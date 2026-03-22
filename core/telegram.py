@@ -6,8 +6,9 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 DISCORD_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 ALERTS_ENABLED = os.getenv("ALERTS_ENABLED", "1") == "1"
+NL = chr(10)
 
-def _send(text: str) -> bool:
+def _send(text):
     if not ALERTS_ENABLED:
         LOGGER.info("Alerts disabled")
         return True
@@ -31,127 +32,92 @@ def _send(text: str) -> bool:
             LOGGER.warning("Discord error: " + str(e))
     return ok
 
-def send_morning_card(picks: list, week_stats: dict = None) -> bool:
+def send_morning_card(picks, week_stats=None):
     from datetime import datetime, timezone
     import pytz
     tz = pytz.timezone(os.getenv("GHOST_TZ", "America/Chicago"))
     now = datetime.now(tz)
     day = now.strftime("%A %b %d")
-    lines = ["<b>Ghost PICKS -- " + day + "</b>"]
+    parts = ["<b>Ghost PICKS -- " + day + "</b>"]
     if not picks:
-        lines.append("No picks today -- market conditions not ideal.")
+        parts.append("No picks today -- conditions not ideal.")
     else:
         for i, p in enumerate(picks[:10], 1):
             sym = p["symbol"]
             direction = p["direction"]
             arrow = "BUY" if direction == "UP" else "SELL"
-            entry = p.get("entry_price", 0)
-            target = p.get("target_price", 0)
-            stop = p.get("stop_price", 0)
-            conf = int(p.get("confidence", 0) * 100)
-            if direction == "UP":
-                pct = (target - entry) / entry * 100 if entry else 0
-            else:
-                pct = (entry - target) / entry * 100 if entry else 0
+            entry = p.get("entry_price", 0) or 0
+            target = p.get("target_price", 0) or 0
+            stop = p.get("stop_price", 0) or 0
+            conf = int((p.get("confidence", 0) or 0) * 100)
+            pct = (target - entry) / entry * 100 if entry and direction == "UP" else (entry - target) / entry * 100 if entry else 0
             usd_out = round(100 * (1 + pct/100), 2)
-            if entry >= 1:
-                ep = "$" + str(round(entry, 2))
-                tp = "$" + str(round(target, 2))
-                sp = "$" + str(round(stop, 2))
-            else:
-                ep = "$" + str(round(entry, 6))
-                tp = "$" + str(round(target, 6))
-                sp = "$" + str(round(stop, 6))
+            fmt = lambda v: "$" + str(round(v, 2)) if v >= 1 else "$" + str(round(v, 6))
             exp_ts = p.get("expires_at", 0)
             if exp_ts:
                 exp = datetime.fromtimestamp(float(exp_ts), tz=timezone.utc)
                 exp_str = exp.astimezone(tz).strftime("%a %b %d")
             else:
                 exp_str = "48hrs"
-            lines.append("")
-            lines.append(str(i) + ". <b>" + sym + " -- " + arrow + "</b> (" + str(conf) + "% confident)")
-            lines.append("   Get in at:   " + ep)
-            lines.append("   Get out at:  " + tp + " (+" + str(round(pct,1)) + "%)")
-            lines.append("   Run away at: " + sp)
-            lines.append("   Done by:     " + exp_str)
-            lines.append("   $100 in -- $" + str(usd_out) + " out")
+            parts.append("")
+            parts.append(str(i) + ". <b>" + sym + " -- " + arrow + "</b> (" + str(conf) + "% confident)")
+            parts.append("   Get in at:   " + fmt(entry))
+            parts.append("   Get out at:  " + fmt(target) + " (+" + str(round(pct,1)) + "%)")
+            parts.append("   Run away at: " + fmt(stop))
+            parts.append("   Done by:     " + exp_str)
+            parts.append("   $100 in -- $" + str(usd_out) + " out")
     if week_stats:
         w = week_stats.get("wins", 0)
         l = week_stats.get("losses", 0)
         pnl = week_stats.get("pnl_usd", 0)
         if w + l > 0:
-            lines.append("")
-            lines.append("Last 7 days: " + str(w) + "W/" + str(l) + "L | $" + str(round(pnl,2)) + " if followed")
+            parts.append("")
+            parts.append("Last 7 days: " + str(w) + "W/" + str(l) + "L | $" + str(round(pnl,2)) + " if followed")
         wr = week_stats.get("alltime_wr", 0)
-        lines.append("All-time: " + str(wr) + "% accuracy")
-    return _send("
-".join(lines))
+        parts.append("All-time: " + str(wr) + "% accuracy")
+    return _send(NL.join(parts))
 
-def send_position_alert(symbol: str, direction: str, outcome: str, entry: float, exit_price: float, pnl_pct: float, usd_out: float) -> bool:
+def send_position_alert(symbol, direction, outcome, entry, exit_price, pnl_pct, usd_out):
     label = "TARGET HIT" if outcome == "WIN" else "STOPPED OUT"
     status = "WIN" if outcome == "WIN" else "LOSS"
-    if entry >= 1:
-        entry_str = "$" + str(round(entry,2))
-        exit_str = "$" + str(round(exit_price,2))
-    else:
-        entry_str = "$" + str(round(entry,6))
-        exit_str = "$" + str(round(exit_price,6))
+    fmt = lambda v: "$" + str(round(v, 2)) if v >= 1 else "$" + str(round(v, 6))
     sign = "+" if pnl_pct >= 0 else ""
-    msg = "<b>" + symbol + " " + label + " -- " + status + "</b>
-"
-    msg += direction + " | " + entry_str + " to " + exit_str + "
-"
+    msg = "<b>" + symbol + " " + label + " -- " + status + "</b>" + NL
+    msg += direction + " | " + fmt(entry) + " to " + fmt(exit_price) + NL
     msg += sign + str(round(pnl_pct,2)) + "% | $100 to $" + str(round(usd_out,2))
     return _send(msg)
 
-def send_news_alert(symbol: str, headline: str, sentiment: str, action: str = "") -> bool:
+def send_news_alert(symbol, headline, sentiment, action=""):
     icon = "WARNING" if sentiment == "BEARISH" else "UPDATE"
-    msg = "<b>" + icon + " -- " + symbol + "</b>
-"
-    msg += headline[:150] + "
-"
+    msg = "<b>" + icon + " -- " + symbol + "</b>" + NL
+    msg += headline[:150] + NL
     msg += "Sentiment: " + sentiment
     if action:
-        msg += "
-" + action
+        msg += NL + action
     return _send(msg)
 
-def send_weekly_summary(stats: dict) -> bool:
+def send_weekly_summary(stats):
     wins = stats.get("wins", 0)
     losses = stats.get("losses", 0)
     total = wins + losses
     wr = round(wins/total*100, 1) if total else 0
     pnl = stats.get("pnl_usd", 0)
+    sign = "+" if pnl >= 0 else ""
+    msg = "<b>Ghost WEEKLY SUMMARY</b>" + NL + NL
+    msg += "If you followed every pick:" + NL
+    msg += str(wins) + "W / " + str(losses) + "L -- " + str(wr) + "%" + NL
+    msg += sign + "$" + str(round(pnl,2)) + " on $1,000 deployed" + NL
     best = stats.get("best_pick", "")
     worst = stats.get("worst_pick", "")
-    alltime_wr = stats.get("alltime_wr", 0)
-    retrain_days = stats.get("retrain_in_days", 14)
-    msg = "<b>Ghost WEEKLY SUMMARY</b>
-
-"
-    msg += "If you followed every pick:
-"
-    msg += str(wins) + "W / " + str(losses) + "L -- " + str(wr) + "%
-"
-    sign = "+" if pnl >= 0 else ""
-    msg += sign + "$" + str(round(pnl,2)) + " on $1,000 deployed
-"
-    if best: msg += "Best: " + best + "
-"
-    if worst: msg += "Worst: " + worst + "
-"
-    msg += "
-All-time: " + str(alltime_wr) + "% accuracy"
-    msg += "
-Model retrains in: " + str(retrain_days) + " days"
-    msg += "
-Next card: Monday 8 AM CT"
+    if best: msg += "Best: " + best + NL
+    if worst: msg += "Worst: " + worst + NL
+    msg += NL + "All-time: " + str(stats.get("alltime_wr",0)) + "% accuracy"
+    msg += NL + "Model retrains in: " + str(stats.get("retrain_in_days",14)) + " days"
+    msg += NL + "Next card: Monday 8 AM CT"
     return _send(msg)
 
-def send_health_alert(issue: str) -> bool:
-    return _send("<b>GHOST HEALTH ALERT</b>
-" + issue)
+def send_health_alert(issue):
+    return _send("<b>GHOST HEALTH ALERT</b>" + NL + issue)
 
-def send_test() -> bool:
-    msg = "Ghost Protocol v2 -- Telegram connected OK"
-    return _send(msg)
+def send_test():
+    return _send("Ghost Protocol v2 -- Telegram connected OK")
