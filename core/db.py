@@ -28,37 +28,39 @@ class db_conn:
         put_conn(self.conn)
 
 def _ensure_tables():
+    """Create tables only if they do not exist. Non-destructive."""
     with db_conn() as conn:
         cur = conn.cursor()
+        # Only create if not exists - preserves v1 data
         cur.execute("""
             CREATE TABLE IF NOT EXISTS predictions (
                 id SERIAL PRIMARY KEY,
                 symbol VARCHAR(20) NOT NULL,
                 direction VARCHAR(10) NOT NULL,
                 confidence FLOAT NOT NULL,
-                entry_price FLOAT NOT NULL,
-                target_price FLOAT NOT NULL,
-                stop_price FLOAT NOT NULL,
-                predicted_at BIGINT NOT NULL,
-                expires_at BIGINT NOT NULL,
+                entry_price FLOAT,
+                target_price FLOAT,
+                stop_price FLOAT,
+                run_at BIGINT,
+                predicted_at BIGINT,
+                expires_at BIGINT,
                 resolved_at BIGINT,
                 outcome VARCHAR(10),
                 exit_price FLOAT,
                 pnl_pct FLOAT,
-                asset_type VARCHAR(10) DEFAULT 'crypto',
-                notes TEXT
+                asset_type VARCHAR(10) DEFAULT 'crypto'
             )
         """)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS paper_trades (
                 id SERIAL PRIMARY KEY,
                 prediction_id INTEGER,
-                symbol VARCHAR(20) NOT NULL,
-                direction VARCHAR(10) NOT NULL,
-                entry_price FLOAT NOT NULL,
-                target_price FLOAT NOT NULL,
-                stop_price FLOAT NOT NULL,
-                entry_time BIGINT NOT NULL,
+                symbol VARCHAR(20),
+                direction VARCHAR(10),
+                entry_price FLOAT,
+                target_price FLOAT,
+                stop_price FLOAT,
+                entry_time BIGINT,
                 exit_time BIGINT,
                 exit_price FLOAT,
                 result VARCHAR(10),
@@ -75,34 +77,26 @@ def _ensure_tables():
                 updated_at BIGINT NOT NULL
             )
         """)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS system_events (
-                id SERIAL PRIMARY KEY,
-                event_type VARCHAR(50),
-                message TEXT,
-                data JSONB,
-                created_at BIGINT NOT NULL
-            )
-        """)
         LOGGER.info("Tables verified")
 
 def _migrate_schema():
-    """Add any missing columns to handle v1->v2 migration."""
+    """Add missing columns to v1 predictions table for v2 compatibility."""
+    # V1 uses run_at, v2 uses predicted_at - add both, keep v1 data intact
     migrations = [
-        ("predictions", "target_price", "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS target_price FLOAT"),
-        ("predictions", "stop_price", "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS stop_price FLOAT"),
-        ("predictions", "asset_type", "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS asset_type VARCHAR(10) DEFAULT 'crypto'"),
-        ("predictions", "expires_at", "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS expires_at BIGINT"),
-        ("predictions", "entry_price", "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS entry_price FLOAT"),
-        ("paper_trades", "usd_in", "ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS usd_in FLOAT DEFAULT 100.0"),
-        ("paper_trades", "usd_out", "ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS usd_out FLOAT"),
+        "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS outcome VARCHAR(10)",
+        "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS exit_price FLOAT",
+        "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS pnl_pct FLOAT",
+        "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS resolved_at BIGINT",
+        "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS predicted_at BIGINT",
+        "UPDATE predictions SET predicted_at = run_at WHERE predicted_at IS NULL AND run_at IS NOT NULL",
     ]
     with db_conn() as conn:
         cur = conn.cursor()
-        for table, col, sql in migrations:
+        for sql in migrations:
             try:
                 cur.execute(sql)
-                LOGGER.info(f"Migration: {table}.{col} ready")
+                conn.commit()
             except Exception as e:
-                LOGGER.warning(f"Migration {table}.{col}: {e}")
+                LOGGER.warning("Migration: " + str(e)[:80])
                 conn.rollback()
+    LOGGER.info("Schema migration complete")
