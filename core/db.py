@@ -9,6 +9,7 @@ def init_db():
     _pool = psycopg2.pool.ThreadedConnectionPool(2, 10, dsn=os.environ["DATABASE_URL"])
     LOGGER.info("DB pool ready")
     _ensure_tables()
+    _migrate_schema()
 
 def get_conn():
     if not _pool: raise RuntimeError("Call init_db() first")
@@ -51,7 +52,7 @@ def _ensure_tables():
         cur.execute("""
             CREATE TABLE IF NOT EXISTS paper_trades (
                 id SERIAL PRIMARY KEY,
-                prediction_id INTEGER REFERENCES predictions(id),
+                prediction_id INTEGER,
                 symbol VARCHAR(20) NOT NULL,
                 direction VARCHAR(10) NOT NULL,
                 entry_price FLOAT NOT NULL,
@@ -84,3 +85,24 @@ def _ensure_tables():
             )
         """)
         LOGGER.info("Tables verified")
+
+def _migrate_schema():
+    """Add any missing columns to handle v1->v2 migration."""
+    migrations = [
+        ("predictions", "target_price", "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS target_price FLOAT"),
+        ("predictions", "stop_price", "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS stop_price FLOAT"),
+        ("predictions", "asset_type", "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS asset_type VARCHAR(10) DEFAULT 'crypto'"),
+        ("predictions", "expires_at", "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS expires_at BIGINT"),
+        ("predictions", "entry_price", "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS entry_price FLOAT"),
+        ("paper_trades", "usd_in", "ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS usd_in FLOAT DEFAULT 100.0"),
+        ("paper_trades", "usd_out", "ALTER TABLE paper_trades ADD COLUMN IF NOT EXISTS usd_out FLOAT"),
+    ]
+    with db_conn() as conn:
+        cur = conn.cursor()
+        for table, col, sql in migrations:
+            try:
+                cur.execute(sql)
+                LOGGER.info(f"Migration: {table}.{col} ready")
+            except Exception as e:
+                LOGGER.warning(f"Migration {table}.{col}: {e}")
+                conn.rollback()
