@@ -29,7 +29,7 @@ def get_model():
     if _model is None:
         try:
             import xgboost as xgb
-            path = os.getenv("MODEL_PATH", "models/ghost_v2.json")
+            path = os.getenv("MODEL_PATH", "/tmp/ghost_v2.json")
             if os.path.exists(path):
                 _model = xgb.XGBClassifier()
                 _model.load_model(path)
