@@ -52,7 +52,7 @@ async def lifespan(app: FastAPI):
     scheduler.register("reconcile", reconcile_outcomes, interval_s=900)
     scheduler.register("news", run_news_cycle, interval_s=1800)
     scheduler.start()
-    LOGGER.info("Ghost Protocol v2 ready ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ 3 tasks running")
+    LOGGER.info("Ghost Protocol v2 ready ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ 3 tasks running")
     yield
     scheduler.stop()
 
@@ -188,12 +188,66 @@ def test_alert():
 
 @APP.post("/api/retrain")
 def retrain(x_cron_secret: str = Header(default="")):
-    """Manually trigger model retrain."""
+    """Train XGBoost on ghost_prediction_outcomes. Inline - no import needed."""
     if CRON_SECRET and x_cron_secret != CRON_SECRET:
         raise HTTPException(status_code=403)
-    from scripts.retrain import run_retrain
-    result = run_retrain()
-    return {"ok": "error" not in result, "result": result}
+    try:
+        import xgboost as xgb, numpy as np, json as _json, time as _time
+        CRYPTO = {'BTC','ETH','SOL','XRP','ADA','DOT','LINK','AVAX','MATIC','LTC','ATOM','UNI','TRX','BCH','CHZ','TURBO','ZEC','RNDR'}
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT COALESCE(gpo.predicted_direction,'UP'), COALESCE(gpo.predicted_confidence,0.5),
+                       gpo.price_at_prediction, gpo.realized_move_pct,
+                       EXTRACT(EPOCH FROM gpo.created_at)::BIGINT,
+                       gpo.symbol,
+                       CASE WHEN gpo.hit_direction=1 THEN 1 ELSE 0 END
+                FROM ghost_prediction_outcomes gpo
+                WHERE gpo.hit_direction IN (0,1) AND gpo.price_at_prediction > 0
+                ORDER BY gpo.created_at DESC LIMIT 5000
+            """)
+            rows = cur.fetchall()
+        if len(rows) < 100:
+            return JSONResponse({"ok": False, "error": "Only " + str(len(rows)) + " rows"}, status_code=400)
+        import datetime as _dt, collections
+        sym_wins = collections.defaultdict(lambda: [0,0])
+        for row in rows:
+            sym = row[5]
+            sym_wins[sym][1] += 1
+            if row[6] == 1: sym_wins[sym][0] += 1
+        X, y = [], []
+        for direction, conf, entry, pnl, ts, sym, label in rows:
+            if not entry or entry <= 0: continue
+            wr = sym_wins[sym][0]/sym_wins[sym][1] if sym_wins[sym][1] else 0.5
+            sc = min(sym_wins[sym][1], 100) / 100
+            pct = abs(pnl)/100 if pnl else 0.05
+            h, dow = 0, 0
+            if ts:
+                dt = _dt.datetime.fromtimestamp(float(ts))
+                h, dow = dt.hour, dt.weekday()
+            X.append([float(conf), 1.0 if direction=="UP" else 0.0, 1.0 if sym in CRYPTO else 0.0,
+                       float(pct), 0.03, float(pct)/0.03 if pct else 1.0,
+                       float(wr), float(sc), float(min(entry,10000))/10000,
+                       float(h)/24, float(dow)/7])
+            y.append(label)
+        X_np, y_np = np.array(X), np.array(y)
+        split = int(len(X_np) * 0.8)
+        model = xgb.XGBClassifier(n_estimators=200, max_depth=4, learning_rate=0.05,
+            subsample=0.8, colsample_bytree=0.8, eval_metric="logloss", random_state=42)
+        model.fit(X_np[:split], y_np[:split], eval_set=[(X_np[split:], y_np[split:])], verbose=False)
+        val_acc = float(np.mean(model.predict(X_np[split:]) == y_np[split:]))
+        train_acc = float(np.mean(model.predict(X_np[:split]) == y_np[:split]))
+        model_path = "/tmp/ghost_v2.json"
+        model.save_model(model_path)
+        from core import prediction as _pred
+        _pred._model = model
+        meta = {"ok": True, "samples": len(X), "train_acc": round(train_acc*100,1),
+                "val_acc": round(val_acc*100,1), "model_path": model_path}
+        LOGGER.info("Retrain done: " + str(meta))
+        return meta
+    except Exception as e:
+        LOGGER.error("Retrain error: " + str(e))
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 @APP.get("/api/price/{symbol}")
 def get_price_endpoint(symbol: str, asset_type: str = "crypto"):
