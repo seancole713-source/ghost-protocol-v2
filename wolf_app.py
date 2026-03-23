@@ -52,7 +52,7 @@ async def lifespan(app: FastAPI):
     scheduler.register("reconcile", reconcile_outcomes, interval_s=900)
     scheduler.register("news", run_news_cycle, interval_s=1800)
     scheduler.start()
-    LOGGER.info("Ghost Protocol v2 ready ÃÂÃÂ¢ÃÂÃÂÃÂÃÂ 3 tasks running")
+    LOGGER.info("Ghost Protocol v2 ready ÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ 3 tasks running")
     yield
     scheduler.stop()
 
@@ -223,7 +223,7 @@ def migrate_outcomes(x_cron_secret: str = Header(default="")):
                     EXTRACT(EPOCH FROM gpo.created_at)::BIGINT,
                     EXTRACT(EPOCH FROM COALESCE(gpo.closed_at, gpo.created_at + INTERVAL '48 hours'))::BIGINT,
                     EXTRACT(EPOCH FROM gpo.closed_at)::BIGINT,
-                    CASE WHEN gpo.hit_direction = TRUE THEN 'WIN' ELSE 'LOSS' END,
+                    CASE WHEN gpo.hit_direction = 1 THEN 'WIN' ELSE 'LOSS' END,
                     gpo.price_at_resolution,
                     gpo.realized_move_pct,
                     CASE WHEN gpo.symbol = ANY(ARRAY['BTC','ETH','SOL','XRP','ADA','DOT','LINK','AVAX','MATIC','LTC','ATOM','UNI','TRX','BCH','CHZ','TURBO','ZEC','RNDR']) THEN 'crypto' ELSE 'stock' END
