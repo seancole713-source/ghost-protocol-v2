@@ -373,7 +373,7 @@ def get_stats():
     """Overall accuracy stats across all sources."""
     with db_conn() as conn:
         cur = conn.cursor()
-        cur.execute("SELECT outcome, COUNT(*) FROM predictions WHERE outcome IN ('WIN','LOSS') GROUP BY outcome")
+        cur.execute("SELECT outcome, COUNT(*) FROM predictions WHERE outcome IN ('WIN','LOSS') AND predicted_at IS NOT NULL GROUP BY outcome")
         rows = {r[0]: r[1] for r in cur.fetchall()}
         wins = rows.get("WIN", 0)
         losses = rows.get("LOSS", 0)
