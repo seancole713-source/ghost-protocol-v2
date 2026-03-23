@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ghost Protocol v2 — Cockpit</title>
+<style>
+  :root {
+    --bg: #0a0a0f;
+    --card: #12121a;
+    --border: #1e1e2e;
+    --accent: #7c3aed;
+    --green: #10b981;
+    --red: #ef4444;
+    --yellow: #f59e0b;
+    --text: #e2e8f0;
+    --muted: #64748b;
+    --font: 'SF Mono', 'Fira Code', monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 13px; min-height: 100vh; }
+  .header { border-bottom: 1px solid var(--border); padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; }
+  .header h1 { font-size: 16px; font-weight: 600; letter-spacing: 0.05em; color: var(--accent); }
+  .header .status { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); animation: pulse 2s infinite; }
+  .dot.red { background: var(--red); animation: none; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; padding: 20px 24px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+  .card .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px; }
+  .card .value { font-size: 28px; font-weight: 700; }
+  .card .sub { font-size: 11px; color: var(--muted); margin-top: 4px; }
+  .green { color: var(--green); }
+  .red { color: var(--red); }
+  .yellow { color: var(--yellow); }
+  .section { padding: 0 24px 20px; }
+  .section h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); margin-bottom: 12px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+  .picks-table { width: 100%; border-collapse: collapse; }
+  .picks-table th { font-size: 10px; text-transform: uppercase; color: var(--muted); text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+  .picks-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  .picks-table tr:last-child td { border-bottom: none; }
+  .picks-table tr:hover td { background: rgba(124,58,237,0.05); }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 600; }
+  .badge.BUY,.badge.UP { background: rgba(16,185,129,0.15); color: var(--green); }
+  .badge.SELL,.badge.DOWN { background: rgba(239,68,68,0.15); color: var(--red); }
+  .badge.WIN { background: rgba(16,185,129,0.15); color: var(--green); }
+  .badge.LOSS { background: rgba(239,68,68,0.15); color: var(--red); }
+  .badge.EXPIRED { background: rgba(100,116,139,0.15); color: var(--muted); }
+  .bar-wrap { background: var(--border); border-radius: 4px; height: 6px; width: 100%; margin-top: 4px; }
+  .bar { height: 6px; border-radius: 4px; background: var(--green); transition: width 0.6s; }
+  .tasks { display: flex; gap: 12px; flex-wrap: wrap; }
+  .task { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; flex: 1; min-width: 160px; }
+  .task .t-name { font-size: 11px; color: var(--muted); text-transform: uppercase; }
+  .task .t-runs { font-size: 20px; font-weight: 700; margin: 4px 0; }
+  .task .t-err { font-size: 11px; }
+  .acc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+  .sym-card { background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; }
+  .sym-card .sym { font-weight: 700; font-size: 14px; }
+  .sym-card .wr { font-size: 20px; font-weight: 700; margin: 2px 0; }
+  .sym-card .n { font-size: 10px; color: var(--muted); }
+  .refresh { font-size: 10px; color: var(--muted); text-align: right; padding: 0 24px 12px; }
+  .error-box { background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3); border-radius: 6px; padding: 8px 12px; font-size: 11px; color: var(--red); margin: 4px 0; }
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>👻 GHOST PROTOCOL v2</h1>
+  <div class="status">
+    <div class="dot" id="status-dot"></div>
+    <span id="status-text">connecting...</span>
+    <span id="last-refresh"></span>
+  </div>
+</div>
+
+<div class="grid" id="stat-cards">
+  <div class="card"><div class="label">Health Score</div><div class="value" id="health-score">...</div><div class="sub" id="health-issues"></div></div>
+  <div class="card"><div class="label">Win Rate</div><div class="value" id="win-rate">...</div><div class="sub" id="win-count"></div><div class="bar-wrap"><div class="bar" id="wr-bar" style="width:0%"></div></div></div>
+  <div class="card"><div class="label">Open Positions</div><div class="value" id="open-pos">...</div><div class="sub">being tracked</div></div>
+  <div class="card"><div class="label">Price Feeds</div><div class="value" id="feeds">...</div><div class="sub" id="feeds-detail"></div></div>
+</div>
+
+<div class="section">
+  <h2>Background Tasks</h2>
+  <div class="tasks" id="tasks-list"></div>
+</div>
+
+<div class="section">
+  <h2>Active Picks</h2>
+  <table class="picks-table">
+    <thead><tr><th>Symbol</th><th>Direction</th><th>Confidence</th><th>Entry</th><th>Target</th><th>Stop</th><th>Expires</th></tr></thead>
+    <tbody id="picks-body"></tbody>
+  </table>
+</div>
+
+<div class="section">
+  <h2>Recent Results</h2>
+  <table class="picks-table">
+    <thead><tr><th>Symbol</th><th>Direction</th><th>Outcome</th><th>Entry</th><th>Exit</th><th>P&amp;L</th></tr></thead>
+    <tbody id="results-body"></tbody>
+  </table>
+</div>
+
+<div class="section">
+  <h2>Symbol Edge (from 13,945 historical outcomes)</h2>
+  <div class="acc-grid" id="acc-grid"></div>
+</div>
+
+<div class="refresh" id="refresh-line">Loading...</div>
+
+<script>
+const BASE = '';  // same origin
+
+function fmt_price(p) {
+  if (!p) return '—';
+  if (p > 1000) return '$' + p.toLocaleString('en-US', {maximumFractionDigits:0});
+  if (p > 1) return '$' + p.toFixed(3);
+  return '$' + p.toFixed(6);
+}
+
+function fmt_time(ts) {
+  if (!ts) return '—';
+  const d = new Date(ts * 1000);
+  const now = new Date();
+  const diff = d - now;
+  if (diff < 0) return 'expired';
+  const h = Math.floor(diff / 3600000);
+  if (h < 24) return h + 'h left';
+  return Math.floor(h/24) + 'd left';
+}
+
+async function load() {
+  try {
+    const [health, stats, picks, acc] = await Promise.all([
+      fetch('/health').then(r=>r.json()),
+      fetch('/api/stats').then(r=>r.json()),
+      fetch('/api/picks').then(r=>r.json()),
+      fetch('/api/symbol-accuracy').then(r=>r.json()),
+    ]);
+
+    // Health
+    const score = health.score || 0;
+    document.getElementById('health-score').textContent = score;
+    document.getElementById('health-score').className = 'value ' + (score >= 90 ? 'green' : score >= 70 ? 'yellow' : 'red');
+    document.getElementById('status-dot').className = 'dot ' + (score < 70 ? 'red' : '');
+    document.getElementById('status-text').textContent = health.status || 'unknown';
+    const issues = health.issues || [];
+    document.getElementById('health-issues').textContent = issues.length ? issues.join(', ') : 'No issues';
+
+    // Feeds
+    const feeds = health.price_feeds || {};
+    const ok = [feeds.coingecko, feeds.coinbase, feeds.binance, feeds.polygon].filter(Boolean).length;
+    document.getElementById('feeds').textContent = ok + '/4';
+    document.getElementById('feeds').className = 'value ' + (ok >= 3 ? 'green' : ok >= 2 ? 'yellow' : 'red');
+    document.getElementById('feeds-detail').textContent = feeds.summary || '';
+
+    // Stats
+    const wins = stats.wins || 0;
+    const losses = stats.losses || 0;
+    const wr = stats.win_rate_pct || 0;
+    document.getElementById('win-rate').textContent = wr + '%';
+    document.getElementById('win-rate').className = 'value ' + (wr >= 55 ? 'green' : wr >= 45 ? 'yellow' : 'red');
+    document.getElementById('win-count').textContent = wins + 'W / ' + losses + 'L';
+    document.getElementById('wr-bar').style.width = Math.min(wr, 100) + '%';
+    document.getElementById('wr-bar').style.background = wr >= 55 ? 'var(--green)' : wr >= 45 ? 'var(--yellow)' : 'var(--red)';
+    document.getElementById('open-pos').textContent = stats.open_positions || 0;
+
+    // Tasks
+    const tlist = document.getElementById('tasks-list');
+    tlist.innerHTML = '';
+    (health.tasks || []).forEach(t => {
+      const div = document.createElement('div');
+      div.className = 'task';
+      div.innerHTML = '<div class="t-name">' + t.name + '</div>' +
+        '<div class="t-runs">' + t.run_count + ' <span style="font-size:12px;color:var(--muted)">runs</span></div>' +
+        '<div class="t-err ' + (t.error_count > 0 ? 'red' : 'green') + '">' + t.error_count + ' errors</div>' +
+        (t.last_error ? '<div class="error-box">' + t.last_error.slice(0,80) + '</div>' : '');
+      tlist.appendChild(div);
+    });
+
+    // Active picks
+    const pb = document.getElementById('picks-body');
+    pb.innerHTML = '';
+    (picks.active || []).slice(0, 20).forEach(p => {
+      const dir = p.direction === 'UP' ? 'BUY' : 'SELL';
+      const conf = Math.round((p.confidence || 0) * 100);
+      pb.innerHTML += '<tr>' +
+        '<td style="font-weight:600">' + p.symbol + '</td>' +
+        '<td><span class="badge ' + dir + '">' + dir + '</span></td>' +
+        '<td>' + conf + '%</td>' +
+        '<td>' + fmt_price(p.entry_price) + '</td>' +
+        '<td class="green">' + fmt_price(p.target_price) + '</td>' +
+        '<td class="red">' + fmt_price(p.stop_price) + '</td>' +
+        '<td>' + fmt_time(p.expires_at) + '</td>' +
+        '</tr>';
+    });
+    if (!picks.active?.length) pb.innerHTML = '<tr><td colspan="7" style="color:var(--muted);text-align:center;padding:20px">No active picks right now</td></tr>';
+
+    // Recent results
+    const rb = document.getElementById('results-body');
+    rb.innerHTML = '';
+    const resolved = (picks.active || []).filter(p => p.outcome).concat(picks.resolved || []);
+    resolved.slice(0, 15).forEach(p => {
+      const dir = p.direction === 'UP' ? 'BUY' : 'SELL';
+      const pnl = p.pnl_pct;
+      rb.innerHTML += '<tr>' +
+        '<td style="font-weight:600">' + p.symbol + '</td>' +
+        '<td><span class="badge ' + dir + '">' + dir + '</span></td>' +
+        '<td><span class="badge ' + p.outcome + '">' + p.outcome + '</span></td>' +
+        '<td>' + fmt_price(p.entry_price) + '</td>' +
+        '<td>' + fmt_price(p.exit_price) + '</td>' +
+        '<td class="' + (pnl >= 0 ? 'green' : 'red') + '">' + (pnl >= 0 ? '+' : '') + (pnl ? pnl.toFixed(1) : '0') + '%</td>' +
+        '</tr>';
+    });
+    if (!resolved.length) rb.innerHTML = '<tr><td colspan="6" style="color:var(--muted);text-align:center;padding:20px">No resolved picks yet</td></tr>';
+
+    // Symbol accuracy
+    const ag = document.getElementById('acc-grid');
+    ag.innerHTML = '';
+    (acc.data || []).slice(0, 24).forEach(s => {
+      const color = s.win_rate >= 65 ? 'green' : s.win_rate >= 55 ? 'yellow' : 'red';
+      ag.innerHTML += '<div class="sym-card">' +
+        '<div class="sym">' + s.symbol + '</div>' +
+        '<div class="wr ' + color + '">' + s.win_rate + '%</div>' +
+        '<div class="n">' + s.total + ' picks</div>' +
+        '</div>';
+    });
+
+    document.getElementById('last-refresh').textContent = '· ' + new Date().toLocaleTimeString();
+    document.getElementById('refresh-line').textContent = 'Auto-refresh every 60s · Last updated ' + new Date().toLocaleTimeString();
+
+  } catch(e) {
+    document.getElementById('status-text').textContent = 'ERROR: ' + e.message;
+    document.getElementById('status-dot').className = 'dot red';
+  }
+}
+
+load();
+setInterval(load, 60000);
+</script>
+</body>
+</html>
