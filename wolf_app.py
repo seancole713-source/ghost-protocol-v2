@@ -52,7 +52,7 @@ async def lifespan(app: FastAPI):
     scheduler.register("reconcile", reconcile_outcomes, interval_s=900)
     scheduler.register("news", run_news_cycle, interval_s=1800)
     scheduler.start()
-    LOGGER.info("Ghost Protocol v2 ready ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ 3 tasks running")
+    LOGGER.info("Ghost Protocol v2 ready ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ 3 tasks running")
     yield
     scheduler.stop()
 
@@ -166,10 +166,20 @@ def get_news():
 
 @APP.post("/api/run-predictions")
 def trigger_predictions(x_cron_secret: str = Header(default="")):
+    """Run prediction cycle only. Does NOT send Telegram (use /api/morning-card for that)."""
+    if CRON_SECRET and x_cron_secret != CRON_SECRET:
+        raise HTTPException(status_code=403)
+    from core.prediction import run_prediction_cycle
+    picks = run_prediction_cycle()
+    return {"ok": True, "picks_generated": len(picks), "picks": picks}
+
+@APP.post("/api/morning-card")
+def trigger_morning_card(x_cron_secret: str = Header(default="")):
+    """Run prediction cycle AND send Telegram card. Use for cron-job.org trigger."""
     if CRON_SECRET and x_cron_secret != CRON_SECRET:
         raise HTTPException(status_code=403)
     picks = _morning_card_job()
-    return {"ok": True, "picks_generated": len(picks), "picks": picks}
+    return {"ok": True, "picks_generated": len(picks)}
 
 @APP.post("/api/reconcile")
 def trigger_reconcile(x_cron_secret: str = Header(default="")):
