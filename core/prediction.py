@@ -213,4 +213,12 @@ def reconcile_outcomes():
                     (outcome, price, round(pnl,3), now, pred_id))
             resolved += 1
             LOGGER.info("Resolved " + symbol + " " + direction + ": " + outcome + " " + str(round(pnl,2)) + "%")
+            # Watchdog: fire Telegram alert immediately when pick resolves
+            if outcome in ("WIN", "LOSS"):
+                try:
+                    from core.telegram import send_position_alert
+                    usd_out = round(100 * (1 + pnl/100), 2)
+                    send_position_alert(symbol, direction, outcome, entry, price, pnl, usd_out)
+                except Exception as te:
+                    LOGGER.error("Watchdog alert failed: " + str(te))
     return resolved
