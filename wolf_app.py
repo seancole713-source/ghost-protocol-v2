@@ -52,7 +52,7 @@ async def lifespan(app: FastAPI):
     scheduler.register("reconcile", reconcile_outcomes, interval_s=900)
     scheduler.register("news", run_news_cycle, interval_s=1800)
     scheduler.start()
-    LOGGER.info("Ghost Protocol v2 ready Ã¢ÂÂ 3 tasks running")
+    LOGGER.info("Ghost Protocol v2 ready ÃÂ¢ÃÂÃÂ 3 tasks running")
     yield
     scheduler.stop()
 
@@ -261,6 +261,39 @@ def get_stats():
     return {"ok": True, "wins": wins, "losses": losses, "total": total,
             "win_rate_pct": round(wins/total*100,1) if total else 0,
             "open_positions": open_count}
+
+@APP.get("/api/db-probe")
+def db_probe():
+    """Count rows in v1 outcome tables to find where data lives."""
+    tables = [
+        "accuracy_forecasts", "ghost_predictions", "ghost_prediction_outcomes",
+        "ghost_tracked_picks", "ai_memory", "outcomes", "ghost_accuracy_stats",
+        "predictions", "paper_trades", "money_game_trades",
+    ]
+    counts = {}
+    with db_conn() as conn:
+        cur = conn.cursor()
+        for t in tables:
+            try:
+                cur.execute("SELECT COUNT(*) FROM " + t)
+                counts[t] = cur.fetchone()[0]
+            except Exception as e:
+                conn.rollback()
+                counts[t] = "ERR: " + str(e)[:60]
+        # Also check ghost_tracked_picks columns
+        try:
+            cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='ghost_tracked_picks' ORDER BY ordinal_position")
+            counts["ghost_tracked_picks_cols"] = [r[0] for r in cur.fetchall()]
+        except: pass
+        try:
+            cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='ghost_predictions' ORDER BY ordinal_position")
+            counts["ghost_predictions_cols"] = [r[0] for r in cur.fetchall()][:10]
+        except: pass
+        try:
+            cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='money_game_trades' ORDER BY ordinal_position")
+            counts["money_game_trades_cols"] = [r[0] for r in cur.fetchall()]
+        except: pass
+    return {"ok": True, "counts": counts}
 
 @APP.get("/cockpit")
 def cockpit():
