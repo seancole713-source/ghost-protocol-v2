@@ -52,7 +52,7 @@ async def lifespan(app: FastAPI):
     scheduler.register("reconcile", reconcile_outcomes, interval_s=900)
     scheduler.register("news", run_news_cycle, interval_s=1800)
     scheduler.start()
-    LOGGER.info("Ghost Protocol v2 ready ÃÂ¢ÃÂÃÂ 3 tasks running")
+    LOGGER.info("Ghost Protocol v2 ready ÃÂÃÂ¢ÃÂÃÂÃÂÃÂ 3 tasks running")
     yield
     scheduler.stop()
 
@@ -203,48 +203,50 @@ def get_price_endpoint(symbol: str, asset_type: str = "crypto"):
 
 @APP.post("/api/migrate-outcomes")
 def migrate_outcomes(x_cron_secret: str = Header(default="")):
-    """INSERT resolved v1 accuracy_forecasts as v2 prediction rows."""
+    """INSERT from ghost_prediction_outcomes (13k rows) into predictions."""
     if CRON_SECRET and x_cron_secret != CRON_SECRET:
         raise HTTPException(status_code=403)
-    inserted = 0
     try:
         with db_conn() as conn:
             cur = conn.cursor()
-            # INSERT resolved forecasts as v2 predictions (skip already-imported ones)
             cur.execute("""
                 INSERT INTO predictions
-                    (symbol, direction, confidence, entry_price, target_price,
-                     stop_price, predicted_at, expires_at, resolved_at,
-                     outcome, exit_price, pnl_pct, asset_type)
+                    (symbol, direction, confidence, entry_price, target_price, stop_price,
+                     predicted_at, expires_at, resolved_at, outcome, exit_price, pnl_pct, asset_type)
                 SELECT
-                    af.symbol,
-                    af.direction,
-                    af.confidence,
-                    af.entry_price,
-                    af.target_price,
-                    af.entry_price * 0.97,
-                    EXTRACT(EPOCH FROM af.created_at)::BIGINT,
-                    EXTRACT(EPOCH FROM af.created_at)::BIGINT + af.horizon_hours * 3600,
-                    EXTRACT(EPOCH FROM af.resolved_at)::BIGINT,
-                    CASE WHEN af.was_correct THEN 'WIN' ELSE 'LOSS' END,
-                    af.exit_price,
-                    af.pnl_pct,
-                    CASE WHEN af.symbol IN ('BTC','ETH','SOL','XRP','ADA','DOT','LINK','AVAX','MATIC','LTC','ATOM','UNI','TRX','BCH') THEN 'crypto' ELSE 'stock' END
-                FROM accuracy_forecasts af
-                WHERE af.was_correct IS NOT NULL
-                AND af.entry_price IS NOT NULL
-                AND af.entry_price > 0
-                AND af.resolved_at IS NOT NULL
-                ON CONFLICT DO NOTHING
+                    gpo.symbol,
+                    COALESCE(gpo.predicted_direction, 'UP'),
+                    COALESCE(gpo.predicted_confidence, 0.5),
+                    gpo.price_at_prediction,
+                    gpo.price_at_prediction * 1.06,
+                    gpo.price_at_prediction * 0.97,
+                    EXTRACT(EPOCH FROM gpo.created_at)::BIGINT,
+                    EXTRACT(EPOCH FROM COALESCE(gpo.closed_at, gpo.created_at + INTERVAL '48 hours'))::BIGINT,
+                    EXTRACT(EPOCH FROM gpo.closed_at)::BIGINT,
+                    CASE WHEN gpo.hit_direction = TRUE THEN 'WIN' ELSE 'LOSS' END,
+                    gpo.price_at_resolution,
+                    gpo.realized_move_pct,
+                    CASE WHEN gpo.symbol = ANY(ARRAY['BTC','ETH','SOL','XRP','ADA','DOT','LINK','AVAX','MATIC','LTC','ATOM','UNI','TRX','BCH','CHZ','TURBO','ZEC','RNDR']) THEN 'crypto' ELSE 'stock' END
+                FROM ghost_prediction_outcomes gpo
+                WHERE gpo.hit_direction IS NOT NULL
+                AND gpo.price_at_prediction IS NOT NULL
+                AND gpo.price_at_prediction > 0
+                AND gpo.closed_at IS NOT NULL
+                AND NOT EXISTS (
+                    SELECT 1 FROM predictions p2
+                    WHERE p2.symbol = gpo.symbol
+                    AND p2.resolved_at = EXTRACT(EPOCH FROM gpo.closed_at)::BIGINT
+                    AND p2.outcome IS NOT NULL
+                )
             """)
             inserted = cur.rowcount
             cur.execute("SELECT outcome, COUNT(*) FROM predictions WHERE outcome IS NOT NULL GROUP BY outcome")
             counts = {r[0]: r[1] for r in cur.fetchall()}
-            cur.execute("SELECT COUNT(*) FROM accuracy_forecasts WHERE was_correct IS NOT NULL")
-            af_total = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM ghost_prediction_outcomes WHERE hit_direction IS NOT NULL")
+            source_rows = cur.fetchone()[0]
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
-    return {"ok": True, "inserted": inserted, "af_source_rows": af_total, "outcome_counts": counts}
+    return {"ok": True, "inserted": inserted, "source_rows": source_rows, "outcome_counts": counts}
 
 @APP.get("/api/stats")
 def get_stats():
