@@ -79,14 +79,31 @@ def _build_features(symbol: str, asset_type: str):
             rows = cur.fetchall()
         prices = [r[0] for r in rows if r[0]]
         outcomes = [r[1] for r in rows if r[1]]
-        win_rate = outcomes.count("WIN") / len(outcomes) if outcomes else 0.5
-        momentum = (price - prices[0]) / prices[0] if prices else 0.0
-        volatility = max(prices)/min(prices) - 1 if len(prices) > 1 else 0.1
-        vix_val = get_vix() or 15.0
-        return [price, momentum, volatility, win_rate, len(rows),
-                1.0 if asset_type == "crypto" else 0.0,
-                1.0 if symbol in ["BTC","ETH","XRP","AAPL","NVDA","TSLA"] else 0.0,
-                float(vix_val) / 100, float(len(outcomes)), float(outcomes.count("WIN"))]
+        sym_wr = outcomes.count("WIN") / len(outcomes) if outcomes else 0.5
+        sym_count = len(rows)
+        # Same 11 features as retrain.py for model compatibility
+        confidence_val = 0.5  # placeholder - will be set by predict_symbol
+        direction_val = 1.0   # placeholder - will be set by predict_symbol
+        target_pct = TARGET_PCT
+        stop_pct = STOP_PCT
+        rr = target_pct / stop_pct if stop_pct > 0 else 2.0
+        import datetime
+        now_dt = datetime.datetime.now()
+        hour = float(now_dt.hour) / 24
+        dow = float(now_dt.weekday()) / 7
+        return [
+            confidence_val,
+            direction_val,
+            1.0 if asset_type == "crypto" else 0.0,
+            float(target_pct),
+            float(stop_pct),
+            float(rr),
+            float(sym_wr),
+            float(min(sym_count, 100)) / 100,
+            float(min(price, 10000)) / 10000,
+            hour,
+            dow,
+        ]  # 11 features matching retrain.py
     except Exception as e:
         LOGGER.error("Features " + symbol + ": " + str(e))
         return None
