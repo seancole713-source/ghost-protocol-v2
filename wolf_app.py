@@ -52,7 +52,7 @@ async def lifespan(app: FastAPI):
     scheduler.register("reconcile", reconcile_outcomes, interval_s=900)
     scheduler.register("news", run_news_cycle, interval_s=1800)
     scheduler.start()
-    LOGGER.info("Ghost Protocol v2 ready â 3 tasks running")
+    LOGGER.info("Ghost Protocol v2 ready Ã¢ÂÂ 3 tasks running")
     yield
     scheduler.stop()
 
@@ -203,39 +203,48 @@ def get_price_endpoint(symbol: str, asset_type: str = "crypto"):
 
 @APP.post("/api/migrate-outcomes")
 def migrate_outcomes(x_cron_secret: str = Header(default="")):
-    """Backfill WIN/LOSS from v1 tables into predictions.outcome."""
+    """INSERT resolved v1 accuracy_forecasts as v2 prediction rows."""
     if CRON_SECRET and x_cron_secret != CRON_SECRET:
         raise HTTPException(status_code=403)
-    migrated = 0
+    inserted = 0
     try:
         with db_conn() as conn:
             cur = conn.cursor()
+            # INSERT resolved forecasts as v2 predictions (skip already-imported ones)
             cur.execute("""
-                UPDATE predictions p
-                SET outcome = CASE WHEN af.was_correct THEN 'WIN' ELSE 'LOSS' END,
-                    pnl_pct = af.pnl_pct,
-                    exit_price = af.exit_price,
-                    resolved_at = EXTRACT(EPOCH FROM af.resolved_at)::BIGINT
+                INSERT INTO predictions
+                    (symbol, direction, confidence, entry_price, target_price,
+                     stop_price, predicted_at, expires_at, resolved_at,
+                     outcome, exit_price, pnl_pct, asset_type)
+                SELECT
+                    af.symbol,
+                    af.direction,
+                    af.confidence,
+                    af.entry_price,
+                    af.target_price,
+                    af.entry_price * 0.97,
+                    EXTRACT(EPOCH FROM af.created_at)::BIGINT,
+                    EXTRACT(EPOCH FROM af.created_at)::BIGINT + af.horizon_hours * 3600,
+                    EXTRACT(EPOCH FROM af.resolved_at)::BIGINT,
+                    CASE WHEN af.was_correct THEN 'WIN' ELSE 'LOSS' END,
+                    af.exit_price,
+                    af.pnl_pct,
+                    CASE WHEN af.symbol IN ('BTC','ETH','SOL','XRP','ADA','DOT','LINK','AVAX','MATIC','LTC','ATOM','UNI','TRX','BCH') THEN 'crypto' ELSE 'stock' END
                 FROM accuracy_forecasts af
-                WHERE af.prediction_id = p.id
-                AND p.outcome IS NULL AND af.was_correct IS NOT NULL
+                WHERE af.was_correct IS NOT NULL
+                AND af.entry_price IS NOT NULL
+                AND af.entry_price > 0
+                AND af.resolved_at IS NOT NULL
+                ON CONFLICT DO NOTHING
             """)
-            migrated += cur.rowcount
-            cur.execute("""
-                UPDATE predictions p
-                SET outcome = CASE WHEN gp.correct THEN 'WIN' ELSE 'LOSS' END,
-                    pnl_pct = gp.outcome_pct, exit_price = gp.outcome_price,
-                    resolved_at = EXTRACT(EPOCH FROM gp.checked_at)::BIGINT
-                FROM ghost_predictions gp
-                WHERE gp.id = p.id AND p.outcome IS NULL
-                AND gp.correct IS NOT NULL AND gp.checked = TRUE
-            """)
-            migrated += cur.rowcount
+            inserted = cur.rowcount
             cur.execute("SELECT outcome, COUNT(*) FROM predictions WHERE outcome IS NOT NULL GROUP BY outcome")
             counts = {r[0]: r[1] for r in cur.fetchall()}
+            cur.execute("SELECT COUNT(*) FROM accuracy_forecasts WHERE was_correct IS NOT NULL")
+            af_total = cur.fetchone()[0]
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
-    return {"ok": True, "migrated": migrated, "outcome_counts": counts}
+    return {"ok": True, "inserted": inserted, "af_source_rows": af_total, "outcome_counts": counts}
 
 @APP.get("/api/stats")
 def get_stats():
