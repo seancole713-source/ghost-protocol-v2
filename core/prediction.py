@@ -78,15 +78,16 @@ def _get_symbol_signal(symbol, current_price):
                 ORDER BY created_at DESC LIMIT 200
             """, (symbol,))
             rows = cur.fetchall()  # (direction, hit)
-            # Check v2 recent results — these override gpo historical data
+            # Check v2 recent results â these override gpo historical data
             cur.execute(
                 "SELECT direction, CASE WHEN outcome='WIN' THEN 1 ELSE 0 END FROM predictions WHERE symbol=%s AND outcome IN ('WIN','LOSS') ORDER BY id DESC LIMIT 50",
                 (symbol,))
             v2_rows = cur.fetchall()
-            # Circuit breaker: if last 3 v2 picks all LOSS, bench this symbol
-            if len(v2_rows) >= 3:
-                last3 = [r[1] for r in v2_rows[:3]]
-                if all(h == 0 for h in last3):
+            # Circuit breaker: 8 consecutive v2 losses = bench symbol
+            # Set to 8 to avoid false-positives from early broken-model runs
+            if len(v2_rows) >= 8:
+                last8 = [r[1] for r in v2_rows[:8]]
+                if all(x == 0 for x in last8):
                     LOGGER.info("CIRCUIT BREAKER: " + symbol + " benched (3 consecutive v2 losses)")
                     return None
             # Combine: v2 rows count double (more recent, more relevant)
@@ -109,7 +110,8 @@ def _get_symbol_signal(symbol, current_price):
             elif win_rate < INVERSE_THRESHOLD:
                 # Ghost has an inverse edge - flip it
                 inv_dir = "DOWN" if dominant_dir == "UP" else "UP"
-                return (inv_dir, round(1.0 - win_rate, 3))
+                inv_conf = min(round(1.0 - win_rate, 3), 0.65)  # Cap inverse confidence
+                return (inv_dir, inv_conf)
             else:
                 return None  # No edge (45-55% zone)
         else:
