@@ -109,10 +109,11 @@ def train_model(X, y, model_path="/tmp/ghost_v2.json"):
     X_train, X_val = X_np[:split], X_np[split:]
     y_train, y_val = y_np[:split], y_np[split:]
     model = xgb.XGBClassifier(
-        n_estimators=300, max_depth=3, learning_rate=0.03,
-        subsample=0.7, colsample_bytree=0.7, min_child_weight=5,
+        n_estimators=100, max_depth=2, learning_rate=0.05,
+        subsample=0.6, colsample_bytree=0.6, min_child_weight=10,
+        gamma=1.0, reg_alpha=0.1, reg_lambda=1.0,
         use_label_encoder=False, eval_metric="logloss",
-        scale_pos_weight=1.0,  # balanced classes, no weighting needed
+        scale_pos_weight=1.0,
         random_state=42
     )
     model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
