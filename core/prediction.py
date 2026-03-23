@@ -64,17 +64,27 @@ def _check_regime():
 def _get_symbol_signal(symbol, current_price):
     """
     Core signal logic. Returns (direction, confidence) or None.
-    Uses historical win rate from real resolved picks.
-    Falls back to price momentum for symbols with < MIN_SAMPLES.
+    Queries ghost_prediction_outcomes (13k rows) for per-symbol win rates.
+    This is the ground truth - no model, no overfitting.
     """
     try:
         with db_conn() as conn:
             cur = conn.cursor()
-            # Get resolved picks for this symbol, most recent 100
+            # Primary: ghost_prediction_outcomes has 13k+ real outcomes
+            cur.execute("""
+                SELECT predicted_direction, hit_direction
+                FROM ghost_prediction_outcomes
+                WHERE symbol = %s AND hit_direction IN (0, 1)
+                ORDER BY created_at DESC LIMIT 200
+            """, (symbol,))
+            rows = cur.fetchall()  # (direction, hit)
+            # Also check v2 predictions for recent results
             cur.execute(
-                "SELECT direction, outcome FROM predictions WHERE symbol=%s AND outcome IN ('WIN','LOSS') ORDER BY id DESC LIMIT 100",
+                "SELECT direction, CASE WHEN outcome='WIN' THEN 1 ELSE 0 END FROM predictions WHERE symbol=%s AND outcome IN ('WIN','LOSS') ORDER BY id DESC LIMIT 50",
                 (symbol,))
-            rows = cur.fetchall()
+            v2_rows = cur.fetchall()
+            # Combine: v2 rows count double (more recent, more relevant)
+            rows = list(v2_rows) + list(v2_rows) + list(rows)
         if len(rows) >= MIN_SAMPLES:
             total = len(rows)
             wins = sum(1 for _, o in rows if o == "WIN")
