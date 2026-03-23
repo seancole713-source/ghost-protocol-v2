@@ -52,7 +52,7 @@ async def lifespan(app: FastAPI):
     scheduler.register("reconcile", reconcile_outcomes, interval_s=900)
     scheduler.register("news", run_news_cycle, interval_s=1800)
     scheduler.start()
-    LOGGER.info("Ghost Protocol v2 ready ÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ 3 tasks running")
+    LOGGER.info("Ghost Protocol v2 ready ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ¢ÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂÃÂ 3 tasks running")
     yield
     scheduler.stop()
 
@@ -212,7 +212,7 @@ def migrate_outcomes(x_cron_secret: str = Header(default="")):
             cur.execute("""
                 INSERT INTO predictions
                     (symbol, direction, confidence, entry_price, target_price, stop_price,
-                     predicted_at, expires_at, resolved_at, outcome, exit_price, pnl_pct, asset_type)
+                     run_at, predicted_at, expires_at, resolved_at, outcome, exit_price, pnl_pct, asset_type)
                 SELECT
                     gpo.symbol,
                     COALESCE(gpo.predicted_direction, 'UP'),
@@ -220,6 +220,7 @@ def migrate_outcomes(x_cron_secret: str = Header(default="")):
                     gpo.price_at_prediction,
                     gpo.price_at_prediction * 1.06,
                     gpo.price_at_prediction * 0.97,
+                    EXTRACT(EPOCH FROM gpo.created_at)::BIGINT,
                     EXTRACT(EPOCH FROM gpo.created_at)::BIGINT,
                     EXTRACT(EPOCH FROM COALESCE(gpo.closed_at, gpo.created_at + INTERVAL '48 hours'))::BIGINT,
                     EXTRACT(EPOCH FROM gpo.closed_at)::BIGINT,
