@@ -30,7 +30,7 @@ INVERSE_THRESHOLD = 0.45  # Win rate below this = inverse signal
 CRYPTO_SYMBOLS = os.getenv("CRYPTO_SYMBOLS",
     "BTC,ETH,SOL,XRP,CHZ,LINK,ADA,AVAX,DOT,MATIC,TRX,LTC,ATOM,UNI,BCH,NEAR,SUI,ARB,AAVE").split(",")
 STOCK_SYMBOLS = os.getenv("STOCK_SYMBOLS",
-    "AAPL,NVDA,TSLA,MSFT,META,AMZN,HOOD,COIN,PLTR,AMD").split(",")
+    "AAPL,NVDA,TSLA,MSFT,META,AMZN,PLTR,AMD,T,XPO,NET").split(",")
 
 def _check_regime():
     """Block crypto BUYs when BTC down 5%+."""
