@@ -87,14 +87,14 @@ def _get_symbol_signal(symbol, current_price):
             rows = list(v2_rows) + list(v2_rows) + list(rows)
         if len(rows) >= MIN_SAMPLES:
             total = len(rows)
-            wins = sum(1 for _, o in rows if o == "WIN")
+            wins = sum(1 for _, o in rows if o == 1 or o == "WIN")
             win_rate = wins / total
             # Dominant direction from recent history
             up_picks = sum(1 for d, _ in rows if d == "UP")
             dominant_dir = "UP" if up_picks >= total / 2 else "DOWN"
-            up_win_rate = sum(1 for d, o in rows if d == "UP" and o == "WIN") / max(up_picks, 1)
+            up_win_rate = sum(1 for d, o in rows if d == "UP" and (o == 1 or o == "WIN")) / max(up_picks, 1)
             down_picks = total - up_picks
-            down_win_rate = sum(1 for d, o in rows if d == "DOWN" and o == "WIN") / max(down_picks, 1)
+            down_win_rate = sum(1 for d, o in rows if d == "DOWN" and (o == 1 or o == "WIN")) / max(down_picks, 1)
             # Pick the direction with better win rate
             if up_win_rate > down_win_rate and up_win_rate > EDGE_THRESHOLD:
                 return ("UP", round(up_win_rate, 3))
