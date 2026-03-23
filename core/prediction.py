@@ -159,11 +159,6 @@ def run_prediction_cycle() -> List[dict]:
             )
             pred_id = cur.fetchone()[0]
             pick["id"] = pred_id
-            cur.execute(
-                "INSERT INTO paper_trades (prediction_id,symbol,direction,entry_price,target_price,stop_price,entry_time,usd_in) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
-                (pred_id,pick["symbol"],pick["direction"],pick["entry_price"],
-                 pick["target_price"],pick["stop_price"],pick["predicted_at"],100.0)
-            )
             saved.append(pick)
     LOGGER.info("Cycle done: " + str(len(saved)) + " picks saved")
     return saved
