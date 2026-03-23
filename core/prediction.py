@@ -15,7 +15,7 @@ from core.db import db_conn
 from core.prices import get_price, get_vix, get_crypto_price
 
 LOGGER = logging.getLogger("ghost.prediction")
-CONFIDENCE_FLOOR = float(os.getenv("MIN_ALERT_CONFIDENCE", "0.52"))
+CONFIDENCE_FLOOR = float(os.getenv("MIN_ALERT_CONFIDENCE", "0.60"))
 DAILY_CAP = int(os.getenv("DAILY_ALERT_CAP", "10"))
 BTC_THRESHOLD = float(os.getenv("BTC_TREND_THRESHOLD", "-5.0"))
 VIX_FEAR = float(os.getenv("VIX_FEAR", "25"))
@@ -23,9 +23,9 @@ CRYPTO_HOLD_H = int(os.getenv("CRYPTO_FORECAST_H", "48"))
 STOP_PCT = float(os.getenv("RISK_SL_PCT", "3.0")) / 100
 TARGET_PCT = float(os.getenv("RISK_TP_PCT", "6.0")) / 100
 EXCLUDE = set(os.getenv("GHOST_EXCLUDE_SYMBOLS", "").split(","))
-MIN_SAMPLES = 5  # Low until v2 accumulates history
-EDGE_THRESHOLD = 0.55  # Win rate above this = real edge
-INVERSE_THRESHOLD = 0.45  # Win rate below this = inverse signal
+MIN_SAMPLES = 10  # Need 10+ samples before trusting win rate
+EDGE_THRESHOLD = 0.60  # Win rate above 60% = real edge
+INVERSE_THRESHOLD = 0.40  # Win rate below 40% = truly wrong, invert
 
 CRYPTO_SYMBOLS = os.getenv("CRYPTO_SYMBOLS",
     "BTC,ETH,SOL,XRP,CHZ,LINK,ADA,AVAX,DOT,MATIC,TRX,LTC,ATOM,UNI,BCH,NEAR,SUI,ARB,AAVE").split(",")
@@ -78,11 +78,17 @@ def _get_symbol_signal(symbol, current_price):
                 ORDER BY created_at DESC LIMIT 200
             """, (symbol,))
             rows = cur.fetchall()  # (direction, hit)
-            # Also check v2 predictions for recent results
+            # Check v2 recent results — these override gpo historical data
             cur.execute(
                 "SELECT direction, CASE WHEN outcome='WIN' THEN 1 ELSE 0 END FROM predictions WHERE symbol=%s AND outcome IN ('WIN','LOSS') ORDER BY id DESC LIMIT 50",
                 (symbol,))
             v2_rows = cur.fetchall()
+            # Circuit breaker: if last 3 v2 picks all LOSS, bench this symbol
+            if len(v2_rows) >= 3:
+                last3 = [r[1] for r in v2_rows[:3]]
+                if all(h == 0 for h in last3):
+                    LOGGER.info("CIRCUIT BREAKER: " + symbol + " benched (3 consecutive v2 losses)")
+                    return None
             # Combine: v2 rows count double (more recent, more relevant)
             rows = list(v2_rows) + list(v2_rows) + list(rows)
         if len(rows) >= MIN_SAMPLES:
