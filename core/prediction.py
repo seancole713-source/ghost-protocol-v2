@@ -91,9 +91,10 @@ def _build_features(symbol: str, asset_type: str):
         now_dt = datetime.datetime.now()
         hour = float(now_dt.hour) / 24
         dow = float(now_dt.weekday()) / 7
-        return [
-            confidence_val,
-            direction_val,
+        # Return (real_price, feature_vector) - price is separate from features
+        feat = [
+            confidence_val,           # [0] placeholder, updated in predict_symbol
+            direction_val,            # [1] placeholder, updated in predict_symbol
             1.0 if asset_type == "crypto" else 0.0,
             float(target_pct),
             float(stop_pct),
@@ -103,16 +104,17 @@ def _build_features(symbol: str, asset_type: str):
             float(min(price, 10000)) / 10000,
             hour,
             dow,
-        ]  # 11 features matching retrain.py
+        ]
+        return (price, feat)  # real price separate from feature vector
     except Exception as e:
         LOGGER.error("Features " + symbol + ": " + str(e))
         return None
 
 def predict_symbol(symbol: str, asset_type: str, regime: dict):
     if symbol in EXCLUDE: return None
-    features = _build_features(symbol, asset_type)
-    if not features: return None
-    price = features[0]
+    result = _build_features(symbol, asset_type)
+    if not result: return None
+    price, features = result  # unpack real price from feature vector
     model = get_model()
     if model:
         import numpy as np
