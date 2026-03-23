@@ -97,8 +97,9 @@ def _get_symbol_signal(symbol, current_price):
                         return None
                     else:
                         LOGGER.info("CB SKIPPED: " + symbol + " has gpo_wr=" + str(round(gpo_wr,2)) + " overrides 8 v2 losses")
-            # Combine: v2 rows count double (more recent, more relevant)
-            rows = list(v2_rows) + list(v2_rows) + list(rows)
+            # Equal weight: v2 and gpo rows combined
+            # Previously v2 rows were doubled which overrode strong gpo signals
+            rows = list(v2_rows) + list(rows)
         if len(rows) >= MIN_SAMPLES:
             total = len(rows)
             wins = sum(1 for _, o in rows if o == 1 or o == "WIN")
