@@ -15,7 +15,7 @@ from core.db import db_conn
 from core.prices import get_price, get_vix, get_crypto_price
 
 LOGGER = logging.getLogger("ghost.prediction")
-CONFIDENCE_FLOOR = float(os.getenv("MIN_ALERT_CONFIDENCE", "0.55"))
+CONFIDENCE_FLOOR = float(os.getenv("MIN_ALERT_CONFIDENCE", "0.52"))
 DAILY_CAP = int(os.getenv("DAILY_ALERT_CAP", "10"))
 BTC_THRESHOLD = float(os.getenv("BTC_TREND_THRESHOLD", "-5.0"))
 VIX_FEAR = float(os.getenv("VIX_FEAR", "25"))
@@ -23,7 +23,7 @@ CRYPTO_HOLD_H = int(os.getenv("CRYPTO_FORECAST_H", "48"))
 STOP_PCT = float(os.getenv("RISK_SL_PCT", "3.0")) / 100
 TARGET_PCT = float(os.getenv("RISK_TP_PCT", "6.0")) / 100
 EXCLUDE = set(os.getenv("GHOST_EXCLUDE_SYMBOLS", "").split(","))
-MIN_SAMPLES = 30  # Minimum picks before trusting win rate
+MIN_SAMPLES = 5  # Low until v2 accumulates history
 EDGE_THRESHOLD = 0.55  # Win rate above this = real edge
 INVERSE_THRESHOLD = 0.45  # Win rate below this = inverse signal
 
