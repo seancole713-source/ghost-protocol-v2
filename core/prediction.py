@@ -78,18 +78,25 @@ def _get_symbol_signal(symbol, current_price):
                 ORDER BY created_at DESC LIMIT 200
             """, (symbol,))
             rows = cur.fetchall()  # (direction, hit)
-            # Check v2 recent results â these override gpo historical data
+            # Check v2 recent results Ã¢ÂÂ these override gpo historical data
             cur.execute(
                 "SELECT direction, CASE WHEN outcome='WIN' THEN 1 ELSE 0 END FROM predictions WHERE symbol=%s AND outcome IN ('WIN','LOSS') ORDER BY id DESC LIMIT 50",
                 (symbol,))
             v2_rows = cur.fetchall()
-            # Circuit breaker: 8 consecutive v2 losses = bench symbol
-            # Set to 8 to avoid false-positives from early broken-model runs
+            # Circuit breaker: 8 consecutive v2 losses = bench ONLY if gpo also weak
+            # Do NOT bench symbols with strong gpo signal (>60% wr) — early bad model runs
+            # caused many v2 losses that do not reflect current signal quality
             if len(v2_rows) >= 8:
                 last8 = [r[1] for r in v2_rows[:8]]
                 if all(x == 0 for x in last8):
-                    LOGGER.info("CIRCUIT BREAKER: " + symbol + " benched (3 consecutive v2 losses)")
-                    return None
+                    # Check if gpo data has strong edge — if so, ignore v2 losses
+                    gpo_wins = sum(1 for _, o in rows if o == 1 or o == "WIN")
+                    gpo_wr = gpo_wins / len(rows) if rows else 0
+                    if gpo_wr < EDGE_THRESHOLD:
+                        LOGGER.info("CIRCUIT BREAKER: " + symbol + " benched (8 v2 losses, gpo_wr=" + str(round(gpo_wr,2)) + ")")
+                        return None
+                    else:
+                        LOGGER.info("CB SKIPPED: " + symbol + " has gpo_wr=" + str(round(gpo_wr,2)) + " overrides 8 v2 losses")
             # Combine: v2 rows count double (more recent, more relevant)
             rows = list(v2_rows) + list(v2_rows) + list(rows)
         if len(rows) >= MIN_SAMPLES:
