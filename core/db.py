@@ -89,6 +89,9 @@ def _migrate_schema():
         "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS resolved_at BIGINT",
         "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS predicted_at BIGINT",
         "UPDATE predictions SET predicted_at = run_at WHERE predicted_at IS NULL AND run_at IS NOT NULL",
+        "ALTER TABLE predictions ALTER COLUMN run_at DROP NOT NULL",
+        "ALTER TABLE predictions ALTER COLUMN method DROP NOT NULL",
+        "ALTER TABLE predictions ALTER COLUMN horizon_h DROP NOT NULL",
     ]
     with db_conn() as conn:
         cur = conn.cursor()
