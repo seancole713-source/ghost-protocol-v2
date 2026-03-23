@@ -1,5 +1,5 @@
 """
-PROJECT_STATE.py — Ghost Protocol v2
+PROJECT_STATE.py â Ghost Protocol v2
 Single source of truth. Accountability ledger. Read this before touching anything.
 
 RULES:
@@ -13,7 +13,7 @@ RULES:
 """
 
 # ============================================================
-# LIVE SYSTEM — VERIFIED 2026-03-23
+# LIVE SYSTEM â VERIFIED 2026-03-23
 # ============================================================
 
 PRODUCTION_URL = "https://ghost-protocol-v2-production.up.railway.app"
@@ -22,10 +22,10 @@ RAILWAY_PROJECT = "tender-benevolence"
 RAILWAY_SERVICE_V2 = "98593080-065d-43ef-840c-4a3d36a1b572"
 RAILWAY_SERVICE_V1 = "098281d7-7dba-447c-981e-0ebd625cecad"  # old ghost, Telegram silenced
 CRON_JOB = "cron-job.org fires POST /api/morning-card at 8 AM CT (America/Chicago, 0 8 * * *)"
-AUTH_HEADER = "x-cron-secret — value in Railway env as CRON_SECRET"
+AUTH_HEADER = "x-cron-secret â value in Railway env as CRON_SECRET"
 
 # ============================================================
-# VERIFIED LIVE STATE — 2026-03-23 ~11:30 AM CT
+# VERIFIED LIVE STATE â 2026-03-23 ~11:30 AM CT
 # Verified by direct API calls, not by agent claims.
 # ============================================================
 
@@ -40,7 +40,7 @@ LIVE_VERIFIED = {
     "stats_wins": 22,
     "stats_losses": 120,
     "win_rate_pct": 15.5,
-    "win_rate_NOTE": "CORRUPTED — 120 losses are from $0.50 price bug, not real trades",
+    "win_rate_NOTE": "CORRUPTED â 120 losses are from $0.50 price bug, not real trades",
     "open_positions": 132,
     "active_picks_shown": 50,
     "symbols_with_edge": 18,
@@ -48,79 +48,69 @@ LIVE_VERIFIED = {
 }
 
 # ============================================================
-# TODO LIST — sorted by priority
+# TODO LIST â sorted by priority
 # Mark [x] ONLY after verifying on live site yourself.
 # ============================================================
 
 TODO = """
-P1 — BLOCKING (fix before anything else)
-[ ] Run /api/clean-garbage to delete 120 garbage $0.50 predictions.
-    Until this runs, win rate shows 15.5% instead of real number.
-    Command: POST /api/clean-garbage with x-cron-secret header.
-    Verify: /api/stats should show wins=22, losses=0 or small number after.
+P1 — FIX IMMEDIATELY
+[ ] Win rate stats corrupted — 10.3% (11W/96L). The 96 losses are from broken model runs
+    (all-DOWN cards with $68K entries targeting $0.50 resolved as LOSS immediately).
+    clean-garbage endpoint targets entry_price BETWEEN 0.49 AND 0.51 but those picks
+    have real prices now. Need a different filter: DELETE predictions WHERE predicted_at
+    IS NOT NULL AND entry_price > 50 AND target_price < 1.0 (target was $0.53 from $0.50).
+    Until fixed, win rate is meaningless.
 
-[ ] cron-job.org timezone — currently set to UTC 0 14 * * * which fires 9 AM CT during DST.
-    Should be America/Chicago timezone with 0 8 * * * for consistent 8 AM CT year-round.
-    Verify: check cron-job.org job settings, confirm timezone = America/Chicago.
+[ ] PROJECT_STATE.py itself is stale — update after each session (do this now).
 
 P2 — SIGNAL QUALITY
-[ ] MIN_SAMPLES is 5 — too low, allows noisy signals.
-    Raise to 20 after 200+ v2 picks have resolved.
-    File: core/prediction.py line: MIN_SAMPLES = 5
+[ ] LTC UP 94% is wrong — gpo says 59% DOWN bias. v2 double-weighting overrides.
+    Reduce v2 row weight or require direction consistency between v2 and gpo.
 
-[ ] Stock prices fail outside market hours.
-    AAPL/NVDA/TSLA all return null on evenings and weekends.
-    Current fallback: yfinance, also unreliable.
-    Fix needed: Alpha Vantage delayed quotes or accept stocks are crypto-hours-only.
+[ ] XRP UP 88% is marginal — 54.7% gpo win rate is below EDGE_THRESHOLD (60%).
+    It fires via the v2 double-weight path. Consider stricter v2 weight.
 
-[ ] Model retraining is wired but unused.
-    /api/retrain trains XGBoost but prediction.py never loads it.
-    XGBoost was removed because it predicted DOWN 100% on skewed data.
-    Do NOT re-enable until 500+ clean v2 picks exist.
+[ ] Stock prices unavailable outside market hours (Polygon API).
+    Stocks never appear in picks. Fix: accept stocks are daytime-only OR add pre-open data.
 
-P3 — MISSING FEATURES
-[ ] Watchdog — real-time alert when a pick hits target or stop.
-    Currently: reconciler catches it within 15 min, no immediate Telegram alert.
-    Build: core/watchdog.py, register in scheduler, alert via telegram.send_position_alert()
-
-[ ] Weekly summary — send_weekly_summary() exists in core/telegram.py but is never called.
-    Add: scheduler task on Friday 4 PM CT (22:00 UTC).
-
-[ ] Dashboard (cockpit) is placeholder HTML.
-    /cockpit returns basic links only. Full 8-tab dashboard not built.
-    This is Week 4 work.
-
-[ ] Binance and Polygon price feeds failing.
-    Polygon fails outside market hours (expected).
-    Binance fails on Railway network (possible block).
-    Currently 2/4 feeds responding — acceptable but investigate Binance.
+P3 — CLEANUP
+[ ] cron-job.org timezone should be America/Chicago with 0 8 * * * (currently UTC 0 14).
+[ ] Remove /api/debug-signal endpoint before going live with real money.
+[ ] Raise MIN_SAMPLES from 10 to 20 after 300+ resolved v2 picks exist.
+[ ] Circuit breaker threshold (8 consecutive losses) needs validation over time.
 """
 
 # ============================================================
-# COMPLETED — verified on live site
+# COMPLETED â verified on live site
 # ============================================================
 
 COMPLETED = """
-[x] Ghost v2 deployed on Railway — VERIFIED live at ghost-protocol-v2-production.up.railway.app
-[x] PostgreSQL connected — VERIFIED health.db=true
-[x] Crypto price feeds (CoinGecko + Coinbase) — VERIFIED BTC $68K, ETH $2K returned correctly
-[x] All 3 background tasks running with 0 errors — VERIFIED health endpoint 2026-03-23
-[x] Telegram morning card working — VERIFIED card arrived on phone with real prices
-[x] morning_card interval fixed to 86400s — VERIFIED health.tasks[morning_card].interval_s=86400
-[x] Ghost v1 Telegram silenced — DEPLOYED blank TELEGRAM_BOT_TOKEN to v1 service on Railway
-[x] Real prices in cards (not $0.50) — VERIFIED BTC $68K in Telegram card received 2026-03-23
-[x] Mixed UP/DOWN directions in picks — VERIFIED e.g. XRP UP 88%, LINK DOWN 97%
-[x] Signal from ghost_prediction_outcomes (13,945 rows) — VERIFIED /api/symbol-accuracy returns data
-[x] 18 symbols with measured edge — VERIFIED /api/symbol-accuracy shows COMP 88%, BCH 80%, etc
-[x] Regime gate coded — IN CODE but not verified to have blocked a real trade yet
-[x] HOOD/COIN removed (11-14% win rate) — COMMITTED 02ab7b7
-[x] T/XPO/NET added (55-68% win rate) — COMMITTED 02ab7b7
-[x] cron-job.org URL updated to v2 — CONFIRMED by user 2026-03-23
-[x] PROJECT_STATE.py created — THIS FILE
+[x] Ghost v2 deployed on Railway — VERIFIED live, health 100/100
+[x] DB connected — VERIFIED health.db=true
+[x] Crypto price feeds (CoinGecko + Coinbase) — VERIFIED BCH $478, LINK $9.16
+[x] All 3 background tasks running 0 errors — VERIFIED 2026-03-23
+[x] Telegram morning card — VERIFIED card arrived with BCH/LINK/XRP/LTC picks
+[x] morning_card interval 86400s — VERIFIED health tasks interval=86400
+[x] Ghost v1 Telegram silenced — VERIFIED no more v1 cards
+[x] Watchdog running — VERIFIED health tasks shows watchdog wd_runs=1 0 errors
+[x] Weekly summary scheduled — VERIFIED health tasks shows weekly_summary 0 errors
+[x] HOOD/COIN removed — COMMITTED 02ab7b7
+[x] T/XPO/NET added — COMMITTED 02ab7b7
+[x] cron-job.org URL updated to v2 — CONFIRMED by user
+[x] 3-zone signal logic (FIRE>60 / BENCH 40-60 / INVERT<40) — COMMITTED 6821d7e
+[x] Circuit breaker (8 v2 losses = bench, unless gpo>60%) — COMMITTED 354b129
+    VERIFIED: BCH was benched, fix applied, BCH DOWN 87% now appears in picks
+[x] Inverse confidence capped at 0.65 — COMMITTED 4084f1b
+[x] MIN_SAMPLES=10, EDGE_THRESHOLD=0.60, FLOOR=0.70 (Railway env) — VERIFIED via debug
+
+NOT YET BUILT (honest list):
+[ ] Cockpit dashboard — placeholder HTML only
+[ ] Real technical features (RSI, MACD, BB) — using win-rate signal only
+[ ] Alpha Vantage for stock prices outside market hours
 """
 
 # ============================================================
-# WHAT FAILED — DO NOT REPEAT THESE MISTAKES
+# WHAT FAILED â DO NOT REPEAT THESE MISTAKES
 # ============================================================
 
 FAILURES = """
@@ -155,7 +145,7 @@ FAILURES = """
 
 6. HOOD and COIN in stock symbols
    What happened: Poisoned accuracy stats.
-   Why: 11.6% and 14% historical win rate — Ghost was almost always wrong on these.
+   Why: 11.6% and 14% historical win rate â Ghost was almost always wrong on these.
    Resolution: Removed from STOCK_SYMBOLS in prediction.py (commit 02ab7b7).
    Do not repeat: Never add HOOD or COIN back.
 
@@ -165,7 +155,7 @@ FAILURES = """
 """
 
 # ============================================================
-# SESSION LOG — append a new entry after every fix session
+# SESSION LOG â append a new entry after every fix session
 # ============================================================
 
 SESSION_LOG = """
@@ -173,23 +163,23 @@ SESSION_LOG = """
 Context: Ghost v1 was 41% accuracy, 166 files, broken. Full rebuild as v2.
 
 Commits this session (in order):
-  c2f9609 — initial repo + README
-  db.py   — DB pool, schema migration
-  prices.py — CoinGecko + Coinbase + Polygon + yfinance
-  scheduler.py — single background task runner
-  prediction.py — multiple rewrites (see failures above)
-  telegram.py — multiple rewrites (unterminated string bug caused 3 failed deploys)
-  news.py — switched from Reuters to Finnhub after Railway network block
-  nixpacks.toml — libpq-dev fix for psycopg2 on Python 3.13
-  wolf_app.py — 10+ revisions, current state has all endpoints
-  scripts/retrain.py — trained XGBoost, not used (see failures)
-  940bce5 — morning_card interval 3600 -> 86400 (stop hourly spam)
-  02ab7b7 — remove HOOD/COIN, add T/XPO/NET to symbols
-  7669e83 — PROJECT_STATE.md created (markdown version)
-  10f4797 — fix hit_direction 0/1 vs WIN/LOSS comparison (was causing 100% confidence)
-  eac7797 — signal queries ghost_prediction_outcomes not empty v2 predictions table
-  ddce09b — add /api/clean-garbage endpoint
-  THIS COMMIT — PROJECT_STATE.py created
+  c2f9609 â initial repo + README
+  db.py   â DB pool, schema migration
+  prices.py â CoinGecko + Coinbase + Polygon + yfinance
+  scheduler.py â single background task runner
+  prediction.py â multiple rewrites (see failures above)
+  telegram.py â multiple rewrites (unterminated string bug caused 3 failed deploys)
+  news.py â switched from Reuters to Finnhub after Railway network block
+  nixpacks.toml â libpq-dev fix for psycopg2 on Python 3.13
+  wolf_app.py â 10+ revisions, current state has all endpoints
+  scripts/retrain.py â trained XGBoost, not used (see failures)
+  940bce5 â morning_card interval 3600 -> 86400 (stop hourly spam)
+  02ab7b7 â remove HOOD/COIN, add T/XPO/NET to symbols
+  7669e83 â PROJECT_STATE.md created (markdown version)
+  10f4797 â fix hit_direction 0/1 vs WIN/LOSS comparison (was causing 100% confidence)
+  eac7797 â signal queries ghost_prediction_outcomes not empty v2 predictions table
+  ddce09b â add /api/clean-garbage endpoint
+  THIS COMMIT â PROJECT_STATE.py created
 
 Verified live at end of session (2026-03-23 ~11:30 AM CT):
   health_score = 100
@@ -201,7 +191,32 @@ Verified live at end of session (2026-03-23 ~11:30 AM CT):
   18 symbols with edge from gpo data
 
 NOT verified (still needs doing):
-  /api/clean-garbage has not been run — stats still show 15.5% win rate
-  Stocks untested during market hours — all null right now
+  /api/clean-garbage has not been run â stats still show 15.5% win rate
+  Stocks untested during market hours â all null right now
   cron-job.org timezone needs changing to America/Chicago (currently UTC)
+
+--- 2026-03-24 | Agent: Claude Sonnet ---
+Context: Continuing from 2026-03-23 session. BCH/LINK being silenced by circuit breaker.
+
+Root cause found: BCH had exactly 8 v2 resolved picks, all LOSS from broken model runs.
+Circuit breaker threshold was 8 — so it fired on exactly 8 losses. Fix: skip CB if gpo_wr > EDGE_THRESHOLD.
+
+Commits this session:
+  4084f1b — circuit breaker 3→8 + inverse confidence capped at 0.65
+  85fba02 — debug endpoint rebuilt as step-by-step trace
+  354b129 — circuit breaker respects strong gpo signal (BCH 80%+ overrides 8 v2 losses)
+  36d97f0 — debug endpoint calls actual _get_symbol_signal function
+  50ae220 — debug endpoint with step trace
+
+Verified live at end of session (2026-03-24):
+  health_score = 100
+  picks_generated = 4: BCH DOWN 87%, LINK DOWN 86%, XRP UP 88%, LTC UP 94%
+  BCH DOWN 87% matches gpo 80.1% win rate DOWN bias — CORRECT
+  LINK DOWN 86% matches gpo 65.1% win rate DOWN bias — CORRECT
+  Telegram morning card sent successfully (ok:true, picks_generated:4)
+
+NOT verified / still broken:
+  Win rate stats: 10.3% (corrupted — 96 losses from broken model runs)
+  LTC UP 94% questionable — gpo says DOWN bias, v2 double-weighting overrides
+  XRP UP 88% marginal — 54.7% is below EDGE_THRESHOLD (60%)
 """
