@@ -52,7 +52,7 @@ async def lifespan(app: FastAPI):
     scheduler.register("reconcile", reconcile_outcomes, interval_s=900)
     scheduler.register("news", run_news_cycle, interval_s=1800)
     scheduler.start()
-    LOGGER.info("Ghost Protocol v2 ready — 3 tasks running")
+    LOGGER.info("Ghost Protocol v2 ready â 3 tasks running")
     yield
     scheduler.stop()
 
@@ -200,6 +200,58 @@ def get_price_endpoint(symbol: str, asset_type: str = "crypto"):
     from core.prices import get_price
     price = get_price(symbol, asset_type)
     return {"ok": price is not None, "symbol": symbol, "price": price}
+
+@APP.post("/api/migrate-outcomes")
+def migrate_outcomes(x_cron_secret: str = Header(default="")):
+    """Backfill WIN/LOSS from v1 tables into predictions.outcome."""
+    if CRON_SECRET and x_cron_secret != CRON_SECRET:
+        raise HTTPException(status_code=403)
+    migrated = 0
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                UPDATE predictions p
+                SET outcome = CASE WHEN af.was_correct THEN 'WIN' ELSE 'LOSS' END,
+                    pnl_pct = af.pnl_pct,
+                    exit_price = af.exit_price,
+                    resolved_at = EXTRACT(EPOCH FROM af.resolved_at)::BIGINT
+                FROM accuracy_forecasts af
+                WHERE af.prediction_id = p.id
+                AND p.outcome IS NULL AND af.was_correct IS NOT NULL
+            """)
+            migrated += cur.rowcount
+            cur.execute("""
+                UPDATE predictions p
+                SET outcome = CASE WHEN gp.correct THEN 'WIN' ELSE 'LOSS' END,
+                    pnl_pct = gp.outcome_pct, exit_price = gp.outcome_price,
+                    resolved_at = EXTRACT(EPOCH FROM gp.checked_at)::BIGINT
+                FROM ghost_predictions gp
+                WHERE gp.id = p.id AND p.outcome IS NULL
+                AND gp.correct IS NOT NULL AND gp.checked = TRUE
+            """)
+            migrated += cur.rowcount
+            cur.execute("SELECT outcome, COUNT(*) FROM predictions WHERE outcome IS NOT NULL GROUP BY outcome")
+            counts = {r[0]: r[1] for r in cur.fetchall()}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+    return {"ok": True, "migrated": migrated, "outcome_counts": counts}
+
+@APP.get("/api/stats")
+def get_stats():
+    """Overall accuracy stats across all sources."""
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT outcome, COUNT(*) FROM predictions WHERE outcome IN ('WIN','LOSS') GROUP BY outcome")
+        rows = {r[0]: r[1] for r in cur.fetchall()}
+        wins = rows.get("WIN", 0)
+        losses = rows.get("LOSS", 0)
+        total = wins + losses
+        cur.execute("SELECT COUNT(*) FROM predictions WHERE outcome IS NULL AND entry_price IS NOT NULL")
+        open_count = cur.fetchone()[0]
+    return {"ok": True, "wins": wins, "losses": losses, "total": total,
+            "win_rate_pct": round(wins/total*100,1) if total else 0,
+            "open_positions": open_count}
 
 @APP.get("/cockpit")
 def cockpit():
