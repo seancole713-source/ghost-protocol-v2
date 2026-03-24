@@ -21,6 +21,12 @@ if "/api/v2/recent" not in src:
     changed = True; print("[patch] /api/v2/recent appended")
 else: print("[patch] /api/v2/recent already present")
 
+# Patch 4: add root redirect / -> /cockpit
+if '@APP.get("/")' not in src:
+    src = src + base64.b64decode("CgpAQVBQLmdldCgiLyIpCmRlZiByb290KCk6CiAgICBmcm9tIGZhc3RhcGkucmVzcG9uc2VzIGltcG9ydCBSZWRpcmVjdFJlc3BvbnNlCiAgICByZXR1cm4gUmVkaXJlY3RSZXNwb25zZSh1cmw9Ii9jb2NrcGl0IikK").decode("utf-8")
+    changed = True; print("[patch] root redirect added")
+else: print("[patch] root redirect already present")
+
 if changed:
     open(wolf,"w",encoding="utf-8").write(src)
     print("[patch] wolf_app.py written OK")
