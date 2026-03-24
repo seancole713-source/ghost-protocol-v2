@@ -3,43 +3,24 @@ wolf = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wolf_app.py")
 src = open(wolf, encoding="utf-8").read()
 changed = False
 
-# Patch 1: cockpit route -> serve cockpit.html
 if "cockpit.html" not in src:
     anchor = '@APP.get("/cockpit")\ndef cockpit():\n    html = ("<h1>Ghost Protocol v2</h1>'
     if anchor in src:
-        new_fn = base64.b64decode("QEFQUC5nZXQoIi9jb2NrcGl0IiwgcmVzcG9uc2VfY2xhc3M9SFRNTFJlc3BvbnNlKQpkZWYgY29ja3BpdCgpOgogICAgaW1wb3J0IG9zIGFzIF9vcwogICAgX3AgPSBfb3MucGF0aC5qb2luKF9vcy5wYXRoLmRpcm5hbWUoX29zLnBhdGguYWJzcGF0aChfX2ZpbGVfXykpLCAiY29ja3BpdC5odG1sIikKICAgIHdpdGggb3BlbihfcCwgZW5jb2Rpbmc9InV0Zi04IikgYXMgX2Y6CiAgICAgICAgcmV0dXJuIEhUTUxSZXNwb25zZShjb250ZW50PV9mLnJlYWQoKSk=").decode("utf-8")
-        src = src[:src.index(anchor)] + new_fn + "\n"
-        changed = True
-        print("[patch] cockpit route patched")
-    else:
-        print("[patch] WARNING: cockpit anchor not found")
-else:
-    print("[patch] cockpit already patched")
+        src = src[:src.index(anchor)] + base64.b64decode("QEFQUC5nZXQoIi9jb2NrcGl0IiwgcmVzcG9uc2VfY2xhc3M9SFRNTFJlc3BvbnNlKQpkZWYgY29ja3BpdCgpOgogICAgaW1wb3J0IG9zIGFzIF9vcwogICAgX3AgPSBfb3MucGF0aC5qb2luKF9vcy5wYXRoLmRpcm5hbWUoX29zLnBhdGguYWJzcGF0aChfX2ZpbGVfXykpLCAiY29ja3BpdC5odG1sIikKICAgIHdpdGggb3BlbihfcCwgZW5jb2Rpbmc9InV0Zi04IikgYXMgX2Y6CiAgICAgICAgcmV0dXJuIEhUTUxSZXNwb25zZShjb250ZW50PV9mLnJlYWQoKSk=").decode("utf-8") + "\n"
+        changed = True; print("[patch] cockpit patched")
+    else: print("[patch] WARNING: cockpit anchor not found")
+else: print("[patch] cockpit already patched")
 
-# Patch 2: fix get_recent_articles -> get_cached_articles
 if "get_recent_articles" in src:
-    src = src.replace("get_recent_articles", "get_cached_articles")
-    changed = True
-    print("[patch] news: get_recent_articles -> get_cached_articles")
-else:
-    print("[patch] news function name already correct")
+    src = src.replace("get_recent_articles","get_cached_articles")
+    changed = True; print("[patch] news function renamed")
+else: print("[patch] news function already correct")
 
-# Patch 3: fix history endpoint to query predictions table (v2 resolved picks)
-hist_anchor = '@APP.get("/api/history")'
-if hist_anchor in src and "FROM predictions" not in src[src.index(hist_anchor):src.index(hist_anchor)+800]:
-    # Find the full old history function
-    hist_start = src.index(hist_anchor)
-    # Find next @APP. after it
-    next_app = src.find("\n@APP.", hist_start + 10)
-    if next_app == -1:
-        next_app = len(src)
-    new_hist = base64.b64decode("QEFQUC5nZXQoIi9hcGkvaGlzdG9yeSIpCmRlZiBoaXN0b3J5KCk6CiAgICAiIiJSZXNvbHZlZCB2MiBwaWNrcyBmcm9tIHByZWRpY3Rpb25zIHRhYmxlLiIiIgogICAgd2l0aCBkYl9jb25uKCkgYXMgY29ubjoKICAgICAgICBjdXIgPSBjb25uLmN1cnNvcigpCiAgICAgICAgY3VyLmV4ZWN1dGUoCiAgICAgICAgICAgICIiIgogICAgICAgICAgICBTRUxFQ1QgaWQsIHN5bWJvbCwgZGlyZWN0aW9uLCBjb25maWRlbmNlLCBlbnRyeV9wcmljZSwKICAgICAgICAgICAgICAgICAgIGV4aXRfcHJpY2UsIHBubF9wY3QsIG91dGNvbWUsIHByZWRpY3RlZF9hdCwgZXhwaXJlc19hdCwgYXNzZXRfdHlwZQogICAgICAgICAgICBGUk9NIHByZWRpY3Rpb25zCiAgICAgICAgICAgIFdIRVJFIG91dGNvbWUgSVMgTk9UIE5VTEwKICAgICAgICAgICAgICBBTkQgcHJlZGljdGVkX2F0IElTIE5PVCBOVUxMCiAgICAgICAgICAgIE9SREVSIEJZIGV4cGlyZXNfYXQgREVTQwogICAgICAgICAgICBMSU1JVCA1MAogICAgICAgICAgICAiIiIKICAgICAgICApCiAgICAgICAgcm93cyA9IGN1ci5mZXRjaGFsbCgpCiAgICB0cmFkZXMgPSBbXQogICAgd2lucyA9IGxvc3NlcyA9IDAKICAgIHRvdGFsX3BubCA9IDAuMAogICAgZm9yIHIgaW4gcm93czoKICAgICAgICBvdXRjb21lID0gcls3XQogICAgICAgIHBubCA9IGZsb2F0KHJbNl0gb3IgMCkKICAgICAgICBpZiBvdXRjb21lID09ICJXSU4iOiB3aW5zICs9IDEKICAgICAgICBlbGlmIG91dGNvbWUgaW4gKCJMT1NTIiwiU1RPUCIpOiBsb3NzZXMgKz0gMQogICAgICAgIHRvdGFsX3BubCArPSBwbmwKICAgICAgICB0cmFkZXMuYXBwZW5kKHsKICAgICAgICAgICAgImlkIjogclswXSwgInN5bWJvbCI6IHJbMV0sICJkaXJlY3Rpb24iOiByWzJdLAogICAgICAgICAgICAiY29uZmlkZW5jZSI6IHJbM10sICJlbnRyeV9wcmljZSI6IGZsb2F0KHJbNF0gb3IgMCksCiAgICAgICAgICAgICJleGl0X3ByaWNlIjogZmxvYXQocls1XSBvciAwKSBpZiByWzVdIGVsc2UgTm9uZSwKICAgICAgICAgICAgInBubF9wY3QiOiByb3VuZChwbmwsIDMpLCAib3V0Y29tZSI6IG91dGNvbWUsCiAgICAgICAgICAgICJwcmVkaWN0ZWRfYXQiOiByWzhdLCAiZXhwaXJlc19hdCI6IHJbOV0sCiAgICAgICAgICAgICJhc3NldF90eXBlIjogclsxMF0KICAgICAgICB9KQogICAgdG90YWwgPSB3aW5zICsgbG9zc2VzCiAgICByZXR1cm4gewogICAgICAgICJvayI6IFRydWUsICJ0cmFkZXMiOiB0cmFkZXMsICJ0b3RhbCI6IHRvdGFsLAogICAgICAgICJ3aW5zIjogd2lucywgImxvc3NlcyI6IGxvc3NlcywKICAgICAgICAid2luX3JhdGVfcGN0Ijogcm91bmQod2lucy90b3RhbCoxMDAsIDEpIGlmIHRvdGFsIGVsc2UgMCwKICAgICAgICAidG90YWxfcG5sX3BjdCI6IHJvdW5kKHRvdGFsX3BubCwgMikKICAgIH0=").decode("utf-8")
-    src = src[:hist_start] + new_hist + "\n" + src[next_app:]
-    changed = True
-    print("[patch] history endpoint fixed to query predictions table")
-else:
-    print("[patch] history endpoint already correct or anchor not found")
+if "/api/v2/recent" not in src:
+    src = src + base64.b64decode("CgpAQVBQLmdldCgiL2FwaS92Mi9yZWNlbnQiKQpkZWYgdjJfcmVjZW50KCk6CiAgICAiIiJSZXNvbHZlZCB2MiBwaWNrcyBxdWVyeWluZyBwcmVkaWN0aW9ucyB0YWJsZSBkaXJlY3RseS4iIiIKICAgIHdpdGggZGJfY29ubigpIGFzIGNvbm46CiAgICAgICAgY3VyID0gY29ubi5jdXJzb3IoKQogICAgICAgIGN1ci5leGVjdXRlKCIiIgogICAgICAgICAgICBTRUxFQ1QgaWQsc3ltYm9sLGRpcmVjdGlvbixjb25maWRlbmNlLGVudHJ5X3ByaWNlLAogICAgICAgICAgICAgICAgICAgZXhpdF9wcmljZSxwbmxfcGN0LG91dGNvbWUscHJlZGljdGVkX2F0LGV4cGlyZXNfYXQsYXNzZXRfdHlwZQogICAgICAgICAgICBGUk9NIHByZWRpY3Rpb25zCiAgICAgICAgICAgIFdIRVJFIG91dGNvbWUgSVMgTk9UIE5VTEwgQU5EIHByZWRpY3RlZF9hdCBJUyBOT1QgTlVMTAogICAgICAgICAgICBPUkRFUiBCWSBleHBpcmVzX2F0IERFU0MgTlVMTFMgTEFTVCBMSU1JVCA1MAogICAgICAgICIiIikKICAgICAgICByb3dzID0gY3VyLmZldGNoYWxsKCkKICAgIHRyYWRlcz1bXTsgd2lucz1sb3NzZXM9MAogICAgZm9yIHIgaW4gcm93czoKICAgICAgICBvPXJbN107IHBubD1mbG9hdChyWzZdIG9yIDApCiAgICAgICAgaWYgbz09IldJTiI6IHdpbnMrPTEKICAgICAgICBlbGlmIG8gaW4gKCJMT1NTIiwiU1RPUCIsIkVYUElSRUQiKTogbG9zc2VzKz0xCiAgICAgICAgdHJhZGVzLmFwcGVuZCh7ImlkIjpyWzBdLCJzeW1ib2wiOnJbMV0sImRpcmVjdGlvbiI6clsyXSwiY29uZmlkZW5jZSI6clszXSwKICAgICAgICAgICAgImVudHJ5X3ByaWNlIjpmbG9hdChyWzRdIG9yIDApLCJleGl0X3ByaWNlIjpmbG9hdChyWzVdIG9yIDApIGlmIHJbNV0gZWxzZSBOb25lLAogICAgICAgICAgICAicG5sX3BjdCI6cm91bmQocG5sLDMpLCJvdXRjb21lIjpvLCJwcmVkaWN0ZWRfYXQiOnJbOF0sImV4cGlyZXNfYXQiOnJbOV0sImFzc2V0X3R5cGUiOnJbMTBdfSkKICAgIHRvdGFsPXdpbnMrbG9zc2VzCiAgICByZXR1cm4geyJvayI6VHJ1ZSwidHJhZGVzIjp0cmFkZXMsInRvdGFsIjp0b3RhbCwid2lucyI6d2lucywibG9zc2VzIjpsb3NzZXMsCiAgICAgICAgIndpbl9yYXRlX3BjdCI6cm91bmQod2lucy90b3RhbCoxMDAsMSkgaWYgdG90YWwgZWxzZSAwfQo=").decode("utf-8")
+    changed = True; print("[patch] /api/v2/recent appended")
+else: print("[patch] /api/v2/recent already present")
 
 if changed:
-    open(wolf, "w", encoding="utf-8").write(src)
+    open(wolf,"w",encoding="utf-8").write(src)
     print("[patch] wolf_app.py written OK")

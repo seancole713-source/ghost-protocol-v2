@@ -130,11 +130,12 @@ function fmt_time(ts) {
 
 async function load() {
   try {
-    const [health, stats, picks, acc] = await Promise.all([
+    const [health, stats, picks, acc, v2r] = await Promise.all([
       fetch('/health').then(r=>r.json()),
       fetch('/api/stats').then(r=>r.json()),
       fetch('/api/picks').then(r=>r.json()),
       fetch('/api/symbol-accuracy').then(r=>r.json()),
+        fetch('/api/v2/recent').then(r=>r.json()).catch(()=>({trades:[],wins:0,losses:0,win_rate_pct:0})),
     ]);
 
     // Health
@@ -198,7 +199,7 @@ async function load() {
     // Recent results
     const rb = document.getElementById('results-body');
     rb.innerHTML = '';
-    const resolved = (picks.active || []).filter(p => p.outcome).concat(picks.resolved || []);
+        const resolved = (v2r && v2r.trades && v2r.trades.length > 0) ? v2r.trades : [];
     resolved.slice(0, 15).forEach(p => {
       const dir = p.direction === 'UP' ? 'BUY' : 'SELL';
       const pnl = p.pnl_pct;

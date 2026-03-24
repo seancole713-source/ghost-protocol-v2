@@ -212,5 +212,5 @@ def run_news_cycle() -> List[Dict]:
     return articles
 
 
-def get_cached_articles() -> List[Dict]:
+def get_cached_articles(limit=None) -> List[Dict]:
     return _cached_articles
