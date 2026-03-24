@@ -1,1 +1,1 @@
-web: uvicorn wolf_app:APP --host 0.0.0.0 --port $PORT --workers 1
+web: python patch_cockpit.py && uvicorn wolf_app:APP --host 0.0.0.0 --port $PORT
