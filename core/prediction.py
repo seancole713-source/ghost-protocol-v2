@@ -12,6 +12,10 @@ Rules:
 import os, time, logging
 from typing import Optional, List
 from core.db import db_conn
+try:
+    from core.news import get_symbol_sentiment as _get_sentiment
+except Exception:
+    def _get_sentiment(s): return 0.0
 from core.prices import get_price, get_vix, get_crypto_price
 
 LOGGER = logging.getLogger("ghost.prediction")
@@ -159,6 +163,16 @@ def predict_symbol(symbol, asset_type, regime):
     hold = CRYPTO_HOLD_H * 3600 if asset_type == "crypto" else 48 * 3600
     target = price * (1 + TARGET_PCT) if direction == "UP" else price * (1 - TARGET_PCT)
     stop = price * (1 - STOP_PCT) if direction == "UP" else price * (1 + STOP_PCT)
+    # Claude news sentiment: nudges confidence +-10% based on news alignment
+    try:
+        sent = _get_sentiment(symbol)
+        if abs(sent) > 0.1:
+            dir_mult = 1.0 if direction in ("UP", "BUY") else -1.0
+            adj = round(sent * dir_mult * 0.10, 3)
+            confidence = round(max(CONFIDENCE_FLOOR, min(0.98, confidence + adj)), 3)
+            LOGGER.info(f"[SENTIMENT] {symbol} news={sent:.2f} adj={adj:+.3f} conf={confidence:.3f}")
+    except Exception:
+        pass
     return {
         "symbol": symbol, "direction": direction, "confidence": confidence,
         "entry_price": price, "target_price": round(target, 6),

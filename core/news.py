@@ -1,14 +1,16 @@
 """
-core/news.py - News brain using Finnhub (allowed by Railway network).
-CryptoPanic for crypto news. Scores sentiment, alerts on open positions.
-Runs every 30 minutes via scheduler.
+core/news.py - News brain with Claude-powered sentiment scoring.
+Fetches Finnhub + CryptoPanic every 30 min.
+Scores headlines via Claude Haiku batch call, stores per-symbol sentiment score.
+prediction.py reads get_symbol_sentiment() to adjust confidence - no new Telegram alerts.
 """
-import os, time, logging, requests
+import os, time, logging, json, requests
 from typing import List, Dict
 
 LOGGER = logging.getLogger("ghost.news")
 CRYPTOPANIC_KEY = os.getenv("CRYPTOPANIC_API_KEY", "")
 FINNHUB_KEY = os.getenv("FINNHUB_API_KEY", "")
+ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 BEARISH_WORDS = ["crash","collapse","fall","drop","decline","loss","bankrupt","fraud",
     "investigation","lawsuit","ban","restrict","inflation","recession","default","fail","warning","risk"]
@@ -17,107 +19,198 @@ BULLISH_WORDS = ["surge","rally","gain","rise","record","profit","growth","partn
 
 _seen_headlines = set()
 _cached_articles: List[Dict] = []
+# Per-symbol sentiment scores updated every 30 min. Read by prediction.py.
+# Values: -1.0 (very bearish) to +1.0 (very bullish), 0.0 = neutral/unknown
+_symbol_sentiment: Dict[str, float] = {}
 
-def _score_sentiment(text: str) -> str:
-    text_lower = text.lower()
-    bull = sum(1 for w in BULLISH_WORDS if w in text_lower)
-    bear = sum(1 for w in BEARISH_WORDS if w in text_lower)
-    if bear > bull: return "BEARISH"
-    if bull > bear: return "BULLISH"
-    return "NEUTRAL"
 
-def _fetch_finnhub_market_news() -> List[Dict]:
-    """Fetch general market news from Finnhub API."""
-    if not FINNHUB_KEY: return []
-    articles = []
+def get_symbol_sentiment(symbol: str) -> float:
+    """Return latest Claude sentiment score for a symbol. 0.0 = neutral."""
+    return _symbol_sentiment.get(symbol.upper(), 0.0)
+
+
+def get_all_sentiments() -> Dict[str, float]:
+    """Return full sentiment dict for dashboard/API."""
+    return dict(_symbol_sentiment)
+
+
+def _keyword_score(text: str) -> float:
+    """Fallback keyword-based scoring when Claude unavailable."""
+    t = text.lower()
+    b = sum(1 for w in BEARISH_WORDS if w in t)
+    u = sum(1 for w in BULLISH_WORDS if w in t)
+    total = b + u
+    if total == 0:
+        return 0.0
+    return round((u - b) / total, 3)
+
+
+def _score_with_claude(articles: List[Dict]) -> Dict[str, float]:
+    """
+    Batch call Claude Haiku to score sentiment per symbol from headlines.
+    Returns {SYMBOL: score} where score is -1.0 (bearish) to +1.0 (bullish).
+    One API call per 30-min cycle - not per prediction.
+    """
+    if not ANTHROPIC_KEY or not articles:
+        return {}
+
+    headline_lines = ""
+    for a in articles[:40]:
+        syms = ",".join(a.get("symbols", ["MARKET"]))
+        headline_lines += "[" + syms + "] " + a.get("title", "")[:120] + "\n"
+
+    prompt = (
+        "Analyze these financial news headlines and score sentiment per symbol.\n\n"
+        "Headlines (format: [SYMBOLS] headline):\n"
+        + headline_lines +
+        "\nFor each symbol mentioned, give a sentiment score: "
+        "-1.0 = very bearish, 0.0 = neutral, +1.0 = very bullish.\n"
+        "Consider: bad news/crash/fraud = bearish, good news/launch/profit = bullish.\n"
+        "Respond ONLY with JSON like: {\"BTC\": -0.4, \"ETH\": 0.2, \"LINK\": -0.7}\n"
+        "Only include symbols from the headlines. No explanation."
+    )
+
     try:
-        url = "https://finnhub.io/api/v1/news?category=general&token=" + FINNHUB_KEY
-        r = requests.get(url, timeout=8)
-        for item in r.json()[:15]:
-            title = item.get("headline", "").strip()
-            if not title or title in _seen_headlines: continue
-            articles.append({
-                "headline": title,
-                "source": "finnhub",
-                "sentiment": _score_sentiment(title),
-                "symbols": [],
-                "url": item.get("url", ""),
-                "ts": item.get("datetime", int(time.time())),
-            })
+        resp = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": ANTHROPIC_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": "claude-haiku-4-5-20251001",
+                "max_tokens": 300,
+                "messages": [{"role": "user", "content": prompt}],
+            },
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            raw = resp.json()["content"][0]["text"].strip()
+            start = raw.find("{")
+            end = raw.rfind("}") + 1
+            if start >= 0 and end > start:
+                scores = json.loads(raw[start:end])
+                clean = {k.upper(): max(-1.0, min(1.0, float(v))) for k, v in scores.items()}
+                LOGGER.info(f"Claude sentiment: {clean}")
+                return clean
+        else:
+            LOGGER.warning(f"Claude API {resp.status_code}: {resp.text[:100]}")
     except Exception as e:
-        LOGGER.warning("Finnhub news error: " + str(e))
-    return articles
+        LOGGER.warning(f"Claude sentiment error: {e}")
+    return {}
+
+
+def _fallback_scores(articles: List[Dict]) -> Dict[str, float]:
+    """Aggregate keyword scores per symbol across all articles."""
+    scores: Dict[str, list] = {}
+    for a in articles:
+        score = _keyword_score(a.get("title", ""))
+        for sym in a.get("symbols", []):
+            s = sym.upper()
+            scores.setdefault(s, []).append(score)
+    return {s: round(sum(v)/len(v), 3) for s, v in scores.items() if v}
+
 
 def _fetch_cryptopanic() -> List[Dict]:
-    """Fetch crypto news from CryptoPanic API."""
-    if not CRYPTOPANIC_KEY: return []
-    articles = []
+    if not CRYPTOPANIC_KEY:
+        return []
     try:
-        url = "https://cryptopanic.com/api/v1/posts/?auth_token=" + CRYPTOPANIC_KEY + "&filter=hot&public=true"
-        r = requests.get(url, timeout=8)
-        for item in r.json().get("results", [])[:10]:
-            title = item.get("title", "").strip()
-            if not title or title in _seen_headlines: continue
-            votes = item.get("votes", {})
-            bull = votes.get("positive", 0) + votes.get("important", 0)
-            bear = votes.get("negative", 0) + votes.get("disliked", 0)
-            sentiment = "BEARISH" if bear > bull else "BULLISH" if bull > bear else _score_sentiment(title)
-            currencies = [c["code"] for c in item.get("currencies", [])]
-            articles.append({
-                "headline": title,
-                "source": "cryptopanic",
-                "sentiment": sentiment,
-                "symbols": currencies,
-                "ts": int(time.time()),
-            })
+        r = requests.get(
+            "https://cryptopanic.com/api/v1/posts/",
+            params={"auth_token": CRYPTOPANIC_KEY, "kind": "news", "public": "true"},
+            timeout=8,
+        )
+        articles = []
+        for item in r.json().get("results", [])[:20]:
+            syms = [c["code"].upper() for c in item.get("currencies", [])]
+            title = item.get("title", "")
+            if title and title not in _seen_headlines:
+                _seen_headlines.add(title)
+                articles.append({"title": title, "symbols": syms or ["CRYPTO"], "source": "cryptopanic"})
+        return articles
     except Exception as e:
-        LOGGER.warning("CryptoPanic error: " + str(e))
+        LOGGER.warning(f"CryptoPanic fetch error: {e}")
+        return []
+
+
+def _fetch_finnhub_crypto() -> List[Dict]:
+    if not FINNHUB_KEY:
+        return []
+    try:
+        r = requests.get(
+            "https://finnhub.io/api/v1/news",
+            params={"category": "crypto", "token": FINNHUB_KEY},
+            timeout=8,
+        )
+        articles = []
+        for a in r.json()[:15]:
+            title = a.get("headline", "")
+            if title and title not in _seen_headlines:
+                _seen_headlines.add(title)
+                articles.append({"title": title, "symbols": ["CRYPTO"], "source": "finnhub"})
+        return articles
+    except Exception as e:
+        LOGGER.warning(f"Finnhub fetch error: {e}")
+        return []
+
+
+def _fetch_finnhub_stock(symbol: str) -> List[Dict]:
+    if not FINNHUB_KEY:
+        return []
+    try:
+        import datetime
+        today = datetime.date.today().isoformat()
+        from_date = (datetime.date.today() - datetime.timedelta(days=3)).isoformat()
+        r = requests.get(
+            "https://finnhub.io/api/v1/company-news",
+            params={"symbol": symbol, "from": from_date, "to": today, "token": FINNHUB_KEY},
+            timeout=8,
+        )
+        return [{"title": a["headline"], "symbols": [symbol], "source": "finnhub_stock"}
+                for a in r.json()[:5] if "headline" in a]
+    except Exception:
+        return []
+
+
+def run_news_cycle() -> List[Dict]:
+    """
+    Main cycle called every 30 min by scheduler.
+    1. Fetch headlines from Finnhub + CryptoPanic
+    2. Score sentiment with Claude (or keyword fallback)
+    3. Store scores in _symbol_sentiment - prediction.py reads these
+    No Telegram alerts sent here.
+    """
+    global _cached_articles, _symbol_sentiment
+
+    articles = []
+    articles.extend(_fetch_cryptopanic())
+    articles.extend(_fetch_finnhub_crypto())
+    for sym in ["AAPL", "NVDA", "TSLA", "MSFT", "META", "AMZN"]:
+        articles.extend(_fetch_finnhub_stock(sym))
+
+    if not articles:
+        LOGGER.info("News cycle: no new articles")
+        return _cached_articles
+
+    # Score sentiment - Claude if available, else keyword fallback
+    if ANTHROPIC_KEY:
+        scores = _score_with_claude(articles)
+        if scores:
+            # Decay old scores toward neutral before updating
+            for sym in list(_symbol_sentiment):
+                _symbol_sentiment[sym] = round(_symbol_sentiment[sym] * 0.7, 3)
+            _symbol_sentiment.update(scores)
+        else:
+            _symbol_sentiment.update(_fallback_scores(articles))
+    else:
+        _symbol_sentiment.update(_fallback_scores(articles))
+        LOGGER.info("No ANTHROPIC_API_KEY set - using keyword fallback")
+
+    _cached_articles = articles
+    LOGGER.info(f"News cycle: {len(articles)} articles, {len(_symbol_sentiment)} symbols scored")
     return articles
 
-def _get_open_symbols() -> List[str]:
-    try:
-        from core.db import db_conn
-        with db_conn() as conn:
-            cur = conn.cursor()
-            cur.execute("SELECT DISTINCT symbol FROM predictions WHERE outcome IS NULL AND entry_price IS NOT NULL")
-            return [r[0] for r in cur.fetchall()]
-    except: return []
 
-def run_news_cycle() -> int:
-    """Main news cycle. Called every 30 min by scheduler."""
-    global _cached_articles
-    LOGGER.info("News cycle running...")
-    articles = _fetch_finnhub_market_news() + _fetch_cryptopanic()
-    _cached_articles = articles
-    if not articles:
-        LOGGER.info("No new articles")
-        return 0
-    open_symbols = _get_open_symbols()
-    alerts_sent = 0
-    try:
-        from core.telegram import send_news_alert
-        for article in articles:
-            if article["sentiment"] == "NEUTRAL": continue
-            headline_upper = article["headline"].upper()
-            affected = list(article.get("symbols", []))
-            if not affected:
-                for sym in open_symbols:
-                    if sym in headline_upper:
-                        affected.append(sym)
-            if affected and article["sentiment"] == "BEARISH":
-                for sym in affected[:2]:
-                    send_news_alert(sym, article["headline"], "BEARISH", "Check your stop loss")
-                    alerts_sent += 1
-            _seen_headlines.add(article["headline"])
-    except Exception as e:
-        LOGGER.error("News alert error: " + str(e))
-    LOGGER.info("News cycle done: " + str(len(articles)) + " articles, " + str(alerts_sent) + " alerts")
-    return alerts_sent
-
-def get_recent_articles(limit: int = 20) -> List[Dict]:
-    """Return cached articles for dashboard."""
-    if not _cached_articles:
-        # Fetch fresh if cache empty
-        articles = _fetch_finnhub_market_news() + _fetch_cryptopanic()
-        return sorted(articles, key=lambda x: x["ts"], reverse=True)[:limit]
-    return sorted(_cached_articles, key=lambda x: x["ts"], reverse=True)[:limit]
+def get_cached_articles() -> List[Dict]:
+    return _cached_articles
