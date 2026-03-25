@@ -24,6 +24,12 @@ if "portfolio_router" not in src:
     changed = True; print("[patch] portfolio router included")
 else: print("[patch] portfolio router already included")
 
+# Patch 4: wire model retrain into weekly scheduler
+if "model_retrain" not in src:
+    src = src + base64.b64decode("CmZyb20gY29yZS5tb2RlbCBpbXBvcnQgcmV0cmFpbl9pZl9yZWFkeQpzY2hlZHVsZXIucmVnaXN0ZXIoIm1vZGVsX3JldHJhaW4iLCByZXRyYWluX2lmX3JlYWR5LCA2MDQ4MDApICAjIHdlZWtseQo=").decode("utf-8")
+    changed = True; print("[patch] model_retrain scheduler registered")
+else: print("[patch] model_retrain already registered")
+
 if changed:
     open(wolf,"w",encoding="utf-8").write(src)
     print("[patch] wolf_app.py written OK")
