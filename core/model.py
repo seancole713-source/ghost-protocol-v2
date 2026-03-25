@@ -108,7 +108,8 @@ def _load_training_data():
               AND features IS NOT NULL
               AND direction IN ('UP','BUY')
             ORDER BY predicted_at ASC
-        """)        rows = cur.fetchall()
+        """)
+        rows = cur.fetchall()
 
     X, y, ts = [], [], []
     for features_json, outcome, predicted_at in rows:
