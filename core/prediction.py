@@ -19,7 +19,7 @@ except Exception:
 from core.prices import get_price, get_vix, get_crypto_price
 
 LOGGER = logging.getLogger("ghost.prediction")
-CONFIDENCE_FLOOR = float(os.getenv("MIN_ALERT_CONFIDENCE", "0.60"))
+CONFIDENCE_FLOOR = float(os.getenv("MIN_ALERT_CONFIDENCE", "0.75"))
 DAILY_CAP = int(os.getenv("DAILY_ALERT_CAP", "10"))
 BTC_THRESHOLD = float(os.getenv("BTC_TREND_THRESHOLD", "-5.0"))
 VIX_FEAR = float(os.getenv("VIX_FEAR", "25"))
@@ -156,6 +156,9 @@ def predict_symbol(symbol, asset_type, regime):
     if not signal: return None
     direction, confidence = signal
     if confidence < CONFIDENCE_FLOOR: return None
+    if symbol == "XRP" and direction == "UP":
+        LOGGER.info("XRP BUY blocked: historically 6.5% win rate")
+        return None
     if regime["block_crypto_buys"] and asset_type == "crypto" and direction == "UP":
         LOGGER.info("REGIME blocked " + symbol + " UP")
         return None
