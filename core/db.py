@@ -92,6 +92,7 @@ def _migrate_schema():
         "ALTER TABLE predictions ALTER COLUMN run_at DROP NOT NULL",
         "ALTER TABLE predictions ALTER COLUMN method DROP NOT NULL",
         "ALTER TABLE predictions ALTER COLUMN horizon_h DROP NOT NULL",
+        "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS features JSONB",
     ]
     with db_conn() as conn:
         cur = conn.cursor()
