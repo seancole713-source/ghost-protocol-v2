@@ -212,5 +212,16 @@ def run_news_cycle() -> List[Dict]:
     return articles
 
 
+# Alias for prediction.py compatibility
+get_sentiment_for_symbol = get_symbol_sentiment
+
 def get_cached_articles(limit=None) -> List[Dict]:
-    return _cached_articles
+    """Return articles with per-article sentiment attached from symbol scores."""
+    enriched = []
+    for a in _cached_articles:
+        syms = a.get("symbols", [])
+        scores = [_symbol_sentiment.get(s.upper(), 0.0) for s in syms if s.upper() in _symbol_sentiment]
+        art = dict(a)
+        art["sentiment"] = round(sum(scores) / len(scores), 3) if scores else 0.0
+        enriched.append(art)
+    return enriched if limit is None else enriched[:limit]

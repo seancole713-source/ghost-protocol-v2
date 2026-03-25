@@ -268,6 +268,13 @@ def run_prediction_cycle():
         cur = conn.cursor()
         for pick in top:
             try:
+                # Skip if an open pick for this symbol already exists
+                cur.execute(
+                    "SELECT COUNT(*) FROM predictions WHERE symbol=%s AND outcome IS NULL AND expires_at > %s",
+                    (pick["symbol"], int(time.time())))
+                if cur.fetchone()[0] > 0:
+                    LOGGER.info("DEDUP: skipping " + pick["symbol"] + " — open pick already exists")
+                    continue
                 cur.execute(
                     "INSERT INTO predictions (symbol,direction,confidence,entry_price,target_price,stop_price,run_at,predicted_at,expires_at,asset_type,features) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
                     (pick["symbol"], pick["direction"], pick["confidence"], pick["entry_price"],
