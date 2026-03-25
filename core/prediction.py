@@ -283,3 +283,45 @@ def run_prediction_cycle():
                 conn.rollback()
     LOGGER.info("Cycle: " + str(len(saved)) + "/" + str(len(all_picks)) + " picks | regime: " + (regime["reason"] or "OK"))
     return saved
+
+
+def reconcile_outcomes():
+    """Check open v2 predictions against live prices. Mark WIN/LOSS/EXPIRED."""
+    resolved = 0
+    now = int(time.time())
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id,symbol,direction,entry_price,target_price,stop_price,expires_at,asset_type FROM predictions WHERE outcome IS NULL AND predicted_at IS NOT NULL AND entry_price IS NOT NULL AND entry_price > 0 AND target_price IS NOT NULL AND stop_price IS NOT NULL"
+        )
+        open_preds = cur.fetchall()
+    for pred_id, symbol, direction, entry, target, stop, expires_at, asset_type in open_preds:
+        if None in (entry, target, stop): continue
+        price = get_price(symbol, asset_type or "crypto")
+        if not price: continue
+        outcome = None
+        if direction == "UP":
+            if price >= target: outcome = "WIN"
+            elif price <= stop: outcome = "LOSS"
+        else:
+            if price <= target: outcome = "WIN"
+            elif price >= stop: outcome = "LOSS"
+        if not outcome and expires_at and now > expires_at: outcome = "EXPIRED"
+        if outcome:
+            pnl = (price-entry)/entry*100 if direction=="UP" else (entry-price)/entry*100
+            with db_conn() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    "UPDATE predictions SET outcome=%s,exit_price=%s,pnl_pct=%s,resolved_at=%s WHERE id=%s",
+                    (outcome, price, round(pnl,3), now, pred_id))
+            resolved += 1
+            LOGGER.info("Resolved " + symbol + " " + direction + ": " + outcome + " " + str(round(pnl,2)) + "%")
+            # Watchdog: fire Telegram alert immediately when pick resolves
+            if outcome in ("WIN", "LOSS"):
+                try:
+                    from core.telegram import send_position_alert
+                    usd_out = round(100 * (1 + pnl/100), 2)
+                    send_position_alert(symbol, direction, outcome, entry, price, pnl, usd_out)
+                except Exception as te:
+                    LOGGER.error("Watchdog alert failed: " + str(te))
+    return resolved
