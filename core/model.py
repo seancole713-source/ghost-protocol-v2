@@ -108,4 +108,118 @@ def _load_training_data():
               AND features IS NOT NULL
               AND direction IN ('UP','BUY')
             ORDER BY predicted_at ASC
-        """)
+        """)        rows = cur.fetchall()
+
+    X, y, ts = [], [], []
+    for features_json, outcome, predicted_at in rows:
+        if not features_json:
+            continue
+        try:
+            f = features_json if isinstance(features_json, dict) else json.loads(features_json)
+            X.append(_row_to_features(f))
+            y.append(1 if outcome == "WIN" else 0)
+            ts.append(predicted_at or 0)
+        except Exception:
+            continue
+    return np.array(X), np.array(y), ts
+
+
+def train_model(force=False):
+    """
+    Train XGBoost on accumulated labeled data.
+    Returns (model, metrics_dict) or (None, reason_str).
+    """
+    try:
+        import xgboost as xgb
+        from sklearn.model_selection import TimeSeriesSplit
+        from sklearn.metrics import roc_auc_score
+    except ImportError as e:
+        return None, "missing dependency: " + str(e)
+
+    X, y, ts = _load_training_data()
+    n = len(X)
+
+    if n < MIN_TRAIN_ROWS and not force:
+        return None, "only " + str(n) + " rows, need " + str(MIN_TRAIN_ROWS)
+    if n == 0:
+        return None, "no training data"
+
+    wins = int(y.sum())
+    losses = n - wins
+    LOGGER.info("[MODEL] Training on " + str(n) + " rows (" + str(wins) + "W / " + str(losses) + "L)")
+    scale = losses / max(wins, 1)
+
+    model = xgb.XGBClassifier(
+        n_estimators=200, max_depth=4, learning_rate=0.05,
+        scale_pos_weight=scale, subsample=0.8, colsample_bytree=0.8,
+        use_label_encoder=False, eval_metric="logloss",
+        random_state=42, verbosity=0,
+    )
+
+    cv_scores = []
+    if n >= 100:
+        tscv = TimeSeriesSplit(n_splits=min(5, n // 20))
+        for train_idx, val_idx in tscv.split(X):
+            X_tr, X_val = X[train_idx], X[val_idx]
+            y_tr, y_val = y[train_idx], y[val_idx]
+            if len(np.unique(y_val)) < 2:
+                continue
+            m = xgb.XGBClassifier(
+                n_estimators=200, max_depth=4, learning_rate=0.05,
+                scale_pos_weight=scale, subsample=0.8, colsample_bytree=0.8,
+                use_label_encoder=False, eval_metric="logloss",
+                random_state=42, verbosity=0,
+            )
+            m.fit(X_tr, y_tr)
+            proba = m.predict_proba(X_val)[:, 1]
+            cv_scores.append(roc_auc_score(y_val, proba))
+
+    model.fit(X, y)
+
+    importances = dict(zip(FEATURE_COLS, model.feature_importances_.tolist()))
+    top = sorted(importances.items(), key=lambda x: x[1], reverse=True)
+    LOGGER.info("[MODEL] Feature importances: " + str(top[:4]))
+
+    os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
+    with open(MODEL_PATH, "wb") as f:
+        pickle.dump(model, f)
+    LOGGER.info("[MODEL] Saved to " + MODEL_PATH)
+
+    global _model_cache, _model_loaded_at
+    _model_cache = None
+    _model_loaded_at = 0
+
+    metrics = {
+        "rows": n, "wins": wins, "losses": losses,
+        "cv_auc": round(float(np.mean(cv_scores)), 3) if cv_scores else None,
+        "feature_importances": dict(top),
+    }
+    return model, metrics
+
+
+def retrain_if_ready():
+    """Called by weekly scheduler. Trains if enough labeled data."""
+    from core.db import db_conn
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT COUNT(*) FROM predictions
+                WHERE outcome IN ('WIN','LOSS','STOP')
+                  AND features IS NOT NULL
+                  AND direction IN ('UP','BUY')
+            """)
+            count = cur.fetchone()[0]
+    except Exception as e:
+        LOGGER.error("[MODEL] DB count failed: " + str(e))
+        return
+
+    LOGGER.info("[MODEL] Labeled rows with features: " + str(count) + " / " + str(MIN_TRAIN_ROWS) + " needed")
+    if count < MIN_TRAIN_ROWS:
+        return
+
+    model, result = train_model()
+    if model is None:
+        LOGGER.warning("[MODEL] Training skipped: " + str(result))
+    else:
+        LOGGER.info("[MODEL] Training complete: " + str(result))
