@@ -7,7 +7,7 @@ changed = False
 if "cockpit.html" not in src:
     anchor = '@APP.get("/cockpit")\ndef cockpit():\n    html = ("<h1>Ghost Protocol v2</h1>'
     if anchor in src:
-        src = src[:src.index(anchor)] + base64.b64decode("QEFQUC5nZXQoIi9jb2NrcGl0IiwgcmVzcG9uc2VfY2xhc3M9SFRNTFJlc3BvbnNlKQpkZWYgY29ja3BpdCgpOgogICAgaW1wb3J0IG9zIGFzIF9vcwogICAgX3AgPSBfb3MucGF0aC5qb2luKF9vcy5wYXRoLmRpcm5hbWUoX29zLnBhdGguYWJzcGF0aChfX2ZpbGVfXykpLCAiY29ja3BpdC5odG1sIikKICAgIHdpdGggb3BlbihfcCwgZW5jb2Rpbmc9InV0Zi04IikgYXMgX2Y6CiAgICAgICAgcmV0dXJuIEhUTUxSZXNwb25zZShjb250ZW50PV9mLnJlYWQoKSk=").decode("utf-8") + "\n"
+        src = src[:src.index(anchor)] + base64.b64decode("CmZyb20gY29yZS5tb2RlbCBpbXBvcnQgcmV0cmFpbl9pZl9yZWFkeQpmcm9tIGNvcmUgaW1wb3J0IHNjaGVkdWxlciBhcyBfc2NoZWQ7IF9zY2hlZC5yZWdpc3RlcigibW9kZWxfcmV0cmFpbiIsIHJldHJhaW5faWZfcmVhZHksIDYwNDgwMCkgICMgd2Vla2x5Cg==").decode("utf-8") + "\n"
         changed = True; print("[patch] cockpit patched")
     else: print("[patch] WARNING: cockpit anchor not found")
 else: print("[patch] cockpit already patched")
@@ -25,7 +25,11 @@ if "portfolio_router" not in src:
 else: print("[patch] portfolio router already included")
 
 # Patch 4: wire model retrain into weekly scheduler
-if "model_retrain" not in src:
+bad_sched = 'scheduler.register("model_retrain", retrain_if_ready, 604800)  # weekly'
+if bad_sched in src:
+    src = src.replace(bad_sched, 'from core import scheduler as _sched; _sched.register("model_retrain", retrain_if_ready, 604800)  # weekly')
+    changed = True; print("[patch] model_retrain scheduler fixed")
+elif "model_retrain" not in src:
     src = src + base64.b64decode("CmZyb20gY29yZS5tb2RlbCBpbXBvcnQgcmV0cmFpbl9pZl9yZWFkeQpzY2hlZHVsZXIucmVnaXN0ZXIoIm1vZGVsX3JldHJhaW4iLCByZXRyYWluX2lmX3JlYWR5LCA2MDQ4MDApICAjIHdlZWtseQo=").decode("utf-8")
     changed = True; print("[patch] model_retrain scheduler registered")
 else: print("[patch] model_retrain already registered")
