@@ -156,8 +156,8 @@ def predict_symbol(symbol, asset_type, regime):
     if not signal: return None
     direction, confidence = signal
     if confidence < CONFIDENCE_FLOOR: return None
-    if symbol == "XRP" and direction == "UP":
-        LOGGER.info("XRP BUY blocked: historically 6.5% win rate")
+    if direction == "DOWN":
+        LOGGER.info("SELL blocked: 3.9% win rate across 103 trades vs BUY 28.6% win rate")
         return None
     if regime["block_crypto_buys"] and asset_type == "crypto" and direction == "UP":
         LOGGER.info("REGIME blocked " + symbol + " UP")
