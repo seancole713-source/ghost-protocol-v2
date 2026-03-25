@@ -101,6 +101,35 @@
   /* NO STOCKS MSG */
   .info-box { background:#111; border:1px solid #1e1e1e; border-radius:10px; padding:20px; margin-bottom:16px; color:#666; font-size:14px; line-height:1.6; }
   .info-box b { color:#888; }
+
+.port-form{background:#111;border:1px solid #1e1e1e;border-radius:12px;padding:20px;margin-bottom:20px}
+.port-form h3{font-size:12px;font-weight:700;color:#555;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:14px}
+.form-row{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;margin-bottom:12px;align-items:end}
+.form-row label{font-size:10px;color:#555;font-weight:700;letter-spacing:.5px;display:block;margin-bottom:4px}
+.form-row input,.form-row select{width:100%;background:#0a0a0a;border:1px solid #2a2a2a;color:#fff;padding:9px 10px;border-radius:8px;font-size:14px}
+.btn-add{background:#ff3b3b;color:#fff;border:none;padding:10px 18px;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;width:100%}
+.btn-add:hover{background:#e03333}
+.port-totals{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px}
+.ptot{background:#111;border:1px solid #1e1e1e;border-radius:10px;padding:14px;text-align:center}
+.ptot-label{font-size:10px;color:#444;letter-spacing:.5px;margin-bottom:4px}
+.ptot-val{font-size:20px;font-weight:800}
+.pcard{background:#111;border:1px solid #1e1e1e;border-radius:12px;padding:16px;margin-bottom:10px}
+.pcard-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+.psym{font-size:20px;font-weight:800}
+.ptype{font-size:10px;color:#555;font-weight:700;letter-spacing:1px;margin-left:6px}
+.pnums{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px}
+.pnum{text-align:center;background:#0d0d0d;border-radius:8px;padding:8px}
+.pnum-label{font-size:9px;color:#444;letter-spacing:.3px;margin-bottom:3px}
+.pnum-val{font-size:13px;font-weight:700}
+.ghost-adv{display:flex;align-items:center;justify-content:space-between}
+.gadv-label{font-size:11px;color:#444}
+.gadv-val{font-size:13px;font-weight:800;padding:5px 14px;border-radius:20px}
+.gadv-buy{background:#071a0d;color:#22c55e}
+.gadv-sell{background:#1a0707;color:#ff3b3b}
+.gadv-hold{background:#1a1a1a;color:#666}
+.btn-del{background:none;border:1px solid #2a2a2a;color:#555;padding:4px 10px;border-radius:6px;font-size:11px;cursor:pointer;margin-left:10px}
+.btn-del:hover{border-color:#ff3b3b;color:#ff3b3b}
+.perr{color:#ff3b3b;font-size:13px;margin-top:8px;min-height:18px}
 </style>
 </head>
 <body>
@@ -117,7 +146,7 @@
 <div class="tabs">
   <div class="tab active" onclick="show('crypto')">🪙 CRYPTO PLAYS</div>
   <div class="tab" onclick="show('stocks')">📈 STOCK PLAYS</div>
-  <div class="tab" onclick="show('results')">📊 RESULTS</div>
+  <div class="tab" onclick="show('portfolio')">💼 MY PORTFOLIO</div><div class="tab" onclick="show('results')">📊 RESULTS</div>
   <div class="tab" onclick="show('news')">📰 NEWS</div>
 </div>
 
@@ -155,6 +184,24 @@
     </div>
   </div>
 
+
+  <div class="panel" id="panel-portfolio">
+    <div class="sec-label">My Portfolio</div>
+    <div class="port-form">
+      <h3>Add a Position</h3>
+      <div class="form-row">
+        <div><label>SYMBOL</label><input id="p-sym" placeholder="BTC, AAPL..."></div>
+        <div><label>TYPE</label><select id="p-type"><option value="crypto">Crypto</option><option value="stock">Stock</option></select></div>
+        <div><label>QUANTITY</label><input id="p-qty" type="number" placeholder="0.5"></div>
+        <div><label>PRICE PAID ($)</label><input id="p-bp" type="number" step="0.000001" placeholder="65000"></div>
+        <div><label>DATE</label><input id="p-date" type="date"></div>
+        <div><label>&nbsp;</label><button class="btn-add" onclick="addPos()">+ ADD</button></div>
+      </div>
+      <div class="perr" id="perr"></div>
+    </div>
+    <div id="ptotals"></div>
+    <div id="ppositions"><div class="empty"><div class="ico">💼</div><p>No positions yet.<br>Add your first above.</p></div></div>
+  </div>
 </div>
 
 <div class="footer" id="footer">
@@ -168,6 +215,7 @@
 let currentPanel = 'crypto';
 
 function show(panel) {
+  if(panel==='portfolio') setTimeout(loadPortfolio, 50);
   currentPanel = panel;
   document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -341,6 +389,126 @@ async function load() {
   }
 }
 
+
+async function loadPortfolio(){
+  const d=await fetch('/api/portfolio').then(r=>r.json()).catch(()=>({positions:[],total_cost:0}));
+  const ps=d.positions||[];
+  const tw=document.getElementById('ptotals');
+  const pw=document.getElementById('ppositions');
+  if(ps.length===0){tw.innerHTML='';pw.innerHTML='<div class="empty"><div class="ico">💼</div><p>No positions yet.<br>Add your first above.</p></div>';return;}
+  tw.innerHTML='<div class="port-totals">'
+    +'<div class="ptot"><div class="ptot-label">TOTAL INVESTED</div><div class="ptot-val">
+setInterval(() => {
+  const d = new Date();
+  document.getElementById('clock').textContent = d.toLocaleTimeString('en-US', {hour:'2-digit',minute:'2-digit',timeZone:'America/Chicago'}) + ' CT';
+}, 1000);
+
+load();
+setInterval(load, 60000);
+</script>
+</body>
+</html>+(d.total_cost||0).toLocaleString('en-US',{maximumFractionDigits:2})+'</div></div>'
+    +'<div class="ptot"><div class="ptot-label">CURRENT VALUE</div><div class="ptot-val">'+(d.total_value?'
+setInterval(() => {
+  const d = new Date();
+  document.getElementById('clock').textContent = d.toLocaleTimeString('en-US', {hour:'2-digit',minute:'2-digit',timeZone:'America/Chicago'}) + ' CT';
+}, 1000);
+
+load();
+setInterval(load, 60000);
+</script>
+</body>
+</html>+d.total_value.toLocaleString('en-US',{maximumFractionDigits:2}):'—')+'</div></div>'
+    +'<div class="ptot"><div class="ptot-label">TOTAL GAIN/LOSS</div><div class="ptot-val '+(d.total_gain_loss>=0?'pos':'neg')+'">'+(d.total_gain_loss!==null?(d.total_gain_loss>=0?'+
+setInterval(() => {
+  const d = new Date();
+  document.getElementById('clock').textContent = d.toLocaleTimeString('en-US', {hour:'2-digit',minute:'2-digit',timeZone:'America/Chicago'}) + ' CT';
+}, 1000);
+
+load();
+setInterval(load, 60000);
+</script>
+</body>
+</html>:'-
+setInterval(() => {
+  const d = new Date();
+  document.getElementById('clock').textContent = d.toLocaleTimeString('en-US', {hour:'2-digit',minute:'2-digit',timeZone:'America/Chicago'}) + ' CT';
+}, 1000);
+
+load();
+setInterval(load, 60000);
+</script>
+</body>
+</html>)+Math.abs(d.total_gain_loss).toLocaleString('en-US',{maximumFractionDigits:2}):'—')+'</div></div>'
+    +'</div>';
+  pw.innerHTML=ps.map(p=>{
+    const gl=p.gain_loss_pct,glD=p.gain_loss;
+    const glc=gl===null?'':gl>=0?'pos':'neg';
+    const glStr=gl===null?'—':(gl>=0?'+':'')+gl.toFixed(2)+'%';
+    const glDStr=glD===null?'—':(glD>=0?'+
+setInterval(() => {
+  const d = new Date();
+  document.getElementById('clock').textContent = d.toLocaleTimeString('en-US', {hour:'2-digit',minute:'2-digit',timeZone:'America/Chicago'}) + ' CT';
+}, 1000);
+
+load();
+setInterval(load, 60000);
+</script>
+</body>
+</html>:'-
+setInterval(() => {
+  const d = new Date();
+  document.getElementById('clock').textContent = d.toLocaleTimeString('en-US', {hour:'2-digit',minute:'2-digit',timeZone:'America/Chicago'}) + ' CT';
+}, 1000);
+
+load();
+setInterval(load, 60000);
+</script>
+</body>
+</html>)+Math.abs(glD).toFixed(2);
+    let adv='<span class="gadv-val gadv-hold">HOLD</span>';
+    if(p.ghost_signal){const b=p.ghost_signal.direction==='UP'||p.ghost_signal.direction==='BUY';adv='<span class="gadv-val '+(b?'gadv-buy':'gadv-sell')+'">'+(b?'👍 BUY MORE':'👎 CONSIDER SELL')+'</span>';}
+    return '<div class="pcard">'
+      +'<div class="pcard-top"><div><span class="psym">'+p.symbol+'</span><span class="ptype">'+p.asset_type.toUpperCase()+'</span></div>'
+      +'<div class="ghost-adv"><span class="gadv-label">GHOST SAYS</span>&nbsp;'+adv+'<button class="btn-del" onclick="delPos('+p.id+')">✕ Remove</button></div></div>'
+      +'<div class="pnums">'
+      +'<div class="pnum"><div class="pnum-label">YOU PAID</div><div class="pnum-val">'+fmt(p.buy_price)+'</div></div>'
+      +'<div class="pnum"><div class="pnum-label">NOW</div><div class="pnum-val">'+(p.live_price?fmt(p.live_price):'—')+'</div></div>'
+      +'<div class="pnum"><div class="pnum-label">YOUR VALUE</div><div class="pnum-val">'+(p.current_value?'
+setInterval(() => {
+  const d = new Date();
+  document.getElementById('clock').textContent = d.toLocaleTimeString('en-US', {hour:'2-digit',minute:'2-digit',timeZone:'America/Chicago'}) + ' CT';
+}, 1000);
+
+load();
+setInterval(load, 60000);
+</script>
+</body>
+</html>+p.current_value.toLocaleString('en-US',{maximumFractionDigits:2}):'—')+'</div></div>'
+      +'<div class="pnum"><div class="pnum-label">GAIN/LOSS</div><div class="pnum-val '+glc+'">'+glDStr+' ('+glStr+')</div></div>'
+      +'</div></div>';
+  }).join('');
+}
+async function addPos(){
+  const sym=document.getElementById('p-sym').value.trim().toUpperCase();
+  const type=document.getElementById('p-type').value;
+  const qty=parseFloat(document.getElementById('p-qty').value||0);
+  const bp=parseFloat(document.getElementById('p-bp').value||0);
+  const date=document.getElementById('p-date').value;
+  const err=document.getElementById('perr');
+  if(!sym||qty<=0||bp<=0){err.textContent='Fill in symbol, quantity and price paid.';return;}
+  err.textContent='Adding...';
+  const r=await fetch('/api/portfolio',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({symbol:sym,asset_type:type,quantity:qty,buy_price:bp,buy_date:date})
+  }).then(r=>r.json()).catch(()=>({ok:false,error:'Network error'}));
+  if(r.ok){err.textContent='';document.getElementById('p-sym').value='';document.getElementById('p-qty').value='';document.getElementById('p-bp').value='';loadPortfolio();}
+  else{err.textContent=r.error||'Failed';}
+}
+async function delPos(id){
+  if(!confirm('Remove this position?'))return;
+  await fetch('/api/portfolio/'+id,{method:'DELETE'});
+  loadPortfolio();
+}
 // Clock
 setInterval(() => {
   const d = new Date();

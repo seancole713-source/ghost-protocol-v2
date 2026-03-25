@@ -3,6 +3,7 @@ wolf = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wolf_app.py")
 src = open(wolf, encoding="utf-8").read()
 changed = False
 
+# 1. cockpit route
 if "cockpit.html" not in src:
     anchor = '@APP.get("/cockpit")\ndef cockpit():\n    html = ("<h1>Ghost Protocol v2</h1>'
     if anchor in src:
@@ -11,21 +12,17 @@ if "cockpit.html" not in src:
     else: print("[patch] WARNING: cockpit anchor not found")
 else: print("[patch] cockpit already patched")
 
+# 2. fix news function name
 if "get_recent_articles" in src:
     src = src.replace("get_recent_articles","get_cached_articles")
-    changed = True; print("[patch] news function renamed")
-else: print("[patch] news function already correct")
+    changed = True; print("[patch] news renamed")
+else: print("[patch] news OK")
 
-if "/api/v2/recent" not in src:
-    src = src + base64.b64decode("CgpAQVBQLmdldCgiL2FwaS92Mi9yZWNlbnQiKQpkZWYgdjJfcmVjZW50KCk6CiAgICAiIiJSZXNvbHZlZCB2MiBwaWNrcyBxdWVyeWluZyBwcmVkaWN0aW9ucyB0YWJsZSBkaXJlY3RseS4iIiIKICAgIHdpdGggZGJfY29ubigpIGFzIGNvbm46CiAgICAgICAgY3VyID0gY29ubi5jdXJzb3IoKQogICAgICAgIGN1ci5leGVjdXRlKCIiIgogICAgICAgICAgICBTRUxFQ1QgaWQsc3ltYm9sLGRpcmVjdGlvbixjb25maWRlbmNlLGVudHJ5X3ByaWNlLAogICAgICAgICAgICAgICAgICAgZXhpdF9wcmljZSxwbmxfcGN0LG91dGNvbWUscHJlZGljdGVkX2F0LGV4cGlyZXNfYXQsYXNzZXRfdHlwZQogICAgICAgICAgICBGUk9NIHByZWRpY3Rpb25zCiAgICAgICAgICAgIFdIRVJFIG91dGNvbWUgSVMgTk9UIE5VTEwgQU5EIHByZWRpY3RlZF9hdCBJUyBOT1QgTlVMTAogICAgICAgICAgICBPUkRFUiBCWSBleHBpcmVzX2F0IERFU0MgTlVMTFMgTEFTVCBMSU1JVCA1MAogICAgICAgICIiIikKICAgICAgICByb3dzID0gY3VyLmZldGNoYWxsKCkKICAgIHRyYWRlcz1bXTsgd2lucz1sb3NzZXM9MAogICAgZm9yIHIgaW4gcm93czoKICAgICAgICBvPXJbN107IHBubD1mbG9hdChyWzZdIG9yIDApCiAgICAgICAgaWYgbz09IldJTiI6IHdpbnMrPTEKICAgICAgICBlbGlmIG8gaW4gKCJMT1NTIiwiU1RPUCIsIkVYUElSRUQiKTogbG9zc2VzKz0xCiAgICAgICAgdHJhZGVzLmFwcGVuZCh7ImlkIjpyWzBdLCJzeW1ib2wiOnJbMV0sImRpcmVjdGlvbiI6clsyXSwiY29uZmlkZW5jZSI6clszXSwKICAgICAgICAgICAgImVudHJ5X3ByaWNlIjpmbG9hdChyWzRdIG9yIDApLCJleGl0X3ByaWNlIjpmbG9hdChyWzVdIG9yIDApIGlmIHJbNV0gZWxzZSBOb25lLAogICAgICAgICAgICAicG5sX3BjdCI6cm91bmQocG5sLDMpLCJvdXRjb21lIjpvLCJwcmVkaWN0ZWRfYXQiOnJbOF0sImV4cGlyZXNfYXQiOnJbOV0sImFzc2V0X3R5cGUiOnJbMTBdfSkKICAgIHRvdGFsPXdpbnMrbG9zc2VzCiAgICByZXR1cm4geyJvayI6VHJ1ZSwidHJhZGVzIjp0cmFkZXMsInRvdGFsIjp0b3RhbCwid2lucyI6d2lucywibG9zc2VzIjpsb3NzZXMsCiAgICAgICAgIndpbl9yYXRlX3BjdCI6cm91bmQod2lucy90b3RhbCoxMDAsMSkgaWYgdG90YWwgZWxzZSAwfQo=").decode("utf-8")
-    changed = True; print("[patch] /api/v2/recent appended")
-else: print("[patch] /api/v2/recent already present")
-
-# Patch 4: add root redirect / -> /cockpit
-if '@APP.get("/")' not in src:
-    src = src + base64.b64decode("CgpAQVBQLmdldCgiLyIpCmRlZiByb290KCk6CiAgICBmcm9tIGZhc3RhcGkucmVzcG9uc2VzIGltcG9ydCBSZWRpcmVjdFJlc3BvbnNlCiAgICByZXR1cm4gUmVkaXJlY3RSZXNwb25zZSh1cmw9Ii9jb2NrcGl0IikK").decode("utf-8")
-    changed = True; print("[patch] root redirect added")
-else: print("[patch] root redirect already present")
+# 3. include portfolio router (just 2 lines - safe)
+if "portfolio_router" not in src:
+    src = src + base64.b64decode("CmZyb20gY29yZS5wb3J0Zm9saW9fcm91dGVzIGltcG9ydCBwb3J0Zm9saW9fcm91dGVyCkFQUC5pbmNsdWRlX3JvdXRlcihwb3J0Zm9saW9fcm91dGVyKQo=").decode("utf-8")
+    changed = True; print("[patch] portfolio router included")
+else: print("[patch] portfolio router already included")
 
 if changed:
     open(wolf,"w",encoding="utf-8").write(src)
