@@ -79,12 +79,11 @@ async def add_portfolio(request: Request):
         new_id = cur.fetchone()[0]; conn.commit()
     return {"ok":True,"id":new_id,"symbol":sym}
 
-@portfolio_router.put("/api/portfolio/{position_id}/price")
-async def set_manual_price(position_id: int, request: Request):
+@portfolio_router.post("/api/portfolio/{position_id}/price")
+def set_manual_price(position_id: int, data: dict):
     """Set manual price when live feed fails (e.g. WOLF)."""
     try:
-        body = await request.json()
-        price = float(body.get("price", 0))
+        price = float(data.get("price", 0))
         with db_conn() as conn:
             cur = conn.cursor()
             try:
