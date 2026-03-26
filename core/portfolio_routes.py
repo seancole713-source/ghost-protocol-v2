@@ -32,7 +32,7 @@ def get_portfolio():
         sym, atype, qty, bp = r[1], r[2], float(r[3]), float(r[4])
         cost = round(qty * bp, 2)
         live = None
-        manual_p = r[8] if len(r) > 8 else None  # manual_price column
+        manual_p = r[7] if len(r) > 7 else None  # manual_price column (index 7)
         try:
             from core.prices import get_price
             live = get_price(sym, atype)
