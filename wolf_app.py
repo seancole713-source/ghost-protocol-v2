@@ -20,7 +20,7 @@ def _weekly_summary_job():
             cutoff = int(__import__("time").time()) - 7*86400
             cur.execute(
                 "SELECT outcome, COUNT(*), AVG(pnl_pct) FROM predictions"
-                " WHERE resolved_at > %s AND outcome IN ('WIN','LOSS') AND direction='UP' AND predicted_at > 1742000000 GROUP BY outcome",
+                " WHERE resolved_at > %s AND outcome IN ('WIN','LOSS') AND direction='UP' AND id >= 223438 GROUP BY outcome",
                 (cutoff,))
             rows = {r[0]: {"count": r[1], "avg_pnl": round(float(r[2] or 0), 2)} for r in cur.fetchall()}
         wins = rows.get("WIN", {}).get("count", 0)

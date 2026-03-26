@@ -138,7 +138,7 @@ def stats_by_direction():
                    SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) as wins,
                    ROUND(AVG(CASE WHEN pnl_pct IS NOT NULL THEN pnl_pct ELSE 0 END)::numeric,2) as avg_pnl
             FROM predictions
-            WHERE outcome IN ('WIN','LOSS','STOP','EXPIRED') AND predicted_at > 1742000000
+            WHERE outcome IN ('WIN','LOSS','STOP','EXPIRED') AND id >= 223438
             GROUP BY direction
         """)
         rows = cur.fetchall()
