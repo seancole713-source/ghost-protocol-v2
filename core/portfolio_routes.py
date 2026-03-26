@@ -150,3 +150,22 @@ def stats_by_direction():
             "win_rate_pct":round(wins/total*100,1) if total else 0,
             "avg_pnl":float(r[3])}
     return {"ok":True,"by_direction":result}
+
+
+@portfolio_router.post("/api/admin/expire-picks")
+def force_expire_picks(x_cron_secret: str = Header(default="")):
+    """Force-expire all open picks so fresh ones can be generated."""
+    import os, time as _time
+    if x_cron_secret != os.getenv("CRON_SECRET",""):
+        return JSONResponse({"ok":False,"error":"Forbidden"}, status_code=403)
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE predictions SET outcome='EXPIRED', resolved_at=%s WHERE outcome IS NULL",
+                (int(_time.time()),)
+            )
+            expired = cur.rowcount
+        return {"ok": True, "expired": expired}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
