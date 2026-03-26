@@ -251,11 +251,18 @@ def get_schema():
     return {"ok": True, "tables": tables}
 
 def _norm_pred(r):
+    _conf = r.get("confidence") or r.get("confidence_score") or 0
+    if _conf >= 0.90:   _pos = 5.0
+    elif _conf >= 0.85: _pos = 4.0
+    elif _conf >= 0.80: _pos = 3.0
+    elif _conf >= 0.75: _pos = 2.0
+    else:               _pos = 1.0
     return {
         "id": r.get("id"),
         "symbol": r.get("symbol",""),
         "direction": r.get("direction",""),
-        "confidence": r.get("confidence") or r.get("confidence_score") or 0,
+        "confidence": _conf,
+        "pos_size_pct": _pos,
         "entry_price": r.get("entry_price") or r.get("entry") or 0,
         "target_price": r.get("target_price") or r.get("target") or 0,
         "stop_price": r.get("stop_price") or r.get("stop") or 0,
