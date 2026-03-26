@@ -264,300 +264,44 @@ async function loadPortfolio() {
     return h;
   }).join('');
 
-  // Ghost Predictions section
-  var gpEl = document.getElementById('ghost-predictions');
-  if (!gpEl) {
-    gpEl = document.createElement('div');
-    gpEl.id = 'ghost-predictions';
-    gpEl.style.cssText = 'margin-top:28px;';
-    document.getElementById('panel-portfolio').appendChild(gpEl);
-  }
-  fetch('/api/picks').then(function(r){return r.json();}).then(function(pd){
-    var picks = (pd.active||[]).filter(function(p){return p.direction==='BUY'||p.direction==='UP';});
-    var pfSyms = ps.map(function(p){return p.symbol;});
-    var matched = picks.filter(function(p){return pfSyms.indexOf(p.symbol)>=0;});
-    var toShow = matched.length>0 ? matched : picks.slice(0,5);
-    var label = matched.length>0 ? 'Ghost Predictions on Your Holdings' : 'All Active Ghost Picks';
-    var noMatch = matched.length===0 && pfSyms.length>0 ? '<p style="color:#555;font-size:13px;margin:4px 0 12px;">No active Ghost picks on your current holdings.</p>' : '';
-    var rows = toShow.map(function(p){
-      var conf = Math.round((p.confidence||0)*100);
-      var ep = p.entry_price||0;
-      var tp = p.target_price||0;
-      var pct = ep>0 ? ((tp-ep)/ep*100).toFixed(1) : '?';
-      var hrs = p.expires_at ? Math.max(0,Math.round((p.expires_at-Date.now()/1000)/3600)) : '?';
-      var epStr = ep>=1?'
-
-async function addPos() {
-  var sym = document.getElementById('p-sym').value.trim().toUpperCase();
-  var type = document.getElementById('p-type').value;
-  var qty = parseFloat(document.getElementById('p-qty').value || 0);
-  var bp = parseFloat(document.getElementById('p-bp').value || 0);
-  var date = document.getElementById('p-date').value;
-  var err = document.getElementById('perr');
-  if (!sym || qty <= 0 || bp <= 0) { err.textContent = 'Fill in symbol, quantity and price paid.'; return; }
-  err.textContent = 'Adding...';
-  var r = await fetch('/api/portfolio', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({symbol: sym, asset_type: type, quantity: qty, buy_price: bp, buy_date: date})
-  }).then(function(r) { return r.json(); }).catch(function() { return {ok: false, error: 'Network error'}; });
-  if (r.ok) {
-    err.textContent = '';
-    document.getElementById('p-sym').value = '';
-    document.getElementById('p-qty').value = '';
-    document.getElementById('p-bp').value = '';
-    loadPortfolio();
-  } else {
-    err.textContent = r.error || 'Failed';
-  }
-}
-
-async function delPos(id) {
-  if (!confirm('Remove this position?')) return;
-  await fetch('/api/portfolio/' + id, {method: 'DELETE'});
-  loadPortfolio();
-}
-
-async function load() {
-  try {
-    var h = await fetch('/health').then(function(r) { return r.json(); });
-    var stats = await fetch('/api/stats').then(function(r) { return r.json(); });
-        var dir = await fetch('/api/stats/direction').then(function(r) { return r.json(); }).catch(function() { return {}; });
-    var picks = await fetch('/api/picks').then(function(r) { return r.json(); });
-    var recent = await fetch('/api/v2/recent').then(function(r) { return r.json(); }).catch(function() { return {trades: []}; });
-    var news = await fetch('/api/news').then(function(r) { return r.json(); }).catch(function() { return {articles: []}; });
-
-    var buyWr = dir.by_direction && dir.by_direction.BUY ? dir.by_direction.BUY.win_rate_pct : (stats.win_rate_pct || 0);
-        document.getElementById('wr').textContent = buyWr + '% BUY';
-    document.getElementById('f-open').textContent = stats.open_positions || 0;
-    document.getElementById('f-total').textContent = stats.total || 0;
-
-    var active = picks.active || [];
-    var crypto = active.filter(function(p) { return p.asset_type !== 'stock'; });
-    var stocks = active.filter(function(p) { return p.asset_type === 'stock'; });
-
-    var seen = {};
-    crypto.forEach(function(p) {
-      if (!seen[p.symbol] || p.confidence > seen[p.symbol].confidence) seen[p.symbol] = p;
-    });
-    var dc = Object.values(seen).sort(function(a, b) { return b.confidence - a.confidence; });
-
-    var sdot = document.getElementById('sdot');
-    var stxt = document.getElementById('stxt');
-    if (dc.length > 0) { sdot.className = 'dot'; stxt.textContent = dc.length + ' crypto plays today'; }
-    else { sdot.className = 'dot warn'; stxt.textContent = 'No plays yet'; }
-
-    document.getElementById('cgrid').innerHTML = dc.length > 0
-      ? dc.map(makeCard).join('')
-      : '<div class="empty"><div class="ico">&#128235;</div><p>No crypto plays today.<br>Check back at 8 AM CT.</p></div>';
-
-    var sg = document.getElementById('sgrid');
-    if (stocks.length > 0) {
-      var seenS = {};
-      stocks.forEach(function(p) { if (!seenS[p.symbol] || p.confidence > seenS[p.symbol].confidence) seenS[p.symbol] = p; });
-      sg.innerHTML = '<div class="grid">' + Object.values(seenS).sort(function(a, b) { return b.confidence - a.confidence; }).map(makeCard).join('') + '</div>';
-    } else {
-      var now = new Date();
-      var et = new Date(now.toLocaleString('en-US', {timeZone: 'America/New_York'}));
-      var hh = et.getHours(), mn = et.getMinutes(), day = et.getDay();
-      var mopen = day >= 1 && day <= 5 && (hh > 9 || (hh === 9 && mn >= 30)) && hh < 16;
-      sg.innerHTML = '<div class="info-box"><b>No stock plays right now.</b><br><br>'
-        + (mopen ? 'Market is open but Ghost has no stock signals above threshold right now.'
-          : 'US stock market is <b>closed</b>. Hours: Mon&ndash;Fri 9:30 AM &ndash; 4:00 PM ET.')
-        + '<br><br>Stocks watched: AAPL, NVDA, TSLA, MSFT, META, AMZN, PLTR, AMD, T, XPO, NET</div>';
+  // Ghost Predictions — appended to portfolio tab
+  (function() {
+    var gpEl = document.getElementById('ghost-predictions');
+    if (!gpEl) {
+      gpEl = document.createElement('div');
+      gpEl.id = 'ghost-predictions';
+      gpEl.style.cssText = 'margin-top:28px;';
+      var panel = document.getElementById('panel-portfolio');
+      if (panel) panel.appendChild(gpEl);
     }
-
-    var trades = recent.trades || [];
-    var rw = document.getElementById('results-wrap');
-    if (trades.length === 0) {
-      rw.innerHTML = '<div class="empty"><div class="ico">&#128235;</div><p>No resolved trades yet.<br>Results appear after Ghost\'s 48-hour window closes.</p></div>';
-    } else {
-      var tbl = '<table class="results-tbl"><thead><tr><th>SYMBOL</th><th>DIRECTION</th><th>RESULT</th><th>ENTERED</th><th>EXITED</th><th>P&amp;L</th></tr></thead><tbody>';
-      trades.slice(0, 25).forEach(function(t) {
-        var w = t.outcome === 'WIN';
-        var pnl = parseFloat(t.pnl_pct || 0);
-        var d = (t.direction === 'UP' || t.direction === 'BUY') ? 'BUY' : 'SELL';
-        tbl += '<tr><td><b>' + t.symbol + '</b></td>';
-        tbl += '<td><span class="pill ' + d.toLowerCase() + '" style="font-size:11px;padding:3px 8px">' + d + '</span></td>';
-        tbl += '<td><span class="' + (w ? 'win-txt' : 'loss-txt') + '">' + (w ? '&#9989; WIN' : '&#10060; LOSS') + '</span></td>';
-        tbl += '<td>' + fmt(t.entry_price) + '</td>';
-        tbl += '<td>' + (t.exit_price ? fmt(t.exit_price) : '&mdash;') + '</td>';
-        tbl += '<td class="' + (pnl >= 0 ? 'pos' : 'neg') + '">' + (pnl >= 0 ? '+' : '') + pnl.toFixed(1) + '%</td></tr>';
-      });
-      tbl += '</tbody></table>';
-      rw.innerHTML = tbl;
-    }
-
-    var articles = news.articles || [];
-    var nw = document.getElementById('news-wrap');
-    if (articles.length === 0) {
-      nw.innerHTML = '<div class="info-box">News refreshes every 30 minutes.</div>';
-    } else {
-      nw.innerHTML = articles.slice(0, 10).map(function(a) {
-        var s = a.sentiment || 0;
-        var st = s > 0.2 ? '<span class="sent-b">&#8593; BULLISH</span>'
-          : s < -0.2 ? '<span class="sent-s">&#8595; BEARISH</span>'
-          : '<span class="sent-n">&#8594; NEUTRAL</span>';
-        return '<div class="news-item"><div class="news-hl">' + (a.title || '') + '</div>'
-          + '<div class="news-meta">' + st + ' &middot; ' + (a.source || 'News') + '</div></div>';
+    fetch('/api/picks').then(function(r){return r.json();}).catch(function(){return {active:[]};}).then(function(pd){
+      var picks = (pd.active||[]).filter(function(p){return p.direction==='BUY'||p.direction==='UP';});
+      if (!picks.length) { gpEl.innerHTML=''; return; }
+      var label = 'ALL ACTIVE GHOST PICKS';
+      var rows = picks.map(function(p){
+        var conf = Math.round((p.confidence||0)*100);
+        var ep = p.entry_price||0;
+        var tp = p.target_price||0;
+        var pct = ep>0?((tp-ep)/ep*100).toFixed(1):'?';
+        var hrs = p.expires_at?Math.max(0,Math.round((p.expires_at-Date.now()/1000)/3600)):'?';
+        var epStr = ep>=1?'$'+ep.toFixed(2):'$'+ep.toFixed(4);
+        var cc = conf>=80?'#4ade80':conf>=70?'#facc15':'#f87171';
+        return '<div style="background:#1a1a1a;border:1px solid #2a2a2a;border-radius:8px;padding:14px 18px;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;gap:12px;">'+
+          '<div style="min-width:90px"><span style="font-weight:700;font-size:15px;color:#fff;">'+p.symbol+'</span>'+
+          '<span style="background:#0d2a0d;color:#4ade80;border-radius:4px;padding:2px 7px;font-size:11px;font-weight:700;margin-left:8px;">BUY</span></div>'+
+          '<div style="text-align:center;"><div style="font-size:10px;color:#666;text-transform:uppercase;letter-spacing:1px;">Entry</div>'+
+          '<div style="color:#fff;font-size:13px;">'+epStr+'</div></div>'+
+          '<div style="text-align:center;"><div style="font-size:10px;color:#666;text-transform:uppercase;letter-spacing:1px;">Target</div>'+
+          '<div style="color:#4ade80;font-size:13px;">+'+pct+'%</div></div>'+
+          '<div style="text-align:center;"><div style="font-size:10px;color:#666;text-transform:uppercase;letter-spacing:1px;">Confidence</div>'+
+          '<div style="color:'+cc+';font-size:13px;">'+conf+'%</div></div>'+
+          '<div style="text-align:right;"><div style="font-size:10px;color:#666;text-transform:uppercase;letter-spacing:1px;">Expires</div>'+
+          '<div style="color:#888;font-size:13px;">'+hrs+'h left</div></div>'+
+        '</div>';
       }).join('');
-    }
-  } catch(e) { console.error(e); }
-}
-
-setInterval(function() {
-  var d = new Date();
-  document.getElementById('clock').textContent = d.toLocaleTimeString('en-US', {hour: '2-digit', minute: '2-digit', timeZone: 'America/Chicago'}) + ' CT';
-}, 1000);
-
-load();
-setInterval(load, 60000);
-</script>
-</body>
-</html>
-+ep.toFixed(2):'
-
-async function addPos() {
-  var sym = document.getElementById('p-sym').value.trim().toUpperCase();
-  var type = document.getElementById('p-type').value;
-  var qty = parseFloat(document.getElementById('p-qty').value || 0);
-  var bp = parseFloat(document.getElementById('p-bp').value || 0);
-  var date = document.getElementById('p-date').value;
-  var err = document.getElementById('perr');
-  if (!sym || qty <= 0 || bp <= 0) { err.textContent = 'Fill in symbol, quantity and price paid.'; return; }
-  err.textContent = 'Adding...';
-  var r = await fetch('/api/portfolio', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({symbol: sym, asset_type: type, quantity: qty, buy_price: bp, buy_date: date})
-  }).then(function(r) { return r.json(); }).catch(function() { return {ok: false, error: 'Network error'}; });
-  if (r.ok) {
-    err.textContent = '';
-    document.getElementById('p-sym').value = '';
-    document.getElementById('p-qty').value = '';
-    document.getElementById('p-bp').value = '';
-    loadPortfolio();
-  } else {
-    err.textContent = r.error || 'Failed';
-  }
-}
-
-async function delPos(id) {
-  if (!confirm('Remove this position?')) return;
-  await fetch('/api/portfolio/' + id, {method: 'DELETE'});
-  loadPortfolio();
-}
-
-async function load() {
-  try {
-    var h = await fetch('/health').then(function(r) { return r.json(); });
-    var stats = await fetch('/api/stats').then(function(r) { return r.json(); });
-        var dir = await fetch('/api/stats/direction').then(function(r) { return r.json(); }).catch(function() { return {}; });
-    var picks = await fetch('/api/picks').then(function(r) { return r.json(); });
-    var recent = await fetch('/api/v2/recent').then(function(r) { return r.json(); }).catch(function() { return {trades: []}; });
-    var news = await fetch('/api/news').then(function(r) { return r.json(); }).catch(function() { return {articles: []}; });
-
-    var buyWr = dir.by_direction && dir.by_direction.BUY ? dir.by_direction.BUY.win_rate_pct : (stats.win_rate_pct || 0);
-        document.getElementById('wr').textContent = buyWr + '% BUY';
-    document.getElementById('f-open').textContent = stats.open_positions || 0;
-    document.getElementById('f-total').textContent = stats.total || 0;
-
-    var active = picks.active || [];
-    var crypto = active.filter(function(p) { return p.asset_type !== 'stock'; });
-    var stocks = active.filter(function(p) { return p.asset_type === 'stock'; });
-
-    var seen = {};
-    crypto.forEach(function(p) {
-      if (!seen[p.symbol] || p.confidence > seen[p.symbol].confidence) seen[p.symbol] = p;
+      gpEl.innerHTML = '<div style="font-size:10px;letter-spacing:2px;color:#666;text-transform:uppercase;margin-bottom:10px;">'+label+'</div>'+rows;
     });
-    var dc = Object.values(seen).sort(function(a, b) { return b.confidence - a.confidence; });
-
-    var sdot = document.getElementById('sdot');
-    var stxt = document.getElementById('stxt');
-    if (dc.length > 0) { sdot.className = 'dot'; stxt.textContent = dc.length + ' crypto plays today'; }
-    else { sdot.className = 'dot warn'; stxt.textContent = 'No plays yet'; }
-
-    document.getElementById('cgrid').innerHTML = dc.length > 0
-      ? dc.map(makeCard).join('')
-      : '<div class="empty"><div class="ico">&#128235;</div><p>No crypto plays today.<br>Check back at 8 AM CT.</p></div>';
-
-    var sg = document.getElementById('sgrid');
-    if (stocks.length > 0) {
-      var seenS = {};
-      stocks.forEach(function(p) { if (!seenS[p.symbol] || p.confidence > seenS[p.symbol].confidence) seenS[p.symbol] = p; });
-      sg.innerHTML = '<div class="grid">' + Object.values(seenS).sort(function(a, b) { return b.confidence - a.confidence; }).map(makeCard).join('') + '</div>';
-    } else {
-      var now = new Date();
-      var et = new Date(now.toLocaleString('en-US', {timeZone: 'America/New_York'}));
-      var hh = et.getHours(), mn = et.getMinutes(), day = et.getDay();
-      var mopen = day >= 1 && day <= 5 && (hh > 9 || (hh === 9 && mn >= 30)) && hh < 16;
-      sg.innerHTML = '<div class="info-box"><b>No stock plays right now.</b><br><br>'
-        + (mopen ? 'Market is open but Ghost has no stock signals above threshold right now.'
-          : 'US stock market is <b>closed</b>. Hours: Mon&ndash;Fri 9:30 AM &ndash; 4:00 PM ET.')
-        + '<br><br>Stocks watched: AAPL, NVDA, TSLA, MSFT, META, AMZN, PLTR, AMD, T, XPO, NET</div>';
-    }
-
-    var trades = recent.trades || [];
-    var rw = document.getElementById('results-wrap');
-    if (trades.length === 0) {
-      rw.innerHTML = '<div class="empty"><div class="ico">&#128235;</div><p>No resolved trades yet.<br>Results appear after Ghost\'s 48-hour window closes.</p></div>';
-    } else {
-      var tbl = '<table class="results-tbl"><thead><tr><th>SYMBOL</th><th>DIRECTION</th><th>RESULT</th><th>ENTERED</th><th>EXITED</th><th>P&amp;L</th></tr></thead><tbody>';
-      trades.slice(0, 25).forEach(function(t) {
-        var w = t.outcome === 'WIN';
-        var pnl = parseFloat(t.pnl_pct || 0);
-        var d = (t.direction === 'UP' || t.direction === 'BUY') ? 'BUY' : 'SELL';
-        tbl += '<tr><td><b>' + t.symbol + '</b></td>';
-        tbl += '<td><span class="pill ' + d.toLowerCase() + '" style="font-size:11px;padding:3px 8px">' + d + '</span></td>';
-        tbl += '<td><span class="' + (w ? 'win-txt' : 'loss-txt') + '">' + (w ? '&#9989; WIN' : '&#10060; LOSS') + '</span></td>';
-        tbl += '<td>' + fmt(t.entry_price) + '</td>';
-        tbl += '<td>' + (t.exit_price ? fmt(t.exit_price) : '&mdash;') + '</td>';
-        tbl += '<td class="' + (pnl >= 0 ? 'pos' : 'neg') + '">' + (pnl >= 0 ? '+' : '') + pnl.toFixed(1) + '%</td></tr>';
-      });
-      tbl += '</tbody></table>';
-      rw.innerHTML = tbl;
-    }
-
-    var articles = news.articles || [];
-    var nw = document.getElementById('news-wrap');
-    if (articles.length === 0) {
-      nw.innerHTML = '<div class="info-box">News refreshes every 30 minutes.</div>';
-    } else {
-      nw.innerHTML = articles.slice(0, 10).map(function(a) {
-        var s = a.sentiment || 0;
-        var st = s > 0.2 ? '<span class="sent-b">&#8593; BULLISH</span>'
-          : s < -0.2 ? '<span class="sent-s">&#8595; BEARISH</span>'
-          : '<span class="sent-n">&#8594; NEUTRAL</span>';
-        return '<div class="news-item"><div class="news-hl">' + (a.title || '') + '</div>'
-          + '<div class="news-meta">' + st + ' &middot; ' + (a.source || 'News') + '</div></div>';
-      }).join('');
-    }
-  } catch(e) { console.error(e); }
-}
-
-setInterval(function() {
-  var d = new Date();
-  document.getElementById('clock').textContent = d.toLocaleTimeString('en-US', {hour: '2-digit', minute: '2-digit', timeZone: 'America/Chicago'}) + ' CT';
-}, 1000);
-
-load();
-setInterval(load, 60000);
-</script>
-</body>
-</html>
-+ep.toFixed(4);
-      var confColor = conf>=80?'#4ade80':conf>=70?'#facc15':'#f87171';
-      return '<div style="background:#1a1a1a;border:1px solid #2a2a2a;border-radius:8px;padding:14px 18px;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;gap:12px;">'+
-        '<div style="min-width:90px"><span style="font-weight:700;font-size:15px;color:#fff;">'+p.symbol+'</span>'+
-        '<span style="background:#0d2a0d;color:#4ade80;border-radius:4px;padding:2px 7px;font-size:11px;font-weight:700;margin-left:8px;">BUY</span></div>'+
-        '<div style="text-align:center;"><div style="font-size:10px;color:#666;letter-spacing:1px;text-transform:uppercase;">Entry</div><div style="color:#fff;font-size:13px;">'+epStr+'</div></div>'+
-        '<div style="text-align:center;"><div style="font-size:10px;color:#666;letter-spacing:1px;text-transform:uppercase;">Target</div><div style="color:#4ade80;font-size:13px;">+'+pct+'%</div></div>'+
-        '<div style="text-align:center;"><div style="font-size:10px;color:#666;letter-spacing:1px;text-transform:uppercase;">Confidence</div><div style="color:'+confColor+';font-size:13px;">'+conf+'%</div></div>'+
-        '<div style="text-align:right;"><div style="font-size:10px;color:#666;letter-spacing:1px;text-transform:uppercase;">Expires</div><div style="color:#888;font-size:13px;">'+hrs+'h left</div></div>'+
-      '</div>';
-    }).join('');
-    gpEl.innerHTML = '<div style="font-size:10px;letter-spacing:2px;color:#666;text-transform:uppercase;margin-bottom:10px;">'+label+'</div>'+noMatch+rows;
-  }).catch(function(){gpEl.innerHTML='';});
+  })();
 }
 
 async function addPos() {
