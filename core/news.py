@@ -119,7 +119,7 @@ def _fetch_cryptopanic() -> List[Dict]:
         r = requests.get(
             "https://cryptopanic.com/api/v1/posts/",
             params={"auth_token": CRYPTOPANIC_KEY, "kind": "news", "public": "true"},
-            timeout=8,
+            timeout=3,
         )
         articles = []
         for item in r.json().get("results", [])[:20]:
@@ -141,7 +141,7 @@ def _fetch_finnhub_crypto() -> List[Dict]:
         r = requests.get(
             "https://finnhub.io/api/v1/news",
             params={"category": "crypto", "token": FINNHUB_KEY},
-            timeout=8,
+            timeout=3,
         )
         articles = []
         for a in r.json()[:15]:
@@ -165,7 +165,7 @@ def _fetch_finnhub_stock(symbol: str) -> List[Dict]:
         r = requests.get(
             "https://finnhub.io/api/v1/company-news",
             params={"symbol": symbol, "from": from_date, "to": today, "token": FINNHUB_KEY},
-            timeout=8,
+            timeout=3,
         )
         return [{"title": a["headline"], "symbols": [symbol], "source": "finnhub_stock"}
                 for a in r.json()[:5] if "headline" in a]
@@ -216,21 +216,20 @@ def run_news_cycle() -> List[Dict]:
 get_sentiment_for_symbol = get_symbol_sentiment
 
 def get_cached_articles(limit=None) -> List[Dict]:
-    """Return articles with sentiment. Fetches fresh on cold start if cache empty."""
-    global _cached_articles
-    source = _cached_articles
-    if not source:
-        try:
-            source = _fetch_cryptopanic() + _fetch_finnhub_crypto()
-            _cached_articles = source
-            LOGGER.info("Cold-start news fetch: " + str(len(source)) + " articles")
-        except Exception as _e:
-            LOGGER.warning("cold-start fetch failed: " + str(_e))
-    enriched = []
-    for a in (source or []):
-        syms = a.get("symbols", [])
-        scores = [_symbol_sentiment.get(s.upper(), 0.0) for s in syms if s.upper() in _symbol_sentiment]
-        art = dict(a)
-        art["sentiment"] = round(sum(scores) / len(scores), 3) if scores else 0.0
-        enriched.append(art)
-    return enriched if limit is None else enriched[:limit]
+    """Return cached articles. Never fetches inline — returns [] on cold start."""
+    try:
+        source = list(_cached_articles) if _cached_articles else []
+        enriched = []
+        for a in source:
+            try:
+                syms = a.get("symbols", [])
+                scores = [_symbol_sentiment.get(s.upper(), 0.0) for s in syms if s.upper() in _symbol_sentiment]
+                art = dict(a)
+                art["sentiment"] = round(sum(scores) / len(scores), 3) if scores else 0.0
+                enriched.append(art)
+            except Exception:
+                enriched.append(a)
+        return enriched if limit is None else enriched[:limit]
+    except Exception as _e:
+        LOGGER.error("get_cached_articles error: " + str(_e))
+        return []
