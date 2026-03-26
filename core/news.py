@@ -233,3 +233,12 @@ def get_cached_articles(limit=None) -> List[Dict]:
     except Exception as _e:
         LOGGER.error("get_cached_articles error: " + str(_e))
         return []
+
+
+def get_recent_articles(limit: int = 20) -> List[Dict]:
+    """Alias for get_cached_articles — returns cached news, never blocks."""
+    return get_cached_articles(limit=limit)
+
+def get_sentiment_for_symbol(symbol: str) -> float:
+    """Return cached sentiment score for a symbol. Alias for get_symbol_sentiment."""
+    return get_symbol_sentiment(symbol)
