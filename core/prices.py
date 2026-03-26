@@ -87,10 +87,11 @@ def _yfinance(symbol):
     try:
         import yfinance as yf
         tk = yf.Ticker(symbol)
-        # Try live price first (works during market hours)
+        # Try live price first via fast_info attributes (market hours)
         try:
-            live = tk.fast_info.get("last_price") or tk.fast_info.get("lastPrice")
-            if live and live > 0:
+            fi = tk.fast_info
+            live = getattr(fi, 'last_price', None) or getattr(fi, 'lastPrice', None)
+            if live and float(live) > 0:
                 return float(live)
         except Exception: pass
         # Fallback: latest close (pre/post market or closed)
