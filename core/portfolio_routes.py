@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS user_portfolio (
     buy_price FLOAT NOT NULL,
     buy_date TEXT DEFAULT '',
     notes TEXT DEFAULT '',
+    manual_price FLOAT DEFAULT NULL,
     created_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())::BIGINT
 )
 """
@@ -24,18 +25,21 @@ def get_portfolio():
     with db_conn() as conn:
         cur = conn.cursor()
         cur.execute(_CREATE_TABLE); conn.commit()
-        cur.execute("SELECT id,symbol,asset_type,quantity,buy_price,buy_date,notes FROM user_portfolio ORDER BY id DESC")
+        cur.execute("SELECT id,symbol,asset_type,quantity,buy_price,buy_date,notes,manual_price FROM user_portfolio ORDER BY id DESC")
         rows = cur.fetchall()
     positions = []
     for r in rows:
         sym, atype, qty, bp = r[1], r[2], float(r[3]), float(r[4])
         cost = round(qty * bp, 2)
         live = None
+        manual_p = r[8] if len(r) > 8 else None  # manual_price column
         try:
             from core.prices import get_price
             live = get_price(sym, atype)
         except Exception:
             pass
+        if live is None and manual_p:
+            live = manual_p  # fallback to manually set price
         val = round(qty * live, 2) if live else None
         gl = round(val - cost, 2) if val is not None else None
         glp = round(gl / cost * 100, 2) if gl is not None and cost > 0 else None
@@ -74,6 +78,23 @@ async def add_portfolio(request: Request):
             (sym,atype,qty,bp,str(d.get("buy_date","")),str(d.get("notes",""))))
         new_id = cur.fetchone()[0]; conn.commit()
     return {"ok":True,"id":new_id,"symbol":sym}
+
+@portfolio_router.put("/api/portfolio/{position_id}/price")
+async def set_manual_price(position_id: int, request: Request):
+    """Set manual price when live feed fails (e.g. WOLF)."""
+    try:
+        body = await request.json()
+        price = float(body.get("price", 0))
+        with db_conn() as conn:
+            cur = conn.cursor()
+            try:
+                cur.execute("ALTER TABLE user_portfolio ADD COLUMN IF NOT EXISTS manual_price FLOAT DEFAULT NULL")
+            except Exception:
+                conn.rollback()
+            cur.execute("UPDATE user_portfolio SET manual_price=%s WHERE id=%s", (price, position_id))
+        return {"ok": True, "id": position_id, "manual_price": price}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 @portfolio_router.delete("/api/portfolio/{position_id}")
 def del_portfolio(position_id: int):
