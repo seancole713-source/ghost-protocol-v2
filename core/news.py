@@ -12,10 +12,18 @@ CRYPTOPANIC_KEY = os.getenv("CRYPTOPANIC_API_KEY", "")
 FINNHUB_KEY = os.getenv("FINNHUB_API_KEY", "")
 ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
-BEARISH_WORDS = ["crash","collapse","fall","drop","decline","loss","bankrupt","fraud",
-    "investigation","lawsuit","ban","restrict","inflation","recession","default","fail","warning","risk"]
-BULLISH_WORDS = ["surge","rally","gain","rise","record","profit","growth","partnership",
-    "acquisition","approval","launch","upgrade","beat","exceed","expansion","bullish","boost"]
+BEARISH_WORDS = [
+    "crash","collapse","fall","drop","decline","loss","bankrupt","fraud",
+    "investigation","lawsuit","ban","restrict","inflation","recession","default","fail","warning","risk",
+    "slips","slump","sink","tumble","plunge","dump","bearish","weak","low","below","down","sell",
+    "concern","fear","uncertainty","volatile","struggle","miss","disappoint","cut","halts","pauses",
+    "loses","slides","retreats","pressure","caution","selloff","correction","overbought"]
+BULLISH_WORDS = [
+    "surge","rally","gain","rise","record","profit","growth","partnership",
+    "acquisition","approval","launch","upgrade","beat","exceed","expansion","bullish","boost",
+    "high","top","soar","jump","spike","recover","rebound","buy","bullish","strong",
+    "breakout","milestone","win","success","positive","optimistic","upside","outperform",
+    "holds","holds ground","above","climbing","adds","gains","advances","up "]
 
 _seen_headlines = set()
 _cached_articles: List[Dict] = []
@@ -233,8 +241,10 @@ def get_cached_articles(limit=None) -> List[Dict]:
                     title = (a.get("title") or a.get("headline") or "").lower()
                     bull = sum(1 for w in BULLISH_WORDS if w in title)
                     bear = sum(1 for w in BEARISH_WORDS if w in title)
-                    if bear > bull: art["sentiment"] = round(-0.3 - (bear - bull) * 0.1, 2)
-                    elif bull > bear: art["sentiment"] = round(0.3 + (bull - bear) * 0.1, 2)
+                    if bear > bull: art["sentiment"] = round(-0.2 - (bear - bull) * 0.1, 2)
+                    elif bull > bear: art["sentiment"] = round(0.2 + (bull - bear) * 0.1, 2)
+                    elif bear == 1: art["sentiment"] = -0.1
+                    elif bull == 1: art["sentiment"] = 0.1
                     else: art["sentiment"] = 0.0
                 enriched.append(art)
             except Exception:

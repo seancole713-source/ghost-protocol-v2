@@ -150,10 +150,13 @@ def _get_symbol_signal(symbol, current_price):
         down_picks = total - up_picks
         down_win_rate = sum(1 for d, o in rows if d == "DOWN" and (o == 1 or o == "WIN")) / max(down_picks, 1)
 
+        # Cap confidence at 0.82 for legacy-only symbols (no v2 validation)
+        _v2_count = len(v2_rows) if v2_rows else 0
+        _conf_cap = 1.0 if _v2_count >= 5 else 0.82 if _v2_count > 0 else 0.79
         if up_win_rate > down_win_rate and up_win_rate > EDGE_THRESHOLD:
-            return ("UP", round(up_win_rate, 3))
+            return ("UP", round(min(up_win_rate, _conf_cap), 3))
         elif down_win_rate > up_win_rate and down_win_rate > EDGE_THRESHOLD:
-            return ("DOWN", round(down_win_rate, 3))
+            return ("DOWN", round(min(down_win_rate, _conf_cap), 3))
         elif win_rate < INVERSE_THRESHOLD:
             inv_dir = "DOWN" if dominant_dir == "UP" else "UP"
             inv_conf = min(round(1.0 - win_rate, 3), 0.65)
