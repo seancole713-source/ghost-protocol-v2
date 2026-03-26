@@ -183,10 +183,9 @@ def auto_refresh_portfolio_prices():
             if (asset_type or "stock").lower() != "stock":
                 continue  # only refresh stocks — crypto prices come from live feeds
             try:
-                import yfinance as _yf
-                _hist = _yf.Ticker(symbol).history(period="2d")
-                if not _hist.empty:
-                    latest = float(_hist["Close"].iloc[-1])
+                from core.prices import get_stock_price
+                latest = get_stock_price(symbol)
+                if latest and latest > 0:
                     with db_conn() as conn:
                         conn.cursor().execute(
                             "UPDATE user_portfolio SET manual_price=%s WHERE id=%s",

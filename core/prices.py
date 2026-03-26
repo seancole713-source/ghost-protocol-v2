@@ -10,13 +10,16 @@ LOGGER = logging.getLogger("ghost.prices")
 POLYGON_KEY = os.getenv("POLYGON_API_KEY", "")
 TIMEOUT = float(os.getenv("PRICE_PROVIDER_TIMEOUT_S", "2.5"))
 CACHE_TTL = int(os.getenv("PRICE_TTL_S", "120"))
+STOCK_CACHE_TTL = int(os.getenv("STOCK_PRICE_TTL_S", "60"))  # stocks refresh every 60s during market hours
 _mem_cache: Dict[str, Tuple[float, float]] = {}
 
-def _cache_get(symbol):
+def _cache_get(symbol, is_stock=False):
+    ttl = STOCK_CACHE_TTL if is_stock else CACHE_TTL
     if symbol in _mem_cache:
         price, ts = _mem_cache[symbol]
-        if time.time() - ts < CACHE_TTL:
+        if time.time() - ts < ttl:
             return price
+        del _mem_cache[symbol]
     return None
 
 def _cache_set(symbol, price):
@@ -83,12 +86,20 @@ def _polygon(symbol):
 def _yfinance(symbol):
     try:
         import yfinance as yf
-        h = yf.Ticker(symbol).history(period="1d")
+        tk = yf.Ticker(symbol)
+        # Try live price first (works during market hours)
+        try:
+            live = tk.fast_info.get("last_price") or tk.fast_info.get("lastPrice")
+            if live and live > 0:
+                return float(live)
+        except Exception: pass
+        # Fallback: latest close (pre/post market or closed)
+        h = tk.history(period="2d")
         if not h.empty: return float(h["Close"].iloc[-1])
     except: return None
 
 def get_stock_price(symbol):
-    cached = _cache_get(symbol)
+    cached = _cache_get(symbol, is_stock=True)
     if cached: return cached
     price = _polygon(symbol) or _yfinance(symbol)
     if price: _cache_set(symbol, price)
