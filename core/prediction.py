@@ -215,23 +215,29 @@ def predict_symbol(symbol, asset_type, regime):
 
     now = int(time.time())
     hold = CRYPTO_HOLD_H * 3600 if asset_type == "crypto" else 48 * 3600
-    # Dynamic targets based on actual recent volatility
-    # Use ATR-style: avg of recent 48h price ranges from resolved picks
-    _vol_pct = TARGET_PCT  # fallback to default
+    # Dynamic targets based on real observed volatility per symbol
+    _VOL_MAP = {
+        "LTC":0.020,"AAVE":0.040,"LINK":0.031,"SOL":0.029,"BTC":0.022,
+        "XRP":0.015,"MATIC":0.020,"SUI":0.022,"NEAR":0.028,"BCH":0.015,
+        "ETH":0.025,"DOT":0.025,"TRX":0.020,"ATOM":0.025,"ARB":0.030,
+        "UNI":0.030,"NEAR":0.028,
+    }
+    # Default: stock 2%, unknown crypto 2.5%
+    _default_vol = 0.020 if asset_type == "stock" else 0.025
+    _vol_pct = _VOL_MAP.get(symbol.upper(), _default_vol)
+    # Also try DB — if 3+ real stop-loss hits, use those
     try:
         with db_conn() as _vc:
             _vcur = _vc.cursor()
-            # Get last 10 resolved picks for this symbol — what % did price actually move?
             _vcur.execute(
-                "SELECT ABS(pnl_pct) FROM predictions WHERE symbol=%s AND outcome IN ('WIN','LOSS') AND pnl_pct IS NOT NULL AND id >= 223438 ORDER BY resolved_at DESC LIMIT 15",
+                "SELECT ABS(pnl_pct) FROM predictions WHERE symbol=%s AND outcome='LOSS' AND pnl_pct IS NOT NULL AND id >= 223438 ORDER BY resolved_at DESC LIMIT 10",
                 (symbol,))
-            _moves = [abs(r[0]) for r in _vcur.fetchall() if r[0]]
-            if len(_moves) >= 5:
-                # Set target at 1.2x avg actual move, min 2%, max 5%
+            _moves = [abs(r[0]) for r in _vcur.fetchall() if r[0] and r[0] > 0.5]
+            if len(_moves) >= 3:
                 avg_move = sum(_moves) / len(_moves)
-                _vol_pct = max(0.02, min(0.05, avg_move / 100 * 1.2))
+                _vol_pct = max(0.015, min(0.05, avg_move / 100 * 1.3))
     except Exception: pass
-    _stop_pct = _vol_pct * 0.6  # stop = 60% of target (risk:reward ~1.7:1)
+    _stop_pct = _vol_pct * 0.65  # stop = 65% of target (~1.5:1 reward:risk)
     target = price * (1 + _vol_pct) if direction == "UP" else price * (1 - _vol_pct)
     stop   = price * (1 - _stop_pct) if direction == "UP" else price * (1 + _stop_pct)
 
