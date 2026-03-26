@@ -49,6 +49,12 @@ _sched2.register("model_retrain", _rtr, 604800)
 else:
     print("[patch] model_retrain already registered")
 
+# Patch 5: dedup-picks endpoint
+if "dedup-picks" not in src:
+    src = src + "\n\n@APP.post(\"/api/dedup-picks\", include_in_schema=False)\ndef dedup_picks():\n    import time\n    from core.db import db_conn\n    try:\n        with db_conn() as conn:\n            cur = conn.cursor()\n            cur.execute(\"SELECT id, symbol, confidence FROM predictions WHERE outcome IS NULL AND expires_at > %s ORDER BY symbol, confidence DESC\", (int(time.time()),))\n            rows = cur.fetchall()\n            seen = {}\n            to_expire = []\n            for pid, sym, conf in rows:\n                if sym not in seen:\n                    seen[sym] = pid\n                else:\n                    to_expire.append(pid)\n            if to_expire:\n                cur.execute(\"UPDATE predictions SET outcome='EXPIRED', resolved_at=%s WHERE id = ANY(%s)\", (int(time.time()), to_expire))\n        return {\"ok\": True, \"expired\": len(to_expire), \"kept\": len(seen)}\n    except Exception as e:\n        return {\"ok\": False, \"error\": str(e)}\n"
+    changed = True; print("[patch] dedup endpoint added")
+else: print("[patch] dedup endpoint present")
+
 if changed:
     with open(src_path, "w") as f:
         f.write(src)
