@@ -81,7 +81,7 @@ def _get_symbol_signal(symbol, current_price):
         with db_conn() as _ac:
             _c = _ac.cursor()
             _c.execute(
-                "SELECT COUNT(*), SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) FROM predictions WHERE symbol=%s AND outcome IN ('WIN','LOSS') AND direction='UP' AND predicted_at > 1742000000",
+                "SELECT COUNT(*), SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) FROM predictions WHERE symbol=%s AND outcome IN ('WIN','LOSS') AND direction='UP' AND id >= 223438",
                 (symbol,))
             _r = _c.fetchone()
             if _r and _r[0] and _r[0] >= 20:
@@ -215,8 +215,25 @@ def predict_symbol(symbol, asset_type, regime):
 
     now = int(time.time())
     hold = CRYPTO_HOLD_H * 3600 if asset_type == "crypto" else 48 * 3600
-    target = price * (1 + TARGET_PCT) if direction == "UP" else price * (1 - TARGET_PCT)
-    stop   = price * (1 - STOP_PCT)   if direction == "UP" else price * (1 + STOP_PCT)
+    # Dynamic targets based on actual recent volatility
+    # Use ATR-style: avg of recent 48h price ranges from resolved picks
+    _vol_pct = TARGET_PCT  # fallback to default
+    try:
+        with db_conn() as _vc:
+            _vcur = _vc.cursor()
+            # Get last 10 resolved picks for this symbol — what % did price actually move?
+            _vcur.execute(
+                "SELECT ABS(pnl_pct) FROM predictions WHERE symbol=%s AND outcome IN ('WIN','LOSS') AND pnl_pct IS NOT NULL AND id >= 223438 ORDER BY resolved_at DESC LIMIT 15",
+                (symbol,))
+            _moves = [abs(r[0]) for r in _vcur.fetchall() if r[0]]
+            if len(_moves) >= 5:
+                # Set target at 1.2x avg actual move, min 2%, max 5%
+                avg_move = sum(_moves) / len(_moves)
+                _vol_pct = max(0.02, min(0.05, avg_move / 100 * 1.2))
+    except Exception: pass
+    _stop_pct = _vol_pct * 0.6  # stop = 60% of target (risk:reward ~1.7:1)
+    target = price * (1 + _vol_pct) if direction == "UP" else price * (1 - _vol_pct)
+    stop   = price * (1 - _stop_pct) if direction == "UP" else price * (1 + _stop_pct)
 
     # Capture raw confidence before sentiment nudge (for ML features)
     confidence_raw = confidence
@@ -288,7 +305,7 @@ def run_prediction_cycle():
         with db_conn() as _cb:
             _cc = _cb.cursor()
             _cc.execute(
-                "SELECT outcome FROM predictions WHERE outcome IN ('WIN','LOSS') AND direction='UP' AND predicted_at > 1742000000 ORDER BY resolved_at DESC LIMIT 5"
+                "SELECT outcome FROM predictions WHERE outcome IN ('WIN','LOSS') AND direction='UP' AND id >= 223438 ORDER BY resolved_at DESC LIMIT 5"
             )
             _last5 = [r[0] for r in _cc.fetchall()]
             if len(_last5) == 5 and all(o == 'LOSS' for o in _last5):

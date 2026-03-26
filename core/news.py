@@ -216,16 +216,26 @@ def run_news_cycle() -> List[Dict]:
 get_sentiment_for_symbol = get_symbol_sentiment
 
 def get_cached_articles(limit=None) -> List[Dict]:
-    """Return cached articles. Never fetches inline — returns [] on cold start."""
+    """Return cached articles with proper per-article sentiment scoring."""
     try:
         source = list(_cached_articles) if _cached_articles else []
         enriched = []
         for a in source:
             try:
-                syms = a.get("symbols", [])
-                scores = [_symbol_sentiment.get(s.upper(), 0.0) for s in syms if s.upper() in _symbol_sentiment]
                 art = dict(a)
-                art["sentiment"] = round(sum(scores) / len(scores), 3) if scores else 0.0
+                # First try symbol-level sentiment
+                syms = a.get("symbols", [])
+                sym_scores = [_symbol_sentiment.get(s.upper(), 0.0) for s in syms if s.upper() in _symbol_sentiment]
+                if sym_scores:
+                    art["sentiment"] = round(sum(sym_scores) / len(sym_scores), 3)
+                else:
+                    # Fall back to keyword scoring on headline
+                    title = (a.get("title") or a.get("headline") or "").lower()
+                    bull = sum(1 for w in BULLISH_WORDS if w in title)
+                    bear = sum(1 for w in BEARISH_WORDS if w in title)
+                    if bear > bull: art["sentiment"] = round(-0.3 - (bear - bull) * 0.1, 2)
+                    elif bull > bear: art["sentiment"] = round(0.3 + (bull - bear) * 0.1, 2)
+                    else: art["sentiment"] = 0.0
                 enriched.append(art)
             except Exception:
                 enriched.append(a)

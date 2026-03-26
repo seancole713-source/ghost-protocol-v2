@@ -64,7 +64,7 @@ def send_morning_card(picks, week_stats=None, is_update=False):
             parts.append("   Done by:     " + exp_str)
             parts.append("   $100 in -- $" + str(usd_out) + " out")
             pos = p.get("pos_size_pct", 2.0)
-            parts.append("   Suggested: " + str(pos) + "% of capital")
+            parts.append("   Risk: " + str(pos) + "% of your capital (e.g. $" + str(round(pos/100*1000,0)) + " of $1K)")
     if week_stats:
         w = week_stats.get("wins", 0)
         l = week_stats.get("losses", 0)
