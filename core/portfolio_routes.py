@@ -169,3 +169,39 @@ def force_expire_picks(x_cron_secret: str = Header(default="")):
         return {"ok": True, "expired": expired}
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+
+def auto_refresh_portfolio_prices():
+    """T19: Refresh all stock portfolio positions with latest price from yfinance."""
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT id, symbol, asset_type FROM user_portfolio")
+            positions = cur.fetchall()
+        updated = 0
+        for pid, symbol, asset_type in positions:
+            if (asset_type or "stock").lower() != "stock":
+                continue  # only refresh stocks — crypto prices come from live feeds
+            try:
+                import yfinance as _yf
+                _hist = _yf.Ticker(symbol).history(period="2d")
+                if not _hist.empty:
+                    latest = float(_hist["Close"].iloc[-1])
+                    with db_conn() as conn:
+                        conn.cursor().execute(
+                            "UPDATE user_portfolio SET manual_price=%s WHERE id=%s",
+                            (latest, pid)
+                        )
+                    updated += 1
+            except Exception as _se:
+                pass  # silent — stale price better than crash
+        return updated
+    except Exception as _e:
+        return 0
+
+
+@portfolio_router.get("/api/portfolio/refresh-prices")
+def refresh_portfolio_prices():
+    """T19: Manually trigger portfolio price refresh."""
+    updated = auto_refresh_portfolio_prices()
+    return {"ok": True, "updated": updated}
