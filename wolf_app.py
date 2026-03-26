@@ -133,6 +133,10 @@ async def lifespan(app: FastAPI):
 APP = FastAPI(title="Ghost Protocol v2", version="2.0.0", lifespan=lifespan)
 APP.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
+# Mount portfolio router — WOLF position tracking, price refresh, ghost predictions
+from core.portfolio_routes import portfolio_router
+APP.include_router(portfolio_router)
+
 @APP.get("/health")
 def health():
     import os, time as _t
