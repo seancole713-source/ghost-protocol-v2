@@ -255,6 +255,19 @@ def run_prediction_cycle():
     regime = _check_regime()
     symbols = ([(s.strip(),"crypto") for s in CRYPTO_SYMBOLS if s.strip()] +
                [(s.strip(),"stock")  for s in STOCK_SYMBOLS  if s.strip()])
+    # AUTO-INCLUDE portfolio holdings — if you own it, Ghost watches it
+    try:
+        with db_conn() as _pc:
+            _cur = _pc.cursor()
+            _cur.execute("SELECT DISTINCT symbol, asset_type FROM user_portfolio")
+            for _sym, _at in _cur.fetchall():
+                _sym = _sym.strip().upper()
+                _at = (_at or "stock").strip()
+                if not any(s == _sym for s, _ in symbols):
+                    symbols.append((_sym, _at))
+                    LOGGER.info("Portfolio symbol added to scan: " + _sym)
+    except Exception as _pe:
+        LOGGER.warning("Could not load portfolio symbols: " + str(_pe))
     all_picks = []
     for symbol, asset_type in symbols:
         pick = predict_symbol(symbol, asset_type, regime)
