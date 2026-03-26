@@ -1,5 +1,5 @@
 """core/portfolio_routes.py - Personal portfolio tracker."""
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Header
 from fastapi.responses import JSONResponse
 from core.db import db_conn
 import time

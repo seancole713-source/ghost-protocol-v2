@@ -116,35 +116,100 @@ APP.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 @APP.get("/health")
 def health():
+    import os, time as _t
     from core.prices import check_feeds
     from core import scheduler
+    issues = []
+    warnings = []
+
+    # 1. DB
+    db_ok = False
     try:
         with db_conn() as conn: conn.cursor().execute("SELECT 1")
         db_ok = True
-    except: db_ok = False
+    except Exception as e:
+        issues.append("DB failed: " + str(e)[:60])
+
+    # 2. Price feeds
+    feeds = check_feeds()
+    feeds_ok = sum(1 for k,v in feeds.items() if k != "summary" and v)
+    if feeds_ok < 2:
+        warnings.append(feeds.get("summary","<2 feeds"))
+
+    # 3. Prediction freshness
     freshness_min = None
     try:
         with db_conn() as conn:
             cur = conn.cursor()
-            try:
-                cur.execute("SELECT predicted_at FROM predictions WHERE predicted_at IS NOT NULL ORDER BY predicted_at DESC LIMIT 1")
-            except:
-                conn.rollback()
-                cur.execute("SELECT run_at FROM predictions ORDER BY run_at DESC LIMIT 1")
+            cur.execute("SELECT predicted_at FROM predictions WHERE predicted_at IS NOT NULL ORDER BY predicted_at DESC LIMIT 1")
             row = cur.fetchone()
-            if row and row[0]: freshness_min = int((time.time() - float(row[0])) / 60)
+            if row and row[0]: freshness_min = int((_t.time() - float(row[0])) / 60)
     except: pass
-    feeds = check_feeds()
+    if freshness_min and freshness_min > 120:
+        issues.append("Predictions stale: " + str(freshness_min) + "m — morning card may not have fired")
+
+    # 4. Telegram credentials
+    tg_token = os.getenv("TELEGRAM_BOT_TOKEN","")
+    tg_chat = os.getenv("TELEGRAM_CHAT_ID","")
+    tg_ok = bool(tg_token and tg_chat)
+    if not tg_ok:
+        issues.append("Telegram credentials missing — no alerts will fire")
+
+    # 5. Open picks vs dedup — are all symbols blocked?
+    open_picks = 0
+    dedup_blocked = False
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM predictions WHERE outcome IS NULL AND expires_at > %s", (_t.time(),))
+            open_picks = cur.fetchone()[0]
+        crypto_syms = [s.strip() for s in os.getenv("CRYPTO_SYMBOLS","").split(",") if s.strip()]
+        stock_syms = [s.strip() for s in os.getenv("STOCK_SYMBOLS","").split(",") if s.strip()]
+        total_syms = len(crypto_syms) + len(stock_syms)
+        if open_picks >= total_syms and total_syms > 0:
+            dedup_blocked = True
+            warnings.append("Dedup blocking: " + str(open_picks) + " open picks covering all " + str(total_syms) + " symbols — morning card will generate 0 new picks")
+    except: pass
+
+    # 6. Last morning card sent — did Telegram actually fire today?
+    last_card_min = None
+    try:
+        tasks = scheduler.status()
+        mc = next((t for t in tasks if t["name"] == "morning_card"), None)
+        if mc:
+            last_card_min = int(mc.get("last_run_ago_s",0) / 60)
+            if last_card_min > 1440:
+                issues.append("Morning card last ran " + str(last_card_min) + "m ago — Telegram card may not have sent today")
+    except: pass
+
+    # 7. Confidence floor
+    conf_floor = float(os.getenv("MIN_ALERT_CONFIDENCE","0.75"))
+    if conf_floor < 0.70:
+        warnings.append("Confidence floor " + str(conf_floor) + " is low — weak signals may get through")
+
+    # Score: start 100, deduct per issue
+    score = 100
+    score -= len(issues) * 20
+    score -= len(warnings) * 5
+    score = max(0, min(100, score))
+    status = "healthy" if score >= 80 and not issues else "degraded" if score >= 50 else "critical"
+
     tasks = scheduler.status()
-    issues = []
-    if not db_ok: issues.append("DB connection failed")
-    if freshness_min and freshness_min > 90: issues.append("Predictions stale: " + str(freshness_min) + "m")
-    feeds_ok = sum(1 for k,v in feeds.items() if k != "summary" and v)
-    if feeds_ok < 2: issues.append(feeds["summary"])
-    score = max(0, 100 - len(issues) * 15)
-    return {"status": "healthy" if not issues else "degraded", "score": score,
-            "db": db_ok, "predictions_freshness_min": freshness_min,
-            "price_feeds": feeds, "tasks": tasks, "issues": issues}
+    return {
+        "status": status,
+        "score": score,
+        "db": db_ok,
+        "telegram_configured": tg_ok,
+        "predictions_freshness_min": freshness_min,
+        "open_picks": open_picks,
+        "dedup_blocked": dedup_blocked,
+        "last_morning_card_min": last_card_min,
+        "confidence_floor": conf_floor,
+        "price_feeds": feeds,
+        "tasks": tasks,
+        "issues": issues,
+        "warnings": warnings,
+    }
 
 @APP.get("/api/schema")
 def get_schema():
