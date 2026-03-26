@@ -75,13 +75,21 @@ def get_crypto_price(symbol):
     _cache_set(symbol, price)
     return price
 
-def _polygon(symbol):
-    if not POLYGON_KEY: return None
+def _alpaca(symbol):
+    """Real-time stock price from Alpaca — free tier, works on Railway."""
     try:
-        r = requests.get(f"https://api.polygon.io/v2/last/trade/{symbol.upper()}?apiKey={POLYGON_KEY}", timeout=TIMEOUT)
-        d = r.json()
-        if d.get("status") == "OK": return float(d["results"]["p"])
-    except: return None
+        key = os.getenv("ALPACA_KEY_ID", "")
+        secret = os.getenv("ALPACA_SECRET_KEY", "")
+        if not key or not secret: return None
+        r = requests.get(
+            f"https://data.alpaca.markets/v2/stocks/{symbol.upper()}/trades/latest",
+            headers={"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret},
+            timeout=TIMEOUT
+        )
+        if r.status_code == 200:
+            return float(r.json()["trade"]["p"])
+    except Exception: pass
+    return None
 
 def _yfinance(symbol):
     try:
@@ -102,7 +110,8 @@ def _yfinance(symbol):
 def get_stock_price(symbol):
     cached = _cache_get(symbol, is_stock=True)
     if cached: return cached
-    price = _polygon(symbol) or _yfinance(symbol)
+    # Alpaca = real-time, yfinance = prev-close fallback
+    price = _alpaca(symbol) or _yfinance(symbol)
     if price: _cache_set(symbol, price)
     return price
 
