@@ -264,16 +264,21 @@ def run_prediction_cycle():
     all_picks.sort(key=lambda x: x["confidence"], reverse=True)
     top = all_picks[:DAILY_CAP]
     saved = []
+    # Pre-fetch open symbols once (separate conn avoids cursor state corruption mid-loop)
+    _open = set()
+    try:
+        with db_conn() as _c:
+            _x = _c.cursor()
+            _x.execute("SELECT DISTINCT symbol FROM predictions WHERE outcome IS NULL AND expires_at > %s", (int(time.time()),))
+            _open = {r[0] for r in _x.fetchall()}
+    except Exception as _e:
+        LOGGER.warning("dedup prefetch failed: " + str(_e))
     with db_conn() as conn:
         cur = conn.cursor()
         for pick in top:
             try:
-                # Skip if an open pick for this symbol already exists
-                cur.execute(
-                    "SELECT COUNT(*) FROM predictions WHERE symbol=%s AND outcome IS NULL AND expires_at > %s",
-                    (pick["symbol"], int(time.time())))
-                if cur.fetchone()[0] > 0:
-                    LOGGER.info("DEDUP: skipping " + pick["symbol"] + " — open pick already exists")
+                if pick["symbol"] in _open:
+                    LOGGER.info("DEDUP: skipping " + pick["symbol"])
                     continue
                 cur.execute(
                     "INSERT INTO predictions (symbol,direction,confidence,entry_price,target_price,stop_price,run_at,predicted_at,expires_at,asset_type,features) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
