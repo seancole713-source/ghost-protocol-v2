@@ -42,7 +42,7 @@ EXCLUDE = set(os.getenv("EXCLUDE_SYMBOLS","HOOD,COIN,CHZ,ADA,AVAX,SAND,FLOW,HBAR
 
 
 def _check_regime():
-    """Block crypto BUYs when BTC down 5%+. Returns regime dict including btc_24h_pct."""
+    """Block crypto BUYs when BTC down significantly. Returns regime dict including btc_24h_pct."""
     gates = {"block_crypto_buys": False, "reduce_size": False, "reason": "", "btc_24h_pct": 0.0}
     try:
         btc = get_crypto_price("BTC")
@@ -57,7 +57,7 @@ def _check_regime():
                 if row and row[0] and row[0] > 0:
                     pct = (btc - row[0]) / row[0] * 100
                     gates["btc_24h_pct"] = round(pct, 2)
-                    if pct <= BTC_THRESHOLD:
+                    if pct <= BTC_THRESHOLD or pct <= -2.0:
                         gates["block_crypto_buys"] = True
                         gates["reason"] = "BTC " + str(round(pct,1)) + "% (24h)"
                         LOGGER.info("REGIME: blocking crypto BUYs, BTC " + str(round(pct,1)) + "%")
@@ -76,6 +76,20 @@ def _get_sentiment(symbol):
 
 
 def _get_symbol_signal(symbol, current_price):
+    # T22: Skip symbols with < 15% WR after 20+ v2 picks
+    try:
+        with db_conn() as _ac:
+            _c = _ac.cursor()
+            _c.execute(
+                "SELECT COUNT(*), SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) FROM predictions WHERE symbol=%s AND outcome IN ('WIN','LOSS') AND direction='UP' AND predicted_at > 1742000000",
+                (symbol,))
+            _r = _c.fetchone()
+            if _r and _r[0] and _r[0] >= 20:
+                _wr = (_r[1] or 0) / _r[0]
+                if _wr < 0.15:
+                    LOGGER.info("T22 SKIP " + symbol + " poor WR: " + str(round(_wr*100,1)) + "% on " + str(_r[0]) + " picks")
+                    return None
+    except Exception: pass
     """
     Core signal logic. Returns (direction, confidence) or None.
     Uses v2 resolved picks + legacy ghost_prediction_outcomes as fallback.
@@ -170,6 +184,15 @@ def predict_symbol(symbol, asset_type, regime):
     if symbol.strip() in EXCLUDE or not symbol.strip():
         return None
     price = get_price(symbol, asset_type)
+    if (not price or price <= 0) and asset_type == "stock":
+        try:
+            import yfinance as _yf
+            _hist = _yf.Ticker(symbol).history(period="2d")
+            if not _hist.empty:
+                price = float(_hist["Close"].iloc[-1])
+                LOGGER.info("Stock prev-close for " + symbol + ": $" + str(round(price,2)))
+        except Exception as _pe:
+            LOGGER.warning("Prev-close fallback failed " + symbol + ": " + str(_pe))
     if not price or price <= 0:
         return None
     signal = _get_symbol_signal(symbol, price)
@@ -177,7 +200,8 @@ def predict_symbol(symbol, asset_type, regime):
         return None
     direction, confidence = signal
 
-    if confidence < CONFIDENCE_FLOOR:
+    _floor = regime.get('confidence_floor_override', CONFIDENCE_FLOOR) if isinstance(regime, dict) else CONFIDENCE_FLOOR
+    if confidence < _floor:
         return None
 
     # SELL signals blocked: 1.9% win rate across 211 trades (data as of 2026-03-25)
@@ -236,6 +260,11 @@ def predict_symbol(symbol, asset_type, regime):
         "price_4h_pct":     price_4h_pct,
     }
 
+    if confidence >= 0.90:   pos_pct = 5.0
+    elif confidence >= 0.85: pos_pct = 4.0
+    elif confidence >= 0.80: pos_pct = 3.0
+    elif confidence >= 0.75: pos_pct = 2.0
+    else:                    pos_pct = 1.0
     return {
         "symbol":       symbol,
         "direction":    direction,
@@ -247,12 +276,27 @@ def predict_symbol(symbol, asset_type, regime):
         "expires_at":   now + hold,
         "asset_type":   asset_type,
         "features":     features,
+        "pos_size_pct": pos_pct,
     }
 
 
 def run_prediction_cycle():
     """Run predictions. Returns list of saved picks. Does NOT send Telegram."""
+    # T23: Circuit breaker — if last 5 resolved picks are all losses, raise confidence floor
+    _cb_floor = CONFIDENCE_FLOOR
+    try:
+        with db_conn() as _cb:
+            _cc = _cb.cursor()
+            _cc.execute(
+                "SELECT outcome FROM predictions WHERE outcome IN ('WIN','LOSS') AND direction='UP' AND predicted_at > 1742000000 ORDER BY resolved_at DESC LIMIT 5"
+            )
+            _last5 = [r[0] for r in _cc.fetchall()]
+            if len(_last5) == 5 and all(o == 'LOSS' for o in _last5):
+                _cb_floor = min(0.92, CONFIDENCE_FLOOR + 0.10)
+                LOGGER.warning("T23 CIRCUIT BREAKER: 5 consecutive losses — raising floor to " + str(_cb_floor))
+    except Exception: pass
     regime = _check_regime()
+    regime['confidence_floor_override'] = _cb_floor
     symbols = ([(s.strip(),"crypto") for s in CRYPTO_SYMBOLS if s.strip()] +
                [(s.strip(),"stock")  for s in STOCK_SYMBOLS  if s.strip()])
     # AUTO-INCLUDE portfolio holdings — if you own it, Ghost watches it

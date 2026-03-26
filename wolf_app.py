@@ -20,7 +20,7 @@ def _weekly_summary_job():
             cutoff = int(__import__("time").time()) - 7*86400
             cur.execute(
                 "SELECT outcome, COUNT(*), AVG(pnl_pct) FROM predictions"
-                " WHERE resolved_at > %s AND outcome IN ('WIN','LOSS') AND predicted_at IS NOT NULL GROUP BY outcome",
+                " WHERE resolved_at > %s AND outcome IN ('WIN','LOSS') AND direction='UP' AND predicted_at > 1742000000 GROUP BY outcome",
                 (cutoff,))
             rows = {r[0]: {"count": r[1], "avg_pnl": round(float(r[2] or 0), 2)} for r in cur.fetchall()}
         wins = rows.get("WIN", {}).get("count", 0)
@@ -64,6 +64,22 @@ def _morning_card_job():
     week_stats = {"wins": wins, "losses": losses, "pnl_usd": pnl, "alltime_wr": alltime_wr}
     if picks:
         send_morning_card(picks, week_stats)
+    else:
+        try:
+            with db_conn() as _oc:
+                _cur2 = _oc.cursor()
+                _cur2.execute(
+                    "SELECT symbol,direction,confidence,entry_price,target_price,stop_price,expires_at FROM predictions WHERE outcome IS NULL AND expires_at > %s ORDER BY confidence DESC LIMIT 10",
+                    (int(time.time()),)
+                )
+                _open = [{"symbol":r[0],"direction":r[1],"confidence":r[2],"entry_price":r[3],"target_price":r[4],"stop_price":r[5],"expires_at":r[6],"pos_size_pct":2.0} for r in _cur2.fetchall()]
+            if _open:
+                send_morning_card(_open, week_stats, is_update=True)
+            else:
+                from core.telegram import _send
+                _send("Ghost Protocol v2 -- No new picks today. Market conditions not met.")
+        except Exception as _oe:
+            LOGGER.warning("Open positions update failed: " + str(_oe))
     return picks
 
 def _weekly_summary_job():
@@ -195,6 +211,18 @@ def health():
     status = "healthy" if score >= 80 and not issues else "degraded" if score >= 50 else "critical"
 
     tasks = scheduler.status()
+    # T18: Auto-fix — if dedup blocking, expire picks older than 50h
+    if dedup_blocked:
+        try:
+            cutoff_50h = _t.time() - 50*3600
+            with db_conn() as _fc:
+                _fc.cursor().execute(
+                    "UPDATE predictions SET outcome='EXPIRED', resolved_at=%s WHERE outcome IS NULL AND predicted_at < %s",
+                    (int(_t.time()), int(cutoff_50h))
+                )
+            LOGGER.info("T18 auto-fix: expired stale picks blocking dedup")
+        except Exception as _ae:
+            LOGGER.warning("T18 auto-fix failed: " + str(_ae))
     return {
         "status": status,
         "score": score,

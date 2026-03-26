@@ -31,12 +31,13 @@ def _fmt(v):
     if v is None: return "$0"
     return "$" + str(round(v, 2)) if v >= 1 else "$" + str(round(v, 6))
 
-def send_morning_card(picks, week_stats=None):
+def send_morning_card(picks, week_stats=None, is_update=False):
     from datetime import datetime, timezone
     import pytz
     tz = pytz.timezone(os.getenv("GHOST_TZ", "America/Chicago"))
     day = datetime.now(tz).strftime("%A %b %d")
-    parts = ["<b>Ghost PICKS -- " + day + "</b>"]
+    label = "OPEN POSITIONS" if is_update else "PICKS"
+    parts = ["<b>Ghost " + label + " -- " + day + "</b>"]
     if not picks:
         parts.append("No picks today.")
     else:
@@ -62,6 +63,8 @@ def send_morning_card(picks, week_stats=None):
             parts.append("   Run away at: " + _fmt(stop))
             parts.append("   Done by:     " + exp_str)
             parts.append("   $100 in -- $" + str(usd_out) + " out")
+            pos = p.get("pos_size_pct", 2.0)
+            parts.append("   Suggested: " + str(pos) + "% of capital")
     if week_stats:
         w = week_stats.get("wins", 0)
         l = week_stats.get("losses", 0)
