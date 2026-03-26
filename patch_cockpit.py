@@ -1,4 +1,4 @@
-import base64, sys, os
+import base64, sys, os, re
 
 src_path = "wolf_app.py"
 with open(src_path) as f:
@@ -6,9 +6,25 @@ with open(src_path) as f:
 
 changed = False
 
-# Patch 1: cockpit route — append if /cockpit route not defined
-if '@APP.get("/cockpit")' not in src and "@APP.get('/cockpit')" not in src:
-    cockpit_route = '''
+# Patch 1: cockpit route — replace placeholder with cockpit.html file-read
+if "cockpit.html" not in src:
+    # Remove old placeholder cockpit route if present and add real one
+    # Pattern: @APP.get("/cockpit"...) returning inline HTML placeholder
+    placeholder_marker = 'Full dashboard coming Week 4'
+    if placeholder_marker in src:
+        # Find the @APP.get("/cockpit") decorator and replace the whole function
+        # Replace from decorator to end of function
+        old_fn = re.search(
+            r'@APP\.get\(."/?cockpit.\).*?def\s+\w+.*?return\s+[^\n]+\n',
+            src, re.DOTALL
+        )
+        if old_fn:
+            src = src[:old_fn.start()] + src[old_fn.end():]
+            changed = True
+
+    # Now append the real cockpit route
+    if '@APP.get("/cockpit")' not in src and "@APP.get('/cockpit')" not in src:
+        src = src + """
 
 from fastapi.responses import HTMLResponse as _HTMLResponse
 
@@ -21,15 +37,16 @@ async def serve_cockpit_ui():
 async def root_redirect():
     from fastapi.responses import RedirectResponse
     return RedirectResponse(url="/cockpit")
-'''
-    src = src + cockpit_route
-    changed = True
-    print("[patch] cockpit route added")
+"""
+        changed = True
+        print("[patch] cockpit route added")
+    else:
+        print("[patch] cockpit already patched")
 else:
-    print("[patch] cockpit already present")
+    print("[patch] cockpit.html already wired")
 
-# Patch 2: news function rename
-if "get_symbol_sentiment" in src and "get_sentiment_for_symbol = get_symbol_sentiment" not in src:
+# Patch 2: news alias
+if "get_symbol_sentiment" in src and "get_sentiment_for_symbol" not in src:
     src = src.replace(
         "from core.news import get_symbol_sentiment",
         "from core.news import get_symbol_sentiment, get_sentiment_for_symbol"
@@ -56,7 +73,7 @@ if bad_sched in src:
     src = src.replace(bad_sched, 'from core import scheduler as _sched; _sched.register("model_retrain", retrain_if_ready, 604800)  # weekly')
     changed = True
     print("[patch] model_retrain scheduler fixed")
-elif 'model_retrain' not in src:
+elif "model_retrain" not in src:
     src = src + """
 from core.model import retrain_if_ready as _rtr
 from core import scheduler as _sched2
