@@ -45,7 +45,7 @@ def _morning_card_job():
             cur = conn.cursor()
             cutoff = int(time.time()) - 7*86400
             cur.execute(
-                "SELECT outcome, pnl_pct FROM predictions WHERE resolved_at > %s AND outcome IN ('WIN','LOSS')",
+                "SELECT outcome, pnl_pct FROM predictions WHERE resolved_at > %s AND outcome IN ('WIN','LOSS') AND direction='UP'",
                 (cutoff,)
             )
             rows = cur.fetchall()
@@ -55,7 +55,7 @@ def _morning_card_job():
             # Correct P&L: $100 per trade simulation using pnl_pct
             pnl = sum((100 * (r[1] or 0) / 100) for r in rows)  # dollar gain per $100 bet
             # Scope to v2 predictions only (predicted_at is set, not NULL)
-            cur.execute("SELECT outcome FROM predictions WHERE outcome IN ('WIN','LOSS') AND predicted_at IS NOT NULL ORDER BY id DESC LIMIT 2000")
+            cur.execute("SELECT outcome FROM predictions WHERE outcome IN ('WIN','LOSS') AND direction='UP' AND predicted_at IS NOT NULL ORDER BY id DESC LIMIT 2000")
             all_rows = cur.fetchall()
             all_wins = sum(1 for r in all_rows if r[0] == "WIN")
             alltime_wr = round(all_wins/len(all_rows)*100,1) if all_rows else 0
