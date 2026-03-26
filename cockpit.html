@@ -300,11 +300,13 @@ async function load() {
   try {
     var h = await fetch('/health').then(function(r) { return r.json(); });
     var stats = await fetch('/api/stats').then(function(r) { return r.json(); });
+        var dir = await fetch('/api/stats/direction').then(function(r) { return r.json(); }).catch(function() { return {}; });
     var picks = await fetch('/api/picks').then(function(r) { return r.json(); });
     var recent = await fetch('/api/v2/recent').then(function(r) { return r.json(); }).catch(function() { return {trades: []}; });
     var news = await fetch('/api/news').then(function(r) { return r.json(); }).catch(function() { return {articles: []}; });
 
-    document.getElementById('wr').textContent = (stats.win_rate_pct || 0) + '%';
+    var buyWr = dir.by_direction && dir.by_direction.BUY ? dir.by_direction.BUY.win_rate_pct : (stats.win_rate_pct || 0);
+        document.getElementById('wr').textContent = buyWr + '% BUY';
     document.getElementById('f-open').textContent = stats.open_positions || 0;
     document.getElementById('f-total').textContent = stats.total || 0;
 

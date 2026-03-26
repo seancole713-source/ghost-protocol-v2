@@ -216,9 +216,18 @@ def run_news_cycle() -> List[Dict]:
 get_sentiment_for_symbol = get_symbol_sentiment
 
 def get_cached_articles(limit=None) -> List[Dict]:
-    """Return articles with per-article sentiment attached from symbol scores."""
+    """Return articles with sentiment. Fetches fresh on cold start if cache empty."""
+    global _cached_articles
+    source = _cached_articles
+    if not source:
+        try:
+            source = _fetch_cryptopanic() + _fetch_finnhub_crypto()
+            _cached_articles = source
+            LOGGER.info("Cold-start news fetch: " + str(len(source)) + " articles")
+        except Exception as _e:
+            LOGGER.warning("cold-start fetch failed: " + str(_e))
     enriched = []
-    for a in _cached_articles:
+    for a in (source or []):
         syms = a.get("symbols", [])
         scores = [_symbol_sentiment.get(s.upper(), 0.0) for s in syms if s.upper() in _symbol_sentiment]
         art = dict(a)
