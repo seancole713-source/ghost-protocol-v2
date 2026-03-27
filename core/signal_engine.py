@@ -21,8 +21,8 @@ import numpy as np
 LOGGER = logging.getLogger("ghost.signal_v3")
 
 # ── Config ─────────────────────────────────────────────────────────────────
-TARGET_MOVE_PCT  = 0.050   # 5% target — 39% base rate, model has room for real edge
-HOLD_HOURS       = 48       # 48h prediction window
+HOLD_HOURS_LABEL = 24      # predict direction 24h from now (~50% base rate, consistent across symbols)
+HOLD_HOURS       = 48       # 48h trade window (how long pick stays open)
 MIN_ACCURACY     = 0.50    # minimum holdout accuracy (need to beat 39% base rate)
 MIN_TRAIN_ROWS   = 100     # minimum labeled rows to attempt training
 MODEL_PATH       = "/tmp/ghost_v3_model.pkl"
@@ -109,6 +109,15 @@ def _calculate_features(df):
     recent_low = np.min(lows[-24:]) if len(lows) >= 24 else lows[-1]
     price_in_range = float((closes[-1] - recent_low) / (recent_high - recent_low + 1e-9))
 
+    import datetime as _dt
+    ts = df[-1].get('ts','') if df else ''
+    try:
+        _d = _dt.datetime.fromisoformat(str(ts).replace('Z','+00:00'))
+        hour_of_day = _d.hour
+        day_of_week = _d.weekday()
+    except Exception:
+        hour_of_day = 12
+        day_of_week = 0
     return {
         'rsi': rsi,
         'rsi_oversold': 1 if rsi < 35 else 0,
@@ -125,6 +134,9 @@ def _calculate_features(df):
         'price_in_range': price_in_range,
         'near_low': 1 if price_in_range < 0.25 else 0,
         'near_high': 1 if price_in_range > 0.75 else 0,
+        'hour_of_day': hour_of_day,
+        'day_of_week': day_of_week,
+        'is_weekend': 1 if day_of_week >= 5 else 0,
     }
 
 def _fetch_ohlcv(symbol, asset_type, period='6mo', interval='1h'):
@@ -225,11 +237,10 @@ def backtest_symbol(symbol, asset_type):
         features['symbol'] = symbol
         features['asset_type'] = asset_type
 
-        # Label: was price >= TARGET_MOVE_PCT higher at any point in next HOLD_HOURS?
+        # Label: is close price higher 24h from now? (~50% base rate across all symbols)
         entry = rows[i]['close']
-        future_highs = [rows[i+j]['high'] for j in range(1, HOLD_HOURS+1)]
-        target = entry * (1 + TARGET_MOVE_PCT)
-        label = 1 if any(h >= target for h in future_highs) else 0
+        future_close = rows[i+24]['close'] if i+24 < len(rows) else entry
+        label = 1 if future_close > entry else 0
         labeled.append({'features': features, 'label': label})
 
     wins = sum(1 for r in labeled if r['label'] == 1)
@@ -249,7 +260,8 @@ def build_training_data(symbols_and_types):
     LOGGER.info(f"Total training rows: {len(all_rows)}")
     FEATURE_COLS = ['rsi','rsi_oversold','rsi_overbought','macd_hist','macd_bullish',
                     'pct_b','bb_squeeze','volume_ratio','volume_spike',
-                    'mom_4h','mom_8h','mom_24h','price_in_range','near_low','near_high']
+                    'mom_4h','mom_8h','mom_24h','price_in_range','near_low','near_high',
+                    'hour_of_day','day_of_week','is_weekend']
     X = np.array([[r['features'].get(c, 0.0) for c in FEATURE_COLS] for r in all_rows])
     y = np.array([r['label'] for r in all_rows])
     return X, y, FEATURE_COLS
