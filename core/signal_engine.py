@@ -268,117 +268,104 @@ def build_training_data(symbols_and_types):
     return X, y, FEATURE_COLS
 
 def train_and_validate(symbols_and_types):
-    """
-    Train XGBoost, validate on holdout.
-    Returns model accuracy and whether it passes MIN_ACCURACY.
-    ONLY saves model if accuracy > MIN_ACCURACY.
-    """
+    """Train one XGBoost per symbol. Only deploys if it beats natural rate by 2%+."""
     try:
         from xgboost import XGBClassifier
         from sklearn.model_selection import train_test_split
         from sklearn.metrics import accuracy_score
-        import pickle
+        import pickle, base64
+        from core.db import db_conn
     except ImportError as e:
         LOGGER.error("Missing dependency: " + str(e))
         return None, 0.0, False
 
-    X, y, feature_cols = build_training_data(symbols_and_types)
-    if X is None:
-        return None, 0.0, False
+    results = {}
+    total_passed = 0
 
-    # 80/20 train/test split — chronological, not random
-    split = int(len(X) * 0.8)
-    X_train, X_test = X[:split], X[split:]
-    y_train, y_test = y[:split], y[split:]
-
-    natural_rate = float(np.mean(y_test))
-    LOGGER.info(f"Natural hit rate on test: {round(natural_rate*100,1)}%")
-
-    model = XGBClassifier(
-        n_estimators=200,
-        max_depth=4,
-        learning_rate=0.05,
-        subsample=0.8,
-        colsample_bytree=0.8,
-        use_label_encoder=False,
-        eval_metric='logloss',
-        random_state=42
-    )
-    model.fit(X_train, y_train)
-    preds = model.predict(X_test)
-    accuracy = float(accuracy_score(y_test, preds))
-
-    # Feature importances
-    importances = dict(zip(feature_cols, model.feature_importances_.tolist()))
-    top = sorted(importances.items(), key=lambda x: x[1], reverse=True)[:5]
-    LOGGER.info(f"Model accuracy: {round(accuracy*100,1)}% (need {round(MIN_ACCURACY*100,1)}%)")
-    LOGGER.info(f"Top features: {top}")
-
-    passes = accuracy >= MIN_ACCURACY
-    if passes:
-        import pickle, base64
-        from core.db import db_conn
-        model_bytes = base64.b64encode(pickle.dumps(model)).decode('ascii')
-        meta_json = json.dumps({'feature_cols': feature_cols, 'accuracy': accuracy,
-                   'natural_rate': natural_rate, 'trained_at': time.time(),
-                   'top_features': top, 'n_samples': len(X)})
+    for symbol, asset_type in symbols_and_types:
         try:
-            with db_conn() as conn:
-                cur = conn.cursor()
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS ghost_v3_model (
-                        key TEXT PRIMARY KEY, value TEXT, updated_at BIGINT
-                    )""")
-                cur.execute("""
-                    INSERT INTO ghost_v3_model (key, value, updated_at)
-                    VALUES (%s, %s, %s)
-                    ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at
-                """, (MODEL_DB_KEY, model_bytes, int(time.time())))
-                cur.execute("""
-                    INSERT INTO ghost_v3_model (key, value, updated_at)
-                    VALUES (%s, %s, %s)
-                    ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at
-                """, (FEATURES_DB_KEY, meta_json, int(time.time())))
-            LOGGER.info("Ghost v3 model saved to PostgreSQL — survives deploys")
-        except Exception as _se:
-            LOGGER.error("Failed to save model to DB: " + str(_se))
-    else:
-        LOGGER.warning(f"Model accuracy {round(accuracy*100,1)}% < {round(MIN_ACCURACY*100,1)}% — NOT deploying")
+            rows = backtest_symbol(symbol, asset_type)
+            if not rows or len(rows) < 80:
+                LOGGER.info(f"Skipping {symbol} — only {len(rows)} samples")
+                continue
 
-    return model, accuracy, passes
+            FEATURE_COLS = ['rsi','rsi_oversold','rsi_overbought','macd_hist','macd_bullish',
+                            'pct_b','bb_squeeze','volume_ratio','volume_spike',
+                            'mom_4h','mom_8h','mom_24h','price_in_range','near_low','near_high',
+                            'hour_of_day','day_of_week','is_weekend']
+            X = np.array([[r['features'].get(c, 0.0) for c in FEATURE_COLS] for r in rows])
+            y = np.array([r['label'] for r in rows])
 
-def load_model():
-    """Load model from PostgreSQL. Survives Railway deploys."""
+            # Chronological 80/20 split
+            split = int(len(X) * 0.8)
+            X_train, X_test = X[:split], X[split:]
+            y_train, y_test = y[:split], y[split:]
+            natural_rate = float(np.mean(y_test))
+
+            model = XGBClassifier(
+                n_estimators=150, max_depth=3, learning_rate=0.05,
+                subsample=0.8, colsample_bytree=0.8,
+                use_label_encoder=False, eval_metric='logloss', random_state=42
+            )
+            model.fit(X_train, y_train)
+            accuracy = float(accuracy_score(y_test, model.predict(X_test)))
+            edge = accuracy - natural_rate
+
+            passes = edge >= 0.02  # need at least +2% over natural rate
+            LOGGER.info(f"{symbol}: acc={round(accuracy*100,1)}% nat={round(natural_rate*100,1)}% edge={round(edge*100,1)}% {'SAVED' if passes else 'skipped'}")
+
+            if passes:
+                model_bytes = base64.b64encode(pickle.dumps(model)).decode('ascii')
+                meta = json.dumps({'feature_cols': FEATURE_COLS, 'accuracy': accuracy,
+                                   'natural_rate': natural_rate, 'edge': edge,
+                                   'trained_at': time.time(), 'n_samples': len(rows)})
+                with db_conn() as conn:
+                    cur = conn.cursor()
+                    cur.execute("""CREATE TABLE IF NOT EXISTS ghost_v3_model
+                                   (key TEXT PRIMARY KEY, value TEXT, updated_at BIGINT)""")
+                    cur.execute("""INSERT INTO ghost_v3_model(key,value,updated_at) VALUES(%s,%s,%s)
+                                   ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at""",
+                                (f"model_{symbol}", model_bytes, int(time.time())))
+                    cur.execute("""INSERT INTO ghost_v3_model(key,value,updated_at) VALUES(%s,%s,%s)
+                                   ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at""",
+                                (f"meta_{symbol}", meta, int(time.time())))
+                results[symbol] = {'accuracy': accuracy, 'edge': edge, 'passed': True}
+                total_passed += 1
+        except Exception as e:
+            LOGGER.warning(f"Training failed for {symbol}: {e}")
+
+    LOGGER.info(f"v3 training complete: {total_passed}/{len(symbols_and_types)} symbols passed")
+    return None, total_passed / max(len(symbols_and_types), 1), total_passed > 0
+
+
+def load_model(symbol=None):
+    """Load per-symbol model from PostgreSQL."""
+    if not symbol: return None, None, None
     try:
         import pickle, base64
         from core.db import db_conn
         with db_conn() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT value FROM ghost_v3_model WHERE key=%s", (MODEL_DB_KEY,))
+            cur.execute("SELECT value FROM ghost_v3_model WHERE key=%s", (f"model_{symbol}",))
             row = cur.fetchone()
             if not row: return None, None, None
             model = pickle.loads(base64.b64decode(row[0]))
-            cur.execute("SELECT value FROM ghost_v3_model WHERE key=%s", (FEATURES_DB_KEY,))
+            cur.execute("SELECT value FROM ghost_v3_model WHERE key=%s", (f"meta_{symbol}",))
             mrow = cur.fetchone()
             if not mrow: return None, None, None
             meta = json.loads(mrow[0])
-        # Reject models older than 14 days
         if time.time() - meta.get('trained_at', 0) > 14 * 86400:
-            LOGGER.warning("v3 model >14 days old — retraining needed")
             return None, None, None
         return model, meta['feature_cols'], meta
     except Exception as e:
-        LOGGER.warning("load_model from DB failed: " + str(e))
+        LOGGER.warning(f"load_model {symbol} failed: {e}")
         return None, None, None
 
 def predict_live(symbol, asset_type):
-    """
-    Score current price action for a symbol.
-    Returns (direction, confidence) or None if no edge detected.
-    """
-    model, feature_cols, meta = load_model()
+    """Use symbol-specific model. Returns (direction, confidence) or None."""
+    model, feature_cols, meta = load_model(symbol)
     if model is None:
-        return None  # model not trained yet — Ghost stays silent
+        return None  # no model for this symbol — Ghost stays silent
 
     # Get recent 72h of hourly data for indicator calculation
     rows = _fetch_ohlcv(symbol, asset_type, period='5d', interval='1h')
@@ -403,16 +390,26 @@ def predict_live(symbol, asset_type):
     return None  # no edge
 
 def get_model_status():
-    """Return current model status for health/cockpit display."""
-    _, _, meta = load_model()
-    if meta is None:
-        return {"trained": False, "reason": "No model — run /api/v3/train to build"}
-    return {
-        "trained": True,
-        "accuracy": round(meta.get("accuracy", 0) * 100, 1),
-        "natural_rate": round(meta.get("natural_rate", 0) * 100, 1),
-        "edge": round((meta.get("accuracy", 0) - meta.get("natural_rate", 0)) * 100, 1),
-        "n_samples": meta.get("n_samples", 0),
-        "trained_at": meta.get("trained_at", 0),
-        "top_features": meta.get("top_features", []),
-    }
+    """Return per-symbol model status."""
+    try:
+        import json
+        from core.db import db_conn
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT key, value FROM ghost_v3_model WHERE key LIKE 'meta_%' ORDER BY key")
+            rows = cur.fetchall()
+        if not rows:
+            return {"trained": False, "reason": "No models — run /api/v3/train to build"}
+        symbols = {}
+        for key, val in rows:
+            sym = key.replace('meta_','')
+            m = json.loads(val)
+            symbols[sym] = {
+                "accuracy": round(m.get("accuracy",0)*100,1),
+                "natural_rate": round(m.get("natural_rate",0)*100,1),
+                "edge": round(m.get("edge",0)*100,1),
+                "n_samples": m.get("n_samples",0),
+            }
+        return {"trained": True, "models": len(symbols), "symbols": symbols}
+    except Exception as e:
+        return {"trained": False, "reason": str(e)}
