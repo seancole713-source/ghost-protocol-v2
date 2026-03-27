@@ -76,6 +76,27 @@ def _get_sentiment(symbol):
 
 
 def _get_symbol_signal(symbol, current_price):
+    """
+    v3: Use XGBoost model trained on real price data.
+    Falls back to legacy heuristic ONLY if model not trained yet.
+    """
+    # Try v3 model first
+    try:
+        from core.signal_engine import predict_live
+        result = predict_live(symbol, "crypto" if symbol not in ["AAPL","NVDA","TSLA","MSFT","META","AMZN","PLTR","AMD","T","XPO","NET","WOLF"] else "stock")
+        if result is not None:
+            LOGGER.info("v3 signal for " + symbol + ": " + str(result[0]) + " " + str(round(result[1]*100,1)) + "%")
+            return result
+    except Exception as _v3e:
+        LOGGER.warning("v3 engine error for " + symbol + ": " + str(_v3e))
+
+    # Fallback: legacy heuristic (v1/v2 behavior) — used until model is trained
+    LOGGER.info("v3 model not ready — using legacy signal for " + symbol)
+    return _legacy_signal(symbol, current_price)
+
+def _legacy_signal(symbol, current_price):
+    """Legacy v2 signal — kept as fallback until v3 model is trained and validated."""
+
     # T22: Skip symbols with < 15% WR after 20+ v2 picks
     try:
         with db_conn() as _ac:

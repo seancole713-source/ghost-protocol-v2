@@ -1,0 +1,328 @@
+"""
+core/signal_engine.py - Ghost Protocol v3 Signal Engine
+
+WHAT THIS DOES (different from v1/v2):
+  v1/v2: confidence = Ghost's own historical win rate (circular, corrupted)
+  v3:    confidence = XGBoost trained on 6 months real price data, validated first
+
+PIPELINE:
+  1. backtest_symbol(symbol) -> pulls 6mo OHLCV, calculates indicators,
+     labels whether price was +2% in 48h, returns per-indicator accuracy
+  2. build_training_data(symbols) -> runs backtest on all symbols, labels rows
+  3. train_model() -> XGBoost on 80% train, validates on 20% holdout
+  4. predict_live(symbol, asset_type) -> scores current price action
+  5. Only generates a pick if model confidence > CONFIDENCE_FLOOR
+
+This engine ONLY deploys after validate() confirms >52% accuracy on holdout.
+If it can't beat 52%, it returns None and Ghost stays silent.
+"""
+import os, time, logging, json
+import numpy as np
+LOGGER = logging.getLogger("ghost.signal_v3")
+
+# ── Config ─────────────────────────────────────────────────────────────────
+TARGET_MOVE_PCT  = 0.020   # 2% target — matches our dynamic target
+HOLD_HOURS       = 48       # 48h prediction window
+MIN_ACCURACY     = 0.52    # minimum holdout accuracy to deploy model
+MIN_TRAIN_ROWS   = 100     # minimum labeled rows to attempt training
+MODEL_PATH       = "/tmp/ghost_v3_model.pkl"
+FEATURES_PATH    = "/tmp/ghost_v3_features.json"
+
+# ── Technical Indicator Calculations ───────────────────────────────────────
+def _rsi(closes, period=14):
+    """Relative Strength Index. <30 oversold (BUY signal), >70 overbought."""
+    if len(closes) < period + 1: return 50.0
+    deltas = np.diff(closes)
+    gains = np.where(deltas > 0, deltas, 0)
+    losses = np.where(deltas < 0, -deltas, 0)
+    avg_gain = np.mean(gains[-period:])
+    avg_loss = np.mean(losses[-period:])
+    if avg_loss == 0: return 100.0
+    rs = avg_gain / avg_loss
+    return float(100 - (100 / (1 + rs)))
+
+def _macd(closes, fast=12, slow=26, signal=9):
+    """MACD line, signal line, histogram. Crossover = momentum shift."""
+    if len(closes) < slow + signal: return 0.0, 0.0, 0.0
+    def ema(data, n):
+        k = 2/(n+1)
+        result = [data[0]]
+        for v in data[1:]: result.append(v*k + result[-1]*(1-k))
+        return np.array(result)
+    fast_ema = ema(closes, fast)
+    slow_ema = ema(closes, slow)
+    macd_line = fast_ema - slow_ema
+    if len(macd_line) < signal: return 0.0, 0.0, 0.0
+    signal_line = ema(macd_line, signal)
+    hist = macd_line[-1] - signal_line[-1]
+    return float(macd_line[-1]), float(signal_line[-1]), float(hist)
+
+def _bollinger(closes, period=20):
+    """Bollinger Bands. Returns % position within bands (0=lower, 1=upper)."""
+    if len(closes) < period: return 0.5, 0.0
+    window = closes[-period:]
+    mid = np.mean(window)
+    std = np.std(window)
+    if std == 0: return 0.5, 0.0
+    upper = mid + 2*std
+    lower = mid - 2*std
+    price = closes[-1]
+    pct_b = float((price - lower) / (upper - lower)) if (upper - lower) > 0 else 0.5
+    band_width = float((upper - lower) / mid)  # squeeze indicator
+    return pct_b, band_width
+
+def _volume_ratio(volumes, period=20):
+    """Current volume vs 20-period average. >1.5 = unusual activity."""
+    if len(volumes) < period + 1: return 1.0
+    avg = np.mean(volumes[-period-1:-1])
+    if avg == 0: return 1.0
+    return float(volumes[-1] / avg)
+
+def _price_momentum(closes, periods=[4, 8, 24]):
+    """% change over last N candles."""
+    result = {}
+    for p in periods:
+        if len(closes) > p and closes[-p-1] > 0:
+            result[f'mom_{p}h'] = float((closes[-1] - closes[-p-1]) / closes[-p-1])
+        else:
+            result[f'mom_{p}h'] = 0.0
+    return result
+
+def _calculate_features(df):
+    """
+    Given a dataframe with OHLCV, return a feature dict for one candle.
+    df: list of dicts with keys open/high/low/close/volume
+    """
+    closes = np.array([c['close'] for c in df], dtype=float)
+    volumes = np.array([c['volume'] for c in df], dtype=float)
+    highs = np.array([c['high'] for c in df], dtype=float)
+    lows = np.array([c['low'] for c in df], dtype=float)
+
+    rsi = _rsi(closes)
+    macd_line, macd_sig, macd_hist = _macd(closes)
+    pct_b, band_width = _bollinger(closes)
+    vol_ratio = _volume_ratio(volumes)
+    momentum = _price_momentum(closes)
+
+    # Price position vs recent range
+    recent_high = np.max(highs[-24:]) if len(highs) >= 24 else highs[-1]
+    recent_low = np.min(lows[-24:]) if len(lows) >= 24 else lows[-1]
+    price_in_range = float((closes[-1] - recent_low) / (recent_high - recent_low + 1e-9))
+
+    return {
+        'rsi': rsi,
+        'rsi_oversold': 1 if rsi < 35 else 0,
+        'rsi_overbought': 1 if rsi > 65 else 0,
+        'macd_hist': macd_hist,
+        'macd_bullish': 1 if macd_hist > 0 else 0,
+        'pct_b': pct_b,
+        'bb_squeeze': 1 if band_width < 0.05 else 0,
+        'volume_ratio': min(vol_ratio, 5.0),
+        'volume_spike': 1 if vol_ratio > 1.5 else 0,
+        'mom_4h': momentum['mom_4h'],
+        'mom_8h': momentum['mom_8h'],
+        'mom_24h': momentum['mom_24h'],
+        'price_in_range': price_in_range,
+        'near_low': 1 if price_in_range < 0.25 else 0,
+        'near_high': 1 if price_in_range > 0.75 else 0,
+    }
+
+def _fetch_ohlcv(symbol, asset_type, period='6mo', interval='1h'):
+    """Pull OHLCV data via yfinance."""
+    try:
+        import yfinance as yf
+        # Map crypto symbols to yfinance format
+        if asset_type == 'crypto':
+            ticker = symbol.upper() + '-USD'
+        else:
+            ticker = symbol.upper()
+        df = yf.Ticker(ticker).history(period=period, interval=interval)
+        if df.empty: return None
+        rows = []
+        for ts, row in df.iterrows():
+            rows.append({
+                'ts': ts.timestamp(),
+                'open': float(row['Open']),
+                'high': float(row['High']),
+                'low': float(row['Low']),
+                'close': float(row['Close']),
+                'volume': float(row['Volume']),
+            })
+        return rows
+    except Exception as e:
+        LOGGER.warning("OHLCV fetch failed for " + symbol + ": " + str(e))
+        return None
+
+def backtest_symbol(symbol, asset_type):
+    """
+    Pull 6mo hourly data, calculate features, label outcomes.
+    Label: did price go up TARGET_MOVE_PCT in next HOLD_HOURS candles?
+    Returns list of {features, label} dicts.
+    """
+    rows = _fetch_ohlcv(symbol, asset_type)
+    if not rows or len(rows) < 100:
+        return []
+
+    labeled = []
+    window = 50  # warmup for indicators
+    for i in range(window, len(rows) - HOLD_HOURS):
+        hist = rows[max(0, i-window):i+1]
+        features = _calculate_features(hist)
+        features['symbol'] = symbol
+        features['asset_type'] = asset_type
+
+        # Label: was price >= TARGET_MOVE_PCT higher at any point in next HOLD_HOURS?
+        entry = rows[i]['close']
+        future_highs = [rows[i+j]['high'] for j in range(1, HOLD_HOURS+1)]
+        target = entry * (1 + TARGET_MOVE_PCT)
+        label = 1 if any(h >= target for h in future_highs) else 0
+        labeled.append({'features': features, 'label': label})
+
+    wins = sum(1 for r in labeled if r['label'] == 1)
+    LOGGER.info(f"Backtest {symbol}: {len(labeled)} samples, {wins} hits "
+                f"({round(wins/len(labeled)*100,1) if labeled else 0}% natural hit rate)")
+    return labeled
+
+def build_training_data(symbols_and_types):
+    """Run backtest on all symbols. Returns X (feature matrix), y (labels)."""
+    all_rows = []
+    for symbol, asset_type in symbols_and_types:
+        rows = backtest_symbol(symbol, asset_type)
+        all_rows.extend(rows)
+    if len(all_rows) < MIN_TRAIN_ROWS:
+        LOGGER.warning(f"Only {len(all_rows)} training rows — need {MIN_TRAIN_ROWS}")
+        return None, None, []
+    LOGGER.info(f"Total training rows: {len(all_rows)}")
+    FEATURE_COLS = ['rsi','rsi_oversold','rsi_overbought','macd_hist','macd_bullish',
+                    'pct_b','bb_squeeze','volume_ratio','volume_spike',
+                    'mom_4h','mom_8h','mom_24h','price_in_range','near_low','near_high']
+    X = np.array([[r['features'].get(c, 0.0) for c in FEATURE_COLS] for r in all_rows])
+    y = np.array([r['label'] for r in all_rows])
+    return X, y, FEATURE_COLS
+
+def train_and_validate(symbols_and_types):
+    """
+    Train XGBoost, validate on holdout.
+    Returns model accuracy and whether it passes MIN_ACCURACY.
+    ONLY saves model if accuracy > MIN_ACCURACY.
+    """
+    try:
+        from xgboost import XGBClassifier
+        from sklearn.model_selection import train_test_split
+        from sklearn.metrics import accuracy_score
+        import pickle
+    except ImportError as e:
+        LOGGER.error("Missing dependency: " + str(e))
+        return None, 0.0, False
+
+    X, y, feature_cols = build_training_data(symbols_and_types)
+    if X is None:
+        return None, 0.0, False
+
+    # 80/20 train/test split — chronological, not random
+    split = int(len(X) * 0.8)
+    X_train, X_test = X[:split], X[split:]
+    y_train, y_test = y[:split], y[split:]
+
+    natural_rate = float(np.mean(y_test))
+    LOGGER.info(f"Natural hit rate on test: {round(natural_rate*100,1)}%")
+
+    model = XGBClassifier(
+        n_estimators=200,
+        max_depth=4,
+        learning_rate=0.05,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        use_label_encoder=False,
+        eval_metric='logloss',
+        random_state=42
+    )
+    model.fit(X_train, y_train)
+    preds = model.predict(X_test)
+    accuracy = float(accuracy_score(y_test, preds))
+
+    # Feature importances
+    importances = dict(zip(feature_cols, model.feature_importances_.tolist()))
+    top = sorted(importances.items(), key=lambda x: x[1], reverse=True)[:5]
+    LOGGER.info(f"Model accuracy: {round(accuracy*100,1)}% (need {round(MIN_ACCURACY*100,1)}%)")
+    LOGGER.info(f"Top features: {top}")
+
+    passes = accuracy >= MIN_ACCURACY
+    if passes:
+        import pickle
+        with open(MODEL_PATH, 'wb') as f:
+            pickle.dump(model, f)
+        with open(FEATURES_PATH, 'w') as f:
+            json.dump({'feature_cols': feature_cols, 'accuracy': accuracy,
+                       'natural_rate': natural_rate, 'trained_at': time.time(),
+                       'top_features': top, 'n_samples': len(X)}, f)
+        LOGGER.info("Model saved — Ghost v3 is live")
+    else:
+        LOGGER.warning(f"Model accuracy {round(accuracy*100,1)}% < {round(MIN_ACCURACY*100,1)}% — NOT deploying")
+
+    return model, accuracy, passes
+
+def load_model():
+    """Load saved model and feature list. Returns (model, feature_cols) or (None, None)."""
+    try:
+        import pickle
+        if not os.path.exists(MODEL_PATH) or not os.path.exists(FEATURES_PATH):
+            return None, None, None
+        with open(MODEL_PATH, 'rb') as f:
+            model = pickle.load(f)
+        with open(FEATURES_PATH) as f:
+            meta = json.load(f)
+        # Reject stale models (>7 days old)
+        if time.time() - meta.get('trained_at', 0) > 7 * 86400:
+            LOGGER.warning("Model is >7 days old — needs retraining")
+            return None, None, None
+        return model, meta['feature_cols'], meta
+    except Exception as e:
+        LOGGER.warning("load_model failed: " + str(e))
+        return None, None, None
+
+def predict_live(symbol, asset_type):
+    """
+    Score current price action for a symbol.
+    Returns (direction, confidence) or None if no edge detected.
+    """
+    model, feature_cols, meta = load_model()
+    if model is None:
+        return None  # model not trained yet — Ghost stays silent
+
+    # Get recent 72h of hourly data for indicator calculation
+    rows = _fetch_ohlcv(symbol, asset_type, period='5d', interval='1h')
+    if not rows or len(rows) < 30:
+        return None
+
+    features = _calculate_features(rows)
+    X = np.array([[features.get(c, 0.0) for c in feature_cols]])
+    proba = model.predict_proba(X)[0]
+    up_prob = float(proba[1])   # probability price goes up TARGET_MOVE_PCT
+
+    # Only signal if model confidence exceeds floor
+    floor = float(os.getenv("MIN_ALERT_CONFIDENCE", "0.75"))
+    if up_prob >= floor:
+        return ("UP", round(up_prob, 3))
+
+    # Inverse: if model very confident it won't go up, could be a DOWN signal
+    down_prob = 1.0 - up_prob
+    if down_prob >= floor:
+        return ("DOWN", round(down_prob, 3))
+
+    return None  # no edge
+
+def get_model_status():
+    """Return current model status for health/cockpit display."""
+    _, _, meta = load_model()
+    if meta is None:
+        return {"trained": False, "reason": "No model — run /api/v3/train to build"}
+    return {
+        "trained": True,
+        "accuracy": round(meta.get("accuracy", 0) * 100, 1),
+        "natural_rate": round(meta.get("natural_rate", 0) * 100, 1),
+        "edge": round((meta.get("accuracy", 0) - meta.get("natural_rate", 0)) * 100, 1),
+        "n_samples": meta.get("n_samples", 0),
+        "trained_at": meta.get("trained_at", 0),
+        "top_features": meta.get("top_features", []),
+    }

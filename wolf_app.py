@@ -746,3 +746,87 @@ def cockpit():
 
 if os.path.exists("static"):
     APP.mount("/static", StaticFiles(directory="static"), name="static")
+
+# ════════════════════════════════════════════════════════════
+# GHOST v3 ENDPOINTS — Backtested signal engine
+# ════════════════════════════════════════════════════════════
+
+@APP.get("/api/v3/status")
+def v3_status():
+    """Model status — accuracy, edge over random, top features."""
+    from core.signal_engine import get_model_status
+    return get_model_status()
+
+@APP.post("/api/v3/train")
+def v3_train(x_cron_secret: str = Header(default="")):
+    """
+    Train v3 XGBoost model on 6mo historical data.
+    Takes 2-5 minutes. Runs in background, returns immediately.
+    Model only deployed if accuracy > 52% on holdout.
+    """
+    import os
+    if x_cron_secret != os.getenv("CRON_SECRET",""):
+        return JSONResponse({"ok":False,"error":"Forbidden"}, status_code=403)
+    import threading
+    def _train():
+        try:
+            from core.signal_engine import train_and_validate
+            import os
+            crypto = [(s.strip(), "crypto") for s in os.getenv("CRYPTO_SYMBOLS","").split(",") if s.strip()]
+            stocks = [(s.strip(), "stock") for s in os.getenv("STOCK_SYMBOLS","").split(",") if s.strip()]
+            # Also include portfolio symbols
+            try:
+                from core.db import db_conn
+                with db_conn() as conn:
+                    cur = conn.cursor()
+                    cur.execute("SELECT DISTINCT symbol, asset_type FROM user_portfolio")
+                    for sym, at in cur.fetchall():
+                        entry = (sym.strip(), (at or "stock").strip())
+                        if entry not in crypto and entry not in stocks:
+                            stocks.append(entry)
+            except Exception: pass
+            model, accuracy, passed = train_and_validate(crypto + stocks)
+            LOGGER.info(f"v3 training complete: accuracy={round(accuracy*100,1)}% passed={passed}")
+        except Exception as e:
+            LOGGER.error("v3 training failed: " + str(e))
+    threading.Thread(target=_train, daemon=True).start()
+    return {"ok": True, "message": "Training started in background. Check /api/v3/status in 3-5 minutes."}
+
+@APP.post("/api/v3/backtest")
+def v3_backtest(x_cron_secret: str = Header(default=""), symbol: str = "LTC", asset_type: str = "crypto"):
+    """
+    Run backtest on a single symbol — see historical accuracy before training.
+    Shows: how often would +2% target have been hit in 48h, by indicator.
+    """
+    import os
+    if x_cron_secret != os.getenv("CRON_SECRET",""):
+        return JSONResponse({"ok":False,"error":"Forbidden"}, status_code=403)
+    try:
+        from core.signal_engine import backtest_symbol, _calculate_features, _fetch_ohlcv
+        rows = backtest_symbol(symbol, asset_type)
+        if not rows:
+            return {"ok": False, "error": "No data for " + symbol}
+        total = len(rows)
+        hits = sum(1 for r in rows if r['label'] == 1)
+        # Per-indicator accuracy — when indicator fires, how often does price hit target?
+        indicators = {
+            'rsi_oversold': lambda f: f.get('rsi_oversold', 0) == 1,
+            'macd_bullish': lambda f: f.get('macd_bullish', 0) == 1,
+            'near_low': lambda f: f.get('near_low', 0) == 1,
+            'volume_spike': lambda f: f.get('volume_spike', 0) == 1,
+            'all_signals': lambda f: f.get('rsi_oversold',0)==1 and f.get('macd_bullish',0)==1,
+        }
+        results = {}
+        for name, fn in indicators.items():
+            fired = [r for r in rows if fn(r['features'])]
+            if fired:
+                acc = sum(1 for r in fired if r['label']==1) / len(fired)
+                results[name] = {"fired": len(fired), "accuracy": round(acc*100,1)}
+        return {
+            "ok": True, "symbol": symbol, "total_samples": total,
+            "natural_hit_rate": round(hits/total*100,1) if total else 0,
+            "target_move": "2.0%", "hold_hours": 48,
+            "indicators": results,
+        }
+    except Exception as e:
+        return JSONResponse({"ok":False,"error":str(e)}, status_code=500)
