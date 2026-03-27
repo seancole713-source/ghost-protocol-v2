@@ -24,7 +24,7 @@ LOGGER = logging.getLogger("ghost.signal_v3")
 HOLD_HOURS_LABEL = 24      # predict direction 24h from now (~50% base rate, consistent across symbols)
 HOLD_HOURS       = 48       # 48h trade window (how long pick stays open)
 MIN_ACCURACY     = 0.50    # minimum holdout accuracy (need to beat 39% base rate)
-MIN_TRAIN_ROWS   = 100     # minimum labeled rows to attempt training
+MIN_TRAIN_ROWS   = 80      # minimum labeled rows (daily bars: ~400-500 per symbol)
 # Model stored in PostgreSQL — survives Railway deploys
 MODEL_DB_KEY     = "ghost_v3_model_pkl"
 FEATURES_DB_KEY  = "ghost_v3_features_json"
@@ -79,7 +79,7 @@ def _volume_ratio(volumes, period=20):
     if avg == 0: return 1.0
     return float(volumes[-1] / avg)
 
-def _price_momentum(closes, periods=[4, 8, 24]):
+def _price_momentum(closes, periods=[1, 3, 5]):
     """% change over last N candles."""
     result = {}
     for p in periods:
@@ -129,9 +129,9 @@ def _calculate_features(df):
         'bb_squeeze': 1 if band_width < 0.05 else 0,
         'volume_ratio': min(vol_ratio, 5.0),
         'volume_spike': 1 if vol_ratio > 1.5 else 0,
-        'mom_4h': momentum['mom_4h'],
-        'mom_8h': momentum['mom_8h'],
-        'mom_24h': momentum['mom_24h'],
+        'mom_4h': momentum['mom_1h'],
+        'mom_8h': momentum['mom_3h'],
+        'mom_24h': momentum['mom_5h'],
         'price_in_range': price_in_range,
         'near_low': 1 if price_in_range < 0.25 else 0,
         'near_high': 1 if price_in_range > 0.75 else 0,
@@ -140,85 +140,56 @@ def _calculate_features(df):
         'is_weekend': 1 if day_of_week >= 5 else 0,
     }
 
-def _fetch_ohlcv(symbol, asset_type, period='6mo', interval='1h'):
-    """Pull OHLCV data via Alpaca historical bars API (confirmed working on Railway)."""
-    import os, requests as _req, urllib.parse
+def _fetch_ohlcv(symbol, asset_type, period='2y', interval='1d'):
+    """
+    Pull DAILY bars from Alpaca — 2 years, fits in one request (no pagination).
+    Daily bars avoid the 265-per-page hourly limit that was breaking training.
+    Prediction task: will tomorrow's close be higher than today's?
+    """
+    import os, requests as _req
     from datetime import datetime, timedelta, timezone
     key = os.getenv("ALPACA_KEY_ID","")
     secret = os.getenv("ALPACA_SECRET_KEY","")
     if not key or not secret:
-        LOGGER.warning("No Alpaca credentials for OHLCV fetch")
+        LOGGER.warning("No Alpaca credentials")
         return None
     headers = {"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret}
-    # Date range
     end_dt = datetime.now(timezone.utc)
-    try:
-        if 'mo' in period:
-            months = int(period.replace('mo',''))
-            start_dt = end_dt - timedelta(days=months*30)
-        elif 'd' in period:
-            days = int(period.replace('d',''))
-            start_dt = end_dt - timedelta(days=days)
-        else:
-            start_dt = end_dt - timedelta(days=180)
-    except Exception:
-        start_dt = end_dt - timedelta(days=180)
+    start_dt = end_dt - timedelta(days=730)  # 2 years
     start_str = start_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
     end_str = end_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
-    rows = []
     try:
         if asset_type == 'crypto':
+            import urllib.parse
             ticker = symbol.upper() + '/USD'
-            url = f"https://data.alpaca.markets/v1beta3/crypto/us/bars"
-            # Must encode the slash in LTC/USD manually — requests auto-encodes it
-            symbol_encoded = urllib.parse.quote(ticker, safe='')
-            full_url = url + '?symbols=' + symbol_encoded + '&timeframe=1Hour&limit=10000&start=' + start_str + '&end=' + end_str
-            params = {}
-            r = _req.get(full_url, headers=headers, timeout=30)
-            LOGGER.info(f"Alpaca crypto URL: {full_url[:100]} status={r.status_code}")
+            ticker_enc = urllib.parse.quote(ticker, safe='')
+            url = (f"https://data.alpaca.markets/v1beta3/crypto/us/bars"
+                   f"?symbols={ticker_enc}&timeframe=1Day&limit=1000"
+                   f"&start={start_str}&end={end_str}")
+            r = _req.get(url, headers=headers, timeout=30)
             if r.status_code != 200:
-                LOGGER.warning(f"Alpaca crypto bars {symbol}: {r.status_code}")
+                LOGGER.warning(f"Alpaca daily crypto {symbol}: HTTP {r.status_code}")
                 return None
             bars = r.json().get('bars', {}).get(ticker, [])
-            # Handle pagination
-            next_token = r.json().get('next_page_token')
-            while next_token and len(bars) < 5000:
-                params['page_token'] = next_token
-                r2 = _req.get(url, headers=headers, params=params, timeout=30)
-                if r2.status_code != 200: break
-                d2 = r2.json()
-                bars.extend(d2.get('bars', {}).get(ticker, []))
-                next_token = d2.get('next_page_token')
         else:
-            url = f"https://data.alpaca.markets/v2/stocks/{symbol.upper()}/bars"
-            params = {'timeframe': '1Hour', 'start': start_str, 'end': end_str, 'limit': 10000, 'feed': 'iex'}
-            r = _req.get(url, headers=headers, params=params, timeout=30)
+            url = (f"https://data.alpaca.markets/v2/stocks/{symbol.upper()}/bars"
+                   f"?timeframe=1Day&limit=1000&feed=iex"
+                   f"&start={start_str}&end={end_str}")
+            r = _req.get(url, headers=headers, timeout=30)
             if r.status_code != 200:
-                LOGGER.warning(f"Alpaca stock bars {symbol}: {r.status_code}")
+                LOGGER.warning(f"Alpaca daily stock {symbol}: HTTP {r.status_code}")
                 return None
             bars = r.json().get('bars', [])
-            next_token = r.json().get('next_page_token')
-            while next_token and len(bars) < 5000:
-                params['page_token'] = next_token
-                r2 = _req.get(url, headers=headers, params=params, timeout=30)
-                if r2.status_code != 200: break
-                d2 = r2.json()
-                bars.extend(d2.get('bars', []))
-                next_token = d2.get('next_page_token')
-        for bar in bars:
-            rows.append({
-                'ts': bar.get('t', ''),
-                'open': float(bar.get('o', 0)),
-                'high': float(bar.get('h', 0)),
-                'low': float(bar.get('l', 0)),
-                'close': float(bar.get('c', 0)),
-                'volume': float(bar.get('v', 0)),
-            })
-        LOGGER.info(f"Alpaca OHLCV {symbol}: {len(rows)} bars fetched")
+        rows = [{'ts': b.get('t',''), 'open': float(b.get('o',0)),
+                 'high': float(b.get('h',0)), 'low': float(b.get('l',0)),
+                 'close': float(b.get('c',0)), 'volume': float(b.get('v',0))}
+                for b in bars if b.get('c',0) > 0]
+        LOGGER.info(f"Alpaca daily {symbol}: {len(rows)} bars")
         return rows if rows else None
     except Exception as e:
-        LOGGER.warning(f"Alpaca OHLCV failed for {symbol}: {e}")
+        LOGGER.warning(f"Alpaca daily fetch failed {symbol}: {e}")
         return None
+
 
 def backtest_symbol(symbol, asset_type):
     """
@@ -238,9 +209,9 @@ def backtest_symbol(symbol, asset_type):
         features['symbol'] = symbol
         features['asset_type'] = asset_type
 
-        # Label: is close price higher 24h from now? (~50% base rate across all symbols)
+        # Label: is tomorrow's close higher than today's? (~50% base rate)
         entry = rows[i]['close']
-        future_close = rows[i+24]['close'] if i+24 < len(rows) else entry
+        future_close = rows[i+1]['close'] if i+1 < len(rows) else entry
         label = 1 if future_close > entry else 0
         labeled.append({'features': features, 'label': label})
 
