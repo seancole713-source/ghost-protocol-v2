@@ -91,12 +91,25 @@ def send_news_alert(symbol, headline, sentiment, action=""):
     if action: parts.append(action)
     return _send(NL.join(parts))
 
-def send_weekly_summary(stats):
-    wins = stats.get("wins", 0)
-    losses = stats.get("losses", 0)
-    total = wins + losses
-    wr = round(wins / total * 100, 1) if total else 0
-    pnl = stats.get("pnl_usd", 0)
+def send_weekly_summary(wins_or_stats, losses=None, wr=None, avg_win=None, avg_loss=None):
+    # Accept either dict or positional args
+    if isinstance(wins_or_stats, dict):
+        stats = wins_or_stats
+        wins = stats.get("wins", 0)
+        losses = stats.get("losses", 0)
+        total = wins + losses
+        wr = round(wins / total * 100, 1) if total else 0
+        avg_win = stats.get("avg_win", 0)
+        avg_loss = stats.get("avg_loss", 0)
+    else:
+        wins = wins_or_stats or 0
+        losses = losses or 0
+        total = wins + losses
+        wr = wr or 0
+        avg_win = avg_win or 0
+        avg_loss = avg_loss or 0
+    # P&L simulation: avg win/loss * $100 per trade
+    pnl = (wins * (avg_win or 0) + losses * (avg_loss or 0)) if total else 0
     sign = "+" if pnl >= 0 else ""
     parts = [
         "<b>Ghost WEEKLY SUMMARY</b>",

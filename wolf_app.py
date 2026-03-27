@@ -76,8 +76,22 @@ def _morning_card_job():
             if _open:
                 send_morning_card(_open, week_stats, is_update=True)
             else:
-                from core.telegram import _send
-                _send("Ghost Protocol v2 -- No new picks today. Market conditions not met.")
+                # Rate-limit: only send "no picks" message once per 4 hours
+                import time as _rt
+                _last_key = "last_no_picks_sent"
+                _now = int(_rt.time())
+                try:
+                    with db_conn() as _rc:
+                        _rc.cursor().execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+                        _rc.cursor().execute("SELECT val FROM ghost_state WHERE key=%s", (_last_key,))
+                        _last_row = _rc.cursor().fetchone()
+                        _last_sent = int(_last_row[0]) if _last_row else 0
+                    if _now - _last_sent > 14400:  # 4 hours
+                        from core.telegram import _send
+                        _send("Ghost Protocol v2 -- No new picks today. Market conditions not met.")
+                        with db_conn() as _rc2:
+                            _rc2.cursor().execute("INSERT INTO ghost_state(key,val) VALUES(%s,%s) ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val", (_last_key, str(_now)))
+                except Exception: pass
         except Exception as _oe:
             LOGGER.warning("Open positions update failed: " + str(_oe))
     return picks
