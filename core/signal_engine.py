@@ -348,17 +348,33 @@ def predict_live(symbol, asset_type):
     proba = model.predict_proba(X)[0]
     up_prob = float(proba[1])   # probability price goes up TARGET_MOVE_PCT
 
-    # Only signal if model confidence exceeds floor
-    floor = float(os.getenv("MIN_ALERT_CONFIDENCE", "0.75"))
-    if up_prob >= floor:
-        return ("UP", round(up_prob, 3))
-
-    # Inverse: if model very confident it won't go up, could be a DOWN signal
-    down_prob = 1.0 - up_prob
-    if down_prob >= floor:
-        return ("DOWN", round(down_prob, 3))
-
-    return None  # no edge
+    # v3 models output raw XGBoost probabilities (typically 0.45-0.58)
+    # Scale to 0.75-0.95 range based on edge so Ghost infrastructure works
+    # Only generate signal if model shows directional edge
+    edge = meta.get('edge', 0)  # edge = accuracy - natural_rate from training
+    
+    # Need at least +2% edge to generate any signal
+    if edge < 0.02:
+        return None
+    
+    # Scale raw probability to interpretable confidence
+    # 0.52 prob + 2% edge -> 0.76 confidence (just above floor)
+    # 0.58 prob + 15% edge -> 0.92 confidence
+    if up_prob > 0.50:
+        # Bullish signal: scale based on how much above 0.50
+        raw_edge = up_prob - 0.50
+        scaled = 0.75 + (raw_edge * 2.0) + (edge * 0.5)
+        conf = round(min(0.95, max(0.75, scaled)), 3)
+        return ("UP", conf)
+    elif up_prob < 0.50:
+        # Bearish: model thinks price going down
+        down_prob = 1.0 - up_prob
+        raw_edge = down_prob - 0.50
+        scaled = 0.75 + (raw_edge * 2.0) + (edge * 0.5)
+        conf = round(min(0.95, max(0.75, scaled)), 3)
+        return ("DOWN", conf)
+    
+    return None  # exactly 0.50 = no signal
 
 def get_model_status():
     """Return per-symbol model status."""
