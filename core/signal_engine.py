@@ -25,8 +25,9 @@ HOLD_HOURS_LABEL = 24      # predict direction 24h from now (~50% base rate, con
 HOLD_HOURS       = 48       # 48h trade window (how long pick stays open)
 MIN_ACCURACY     = 0.50    # minimum holdout accuracy (need to beat 39% base rate)
 MIN_TRAIN_ROWS   = 100     # minimum labeled rows to attempt training
-MODEL_PATH       = "/tmp/ghost_v3_model.pkl"
-FEATURES_PATH    = "/tmp/ghost_v3_features.json"
+# Model stored in PostgreSQL — survives Railway deploys
+MODEL_DB_KEY     = "ghost_v3_model_pkl"
+FEATURES_DB_KEY  = "ghost_v3_features_json"
 
 # ── Technical Indicator Calculations ───────────────────────────────────────
 def _rsi(closes, period=14):
@@ -315,36 +316,59 @@ def train_and_validate(symbols_and_types):
 
     passes = accuracy >= MIN_ACCURACY
     if passes:
-        import pickle
-        with open(MODEL_PATH, 'wb') as f:
-            pickle.dump(model, f)
-        with open(FEATURES_PATH, 'w') as f:
-            json.dump({'feature_cols': feature_cols, 'accuracy': accuracy,
-                       'natural_rate': natural_rate, 'trained_at': time.time(),
-                       'top_features': top, 'n_samples': len(X)}, f)
-        LOGGER.info("Model saved — Ghost v3 is live")
+        import pickle, base64
+        from core.db import db_conn
+        model_bytes = base64.b64encode(pickle.dumps(model)).decode('ascii')
+        meta_json = json.dumps({'feature_cols': feature_cols, 'accuracy': accuracy,
+                   'natural_rate': natural_rate, 'trained_at': time.time(),
+                   'top_features': top, 'n_samples': len(X)})
+        try:
+            with db_conn() as conn:
+                cur = conn.cursor()
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS ghost_v3_model (
+                        key TEXT PRIMARY KEY, value TEXT, updated_at BIGINT
+                    )""")
+                cur.execute("""
+                    INSERT INTO ghost_v3_model (key, value, updated_at)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at
+                """, (MODEL_DB_KEY, model_bytes, int(time.time())))
+                cur.execute("""
+                    INSERT INTO ghost_v3_model (key, value, updated_at)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=EXCLUDED.updated_at
+                """, (FEATURES_DB_KEY, meta_json, int(time.time())))
+            LOGGER.info("Ghost v3 model saved to PostgreSQL — survives deploys")
+        except Exception as _se:
+            LOGGER.error("Failed to save model to DB: " + str(_se))
     else:
         LOGGER.warning(f"Model accuracy {round(accuracy*100,1)}% < {round(MIN_ACCURACY*100,1)}% — NOT deploying")
 
     return model, accuracy, passes
 
 def load_model():
-    """Load saved model and feature list. Returns (model, feature_cols) or (None, None)."""
+    """Load model from PostgreSQL. Survives Railway deploys."""
     try:
-        import pickle
-        if not os.path.exists(MODEL_PATH) or not os.path.exists(FEATURES_PATH):
-            return None, None, None
-        with open(MODEL_PATH, 'rb') as f:
-            model = pickle.load(f)
-        with open(FEATURES_PATH) as f:
-            meta = json.load(f)
-        # Reject stale models (>7 days old)
-        if time.time() - meta.get('trained_at', 0) > 7 * 86400:
-            LOGGER.warning("Model is >7 days old — needs retraining")
+        import pickle, base64
+        from core.db import db_conn
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT value FROM ghost_v3_model WHERE key=%s", (MODEL_DB_KEY,))
+            row = cur.fetchone()
+            if not row: return None, None, None
+            model = pickle.loads(base64.b64decode(row[0]))
+            cur.execute("SELECT value FROM ghost_v3_model WHERE key=%s", (FEATURES_DB_KEY,))
+            mrow = cur.fetchone()
+            if not mrow: return None, None, None
+            meta = json.loads(mrow[0])
+        # Reject models older than 14 days
+        if time.time() - meta.get('trained_at', 0) > 14 * 86400:
+            LOGGER.warning("v3 model >14 days old — retraining needed")
             return None, None, None
         return model, meta['feature_cols'], meta
     except Exception as e:
-        LOGGER.warning("load_model failed: " + str(e))
+        LOGGER.warning("load_model from DB failed: " + str(e))
         return None, None, None
 
 def predict_live(symbol, asset_type):
