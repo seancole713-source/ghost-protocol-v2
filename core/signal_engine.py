@@ -129,7 +129,7 @@ def _calculate_features(df):
 
 def _fetch_ohlcv(symbol, asset_type, period='6mo', interval='1h'):
     """Pull OHLCV data via Alpaca historical bars API (confirmed working on Railway)."""
-    import os, requests as _req
+    import os, requests as _req, urllib.parse
     from datetime import datetime, timedelta, timezone
     key = os.getenv("ALPACA_KEY_ID","")
     secret = os.getenv("ALPACA_SECRET_KEY","")
@@ -139,8 +139,17 @@ def _fetch_ohlcv(symbol, asset_type, period='6mo', interval='1h'):
     headers = {"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret}
     # Date range
     end_dt = datetime.now(timezone.utc)
-    months = int(period.replace('mo','').replace('d','')) if 'mo' in period else 1
-    start_dt = end_dt - timedelta(days=months*30 if 'mo' in period else int(period.replace('d','')))
+    try:
+        if 'mo' in period:
+            months = int(period.replace('mo',''))
+            start_dt = end_dt - timedelta(days=months*30)
+        elif 'd' in period:
+            days = int(period.replace('d',''))
+            start_dt = end_dt - timedelta(days=days)
+        else:
+            start_dt = end_dt - timedelta(days=180)
+    except Exception:
+        start_dt = end_dt - timedelta(days=180)
     start_str = start_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
     end_str = end_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
     rows = []
@@ -148,8 +157,12 @@ def _fetch_ohlcv(symbol, asset_type, period='6mo', interval='1h'):
         if asset_type == 'crypto':
             ticker = symbol.upper() + '/USD'
             url = f"https://data.alpaca.markets/v1beta3/crypto/us/bars"
-            params = {'symbols': ticker, 'timeframe': '1Hour', 'start': start_str, 'end': end_str, 'limit': 10000}
-            r = _req.get(url, headers=headers, params=params, timeout=30)
+            # Must encode the slash in LTC/USD manually — requests auto-encodes it
+            symbol_encoded = urllib.parse.quote(ticker, safe='')
+            full_url = url + '?symbols=' + symbol_encoded + '&timeframe=1Hour&limit=10000&start=' + start_str + '&end=' + end_str
+            params = {}
+            r = _req.get(full_url, headers=headers, timeout=30)
+            LOGGER.info(f"Alpaca crypto URL: {full_url[:100]} status={r.status_code}")
             if r.status_code != 200:
                 LOGGER.warning(f"Alpaca crypto bars {symbol}: {r.status_code}")
                 return None
