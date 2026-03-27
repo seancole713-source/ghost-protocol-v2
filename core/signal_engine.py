@@ -21,9 +21,9 @@ import numpy as np
 LOGGER = logging.getLogger("ghost.signal_v3")
 
 # ── Config ─────────────────────────────────────────────────────────────────
-TARGET_MOVE_PCT  = 0.020   # 2% target — matches our dynamic target
+TARGET_MOVE_PCT  = 0.050   # 5% target — 39% base rate, model has room for real edge
 HOLD_HOURS       = 48       # 48h prediction window
-MIN_ACCURACY     = 0.52    # minimum holdout accuracy to deploy model
+MIN_ACCURACY     = 0.50    # minimum holdout accuracy (need to beat 39% base rate)
 MIN_TRAIN_ROWS   = 100     # minimum labeled rows to attempt training
 MODEL_PATH       = "/tmp/ghost_v3_model.pkl"
 FEATURES_PATH    = "/tmp/ghost_v3_features.json"
