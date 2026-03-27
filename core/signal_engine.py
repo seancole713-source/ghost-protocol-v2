@@ -128,29 +128,70 @@ def _calculate_features(df):
     }
 
 def _fetch_ohlcv(symbol, asset_type, period='6mo', interval='1h'):
-    """Pull OHLCV data via yfinance."""
+    """Pull OHLCV data via Alpaca historical bars API (confirmed working on Railway)."""
+    import os, requests as _req
+    from datetime import datetime, timedelta, timezone
+    key = os.getenv("ALPACA_KEY_ID","")
+    secret = os.getenv("ALPACA_SECRET_KEY","")
+    if not key or not secret:
+        LOGGER.warning("No Alpaca credentials for OHLCV fetch")
+        return None
+    headers = {"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret}
+    # Date range
+    end_dt = datetime.now(timezone.utc)
+    months = int(period.replace('mo','').replace('d','')) if 'mo' in period else 1
+    start_dt = end_dt - timedelta(days=months*30 if 'mo' in period else int(period.replace('d','')))
+    start_str = start_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+    end_str = end_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+    rows = []
     try:
-        import yfinance as yf
-        # Map crypto symbols to yfinance format
         if asset_type == 'crypto':
-            ticker = symbol.upper() + '-USD'
+            ticker = symbol.upper() + '/USD'
+            url = f"https://data.alpaca.markets/v1beta3/crypto/us/bars"
+            params = {'symbols': ticker, 'timeframe': '1Hour', 'start': start_str, 'end': end_str, 'limit': 10000}
+            r = _req.get(url, headers=headers, params=params, timeout=30)
+            if r.status_code != 200:
+                LOGGER.warning(f"Alpaca crypto bars {symbol}: {r.status_code}")
+                return None
+            bars = r.json().get('bars', {}).get(ticker, [])
+            # Handle pagination
+            next_token = r.json().get('next_page_token')
+            while next_token and len(bars) < 5000:
+                params['page_token'] = next_token
+                r2 = _req.get(url, headers=headers, params=params, timeout=30)
+                if r2.status_code != 200: break
+                d2 = r2.json()
+                bars.extend(d2.get('bars', {}).get(ticker, []))
+                next_token = d2.get('next_page_token')
         else:
-            ticker = symbol.upper()
-        df = yf.Ticker(ticker).history(period=period, interval=interval)
-        if df.empty: return None
-        rows = []
-        for ts, row in df.iterrows():
+            url = f"https://data.alpaca.markets/v2/stocks/{symbol.upper()}/bars"
+            params = {'timeframe': '1Hour', 'start': start_str, 'end': end_str, 'limit': 10000, 'feed': 'iex'}
+            r = _req.get(url, headers=headers, params=params, timeout=30)
+            if r.status_code != 200:
+                LOGGER.warning(f"Alpaca stock bars {symbol}: {r.status_code}")
+                return None
+            bars = r.json().get('bars', [])
+            next_token = r.json().get('next_page_token')
+            while next_token and len(bars) < 5000:
+                params['page_token'] = next_token
+                r2 = _req.get(url, headers=headers, params=params, timeout=30)
+                if r2.status_code != 200: break
+                d2 = r2.json()
+                bars.extend(d2.get('bars', []))
+                next_token = d2.get('next_page_token')
+        for bar in bars:
             rows.append({
-                'ts': ts.timestamp(),
-                'open': float(row['Open']),
-                'high': float(row['High']),
-                'low': float(row['Low']),
-                'close': float(row['Close']),
-                'volume': float(row['Volume']),
+                'ts': bar.get('t', ''),
+                'open': float(bar.get('o', 0)),
+                'high': float(bar.get('h', 0)),
+                'low': float(bar.get('l', 0)),
+                'close': float(bar.get('c', 0)),
+                'volume': float(bar.get('v', 0)),
             })
-        return rows
+        LOGGER.info(f"Alpaca OHLCV {symbol}: {len(rows)} bars fetched")
+        return rows if rows else None
     except Exception as e:
-        LOGGER.warning("OHLCV fetch failed for " + symbol + ": " + str(e))
+        LOGGER.warning(f"Alpaca OHLCV failed for {symbol}: {e}")
         return None
 
 def backtest_symbol(symbol, asset_type):
