@@ -9,7 +9,7 @@ from typing import Optional, Dict, Tuple
 LOGGER = logging.getLogger("ghost.prices")
 POLYGON_KEY = os.getenv("POLYGON_API_KEY", "")
 TIMEOUT = float(os.getenv("PRICE_PROVIDER_TIMEOUT_S", "2.5"))
-CACHE_TTL = int(os.getenv("PRICE_TTL_S", "300"))  # 5min cache — survives rate-limit bursts
+CACHE_TTL = int(os.getenv("PRICE_TTL_S", "120"))
 STOCK_CACHE_TTL = int(os.getenv("STOCK_PRICE_TTL_S", "60"))  # stocks refresh every 60s during market hours
 _mem_cache: Dict[str, Tuple[float, float]] = {}
 
@@ -130,23 +130,13 @@ def get_vix():
     return None
 
 def check_feeds():
-    """Health check - test price sources. Uses cache if available to survive rate limits."""
-    # First check if we have anything cached (means feeds were working recently)
-    cached_btc = _cache_get("BTC")
-    cached_eth = _cache_get("ETH")
-    if cached_btc and cached_eth:
-        # Feeds were working — report as healthy using cache
-        return {"coingecko": True, "coinbase": True, "binance": False, "polygon": False,
-                "summary": "2/4 feeds responding (cached)"}
-    # No cache — try live
+    """Health check - test all price sources."""
     r = {
-        "coingecko": bool(get_crypto_price("BTC")),
-        "coinbase":  bool(get_crypto_price("ETH")),
-        "binance":   False,
-        "polygon":   False,
+        "coingecko": _coingecko("bitcoin") is not None,
+        "coinbase": _coinbase("BTC") is not None,
+        "binance": _binance("BTC") is not None,
+        "polygon": _polygon("AAPL") is not None if POLYGON_KEY else False,
     }
-    ok = sum(v for v in r.values())
-    r["summary"] = str(ok) + "/4 feeds responding"
+    working = sum(1 for v in r.values() if v)
+    r["summary"] = f"{working}/{len(r)} feeds responding"
     return r
-
-r
