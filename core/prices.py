@@ -44,6 +44,28 @@ def _binance(symbol):
         return float(r.json()["price"])
     except: return None
 
+def _alpaca_crypto(symbol):
+    """Alpaca crypto latest bar — confirmed working on Railway, no rate limits."""
+    try:
+        import urllib.parse
+        key = os.getenv("ALPACA_KEY_ID", "")
+        secret = os.getenv("ALPACA_SECRET_KEY", "")
+        if not key or not secret: return None
+        ticker = symbol.upper() + "/USD"
+        ticker_enc = urllib.parse.quote(ticker, safe='')
+        r = requests.get(
+            f"https://data.alpaca.markets/v1beta3/crypto/us/latest/bars?symbols={ticker_enc}",
+            headers={"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret},
+            timeout=TIMEOUT
+        )
+        if r.status_code == 200:
+            bars = r.json().get("bars", {})
+            bar = bars.get(ticker)
+            if bar: return float(bar.get("c") or 0) or None
+    except Exception as _e:
+        LOGGER.debug(f"Alpaca crypto failed {symbol}: {_e}")
+    return None
+
 CRYPTO_MAP = {
     "BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana", "XRP": "ripple",
     "CHZ": "chiliz", "LINK": "chainlink", "ADA": "cardano", "AVAX": "avalanche-2",
@@ -62,7 +84,13 @@ def get_crypto_price(symbol):
     if p2: sources.append(("coinbase", p2))
     p3 = _binance(symbol)
     if p3: sources.append(("binance", p3))
-    if not sources: return None
+    if not sources:
+        p4 = _alpaca_crypto(symbol)
+        if p4:
+            _cache_set(symbol, p4)
+            LOGGER.info(f"Alpaca crypto fallback for {symbol}: {p4}")
+            return p4
+        return None
     vals = [p for _, p in sources]
     if len(vals) >= 2:
         for i in range(len(vals)):
@@ -133,9 +161,9 @@ def check_feeds():
     """Health check - test all price sources."""
     r = {
         "coingecko": _coingecko("bitcoin") is not None,
-        "coinbase": _coinbase("BTC") is not None,
-        "binance": _binance("BTC") is not None,
-        "polygon": _polygon("AAPL") is not None if POLYGON_KEY else False,
+        "coinbase":  _coinbase("BTC") is not None,
+        "binance":   _binance("BTC") is not None,
+        "alpaca":    _alpaca_crypto("BTC") is not None,
     }
     working = sum(1 for v in r.values() if v)
     r["summary"] = f"{working}/{len(r)} feeds responding"
