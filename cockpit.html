@@ -446,5 +446,56 @@ setInterval(load, 60000);
   };
 })();
 </script>
-</body>
+
+<script>
+(function(){
+  // Store actual trade data from API
+  var _tradeData = [];
+  
+  // Intercept v2/recent to capture real outcomes
+  var _orig = window.fetch;
+  window.fetch = function(url, opts) {
+    var p = _orig.apply(this, arguments);
+    if (typeof url === 'string' && url.indexOf('v2/recent') !== -1) {
+      return p.then(function(r) {
+        var r2 = r.clone();
+        r2.json().then(function(d){ _tradeData = d.trades || []; }).catch(function(){});
+        return r;
+      });
+    }
+    return p;
+  };
+
+  // After any DOM mutation in results panel, fix outcome badges
+  var _observer = new MutationObserver(function() {
+    if (!_tradeData.length) return;
+    // Find all rows in results panel
+    var panel = document.getElementById('tab-results');
+    if (!panel) return;
+    var rows = panel.querySelectorAll('tr[data-id], div[data-id], tr, .result-row');
+    rows.forEach(function(row, i) {
+      var trade = _tradeData[i];
+      if (!trade) return;
+      if (trade.outcome !== 'EXPIRED') return;
+      // Find any badge-like element in this row showing LOSS
+      row.querySelectorAll('span,td,div').forEach(function(el) {
+        var txt = el.textContent.trim();
+        if (el.children.length === 0 && txt.indexOf('LOSS') !== -1) {
+          el.textContent = '⏳ EXPIRED';
+          el.style.cssText = 'color:#888;background:rgba(128,128,128,0.12);border:1px solid #555;padding:2px 6px;border-radius:4px;font-size:11px';
+        }
+      });
+    });
+  });
+
+  // Start observing once DOM ready
+  document.addEventListener('DOMContentLoaded', function() {
+    var panel = document.getElementById('tab-results');
+    if (panel) _observer.observe(panel, {childList:true, subtree:true});
+  });
+  // Also patch immediately in case already loaded
+  var panel = document.getElementById('tab-results');
+  if (panel) _observer.observe(panel, {childList:true, subtree:true});
+})();
+</script></body>
 </html>
