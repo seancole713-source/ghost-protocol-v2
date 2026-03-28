@@ -342,7 +342,7 @@ async function load() {
       sg.innerHTML = '<div class="info-box"><b>No stock plays right now.</b><br><br>'
         + (mopen ? 'Market is open but Ghost has no stock signals above threshold right now.'
           : 'US stock market is <b>closed</b>. Hours: Mon&ndash;Fri 9:30 AM &ndash; 4:00 PM ET.')
-        + '<br><br>Stocks watched: AAPL, NVDA, TSLA, MSFT, META, AMZN, PLTR, AMD, T, XPO, NET</div>';
+        + '<br><br>Stocks watched: AAPL, NVDA, TSLA, MSFT, META, AMZN, PLTR, AMD, T, XPO, NET, WOLF</div>';
     }
 
     var trades = recent.trades || [];
@@ -357,7 +357,7 @@ async function load() {
         var d = (t.direction === 'UP' || t.direction === 'BUY') ? 'BUY' : 'SELL';
         tbl += '<tr><td><b>' + t.symbol + '</b></td>';
         tbl += '<td><span class="pill ' + d.toLowerCase() + '" style="font-size:11px;padding:3px 8px">' + d + '</span></td>';
-        tbl += '<td><span class="' + (w ? 'win-txt' : 'loss-txt') + '">' + (w ? '&#9989; WIN' : '&#10060; LOSS') + '</span></td>';
+        var exp = t.outcome === 'EXPIRED'; var outCls = w ? 'win-txt' : exp ? '' : 'loss-txt'; var outSty = exp ? 'style="color:#666;font-weight:700;font-size:12px"' : ''; var outLbl = w ? '&#9989; WIN' : exp ? '&#9203; EXPIRED' : '&#10060; LOSS'; tbl += '<td><span class="' + outCls + '" ' + outSty + '>' + outLbl + '</span></td>';
         tbl += '<td>' + fmt(t.entry_price) + '</td>';
         tbl += '<td>' + (t.exit_price ? fmt(t.exit_price) : '&mdash;') + '</td>';
         tbl += '<td class="' + (pnl >= 0 ? 'pos' : 'neg') + '">' + (pnl >= 0 ? '+' : '') + pnl.toFixed(1) + '%</td></tr>';
