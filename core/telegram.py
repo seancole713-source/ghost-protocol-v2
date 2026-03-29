@@ -101,13 +101,18 @@ def send_weekly_summary(wins_or_stats, losses=None, wr=None, avg_win=None, avg_l
         wr = round(wins / total * 100, 1) if total else 0
         avg_win = stats.get("avg_win", 0)
         avg_loss = stats.get("avg_loss", 0)
+        alltime_wr = stats.get("alltime_wr", wr)
+        retrain_days = stats.get("retrain_in_days", 14)
     else:
+        stats = {}  # prevent NameError on stats.get() below
         wins = wins_or_stats or 0
         losses = losses or 0
         total = wins + losses
         wr = wr or 0
         avg_win = avg_win or 0
         avg_loss = avg_loss or 0
+        alltime_wr = wr
+        retrain_days = 14
     # P&L simulation: avg win/loss * $100 per trade
     pnl = (wins * (avg_win or 0) + losses * (avg_loss or 0)) if total else 0
     sign = "+" if pnl >= 0 else ""
@@ -122,7 +127,7 @@ def send_weekly_summary(wins_or_stats, losses=None, wr=None, avg_win=None, avg_l
     if stats.get("worst_pick"): parts.append("Worst: " + stats["worst_pick"])
     parts.extend([
         "",
-        "All-time: " + str(stats.get("alltime_wr", 0)) + "% accuracy",
+        "All-time: " + str(stats.get("alltime_wr", wr)) + "% accuracy",
         "Model retrains in: " + str(stats.get("retrain_in_days", 14)) + " days",
         "Next card: Monday 8 AM CT",
     ])
