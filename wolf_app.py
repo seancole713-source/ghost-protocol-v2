@@ -10,28 +10,6 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelna
 LOGGER = logging.getLogger("ghost")
 CRON_SECRET = os.getenv("CRON_SECRET", "")
 
-def _weekly_summary_job():
-    """Send weekly performance summary every Friday."""
-    try:
-        from core.telegram import send_weekly_summary
-        from core.db import db_conn
-        with db_conn() as conn:
-            cur = conn.cursor()
-            cutoff = int(__import__("time").time()) - 7*86400
-            cur.execute(
-                "SELECT outcome, COUNT(*), AVG(pnl_pct) FROM predictions"
-                " WHERE resolved_at > %s AND outcome IN ('WIN','LOSS') AND direction='UP' AND id >= 223438 GROUP BY outcome",
-                (cutoff,))
-            rows = {r[0]: {"count": r[1], "avg_pnl": round(float(r[2] or 0), 2)} for r in cur.fetchall()}
-        wins = rows.get("WIN", {}).get("count", 0)
-        losses = rows.get("LOSS", {}).get("count", 0)
-        wr = round(wins/(wins+losses)*100, 1) if (wins+losses) > 0 else 0
-        avg_win = rows.get("WIN", {}).get("avg_pnl", 0)
-        avg_loss = rows.get("LOSS", {}).get("avg_pnl", 0)
-        send_weekly_summary(wins, losses, wr, avg_win, avg_loss)
-        LOGGER.info("Weekly summary sent: "+str(wins)+"W/"+str(losses)+"L "+str(wr)+"%")
-    except Exception as e:
-        LOGGER.error("weekly_summary: "+str(e))
 
 def _morning_card_job():
     """Run prediction cycle and send morning Telegram card."""
@@ -133,7 +111,6 @@ async def lifespan(app: FastAPI):
     # Weekly summary: every Friday at 4 PM CT = 22:00 UTC = 79200s from midnight
     # Approximated as 7-day interval - fires on first Friday after deploy
     scheduler.register("weekly_summary", _weekly_summary_job, interval_s=604800)
-    scheduler.register("weekly_summary", _weekly_summary_job, interval_s=3600)
     scheduler.register("reconcile", reconcile_outcomes, interval_s=900)
     # T19: Auto-refresh portfolio stock prices every 15 min
     from core.portfolio_routes import auto_refresh_portfolio_prices
