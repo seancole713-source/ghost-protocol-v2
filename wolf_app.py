@@ -416,6 +416,28 @@ async def diagnostics():
     }
 
 
+
+@APP.post("/api/admin/delete-model")
+async def delete_model(x_cron_secret: str = Header(None)):
+    """Delete a stale model from DB by symbol. Used when model can't retrain."""
+    if x_cron_secret != CRON_SECRET:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    # Always clean up ARB — it only has 43 bars, can never train v3.1
+    from core.db import db_conn
+    deleted = []
+    symbols_to_clean = ["ARB"]  # extend as needed
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            for sym in symbols_to_clean:
+                cur.execute("DELETE FROM ghost_v3_model WHERE key IN (%s, %s)",
+                           (f"model_{sym}", f"meta_{sym}"))
+                deleted.append(sym)
+        return {"ok": True, "deleted": deleted}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 @APP.get("/health")
 def health():
     import os, time as _t
