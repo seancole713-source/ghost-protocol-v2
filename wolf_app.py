@@ -35,8 +35,10 @@ def _morning_card_job():
             # Scope to v2 predictions only (predicted_at is set, not NULL)
             cur.execute("SELECT outcome FROM predictions WHERE outcome IN ('WIN','LOSS') AND direction='UP' AND predicted_at IS NOT NULL ORDER BY id DESC LIMIT 2000")
             all_rows = cur.fetchall()
-            all_wins = sum(1 for r in all_rows if r[0] == "WIN")
-            alltime_wr = round(all_wins/len(all_rows)*100,1) if all_rows else 0
+            # Only count WIN/LOSS — exclude EXPIRED from denominator
+            resolved = [r for r in all_rows if r[0] in ("WIN","LOSS")]
+            all_wins = sum(1 for r in resolved if r[0] == "WIN")
+            alltime_wr = round(all_wins/len(resolved)*100,1) if resolved else 0
     except:
         wins, losses, pnl, alltime_wr = 0, 0, 0.0, 0
     week_stats = {"wins": wins, "losses": losses, "pnl_usd": pnl, "alltime_wr": alltime_wr}
@@ -52,7 +54,23 @@ def _morning_card_job():
                 )
                 _open = [{"symbol":r[0],"direction":r[1],"confidence":r[2],"entry_price":r[3],"target_price":r[4],"stop_price":r[5],"expires_at":r[6],"pos_size_pct":2.0} for r in _cur2.fetchall()]
             if _open:
-                send_morning_card(_open, week_stats, is_update=True)
+                # Only send OPEN POSITIONS if picks have changed since last send
+                import hashlib as _hl
+                _pick_hash = _hl.md5(','.join(sorted(p['symbol'] for p in _open)).encode()).hexdigest()[:8]
+                _hash_key = "last_open_pos_hash"
+                try:
+                    with db_conn() as _hc:
+                        _hcur = _hc.cursor()
+                        _hcur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+                        _hcur.execute("SELECT val FROM ghost_state WHERE key=%s", (_hash_key,))
+                        _hrow = _hcur.fetchone()
+                        _last_hash = _hrow[0] if _hrow else ""
+                    if _pick_hash != _last_hash:
+                        send_morning_card(_open, week_stats, is_update=True)
+                        with db_conn() as _hc2:
+                            _hc2.cursor().execute("INSERT INTO ghost_state(key,val) VALUES(%s,%s) ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val", (_hash_key, _pick_hash))
+                except Exception:
+                    send_morning_card(_open, week_stats, is_update=True)
             else:
                 # Rate-limit: only send "no picks" message once per 4 hours
                 import time as _rt
@@ -60,9 +78,10 @@ def _morning_card_job():
                 _now = int(_rt.time())
                 try:
                     with db_conn() as _rc:
-                        _rc.cursor().execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
-                        _rc.cursor().execute("SELECT val FROM ghost_state WHERE key=%s", (_last_key,))
-                        _last_row = _rc.cursor().fetchone()
+                        _npcur = _rc.cursor()
+                        _npcur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+                        _npcur.execute("SELECT val FROM ghost_state WHERE key=%s", (_last_key,))
+                        _last_row = _npcur.fetchone()
                         _last_sent = int(_last_row[0]) if _last_row else 0
                     if _now - _last_sent > 14400:  # 4 hours
                         from core.telegram import _send
