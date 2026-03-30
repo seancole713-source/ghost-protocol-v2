@@ -238,7 +238,22 @@ def predict_symbol(symbol, asset_type, regime):
         return None
 
     now = int(time.time())
-    hold = CRYPTO_HOLD_H * 3600 if asset_type == "crypto" else 48 * 3600
+    # Stocks: skip weekends — expire at next trading day close, not 48 calendar hours
+    if asset_type == "stock":
+        import datetime as _dt, pytz as _tz
+        _ct = _tz.timezone("America/Chicago")
+        _now_dt = _dt.datetime.now(_ct)
+        # Add 48 trading hours = skip to next weekday if needed
+        _exp = _now_dt + _dt.timedelta(hours=48)
+        # If expiry lands on Saturday, push to Monday
+        if _exp.weekday() == 5: _exp += _dt.timedelta(days=2)
+        # If expiry lands on Sunday, push to Monday
+        elif _exp.weekday() == 6: _exp += _dt.timedelta(days=1)
+        # Set to 4 PM CT (market close) on that day
+        _exp = _exp.replace(hour=16, minute=0, second=0, microsecond=0)
+        hold = int(_exp.timestamp()) - now
+    else:
+        hold = CRYPTO_HOLD_H * 3600
     # Dynamic targets based on real observed volatility per symbol
     _VOL_MAP = {
         "LTC":0.020,"AAVE":0.040,"LINK":0.031,"SOL":0.029,"BTC":0.022,
