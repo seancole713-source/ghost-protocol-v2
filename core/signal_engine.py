@@ -1,37 +1,25 @@
-"""
-core/signal_engine.py - Ghost Protocol v3 Signal Engine
-
-WHAT THIS DOES (different from v1/v2):
-  v1/v2: confidence = Ghost's own historical win rate (circular, corrupted)
-  v3:    confidence = XGBoost trained on 6 months real price data, validated first
-
-PIPELINE:
-  1. backtest_symbol(symbol) -> pulls 6mo OHLCV, calculates indicators,
-     labels whether price was +2% in 48h, returns per-indicator accuracy
-  2. build_training_data(symbols) -> runs backtest on all symbols, labels rows
-  3. train_model() -> XGBoost on 80% train, validates on 20% holdout
-  4. predict_live(symbol, asset_type) -> scores current price action
-  5. Only generates a pick if model confidence > CONFIDENCE_FLOOR
-
-This engine ONLY deploys after validate() confirms >52% accuracy on holdout.
-If it can't beat 52%, it returns None and Ghost stays silent.
+""" core/signal_engine.py - Ghost Protocol v3.1 Signal Engine
+UPGRADES (2026-03-30) from GitHub research:
+  - EMA(20/50/200): no BUY below EMA200 (FarisZnf repo - #1 fix)
+  - ADX(14): no BUY in choppy/sideways markets ADX<20 (FarisZnf repo)
+  - ATR: volatility-aware feature for XGBoost
+  - OBV slope: accumulation/distribution signal
+  - Stochastic %K/%D: momentum confirmation
+  - Regime gate in predict_live blocking BUYs in downtrend+choppy
+  - Better XGBoost hyperparams: 200 estimators, depth 4, min_child 3
 """
 import os, time, logging, json
 import numpy as np
 LOGGER = logging.getLogger("ghost.signal_v3")
 
-# ── Config ─────────────────────────────────────────────────────────────────
-HOLD_HOURS_LABEL = 24      # predict direction 24h from now (~50% base rate, consistent across symbols)
-HOLD_HOURS       = 48       # 48h trade window (how long pick stays open)
-MIN_ACCURACY     = 0.50    # minimum holdout accuracy (need to beat 39% base rate)
-MIN_TRAIN_ROWS   = 80      # minimum labeled rows (daily bars: ~400-500 per symbol)
-# Model stored in PostgreSQL — survives Railway deploys
-MODEL_DB_KEY     = "ghost_v3_model_pkl"
-FEATURES_DB_KEY  = "ghost_v3_features_json"
+HOLD_HOURS_LABEL = 24
+HOLD_HOURS = 48
+MIN_ACCURACY = 0.50
+MIN_TRAIN_ROWS = 80
+MODEL_DB_KEY = "ghost_v3_model_pkl"
+FEATURES_DB_KEY = "ghost_v3_features_json"
 
-# ── Technical Indicator Calculations ───────────────────────────────────────
 def _rsi(closes, period=14):
-    """Relative Strength Index. <30 oversold (BUY signal), >70 overbought."""
     if len(closes) < period + 1: return 50.0
     deltas = np.diff(closes)
     gains = np.where(deltas > 0, deltas, 0)
@@ -39,48 +27,33 @@ def _rsi(closes, period=14):
     avg_gain = np.mean(gains[-period:])
     avg_loss = np.mean(losses[-period:])
     if avg_loss == 0: return 100.0
-    rs = avg_gain / avg_loss
-    return float(100 - (100 / (1 + rs)))
+    return float(100 - (100 / (1 + avg_gain / avg_loss)))
 
 def _macd(closes, fast=12, slow=26, signal=9):
-    """MACD line, signal line, histogram. Crossover = momentum shift."""
     if len(closes) < slow + signal: return 0.0, 0.0, 0.0
     def ema(data, n):
-        k = 2/(n+1)
-        result = [data[0]]
-        for v in data[1:]: result.append(v*k + result[-1]*(1-k))
-        return np.array(result)
-    fast_ema = ema(closes, fast)
-    slow_ema = ema(closes, slow)
-    macd_line = fast_ema - slow_ema
-    if len(macd_line) < signal: return 0.0, 0.0, 0.0
-    signal_line = ema(macd_line, signal)
-    hist = macd_line[-1] - signal_line[-1]
-    return float(macd_line[-1]), float(signal_line[-1]), float(hist)
+        k = 2/(n+1); r = [data[0]]
+        for v in data[1:]: r.append(v*k + r[-1]*(1-k))
+        return np.array(r)
+    ml = ema(closes, fast) - ema(closes, slow)
+    if len(ml) < signal: return 0.0, 0.0, 0.0
+    sl = ema(ml, signal)
+    return float(ml[-1]), float(sl[-1]), float(ml[-1] - sl[-1])
 
 def _bollinger(closes, period=20):
-    """Bollinger Bands. Returns % position within bands (0=lower, 1=upper)."""
     if len(closes) < period: return 0.5, 0.0
-    window = closes[-period:]
-    mid = np.mean(window)
-    std = np.std(window)
+    w = closes[-period:]; mid = np.mean(w); std = np.std(w)
     if std == 0: return 0.5, 0.0
-    upper = mid + 2*std
-    lower = mid - 2*std
-    price = closes[-1]
-    pct_b = float((price - lower) / (upper - lower)) if (upper - lower) > 0 else 0.5
-    band_width = float((upper - lower) / mid)  # squeeze indicator
-    return pct_b, band_width
+    upper = mid + 2*std; lower = mid - 2*std
+    pct_b = float((closes[-1] - lower) / (upper - lower)) if (upper - lower) > 0 else 0.5
+    return pct_b, float((upper - lower) / mid)
 
 def _volume_ratio(volumes, period=20):
-    """Current volume vs 20-period average. >1.5 = unusual activity."""
     if len(volumes) < period + 1: return 1.0
     avg = np.mean(volumes[-period-1:-1])
-    if avg == 0: return 1.0
-    return float(volumes[-1] / avg)
+    return float(volumes[-1] / avg) if avg > 0 else 1.0
 
 def _price_momentum(closes, periods=[1, 3, 5]):
-    """% change over last N candles."""
     result = {}
     for p in periods:
         if len(closes) > p and closes[-p-1] > 0:
@@ -89,11 +62,62 @@ def _price_momentum(closes, periods=[1, 3, 5]):
             result[f'mom_{p}h'] = 0.0
     return result
 
+def _ema(closes, period):
+    if len(closes) < 2: return float(closes[-1])
+    k = 2.0 / (period + 1); v = float(closes[0])
+    for c in closes[1:]: v = c * k + v * (1 - k)
+    return v
+
+def _adx(highs, lows, closes, period=14):
+    if len(closes) < period * 2: return 25.0
+    trs, pdms, ndms = [], [], []
+    for i in range(1, len(closes)):
+        h, l, pc = highs[i], lows[i], closes[i-1]
+        trs.append(max(h-l, abs(h-pc), abs(l-pc)))
+        ph = highs[i] - highs[i-1]; nl = lows[i-1] - lows[i]
+        pdms.append(max(ph, 0) if ph > nl else 0)
+        ndms.append(max(nl, 0) if nl > ph else 0)
+    def wilder(data, p):
+        s = sum(data[:p]); r = [s]
+        for v in data[p:]: s = s - s/p + v; r.append(s)
+        return r
+    dxs = []
+    for a, p, n in zip(wilder(trs, period), wilder(pdms, period), wilder(ndms, period)):
+        if a == 0: continue
+        pdi, ndi = 100*p/a, 100*n/a
+        if pdi + ndi == 0: continue
+        dxs.append(100 * abs(pdi - ndi) / (pdi + ndi))
+    return float(np.mean(dxs[-period:])) if dxs else 25.0
+
+def _atr(highs, lows, closes, period=14):
+    if len(closes) < period + 1: return float(closes[-1] * 0.02)
+    trs = [max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1]))
+           for i in range(1, len(closes))]
+    return float(np.mean(trs[-period:]))
+
+def _obv_slope(closes, volumes, period=10):
+    if len(closes) < period + 1: return 0.0
+    obv = 0.0; obvs = [0.0]
+    for i in range(1, len(closes)):
+        if closes[i] > closes[i-1]: obv += volumes[i]
+        elif closes[i] < closes[i-1]: obv -= volumes[i]
+        obvs.append(obv)
+    r = obvs[-period:]
+    if len(r) < 2: return 0.0
+    slope = (r[-1] - r[0]) / (len(r) * max(abs(r[0]), 1e-9))
+    return float(np.clip(slope, -1.0, 1.0))
+
+def _stochastic(highs, lows, closes, k_period=14, d_period=3):
+    if len(closes) < k_period: return 50.0, 50.0
+    ks = []
+    for i in range(k_period-1, len(closes)):
+        hh = max(highs[i-k_period+1:i+1]); ll = min(lows[i-k_period+1:i+1])
+        ks.append(100*(closes[i]-ll)/(hh-ll) if hh != ll else 50.0)
+    k = ks[-1]
+    d = float(np.mean(ks[-d_period:])) if len(ks) >= d_period else k
+    return float(k), float(d)
+
 def _calculate_features(df):
-    """
-    Given a dataframe with OHLCV, return a feature dict for one candle.
-    df: list of dicts with keys open/high/low/close/volume
-    """
     closes = np.array([c['close'] for c in df], dtype=float)
     volumes = np.array([c['volume'] for c in df], dtype=float)
     highs = np.array([c['high'] for c in df], dtype=float)
@@ -104,21 +128,27 @@ def _calculate_features(df):
     pct_b, band_width = _bollinger(closes)
     vol_ratio = _volume_ratio(volumes)
     momentum = _price_momentum(closes)
-
-    # Price position vs recent range
-    recent_high = np.max(highs[-24:]) if len(highs) >= 24 else highs[-1]
-    recent_low = np.min(lows[-24:]) if len(lows) >= 24 else lows[-1]
-    price_in_range = float((closes[-1] - recent_low) / (recent_high - recent_low + 1e-9))
+    rh = np.max(highs[-24:]) if len(highs) >= 24 else highs[-1]
+    rl = np.min(lows[-24:]) if len(lows) >= 24 else lows[-1]
+    price_in_range = float((closes[-1] - rl) / (rh - rl + 1e-9))
 
     import datetime as _dt
     ts = df[-1].get('ts','') if df else ''
     try:
         _d = _dt.datetime.fromisoformat(str(ts).replace('Z','+00:00'))
-        hour_of_day = _d.hour
-        day_of_week = _d.weekday()
-    except Exception:
-        hour_of_day = 12
-        day_of_week = 0
+        hod, dow = _d.hour, _d.weekday()
+    except:
+        hod, dow = 12, 0
+
+    cur = float(closes[-1])
+    ema20 = _ema(closes, 20)
+    ema50 = _ema(closes, 50) if len(closes) >= 50 else cur
+    ema200 = _ema(closes, 200) if len(closes) >= 200 else cur
+    adx = _adx(highs, lows, closes)
+    atr = _atr(highs, lows, closes)
+    obv_slope = _obv_slope(closes, volumes)
+    stoch_k, stoch_d = _stochastic(highs, lows, closes)
+
     return {
         'rsi': rsi,
         'rsi_oversold': 1 if rsi < 35 else 0,
@@ -135,27 +165,45 @@ def _calculate_features(df):
         'price_in_range': price_in_range,
         'near_low': 1 if price_in_range < 0.25 else 0,
         'near_high': 1 if price_in_range > 0.75 else 0,
-        'hour_of_day': hour_of_day,
-        'day_of_week': day_of_week,
-        'is_weekend': 1 if day_of_week >= 5 else 0,
+        'hour_of_day': hod,
+        'day_of_week': dow,
+        'is_weekend': 1 if dow >= 5 else 0,
+        'above_ema20': 1 if cur > ema20 else 0,
+        'above_ema50': 1 if cur > ema50 else 0,
+        'above_ema200': 1 if cur > ema200 else 0,
+        'ema_trend_bullish': 1 if (ema20 > ema50 and ema50 > ema200) else 0,
+        'ema20_vs_ema50': float((ema20 - ema50) / ema50) if ema50 > 0 else 0.0,
+        'adx': adx,
+        'adx_trending': 1 if adx > 20 else 0,
+        'adx_strong': 1 if adx > 30 else 0,
+        'atr_pct': float(atr / cur) if cur > 0 else 0.02,
+        'obv_slope': obv_slope,
+        'obv_accumulating': 1 if obv_slope > 0 else 0,
+        'stoch_k': stoch_k,
+        'stoch_d': stoch_d,
+        'stoch_oversold': 1 if stoch_k < 20 else 0,
+        'stoch_overbought': 1 if stoch_k > 80 else 0,
     }
 
+FEATURE_COLS = [
+    'rsi','rsi_oversold','rsi_overbought','macd_hist','macd_bullish',
+    'pct_b','bb_squeeze','volume_ratio','volume_spike',
+    'mom_4h','mom_8h','mom_24h','price_in_range','near_low','near_high',
+    'hour_of_day','day_of_week','is_weekend',
+    'above_ema20','above_ema50','above_ema200','ema_trend_bullish','ema20_vs_ema50',
+    'adx','adx_trending','adx_strong',
+    'atr_pct',
+    'obv_slope','obv_accumulating',
+    'stoch_k','stoch_d','stoch_oversold','stoch_overbought',
+]
+
 def _fetch_ohlcv(symbol, asset_type, period='2y', interval='1d'):
-    """
-    Pull DAILY bars from Alpaca — 2 years, fits in one request (no pagination).
-    Daily bars avoid the 265-per-page hourly limit that was breaking training.
-    Prediction task: will tomorrow's close be higher than today's?
-    """
     import os, requests as _req
     from datetime import datetime, timedelta, timezone
-    key = os.getenv("ALPACA_KEY_ID","")
-    secret = os.getenv("ALPACA_SECRET_KEY","")
-    if not key or not secret:
-        LOGGER.warning("No Alpaca credentials")
-        return None
+    key = os.getenv("ALPACA_KEY_ID",""); secret = os.getenv("ALPACA_SECRET_KEY","")
+    if not key or not secret: return None
     headers = {"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret}
-    end_dt = datetime.now(timezone.utc)
-    start_dt = end_dt - timedelta(days=730)  # 2 years
+    end_dt = datetime.now(timezone.utc); start_dt = end_dt - timedelta(days=730)
     start_str = start_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
     end_str = end_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
     try:
@@ -167,18 +215,14 @@ def _fetch_ohlcv(symbol, asset_type, period='2y', interval='1d'):
                    f"?symbols={ticker_enc}&timeframe=1Day&limit=1000"
                    f"&start={start_str}&end={end_str}")
             r = _req.get(url, headers=headers, timeout=30)
-            if r.status_code != 200:
-                LOGGER.warning(f"Alpaca daily crypto {symbol}: HTTP {r.status_code}")
-                return None
+            if r.status_code != 200: return None
             bars = r.json().get('bars', {}).get(ticker, [])
         else:
             url = (f"https://data.alpaca.markets/v2/stocks/{symbol.upper()}/bars"
                    f"?timeframe=1Day&limit=1000&feed=iex"
                    f"&start={start_str}&end={end_str}")
             r = _req.get(url, headers=headers, timeout=30)
-            if r.status_code != 200:
-                LOGGER.warning(f"Alpaca daily stock {symbol}: HTTP {r.status_code}")
-                return None
+            if r.status_code != 200: return None
             bars = r.json().get('bars', [])
         rows = [{'ts': b.get('t',''), 'open': float(b.get('o',0)),
                  'high': float(b.get('h',0)), 'low': float(b.get('l',0)),
@@ -187,130 +231,86 @@ def _fetch_ohlcv(symbol, asset_type, period='2y', interval='1d'):
         LOGGER.info(f"Alpaca daily {symbol}: {len(rows)} bars")
         return rows if rows else None
     except Exception as e:
-        LOGGER.warning(f"Alpaca daily fetch failed {symbol}: {e}")
-        return None
-
+        LOGGER.warning(f"Alpaca fetch failed {symbol}: {e}"); return None
 
 def backtest_symbol(symbol, asset_type):
-    """
-    Pull 6mo hourly data, calculate features, label outcomes.
-    Label: did price go up TARGET_MOVE_PCT in next HOLD_HOURS candles?
-    Returns list of {features, label} dicts.
-    """
     rows = _fetch_ohlcv(symbol, asset_type)
-    if not rows or len(rows) < 100:
-        return []
-
-    labeled = []
-    window = 50  # warmup for indicators
+    if not rows or len(rows) < 100: return []
+    labeled = []; window = 220
     for i in range(window, len(rows) - HOLD_HOURS):
         hist = rows[max(0, i-window):i+1]
         features = _calculate_features(hist)
-        features['symbol'] = symbol
-        features['asset_type'] = asset_type
-
-        # Label: is tomorrow's close higher than today's? (~50% base rate)
+        features['symbol'] = symbol; features['asset_type'] = asset_type
         entry = rows[i]['close']
         future_close = rows[i+1]['close'] if i+1 < len(rows) else entry
-        label = 1 if future_close > entry else 0
-        labeled.append({'features': features, 'label': label})
-
+        labeled.append({'features': features, 'label': 1 if future_close > entry else 0})
     wins = sum(1 for r in labeled if r['label'] == 1)
-    LOGGER.info(f"Backtest {symbol}: {len(labeled)} samples, {wins} hits "
-                f"({round(wins/len(labeled)*100,1) if labeled else 0}% natural hit rate)")
+    LOGGER.info(f"Backtest {symbol}: {len(labeled)} samples, "
+                f"{round(wins/len(labeled)*100,1) if labeled else 0}% natural rate")
     return labeled
 
 def build_training_data(symbols_and_types):
-    """Run backtest on all symbols. Returns X (feature matrix), y (labels)."""
     all_rows = []
     for symbol, asset_type in symbols_and_types:
-        rows = backtest_symbol(symbol, asset_type)
-        all_rows.extend(rows)
-    if len(all_rows) < MIN_TRAIN_ROWS:
-        LOGGER.warning(f"Only {len(all_rows)} training rows — need {MIN_TRAIN_ROWS}")
-        return None, None, []
-    LOGGER.info(f"Total training rows: {len(all_rows)}")
-    FEATURE_COLS = ['rsi','rsi_oversold','rsi_overbought','macd_hist','macd_bullish',
-                    'pct_b','bb_squeeze','volume_ratio','volume_spike',
-                    'mom_4h','mom_8h','mom_24h','price_in_range','near_low','near_high',
-                    'hour_of_day','day_of_week','is_weekend']
+        all_rows.extend(backtest_symbol(symbol, asset_type))
+    if len(all_rows) < MIN_TRAIN_ROWS: return None, None, []
     X = np.array([[r['features'].get(c, 0.0) for c in FEATURE_COLS] for r in all_rows])
     y = np.array([r['label'] for r in all_rows])
     return X, y, FEATURE_COLS
 
 def train_and_validate(symbols_and_types):
-    """Train one XGBoost per symbol. Only deploys if it beats natural rate by 2%+."""
     try:
         from xgboost import XGBClassifier
-        from sklearn.model_selection import train_test_split
         from sklearn.metrics import accuracy_score
         import pickle, base64
         from core.db import db_conn
     except ImportError as e:
-        LOGGER.error("Missing dependency: " + str(e))
-        return None, 0.0, False
-
-    results = {}
+        LOGGER.error("Missing dep: "+str(e)); return None, 0.0, False
     total_passed = 0
-
     for symbol, asset_type in symbols_and_types:
         try:
             rows = backtest_symbol(symbol, asset_type)
-            if not rows or len(rows) < 80:
-                LOGGER.info(f"Skipping {symbol} — only {len(rows)} samples")
-                continue
-
-            FEATURE_COLS = ['rsi','rsi_oversold','rsi_overbought','macd_hist','macd_bullish',
-                            'pct_b','bb_squeeze','volume_ratio','volume_spike',
-                            'mom_4h','mom_8h','mom_24h','price_in_range','near_low','near_high',
-                            'hour_of_day','day_of_week','is_weekend']
+            if not rows or len(rows) < 80: continue
             X = np.array([[r['features'].get(c, 0.0) for c in FEATURE_COLS] for r in rows])
             y = np.array([r['label'] for r in rows])
-
-            # Chronological 80/20 split
             split = int(len(X) * 0.8)
             X_train, X_test = X[:split], X[split:]
             y_train, y_test = y[:split], y[split:]
             natural_rate = float(np.mean(y_test))
-
             model = XGBClassifier(
-                n_estimators=150, max_depth=3, learning_rate=0.05,
-                subsample=0.8, colsample_bytree=0.8,
+                n_estimators=200, max_depth=4, learning_rate=0.03,
+                subsample=0.8, colsample_bytree=0.7, min_child_weight=3,
                 use_label_encoder=False, eval_metric='logloss', random_state=42
             )
             model.fit(X_train, y_train)
             accuracy = float(accuracy_score(y_test, model.predict(X_test)))
             edge = accuracy - natural_rate
-
-            passes = edge >= 0.02  # need at least +2% over natural rate
-            LOGGER.info(f"{symbol}: acc={round(accuracy*100,1)}% nat={round(natural_rate*100,1)}% edge={round(edge*100,1)}% {'SAVED' if passes else 'skipped'}")
-
+            passes = edge >= 0.02
+            LOGGER.info(f"{symbol}: acc={round(accuracy*100,1)}% nat={round(natural_rate*100,1)}% "
+                       f"edge={round(edge*100,1)}% {'SAVED' if passes else 'skipped'}")
             if passes:
                 model_bytes = base64.b64encode(pickle.dumps(model)).decode('ascii')
                 meta = json.dumps({'feature_cols': FEATURE_COLS, 'accuracy': accuracy,
                                    'natural_rate': natural_rate, 'edge': edge,
-                                   'trained_at': time.time(), 'n_samples': len(rows)})
+                                   'trained_at': time.time(), 'n_samples': len(rows),
+                                   'engine_version': 'v3.1_ema_adx_atr_obv_stoch'})
                 with db_conn() as conn:
                     cur = conn.cursor()
-                    cur.execute("""CREATE TABLE IF NOT EXISTS ghost_v3_model
-                                   (key TEXT PRIMARY KEY, value TEXT, updated_at BIGINT)""")
-                    cur.execute("""INSERT INTO ghost_v3_model(key,value,updated_at) VALUES(%s,%s,%s)
-                                   ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at""",
+                    cur.execute("CREATE TABLE IF NOT EXISTS ghost_v3_model "
+                                "(key TEXT PRIMARY KEY, value TEXT, updated_at BIGINT)")
+                    cur.execute("INSERT INTO ghost_v3_model(key,value,updated_at) VALUES(%s,%s,%s) "
+                                "ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at",
                                 (f"model_{symbol}", model_bytes, int(time.time())))
-                    cur.execute("""INSERT INTO ghost_v3_model(key,value,updated_at) VALUES(%s,%s,%s)
-                                   ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at""",
+                    cur.execute("INSERT INTO ghost_v3_model(key,value,updated_at) VALUES(%s,%s,%s) "
+                                "ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at",
                                 (f"meta_{symbol}", meta, int(time.time())))
-                results[symbol] = {'accuracy': accuracy, 'edge': edge, 'passed': True}
                 total_passed += 1
         except Exception as e:
-            LOGGER.warning(f"Training failed for {symbol}: {e}")
-
-    LOGGER.info(f"v3 training complete: {total_passed}/{len(symbols_and_types)} symbols passed")
+            LOGGER.warning(f"Training failed {symbol}: {e}")
+    LOGGER.info(f"v3.1 training: {total_passed}/{len(symbols_and_types)} passed")
     return None, total_passed / max(len(symbols_and_types), 1), total_passed > 0
 
-
 def load_model(symbol=None):
-    """Load per-symbol model from PostgreSQL."""
     if not symbol: return None, None, None
     try:
         import pickle, base64
@@ -325,78 +325,73 @@ def load_model(symbol=None):
             mrow = cur.fetchone()
             if not mrow: return None, None, None
             meta = json.loads(mrow[0])
-        if time.time() - meta.get('trained_at', 0) > 14 * 86400:
-            return None, None, None
-        return model, meta['feature_cols'], meta
+            if time.time() - meta.get('trained_at', 0) > 14 * 86400: return None, None, None
+            return model, meta.get('feature_cols', FEATURE_COLS), meta
     except Exception as e:
-        LOGGER.warning(f"load_model {symbol} failed: {e}")
-        return None, None, None
+        LOGGER.warning(f"load_model {symbol}: {e}"); return None, None, None
 
 def predict_live(symbol, asset_type):
-    """Use symbol-specific model. Returns (direction, confidence) or None."""
+    """
+    Regime gate (jakejk1285 + FarisZnf research):
+    - Skip BUY if price below EMA200 AND ADX<20 (downtrend + choppy)
+    - Skip BUY if full bearish EMA alignment (20<50<200) unless deep oversold
+    """
     model, feature_cols, meta = load_model(symbol)
-    if model is None:
-        return None  # no model for this symbol — Ghost stays silent
+    if model is None: return None
 
-    # Get recent 72h of hourly data for indicator calculation
     rows = _fetch_ohlcv(symbol, asset_type, period='5d', interval='1h')
-    if not rows or len(rows) < 30:
+    if not rows or len(rows) < 30: return None
+    features = _calculate_features(rows)
+
+    above_ema200 = features.get('above_ema200', 1)
+    adx_trending = features.get('adx_trending', 1)
+    adx_val = features.get('adx', 25)
+    ema_trend_bullish = features.get('ema_trend_bullish', 1)
+    rsi = features.get('rsi', 50)
+    stoch_k = features.get('stoch_k', 50)
+
+    # Gate 1: below EMA200 + choppy = high-probability loss setup
+    if above_ema200 == 0 and adx_trending == 0:
+        LOGGER.info(f"REGIME GATE [{symbol}]: below EMA200 + ADX={adx_val:.1f}<20 — skip BUY")
         return None
 
-    features = _calculate_features(rows)
+    # Gate 2: full bearish alignment, not oversold
+    if ema_trend_bullish == 0 and rsi > 40 and stoch_k > 30:
+        LOGGER.info(f"REGIME GATE [{symbol}]: bearish EMA stack, RSI={rsi:.1f} not oversold — skip")
+        return None
+
     X = np.array([[features.get(c, 0.0) for c in feature_cols]])
     proba = model.predict_proba(X)[0]
-    up_prob = float(proba[1])   # probability price goes up TARGET_MOVE_PCT
+    up_prob = float(proba[1])
+    edge = meta.get('edge', 0)
+    if edge < 0.02: return None
 
-    # v3 models output raw XGBoost probabilities (typically 0.45-0.58)
-    # Scale to 0.75-0.95 range based on edge so Ghost infrastructure works
-    # Only generate signal if model shows directional edge
-    edge = meta.get('edge', 0)  # edge = accuracy - natural_rate from training
-    
-    # Need at least +2% edge to generate any signal
-    if edge < 0.02:
-        return None
-    
-    # Scale raw probability to interpretable confidence
-    # 0.52 prob + 2% edge -> 0.76 confidence (just above floor)
-    # 0.58 prob + 15% edge -> 0.92 confidence
     if up_prob > 0.50:
-        # Bullish signal: scale based on how much above 0.50
-        raw_edge = up_prob - 0.50
-        scaled = 0.75 + (raw_edge * 2.0) + (edge * 0.5)
-        conf = round(min(0.95, max(0.75, scaled)), 3)
+        conf = round(min(0.95, max(0.75, 0.75 + (up_prob-0.50)*2.0 + edge*0.5)), 3)
         return ("UP", conf)
     elif up_prob < 0.50:
-        # Bearish: model thinks price going down
-        down_prob = 1.0 - up_prob
-        raw_edge = down_prob - 0.50
-        scaled = 0.75 + (raw_edge * 2.0) + (edge * 0.5)
-        conf = round(min(0.95, max(0.75, scaled)), 3)
+        conf = round(min(0.95, max(0.75, 0.75 + (0.50-up_prob)*2.0 + edge*0.5)), 3)
         return ("DOWN", conf)
-    
-    return None  # exactly 0.50 = no signal
+    return None
 
 def get_model_status():
-    """Return per-symbol model status."""
     try:
-        import json
         from core.db import db_conn
         with db_conn() as conn:
             cur = conn.cursor()
             cur.execute("SELECT key, value FROM ghost_v3_model WHERE key LIKE 'meta_%' ORDER BY key")
             rows = cur.fetchall()
-        if not rows:
-            return {"trained": False, "reason": "No models — run /api/v3/train to build"}
-        symbols = {}
-        for key, val in rows:
-            sym = key.replace('meta_','')
-            m = json.loads(val)
-            symbols[sym] = {
-                "accuracy": round(m.get("accuracy",0)*100,1),
-                "natural_rate": round(m.get("natural_rate",0)*100,1),
-                "edge": round(m.get("edge",0)*100,1),
-                "n_samples": m.get("n_samples",0),
-            }
-        return {"trained": True, "models": len(symbols), "symbols": symbols}
+            if not rows: return {"trained": False, "reason": "No models — run /api/v3/train"}
+            symbols = {}
+            for key, val in rows:
+                sym = key.replace('meta_',''); m = json.loads(val)
+                symbols[sym] = {
+                    "accuracy": round(m.get("accuracy",0)*100,1),
+                    "natural_rate": round(m.get("natural_rate",0)*100,1),
+                    "edge": round(m.get("edge",0)*100,1),
+                    "n_samples": m.get("n_samples",0),
+                    "engine": m.get("engine_version","v3.0"),
+                }
+            return {"trained": True, "models": len(symbols), "symbols": symbols}
     except Exception as e:
         return {"trained": False, "reason": str(e)}
