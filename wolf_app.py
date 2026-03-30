@@ -438,6 +438,41 @@ async def delete_model(x_cron_secret: str = Header(None)):
         return {"ok": False, "error": str(e)}
 
 
+
+@APP.post("/api/admin/fix-stock-expiry")
+async def fix_stock_expiry(x_cron_secret: str = Header(None)):
+    """Fix stock picks that were created before the weekend-expiry fix and expire before market open."""
+    if x_cron_secret != CRON_SECRET:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    import time as _ft, datetime as _fdt, pytz as _ftz
+    from core.db import db_conn
+    _ct = _ftz.timezone("America/Chicago")
+    _now = int(_ft.time())
+    updated = []
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            # Find open stock picks expiring before 4 PM on their expiry day
+            cur.execute("""SELECT id, symbol, expires_at FROM predictions
+                           WHERE outcome IS NULL AND asset_type='stock'
+                           AND expires_at > %s""", (_now,))
+            picks = cur.fetchall()
+            for pid, sym, exp_ts in picks:
+                exp_dt = _fdt.datetime.fromtimestamp(exp_ts, tz=_ct)
+                # If expiry hour is before 16 (4 PM), push to 4 PM same day
+                if exp_dt.hour < 16:
+                    fixed_dt = exp_dt.replace(hour=16, minute=0, second=0, microsecond=0)
+                    # Skip weekends
+                    if fixed_dt.weekday() == 5: fixed_dt += _fdt.timedelta(days=2)
+                    elif fixed_dt.weekday() == 6: fixed_dt += _fdt.timedelta(days=1)
+                    fixed_ts = int(fixed_dt.timestamp())
+                    cur.execute("UPDATE predictions SET expires_at=%s WHERE id=%s", (fixed_ts, pid))
+                    updated.append(f"{sym}: {exp_dt.strftime('%a %I:%M %p')} -> {fixed_dt.strftime('%a %I:%M %p')} CT")
+        return {"ok": True, "fixed": len(updated), "details": updated}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 @APP.get("/health")
 def health():
     import os, time as _t
