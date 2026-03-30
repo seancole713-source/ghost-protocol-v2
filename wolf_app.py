@@ -274,7 +274,7 @@ async def diagnostics():
             _cur = _conn.cursor()
             _cur.execute("""SELECT outcome, COUNT(*) FROM predictions
                             WHERE outcome IN ('WIN','LOSS','EXPIRED')
-                            AND resolved_at IS NOT NULL AND resolved_at > %s
+                            AND predicted_at > %s
                             GROUP BY outcome""", (_7d,))
             _7d_rows = {r[0]: r[1] for r in _cur.fetchall()}
             # All-time win rate
