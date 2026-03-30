@@ -366,11 +366,17 @@ def predict_live(symbol, asset_type):
     edge = meta.get('edge', 0)
     if edge < 0.02: return None
 
+    # Confidence = model accuracy (actual holdout win rate) + current signal strength
+    # This makes 95% confidence mean something — only high-accuracy models on strong signals
+    accuracy = meta.get('accuracy', 0.55)  # holdout win rate, e.g. 0.62 = 62%
+
     if up_prob > 0.50:
-        conf = round(min(0.95, max(0.75, 0.75 + (up_prob-0.50)*2.0 + edge*0.5)), 3)
+        signal_strength = (up_prob - 0.50) * 4.0  # 0.01 signal -> +0.04, 0.08 signal -> +0.32
+        conf = round(min(0.95, max(0.75, accuracy + signal_strength)), 3)
         return ("UP", conf)
     elif up_prob < 0.50:
-        conf = round(min(0.95, max(0.75, 0.75 + (0.50-up_prob)*2.0 + edge*0.5)), 3)
+        signal_strength = (0.50 - up_prob) * 4.0
+        conf = round(min(0.95, max(0.75, accuracy + signal_strength)), 3)
         return ("DOWN", conf)
     return None
 
