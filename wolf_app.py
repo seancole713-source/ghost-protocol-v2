@@ -172,6 +172,250 @@ APP.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 from core.portfolio_routes import portfolio_router
 APP.include_router(portfolio_router)
 
+
+
+@APP.get("/api/diagnostics")
+async def diagnostics():
+    """Full logic correctness check — catches bugs /health misses."""
+    import time as _t, json as _j2, datetime as _dt, pytz as _tz
+    _now = int(_t.time())
+    _passed = []
+    _warnings = []
+    _errors = []
+    _score = 100
+
+    # helpers — plain list appends, no nonlocal/closures
+    def _ok(name, detail=""):
+        _passed.append({"check": name, "detail": detail})
+
+    def _warn(name, detail):
+        _warnings.append({"check": name, "detail": detail})
+        return 5
+
+    def _fail(name, detail, deduct=10):
+        _errors.append({"check": name, "detail": detail})
+        return deduct
+
+    try:
+        from core.db import db_conn
+        from core import scheduler as _sched
+        from core.prices import check_feeds
+        from core.signal_engine import FEATURE_COLS
+
+        # ── 1. Scheduler integrity ────────────────────────────────────────
+        _ws = _sched._tasks.get("weekly_summary")
+        if not _ws:
+            _score -= _fail("scheduler.weekly_summary", "not registered")
+        elif _ws.interval_s != 604800:
+            _score -= _fail("scheduler.weekly_summary", f"interval={_ws.interval_s}s want 604800 — will spam")
+        else:
+            _ok("scheduler.weekly_summary", f"1x at {_ws.interval_s}s")
+
+        # Check for duplicate weekly_summary registrations
+        _ws_count = sum(1 for k in _sched._tasks if k == "weekly_summary")
+        if _ws_count > 1:
+            _score -= _fail("scheduler.weekly_summary_dup", f"registered {_ws_count}x — hourly spam bug")
+
+        _wd = _sched._tasks.get("watchdog")
+        if not _wd:
+            _score -= _fail("scheduler.watchdog", "not registered — picks never resolve", 20)
+        else:
+            _ok("scheduler.watchdog", f"every {_wd.interval_s}s")
+
+        _mc = _sched._tasks.get("morning_card")
+        if not _mc:
+            _score -= _fail("scheduler.morning_card", "not registered — no 8 AM picks", 20)
+        else:
+            _ok("scheduler.morning_card", f"every {_mc.interval_s}s")
+
+        # ── 2. Telegram dedup state ───────────────────────────────────────
+        try:
+            with db_conn() as _conn:
+                _cur = _conn.cursor()
+                _cur.execute("SELECT key, val FROM ghost_state WHERE key IN ('last_open_pos_hash','last_no_picks_sent')")
+                _state = {r[0]: r[1] for r in _cur.fetchall()}
+            if "last_open_pos_hash" in _state:
+                _ok("telegram.open_pos_gate", f"hash={_state['last_open_pos_hash']}")
+            else:
+                _score -= _warn("telegram.open_pos_gate", "hash missing — open positions may spam on restart")
+        except Exception as _e:
+            _score -= _warn("telegram.open_pos_gate", f"state check failed: {_e}")
+
+        # ── 3. Active pick expiry ─────────────────────────────────────────
+        with db_conn() as _conn:
+            _cur = _conn.cursor()
+            _cur.execute("""SELECT symbol, asset_type, expires_at, predicted_at
+                            FROM predictions WHERE outcome IS NULL AND expires_at > %s""", (_now,))
+            _active = _cur.fetchall()
+
+        _weekend = []
+        _stale = []
+        for _sym, _atype, _exp, _pred in _active:
+            if _atype == "stock":
+                _exp_dt = _dt.datetime.fromtimestamp(_exp, tz=_tz.timezone("America/Chicago"))
+                if _exp_dt.weekday() in (5, 6):
+                    _weekend.append(f"{_sym} expires {_exp_dt.strftime('%a')}")
+            if (_now - _pred) > 96 * 3600:
+                _stale.append(f"{_sym} open {int((_now-_pred)/3600)}h")
+
+        if _weekend:
+            _score -= _fail("picks.weekend_expiry", f"Stock picks expiring on weekend: {_weekend}", 15)
+        else:
+            _ok("picks.weekend_expiry", "no stock picks expiring on weekend")
+
+        if _stale:
+            _score -= _warn("picks.stale_open", f"Picks open >96h: {_stale}")
+        else:
+            _ok("picks.stale_open", "all picks within 96h window")
+
+        # ── 4. Resolution rate (7-day window) ────────────────────────────
+        _7d = _now - 7 * 86400
+        with db_conn() as _conn:
+            _cur = _conn.cursor()
+            _cur.execute("""SELECT outcome, COUNT(*) FROM predictions
+                            WHERE outcome IN ('WIN','LOSS','EXPIRED')
+                            AND COALESCE(resolved_at, predicted_at) > %s
+                            GROUP BY outcome""", (_7d,))
+            _7d_rows = {r[0]: r[1] for r in _cur.fetchall()}
+            # All-time win rate
+            _cur.execute("SELECT outcome, COUNT(*) FROM predictions WHERE outcome IN ('WIN','LOSS') GROUP BY outcome")
+            _at_rows = {r[0]: r[1] for r in _cur.fetchall()}
+
+        _7w = _7d_rows.get("WIN", 0)
+        _7l = _7d_rows.get("LOSS", 0)
+        _7e = _7d_rows.get("EXPIRED", 0)
+        _7tot = _7w + _7l + _7e
+        _7res = _7w + _7l
+
+        if _7tot > 0:
+            _res_rate = round(_7res / _7tot * 100, 1)
+            if _res_rate < 10:
+                _score -= _fail("resolution.rate", f"Last 7d: {_res_rate}% resolve ({_7w}W/{_7l}L/{_7e}E) — feed/expiry broken", 20)
+            elif _res_rate < 30:
+                _score -= _warn("resolution.rate", f"Last 7d: {_res_rate}% resolve ({_7w}W/{_7l}L/{_7e}E)")
+            else:
+                _ok("resolution.rate", f"Last 7d: {_res_rate}% ({_7w}W/{_7l}L/{_7e}E)")
+        else:
+            _score -= _warn("resolution.rate", "No resolved picks in last 7 days")
+
+        _atw = _at_rows.get("WIN", 0)
+        _atl = _at_rows.get("LOSS", 0)
+        _at_wr = round(_atw / (_atw + _atl) * 100, 1) if (_atw + _atl) > 0 else 0
+        _ok("win_rate.alltime", f"{_at_wr}% WIN/(WIN+LOSS) all-time ({_atw}W/{_atl}L)")
+
+        # ── 5. Loss streak ────────────────────────────────────────────────
+        with db_conn() as _conn:
+            _cur = _conn.cursor()
+            _cur.execute("""SELECT outcome FROM predictions
+                            WHERE outcome IN ('WIN','LOSS')
+                            ORDER BY resolved_at DESC LIMIT 10""")
+            _recent_outcomes = [r[0] for r in _cur.fetchall()]
+
+        _streak = 0
+        for _o in _recent_outcomes:
+            if _o == "LOSS":
+                _streak += 1
+            else:
+                break
+        if _streak >= 5:
+            _score -= _fail("signal.loss_streak", f"{_streak} consecutive losses — retrain needed", 15)
+        elif _streak >= 3:
+            _score -= _warn("signal.loss_streak", f"{_streak} consecutive losses")
+        else:
+            _ok("signal.loss_streak", f"{_streak} consecutive losses" if _streak else "no streak")
+
+        # ── 6. Model freshness and engine version ─────────────────────────
+        with db_conn() as _conn:
+            _cur = _conn.cursor()
+            _cur.execute("SELECT key, value FROM ghost_v3_model WHERE key LIKE 'meta_%'")
+            _model_rows = _cur.fetchall()
+
+        _stale_models = []
+        _old_engine = []
+        _drift = []
+        _expected_features = len(FEATURE_COLS)
+        for _k, _v in _model_rows:
+            _sym = _k.replace("meta_", "")
+            _m = _j2.loads(_v)
+            _age = (_now - _m.get("trained_at", 0)) / 86400
+            if _age > 14:
+                _stale_models.append(f"{_sym} ({_age:.0f}d)")
+            if "v3.1" not in _m.get("engine_version", "v3.0"):
+                _old_engine.append(_sym)
+            _fc = _m.get("feature_cols", [])
+            if len(_fc) != _expected_features:
+                _drift.append(f"{_sym}: {len(_fc)} vs {_expected_features}")
+
+        if _stale_models:
+            _score -= _warn("models.freshness", f"Stale models (>14d): {_stale_models}")
+        else:
+            _ok("models.freshness", f"{len(_model_rows)} models within 14 days")
+
+        if _old_engine:
+            _score -= _warn("models.engine", f"Old engine (missing EMA/ADX): {_old_engine}")
+        else:
+            _ok("models.engine", f"all {len(_model_rows)} models on v3.1")
+
+        if _drift:
+            _score -= _warn("models.feature_drift", f"Feature mismatch: {_drift}")
+        else:
+            _ok("models.feature_drift", f"all models match {_expected_features}-feature engine")
+
+        # Active picks with no model
+        _active_syms = set(r[0] for r in _active)
+        _model_syms = set(k.replace("meta_","") for k,_ in _model_rows)
+        _no_model = _active_syms - _model_syms
+        if _no_model:
+            _score -= _warn("models.coverage", f"Active picks with no model: {list(_no_model)}")
+        else:
+            _ok("models.coverage", "all active picks have v3 models")
+
+        # ── 7. Confidence calibration ─────────────────────────────────────
+        with db_conn() as _conn:
+            _cur = _conn.cursor()
+            _cur.execute("""SELECT confidence, outcome FROM predictions
+                            WHERE outcome IN ('WIN','LOSS') AND confidence IS NOT NULL
+                            ORDER BY resolved_at DESC LIMIT 100""")
+            _cal = _cur.fetchall()
+
+        if len(_cal) >= 10:
+            _hi = [(c,o) for c,o in _cal if c >= 0.9]
+            _lo = [(c,o) for c,o in _cal if c < 0.9]
+            _hi_wr = round(sum(1 for c,o in _hi if o=="WIN")/len(_hi)*100) if _hi else None
+            _lo_wr = round(sum(1 for c,o in _lo if o=="WIN")/len(_lo)*100) if _lo else None
+            if _hi_wr is not None and _lo_wr is not None:
+                if _hi_wr < _lo_wr:
+                    _score -= _warn("confidence.calibration",
+                        f"HIGH conf {_hi_wr}% WR < LOW conf {_lo_wr}% WR — confidence not meaningful")
+                else:
+                    _ok("confidence.calibration", f"high {_hi_wr}% WR vs low {_lo_wr}% WR — calibrated")
+
+        # ── 8. Price feeds ────────────────────────────────────────────────
+        _feeds = check_feeds()
+        _working = sum(1 for v in _feeds.values() if v is True)
+        _total = sum(1 for v in _feeds.values() if isinstance(v, bool))
+        if _working == 0:
+            _score -= _fail("price_feeds", "0 feeds responding — watchdog blind", 20)
+        elif _working < 2:
+            _score -= _warn("price_feeds", f"Only {_working}/{_total} feeds")
+        else:
+            _ok("price_feeds", f"{_working}/{_total} feeds responding")
+
+    except Exception as _ex:
+        _errors.append({"check": "diagnostics.crashed", "detail": str(_ex)})
+
+    _score = max(0, _score)
+    return {
+        "score": _score,
+        "status": "healthy" if _score >= 80 else "degraded" if _score >= 50 else "critical",
+        "checks_passed": len(_passed),
+        "warnings": len(_warnings),
+        "errors": len(_errors),
+        "details": {"passed": _passed, "warnings": _warnings, "errors": _errors},
+        "timestamp": _now,
+    }
+
+
 @APP.get("/health")
 def health():
     import os, time as _t
