@@ -629,10 +629,11 @@ def get_history(limit: int = 200):
             rows = [_norm_pred(dict(zip(cols, r))) for r in cur.fetchall()]
         resolved = [r for r in rows if r["outcome"] is not None]
         wins = sum(1 for r in resolved if r["outcome"] == "WIN")
+        wl = [r for r in resolved if r["outcome"] in ("WIN","LOSS")]
         total_pnl = sum(r["pnl_pct"] or 0 for r in resolved)
         return {"ok": True, "trades": resolved, "total": len(resolved), "wins": wins,
-                "losses": len(resolved)-wins,
-                "win_rate_pct": round(wins/len(resolved)*100,1) if resolved else 0,
+                "losses": len(wl)-wins,
+                "win_rate_pct": round(wins/len(wl)*100,1) if wl else 0,
                 "total_pnl_pct": round(total_pnl,2)}
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
