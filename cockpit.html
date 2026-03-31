@@ -322,7 +322,7 @@ async function load() {
 
     var sdot = document.getElementById('sdot');
     var stxt = document.getElementById('stxt');
-    if (dc.length > 0) { sdot.className = 'dot'; stxt.textContent = dc.length + ' crypto plays today'; }
+    if (dc.length > 0) { sdot.className = 'dot'; stxt.textContent = dc.length + ' active plays today'; }
     else { sdot.className = 'dot warn'; stxt.textContent = 'No plays yet'; }
 
     document.getElementById('cgrid').innerHTML = dc.length > 0
