@@ -42,6 +42,11 @@ def _morning_card_job():
     except:
         wins, losses, pnl, alltime_wr = 0, 0, 0.0, 0
     week_stats = {"wins": wins, "losses": losses, "pnl_usd": pnl, "alltime_wr": alltime_wr}
+    # Record card fire time for startup self-healing check
+    try:
+        with db_conn() as _tc:
+            _tc.cursor().execute("INSERT INTO ghost_state(key,val) VALUES('last_morning_card_ts',%s) ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val", (str(int(time.time())),))
+    except Exception: pass
     if picks:
         send_morning_card(picks, week_stats)
     else:
@@ -120,6 +125,28 @@ def _weekly_summary_job():
 async def lifespan(app: FastAPI):
     LOGGER.info("Ghost Protocol v2 starting...")
     init_db()
+
+    # Self-healing: if app restarts between 8AM-noon CT and last card was >8h ago, fire now
+    # Prevents silent card misses when Railway restarts during cron window
+    try:
+        import datetime as _sdt, pytz as _stz
+        _ct = _stz.timezone("America/Chicago")
+        _now_ct = _sdt.datetime.now(_ct)
+        _hour_ct = _now_ct.hour
+        if 8 <= _hour_ct < 12:  # morning window
+            with db_conn() as _sc:
+                _scur = _sc.cursor()
+                _scur.execute("SELECT val FROM ghost_state WHERE key='last_morning_card_ts'")
+                _row = _scur.fetchone()
+                _last_ts = int(_row[0]) if _row else 0
+                _hours_ago = (time.time() - _last_ts) / 3600
+            if _hours_ago > 8:
+                LOGGER.warning(f"Startup recovery: last card {_hours_ago:.1f}h ago, firing now (hour={_hour_ct} CT)")
+                import asyncio as _aio
+                _aio.get_event_loop().run_in_executor(None, _morning_card_job)
+    except Exception as _se:
+        LOGGER.warning(f"Startup card recovery failed: {_se}")
+
     from core import scheduler
     from core.prediction import reconcile_outcomes
     from core.news import run_news_cycle
