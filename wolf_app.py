@@ -179,6 +179,12 @@ async def lifespan(app: FastAPI):
                     LOGGER.warning("Weekly retrain failed for "+sym+": "+str(_e)[:60])
                     failed += 1
             LOGGER.info("Weekly retrain complete: "+str(trained)+" trained, "+str(failed)+" failed")
+            # Auto-purge sub-52% models after weekly retrain
+            try:
+                purged = _auto_purge_bad_models()
+                LOGGER.info("Weekly retrain purged "+str(purged)+" sub-52% models")
+            except Exception as _pe:
+                LOGGER.warning("Weekly purge failed: "+str(_pe)[:60])
         except Exception as _e:
             LOGGER.warning("Weekly retrain error: "+str(_e)[:80])
     scheduler.register("weekly_retrain", _weekly_retrain, interval_s=604800)
@@ -463,6 +469,29 @@ async def diagnostics():
     }
 
 
+
+def _auto_purge_bad_models():
+    """Purge all sub-52% accuracy models from DB. Called after every retrain."""
+    try:
+        MIN_ACC = 0.52
+        from core.db import db_conn as _dbc
+        import json as _j
+        with _dbc() as _c:
+            cur = _c.cursor()
+            cur.execute("DELETE FROM ghost_models WHERE symbol='ARB'")
+            cur.execute("SELECT id, symbol, metadata FROM ghost_models")
+            rows = cur.fetchall()
+            purged = 0
+            for rid, sym, meta in rows:
+                try:
+                    m = _j.loads(meta) if isinstance(meta, str) else (meta or {})
+                    acc = float(m.get('accuracy', 1.0))
+                    if acc < MIN_ACC:
+                        cur.execute("DELETE FROM ghost_models WHERE id=%s", (rid,))
+                        purged += 1
+                except Exception: pass
+        return purged
+    except Exception: return 0
 
 @APP.post("/api/admin/delete-model")
 async def delete_model(x_cron_secret: str = Header(None)):
@@ -1186,6 +1215,13 @@ def v3_train(x_cron_secret: str = Header(default="")):
             except Exception: pass
             model, accuracy, passed = train_and_validate(crypto + stocks)
             LOGGER.info(f"v3 training complete: accuracy={round(accuracy*100,1)}% passed={passed}")
+            # Auto-purge sub-52% models immediately after training
+            try:
+                from wolf_app import _auto_purge_bad_models
+                purged = _auto_purge_bad_models()
+                LOGGER.info(f"Auto-purged {purged} sub-52% models after retrain")
+            except Exception as _pe:
+                LOGGER.warning("Auto-purge after train failed: "+str(_pe)[:60])
         except Exception as e:
             LOGGER.error("v3 training failed: " + str(e))
     threading.Thread(target=_train, daemon=True).start()
