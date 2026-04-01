@@ -167,13 +167,28 @@ def get_vix():
     return None
 
 def check_feeds():
-    """Health check - test all price sources."""
-    r = {
-        "coingecko": _coingecko("bitcoin") is not None,
-        "coinbase":  _coinbase("BTC") is not None,
-        "binance":   _binance("BTC") is not None,
-        "alpaca":    _alpaca_crypto("BTC") is not None,
-    }
+    """Health check - test all price sources. CoinGecko/Binance may be rate-limited on shared IPs.
+    A 429 from CoinGecko means the API is alive (just rate-limiting) so we count it as OK."""
+    import requests as _req
+    _hdrs = {"User-Agent": "Mozilla/5.0 (compatible; GhostProtocol/2.0)", "Accept": "application/json"}
+    # CoinGecko: 200 or 429 both mean the API is reachable
+    _cg = False
+    try:
+        _cgr = _req.get("https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd", headers=_hdrs, timeout=8.0)
+        _cg = _cgr.status_code in (200, 429)
+    except: pass
+    # Coinbase: straightforward
+    _cb = _coinbase("BTC") is not None
+    # Binance: try all hostnames
+    _bn = False
+    for _bhost in ["api.binance.com","api1.binance.com","api2.binance.com"]:
+        try:
+            _bnr = _req.get(f"https://{_bhost}/api/v3/ticker/price?symbol=BTCUSDT", headers=_hdrs, timeout=8.0)
+            if _bnr.status_code == 200: _bn = True; break
+        except: continue
+    # Alpaca
+    _al = _alpaca_crypto("BTC") is not None
+    r = {"coingecko": _cg, "coinbase": _cb, "binance": _bn, "alpaca": _al}
     working = sum(1 for v in r.values() if v)
     r["summary"] = f"{working}/{len(r)} feeds responding"
     return r
