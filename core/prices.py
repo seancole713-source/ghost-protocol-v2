@@ -27,7 +27,9 @@ def _cache_set(symbol, price):
 
 def _coingecko(symbol):
     try:
-        r = requests.get(f"https://api.coingecko.com/api/v3/simple/price?ids={symbol.lower()}&vs_currencies=usd", timeout=TIMEOUT)
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; GhostProtocol/2.0)", "Accept": "application/json"}
+        r = requests.get(f"https://api.coingecko.com/api/v3/simple/price?ids={symbol.lower()}&vs_currencies=usd", headers=headers, timeout=TIMEOUT)
+        if r.status_code == 429: return None  # rate limited — skip, don't retry
         for k, v in r.json().items():
             return float(v["usd"])
     except: 
@@ -42,10 +44,14 @@ def _coinbase(symbol):
     except: return None
 
 def _binance(symbol):
-    try:
-        r = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={symbol.upper()}USDT", timeout=TIMEOUT)
-        return float(r.json()["price"])
-    except: return None
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; GhostProtocol/2.0)", "Accept": "application/json"}
+    for host in ["api.binance.com", "api1.binance.com", "api2.binance.com"]:
+        try:
+            r = requests.get(f"https://{host}/api/v3/ticker/price?symbol={symbol.upper()}USDT", headers=headers, timeout=TIMEOUT)
+            if r.status_code == 200:
+                return float(r.json()["price"])
+        except: continue
+    return None
 
 def _alpaca_crypto(symbol):
     """Alpaca crypto latest bar — confirmed working on Railway, no rate limits."""
