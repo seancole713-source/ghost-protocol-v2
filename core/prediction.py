@@ -34,10 +34,10 @@ BTC_THRESHOLD    = float(os.getenv("BTC_TREND_THRESHOLD", "-5.0"))
 
 CRYPTO_SYMBOLS = os.getenv(
     "CRYPTO_SYMBOLS",
-    "BTC,ETH,SOL,XRP,LINK,DOT,MATIC,TRX,LTC,ATOM,UNI,BCH,NEAR,SUI,AAVE").split(",")
+    "ETH,SOL,UNI,BCH").split(",")  # only symbols with v3.1 models ≥52% accuracy
 STOCK_SYMBOLS = os.getenv(
     "STOCK_SYMBOLS",
-    "AAPL,NVDA,TSLA,MSFT,META,AMZN,PLTR,AMD,T,XPO,NET").split(",")
+    "AAPL,TSLA,META,AMZN,T,WOLF").split(",")  # only symbols with v3.1 models ≥52% accuracy
 EXCLUDE = set(os.getenv("EXCLUDE_SYMBOLS","HOOD,COIN,CHZ,ADA,AVAX,SAND,FLOW,HBAR,ALGO").split(","))
 
 
@@ -78,7 +78,7 @@ def _get_sentiment(symbol):
 def _get_symbol_signal(symbol, current_price):
     """
     v3: Use XGBoost model trained on real price data.
-    Falls back to legacy heuristic ONLY if model not trained yet.
+    Returns None if no v3 model exists — legacy fallback disabled.
     """
     # Try v3 model first
     try:
@@ -90,9 +90,9 @@ def _get_symbol_signal(symbol, current_price):
     except Exception as _v3e:
         LOGGER.warning("v3 engine error for " + symbol + ": " + str(_v3e))
 
-    # Fallback: legacy heuristic (v1/v2 behavior) — used until model is trained
-    LOGGER.info("v3 model not ready — using legacy signal for " + symbol)
-    return _legacy_signal(symbol, current_price)
+    # Legacy fallback DISABLED — if no v3 model, skip symbol entirely
+    LOGGER.info("No v3 model for " + symbol + " — skipping (legacy disabled)")
+    return None
 
 def _legacy_signal(symbol, current_price):
     """Legacy v2 signal — kept as fallback until v3 model is trained and validated."""
