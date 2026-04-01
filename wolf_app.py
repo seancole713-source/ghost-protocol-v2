@@ -125,6 +125,12 @@ def _weekly_summary_job():
 async def lifespan(app: FastAPI):
     LOGGER.info("Ghost Protocol v2 starting...")
     init_db()
+    # Purge sub-52% models on every startup — prevents bad models from persisting across deploys
+    try:
+        purged = _auto_purge_bad_models()
+        if purged: LOGGER.info(f"Boot purge: removed {purged} sub-52% models")
+    except Exception as _bpe:
+        LOGGER.warning("Boot purge failed: "+str(_bpe)[:60])
 
     # Self-healing: if app restarts between 8AM-noon CT and last card was >8h ago, fire now
     # Prevents silent card misses when Railway restarts during cron window
@@ -208,8 +214,19 @@ async def lifespan(app: FastAPI):
                 except Exception: pass
                 m, acc, passed = train_and_validate(crypto + stocks)
                 LOGGER.info(f"Startup training: acc={round(acc*100,1)}% passed={passed}")
+                # Purge bad models immediately after startup train
+                try:
+                    purged = _auto_purge_bad_models()
+                    LOGGER.info(f"Startup purge: removed {purged} sub-52% models")
+                except Exception as _spe:
+                    LOGGER.warning("Startup purge failed: "+str(_spe)[:60])
             else:
                 LOGGER.info("v3 model loaded from DB — ready")
+                # Always purge on startup even if model exists (catches stale bad models)
+                try:
+                    purged = _auto_purge_bad_models()
+                    if purged: LOGGER.info(f"Startup cleanup: removed {purged} sub-52% models")
+                except Exception: pass
         except Exception as _te:
             LOGGER.warning("Startup training failed: " + str(_te))
     import threading as _th
