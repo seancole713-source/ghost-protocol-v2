@@ -322,8 +322,9 @@ async function load() {
 
     var sdot = document.getElementById('sdot');
     var stxt = document.getElementById('stxt');
-    if (dc.length > 0) { sdot.className = 'dot'; stxt.textContent = (picks.active ? picks.active.length : dc.length) + ' active plays today'; }
-    else if (!picks.active || picks.active.length === 0) { sdot.className = 'dot warn'; stxt.textContent = 'No plays yet'; }
+    var totalActive = picks.active ? picks.active.length : 0;
+    if (totalActive > 0) { sdot.className = 'dot'; stxt.textContent = totalActive + ' active plays today'; }
+    else { sdot.className = 'dot warn'; stxt.textContent = 'No plays yet'; }
 
     document.getElementById('cgrid').innerHTML = dc.length > 0
       ? dc.map(makeCard).join('')
