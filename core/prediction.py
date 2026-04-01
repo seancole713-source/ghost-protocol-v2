@@ -38,6 +38,26 @@ CRYPTO_SYMBOLS = os.getenv(
 STOCK_SYMBOLS = os.getenv(
     "STOCK_SYMBOLS",
     "AAPL,TSLA,META,AMZN,T,WOLF").split(",")  # only symbols with v3.1 models ≥52% accuracy
+
+def _is_market_hours():
+    """Returns True if US market is open (9:30 AM - 4:00 PM CT, Mon-Fri)."""
+    import datetime as _dt, pytz as _tz
+    ct = _tz.timezone("America/Chicago")
+    now = _dt.datetime.now(ct)
+    if now.weekday() >= 5: return False  # weekend
+    mkt_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
+    mkt_close = now.replace(hour=16, minute=0, second=0, microsecond=0)
+    return mkt_open <= now <= mkt_close
+
+def _is_premarket():
+    """Returns True if pre-market (4 AM - 9:30 AM CT, Mon-Fri)."""
+    import datetime as _dt, pytz as _tz
+    ct = _tz.timezone("America/Chicago")
+    now = _dt.datetime.now(ct)
+    if now.weekday() >= 5: return False
+    pre_open = now.replace(hour=4, minute=0, second=0, microsecond=0)
+    mkt_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
+    return pre_open <= now < mkt_open
 EXCLUDE = set(os.getenv("EXCLUDE_SYMBOLS","HOOD,COIN,CHZ,ADA,AVAX,SAND,FLOW,HBAR,ALGO").split(","))
 
 
@@ -360,7 +380,8 @@ def run_prediction_cycle():
     regime = _check_regime()
     regime['confidence_floor_override'] = _cb_floor
     symbols = ([(s.strip(),"crypto") for s in CRYPTO_SYMBOLS if s.strip()] +
-               [(s.strip(),"stock")  for s in STOCK_SYMBOLS  if s.strip()])
+               # T07: skip stocks pre-market — features degrade before open, confidence drops below floor
+               ([(s.strip(),"stock") for s in STOCK_SYMBOLS if s.strip()] if (_is_market_hours() or not _is_premarket()) else []))
     # AUTO-INCLUDE portfolio holdings — if you own it, Ghost watches it
     try:
         with db_conn() as _pc:

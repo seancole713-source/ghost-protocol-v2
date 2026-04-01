@@ -8,7 +8,7 @@ from typing import Optional, Dict, Tuple
 
 LOGGER = logging.getLogger("ghost.prices")
 POLYGON_KEY = os.getenv("POLYGON_API_KEY", "")
-TIMEOUT = float(os.getenv("PRICE_PROVIDER_TIMEOUT_S", "2.5"))
+TIMEOUT = float(os.getenv("PRICE_PROVIDER_TIMEOUT_S", "8.0"))  # raised: CoinGecko/Binance need more time
 CACHE_TTL = int(os.getenv("PRICE_TTL_S", "120"))
 STOCK_CACHE_TTL = int(os.getenv("STOCK_PRICE_TTL_S", "60"))  # stocks refresh every 60s during market hours
 _mem_cache: Dict[str, Tuple[float, float]] = {}
@@ -30,7 +30,10 @@ def _coingecko(symbol):
         r = requests.get(f"https://api.coingecko.com/api/v3/simple/price?ids={symbol.lower()}&vs_currencies=usd", timeout=TIMEOUT)
         for k, v in r.json().items():
             return float(v["usd"])
-    except: return None
+    except: 
+        try:  # fallback: try coinbase for this symbol
+            return _coinbase(symbol)
+        except: return None
 
 def _coinbase(symbol):
     try:

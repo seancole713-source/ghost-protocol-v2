@@ -162,6 +162,26 @@ async def lifespan(app: FastAPI):
     from core.portfolio_routes import auto_refresh_portfolio_prices
     scheduler.register("portfolio_price_refresh", auto_refresh_portfolio_prices, interval_s=900)
     scheduler.register("news", run_news_cycle, interval_s=1800)
+    # Weekly model retrain — keeps models fresh as market conditions change
+    from core.signal_engine import train_and_validate as _tv
+    def _weekly_retrain():
+        try:
+            from core.prediction import CRYPTO_SYMBOLS, STOCK_SYMBOLS
+            import os as _os
+            syms = [(s.strip(),"crypto") for s in CRYPTO_SYMBOLS if s.strip()] +                    [(s.strip(),"stock") for s in STOCK_SYMBOLS if s.strip()]
+            trained, failed = 0, 0
+            for sym, atype in syms:
+                try:
+                    result = _tv(sym, atype)
+                    if result: trained += 1
+                    else: failed += 1
+                except Exception as _e:
+                    LOGGER.warning("Weekly retrain failed for "+sym+": "+str(_e)[:60])
+                    failed += 1
+            LOGGER.info("Weekly retrain complete: "+str(trained)+" trained, "+str(failed)+" failed")
+        except Exception as _e:
+            LOGGER.warning("Weekly retrain error: "+str(_e)[:80])
+    scheduler.register("weekly_retrain", _weekly_retrain, interval_s=604800)
     scheduler.start()
     # Ghost v3: auto-train on startup if no model in DB
     def _startup_train():
