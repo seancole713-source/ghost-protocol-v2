@@ -446,21 +446,36 @@ async def diagnostics():
 
 @APP.post("/api/admin/delete-model")
 async def delete_model(x_cron_secret: str = Header(None)):
-    """Delete a stale model from DB by symbol. Used when model can't retrain."""
+    """Delete models below accuracy threshold. Purges bad models so they stop generating picks."""
     if x_cron_secret != CRON_SECRET:
         raise HTTPException(status_code=403, detail="Forbidden")
-    # Always clean up ARB — it only has 43 bars, can never train v3.1
+    import json as _j
     from core.db import db_conn
     deleted = []
-    symbols_to_clean = ["ARB"]  # extend as needed
+    kept = []
+    ACCURACY_FLOOR = 0.52  # must match signal_engine MIN_ACCURACY
     try:
         with db_conn() as conn:
             cur = conn.cursor()
-            for sym in symbols_to_clean:
-                cur.execute("DELETE FROM ghost_v3_model WHERE key IN (%s, %s)",
-                           (f"model_{sym}", f"meta_{sym}"))
-                deleted.append(sym)
-        return {"ok": True, "deleted": deleted}
+            # Always delete ARB (43 bars, never trains)
+            cur.execute("DELETE FROM ghost_v3_model WHERE key IN ('model_ARB','meta_ARB')")
+            deleted.append("ARB")
+            # Delete all models below accuracy floor
+            cur.execute("SELECT key, value FROM ghost_v3_model WHERE key LIKE 'meta_%'")
+            rows = cur.fetchall()
+            for key, val in rows:
+                sym = key.replace("meta_", "")
+                try:
+                    meta = _j.loads(val)
+                    acc = meta.get("accuracy", 0)
+                    if acc < ACCURACY_FLOOR:
+                        cur.execute("DELETE FROM ghost_v3_model WHERE key IN (%s, %s)",
+                                   (f"model_{sym}", f"meta_{sym}"))
+                        deleted.append(f"{sym}(acc={round(acc*100,1)}%)")
+                    else:
+                        kept.append(f"{sym}(acc={round(acc*100,1)}%)")
+                except Exception: pass
+        return {"ok": True, "deleted": deleted, "kept": kept}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
