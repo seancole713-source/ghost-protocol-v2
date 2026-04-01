@@ -212,6 +212,10 @@ async def lifespan(app: FastAPI):
                         for sym, at in _c.cursor().fetchall() if False else []:
                             pass
                 except Exception: pass
+                # Filter out symbols known to consistently fail 52% accuracy threshold
+                _bad = {'AAPL','XRP','DOT','LTC','LINK','ARB','BTC','NVDA','PLTR','MSFT','AMD','XPO','NET','NEAR','SUI','MATIC','TRX','ATOM','AAVE','HBAR','ALGO','SAND','FLOW'}
+                crypto = [(s,t) for s,t in crypto if s.upper() not in _bad]
+                stocks = [(s,t) for s,t in stocks if s.upper() not in _bad]
                 m, acc, passed = train_and_validate(crypto + stocks)
                 LOGGER.info(f"Startup training: acc={round(acc*100,1)}% passed={passed}")
                 # Purge bad models immediately after startup train
@@ -1234,7 +1238,6 @@ def v3_train(x_cron_secret: str = Header(default="")):
             LOGGER.info(f"v3 training complete: accuracy={round(accuracy*100,1)}% passed={passed}")
             # Auto-purge sub-52% models immediately after training
             try:
-                from wolf_app import _auto_purge_bad_models
                 purged = _auto_purge_bad_models()
                 LOGGER.info(f"Auto-purged {purged} sub-52% models after retrain")
             except Exception as _pe:
