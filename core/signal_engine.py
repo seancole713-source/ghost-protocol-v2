@@ -365,6 +365,7 @@ def predict_live(symbol, asset_type):
     up_prob = float(proba[1])
     edge = meta.get('edge', 0)
     if edge < 0.03: return None  # raised from 2% — PLTR/AAVE/NET <3% edge not reliable
+    if meta.get('accuracy', 0) < 0.52: return None  # block sub-52% models at prediction time
 
     # Confidence = model accuracy (actual holdout win rate) + current signal strength
     # This makes 95% confidence mean something — only high-accuracy models on strong signals
