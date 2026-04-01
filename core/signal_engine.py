@@ -14,7 +14,7 @@ LOGGER = logging.getLogger("ghost.signal_v3")
 
 HOLD_HOURS_LABEL = 24
 HOLD_HOURS = 48
-MIN_ACCURACY = 0.50
+MIN_ACCURACY = 0.52  # raised from 0.50 — sub-52% models predict worse than coin flip
 MIN_TRAIN_ROWS = 80
 MODEL_DB_KEY = "ghost_v3_model_pkl"
 FEATURES_DB_KEY = "ghost_v3_features_json"
@@ -285,7 +285,7 @@ def train_and_validate(symbols_and_types):
             model.fit(X_train, y_train)
             accuracy = float(accuracy_score(y_test, model.predict(X_test)))
             edge = accuracy - natural_rate
-            passes = edge >= 0.02
+            passes = edge >= 0.03  # raised to match predict_live threshold
             LOGGER.info(f"{symbol}: acc={round(accuracy*100,1)}% nat={round(natural_rate*100,1)}% "
                        f"edge={round(edge*100,1)}% {'SAVED' if passes else 'skipped'}")
             if passes:
@@ -364,7 +364,7 @@ def predict_live(symbol, asset_type):
     proba = model.predict_proba(X)[0]
     up_prob = float(proba[1])
     edge = meta.get('edge', 0)
-    if edge < 0.02: return None
+    if edge < 0.03: return None  # raised from 2% — PLTR/AAVE/NET <3% edge not reliable
 
     # Confidence = model accuracy (actual holdout win rate) + current signal strength
     # This makes 95% confidence mean something — only high-accuracy models on strong signals
@@ -374,10 +374,8 @@ def predict_live(symbol, asset_type):
         signal_strength = (up_prob - 0.50) * 4.0  # 0.01 signal -> +0.04, 0.08 signal -> +0.32
         conf = round(min(0.95, max(0.75, accuracy + signal_strength)), 3)
         return ("UP", conf)
-    elif up_prob < 0.50:
-        signal_strength = (0.50 - up_prob) * 4.0
-        conf = round(min(0.95, max(0.75, accuracy + signal_strength)), 3)
-        return ("DOWN", conf)
+    # DOWN signals disabled — 1.5% WR on 274 trades, not viable
+    # Ghost is BUY-only system
     return None
 
 def get_model_status():

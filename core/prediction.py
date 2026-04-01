@@ -22,7 +22,7 @@ except ImportError:
 
 LOGGER = logging.getLogger("ghost.prediction")
 
-CONFIDENCE_FLOOR = float(os.getenv("MIN_ALERT_CONFIDENCE", "0.75"))
+CONFIDENCE_FLOOR = float(os.getenv("MIN_ALERT_CONFIDENCE", "0.80"))  # raised: filter weak signals
 DAILY_CAP        = int(os.getenv("DAILY_ALERT_CAP", "10"))
 CRYPTO_HOLD_H    = int(os.getenv("CRYPTO_HOLD_HOURS", "48"))
 TARGET_PCT       = float(os.getenv("TARGET_PCT", "0.06"))
