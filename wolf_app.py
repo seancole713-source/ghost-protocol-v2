@@ -500,6 +500,31 @@ async def diagnostics():
     except Exception as _ex:
         _errors.append({"check": "diagnostics.crashed", "detail": str(_ex)})
 
+    # morning_card.today: flag if no card today after 9AM CT
+    try:
+        import datetime as _mcdt, pytz as _mcpytz
+        _mc_ct = _mcpytz.timezone("America/Chicago")
+        _mc_now = _mcdt.datetime.now(_mc_ct)
+        _mc_today = _mc_now.strftime("%Y-%m-%d")
+        _mc_last = None
+        try:
+            with db_conn() as _mc_conn:
+                _mc_cur = _mc_conn.cursor()
+                _mc_cur.execute("SELECT val FROM ghost_state WHERE key='last_morning_card_date'")
+                _mc_row = _mc_cur.fetchone()
+                _mc_last = _mc_row[0] if _mc_row else None
+        except Exception: pass
+        if _mc_now.hour >= 9:
+            if _mc_last == _mc_today:
+                _passed.append({"check":"morning_card.today","detail":"Card sent today "+_mc_today,"status":"pass"})
+            else:
+                _errors.append({"check":"morning_card.today","detail":"No card today ("+_mc_today+") last:"+str(_mc_last),"status":"error"})
+                _score -= 10
+        else:
+            _passed.append({"check":"morning_card.today","detail":"Before 9AM CT — OK","status":"pass"})
+    except Exception as _mc_ex:
+        _warnings.append({"check":"morning_card.today","detail":"Cannot verify: "+str(_mc_ex)[:60],"status":"warning"})
+
     _score = max(0, _score)
     return {
         "score": _score,
@@ -691,31 +716,6 @@ def health():
 
     score = max(0, min(100, 100 - len(issues)*20 - len(warnings)*5))
     status_str = "healthy" if score >= 80 and not issues else "degraded" if score >= 50 else "critical"
-    # Check morning card fired today (after 9AM CT)
-    try:
-        import datetime as _ddt, pytz as _dpytz
-        _dct = _dpytz.timezone("America/Chicago")
-        _dnow = _ddt.datetime.now(_dct)
-        _dtoday = _dnow.strftime("%Y-%m-%d")
-        _dlast = None
-        try:
-            with db_conn() as _dconn2:
-                _dcur2 = _dconn2.cursor()
-                _dcur2.execute("SELECT val FROM ghost_state WHERE key='last_morning_card_date'")
-                _drow2 = _dcur2.fetchone()
-                _dlast = _drow2[0] if _drow2 else None
-        except Exception: pass
-        if _dnow.hour >= 9:
-            if _dlast == _dtoday:
-                passed.append({"check":"morning_card.today","detail":"Card sent today "+_dtoday,"status":"pass"})
-            else:
-                errors.append({"check":"morning_card.today","detail":"Card not sent today ("+_dtoday+") last: "+str(_dlast),"status":"error"})
-                score -= 10
-        else:
-            passed.append({"check":"morning_card.today","detail":"Before 9AM CT — not yet required","status":"pass"})
-    except Exception as _dex:
-        warnings.append({"check":"morning_card.today","detail":"Cannot verify: "+str(_dex)[:60],"status":"warning"})
-
     return {
         "status": status_str, "score": score, "db": db_ok,
         "telegram_configured": tg_ok, "predictions_freshness_min": freshness_min,
