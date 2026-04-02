@@ -666,7 +666,7 @@ def health():
             row = cur.fetchone()
             if row and row[0]:
                 freshness_min = int((_t.time() - float(row[0])) / 60)
-        if freshness_min and freshness_min > 1560:  # 26h — picks fire at 8AM, stale after a full missed day
+        if freshness_min and freshness_min > 2880:  # 48h — only flag if no picks for 2+ days
             issues.append("Predictions stale: " + str(freshness_min) + "m")
     except Exception: pass
 
