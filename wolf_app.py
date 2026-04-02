@@ -235,7 +235,7 @@ async def lifespan(app: FastAPI):
                             pass
                 except Exception: pass
                 # Filter out symbols known to consistently fail 52% accuracy threshold
-                _bad = {'AAPL','XRP','DOT','LTC','LINK','ARB','BTC','NVDA','PLTR','MSFT','AMD','XPO','NET','NEAR','SUI','MATIC','TRX','ATOM','AAVE','HBAR','ALGO','SAND','FLOW'}
+                _bad = {'AAPL','XRP','DOT','LTC','LINK','ARB','BTC','NVDA','PLTR','MSFT','AMD','XPO','NET','NEAR','SUI','MATIC','TRX','ATOM','AAVE','HBAR','ALGO','SAND','FLOW','WOLF'}
                 crypto = [(s,t) for s,t in crypto if s.upper() not in _bad]
                 stocks = [(s,t) for s,t in stocks if s.upper() not in _bad]
                 m, acc, passed = train_and_validate(crypto + stocks)
