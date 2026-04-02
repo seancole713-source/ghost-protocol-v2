@@ -697,17 +697,20 @@ def health():
         _dct = _dpytz.timezone("America/Chicago")
         _dnow = _ddt.datetime.now(_dct)
         _dtoday = _dnow.strftime("%Y-%m-%d")
+        _dlast = None
+        try:
+            with db_conn() as _dconn2:
+                _dcur2 = _dconn2.cursor()
+                _dcur2.execute("SELECT val FROM ghost_state WHERE key='last_morning_card_date'")
+                _drow2 = _dcur2.fetchone()
+                _dlast = _drow2[0] if _drow2 else None
+        except Exception: pass
         if _dnow.hour >= 9:
-            with db_conn() as _dconn:
-                _dcur = _dconn.cursor()
-                _dcur.execute("SELECT val FROM ghost_state WHERE key='last_morning_card_date'")
-                _drow = _dcur.fetchone()
-                _dlast = _drow[0] if _drow else None
-            if _dlast != _dtoday:
-                errors.append({"check":"morning_card.today","detail":"Card not sent today ("+_dtoday+") — last: "+str(_dlast),"status":"error"})
-                score -= 10
-            else:
+            if _dlast == _dtoday:
                 passed.append({"check":"morning_card.today","detail":"Card sent today "+_dtoday,"status":"pass"})
+            else:
+                errors.append({"check":"morning_card.today","detail":"Card not sent today ("+_dtoday+") last: "+str(_dlast),"status":"error"})
+                score -= 10
         else:
             passed.append({"check":"morning_card.today","detail":"Before 9AM CT — not yet required","status":"pass"})
     except Exception as _dex:
