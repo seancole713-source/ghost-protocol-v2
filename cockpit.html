@@ -244,7 +244,7 @@ async function loadPortfolio() {
     var glc = gl === null ? '' : (gl >= 0 ? 'pos' : 'neg');
     var glStr = gl === null ? '&mdash;' : (gl >= 0 ? '+' : '') + gl.toFixed(2) + '%';
     var glDStr = glD === null ? '&mdash;' : (glD >= 0 ? '+$' : '-$') + Math.abs(glD).toFixed(2);
-    var adv = '<span class="gadv-val gadv-hold">HOLD</span>';
+    var adv = '<span class="gadv-val gadv-neutral">Not watching</span>';
     if (p.ghost_signal) {
       var b = p.ghost_signal.direction === 'UP' || p.ghost_signal.direction === 'BUY';
       adv = '<span class="gadv-val ' + (b ? 'gadv-buy' : 'gadv-sell') + '">' + (b ? '&#128077; BUY MORE' : '&#128078; CONSIDER SELL') + '</span>';

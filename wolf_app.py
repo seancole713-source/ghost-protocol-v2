@@ -50,7 +50,7 @@ def _morning_card_job():
             # Correct P&L: $100 per trade simulation using pnl_pct
             pnl = sum((100 * (r[1] or 0) / 100) for r in rows)  # dollar gain per $100 bet
             # Scope to v2 predictions only (predicted_at is set, not NULL)
-            cur.execute("SELECT outcome FROM predictions WHERE outcome IN ('WIN','LOSS') AND direction='UP' AND predicted_at IS NOT NULL ORDER BY id DESC LIMIT 2000")
+            cur.execute("SELECT outcome FROM predictions WHERE outcome IN ('WIN','LOSS') AND predicted_at IS NOT NULL ORDER BY id DESC LIMIT 2000")
             all_rows = cur.fetchall()
             # Only count WIN/LOSS — exclude EXPIRED from denominator
             resolved = [r for r in all_rows if r[0] in ("WIN","LOSS")]
