@@ -13,9 +13,26 @@ CRON_SECRET = os.getenv("CRON_SECRET", "")
 
 def _morning_card_job():
     """Run prediction cycle and send morning Telegram card."""
+    import datetime as _dt, pytz as _pytz, time as _t2
     from core.prediction import run_prediction_cycle
     from core.telegram import send_morning_card
     from core.db import db_conn
+    # Dedup: only fire once per CT calendar day
+    _ct_tz = _pytz.timezone("America/Chicago")
+    _today_ct = _dt.datetime.now(_ct_tz).strftime("%Y-%m-%d")
+    try:
+        with db_conn() as _dc:
+            _row = _dc.cursor().execute("SELECT val FROM ghost_state WHERE key='last_morning_card_date'").fetchone() if hasattr(_dc.cursor().execute("SELECT val FROM ghost_state WHERE key='last_morning_card_date'"), 'fetchone') else None
+    except: _row = None
+    try:
+        with db_conn() as _dc2:
+            _cur_d = _dc2.cursor()
+            _cur_d.execute("SELECT val FROM ghost_state WHERE key='last_morning_card_date'")
+            _row = _cur_d.fetchone()
+            if _row and _row[0] == _today_ct:
+                LOGGER.info("Morning card already sent today ("+_today_ct+") — skipping duplicate")
+                return []
+    except Exception as _de: LOGGER.warning("Dedup check failed: "+str(_de)[:60])
     picks = run_prediction_cycle()
     # Get week stats
     try:
@@ -46,6 +63,11 @@ def _morning_card_job():
     try:
         with db_conn() as _tc:
             _tc.cursor().execute("INSERT INTO ghost_state(key,val) VALUES('last_morning_card_ts',%s) ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val", (str(int(time.time())),))
+        # Also write CT calendar date for day-level dedup
+        import datetime as _dt2, pytz as _pytz2
+        _ct2 = _pytz2.timezone("America/Chicago")
+        _date_str = _dt2.datetime.now(_ct2).strftime("%Y-%m-%d")
+        _tc.cursor().execute("INSERT INTO ghost_state(key,val) VALUES('last_morning_card_date',%s) ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val", (_date_str,))
     except Exception: pass
     if picks:
         send_morning_card(picks, week_stats)
@@ -669,6 +691,28 @@ def health():
 
     score = max(0, min(100, 100 - len(issues)*20 - len(warnings)*5))
     status_str = "healthy" if score >= 80 and not issues else "degraded" if score >= 50 else "critical"
+    # Check morning card fired today (after 9AM CT)
+    try:
+        import datetime as _ddt, pytz as _dpytz
+        _dct = _dpytz.timezone("America/Chicago")
+        _dnow = _ddt.datetime.now(_dct)
+        _dtoday = _dnow.strftime("%Y-%m-%d")
+        if _dnow.hour >= 9:
+            with db_conn() as _dconn:
+                _dcur = _dconn.cursor()
+                _dcur.execute("SELECT val FROM ghost_state WHERE key='last_morning_card_date'")
+                _drow = _dcur.fetchone()
+                _dlast = _drow[0] if _drow else None
+            if _dlast != _dtoday:
+                errors.append({"check":"morning_card.today","detail":"Card not sent today ("+_dtoday+") — last: "+str(_dlast),"status":"error"})
+                score -= 10
+            else:
+                passed.append({"check":"morning_card.today","detail":"Card sent today "+_dtoday,"status":"pass"})
+        else:
+            passed.append({"check":"morning_card.today","detail":"Before 9AM CT — not yet required","status":"pass"})
+    except Exception as _dex:
+        warnings.append({"check":"morning_card.today","detail":"Cannot verify: "+str(_dex)[:60],"status":"warning"})
+
     return {
         "status": status_str, "score": score, "db": db_ok,
         "telegram_configured": tg_ok, "predictions_freshness_min": freshness_min,
