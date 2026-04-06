@@ -9,6 +9,9 @@ from typing import List, Dict
 
 LOGGER = logging.getLogger("ghost.news")
 CRYPTOPANIC_KEY = os.getenv("CRYPTOPANIC_API_KEY", "")
+# v1 /api/v1/posts/ returns 404; plans use /api/<plan>/v2/posts/ (e.g. developer, growth).
+_cp_plan = (os.getenv("CRYPTOPANIC_API_PLAN") or "developer").strip().lower()
+CRYPTOPANIC_PLAN = "".join(c for c in _cp_plan if c.isalnum() or c == "_") or "developer"
 FINNHUB_KEY = os.getenv("FINNHUB_API_KEY", "")
 ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
@@ -124,17 +127,33 @@ def _fetch_cryptopanic() -> List[Dict]:
     if not CRYPTOPANIC_KEY:
         return []
     try:
+        url = f"https://cryptopanic.com/api/{CRYPTOPANIC_PLAN}/v2/posts/"
         r = requests.get(
-            "https://cryptopanic.com/api/v1/posts/",
+            url,
             params={"auth_token": CRYPTOPANIC_KEY, "kind": "news", "public": "true"},
             timeout=3,
         )
         if r.status_code != 200:
-            LOGGER.warning("CryptoPanic HTTP %s: %r", r.status_code, (r.text or "")[:160])
+            err = (r.text or "").strip()
+            try:
+                j = r.json()
+                if isinstance(j, dict) and j.get("info"):
+                    err = str(j.get("info", err))
+            except ValueError:
+                pass
+            LOGGER.warning(
+                "CryptoPanic HTTP %s (%s plan): %s",
+                r.status_code,
+                CRYPTOPANIC_PLAN,
+                err[:200],
+            )
             return []
         body = (r.text or "").strip()
         if not body:
-            LOGGER.warning("CryptoPanic empty response (check CRYPTOPANIC_API_KEY / plan)")
+            LOGGER.warning(
+                "CryptoPanic empty response (check CRYPTOPANIC_API_KEY and CRYPTOPANIC_API_PLAN=%s)",
+                CRYPTOPANIC_PLAN,
+            )
             return []
         try:
             payload = r.json()
