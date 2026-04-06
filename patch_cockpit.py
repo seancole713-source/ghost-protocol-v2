@@ -1,4 +1,4 @@
-mport os
+import os
 
 src_path = "wolf_app.py"
 with open(src_path) as f:
