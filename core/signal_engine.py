@@ -1,4 +1,4 @@
-""" core/signal_engine.py - Ghost Protocol v3.1 Signal Engine
+""" core/signal_engine.py - Ghost Protocol v3.2 Signal Engine
 UPGRADES (2026-03-30) from GitHub research:
   - EMA(20/50/200): no BUY below EMA200 (FarisZnf repo - #1 fix)
   - ADX(14): no BUY in choppy/sideways markets ADX<20 (FarisZnf repo)
@@ -7,16 +7,64 @@ UPGRADES (2026-03-30) from GitHub research:
   - Stochastic %K/%D: momentum confirmation
   - Regime gate in predict_live blocking BUYs in downtrend+choppy
   - Better XGBoost hyperparams: 200 estimators, depth 4, min_child 3
+
+v3.2: Training labels match live paper trades — WIN = hit vol-based target before stop
+within N daily bars (see V3_LABEL_HOLD_BARS), same TP/SL math as core.vol_targets.
 """
 import os, time, logging, json
 import numpy as np
+from core.vol_targets import base_vol_pct, stop_pct_from_vol
+
 LOGGER = logging.getLogger("ghost.signal_v3")
 
-HOLD_HOURS = 48  # hourly bars: label horizon for backtest (matches CRYPTO_HOLD_HOURS default)
-MIN_ACCURACY = 0.52  # raised from 0.50 — sub-52% models predict worse than coin flip
+LABEL_TYPE = "tp_sl_daily"
+# Daily bars only: approximate 48h crypto hold with this many forward bars (24h each).
+V3_LABEL_HOLD_BARS = max(1, int(os.getenv("V3_LABEL_HOLD_BARS", "3")))
 MIN_TRAIN_ROWS = 80
 MODEL_DB_KEY = "ghost_v3_model_pkl"
 FEATURES_DB_KEY = "ghost_v3_features_json"
+
+
+def _v3_min_holdout_acc() -> float:
+    return float(os.getenv("V3_MIN_HOLDOUT_ACC", "0.55"))
+
+
+def _v3_min_edge() -> float:
+    return float(os.getenv("V3_MIN_EDGE", "0.05"))
+
+
+def _v3_min_win_proba() -> float:
+    return float(os.getenv("V3_MIN_WIN_PROBA", "0.55"))
+
+
+def _v3_min_tp_sl_wins() -> int:
+    return max(5, int(os.getenv("V3_MIN_TP_SL_WINS", "15")))
+
+
+def _simulate_up_tp_sl(rows: list, entry_idx: int, hold_bars: int, vol_pct: float) -> str:
+    """
+    Path simulation on daily OHLC: UP trade from rows[entry_idx] close.
+    Conservative same-bar rule: if both stop and target are touched, count LOSS.
+    Returns WIN | LOSS | EXPIRED (mirrors live reconcile when expiry ends without hit).
+    """
+    entry = float(rows[entry_idx]["close"])
+    if entry <= 0:
+        return "EXPIRED"
+    target = entry * (1 + vol_pct)
+    stop = entry * (1 - stop_pct_from_vol(vol_pct))
+    last = min(len(rows) - 1, entry_idx + hold_bars)
+    for j in range(entry_idx + 1, last + 1):
+        lo = float(rows[j]["low"])
+        hi = float(rows[j]["high"])
+        hit_stop = lo <= stop
+        hit_tgt = hi >= target
+        if hit_stop and hit_tgt:
+            return "LOSS"
+        if hit_stop:
+            return "LOSS"
+        if hit_tgt:
+            return "WIN"
+    return "EXPIRED"
 
 def _rsi(closes, period=14):
     if len(closes) < period + 1: return 50.0
@@ -234,18 +282,24 @@ def _fetch_ohlcv(symbol, asset_type, period='2y', interval='1d'):
 
 def backtest_symbol(symbol, asset_type):
     rows = _fetch_ohlcv(symbol, asset_type)
-    if not rows or len(rows) < 100: return []
-    labeled = []; window = 220
-    for i in range(window, len(rows) - HOLD_HOURS):
-        hist = rows[max(0, i-window):i+1]
+    if not rows or len(rows) < 100:
+        return []
+    vol_pct = base_vol_pct(symbol, asset_type)
+    labeled = []
+    window = 220
+    margin = V3_LABEL_HOLD_BARS + 1
+    for i in range(window, len(rows) - margin):
+        hist = rows[max(0, i - window) : i + 1]
         features = _calculate_features(hist)
-        features['symbol'] = symbol; features['asset_type'] = asset_type
-        entry = rows[i]['close']
-        future_close = rows[i+1]['close'] if i+1 < len(rows) else entry
-        labeled.append({'features': features, 'label': 1 if future_close > entry else 0})
-    wins = sum(1 for r in labeled if r['label'] == 1)
-    LOGGER.info(f"Backtest {symbol}: {len(labeled)} samples, "
-                f"{round(wins/len(labeled)*100,1) if labeled else 0}% natural rate")
+        features["symbol"] = symbol
+        features["asset_type"] = asset_type
+        outcome = _simulate_up_tp_sl(rows, i, V3_LABEL_HOLD_BARS, vol_pct)
+        labeled.append({"features": features, "label": 1 if outcome == "WIN" else 0, "outcome": outcome})
+    wins = sum(1 for r in labeled if r["label"] == 1)
+    LOGGER.info(
+        f"Backtest {symbol}: {len(labeled)} samples (TP/SL labels, {V3_LABEL_HOLD_BARS}d bars), "
+        f"{round(wins/len(labeled)*100,1) if labeled else 0}% natural WIN rate"
+    )
     return labeled
 
 def build_training_data(symbols_and_types):
@@ -269,30 +323,45 @@ def train_and_validate(symbols_and_types):
     for symbol, asset_type in symbols_and_types:
         try:
             rows = backtest_symbol(symbol, asset_type)
-            if not rows or len(rows) < 80: continue
-            X = np.array([[r['features'].get(c, 0.0) for c in FEATURE_COLS] for r in rows])
-            y = np.array([r['label'] for r in rows])
+            if not rows or len(rows) < 80:
+                continue
+            X = np.array([[r["features"].get(c, 0.0) for c in FEATURE_COLS] for r in rows])
+            y = np.array([r["label"] for r in rows])
+            if int(np.sum(y)) < _v3_min_tp_sl_wins():
+                LOGGER.info(f"{symbol}: skip — {int(np.sum(y))} historical TP/SL wins (min {_v3_min_tp_sl_wins()})")
+                continue
             split = int(len(X) * 0.8)
             X_train, X_test = X[:split], X[split:]
             y_train, y_test = y[:split], y[split:]
             natural_rate = float(np.mean(y_test))
+            pos_ct = int(np.sum(y_train))
+            neg_ct = int(len(y_train) - pos_ct)
+            spw = (neg_ct / pos_ct) if pos_ct > 0 else 1.0
+            min_acc = _v3_min_holdout_acc()
+            min_edge = _v3_min_edge()
             model = XGBClassifier(
                 n_estimators=200, max_depth=4, learning_rate=0.03,
                 subsample=0.8, colsample_bytree=0.7, min_child_weight=3,
+                scale_pos_weight=min(25.0, max(1.0, float(spw))),
                 use_label_encoder=False, eval_metric='logloss', random_state=42
             )
             model.fit(X_train, y_train)
             accuracy = float(accuracy_score(y_test, model.predict(X_test)))
             edge = accuracy - natural_rate
-            passes = edge >= 0.03  # raised to match predict_live threshold
+            passes = edge >= min_edge and accuracy >= min_acc
             LOGGER.info(f"{symbol}: acc={round(accuracy*100,1)}% nat={round(natural_rate*100,1)}% "
-                       f"edge={round(edge*100,1)}% {'SAVED' if passes else 'skipped'}")
+                       f"edge={round(edge*100,1)}% thr=({min_acc*100:.0f}%acc,{min_edge*100:.0f}%edge) "
+                       f"{'SAVED' if passes else 'skipped'}")
             if passes:
                 model_bytes = base64.b64encode(pickle.dumps(model)).decode('ascii')
-                meta = json.dumps({'feature_cols': FEATURE_COLS, 'accuracy': accuracy,
-                                   'natural_rate': natural_rate, 'edge': edge,
-                                   'trained_at': time.time(), 'n_samples': len(rows),
-                                   'engine_version': 'v3.1_ema_adx_atr_obv_stoch'})
+                meta = json.dumps({
+                    "feature_cols": FEATURE_COLS, "accuracy": accuracy,
+                    "natural_rate": natural_rate, "edge": edge,
+                    "trained_at": time.time(), "n_samples": len(rows),
+                    "engine_version": "v3.2_tp_sl_daily",
+                    "label_type": LABEL_TYPE,
+                    "label_hold_bars": V3_LABEL_HOLD_BARS,
+                })
                 with db_conn() as conn:
                     cur = conn.cursor()
                     cur.execute("CREATE TABLE IF NOT EXISTS ghost_v3_model "
@@ -324,6 +393,9 @@ def load_model(symbol=None):
             mrow = cur.fetchone()
             if not mrow: return None, None, None
             meta = json.loads(mrow[0])
+            if meta.get("label_type") != LABEL_TYPE:
+                LOGGER.info("load_model %s: wrong label_type (retrain for v3.2 TP/SL)", symbol)
+                return None, None, None
             if time.time() - meta.get('trained_at', 0) > 14 * 86400: return None, None, None
             return model, meta.get('feature_cols', FEATURE_COLS), meta
     except Exception as e:
@@ -362,16 +434,20 @@ def predict_live(symbol, asset_type):
     X = np.array([[features.get(c, 0.0) for c in feature_cols]])
     proba = model.predict_proba(X)[0]
     up_prob = float(proba[1])
+    min_edge = _v3_min_edge()
+    min_acc = _v3_min_holdout_acc()
+    min_p = _v3_min_win_proba()
     edge = meta.get('edge', 0)
-    if edge < 0.03: return None  # raised from 2% — PLTR/AAVE/NET <3% edge not reliable
-    if meta.get('accuracy', 0) < 0.52: return None  # block sub-52% models at prediction time
+    if edge < min_edge:
+        return None
+    if meta.get('accuracy', 0) < min_acc:
+        return None
 
-    # Confidence = model accuracy (actual holdout win rate) + current signal strength
-    # This makes 95% confidence mean something — only high-accuracy models on strong signals
-    accuracy = meta.get('accuracy', 0.55)  # holdout win rate, e.g. 0.62 = 62%
+    # Confidence = holdout TP/SL WIN rate + strength above min win-probability
+    accuracy = meta.get('accuracy', min_acc)
 
-    if up_prob > 0.50:
-        signal_strength = (up_prob - 0.50) * 4.0  # 0.01 signal -> +0.04, 0.08 signal -> +0.32
+    if up_prob > min_p:
+        signal_strength = (up_prob - min_p) * 4.0
         conf = round(min(0.95, max(0.75, accuracy + signal_strength)), 3)
         return ("UP", conf)
     # DOWN signals disabled — 1.5% WR on 274 trades, not viable
@@ -395,6 +471,8 @@ def get_model_status():
                     "edge": round(m.get("edge",0)*100,1),
                     "n_samples": m.get("n_samples",0),
                     "engine": m.get("engine_version","v3.0"),
+                    "label_type": m.get("label_type", ""),
+                    "label_hold_bars": m.get("label_hold_bars", V3_LABEL_HOLD_BARS),
                 }
             return {"trained": True, "models": len(symbols), "symbols": symbols}
     except Exception as e:

@@ -1,6 +1,6 @@
 """
 core/prediction.py - Ghost v2 prediction engine.
-Signal source: per-symbol historical accuracy from real resolved picks.
+Signal source: v3 XGBoost trained on TP/SL outcomes (see core.signal_engine v3.2).
 Rules:
   - 30+ resolved picks AND win_rate > 55%: predict dominant direction
   - 30+ resolved picks AND win_rate < 45%: predict inverse
@@ -14,6 +14,7 @@ import os, time, logging, json
 from datetime import datetime, timezone
 from typing import Optional, List
 from core.db import db_conn
+from core.vol_targets import base_vol_pct, stop_pct_from_vol
 try:
     from core.prices import get_price, get_crypto_price
 except ImportError:
@@ -274,16 +275,8 @@ def predict_symbol(symbol, asset_type, regime):
         hold = int(_exp.timestamp()) - now
     else:
         hold = CRYPTO_HOLD_H * 3600
-    # Dynamic targets based on real observed volatility per symbol
-    _VOL_MAP = {
-        "LTC":0.020,"AAVE":0.040,"LINK":0.031,"SOL":0.029,"BTC":0.022,
-        "XRP":0.015,"MATIC":0.020,"SUI":0.022,"NEAR":0.028,"BCH":0.015,
-        "ETH":0.025,"DOT":0.025,"TRX":0.020,"ATOM":0.025,"ARB":0.030,
-        "UNI":0.030,"NEAR":0.028,
-    }
-    # Default: stock 2%, unknown crypto 2.5%
-    _default_vol = 0.020 if asset_type == "stock" else 0.025
-    _vol_pct = _VOL_MAP.get(symbol.upper(), _default_vol)
+    # Dynamic targets based on real observed volatility per symbol (see core.vol_targets)
+    _vol_pct = base_vol_pct(symbol, asset_type)
     # Also try DB — if 3+ real stop-loss hits, use those
     try:
         with db_conn() as _vc:
@@ -296,7 +289,7 @@ def predict_symbol(symbol, asset_type, regime):
                 avg_move = sum(_moves) / len(_moves)
                 _vol_pct = max(0.015, min(0.05, avg_move / 100 * 1.3))
     except Exception: pass
-    _stop_pct = _vol_pct * 0.65  # stop = 65% of target (~1.5:1 reward:risk)
+    _stop_pct = stop_pct_from_vol(_vol_pct)  # ~1.5:1 reward:risk vs target move
     target = price * (1 + _vol_pct) if direction == "UP" else price * (1 - _vol_pct)
     stop   = price * (1 - _stop_pct) if direction == "UP" else price * (1 + _stop_pct)
 
