@@ -1115,9 +1115,47 @@ def get_stats():
         total = wins + losses
         cur.execute("SELECT COUNT(*) FROM predictions WHERE outcome IS NULL AND entry_price IS NOT NULL")
         open_count = cur.fetchone()[0]
+        # Post-v3.2 window stats (ignore legacy era by default)
+        v32_start_ts = 0
+        try:
+            v32_start_ts = int(os.getenv("V3_STATS_START_TS", "0") or 0)
+        except Exception:
+            v32_start_ts = 0
+        if v32_start_ts <= 0:
+            try:
+                cur.execute("SELECT value FROM ghost_v3_model WHERE key LIKE 'meta_%'")
+                metas = [json.loads(r[0]) for r in cur.fetchall()]
+                trained = [
+                    int(m.get("trained_at", 0))
+                    for m in metas
+                    if m.get("label_type") == "tp_sl_daily"
+                ]
+                if trained:
+                    v32_start_ts = min(trained)
+            except Exception:
+                v32_start_ts = 0
+        v32_wins = v32_losses = v32_total = 0
+        if v32_start_ts > 0:
+            cur.execute(
+                "SELECT outcome, COUNT(*) FROM predictions "
+                "WHERE outcome IN ('WIN','LOSS') AND predicted_at IS NOT NULL AND predicted_at >= %s "
+                "GROUP BY outcome",
+                (v32_start_ts,),
+            )
+            v32_rows = {r[0]: r[1] for r in cur.fetchall()}
+            v32_wins = v32_rows.get("WIN", 0)
+            v32_losses = v32_rows.get("LOSS", 0)
+            v32_total = v32_wins + v32_losses
     return {"ok": True, "wins": wins, "losses": losses, "total": total,
             "win_rate_pct": round(wins/total*100,1) if total else 0,
-            "open_positions": open_count}
+            "open_positions": open_count,
+            "post_v32": {
+                "start_ts": v32_start_ts,
+                "wins": v32_wins,
+                "losses": v32_losses,
+                "total": v32_total,
+                "win_rate_pct": round(v32_wins/v32_total*100,1) if v32_total else 0.0,
+            }}
 
 @APP.get("/api/db-probe")
 def db_probe():
