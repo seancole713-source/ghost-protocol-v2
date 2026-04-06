@@ -129,15 +129,27 @@ def _fetch_cryptopanic() -> List[Dict]:
             params={"auth_token": CRYPTOPANIC_KEY, "kind": "news", "public": "true"},
             timeout=3,
         )
+        if r.status_code != 200:
+            LOGGER.warning("CryptoPanic HTTP %s: %r", r.status_code, (r.text or "")[:160])
+            return []
+        body = (r.text or "").strip()
+        if not body:
+            LOGGER.warning("CryptoPanic empty response (check CRYPTOPANIC_API_KEY / plan)")
+            return []
+        try:
+            payload = r.json()
+        except ValueError:
+            LOGGER.warning("CryptoPanic non-JSON response: %r", body[:200])
+            return []
         articles = []
-        for item in r.json().get("results", [])[:20]:
+        for item in payload.get("results", [])[:20]:
             syms = [c["code"].upper() for c in item.get("currencies", [])]
             title = item.get("title", "")
             if title and title not in _seen_headlines:
                 _seen_headlines.add(title)
                 articles.append({"title": title, "symbols": syms or ["CRYPTO"], "source": "cryptopanic"})
         return articles
-    except Exception as e:
+    except requests.RequestException as e:
         LOGGER.warning(f"CryptoPanic fetch error: {e}")
         return []
 

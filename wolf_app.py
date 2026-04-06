@@ -1,4 +1,4 @@
-import os, time, logging
+import os, sys, time, logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -6,7 +6,11 @@ from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from core.db import db_conn, init_db
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    stream=sys.stdout,
+)
 LOGGER = logging.getLogger("ghost")
 CRON_SECRET = os.getenv("CRON_SECRET", "")
 
@@ -210,18 +214,18 @@ async def lifespan(app: FastAPI):
     def _weekly_retrain():
         try:
             from core.prediction import CRYPTO_SYMBOLS, STOCK_SYMBOLS
-            import os as _os
-            syms = [(s.strip(),"crypto") for s in CRYPTO_SYMBOLS if s.strip()] +                    [(s.strip(),"stock") for s in STOCK_SYMBOLS if s.strip()]
-            trained, failed = 0, 0
-            for sym, atype in syms:
-                try:
-                    result = _tv(sym, atype)
-                    if result: trained += 1
-                    else: failed += 1
-                except Exception as _e:
-                    LOGGER.warning("Weekly retrain failed for "+sym+": "+str(_e)[:60])
-                    failed += 1
-            LOGGER.info("Weekly retrain complete: "+str(trained)+" trained, "+str(failed)+" failed")
+            syms = [(s.strip(), "crypto") for s in CRYPTO_SYMBOLS if s.strip()] + [
+                (s.strip(), "stock") for s in STOCK_SYMBOLS if s.strip()
+            ]
+            trained, failed = 0, len(syms)
+            try:
+                # train_and_validate expects one list of (symbol, asset_type), not per-symbol calls
+                _, acc_ratio, _ok = _tv(syms)
+                trained = int(round(acc_ratio * len(syms))) if syms else 0
+                failed = len(syms) - trained
+            except Exception as _e:
+                LOGGER.warning("Weekly retrain failed: " + str(_e)[:80])
+            LOGGER.info("Weekly retrain complete: " + str(trained) + " trained, " + str(failed) + " failed")
             # Auto-purge sub-52% models after weekly retrain
             try:
                 purged = _auto_purge_bad_models()
