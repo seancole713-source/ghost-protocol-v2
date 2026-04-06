@@ -45,6 +45,10 @@ def _v3_min_wf_folds() -> int:
     return max(2, int(os.getenv("V3_MIN_WF_FOLDS", "3")))
 
 
+def _v3_min_wf_acc_mean() -> float:
+    return float(os.getenv("V3_MIN_WF_ACC_MEAN", "0.60"))
+
+
 def _walk_forward_scores(X, y):
     """
     Rolling walk-forward validation over time-ordered samples.
@@ -407,17 +411,18 @@ def train_and_validate(symbols_and_types):
             accuracy = float(accuracy_score(y_test, model.predict(X_test)))
             edge = accuracy - natural_rate
             wf = _walk_forward_scores(X, y)
+            min_wf_acc = _v3_min_wf_acc_mean()
             wf_ok = (
                 wf["fold_count"] >= _v3_min_wf_folds()
-                and wf["acc_mean"] >= min_acc
+                and wf["acc_mean"] >= min_wf_acc
                 and wf["edge_mean"] >= min_edge
-                and wf["acc_min"] >= (min_acc - 0.03)
+                and wf["acc_min"] >= (min_wf_acc - 0.03)
             )
             passes = edge >= min_edge and accuracy >= min_acc and wf_ok
             LOGGER.info(f"{symbol}: acc={round(accuracy*100,1)}% nat={round(natural_rate*100,1)}% "
                        f"edge={round(edge*100,1)}% wf={wf['fold_count']} folds "
                        f"(mean_acc={round(wf['acc_mean']*100,1)}%, mean_edge={round(wf['edge_mean']*100,1)}%) "
-                       f"thr=({min_acc*100:.0f}%acc,{min_edge*100:.0f}%edge) "
+                       f"thr=({min_acc*100:.0f}%acc,{min_edge*100:.0f}%edge,{min_wf_acc*100:.0f}%wf_mean_acc) "
                        f"{'SAVED' if passes else 'skipped'}")
             if passes:
                 model_bytes = base64.b64encode(pickle.dumps(model)).decode('ascii')
@@ -509,6 +514,7 @@ def predict_live(symbol, asset_type):
     min_edge = _v3_min_edge()
     min_acc = _v3_min_holdout_acc()
     min_p = _v3_min_win_proba()
+    min_wf_acc = _v3_min_wf_acc_mean()
     edge = meta.get('edge', 0)
     wf_acc_mean = float(meta.get("wf_acc_mean", meta.get("accuracy", 0)))
     wf_edge_mean = float(meta.get("wf_edge_mean", meta.get("edge", 0)))
@@ -517,7 +523,7 @@ def predict_live(symbol, asset_type):
         return None
     if meta.get('accuracy', 0) < min_acc:
         return None
-    if wf_fold_count > 0 and (wf_acc_mean < min_acc or wf_edge_mean < min_edge):
+    if wf_fold_count > 0 and (wf_acc_mean < min_wf_acc or wf_edge_mean < min_edge):
         return None
 
     # Confidence = holdout TP/SL WIN rate + strength above min win-probability

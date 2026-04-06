@@ -38,6 +38,7 @@ def _purge_v3_stale_or_weak():
     """Remove v3 models below V3_MIN_HOLDOUT_ACC or pre-v3.2 label schema."""
     import json as _j
     floor = float(os.getenv("V3_MIN_HOLDOUT_ACC", "0.55"))
+    wf_floor = float(os.getenv("V3_MIN_WF_ACC_MEAN", "0.60"))
     min_edge = float(os.getenv("V3_MIN_EDGE", "0.05"))
     min_wf_folds = max(2, int(os.getenv("V3_MIN_WF_FOLDS", "3")))
     purged = 0
@@ -53,7 +54,7 @@ def _purge_v3_stale_or_weak():
                     wf_folds = int(meta.get("wf_fold_count", 0))
                     wf_acc = float(meta.get("wf_acc_mean", meta.get("accuracy", 0)))
                     wf_edge = float(meta.get("wf_edge_mean", meta.get("edge", 0)))
-                    wf_weak = wf_folds < min_wf_folds or wf_acc < floor or wf_edge < min_edge
+                    wf_weak = wf_folds < min_wf_folds or wf_acc < wf_floor or wf_edge < min_edge
                     if meta.get("label_type") != "tp_sl_daily" or weak or wf_weak:
                         cur.execute(
                             "DELETE FROM ghost_v3_model WHERE key IN (%s,%s)",
@@ -544,7 +545,7 @@ async def diagnostics():
             _wf_acc = float(_m.get("wf_acc_mean", _m.get("accuracy", 0)))
             _wf_edge = float(_m.get("wf_edge_mean", _m.get("edge", 0)))
             _wf_min_folds = max(2, int(os.getenv("V3_MIN_WF_FOLDS", "3")))
-            _wf_floor = float(os.getenv("V3_MIN_HOLDOUT_ACC", "0.55"))
+            _wf_floor = float(os.getenv("V3_MIN_WF_ACC_MEAN", "0.60"))
             _wf_edge_floor = float(os.getenv("V3_MIN_EDGE", "0.05"))
             if _wf_folds < _wf_min_folds or _wf_acc < _wf_floor or _wf_edge < _wf_edge_floor:
                 _weak_wf.append(_sym)
