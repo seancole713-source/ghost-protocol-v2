@@ -11,6 +11,17 @@ LOGGER = logging.getLogger("ghost")
 CRON_SECRET = os.getenv("CRON_SECRET", "")
 
 
+def _has_any_v3_model():
+    """True when ghost_v3_model has at least one trained symbol (meta_* row)."""
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT 1 FROM ghost_v3_model WHERE key ~ '^meta_' LIMIT 1")
+            return cur.fetchone() is not None
+    except Exception:
+        return False
+
+
 def _morning_card_job():
     """Run prediction cycle and send morning Telegram card."""
     import datetime as _dt, pytz as _pytz, time as _t2
@@ -21,10 +32,6 @@ def _morning_card_job():
     _ct_tz = _pytz.timezone("America/Chicago")
     _today_ct = _dt.datetime.now(_ct_tz).strftime("%Y-%m-%d")
     try:
-        with db_conn() as _dc:
-            _row = _dc.cursor().execute("SELECT val FROM ghost_state WHERE key='last_morning_card_date'").fetchone() if hasattr(_dc.cursor().execute("SELECT val FROM ghost_state WHERE key='last_morning_card_date'"), 'fetchone') else None
-    except: _row = None
-    try:
         with db_conn() as _dc2:
             _cur_d = _dc2.cursor()
             _cur_d.execute("SELECT val FROM ghost_state WHERE key='last_morning_card_date'")
@@ -32,7 +39,8 @@ def _morning_card_job():
             if _row and _row[0] == _today_ct:
                 LOGGER.info("Morning card already sent today ("+_today_ct+") — skipping duplicate")
                 return []
-    except Exception as _de: LOGGER.warning("Dedup check failed: "+str(_de)[:60])
+    except Exception as _de:
+        LOGGER.warning("Dedup check failed: "+str(_de)[:60])
     picks = run_prediction_cycle()
     # Get week stats
     try:
@@ -61,14 +69,21 @@ def _morning_card_job():
     week_stats = {"wins": wins, "losses": losses, "pnl_usd": pnl, "alltime_wr": alltime_wr}
     # Record card fire time for startup self-healing check
     try:
-        with db_conn() as _tc:
-            _tc.cursor().execute("INSERT INTO ghost_state(key,val) VALUES('last_morning_card_ts',%s) ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val", (str(int(time.time())),))
-        # Also write CT calendar date for day-level dedup
         import datetime as _dt2, pytz as _pytz2
         _ct2 = _pytz2.timezone("America/Chicago")
         _date_str = _dt2.datetime.now(_ct2).strftime("%Y-%m-%d")
-        _tc.cursor().execute("INSERT INTO ghost_state(key,val) VALUES('last_morning_card_date',%s) ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val", (_date_str,))
-    except Exception: pass
+        with db_conn() as _tc:
+            _cur_tc = _tc.cursor()
+            _cur_tc.execute(
+                "INSERT INTO ghost_state(key,val) VALUES('last_morning_card_ts',%s) ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
+                (str(int(time.time())),),
+            )
+            _cur_tc.execute(
+                "INSERT INTO ghost_state(key,val) VALUES('last_morning_card_date',%s) ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
+                (_date_str,),
+            )
+    except Exception:
+        pass
     if picks:
         send_morning_card(picks, week_stats)
     else:
@@ -220,10 +235,9 @@ async def lifespan(app: FastAPI):
     # Ghost v3: auto-train on startup if no model in DB
     def _startup_train():
         try:
-            from core.signal_engine import load_model, train_and_validate
+            from core.signal_engine import train_and_validate
             import os
-            model, _, _ = load_model()
-            if model is None:
+            if not _has_any_v3_model():
                 LOGGER.info("No v3 model found — training on startup...")
                 crypto = [(s.strip(),"crypto") for s in os.getenv("CRYPTO_SYMBOLS","").split(",") if s.strip()]
                 stocks = [(s.strip(),"stock") for s in os.getenv("STOCK_SYMBOLS","").split(",") if s.strip()]

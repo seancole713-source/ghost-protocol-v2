@@ -12,8 +12,7 @@ import os, time, logging, json
 import numpy as np
 LOGGER = logging.getLogger("ghost.signal_v3")
 
-HOLD_HOURS_LABEL = 24
-HOLD_HOURS = 48
+HOLD_HOURS = 48  # hourly bars: label horizon for backtest (matches CRYPTO_HOLD_HOURS default)
 MIN_ACCURACY = 0.52  # raised from 0.50 — sub-52% models predict worse than coin flip
 MIN_TRAIN_ROWS = 80
 MODEL_DB_KEY = "ghost_v3_model_pkl"

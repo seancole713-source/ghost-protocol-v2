@@ -7,7 +7,7 @@ Rules:
   - Less than 30 picks: momentum-based (price vs 7-day average)
   - Regime gate: BTC down 5%+ blocks crypto BUYs
   - SELL signals blocked: 1.9% win rate across 211 trades
-  - Confidence floor 0.75 (raised from 0.60)
+  - Confidence floor 0.80 by default (MIN_ALERT_CONFIDENCE)
   - Features logged on every prediction for future ML training
 """
 import os, time, logging, json

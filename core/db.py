@@ -77,6 +77,12 @@ def _ensure_tables():
                 updated_at BIGINT NOT NULL
             )
         """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS ghost_state (
+                key TEXT PRIMARY KEY,
+                val TEXT
+            )
+        """)
         LOGGER.info("Tables verified")
 
 def _migrate_schema():
