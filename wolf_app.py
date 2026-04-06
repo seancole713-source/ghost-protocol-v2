@@ -1068,6 +1068,41 @@ def migrate_outcomes(x_cron_secret: str = Header(default="")):
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
     return {"ok": True, "inserted": inserted, "source_rows": source_rows, "outcome_counts": counts}
 
+@APP.get("/api/stats/v32")
+def get_stats_v32():
+    """Win rate for v3.2-era predictions only (post 2026-04-05). Use this for decisioning, not all-time."""
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            # Only count predictions made after v3.2 deploy, BUY only, WIN/LOSS only
+            cur.execute("""
+                SELECT outcome, COUNT(*) FROM predictions
+                WHERE direction='UP'
+                AND predicted_at >= '2026-04-05 00:00:00'
+                AND outcome IN ('WIN','LOSS')
+                GROUP BY outcome
+            """)
+            rows = {r[0]: r[1] for r in cur.fetchall()}
+            wins = rows.get('WIN', 0)
+            losses = rows.get('LOSS', 0)
+            total = wins + losses
+            wr = round(wins / total * 100, 1) if total else 0
+            # Also get open picks from v3.2 era
+            cur.execute("""
+                SELECT COUNT(*) FROM predictions
+                WHERE direction='UP'
+                AND predicted_at >= '2026-04-05 00:00:00'
+                AND outcome IS NULL
+                AND expires_at > %s
+            """, (int(__import__('time').time()),))
+            open_picks = cur.fetchone()[0]
+        return {"ok": True, "era": "v3.2", "since": "2026-04-05",
+                "wins": wins, "losses": losses, "total": total,
+                "win_rate_pct": wr, "open_picks": open_picks,
+                "verdict": "on_track" if wr >= 55 else "watch" if wr >= 45 else "review"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:80]}
+
 @APP.get("/api/stats")
 def get_stats():
     """Overall accuracy stats across all sources."""
