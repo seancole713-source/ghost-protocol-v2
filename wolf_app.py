@@ -1106,6 +1106,7 @@ def get_stats_v32():
 @APP.get("/api/stats")
 def get_stats():
     """Overall accuracy stats across all sources."""
+    import json as _json
     with db_conn() as conn:
         cur = conn.cursor()
         cur.execute("SELECT outcome, COUNT(*) FROM predictions WHERE outcome IN ('WIN','LOSS') AND predicted_at IS NOT NULL GROUP BY outcome")
@@ -1124,7 +1125,7 @@ def get_stats():
         if v32_start_ts <= 0:
             try:
                 cur.execute("SELECT value FROM ghost_v3_model WHERE key LIKE 'meta_%'")
-                metas = [json.loads(r[0]) for r in cur.fetchall()]
+                metas = [_json.loads(r[0]) for r in cur.fetchall()]
                 trained = [
                     int(m.get("trained_at", 0))
                     for m in metas
