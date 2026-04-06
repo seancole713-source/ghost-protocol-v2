@@ -61,3 +61,47 @@ if changed:
     print("[patch] wolf_app.py written OK")
 else:
     print("[patch] no changes needed")
+
+# Patch 6: /api/cockpit/context route
+if "/api/cockpit/context" not in src:
+        src += """
+
+        @APP.get("/api/cockpit/context", include_in_schema=False)
+        def cockpit_context():
+            import json
+                from core.db import db_conn
+                    try:
+                            with db_conn() as conn:
+                                        cur = conn.cursor()
+                                                    cur.execute("SELECT COUNT(*) FROM predictions WHERE outcome IS NULL AND expires_at > extract(epoch from now())")
+                                                                open_picks = cur.fetchone()[0]
+                                                                            cur.execute("SELECT COUNT(*) FROM predictions WHERE resolved_at > extract(epoch from now()) - 86400")
+                                                                                        resolved_24h = cur.fetchone()[0]
+                                                                                                    cur.execute("SELECT outcome, COUNT(*) FROM predictions WHERE resolved_at > extract(epoch from now()) - 604800 GROUP BY outcome")
+                                                                                                                outcomes = {r[0]: r[1] for r in cur.fetchall()}
+                                                                                                                        regime = _check_regime() if callable(globals().get('_check_regime')) else "unknown"
+                                                                                                                                return {"ok": True, "open_picks": open_picks, "resolved_24h": resolved_24h, "weekly_outcomes": outcomes, "regime": regime}
+                                                                                                                                    except Exception as e:
+                                                                                                                                            return {"ok": False, "error": str(e)}
+                                                                                                                                            """
+        changed = True
+        print("[patch] cockpit /api/cockpit/context added")
+else:
+        print("[patch] /api/cockpit/context already present")
+
+# Patch 7: /api/regime route
+if "/api/regime" not in src:
+        src += """
+
+        @APP.get("/api/regime", include_in_schema=False)
+        def api_regime():
+            try:
+                    regime = _check_regime() if callable(globals().get('_check_regime')) else "unknown"
+                            return {"ok": True, "regime": regime}
+                                except Exception as e:
+                                        return {"ok": False, "error": str(e)}
+                                        """
+        changed = True
+        print("[patch] /api/regime added")
+else:
+        print("[patch] /api/regime already present")
