@@ -112,7 +112,7 @@ def train_model(X, y, model_path="/tmp/ghost_v2.json"):
         n_estimators=100, max_depth=2, learning_rate=0.05,
         subsample=0.6, colsample_bytree=0.6, min_child_weight=10,
         gamma=1.0, reg_alpha=0.1, reg_lambda=1.0,
-        use_label_encoder=False, eval_metric="logloss",
+        eval_metric="logloss",
         scale_pos_weight=1.0,
         random_state=42
     )

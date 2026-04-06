@@ -153,7 +153,7 @@ def train_model(force=False):
     model = xgb.XGBClassifier(
         n_estimators=200, max_depth=4, learning_rate=0.05,
         scale_pos_weight=scale, subsample=0.8, colsample_bytree=0.8,
-        use_label_encoder=False, eval_metric="logloss",
+        eval_metric="logloss",
         random_state=42, verbosity=0,
     )
 
@@ -168,7 +168,7 @@ def train_model(force=False):
             m = xgb.XGBClassifier(
                 n_estimators=200, max_depth=4, learning_rate=0.05,
                 scale_pos_weight=scale, subsample=0.8, colsample_bytree=0.8,
-                use_label_encoder=False, eval_metric="logloss",
+                eval_metric="logloss",
                 random_state=42, verbosity=0,
             )
             m.fit(X_tr, y_tr)

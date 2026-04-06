@@ -79,7 +79,6 @@ def _walk_forward_scores(X, y):
             colsample_bytree=0.7,
             min_child_weight=3,
             scale_pos_weight=min(25.0, max(1.0, float(neg_ct / pos_ct))),
-            use_label_encoder=False,
             eval_metric="logloss",
             random_state=42,
         )
@@ -402,7 +401,7 @@ def train_and_validate(symbols_and_types):
                 n_estimators=200, max_depth=4, learning_rate=0.03,
                 subsample=0.8, colsample_bytree=0.7, min_child_weight=3,
                 scale_pos_weight=min(25.0, max(1.0, float(spw))),
-                use_label_encoder=False, eval_metric='logloss', random_state=42
+                eval_metric='logloss', random_state=42
             )
             model.fit(X_train, y_train)
             accuracy = float(accuracy_score(y_test, model.predict(X_test)))

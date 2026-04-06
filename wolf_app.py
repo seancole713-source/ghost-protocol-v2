@@ -38,6 +38,8 @@ def _purge_v3_stale_or_weak():
     """Remove v3 models below V3_MIN_HOLDOUT_ACC or pre-v3.2 label schema."""
     import json as _j
     floor = float(os.getenv("V3_MIN_HOLDOUT_ACC", "0.55"))
+    min_edge = float(os.getenv("V3_MIN_EDGE", "0.05"))
+    min_wf_folds = max(2, int(os.getenv("V3_MIN_WF_FOLDS", "3")))
     purged = 0
     try:
         with db_conn() as conn:
@@ -47,7 +49,12 @@ def _purge_v3_stale_or_weak():
                 sym = key.replace("meta_", "")
                 try:
                     meta = _j.loads(val)
-                    if meta.get("label_type") != "tp_sl_daily" or float(meta.get("accuracy", 0)) < floor:
+                    weak = float(meta.get("accuracy", 0)) < floor or float(meta.get("edge", 0)) < min_edge
+                    wf_folds = int(meta.get("wf_fold_count", 0))
+                    wf_acc = float(meta.get("wf_acc_mean", meta.get("accuracy", 0)))
+                    wf_edge = float(meta.get("wf_edge_mean", meta.get("edge", 0)))
+                    wf_weak = wf_folds < min_wf_folds or wf_acc < floor or wf_edge < min_edge
+                    if meta.get("label_type") != "tp_sl_daily" or weak or wf_weak:
                         cur.execute(
                             "DELETE FROM ghost_v3_model WHERE key IN (%s,%s)",
                             (f"model_{sym}", f"meta_{sym}"),
@@ -519,6 +526,7 @@ async def diagnostics():
         _stale_models = []
         _old_engine = []
         _drift = []
+        _weak_wf = []
         _expected_features = len(FEATURE_COLS)
         for _k, _v in _model_rows:
             _sym = _k.replace("meta_", "")
@@ -532,6 +540,14 @@ async def diagnostics():
             _fc = _m.get("feature_cols", [])
             if len(_fc) != _expected_features:
                 _drift.append(f"{_sym}: {len(_fc)} vs {_expected_features}")
+            _wf_folds = int(_m.get("wf_fold_count", 0))
+            _wf_acc = float(_m.get("wf_acc_mean", _m.get("accuracy", 0)))
+            _wf_edge = float(_m.get("wf_edge_mean", _m.get("edge", 0)))
+            _wf_min_folds = max(2, int(os.getenv("V3_MIN_WF_FOLDS", "3")))
+            _wf_floor = float(os.getenv("V3_MIN_HOLDOUT_ACC", "0.55"))
+            _wf_edge_floor = float(os.getenv("V3_MIN_EDGE", "0.05"))
+            if _wf_folds < _wf_min_folds or _wf_acc < _wf_floor or _wf_edge < _wf_edge_floor:
+                _weak_wf.append(_sym)
 
         if _stale_models:
             _score -= _warn("models.freshness", f"Stale models (>14d): {_stale_models}")
@@ -547,6 +563,11 @@ async def diagnostics():
             _score -= _warn("models.feature_drift", f"Feature mismatch: {_drift}")
         else:
             _ok("models.feature_drift", f"all models match {_expected_features}-feature engine")
+
+        if _weak_wf:
+            _score -= _warn("models.walk_forward", f"Models below walk-forward floor: {_weak_wf}")
+        else:
+            _ok("models.walk_forward", "all models pass walk-forward floor")
 
         # Active picks with no model
         _active_syms = set(r[0] for r in _active)
