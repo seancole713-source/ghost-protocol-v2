@@ -60,6 +60,33 @@ def _purge_v3_stale_or_weak():
         return 0
 
 
+def _expire_open_picks_without_v3_model():
+    """Expire active picks for symbols that currently have no v3 TP/SL model."""
+    expired = 0
+    now = int(time.time())
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT key FROM ghost_v3_model WHERE key LIKE 'meta_%'")
+            model_syms = {row[0].replace("meta_", "") for row in cur.fetchall()}
+            cur.execute(
+                "SELECT id, symbol FROM predictions "
+                "WHERE outcome IS NULL AND expires_at > %s",
+                (now,),
+            )
+            rows = cur.fetchall()
+            for pid, sym in rows:
+                if (sym or "").upper() not in model_syms:
+                    cur.execute(
+                        "UPDATE predictions SET outcome='EXPIRED', resolved_at=%s WHERE id=%s",
+                        (now, pid),
+                    )
+                    expired += 1
+        return expired
+    except Exception:
+        return 0
+
+
 def _morning_card_job():
     """Run prediction cycle and send morning Telegram card."""
     import datetime as _dt, pytz as _pytz, time as _t2
@@ -206,6 +233,9 @@ async def lifespan(app: FastAPI):
         if purged: LOGGER.info(f"Boot purge: removed {purged} legacy ghost_models below floor")
         pv = _purge_v3_stale_or_weak()
         if pv: LOGGER.info(f"Boot v3 purge: removed {pv} stale or sub-floor TP/SL models")
+        expired_orphans = _expire_open_picks_without_v3_model()
+        if expired_orphans:
+            LOGGER.info("Boot pick cleanup: expired %s active picks with no model", expired_orphans)
     except Exception as _bpe:
         LOGGER.warning("Boot purge failed: "+str(_bpe)[:60])
 
@@ -492,7 +522,8 @@ async def diagnostics():
             _age = (_now - _m.get("trained_at", 0)) / 86400
             if _age > 14:
                 _stale_models.append(f"{_sym} ({_age:.0f}d)")
-            if "v3.1" not in _m.get("engine_version", "v3.0"):
+            _engine = _m.get("engine_version", "v3.0")
+            if ("v3.1_ema_adx_atr_obv_stoch" not in _engine) and ("v3.2_tp_sl_daily" not in _engine):
                 _old_engine.append(_sym)
             _fc = _m.get("feature_cols", [])
             if len(_fc) != _expected_features:
@@ -504,9 +535,9 @@ async def diagnostics():
             _ok("models.freshness", f"{len(_model_rows)} models within 14 days")
 
         if _old_engine:
-            _score -= _warn("models.engine", f"Old engine (missing EMA/ADX): {_old_engine}")
+            _score -= _warn("models.engine", f"Unrecognized engine version: {_old_engine}")
         else:
-            _ok("models.engine", f"all {len(_model_rows)} models on v3.1")
+            _ok("models.engine", f"all {len(_model_rows)} models on accepted engines (v3.1/v3.2)")
 
         if _drift:
             _score -= _warn("models.feature_drift", f"Feature mismatch: {_drift}")
