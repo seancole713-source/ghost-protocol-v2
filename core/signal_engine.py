@@ -41,6 +41,65 @@ def _v3_min_tp_sl_wins() -> int:
     return max(5, int(os.getenv("V3_MIN_TP_SL_WINS", "15")))
 
 
+def _v3_min_wf_folds() -> int:
+    return max(2, int(os.getenv("V3_MIN_WF_FOLDS", "3")))
+
+
+def _walk_forward_scores(X, y):
+    """
+    Rolling walk-forward validation over time-ordered samples.
+    Returns dict with fold_count / mean and minimum fold scores.
+    """
+    from xgboost import XGBClassifier
+    from sklearn.metrics import accuracy_score
+
+    n = len(X)
+    min_train = max(120, int(n * 0.50))
+    test_size = max(20, int(n * 0.10))
+    step = test_size
+    folds = []
+    start = min_train
+    while start + test_size <= n:
+        X_train, y_train = X[:start], y[:start]
+        X_test, y_test = X[start : start + test_size], y[start : start + test_size]
+        if len(X_train) < 60 or len(X_test) < 20:
+            start += step
+            continue
+        pos_ct = int(np.sum(y_train))
+        neg_ct = int(len(y_train) - pos_ct)
+        if pos_ct <= 0:
+            start += step
+            continue
+        natural_rate = float(np.mean(y_test))
+        model = XGBClassifier(
+            n_estimators=200,
+            max_depth=4,
+            learning_rate=0.03,
+            subsample=0.8,
+            colsample_bytree=0.7,
+            min_child_weight=3,
+            scale_pos_weight=min(25.0, max(1.0, float(neg_ct / pos_ct))),
+            use_label_encoder=False,
+            eval_metric="logloss",
+            random_state=42,
+        )
+        model.fit(X_train, y_train)
+        acc = float(accuracy_score(y_test, model.predict(X_test)))
+        folds.append({"acc": acc, "nat": natural_rate, "edge": acc - natural_rate})
+        start += step
+
+    if not folds:
+        return {"fold_count": 0, "acc_mean": 0.0, "acc_min": 0.0, "edge_mean": 0.0, "edge_min": 0.0}
+
+    return {
+        "fold_count": len(folds),
+        "acc_mean": float(np.mean([f["acc"] for f in folds])),
+        "acc_min": float(np.min([f["acc"] for f in folds])),
+        "edge_mean": float(np.mean([f["edge"] for f in folds])),
+        "edge_min": float(np.min([f["edge"] for f in folds])),
+    }
+
+
 def _simulate_up_tp_sl(rows: list, entry_idx: int, hold_bars: int, vol_pct: float) -> str:
     """
     Path simulation on daily OHLC: UP trade from rows[entry_idx] close.
@@ -348,9 +407,18 @@ def train_and_validate(symbols_and_types):
             model.fit(X_train, y_train)
             accuracy = float(accuracy_score(y_test, model.predict(X_test)))
             edge = accuracy - natural_rate
-            passes = edge >= min_edge and accuracy >= min_acc
+            wf = _walk_forward_scores(X, y)
+            wf_ok = (
+                wf["fold_count"] >= _v3_min_wf_folds()
+                and wf["acc_mean"] >= min_acc
+                and wf["edge_mean"] >= min_edge
+                and wf["acc_min"] >= (min_acc - 0.03)
+            )
+            passes = edge >= min_edge and accuracy >= min_acc and wf_ok
             LOGGER.info(f"{symbol}: acc={round(accuracy*100,1)}% nat={round(natural_rate*100,1)}% "
-                       f"edge={round(edge*100,1)}% thr=({min_acc*100:.0f}%acc,{min_edge*100:.0f}%edge) "
+                       f"edge={round(edge*100,1)}% wf={wf['fold_count']} folds "
+                       f"(mean_acc={round(wf['acc_mean']*100,1)}%, mean_edge={round(wf['edge_mean']*100,1)}%) "
+                       f"thr=({min_acc*100:.0f}%acc,{min_edge*100:.0f}%edge) "
                        f"{'SAVED' if passes else 'skipped'}")
             if passes:
                 model_bytes = base64.b64encode(pickle.dumps(model)).decode('ascii')
@@ -361,6 +429,11 @@ def train_and_validate(symbols_and_types):
                     "engine_version": "v3.2_tp_sl_daily",
                     "label_type": LABEL_TYPE,
                     "label_hold_bars": V3_LABEL_HOLD_BARS,
+                    "wf_fold_count": wf["fold_count"],
+                    "wf_acc_mean": wf["acc_mean"],
+                    "wf_acc_min": wf["acc_min"],
+                    "wf_edge_mean": wf["edge_mean"],
+                    "wf_edge_min": wf["edge_min"],
                 })
                 with db_conn() as conn:
                     cur = conn.cursor()
@@ -375,7 +448,7 @@ def train_and_validate(symbols_and_types):
                 total_passed += 1
         except Exception as e:
             LOGGER.warning(f"Training failed {symbol}: {e}")
-    LOGGER.info(f"v3.1 training: {total_passed}/{len(symbols_and_types)} passed")
+    LOGGER.info(f"v3.2 training: {total_passed}/{len(symbols_and_types)} passed")
     return None, total_passed / max(len(symbols_and_types), 1), total_passed > 0
 
 def load_model(symbol=None):
@@ -438,9 +511,14 @@ def predict_live(symbol, asset_type):
     min_acc = _v3_min_holdout_acc()
     min_p = _v3_min_win_proba()
     edge = meta.get('edge', 0)
+    wf_acc_mean = float(meta.get("wf_acc_mean", meta.get("accuracy", 0)))
+    wf_edge_mean = float(meta.get("wf_edge_mean", meta.get("edge", 0)))
+    wf_fold_count = int(meta.get("wf_fold_count", 0))
     if edge < min_edge:
         return None
     if meta.get('accuracy', 0) < min_acc:
+        return None
+    if wf_fold_count > 0 and (wf_acc_mean < min_acc or wf_edge_mean < min_edge):
         return None
 
     # Confidence = holdout TP/SL WIN rate + strength above min win-probability
@@ -469,6 +547,9 @@ def get_model_status():
                     "accuracy": round(m.get("accuracy",0)*100,1),
                     "natural_rate": round(m.get("natural_rate",0)*100,1),
                     "edge": round(m.get("edge",0)*100,1),
+                    "wf_acc_mean": round(m.get("wf_acc_mean",0)*100,1),
+                    "wf_edge_mean": round(m.get("wf_edge_mean",0)*100,1),
+                    "wf_fold_count": m.get("wf_fold_count",0),
                     "n_samples": m.get("n_samples",0),
                     "engine": m.get("engine_version","v3.0"),
                     "label_type": m.get("label_type", ""),

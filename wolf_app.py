@@ -314,14 +314,18 @@ async def lifespan(app: FastAPI):
                 try:
                     from core.db import db_conn as _dbc
                     with _dbc() as _c:
-                        _c.cursor().execute("SELECT symbol, asset_type FROM user_portfolio")
-                        for sym, at in _c.cursor().fetchall() if False else []:
-                            pass
-                except Exception: pass
-                # Filter out symbols known to consistently fail 52% accuracy threshold
-                _bad = {'AAPL','XRP','DOT','LTC','LINK','ARB','BTC','NVDA','PLTR','MSFT','AMD','XPO','NET','NEAR','SUI','MATIC','TRX','ATOM','AAVE','HBAR','ALGO','SAND','FLOW','WOLF'}
-                crypto = [(s,t) for s,t in crypto if s.upper() not in _bad]
-                stocks = [(s,t) for s,t in stocks if s.upper() not in _bad]
+                        _curp = _c.cursor()
+                        _curp.execute("SELECT DISTINCT symbol, asset_type FROM user_portfolio")
+                        for sym, at in _curp.fetchall():
+                            _entry = (sym.strip().upper(), (at or "stock").strip().lower())
+                            if _entry[1] == "crypto":
+                                if _entry not in crypto:
+                                    crypto.append(_entry)
+                            else:
+                                if _entry not in stocks:
+                                    stocks.append((_entry[0], "stock"))
+                except Exception:
+                    pass
                 m, acc, passed = train_and_validate(crypto + stocks)
                 LOGGER.info(f"Startup training: acc={round(acc*100,1)}% passed={passed}")
                 try:
