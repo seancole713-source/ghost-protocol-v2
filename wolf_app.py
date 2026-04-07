@@ -218,17 +218,21 @@ def _morning_card_job():
     from core.prediction import run_prediction_cycle
     from core.telegram import send_morning_card
     from core.db import db_conn
-    # Dedup: only fire once per CT calendar day
+    # Dedup: Telegram morning card only once per CT day — but always run prediction cycle
+    # (redeploys used to return [] here and skipped inserts until next calendar day).
     _ct_tz = _pytz.timezone("America/Chicago")
     _today_ct = _dt.datetime.now(_ct_tz).strftime("%Y-%m-%d")
+    _skip_telegram = False
     try:
         with db_conn() as _dc2:
             _cur_d = _dc2.cursor()
             _cur_d.execute("SELECT val FROM ghost_state WHERE key='last_morning_card_date'")
             _row = _cur_d.fetchone()
             if _row and _row[0] == _today_ct:
-                LOGGER.info("Morning card already sent today ("+_today_ct+") — skipping duplicate")
-                return []
+                _skip_telegram = True
+                LOGGER.info(
+                    "Morning card already sent today (" + _today_ct + ") — will run prediction cycle, skip duplicate Telegram"
+                )
     except Exception as _de:
         LOGGER.warning("Dedup check failed: "+str(_de)[:60])
     picks = run_prediction_cycle()
@@ -274,6 +278,9 @@ def _morning_card_job():
             )
     except Exception:
         pass
+    if _skip_telegram:
+        LOGGER.info("Morning card: Telegram skipped (same CT day); cycle returned %s saved picks", len(picks or []))
+        return picks
     if picks:
         send_morning_card(picks, week_stats)
     else:
