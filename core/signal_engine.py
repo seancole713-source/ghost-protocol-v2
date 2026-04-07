@@ -385,13 +385,17 @@ def train_and_validate(symbols_and_types):
     for symbol, asset_type in symbols_and_types:
         try:
             rows = backtest_symbol(symbol, asset_type)
-            if not rows or len(rows) < 80:
+            n_samples = len(rows) if rows else 0
+            if not rows or n_samples < 80:
+                LOGGER.info(
+                    f"RETRAIN [{symbol}]: acc=NA edge=NA wf_folds=NA wf_acc_mean=NA wf_edge_mean=NA wf_acc_min=NA "
+                    f"| FAIL: n_samples<{MIN_TRAIN_ROWS} ({n_samples})"
+                )
                 continue
             X = np.array([[r["features"].get(c, 0.0) for c in FEATURE_COLS] for r in rows])
             y = np.array([r["label"] for r in rows])
-            if int(np.sum(y)) < _v3_min_tp_sl_wins():
-                LOGGER.info(f"{symbol}: skip — {int(np.sum(y))} historical TP/SL wins (min {_v3_min_tp_sl_wins()})")
-                continue
+            wins_ct = int(np.sum(y))
+            min_wins = _v3_min_tp_sl_wins()
             split = int(len(X) * 0.8)
             X_train, X_test = X[:split], X[split:]
             y_train, y_test = y[:split], y[split:]
@@ -412,18 +416,26 @@ def train_and_validate(symbols_and_types):
             edge = accuracy - natural_rate
             wf = _walk_forward_scores(X, y)
             min_wf_acc = _v3_min_wf_acc_mean()
-            wf_ok = (
-                wf["fold_count"] >= _v3_min_wf_folds()
-                and wf["acc_mean"] >= min_wf_acc
-                and wf["edge_mean"] >= min_edge
-                and wf["acc_min"] >= (min_wf_acc - 0.03)
+            min_wf_folds = _v3_min_wf_folds()
+            min_wf_acc_min = (min_wf_acc - 0.03)
+            gate_checks = [
+                ("n_samples", n_samples >= MIN_TRAIN_ROWS, f"n_samples<{MIN_TRAIN_ROWS} ({n_samples})"),
+                ("tp_sl_wins", wins_ct >= min_wins, f"tp_sl_wins<{min_wins} ({wins_ct})"),
+                ("holdout_acc", accuracy >= min_acc, f"holdout_acc < {min_acc*100:.1f}% ({accuracy*100:.1f}%)"),
+                ("edge", edge >= min_edge, f"edge < {min_edge*100:.1f}% ({edge*100:.1f}%)"),
+                ("wf_folds", wf["fold_count"] >= min_wf_folds, f"wf_folds < {min_wf_folds} ({wf['fold_count']})"),
+                ("wf_acc_mean", wf["acc_mean"] >= min_wf_acc, f"wf_acc_mean < {min_wf_acc*100:.1f}% ({wf['acc_mean']*100:.1f}%)"),
+                ("wf_edge_mean", wf["edge_mean"] >= min_edge, f"wf_edge_mean < {min_edge*100:.1f}% ({wf['edge_mean']*100:.1f}%)"),
+                ("wf_acc_min", wf["acc_min"] >= min_wf_acc_min, f"wf_acc_min < {min_wf_acc_min*100:.1f}% ({wf['acc_min']*100:.1f}%)"),
+            ]
+            fail_reason = next((msg for _, ok, msg in gate_checks if not ok), None)
+            passes = fail_reason is None
+            LOGGER.info(
+                f"RETRAIN [{symbol}]: acc={accuracy*100:.1f}% edge={edge*100:.1f}% "
+                f"wf_folds={wf['fold_count']} wf_acc_mean={wf['acc_mean']*100:.1f}% "
+                f"wf_edge_mean={wf['edge_mean']*100:.1f}% wf_acc_min={wf['acc_min']*100:.1f}% "
+                f"| {'PASS' if passes else 'FAIL: ' + fail_reason}"
             )
-            passes = edge >= min_edge and accuracy >= min_acc and wf_ok
-            LOGGER.info(f"{symbol}: acc={round(accuracy*100,1)}% nat={round(natural_rate*100,1)}% "
-                       f"edge={round(edge*100,1)}% wf={wf['fold_count']} folds "
-                       f"(mean_acc={round(wf['acc_mean']*100,1)}%, mean_edge={round(wf['edge_mean']*100,1)}%) "
-                       f"thr=({min_acc*100:.0f}%acc,{min_edge*100:.0f}%edge,{min_wf_acc*100:.0f}%wf_mean_acc) "
-                       f"{'SAVED' if passes else 'skipped'}")
             if passes:
                 model_bytes = base64.b64encode(pickle.dumps(model)).decode('ascii')
                 meta = json.dumps({
