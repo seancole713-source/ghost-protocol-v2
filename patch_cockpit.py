@@ -62,52 +62,7 @@ if "dedup-picks" not in src:
     changed = True; print("[patch] dedup endpoint added")
 else: print("[patch] dedup endpoint present")
 
-# Patch 6: /api/cockpit/context route
-if "/api/cockpit/context" not in src:
-    src += """
-
-@APP.get("/api/cockpit/context", include_in_schema=False)
-def cockpit_context():
-    from core.db import db_conn
-    try:
-        with db_conn() as conn:
-            cur = conn.cursor()
-            cur.execute("SELECT COUNT(*) FROM predictions WHERE outcome IS NULL AND expires_at > extract(epoch from now())")
-            open_picks = cur.fetchone()[0]
-            cur.execute("SELECT COUNT(*) FROM predictions WHERE resolved_at > extract(epoch from now()) - 86400")
-            resolved_24h = cur.fetchone()[0]
-            cur.execute("SELECT outcome, COUNT(*) FROM predictions WHERE resolved_at > extract(epoch from now()) - 604800 GROUP BY outcome")
-            outcomes = {r[0]: r[1] for r in cur.fetchall()}
-        try:
-            from core.prediction import _check_regime
-            regime = {"ok": True, **_check_regime()}
-        except Exception as _re:
-            regime = {"ok": False, "error": str(_re)[:120], "block_crypto_buys": False, "reason": "", "btc_24h_pct": 0.0}
-        return {"ok": True, "open_picks": open_picks, "resolved_24h": resolved_24h, "weekly_outcomes": outcomes, "regime": regime}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-"""
-    changed = True
-    print("[patch] cockpit /api/cockpit/context added")
-else:
-    print("[patch] /api/cockpit/context already present")
-
-# Patch 7: /api/regime route
-if "/api/regime" not in src:
-    src += """
-
-@APP.get("/api/regime", include_in_schema=False)
-def api_regime():
-    try:
-        from core.prediction import _check_regime
-        return {"ok": True, **_check_regime()}
-    except Exception as e:
-        return {"ok": False, "error": str(e)[:120], "block_crypto_buys": False, "reason": "", "btc_24h_pct": 0.0}
-"""
-    changed = True
-    print("[patch] /api/regime added")
-else:
-    print("[patch] /api/regime already present")
+# Patches 6–7 (/api/cockpit/context, /api/regime) live in committed wolf_app.py
 
 if changed:
     with open(src_path, "w") as f:

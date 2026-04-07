@@ -14,6 +14,104 @@ logging.basicConfig(
 LOGGER = logging.getLogger("ghost")
 CRON_SECRET = os.getenv("CRON_SECRET", "")
 
+_COCKPIT_DB_CACHE = {"t": 0.0, "stats": None, "direction": None, "v3": None, "activity": None}
+
+
+def _bump_cockpit_db_cache():
+    _COCKPIT_DB_CACHE["t"] = 0.0
+    for _k in ("stats", "direction", "v3", "activity"):
+        _COCKPIT_DB_CACHE[_k] = None
+
+
+def _v32_stats_start_ts(cur):
+    """Unix start of v3.2 stats window: V3_STATS_START_TS or min trained_at of tp_sl_daily metas."""
+    import json as _json
+
+    v32_start_ts = 0
+    try:
+        v32_start_ts = int(os.getenv("V3_STATS_START_TS", "0") or 0)
+    except Exception:
+        v32_start_ts = 0
+    if v32_start_ts <= 0:
+        try:
+            cur.execute("SELECT value FROM ghost_v3_model WHERE key LIKE 'meta_%'")
+            trained = []
+            for (val,) in cur.fetchall():
+                try:
+                    m = _json.loads(val)
+                    if m.get("label_type") == "tp_sl_daily":
+                        trained.append(int(m.get("trained_at", 0)))
+                except Exception:
+                    continue
+            if trained:
+                v32_start_ts = min(trained)
+        except Exception:
+            v32_start_ts = 0
+    return v32_start_ts
+
+
+def _compute_get_stats(cur):
+    """Payload for GET /api/stats using an existing cursor."""
+    cur.execute(
+        "SELECT outcome, COUNT(*) FROM predictions WHERE outcome IN ('WIN','LOSS') "
+        "AND predicted_at IS NOT NULL GROUP BY outcome"
+    )
+    rows = {r[0]: r[1] for r in cur.fetchall()}
+    wins = rows.get("WIN", 0)
+    losses = rows.get("LOSS", 0)
+    total = wins + losses
+    cur.execute("SELECT COUNT(*) FROM predictions WHERE outcome IS NULL AND entry_price IS NOT NULL")
+    open_count = cur.fetchone()[0]
+    v32_start_ts = _v32_stats_start_ts(cur)
+    v32_wins = v32_losses = v32_total = 0
+    if v32_start_ts > 0:
+        cur.execute(
+            "SELECT outcome, COUNT(*) FROM predictions "
+            "WHERE outcome IN ('WIN','LOSS') AND predicted_at IS NOT NULL AND predicted_at >= %s "
+            "GROUP BY outcome",
+            (v32_start_ts,),
+        )
+        v32_rows = {r[0]: r[1] for r in cur.fetchall()}
+        v32_wins = v32_rows.get("WIN", 0)
+        v32_losses = v32_rows.get("LOSS", 0)
+        v32_total = v32_wins + v32_losses
+    return {
+        "ok": True,
+        "wins": wins,
+        "losses": losses,
+        "total": total,
+        "win_rate_pct": round(wins / total * 100, 1) if total else 0,
+        "open_positions": open_count,
+        "post_v32": {
+            "start_ts": v32_start_ts,
+            "wins": v32_wins,
+            "losses": v32_losses,
+            "total": v32_total,
+            "win_rate_pct": round(v32_wins / v32_total * 100, 1) if v32_total else 0.0,
+        },
+    }
+
+
+def _cockpit_activity_on_cursor(cur):
+    """Summary counts embedded in /api/cockpit/context."""
+    cur.execute(
+        "SELECT COUNT(*) FROM predictions WHERE outcome IS NULL AND expires_at > extract(epoch from now())"
+    )
+    open_predictions = cur.fetchone()[0]
+    cur.execute(
+        "SELECT COUNT(*) FROM predictions WHERE resolved_at > extract(epoch from now()) - 86400"
+    )
+    resolved_24h = cur.fetchone()[0]
+    cur.execute(
+        "SELECT outcome, COUNT(*) FROM predictions WHERE resolved_at > extract(epoch from now()) - 604800 GROUP BY outcome"
+    )
+    weekly_outcomes = {r[0]: r[1] for r in cur.fetchall()}
+    return {
+        "open_predictions": open_predictions,
+        "resolved_24h": resolved_24h,
+        "weekly_outcomes": weekly_outcomes,
+    }
+
 
 def _has_any_v3_model():
     """True when at least one v3.2 TP/SL model exists (label_type=tp_sl_daily on meta_*)."""
@@ -363,7 +461,7 @@ APP = FastAPI(title="Ghost Protocol v2", version="2.0.0", lifespan=lifespan)
 APP.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 # Mount portfolio router — WOLF position tracking, price refresh, ghost predictions
-from core.portfolio_routes import portfolio_router
+from core.portfolio_routes import portfolio_router, compute_stats_by_direction
 APP.include_router(portfolio_router)
 
 
@@ -838,6 +936,21 @@ def health():
     }
 
 
+@APP.get("/api/regime", include_in_schema=False)
+def api_regime():
+    try:
+        from core.prediction import _check_regime
+        return {"ok": True, **_check_regime()}
+    except Exception as e:
+        return {
+            "ok": False,
+            "error": str(e)[:120],
+            "block_crypto_buys": False,
+            "reason": "",
+            "btc_24h_pct": 0.0,
+        }
+
+
 @APP.get("/api/schema")
 def get_schema():
     tables = {}
@@ -1070,93 +1183,84 @@ def migrate_outcomes(x_cron_secret: str = Header(default="")):
 
 @APP.get("/api/stats/v32")
 def get_stats_v32():
-    """Win rate for v3.2-era predictions only (post 2026-04-05). Use this for decisioning, not all-time."""
+    """
+    BUY-only WIN/LOSS in the same v3.2 window as /api/stats post_v32
+    (V3_STATS_START_TS or min tp_sl_daily trained_at).
+    """
+    import datetime as _dt
+
     try:
         with db_conn() as conn:
             cur = conn.cursor()
-            # Only count predictions made after v3.2 deploy, BUY only, WIN/LOSS only
-            cur.execute("""
+            v32_start_ts = _v32_stats_start_ts(cur)
+            now_ts = int(time.time())
+            if v32_start_ts <= 0:
+                return {
+                    "ok": True,
+                    "era": "v3.2",
+                    "start_ts": 0,
+                    "since": None,
+                    "since_iso": None,
+                    "wins": 0,
+                    "losses": 0,
+                    "total": 0,
+                    "win_rate_pct": 0.0,
+                    "open_picks": 0,
+                    "verdict": "review",
+                    "note": "No v3.2 cutover timestamp; set V3_STATS_START_TS or train tp_sl_daily models.",
+                }
+            cur.execute(
+                """
                 SELECT outcome, COUNT(*) FROM predictions
-                WHERE direction='UP'
-                AND predicted_at >= '2026-04-05 00:00:00'
+                WHERE direction IN ('UP','BUY')
+                AND predicted_at IS NOT NULL AND predicted_at >= %s
                 AND outcome IN ('WIN','LOSS')
                 GROUP BY outcome
-            """)
+                """,
+                (v32_start_ts,),
+            )
             rows = {r[0]: r[1] for r in cur.fetchall()}
-            wins = rows.get('WIN', 0)
-            losses = rows.get('LOSS', 0)
+            wins = rows.get("WIN", 0)
+            losses = rows.get("LOSS", 0)
             total = wins + losses
             wr = round(wins / total * 100, 1) if total else 0
-            # Also get open picks from v3.2 era
-            cur.execute("""
+            cur.execute(
+                """
                 SELECT COUNT(*) FROM predictions
-                WHERE direction='UP'
-                AND predicted_at >= '2026-04-05 00:00:00'
+                WHERE direction IN ('UP','BUY')
+                AND predicted_at >= %s AND predicted_at IS NOT NULL
                 AND outcome IS NULL
                 AND expires_at > %s
-            """, (int(__import__('time').time()),))
+                """,
+                (v32_start_ts, now_ts),
+            )
             open_picks = cur.fetchone()[0]
-        return {"ok": True, "era": "v3.2", "since": "2026-04-05",
-                "wins": wins, "losses": losses, "total": total,
-                "win_rate_pct": wr, "open_picks": open_picks,
-                "verdict": "on_track" if wr >= 55 else "watch" if wr >= 45 else "review"}
+        since_iso = _dt.datetime.fromtimestamp(v32_start_ts, tz=_dt.timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        since_day = since_iso[:10]
+        verdict = "on_track" if wr >= 55 else "watch" if wr >= 45 else "review"
+        return {
+            "ok": True,
+            "era": "v3.2",
+            "start_ts": v32_start_ts,
+            "since": since_day,
+            "since_iso": since_iso,
+            "wins": wins,
+            "losses": losses,
+            "total": total,
+            "win_rate_pct": wr,
+            "open_picks": open_picks,
+            "verdict": verdict,
+        }
     except Exception as e:
         return {"ok": False, "error": str(e)[:80]}
 
 @APP.get("/api/stats")
 def get_stats():
     """Overall accuracy stats across all sources."""
-    import json as _json
     with db_conn() as conn:
-        cur = conn.cursor()
-        cur.execute("SELECT outcome, COUNT(*) FROM predictions WHERE outcome IN ('WIN','LOSS') AND predicted_at IS NOT NULL GROUP BY outcome")
-        rows = {r[0]: r[1] for r in cur.fetchall()}
-        wins = rows.get("WIN", 0)
-        losses = rows.get("LOSS", 0)
-        total = wins + losses
-        cur.execute("SELECT COUNT(*) FROM predictions WHERE outcome IS NULL AND entry_price IS NOT NULL")
-        open_count = cur.fetchone()[0]
-        # Post-v3.2 window stats (ignore legacy era by default)
-        v32_start_ts = 0
-        try:
-            v32_start_ts = int(os.getenv("V3_STATS_START_TS", "0") or 0)
-        except Exception:
-            v32_start_ts = 0
-        if v32_start_ts <= 0:
-            try:
-                cur.execute("SELECT value FROM ghost_v3_model WHERE key LIKE 'meta_%'")
-                metas = [_json.loads(r[0]) for r in cur.fetchall()]
-                trained = [
-                    int(m.get("trained_at", 0))
-                    for m in metas
-                    if m.get("label_type") == "tp_sl_daily"
-                ]
-                if trained:
-                    v32_start_ts = min(trained)
-            except Exception:
-                v32_start_ts = 0
-        v32_wins = v32_losses = v32_total = 0
-        if v32_start_ts > 0:
-            cur.execute(
-                "SELECT outcome, COUNT(*) FROM predictions "
-                "WHERE outcome IN ('WIN','LOSS') AND predicted_at IS NOT NULL AND predicted_at >= %s "
-                "GROUP BY outcome",
-                (v32_start_ts,),
-            )
-            v32_rows = {r[0]: r[1] for r in cur.fetchall()}
-            v32_wins = v32_rows.get("WIN", 0)
-            v32_losses = v32_rows.get("LOSS", 0)
-            v32_total = v32_wins + v32_losses
-    return {"ok": True, "wins": wins, "losses": losses, "total": total,
-            "win_rate_pct": round(wins/total*100,1) if total else 0,
-            "open_positions": open_count,
-            "post_v32": {
-                "start_ts": v32_start_ts,
-                "wins": v32_wins,
-                "losses": v32_losses,
-                "total": v32_total,
-                "win_rate_pct": round(v32_wins/v32_total*100,1) if v32_total else 0.0,
-            }}
+        return _compute_get_stats(conn.cursor())
 
 @APP.get("/api/db-probe")
 def db_probe():
@@ -1416,16 +1520,12 @@ def debug_signal(symbol: str):
         }
     }
 
-@APP.get("/cockpit")
+@APP.get("/cockpit", include_in_schema=False)
 def cockpit():
-    html = ("<h1>Ghost Protocol v2</h1><ul>"
-           "<li><a href=/health>/health</a></li>"
-           "<li><a href=/api/picks>/api/picks</a></li>"
-           "<li><a href=/api/history>/api/history</a></li>"
-           "<li><a href=/api/news>/api/news</a></li>"
-           "<li><a href=/api/schema>/api/schema</a></li>"
-           "</ul><p>Full dashboard coming Week 4.</p>")
-    return HTMLResponse(html)
+    import os as _os
+    _path = _os.path.join(_os.path.dirname(__file__), "cockpit.html")
+    with open(_path, encoding="utf-8") as _f:
+        return HTMLResponse(_f.read())
 
 if os.path.exists("static"):
     APP.mount("/static", StaticFiles(directory="static"), name="static")
@@ -1439,6 +1539,69 @@ def v3_status():
     """Model status — accuracy, edge over random, top features."""
     from core.signal_engine import get_model_status
     return get_model_status()
+
+
+def _cockpit_cached_db_payload():
+    """
+    Stats + direction + activity in one DB connection; v3 JSON cached with them.
+    Health and regime stay fresh per request. TTL: COCKPIT_CONTEXT_CACHE_SEC (0 = off).
+    """
+    ttl = float(os.getenv("COCKPIT_CONTEXT_CACHE_SEC", "8"))
+    now = time.time()
+    if (
+        ttl > 0
+        and _COCKPIT_DB_CACHE["stats"] is not None
+        and (now - _COCKPIT_DB_CACHE["t"]) < ttl
+    ):
+        return (
+            _COCKPIT_DB_CACHE["stats"],
+            _COCKPIT_DB_CACHE["direction"],
+            _COCKPIT_DB_CACHE["v3"],
+            _COCKPIT_DB_CACHE["activity"],
+        )
+    with db_conn() as conn:
+        cur = conn.cursor()
+        stats = _compute_get_stats(cur)
+        direction = compute_stats_by_direction(cur)
+        activity = _cockpit_activity_on_cursor(cur)
+    v3 = v3_status()
+    if ttl > 0:
+        _COCKPIT_DB_CACHE["t"] = now
+        _COCKPIT_DB_CACHE["stats"] = stats
+        _COCKPIT_DB_CACHE["direction"] = direction
+        _COCKPIT_DB_CACHE["v3"] = v3
+        _COCKPIT_DB_CACHE["activity"] = activity
+    return stats, direction, v3, activity
+
+
+@APP.get("/api/cockpit/context", include_in_schema=False)
+def cockpit_context():
+    """Single fetch for /cockpit: health, stats, direction, regime, v3, activity summary."""
+    try:
+        stats, direction, v3, activity = _cockpit_cached_db_payload()
+        try:
+            from core.prediction import _check_regime
+            regime = {"ok": True, **_check_regime()}
+        except Exception as _re:
+            regime = {
+                "ok": False,
+                "error": str(_re)[:120],
+                "block_crypto_buys": False,
+                "reason": "",
+                "btc_24h_pct": 0.0,
+            }
+        return {
+            "ok": True,
+            "health": health(),
+            "stats": stats,
+            "direction": direction,
+            "regime": regime,
+            "v3": v3,
+            "activity": activity,
+        }
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:120]}, status_code=500)
+
 
 @APP.post("/api/v3/train")
 def v3_train(x_cron_secret: str = Header(default="")):
@@ -1470,6 +1633,7 @@ def v3_train(x_cron_secret: str = Header(default="")):
             except Exception: pass
             model, accuracy, passed = train_and_validate(crypto + stocks)
             LOGGER.info(f"v3 training complete: accuracy={round(accuracy*100,1)}% passed={passed}")
+            _bump_cockpit_db_cache()
             try:
                 purged = _auto_purge_bad_models()
                 pv = _purge_v3_stale_or_weak()
