@@ -153,7 +153,7 @@ body{background:#0a0a0a;color:#fff;font-family:-apple-system,BlinkMacSystemFont,
       <div class="truth-card">
         <h4>Post&#8211;v3.2 window (decision metric)</h4>
         <div class="truth-big v32" id="t-v32-wr">&#8212;</div>
-        <div class="truth-note">WIN / (WIN+LOSS) for all directions with <code>predicted_at</code> on or after the v3.2 model cutover. EXPIRED excluded. Same rule as <code>/api/stats</code> field <code>post_v32</code>.</div>
+        <div class="truth-note"><b>Issued in window</b> — WIN/LOSS for all directions where <code>predicted_at</code> is on or after the cutover (when models were trained). This is the fair score for the <i>current</i> engine. <b>Recent Results</b> sorts by exit/expiry, so you can see closes for <i>older</i> picks that do not count here. EXPIRED excluded. API: <code>post_v32</code>.</div>
         <div class="truth-kv" id="t-v32-kv"></div>
       </div>
       <div class="truth-card">
@@ -165,7 +165,7 @@ body{background:#0a0a0a;color:#fff;font-family:-apple-system,BlinkMacSystemFont,
       <div class="truth-card">
         <h4>System freshness</h4>
         <div class="truth-big" id="t-fresh">&#8212;</div>
-        <div class="truth-note">Minutes since newest prediction row. High values mean the scanner or cron may be quiet.</div>
+        <div class="truth-note">Minutes since the newest <code>predicted_at</code> (a new pick row). Resolving old picks does not refresh this. High values mean the scanner or cron may be quiet.</div>
         <div class="truth-kv" id="t-sys-kv"></div>
       </div>
     </div>
@@ -317,11 +317,18 @@ function renderModelTable(v3) {
 
 function renderTruth(stats, health, regime, v3, dir) {
   var pv = stats.post_v32 || {};
+  var pr = stats.post_v32_resolved || {};
   var v32t = pv.total || 0;
+  var v32rt = pr.total || 0;
   var v32wr = pv.win_rate_pct != null ? pv.win_rate_pct : 0;
-  document.getElementById('t-v32-wr').textContent = v32t > 0 ? v32wr + '%' : '\u2014';
+  var v32rwr = pr.win_rate_pct != null ? pr.win_rate_pct : 0;
+  document.getElementById('t-v32-wr').textContent = v32t > 0 ? v32wr + '%' : (v32rt > 0 ? v32rwr + '%' : '\u2014');
   document.getElementById('t-v32-kv').innerHTML =
-    '<b>Resolved</b> ' + (pv.wins || 0) + 'W / ' + (pv.losses || 0) + 'L / ' + v32t + ' total (WIN+LOSS, all directions)<br>'
+    '<b>Issued after cutover</b> ' + (pv.wins || 0) + 'W / ' + (pv.losses || 0) + 'L / ' + v32t
+    + (v32t > 0 ? ' \u00b7 ' + v32wr + '%' : '') + '<br>'
+    + '<b>Closed after cutover</b> ' + (pr.wins || 0) + 'W / ' + (pr.losses || 0) + 'L / ' + v32rt
+    + (v32rt > 0 ? ' \u00b7 ' + v32rwr + '%' : '')
+    + ' <span style="color:#666">(<code>resolved_at</code> \u2265 cutover; can include picks issued earlier)</span><br>'
     + '<b>Window start</b> ' + fmtTsIso(pv.start_ts);
 
   var buyDir = dir && dir.by_direction && dir.by_direction.BUY;
@@ -482,16 +489,22 @@ async function load() {
 
     var buyWr = dir.by_direction && dir.by_direction.BUY ? dir.by_direction.BUY.win_rate_pct : (stats.win_rate_pct || 0);
     var pv = stats.post_v32 || {};
+    var pr = stats.post_v32_resolved || {};
     var v32t = pv.total || 0;
+    var v32rt = pr.total || 0;
     var v32wr = pv.win_rate_pct != null ? pv.win_rate_pct : 0;
+    var v32rwr = pr.win_rate_pct != null ? pr.win_rate_pct : 0;
     var wrEl = document.getElementById('wr');
     var wrSub = document.getElementById('wr-sub');
     if (v32t > 0) {
-      wrEl.textContent = v32wr + '% \u00b7 v3.2 window';
+      wrEl.textContent = v32wr + '% \u00b7 v3.2 (issued)';
       wrSub.textContent = 'Legacy BUY cohort: ' + buyWr + '%';
+    } else if (v32rt > 0) {
+      wrEl.textContent = v32rwr + '% \u00b7 closed since cutover';
+      wrSub.textContent = 'No WIN/LOSS yet for picks issued after ' + fmtTsIso(pv.start_ts) + ' \u00b7 legacy BUY ' + buyWr + '%';
     } else {
       wrEl.textContent = buyWr + '% BUY';
-      wrSub.textContent = pv.start_ts ? ('v3.2 window: no resolved trades yet \u00b7 since ' + fmtTsIso(pv.start_ts)) : '';
+      wrSub.textContent = pv.start_ts ? ('v3.2: no issued- or closed-in-window WIN/LOSS yet \u00b7 since ' + fmtTsIso(pv.start_ts)) : '';
     }
     document.getElementById('f-open').textContent = stats.open_positions || 0;
     document.getElementById('f-total').textContent = stats.total || 0;

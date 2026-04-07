@@ -64,6 +64,7 @@ def _compute_get_stats(cur):
     open_count = cur.fetchone()[0]
     v32_start_ts = _v32_stats_start_ts(cur)
     v32_wins = v32_losses = v32_total = 0
+    v32r_wins = v32r_losses = v32r_total = 0
     if v32_start_ts > 0:
         cur.execute(
             "SELECT outcome, COUNT(*) FROM predictions "
@@ -75,6 +76,17 @@ def _compute_get_stats(cur):
         v32_wins = v32_rows.get("WIN", 0)
         v32_losses = v32_rows.get("LOSS", 0)
         v32_total = v32_wins + v32_losses
+        # Closes after cutover (matches "Recent Results" feel; can include picks issued before cutover)
+        cur.execute(
+            "SELECT outcome, COUNT(*) FROM predictions "
+            "WHERE outcome IN ('WIN','LOSS') AND resolved_at IS NOT NULL AND resolved_at >= %s "
+            "GROUP BY outcome",
+            (v32_start_ts,),
+        )
+        v32r_rows = {r[0]: r[1] for r in cur.fetchall()}
+        v32r_wins = v32r_rows.get("WIN", 0)
+        v32r_losses = v32r_rows.get("LOSS", 0)
+        v32r_total = v32r_wins + v32r_losses
     return {
         "ok": True,
         "wins": wins,
@@ -88,6 +100,13 @@ def _compute_get_stats(cur):
             "losses": v32_losses,
             "total": v32_total,
             "win_rate_pct": round(v32_wins / v32_total * 100, 1) if v32_total else 0.0,
+        },
+        "post_v32_resolved": {
+            "start_ts": v32_start_ts,
+            "wins": v32r_wins,
+            "losses": v32r_losses,
+            "total": v32r_total,
+            "win_rate_pct": round(v32r_wins / v32r_total * 100, 1) if v32r_total else 0.0,
         },
     }
 
@@ -1259,6 +1278,21 @@ def get_stats_v32():
             wr = round(wins / total * 100, 1) if total else 0
             cur.execute(
                 """
+                SELECT outcome, COUNT(*) FROM predictions
+                WHERE direction IN ('UP','BUY')
+                AND resolved_at IS NOT NULL AND resolved_at >= %s
+                AND outcome IN ('WIN','LOSS')
+                GROUP BY outcome
+                """,
+                (v32_start_ts,),
+            )
+            rrows = {r[0]: r[1] for r in cur.fetchall()}
+            rw = rrows.get("WIN", 0)
+            rl = rrows.get("LOSS", 0)
+            rt = rw + rl
+            rwr = round(rw / rt * 100, 1) if rt else 0
+            cur.execute(
+                """
                 SELECT COUNT(*) FROM predictions
                 WHERE direction IN ('UP','BUY')
                 AND predicted_at >= %s AND predicted_at IS NOT NULL
@@ -1283,6 +1317,10 @@ def get_stats_v32():
             "losses": losses,
             "total": total,
             "win_rate_pct": wr,
+            "resolved_wins": rw,
+            "resolved_losses": rl,
+            "resolved_total": rt,
+            "resolved_win_rate_pct": rwr,
             "open_picks": open_picks,
             "verdict": verdict,
         }
