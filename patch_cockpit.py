@@ -78,7 +78,11 @@ def cockpit_context():
             resolved_24h = cur.fetchone()[0]
             cur.execute("SELECT outcome, COUNT(*) FROM predictions WHERE resolved_at > extract(epoch from now()) - 604800 GROUP BY outcome")
             outcomes = {r[0]: r[1] for r in cur.fetchall()}
-        regime = _check_regime() if callable(globals().get("_check_regime")) else "unknown"
+        try:
+            from core.prediction import _check_regime
+            regime = {"ok": True, **_check_regime()}
+        except Exception as _re:
+            regime = {"ok": False, "error": str(_re)[:120], "block_crypto_buys": False, "reason": "", "btc_24h_pct": 0.0}
         return {"ok": True, "open_picks": open_picks, "resolved_24h": resolved_24h, "weekly_outcomes": outcomes, "regime": regime}
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -95,10 +99,10 @@ if "/api/regime" not in src:
 @APP.get("/api/regime", include_in_schema=False)
 def api_regime():
     try:
-        regime = _check_regime() if callable(globals().get("_check_regime")) else "unknown"
-        return {"ok": True, "regime": regime}
+        from core.prediction import _check_regime
+        return {"ok": True, **_check_regime()}
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": str(e)[:120], "block_crypto_buys": False, "reason": "", "btc_24h_pct": 0.0}
 """
     changed = True
     print("[patch] /api/regime added")
