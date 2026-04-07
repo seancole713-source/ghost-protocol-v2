@@ -844,6 +844,36 @@ async def fix_stock_expiry(x_cron_secret: str = Header(None)):
         return {"ok": False, "error": str(e)}
 
 
+@APP.post("/api/dedup-picks", include_in_schema=False)
+def dedup_picks():
+    """Expire duplicate open picks per symbol (keep highest confidence)."""
+    now = int(time.time())
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT id, symbol, confidence FROM predictions WHERE outcome IS NULL AND expires_at > %s "
+                "ORDER BY symbol, confidence DESC",
+                (now,),
+            )
+            rows = cur.fetchall()
+            seen = {}
+            to_expire = []
+            for pid, sym, conf in rows:
+                if sym not in seen:
+                    seen[sym] = pid
+                else:
+                    to_expire.append(pid)
+            if to_expire:
+                cur.execute(
+                    "UPDATE predictions SET outcome='EXPIRED', resolved_at=%s WHERE id = ANY(%s)",
+                    (now, to_expire),
+                )
+        return {"ok": True, "expired": len(to_expire), "kept": len(seen)}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 @APP.get("/health")
 def health():
     import os, time as _t
