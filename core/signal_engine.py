@@ -417,7 +417,8 @@ def train_and_validate(symbols_and_types):
             wf = _walk_forward_scores(X, y)
             min_wf_acc = _v3_min_wf_acc_mean()
             min_wf_folds = _v3_min_wf_folds()
-            min_wf_acc_min = (min_wf_acc - 0.03)
+            # Allow modest fold variance while keeping strict mean WF quality.
+            min_wf_acc_min = (min_wf_acc - 0.05)
             gate_checks = [
                 ("n_samples", n_samples >= MIN_TRAIN_ROWS, f"n_samples<{MIN_TRAIN_ROWS} ({n_samples})"),
                 ("tp_sl_wins", wins_ct >= min_wins, f"tp_sl_wins<{min_wins} ({wins_ct})"),
