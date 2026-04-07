@@ -845,8 +845,10 @@ async def fix_stock_expiry(x_cron_secret: str = Header(None)):
 
 
 @APP.post("/api/dedup-picks", include_in_schema=False)
-def dedup_picks():
-    """Expire duplicate open picks per symbol (keep highest confidence)."""
+def dedup_picks(x_cron_secret: str = Header(None)):
+    """Expire duplicate open picks per symbol (keep highest confidence). Requires CRON_SECRET header."""
+    if x_cron_secret != CRON_SECRET:
+        raise HTTPException(status_code=403, detail="Forbidden")
     now = int(time.time())
     try:
         with db_conn() as conn:
