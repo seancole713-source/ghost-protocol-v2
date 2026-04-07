@@ -49,6 +49,34 @@ def _v3_min_wf_acc_mean() -> float:
     return float(os.getenv("V3_MIN_WF_ACC_MEAN", "0.60"))
 
 
+def _v3_wf_acc_min_slack() -> float:
+    return float(os.getenv("V3_WF_ACC_MIN_SLACK", "0.05"))
+
+
+def _v3_wf_acc_min_overrides() -> dict:
+    """
+    Optional per-symbol absolute floor overrides for wf_acc_min.
+    Env format: V3_WF_ACC_MIN_OVERRIDES="UNI=0.51,BCH=0.55"
+    """
+    raw = (os.getenv("V3_WF_ACC_MIN_OVERRIDES", "") or "").strip()
+    out = {}
+    if not raw:
+        return out
+    for part in raw.split(","):
+        part = part.strip()
+        if not part or "=" not in part:
+            continue
+        k, v = part.split("=", 1)
+        sym = (k or "").strip().upper()
+        if not sym:
+            continue
+        try:
+            out[sym] = float(v.strip())
+        except Exception:
+            continue
+    return out
+
+
 def _walk_forward_scores(X, y):
     """
     Rolling walk-forward validation over time-ordered samples.
@@ -418,7 +446,10 @@ def train_and_validate(symbols_and_types):
             min_wf_acc = _v3_min_wf_acc_mean()
             min_wf_folds = _v3_min_wf_folds()
             # Allow modest fold variance while keeping strict mean WF quality.
-            min_wf_acc_min = (min_wf_acc - 0.05)
+            wf_slack = _v3_wf_acc_min_slack()
+            min_wf_acc_min = (min_wf_acc - wf_slack)
+            symbol_overrides = _v3_wf_acc_min_overrides()
+            symbol_wf_acc_min = symbol_overrides.get(symbol.upper(), min_wf_acc_min)
             gate_checks = [
                 ("n_samples", n_samples >= MIN_TRAIN_ROWS, f"n_samples<{MIN_TRAIN_ROWS} ({n_samples})"),
                 ("tp_sl_wins", wins_ct >= min_wins, f"tp_sl_wins<{min_wins} ({wins_ct})"),
@@ -427,7 +458,7 @@ def train_and_validate(symbols_and_types):
                 ("wf_folds", wf["fold_count"] >= min_wf_folds, f"wf_folds < {min_wf_folds} ({wf['fold_count']})"),
                 ("wf_acc_mean", wf["acc_mean"] >= min_wf_acc, f"wf_acc_mean < {min_wf_acc*100:.1f}% ({wf['acc_mean']*100:.1f}%)"),
                 ("wf_edge_mean", wf["edge_mean"] >= min_edge, f"wf_edge_mean < {min_edge*100:.1f}% ({wf['edge_mean']*100:.1f}%)"),
-                ("wf_acc_min", wf["acc_min"] >= min_wf_acc_min, f"wf_acc_min < {min_wf_acc_min*100:.1f}% ({wf['acc_min']*100:.1f}%)"),
+                ("wf_acc_min", wf["acc_min"] >= symbol_wf_acc_min, f"wf_acc_min < {symbol_wf_acc_min*100:.1f}% ({wf['acc_min']*100:.1f}%)"),
             ]
             fail_reason = next((msg for _, ok, msg in gate_checks if not ok), None)
             passes = fail_reason is None
