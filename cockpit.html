@@ -99,13 +99,36 @@ body{background:#0a0a0a;color:#fff;font-family:-apple-system,BlinkMacSystemFont,
 .perr{color:#ff3b3b;font-size:13px;margin-top:8px;min-height:18px}
 .footer{background:#111;border-top:1px solid #1e1e1e;padding:10px 20px;display:flex;gap:20px;font-size:11px;color:#3a3a3a;flex-wrap:wrap}
 .footer b{color:#555}
+.truth-wrap{background:#0d0d0d;border-bottom:1px solid #252525}
+.truth-toggle{width:100%;text-align:left;background:#111;border:none;border-bottom:1px solid #1e1e1e;color:#888;font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;padding:10px 20px;cursor:pointer;display:flex;align-items:center;justify-content:space-between}
+.truth-toggle:hover{color:#ccc}
+.truth-toggle .chev{color:#ff3b3b;font-size:14px}
+.truth-panel{padding:14px 20px 18px;max-width:1100px;margin:0 auto}
+.truth-panel.collapsed{display:none}
+.regime-bar{border-radius:10px;padding:12px 16px;margin-bottom:14px;font-size:13px;line-height:1.5}
+.regime-bar.ok{background:#071a0d;border:1px solid #14532d;color:#86efac}
+.regime-bar.block{background:#1a0a0a;border:1px solid #7f1d1d;color:#fca5a5}
+.truth-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin-bottom:14px}
+.truth-card{background:#111;border:1px solid #1e1e1e;border-radius:12px;padding:14px 16px}
+.truth-card h4{font-size:10px;font-weight:700;letter-spacing:1.5px;color:#555;text-transform:uppercase;margin-bottom:10px}
+.truth-big{font-size:26px;font-weight:800;color:#fff;margin-bottom:4px}
+.truth-big.v32{color:#4ade80}
+.truth-big.legacy{color:#f59e0b}
+.truth-note{font-size:11px;color:#555;line-height:1.55}
+.truth-kv{font-size:12px;color:#888;margin-top:8px;line-height:1.5}
+.truth-kv b{color:#aaa}
+.models-tbl{width:100%;border-collapse:collapse;font-size:12px}
+.models-tbl th{text-align:left;font-size:9px;letter-spacing:1px;color:#555;padding:8px 10px;border-bottom:1px solid #252525}
+.models-tbl td{padding:10px;border-bottom:1px solid #1a1a1a;color:#ccc}
+.models-tbl tr:last-child td{border:none}
+.wr-sub{font-size:10px;color:#555;margin-top:4px;line-height:1.3;max-width:200px}
 </style>
 </head>
 <body>
 <div class="topbar">
   <div class="logo">&#128123; GHOST <span>PROTOCOL</span></div>
   <div class="top-right">
-    <div class="wr">Win Rate: <b id="wr">&#8212;</b></div>
+    <div class="wr"><div>Win rate: <b id="wr">&#8212;</b></div><div class="wr-sub" id="wr-sub"></div></div>
     <div><span class="dot" id="sdot"></span><span id="stxt" style="font-size:13px;color:#888">Loading...</span></div>
     <div id="clock"></div>
   </div>
@@ -117,6 +140,40 @@ body{background:#0a0a0a;color:#fff;font-family:-apple-system,BlinkMacSystemFont,
   <div class="tab" id="tab-portfolio" onclick="show('portfolio')">&#128188; MY PORTFOLIO</div>
   <div class="tab" id="tab-results" onclick="show('results')">&#128202; RESULTS</div>
   <div class="tab" id="tab-news" onclick="show('news')">&#128240; NEWS</div>
+</div>
+
+<div class="truth-wrap">
+  <button type="button" class="truth-toggle" id="truth-toggle" aria-expanded="true">
+    <span>Truth mode · metrics that match the engine</span>
+    <span class="chev" id="truth-chev">&#9660;</span>
+  </button>
+  <div class="truth-panel" id="truth-body">
+    <div id="regime-slot"></div>
+    <div class="truth-grid">
+      <div class="truth-card">
+        <h4>Post&#8211;v3.2 window (decision metric)</h4>
+        <div class="truth-big v32" id="t-v32-wr">&#8212;</div>
+        <div class="truth-note">WIN / (WIN+LOSS) for all directions with <code>predicted_at</code> on or after the v3.2 model cutover. EXPIRED excluded. Same rule as <code>/api/stats</code> field <code>post_v32</code>.</div>
+        <div class="truth-kv" id="t-v32-kv"></div>
+      </div>
+      <div class="truth-card">
+        <h4>Legacy / all&#8211;time (context only)</h4>
+        <div class="truth-big legacy" id="t-leg-wr">&#8212;</div>
+        <div class="truth-note">Includes older engines and migrated rows. Do not use alone to judge v3.2.</div>
+        <div class="truth-kv" id="t-leg-kv"></div>
+      </div>
+      <div class="truth-card">
+        <h4>System freshness</h4>
+        <div class="truth-big" id="t-fresh">&#8212;</div>
+        <div class="truth-note">Minutes since newest prediction row. High values mean the scanner or cron may be quiet.</div>
+        <div class="truth-kv" id="t-sys-kv"></div>
+      </div>
+    </div>
+    <div class="truth-card" style="margin-bottom:0">
+      <h4>Model lineage (loaded symbols)</h4>
+      <div id="t-models-slot"><p class="truth-note">Loading&#8230;</p></div>
+    </div>
+  </div>
 </div>
 
 <div class="main">
@@ -159,7 +216,7 @@ body{background:#0a0a0a;color:#fff;font-family:-apple-system,BlinkMacSystemFont,
   <span>Ghost Protocol v2</span>
   <span>Open: <b id="f-open">&#8212;</b></span>
   <span>Resolved: <b id="f-total">&#8212;</b></span>
-  <span style="margin-left:auto;color:#222">Refreshes every 60s</span>
+  <span style="margin-left:auto;color:#222">Truth mode &amp; picks refresh every 60s</span>
 </div>
 
 <script>
@@ -218,6 +275,107 @@ function makeCard(p) {
   html += '</div>';
   return html;
 }
+
+function escHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/"/g, '&quot;');
+}
+
+function fmtTsIso(ts) {
+  if (ts == null || ts === 0) return '\u2014';
+  var sec = Number(ts);
+  if (sec > 1e12) sec = Math.floor(sec / 1000);
+  var d = new Date(sec * 1000);
+  if (isNaN(d.getTime())) return '\u2014';
+  return d.toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
+}
+
+function renderModelTable(v3) {
+  if (!v3 || !v3.trained) {
+    return '<p class="truth-note">' + escHtml(v3 && v3.reason ? v3.reason : 'No v3 models loaded.') + '</p>';
+  }
+  var syms = v3.symbols || {};
+  var keys = Object.keys(syms).sort();
+  if (!keys.length) return '<p class="truth-note">No symbol rows.</p>';
+  var h = '<table class="models-tbl"><thead><tr><th>Symbol</th><th>Engine</th><th>Label</th><th>Hold bars</th><th>Acc</th><th>WF mean</th><th>Edge</th><th>N</th></tr></thead><tbody>';
+  keys.forEach(function(k) {
+    var m = syms[k];
+    h += '<tr><td><b>' + escHtml(k) + '</b></td>';
+    h += '<td>' + escHtml(m.engine != null ? m.engine : '\u2014') + '</td>';
+    h += '<td>' + escHtml(m.label_type || '\u2014') + '</td>';
+    h += '<td>' + (m.label_hold_bars != null ? m.label_hold_bars : '\u2014') + '</td>';
+    h += '<td>' + (m.accuracy != null ? m.accuracy : '\u2014') + '%</td>';
+    h += '<td>' + (m.wf_acc_mean != null ? m.wf_acc_mean : '\u2014') + '%</td>';
+    h += '<td>' + (m.edge != null ? m.edge : '\u2014') + '%</td>';
+    h += '<td>' + (m.n_samples != null ? m.n_samples : 0) + '</td></tr>';
+  });
+  h += '</tbody></table>';
+  return h;
+}
+
+function renderTruth(stats, health, regime, v3, dir) {
+  var pv = stats.post_v32 || {};
+  var v32t = pv.total || 0;
+  var v32wr = pv.win_rate_pct != null ? pv.win_rate_pct : 0;
+  document.getElementById('t-v32-wr').textContent = v32t > 0 ? v32wr + '%' : '\u2014';
+  document.getElementById('t-v32-kv').innerHTML =
+    '<b>Resolved</b> ' + (pv.wins || 0) + 'W / ' + (pv.losses || 0) + 'L / ' + v32t + ' total (WIN+LOSS, all directions)<br>'
+    + '<b>Window start</b> ' + fmtTsIso(pv.start_ts);
+
+  var buyDir = dir && dir.by_direction && dir.by_direction.BUY;
+  var legPct = buyDir && buyDir.win_rate_pct != null ? buyDir.win_rate_pct : (stats.win_rate_pct || 0);
+  document.getElementById('t-leg-wr').textContent = legPct + '%';
+  if (buyDir) {
+    document.getElementById('t-leg-kv').innerHTML =
+      '<b>BUY cohort</b> ' + buyDir.wins + 'W / ' + buyDir.losses + 'L / ' + buyDir.total
+      + ' resolved (includes EXPIRED in denominator per <code>/api/stats/direction</code>)';
+  } else {
+    document.getElementById('t-leg-kv').innerHTML =
+      '<b>All outcomes</b> ' + (stats.wins || 0) + 'W / ' + (stats.losses || 0) + 'L / ' + (stats.total || 0);
+  }
+
+  var fresh = health.predictions_freshness_min;
+  document.getElementById('t-fresh').textContent = fresh != null ? fresh + ' min' : '\u2014';
+  var feeds = health.price_feeds && health.price_feeds.summary ? health.price_feeds.summary : '\u2014';
+  var cf = health.confidence_floor;
+  var cfStr = cf != null ? (Math.round(cf * 1000) / 10).toFixed(1) : '\u2014';
+  document.getElementById('t-sys-kv').innerHTML =
+    '<b>Alert confidence floor</b> ' + cfStr + '%<br>'
+    + '<b>Price feeds</b> ' + escHtml(feeds) + '<br>'
+    + '<b>Open picks</b> ' + (health.open_picks != null ? health.open_picks : '\u2014')
+    + (health.dedup_blocked ? ' <span style="color:#f59e0b">(dedup cap)</span>' : '');
+
+  var rs = document.getElementById('regime-slot');
+  if (regime && regime.ok !== false) {
+    if (regime.block_crypto_buys) {
+      rs.innerHTML = '<div class="regime-bar block"><b>Regime gate</b> \u2014 Crypto BUYs blocked. '
+        + escHtml(regime.reason || '') + ' (BTC 24h: '
+        + (regime.btc_24h_pct != null ? regime.btc_24h_pct : '\u2014') + '%)</div>';
+    } else {
+      rs.innerHTML = '<div class="regime-bar ok"><b>Regime</b> \u2014 Crypto BUYs allowed. BTC 24h \u2248 '
+        + (regime.btc_24h_pct != null ? regime.btc_24h_pct : '\u2014') + '%</div>';
+    }
+  } else {
+    rs.innerHTML = '<div class="regime-bar ok" style="border-color:#333;color:#666"><b>Regime</b> \u2014 unavailable'
+      + (regime && regime.error ? ' (' + escHtml(regime.error) + ')' : '') + '</div>';
+  }
+
+  document.getElementById('t-models-slot').innerHTML = renderModelTable(v3);
+}
+
+(function initTruthToggle() {
+  var btn = document.getElementById('truth-toggle');
+  var body = document.getElementById('truth-body');
+  var chev = document.getElementById('truth-chev');
+  if (!btn || !body || !chev) return;
+  btn.addEventListener('click', function() {
+    var collapsed = body.classList.toggle('collapsed');
+    btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    chev.innerHTML = collapsed ? '&#9654;' : '&#9660;';
+  });
+})();
 
 async function loadPortfolio() {
   var data = await fetch('/api/portfolio').then(function(r) { return r.json(); }).catch(function() { return {positions: []}; });
@@ -298,15 +456,43 @@ async function delPos(id) {
 
 async function load() {
   try {
-    var h = await fetch('/health').then(function(r) { return r.json(); });
-    var stats = await fetch('/api/stats').then(function(r) { return r.json(); });
-        var dir = await fetch('/api/stats/direction').then(function(r) { return r.json(); }).catch(function() { return {}; });
-    var picks = await fetch('/api/picks').then(function(r) { return r.json(); });
-    var recent = await fetch('/api/v2/recent').then(function(r) { return r.json(); }).catch(function() { return {trades: []}; });
-    var news = await fetch('/api/news').then(function(r) { return r.json(); }).catch(function() { return {articles: []}; });
+    var ctx = await fetch('/api/cockpit/context').then(function(r) { return r.json(); }).catch(function() { return {ok: false}; });
+    var h, stats, dir, regime, v3;
+    if (ctx && ctx.ok === true && ctx.health && ctx.stats) {
+      h = ctx.health;
+      stats = ctx.stats;
+      dir = ctx.direction || {};
+      regime = ctx.regime || {ok: false};
+      v3 = ctx.v3 || {trained: false};
+    } else {
+      h = await fetch('/health').then(function(r) { return r.json(); });
+      stats = await fetch('/api/stats').then(function(r) { return r.json(); });
+      dir = await fetch('/api/stats/direction').then(function(r) { return r.json(); }).catch(function() { return {}; });
+      regime = await fetch('/api/regime').then(function(r) { return r.json(); }).catch(function() { return {ok: false, error: 'fetch failed'}; });
+      v3 = await fetch('/api/v3/status').then(function(r) { return r.json(); }).catch(function() { return {trained: false, reason: 'v3 status fetch failed'}; });
+    }
+    var pr = await Promise.all([
+      fetch('/api/picks').then(function(r) { return r.json(); }),
+      fetch('/api/v2/recent').then(function(r) { return r.json(); }).catch(function() { return {trades: []}; }),
+      fetch('/api/news').then(function(r) { return r.json(); }).catch(function() { return {articles: []}; })
+    ]);
+    var picks = pr[0];
+    var recent = pr[1];
+    var news = pr[2];
 
     var buyWr = dir.by_direction && dir.by_direction.BUY ? dir.by_direction.BUY.win_rate_pct : (stats.win_rate_pct || 0);
-        document.getElementById('wr').textContent = buyWr + '% BUY';
+    var pv = stats.post_v32 || {};
+    var v32t = pv.total || 0;
+    var v32wr = pv.win_rate_pct != null ? pv.win_rate_pct : 0;
+    var wrEl = document.getElementById('wr');
+    var wrSub = document.getElementById('wr-sub');
+    if (v32t > 0) {
+      wrEl.textContent = v32wr + '% \u00b7 v3.2 window';
+      wrSub.textContent = 'Legacy BUY cohort: ' + buyWr + '%';
+    } else {
+      wrEl.textContent = buyWr + '% BUY';
+      wrSub.textContent = pv.start_ts ? ('v3.2 window: no resolved trades yet \u00b7 since ' + fmtTsIso(pv.start_ts)) : '';
+    }
     document.getElementById('f-open').textContent = stats.open_positions || 0;
     document.getElementById('f-total').textContent = stats.total || 0;
 
@@ -381,6 +567,8 @@ async function load() {
           + '<div class="news-meta">' + st + ' &middot; ' + (a.source || 'News') + '</div></div>';
       }).join('');
     }
+
+    renderTruth(stats, h, regime, v3, dir);
   } catch(e) { console.error(e); }
 }
 
