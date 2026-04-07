@@ -461,7 +461,8 @@ APP = FastAPI(title="Ghost Protocol v2", version="2.0.0", lifespan=lifespan)
 APP.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 # Mount portfolio router — WOLF position tracking, price refresh, ghost predictions
-from core.portfolio_routes import portfolio_router, compute_stats_by_direction
+from core.portfolio_routes import portfolio_router
+from core.stats_direction import compute_stats_by_direction
 APP.include_router(portfolio_router)
 
 
