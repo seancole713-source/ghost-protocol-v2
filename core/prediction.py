@@ -110,9 +110,18 @@ def _get_symbol_signal(symbol, current_price):
             return result
     except Exception as _v3e:
         LOGGER.warning("v3 engine error for " + symbol + ": " + str(_v3e))
+        return None
 
-    # Legacy fallback DISABLED — if no v3 model, skip symbol entirely
-    LOGGER.info("No v3 model for " + symbol + " — skipping (legacy disabled)")
+    # predict_live returned None — log reason if available
+    try:
+        from core.signal_engine import load_model as _lm
+        _has_model = _lm(symbol) is not None
+    except Exception:
+        _has_model = False
+    if not _has_model:
+        LOGGER.info("No v3 model for " + symbol + " — model missing, skipping")
+    else:
+        LOGGER.info("No v3 signal for " + symbol + " — model exists but regime/confidence/wf gate blocked signal")
     return None
 
 def _legacy_signal(symbol, current_price):
