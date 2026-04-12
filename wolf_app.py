@@ -218,6 +218,7 @@ def _morning_card_job():
     from core.prediction import run_prediction_cycle
     from core.telegram import send_morning_card
     from core.db import db_conn
+    _cycle_diag = {}
     # Dedup: Telegram morning card only once per CT day — but always run prediction cycle
     # (redeploys used to return [] here and skipped inserts until next calendar day).
     _ct_tz = _pytz.timezone("America/Chicago")
@@ -235,7 +236,7 @@ def _morning_card_job():
                 )
     except Exception as _de:
         LOGGER.warning("Dedup check failed: "+str(_de)[:60])
-    picks = run_prediction_cycle()
+    picks, _cycle_diag = run_prediction_cycle(with_diag=True)
     # Get week stats
     try:
         with db_conn() as conn:
@@ -324,7 +325,36 @@ def _morning_card_job():
                         _last_sent = int(_last_row[0]) if _last_row else 0
                     if _now - _last_sent > 14400:  # 4 hours
                         from core.telegram import _send
-                        _send("Ghost Protocol v2 -- No new picks today. Market conditions not met.")
+                        _cd = _cycle_diag if isinstance(_cycle_diag, dict) else {}
+                        _top = (_cd.get("top_reason_label") or "unknown").strip()
+                        _sum = (_cd.get("skip_summary") or "").strip()
+                        _reg = (_cd.get("regime") or "").strip()
+                        _btc = _cd.get("regime_btc_24h_pct")
+                        _cf = _cd.get("confidence_floor")
+                        _sc = _cd.get("symbols_scanned")
+                        _cand = _cd.get("candidates")
+                        _saved = _cd.get("saved")
+                        _dd = _cd.get("dedup_blocked")
+                        _detail = (
+                            f"scanned={_sc}, candidates={_cand}, saved={_saved}, dedup={_dd}. "
+                            f"Top: {_top}"
+                            + (f". Counts: {_sum}" if _sum else "")
+                            + (f". Regime: {_reg}" if _reg else "")
+                            + (
+                                f" (BTC 24h {float(_btc):+.1f}%)"
+                                if isinstance(_btc, (int, float))
+                                else ""
+                            )
+                            + (
+                                f". Conf floor {float(_cf)*100:.1f}%"
+                                if isinstance(_cf, (int, float))
+                                else ""
+                            )
+                        )
+                        _send(
+                            "Ghost Protocol v2 — No new picks inserted today.\n"
+                            "Reason: " + _detail
+                        )
                         with db_conn() as _rc2:
                             _rc2.cursor().execute("INSERT INTO ghost_state(key,val) VALUES(%s,%s) ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val", (_last_key, str(_now)))
                 except Exception: pass

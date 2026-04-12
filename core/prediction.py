@@ -225,9 +225,14 @@ def _legacy_signal(symbol, current_price):
         return None
 
 
-def predict_symbol(symbol, asset_type, regime):
-    if symbol.strip() in EXCLUDE or not symbol.strip():
-        return None
+def _predict_symbol_ex(symbol, asset_type, regime):
+    """
+    Like predict_symbol but returns (pick_or_None, skip_code_or_None).
+    skip_code is for morning-card diagnostics only (not an API contract).
+    """
+    sym = symbol.strip()
+    if sym in EXCLUDE or not sym:
+        return None, "excluded"
     price = get_price(symbol, asset_type)
     if (not price or price <= 0) and asset_type == "stock":
         try:
@@ -239,24 +244,24 @@ def predict_symbol(symbol, asset_type, regime):
         except Exception as _pe:
             LOGGER.warning("Prev-close fallback failed " + symbol + ": " + str(_pe))
     if not price or price <= 0:
-        return None
+        return None, "no_price"
     signal = _get_symbol_signal(symbol, price)
     if not signal:
-        return None
+        return None, "no_v3_model"
     direction, confidence = signal
 
     _floor = regime.get('confidence_floor_override', CONFIDENCE_FLOOR) if isinstance(regime, dict) else CONFIDENCE_FLOOR
     if confidence < _floor:
-        return None
+        return None, "below_confidence_floor"
 
     # SELL signals blocked: 1.9% win rate across 211 trades (data as of 2026-03-25)
     if direction == "DOWN":
         LOGGER.info("SELL blocked: " + symbol + " — DOWN signals 1.9% wr historically")
-        return None
+        return None, "sell_blocked"
 
     if regime["block_crypto_buys"] and asset_type == "crypto" and direction == "UP":
         LOGGER.info("REGIME blocked " + symbol + " UP")
-        return None
+        return None, "regime_blocked_crypto_buy"
 
     now = int(time.time())
     # Stocks: skip weekends — expire at next trading day close, not 48 calendar hours
@@ -352,11 +357,19 @@ def predict_symbol(symbol, asset_type, regime):
         "asset_type":   asset_type,
         "features":     features,
         "pos_size_pct": pos_pct,
-    }
+    }, None
 
 
-def run_prediction_cycle():
-    """Run predictions. Returns list of saved picks. Does NOT send Telegram."""
+def predict_symbol(symbol, asset_type, regime):
+    pick, _skip = _predict_symbol_ex(symbol, asset_type, regime)
+    return pick
+
+
+def run_prediction_cycle(with_diag: bool = False):
+    """Run predictions. Returns list of saved picks. Does NOT send Telegram.
+
+    If with_diag=True, returns (saved_picks, diag_dict) for Telegram copy.
+    """
     # T23: Circuit breaker — if last 5 resolved picks are all losses, raise confidence floor
     _cb_floor = CONFIDENCE_FLOOR
     try:
@@ -388,15 +401,19 @@ def run_prediction_cycle():
                     LOGGER.info("Portfolio symbol added to scan: " + _sym)
     except Exception as _pe:
         LOGGER.warning("Could not load portfolio symbols: " + str(_pe))
+    skip_counts = {}
     all_picks = []
     for symbol, asset_type in symbols:
-        pick = predict_symbol(symbol, asset_type, regime)
+        pick, skip = _predict_symbol_ex(symbol, asset_type, regime)
         if pick:
             all_picks.append(pick)
+        elif skip:
+            skip_counts[skip] = skip_counts.get(skip, 0) + 1
 
     all_picks.sort(key=lambda x: x["confidence"], reverse=True)
     top = all_picks[:DAILY_CAP]
     saved = []
+    dedup_blocked = 0
     # Pre-fetch open symbols once (separate conn avoids cursor state corruption mid-loop)
     _open = set()
     try:
@@ -412,6 +429,7 @@ def run_prediction_cycle():
             try:
                 if pick["symbol"] in _open:
                     LOGGER.info("DEDUP: skipping " + pick["symbol"])
+                    dedup_blocked += 1
                     continue
                 cur.execute(
                     "INSERT INTO predictions (symbol,direction,confidence,entry_price,target_price,stop_price,run_at,predicted_at,expires_at,asset_type,features) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
@@ -427,7 +445,62 @@ def run_prediction_cycle():
                 LOGGER.error("INSERT " + pick["symbol"] + ": " + str(e))
                 conn.rollback()
     LOGGER.info("Cycle: " + str(len(saved)) + "/" + str(len(all_picks)) + " picks | regime: " + (regime["reason"] or "OK"))
-    return saved
+    if not with_diag:
+        return saved
+    # --- diagnostics for Telegram "no picks" accuracy ---
+    _prio = [
+        "dedup_blocked",
+        "regime_blocked_crypto_buy",
+        "below_confidence_floor",
+        "no_v3_model",
+        "no_price",
+        "sell_blocked",
+        "excluded",
+    ]
+    _labels = {
+        "dedup_blocked": "dedup (open pick already exists)",
+        "regime_blocked_crypto_buy": "regime blocked crypto BUY",
+        "below_confidence_floor": "below confidence floor",
+        "no_v3_model": "no v3 model / signal",
+        "no_price": "missing price",
+        "sell_blocked": "SELL/DOWN blocked",
+        "excluded": "symbol excluded",
+    }
+    top_reason = None
+    if dedup_blocked > 0:
+        top_reason = "dedup_blocked"
+    else:
+        for k in _prio:
+            if k == "dedup_blocked":
+                continue
+            if skip_counts.get(k):
+                top_reason = k
+                break
+        if top_reason is None and skip_counts:
+            top_reason = max(skip_counts.items(), key=lambda kv: kv[1])[0]
+    diag = {
+        "symbols_scanned": len(symbols),
+        "candidates": len(all_picks),
+        "saved": len(saved),
+        "dedup_blocked": dedup_blocked,
+        "skip_counts": dict(sorted(skip_counts.items(), key=lambda kv: (-kv[1], kv[0]))),
+        "regime": regime.get("reason") or "",
+        "regime_btc_24h_pct": regime.get("btc_24h_pct"),
+        "confidence_floor": regime.get("confidence_floor_override", CONFIDENCE_FLOOR),
+        "top_reason_code": top_reason,
+        "top_reason_label": _labels.get(top_reason, top_reason or "unknown"),
+    }
+    parts = []
+    if dedup_blocked:
+        parts.append(_labels["dedup_blocked"] + "=" + str(dedup_blocked))
+    for k in _prio:
+        if k == "dedup_blocked":
+            continue
+        c = skip_counts.get(k, 0)
+        if c:
+            parts.append(_labels.get(k, k) + "=" + str(c))
+    diag["skip_summary"] = "; ".join(parts) if parts else ""
+    return saved, diag
 
 
 def reconcile_outcomes():
