@@ -112,16 +112,17 @@ def _get_symbol_signal(symbol, current_price):
         LOGGER.warning("v3 engine error for " + symbol + ": " + str(_v3e))
         return None
 
-    # predict_live returned None — log reason if available
+    # predict_live returned None — distinguish missing/unloadable model vs live gating.
     try:
         from core.signal_engine import load_model as _lm
-        _has_model = _lm(symbol) is not None
+        _m, _fc, _meta = _lm(symbol)
+        _has_model = _m is not None
     except Exception:
         _has_model = False
     if not _has_model:
-        LOGGER.info("No v3 model for " + symbol + " — model missing, skipping")
+        LOGGER.info("No v3 model for " + symbol + " — model missing/unloadable, skipping")
     else:
-        LOGGER.info("No v3 signal for " + symbol + " — model exists but regime/confidence/wf gate blocked signal")
+        LOGGER.info("No v3 signal for " + symbol + " — model loaded but live filters returned no trade")
     return None
 
 def _legacy_signal(symbol, current_price):
