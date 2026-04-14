@@ -522,17 +522,19 @@ def load_model(symbol=None):
     except Exception as e:
         LOGGER.warning(f"load_model {symbol}: {e}"); return None, None, None
 
-def predict_live(symbol, asset_type):
+def predict_live_ex(symbol, asset_type):
     """
-    Regime gate (jakejk1285 + FarisZnf research):
-    - Skip BUY if price below EMA200 AND ADX<20 (downtrend + choppy)
-    - Skip BUY if full bearish EMA alignment (20<50<200) unless deep oversold
+    Like predict_live but returns (signal_tuple_or_None, reason_code_or_None).
+    reason_code is for diagnostics/metrics only.
     """
     model, feature_cols, meta = load_model(symbol)
-    if model is None: return None
+    if model is None:
+        return None, "no_model"
 
     rows = _fetch_ohlcv(symbol, asset_type, period='5d', interval='1h')
-    if not rows or len(rows) < 30: return None
+    if not rows or len(rows) < 30:
+        return None, "intraday_data"
+
     features = _calculate_features(rows)
 
     above_ema200 = features.get('above_ema200', 1)
@@ -545,12 +547,12 @@ def predict_live(symbol, asset_type):
     # Gate 1: below EMA200 + choppy = high-probability loss setup
     if above_ema200 == 0 and adx_trending == 0:
         LOGGER.info(f"REGIME GATE [{symbol}]: below EMA200 + ADX={adx_val:.1f}<20 — skip BUY")
-        return None
+        return None, "regime_gate"
 
     # Gate 2: full bearish alignment, not oversold
     if ema_trend_bullish == 0 and rsi > 40 and stoch_k > 30:
         LOGGER.info(f"REGIME GATE [{symbol}]: bearish EMA stack, RSI={rsi:.1f} not oversold — skip")
-        return None
+        return None, "regime_gate"
 
     X = np.array([[features.get(c, 0.0) for c in feature_cols]])
     proba = model.predict_proba(X)[0]
@@ -564,11 +566,11 @@ def predict_live(symbol, asset_type):
     wf_edge_mean = float(meta.get("wf_edge_mean", meta.get("edge", 0)))
     wf_fold_count = int(meta.get("wf_fold_count", 0))
     if edge < min_edge:
-        return None
+        return None, "meta_gate"
     if meta.get('accuracy', 0) < min_acc:
-        return None
+        return None, "meta_gate"
     if wf_fold_count > 0 and (wf_acc_mean < min_wf_acc or wf_edge_mean < min_edge):
-        return None
+        return None, "meta_gate"
 
     # Confidence = holdout TP/SL WIN rate + strength above min win-probability
     accuracy = meta.get('accuracy', min_acc)
@@ -576,10 +578,20 @@ def predict_live(symbol, asset_type):
     if up_prob > min_p:
         signal_strength = (up_prob - min_p) * 4.0
         conf = round(min(0.95, max(0.75, accuracy + signal_strength)), 3)
-        return ("UP", conf)
+        return ("UP", conf), None
     # DOWN signals disabled — 1.5% WR on 274 trades, not viable
     # Ghost is BUY-only system
-    return None
+    return None, "prob_low"
+
+
+def predict_live(symbol, asset_type):
+    """
+    Regime gate (jakejk1285 + FarisZnf research):
+    - Skip BUY if price below EMA200 AND ADX<20 (downtrend + choppy)
+    - Skip BUY if full bearish EMA alignment (20<50<200) unless deep oversold
+    """
+    sig, _reason = predict_live_ex(symbol, asset_type)
+    return sig
 
 def get_model_status():
     try:

@@ -103,8 +103,9 @@ def _get_symbol_signal(symbol, current_price):
     """
     # Try v3 model first
     try:
-        from core.signal_engine import predict_live
-        result = predict_live(symbol, "crypto" if symbol not in ["AAPL","NVDA","TSLA","MSFT","META","AMZN","PLTR","AMD","T","XPO","NET","WOLF"] else "stock")
+        from core.signal_engine import predict_live_ex
+        _atype = "crypto" if symbol not in ["AAPL","NVDA","TSLA","MSFT","META","AMZN","PLTR","AMD","T","XPO","NET","WOLF"] else "stock"
+        result, _reason = predict_live_ex(symbol, _atype)
         if result is not None:
             LOGGER.info("v3 signal for " + symbol + ": " + str(result[0]) + " " + str(round(result[1]*100,1)) + "%")
             return result
@@ -112,7 +113,7 @@ def _get_symbol_signal(symbol, current_price):
         LOGGER.warning("v3 engine error for " + symbol + ": " + str(_v3e))
         return None
 
-    # predict_live returned None — distinguish missing/unloadable model vs live gating.
+    # predict_live_ex returned None — distinguish missing/unloadable model vs live gating.
     try:
         from core.signal_engine import load_model as _lm
         _m, _fc, _meta = _lm(symbol)
@@ -255,9 +256,26 @@ def _predict_symbol_ex(symbol, asset_type, regime):
             LOGGER.warning("Prev-close fallback failed " + symbol + ": " + str(_pe))
     if not price or price <= 0:
         return None, "no_price"
-    signal = _get_symbol_signal(symbol, price)
+    try:
+        from core.signal_engine import predict_live_ex
+        _atype = "crypto" if sym not in ["AAPL","NVDA","TSLA","MSFT","META","AMZN","PLTR","AMD","T","XPO","NET","WOLF"] else "stock"
+        signal, v3_reason = predict_live_ex(symbol, _atype)
+    except Exception as _pe:
+        LOGGER.warning("v3 engine error for " + symbol + ": " + str(_pe))
+        return None, "v3_engine_error"
+
     if not signal:
-        return None, "no_v3_model"
+        if v3_reason == "no_model":
+            return None, "no_v3_model"
+        if v3_reason == "regime_gate":
+            return None, "v3_regime_gate"
+        if v3_reason == "intraday_data":
+            return None, "v3_intraday_data"
+        if v3_reason == "meta_gate":
+            return None, "v3_meta_gate"
+        if v3_reason == "prob_low":
+            return None, "v3_prob_low"
+        return None, "v3_no_signal"
     direction, confidence = signal
 
     _floor = regime.get('confidence_floor_override', CONFIDENCE_FLOOR) if isinstance(regime, dict) else CONFIDENCE_FLOOR
@@ -462,6 +480,12 @@ def run_prediction_cycle(with_diag: bool = False):
         "dedup_blocked",
         "regime_blocked_crypto_buy",
         "below_confidence_floor",
+        "v3_regime_gate",
+        "v3_meta_gate",
+        "v3_prob_low",
+        "v3_intraday_data",
+        "v3_engine_error",
+        "v3_no_signal",
         "no_v3_model",
         "no_price",
         "sell_blocked",
@@ -471,7 +495,13 @@ def run_prediction_cycle(with_diag: bool = False):
         "dedup_blocked": "dedup (open pick already exists)",
         "regime_blocked_crypto_buy": "regime blocked crypto BUY",
         "below_confidence_floor": "below confidence floor",
-        "no_v3_model": "no v3 model / signal",
+        "v3_regime_gate": "v3 live regime gate blocked BUY",
+        "v3_meta_gate": "v3 model metadata failed live thresholds",
+        "v3_prob_low": "v3 model prob below BUY floor",
+        "v3_intraday_data": "v3 intraday bars missing/short",
+        "v3_engine_error": "v3 engine error",
+        "v3_no_signal": "v3 returned no signal (other)",
+        "no_v3_model": "no v3 model in DB / unloadable",
         "no_price": "missing price",
         "sell_blocked": "SELL/DOWN blocked",
         "excluded": "symbol excluded",
