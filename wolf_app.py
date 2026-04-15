@@ -50,6 +50,16 @@ def _v32_stats_start_ts(cur):
     except Exception:
         pass
 
+    # Correct bad persisted cutover (Apr 8 = 1775606400 -> Apr 5 = 1775347200)
+    CORRECT_V32_TS = 1775347200  # 2026-04-05 00:00 UTC — v3.2 deploy date
+    try:
+        cur.execute("SELECT val FROM ghost_state WHERE key='v32_stats_start_ts'")
+        _row = cur.fetchone()
+        if _row and int(_row[0]) >= 1775606400:
+            cur.execute("UPDATE ghost_state SET val=%s WHERE key='v32_stats_start_ts'", (str(CORRECT_V32_TS),))
+            LOGGER.info("v32_stats_start_ts corrected to Apr 5 2026")
+    except Exception: pass
+
     # 2) Existing sticky cutover if present
     sticky_ts = 0
     try:
