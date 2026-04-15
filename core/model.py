@@ -211,11 +211,29 @@ def retrain_if_ready():
                   AND direction IN ('UP','BUY')
             """)
             count = cur.fetchone()[0]
+            cur.execute("""
+                SELECT symbol, COUNT(*) FROM predictions
+                WHERE outcome IN ('WIN','LOSS','STOP')
+                  AND features IS NOT NULL
+                  AND direction IN ('UP','BUY')
+                GROUP BY symbol
+                ORDER BY COUNT(*) DESC, symbol
+                LIMIT 10
+            """)
+            by_symbol = cur.fetchall()
     except Exception as e:
         LOGGER.error("[MODEL] DB count failed: " + str(e))
         return
 
-    LOGGER.info("[MODEL] Labeled rows with features: " + str(count) + " / " + str(MIN_TRAIN_ROWS) + " needed")
+    detail = ", ".join(f"{(s or '').upper()}={n}" for s, n in (by_symbol or []))
+    LOGGER.info(
+        "[MODEL] Labeled rows with features: "
+        + str(count)
+        + " / "
+        + str(MIN_TRAIN_ROWS)
+        + " needed"
+        + ((" | top symbols: " + detail) if detail else "")
+    )
     if count < MIN_TRAIN_ROWS:
         return
 

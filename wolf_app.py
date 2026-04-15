@@ -643,6 +643,34 @@ async def lifespan(app: FastAPI):
                 LOGGER.info("Weekly retrain skipped: retrain lock busy")
                 return
             _lock_acquired = True
+            min_interval_s = max(3600, int(os.getenv("WEEKLY_RETRAIN_MIN_INTERVAL_SEC", "604800")))
+            now_ts = int(time.time())
+            last_ts = 0
+            try:
+                with db_conn() as _wc:
+                    _wcur = _wc.cursor()
+                    _wcur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+                    _wcur.execute("SELECT val FROM ghost_state WHERE key='last_weekly_retrain_ts'")
+                    _wr = _wcur.fetchone()
+                    last_ts = int(_wr[0]) if _wr and _wr[0] else 0
+            except Exception as _wse:
+                LOGGER.warning("Weekly retrain state read failed: %s", str(_wse)[:80])
+            if last_ts and (now_ts - last_ts) < min_interval_s:
+                LOGGER.info(
+                    "Weekly retrain skipped: last run %ss ago (<%ss)",
+                    now_ts - last_ts, min_interval_s
+                )
+                return
+            try:
+                with db_conn() as _wc2:
+                    _wcur2 = _wc2.cursor()
+                    _wcur2.execute(
+                        "INSERT INTO ghost_state(key,val) VALUES('last_weekly_retrain_ts',%s) "
+                        "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
+                        (str(now_ts),),
+                    )
+            except Exception as _wse2:
+                LOGGER.warning("Weekly retrain state write failed: %s", str(_wse2)[:80])
             from core.prediction import CRYPTO_SYMBOLS, STOCK_SYMBOLS
             syms = [(s.strip(), "crypto") for s in CRYPTO_SYMBOLS if s.strip()] + [
                 (s.strip(), "stock") for s in STOCK_SYMBOLS if s.strip()
