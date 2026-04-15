@@ -1758,6 +1758,60 @@ def v3_status():
     return get_model_status()
 
 
+@APP.get("/api/coverage")
+def coverage_status():
+    """Coverage maintenance status for monitoring/ops."""
+    now = int(time.time())
+    enabled = os.getenv("AUTO_COVERAGE_RETRAIN_ENABLED", "1").strip() in ("1", "true", "TRUE", "yes", "on")
+    min_models = max(1, int(os.getenv("MODEL_COVERAGE_MIN_MODELS", "3")))
+    cooldown_s = max(900, int(os.getenv("COVERAGE_RETRAIN_COOLDOWN_SEC", "21600")))
+    check_interval_s = max(900, int(os.getenv("COVERAGE_CHECK_INTERVAL_SEC", "3600")))
+
+    try:
+        from core.signal_engine import get_model_status
+        st = get_model_status() or {}
+    except Exception as e:
+        st = {"trained": False, "reason": "status_error: " + str(e)[:80]}
+    loaded_models = int(st.get("models", 0)) if st.get("trained") else 0
+
+    last_ts = 0
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            cur.execute("SELECT val FROM ghost_state WHERE key='last_coverage_retrain_ts'")
+            row = cur.fetchone()
+            last_ts = int(row[0]) if row and row[0] else 0
+    except Exception:
+        last_ts = 0
+
+    since_last_s = (now - last_ts) if last_ts else None
+    cooldown_remaining_s = max(0, cooldown_s - since_last_s) if since_last_s is not None else 0
+    below_floor = loaded_models < min_models
+    eligible_now = enabled and below_floor and cooldown_remaining_s == 0 and (not _COVERAGE_RETRAIN_RUNNING)
+
+    return {
+        "ok": True,
+        "now_ts": now,
+        "coverage": {
+            "loaded_models": loaded_models,
+            "min_models_floor": min_models,
+            "below_floor": below_floor,
+        },
+        "maintenance": {
+            "enabled": enabled,
+            "running": _COVERAGE_RETRAIN_RUNNING,
+            "check_interval_s": check_interval_s,
+            "cooldown_s": cooldown_s,
+            "last_retrain_ts": last_ts or None,
+            "since_last_retrain_s": since_last_s,
+            "cooldown_remaining_s": cooldown_remaining_s,
+            "eligible_now": eligible_now,
+        },
+        "model_status": st,
+    }
+
+
 def _cockpit_cached_db_payload():
     """
     Stats + direction + activity in one DB connection; v3 JSON cached with them.
