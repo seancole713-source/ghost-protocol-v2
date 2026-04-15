@@ -27,30 +27,101 @@ def _bump_cockpit_db_cache():
 
 
 def _v32_stats_start_ts(cur):
-    """Unix start of v3.2 stats window: V3_STATS_START_TS or min trained_at of tp_sl_daily metas."""
+    """Unix start of v3.2 stats window with non-drifting persistence.
+
+    Priority:
+    1) V3_STATS_START_TS env override (if set)
+    2) persisted ghost_state.v32_stats_start_ts (sticky, never move forward)
+    3) bootstrap candidate from model metas + recent symbol history
+    """
     import json as _json
 
-    v32_start_ts = 0
+    # 1) Hard override from env
     try:
-        v32_start_ts = int(os.getenv("V3_STATS_START_TS", "0") or 0)
+        _env_ts = int(os.getenv("V3_STATS_START_TS", "0") or 0)
+        if _env_ts > 0:
+            return _env_ts
     except Exception:
-        v32_start_ts = 0
-    if v32_start_ts <= 0:
-        try:
-            cur.execute("SELECT value FROM ghost_v3_model WHERE key LIKE 'meta_%'")
-            trained = []
-            for (val,) in cur.fetchall():
-                try:
-                    m = _json.loads(val)
-                    if m.get("label_type") == "tp_sl_daily":
-                        trained.append(int(m.get("trained_at", 0)))
-                except Exception:
+        pass
+
+    # Ensure state table exists (shared with other lightweight state keys)
+    try:
+        cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+    except Exception:
+        pass
+
+    # 2) Existing sticky cutover if present
+    sticky_ts = 0
+    try:
+        cur.execute("SELECT val FROM ghost_state WHERE key='v32_stats_start_ts'")
+        _row = cur.fetchone()
+        if _row and _row[0]:
+            sticky_ts = int(_row[0])
+    except Exception:
+        sticky_ts = 0
+
+    # 3) Bootstrap candidate (if sticky missing or to allow safe backward correction only)
+    model_ts = 0
+    model_syms = []
+    try:
+        cur.execute("SELECT key, value FROM ghost_v3_model WHERE key LIKE 'meta_%'")
+        trained = []
+        for key, val in cur.fetchall():
+            try:
+                m = _json.loads(val)
+                if m.get("label_type") != "tp_sl_daily":
                     continue
-            if trained:
-                v32_start_ts = min(trained)
+                ts = int(m.get("trained_at", 0) or 0)
+                if ts > 0:
+                    trained.append(ts)
+                sym = str(key or "").replace("meta_", "").strip().upper()
+                if sym:
+                    model_syms.append(sym)
+            except Exception:
+                continue
+        if trained:
+            model_ts = min(trained)
+    except Exception:
+        model_ts = 0
+
+    # Recent symbol-history anchor (helps recover when model_ts drifts forward after retrain churn)
+    # Scoped to recent history to avoid pulling legacy-era rows.
+    hist_ts = 0
+    try:
+        model_syms = sorted(set(model_syms))
+        if model_syms:
+            placeholders = ",".join(["%s"] * len(model_syms))
+            cur.execute(
+                f"SELECT MIN(predicted_at) FROM predictions "
+                f"WHERE predicted_at IS NOT NULL AND predicted_at >= %s "
+                f"AND symbol IN ({placeholders})",
+                [int(time.time()) - 90 * 86400, *model_syms],
+            )
+            _h = cur.fetchone()
+            if _h and _h[0]:
+                hist_ts = int(_h[0])
+    except Exception:
+        hist_ts = 0
+
+    candidates = [t for t in (model_ts, hist_ts) if t > 0]
+    candidate_ts = min(candidates) if candidates else 0
+
+    # Never move cutover forward implicitly; allow only first set or backward correction.
+    if sticky_ts > 0 and candidate_ts > 0:
+        final_ts = min(sticky_ts, candidate_ts)
+    else:
+        final_ts = sticky_ts or candidate_ts or 0
+
+    if final_ts > 0 and final_ts != sticky_ts:
+        try:
+            cur.execute(
+                "INSERT INTO ghost_state(key,val) VALUES('v32_stats_start_ts',%s) "
+                "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
+                (str(final_ts),),
+            )
         except Exception:
-            v32_start_ts = 0
-    return v32_start_ts
+            pass
+    return final_ts
 
 
 def _compute_get_stats(cur):
