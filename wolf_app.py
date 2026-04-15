@@ -13,6 +13,7 @@ logging.basicConfig(
 )
 LOGGER = logging.getLogger("ghost")
 CRON_SECRET = os.getenv("CRON_SECRET", "")
+_COVERAGE_RETRAIN_RUNNING = False
 
 _COCKPIT_DB_CACHE = {"t": 0.0, "stats": None, "direction": None, "v3": None, "activity": None}
 
@@ -385,6 +386,108 @@ def _weekly_summary_job():
     except Exception as e:
         LOGGER.error("Weekly summary failed: " + str(e))
 
+
+def _build_train_symbol_list():
+    """Training symbol universe = env symbols + portfolio holdings."""
+    from core.prediction import CRYPTO_SYMBOLS, STOCK_SYMBOLS
+    syms = [(s.strip().upper(), "crypto") for s in CRYPTO_SYMBOLS if s.strip()] + [
+        (s.strip().upper(), "stock") for s in STOCK_SYMBOLS if s.strip()
+    ]
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT DISTINCT symbol, asset_type FROM user_portfolio")
+            for sym, at in cur.fetchall():
+                k = (str(sym or "").strip().upper(), (at or "stock").strip().lower())
+                if not k[0]:
+                    continue
+                if k[1] != "crypto":
+                    k = (k[0], "stock")
+                if k not in syms:
+                    syms.append(k)
+    except Exception as e:
+        LOGGER.warning("Coverage symbol build failed: %s", str(e)[:80])
+    return syms
+
+
+def _coverage_maintenance_job():
+    """
+    Keep model coverage above a floor.
+    If loaded model count is too low, run a rate-limited retrain pass.
+    """
+    global _COVERAGE_RETRAIN_RUNNING
+    if os.getenv("AUTO_COVERAGE_RETRAIN_ENABLED", "1").strip() not in ("1", "true", "TRUE", "yes", "on"):
+        return
+    if _COVERAGE_RETRAIN_RUNNING:
+        LOGGER.info("Coverage maintenance: retrain already running, skip")
+        return
+
+    min_models = max(1, int(os.getenv("MODEL_COVERAGE_MIN_MODELS", "3")))
+    cooldown_s = max(900, int(os.getenv("COVERAGE_RETRAIN_COOLDOWN_SEC", "21600")))
+    now = int(time.time())
+
+    last_ts = 0
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            cur.execute("SELECT val FROM ghost_state WHERE key='last_coverage_retrain_ts'")
+            row = cur.fetchone()
+            last_ts = int(row[0]) if row and row[0] else 0
+    except Exception as e:
+        LOGGER.warning("Coverage maintenance state read failed: %s", str(e)[:80])
+
+    if last_ts and now - last_ts < cooldown_s:
+        LOGGER.info("Coverage maintenance: cooldown active (%ss left)", cooldown_s - (now - last_ts))
+        return
+
+    try:
+        from core.signal_engine import get_model_status, train_and_validate
+        st = get_model_status() or {}
+        loaded = int(st.get("models", 0)) if st.get("trained") else 0
+        if loaded >= min_models:
+            LOGGER.info("Coverage maintenance: loaded models %s >= floor %s", loaded, min_models)
+            return
+
+        syms = _build_train_symbol_list()
+        if not syms:
+            LOGGER.warning("Coverage maintenance: empty symbol universe, skip retrain")
+            return
+
+        _COVERAGE_RETRAIN_RUNNING = True
+        LOGGER.warning(
+            "Coverage maintenance: loaded models %s below floor %s, retraining %s symbols",
+            loaded, min_models, len(syms)
+        )
+        _, acc_ratio, _ok = train_and_validate(syms)
+        trained = int(round(acc_ratio * len(syms))) if syms else 0
+        failed = len(syms) - trained
+        try:
+            purged = _auto_purge_bad_models()
+            pv = _purge_v3_stale_or_weak()
+            LOGGER.info("Coverage maintenance purge: legacy=%s v3=%s", purged, pv)
+        except Exception as e:
+            LOGGER.warning("Coverage maintenance purge failed: %s", str(e)[:80])
+        _bump_cockpit_db_cache()
+        LOGGER.info(
+            "Coverage maintenance retrain complete: %s trained, %s failed (acc_ratio=%.3f)",
+            trained, failed, float(acc_ratio or 0.0)
+        )
+    except Exception as e:
+        LOGGER.warning("Coverage maintenance retrain failed: %s", str(e)[:120])
+    finally:
+        _COVERAGE_RETRAIN_RUNNING = False
+        try:
+            with db_conn() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    "INSERT INTO ghost_state(key,val) VALUES('last_coverage_retrain_ts',%s) "
+                    "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
+                    (str(int(time.time())),),
+                )
+        except Exception:
+            pass
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     LOGGER.info("Ghost Protocol v2 starting...")
@@ -437,6 +540,12 @@ async def lifespan(app: FastAPI):
     from core.portfolio_routes import auto_refresh_portfolio_prices
     scheduler.register("portfolio_price_refresh", auto_refresh_portfolio_prices, interval_s=900)
     scheduler.register("news", run_news_cycle, interval_s=1800)
+    # Coverage maintenance: if too few loadable v3 models, run rate-limited retrain.
+    scheduler.register(
+        "coverage_maintenance",
+        _coverage_maintenance_job,
+        interval_s=max(900, int(os.getenv("COVERAGE_CHECK_INTERVAL_SEC", "3600"))),
+    )
     # Weekly model retrain — keeps models fresh as market conditions change
     from core.signal_engine import train_and_validate as _tv
     def _weekly_retrain():
