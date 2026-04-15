@@ -1,4 +1,4 @@
-import os, sys, time, logging
+import os, sys, time, logging, threading
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,6 +14,8 @@ logging.basicConfig(
 LOGGER = logging.getLogger("ghost")
 CRON_SECRET = os.getenv("CRON_SECRET", "")
 _COVERAGE_RETRAIN_RUNNING = False
+_RETRAIN_JOB_LOCK = threading.Lock()
+_APP_BOOT_TS = time.time()
 
 _COCKPIT_DB_CACHE = {"t": 0.0, "stats": None, "direction": None, "v3": None, "activity": None}
 
@@ -424,7 +426,12 @@ def _coverage_maintenance_job():
 
     min_models = max(1, int(os.getenv("MODEL_COVERAGE_MIN_MODELS", "3")))
     cooldown_s = max(900, int(os.getenv("COVERAGE_RETRAIN_COOLDOWN_SEC", "21600")))
+    boot_grace_s = max(0, int(os.getenv("COVERAGE_BOOT_GRACE_SEC", "600")))
     now = int(time.time())
+    _lock_acquired = False
+    if (time.time() - _APP_BOOT_TS) < boot_grace_s:
+        LOGGER.info("Coverage maintenance: boot grace active, defer (%ss)", int(boot_grace_s - (time.time() - _APP_BOOT_TS)))
+        return
 
     last_ts = 0
     try:
@@ -454,6 +461,10 @@ def _coverage_maintenance_job():
             LOGGER.warning("Coverage maintenance: empty symbol universe, skip retrain")
             return
 
+        if not _RETRAIN_JOB_LOCK.acquire(blocking=False):
+            LOGGER.info("Coverage maintenance: retrain lock busy, skip this run")
+            return
+        _lock_acquired = True
         _COVERAGE_RETRAIN_RUNNING = True
         LOGGER.warning(
             "Coverage maintenance: loaded models %s below floor %s, retraining %s symbols",
@@ -476,17 +487,23 @@ def _coverage_maintenance_job():
     except Exception as e:
         LOGGER.warning("Coverage maintenance retrain failed: %s", str(e)[:120])
     finally:
+        if _lock_acquired:
+            try:
+                _RETRAIN_JOB_LOCK.release()
+            except Exception:
+                pass
         _COVERAGE_RETRAIN_RUNNING = False
-        try:
-            with db_conn() as conn:
-                cur = conn.cursor()
-                cur.execute(
-                    "INSERT INTO ghost_state(key,val) VALUES('last_coverage_retrain_ts',%s) "
-                    "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
-                    (str(int(time.time())),),
-                )
-        except Exception:
-            pass
+        if _lock_acquired:
+            try:
+                with db_conn() as conn:
+                    cur = conn.cursor()
+                    cur.execute(
+                        "INSERT INTO ghost_state(key,val) VALUES('last_coverage_retrain_ts',%s) "
+                        "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
+                        (str(int(time.time())),),
+                    )
+            except Exception:
+                pass
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -549,7 +566,12 @@ async def lifespan(app: FastAPI):
     # Weekly model retrain — keeps models fresh as market conditions change
     from core.signal_engine import train_and_validate as _tv
     def _weekly_retrain():
+        _lock_acquired = False
         try:
+            if not _RETRAIN_JOB_LOCK.acquire(blocking=False):
+                LOGGER.info("Weekly retrain skipped: retrain lock busy")
+                return
+            _lock_acquired = True
             from core.prediction import CRYPTO_SYMBOLS, STOCK_SYMBOLS
             syms = [(s.strip(), "crypto") for s in CRYPTO_SYMBOLS if s.strip()] + [
                 (s.strip(), "stock") for s in STOCK_SYMBOLS if s.strip()
@@ -571,14 +593,25 @@ async def lifespan(app: FastAPI):
                 LOGGER.warning("Weekly purge failed: "+str(_pe)[:60])
         except Exception as _e:
             LOGGER.warning("Weekly retrain error: "+str(_e)[:80])
+        finally:
+            if _lock_acquired:
+                try:
+                    _RETRAIN_JOB_LOCK.release()
+                except Exception:
+                    pass
     scheduler.register("weekly_retrain", _weekly_retrain, interval_s=604800)
     scheduler.start()
     # Ghost v3: auto-train on startup if no model in DB
     def _startup_train():
+        _lock_acquired = False
         try:
             from core.signal_engine import train_and_validate
             import os
             if not _has_any_v3_model():
+                if not _RETRAIN_JOB_LOCK.acquire(blocking=False):
+                    LOGGER.info("Startup training skipped: retrain lock busy")
+                    return
+                _lock_acquired = True
                 LOGGER.info("No v3.2 TP/SL model found — training on startup...")
                 crypto = [(s.strip(),"crypto") for s in os.getenv("CRYPTO_SYMBOLS","").split(",") if s.strip()]
                 stocks = [(s.strip(),"stock") for s in os.getenv("STOCK_SYMBOLS","").split(",") if s.strip()]
@@ -616,6 +649,12 @@ async def lifespan(app: FastAPI):
                     pass
         except Exception as _te:
             LOGGER.warning("Startup training failed: " + str(_te))
+        finally:
+            if _lock_acquired:
+                try:
+                    _RETRAIN_JOB_LOCK.release()
+                except Exception:
+                    pass
     import threading as _th
     _th.Thread(target=_startup_train, daemon=True).start()
     LOGGER.info("Ghost Protocol v2 ready.")
