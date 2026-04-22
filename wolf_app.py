@@ -1075,6 +1075,11 @@ def _auto_purge_bad_models():
         import json as _j
         with _dbc() as _c:
             cur = _c.cursor()
+            # Legacy table may not exist on newer deployments; skip quietly if absent.
+            cur.execute("SELECT to_regclass('public.ghost_models')")
+            reg = cur.fetchone()
+            if not reg or not reg[0]:
+                return 0
             cur.execute("DELETE FROM ghost_models WHERE symbol='ARB'")
             cur.execute("SELECT id, symbol, metadata FROM ghost_models")
             rows = cur.fetchall()
