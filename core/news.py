@@ -33,6 +33,7 @@ _cached_articles: List[Dict] = []
 # Per-symbol sentiment scores updated every 30 min. Read by prediction.py.
 # Values: -1.0 (very bearish) to +1.0 (very bullish), 0.0 = neutral/unknown
 _symbol_sentiment: Dict[str, float] = {}
+_finnhub_fail_streak = 0
 
 
 def _safe_log_snippet(text: str, max_len: int = 160) -> str:
@@ -191,40 +192,98 @@ def _fetch_cryptopanic() -> List[Dict]:
 
 
 def _fetch_finnhub_crypto() -> List[Dict]:
+    global _finnhub_fail_streak
     if not FINNHUB_KEY:
         return []
-    try:
-        r = requests.get(
-            "https://finnhub.io/api/v1/news",
-            params={"category": "crypto", "token": FINNHUB_KEY},
-            timeout=3,
-        )
-        articles = []
-        for a in r.json()[:15]:
-            title = a.get("headline", "")
-            if title and title not in _seen_headlines:
-                _seen_headlines.add(title)
-                articles.append({"title": title, "symbols": ["CRYPTO"], "source": "finnhub"})
-        return articles
-    except Exception as e:
-        LOGGER.warning(f"Finnhub fetch error: {e}")
-        return []
+    attempts = 3
+    last_err = None
+    for i in range(attempts):
+        try:
+            r = requests.get(
+                "https://finnhub.io/api/v1/news",
+                params={"category": "crypto", "token": FINNHUB_KEY},
+                timeout=3,
+            )
+            r.raise_for_status()
+            articles = []
+            for a in r.json()[:15]:
+                title = a.get("headline", "")
+                if title and title not in _seen_headlines:
+                    _seen_headlines.add(title)
+                    articles.append({"title": title, "symbols": ["CRYPTO"], "source": "finnhub"})
+            if _finnhub_fail_streak >= 3:
+                LOGGER.info("Finnhub recovered after %s consecutive failures", _finnhub_fail_streak)
+            _finnhub_fail_streak = 0
+            return articles
+        except requests.RequestException as e:
+            last_err = e
+            if i < attempts - 1:
+                time.sleep(0.25 * (2 ** i))
+                continue
+            _finnhub_fail_streak += 1
+            if _finnhub_fail_streak >= 3:
+                LOGGER.warning(
+                    "Finnhub fetch failing (streak=%s): %s",
+                    _finnhub_fail_streak,
+                    str(e)[:160],
+                )
+            else:
+                LOGGER.info(
+                    "Finnhub transient fetch error (streak=%s): %s",
+                    _finnhub_fail_streak,
+                    str(e)[:160],
+                )
+            return []
+
+    # Unreachable in normal flow, but keep explicit.
+    if last_err:
+        _finnhub_fail_streak += 1
+        LOGGER.info("Finnhub transient fetch error (streak=%s): %s", _finnhub_fail_streak, str(last_err)[:160])
+    return []
 
 
 def _fetch_finnhub_stock(symbol: str) -> List[Dict]:
+    global _finnhub_fail_streak
     if not FINNHUB_KEY:
         return []
     try:
         import datetime
         today = datetime.date.today().isoformat()
         from_date = (datetime.date.today() - datetime.timedelta(days=3)).isoformat()
-        r = requests.get(
-            "https://finnhub.io/api/v1/company-news",
-            params={"symbol": symbol, "from": from_date, "to": today, "token": FINNHUB_KEY},
-            timeout=3,
-        )
-        return [{"title": a["headline"], "symbols": [symbol], "source": "finnhub_stock"}
-                for a in r.json()[:5] if "headline" in a]
+        attempts = 2
+        for i in range(attempts):
+            try:
+                r = requests.get(
+                    "https://finnhub.io/api/v1/company-news",
+                    params={"symbol": symbol, "from": from_date, "to": today, "token": FINNHUB_KEY},
+                    timeout=3,
+                )
+                r.raise_for_status()
+                if _finnhub_fail_streak >= 3:
+                    LOGGER.info("Finnhub recovered after %s consecutive failures", _finnhub_fail_streak)
+                _finnhub_fail_streak = 0
+                return [{"title": a["headline"], "symbols": [symbol], "source": "finnhub_stock"}
+                        for a in r.json()[:5] if "headline" in a]
+            except requests.RequestException as e:
+                if i < attempts - 1:
+                    time.sleep(0.2)
+                    continue
+                _finnhub_fail_streak += 1
+                if _finnhub_fail_streak >= 3:
+                    LOGGER.warning(
+                        "Finnhub stock fetch failing %s (streak=%s): %s",
+                        symbol,
+                        _finnhub_fail_streak,
+                        str(e)[:160],
+                    )
+                else:
+                    LOGGER.info(
+                        "Finnhub stock transient error %s (streak=%s): %s",
+                        symbol,
+                        _finnhub_fail_streak,
+                        str(e)[:160],
+                    )
+                return []
     except Exception:
         return []
 

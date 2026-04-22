@@ -589,6 +589,10 @@ def _coverage_maintenance_job():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     LOGGER.info("Ghost Protocol v2 starting...")
+    if os.getenv("GHOST_TEST_MODE", "0").strip().lower() in ("1", "true", "yes", "on"):
+        LOGGER.info("Ghost Protocol v2 test mode startup: skipping DB init and schedulers")
+        yield
+        return
     init_db()
     # Purge weak / legacy-schema models on startup
     try:
@@ -1214,8 +1218,11 @@ def health():
             warnings.append(feeds.get("summary", "<2 feeds responding"))
     except Exception: pass
 
-    # 3. Prediction freshness
+    # 3. Prediction freshness vs cycle freshness
     freshness_min = None
+    cycle_freshness_min = None
+    cycle_last_saved = None
+    cycle_last_scanned = None
     try:
         with db_conn() as conn:
             cur = conn.cursor()
@@ -1223,8 +1230,31 @@ def health():
             row = cur.fetchone()
             if row and row[0]:
                 freshness_min = int((_t.time() - float(row[0])) / 60)
-        if freshness_min and freshness_min > 2880:  # 48h — only flag if no picks for 2+ days
-            issues.append("Predictions stale: " + str(freshness_min) + "m")
+            cur.execute("SELECT val FROM ghost_state WHERE key='last_prediction_cycle_ts'")
+            cyc = cur.fetchone()
+            if cyc and cyc[0]:
+                cycle_freshness_min = int((_t.time() - float(cyc[0])) / 60)
+            cur.execute("SELECT val FROM ghost_state WHERE key='last_prediction_cycle_saved'")
+            cyc_saved = cur.fetchone()
+            if cyc_saved and cyc_saved[0] is not None:
+                cycle_last_saved = int(cyc_saved[0])
+            cur.execute("SELECT val FROM ghost_state WHERE key='last_prediction_cycle_scanned'")
+            cyc_scan = cur.fetchone()
+            if cyc_scan and cyc_scan[0] is not None:
+                cycle_last_scanned = int(cyc_scan[0])
+
+        cycle_stale_min = max(60, int(os.getenv("PREDICTION_CYCLE_STALE_MIN", "2160")))  # default 36h
+        if cycle_freshness_min is None:
+            warnings.append("Prediction cycle heartbeat missing")
+        elif cycle_freshness_min > cycle_stale_min:
+            issues.append("Prediction cycle stale: " + str(cycle_freshness_min) + "m")
+
+        # No-pick periods are normal when gates block trades; do not hard-fail if cycle is alive.
+        if freshness_min and freshness_min > 2880:
+            if cycle_freshness_min is not None and cycle_freshness_min <= cycle_stale_min:
+                warnings.append("No picks inserted recently: " + str(freshness_min) + "m (cycle alive)")
+            else:
+                issues.append("Predictions stale: " + str(freshness_min) + "m")
     except Exception: pass
 
     # 4. Telegram
@@ -1276,10 +1306,115 @@ def health():
     return {
         "status": status_str, "score": score, "db": db_ok,
         "telegram_configured": tg_ok, "predictions_freshness_min": freshness_min,
+        "prediction_cycle_freshness_min": cycle_freshness_min,
+        "last_prediction_cycle_saved": cycle_last_saved,
+        "last_prediction_cycle_scanned": cycle_last_scanned,
         "open_picks": open_picks, "dedup_blocked": dedup_blocked,
         "last_morning_card_min": last_card_min, "confidence_floor": conf_floor,
         "price_feeds": feeds, "tasks": tasks, "issues": issues, "warnings": warnings,
     }
+
+@APP.get("/api/health")
+def api_health():
+    """Alias for health endpoint used by external monitors."""
+    return health()
+
+
+@APP.post("/api/health/audit")
+def health_audit(x_cron_secret: str = Header(default=""), auto_fix: bool = True):
+    """
+    Deep reliability audit with persistent findings and optional auto-fix hooks.
+
+    Returns structured PASS/FAIL records for each check:
+    status, location, evidence, impact, auto_fix, fix_result.
+    """
+    if CRON_SECRET and x_cron_secret != CRON_SECRET:
+        raise HTTPException(status_code=403)
+
+    import asyncio as _asyncio
+    from core.health_audit import run_health_audit
+
+    try:
+        h = health()
+        try:
+            d = _asyncio.run(diagnostics())
+        except RuntimeError:
+            # Fallback when a running loop exists (should not happen in sync path).
+            d = {"score": 0, "checks_passed": 0, "warnings": 0, "errors": 1, "details": {"errors": [{"check": "diagnostics.loop", "detail": "unable to run diagnostics in current loop"}]}}
+        try:
+            with db_conn() as conn:
+                cur = conn.cursor()
+                s = _compute_get_stats(cur)
+        except Exception as _se:
+            s = {
+                "ok": False,
+                "wins": 0,
+                "losses": 0,
+                "total": 0,
+                "open_positions": 0,
+                "error": "stats_unavailable: " + str(_se)[:120],
+            }
+        c = cockpit_context()
+        if isinstance(c, JSONResponse):
+            c = {"ok": False, "error": "cockpit_context returned JSONResponse error"}
+        report = run_health_audit(
+            app=APP,
+            db_conn=db_conn,
+            health_payload=h,
+            diagnostics_payload=d,
+            stats_payload=s,
+            cockpit_payload=c,
+            auto_fix=bool(auto_fix),
+        )
+        return {"ok": True, "audit": report}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
+@APP.get("/api/health/audit/history")
+def health_audit_history(limit: int = 20):
+    """Persistent audit run history for recurrence analysis."""
+    lim = max(1, min(200, int(limit)))
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS health_audit_runs (
+                    id SERIAL PRIMARY KEY,
+                    run_ts BIGINT NOT NULL,
+                    status TEXT NOT NULL,
+                    coverage_pct FLOAT NOT NULL,
+                    unresolved_count INT NOT NULL,
+                    resolved_count INT NOT NULL,
+                    payload JSONB NOT NULL
+                )
+                """
+            )
+            cur.execute(
+                """
+                SELECT id, run_ts, status, coverage_pct, unresolved_count, resolved_count
+                FROM health_audit_runs
+                ORDER BY id DESC
+                LIMIT %s
+                """,
+                (lim,),
+            )
+            rows = cur.fetchall()
+        out = [
+            {
+                "id": int(r[0]),
+                "run_ts": int(r[1]),
+                "status": r[2],
+                "coverage_pct": float(r[3]),
+                "unresolved_count": int(r[4]),
+                "resolved_count": int(r[5]),
+            }
+            for r in rows
+        ]
+        return {"ok": True, "runs": out}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
 
 
 @APP.get("/api/health")

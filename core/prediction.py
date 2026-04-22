@@ -473,6 +473,24 @@ def run_prediction_cycle(with_diag: bool = False):
                 LOGGER.error("INSERT " + pick["symbol"] + ": " + str(e))
                 conn.rollback()
     LOGGER.info("Cycle: " + str(len(saved)) + "/" + str(len(all_picks)) + " picks | regime: " + (regime["reason"] or "OK"))
+    # Persist cycle heartbeat even when zero picks are saved.
+    try:
+        with db_conn() as _hc:
+            _cur = _hc.cursor()
+            _cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            _now = int(time.time())
+            _cur.execute(
+                """
+                INSERT INTO ghost_state(key,val) VALUES
+                    ('last_prediction_cycle_ts', %s),
+                    ('last_prediction_cycle_saved', %s),
+                    ('last_prediction_cycle_scanned', %s)
+                ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val
+                """,
+                (str(_now), str(len(saved)), str(len(symbols))),
+            )
+    except Exception as _he:
+        LOGGER.warning("Cycle heartbeat write failed: " + str(_he)[:80])
     if not with_diag:
         return saved
     # --- diagnostics for Telegram "no picks" accuracy ---
