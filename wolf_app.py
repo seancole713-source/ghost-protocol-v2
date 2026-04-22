@@ -1282,6 +1282,12 @@ def health():
     }
 
 
+@APP.get("/api/health")
+def api_health():
+    """Alias for health endpoint used by external monitors."""
+    return health()
+
+
 @APP.get("/api/regime", include_in_schema=False)
 def api_regime():
     try:
