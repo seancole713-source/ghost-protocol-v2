@@ -35,6 +35,23 @@ _cached_articles: List[Dict] = []
 _symbol_sentiment: Dict[str, float] = {}
 
 
+def _safe_log_snippet(text: str, max_len: int = 160) -> str:
+    """
+    Normalize third-party response text for logs.
+
+    - Collapses newlines/whitespace to one line to avoid log spam fan-out.
+    - Suppresses raw HTML bodies (CryptoPanic 404 pages) to a concise marker.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+    lowered = raw.lower()
+    if "<!doctype html" in lowered or "<html" in lowered:
+        return "[html-response-suppressed]"
+    compact = " ".join(raw.split())
+    return compact[:max_len]
+
+
 def get_symbol_sentiment(symbol: str) -> float:
     """Return latest Claude sentiment score for a symbol. 0.0 = neutral."""
     return _symbol_sentiment.get(symbol.upper(), 0.0)
@@ -134,18 +151,18 @@ def _fetch_cryptopanic() -> List[Dict]:
             timeout=3,
         )
         if r.status_code != 200:
-            err = (r.text or "").strip()
+            err = _safe_log_snippet(r.text)
             try:
                 j = r.json()
                 if isinstance(j, dict) and j.get("info"):
-                    err = str(j.get("info", err))
+                    err = _safe_log_snippet(str(j.get("info", err)))
             except ValueError:
                 pass
             LOGGER.warning(
                 "CryptoPanic HTTP %s (%s plan): %s",
                 r.status_code,
                 CRYPTOPANIC_PLAN,
-                err[:200],
+                err,
             )
             return []
         body = (r.text or "").strip()
@@ -158,7 +175,7 @@ def _fetch_cryptopanic() -> List[Dict]:
         try:
             payload = r.json()
         except ValueError:
-            LOGGER.warning("CryptoPanic non-JSON response: %r", body[:200])
+            LOGGER.warning("CryptoPanic non-JSON response: %s", _safe_log_snippet(body))
             return []
         articles = []
         for item in payload.get("results", [])[:20]:
