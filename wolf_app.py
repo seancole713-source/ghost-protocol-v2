@@ -508,6 +508,8 @@ def _coverage_maintenance_job():
     min_models = max(1, int(os.getenv("MODEL_COVERAGE_MIN_MODELS", "3")))
     cooldown_s = max(900, int(os.getenv("COVERAGE_RETRAIN_COOLDOWN_SEC", "21600")))
     boot_grace_s = max(0, int(os.getenv("COVERAGE_BOOT_GRACE_SEC", "600")))
+    low_yield_ratio = max(0.0, min(1.0, float(os.getenv("COVERAGE_LOW_YIELD_RATIO", "0.25"))))
+    low_yield_backoff_s = max(3600, int(os.getenv("COVERAGE_LOW_YIELD_BACKOFF_SEC", "43200")))
     now = int(time.time())
     _lock_acquired = False
     if (time.time() - _APP_BOOT_TS) < boot_grace_s:
@@ -515,6 +517,7 @@ def _coverage_maintenance_job():
         return
 
     last_ts = 0
+    low_yield_until_ts = 0
     try:
         with db_conn() as conn:
             cur = conn.cursor()
@@ -522,8 +525,15 @@ def _coverage_maintenance_job():
             cur.execute("SELECT val FROM ghost_state WHERE key='last_coverage_retrain_ts'")
             row = cur.fetchone()
             last_ts = int(row[0]) if row and row[0] else 0
+            cur.execute("SELECT val FROM ghost_state WHERE key='last_coverage_low_yield_until_ts'")
+            row2 = cur.fetchone()
+            low_yield_until_ts = int(row2[0]) if row2 and row2[0] else 0
     except Exception as e:
         LOGGER.warning("Coverage maintenance state read failed: %s", str(e)[:80])
+
+    if low_yield_until_ts and now < low_yield_until_ts:
+        LOGGER.info("Coverage maintenance: low-yield backoff active (%ss left)", low_yield_until_ts - now)
+        return
 
     if last_ts and now - last_ts < cooldown_s:
         LOGGER.info("Coverage maintenance: cooldown active (%ss left)", cooldown_s - (now - last_ts))
@@ -565,6 +575,21 @@ def _coverage_maintenance_job():
             "Coverage maintenance retrain complete: %s trained, %s failed (acc_ratio=%.3f)",
             trained, failed, float(acc_ratio or 0.0)
         )
+        if float(acc_ratio or 0.0) < low_yield_ratio:
+            try:
+                with db_conn() as conn:
+                    cur = conn.cursor()
+                    cur.execute(
+                        "INSERT INTO ghost_state(key,val) VALUES('last_coverage_low_yield_until_ts',%s) "
+                        "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
+                        (str(int(time.time()) + low_yield_backoff_s),),
+                    )
+                LOGGER.warning(
+                    "Coverage maintenance: low-yield retrain (acc_ratio=%.3f < %.3f), backoff %ss",
+                    float(acc_ratio or 0.0), low_yield_ratio, low_yield_backoff_s
+                )
+            except Exception as e:
+                LOGGER.warning("Coverage maintenance low-yield backoff write failed: %s", str(e)[:80])
     except Exception as e:
         LOGGER.warning("Coverage maintenance retrain failed: %s", str(e)[:120])
     finally:
