@@ -39,22 +39,24 @@ APP.include_router(_pr)
 else:
     print("[patch] portfolio router already included")
 
-# Patch 4: model_retrain
-bad = 'scheduler.register("model_retrain", retrain_if_ready, 604800)  # weekly'
-if bad in src:
-    src = src.replace(bad, 'from core import scheduler as _sched; _sched.register("model_retrain", retrain_if_ready, 604800)')
-    changed = True
-    print("[patch] model_retrain fixed")
-elif "model_retrain" not in src:
-    src += """
-from core.model import retrain_if_ready as _rtr
-from core import scheduler as _sched2
-_sched2.register("model_retrain", _rtr, 604800)
-"""
-    changed = True
-    print("[patch] model_retrain registered")
+# Patch 4: remove legacy model_retrain injection.
+# Weekly retraining is handled by the in-app `weekly_retrain` task with persisted cooldown.
+legacy_blocks = [
+    'scheduler.register("model_retrain", retrain_if_ready, 604800)  # weekly',
+    "from core.model import retrain_if_ready as _rtr\nfrom core import scheduler as _sched2\n_sched2.register(\"model_retrain\", _rtr, 604800)\n",
+    "from core.model import retrain_if_ready as _rtr\nfrom core import scheduler as _sched2\n_sched2.register(\"model_retrain\", _rtr, 604800)",
+]
+removed_any = False
+for _blk in legacy_blocks:
+    if _blk in src:
+        src = src.replace(_blk, "")
+        changed = True
+        removed_any = True
+
+if removed_any:
+    print("[patch] model_retrain legacy injection removed")
 else:
-    print("[patch] model_retrain already registered")
+    print("[patch] model_retrain legacy injection not present")
 
 # Patch 5 (/api/dedup-picks) lives in committed wolf_app.py
 
