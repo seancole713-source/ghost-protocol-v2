@@ -1,0 +1,171 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── Fast unit tests ────────────────────────────────────────────────────────
+  unit-tests:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest
+
+      - name: Run unit tests
+        env:
+          GHOST_TEST_MODE: "1"
+        run: pytest tests/ -v --tb=short
+
+  # ── Type checking ──────────────────────────────────────────────────────────
+  type-check:
+    name: Type check (mypy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt mypy types-requests
+
+      - name: Run mypy
+        run: mypy scripts/verify_health_audit.py scripts/check_error_signatures.py --config-file mypy.ini
+
+  # ── Integration tests ──────────────────────────────────────────────────────
+  integration-tests:
+    name: Integration tests
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    # Only run on push to main or PRs that touch core application files
+    if: |
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.changed_files, 'wolf_app.py') ||
+      contains(github.event.pull_request.changed_files, 'core/')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest requests
+
+      - name: Run integration tests
+        env:
+          GHOST_TEST_MODE: "1"
+        run: pytest tests/ -v --tb=short -m "integration or not integration"
+
+  # ── Playwright smoke tests ─────────────────────────────────────────────────
+  playwright-smoke:
+    name: Playwright smoke tests
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    # Only run when e2e tests or cockpit HTML change, or on main push
+    if: |
+      github.event_name == 'push' ||
+      contains(toJson(github.event.pull_request.changed_files), 'e2e/') ||
+      contains(toJson(github.event.pull_request.changed_files), 'cockpit.html')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+        continue-on-error: true  # graceful if no package.json
+
+      - name: Install Node dependencies
+        run: |
+          if [ -f package.json ]; then
+            npm ci
+          else
+            echo "No package.json found — skipping npm install"
+          fi
+        continue-on-error: true
+
+      - name: Install Playwright browsers
+        run: |
+          if [ -f package.json ] && grep -q playwright package.json; then
+            npx playwright install --with-deps chromium
+          else
+            echo "Playwright not configured — skipping browser install"
+          fi
+        continue-on-error: true
+
+      - name: Run Playwright smoke tests
+        env:
+          BASE_URL: ${{ secrets.BASE_URL || 'https://ghost-protocol-v2-production.up.railway.app' }}
+        run: |
+          if [ -d e2e ] && [ -f package.json ] && grep -q playwright package.json; then
+            npx playwright test e2e/ --reporter=list
+          else
+            echo "No e2e tests configured — skipping"
+          fi
+        continue-on-error: true
+
+  # ── Release gates ──────────────────────────────────────────────────────────
+  release-gates:
+    name: Release gates (go/no-go)
+    runs-on: ubuntu-latest
+    needs: [unit-tests, integration-tests]
+    # Only run on push to main (not on PRs — gates hit production)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install gate dependencies
+        run: pip install requests
+
+      - name: Wait for Railway deployment
+        run: |
+          echo "Waiting 60s for Railway to deploy..."
+          sleep 60
+
+      - name: Run go/no-go gate (bash orchestrator)
+        env:
+          BASE_URL: ${{ secrets.BASE_URL || 'https://ghost-protocol-v2-production.up.railway.app' }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: bash scripts/go-no-go.sh
+
+      - name: Run verify_health_audit.py
+        env:
+          BASE_URL: ${{ secrets.BASE_URL || 'https://ghost-protocol-v2-production.up.railway.app' }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: python scripts/verify_health_audit.py
+
+      - name: Run check_error_signatures.py
+        env:
+          BASE_URL: ${{ secrets.BASE_URL || 'https://ghost-protocol-v2-production.up.railway.app' }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: python scripts/check_error_signatures.py

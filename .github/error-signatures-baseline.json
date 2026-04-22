@@ -1,0 +1,70 @@
+{
+  "meta": {
+    "version": "1.0.0",
+    "updated": "2025-01-01",
+    "description": "Baseline error response signatures for POST /api/health/audit. Any deviation from these signatures during a release gate run is reported as a failure.",
+    "endpoint": "POST /api/health/audit",
+    "service": "ghost-protocol-v2"
+  },
+  "signatures": {
+    "auth_rejection_403": {
+      "description": "Response when x-cron-secret header is wrong or missing (and CRON_SECRET is set)",
+      "http_status": 403,
+      "required_keys": ["ok", "error", "error_code", "stage", "ts"],
+      "exact_match": {
+        "ok": false,
+        "error_code": "auth_failed"
+      },
+      "type_checks": {
+        "ok": "bool",
+        "error": "str",
+        "error_code": "str",
+        "stage": "str",
+        "ts": "int"
+      },
+      "allowed_values": {
+        "ok": [false]
+      }
+    },
+    "success_200": {
+      "description": "Response when audit runs successfully with a valid (or absent) CRON_SECRET",
+      "http_status": 200,
+      "required_keys": ["ok", "audit"],
+      "exact_match": {
+        "ok": true
+      },
+      "type_checks": {
+        "ok": "bool",
+        "audit": "dict"
+      },
+      "allowed_values": {
+        "ok": [true]
+      },
+      "nested": {
+        "audit": {
+          "required_keys": ["run_ts", "stage", "overall_status", "summary", "findings"],
+          "type_checks": {
+            "run_ts": "int",
+            "stage": "str",
+            "overall_status": "str",
+            "summary": "dict",
+            "findings": "list"
+          },
+          "allowed_values": {
+            "overall_status": ["PASS", "WARN", "FAIL"]
+          }
+        },
+        "audit.summary": {
+          "required_keys": ["total_checks", "passed", "warned", "failed", "coverage_pct"],
+          "type_checks": {
+            "total_checks": "int",
+            "passed": "int",
+            "warned": "int",
+            "failed": "int",
+            "coverage_pct": "float"
+          }
+        }
+      }
+    }
+  }
+}

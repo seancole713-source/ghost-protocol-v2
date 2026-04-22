@@ -1,0 +1,17 @@
+{
+  "name": "ghost-protocol-v2",
+  "version": "2.0.0",
+  "description": "Ghost Protocol v2 — E2E tests and release gate tooling",
+  "private": true,
+  "scripts": {
+    "test:e2e": "playwright test e2e/",
+    "test:e2e:headed": "playwright test e2e/ --headed",
+    "test:e2e:report": "playwright test e2e/ --reporter=html",
+    "gates": "bash scripts/go-no-go.sh",
+    "verify-audit": "python3 scripts/verify_health_audit.py",
+    "check-signatures": "python3 scripts/check_error_signatures.py"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.44.0"
+  }
+}
