@@ -75,7 +75,9 @@ pass "/api/coverage"
 # 5) Cockpit page reachable
 cockpit_code="$(curl -sS -o /tmp/gp_cockpit.html -w "%{http_code}" "$BASE_URL/cockpit")"
 [ "$cockpit_code" = "200" ] || fail "/cockpit returned HTTP $cockpit_code"
-grep -q "GHOST PROTOCOL" /tmp/gp_cockpit.html || fail "/cockpit missing expected title text"
+# Accept either title casing and require a stable tab marker.
+grep -Eq "Ghost Protocol|GHOST PROTOCOL" /tmp/gp_cockpit.html || fail "/cockpit missing expected title text"
+grep -q "tab-crypto" /tmp/gp_cockpit.html || fail "/cockpit missing expected tab marker"
 pass "/cockpit page"
 
 echo
