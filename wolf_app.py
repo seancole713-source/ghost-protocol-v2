@@ -1357,36 +1357,111 @@ def health_audit(x_cron_secret: str = Header(default=""), auto_fix: bool = True)
 
     Returns structured PASS/FAIL records for each check:
     status, location, evidence, impact, auto_fix, fix_result.
-    """
-    if CRON_SECRET and x_cron_secret != CRON_SECRET:
-        raise HTTPException(status_code=403)
 
+    Stage-safe: production enforces stricter gates; staging/dev returns the
+    same schema with relaxed thresholds so CI can run the same scripts.
+    Error payloads are deterministic — every failure path returns the same
+    top-level shape: {ok, error, error_code, stage, ts}.
+    """
     import asyncio as _asyncio
+    import time as _time
+
+    _stage = os.getenv("RAILWAY_ENVIRONMENT", os.getenv("APP_ENV", "production")).lower()
+    _ts = int(_time.time())
+
+    # ── Auth ──────────────────────────────────────────────────────────────
+    if CRON_SECRET and x_cron_secret != CRON_SECRET:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "Forbidden",
+                "error_code": "auth_failed",
+                "stage": _stage,
+                "ts": _ts,
+            },
+            status_code=403,
+        )
+
     from core.health_audit import run_health_audit
 
+    # ── Collect sub-payloads with individual fallbacks ────────────────────
     try:
         h = health()
+    except Exception as _he:
+        LOGGER.warning("health_audit: health() failed: %s", str(_he)[:120])
+        h = {
+            "status": "unknown",
+            "score": 0,
+            "db": False,
+            "issues": ["health() raised: " + str(_he)[:80]],
+            "warnings": [],
+            "telegram_configured": False,
+            "confidence_floor": 0.0,
+            "open_picks": 0,
+        }
+
+    try:
+        d = _asyncio.run(diagnostics())
+    except RuntimeError:
+        # Running event loop (e.g. called from async context) — use thread fallback.
         try:
-            d = _asyncio.run(diagnostics())
-        except RuntimeError:
-            # Fallback when a running loop exists (should not happen in sync path).
-            d = {"score": 0, "checks_passed": 0, "warnings": 0, "errors": 1, "details": {"errors": [{"check": "diagnostics.loop", "detail": "unable to run diagnostics in current loop"}]}}
-        try:
-            with db_conn() as conn:
-                cur = conn.cursor()
-                s = _compute_get_stats(cur)
-        except Exception as _se:
-            s = {
-                "ok": False,
-                "wins": 0,
-                "losses": 0,
-                "total": 0,
-                "open_positions": 0,
-                "error": "stats_unavailable: " + str(_se)[:120],
+            import concurrent.futures as _cf
+            with _cf.ThreadPoolExecutor(max_workers=1) as _ex:
+                d = _ex.submit(_asyncio.run, diagnostics()).result(timeout=30)
+        except Exception as _de2:
+            LOGGER.warning("health_audit: diagnostics() thread fallback failed: %s", str(_de2)[:80])
+            d = {
+                "score": 0,
+                "status": "unknown",
+                "checks_passed": 0,
+                "warnings": 0,
+                "errors": 1,
+                "details": {
+                    "errors": [{"check": "diagnostics.unavailable", "detail": str(_de2)[:120]}],
+                    "warnings": [],
+                    "passed": [],
+                },
             }
+    except Exception as _de:
+        LOGGER.warning("health_audit: diagnostics() failed: %s", str(_de)[:120])
+        d = {
+            "score": 0,
+            "status": "unknown",
+            "checks_passed": 0,
+            "warnings": 0,
+            "errors": 1,
+            "details": {
+                "errors": [{"check": "diagnostics.crashed", "detail": str(_de)[:120]}],
+                "warnings": [],
+                "passed": [],
+            },
+        }
+
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            s = _compute_get_stats(cur)
+    except Exception as _se:
+        LOGGER.warning("health_audit: stats failed: %s", str(_se)[:120])
+        s = {
+            "ok": False,
+            "wins": 0,
+            "losses": 0,
+            "total": 0,
+            "open_positions": 0,
+            "error": "stats_unavailable: " + str(_se)[:120],
+        }
+
+    try:
         c = cockpit_context()
         if isinstance(c, JSONResponse):
-            c = {"ok": False, "error": "cockpit_context returned JSONResponse error"}
+            c = {"ok": False, "error": "cockpit_context returned JSONResponse"}
+    except Exception as _ce:
+        LOGGER.warning("health_audit: cockpit_context() failed: %s", str(_ce)[:120])
+        c = {"ok": False, "error": "cockpit_context raised: " + str(_ce)[:120]}
+
+    # ── Run audit ─────────────────────────────────────────────────────────
+    try:
         report = run_health_audit(
             app=APP,
             db_conn=db_conn,
@@ -1398,7 +1473,18 @@ def health_audit(x_cron_secret: str = Header(default=""), auto_fix: bool = True)
         )
         return {"ok": True, "audit": report}
     except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+        LOGGER.error("health_audit: run_health_audit crashed: %s", str(e)[:200])
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": str(e)[:200],
+                "error_code": "audit_engine_failed",
+                "stage": _stage,
+                "ts": _ts,
+            },
+            status_code=500,
+        )
+
 
 
 @APP.get("/api/health/audit/history")
