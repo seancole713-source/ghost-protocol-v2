@@ -1364,13 +1364,41 @@ def health_audit(x_cron_secret: str = Header(default=""), auto_fix: bool = True)
     import asyncio as _asyncio
     from core.health_audit import run_health_audit
 
+    stage = "init"
     try:
+        stage = "health"
         h = health()
+
+        stage = "diagnostics"
+        d = {"score": 0, "checks_passed": 0, "warnings": 0, "errors": 1, "details": {"errors": [{"check": "diagnostics.fallback", "detail": "diagnostics fallback used"}]}}
         try:
-            d = _asyncio.run(diagnostics())
-        except RuntimeError:
-            # Fallback when a running loop exists (should not happen in sync path).
-            d = {"score": 0, "checks_passed": 0, "warnings": 0, "errors": 1, "details": {"errors": [{"check": "diagnostics.loop", "detail": "unable to run diagnostics in current loop"}]}}
+            # Avoid creating an un-awaited coroutine if we are already inside a running loop.
+            _loop_running = False
+            try:
+                _asyncio.get_running_loop()
+                _loop_running = True
+            except RuntimeError:
+                _loop_running = False
+            if _loop_running:
+                d = {
+                    "score": 0,
+                    "checks_passed": 0,
+                    "warnings": 0,
+                    "errors": 1,
+                    "details": {"errors": [{"check": "diagnostics.loop", "detail": "running loop detected; fallback diagnostics used"}]},
+                }
+            else:
+                d = _asyncio.run(diagnostics())
+        except Exception as _de:
+            d = {
+                "score": 0,
+                "checks_passed": 0,
+                "warnings": 0,
+                "errors": 1,
+                "details": {"errors": [{"check": "diagnostics.error", "detail": str(_de)[:160]}]},
+            }
+
+        stage = "stats"
         try:
             with db_conn() as conn:
                 cur = conn.cursor()
@@ -1384,9 +1412,16 @@ def health_audit(x_cron_secret: str = Header(default=""), auto_fix: bool = True)
                 "open_positions": 0,
                 "error": "stats_unavailable: " + str(_se)[:120],
             }
-        c = cockpit_context()
-        if isinstance(c, JSONResponse):
-            c = {"ok": False, "error": "cockpit_context returned JSONResponse error"}
+
+        stage = "cockpit"
+        try:
+            c = cockpit_context()
+            if isinstance(c, JSONResponse):
+                c = {"ok": False, "error": "cockpit_context returned JSONResponse error"}
+        except Exception as _ce:
+            c = {"ok": False, "error": "cockpit_context_failed: " + str(_ce)[:120]}
+
+        stage = "audit"
         report = run_health_audit(
             app=APP,
             db_conn=db_conn,
@@ -1398,7 +1433,7 @@ def health_audit(x_cron_secret: str = Header(default=""), auto_fix: bool = True)
         )
         return {"ok": True, "audit": report}
     except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+        return JSONResponse({"ok": False, "error": str(e)[:200], "stage": stage}, status_code=500)
 
 
 @APP.get("/api/health/audit/history")

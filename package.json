@@ -1,0 +1,19 @@
+{
+  "name": "ghost-protocol-v2-quality-gates",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Quality gate scripts for Ghost Protocol v2",
+  "scripts": {
+    "lint": "ruff check tests scripts/verify_live_health.py scripts/verify_health_audit.py scripts/check_error_signatures.py",
+    "type-check": "mypy --config-file mypy.ini tests scripts/verify_live_health.py scripts/verify_health_audit.py scripts/check_error_signatures.py",
+    "test": "make test",
+    "build": "make test-compile",
+    "test:e2e": "playwright test",
+    "verify:live": "python3 scripts/verify_live_health.py",
+    "verify:health-audit": "python3 scripts/verify_health_audit.py",
+    "verify:error-signatures": "python3 scripts/check_error_signatures.py"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.52.0"
+  }
+}

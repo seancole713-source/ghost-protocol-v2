@@ -7,78 +7,88 @@ echo "== Ghost Deploy Go/No-Go =="
 echo "BASE_URL=$BASE_URL"
 echo
 
-pass() { echo "PASS: $1"; }
-fail() { echo "FAIL: $1"; exit 1; }
+python3 - <<'PY' "$BASE_URL"
+import sys
 
-# 1) Core health endpoints
-h1="$(curl -fsS "$BASE_URL/health")" || fail "/health unreachable"
-h2_code="$(curl -sS -o /tmp/gp_api_health.json -w "%{http_code}" "$BASE_URL/api/health")"
-[ "$h2_code" = "200" ] || fail "/api/health returned HTTP $h2_code"
-h2="$(cat /tmp/gp_api_health.json)"
+import requests
 
-python3 - <<'PY' "$h1" "$h2" || fail "health payload validation failed"
-import json,sys
-a=json.loads(sys.argv[1]); b=json.loads(sys.argv[2])
-req={"status","score","db","issues","warnings"}
-assert req.issubset(a.keys()), f"/health missing keys: {req-set(a.keys())}"
-assert req.issubset(b.keys()), f"/api/health missing keys: {req-set(b.keys())}"
-assert a["status"] in ("healthy","degraded","critical")
-assert b["status"] in ("healthy","degraded","critical")
-print("health payloads valid")
-PY
-pass "/health and /api/health"
+base_url = sys.argv[1].rstrip("/")
 
-# 2) Cockpit + stats consistency
-stats="$(curl -fsS "$BASE_URL/api/stats")" || fail "/api/stats unreachable"
-ctx="$(curl -fsS "$BASE_URL/api/cockpit/context")" || fail "/api/cockpit/context unreachable"
 
-python3 - <<'PY' "$stats" "$ctx" || fail "stats/context consistency failed"
-import json,sys
-s=json.loads(sys.argv[1]); c=json.loads(sys.argv[2])
-assert s.get("ok") is True, "stats ok=false"
-assert c.get("ok") is True, "cockpit ok=false"
-cs=c.get("stats",{})
-assert cs.get("wins")==s.get("wins"), f"wins mismatch {cs.get('wins')} != {s.get('wins')}"
-assert cs.get("losses")==s.get("losses"), f"losses mismatch {cs.get('losses')} != {s.get('losses')}"
-assert cs.get("post_v32")==s.get("post_v32"), "post_v32 mismatch"
-print("stats/cockpit consistency valid")
-PY
-pass "/api/stats vs /api/cockpit/context"
+def pass_check(name: str) -> None:
+    print(f"PASS: {name}")
 
-# 3) Diagnostics endpoint
-diag="$(curl -fsS "$BASE_URL/api/diagnostics")" || fail "/api/diagnostics unreachable"
-python3 - <<'PY' "$diag" || fail "diagnostics payload invalid"
-import json,sys
-d=json.loads(sys.argv[1])
-assert "score" in d and "status" in d and "details" in d
-assert isinstance(d.get("checks_passed"), int)
-print("diagnostics payload valid")
-PY
-pass "/api/diagnostics"
 
-# 4) Coverage/model visibility
-cov="$(curl -fsS "$BASE_URL/api/coverage")" || fail "/api/coverage unreachable"
-python3 - <<'PY' "$cov" || fail "coverage payload invalid"
-import json,sys
-c=json.loads(sys.argv[1])
-assert c.get("ok") is True
-ms=c.get("model_status",{})
-assert "trained" in ms
+def fail_check(name: str, detail: str) -> None:
+    print(f"FAIL: {name} - {detail}")
+    raise SystemExit(1)
+
+
+def get_json(path: str) -> dict:
+    url = f"{base_url}{path}"
+    resp = requests.get(url, timeout=20)
+    if resp.status_code != 200:
+        fail_check(path, f"HTTP {resp.status_code}")
+    return resp.json()
+
+
+h1 = get_json("/health")
+h2 = get_json("/api/health")
+required = {"status", "score", "db", "issues", "warnings"}
+if not required.issubset(h1):
+    fail_check("/health", f"missing keys {required - set(h1)}")
+if not required.issubset(h2):
+    fail_check("/api/health", f"missing keys {required - set(h2)}")
+if h1.get("status") not in ("healthy", "degraded", "critical"):
+    fail_check("/health", f"invalid status {h1.get('status')}")
+if h2.get("status") not in ("healthy", "degraded", "critical"):
+    fail_check("/api/health", f"invalid status {h2.get('status')}")
+pass_check("/health and /api/health")
+
+stats = get_json("/api/stats")
+ctx = get_json("/api/cockpit/context")
+if stats.get("ok") is not True:
+    fail_check("/api/stats", "ok=false")
+if ctx.get("ok") is not True:
+    fail_check("/api/cockpit/context", "ok=false")
+cs = ctx.get("stats", {})
+if cs.get("wins") != stats.get("wins"):
+    fail_check("stats consistency", f"wins mismatch {cs.get('wins')} != {stats.get('wins')}")
+if cs.get("losses") != stats.get("losses"):
+    fail_check("stats consistency", f"losses mismatch {cs.get('losses')} != {stats.get('losses')}")
+if cs.get("post_v32") != stats.get("post_v32"):
+    fail_check("stats consistency", "post_v32 mismatch")
+pass_check("/api/stats vs /api/cockpit/context")
+
+diag = get_json("/api/diagnostics")
+if not all(k in diag for k in ("score", "status", "details")):
+    fail_check("/api/diagnostics", "missing keys")
+if not isinstance(diag.get("checks_passed"), int):
+    fail_check("/api/diagnostics", "checks_passed not int")
+pass_check("/api/diagnostics")
+
+cov = get_json("/api/coverage")
+if cov.get("ok") is not True:
+    fail_check("/api/coverage", "ok=false")
+ms = cov.get("model_status", {})
+if "trained" not in ms:
+    fail_check("/api/coverage", "model_status missing trained")
 if ms.get("trained"):
-    syms=ms.get("symbols",{})
-    for name,meta in syms.items():
-        assert "wf_acc_min" in meta, f"{name} missing wf_acc_min"
-print("coverage payload valid")
+    for name, meta in ms.get("symbols", {}).items():
+        if "wf_acc_min" not in meta:
+            fail_check("/api/coverage", f"{name} missing wf_acc_min")
+pass_check("/api/coverage")
+
+cockpit = requests.get(f"{base_url}/cockpit", timeout=20)
+if cockpit.status_code != 200:
+    fail_check("/cockpit", f"HTTP {cockpit.status_code}")
+html = cockpit.text
+if "Ghost Protocol" not in html and "GHOST PROTOCOL" not in html:
+    fail_check("/cockpit", "missing expected title text")
+if "tab-crypto" not in html:
+    fail_check("/cockpit", "missing expected tab marker")
+pass_check("/cockpit page")
+
+print()
+print("GO: all checks passed")
 PY
-pass "/api/coverage"
-
-# 5) Cockpit page reachable
-cockpit_code="$(curl -sS -o /tmp/gp_cockpit.html -w "%{http_code}" "$BASE_URL/cockpit")"
-[ "$cockpit_code" = "200" ] || fail "/cockpit returned HTTP $cockpit_code"
-# Accept either title casing and require a stable tab marker.
-grep -Eq "Ghost Protocol|GHOST PROTOCOL" /tmp/gp_cockpit.html || fail "/cockpit missing expected title text"
-grep -q "tab-crypto" /tmp/gp_cockpit.html || fail "/cockpit missing expected tab marker"
-pass "/cockpit page"
-
-echo
-echo "GO: all checks passed"
