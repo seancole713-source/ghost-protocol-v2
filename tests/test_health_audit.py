@@ -19,6 +19,8 @@ class FakeCursor:
     def fetchone(self):
         if "SELECT 1" in self.last_sql:
             return (1,)
+        if "COUNT(*) FROM predictions WHERE outcome IS NULL" in self.last_sql and "expires_at > extract" in self.last_sql:
+            return (3,)
         if "SELECT val FROM ghost_state WHERE key='v32_stats_start_ts'" in self.last_sql:
             return (self.v32_value,)
         return None
@@ -48,22 +50,41 @@ class FakeDbCtx:
         return False
 
 
-def test_run_health_audit_returns_structured_findings_and_autofix():
+def test_run_health_audit_returns_structured_findings_and_autofix(monkeypatch):
+    monkeypatch.delenv("STOCK_SYMBOLS", raising=False)
     cur = FakeCursor()
 
     class _R:
         def __init__(self, path):
             self.path = path
 
-    app = type("App", (), {"routes": [_R("/health"), _R("/api/health"), _R("/api/diagnostics"), _R("/api/stats"), _R("/api/cockpit/context"), _R("/api/picks"), _R("/api/v2/recent"), _R("/api/news")]})
+    _paths = [
+        "/health",
+        "/api/health",
+        "/api/diagnostics",
+        "/api/stats",
+        "/api/cockpit/context",
+        "/api/picks",
+        "/api/v2/recent",
+        "/api/news",
+        "/api/coverage",
+        "/api/v3/status",
+        "/api/regime",
+        "/cockpit",
+        "/api/portfolio",
+        "/api/health/audit",
+        "/api/health/audit/history",
+    ]
+    app = type("App", (), {"routes": [_R(p) for p in _paths]})
 
+    _pv = {"start_ts": 1775347200, "wins": 1, "losses": 0}
     report = run_health_audit(
         app=app,
         db_conn=lambda: FakeDbCtx(cur),
-        health_payload={"status": "healthy", "score": 100},
-        diagnostics_payload={"checks_passed": 10, "warnings": 0, "errors": 0},
-        stats_payload={"wins": 2, "losses": 1},
-        cockpit_payload={"stats": {"wins": 2, "losses": 1}},
+        health_payload={"status": "healthy", "score": 100, "issues": [], "warnings": []},
+        diagnostics_payload={"checks_passed": 10, "warnings": 0, "errors": 0, "details": {"errors": []}},
+        stats_payload={"wins": 2, "losses": 1, "post_v32": _pv},
+        cockpit_payload={"stats": {"wins": 2, "losses": 1, "post_v32": _pv}, "activity": {"open_predictions": 3}},
         auto_fix=True,
     )
 
