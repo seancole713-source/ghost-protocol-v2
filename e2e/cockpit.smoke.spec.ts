@@ -29,6 +29,7 @@ test.describe("Cockpit smoke", () => {
     expect(statsBody.ok).toBeTruthy();
     expect(typeof statsBody.wins).toBe("number");
     expect(typeof statsBody.losses).toBe("number");
+    // scan_symbols: enforced in unit tests; production E2E uses default BASE_URL which may lag one deploy.
 
     const cockpit = await request.get("/api/cockpit/context");
     expect(cockpit.ok()).toBeTruthy();
@@ -36,6 +37,11 @@ test.describe("Cockpit smoke", () => {
     expect(cockpitBody.ok).toBeTruthy();
     expect(cockpitBody.stats.wins).toBe(statsBody.wins);
     expect(cockpitBody.stats.losses).toBe(statsBody.losses);
+    if (statsBody.scan_symbols && cockpitBody.stats.scan_symbols) {
+      expect(cockpitBody.stats.scan_symbols).toEqual(statsBody.scan_symbols);
+      expect(Array.isArray(statsBody.scan_symbols.crypto)).toBeTruthy();
+      expect(Array.isArray(statsBody.scan_symbols.stocks)).toBeTruthy();
+    }
 
     const health = await request.get("/health");
     expect(health.ok()).toBeTruthy();
