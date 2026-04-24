@@ -165,7 +165,7 @@ body{background:#0a0a0a;color:#fff;font-family:-apple-system,BlinkMacSystemFont,
       <div class="truth-card">
         <h4>System freshness</h4>
         <div class="truth-big" id="t-fresh">&#8212;</div>
-        <div class="truth-note">Minutes since the newest <code>predicted_at</code> (a new pick row). Resolving old picks does not refresh this. High values mean the scanner or cron may be quiet.</div>
+        <div class="truth-note">Minutes since the newest <code>predicted_at</code> (a new pick row). Resolving old picks does not refresh this. For engine liveness, compare <code>/health</code> <code>prediction_cycle_freshness_min</code> (last full scan) — picks can be zero while the cycle is fresh.</div>
         <div class="truth-kv" id="t-sys-kv"></div>
       </div>
     </div>
@@ -457,7 +457,19 @@ async function addPos() {
 
 async function delPos(id) {
   if (!confirm('Remove this position?')) return;
-  await fetch('/api/portfolio/' + id, {method: 'DELETE'});
+  var err = document.getElementById('perr');
+  if (err) err.textContent = 'Removing...';
+  var resp = await fetch('/api/portfolio/' + id, {method: 'DELETE'}).catch(function() { return null; });
+  if (!resp || !resp.ok) {
+    if (err) err.textContent = 'Remove failed. Try again.';
+    return;
+  }
+  var body = await resp.json().catch(function() { return {}; });
+  if (body && body.ok === false) {
+    if (err) err.textContent = body.error || 'Remove failed.';
+    return;
+  }
+  if (err) err.textContent = '';
   loadPortfolio();
 }
 
@@ -509,6 +521,11 @@ async function load() {
     document.getElementById('f-open').textContent = stats.open_positions || 0;
     document.getElementById('f-total').textContent = stats.total || 0;
 
+    var scan = (stats && stats.scan_symbols) ? stats.scan_symbols : {crypto: [], stocks: []};
+    var stockWatchedLine = (scan.stocks && scan.stocks.length)
+      ? ('Stocks watched: ' + scan.stocks.join(', '))
+      : 'Stock scan list is empty (configure <code>STOCK_SYMBOLS</code> on the server).';
+
     var active = picks.active || [];
     var crypto = active.filter(function(p) { return p.asset_type !== 'stock'; });
     var stocks = active.filter(function(p) { return p.asset_type === 'stock'; });
@@ -542,7 +559,7 @@ async function load() {
       sg.innerHTML = '<div class="info-box"><b>No stock plays right now.</b><br><br>'
         + (mopen ? 'Market is open but Ghost has no stock signals above threshold right now.'
           : 'US stock market is <b>closed</b>. Hours: Mon&ndash;Fri 9:30 AM &ndash; 4:00 PM ET.')
-        + '<br><br>Stocks watched: AAPL, NVDA, TSLA, MSFT, META, AMZN, PLTR, AMD, T, XPO, NET, WOLF</div>';
+        + '<br><br>' + stockWatchedLine + '</div>';
     }
 
     var trades = recent.trades || [];
@@ -582,7 +599,13 @@ async function load() {
     }
 
     renderTruth(stats, h, regime, v3, dir);
-  } catch(e) { console.error(e); }
+  } catch(e) {
+    console.error(e);
+    var st = document.getElementById('stxt');
+    if (st) st.textContent = 'Load error — refresh';
+    var sdot = document.getElementById('sdot');
+    if (sdot) sdot.className = 'dot warn';
+  }
 }
 
 setInterval(function() {

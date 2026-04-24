@@ -171,6 +171,8 @@ def _compute_get_stats(cur):
         v32r_wins = v32r_rows.get("WIN", 0)
         v32r_losses = v32r_rows.get("LOSS", 0)
         v32r_total = v32r_wins + v32r_losses
+    scan_crypto = [s.strip().upper() for s in os.getenv("CRYPTO_SYMBOLS", "").split(",") if s.strip()]
+    scan_stocks = [s.strip().upper() for s in os.getenv("STOCK_SYMBOLS", "").split(",") if s.strip()]
     return {
         "ok": True,
         "wins": wins,
@@ -192,6 +194,7 @@ def _compute_get_stats(cur):
             "total": v32r_total,
             "win_rate_pct": round(v32r_wins / v32r_total * 100, 1) if v32r_total else 0.0,
         },
+        "scan_symbols": {"crypto": scan_crypto, "stocks": scan_stocks},
     }
 
 
@@ -1480,12 +1483,6 @@ def health_audit_history(limit: int = 20):
         return {"ok": True, "runs": out}
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
-
-
-@APP.get("/api/health")
-def api_health():
-    """Alias for health endpoint used by external monitors."""
-    return health()
 
 
 @APP.get("/api/regime", include_in_schema=False)

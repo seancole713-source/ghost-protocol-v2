@@ -75,6 +75,8 @@ def test_v32_stats_start_ts_allows_backward_correction(monkeypatch):
 
 def test_compute_get_stats_uses_v32_breakdowns(monkeypatch):
     monkeypatch.setenv("V3_STATS_START_TS", "1775347200")
+    monkeypatch.setenv("CRYPTO_SYMBOLS", "ETH, UNI")
+    monkeypatch.setenv("STOCK_SYMBOLS", "TSLA, META")
     cur = QueueCursor(
         fetchall_values=[
             [("WIN", 10), ("LOSS", 5)],
@@ -92,12 +94,19 @@ def test_compute_get_stats_uses_v32_breakdowns(monkeypatch):
     assert payload["post_v32"]["losses"] == 1
     assert payload["post_v32_resolved"]["wins"] == 1
     assert payload["post_v32_resolved"]["losses"] == 2
+    assert payload["scan_symbols"]["crypto"] == ["ETH", "UNI"]
+    assert payload["scan_symbols"]["stocks"] == ["TSLA", "META"]
 
 
 def test_api_health_alias_calls_health(monkeypatch):
     expected = {"status": "healthy", "score": 100}
     monkeypatch.setattr(wolf_app, "health", lambda: expected)
     assert wolf_app.api_health() == expected
+
+
+def test_api_health_route_registered_once():
+    paths = [getattr(r, "path", "") for r in wolf_app.APP.routes]
+    assert paths.count("/api/health") == 1
 
 
 def test_health_audit_endpoint_returns_wrapped_report(monkeypatch):
