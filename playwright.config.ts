@@ -20,11 +20,18 @@ export default defineConfig({
   projects: [
     {
       name: "desktop-chromium",
+      testIgnore: /api-surface\.spec\.ts/,
       use: { ...devices["Desktop Chrome"] },
     },
     {
       name: "mobile-chromium",
+      testIgnore: /api-surface\.spec\.ts/,
       use: { ...devices["Pixel 7"] },
+    },
+    {
+      name: "api-json",
+      testMatch: /api-surface\.spec\.ts/,
+      use: { ...devices["Desktop Chrome"] },
     },
   ],
 });

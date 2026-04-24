@@ -1,14 +1,13 @@
 import { expect, test } from "@playwright/test";
+import { attachStrictClientMonitors } from "./error-collectors";
 
 /** Evidence-oriented UI checks against live BASE_URL (desktop + mobile projects). */
 test.describe("Cockpit flows", () => {
   test("tabs switch panels; truth toggle; portfolio validation; reload survives", async ({ page }) => {
-    const consoleErrors: string[] = [];
-    page.on("console", (msg) => {
-      if (msg.type() === "error") consoleErrors.push(msg.text());
-    });
+    const { consoleErrors, pageErrors, failedApiResponses } = attachStrictClientMonitors(page);
 
     await page.goto("/cockpit", { waitUntil: "domcontentloaded" });
+    await expect(page.locator("#cgrid")).not.toContainText("Loading plays", { timeout: 25_000 });
     expect(await page.locator("#panel-crypto").evaluate((el) => el.classList.contains("active"))).toBeTruthy();
 
     const tabs: Array<"stocks" | "portfolio" | "results" | "news" | "crypto"> = [
@@ -43,6 +42,8 @@ test.describe("Cockpit flows", () => {
     await expect(page.locator("#panel-crypto")).toHaveClass(/active/);
 
     expect(consoleErrors, `console errors: ${consoleErrors.join(" | ")}`).toHaveLength(0);
+    expect(pageErrors, `pageerror: ${pageErrors.join(" | ")}`).toHaveLength(0);
+    expect(failedApiResponses, JSON.stringify(failedApiResponses)).toHaveLength(0);
   });
 
   test("POST /api/portfolio rejects empty symbol", async ({ request }) => {

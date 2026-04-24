@@ -1,16 +1,15 @@
 import { expect, test } from "@playwright/test";
+import { attachStrictClientMonitors } from "./error-collectors";
 
 test.describe("Cockpit smoke", () => {
   test("cockpit page renders tabs and title", async ({ page }) => {
-    const consoleErrors: string[] = [];
-    page.on("console", (msg) => {
-      if (msg.type() === "error") {
-        consoleErrors.push(msg.text());
-      }
-    });
+    const { consoleErrors, pageErrors, failedApiResponses } = attachStrictClientMonitors(page);
 
     const response = await page.goto("/cockpit", { waitUntil: "domcontentloaded" });
     expect(response?.ok()).toBeTruthy();
+
+    await expect(page.locator("#cgrid")).not.toContainText("Loading plays", { timeout: 25_000 });
+    await expect(page.locator("#stxt")).not.toHaveText("Load error — refresh");
 
     await expect(page.locator(".logo")).toContainText("GHOST PROTOCOL");
     await expect(page.locator("#tab-crypto")).toBeVisible();
@@ -20,6 +19,8 @@ test.describe("Cockpit smoke", () => {
     await expect(page.locator("#tab-news")).toBeVisible();
 
     expect(consoleErrors, `Console errors found: ${consoleErrors.join(" | ")}`).toHaveLength(0);
+    expect(pageErrors, `pageerror: ${pageErrors.join(" | ")}`).toHaveLength(0);
+    expect(failedApiResponses, JSON.stringify(failedApiResponses)).toHaveLength(0);
   });
 
   test("core API endpoints return valid payloads", async ({ request }) => {
