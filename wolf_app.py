@@ -1249,7 +1249,8 @@ def health():
         feeds_ok = sum(1 for k,v in feeds.items() if k != "summary" and v)
         if feeds_ok < 2:
             warnings.append(feeds.get("summary", "<2 feeds responding"))
-    except Exception: pass
+    except Exception as _fe:
+        LOGGER.warning("health.check_feeds failed: " + str(_fe)[:120])
 
     # 3. Prediction freshness vs cycle freshness
     freshness_min = None
@@ -1288,7 +1289,8 @@ def health():
                 warnings.append("No picks inserted recently: " + str(freshness_min) + "m (cycle alive)")
             else:
                 issues.append("Predictions stale: " + str(freshness_min) + "m")
-    except Exception: pass
+    except Exception as _pe:
+        LOGGER.warning("health.prediction_freshness_block failed: " + str(_pe)[:120])
 
     # 4. Telegram
     tg_ok = bool(os.getenv("TELEGRAM_BOT_TOKEN","") and os.getenv("TELEGRAM_CHAT_ID",""))
@@ -1314,8 +1316,10 @@ def health():
                         "UPDATE predictions SET outcome='EXPIRED', resolved_at=%s WHERE outcome IS NULL AND predicted_at < %s",
                         (int(_t.time()), int(_t.time() - 50*3600))
                     )
-            except Exception: pass
-    except Exception: pass
+            except Exception as _de:
+                LOGGER.warning("health.dedup_expire_update failed: " + str(_de)[:120])
+    except Exception as _oe:
+        LOGGER.warning("health.open_picks_block failed: " + str(_oe)[:120])
 
     # 6. Confidence floor
     conf_floor = float(os.getenv("MIN_ALERT_CONFIDENCE","0.75"))
@@ -1332,7 +1336,8 @@ def health():
             last_card_min = int(mc.get("last_run_ago_s", 0) / 60)
             if last_card_min > 1440:
                 issues.append("Morning card last ran " + str(last_card_min) + "m ago")
-    except Exception: pass
+    except Exception as _se:
+        LOGGER.warning("health.scheduler_status failed: " + str(_se)[:120])
 
     score = max(0, min(100, 100 - len(issues)*20 - len(warnings)*5))
     status_str = "healthy" if score >= 80 and not issues else "degraded" if score >= 50 else "critical"
