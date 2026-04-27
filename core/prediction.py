@@ -12,7 +12,7 @@ Rules:
 """
 import os, time, logging, json
 from datetime import datetime, timezone
-from typing import Optional, List
+from typing import Optional, List, Dict, Any, Tuple
 from core.db import db_conn
 from core.vol_targets import base_vol_pct, stop_pct_from_vol
 try:
@@ -60,6 +60,199 @@ def _is_premarket():
     mkt_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
     return pre_open <= now < mkt_open
 EXCLUDE = set(os.getenv("EXCLUDE_SYMBOLS","HOOD,COIN,CHZ,ADA,AVAX,SAND,FLOW,HBAR,ALGO").split(","))
+
+
+def _objective_mode() -> str:
+    mode = (os.getenv("OBJECTIVE_MODE", "precision") or "").strip().lower()
+    if mode in ("aggressive", "balanced", "precision"):
+        return mode
+    return "precision"
+
+
+def _objective_mode_defaults(mode: str) -> Dict[str, float]:
+    if mode == "aggressive":
+        return {
+            "target_wr": 0.62,
+            "min_samples": 8.0,
+            "bootstrap_min_conf": 0.78,
+            "lookback_days": 120.0,
+        }
+    if mode == "balanced":
+        return {
+            "target_wr": 0.70,
+            "min_samples": 12.0,
+            "bootstrap_min_conf": 0.85,
+            "lookback_days": 150.0,
+        }
+    # precision mode (default)
+    return {
+        "target_wr": 0.80,
+        "min_samples": 20.0,
+        "bootstrap_min_conf": 0.90,
+        "lookback_days": 180.0,
+    }
+
+
+def _objective_float(name: str, default: float, lo: float, hi: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        val = float(raw)
+    except Exception:
+        return default
+    return max(lo, min(hi, val))
+
+
+def _objective_int(name: str, default: int, lo: int, hi: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or str(raw).strip() == "":
+        return default
+    try:
+        val = int(raw)
+    except Exception:
+        return default
+    return max(lo, min(hi, val))
+
+
+def _objective_effective_config() -> Dict[str, Any]:
+    mode = _objective_mode()
+    defaults = _objective_mode_defaults(mode)
+    target_wr = _objective_float("OBJECTIVE_TARGET_WIN_RATE", float(defaults["target_wr"]), 0.50, 0.95)
+    min_samples = _objective_int("OBJECTIVE_MIN_SAMPLES", int(defaults["min_samples"]), 5, 5000)
+    bootstrap_min_conf = _objective_float("OBJECTIVE_BOOTSTRAP_MIN_CONF", float(defaults["bootstrap_min_conf"]), 0.50, 0.99)
+    lookback_days = _objective_int("OBJECTIVE_LOOKBACK_DAYS", int(defaults["lookback_days"]), 7, 3650)
+    return {
+        "mode": mode,
+        "target_wr": target_wr,
+        "min_samples": min_samples,
+        "bootstrap_min_conf": bootstrap_min_conf,
+        "lookback_days": lookback_days,
+    }
+
+
+def _objective_target_win_rate() -> float:
+    return float(_objective_effective_config()["target_wr"])
+
+
+def _objective_min_samples() -> int:
+    return int(_objective_effective_config()["min_samples"])
+
+
+def _objective_lookback_days() -> int:
+    return int(_objective_effective_config()["lookback_days"])
+
+
+def _objective_bootstrap_min_conf() -> float:
+    return float(_objective_effective_config()["bootstrap_min_conf"])
+
+
+def _objective_enforced() -> bool:
+    return os.getenv("OBJECTIVE_ENFORCE", "1").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _safe_wr(wins: int, total: int) -> float:
+    return float(wins) / float(total) if total > 0 else 0.0
+
+
+def _direction_aliases(direction: str) -> Tuple[str, ...]:
+    d = (direction or "").upper()
+    if d in ("UP", "BUY"):
+        return ("UP", "BUY")
+    return ("DOWN", "SELL")
+
+
+def _objective_symbol_stats(symbol: str, direction: str) -> Dict[str, Any]:
+    """
+    Blend recent v2 outcomes + legacy outcomes to estimate direction precision.
+    """
+    cutoff = int(time.time()) - _objective_lookback_days() * 86400
+    aliases = _direction_aliases(direction)
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT COUNT(*), COALESCE(SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END), 0)
+            FROM predictions
+            WHERE symbol=%s
+              AND direction = ANY(%s)
+              AND outcome IN ('WIN','LOSS')
+              AND COALESCE(resolved_at, predicted_at, run_at, 0) >= %s
+            """,
+            (symbol, list(aliases), cutoff),
+        )
+        v2_total, v2_wins = cur.fetchone() or (0, 0)
+
+        cur.execute(
+            """
+            SELECT COUNT(*), COALESCE(SUM(CASE WHEN hit_direction=1 THEN 1 ELSE 0 END), 0)
+            FROM ghost_prediction_outcomes
+            WHERE symbol=%s
+              AND predicted_direction = %s
+              AND hit_direction IN (0,1)
+              AND EXTRACT(EPOCH FROM created_at)::BIGINT >= %s
+            """,
+            (symbol, "UP" if aliases[0] in ("UP", "BUY") else "DOWN", cutoff),
+        )
+        gpo_total, gpo_wins = cur.fetchone() or (0, 0)
+
+    v2_total = int(v2_total or 0)
+    v2_wins = int(v2_wins or 0)
+    gpo_total = int(gpo_total or 0)
+    gpo_wins = int(gpo_wins or 0)
+    combined_total = v2_total + gpo_total
+    combined_wins = v2_wins + gpo_wins
+    return {
+        "v2_total": v2_total,
+        "v2_wins": v2_wins,
+        "v2_wr": round(_safe_wr(v2_wins, v2_total), 4),
+        "gpo_total": gpo_total,
+        "gpo_wins": gpo_wins,
+        "gpo_wr": round(_safe_wr(gpo_wins, gpo_total), 4),
+        "combined_total": combined_total,
+        "combined_wins": combined_wins,
+        "combined_wr": round(_safe_wr(combined_wins, combined_total), 4),
+    }
+
+
+def _objective_gate(symbol: str, direction: str, confidence: float) -> Tuple[bool, str, Dict[str, Any]]:
+    """
+    Precision gate for the 80% objective:
+    - If enough evidence exists, require historical direction WR >= target.
+    - If not enough evidence, require higher confidence bootstrap threshold.
+    """
+    cfg = _objective_effective_config()
+    target_wr = float(cfg["target_wr"])
+    min_samples = int(cfg["min_samples"])
+    bootstrap_min_conf = float(cfg["bootstrap_min_conf"])
+
+    if not _objective_enforced():
+        return True, "", {"enforced": False, **cfg}
+
+    try:
+        stats = _objective_symbol_stats(symbol, direction)
+    except Exception as e:
+        LOGGER.warning("objective gate stats failed for %s: %s", symbol, str(e)[:120])
+        # Fail-open on telemetry failure to avoid hard outage.
+        return True, "", {"enforced": True, "error": "stats_failed", **cfg}
+
+    meta = {
+        "enforced": True,
+        **cfg,
+        **stats,
+    }
+    total = int(stats.get("combined_total", 0))
+    wr = float(stats.get("combined_wr", 0.0))
+
+    if total >= min_samples:
+        if wr < target_wr:
+            return False, "objective_gate", meta
+        return True, "", meta
+
+    # Low evidence: only allow stronger-confidence picks.
+    if confidence < bootstrap_min_conf:
+        return False, "objective_bootstrap_conf", meta
+    return True, "", meta
 
 
 def _check_regime():
@@ -291,6 +484,19 @@ def _predict_symbol_ex(symbol, asset_type, regime):
         LOGGER.info("REGIME blocked " + symbol + " UP")
         return None, "regime_blocked_crypto_buy"
 
+    objective_ok, objective_skip, objective_meta = _objective_gate(sym, direction, float(confidence))
+    if not objective_ok:
+        LOGGER.info(
+            "OBJECTIVE GATE blocked %s %s: wr=%s total=%s target=%s conf=%.3f",
+            sym,
+            direction,
+            objective_meta.get("combined_wr"),
+            objective_meta.get("combined_total"),
+            objective_meta.get("target_wr"),
+            float(confidence),
+        )
+        return None, objective_skip
+
     now = int(time.time())
     # Stocks: skip weekends — expire at next trading day close, not 48 calendar hours
     if asset_type == "stock":
@@ -385,6 +591,8 @@ def _predict_symbol_ex(symbol, asset_type, regime):
         "asset_type":   asset_type,
         "features":     features,
         "pos_size_pct": pos_pct,
+        "objective_expected_wr": objective_meta.get("combined_wr"),
+        "objective_samples": objective_meta.get("combined_total"),
     }, None
 
 
@@ -498,6 +706,8 @@ def run_prediction_cycle(with_diag: bool = False):
         "dedup_blocked",
         "regime_blocked_crypto_buy",
         "below_confidence_floor",
+        "objective_gate",
+        "objective_bootstrap_conf",
         "v3_regime_gate",
         "v3_meta_gate",
         "v3_prob_low",
@@ -513,6 +723,8 @@ def run_prediction_cycle(with_diag: bool = False):
         "dedup_blocked": "dedup (open pick already exists)",
         "regime_blocked_crypto_buy": "regime blocked crypto BUY",
         "below_confidence_floor": "below confidence floor",
+        "objective_gate": "objective gate (symbol WR below target)",
+        "objective_bootstrap_conf": "objective bootstrap (confidence below bootstrap minimum)",
         "v3_regime_gate": "v3 live regime gate blocked BUY",
         "v3_meta_gate": "v3 model metadata failed live thresholds",
         "v3_prob_low": "v3 model prob below BUY floor",
@@ -559,6 +771,111 @@ def run_prediction_cycle(with_diag: bool = False):
             parts.append(_labels.get(k, k) + "=" + str(c))
     diag["skip_summary"] = "; ".join(parts) if parts else ""
     return saved, diag
+
+
+def get_objective_status() -> Dict[str, Any]:
+    """
+    Report progress toward the configured objective win rate target.
+    """
+    cfg = _objective_effective_config()
+    target_wr = float(cfg["target_wr"])
+    lookback_days = int(cfg["lookback_days"])
+    cutoff = int(time.time()) - lookback_days * 86400
+
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT COUNT(*), COALESCE(SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END), 0)
+            FROM predictions
+            WHERE direction IN ('UP','BUY')
+              AND outcome IN ('WIN','LOSS')
+              AND COALESCE(resolved_at, predicted_at, run_at, 0) >= %s
+            """,
+            (cutoff,),
+        )
+        v2_total, v2_wins = cur.fetchone() or (0, 0)
+
+        cur.execute(
+            """
+            SELECT COUNT(*), COALESCE(SUM(CASE WHEN hit_direction=1 THEN 1 ELSE 0 END), 0)
+            FROM ghost_prediction_outcomes
+            WHERE predicted_direction='UP'
+              AND hit_direction IN (0,1)
+              AND EXTRACT(EPOCH FROM created_at)::BIGINT >= %s
+            """,
+            (cutoff,),
+        )
+        gpo_total, gpo_wins = cur.fetchone() or (0, 0)
+
+        cur.execute(
+            """
+            SELECT symbol,
+                   COUNT(*)::INT AS total,
+                   COALESCE(SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END),0)::INT AS wins
+            FROM predictions
+            WHERE direction IN ('UP','BUY')
+              AND outcome IN ('WIN','LOSS')
+              AND COALESCE(resolved_at, predicted_at, run_at, 0) >= %s
+            GROUP BY symbol
+            HAVING COUNT(*) >= %s
+            ORDER BY (COALESCE(SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END),0)::FLOAT / COUNT(*)) DESC, COUNT(*) DESC
+            LIMIT 15
+            """,
+            (cutoff, _objective_min_samples()),
+        )
+        rows = cur.fetchall()
+
+    v2_total = int(v2_total or 0)
+    v2_wins = int(v2_wins or 0)
+    gpo_total = int(gpo_total or 0)
+    gpo_wins = int(gpo_wins or 0)
+    combined_total = v2_total + gpo_total
+    combined_wins = v2_wins + gpo_wins
+    current_wr = _safe_wr(combined_wins, combined_total)
+
+    top_symbols = []
+    for sym, total, wins in rows:
+        total_i = int(total or 0)
+        wins_i = int(wins or 0)
+        top_symbols.append(
+            {
+                "symbol": str(sym or "").upper(),
+                "wins": wins_i,
+                "losses": max(0, total_i - wins_i),
+                "total": total_i,
+                "win_rate_pct": round(_safe_wr(wins_i, total_i) * 100.0, 1),
+            }
+        )
+
+    return {
+        "objective_enforced": _objective_enforced(),
+        "objective_mode": cfg["mode"],
+        "target_win_rate_pct": round(target_wr * 100.0, 1),
+        "min_samples": int(cfg["min_samples"]),
+        "bootstrap_min_conf_pct": round(float(cfg["bootstrap_min_conf"]) * 100.0, 1),
+        "lookback_days": lookback_days,
+        "current_win_rate_pct": round(current_wr * 100.0, 1),
+        "gap_to_target_pct": round((target_wr - current_wr) * 100.0, 1),
+        "combined": {
+            "wins": combined_wins,
+            "losses": max(0, combined_total - combined_wins),
+            "total": combined_total,
+        },
+        "v2_recent": {
+            "wins": v2_wins,
+            "losses": max(0, v2_total - v2_wins),
+            "total": v2_total,
+            "win_rate_pct": round(_safe_wr(v2_wins, v2_total) * 100.0, 1),
+        },
+        "legacy_recent": {
+            "wins": gpo_wins,
+            "losses": max(0, gpo_total - gpo_wins),
+            "total": gpo_total,
+            "win_rate_pct": round(_safe_wr(gpo_wins, gpo_total) * 100.0, 1),
+        },
+        "top_symbols": top_symbols,
+    }
 
 
 def reconcile_outcomes():

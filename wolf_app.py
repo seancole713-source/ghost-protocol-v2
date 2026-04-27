@@ -1505,6 +1505,16 @@ def api_regime():
         }
 
 
+@APP.get("/api/objective")
+def api_objective():
+    """Progress telemetry toward configured prediction win-rate objective."""
+    try:
+        from core.prediction import get_objective_status
+        return {"ok": True, **get_objective_status()}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:120]}
+
+
 @APP.get("/api/schema")
 def get_schema():
     tables = {}
@@ -1947,7 +1957,7 @@ def run_watchdog(x_cron_secret: str = Header(default="")):
                         "UPDATE predictions SET outcome=%s,exit_price=%s,pnl_pct=%s,resolved_at=%s WHERE id=%s",
                         (hit, price, round(pnl,3), int(time.time()), pred_id))
                 try:
-                    send_position_alert(symbol, direction, entry, price, hit, round(pnl,2), conf or 0)
+                    send_position_alert(symbol, direction, hit, entry, price, round(pnl, 2), conf or 0)
                 except Exception as e:
                     LOGGER.error("watchdog alert " + symbol + ": " + str(e))
                 alerted.append({"symbol":symbol,"outcome":hit,"pnl":round(pnl,2)})

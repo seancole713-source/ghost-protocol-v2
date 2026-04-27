@@ -253,9 +253,10 @@ function makeCard(p) {
   var cc = pct >= 85 ? 'h' : pct >= 70 ? 'm' : 'l';
   var sl = pct >= 85 ? 'Strong signal' : pct >= 70 ? 'Good signal' : 'Moderate signal';
   var isStock = p.asset_type === 'stock';
+  var sym = escHtml(p.symbol || '');
   var html = '<div class="card ' + dc + '">';
   html += '<div class="card-header">';
-  html += '<div><span class="sym">' + p.symbol + '</span>';
+  html += '<div><span class="sym">' + sym + '</span>';
   html += '<span class="badge' + (isStock ? ' stock' : '') + '">' + (isStock ? 'STOCK' : 'CRYPTO') + '</span></div>';
   html += '<span class="pill ' + dc + '">' + (buy ? 'BUY' : 'SELL') + '</span>';
   html += '</div>';
@@ -280,6 +281,8 @@ function escHtml(s) {
   return String(s == null ? '' : s)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/'/g, '&#39;')
     .replace(/"/g, '&quot;');
 }
 
@@ -399,7 +402,7 @@ async function loadPortfolio() {
   var tgl = data.total_gain_loss;
   tw.innerHTML = '<div class="port-totals">'
     + '<div class="ptot"><div class="ptot-label">TOTAL INVESTED</div><div class="ptot-val">$' + tc.toLocaleString('en-US', {maximumFractionDigits: 2}) + '</div></div>'
-    + '<div class="ptot"><div class="ptot-label">CURRENT VALUE</div><div class="ptot-val">' + (tv ? '$' + tv.toLocaleString('en-US', {maximumFractionDigits: 2}) : '&mdash;') + '</div></div>'
+    + '<div class="ptot"><div class="ptot-label">CURRENT VALUE</div><div class="ptot-val">' + (tv != null ? '$' + tv.toLocaleString('en-US', {maximumFractionDigits: 2}) : '&mdash;') + '</div></div>'
     + '<div class="ptot"><div class="ptot-label">TOTAL GAIN/LOSS</div><div class="ptot-val ' + (tgl >= 0 ? 'pos' : 'neg') + '">'
     + (tgl !== null ? (tgl >= 0 ? '+$' : '-$') + Math.abs(tgl).toLocaleString('en-US', {maximumFractionDigits: 2}) : '&mdash;') + '</div></div>'
     + '</div>';
@@ -414,16 +417,20 @@ async function loadPortfolio() {
       var b = p.ghost_signal.direction === 'UP' || p.ghost_signal.direction === 'BUY';
       adv = '<span class="gadv-val ' + (b ? 'gadv-buy' : 'gadv-sell') + '">' + (b ? '&#128077; BUY MORE' : '&#128078; CONSIDER SELL') + '</span>';
     }
+    var safeSymbol = escHtml(p.symbol || '');
+    var safeAssetType = escHtml((p.asset_type || '').toUpperCase());
+    var safeId = Number(p.id);
+    if (!isFinite(safeId) || safeId < 0) safeId = 0;
     var h = '<div class="pcard">';
     h += '<div class="pcard-top">';
-    h += '<div><span class="psym">' + p.symbol + '</span><span class="ptype">' + p.asset_type.toUpperCase() + '</span></div>';
+    h += '<div><span class="psym">' + safeSymbol + '</span><span class="ptype">' + safeAssetType + '</span></div>';
     h += '<div class="ghost-adv"><span class="gadv-label">GHOST SAYS</span>' + adv;
-    h += '<button class="btn-del" onclick="delPos(' + p.id + ')">&#10005; Remove</button></div>';
+    h += '<button class="btn-del" onclick="delPos(' + safeId + ')">&#10005; Remove</button></div>';
     h += '</div>';
     h += '<div class="pnums">';
     h += '<div class="pnum"><div class="pnum-label">YOU PAID</div><div class="pnum-val">' + fmt(p.buy_price) + '</div></div>';
-    h += '<div class="pnum"><div class="pnum-label">NOW</div><div class="pnum-val">' + (p.live_price ? fmt(p.live_price) : '&mdash;') + '</div></div>';
-    h += '<div class="pnum"><div class="pnum-label">YOUR VALUE</div><div class="pnum-val">' + (p.current_value ? '$' + p.current_value.toLocaleString('en-US', {maximumFractionDigits: 2}) : '&mdash;') + '</div></div>';
+    h += '<div class="pnum"><div class="pnum-label">NOW</div><div class="pnum-val">' + (p.live_price != null ? fmt(p.live_price) : '&mdash;') + '</div></div>';
+    h += '<div class="pnum"><div class="pnum-label">YOUR VALUE</div><div class="pnum-val">' + (p.current_value != null ? '$' + p.current_value.toLocaleString('en-US', {maximumFractionDigits: 2}) : '&mdash;') + '</div></div>';
     h += '<div class="pnum"><div class="pnum-label">GAIN/LOSS</div><div class="pnum-val ' + glc + '">' + glDStr + ' (' + glStr + ')</div></div>';
     h += '</div></div>';
     return h;
@@ -523,7 +530,7 @@ async function load() {
 
     var scan = (stats && stats.scan_symbols) ? stats.scan_symbols : {crypto: [], stocks: []};
     var stockWatchedLine = (scan.stocks && scan.stocks.length)
-      ? ('Stocks watched: ' + scan.stocks.join(', '))
+      ? ('Stocks watched: ' + scan.stocks.map(function(s) { return escHtml(s); }).join(', '))
       : 'Stock scan list is empty (configure <code>STOCK_SYMBOLS</code> on the server).';
 
     var active = picks.active || [];
@@ -572,7 +579,7 @@ async function load() {
         var w = t.outcome === 'WIN';
         var pnl = parseFloat(t.pnl_pct || 0);
         var d = (t.direction === 'UP' || t.direction === 'BUY') ? 'BUY' : 'SELL';
-        tbl += '<tr><td><b>' + t.symbol + '</b></td>';
+        tbl += '<tr><td><b>' + escHtml(t.symbol || '') + '</b></td>';
         tbl += '<td><span class="pill ' + d.toLowerCase() + '" style="font-size:11px;padding:3px 8px">' + d + '</span></td>';
         var exp = t.outcome === 'EXPIRED'; var outCls = w ? 'win-txt' : exp ? '' : 'loss-txt'; var outSty = exp ? 'style="color:#666;font-weight:700;font-size:12px"' : ''; var outLbl = w ? '&#9989; WIN' : exp ? '&#9203; EXPIRED' : '&#10060; LOSS'; tbl += '<td><span class="' + outCls + '" ' + outSty + '>' + outLbl + '</span></td>';
         tbl += '<td>' + fmt(t.entry_price) + '</td>';
@@ -593,8 +600,8 @@ async function load() {
         var st = s > 0.2 ? '<span class="sent-b">&#8593; BULLISH</span>'
           : s < -0.2 ? '<span class="sent-s">&#8595; BEARISH</span>'
           : '<span class="sent-n">&#8594; NEUTRAL</span>';
-        return '<div class="news-item"><div class="news-hl">' + (a.title || '') + '</div>'
-          + '<div class="news-meta">' + st + ' &middot; ' + (a.source || 'News') + '</div></div>';
+        return '<div class="news-item"><div class="news-hl">' + escHtml(a.title || '') + '</div>'
+          + '<div class="news-meta">' + st + ' &middot; ' + escHtml(a.source || 'News') + '</div></div>';
       }).join('');
     }
 
@@ -657,8 +664,9 @@ setInterval(load, 60000);
         var dir = (p.direction==='UP'||p.direction==='BUY') ? 'BUY' : 'SELL';
         var dc = dir==='BUY'?'#4ade80':'#f87171';
         var db = dir==='BUY'?'#0d2a0d':'#2a0d0d';
+        var safeSym = escHtml(p.symbol || '');
         return '<div style="background:#1a1a1a;border:1px solid #2a2a2a;border-radius:8px;padding:14px 18px;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;gap:12px;">'
-          +'<div style="min-width:90px"><span style="font-weight:700;font-size:15px;color:#fff;">'+p.symbol+'</span>'
+          +'<div style="min-width:90px"><span style="font-weight:700;font-size:15px;color:#fff;">'+safeSym+'</span>'
           +'<span style="background:'+db+';color:'+dc+';border-radius:4px;padding:2px 7px;font-size:11px;font-weight:700;margin-left:8px;">'+dir+'</span></div>'
           +'<div style="text-align:center"><div style="font-size:10px;color:#666;text-transform:uppercase;letter-spacing:1px">Entry</div><div style="color:#fff;font-size:13px">'+epStr+'</div></div>'
           +'<div style="text-align:center"><div style="font-size:10px;color:#666;text-transform:uppercase;letter-spacing:1px">Target</div><div style="color:#4ade80;font-size:13px">+'+pct+'%</div></div>'
