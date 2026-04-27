@@ -23,6 +23,8 @@ const READ_ONLY_JSON_GETS = [
   "/api/v2/recent",
   "/api/db-probe",
   "/api/symbol-accuracy",
+  "/api/objective",
+  "/api/objective/report?days=7",
   "/api/health/audit/history",
   "/api/price/BTC",
   "/api/debug-signal/BTC",
