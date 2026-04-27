@@ -1515,6 +1515,16 @@ def api_objective():
         return {"ok": False, "error": str(e)[:120]}
 
 
+@APP.get("/api/objective/report")
+def api_objective_report(days: int = 14):
+    """Daily objective trend report for the last N days."""
+    try:
+        from core.prediction import get_objective_daily_report
+        return {"ok": True, **get_objective_daily_report(days=days)}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:120]}
+
+
 @APP.get("/api/schema")
 def get_schema():
     tables = {}

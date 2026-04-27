@@ -60,9 +60,14 @@ def _is_premarket():
     mkt_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
     return pre_open <= now < mkt_open
 EXCLUDE = set(os.getenv("EXCLUDE_SYMBOLS","HOOD,COIN,CHZ,ADA,AVAX,SAND,FLOW,HBAR,ALGO").split(","))
+_OBJECTIVE_RUNTIME_MODE_CACHE: Dict[str, Any] = {"mode": None, "ts": 0.0}
 
 
 def _objective_mode() -> str:
+    if _objective_auto_enabled():
+        cached_mode = _objective_runtime_mode()
+        if cached_mode in ("aggressive", "balanced", "precision"):
+            return cached_mode
     mode = (os.getenv("OBJECTIVE_MODE", "precision") or "").strip().lower()
     if mode in ("aggressive", "balanced", "precision"):
         return mode
@@ -129,6 +134,46 @@ def _objective_effective_config() -> Dict[str, Any]:
         "bootstrap_min_conf": bootstrap_min_conf,
         "lookback_days": lookback_days,
     }
+
+
+def _objective_auto_enabled() -> bool:
+    return os.getenv("OBJECTIVE_AUTO_MODE_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _objective_auto_window_days() -> int:
+    return max(7, int(os.getenv("OBJECTIVE_AUTO_WINDOW_DAYS", "30")))
+
+
+def _objective_runtime_mode(cache_ttl_s: int = 45) -> str:
+    """
+    Runtime-selected objective mode from ghost_state.
+    Falls back to env OBJECTIVE_MODE when unavailable.
+    """
+    now = time.time()
+    cached = _OBJECTIVE_RUNTIME_MODE_CACHE.get("mode")
+    cached_ts = float(_OBJECTIVE_RUNTIME_MODE_CACHE.get("ts") or 0.0)
+    if cached and (now - cached_ts) < cache_ttl_s:
+        return str(cached)
+
+    env_mode = (os.getenv("OBJECTIVE_MODE", "precision") or "").strip().lower()
+    fallback_mode = env_mode if env_mode in ("aggressive", "balanced", "precision") else "precision"
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            cur.execute("SELECT val FROM ghost_state WHERE key='objective_mode_runtime'")
+            row = cur.fetchone()
+            if row and row[0]:
+                db_mode = str(row[0]).strip().lower()
+                if db_mode in ("aggressive", "balanced", "precision"):
+                    _OBJECTIVE_RUNTIME_MODE_CACHE["mode"] = db_mode
+                    _OBJECTIVE_RUNTIME_MODE_CACHE["ts"] = now
+                    return db_mode
+    except Exception:
+        pass
+    _OBJECTIVE_RUNTIME_MODE_CACHE["mode"] = fallback_mode
+    _OBJECTIVE_RUNTIME_MODE_CACHE["ts"] = now
+    return fallback_mode
 
 
 def _objective_target_win_rate() -> float:
@@ -253,6 +298,103 @@ def _objective_gate(symbol: str, direction: str, confidence: float) -> Tuple[boo
     if confidence < bootstrap_min_conf:
         return False, "objective_bootstrap_conf", meta
     return True, "", meta
+
+
+def _objective_recent_v2_stats(window_days: int) -> Dict[str, Any]:
+    cutoff = int(time.time()) - int(window_days) * 86400
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT COUNT(*), COALESCE(SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END), 0)
+            FROM predictions
+            WHERE direction IN ('UP','BUY')
+              AND outcome IN ('WIN','LOSS')
+              AND COALESCE(resolved_at, predicted_at, run_at, 0) >= %s
+            """,
+            (cutoff,),
+        )
+        total, wins = cur.fetchone() or (0, 0)
+    total_i = int(total or 0)
+    wins_i = int(wins or 0)
+    losses_i = max(0, total_i - wins_i)
+    wr = _safe_wr(wins_i, total_i)
+    return {"window_days": int(window_days), "wins": wins_i, "losses": losses_i, "total": total_i, "win_rate": wr}
+
+
+def _objective_pick_mode(stats: Dict[str, Any]) -> Tuple[str, str]:
+    """
+    Choose objective mode based on recent realized BUY precision.
+    """
+    total = int(stats.get("total", 0))
+    wr = float(stats.get("win_rate", 0.0))
+    min_precision_n = max(10, int(os.getenv("OBJECTIVE_AUTO_MIN_PRECISION_SAMPLES", "40")))
+    min_balanced_n = max(6, int(os.getenv("OBJECTIVE_AUTO_MIN_BALANCED_SAMPLES", "20")))
+    wr_precision = max(0.55, min(0.95, float(os.getenv("OBJECTIVE_AUTO_PROMOTE_TO_PRECISION_WR", "0.68"))))
+    wr_balanced = max(0.50, min(0.90, float(os.getenv("OBJECTIVE_AUTO_PROMOTE_TO_BALANCED_WR", "0.55"))))
+
+    if total >= min_precision_n and wr >= wr_precision:
+        return "precision", f"recent_wr={wr:.3f} on n={total} >= precision thresholds"
+    if total >= min_balanced_n and wr >= wr_balanced:
+        return "balanced", f"recent_wr={wr:.3f} on n={total} >= balanced thresholds"
+    return "aggressive", f"recent_wr={wr:.3f} on n={total} below promotion thresholds"
+
+
+def objective_autotune_mode() -> Dict[str, Any]:
+    """
+    Auto-step objective mode based on recent realized outcomes.
+    Persists selected mode in ghost_state.objective_mode_runtime.
+    """
+    if not _objective_auto_enabled():
+        mode = _objective_runtime_mode()
+        return {"enabled": False, "mode": mode, "reason": "auto disabled"}
+
+    try:
+        stats = _objective_recent_v2_stats(_objective_auto_window_days())
+        target_mode, reason = _objective_pick_mode(stats)
+        now = int(time.time())
+        changed = False
+        prev_mode = None
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            cur.execute("SELECT val FROM ghost_state WHERE key='objective_mode_runtime'")
+            row = cur.fetchone()
+            prev_mode = str(row[0]).strip().lower() if row and row[0] else None
+            if prev_mode != target_mode:
+                changed = True
+            cur.execute(
+                "INSERT INTO ghost_state(key,val) VALUES('objective_mode_runtime',%s) "
+                "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
+                (target_mode,),
+            )
+            cur.execute(
+                "INSERT INTO ghost_state(key,val) VALUES('objective_mode_runtime_reason',%s) "
+                "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
+                (reason[:240],),
+            )
+            cur.execute(
+                "INSERT INTO ghost_state(key,val) VALUES('objective_mode_runtime_updated_ts',%s) "
+                "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
+                (str(now),),
+            )
+
+        _OBJECTIVE_RUNTIME_MODE_CACHE["mode"] = target_mode
+        _OBJECTIVE_RUNTIME_MODE_CACHE["ts"] = time.time()
+        if changed:
+            LOGGER.info("OBJECTIVE AUTO MODE: %s -> %s (%s)", prev_mode or "unset", target_mode, reason)
+        return {
+            "enabled": True,
+            "mode": target_mode,
+            "changed": changed,
+            "previous_mode": prev_mode,
+            "reason": reason,
+            "stats": stats,
+        }
+    except Exception as e:
+        LOGGER.warning("objective auto mode failed: %s", str(e)[:120])
+        mode = _objective_runtime_mode()
+        return {"enabled": True, "mode": mode, "error": str(e)[:120]}
 
 
 def _check_regime():
@@ -619,6 +761,7 @@ def run_prediction_cycle(with_diag: bool = False):
                 _cb_floor = min(0.92, CONFIDENCE_FLOOR + 0.10)
                 LOGGER.warning("T23 CIRCUIT BREAKER: 5 consecutive losses — raising floor to " + str(_cb_floor))
     except Exception: pass
+    auto_mode_state = objective_autotune_mode()
     regime = _check_regime()
     regime['confidence_floor_override'] = _cb_floor
     symbols = ([(s.strip(),"crypto") for s in CRYPTO_SYMBOLS if s.strip()] +
@@ -757,6 +900,8 @@ def run_prediction_cycle(with_diag: bool = False):
         "regime": regime.get("reason") or "",
         "regime_btc_24h_pct": regime.get("btc_24h_pct"),
         "confidence_floor": regime.get("confidence_floor_override", CONFIDENCE_FLOOR),
+        "objective_mode": _objective_mode(),
+        "objective_mode_auto": auto_mode_state,
         "top_reason_code": top_reason,
         "top_reason_label": _labels.get(top_reason, top_reason or "unknown"),
     }
@@ -777,6 +922,7 @@ def get_objective_status() -> Dict[str, Any]:
     """
     Report progress toward the configured objective win rate target.
     """
+    auto_state = objective_autotune_mode()
     cfg = _objective_effective_config()
     target_wr = float(cfg["target_wr"])
     lookback_days = int(cfg["lookback_days"])
@@ -848,9 +994,27 @@ def get_objective_status() -> Dict[str, Any]:
             }
         )
 
+    runtime_reason = ""
+    runtime_updated_ts = None
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT val FROM ghost_state WHERE key='objective_mode_runtime_reason'")
+            rr = cur.fetchone()
+            runtime_reason = str(rr[0]) if rr and rr[0] else ""
+            cur.execute("SELECT val FROM ghost_state WHERE key='objective_mode_runtime_updated_ts'")
+            rt = cur.fetchone()
+            runtime_updated_ts = int(rt[0]) if rt and rt[0] else None
+    except Exception:
+        runtime_reason = ""
+        runtime_updated_ts = None
+
     return {
         "objective_enforced": _objective_enforced(),
         "objective_mode": cfg["mode"],
+        "objective_mode_reason": runtime_reason,
+        "objective_mode_updated_ts": runtime_updated_ts,
+        "objective_mode_auto": auto_state,
         "target_win_rate_pct": round(target_wr * 100.0, 1),
         "min_samples": int(cfg["min_samples"]),
         "bootstrap_min_conf_pct": round(float(cfg["bootstrap_min_conf"]) * 100.0, 1),
@@ -875,6 +1039,60 @@ def get_objective_status() -> Dict[str, Any]:
             "win_rate_pct": round(_safe_wr(gpo_wins, gpo_total) * 100.0, 1),
         },
         "top_symbols": top_symbols,
+    }
+
+
+def get_objective_daily_report(days: int = 14) -> Dict[str, Any]:
+    """
+    Day-by-day realized BUY precision trend.
+    """
+    days_i = max(3, min(90, int(days)))
+    cutoff = int(time.time()) - days_i * 86400
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT
+              TO_CHAR(DATE_TRUNC('day', TO_TIMESTAMP(COALESCE(resolved_at, predicted_at, run_at))), 'YYYY-MM-DD') AS d,
+              COUNT(*)::INT AS total,
+              COALESCE(SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END), 0)::INT AS wins
+            FROM predictions
+            WHERE direction IN ('UP','BUY')
+              AND outcome IN ('WIN','LOSS')
+              AND COALESCE(resolved_at, predicted_at, run_at, 0) >= %s
+            GROUP BY 1
+            ORDER BY 1 ASC
+            """,
+            (cutoff,),
+        )
+        rows = cur.fetchall()
+
+    series = []
+    wins_total = 0
+    losses_total = 0
+    for day, total, wins in rows:
+        total_i = int(total or 0)
+        wins_i = int(wins or 0)
+        losses_i = max(0, total_i - wins_i)
+        wins_total += wins_i
+        losses_total += losses_i
+        series.append(
+            {
+                "date": str(day),
+                "wins": wins_i,
+                "losses": losses_i,
+                "total": total_i,
+                "win_rate_pct": round(_safe_wr(wins_i, total_i) * 100.0, 1),
+            }
+        )
+    total = wins_total + losses_total
+    return {
+        "days": days_i,
+        "wins": wins_total,
+        "losses": losses_total,
+        "total": total,
+        "win_rate_pct": round(_safe_wr(wins_total, total) * 100.0, 1),
+        "series": series,
     }
 
 
