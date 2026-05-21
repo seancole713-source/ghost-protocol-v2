@@ -13,7 +13,7 @@ RULES:
 """
 
 # ============================================================
-# LIVE SYSTEM â VERIFIED 2026-03-23
+# LIVE SYSTEM — LAST VERIFIED 2026-03-23 (update after next verification)
 # ============================================================
 
 PRODUCTION_URL = "https://ghost-protocol-v2-production.up.railway.app"
@@ -24,8 +24,23 @@ RAILWAY_SERVICE_V1 = "098281d7-7dba-447c-981e-0ebd625cecad"  # old ghost, Telegr
 CRON_JOB = "cron-job.org fires POST /api/morning-card at 8 AM CT (America/Chicago, 0 8 * * *)"
 AUTH_HEADER = "x-cron-secret â value in Railway env as CRON_SECRET"
 
+# ============================================================# WOLF PIVOT — 2026-05-21
+# Ghost Protocol v2 is now WOLF-only. All crypto defaults removed.
 # ============================================================
-# VERIFIED LIVE STATE â 2026-03-23 ~11:30 AM CT
+
+WOLF_PIVOT = {
+    "primary_symbol": "WOLF",  # Wolfspeed Inc, NYSE
+    "secondary_symbol": "DRIV",  # shown in ticker bar
+    "STOCK_SYMBOLS_default": "WOLF",  # Railway env var
+    "CRYPTO_SYMBOLS_default": "",     # Railway env var — EMPTY, do not change back
+    "commits": [
+        "d0be424 — WOLF pivot phases 1-6 (agents, intel, metrics, risk, patterns)",
+        "3ceebd3 — crypto defaults stripped; asset_type fallbacks → stock",
+        "9073d1b — WOLF-first cockpit UI (real v2 endpoints, no crypto, WOLF hero)",
+    ],
+}
+
+# ============================================================# VERIFIED LIVE STATE â 2026-03-23 ~11:30 AM CT
 # Verified by direct API calls, not by agent claims.
 # ============================================================
 
@@ -47,37 +62,69 @@ LIVE_VERIFIED = {
     "top_edge_symbols": "COMP 88% (43), BCH 80% (166), LINK 66% (405), XRP 55% (508)",
 }
 
+# ============================================================# V2 API FIELD NAMES — JS/Frontend must use these, not old v4 names
 # ============================================================
-# TODO LIST â sorted by priority
+
+V2_PICK_FIELDS = {
+    "outcome": "null=active | 'WIN' | 'LOSS' | 'EXPIRED'  — NOT p.status",
+    "stop_price": "stop loss price  — NOT p.stop_loss",
+    "expires_at": "unix timestamp  — NOT p.done_by",
+    "gain_pct": "NOT a field — calculate: (target-entry)/entry*100",
+    "pnl_pct": "filled after outcome resolved",
+}
+
+V2_ENDPOINTS_REAL = [
+    "GET /api/picks               → array of picks directly (NOT wrapped in .picks)",
+    "GET /api/v2/recent           → {ok, trades[], wins, losses, win_rate_pct}",
+    "GET /api/news                → array or {items:[]}",
+    "GET /api/cockpit/context     → {ok, health, stats, direction, regime, v3, activity}",
+    "GET /api/stats/v32           → {ok, era, wins, losses, win_rate_pct, open_picks, verdict}",
+    "GET /api/objective           → {ok, target_pct, current_pct, on_track, trades_evaluated}",
+    "GET /api/wolf/price          → {ok, symbol, price}",
+    "GET /api/wolf/context        → {earnings, short_data, edgar_alert, competitor_signals, reasons[]}",
+    "GET /api/price/{sym}?asset_type=stock  → {symbol, price, ok}",
+]
+
+V2_ENDPOINTS_FAKE_DO_NOT_USE = [
+    # These NEVER existed in v2 — the old cockpit JS called them, all returned 404
+    "/api/v4/picks",
+    "/api/v3/watchlist/enriched",
+    "/api/v3/news/feed",
+    "/api/v3/accuracy/summary",
+    "/api/v3/heartbeat/status",
+    "/integrity/audit/readonly",
+    "/api/v4/history",
+    "/api/v3/intelligence/status",
+    "/api/v4/subsystems",
+    "/api/accuracy/trends",
+    "/api/v3/market/ticker",
+]
+
+# ============================================================# TODO LIST â sorted by priority
 # Mark [x] ONLY after verifying on live site yourself.
 # ============================================================
 
 TODO = """
-P1 — FIX IMMEDIATELY
-[ ] Win rate stats corrupted — 10.3% (11W/96L). The 96 losses are from broken model runs
-    (all-DOWN cards with $68K entries targeting $0.50 resolved as LOSS immediately).
-    clean-garbage endpoint targets entry_price BETWEEN 0.49 AND 0.51 but those picks
-    have real prices now. Need a different filter: DELETE predictions WHERE predicted_at
-    IS NOT NULL AND entry_price > 50 AND target_price < 1.0 (target was $0.53 from $0.50).
-    Until fixed, win rate is meaningless.
+P0 — VERIFY NEW ENDPOINTS EXIST IN wolf_app.py
+[ ] /api/stats/v32    — cockpit JS calls this; returns 404 if not implemented
+[ ] /api/objective    — cockpit JS calls this; returns 404 if not implemented
+[ ] /api/wolf/price   — cockpit JS calls this; returns 404 if not implemented
+[ ] /api/wolf/context — cockpit JS calls this; graceful 404 ok but build it
+[ ] /api/v2/recent    — cockpit JS calls this; verify it returns {ok, trades[], wins, losses, win_rate_pct}
 
-[ ] PROJECT_STATE.py itself is stale — update after each session (do this now).
+P1 — FIX IMMEDIATELY
+[ ] Win rate stats corrupted — ~120 picks with entry_price=0.50 from broken model runs.
+    Fix: POST /api/clean-garbage (run once). Until fixed, win rate is meaningless.
 
 P2 — SIGNAL QUALITY
-[ ] LTC UP 94% is wrong — gpo says 59% DOWN bias. v2 double-weighting overrides.
-    Reduce v2 row weight or require direction consistency between v2 and gpo.
-
-[ ] XRP UP 88% is marginal — 54.7% gpo win rate is below EDGE_THRESHOLD (60%).
-    It fires via the v2 double-weight path. Consider stricter v2 weight.
-
-[ ] Stock prices unavailable outside market hours (Polygon API).
-    Stocks never appear in picks. Fix: accept stocks are daytime-only OR add pre-open data.
+[ ] WOLF has limited history in gpo table — MIN_SAMPLES=5 may fire on too little data.
+    Raise to 20 once 200+ WOLF picks are resolved.
+[ ] Stock prices unavailable outside market hours (Polygon/yfinance).
+    Accept daytime-only OR add Alpha Vantage for pre/after-market.
 
 P3 — CLEANUP
-[ ] cron-job.org timezone should be America/Chicago with 0 8 * * * (currently UTC 0 14).
-[ ] Remove /api/debug-signal endpoint before going live with real money.
-[ ] Raise MIN_SAMPLES from 10 to 20 after 300+ resolved v2 picks exist.
-[ ] Circuit breaker threshold (8 consecutive losses) needs validation over time.
+[ ] Weekly summary never fires — add Friday 4 PM CT scheduler task.
+[ ] Watchdog not built — no real-time alert when pick hits target/stop.
 """
 
 # ============================================================
@@ -99,14 +146,24 @@ COMPLETED = """
 [x] cron-job.org URL updated to v2 — CONFIRMED by user
 [x] 3-zone signal logic (FIRE>60 / BENCH 40-60 / INVERT<40) — COMMITTED 6821d7e
 [x] Circuit breaker (8 v2 losses = bench, unless gpo>60%) — COMMITTED 354b129
-    VERIFIED: BCH was benched, fix applied, BCH DOWN 87% now appears in picks
 [x] Inverse confidence capped at 0.65 — COMMITTED 4084f1b
 [x] MIN_SAMPLES=10, EDGE_THRESHOLD=0.60, FLOOR=0.70 (Railway env) — VERIFIED via debug
+[x] WOLF PIVOT — CRYPTO_SYMBOLS default='' / STOCK_SYMBOLS default='WOLF' — COMMITTED 3ceebd3
+[x] wolf_app.py asset_type fallbacks changed crypto→stock — COMMITTED 3ceebd3
+[x] WOLF-first cockpit UI — real v2 endpoints, WOLF hero tab, no crypto — COMMITTED 9073d1b
+    - loadAll() wired to /api/picks, /api/v2/recent, /api/news, /api/cockpit/context,
+      /api/stats/v32, /api/objective
+    - renderPicks() uses v2 fields: outcome (not status), stop_price (not stop_loss)
+    - loadWolfIntel() uses /api/wolf/price, renders current pick + v3.2 stats + objective bar
+    - Ticker: WOLF + DRIV replace BTC/ETH
+    - Crypto tab, nav button, all crypto filters removed
 
-NOT YET BUILT (honest list):
-[ ] Cockpit dashboard — placeholder HTML only
-[ ] Real technical features (RSI, MACD, BB) — using win-rate signal only
-[ ] Alpha Vantage for stock prices outside market hours
+NOT YET VERIFIED (agent claims, needs live check):
+[ ] /api/stats/v32 exists and returns correct shape
+[ ] /api/objective exists and returns correct shape
+[ ] /api/wolf/price exists and returns {ok, symbol, price}
+[ ] /api/wolf/context exists
+[ ] /api/v2/recent returns {ok, trades[], wins, losses, win_rate_pct}
 """
 
 # ============================================================
