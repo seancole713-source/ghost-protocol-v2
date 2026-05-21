@@ -810,6 +810,14 @@ from core.portfolio_routes import portfolio_router
 from core.stats_direction import compute_stats_by_direction
 APP.include_router(portfolio_router)
 
+# Phase 4: WOLF Intel endpoints
+try:
+    from api.wolf_endpoints import router as wolf_router
+    APP.include_router(wolf_router)
+    LOGGER.info("[INIT] WOLF Intel endpoints loaded")
+except Exception as _we:
+    LOGGER.warning(f"[INIT] wolf_endpoints unavailable: {_we}")
+
 
 
 @APP.get("/api/diagnostics")
