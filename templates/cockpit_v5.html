@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Ghost Protocol v5</title>
+    <title>Ghost Protocol — WOLF Intel</title>
     <link rel="stylesheet" href="/static/cockpit_v5.css?v={{ cache_bust }}">
 </head>
 <body>
@@ -16,9 +16,9 @@
             <span class="ticker-sep">│</span>
             <span class="ticker-item" id="tick-nasdaq">NASDAQ <span class="tick-price">--</span> <span class="tick-chg">--</span></span>
             <span class="ticker-sep">│</span>
-            <span class="ticker-item" id="tick-btc">BTC <span class="tick-price">--</span> <span class="tick-chg">--</span></span>
+            <span class="ticker-item" id="tick-wolf">WOLF <span class="tick-price">--</span> <span class="tick-chg">--</span></span>
             <span class="ticker-sep">│</span>
-            <span class="ticker-item" id="tick-eth">ETH <span class="tick-price">--</span> <span class="tick-chg">--</span></span>
+            <span class="ticker-item" id="tick-driv">DRIV <span class="tick-price">--</span> <span class="tick-chg">--</span></span>
             <span class="ticker-sep">│</span>
             <span class="ticker-item" id="tick-vix">VIX <span class="tick-price">--</span> <span class="tick-chg">--</span></span>
         </div>
@@ -26,18 +26,14 @@
 
     <!-- ═══ LEFT SIDEBAR (icon nav like Robinhood) ═══ -->
     <nav id="left-sidebar">
-        <div class="sidebar-logo">👻</div>
-        <button class="nav-icon active" data-tab="picks" title="Picks">
+        <div class="sidebar-logo">�</div>
+        <button class="nav-icon" data-tab="picks" title="Picks">
             <svg viewBox="0 0 24 24"><path d="M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zm0-10v2h14V7H7z"/></svg>
             <span class="nav-label">Picks</span>
         </button>
         <button class="nav-icon" data-tab="stocks" title="Stocks">
             <svg viewBox="0 0 24 24"><path d="M16 6l2.29 2.29-4.88 4.88-4-4L2 16.59 3.41 18l6-6 4 4 6.3-6.29L22 12V6z"/></svg>
             <span class="nav-label">Stocks</span>
-        </button>
-        <button class="nav-icon" data-tab="crypto" title="Crypto">
-            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/><text x="12" y="16" text-anchor="middle" font-size="12" fill="currentColor">₿</text></svg>
-            <span class="nav-label">Crypto</span>
         </button>
         <button class="nav-icon" data-tab="history" title="History">
             <svg viewBox="0 0 24 24"><path d="M13 3a9 9 0 0 0-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42A8.954 8.954 0 0 0 13 21a9 9 0 0 0 0-18zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/></svg>
@@ -55,7 +51,7 @@
             <svg viewBox="0 0 24 24"><path d="M20 2H4c-1.1 0-1.99.9-1.99 2L2 22l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-7 9h-2V5h2v6zm0 4h-2v-2h2v2z"/></svg>
             <span class="nav-label">News</span>
         </button>
-        <button class="nav-icon" data-tab="wolf" title="WOLF Intel">
+        <button class="nav-icon active" data-tab="wolf" title="WOLF Intel">
             <svg viewBox="0 0 24 24"><path d="M12 2L1 21h22L12 2zm0 3.17L20.05 19H3.95L12 5.17zM11 10v4h2v-4h-2zm0 6v2h2v-2h-2z"/></svg>
             <span class="nav-label">WOLF</span>
         </button>
@@ -72,7 +68,7 @@
     <!-- ═══ MAIN CONTENT AREA ═══ -->
     <div id="main-area">
         <!-- ─── TAB: PICKS ─── -->
-        <div id="tab-picks" class="tab-page active">
+        <div id="tab-picks" class="tab-page">
             <div class="page-header" id="picks-header">
                 👻 GHOST PICKS — <span id="greeting-date">...</span> |
                 <span id="greeting-sub">Loading…</span>
@@ -141,42 +137,7 @@
             </div>
         </div>
 
-        <!-- ─── TAB: CRYPTO ─── -->
-        <div id="tab-crypto" class="tab-page">
-            <div class="page-header">CRYPTO — Ghost Watchlist</div>
-            <div class="content-with-sidebar">
-                <div class="content-main">
-                    <div class="filter-row">
-                        <button class="filter-btn active" data-filter="all" data-scope="crypto">All</button>
-                        <button class="filter-btn" data-filter="active" data-scope="crypto">Active Picks</button>
-                        <button class="filter-btn" data-filter="watching" data-scope="crypto">Watching</button>
-                    </div>
-                    <div class="yf-table-wrap">
-                        <table class="data-table yf-table" id="crypto-table">
-                            <thead>
-                                <tr>
-                                    <th class="sortable" data-sort="symbol">Symbol</th>
-                                    <th class="sortable" data-sort="price">Price</th>
-                                    <th class="sortable" data-sort="change">Change</th>
-                                    <th class="sortable" data-sort="changePct">Change %</th>
-                                    <th>Ghost</th>
-                                    <th class="sortable" data-sort="conf">Confidence</th>
-                                </tr>
-                            </thead>
-                            <tbody id="crypto-tbody">
-                                <tr><td colspan="6" class="empty-state">Loading…</td></tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-                <div class="content-sidebar">
-                    <div class="sidebar-section-title">Top Crypto Movers</div>
-                    <div id="crypto-movers">
-                        <div class="empty-state-sm">Loading…</div>
-                    </div>
-                </div>
-            </div>
-        </div>
+
 
         <!-- ─── TAB: HISTORY ─── -->
         <div id="tab-history" class="tab-page">
@@ -191,8 +152,6 @@
             </div>
             <div class="filter-row">
                 <button class="filter-btn active" data-filter="all" data-scope="history">All</button>
-                <button class="filter-btn" data-filter="stock" data-scope="history">Stocks</button>
-                <button class="filter-btn" data-filter="crypto" data-scope="history">Crypto</button>
                 <button class="filter-btn" data-filter="win" data-scope="history">Wins</button>
                 <button class="filter-btn" data-filter="loss" data-scope="history">Losses</button>
             </div>
@@ -333,8 +292,7 @@
             <div class="page-header">NEWS — Market Analysis</div>
             <div class="filter-row">
                 <button class="filter-btn active" data-filter="all" data-scope="news">All</button>
-                <button class="filter-btn" data-filter="stocks" data-scope="news">Stocks</button>
-                <button class="filter-btn" data-filter="crypto" data-scope="news">Crypto</button>
+                <button class="filter-btn" data-filter="wolf" data-scope="news">WOLF</button>
                 <button class="filter-btn" data-filter="macro" data-scope="news">Macro / Market</button>
             </div>
             <div class="news-feed" id="news-feed">
@@ -390,18 +348,41 @@
             </div>
         </div>
         <!-- ─── TAB: WOLF INTEL ─── -->
-        <div id="tab-wolf" class="tab-page">
+        <div id="tab-wolf" class="tab-page active">
             <div class="page-header">🐺 WOLF INTEL — Wolfspeed (NYSE: WOLF)</div>
             <div class="content-with-sidebar">
                 <div class="content-main">
 
                     <!-- Price hero -->
-                    <section class="section-label">Live Price</section>
                     <div class="wolf-price-hero">
-                        <span class="wolf-price-val" id="wolf-price">—</span>
-                        <span class="wolf-price-chg" id="wolf-price-chg">—</span>
-                        <span class="wolf-price-ts" id="wolf-price-ts"></span>
+                        <div class="wolf-price-left">
+                            <span class="wolf-ticker-label">NYSE: WOLF</span>
+                            <span class="wolf-price-val" id="wolf-price">—</span>
+                            <span class="wolf-price-chg" id="wolf-price-chg">—</span>
+                            <span class="wolf-price-ts" id="wolf-price-ts"></span>
+                        </div>
+                        <div class="wolf-price-right">
+                            <button class="wolf-refresh-btn" onclick="loadWolfIntel()" title="Refresh WOLF data">↺ Refresh</button>
+                        </div>
                     </div>
+
+                    <!-- Current Signal -->
+                    <section class="section-label">Current Signal</section>
+                    <div id="wolf-current-pick"><div class="empty-state">Loading…</div></div>
+
+                    <!-- v3.2 Stats -->
+                    <section class="section-label">v3.2 Era Performance</section>
+                    <div class="wolf-stats-row" id="wolf-stats-row">
+                        <div class="wolf-stat-box"><span class="wolf-stat-val green" id="wolf-stat-wins">--</span><span class="wolf-stat-lbl">Wins</span></div>
+                        <div class="wolf-stat-box"><span class="wolf-stat-val red" id="wolf-stat-losses">--</span><span class="wolf-stat-lbl">Losses</span></div>
+                        <div class="wolf-stat-box"><span class="wolf-stat-val" id="wolf-stat-wr">--</span><span class="wolf-stat-lbl">Win Rate</span></div>
+                        <div class="wolf-stat-box"><span class="wolf-stat-val" id="wolf-stat-open">--</span><span class="wolf-stat-lbl">Open Picks</span></div>
+                        <div class="wolf-stat-box"><span class="wolf-stat-val" id="wolf-stat-verdict">--</span><span class="wolf-stat-lbl">Verdict</span></div>
+                    </div>
+
+                    <!-- Objective progress -->
+                    <section class="section-label">Objective Progress</section>
+                    <div id="wolf-objective"><div class="empty-state">Loading…</div></div>
 
                     <!-- Context signals -->
                     <section class="section-label">Context Signals</section>

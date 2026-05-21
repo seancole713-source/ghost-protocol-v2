@@ -21,29 +21,15 @@ let _audit = null;
 let _intelligence = null;
 let _subsystems = null;
 let _newsFilter = 'all';
-let _stockFilter = 'all';
-let _cryptoFilter = 'all';
 let _historyFilter = 'all';
-
-// ─── CRYPTO KEYWORDS for filtering ───
-const CRYPTO_KEYS = new Set([
-    'BTC','ETH','SOL','XRP','DOGE','ADA','DOT','LINK','AVAX','MATIC',
-    'UNI','AAVE','SHIB','LTC','BCH','ATOM','FIL','NEAR','APT','ARB',
-    'OP','SUI','SEI','TIA','INJ','PEPE','WIF','BONK','FLOKI','GIGA',
-    'CHZ','BITCOIN','ETHEREUM','CRYPTO','BLOCKCHAIN','DEFI','NFT','WEB3',
-    'ALTCOIN','BINANCE','COINBASE','STABLECOIN','MEMECOIN','LAYER 2',
-    'MINING','HALVING','HASH RATE','WHALE','SATOSHI','TOKEN','LEDGER',
-    'METAMASK','UNISWAP','OPENSEA','POLYGON','SOLANA','CARDANO',
-    'DOGECOIN','RIPPLE','CHAINLINK','POLKADOT','COSMOS',
-]);
 
 // ─── BOOT ───
 document.addEventListener('DOMContentLoaded', () => {
     initNav();
     initFilters();
     loadAll();
-    setInterval(loadAll, 30000);
-    setInterval(loadTicker, 60000);
+    setInterval(loadAll, 60000);
+    setInterval(loadTicker, 120000);
     loadTicker();
 });
 
@@ -66,14 +52,10 @@ function initFilters() {
     document.querySelectorAll('.filter-btn').forEach(btn => {
         btn.addEventListener('click', () => {
             const scope = btn.dataset.scope;
-            // Deactivate siblings with same scope
             document.querySelectorAll(`.filter-btn[data-scope="${scope}"]`).forEach(b => b.classList.remove('active'));
             btn.classList.add('active');
-
             if (scope === 'history') { _historyFilter = btn.dataset.filter; renderHistory(); }
             else if (scope === 'news') { _newsFilter = btn.dataset.filter; renderNewsFeed(); }
-            else if (scope === 'stocks') { _stockFilter = btn.dataset.filter; renderStocksTable(); }
-            else if (scope === 'crypto') { _cryptoFilter = btn.dataset.filter; renderCryptoTable(); }
         });
     });
 }
@@ -82,25 +64,23 @@ function initFilters() {
 // MARKET TICKER BAR
 // ═══════════════════════════════════════
 async function loadTicker() {
-    try {
-        const data = await fetchJSON('/api/v3/market/ticker');
-        if (!data?.ok) return;
-        const items = data.items || [];
-        items.forEach(item => {
+    const items = [
+        {id: 'spy',    sym: 'SPY'},
+        {id: 'dow',    sym: 'DIA'},
+        {id: 'nasdaq', sym: 'QQQ'},
+        {id: 'wolf',   sym: 'WOLF'},
+        {id: 'driv',   sym: 'DRIV'},
+        {id: 'vix',    sym: 'VIX'},
+    ];
+    for (const item of items) {
+        try {
+            const data = await fetchJSON(`/api/price/${item.sym}?asset_type=stock`);
+            if (!data?.price) continue;
             const el = document.getElementById('tick-' + item.id);
-            if (!el) return;
+            if (!el) continue;
             const priceEl = el.querySelector('.tick-price');
-            const chgEl = el.querySelector('.tick-chg');
-            if (priceEl) priceEl.textContent = fmtTickerPrice(item.price);
-            if (chgEl) {
-                const isUp = item.change >= 0;
-                const pct = item.change_pct != null ? ` (${isUp ? '+' : ''}${item.change_pct.toFixed(2)}%)` : '';
-                chgEl.textContent = `${isUp ? '+' : ''}${item.change.toFixed(2)}${pct}`;
-                chgEl.className = 'tick-chg ' + (isUp ? 'up' : 'down');
-            }
-        });
-    } catch (e) {
-        console.warn('Ticker load failed:', e);
+            if (priceEl) priceEl.textContent = fmtTickerPrice(data.price);
+        } catch (e) { /* silent */ }
     }
 }
 
@@ -109,86 +89,86 @@ async function loadTicker() {
 // ═══════════════════════════════════════
 async function loadAll() {
     const results = await Promise.allSettled([
-        fetchJSON('/api/v4/picks'),                      // 0 – picks
-        fetchJSON('/api/v3/watchlist/enriched'),          // 1 – watchlist
-        fetchJSON('/api/v3/news/feed'),                  // 2 – news
-        fetchJSON('/api/v3/accuracy/summary'),           // 3 – accuracy
-        fetchJSON('/api/v3/heartbeat/status'),           // 4 – heartbeat
-        fetchJSON('/integrity/audit/readonly'),          // 5 – integrity audit
-        fetchJSON('/api/v4/history?days=365&limit=2000'),// 6 – full history
-        fetchJSON('/api/v3/intelligence/status'),        // 7 – intelligence hub
-        fetchJSON('/api/v3/intelligence/cache'),         // 8 – news brain cache
-        fetchJSON('/api/v4/subsystems'),                 // 9 – full subsystem inventory
-        fetchJSON('/api/accuracy/trends?days=30'),       // 10 – accuracy trends (Phase 3.8)
+        fetchJSON('/api/picks'),            // 0 – active + recent predictions
+        fetchJSON('/api/v2/recent'),        // 1 – resolved trades with win/loss stats
+        fetchJSON('/api/news'),             // 2 – WOLF news feed
+        fetchJSON('/api/cockpit/context'), // 3 – master health/stats/direction
+        fetchJSON('/api/stats/v32'),        // 4 – v3.2 era WOLF stats
+        fetchJSON('/api/objective'),        // 5 – win-rate objective progress
     ]);
 
     const val = i => results[i].status === 'fulfilled' ? results[i].value : null;
 
-    const picksData = val(0);
-    const watchData = val(1);
-    const newsData = val(2);
-    _accuracy = val(3);
-    _heartbeat = val(4);
-    _audit = val(5);
-    const histData = val(6);
-    _intelligence = val(7);
-    const newsBrain = val(8);
-    _subsystems = val(9);
-    const trendsData = val(10);
+    const picksRaw   = val(0);
+    const recentData = val(1);
+    const newsData   = val(2);
+    const ctxData    = val(3);
+    window._statsV32  = val(4);
+    window._objective = val(5);
 
-    if (picksData?.ok) _picks = picksData.picks || [];
-    if (watchData?.ok) {
-        // FIX (Mar 21, 2026): Flatten prediction nested object into watchlist items
-        // API returns {prediction: {direction, confidence}}, frontend expects ghost_direction, ghost_confidence
-        const items = watchData.items || watchData.watchlist || [];
-        _watchlist = items.map(item => {
-            // If item has nested prediction object, flatten it
-            if (item.prediction) {
-                return {
-                    ...item,
-                    ghost_direction: item.prediction.direction || 'HOLD',
-                    ghost_confidence: item.prediction.confidence || 0,
-                    price: item.current_price || item.price || 0,
-                    // Calculate change_pct if missing
-                    change_pct: item.change_pct || 0,
-                    type: item.asset_type || item.type || 'unknown'
-                };
-            }
-            return item;
-        });
-    }
-    if (newsData?.ok) _news = newsData.articles || newsData.items || newsData.feed || [];
-    if (histData?.ok) _history = histData.trades || [];
-    
-    // Store accuracy trends for charting (Phase 3.8)
-    if (trendsData?.ok) {
-        window._accuracyTrends = trendsData;
-        renderAccuracyChart();
+    // Picks: /api/picks returns an array directly
+    if (Array.isArray(picksRaw)) _picks = picksRaw;
+    else if (picksRaw?.ok && Array.isArray(picksRaw.picks)) _picks = picksRaw.picks;
+    else _picks = [];
+
+    // History from /api/v2/recent
+    if (recentData?.ok) {
+        _history = (recentData.trades || []).map(t => ({
+            ...t,
+            outcome: (t.outcome || '').toLowerCase(),
+            pnl: t.pnl_pct || 0,
+            actual_move_pct: t.pnl_pct || 0,
+        }));
     }
 
-    // ── Status indicator ──
-    setStatus((picksData && picksData.ok) || (watchData && watchData.ok));
+    // Accuracy from cockpit context stats, fall back to v2/recent
+    if (ctxData?.ok && ctxData.stats) {
+        const s = ctxData.stats;
+        const w32 = s.post_v32 || {};
+        _accuracy = {
+            accuracy_pct:        s.win_rate_pct  || w32.win_rate_pct  || 0,
+            correct_predictions: s.wins          || w32.wins          || 0,
+            total_predictions:   s.total         || (s.wins + s.losses) || 0,
+            total_skipped: 0,
+        };
+    } else if (recentData?.ok) {
+        _accuracy = {
+            accuracy_pct:        recentData.win_rate_pct || 0,
+            correct_predictions: recentData.wins         || 0,
+            total_predictions:   recentData.total        || 0,
+            total_skipped: 0,
+        };
+    }
 
-    // ── Picks header ──
+    // Health/audit from cockpit context
+    if (ctxData?.ok) {
+        _heartbeat = { tasks: {}, ...(ctxData.health || {}), alive: 0, total: 0 };
+        _audit = {
+            health_score: ctxData.health?.status === 'ok' ? 95 : 50,
+            issues: [], issues_remaining: 0, auto_fixes_applied: 0,
+        };
+    }
+
+    // News
+    if (Array.isArray(newsData))       _news = newsData;
+    else if (newsData?.items)          _news = newsData.items;
+    else if (newsData?.articles)       _news = newsData.articles;
+    else                               _news = [];
+
+    setStatus(ctxData?.ok || Array.isArray(picksRaw));
     renderPicksHeader();
-
-    // ── Render all tabs ──
     renderPicks();
     renderRecentPicks();
     renderActivePositions();
     renderStocksTable();
-    renderStockMovers();
-    renderCryptoTable();
-    renderCryptoMovers();
     renderHistory();
     renderHealth();
     renderHealthSidebar();
-    renderBrain(newsBrain);
+    renderBrain(null);
     renderNewsFeed();
     renderFinancials();
-    loadWolfIntel();  // Phase 4: WOLF KPI panel
+    loadWolfIntel();
 }
-
 function setStatus(alive) {
     const dot = document.getElementById('status-indicator');
     const txt = document.getElementById('status-text');
@@ -238,10 +218,8 @@ function renderPicks() {
     el.innerHTML = _picks
         // Sort: active/pending first, then resolved
         .slice().sort((a, b) => {
-            const sa = (a.status || 'pending').toLowerCase();
-            const sb = (b.status || 'pending').toLowerCase();
-            const aActive = sa === 'active' || sa === 'pending' ? 0 : 1;
-            const bActive = sb === 'active' || sb === 'pending' ? 0 : 1;
+            const aActive = a.outcome == null ? 0 : 1;
+            const bActive = b.outcome == null ? 0 : 1;
             return aActive - bActive;
         })
         .map(p => {
@@ -252,19 +230,23 @@ function renderPicks() {
         const star = p.whitelisted ? ' <span class="pick-star">⭐</span>' : '';
         const entry = fmtPrice(p.entry_price);
         const target = fmtPrice(p.target_price);
-        const stop = fmtPrice(p.stop_loss);
-        const gainPct = p.gain_pct != null ? Math.abs(p.gain_pct).toFixed(1) : '3.0';
-        const returnVal = p.gain_pct != null ? (100 + Math.abs(p.gain_pct)).toFixed(2) : '103.00';
-        const deadline = p.done_by || '--';
-        
-        // Calculate time remaining until deadline
+        const stop = fmtPrice(p.stop_price);
+        const gainPct = (p.entry_price && p.target_price)
+            ? Math.abs((p.target_price - p.entry_price) / p.entry_price * 100).toFixed(1)
+            : '3.0';
+        const returnVal = (p.entry_price && p.target_price)
+            ? (100 + Math.abs((p.target_price - p.entry_price) / p.entry_price * 100)).toFixed(2)
+            : '103.00';
+
+        // Format expires_at as deadline string
+        let deadline = '--';
         let timeRemaining = '';
         if (p.expires_at) {
             try {
                 const expiresMs = typeof p.expires_at === 'number' ? p.expires_at * 1000 : new Date(p.expires_at).getTime();
                 const nowMs = Date.now();
                 const diffMs = expiresMs - nowMs;
-                
+                deadline = new Date(expiresMs).toLocaleDateString('en-US', {month:'short', day:'numeric'});
                 if (diffMs > 0) {
                     const hours = Math.floor(diffMs / (1000 * 60 * 60));
                     const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
@@ -284,11 +266,12 @@ function renderPicks() {
             }
         }
 
-        const status = (p.status || 'pending').toLowerCase();
-        let statusClass = 'pending', statusLabel = 'PENDING';
-        if (['won', 'win', 'correct', 'target_hit'].includes(status)) { statusClass = 'won'; statusLabel = 'WON'; }
-        else if (['lost', 'loss', 'incorrect', 'stop_hit'].includes(status)) { statusClass = 'lost'; statusLabel = 'LOST'; }
-        else if (status === 'expired') { statusClass = 'expired'; statusLabel = 'EXPIRED'; }
+        // Derive status from outcome field (v2 API shape)
+        const outcome = (p.outcome || '').toUpperCase();
+        let statusClass = 'pending', statusLabel = 'ACTIVE';
+        if (outcome === 'WIN')     { statusClass = 'won';     statusLabel = 'WON'; }
+        else if (outcome === 'LOSS')    { statusClass = 'lost';    statusLabel = 'LOST'; }
+        else if (outcome === 'EXPIRED') { statusClass = 'expired'; statusLabel = 'EXPIRED'; }
 
         return `
         <div class="pick-card ${sideClass}">
@@ -324,25 +307,22 @@ function renderRecentPicks() {
     }
 
     // Combine active picks + recent history
-    const activePicks = _picks.filter(p => {
-        const s = (p.status || 'pending').toLowerCase();
-        return s === 'active' || s === 'pending';
-    });
+    const activePicks = _picks.filter(p => p.outcome == null);
     const rows = activePicks.map(p => ({
         symbol: p.symbol,
         direction: (p.direction || '').toUpperCase(),
         entry: fmtPrice(p.entry_price),
         target: fmtPrice(p.target_price),
-        stop: fmtPrice(p.stop_loss),
-        status: (p.status || 'PENDING').toUpperCase(),
-        date: p.done_by || 'Active'
+        stop: fmtPrice(p.stop_price),
+        status: 'ACTIVE',
+        date: p.expires_at ? new Date(typeof p.expires_at === 'number' ? p.expires_at * 1000 : p.expires_at).toLocaleDateString('en-US', {month:'short', day:'numeric'}) : 'Active'
     })).concat(recent.map(t => ({
         symbol: t.symbol,
         direction: (t.direction || '').toUpperCase(),
         entry: fmtPrice(t.entry_price),
-        target: fmtPrice(t.exit_price),
-        stop: '--',
-        status: t.outcome === 'win' ? 'WON' : t.outcome === 'loss' ? 'LOST' : 'RESOLVED',
+        target: fmtPrice(t.target_price),
+        stop: fmtPrice(t.stop_price),
+        status: t.outcome === 'win' ? 'WON' : t.outcome === 'loss' ? 'LOST' : (t.outcome || 'RESOLVED').toUpperCase(),
         date: fmtDate(t.predicted_at)
     })));
 
@@ -459,48 +439,11 @@ function renderStockMovers() {
 }
 
 // ═══════════════════════════════════════
-// TAB 3: CRYPTO
+// TAB 3: CRYPTO (removed)
 // ═══════════════════════════════════════
-function renderCryptoTable() {
-    const tbody = document.getElementById('crypto-tbody');
-    if (!tbody) return;
+function renderCryptoTable() { /* crypto tab removed */ }
 
-    let items = _watchlist.filter(w => (w.type || '').toLowerCase() === 'crypto');
-
-    if (_cryptoFilter === 'active') {
-        const activeSyms = new Set(_picks.map(p => p.symbol));
-        items = items.filter(w => activeSyms.has(w.symbol));
-    } else if (_cryptoFilter === 'watching') {
-        const activeSyms = new Set(_picks.map(p => p.symbol));
-        items = items.filter(w => !activeSyms.has(w.symbol));
-    }
-
-    if (!items.length) {
-        tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No crypto — predictions haven\'t run yet</td></tr>';
-        return;
-    }
-
-    tbody.innerHTML = items.map(w => buildWatchlistRow(w)).join('');
-}
-
-function renderCryptoMovers() {
-    const el = document.getElementById('crypto-movers');
-    if (!el) return;
-
-    const crypto = _watchlist.filter(w => (w.type || '').toLowerCase() === 'crypto');
-    const sorted = [...crypto].sort((a, b) => Math.abs(b.change_pct || 0) - Math.abs(a.change_pct || 0));
-
-    if (!sorted.length) {
-        el.innerHTML = '<div class="empty-state-sm">No data</div>';
-        return;
-    }
-
-    el.innerHTML = sorted.slice(0, 8).map(w => {
-        const pct = w.change_pct || 0;
-        const cls = pct >= 0 ? 'up' : 'down';
-        return `<div class="mover-item"><span class="mover-sym">${w.symbol}</span><span class="mover-chg ${cls}">${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%</span></div>`;
-    }).join('');
-}
+function renderCryptoMovers() { /* crypto tab removed */ }
 
 function buildWatchlistRow(w) {
     const price = fmtPrice(w.price);
@@ -566,9 +509,7 @@ function buildWatchlistRow(w) {
 function renderHistory() {
     let data = [..._history];
 
-    if (_historyFilter === 'stock') data = data.filter(t => (t.market || t.type || '').toLowerCase() === 'stock');
-    else if (_historyFilter === 'crypto') data = data.filter(t => (t.market || t.type || '').toLowerCase() === 'crypto');
-    else if (_historyFilter === 'win') data = data.filter(t => t.outcome === 'win');
+    if (_historyFilter === 'win') data = data.filter(t => t.outcome === 'win');
     else if (_historyFilter === 'loss') data = data.filter(t => t.outcome === 'loss');
 
     // Stats from ALL history
@@ -1142,15 +1083,11 @@ function renderNewsFeed() {
     let articles = [..._news];
 
     // Apply filter
-    if (_newsFilter === 'stocks') {
+    if (_newsFilter === 'wolf') {
+        const wolfKeys = ['WOLF', 'WOLFSPEED', 'WOLFSPEED INC'];
         articles = articles.filter(a => {
             const title = (a.title || a.headline || '').toUpperCase();
-            return !Array.from(CRYPTO_KEYS).some(k => title.includes(k));
-        });
-    } else if (_newsFilter === 'crypto') {
-        articles = articles.filter(a => {
-            const title = (a.title || a.headline || '').toUpperCase();
-            return Array.from(CRYPTO_KEYS).some(k => title.includes(k));
+            return wolfKeys.some(k => title.includes(k));
         });
     } else if (_newsFilter === 'macro') {
         const macroKeys = ['FED', 'FOMC', 'GDP', 'CPI', 'INFLATION', 'INTEREST RATE',
@@ -1548,32 +1485,102 @@ async function loadWolfIntel() {
         ctx = await fetchJSON('/api/wolf/context');
     } catch (e) { /* endpoint may not be live yet */ }
 
-    // ── Fetch live WOLF price separately (uses existing ticker endpoint)
+    // ── Fetch live WOLF price
     let priceData = null;
     try {
-        priceData = await fetchJSON('/api/v3/market/ticker');
+        priceData = await fetchJSON('/api/wolf/price');
     } catch (e) {}
 
     // ── Price hero ─────────────────────────────────────────────────────
-    if (priceData?.items) {
-        const wolfItem = priceData.items.find(i => i.id === 'WOLF' || i.symbol === 'WOLF');
-        if (wolfItem) {
-            const priceEl = document.getElementById('wolf-price');
-            const chgEl = document.getElementById('wolf-price-chg');
-            const tsEl = document.getElementById('wolf-price-ts');
-            if (priceEl) priceEl.textContent = '$' + (wolfItem.price || wolfItem.last || '—');
-            if (chgEl) {
-                const chg = wolfItem.change_pct ?? wolfItem.pct_change ?? null;
-                if (chg !== null) {
-                    chgEl.textContent = (chg >= 0 ? '▲' : '▼') + Math.abs(chg).toFixed(2) + '%';
-                    chgEl.style.color = chg >= 0 ? 'var(--green)' : 'var(--red)';
-                }
-            }
-            if (tsEl) tsEl.textContent = wolfItem.ts || '';
+    if (priceData?.price) {
+        const priceEl = document.getElementById('wolf-price');
+        if (priceEl) priceEl.textContent = '$' + Number(priceData.price).toFixed(2);
+        const tsEl = document.getElementById('wolf-price-ts');
+        if (tsEl) tsEl.textContent = 'Live quote';
+    }
+
+    // ── Current signal from _picks ──────────────────────────────────────
+    const pickEl = document.getElementById('wolf-current-pick');
+    if (pickEl) {
+        const active = _picks.find(p => p.outcome == null && p.symbol === 'WOLF')
+                    || _picks.find(p => p.outcome == null)
+                    || _picks[0];
+        if (active) {
+            const isUp = (active.direction || '').toUpperCase() === 'UP';
+            const dirColor = isUp ? 'var(--green)' : 'var(--red)';
+            const gainPct = (active.entry_price && active.target_price)
+                ? Math.abs((active.target_price - active.entry_price) / active.entry_price * 100).toFixed(1)
+                : '—';
+            const conf = active.confidence ? (active.confidence * 100).toFixed(0) + '%' : '—';
+            const expiresStr = active.expires_at
+                ? new Date(typeof active.expires_at === 'number' ? active.expires_at * 1000 : active.expires_at)
+                    .toLocaleDateString('en-US', {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'})
+                : '—';
+            pickEl.innerHTML = `
+                <div class="wolf-signal-badge" style="color:${dirColor}">
+                    ${isUp ? '▲ LONG' : '▼ SHORT'} &nbsp; ${esc(active.symbol || 'WOLF')}
+                </div>
+                <div class="wolf-signal-row">
+                    <div><span class="wolf-kpi-label">Entry</span><span class="wolf-kpi-val">${fmtPrice(active.entry_price)}</span></div>
+                    <div><span class="wolf-kpi-label">Target</span><span class="wolf-kpi-val green">${fmtPrice(active.target_price)} (+${gainPct}%)</span></div>
+                    <div><span class="wolf-kpi-label">Stop</span><span class="wolf-kpi-val red">${fmtPrice(active.stop_price)}</span></div>
+                    <div><span class="wolf-kpi-label">Confidence</span><span class="wolf-kpi-val">${conf}</span></div>
+                    <div><span class="wolf-kpi-label">Expires</span><span class="wolf-kpi-val">${expiresStr}</span></div>
+                </div>`;
+        } else {
+            pickEl.innerHTML = '<div class="empty-state">No active signal — Ghost is waiting for setup</div>';
         }
     }
 
-    if (!ctx) return;  // No context data available yet
+    // ── v3.2 Stats ──────────────────────────────────────────────────────
+    const s32 = window._statsV32;
+    if (s32?.ok) {
+        setText('wolf-stat-wins',    s32.wins    ?? '--');
+        setText('wolf-stat-losses',  s32.losses  ?? '--');
+        const wrEl = document.getElementById('wolf-stat-wr');
+        if (wrEl) {
+            const wr = s32.resolved_win_rate_pct ?? s32.win_rate_pct ?? 0;
+            wrEl.textContent = wr.toFixed(1) + '%';
+            wrEl.style.color = wr >= 60 ? 'var(--green)' : wr >= 50 ? '#ffaa00' : 'var(--red)';
+        }
+        setText('wolf-stat-open',    s32.open_picks ?? '--');
+        const verdictEl = document.getElementById('wolf-stat-verdict');
+        if (verdictEl) {
+            const v = s32.verdict || 'watch';
+            verdictEl.textContent = v.replace('_', ' ').toUpperCase();
+            verdictEl.style.color = v === 'on_track' ? 'var(--green)' : v === 'watch' ? '#ffaa00' : 'var(--red)';
+        }
+    }
+
+    // ── Objective Progress ──────────────────────────────────────────────
+    const objEl = document.getElementById('wolf-objective');
+    const obj = window._objective;
+    if (objEl && obj?.ok) {
+        const cur = obj.current_pct ?? 0;
+        const tgt = obj.target_pct ?? 60;
+        const pct = Math.min(100, (cur / Math.max(tgt, 1)) * 100).toFixed(0);
+        const barColor = obj.on_track ? 'var(--green)' : cur >= 50 ? '#ffaa00' : 'var(--red)';
+        objEl.innerHTML = `
+            <div class="wolf-objective">
+                <div style="display:flex;justify-content:space-between;margin-bottom:.4rem">
+                    <span style="font-size:.85rem;color:rgba(255,255,255,0.6)">Win rate: <strong style="color:${barColor}">${cur.toFixed(1)}%</strong> / target ${tgt}%</span>
+                    <span style="font-size:.8rem;color:rgba(255,255,255,0.4)">${obj.trades_evaluated ?? 0} trades · ${obj.window_days ?? 30}d window</span>
+                </div>
+                <div class="wolf-obj-bar">
+                    <div class="wolf-obj-fill" style="width:${pct}%;background:${barColor}"></div>
+                </div>
+                <div style="font-size:.75rem;color:rgba(255,255,255,0.4);margin-top:.3rem">${obj.on_track ? '✅ On track' : '⚠️ Below target'}</div>
+            </div>`;
+    } else if (objEl) {
+        objEl.innerHTML = '<div class="empty-state">Objective data loading…</div>';
+    }
+
+    if (!ctx) {
+        // Fill sidebar status with minimal message
+        const sideEl = document.getElementById('wolf-sidebar-status');
+        if (sideEl) sideEl.innerHTML = '<div class="empty-state-sm">Context loading…</div>';
+        return;
+    }
 
     // ── KPI cards ──────────────────────────────────────────────────────
     const sf = ctx.short_data?.short_float_pct;
