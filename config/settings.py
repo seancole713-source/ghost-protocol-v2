@@ -41,18 +41,6 @@ class Settings(BaseSettings):
     # Price range covers post-bankruptcy emergence + high-growth scenarios
     MIN_PRICE_WOLF: float = 0.50
     MAX_PRICE_WOLF: float = 200.0
-
-    # Data Quality - legacy crypto ranges kept for DB compatibility (not used in predictions)
-    MIN_PRICE_BTC: float = 10000.0
-    MAX_PRICE_BTC: float = 500000.0
-    MIN_PRICE_ETH: float = 500.0
-    MAX_PRICE_ETH: float = 50000.0
-    MIN_PRICE_XRP: float = 0.10
-    MAX_PRICE_XRP: float = 50.0
-    MIN_PRICE_LINK: float = 1.0
-    MAX_PRICE_LINK: float = 500.0
-    MIN_PRICE_SOL: float = 5.0
-    MAX_PRICE_SOL: float = 1000.0
     
     model_config = {
         "env_file": ".env",
