@@ -1565,7 +1565,7 @@ def _norm_pred(r):
         "outcome": r.get("outcome") or r.get("result"),
         "exit_price": r.get("exit_price"),
         "pnl_pct": r.get("pnl_pct") or r.get("pnl"),
-        "asset_type": r.get("asset_type","crypto"),
+        "asset_type": r.get("asset_type","stock"),
     }
 
 @APP.get("/api/picks")
@@ -1958,7 +1958,7 @@ def run_watchdog(x_cron_secret: str = Header(default="")):
             )
             open_picks = cur.fetchall()
         for pred_id, symbol, direction, entry, target, stop, asset_type, conf in open_picks:
-            price = get_price(symbol, asset_type or "crypto")
+            price = get_price(symbol, asset_type or "stock")
             if not price: continue
             hit = None
             if direction == "UP":
@@ -1991,7 +1991,7 @@ def debug_signal(symbol: str):
     import os, traceback
     result = {"symbol": symbol, "steps": []}
     try:
-        price = get_price(symbol, "crypto")
+        price = get_price(symbol, "stock")
         result["price"] = price
         result["steps"].append("price=" + str(price))
         with db_conn() as conn:

@@ -33,12 +33,8 @@ EDGE_THRESHOLD   = 0.55
 INVERSE_THRESHOLD = 0.40
 BTC_THRESHOLD    = float(os.getenv("BTC_TREND_THRESHOLD", "-5.0"))
 
-CRYPTO_SYMBOLS = os.getenv(
-    "CRYPTO_SYMBOLS",
-    "ETH,SOL,UNI,BCH").split(",")  # only symbols with v3.1 models ≥52% accuracy
-STOCK_SYMBOLS = os.getenv(
-    "STOCK_SYMBOLS",
-    "AAPL,TSLA,META,AMZN,T,WOLF").split(",")  # only symbols with v3.1 models ≥52% accuracy
+CRYPTO_SYMBOLS = [s for s in os.getenv("CRYPTO_SYMBOLS", "").split(",") if s.strip()]  # WOLF-only: no crypto
+STOCK_SYMBOLS = [s for s in os.getenv("STOCK_SYMBOLS", "WOLF").split(",") if s.strip()]  # WOLF-only
 
 def _is_market_hours():
     """Returns True if US market is open (9:30 AM - 4:00 PM CT, Mon-Fri)."""
