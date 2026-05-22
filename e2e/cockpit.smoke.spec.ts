@@ -12,7 +12,6 @@ test.describe("Cockpit smoke", () => {
     await expect(page.locator("#stxt")).not.toHaveText("Load error — refresh");
 
     await expect(page.locator(".logo")).toContainText("GHOST PROTOCOL");
-    await expect(page.locator("#tab-crypto")).toBeVisible();
     await expect(page.locator("#tab-stocks")).toBeVisible();
     await expect(page.locator("#tab-portfolio")).toBeVisible();
     await expect(page.locator("#tab-results")).toBeVisible();
@@ -40,7 +39,6 @@ test.describe("Cockpit smoke", () => {
     expect(cockpitBody.stats.losses).toBe(statsBody.losses);
     if (statsBody.scan_symbols && cockpitBody.stats.scan_symbols) {
       expect(cockpitBody.stats.scan_symbols).toEqual(statsBody.scan_symbols);
-      expect(Array.isArray(statsBody.scan_symbols.crypto)).toBeTruthy();
       expect(Array.isArray(statsBody.scan_symbols.stocks)).toBeTruthy();
     }
 

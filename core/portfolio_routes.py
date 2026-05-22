@@ -11,7 +11,7 @@ _CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS user_portfolio (
     id SERIAL PRIMARY KEY,
     symbol TEXT NOT NULL,
-    asset_type TEXT DEFAULT 'crypto',
+    asset_type TEXT DEFAULT 'stock',
     quantity FLOAT NOT NULL,
     buy_price FLOAT NOT NULL,
     buy_date TEXT DEFAULT '',
@@ -67,7 +67,7 @@ def get_portfolio():
 async def add_portfolio(request: Request):
     d = await request.json()
     sym = str(d.get("symbol","")).upper().strip()
-    atype = str(d.get("asset_type","crypto"))
+    atype = str(d.get("asset_type","stock"))
     qty = float(d.get("quantity",0))
     bp = float(d.get("buy_price",0))
     if not sym or qty <= 0 or bp <= 0:
@@ -165,7 +165,7 @@ def auto_refresh_portfolio_prices():
         updated = 0
         for pid, symbol, asset_type in positions:
             if (asset_type or "stock").lower() != "stock":
-                continue  # only refresh stocks — crypto prices come from live feeds
+                continue  # WOLF-only: only refresh stocks; ignore non-stock rows
             try:
                 from core.prices import get_stock_price
                 latest = get_stock_price(symbol)

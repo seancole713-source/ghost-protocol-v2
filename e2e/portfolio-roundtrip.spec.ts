@@ -9,7 +9,7 @@ test.describe("Portfolio persistence", () => {
     const created = await request.post("/api/portfolio", {
       data: {
         symbol: sym,
-        asset_type: "crypto",
+        asset_type: "stock",
         quantity: 0.0001,
         buy_price: 1,
         buy_date: "2026-01-15",

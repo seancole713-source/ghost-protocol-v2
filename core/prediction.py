@@ -1,11 +1,10 @@
 """
-core/prediction.py - Ghost v2 prediction engine.
+core/prediction.py - Ghost v2 prediction engine (WOLF-only mode).
 Signal source: v3 XGBoost trained on TP/SL outcomes (see core.signal_engine v3.2).
 Rules:
   - 30+ resolved picks AND win_rate > 55%: predict dominant direction
   - 30+ resolved picks AND win_rate < 45%: predict inverse
   - Less than 30 picks: momentum-based (price vs 7-day average)
-  - Regime gate: BTC down 5%+ blocks crypto BUYs
   - SELL signals blocked: 1.9% win rate across 211 trades
   - Confidence floor 0.80 by default (MIN_ALERT_CONFIDENCE)
   - Features logged on every prediction for future ML training
@@ -16,25 +15,23 @@ from typing import Optional, List, Dict, Any, Tuple
 from core.db import db_conn
 from core.vol_targets import base_vol_pct, stop_pct_from_vol
 try:
-    from core.prices import get_price, get_crypto_price
+    from core.prices import get_price
 except ImportError:
-    def get_price(s, t): return None
-    def get_crypto_price(s): return None
+    def get_price(s, t=None): return None
 
 LOGGER = logging.getLogger("ghost.prediction")
 
 CONFIDENCE_FLOOR = float(os.getenv("MIN_ALERT_CONFIDENCE", "0.80"))  # raised: filter weak signals
 DAILY_CAP        = int(os.getenv("DAILY_ALERT_CAP", "10"))
-CRYPTO_HOLD_H    = int(os.getenv("CRYPTO_HOLD_HOURS", "48"))
 TARGET_PCT       = float(os.getenv("TARGET_PCT", "0.06"))
 STOP_PCT         = float(os.getenv("STOP_PCT", "0.03"))
 MIN_SAMPLES      = int(os.getenv("MIN_SAMPLES", "10"))
 EDGE_THRESHOLD   = 0.55
 INVERSE_THRESHOLD = 0.40
-BTC_THRESHOLD    = float(os.getenv("BTC_TREND_THRESHOLD", "-5.0"))
 
-CRYPTO_SYMBOLS = [s for s in os.getenv("CRYPTO_SYMBOLS", "").split(",") if s.strip()]  # WOLF-only: no crypto
-STOCK_SYMBOLS = [s for s in os.getenv("STOCK_SYMBOLS", "WOLF").split(",") if s.strip()]  # WOLF-only
+# WOLF-only mode — these legacy names retained for back-compat with any importer.
+CRYPTO_SYMBOLS: List[str] = []
+STOCK_SYMBOLS: List[str] = ["WOLF"]
 
 def _is_market_hours():
     """Returns True if US market is open (9:30 AM - 4:00 PM CT, Mon-Fri)."""
@@ -55,7 +52,7 @@ def _is_premarket():
     pre_open = now.replace(hour=4, minute=0, second=0, microsecond=0)
     mkt_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
     return pre_open <= now < mkt_open
-EXCLUDE = set(os.getenv("EXCLUDE_SYMBOLS","HOOD,COIN,CHZ,ADA,AVAX,SAND,FLOW,HBAR,ALGO").split(","))
+EXCLUDE = set(s for s in os.getenv("EXCLUDE_SYMBOLS","").split(",") if s.strip())
 _OBJECTIVE_RUNTIME_MODE_CACHE: Dict[str, Any] = {"mode": None, "ts": 0.0}
 
 
@@ -394,28 +391,8 @@ def objective_autotune_mode() -> Dict[str, Any]:
 
 
 def _check_regime():
-    """Block crypto BUYs when BTC down significantly. Returns regime dict including btc_24h_pct."""
-    gates = {"block_crypto_buys": False, "reduce_size": False, "reason": "", "btc_24h_pct": 0.0}
-    try:
-        btc = get_crypto_price("BTC")
-        if btc:
-            with db_conn() as conn:
-                cur = conn.cursor()
-                cutoff = int(time.time()) - 86400
-                cur.execute(
-                    "SELECT entry_price FROM predictions WHERE symbol='BTC' AND (predicted_at > %s OR run_at > %s) AND entry_price > 0 ORDER BY id ASC LIMIT 1",
-                    (cutoff, cutoff))
-                row = cur.fetchone()
-                if row and row[0] and row[0] > 0:
-                    pct = (btc - row[0]) / row[0] * 100
-                    gates["btc_24h_pct"] = round(pct, 2)
-                    if pct <= BTC_THRESHOLD or pct <= -2.0:
-                        gates["block_crypto_buys"] = True
-                        gates["reason"] = "BTC " + str(round(pct,1)) + "% (24h)"
-                        LOGGER.info("REGIME: blocking crypto BUYs, BTC " + str(round(pct,1)) + "%")
-    except Exception as e:
-        LOGGER.warning("regime check failed: " + str(e))
-    return gates
+    """WOLF-only mode: regime gate is a no-op. Returns benign defaults for back-compat."""
+    return {"block_crypto_buys": False, "reduce_size": False, "reason": "", "btc_24h_pct": 0.0}
 
 
 def _get_sentiment(symbol):
@@ -435,7 +412,7 @@ def _get_symbol_signal(symbol, current_price):
     # Try v3 model first
     try:
         from core.signal_engine import predict_live_ex
-        _atype = "crypto" if symbol not in ["AAPL","NVDA","TSLA","MSFT","META","AMZN","PLTR","AMD","T","XPO","NET","WOLF"] else "stock"
+        _atype = "stock"  # WOLF-only mode
         result, _reason = predict_live_ex(symbol, _atype)
         if result is not None:
             LOGGER.info("v3 signal for " + symbol + ": " + str(result[0]) + " " + str(round(result[1]*100,1)) + "%")
@@ -592,8 +569,7 @@ def _predict_symbol_ex(symbol, asset_type, regime):
         return None, "no_price"
     try:
         from core.signal_engine import predict_live_ex
-        _atype = "crypto" if sym not in ["AAPL","NVDA","TSLA","MSFT","META","AMZN","PLTR","AMD","T","XPO","NET","WOLF"] else "stock"
-        signal, v3_reason = predict_live_ex(symbol, _atype)
+        signal, v3_reason = predict_live_ex(symbol, "stock")
     except Exception as _pe:
         LOGGER.warning("v3 engine error for " + symbol + ": " + str(_pe))
         return None, "v3_engine_error"
@@ -621,10 +597,6 @@ def _predict_symbol_ex(symbol, asset_type, regime):
         LOGGER.info("SELL blocked: " + symbol + " — DOWN signals 1.9% wr historically")
         return None, "sell_blocked"
 
-    if regime["block_crypto_buys"] and asset_type == "crypto" and direction == "UP":
-        LOGGER.info("REGIME blocked " + symbol + " UP")
-        return None, "regime_blocked_crypto_buy"
-
     objective_ok, objective_skip, objective_meta = _objective_gate(sym, direction, float(confidence))
     if not objective_ok:
         LOGGER.info(
@@ -640,21 +612,14 @@ def _predict_symbol_ex(symbol, asset_type, regime):
 
     now = int(time.time())
     # Stocks: skip weekends — expire at next trading day close, not 48 calendar hours
-    if asset_type == "stock":
-        import datetime as _dt, pytz as _tz
-        _ct = _tz.timezone("America/Chicago")
-        _now_dt = _dt.datetime.now(_ct)
-        # Add 48 trading hours = skip to next weekday if needed
-        _exp = _now_dt + _dt.timedelta(hours=48)
-        # If expiry lands on Saturday, push to Monday
-        if _exp.weekday() == 5: _exp += _dt.timedelta(days=2)
-        # If expiry lands on Sunday, push to Monday
-        elif _exp.weekday() == 6: _exp += _dt.timedelta(days=1)
-        # Set to 4 PM CT (market close) on that day
-        _exp = _exp.replace(hour=16, minute=0, second=0, microsecond=0)
-        hold = int(_exp.timestamp()) - now
-    else:
-        hold = CRYPTO_HOLD_H * 3600
+    import datetime as _dt, pytz as _tz
+    _ct = _tz.timezone("America/Chicago")
+    _now_dt = _dt.datetime.now(_ct)
+    _exp = _now_dt + _dt.timedelta(hours=48)
+    if _exp.weekday() == 5: _exp += _dt.timedelta(days=2)
+    elif _exp.weekday() == 6: _exp += _dt.timedelta(days=1)
+    _exp = _exp.replace(hour=16, minute=0, second=0, microsecond=0)
+    hold = int(_exp.timestamp()) - now
     # Dynamic targets based on real observed volatility per symbol (see core.vol_targets)
     _vol_pct = base_vol_pct(symbol, asset_type)
     # Also try DB — if 3+ real stop-loss hits, use those
@@ -706,7 +671,6 @@ def _predict_symbol_ex(symbol, asset_type, regime):
     # Build feature vector — stored in DB for future ML training
     now_dt = datetime.now(timezone.utc)
     features = {
-        "btc_24h_pct":      regime.get("btc_24h_pct", 0.0),
         "hour_of_day":      now_dt.hour,
         "day_of_week":      now_dt.weekday(),
         "symbol_win_rate":  round(confidence_raw, 3),
@@ -763,9 +727,9 @@ def run_prediction_cycle(with_diag: bool = False):
     auto_mode_state = objective_autotune_mode()
     regime = _check_regime()
     regime['confidence_floor_override'] = _cb_floor
-    symbols = ([(s.strip(),"crypto") for s in CRYPTO_SYMBOLS if s.strip()] +
-               # T07: skip stocks pre-market — features degrade before open, confidence drops below floor
-               ([(s.strip(),"stock") for s in STOCK_SYMBOLS if s.strip()] if (_is_market_hours() or not _is_premarket()) else []))
+    # WOLF-only: only stocks; skip pre-market (T07: features degrade before open).
+    symbols = ([(s.strip(),"stock") for s in STOCK_SYMBOLS if s.strip()]
+               if (_is_market_hours() or not _is_premarket()) else [])
     # AUTO-INCLUDE portfolio holdings — if you own it, Ghost watches it
     try:
         with db_conn() as _pc:
@@ -846,7 +810,6 @@ def run_prediction_cycle(with_diag: bool = False):
     # --- diagnostics for Telegram "no picks" accuracy ---
     _prio = [
         "dedup_blocked",
-        "regime_blocked_crypto_buy",
         "below_confidence_floor",
         "objective_gate",
         "objective_bootstrap_conf",
@@ -863,7 +826,6 @@ def run_prediction_cycle(with_diag: bool = False):
     ]
     _labels = {
         "dedup_blocked": "dedup (open pick already exists)",
-        "regime_blocked_crypto_buy": "regime blocked crypto BUY",
         "below_confidence_floor": "below confidence floor",
         "objective_gate": "objective gate (symbol WR below target)",
         "objective_bootstrap_conf": "objective bootstrap (confidence below bootstrap minimum)",
@@ -897,7 +859,6 @@ def run_prediction_cycle(with_diag: bool = False):
         "dedup_blocked": dedup_blocked,
         "skip_counts": dict(sorted(skip_counts.items(), key=lambda kv: (-kv[1], kv[0]))),
         "regime": regime.get("reason") or "",
-        "regime_btc_24h_pct": regime.get("btc_24h_pct"),
         "confidence_floor": regime.get("confidence_floor_override", CONFIDENCE_FLOOR),
         "objective_mode": _objective_mode(),
         "objective_mode_auto": auto_mode_state,
@@ -1107,7 +1068,7 @@ def reconcile_outcomes():
         open_preds = cur.fetchall()
     for pred_id, symbol, direction, entry, target, stop, expires_at, asset_type in open_preds:
         if None in (entry, target, stop): continue
-        price = get_price(symbol, asset_type or "crypto")
+        price = get_price(symbol)
         if not price: continue
         outcome = None
         if direction == "UP":

@@ -50,7 +50,7 @@ def _seed_prediction(symbol, outcome, predicted_at, resolved_at=None, expires_at
             INSERT INTO predictions
             (symbol, direction, confidence, entry_price, target_price, stop_price,
              run_at, predicted_at, expires_at, resolved_at, outcome, exit_price, pnl_pct, asset_type)
-            VALUES (%s, 'BUY', 0.90, 100.0, 103.0, 97.0, %s, %s, %s, %s, %s, 101.0, 1.0, 'crypto')
+            VALUES (%s, 'BUY', 0.90, 100.0, 103.0, 97.0, %s, %s, %s, %s, %s, 101.0, 1.0, 'stock')
             """,
             (
                 symbol,

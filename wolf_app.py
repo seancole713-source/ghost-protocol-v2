@@ -185,8 +185,7 @@ def _compute_get_stats(cur):
         v32r_wins = v32r_rows.get("WIN", 0)
         v32r_losses = v32r_rows.get("LOSS", 0)
         v32r_total = v32r_wins + v32r_losses
-    scan_crypto = [s.strip().upper() for s in os.getenv("CRYPTO_SYMBOLS", "").split(",") if s.strip()]
-    scan_stocks = [s.strip().upper() for s in os.getenv("STOCK_SYMBOLS", "").split(",") if s.strip()]
+    scan_stocks = [s.strip().upper() for s in os.getenv("STOCK_SYMBOLS", "WOLF").split(",") if s.strip()] or ["WOLF"]
     return {
         "ok": True,
         "wins": wins,
@@ -208,7 +207,7 @@ def _compute_get_stats(cur):
             "total": v32r_total,
             "win_rate_pct": round(v32r_wins / v32r_total * 100, 1) if v32r_total else 0.0,
         },
-        "scan_symbols": {"crypto": scan_crypto, "stocks": scan_stocks},
+        "scan_symbols": {"stocks": scan_stocks},
     }
 
 
@@ -430,7 +429,6 @@ def _morning_card_job():
                         _top = (_cd.get("top_reason_label") or "unknown").strip()
                         _sum = (_cd.get("skip_summary") or "").strip()
                         _reg = (_cd.get("regime") or "").strip()
-                        _btc = _cd.get("regime_btc_24h_pct")
                         _cf = _cd.get("confidence_floor")
                         _sc = _cd.get("symbols_scanned")
                         _cand = _cd.get("candidates")
@@ -441,11 +439,6 @@ def _morning_card_job():
                             f"Top: {_top}"
                             + (f". Counts: {_sum}" if _sum else "")
                             + (f". Regime: {_reg}" if _reg else "")
-                            + (
-                                f" (BTC 24h {float(_btc):+.1f}%)"
-                                if isinstance(_btc, (int, float))
-                                else ""
-                            )
                             + (
                                 f". Conf floor {float(_cf)*100:.1f}%"
                                 if isinstance(_cf, (int, float))
@@ -488,22 +481,16 @@ def _weekly_summary_job():
 
 
 def _build_train_symbol_list():
-    """Training symbol universe = env symbols + portfolio holdings."""
-    from core.prediction import CRYPTO_SYMBOLS, STOCK_SYMBOLS
-    syms = [(s.strip().upper(), "crypto") for s in CRYPTO_SYMBOLS if s.strip()] + [
-        (s.strip().upper(), "stock") for s in STOCK_SYMBOLS if s.strip()
-    ]
+    """Training symbol universe = WOLF + portfolio holdings (WOLF-only mode)."""
+    from core.prediction import STOCK_SYMBOLS
+    syms = [(s.strip().upper(), "stock") for s in STOCK_SYMBOLS if s.strip()]
     try:
         with db_conn() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT DISTINCT symbol, asset_type FROM user_portfolio")
-            for sym, at in cur.fetchall():
-                k = (str(sym or "").strip().upper(), (at or "stock").strip().lower())
-                if not k[0]:
-                    continue
-                if k[1] != "crypto":
-                    k = (k[0], "stock")
-                if k not in syms:
+            cur.execute("SELECT DISTINCT symbol FROM user_portfolio")
+            for (sym,) in cur.fetchall():
+                k = (str(sym or "").strip().upper(), "stock")
+                if k[0] and k not in syms:
                     syms.append(k)
     except Exception as e:
         LOGGER.warning("Coverage symbol build failed: %s", str(e)[:80])
@@ -727,10 +714,8 @@ async def lifespan(app: FastAPI):
                     )
             except Exception as _wse2:
                 LOGGER.warning("Weekly retrain state write failed: %s", str(_wse2)[:80])
-            from core.prediction import CRYPTO_SYMBOLS, STOCK_SYMBOLS
-            syms = [(s.strip(), "crypto") for s in CRYPTO_SYMBOLS if s.strip()] + [
-                (s.strip(), "stock") for s in STOCK_SYMBOLS if s.strip()
-            ]
+            from core.prediction import STOCK_SYMBOLS
+            syms = [(s.strip(), "stock") for s in STOCK_SYMBOLS if s.strip()]
             trained, failed = 0, len(syms)
             try:
                 # train_and_validate expects one list of (symbol, asset_type), not per-symbol calls
@@ -768,24 +753,19 @@ async def lifespan(app: FastAPI):
                     return
                 _lock_acquired = True
                 LOGGER.info("No v3.2 TP/SL model found — training on startup...")
-                crypto = [(s.strip(),"crypto") for s in os.getenv("CRYPTO_SYMBOLS","").split(",") if s.strip()]
-                stocks = [(s.strip(),"stock") for s in os.getenv("STOCK_SYMBOLS","").split(",") if s.strip()]
+                stocks = [(s.strip(),"stock") for s in os.getenv("STOCK_SYMBOLS","WOLF").split(",") if s.strip()] or [("WOLF","stock")]
                 try:
                     from core.db import db_conn as _dbc
                     with _dbc() as _c:
                         _curp = _c.cursor()
-                        _curp.execute("SELECT DISTINCT symbol, asset_type FROM user_portfolio")
-                        for sym, at in _curp.fetchall():
-                            _entry = (sym.strip().upper(), (at or "stock").strip().lower())
-                            if _entry[1] == "crypto":
-                                if _entry not in crypto:
-                                    crypto.append(_entry)
-                            else:
-                                if _entry not in stocks:
-                                    stocks.append((_entry[0], "stock"))
+                        _curp.execute("SELECT DISTINCT symbol FROM user_portfolio")
+                        for (sym,) in _curp.fetchall():
+                            _entry = (str(sym or "").strip().upper(), "stock")
+                            if _entry[0] and _entry not in stocks:
+                                stocks.append(_entry)
                 except Exception:
                     pass
-                m, acc, passed = train_and_validate(crypto + stocks)
+                m, acc, passed = train_and_validate(stocks)
                 LOGGER.info(f"Startup training: acc={round(acc*100,1)}% passed={passed}")
                 try:
                     purged = _auto_purge_bad_models()
@@ -1130,7 +1110,6 @@ def _auto_purge_bad_models():
             reg = cur.fetchone()
             if not reg or not reg[0]:
                 return 0
-            cur.execute("DELETE FROM ghost_models WHERE symbol='ARB'")
             cur.execute("SELECT id, symbol, metadata FROM ghost_models")
             rows = cur.fetchall()
             purged = 0
@@ -1158,9 +1137,6 @@ async def delete_model(x_cron_secret: str = Header(None)):
     try:
         with db_conn() as conn:
             cur = conn.cursor()
-            # Always delete ARB (43 bars, never trains)
-            cur.execute("DELETE FROM ghost_v3_model WHERE key IN ('model_ARB','meta_ARB')")
-            deleted.append("ARB")
             # Delete all models below accuracy floor
             cur.execute("SELECT key, value FROM ghost_v3_model WHERE key LIKE 'meta_%'")
             rows = cur.fetchall()
@@ -1265,7 +1241,7 @@ def health():
         issues.append("DB failed: " + str(e)[:60])
 
     # 2. Price feeds
-    feeds = {"coingecko": False, "coinbase": False, "binance": False, "polygon": False, "summary": "0/4 feeds responding"}
+    feeds = {"alpaca_stock": False, "yfinance": False, "summary": "0/2 feeds responding"}
     try:
         feeds = check_feeds()
         feeds_ok = sum(1 for k,v in feeds.items() if k != "summary" and v)
@@ -1327,7 +1303,7 @@ def health():
             cur = conn.cursor()
             cur.execute("SELECT COUNT(*) FROM predictions WHERE outcome IS NULL AND expires_at > %s", (_t.time(),))
             open_picks = cur.fetchone()[0]
-        total_syms = len([s for s in os.getenv("CRYPTO_SYMBOLS","").split(",") if s.strip()]) +                      len([s for s in os.getenv("STOCK_SYMBOLS","").split(",") if s.strip()])
+        total_syms = len([s for s in os.getenv("STOCK_SYMBOLS","WOLF").split(",") if s.strip()]) or 1
         if open_picks >= total_syms > 0:
             dedup_blocked = True
             warnings.append("Dedup blocking all " + str(total_syms) + " symbols")
@@ -1514,17 +1490,8 @@ def health_audit_history(limit: int = 20):
 
 @APP.get("/api/regime", include_in_schema=False)
 def api_regime():
-    try:
-        from core.prediction import _check_regime
-        return {"ok": True, **_check_regime()}
-    except Exception as e:
-        return {
-            "ok": False,
-            "error": str(e)[:120],
-            "block_crypto_buys": False,
-            "reason": "",
-            "btc_24h_pct": 0.0,
-        }
+    """WOLF-only mode: regime gate is a no-op. Endpoint retained for back-compat."""
+    return {"ok": True, "block_crypto_buys": False, "reduce_size": False, "reason": "", "btc_24h_pct": 0.0}
 
 
 @APP.get("/api/objective")
@@ -1667,7 +1634,6 @@ def retrain(x_cron_secret: str = Header(default="")):
         raise HTTPException(status_code=403)
     try:
         import xgboost as xgb, numpy as np, json as _json, time as _time
-        CRYPTO = {'BTC','ETH','SOL','XRP','ADA','DOT','LINK','AVAX','MATIC','LTC','ATOM','UNI','TRX','BCH','CHZ','TURBO','ZEC','RNDR'}
         with db_conn() as conn:
             cur = conn.cursor()
             cur.execute("""
@@ -1699,7 +1665,7 @@ def retrain(x_cron_secret: str = Header(default="")):
             if ts:
                 dt = _dt.datetime.fromtimestamp(float(ts))
                 h, dow = dt.hour, dt.weekday()
-            X.append([float(conf), 1.0 if direction=="UP" else 0.0, 1.0 if sym in CRYPTO else 0.0,
+            X.append([float(conf), 1.0 if direction=="UP" else 0.0, 0.0,
                        float(pct), 0.03, float(pct)/0.03 if pct else 1.0,
                        float(wr), float(sc), float(min(entry,10000))/10000,
                        float(h)/24, float(dow)/7])
@@ -1724,9 +1690,10 @@ def retrain(x_cron_secret: str = Header(default="")):
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 @APP.get("/api/price/{symbol}")
-def get_price_endpoint(symbol: str, asset_type: str = "crypto"):
+def get_price_endpoint(symbol: str, asset_type: str = "stock"):
+    """WOLF-only mode: asset_type is ignored, always returns stock price."""
     from core.prices import get_price
-    price = get_price(symbol, asset_type)
+    price = get_price(symbol)
     return {"ok": price is not None, "symbol": symbol, "price": price}
 
 @APP.post("/api/migrate-outcomes")
@@ -1755,7 +1722,7 @@ def migrate_outcomes(x_cron_secret: str = Header(default="")):
                     CASE WHEN gpo.hit_direction = 1 THEN 'WIN' ELSE 'LOSS' END,
                     gpo.price_at_resolution,
                     gpo.realized_move_pct,
-                    CASE WHEN gpo.symbol = ANY(ARRAY['BTC','ETH','SOL','XRP','ADA','DOT','LINK','AVAX','MATIC','LTC','ATOM','UNI','TRX','BCH','CHZ','TURBO','ZEC','RNDR']) THEN 'crypto' ELSE 'stock' END
+                    'stock'
                 FROM ghost_prediction_outcomes gpo
                 WHERE gpo.hit_direction IS NOT NULL
                 AND gpo.price_at_prediction IS NOT NULL
@@ -2071,7 +2038,7 @@ def debug_signal(symbol: str):
     import os
     from core.prices import get_price
     from core.prediction import _get_symbol_signal, _check_regime, CONFIDENCE_FLOOR, EDGE_THRESHOLD, INVERSE_THRESHOLD, MIN_SAMPLES
-    price = get_price(symbol, "crypto")
+    price = get_price(symbol)
     regime = _check_regime()
     signal_error = None
     try:
@@ -2248,17 +2215,8 @@ def cockpit_context():
     """Single fetch for /cockpit: health, stats, direction, regime, v3, activity summary."""
     try:
         stats, direction, v3, activity = _cockpit_cached_db_payload()
-        try:
-            from core.prediction import _check_regime
-            regime = {"ok": True, **_check_regime()}
-        except Exception as _re:
-            regime = {
-                "ok": False,
-                "error": str(_re)[:120],
-                "block_crypto_buys": False,
-                "reason": "",
-                "btc_24h_pct": 0.0,
-            }
+        # WOLF-only mode: regime gate is a no-op.
+        regime = {"ok": True, "block_crypto_buys": False, "reduce_size": False, "reason": "", "btc_24h_pct": 0.0}
         return {
             "ok": True,
             "health": health(),
@@ -2286,20 +2244,19 @@ def v3_train(x_cron_secret: str = Header(default="")):
         try:
             from core.signal_engine import train_and_validate
             import os
-            crypto = [(s.strip(), "crypto") for s in os.getenv("CRYPTO_SYMBOLS","").split(",") if s.strip()]
-            stocks = [(s.strip(), "stock") for s in os.getenv("STOCK_SYMBOLS","").split(",") if s.strip()]
+            stocks = [(s.strip(), "stock") for s in os.getenv("STOCK_SYMBOLS","WOLF").split(",") if s.strip()] or [("WOLF","stock")]
             # Also include portfolio symbols
             try:
                 from core.db import db_conn
                 with db_conn() as conn:
                     cur = conn.cursor()
-                    cur.execute("SELECT DISTINCT symbol, asset_type FROM user_portfolio")
-                    for sym, at in cur.fetchall():
-                        entry = (sym.strip(), (at or "stock").strip())
-                        if entry not in crypto and entry not in stocks:
+                    cur.execute("SELECT DISTINCT symbol FROM user_portfolio")
+                    for (sym,) in cur.fetchall():
+                        entry = (str(sym or "").strip().upper(), "stock")
+                        if entry[0] and entry not in stocks:
                             stocks.append(entry)
             except Exception: pass
-            model, accuracy, passed = train_and_validate(crypto + stocks)
+            model, accuracy, passed = train_and_validate(stocks)
             LOGGER.info(f"v3 training complete: accuracy={round(accuracy*100,1)}% passed={passed}")
             _bump_cockpit_db_cache()
             try:
@@ -2314,7 +2271,7 @@ def v3_train(x_cron_secret: str = Header(default="")):
     return {"ok": True, "message": "Training started in background. Check /api/v3/status in 3-5 minutes."}
 
 @APP.post("/api/v3/backtest")
-def v3_backtest(x_cron_secret: str = Header(default=""), symbol: str = "LTC", asset_type: str = "crypto"):
+def v3_backtest(x_cron_secret: str = Header(default=""), symbol: str = "WOLF", asset_type: str = "stock"):
     """
     Historical samples for v3 training: TP/SL WIN before stop within N daily bars
     (same rules as live reconcile / core.vol_targets).

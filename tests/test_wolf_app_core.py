@@ -63,8 +63,7 @@ def test_v32_stats_start_ts_allows_backward_correction(monkeypatch):
     cur = RoutingCursor(
         sticky_ts=1775606400,
         metas={
-            "UNI": {"label_type": "tp_sl_daily", "trained_at": 1775347200},
-            "SOL": {"label_type": "tp_sl_daily", "trained_at": 1775400000},
+            "WOLF": {"label_type": "tp_sl_daily", "trained_at": 1775347200},
         },
         hist_min=1775380000,
     )
@@ -75,8 +74,7 @@ def test_v32_stats_start_ts_allows_backward_correction(monkeypatch):
 
 def test_compute_get_stats_uses_v32_breakdowns(monkeypatch):
     monkeypatch.setenv("V3_STATS_START_TS", "1775347200")
-    monkeypatch.setenv("CRYPTO_SYMBOLS", "ETH, UNI")
-    monkeypatch.setenv("STOCK_SYMBOLS", "TSLA, META")
+    monkeypatch.setenv("STOCK_SYMBOLS", "WOLF")
     cur = QueueCursor(
         fetchall_values=[
             [("WIN", 10), ("LOSS", 5)],
@@ -94,8 +92,7 @@ def test_compute_get_stats_uses_v32_breakdowns(monkeypatch):
     assert payload["post_v32"]["losses"] == 1
     assert payload["post_v32_resolved"]["wins"] == 1
     assert payload["post_v32_resolved"]["losses"] == 2
-    assert payload["scan_symbols"]["crypto"] == ["ETH", "UNI"]
-    assert payload["scan_symbols"]["stocks"] == ["TSLA", "META"]
+    assert payload["scan_symbols"]["stocks"] == ["WOLF"]
 
 
 def test_api_health_alias_calls_health(monkeypatch):

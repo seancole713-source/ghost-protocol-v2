@@ -26,8 +26,8 @@ const READ_ONLY_JSON_GETS = [
   "/api/objective",
   "/api/objective/report?days=7",
   "/api/health/audit/history",
-  "/api/price/BTC",
-  "/api/debug-signal/BTC",
+  "/api/price/WOLF",
+  "/api/debug-signal/WOLF",
 ];
 
 test.describe("API GET surface", () => {

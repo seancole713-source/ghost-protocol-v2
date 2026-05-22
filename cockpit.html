@@ -135,8 +135,7 @@ body{background:#0a0a0a;color:#fff;font-family:-apple-system,BlinkMacSystemFont,
 </div>
 
 <div class="tabs">
-  <div class="tab active" id="tab-crypto" onclick="show('crypto')">&#129689; CRYPTO PLAYS</div>
-  <div class="tab" id="tab-stocks" onclick="show('stocks')">&#128200; STOCK PLAYS</div>
+  <div class="tab active" id="tab-stocks" onclick="show('stocks')">&#128200; WOLF PLAYS</div>
   <div class="tab" id="tab-portfolio" onclick="show('portfolio')">&#128188; MY PORTFOLIO</div>
   <div class="tab" id="tab-results" onclick="show('results')">&#128202; RESULTS</div>
   <div class="tab" id="tab-news" onclick="show('news')">&#128240; NEWS</div>
@@ -177,23 +176,20 @@ body{background:#0a0a0a;color:#fff;font-family:-apple-system,BlinkMacSystemFont,
 </div>
 
 <div class="main">
-  <div class="panel active" id="panel-crypto">
-    <div class="sec-label">Today's Crypto Plays</div>
+  <div class="panel active" id="panel-stocks">
+    <div class="sec-label">Today's WOLF Play</div>
     <div class="grid" id="cgrid"><div class="empty"><div class="ico">&#9203;</div><p>Loading plays...</p></div></div>
-  </div>
-  <div class="panel" id="panel-stocks">
-    <div class="sec-label">Today's Stock Plays</div>
-    <div id="sgrid"><div class="empty"><div class="ico">&#9203;</div><p>Loading...</p></div></div>
+    <div id="sgrid"></div>
   </div>
   <div class="panel" id="panel-portfolio">
     <div class="sec-label">My Portfolio</div>
     <div class="port-form">
       <h3>Add a Position</h3>
       <div class="form-row">
-        <div><label>SYMBOL</label><input id="p-sym" placeholder="BTC, AAPL..."></div>
-        <div><label>TYPE</label><select id="p-type"><option value="crypto">Crypto</option><option value="stock">Stock</option></select></div>
-        <div><label>QUANTITY</label><input id="p-qty" type="number" placeholder="0.5"></div>
-        <div><label>PRICE PAID ($)</label><input id="p-bp" type="number" step="0.000001" placeholder="65000"></div>
+        <div><label>SYMBOL</label><input id="p-sym" placeholder="WOLF" value="WOLF"></div>
+        <div><label>TYPE</label><select id="p-type"><option value="stock">Stock</option></select></div>
+        <div><label>QUANTITY</label><input id="p-qty" type="number" placeholder="100"></div>
+        <div><label>PRICE PAID ($)</label><input id="p-bp" type="number" step="0.000001" placeholder="3.50"></div>
         <div><label>DATE</label><input id="p-date" type="date"></div>
         <div><label>&nbsp;</label><button class="btn-add" onclick="addPos()">+ ADD</button></div>
       </div>
@@ -257,7 +253,7 @@ function makeCard(p) {
   var html = '<div class="card ' + dc + '">';
   html += '<div class="card-header">';
   html += '<div><span class="sym">' + sym + '</span>';
-  html += '<span class="badge' + (isStock ? ' stock' : '') + '">' + (isStock ? 'STOCK' : 'CRYPTO') + '</span></div>';
+  html += '<span class="badge stock">STOCK</span></div>';
   html += '<span class="pill ' + dc + '">' + (buy ? 'BUY' : 'SELL') + '</span>';
   html += '</div>';
   html += '<div class="action">';
@@ -551,7 +547,7 @@ async function load() {
 
     document.getElementById('cgrid').innerHTML = dc.length > 0
       ? dc.map(makeCard).join('')
-      : '<div class="empty"><div class="ico">&#128235;</div><p>No crypto plays today.<br>Check back at 8 AM CT.</p></div>';
+      : '<div class="empty"><div class="ico">&#128235;</div><p>No WOLF play yet today.<br>Check back at 8 AM CT.</p></div>';
 
     var sg = document.getElementById('sgrid');
     if (stocks.length > 0) {
