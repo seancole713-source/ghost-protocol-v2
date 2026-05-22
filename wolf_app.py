@@ -2744,6 +2744,21 @@ def v3_train_sync(x_cron_secret: str = Header(default=""), force: bool = False):
         except Exception:
             models_after = 0
         finished_at = int(time.time())
+        # PR #20: surface per-symbol gate-fail detail in the response so
+        # the operator doesn't have to grep Railway logs for RETRAIN lines.
+        # train_and_validate persists this to ghost_state.last_train_details.
+        train_details = None
+        try:
+            import json as _json
+            with db_conn() as _dc:
+                _dcur = _dc.cursor()
+                _dcur.execute("SELECT val FROM ghost_state WHERE key='last_train_details'")
+                _drow = _dcur.fetchone()
+                if _drow and _drow[0]:
+                    train_details = _json.loads(_drow[0])
+        except Exception as _de:
+            LOGGER.warning("train detail read failed: " + str(_de)[:120])
+
         result = {
             "ok": True,
             "_pr_version": _RUNNING_PR_VERSION,
@@ -2755,6 +2770,7 @@ def v3_train_sync(x_cron_secret: str = Header(default=""), force: bool = False):
             "started_at": started_at,
             "finished_at": finished_at,
             "duration_s": finished_at - started_at,
+            "train_details": train_details,
         }
         _record_v3_train_state(
             state="passed" if passed else "failed",

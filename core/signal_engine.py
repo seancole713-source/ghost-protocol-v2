@@ -689,6 +689,26 @@ def build_training_data(symbols_and_types):
     y = np.array([r['label'] for r in all_rows])
     return X, y, FEATURE_COLS
 
+def _persist_train_details(details_list) -> None:
+    """Persist per-symbol training diagnostics to ghost_state.last_train_details.
+
+    Lets the v3_train_sync endpoint surface gate-fail reasons in its response
+    instead of forcing the operator to grep Railway logs for RETRAIN lines.
+    """
+    try:
+        from core.db import db_conn
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            cur.execute(
+                "INSERT INTO ghost_state(key,val) VALUES('last_train_details', %s) "
+                "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
+                (json.dumps({"ts": int(time.time()), "symbols": details_list}),),
+            )
+    except Exception as _e:
+        LOGGER.warning("train details persist failed: " + str(_e)[:120])
+
+
 def train_and_validate(symbols_and_types):
     try:
         from xgboost import XGBClassifier
@@ -698,16 +718,24 @@ def train_and_validate(symbols_and_types):
     except ImportError as e:
         LOGGER.error("Missing dep: "+str(e)); return None, 0.0, False
     total_passed = 0
+    details: list = []
     for symbol, asset_type in symbols_and_types:
+        symbol_detail = {"symbol": symbol, "asset_type": asset_type}
         try:
             rows = backtest_symbol(symbol, asset_type)
             n_samples = len(rows) if rows else 0
             min_rows = _min_train_rows()
             if not rows or n_samples < min_rows:
+                fail_msg = f"n_samples<{min_rows} ({n_samples})"
                 LOGGER.info(
                     f"RETRAIN [{symbol}]: acc=NA edge=NA wf_folds=NA wf_acc_mean=NA wf_edge_mean=NA wf_acc_min=NA "
-                    f"| FAIL: n_samples<{min_rows} ({n_samples})"
+                    f"| FAIL: {fail_msg}"
                 )
+                symbol_detail.update({
+                    "passed": False, "fail_reason": fail_msg,
+                    "n_samples": n_samples, "stage": "pre_train",
+                })
+                details.append(symbol_detail)
                 continue
             X = np.array([[r["features"].get(c, 0.0) for c in FEATURE_COLS] for r in rows])
             y = np.array([r["label"] for r in rows])
@@ -757,6 +785,32 @@ def train_and_validate(symbols_and_types):
                 f"wf_edge_mean={wf['edge_mean']*100:.1f}% wf_acc_min={wf['acc_min']*100:.1f}% "
                 f"| {'PASS' if passes else 'FAIL: ' + fail_reason}"
             )
+            symbol_detail.update({
+                "passed": bool(passes),
+                "fail_reason": fail_reason,
+                "stage": "trained",
+                "n_samples": n_samples,
+                "wins_ct": wins_ct,
+                "natural_rate": round(natural_rate, 4),
+                "holdout_acc": round(accuracy, 4),
+                "edge": round(edge, 4),
+                "wf_fold_count": int(wf["fold_count"]),
+                "wf_acc_mean": round(wf["acc_mean"], 4),
+                "wf_acc_min": round(wf["acc_min"], 4),
+                "wf_edge_mean": round(wf["edge_mean"], 4),
+                "wf_edge_min": round(wf["edge_min"], 4),
+                "gates": [{"name": n, "passed": bool(p), "msg": m} for n, p, m in gate_checks],
+                "thresholds": {
+                    "min_train_rows": min_rows,
+                    "min_tp_sl_wins": min_wins,
+                    "min_holdout_acc": min_acc,
+                    "min_edge": min_edge,
+                    "min_wf_folds": min_wf_folds,
+                    "min_wf_acc_mean": min_wf_acc,
+                    "min_wf_acc_min": symbol_wf_acc_min,
+                },
+            })
+            details.append(symbol_detail)
             if passes:
                 model_bytes = base64.b64encode(pickle.dumps(model)).decode('ascii')
                 meta = json.dumps({
@@ -785,7 +839,13 @@ def train_and_validate(symbols_and_types):
                 total_passed += 1
         except Exception as e:
             LOGGER.warning(f"Training failed {symbol}: {e}")
+            symbol_detail.update({
+                "passed": False, "fail_reason": "exception: " + str(e)[:200],
+                "stage": "exception",
+            })
+            details.append(symbol_detail)
     LOGGER.info(f"v3.2 training: {total_passed}/{len(symbols_and_types)} passed")
+    _persist_train_details(details)
     return None, total_passed / max(len(symbols_and_types), 1), total_passed > 0
 
 def load_model(symbol=None):

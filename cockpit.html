@@ -1665,10 +1665,13 @@ async function handleTrainSyncClick(){
     if(body.ok){
       var icon = body.passed ? '<span class="train-ok">&#10003;</span>' : '<span class="train-warn">&#x23F3;</span>';
       var pct = body.accuracy != null ? body.accuracy.toFixed(2) + '%' : '—';
-      resultEl.innerHTML = icon + ' <b>passed=' + body.passed + '</b> &middot; acc=' + pct
+      var headline = icon + ' <b>passed=' + body.passed + '</b> &middot; acc=' + pct
         + ' &middot; models ' + body.models_before + '&rarr;' + body.models_after
         + ' &middot; ' + (body.duration_s || 0) + 's'
         + ' <span style="color:#666">(PR #' + body._pr_version + ')</span>';
+      // PR #20: per-symbol gate detail
+      var detail = renderTrainDetails(body.train_details);
+      resultEl.innerHTML = headline + detail;
       if(secretEl) secretEl.value = '';
     } else {
       resultEl.innerHTML = '<span class="train-fail">&#10007;</span> ' + escHtml(body.error || 'sync train failed')
@@ -1680,6 +1683,57 @@ async function handleTrainSyncClick(){
   } finally {
     btns.forEach(function(b){ b.disabled = false; });
   }
+}
+
+function renderTrainDetails(td){
+  if(!td || !td.symbols || !td.symbols.length) return '';
+  var html = '<div style="margin-top:10px"><div class="truth-note" style="margin-bottom:6px"><b>Per-symbol gate detail</b></div>';
+  td.symbols.forEach(function(s){
+    var statusCls = s.passed ? 'train-ok' : 'train-fail';
+    var statusIcon = s.passed ? '&#10003;' : '&#10007;';
+    var lines = [];
+    lines.push('<div style="font-size:12px;line-height:1.7">');
+    lines.push('<span class="' + statusCls + '">' + statusIcon + '</span> '
+      + '<b>' + escHtml(s.symbol) + '</b> &middot; <b>passed=' + s.passed + '</b>'
+      + (s.fail_reason ? ' &middot; fail: <span class="train-fail">' + escHtml(s.fail_reason) + '</span>' : ''));
+
+    if(s.stage === 'pre_train'){
+      lines.push('<div style="color:#888;font-size:11px;margin-left:14px">'
+        + 'Stage: pre_train (didn\'t reach model fit) &middot; n_samples=' + (s.n_samples != null ? s.n_samples : '—')
+        + '</div>');
+    } else if(s.stage === 'exception'){
+      lines.push('<div style="color:#888;font-size:11px;margin-left:14px">Stage: exception — see Railway logs for stack trace</div>');
+    } else if(s.stage === 'trained'){
+      var metrics = [
+        ['n_samples', s.n_samples, s.thresholds && s.thresholds.min_train_rows],
+        ['tp_sl_wins', s.wins_ct, s.thresholds && s.thresholds.min_tp_sl_wins],
+        ['holdout_acc', (s.holdout_acc != null ? (s.holdout_acc * 100).toFixed(1) + '%' : '—'),
+          (s.thresholds && s.thresholds.min_holdout_acc != null ? (s.thresholds.min_holdout_acc * 100).toFixed(1) + '%' : '—')],
+        ['edge', (s.edge != null ? (s.edge * 100).toFixed(1) + '%' : '—'),
+          (s.thresholds && s.thresholds.min_edge != null ? (s.thresholds.min_edge * 100).toFixed(1) + '%' : '—')],
+        ['wf_folds', s.wf_fold_count, s.thresholds && s.thresholds.min_wf_folds],
+        ['wf_acc_mean', (s.wf_acc_mean != null ? (s.wf_acc_mean * 100).toFixed(1) + '%' : '—'),
+          (s.thresholds && s.thresholds.min_wf_acc_mean != null ? (s.thresholds.min_wf_acc_mean * 100).toFixed(1) + '%' : '—')],
+        ['wf_acc_min', (s.wf_acc_min != null ? (s.wf_acc_min * 100).toFixed(1) + '%' : '—'),
+          (s.thresholds && s.thresholds.min_wf_acc_min != null ? (s.thresholds.min_wf_acc_min * 100).toFixed(1) + '%' : '—')],
+        ['natural_rate', (s.natural_rate != null ? (s.natural_rate * 100).toFixed(1) + '%' : '—'), '—'],
+      ];
+      var rows = metrics.map(function(m){
+        return '<tr><td style="padding:2px 8px;color:#888">' + m[0] + '</td>'
+          + '<td style="padding:2px 8px;color:#fff"><b>' + escHtml(String(m[1])) + '</b></td>'
+          + '<td style="padding:2px 8px;color:#666">need &ge; ' + escHtml(String(m[2])) + '</td></tr>';
+      }).join('');
+      lines.push('<table style="margin-left:14px;margin-top:4px;font-size:11px;border-collapse:collapse">'
+        + '<thead><tr><th style="text-align:left;color:#555;padding:2px 8px;font-weight:600">metric</th>'
+        + '<th style="text-align:left;color:#555;padding:2px 8px;font-weight:600">actual</th>'
+        + '<th style="text-align:left;color:#555;padding:2px 8px;font-weight:600">threshold</th></tr></thead>'
+        + '<tbody>' + rows + '</tbody></table>');
+    }
+    lines.push('</div>');
+    html += lines.join('');
+  });
+  html += '</div>';
+  return html;
 }
 
 async function handleVersionCheckClick(){
