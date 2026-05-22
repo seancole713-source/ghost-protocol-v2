@@ -187,6 +187,9 @@ def _compute_get_stats(cur):
         v32r_losses = v32r_rows.get("LOSS", 0)
         v32r_total = v32r_wins + v32r_losses
     scan_stocks = [s.strip().upper() for s in os.getenv("STOCK_SYMBOLS", "WOLF").split(",") if s.strip()] or ["WOLF"]
+    # WOLF-only hardening (PR #8): refuse to surface non-WOLF symbols in the
+    # scan list even if the Railway env var is stale. WOLF is always included.
+    scan_stocks = [s for s in scan_stocks if s == "WOLF"] or ["WOLF"]
     return {
         "ok": True,
         "wins": wins,
@@ -1621,6 +1624,111 @@ def trigger_reconcile(x_cron_secret: str = Header(default="")):
     count = reconcile_outcomes()
     return {"ok": True, "resolved": count}
 
+@APP.post("/api/wolf/signal-alert/check")
+def wolf_signal_alert_check(x_cron_secret: str = Header(default="")):
+    """Scan recent WOLF picks for unalerted high-confidence signals; fire Telegram.
+
+    Throttling:
+      - Confidence floor: 0.80 (only high-conviction signals alert)
+      - Per-pick dedup: each prediction id only alerts once (wolf_signal_alerts table)
+      - Daily cap: max 2 alerts per UTC day
+
+    Designed to be called from a cron after /api/run-predictions or
+    /api/morning-card. Safe to call repeatedly — dedup prevents duplicates.
+    """
+    if not _cron_ok(x_cron_secret):
+        raise HTTPException(status_code=403)
+
+    conf_floor = float(os.getenv("WOLF_ALERT_CONFIDENCE_FLOOR", "0.80"))
+    daily_cap = int(os.getenv("WOLF_ALERT_DAILY_CAP", "2"))
+    day_start = int(time.time()) - (int(time.time()) % 86400)
+
+    sent: list[dict] = []
+    errors: list[str] = []
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS wolf_signal_alerts (
+                    prediction_id BIGINT PRIMARY KEY,
+                    sent_at BIGINT NOT NULL,
+                    direction TEXT,
+                    entry_price DOUBLE PRECISION,
+                    target_price DOUBLE PRECISION,
+                    confidence DOUBLE PRECISION
+                )
+                """
+            )
+            cur.execute(
+                "SELECT COUNT(*) FROM wolf_signal_alerts WHERE sent_at >= %s",
+                (day_start,),
+            )
+            sent_today = int(cur.fetchone()[0] or 0)
+            remaining = max(0, daily_cap - sent_today)
+            if remaining <= 0:
+                return {"ok": True, "sent": [], "skipped_reason": "daily cap reached",
+                        "sent_today": sent_today, "daily_cap": daily_cap}
+
+            cur.execute(
+                """
+                SELECT p.id, p.direction, p.confidence, p.entry_price, p.target_price,
+                       p.stop_price, p.expires_at, p.predicted_at
+                FROM predictions p
+                LEFT JOIN wolf_signal_alerts a ON a.prediction_id = p.id
+                WHERE p.symbol = 'WOLF'
+                  AND p.outcome IS NULL
+                  AND p.confidence >= %s
+                  AND p.predicted_at >= %s
+                  AND a.prediction_id IS NULL
+                ORDER BY p.confidence DESC, p.predicted_at DESC
+                LIMIT %s
+                """,
+                (conf_floor, day_start, remaining),
+            )
+            candidates = cur.fetchall()
+
+            from core.telegram import _send
+            for row in candidates:
+                pid, direction, conf, entry, target, stop, expires, predicted = row
+                buy_dir = direction in ("UP", "BUY")
+                head = "BUY SIGNAL" if buy_dir else "SELL SIGNAL"
+                entry_label = "Buy at" if buy_dir else "Short at"
+                target_label = "Target" if buy_dir else "Cover at"
+                hrs = max(0, int(((expires or 0) - time.time()) // 3600)) if expires else None
+                body = (
+                    f"\U0001F43A {head}: WOLF\n"
+                    f"{entry_label} ${float(entry):.2f}\n"
+                    f"{target_label} ${float(target):.2f}\n"
+                    f"Stop ${float(stop):.2f}\n"
+                    f"Confidence: {round(float(conf) * 100, 1)}%"
+                    + (f"\nWindow: ~{hrs}h" if hrs is not None else "")
+                )
+                try:
+                    _send(body)
+                except Exception as _se:
+                    errors.append(f"id={pid} telegram: {str(_se)[:80]}")
+                    continue
+                cur.execute(
+                    "INSERT INTO wolf_signal_alerts(prediction_id, sent_at, direction, "
+                    "entry_price, target_price, confidence) VALUES (%s,%s,%s,%s,%s,%s) "
+                    "ON CONFLICT (prediction_id) DO NOTHING",
+                    (int(pid), int(time.time()), direction, float(entry) if entry else None,
+                     float(target) if target else None, float(conf) if conf else None),
+                )
+                sent.append({
+                    "prediction_id": int(pid), "direction": direction,
+                    "entry_price": float(entry) if entry else None,
+                    "target_price": float(target) if target else None,
+                    "confidence": float(conf) if conf else None,
+                })
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200], "sent": sent, "errors": errors}, status_code=500)
+
+    return {"ok": True, "sent": sent, "sent_today": sent_today + len(sent),
+            "daily_cap": daily_cap, "errors": errors}
+
+
 @APP.post("/api/test-alert")
 def test_alert():
     """Send test message to Telegram to verify connection."""
@@ -2183,9 +2291,25 @@ if os.path.exists("static"):
 
 @APP.get("/api/v3/status")
 def v3_status():
-    """Model status — accuracy, edge over random, top features."""
+    """Model status — accuracy, edge over random, top features.
+
+    WOLF-only hardening (PR #8): even if ghost_v3_model has stale rows for
+    other symbols (e.g. BCH/SOL/UNI from the pre-WOLF crypto era), this
+    endpoint never exposes them. Filtering at the wrapper keeps the source
+    function reusable for one-off diagnostics that may need full coverage.
+    """
     from core.signal_engine import get_model_status
-    return get_model_status()
+    st = get_model_status() or {}
+    syms = st.get("symbols") or {}
+    if syms:
+        wolf_only = {k: v for k, v in syms.items() if str(k).upper() == "WOLF"}
+        st["symbols"] = wolf_only
+        if st.get("trained"):
+            st["models"] = len(wolf_only)
+            if not wolf_only:
+                st["trained"] = False
+                st["reason"] = "No WOLF model trained — run /api/v3/train"
+    return st
 
 
 @APP.get("/api/coverage")
