@@ -1353,3 +1353,112 @@ def test_v3_train_sync_requires_cron_secret_when_set(monkeypatch):
     body = json.loads(resp.body)
     assert resp.status_code == 403
     assert body["ok"] is False
+
+
+# ── PR #20: per-symbol gate detail surfacing ────────────────────────────
+
+def test_persist_train_details_writes_json_to_ghost_state(monkeypatch):
+    """_persist_train_details serialises the details list and upserts it
+    into ghost_state.last_train_details so v3_train_sync can read it."""
+    import core.signal_engine as _se
+    executed = []
+
+    class _Cur:
+        def execute(self, sql, params=None):
+            executed.append((sql, params))
+
+        def fetchall(self): return []
+        def fetchone(self): return None
+
+    class _Conn:
+        def cursor(self): return _Cur()
+
+    class _DbCtx:
+        def __enter__(self): return _Conn()
+        def __exit__(self, *a): return False
+
+    import core.db
+    monkeypatch.setattr(core.db, "db_conn", lambda: _DbCtx())
+
+    _se._persist_train_details([
+        {"symbol": "WOLF", "passed": False, "fail_reason": "holdout_acc < 55.0% (52.0%)",
+         "stage": "trained", "n_samples": 126, "holdout_acc": 0.52},
+    ])
+    # Find the INSERT — SQL literal contains 'last_train_details', params has the JSON
+    insert_calls = [e for e in executed if "last_train_details" in e[0]]
+    assert len(insert_calls) == 1
+    insert_sql, insert_params = insert_calls[0]
+    assert insert_params is not None and len(insert_params) >= 1
+    import json as _json
+    payload = _json.loads(insert_params[0])
+    assert "ts" in payload
+    assert len(payload["symbols"]) == 1
+    assert payload["symbols"][0]["symbol"] == "WOLF"
+    assert payload["symbols"][0]["fail_reason"] == "holdout_acc < 55.0% (52.0%)"
+
+
+def test_v3_train_sync_includes_train_details_in_response(monkeypatch):
+    """v3_train_sync reads ghost_state.last_train_details and surfaces it
+    inside its response under 'train_details' so the cockpit can render
+    per-symbol gate metrics without needing a separate fetch."""
+    monkeypatch.setenv("CRON_SECRET", "")
+
+    # Cursor that returns canned ghost_state.last_train_details row
+    detail_payload = {
+        "ts": 1779470000,
+        "symbols": [
+            {"symbol": "WOLF", "passed": False,
+             "fail_reason": "holdout_acc < 55.0% (52.0%)",
+             "stage": "trained", "n_samples": 126,
+             "holdout_acc": 0.52, "edge": 0.04,
+             "thresholds": {"min_holdout_acc": 0.55, "min_edge": 0.05}},
+        ],
+    }
+
+    class _DetailCursor:
+        def __init__(self):
+            self.last_sql = ""
+            self.state = {}
+
+        def execute(self, sql, params=None):
+            self.last_sql = sql
+            if "INSERT INTO ghost_state" in sql and params and len(params) == 2:
+                self.state[params[0]] = params[1]
+
+        def fetchone(self):
+            if "SELECT val FROM ghost_state WHERE key='last_train_details'" in self.last_sql:
+                import json as _json
+                return (_json.dumps(detail_payload),)
+            return None
+
+        def fetchall(self):
+            return []
+
+    cur = _DetailCursor()
+
+    class _Conn:
+        def cursor(self): return cur
+
+    class _DbCtx:
+        def __enter__(self): return _Conn()
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(wolf_app, "db_conn", lambda: _DbCtx())
+
+    import core.signal_engine as _se
+    monkeypatch.setattr(_se, "train_and_validate", lambda stocks: (None, 0.0, False))
+    monkeypatch.setattr(_se, "get_model_status",
+                        lambda: {"trained": False, "models": 0, "symbols": {}})
+    monkeypatch.setattr(wolf_app, "_bump_cockpit_db_cache", lambda: None)
+    monkeypatch.setattr(wolf_app, "_auto_purge_bad_models", lambda: 0)
+    monkeypatch.setattr(wolf_app, "_purge_v3_stale_or_weak", lambda: 0)
+
+    out = wolf_app.v3_train_sync(x_cron_secret="", force=True)
+    assert out["ok"] is True
+    assert out["passed"] is False
+    assert out["train_details"] is not None
+    assert len(out["train_details"]["symbols"]) == 1
+    wolf_detail = out["train_details"]["symbols"][0]
+    assert wolf_detail["symbol"] == "WOLF"
+    assert wolf_detail["fail_reason"] == "holdout_acc < 55.0% (52.0%)"
+    assert wolf_detail["holdout_acc"] == 0.52
