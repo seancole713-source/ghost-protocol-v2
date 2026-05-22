@@ -1839,6 +1839,63 @@ def get_stats_v32():
     except Exception as e:
         return {"ok": False, "error": str(e)[:80]}
 
+@APP.get("/api/stats/confidence-buckets")
+def get_stats_confidence_buckets():
+    """Realized WIN/LOSS per confidence bucket since the v3.2 cutover.
+
+    Public read-only — same convention as /api/stats and /api/stats/v32.
+    Diagnostic for confidence calibration: if a high bucket wins at chance
+    rate, confidence carries no signal and the engine needs recalibration.
+    """
+    buckets_spec = [
+        ("<60", 0.00, 0.60),
+        ("60-70", 0.60, 0.70),
+        ("70-80", 0.70, 0.80),
+        ("80-90", 0.80, 0.90),
+        ("90+", 0.90, 1.01),
+    ]
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            v32_start_ts = _v32_stats_start_ts(cur)
+            out = []
+            for label, lo, hi in buckets_spec:
+                if v32_start_ts > 0:
+                    cur.execute(
+                        "SELECT outcome, COUNT(*) FROM predictions "
+                        "WHERE outcome IN ('WIN','LOSS') "
+                        "AND predicted_at IS NOT NULL AND predicted_at >= %s "
+                        "AND confidence >= %s AND confidence < %s "
+                        "GROUP BY outcome",
+                        (v32_start_ts, lo, hi),
+                    )
+                else:
+                    cur.execute(
+                        "SELECT outcome, COUNT(*) FROM predictions "
+                        "WHERE outcome IN ('WIN','LOSS') "
+                        "AND predicted_at IS NOT NULL "
+                        "AND confidence >= %s AND confidence < %s "
+                        "GROUP BY outcome",
+                        (lo, hi),
+                    )
+                rows = {r[0]: r[1] for r in cur.fetchall()}
+                w = rows.get("WIN", 0)
+                l = rows.get("LOSS", 0)
+                tot = w + l
+                out.append({
+                    "label": label,
+                    "min": lo,
+                    "max": hi,
+                    "wins": w,
+                    "losses": l,
+                    "total": tot,
+                    "win_rate_pct": round(w / tot * 100, 1) if tot else 0.0,
+                })
+        return {"ok": True, "start_ts": v32_start_ts, "buckets": out}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
 @APP.get("/api/stats")
 def get_stats():
     """Overall accuracy stats across all sources."""
