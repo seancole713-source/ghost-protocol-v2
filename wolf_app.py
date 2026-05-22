@@ -22,10 +22,11 @@ def _cron_ok(provided: str, strict: bool = False) -> bool:
     strict=True: if no CRON_SECRET is configured, REJECT. Use on endpoints
                  that must never be exposed without explicit auth, even in dev.
     """
-    if not CRON_SECRET:
+    secret = os.environ.get("CRON_SECRET", "")
+    if not secret:
         return not strict
     return hmac.compare_digest((provided or "").encode("utf-8"),
-                               CRON_SECRET.encode("utf-8"))
+                               secret.encode("utf-8"))
 
 _COVERAGE_RETRAIN_RUNNING = False
 _RETRAIN_JOB_LOCK = threading.Lock()
