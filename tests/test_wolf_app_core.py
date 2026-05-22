@@ -1551,3 +1551,206 @@ def test_walk_forward_respects_env_min_train_override(monkeypatch):
     y = np.array([0, 1] * 63 + [0])
     out = _se._walk_forward_scores(X, y)
     assert out["fold_count"] == 0
+
+
+# ── PR #22: ops polish (purge non-WOLF / telegram status / freshness) ───
+
+def test_delete_model_non_wolf_only_purges_other_symbols(monkeypatch):
+    """non_wolf_only=true deletes every model whose symbol isn't WOLF and
+    keeps the WOLF row regardless of its accuracy."""
+    import json as _j
+    # delete_model uses strict=True cron-gate; empty secret rejects.
+    monkeypatch.setenv("CRON_SECRET", "testsecret")
+
+    rows = [
+        ("meta_WOLF", _j.dumps({"accuracy": 0.65})),
+        ("meta_BCH",  _j.dumps({"accuracy": 0.99})),  # would normally be kept on accuracy alone
+        ("meta_SOL",  _j.dumps({"accuracy": 0.30})),
+        ("meta_UNI",  _j.dumps({"accuracy": 0.30})),
+    ]
+
+    class _Cur:
+        def __init__(self):
+            self.executed = []
+            self._rows_returned = False
+
+        def execute(self, sql, params=None):
+            self.executed.append((sql, params))
+
+        def fetchall(self):
+            # Return the meta rows on the SELECT call (first fetchall in delete_model)
+            if not self._rows_returned:
+                self._rows_returned = True
+                return rows
+            return []
+
+        def fetchone(self):
+            return None
+
+    cur = _Cur()
+
+    class _Conn:
+        def cursor(self):
+            return cur
+
+    class _DbCtx:
+        def __enter__(self):
+            return _Conn()
+
+        def __exit__(self, *a):
+            return False
+
+    import core.db
+    monkeypatch.setattr(core.db, "db_conn", lambda: _DbCtx())
+    monkeypatch.setattr(wolf_app, "db_conn", lambda: _DbCtx())
+
+    import asyncio
+    out = asyncio.run(wolf_app.delete_model(x_cron_secret="testsecret", non_wolf_only=True))
+    assert out["ok"] is True
+    assert out["mode"] == "non_wolf_only"
+    assert "WOLF(WOLF)" in out["kept"]
+    assert set(out["deleted"]) == {"BCH(non-WOLF)", "SOL(non-WOLF)", "UNI(non-WOLF)"}
+    deletes = [e for e in cur.executed if "DELETE FROM ghost_v3_model" in e[0]]
+    assert len(deletes) == 3
+
+
+def test_delete_model_default_mode_still_uses_accuracy_floor(monkeypatch):
+    """Without non_wolf_only the legacy accuracy-floor behaviour is preserved."""
+    import json as _j
+    monkeypatch.setenv("CRON_SECRET", "testsecret")
+    monkeypatch.setenv("V3_MIN_HOLDOUT_ACC", "0.55")
+
+    rows = [
+        ("meta_WOLF", _j.dumps({"accuracy": 0.65})),  # kept
+        ("meta_OLD",  _j.dumps({"accuracy": 0.30})),  # purged
+    ]
+
+    class _Cur:
+        def __init__(self):
+            self.executed = []
+            self._rows_returned = False
+
+        def execute(self, sql, params=None):
+            self.executed.append((sql, params))
+
+        def fetchall(self):
+            if not self._rows_returned:
+                self._rows_returned = True
+                return rows
+            return []
+
+        def fetchone(self):
+            return None
+
+    cur = _Cur()
+
+    class _Conn:
+        def cursor(self):
+            return cur
+
+    class _DbCtx:
+        def __enter__(self):
+            return _Conn()
+
+        def __exit__(self, *a):
+            return False
+
+    import core.db
+    monkeypatch.setattr(core.db, "db_conn", lambda: _DbCtx())
+    monkeypatch.setattr(wolf_app, "db_conn", lambda: _DbCtx())
+
+    import asyncio
+    out = asyncio.run(wolf_app.delete_model(x_cron_secret="testsecret"))
+    assert out["ok"] is True
+    assert out["mode"] == "low_accuracy"
+    assert out["deleted"] == ["OLD(acc=30.0%)"]
+    assert out["kept"] == ["WOLF(acc=65.0%)"]
+
+
+def test_telegram_status_reports_state_and_recent_alerts(monkeypatch):
+    """/api/telegram/status reads ghost_state.last_signal_cron_* and
+    wolf_signal_alerts rows; surfaces a flat payload for the cockpit."""
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "cid")
+
+    class _Cur:
+        def __init__(self):
+            self.last_sql = ""
+
+        def execute(self, sql, params=None):
+            self.last_sql = sql
+
+        def fetchone(self):
+            if "key='last_signal_cron_ts'" in self.last_sql:
+                return ("1779470000",)
+            if "key='last_signal_cron_sent'" in self.last_sql:
+                return ("2",)
+            return None
+
+        def fetchall(self):
+            if "FROM wolf_signal_alerts" in self.last_sql:
+                return [
+                    (101, 1779470000, "BUY",  58.5, 72.0, 0.92),
+                    (102, 1779380000, "SELL", 72.0, 60.0, 0.85),
+                ]
+            return []
+
+    class _Conn:
+        def cursor(self):
+            return _Cur()
+
+    class _DbCtx:
+        def __enter__(self):
+            return _Conn()
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(wolf_app, "db_conn", lambda: _DbCtx())
+    out = wolf_app.telegram_status()
+    assert out["ok"] is True
+    assert out["configured"] is True
+    assert out["last_cron_ts"] == 1779470000
+    assert out["last_cron_sent"] == 2
+    assert len(out["recent_alerts"]) == 2
+    assert out["recent_alerts"][0]["prediction_id"] == 101
+    assert out["recent_alerts"][0]["direction"] == "BUY"
+    assert out["recent_alerts"][0]["confidence"] == 0.92
+
+
+def test_telegram_status_handles_missing_table_gracefully(monkeypatch):
+    """wolf_signal_alerts may not exist on a fresh deploy — must not crash."""
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+
+    class _Cur:
+        def __init__(self):
+            self.last_sql = ""
+
+        def execute(self, sql, params=None):
+            self.last_sql = sql
+            if "FROM wolf_signal_alerts" in sql:
+                raise RuntimeError("relation does not exist")
+
+        def fetchone(self):
+            return None
+
+        def fetchall(self):
+            return []
+
+    class _Conn:
+        def cursor(self):
+            return _Cur()
+
+    class _DbCtx:
+        def __enter__(self):
+            return _Conn()
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(wolf_app, "db_conn", lambda: _DbCtx())
+    out = wolf_app.telegram_status()
+    assert out["ok"] is True
+    assert out["configured"] is False
+    assert out["recent_alerts"] == []

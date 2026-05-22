@@ -509,7 +509,7 @@ section.block{margin-bottom:32px}
         <div class="truth-card">
           <h4>System freshness</h4>
           <div class="truth-big" id="t-fresh">&#8212;</div>
-          <div class="truth-note">Minutes since the newest <code>predicted_at</code>. For engine liveness compare <code>/health</code> <code>prediction_cycle_freshness_min</code> — picks can be zero while the cycle is fresh.</div>
+          <div class="truth-note"><b>Pick freshness</b> — minutes since the newest <code>predicted_at</code> row. <b>Cycle freshness</b> — minutes since the engine last scanned for picks (shown in kv below). Engine-fresh + zero new picks is a CORRECT outcome (no signal cleared the floor).</div>
           <div class="truth-kv" id="t-sys-kv"></div>
         </div>
       </div>
@@ -525,6 +525,12 @@ section.block{margin-bottom:32px}
           <div class="truth-big" id="t-cov-loaded">&#8212;</div>
           <div class="truth-note">Loaded v3 models vs <code>MODEL_COVERAGE_MIN_MODELS</code> floor. Auto-retrain fires when below floor and cooldown is clear.</div>
           <div class="truth-kv" id="t-cov-kv"></div>
+        </div>
+        <div class="truth-card">
+          <h4>Telegram alerts</h4>
+          <div class="truth-big" id="t-tg-status">&#8212;</div>
+          <div class="truth-note">Signal-alert cron (PR #8) state from <code>ghost_state.last_signal_cron_*</code>. Recent picks fired via Telegram show in <code>wolf_signal_alerts</code>.</div>
+          <div class="truth-kv" id="t-tg-kv"></div>
         </div>
       </div>
       <div class="truth-card" style="margin-bottom:14px">
@@ -544,6 +550,7 @@ section.block{margin-bottom:32px}
           <button class="btn-train secondary" onclick="handleDataSourcesClick()">Test Data Sources</button>
           <button class="btn-train secondary" onclick="handleTrainSyncClick()" title="Runs train synchronously, takes 1-5 min, returns actual result inline">Train (sync)</button>
           <button class="btn-train secondary" onclick="handleVersionCheckClick()" title="Show running code version + deploy ID">Check Version</button>
+          <button class="btn-train secondary" onclick="handlePurgeNonWolfClick()" title="Delete every ghost_v3_model row whose symbol is not WOLF (cleans the 3 stale crypto-era rows)">Purge Non-WOLF Models</button>
         </div>
         <div id="train-result" class="truth-note" style="margin-top:10px;min-height:18px"></div>
         <div id="data-sources-result" style="margin-top:8px"></div>
@@ -1755,6 +1762,47 @@ async function handleVersionCheckClick(){
   }
 }
 
+/* ─── Purge non-WOLF models button (PR #22) ─── */
+async function handlePurgeNonWolfClick(){
+  var secretEl = document.getElementById('train-secret');
+  var resultEl = document.getElementById('train-result');
+  var btns = document.querySelectorAll('.btn-train');
+  var secret = (secretEl && secretEl.value) ? secretEl.value : '';
+  if(!confirm('Delete EVERY ghost_v3_model row whose symbol is not WOLF? This is permanent. Continue?')){
+    return;
+  }
+  resultEl.innerHTML = '<span class="train-warn">&#x21BB; Purging non-WOLF models...</span>';
+  btns.forEach(function(b){ b.disabled = true; });
+  try{
+    var resp = await fetch('/api/admin/delete-model?non_wolf_only=true', {
+      method: 'POST',
+      headers: {'x-cron-secret': secret, 'Content-Type': 'application/json'},
+    });
+    var body = {};
+    try { body = await resp.json(); } catch(_e) {}
+    if(resp.status === 403){
+      resultEl.innerHTML = '<span class="train-fail">&#10007;</span> 403 (cron secret missing or wrong)';
+      return;
+    }
+    if(resp.ok && body && body.ok){
+      var deleted = body.deleted || [];
+      var kept = body.kept || [];
+      var icon = deleted.length ? '<span class="train-ok">&#10003;</span>' : '<span class="train-warn">&#x21BB;</span>';
+      resultEl.innerHTML = icon + ' Purged <b>' + deleted.length + '</b> non-WOLF model(s) &middot; kept <b>'
+        + kept.length + '</b>'
+        + (deleted.length ? '<div class="truth-note" style="margin-top:6px;font-size:11px">Deleted: ' + escHtml(deleted.join(', ')) + '</div>' : '')
+        + (kept.length ? '<div class="truth-note" style="margin-top:2px;font-size:11px">Kept: ' + escHtml(kept.join(', ')) + '</div>' : '');
+      if(secretEl) secretEl.value = '';
+    } else {
+      resultEl.innerHTML = '<span class="train-fail">&#10007;</span> ' + escHtml(body.error || ('HTTP ' + resp.status));
+    }
+  } catch(e) {
+    resultEl.innerHTML = '<span class="train-fail">&#10007;</span> Network error: ' + escHtml(String(e));
+  } finally {
+    btns.forEach(function(b){ b.disabled = false; });
+  }
+}
+
 function renderModelTable(v3){
   if(!v3 || !v3.trained){
     return '<p class="truth-note">' + escHtml(v3 && v3.reason ? v3.reason : 'No v3 models loaded.') + '</p>';
@@ -1802,18 +1850,61 @@ function renderTruth(stats, health, v3, dir){
       '<b>All outcomes</b> ' + (stats.wins||0) + 'W / ' + (stats.losses||0) + 'L / ' + (stats.total||0);
   }
 
-  var fresh = health.predictions_freshness_min;
-  document.getElementById('t-fresh').textContent = fresh != null ? fresh + ' min' : '—';
+  // PR #22: System Freshness now distinguishes pick vs cycle freshness.
+  // Pick freshness = newest predicted_at row. Cycle freshness = engine ran.
+  // Engine-fresh + zero new picks is correct (no signal above floor).
+  var pickFresh = health.predictions_freshness_min;
+  var cycleFresh = health.prediction_cycle_freshness_min;
+  document.getElementById('t-fresh').textContent = pickFresh != null ? pickFresh + ' min' : '—';
   var feeds = health.price_feeds && health.price_feeds.summary ? health.price_feeds.summary : '—';
   var cf = health.confidence_floor;
   var cfStr = cf != null ? (Math.round(cf*1000)/10).toFixed(1) : '—';
   document.getElementById('t-sys-kv').innerHTML =
-    '<b>Alert confidence floor</b> ' + cfStr + '%<br>'
+    '<b>Pick freshness</b> ' + (pickFresh != null ? pickFresh + ' min' : '—') + '<br>'
+    + '<b>Cycle freshness</b> ' + (cycleFresh != null ? cycleFresh + ' min' : '—')
+    + (cycleFresh != null && pickFresh != null && cycleFresh < pickFresh
+        ? ' <span style="color:#888">(engine ran but no new pick — signal below floor)</span>' : '') + '<br>'
+    + '<b>Alert confidence floor</b> ' + cfStr + '%<br>'
     + '<b>Price feeds</b> ' + escHtml(feeds) + '<br>'
     + '<b>Open picks</b> ' + (health.open_picks != null ? health.open_picks : '—')
     + (health.dedup_blocked ? ' <span style="color:#f59e0b">(dedup cap)</span>' : '');
 
   document.getElementById('t-models-slot').innerHTML = renderModelTable(v3);
+}
+
+/* ─── Telegram alerts card (PR #22) ─── */
+function renderTelegram(tg){
+  var bigEl = document.getElementById('t-tg-status');
+  var kvEl = document.getElementById('t-tg-kv');
+  if(!bigEl || !kvEl) return;
+  if(!tg || tg.ok === false){
+    bigEl.textContent = '—';
+    bigEl.className = 'truth-big';
+    kvEl.innerHTML = '<b>Telegram status unavailable</b>' + (tg && tg.error ? ' (' + escHtml(tg.error) + ')' : '');
+    return;
+  }
+  var configured = !!tg.configured;
+  var nRecent = (tg.recent_alerts || []).length;
+  bigEl.textContent = configured ? (nRecent + ' sent') : 'unconfigured';
+  bigEl.className = 'truth-big ' + (!configured ? 'warn' : nRecent > 0 ? 'pass' : 'warn');
+  var lines = [];
+  lines.push('<b>Bot configured</b> ' + (configured ? 'yes' : '<span style="color:#f59e0b">no &mdash; set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID</span>'));
+  lines.push('<b>Last cron run</b> ' + (tg.last_cron_ts ? fmtTsIso(tg.last_cron_ts) : 'never'));
+  lines.push('<b>Last cron sent</b> ' + (tg.last_cron_sent != null ? tg.last_cron_sent + ' alert(s)' : '—'));
+  if(nRecent > 0){
+    var alerts = tg.recent_alerts.map(function(a){
+      var dir = a.direction || '—';
+      var conf = a.confidence != null ? Math.round(a.confidence * 100) + '%' : '—';
+      return '<div style="font-size:11px;color:#888;margin-top:3px">'
+        + '<b>#' + a.prediction_id + '</b> ' + escHtml(dir)
+        + ' @ $' + (a.entry_price != null ? a.entry_price.toFixed(2) : '—')
+        + ' &rarr; $' + (a.target_price != null ? a.target_price.toFixed(2) : '—')
+        + ' &middot; conf=' + conf
+        + ' &middot; ' + (a.sent_at ? fmtTimeAgo(a.sent_at) : '—') + '</div>';
+    }).join('');
+    lines.push('<div style="margin-top:6px"><b>Recent alerts</b>' + alerts + '</div>');
+  }
+  kvEl.innerHTML = lines.join('<br>');
 }
 
 (function initTruthToggle(){
@@ -1856,10 +1947,11 @@ async function load(){
       fetch('/api/coverage').then(function(r){return r.json()}).catch(function(){return {ok:false}}),
       fetch('/api/stats/confidence-buckets').then(function(r){return r.json()}).catch(function(){return {ok:false}}),
       fetch('/api/wolf/ghost-score').then(function(r){return r.json()}).catch(function(){return {ok:false}}),
+      fetch('/api/telegram/status').then(function(r){return r.json()}).catch(function(){return {ok:false}}),
     ]);
     var price=batch[0], history=batch[1], predictions=batch[2], wstats=batch[3], earnings=batch[4],
         analyst=batch[5], news=batch[6], picks=batch[7], recent=batch[8], audit=batch[9],
-        coverage=batch[10], conf=batch[11], ghostScore=batch[12];
+        coverage=batch[10], conf=batch[11], ghostScore=batch[12], telegram=batch[13];
 
     renderGhostScore(ghostScore);
     renderHero(price);
@@ -1874,6 +1966,7 @@ async function load(){
     renderActivity(activity);
     renderAudit(audit);
     renderCoverage(coverage);
+    renderTelegram(telegram);
     renderConfidence(conf);
 
     document.getElementById('f-open').textContent = stats.open_positions || 0;
