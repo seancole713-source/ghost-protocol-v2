@@ -1462,3 +1462,92 @@ def test_v3_train_sync_includes_train_details_in_response(monkeypatch):
     assert wolf_detail["symbol"] == "WOLF"
     assert wolf_detail["fail_reason"] == "holdout_acc < 55.0% (52.0%)"
     assert wolf_detail["holdout_acc"] == 0.52
+
+
+# ── PR #21: walk-forward fold floors are env-tunable ────────────────────
+
+def test_v3_wf_min_train_floor_default_and_env(monkeypatch):
+    """V3_WF_MIN_TRAIN default 60, env override honoured, floor 20."""
+    import core.signal_engine as _se
+    monkeypatch.delenv("V3_WF_MIN_TRAIN", raising=False)
+    assert _se._v3_wf_min_train_floor() == 60
+    monkeypatch.setenv("V3_WF_MIN_TRAIN", "80")
+    assert _se._v3_wf_min_train_floor() == 80
+    monkeypatch.setenv("V3_WF_MIN_TRAIN", "5")  # below absolute safety floor
+    assert _se._v3_wf_min_train_floor() == 20
+
+
+def test_v3_wf_test_size_floor_default_and_env(monkeypatch):
+    """V3_WF_TEST_SIZE default 15, env override, floor 5."""
+    import core.signal_engine as _se
+    monkeypatch.delenv("V3_WF_TEST_SIZE", raising=False)
+    assert _se._v3_wf_test_size_floor() == 15
+    monkeypatch.setenv("V3_WF_TEST_SIZE", "25")
+    assert _se._v3_wf_test_size_floor() == 25
+    monkeypatch.setenv("V3_WF_TEST_SIZE", "1")
+    assert _se._v3_wf_test_size_floor() == 5
+
+
+def _install_fake_xgboost(monkeypatch):
+    """Stub xgboost.XGBClassifier + sklearn.metrics.accuracy_score so WF
+    tests run without the heavy ML deps installed in the sandbox."""
+    import sys, types
+    import numpy as np
+
+    class _StubModel:
+        def __init__(self, **k): pass
+        def fit(self, X, y): return self
+        def predict(self, X):
+            return np.zeros(len(X))
+
+    fake_xgb = types.ModuleType("xgboost")
+    fake_xgb.XGBClassifier = _StubModel
+    monkeypatch.setitem(sys.modules, "xgboost", fake_xgb)
+
+    fake_sklearn = types.ModuleType("sklearn")
+    fake_metrics = types.ModuleType("sklearn.metrics")
+    fake_metrics.accuracy_score = lambda y_true, y_pred: float(np.mean(
+        np.asarray(y_true) == np.asarray(y_pred)
+    ))
+    fake_sklearn.metrics = fake_metrics
+    monkeypatch.setitem(sys.modules, "sklearn", fake_sklearn)
+    monkeypatch.setitem(sys.modules, "sklearn.metrics", fake_metrics)
+
+
+def test_walk_forward_produces_folds_for_127_sample_input(monkeypatch):
+    """Regression for the WOLF case: n=127 must produce >=3 folds with the
+    new defaults (60 / 15). Previously hardcoded 120/20 gave zero folds."""
+    import core.signal_engine as _se
+    import numpy as np
+    for k in ("V3_WF_MIN_TRAIN", "V3_WF_TEST_SIZE",
+              "V3_WF_MIN_TRAIN_FRAC", "V3_WF_TEST_FRAC"):
+        monkeypatch.delenv(k, raising=False)
+    _install_fake_xgboost(monkeypatch)
+
+    X = np.zeros((127, 3))
+    y = np.array([0, 1] * 63 + [0])
+    out = _se._walk_forward_scores(X, y)
+    assert out["fold_count"] >= 3, f"expected >=3 folds, got {out['fold_count']}"
+
+
+def test_walk_forward_zero_folds_when_n_below_train_floor(monkeypatch):
+    """Pathologically small input returns zero folds gracefully."""
+    import core.signal_engine as _se
+    import numpy as np
+    monkeypatch.delenv("V3_WF_MIN_TRAIN", raising=False)
+    _install_fake_xgboost(monkeypatch)
+    out = _se._walk_forward_scores(np.zeros((10, 3)), np.zeros(10))
+    assert out == {"fold_count": 0, "acc_mean": 0.0, "acc_min": 0.0,
+                   "edge_mean": 0.0, "edge_min": 0.0}
+
+
+def test_walk_forward_respects_env_min_train_override(monkeypatch):
+    """Setting V3_WF_MIN_TRAIN higher than n means zero folds."""
+    import core.signal_engine as _se
+    import numpy as np
+    monkeypatch.setenv("V3_WF_MIN_TRAIN", "200")
+    _install_fake_xgboost(monkeypatch)
+    X = np.zeros((127, 3))
+    y = np.array([0, 1] * 63 + [0])
+    out = _se._walk_forward_scores(X, y)
+    assert out["fold_count"] == 0
