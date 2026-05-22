@@ -1,3 +1,8 @@
+# PR #15 cache-bust marker: bumping this comment changes the file hash,
+# which forces Railway/Nixpacks to invalidate the build-layer cache and
+# rebuild the container image. Increment the version below if Railway
+# starts serving stale containers again.
+# cache_bust = "pr15"
 [phases.setup]
 aptPkgs = ["libpq-dev", "gcc", "python3-dev"]
 

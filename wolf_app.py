@@ -12,6 +12,18 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 LOGGER = logging.getLogger("ghost")
+
+# PR #15 cache-bust banner. Logged once at module import. If this line is
+# missing from Railway logs after a deploy, the container is stale (the
+# Procfile boot echo is the shell-level twin of this check).
+LOGGER.info(
+    "[wolf_app] BOOT_BANNER PR15_CACHEBUST "
+    "DEPLOY_VERSION=%s GIT_SHA=%s DEPLOY_ID=%s",
+    os.getenv("DEPLOY_VERSION", "unset"),
+    os.getenv("RAILWAY_GIT_COMMIT_SHA", "unset"),
+    os.getenv("RAILWAY_DEPLOYMENT_ID", "unset"),
+)
+
 CRON_SECRET = os.getenv("CRON_SECRET", "")
 
 
