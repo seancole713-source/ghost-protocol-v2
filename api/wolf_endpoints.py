@@ -754,3 +754,248 @@ def _categorize(title: str) -> str:
     if any(k in t for k in _PRESS_KEYWORDS):
         return "press"
     return "news"
+
+
+# ────────────────────────────────────────────────────────────────
+# /api/wolf/ghost-score — composite intelligence rating
+# ────────────────────────────────────────────────────────────────
+#
+# Score = sum of five weighted components, each in [0, weight], total [0, 100].
+# Higher = more bullish on WOLF.
+#
+#   Component         Weight   Computation
+#   ───────────────   ──────   ─────────────────────────────────────────────
+#   model_confidence    40     BUY pick → confidence*40
+#                              SELL pick → (1-confidence)*40
+#                              No pick → 20 (neutral midpoint)
+#   volume_signal       20     min(20, volume_ratio * 10)
+#                              At 2x avg volume (alert threshold) → 20
+#                              At 1x → 10. No data → 10.
+#   sector_alignment    15     'wolf_lagging_up' (peers up, WOLF flat) → 15
+#                              'wolf_holding_down' (peers down, WOLF holds) → 12
+#                              else → 7.5 (neutral)
+#   price_momentum      15     (current - 5d_SMA) / 5d_SMA mapped:
+#                              ≥+3% → 15, ≥+1% → 12, ±1% → 7.5,
+#                              <-1% → 3, <-3% → 0. No data → 7.5.
+#   freshness           10     Hours since latest predicted_at:
+#                              0-2h → 10, 2-6h → 8, 6-12h → 6,
+#                              12-24h → 4, 24-48h → 2, >48h → 0.
+#
+# Signal label (from spec):
+#   80-100 STRONG_BUY · 60-79 BUY · 40-59 HOLD · 20-39 SELL · 0-19 STRONG_SELL
+#
+# The formula is transparent on purpose — weights are product-owner choices,
+# not derived empirically. Every input is real (no mocks), but the user
+# should treat the score as a summary indicator, not a validated signal.
+
+_GHOST_WEIGHTS = {
+    "model_confidence": 40,
+    "volume_signal": 20,
+    "sector_alignment": 15,
+    "price_momentum": 15,
+    "freshness": 10,
+}
+
+
+def _score_model(latest_pick: Optional[dict]) -> float:
+    if not latest_pick:
+        return 20.0  # neutral midpoint of [0, 40]
+    conf = float(latest_pick.get("confidence") or 0.0)
+    direction = (latest_pick.get("direction") or "").upper()
+    if direction in ("UP", "BUY"):
+        return round(conf * 40, 2)
+    if direction in ("DOWN", "SELL"):
+        return round((1 - conf) * 40, 2)
+    return 20.0
+
+
+def _score_volume(volume_ratio: Optional[float]) -> float:
+    if volume_ratio is None:
+        return 10.0
+    return round(min(20.0, max(0.0, float(volume_ratio) * 10)), 2)
+
+
+def _score_sector(sector: Optional[dict]) -> float:
+    if not sector:
+        return 7.5
+    sig = sector.get("signal")
+    if sig == "wolf_lagging_up":
+        return 15.0
+    if sig == "wolf_holding_down":
+        return 12.0
+    return 7.5
+
+
+def _score_momentum(current: Optional[float], sma_5d: Optional[float]) -> float:
+    if current is None or sma_5d is None or sma_5d <= 0:
+        return 7.5
+    delta = (current - sma_5d) / sma_5d
+    if delta >= 0.03:
+        return 15.0
+    if delta >= 0.01:
+        return 12.0
+    if delta >= -0.01:
+        return 7.5
+    if delta >= -0.03:
+        return 3.0
+    return 0.0
+
+
+def _score_freshness(predicted_at: Optional[int], now_ts: int) -> float:
+    if not predicted_at:
+        return 0.0
+    age_h = max(0.0, (now_ts - int(predicted_at)) / 3600.0)
+    if age_h <= 2:
+        return 10.0
+    if age_h <= 6:
+        return 8.0
+    if age_h <= 12:
+        return 6.0
+    if age_h <= 24:
+        return 4.0
+    if age_h <= 48:
+        return 2.0
+    return 0.0
+
+
+def _signal_label(score: float) -> str:
+    if score >= 80:
+        return "STRONG_BUY"
+    if score >= 60:
+        return "BUY"
+    if score >= 40:
+        return "HOLD"
+    if score >= 20:
+        return "SELL"
+    return "STRONG_SELL"
+
+
+def compute_ghost_score(latest_pick, volume_ratio, sector, current_price, sma_5d, now_ts):
+    """Pure scoring function — all I/O lifted to the caller for testability."""
+    components = {
+        "model": _score_model(latest_pick),
+        "volume": _score_volume(volume_ratio),
+        "sector": _score_sector(sector),
+        "momentum": _score_momentum(current_price, sma_5d),
+        "freshness": _score_freshness(latest_pick.get("predicted_at") if latest_pick else None, now_ts),
+    }
+    score = sum(components.values())
+    score = max(0.0, min(100.0, score))
+    return {
+        "score": round(score, 1),
+        "signal": _signal_label(score),
+        "components": {k: round(v, 2) for k, v in components.items()},
+        "weights": dict(_GHOST_WEIGHTS),
+    }
+
+
+@router.get("/ghost-score")
+async def get_ghost_score():
+    """Composite 0-100 score reflecting overall WOLF bullishness.
+
+    Cached for 60s. All inputs are real data: latest pick from the
+    predictions table, volume ratio from yfinance, sector correlation
+    from the SiC peers helper, and 5-day SMA from the price history.
+
+    Frontend renders this as a gauge at the top of the cockpit.
+    """
+    cached = _cache_get("ghost-score", 60)
+    if cached:
+        return JSONResponse(content=cached)
+
+    latest_pick = None
+    volume_ratio = None
+    current_price = None
+    sma_5d = None
+    sector = None
+    errors: List[str] = []
+
+    # 1. Latest WOLF pick (any status, ordered by predicted_at)
+    try:
+        from core.db import db_conn
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT id, predicted_at, direction, confidence
+                FROM predictions
+                WHERE symbol = %s AND predicted_at IS NOT NULL
+                ORDER BY predicted_at DESC
+                LIMIT 1
+                """,
+                (WOLF_SYMBOL,),
+            )
+            row = cur.fetchone()
+            if row:
+                latest_pick = {
+                    "id": int(row[0]),
+                    "predicted_at": int(row[1]) if row[1] else None,
+                    "direction": row[2],
+                    "confidence": float(row[3]) if row[3] is not None else None,
+                }
+    except Exception as e:
+        errors.append("latest_pick: " + str(e)[:80])
+
+    # 2. Volume ratio + current price (yfinance fast_info)
+    try:
+        import yfinance as yf
+        tk = yf.Ticker(WOLF_SYMBOL)
+        fi = tk.fast_info
+        current_price = _safe_float(getattr(fi, "last_price", None) or getattr(fi, "lastPrice", None))
+        last_vol = _safe_int(getattr(fi, "last_volume", None) or getattr(fi, "lastVolume", None))
+        try:
+            info = tk.info or {}
+            avg_vol = _safe_int(info.get("averageVolume") or info.get("averageDailyVolume10Day"))
+        except Exception:
+            avg_vol = None
+        if last_vol and avg_vol and avg_vol > 0:
+            volume_ratio = round(last_vol / avg_vol, 2)
+    except Exception as e:
+        errors.append("volume: " + str(e)[:80])
+
+    # 3. Sector correlation (reuse existing helper)
+    try:
+        sector = _fetch_sector_correlation()
+    except Exception as e:
+        errors.append("sector: " + str(e)[:80])
+
+    # 4. 5-day SMA from yfinance daily bars
+    try:
+        import yfinance as yf
+        tk = yf.Ticker(WOLF_SYMBOL)
+        h = tk.history(period="7d", interval="1d")
+        if h is not None and not h.empty:
+            closes = [float(c) for c in h["Close"].tolist() if c is not None and not (isinstance(c, float) and math.isnan(c))]
+            tail = closes[-5:] if len(closes) >= 5 else closes
+            if tail:
+                sma_5d = round(sum(tail) / len(tail), 4)
+            # Fall back to last close if we never got a live price above
+            if current_price is None and closes:
+                current_price = round(closes[-1], 4)
+    except Exception as e:
+        errors.append("momentum: " + str(e)[:80])
+
+    now_ts = int(time.time())
+    scored = compute_ghost_score(latest_pick, volume_ratio, sector, current_price, sma_5d, now_ts)
+
+    payload = _ok({
+        "symbol": WOLF_SYMBOL,
+        "updated_at": now_ts,
+        "score": scored["score"],
+        "signal": scored["signal"],
+        "components": scored["components"],
+        "weights": scored["weights"],
+        "inputs": {
+            "model_pick_id": latest_pick.get("id") if latest_pick else None,
+            "model_direction": latest_pick.get("direction") if latest_pick else None,
+            "model_confidence": latest_pick.get("confidence") if latest_pick else None,
+            "predicted_at": latest_pick.get("predicted_at") if latest_pick else None,
+            "volume_ratio": volume_ratio,
+            "current_price": current_price,
+            "sma_5d": sma_5d,
+            "sector_signal": sector.get("signal") if sector else None,
+        },
+        "errors": errors if errors else None,
+    })
+    _cache_set("ghost-score", payload)
+    return JSONResponse(content=payload)
