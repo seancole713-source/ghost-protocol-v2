@@ -17,7 +17,7 @@ LOGGER = logging.getLogger("ghost")
 # missing from Railway logs after a deploy, the container is stale (the
 # Procfile boot echo is the shell-level twin of this check).
 LOGGER.info(
-    "[wolf_app] BOOT_BANNER PR15_CACHEBUST "
+    "[wolf_app] BOOT_BANNER PR19_CACHEBUST "
     "DEPLOY_VERSION=%s GIT_SHA=%s DEPLOY_ID=%s",
     os.getenv("DEPLOY_VERSION", "unset"),
     os.getenv("RAILWAY_GIT_COMMIT_SHA", "unset"),
@@ -2659,8 +2659,129 @@ def v3_train(x_cron_secret: str = Header(default=""), force: bool = False):
                 finished_at=int(time.time()),
             )
     threading.Thread(target=_train, daemon=True).start()
+    # PR #19: response now includes _pr_version so the operator can verify
+    # from a single curl whether the deployed code is fresh or stale. If the
+    # response is missing this field, Railway is serving a pre-PR-#19 version.
     return {"ok": True, "message": "Training started in background. Check /api/v3/train/last in 3-5 minutes.",
-            "force": force, "started_at": started_at}
+            "force": force, "started_at": started_at, "_pr_version": 19}
+
+
+# PR #19 deploy-version constant. Bump on every "did Railway pick up
+# the new code?" PR so /api/_version reveals the truth in one curl.
+_RUNNING_PR_VERSION = 19
+
+
+@APP.get("/api/_version")
+def deploy_version():
+    """Return the running code version + Railway-injected git/deploy IDs.
+
+    Lets the operator verify from a single curl whether the deployed
+    container is running the expected commit. No auth required —
+    nothing sensitive in the response.
+    """
+    return {
+        "ok": True,
+        "_pr_version": _RUNNING_PR_VERSION,
+        "git_sha": os.getenv("RAILWAY_GIT_COMMIT_SHA", "unset"),
+        "deploy_id": os.getenv("RAILWAY_DEPLOYMENT_ID", "unset"),
+        "deploy_version_env": os.getenv("DEPLOY_VERSION", "unset"),
+        "ts": int(time.time()),
+        "endpoints_present": {
+            "v3_train_force_param": True,    # PR #18
+            "v3_train_last": True,            # PR #18
+            "v3_train_sync": True,            # PR #19
+            "diag_data_sources": True,        # PR #17
+            "wolf_signal_alert_check": True,  # PR #8
+        },
+    }
+
+
+@APP.post("/api/v3/train/sync")
+def v3_train_sync(x_cron_secret: str = Header(default=""), force: bool = False):
+    """Synchronous v3 training — runs train_and_validate in the request
+    thread and returns the actual outcome directly.
+
+    Use this when the async /api/v3/train silently fails to produce a
+    model and you can't tell why. The HTTP request blocks for the full
+    training duration (typically 60-300s) but the response payload
+    contains the definitive result: passed bool, accuracy, error string.
+
+    Caveats:
+      - HTTP client must allow long-running requests (Hoppscotch ok,
+        browsers may timeout at 30s-2min depending on platform)
+      - Holds a worker thread for the duration — don't call repeatedly
+      - Still records the same ghost_state phase markers as the async
+        endpoint, so /api/v3/train/last reflects this run too
+    """
+    LOGGER.info(f"[v3_train_sync] PR19_DIAG ENDPOINT_INVOKED force={force}")
+    if not _cron_ok(x_cron_secret):
+        return JSONResponse({"ok": False, "error": "Forbidden"}, status_code=403)
+    started_at = int(time.time())
+    _record_v3_train_state(
+        ts=started_at, state="started", force=str(force).lower(),
+        accuracy="", passed="", error="", models_before="", models_after="",
+    )
+    try:
+        from core.signal_engine import train_and_validate, get_model_status
+        stocks = _v3_train_collect_symbols()
+        try:
+            models_before = int((get_model_status() or {}).get("models", 0))
+        except Exception:
+            models_before = 0
+        _record_v3_train_state(state="running", stocks=str(stocks), models_before=models_before)
+        LOGGER.info(f"[v3_train_sync] PR19_DIAG calling train_and_validate(stocks={stocks})")
+        model, accuracy, passed = train_and_validate(stocks)
+        LOGGER.info(f"[v3_train_sync] PR19_DIAG train_and_validate returned passed={passed} acc={accuracy}")
+        _bump_cockpit_db_cache()
+        try:
+            purged = _auto_purge_bad_models()
+            pv = _purge_v3_stale_or_weak()
+            LOGGER.info(f"Post-train purge (sync): legacy={purged} v3={pv}")
+        except Exception as _pe:
+            LOGGER.warning("Auto-purge after sync train failed: " + str(_pe)[:60])
+        try:
+            models_after = int((get_model_status() or {}).get("models", 0))
+        except Exception:
+            models_after = 0
+        finished_at = int(time.time())
+        result = {
+            "ok": True,
+            "_pr_version": _RUNNING_PR_VERSION,
+            "passed": bool(passed),
+            "accuracy": round((accuracy or 0) * 100, 2),
+            "stocks": stocks,
+            "models_before": models_before,
+            "models_after": models_after,
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "duration_s": finished_at - started_at,
+        }
+        _record_v3_train_state(
+            state="passed" if passed else "failed",
+            accuracy=f"{(accuracy or 0):.4f}",
+            passed=str(bool(passed)).lower(),
+            models_after=models_after,
+            finished_at=finished_at,
+            error="",
+        )
+        return result
+    except Exception as e:
+        finished_at = int(time.time())
+        err_str = str(e)[:300]
+        LOGGER.error("v3_train_sync failed: " + err_str)
+        _record_v3_train_state(
+            state="exception",
+            error=err_str,
+            finished_at=finished_at,
+        )
+        return JSONResponse({
+            "ok": False,
+            "_pr_version": _RUNNING_PR_VERSION,
+            "error": err_str,
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "duration_s": finished_at - started_at,
+        }, status_code=500)
 
 
 @APP.get("/api/v3/train/last")

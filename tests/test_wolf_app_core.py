@@ -1275,3 +1275,81 @@ def test_v3_train_last_endpoint_returns_none_when_no_history(monkeypatch):
     out = wolf_app.v3_train_last()
     assert out["ok"] is True
     assert out["last"] is None
+
+
+# ── /api/_version + /api/v3/train/sync (PR #19) ─────────────────────────
+
+def test_deploy_version_exposes_pr_marker_and_endpoint_inventory():
+    """/api/_version returns the running PR marker and the endpoint inventory.
+    Lets the operator verify code freshness from a single curl."""
+    out = wolf_app.deploy_version()
+    assert out["ok"] is True
+    assert out["_pr_version"] == 19
+    assert isinstance(out["endpoints_present"], dict)
+    # All of the recent endpoint flags must be present and true
+    expected = {"v3_train_force_param", "v3_train_last", "v3_train_sync",
+                "diag_data_sources", "wolf_signal_alert_check"}
+    assert expected.issubset(set(out["endpoints_present"].keys()))
+    for ep, present in out["endpoints_present"].items():
+        assert present is True, f"{ep} marked False"
+
+
+def test_v3_train_sync_returns_actual_result_with_pr_version(monkeypatch):
+    """v3_train_sync calls train_and_validate inline and returns the result
+    directly. _pr_version marker is included so the client can detect
+    stale deploys at-a-glance."""
+    monkeypatch.setenv("CRON_SECRET", "")
+    cur = _patch_state_cursor(monkeypatch)
+
+    # Mock train_and_validate to return a known-passing result
+    import core.signal_engine as _se
+    monkeypatch.setattr(_se, "train_and_validate", lambda stocks: (None, 0.6234, True))
+    monkeypatch.setattr(_se, "get_model_status",
+                        lambda: {"trained": True, "models": 1, "symbols": {"WOLF": {}}})
+    monkeypatch.setattr(wolf_app, "_bump_cockpit_db_cache", lambda: None)
+    monkeypatch.setattr(wolf_app, "_auto_purge_bad_models", lambda: 0)
+    monkeypatch.setattr(wolf_app, "_purge_v3_stale_or_weak", lambda: 0)
+
+    out = wolf_app.v3_train_sync(x_cron_secret="", force=True)
+    assert out["ok"] is True
+    assert out["_pr_version"] == 19
+    assert out["passed"] is True
+    assert out["accuracy"] == 62.34
+    assert "stocks" in out
+    assert out["models_after"] == 1
+    # State was recorded for both 'started' AND 'passed' phases
+    assert cur.state["last_v3_train_state"] == "passed"
+    assert cur.state["last_v3_train_passed"] == "true"
+
+
+def test_v3_train_sync_returns_500_with_error_on_exception(monkeypatch):
+    """Exception inside train_and_validate → 500 response with the error
+    string surfaced + state=exception recorded."""
+    monkeypatch.setenv("CRON_SECRET", "")
+    cur = _patch_state_cursor(monkeypatch)
+    import core.signal_engine as _se
+    monkeypatch.setattr(_se, "train_and_validate",
+                        lambda stocks: (_ for _ in ()).throw(RuntimeError("xgboost died")))
+    monkeypatch.setattr(_se, "get_model_status",
+                        lambda: {"trained": False, "models": 0, "symbols": {}})
+
+    resp = wolf_app.v3_train_sync(x_cron_secret="", force=False)
+    # Returns a JSONResponse on error path; we need to inspect the body
+    import json
+    body = json.loads(resp.body)
+    assert resp.status_code == 500
+    assert body["ok"] is False
+    assert "xgboost died" in body["error"]
+    assert body["_pr_version"] == 19
+    assert cur.state["last_v3_train_state"] == "exception"
+    assert "xgboost died" in cur.state["last_v3_train_error"]
+
+
+def test_v3_train_sync_requires_cron_secret_when_set(monkeypatch):
+    """403 on missing/wrong header when CRON_SECRET configured."""
+    monkeypatch.setenv("CRON_SECRET", "supersecret")
+    resp = wolf_app.v3_train_sync(x_cron_secret="wrong", force=True)
+    import json
+    body = json.loads(resp.body)
+    assert resp.status_code == 403
+    assert body["ok"] is False
