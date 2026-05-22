@@ -193,3 +193,18 @@ def test_clean_garbage_sql_filter_targets_impossible_combos(monkeypatch):
         # Regression: must NOT contain the legacy buggy range filter
         assert "BETWEEN 0.49 AND 0.51" not in sql
         assert "0.50" not in sql
+
+
+def test_cron_ok_rejects_wrong_secret_when_env_set(monkeypatch):
+    """monkeypatch.setenv must now gate _cron_ok — env is read at call time."""
+    monkeypatch.setenv("CRON_SECRET", "correct-secret")
+    assert wolf_app._cron_ok("correct-secret") is True
+    assert wolf_app._cron_ok("wrong-secret") is False
+    assert wolf_app._cron_ok("") is False
+
+
+def test_cron_ok_dev_mode_when_env_unset(monkeypatch):
+    """When CRON_SECRET is absent: non-strict allows, strict rejects."""
+    monkeypatch.delenv("CRON_SECRET", raising=False)
+    assert wolf_app._cron_ok("") is True          # non-strict: dev-mode allow
+    assert wolf_app._cron_ok("", strict=True) is False  # strict: always reject
