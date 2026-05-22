@@ -1,4 +1,4 @@
-import os, sys, time, logging, threading
+import os, sys, time, logging, threading, hmac
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,6 +13,20 @@ logging.basicConfig(
 )
 LOGGER = logging.getLogger("ghost")
 CRON_SECRET = os.getenv("CRON_SECRET", "")
+
+
+def _cron_ok(provided: str, strict: bool = False) -> bool:
+    """Constant-time check for x-cron-secret header.
+
+    strict=False (default): if no CRON_SECRET is configured, allow (dev mode).
+    strict=True: if no CRON_SECRET is configured, REJECT. Use on endpoints
+                 that must never be exposed without explicit auth, even in dev.
+    """
+    if not CRON_SECRET:
+        return not strict
+    return hmac.compare_digest((provided or "").encode("utf-8"),
+                               CRON_SECRET.encode("utf-8"))
+
 _COVERAGE_RETRAIN_RUNNING = False
 _RETRAIN_JOB_LOCK = threading.Lock()
 _APP_BOOT_TS = time.time()
@@ -1134,7 +1148,7 @@ def _auto_purge_bad_models():
 @APP.post("/api/admin/delete-model")
 async def delete_model(x_cron_secret: str = Header(None)):
     """Delete models below accuracy threshold. Purges bad models so they stop generating picks."""
-    if x_cron_secret != CRON_SECRET:
+    if not _cron_ok(x_cron_secret, strict=True):
         raise HTTPException(status_code=403, detail="Forbidden")
     import json as _j
     from core.db import db_conn
@@ -1171,7 +1185,7 @@ async def delete_model(x_cron_secret: str = Header(None)):
 @APP.post("/api/admin/fix-stock-expiry")
 async def fix_stock_expiry(x_cron_secret: str = Header(None)):
     """Fix stock picks that were created before the weekend-expiry fix and expire before market open."""
-    if x_cron_secret != CRON_SECRET:
+    if not _cron_ok(x_cron_secret, strict=True):
         raise HTTPException(status_code=403, detail="Forbidden")
     import time as _ft, datetime as _fdt, pytz as _ftz
     from core.db import db_conn
@@ -1205,7 +1219,7 @@ async def fix_stock_expiry(x_cron_secret: str = Header(None)):
 @APP.post("/api/dedup-picks", include_in_schema=False)
 def dedup_picks(x_cron_secret: str = Header(None)):
     """Expire duplicate open picks per symbol (keep highest confidence). Requires CRON_SECRET header."""
-    if x_cron_secret != CRON_SECRET:
+    if not _cron_ok(x_cron_secret, strict=True):
         raise HTTPException(status_code=403, detail="Forbidden")
     now = int(time.time())
     try:
@@ -1374,7 +1388,7 @@ def health_audit(x_cron_secret: str = Header(default=""), auto_fix: bool = True)
     Returns structured PASS/FAIL records for each check:
     status, location, evidence, impact, auto_fix, fix_result.
     """
-    if CRON_SECRET and x_cron_secret != CRON_SECRET:
+    if not _cron_ok(x_cron_secret):
         raise HTTPException(status_code=403)
 
     import asyncio as _asyncio
@@ -1617,7 +1631,7 @@ def get_news():
 @APP.post("/api/run-predictions")
 def trigger_predictions(x_cron_secret: str = Header(default="")):
     """Run prediction cycle only. Does NOT send Telegram (use /api/morning-card for that)."""
-    if CRON_SECRET and x_cron_secret != CRON_SECRET:
+    if not _cron_ok(x_cron_secret):
         raise HTTPException(status_code=403)
     from core.prediction import run_prediction_cycle
     picks = run_prediction_cycle()
@@ -1626,14 +1640,14 @@ def trigger_predictions(x_cron_secret: str = Header(default="")):
 @APP.post("/api/morning-card")
 def trigger_morning_card(x_cron_secret: str = Header(default="")):
     """Run prediction cycle AND send Telegram card. Use for cron-job.org trigger."""
-    if CRON_SECRET and x_cron_secret != CRON_SECRET:
+    if not _cron_ok(x_cron_secret):
         raise HTTPException(status_code=403)
     picks = _morning_card_job()
     return {"ok": True, "picks_generated": len(picks)}
 
 @APP.post("/api/reconcile")
 def trigger_reconcile(x_cron_secret: str = Header(default="")):
-    if CRON_SECRET and x_cron_secret != CRON_SECRET:
+    if not _cron_ok(x_cron_secret):
         raise HTTPException(status_code=403)
     from core.prediction import reconcile_outcomes
     count = reconcile_outcomes()
@@ -1649,7 +1663,7 @@ def test_alert():
 @APP.post("/api/retrain")
 def retrain(x_cron_secret: str = Header(default="")):
     """Train XGBoost on ghost_prediction_outcomes. Inline - no import needed."""
-    if CRON_SECRET and x_cron_secret != CRON_SECRET:
+    if not _cron_ok(x_cron_secret):
         raise HTTPException(status_code=403)
     try:
         import xgboost as xgb, numpy as np, json as _json, time as _time
@@ -1718,7 +1732,7 @@ def get_price_endpoint(symbol: str, asset_type: str = "crypto"):
 @APP.post("/api/migrate-outcomes")
 def migrate_outcomes(x_cron_secret: str = Header(default="")):
     """INSERT from ghost_prediction_outcomes (13k rows) into predictions."""
-    if CRON_SECRET and x_cron_secret != CRON_SECRET:
+    if not _cron_ok(x_cron_secret):
         raise HTTPException(status_code=403)
     try:
         with db_conn() as conn:
@@ -1922,7 +1936,7 @@ def symbol_accuracy():
 @APP.post("/api/clean-garbage")
 def clean_garbage(x_cron_secret: str = Header(default="")):
     """Delete broken predictions from the $0.50 entry price bug."""
-    if CRON_SECRET and x_cron_secret != CRON_SECRET:
+    if not _cron_ok(x_cron_secret):
         raise HTTPException(status_code=403)
     with db_conn() as conn:
         cur = conn.cursor()
@@ -1940,7 +1954,7 @@ def clean_garbage(x_cron_secret: str = Header(default="")):
 @APP.post("/api/watchdog")
 def run_watchdog(x_cron_secret: str = Header(default="")):
     """Check open picks vs live prices. Send Telegram alert if target or stop hit."""
-    if CRON_SECRET and x_cron_secret != CRON_SECRET:
+    if not _cron_ok(x_cron_secret):
         raise HTTPException(status_code=403)
     from core.prediction import reconcile_outcomes
     from core.telegram import send_position_alert
@@ -2265,8 +2279,7 @@ def v3_train(x_cron_secret: str = Header(default="")):
     Takes 2-5 minutes. Runs in background, returns immediately.
     Model only deployed if accuracy > 52% on holdout.
     """
-    import os
-    if x_cron_secret != os.getenv("CRON_SECRET",""):
+    if not _cron_ok(x_cron_secret):
         return JSONResponse({"ok":False,"error":"Forbidden"}, status_code=403)
     import threading
     def _train():
@@ -2306,8 +2319,7 @@ def v3_backtest(x_cron_secret: str = Header(default=""), symbol: str = "LTC", as
     Historical samples for v3 training: TP/SL WIN before stop within N daily bars
     (same rules as live reconcile / core.vol_targets).
     """
-    import os
-    if x_cron_secret != os.getenv("CRON_SECRET",""):
+    if not _cron_ok(x_cron_secret):
         return JSONResponse({"ok":False,"error":"Forbidden"}, status_code=403)
     try:
         from core.signal_engine import backtest_symbol, V3_LABEL_HOLD_BARS, LABEL_TYPE

@@ -1,0 +1,4 @@
+# Test-only dependencies. Kept separate from requirements.txt so Railway
+# does not pull pytest into the production runtime image.
+pytest==8.3.4
+pytest-asyncio==0.24.0
