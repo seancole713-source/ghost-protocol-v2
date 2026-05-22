@@ -1902,16 +1902,23 @@ def symbol_accuracy():
 
 @APP.post("/api/clean-garbage")
 def clean_garbage(x_cron_secret: str = Header(default="")):
-    """Delete broken predictions from the $0.50 entry price bug."""
+    """Delete broken predictions with absurd entry/target combos.
+
+    Filter: entry_price > 50 AND target_price < 1 (impossible legitimate trade).
+    """
     if not _cron_ok(x_cron_secret):
         raise HTTPException(status_code=403)
     with db_conn() as conn:
         cur = conn.cursor()
         # Count first
-        cur.execute("SELECT COUNT(*) FROM predictions WHERE entry_price BETWEEN 0.49 AND 0.51 AND predicted_at IS NOT NULL")
+        # Filter rationale: legitimate predictions have target within ~20% of entry.
+        # Only impossible/garbage rows have entry > $50 with target < $1 (order-of-magnitude mismatch).
+        cur.execute("SELECT COUNT(*) FROM predictions WHERE entry_price > 50 AND target_price < 1 AND predicted_at IS NOT NULL")
         garbage_count = cur.fetchone()[0]
-        # Delete predictions where entry_price was $0.50 (the placeholder confidence value)
-        cur.execute("DELETE FROM predictions WHERE entry_price BETWEEN 0.49 AND 0.51 AND predicted_at IS NOT NULL")
+        # Delete predictions with impossible entry/target combo
+        # Filter rationale: legitimate predictions have target within ~20% of entry.
+        # Only impossible/garbage rows have entry > $50 with target < $1 (order-of-magnitude mismatch).
+        cur.execute("DELETE FROM predictions WHERE entry_price > 50 AND target_price < 1 AND predicted_at IS NOT NULL")
         deleted = cur.rowcount
         # Recount clean predictions
         cur.execute("SELECT outcome, COUNT(*) FROM predictions WHERE outcome IN ('WIN','LOSS') AND predicted_at IS NOT NULL GROUP BY outcome")

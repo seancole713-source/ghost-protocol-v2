@@ -145,3 +145,51 @@ def test_health_audit_endpoint_returns_wrapped_report(monkeypatch):
     out = wolf_app.health_audit(x_cron_secret="", auto_fix=True)
     assert out["ok"] is True
     assert out["audit"]["status"] == "PASS"
+
+
+def test_clean_garbage_sql_filter_targets_impossible_combos(monkeypatch):
+    """Regression test: /api/clean-garbage must filter on the absurd
+    entry/target combo (entry > 50, target < 1), NOT the legacy buggy
+    range (entry BETWEEN 0.49 AND 0.51) that would delete legitimate
+    sub-$1 picks. Locks in the post-PR#3.0 SQL string.
+    """
+    executed = []
+
+    class _Cur:
+        rowcount = 0
+
+        def execute(self, sql, params=None):
+            executed.append(sql)
+
+        def fetchone(self):
+            return (0,)
+
+        def fetchall(self):
+            return []
+
+    class _Conn:
+        def cursor(self):
+            return _Cur()
+
+    class _DbCtx:
+        def __enter__(self):
+            return _Conn()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(wolf_app, "db_conn", lambda: _DbCtx())
+    monkeypatch.setattr(wolf_app, "CRON_SECRET", "")  # dev mode allows non-strict guard
+
+    out = wolf_app.clean_garbage(x_cron_secret="")
+
+    assert out["ok"] is True
+    select_and_delete = [s for s in executed if "entry_price" in s and ("SELECT" in s or "DELETE" in s)]
+    assert len(select_and_delete) == 2, f"expected 2 entry_price queries, got: {select_and_delete}"
+    for sql in select_and_delete:
+        # Correct filter — predictions with impossible entry/target combinations
+        assert "entry_price > 50" in sql
+        assert "target_price < 1" in sql
+        # Regression: must NOT contain the legacy buggy range filter
+        assert "BETWEEN 0.49 AND 0.51" not in sql
+        assert "0.50" not in sql
