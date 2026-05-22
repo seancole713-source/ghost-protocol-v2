@@ -104,24 +104,74 @@ def _v3_wf_acc_min_overrides() -> dict:
     return out
 
 
+def _v3_wf_min_train_floor() -> int:
+    """Absolute minimum training-window size for walk-forward folds.
+
+    Was hardcoded to 120, which produced ZERO folds on WOLF's
+    post-restructure dataset (127 samples → 120 train + 20 test
+    overshoots n). Env-tunable so small-dataset tickers can run WF;
+    larger defaults can be set back on production once WOLF accumulates
+    more history.
+    """
+    return max(20, int(os.getenv("V3_WF_MIN_TRAIN", "60")))
+
+
+def _v3_wf_min_train_frac() -> float:
+    """Floor as fraction of total samples (was 0.50)."""
+    try:
+        return float(os.getenv("V3_WF_MIN_TRAIN_FRAC", "0.40"))
+    except Exception:
+        return 0.40
+
+
+def _v3_wf_test_size_floor() -> int:
+    """Absolute minimum per-fold test-window size (was hardcoded to 20)."""
+    return max(5, int(os.getenv("V3_WF_TEST_SIZE", "15")))
+
+
+def _v3_wf_test_size_frac() -> float:
+    """Test-window size as fraction of total samples (was 0.10, unchanged)."""
+    try:
+        return float(os.getenv("V3_WF_TEST_FRAC", "0.10"))
+    except Exception:
+        return 0.10
+
+
 def _walk_forward_scores(X, y):
     """
     Rolling walk-forward validation over time-ordered samples.
     Returns dict with fold_count / mean and minimum fold scores.
+
+    PR #21: train-window and test-window floors are env-tunable so the
+    function actually produces folds for small datasets. WOLF's 127
+    post-restructure samples couldn't generate folds with the prior
+    hardcoded floors (120 / 20).
+
+    Example fold layout for n=127 with defaults (60 / 15):
+      fold 1: train=X[:60],  test=X[60:75]
+      fold 2: train=X[:75],  test=X[75:90]
+      fold 3: train=X[:90],  test=X[90:105]
+      fold 4: train=X[:105], test=X[105:120]
     """
     from xgboost import XGBClassifier
     from sklearn.metrics import accuracy_score
 
     n = len(X)
-    min_train = max(120, int(n * 0.50))
-    test_size = max(20, int(n * 0.10))
+    min_train_floor = _v3_wf_min_train_floor()
+    min_train_frac = _v3_wf_min_train_frac()
+    test_size_floor = _v3_wf_test_size_floor()
+    test_size_frac = _v3_wf_test_size_frac()
+    min_train = max(min_train_floor, int(n * min_train_frac))
+    test_size = max(test_size_floor, int(n * test_size_frac))
     step = test_size
     folds = []
     start = min_train
     while start + test_size <= n:
         X_train, y_train = X[:start], y[:start]
         X_test, y_test = X[start : start + test_size], y[start : start + test_size]
-        if len(X_train) < 60 or len(X_test) < 20:
+        # Inner safety check: skip degenerate folds. Tied to the env-tunable
+        # floors so the inner & outer constraints stay coherent.
+        if len(X_train) < min_train_floor or len(X_test) < test_size_floor:
             start += step
             continue
         pos_ct = int(np.sum(y_train))
