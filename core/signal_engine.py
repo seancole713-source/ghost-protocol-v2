@@ -17,6 +17,11 @@ from core.vol_targets import base_vol_pct, stop_pct_from_vol
 
 LOGGER = logging.getLogger("ghost.signal_v3")
 
+# PR #14 deploy-marker — if this line isn't in Railway logs at app startup,
+# the deployment did NOT pick up code at or after PR #14. The marker also
+# helps disambiguate cached vs fresh Python module loads after redeploy.
+LOGGER.info("[signal_engine] MODULE_LOADED PR14_DIAG ohlcv_chain=sip|iex|polygon|yfinance")
+
 LABEL_TYPE = "tp_sl_daily"
 # Daily bars only: approximate 48h stock hold with this many forward bars (24h each).
 V3_LABEL_HOLD_BARS = max(1, int(os.getenv("V3_LABEL_HOLD_BARS", "3")))
@@ -359,6 +364,11 @@ FEATURE_COLS = [
 def _fetch_ohlcv(symbol, asset_type, period='1y', interval='1d'):
     """Fetch daily OHLCV bars from Alpaca.
 
+    PR #14 diag: emits "_fetch_ohlcv ENTERED" at the top so we can confirm
+    in Railway logs whether the function is being called at all. If you see
+    "PR14_DIAG MODULE_LOADED" but not "_fetch_ohlcv ENTERED" during training,
+    something upstream is short-circuiting before reaching this function.
+
     Feed selection: tries SIP first (consolidated tape, the only feed that
     carries post-restructuring WOLF shares since 2025-09-29), falls back to
     IEX if SIP returns no rows or the account isn't entitled to SIP.
@@ -367,6 +377,7 @@ def _fetch_ohlcv(symbol, asset_type, period='1y', interval='1d'):
     trading from 2025-09-29, so >1y of data doesn't exist for the new ticker;
     fetching 2y would waste a round-trip and could confuse downstream logic.
     """
+    LOGGER.info(f"[_fetch_ohlcv] PR14_DIAG ENTERED symbol={symbol} asset_type={asset_type} period={period}")
     import os, requests as _req
     from datetime import datetime, timedelta, timezone
     key = os.getenv("ALPACA_KEY_ID", "")
