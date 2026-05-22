@@ -1,6 +1,7 @@
 """
 core/news.py - News brain with Claude-powered sentiment scoring.
-Fetches Finnhub + CryptoPanic every 30 min.
+WOLF-ONLY MODE: Finnhub only, WOLF only.
+Fetches Finnhub company-news for WOLF every 30 min.
 Scores headlines via Claude Haiku batch call, stores per-symbol sentiment score.
 prediction.py reads get_symbol_sentiment() to adjust confidence - no new Telegram alerts.
 """
@@ -8,10 +9,6 @@ import os, time, logging, json, requests
 from typing import List, Dict
 
 LOGGER = logging.getLogger("ghost.news")
-CRYPTOPANIC_KEY = os.getenv("CRYPTOPANIC_API_KEY", "")
-# v1 /api/v1/posts/ returns 404; plans use /api/<plan>/v2/posts/ (e.g. developer, growth).
-_cp_plan = (os.getenv("CRYPTOPANIC_API_PLAN") or "developer").strip().lower()
-CRYPTOPANIC_PLAN = "".join(c for c in _cp_plan if c.isalnum() or c == "_") or "developer"
 FINNHUB_KEY = os.getenv("FINNHUB_API_KEY", "")
 ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
@@ -41,7 +38,7 @@ def _safe_log_snippet(text: str, max_len: int = 160) -> str:
     Normalize third-party response text for logs.
 
     - Collapses newlines/whitespace to one line to avoid log spam fan-out.
-    - Suppresses raw HTML bodies (CryptoPanic 404 pages) to a concise marker.
+    - Suppresses raw HTML bodies to a concise marker.
     """
     raw = (text or "").strip()
     if not raw:
@@ -94,8 +91,8 @@ def _score_with_claude(articles: List[Dict]) -> Dict[str, float]:
         + headline_lines +
         "\nFor each symbol mentioned, give a sentiment score: "
         "-1.0 = very bearish, 0.0 = neutral, +1.0 = very bullish.\n"
-        "Consider: bad news/crash/fraud = bearish, good news/launch/profit = bullish.\n"
-        "Respond ONLY with JSON like: {\"BTC\": -0.4, \"ETH\": 0.2, \"LINK\": -0.7}\n"
+        "Consider: bad news/lawsuit/miss = bearish, good news/launch/profit = bullish.\n"
+        "Respond ONLY with JSON like: {\"WOLF\": -0.4}\n"
         "Only include symbols from the headlines. No explanation."
     )
 
@@ -139,107 +136,6 @@ def _fallback_scores(articles: List[Dict]) -> Dict[str, float]:
             s = sym.upper()
             scores.setdefault(s, []).append(score)
     return {s: round(sum(v)/len(v), 3) for s, v in scores.items() if v}
-
-
-def _fetch_cryptopanic() -> List[Dict]:
-    if not CRYPTOPANIC_KEY:
-        return []
-    try:
-        url = f"https://cryptopanic.com/api/{CRYPTOPANIC_PLAN}/v2/posts/"
-        r = requests.get(
-            url,
-            params={"auth_token": CRYPTOPANIC_KEY, "kind": "news", "public": "true"},
-            timeout=3,
-        )
-        if r.status_code != 200:
-            err = _safe_log_snippet(r.text)
-            try:
-                j = r.json()
-                if isinstance(j, dict) and j.get("info"):
-                    err = _safe_log_snippet(str(j.get("info", err)))
-            except ValueError:
-                pass
-            LOGGER.warning(
-                "CryptoPanic HTTP %s (%s plan): %s",
-                r.status_code,
-                CRYPTOPANIC_PLAN,
-                err,
-            )
-            return []
-        body = (r.text or "").strip()
-        if not body:
-            LOGGER.warning(
-                "CryptoPanic empty response (check CRYPTOPANIC_API_KEY and CRYPTOPANIC_API_PLAN=%s)",
-                CRYPTOPANIC_PLAN,
-            )
-            return []
-        try:
-            payload = r.json()
-        except ValueError:
-            LOGGER.warning("CryptoPanic non-JSON response: %s", _safe_log_snippet(body))
-            return []
-        articles = []
-        for item in payload.get("results", [])[:20]:
-            syms = [c["code"].upper() for c in item.get("currencies", [])]
-            title = item.get("title", "")
-            if title and title not in _seen_headlines:
-                _seen_headlines.add(title)
-                articles.append({"title": title, "symbols": syms or ["CRYPTO"], "source": "cryptopanic"})
-        return articles
-    except requests.RequestException as e:
-        LOGGER.warning(f"CryptoPanic fetch error: {e}")
-        return []
-
-
-def _fetch_finnhub_crypto() -> List[Dict]:
-    global _finnhub_fail_streak
-    if not FINNHUB_KEY:
-        return []
-    attempts = 3
-    last_err = None
-    for i in range(attempts):
-        try:
-            r = requests.get(
-                "https://finnhub.io/api/v1/news",
-                params={"category": "crypto", "token": FINNHUB_KEY},
-                timeout=3,
-            )
-            r.raise_for_status()
-            articles = []
-            for a in r.json()[:15]:
-                title = a.get("headline", "")
-                if title and title not in _seen_headlines:
-                    _seen_headlines.add(title)
-                    articles.append({"title": title, "symbols": ["CRYPTO"], "source": "finnhub"})
-            if _finnhub_fail_streak >= 3:
-                LOGGER.info("Finnhub recovered after %s consecutive failures", _finnhub_fail_streak)
-            _finnhub_fail_streak = 0
-            return articles
-        except requests.RequestException as e:
-            last_err = e
-            if i < attempts - 1:
-                time.sleep(0.25 * (2 ** i))
-                continue
-            _finnhub_fail_streak += 1
-            if _finnhub_fail_streak >= 3:
-                LOGGER.warning(
-                    "Finnhub fetch failing (streak=%s): %s",
-                    _finnhub_fail_streak,
-                    str(e)[:160],
-                )
-            else:
-                LOGGER.info(
-                    "Finnhub transient fetch error (streak=%s): %s",
-                    _finnhub_fail_streak,
-                    str(e)[:160],
-                )
-            return []
-
-    # Unreachable in normal flow, but keep explicit.
-    if last_err:
-        _finnhub_fail_streak += 1
-        LOGGER.info("Finnhub transient fetch error (streak=%s): %s", _finnhub_fail_streak, str(last_err)[:160])
-    return []
 
 
 def _fetch_finnhub_stock(symbol: str) -> List[Dict]:
@@ -291,7 +187,7 @@ def _fetch_finnhub_stock(symbol: str) -> List[Dict]:
 def run_news_cycle() -> List[Dict]:
     """
     Main cycle called every 30 min by scheduler.
-    1. Fetch headlines from Finnhub + CryptoPanic
+    1. Fetch headlines from Finnhub for WOLF
     2. Score sentiment with Claude (or keyword fallback)
     3. Store scores in _symbol_sentiment - prediction.py reads these
     No Telegram alerts sent here.
@@ -299,9 +195,7 @@ def run_news_cycle() -> List[Dict]:
     global _cached_articles, _symbol_sentiment
 
     articles = []
-    articles.extend(_fetch_cryptopanic())
-    articles.extend(_fetch_finnhub_crypto())
-    for sym in ["AAPL", "NVDA", "TSLA", "MSFT", "META", "AMZN"]:
+    for sym in ["WOLF"]:
         articles.extend(_fetch_finnhub_stock(sym))
 
     if not articles:
@@ -363,7 +257,7 @@ def get_cached_articles(limit=None) -> List[Dict]:
 
 
 def get_recent_articles(limit: int = 20) -> List[Dict]:
-    """Alias for get_cached_articles — returns cached news, never blocks."""
+    """Alias for get_cached_articles - returns cached news, never blocks."""
     return get_cached_articles(limit=limit)
 
 def get_sentiment_for_symbol(symbol: str) -> float:

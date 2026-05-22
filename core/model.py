@@ -27,7 +27,6 @@ MODEL_RELOAD_S = 3600  # reload from disk every hour
 # ─── Feature schema ────────────────────────────────────────────────────────────
 # Must match exactly what prediction.py stores in the features JSONB column.
 FEATURE_COLS = [
-    "btc_24h_pct",      # BTC price change over last 24h (regime context)
     "hour_of_day",      # UTC hour 0-23
     "day_of_week",      # 0=Mon .. 6=Sun
     "symbol_win_rate",  # historical win rate for this symbol at signal time
@@ -41,7 +40,6 @@ def _row_to_features(features_json):
     """Convert a stored features dict to a numpy feature vector."""
     f = features_json if isinstance(features_json, dict) else {}
     return [
-        float(f.get("btc_24h_pct", 0.0)),
         float(f.get("hour_of_day", 12)),
         float(f.get("day_of_week", 2)),
         float(f.get("symbol_win_rate", 0.3)),

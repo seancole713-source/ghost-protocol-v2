@@ -11,14 +11,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 LOGGER = logging.getLogger("ghost.retrain")
 
-CRYPTO_SET = {"BTC","ETH","SOL","XRP","ADA","DOT","LINK","AVAX","MATIC","LTC","ATOM","UNI","TRX","BCH","CHZ","TURBO","ZEC","RNDR"}
-
-# Single source of truth for feature order - imported by prediction.py
+# WOLF-only mode: feature order retained for back-compat with persisted models.
+# is_crypto / is_major slots are always 0.0 now.
 FEATURE_ORDER = [
     "sym_win_rate",    # Historical win rate for this symbol
     "sym_count_norm",  # Normalized sample count (0-1)
-    "is_crypto",       # 1.0 for crypto, 0.0 for stock
-    "is_major",        # 1.0 for BTC/ETH/XRP/AAPL/NVDA
+    "is_crypto",       # legacy slot, always 0.0
+    "is_major",        # legacy slot, always 0.0
     "hour_norm",       # Hour of day normalized (0-1)
     "dow_norm",        # Day of week normalized (0-1)
     "price_norm",      # Price normalized to 0-1 range
@@ -83,8 +82,8 @@ def load_balanced_data(min_samples=200, days=90):
         features = [
             float(wr),                                        # sym_win_rate
             float(min(cnt, 200)) / 200,                       # sym_count_norm
-            1.0 if sym in CRYPTO_SET else 0.0,                # is_crypto
-            1.0 if sym in {"BTC","ETH","XRP","AAPL","NVDA","TSLA"} else 0.0,  # is_major
+            0.0,                                              # is_crypto (legacy slot, WOLF-only)
+            0.0,                                              # is_major (legacy slot, WOLF-only)
             float(dt.hour) / 24,                              # hour_norm
             float(dt.weekday()) / 7,                          # dow_norm
             min(float(price), 100000) / 100000,               # price_norm

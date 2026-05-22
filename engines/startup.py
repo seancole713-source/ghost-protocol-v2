@@ -12,8 +12,6 @@
 #                in proper 'with' context managers (lines ~361, ~472)
 # ──────────────────────────────────────────────────────────────
 # KNOWN ISSUES:
-#   - Crypto price fetches fail for some symbols (DLO, SRRK) — provider issue
-#   - coroutine 'get_crypto_price_quorum' warning in system_doctor.py:146
 #   - Market mood update fails when SPY data unavailable (weekends/after hours)
 # ──────────────────────────────────────────────────────────────
 # DO NOT CHANGE (frozen interfaces):
@@ -108,12 +106,10 @@ async def _on_startup():
     try:
         env_config = {
             "STOCKS_ENABLED": _os_module.getenv("STOCKS_ENABLED", "1"),
-            "CRYPTO_ENABLED": _os_module.getenv("CRYPTO_ENABLED", "0"),
             "PRICE_STRICT_LIVE": _os_module.getenv("PRICE_STRICT_LIVE", "0"),
             "PRICE_REQUIRE_QUORUM": _os_module.getenv("PRICE_REQUIRE_QUORUM", "0"),
             "PREDICT_REQUIRE_PRICE_QUORUM": _os_module.getenv("PREDICT_REQUIRE_PRICE_QUORUM", "0"),
-            "STOCK_PRICE_SOURCE": _os_module.getenv("STOCK_PRICE_SOURCE", "polygon"),
-            "CRYPTO_PRICE_SOURCE": _os_module.getenv("CRYPTO_PRICE_SOURCE", "coingecko"),
+            "STOCK_PRICE_SOURCE": _os_module.getenv("STOCK_PRICE_SOURCE", "alpaca"),
             "REDIS_URL_SET": bool(_os_module.getenv("REDIS_URL")),
             "OPENAI_KEY_SET": bool(_os_module.getenv("OPENAI_API_KEY")),
             "TELEGRAM_TOKEN_SET": bool(_os_module.getenv("TELEGRAM_BOT_TOKEN")),
@@ -520,8 +516,6 @@ async def _on_startup():
             while True:
                 try:
                     from core.paper_tracker import get_paper_tracker
-                    from core.crypto.crypto_providers import get_crypto_price_quorum
-                    
                     tracker = get_paper_tracker()
                     price_data = {}
                     
@@ -545,27 +539,17 @@ async def _on_startup():
                     if symbols:
                         LOGGER.info(f"[PAPER] Found {len(symbols)} symbols with due trades, fetching prices...")
                         
-                        # Fetch current prices for symbols with due trades
-                        from core.asset_classifier import get_asset_type
-                        
+                        # Fetch current prices for symbols with due trades (WOLF-only: stocks)
                         failed_symbols = []
                         for (symbol,) in symbols:
                             try:
-                                asset_type = get_asset_type(symbol)
-                                if asset_type.startswith('crypto'):
-                                    result = await get_crypto_price_quorum(symbol, use_cache=True)
-                                    if result and result.get("price"):
-                                        price_data[symbol] = result["price"]
-                                    else:
-                                        failed_symbols.append(symbol)
+                                # WOLF-only mode: stock prices only
+                                stock_result = turbo_stock_price(symbol, max_budget_s=2.0)
+                                if stock_result and stock_result.get("ok") and stock_result.get("price"):
+                                    price_data[symbol] = stock_result["price"]
+                                    LOGGER.info(f"[PAPER] Stock price for {symbol}: ${stock_result['price']:.2f}")
                                 else:
-                                    # Use stock price provider for stocks
-                                    stock_result = turbo_stock_price(symbol, max_budget_s=2.0)
-                                    if stock_result and stock_result.get("ok") and stock_result.get("price"):
-                                        price_data[symbol] = stock_result["price"]
-                                        LOGGER.info(f"[PAPER] Stock price for {symbol}: ${stock_result['price']:.2f}")
-                                    else:
-                                        failed_symbols.append(symbol)
+                                    failed_symbols.append(symbol)
                             except Exception as price_err:
                                 failed_symbols.append(symbol)
                                 LOGGER.debug(f"[PAPER] Price fetch failed for {symbol}: {price_err}")
@@ -772,7 +756,7 @@ async def _on_startup():
                 warmup_count = 0
                 
                 # EDGE WHITELIST (Feb 10, 2026): Only cache edge symbols on startup
-                # Previously loaded 50 random predictions → polluted cache with ETH, XRP, LINK
+                # Previously loaded 50 random predictions which polluted cache.
                 _warmup_edge_enabled = os.getenv("EDGE_WHITELIST_ENABLED", "1") == "1"
                 _warmup_edge_set = get_edge_set()
                 
@@ -863,47 +847,37 @@ async def _on_startup():
     
     # Start outcome reconciler background task (runs hourly)
     # NOTE: DISABLED - Using outcome_reconciler_v2 instead (started at line 3973)
-    # The old reconciler uses prediction_points table which isn't populated for crypto
     LOGGER.info("[GHOST STARTUP] ⚠️ Old outcome reconciler DISABLED - using V2 at line 3973")
 
     # ========================================================================
-    # CRITICAL: Auto-trigger stock AND crypto predictions on startup
-    # Railway ephemeral storage loses predictions on redeploy
-    # Beast scheduler only runs on weekdays, so weekends need manual trigger
-    # This ensures TOP 10 always has 5 stocks + 5 crypto ready
+    # WOLF-only: Auto-trigger predictions on startup
+    # Railway ephemeral storage loses predictions on redeploy.
     # ========================================================================
     try:
         async def _startup_predictions():
-            """Trigger stock + crypto predictions 60s after startup to ensure TOP 10 is ready"""
+            """Trigger WOLF predictions 60s after startup."""
             await asyncio.sleep(60)  # Wait for app to fully initialize
-            
-            # FIX (Mar 1, 2026): Use get_edge_set() — single source of truth.
-            # Old code read EDGE_SYMBOLS env var with stale hardcoded fallback
-            # (GIGA, TURBO, RNDR, etc.) that aren't edge symbols anymore.
-            from config.symbols import get_edge_set, is_crypto
-            
+
+            from config.symbols import get_edge_set
+
             edge_set = get_edge_set()
-            EDGE_STOCKS = sorted([s for s in edge_set if not is_crypto(s)])
-            EDGE_CRYPTO = sorted([s for s in edge_set if is_crypto(s)])
-            
-            TOP_STOCKS = EDGE_STOCKS[:5]  # Max 5 for startup
-            TOP_CRYPTO = EDGE_CRYPTO[:5]  # Max 5 for startup
-            
-            LOGGER.info(f"[STARTUP PREDS] Edge symbols: {len(EDGE_STOCKS)} stocks, {len(EDGE_CRYPTO)} crypto")
-            LOGGER.info(f"[STARTUP PREDS] Triggering predictions for {len(TOP_STOCKS)} stocks + {len(TOP_CRYPTO)} crypto...")
-            
+            EDGE_STOCKS = sorted(edge_set)
+
+            TOP_STOCKS = EDGE_STOCKS[:5]
+
+            LOGGER.info(f"[STARTUP PREDS] Edge symbols: {len(EDGE_STOCKS)} stocks")
+            LOGGER.info(f"[STARTUP PREDS] Triggering predictions for {len(TOP_STOCKS)} stocks...")
+
             import httpx
-            
+
             # Get base URL from environment or default to localhost
             port = _os_module.getenv("PORT", "8080")
             base_url = f"http://localhost:{port}"
             auth_token = _os_module.getenv("API_AUTH_TOKEN", "ghost-prod-2024")
-            
+
             stocks_triggered = 0
-            crypto_triggered = 0
-            
+
             async with httpx.AsyncClient(timeout=30.0) as client:
-                # Trigger stocks
                 for symbol in TOP_STOCKS:
                     try:
                         resp = await client.post(
@@ -916,28 +890,11 @@ async def _on_startup():
                             if data.get("ok") or data.get("direction"):
                                 stocks_triggered += 1
                                 LOGGER.info(f"[STARTUP PREDS] ✅ {symbol}: {data.get('direction')} conf={data.get('confidence', 0):.2f}")
-                        await asyncio.sleep(5)  # Rate limit - keep server responsive
+                        await asyncio.sleep(5)
                     except Exception as e:
                         LOGGER.warning(f"[STARTUP PREDS] ⚠️ {symbol} failed: {e}")
-                
-                # Trigger crypto
-                for symbol in TOP_CRYPTO:
-                    try:
-                        resp = await client.post(
-                            f"{base_url}/api/predict/run",
-                            params={"symbol": symbol, "horizon": "SHORT"},
-                            headers={"Authorization": f"Bearer {auth_token}"}
-                        )
-                        if resp.status_code == 200:
-                            data = resp.json()
-                            if data.get("ok") or data.get("direction"):
-                                crypto_triggered += 1
-                                LOGGER.info(f"[STARTUP PREDS] ✅ {symbol}: {data.get('direction')} conf={data.get('confidence', 0):.2f}")
-                        await asyncio.sleep(5)  # Rate limit - keep server responsive
-                    except Exception as e:
-                        LOGGER.warning(f"[STARTUP PREDS] ⚠️ {symbol} failed: {e}")
-            
-            LOGGER.info(f"[STARTUP PREDS] ✅ Done: {stocks_triggered}/{len(TOP_STOCKS)} stocks, {crypto_triggered}/{len(TOP_CRYPTO)} crypto")
+
+            LOGGER.info(f"[STARTUP PREDS] ✅ Done: {stocks_triggered}/{len(TOP_STOCKS)} stocks")
         
         loop = asyncio.get_running_loop()
         loop.create_task(_startup_predictions())

@@ -1,30 +1,19 @@
 #!/usr/bin/env python3
 """
-🏛️ GHOST STOCK ENGINE - Stock-Specific Prediction Model
-========================================================
+GHOST STOCK ENGINE - Stock-Specific Prediction Model (WOLF-only mode)
+======================================================================
 
-Why stocks need a different model than crypto:
-- Stocks move 2-3x slower than crypto
-- Stocks are affected by market hours, earnings, Fed
-- RSI 30 (crypto oversold) rarely happens in stocks
-- 48h horizon is too long for stocks (24h better)
-- 6% target is unrealistic (2% is achievable)
+Tuned for slower-moving stocks:
+- 24h horizon
+- 2% target
+- RSI 35/65 thresholds
+- 3-4 confirmations
+- VIX < 20-22 max
+- SPY regime gate (stock market regime)
+- Market hours only
+- Earnings blackout
 
-This engine applies the Ghost blueprint that WORKS for crypto,
-but with stock-tuned parameters:
-
-CRYPTO ENGINE          | STOCK ENGINE
------------------------|--------------------
-48h horizon            | 24h horizon
-6% target              | 2% target
-RSI 30/70              | RSI 35/65
-3 confirmations        | 4 confirmations
-VIX < 25               | VIX < 20
-BTC trend gate         | SPY regime gate
-24/7 trading           | Market hours only
-No earnings            | Earnings blackout
-
-Target: 40-50% win rate (up from 4.5%)
+Target: 40-50% win rate.
 
 PRE-MARKET FIX (Feb 24, 2026):
   At 8 AM CT (9 AM ET), the stock market doesn't open until 8:30 CT / 9:30 ET.
@@ -95,12 +84,12 @@ def _is_premarket() -> bool:
 class StockConfig:
     """Stock-specific prediction parameters (tuned for slower-moving assets)"""
     
-    # Prediction horizon (vs 48h for crypto)
+    # Prediction horizon
     horizon_hours: int = 24
-    
-    # Target move percentage (vs 6% for crypto)
+
+    # Target move percentage
     target_pct: float = 2.0
-    
+
     # RSI thresholds (RELAXED from 35/65 to 40/60 for better signal generation)
     # Stocks rarely hit 35/65 - we were getting too many HOLDs
     rsi_oversold: float = 40.0
@@ -126,7 +115,7 @@ class StockConfig:
     max_position_pct: float = 5.0  # Max 5% of portfolio per stock
     
     # Stop loss / Take profit
-    stop_loss_pct: float = 1.0  # Tighter than crypto
+    stop_loss_pct: float = 1.0
     take_profit_pct: float = 2.5  # Smaller targets
     
     # Multi-timeframe requirements
@@ -153,26 +142,8 @@ class StockConfig:
 # Default configuration
 STOCK_CONFIG = StockConfig()
 
-# Stock whitelist (high-liquidity, predictable stocks)
-STOCK_WHITELIST = {
-    # Tech giants (most predictable)
-    "AAPL", "MSFT", "GOOGL", "AMZN", "META", "NVDA",
-    
-    # Finance
-    "JPM", "BAC", "GS", "MS",
-    
-    # Consumer
-    "TSLA", "DIS", "NKE", "SBUX",
-    
-    # Healthcare
-    "JNJ", "PFE", "UNH",
-    
-    # Energy
-    "XOM", "CVX",
-    
-    # Industrial
-    "CAT", "BA", "GE",
-}
+# Stock whitelist (WOLF-only mode)
+STOCK_WHITELIST = {"WOLF"}
 
 
 @dataclass
@@ -232,9 +203,9 @@ class StockPrediction:
 class StockEngine:
     """
     Stock-specific prediction engine.
-    
-    Uses the same ensemble approach as crypto (LSTM + XGBoost + Transformer)
-    but with stock-tuned parameters and additional gates.
+
+    Uses an ensemble approach (LSTM + XGBoost + Transformer)
+    with stock-tuned parameters and additional gates.
     """
     
     def __init__(self, config: StockConfig = None):
@@ -745,7 +716,6 @@ class StockEngine:
         price = indicators.get("current_price", 0)
         
         # PRIMARY: Use Ensemble Predictor (LSTM + XGBoost + Transformer)
-        # This was missing - stocks need the same ML power as crypto
         direction = "HOLD"
         ensemble_confidence = 0.5
         try:

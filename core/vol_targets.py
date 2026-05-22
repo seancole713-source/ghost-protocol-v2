@@ -1,23 +1,11 @@
-"""Shared volatility targets for UP trades — must match live TP/SL in prediction.py."""
+"""Shared volatility targets for UP trades — must match live TP/SL in prediction.py.
+
+WOLF-only mode: VOL_MAP retains a single WOLF entry. Anything else uses default.
+"""
 from __future__ import annotations
 
 VOL_MAP = {
-    "LTC": 0.020,
-    "AAVE": 0.040,
-    "LINK": 0.031,
-    "SOL": 0.029,
-    "BTC": 0.022,
-    "XRP": 0.015,
-    "MATIC": 0.020,
-    "SUI": 0.022,
-    "NEAR": 0.028,
-    "BCH": 0.015,
-    "ETH": 0.025,
-    "DOT": 0.025,
-    "TRX": 0.020,
-    "ATOM": 0.025,
-    "ARB": 0.030,
-    "UNI": 0.030,
+    "WOLF": 0.025,
 }
 
 

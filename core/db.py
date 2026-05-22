@@ -48,7 +48,7 @@ def _ensure_tables():
                 outcome VARCHAR(10),
                 exit_price FLOAT,
                 pnl_pct FLOAT,
-                asset_type VARCHAR(10) DEFAULT 'crypto'
+                asset_type VARCHAR(10) DEFAULT 'stock'
             )
         """)
         cur.execute("""

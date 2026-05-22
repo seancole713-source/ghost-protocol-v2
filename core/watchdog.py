@@ -25,7 +25,7 @@ def run_watchdog():
             )
             open_picks = cur.fetchall()
         for pred_id, symbol, direction, entry, target, stop, asset_type, conf in open_picks:
-            price = get_price(symbol, asset_type or "crypto")
+            price = get_price(symbol)
             if not price: continue
             hit = None
             if direction == "UP":

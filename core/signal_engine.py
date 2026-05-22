@@ -18,7 +18,7 @@ from core.vol_targets import base_vol_pct, stop_pct_from_vol
 LOGGER = logging.getLogger("ghost.signal_v3")
 
 LABEL_TYPE = "tp_sl_daily"
-# Daily bars only: approximate 48h crypto hold with this many forward bars (24h each).
+# Daily bars only: approximate 48h stock hold with this many forward bars (24h each).
 V3_LABEL_HOLD_BARS = max(1, int(os.getenv("V3_LABEL_HOLD_BARS", "3")))
 MIN_TRAIN_ROWS = 80
 MODEL_DB_KEY = "ghost_v3_model_pkl"
@@ -56,7 +56,7 @@ def _v3_wf_acc_min_slack() -> float:
 def _v3_wf_acc_min_overrides() -> dict:
     """
     Optional per-symbol absolute floor overrides for wf_acc_min.
-    Env format: V3_WF_ACC_MIN_OVERRIDES="UNI=0.51,BCH=0.55"
+    Env format: V3_WF_ACC_MIN_OVERRIDES="WOLF=0.55"
     """
     raw = (os.getenv("V3_WF_ACC_MIN_OVERRIDES", "") or "").strip()
     out = {}
@@ -344,23 +344,12 @@ def _fetch_ohlcv(symbol, asset_type, period='2y', interval='1d'):
     start_str = start_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
     end_str = end_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
     try:
-        if asset_type == 'crypto':
-            import urllib.parse
-            ticker = symbol.upper() + '/USD'
-            ticker_enc = urllib.parse.quote(ticker, safe='')
-            url = (f"https://data.alpaca.markets/v1beta3/crypto/us/bars"
-                   f"?symbols={ticker_enc}&timeframe=1Day&limit=1000"
-                   f"&start={start_str}&end={end_str}")
-            r = _req.get(url, headers=headers, timeout=30)
-            if r.status_code != 200: return None
-            bars = r.json().get('bars', {}).get(ticker, [])
-        else:
-            url = (f"https://data.alpaca.markets/v2/stocks/{symbol.upper()}/bars"
-                   f"?timeframe=1Day&limit=1000&feed=iex"
-                   f"&start={start_str}&end={end_str}")
-            r = _req.get(url, headers=headers, timeout=30)
-            if r.status_code != 200: return None
-            bars = r.json().get('bars', [])
+        url = (f"https://data.alpaca.markets/v2/stocks/{symbol.upper()}/bars"
+               f"?timeframe=1Day&limit=1000&feed=iex"
+               f"&start={start_str}&end={end_str}")
+        r = _req.get(url, headers=headers, timeout=30)
+        if r.status_code != 200: return None
+        bars = r.json().get('bars', [])
         rows = [{'ts': b.get('t',''), 'open': float(b.get('o',0)),
                  'high': float(b.get('h',0)), 'low': float(b.get('l',0)),
                  'close': float(b.get('c',0)), 'volume': float(b.get('v',0))}
