@@ -1,4 +1,5 @@
 import json
+import time
 
 import wolf_app
 
@@ -260,3 +261,202 @@ def test_confidence_buckets_computes_per_bucket_winrate(monkeypatch):
     assert rates == {"<60": 25.0, "60-70": 50.0, "70-80": 70.0, "80-90": 80.0, "90+": 90.0}
     totals = {b["label"]: b["total"] for b in out["buckets"]}
     assert totals == {"<60": 4, "60-70": 10, "70-80": 10, "80-90": 10, "90+": 10}
+
+
+# ════════════════════════════════════════════════════════════════════════
+# PR #8 — WOLF command center
+# ════════════════════════════════════════════════════════════════════════
+
+def test_scan_symbols_drops_non_wolf_even_if_env_dirty(monkeypatch):
+    """PR #8 hardening: STOCK_SYMBOLS=TSLA,META,WOLF,AMZN must reduce to ['WOLF']."""
+    monkeypatch.setenv("STOCK_SYMBOLS", "TSLA,META,WOLF,AMZN,T")
+    monkeypatch.setenv("V3_STATS_START_TS", "0")
+    monkeypatch.delenv("V3_STATS_START_TS", raising=False)
+    monkeypatch.setattr(wolf_app, "_v32_stats_start_ts", lambda cur: 0)
+    cur = QueueCursor(fetchall_values=[[]], fetchone_values=[(0,)])
+    payload = wolf_app._compute_get_stats(cur)
+    assert payload["scan_symbols"]["stocks"] == ["WOLF"]
+
+
+def test_scan_symbols_falls_back_to_wolf_when_env_empty(monkeypatch):
+    monkeypatch.setenv("STOCK_SYMBOLS", "")
+    monkeypatch.setattr(wolf_app, "_v32_stats_start_ts", lambda cur: 0)
+    cur = QueueCursor(fetchall_values=[[]], fetchone_values=[(0,)])
+    payload = wolf_app._compute_get_stats(cur)
+    assert payload["scan_symbols"]["stocks"] == ["WOLF"]
+
+
+def test_v3_status_strips_non_wolf_models(monkeypatch):
+    """PR #8 hardening: stale BCH/SOL/UNI rows in ghost_v3_model must not surface."""
+    import core.signal_engine as _se
+    fake = {
+        "trained": True,
+        "models": 4,
+        "symbols": {
+            "WOLF": {"engine": "v3.2", "label_type": "tp_sl_daily", "accuracy": 71.0},
+            "BCH": {"engine": "v3.0", "label_type": "tp_sl_4h", "accuracy": 52.0},
+            "SOL": {"engine": "v3.0", "label_type": "tp_sl_4h", "accuracy": 49.0},
+            "UNI": {"engine": "v3.0", "label_type": "tp_sl_4h", "accuracy": 50.0},
+        },
+    }
+    monkeypatch.setattr(_se, "get_model_status", lambda: fake)
+    out = wolf_app.v3_status()
+    assert out["trained"] is True
+    assert out["models"] == 1
+    assert list(out["symbols"].keys()) == ["WOLF"]
+
+
+def test_v3_status_flips_to_untrained_when_no_wolf_model(monkeypatch):
+    import core.signal_engine as _se
+    fake = {"trained": True, "models": 1, "symbols": {"BCH": {"engine": "v3.0"}}}
+    monkeypatch.setattr(_se, "get_model_status", lambda: fake)
+    out = wolf_app.v3_status()
+    assert out["trained"] is False
+    assert "WOLF" in str(out.get("reason", ""))
+
+
+# ── /api/wolf/signal-alert/check — Telegram alert throttling ───────────
+
+class _SignalAlertCursor:
+    """Cursor that scripts the SQL execution path of wolf_signal_alert_check.
+
+    Expected execution order:
+      1. CREATE TABLE IF NOT EXISTS …  → no-op
+      2. SELECT COUNT(*) FROM wolf_signal_alerts WHERE sent_at >= %s
+      3. SELECT … FROM predictions … LEFT JOIN wolf_signal_alerts …
+      4. INSERT INTO wolf_signal_alerts … (per candidate)
+    """
+
+    def __init__(self, sent_today=0, candidates=None):
+        self.sent_today = sent_today
+        self.candidates = list(candidates or [])
+        self.executed = []
+        self.last_sql = ""
+
+    def execute(self, sql, params=None):
+        self.last_sql = sql
+        self.executed.append((sql, params))
+
+    def fetchone(self):
+        s = self.last_sql
+        if "SELECT COUNT(*) FROM wolf_signal_alerts" in s:
+            return (self.sent_today,)
+        return None
+
+    def fetchall(self):
+        if "FROM predictions" in self.last_sql and "LEFT JOIN wolf_signal_alerts" in self.last_sql:
+            return list(self.candidates)
+        return []
+
+
+def _patch_signal_alert(monkeypatch, cur, sent_messages):
+    class _Conn:
+        def cursor(self):
+            return cur
+
+    class _DbCtx:
+        def __enter__(self):
+            return _Conn()
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(wolf_app, "db_conn", lambda: _DbCtx())
+
+    import core.telegram as _tg
+    monkeypatch.setattr(_tg, "_send", lambda text: sent_messages.append(text))
+
+
+def test_signal_alert_check_skips_when_daily_cap_reached(monkeypatch):
+    monkeypatch.setenv("CRON_SECRET", "")
+    monkeypatch.setenv("WOLF_ALERT_DAILY_CAP", "2")
+    sent = []
+    cur = _SignalAlertCursor(sent_today=2, candidates=[])
+    _patch_signal_alert(monkeypatch, cur, sent)
+    out = wolf_app.wolf_signal_alert_check(x_cron_secret="")
+    assert out["ok"] is True
+    assert out["sent"] == []
+    assert "daily cap" in (out.get("skipped_reason") or "")
+    assert sent == []  # no telegram sent
+
+
+def test_signal_alert_check_sends_high_conf_and_records(monkeypatch):
+    monkeypatch.setenv("CRON_SECRET", "")
+    monkeypatch.setenv("WOLF_ALERT_DAILY_CAP", "2")
+    monkeypatch.setenv("WOLF_ALERT_CONFIDENCE_FLOOR", "0.80")
+    sent = []
+    # Two unalerted high-conf BUY picks
+    candidates = [
+        (101, "BUY", 0.92, 58.5, 72.0, 54.0, int(time.time()) + 86400, int(time.time())),
+        (102, "BUY", 0.88, 60.0, 70.0, 56.0, int(time.time()) + 86400, int(time.time())),
+    ]
+    cur = _SignalAlertCursor(sent_today=0, candidates=candidates)
+    _patch_signal_alert(monkeypatch, cur, sent)
+    out = wolf_app.wolf_signal_alert_check(x_cron_secret="")
+    assert out["ok"] is True
+    assert len(out["sent"]) == 2
+    assert out["sent_today"] == 2
+    # Telegram was called per candidate with the right structure
+    assert len(sent) == 2
+    for msg in sent:
+        assert "WOLF" in msg
+        assert "Confidence" in msg
+        assert "BUY SIGNAL" in msg
+    # An INSERT must have been executed for each alert
+    inserts = [s for s, _ in cur.executed if "INSERT INTO wolf_signal_alerts" in s]
+    assert len(inserts) == 2
+
+
+def test_signal_alert_check_requires_cron_secret_when_set(monkeypatch):
+    """When CRON_SECRET is configured, missing/wrong header → 403."""
+    monkeypatch.setenv("CRON_SECRET", "supersecret")
+    from fastapi import HTTPException
+    try:
+        wolf_app.wolf_signal_alert_check(x_cron_secret="wrong")
+        assert False, "expected HTTPException"
+    except HTTPException as e:
+        assert e.status_code == 403
+
+
+# ── /api/wolf/predictions — buy_target / sell_target derivation ─────────
+
+def test_wolf_predictions_buy_sell_target_derivation(monkeypatch):
+    """BUY pick → buy_target=entry, sell_target=target. SELL pick → inverted."""
+    import api.wolf_endpoints as we
+    we._CACHE.clear()  # bypass the in-process cache between test runs
+
+    now = int(time.time())
+    rows = [
+        # id, predicted_at, expires_at, resolved_at, direction, confidence,
+        # entry_price, target_price, stop_price, outcome, pnl_pct
+        (1, now - 3600, now + 82800, None, "BUY", 0.85, 58.5, 72.0, 54.0, None, None),
+        (2, now - 7200, now + 79200, None, "SELL", 0.80, 70.0, 60.0, 75.0, None, None),
+    ]
+    cur = QueueCursor(fetchall_values=[rows])
+
+    class _Conn:
+        def cursor(self):
+            return cur
+
+    class _DbCtx:
+        def __enter__(self):
+            return _Conn()
+
+        def __exit__(self, *a):
+            return False
+
+    import core.db as _db
+    monkeypatch.setattr(_db, "db_conn", lambda: _DbCtx())
+
+    import asyncio
+    resp = asyncio.run(we.get_wolf_predictions(days=30, limit=100))
+    import json
+    body = json.loads(resp.body)
+    assert body["ok"] is True
+    preds = {p["id"]: p for p in body["predictions"]}
+    # BUY pick: buy_target = entry (58.5), sell_target = target (72.0)
+    assert preds[1]["buy_target"] == 58.5
+    assert preds[1]["sell_target"] == 72.0
+    # SELL pick: buy_target = target (60.0), sell_target = entry (70.0)
+    assert preds[2]["buy_target"] == 60.0
+    assert preds[2]["sell_target"] == 70.0
