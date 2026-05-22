@@ -2450,15 +2450,23 @@ def v3_train(x_cron_secret: str = Header(default="")):
     Takes 2-5 minutes. Runs in background, returns immediately.
     Model only deployed if accuracy > 52% on holdout (and the rest of
     the v3.2 quality gates pass: walk-forward, edge, min wins).
+
+    PR #14 diag: emits PR14_DIAG markers at endpoint entry, background-
+    thread start, and post-train_and_validate so a missing link reveals
+    exactly where the chain breaks in Railway logs.
     """
+    LOGGER.info("[v3_train] PR14_DIAG ENDPOINT_INVOKED")
     if not _cron_ok(x_cron_secret):
         return JSONResponse({"ok":False,"error":"Forbidden"}, status_code=403)
     import threading
     def _train():
         try:
+            LOGGER.info("[v3_train] PR14_DIAG BG_THREAD_STARTED importing train_and_validate")
             from core.signal_engine import train_and_validate
             stocks = _v3_train_collect_symbols()
+            LOGGER.info(f"[v3_train] PR14_DIAG calling train_and_validate(stocks={stocks})")
             model, accuracy, passed = train_and_validate(stocks)
+            LOGGER.info(f"[v3_train] PR14_DIAG train_and_validate returned passed={passed} acc={accuracy}")
             LOGGER.info(f"v3 training complete: accuracy={round(accuracy*100,1)}% passed={passed}")
             _bump_cockpit_db_cache()
             try:
