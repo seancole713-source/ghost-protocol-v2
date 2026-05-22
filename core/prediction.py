@@ -543,7 +543,10 @@ def _legacy_signal(symbol, current_price):
             return ("DOWN", round(min(down_win_rate, _conf_cap), 3))
         elif win_rate < INVERSE_THRESHOLD:
             inv_dir = "DOWN" if dominant_dir == "UP" else "UP"
-            inv_conf = min(round(1.0 - win_rate, 3), 0.65)
+            # Confidence scales with distance from 50/50.
+            # WR=0.40 (barely inverse) → 0.20; WR=0.10 (strong inverse) → 0.80.
+            # Capped at 0.65 because inverse signals are second-class evidence.
+            inv_conf = round(min(abs(win_rate - 0.5) * 2.0, 0.65), 3)
             return (inv_dir, inv_conf)
         else:
             return None  # No edge (45-55% zone)
