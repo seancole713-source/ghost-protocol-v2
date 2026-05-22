@@ -707,3 +707,183 @@ def test_v3_train_collect_symbols_falls_back_to_wolf_when_all_empty(monkeypatch)
     monkeypatch.setattr(wolf_app, "db_conn", lambda: _BrokenCtx())
     out = wolf_app._v3_train_collect_symbols()
     assert out == [("WOLF", "stock")]
+
+
+# ── Polygon fallback (PR fix/wolf-training-polygon-fallback) ─────────────
+
+class _MockPolygonResponse:
+    def __init__(self, status_code=200, body=None):
+        self.status_code = status_code
+        self._body = body or {"status": "OK", "results": []}
+
+    def json(self):
+        return self._body
+
+
+def test_try_polygon_ohlcv_skipped_when_no_api_key(monkeypatch):
+    """No POLYGON_API_KEY env → return None immediately, no HTTP call."""
+    import core.signal_engine as _se
+    monkeypatch.delenv("POLYGON_API_KEY", raising=False)
+    called = []
+    monkeypatch.setattr("requests.get", lambda *a, **k: (called.append(a), _MockPolygonResponse())[1])
+    assert _se._try_polygon_ohlcv("WOLF", "1y") is None
+    assert called == []
+
+
+def test_try_polygon_ohlcv_parses_bars_into_standard_row_shape(monkeypatch):
+    """Polygon response → list of {ts, open, high, low, close, volume}."""
+    import core.signal_engine as _se
+    monkeypatch.setenv("POLYGON_API_KEY", "polykey")
+    polygon_body = {
+        "status": "OK",
+        "results": [
+            {"t": 1_730_400_000_000, "o": 60.5, "h": 62.0, "l": 59.8, "c": 61.5, "v": 1_200_000},
+            {"t": 1_730_486_400_000, "o": 61.5, "h": 63.0, "l": 61.0, "c": 62.5, "v": 1_100_000},
+        ],
+    }
+    captured = {}
+
+    def fake_get(url, timeout=None, **kwargs):
+        captured["url"] = url
+        return _MockPolygonResponse(200, polygon_body)
+
+    monkeypatch.setattr("requests.get", fake_get)
+    rows = _se._try_polygon_ohlcv("WOLF", "1y")
+    assert rows is not None
+    assert len(rows) == 2
+    assert rows[0]["close"] == 61.5
+    assert rows[1]["close"] == 62.5
+    assert set(rows[0].keys()) == {"ts", "open", "high", "low", "close", "volume"}
+    # URL is well-formed
+    assert "api.polygon.io/v2/aggs/ticker/WOLF/range/1/day/" in captured["url"]
+    assert "apiKey=polykey" in captured["url"]
+
+
+def test_try_polygon_ohlcv_returns_none_on_non_ok_status(monkeypatch):
+    """Polygon's 'NOT_AUTHORIZED' / 'ERROR' statuses → None, no rows."""
+    import core.signal_engine as _se
+    monkeypatch.setenv("POLYGON_API_KEY", "polykey")
+    monkeypatch.setattr("requests.get",
+                        lambda *a, **k: _MockPolygonResponse(200, {"status": "NOT_AUTHORIZED", "results": []}))
+    assert _se._try_polygon_ohlcv("WOLF", "1y") is None
+
+
+def test_fetch_ohlcv_uses_polygon_when_alpaca_feeds_empty(monkeypatch):
+    """SIP empty + IEX empty → Polygon attempted before yfinance."""
+    import core.signal_engine as _se
+    monkeypatch.setenv("ALPACA_KEY_ID", "k")
+    monkeypatch.setenv("ALPACA_SECRET_KEY", "s")
+    monkeypatch.setenv("POLYGON_API_KEY", "polykey")
+    # Track call order
+    order = []
+
+    def fake_get(url, headers=None, timeout=None, **kwargs):
+        if "alpaca.markets" in url:
+            order.append("alpaca")
+            return _MockBarsResponse(200, [])
+        if "polygon.io" in url:
+            order.append("polygon")
+            return _MockPolygonResponse(200, {
+                "status": "OK",
+                "results": [{"t": 1_730_400_000_000, "o": 60, "h": 61, "l": 59, "c": 60.5, "v": 1_000_000}],
+            })
+        return _MockBarsResponse(404, [])
+
+    monkeypatch.setattr("requests.get", fake_get)
+    # yfinance must NOT be called when Polygon succeeds
+    yfinance_called = []
+    monkeypatch.setattr(_se, "_try_yfinance_ohlcv", lambda s, p: yfinance_called.append((s, p)) or None)
+
+    rows = _se._fetch_ohlcv("WOLF", "stock")
+    assert rows is not None and len(rows) == 1
+    assert rows[0]["close"] == 60.5
+    assert order == ["alpaca", "alpaca", "polygon"]  # SIP, IEX, then Polygon
+    assert yfinance_called == []  # Polygon succeeded → yfinance skipped
+
+
+# ── yfinance multi-strategy retry (PR fix/wolf-training-polygon-fallback) ──
+
+class _DF:
+    """Minimal DataFrame-ish object that exposes .empty and .iterrows()."""
+
+    def __init__(self, rows):
+        self._rows = rows
+        self.empty = not rows
+
+    def iterrows(self):
+        for r in self._rows:
+            yield r["ts"], r
+
+
+def test_try_yfinance_ohlcv_retries_shorter_period_when_primary_empty(monkeypatch):
+    """1y empty → falls through to 6mo, which has data → returns those rows."""
+    import core.signal_engine as _se
+
+    calls = []
+    bar = {"ts": "2026-01-02", "Open": 60.0, "High": 62.0, "Low": 59.0, "Close": 61.0, "Volume": 100_000}
+
+    class _Tk:
+        def __init__(self, sym):
+            pass
+
+        def history(self, period=None, start=None, end=None, interval=None):
+            calls.append(("period" if period else "explicit", period or (start, end)))
+            if period == "1y":
+                return _DF([])      # primary empty
+            if period == "6mo":
+                return _DF([bar])   # shorter period has data
+            return _DF([])
+
+    class _FakeYF:
+        Ticker = _Tk
+
+    import sys
+    monkeypatch.setitem(sys.modules, "yfinance", _FakeYF)
+    rows = _se._try_yfinance_ohlcv("WOLF", "1y")
+    assert rows is not None and len(rows) == 1
+    assert rows[0]["close"] == 61.0
+    assert calls[0] == ("period", "1y")
+    assert calls[1] == ("period", "6mo")
+
+
+def test_try_yfinance_ohlcv_falls_through_to_explicit_dates(monkeypatch):
+    """All period candidates empty → tries explicit start/end last."""
+    import core.signal_engine as _se
+
+    calls = []
+    bar = {"ts": "2026-01-02", "Open": 60, "High": 62, "Low": 59, "Close": 61, "Volume": 100_000}
+
+    class _Tk:
+        def __init__(self, sym):
+            pass
+
+        def history(self, period=None, start=None, end=None, interval=None):
+            calls.append(("period" if period else "explicit", period))
+            if period:
+                return _DF([])  # all periods empty
+            return _DF([bar])   # start/end succeeds
+
+    import sys
+    monkeypatch.setitem(sys.modules, "yfinance", type("YF", (), {"Ticker": _Tk}))
+    rows = _se._try_yfinance_ohlcv("WOLF", "1y")
+    assert rows is not None and len(rows) == 1
+    # Tried 1y, 6mo, 3mo, then explicit
+    period_attempts = [c[1] for c in calls if c[0] == "period"]
+    assert period_attempts == ["1y", "6mo", "3mo"]
+    assert any(c[0] == "explicit" for c in calls)
+
+
+def test_try_yfinance_ohlcv_returns_none_when_all_strategies_fail(monkeypatch):
+    """Every strategy returns empty → final None, no crash."""
+    import core.signal_engine as _se
+
+    class _Tk:
+        def __init__(self, sym):
+            pass
+
+        def history(self, period=None, start=None, end=None, interval=None):
+            return _DF([])
+
+    import sys
+    monkeypatch.setitem(sys.modules, "yfinance", type("YF", (), {"Ticker": _Tk}))
+    assert _se._try_yfinance_ohlcv("WOLF", "1y") is None
