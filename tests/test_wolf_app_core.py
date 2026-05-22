@@ -720,14 +720,38 @@ class _MockPolygonResponse:
         return self._body
 
 
-def test_try_polygon_ohlcv_skipped_when_no_api_key(monkeypatch):
-    """No POLYGON_API_KEY env → return None immediately, no HTTP call."""
+def test_try_polygon_ohlcv_skipped_when_no_api_key(monkeypatch, caplog):
+    """No POLYGON_API_KEY env → return None immediately, no HTTP call.
+
+    Regression for PR #13: pre-fix the silent return left ops blind to
+    why Polygon never appeared in production logs. Post-fix every code
+    path must log so 'Polygon never ran' vs 'Polygon ran but returned
+    None' is distinguishable.
+    """
     import core.signal_engine as _se
+    import logging
     monkeypatch.delenv("POLYGON_API_KEY", raising=False)
     called = []
     monkeypatch.setattr("requests.get", lambda *a, **k: (called.append(a), _MockPolygonResponse())[1])
-    assert _se._try_polygon_ohlcv("WOLF", "1y") is None
+    with caplog.at_level(logging.INFO, logger="ghost.signal_v3"):
+        assert _se._try_polygon_ohlcv("WOLF", "1y") is None
     assert called == []
+    assert any("POLYGON_API_KEY not set" in r.message for r in caplog.records), \
+        f"expected 'POLYGON_API_KEY not set' log, got: {[r.message for r in caplog.records]}"
+
+
+def test_try_polygon_ohlcv_logs_when_status_ok_but_results_empty(monkeypatch, caplog):
+    """status=OK with empty results array → log 'no bars in range' + return None."""
+    import core.signal_engine as _se
+    import logging
+    monkeypatch.setenv("POLYGON_API_KEY", "polykey")
+    monkeypatch.setattr("requests.get",
+                        lambda *a, **k: _MockPolygonResponse(200, {"status": "OK", "results": []}))
+    with caplog.at_level(logging.INFO, logger="ghost.signal_v3"):
+        assert _se._try_polygon_ohlcv("WOLF", "1y") is None
+    assert any("results=[]" in r.message or "no bars in range" in r.message
+               for r in caplog.records), \
+        f"expected empty-results log, got: {[r.message for r in caplog.records]}"
 
 
 def test_try_polygon_ohlcv_parses_bars_into_standard_row_shape(monkeypatch):

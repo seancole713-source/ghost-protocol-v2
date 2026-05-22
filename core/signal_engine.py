@@ -409,7 +409,9 @@ def _fetch_ohlcv(symbol, asset_type, period='1y', interval='1d'):
     if not rows:
         # Polygon third tier — paid feed, used by scripts/wolf_backtest.py
         # for the same reason: covers post-restructure WOLF where Alpaca's
-        # tiers don't. Gated on POLYGON_API_KEY env (skipped silently when unset).
+        # tiers don't. Requires POLYGON_API_KEY env; the helper logs at every
+        # branch (missing key, HTTP error, non-OK status, empty results,
+        # parse failure, or success) so ops can tell exactly what happened.
         LOGGER.info(f"Alpaca IEX returned nothing for {symbol}, trying Polygon fallback")
         rows = _try_polygon_ohlcv(symbol, period)
         feed_used = 'polygon'
@@ -432,16 +434,21 @@ def _try_polygon_ohlcv(symbol, period):
 
     Requires POLYGON_API_KEY env. Endpoint:
       /v2/aggs/ticker/{SYM}/range/1/day/{from}/{to}?adjusted=true
+
+    Every code path emits an INFO log so ops can tell exactly what happened
+    (missing key, HTTP error, status != OK, no results, or success).
     """
     import os, requests as _req
     from datetime import datetime, timedelta, timezone
     api_key = os.getenv("POLYGON_API_KEY", "")
     if not api_key:
+        LOGGER.info(f"Polygon {symbol}: POLYGON_API_KEY not set on this deployment, skipping")
         return None
     days_map = {'3m': 90, '6m': 180, '1y': 365, '2y': 730}
     lookback_days = days_map.get(period, 365)
     end_date = datetime.now(timezone.utc).date()
     start_date = end_date - timedelta(days=lookback_days + 30)  # +30 for weekend/holiday buffer
+    LOGGER.info(f"Polygon {symbol}: requesting bars {start_date}..{end_date} (lookback={lookback_days}d)")
     try:
         url = (
             f"https://api.polygon.io/v2/aggs/ticker/{symbol.upper()}/range/1/day/"
@@ -450,15 +457,19 @@ def _try_polygon_ohlcv(symbol, period):
         )
         r = _req.get(url, timeout=30)
         if r.status_code != 200:
-            LOGGER.info(f"Polygon {symbol}: HTTP {r.status_code}")
+            LOGGER.info(f"Polygon {symbol}: HTTP {r.status_code} body={r.text[:200]!r}")
             return None
         data = r.json()
         status = data.get("status")
         if status not in ("OK", "DELAYED"):
-            LOGGER.info(f"Polygon {symbol}: status={status}")
+            LOGGER.info(f"Polygon {symbol}: status={status} body={str(data)[:200]!r}")
+            return None
+        results = data.get("results") or []
+        if not results:
+            LOGGER.info(f"Polygon {symbol}: status=OK but results=[] (no bars in range)")
             return None
         rows = []
-        for bar in data.get("results", []) or []:
+        for bar in results:
             try:
                 close = float(bar.get("c", 0))
                 if close <= 0:
@@ -474,7 +485,11 @@ def _try_polygon_ohlcv(symbol, period):
                 })
             except Exception:
                 continue
-        return rows if rows else None
+        if not rows:
+            LOGGER.info(f"Polygon {symbol}: {len(results)} raw bars returned but all failed parsing")
+            return None
+        LOGGER.info(f"Polygon {symbol}: parsed {len(rows)} bars from response")
+        return rows
     except Exception as e:
         LOGGER.warning(f"Polygon {symbol}: {e}")
         return None
