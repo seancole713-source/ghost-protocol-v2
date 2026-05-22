@@ -20,7 +20,7 @@ LOGGER = logging.getLogger("ghost.signal_v3")
 # PR #14 deploy-marker — if this line isn't in Railway logs at app startup,
 # the deployment did NOT pick up code at or after PR #14. The marker also
 # helps disambiguate cached vs fresh Python module loads after redeploy.
-LOGGER.info("[signal_engine] MODULE_LOADED PR14_DIAG ohlcv_chain=sip|iex|polygon|yfinance")
+LOGGER.info("[signal_engine] MODULE_LOADED PR17_DIAG ohlcv_chain=sip|iex|polygon|yfinance|stooq")
 
 LABEL_TYPE = "tp_sl_daily"
 # Daily bars only: approximate 48h stock hold with this many forward bars (24h each).
@@ -434,10 +434,82 @@ def _fetch_ohlcv(symbol, asset_type, period='1y', interval='1d'):
         LOGGER.info(f"Polygon returned nothing for {symbol}, trying yfinance fallback")
         rows = _try_yfinance_ohlcv(symbol, period)
         feed_used = 'yfinance'
+    if not rows:
+        # Stooq fifth tier — last-resort fallback. Free CSV endpoint, no API
+        # key, no rate-limit issues, and a completely different data aggregator
+        # from Alpaca/Polygon/Yahoo so it tends to work when the others don't
+        # (e.g. for post-restructure tickers that Yahoo flags as delisted).
+        LOGGER.info(f"yfinance returned nothing for {symbol}, trying Stooq fallback")
+        rows = _try_stooq_ohlcv(symbol, period)
+        feed_used = 'stooq'
     if rows:
         LOGGER.info(f"Daily {symbol}: {len(rows)} bars (feed={feed_used}, lookback={lookback_days}d)")
         return rows
     return None
+
+
+def _try_stooq_ohlcv(symbol, period):
+    """Fetch daily OHLCV from stooq.com — fifth-tier fallback.
+
+    Stooq serves a CSV directly with no API key. The URL pattern is:
+      https://stooq.com/q/d/l/?s={symbol}.us&i=d
+
+    Columns: Date,Open,High,Low,Close,Volume
+
+    Every code path emits an INFO log (same pattern as PR #13 Polygon path)
+    so ops can tell exactly what happened: HTTP error, empty body, parse
+    failure, no rows in window, or success.
+    """
+    import requests as _req
+    import csv as _csv
+    import io as _io
+    from datetime import datetime, timedelta, timezone
+
+    days_map = {'3m': 90, '6m': 180, '1y': 365, '2y': 730}
+    lookback_days = days_map.get(period, 365)
+    cutoff_date = datetime.now(timezone.utc).date() - timedelta(days=lookback_days)
+    LOGGER.info(f"Stooq {symbol}: requesting CSV cutoff>={cutoff_date} (lookback={lookback_days}d)")
+    try:
+        url = f"https://stooq.com/q/d/l/?s={symbol.lower()}.us&i=d"
+        r = _req.get(url, timeout=30, headers={"User-Agent": "Mozilla/5.0 (ghost-protocol)"})
+        if r.status_code != 200:
+            LOGGER.info(f"Stooq {symbol}: HTTP {r.status_code}")
+            return None
+        text = (r.text or "").strip()
+        if not text or "No data" in text or len(text) < 30:
+            LOGGER.info(f"Stooq {symbol}: empty/no-data response (len={len(text)})")
+            return None
+        reader = _csv.DictReader(_io.StringIO(text))
+        rows = []
+        skipped_pre_cutoff = 0
+        for row in reader:
+            try:
+                date_str = row.get("Date") or ""
+                close = float(row.get("Close", 0) or 0)
+                if close <= 0:
+                    continue
+                row_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+                if row_date < cutoff_date:
+                    skipped_pre_cutoff += 1
+                    continue
+                rows.append({
+                    "ts": row_date.strftime("%Y-%m-%dT00:00:00Z"),
+                    "open": float(row.get("Open", 0) or 0),
+                    "high": float(row.get("High", 0) or 0),
+                    "low": float(row.get("Low", 0) or 0),
+                    "close": close,
+                    "volume": float(row.get("Volume", 0) or 0),
+                })
+            except Exception:
+                continue
+        if not rows:
+            LOGGER.info(f"Stooq {symbol}: parsed 0 rows in window (skipped {skipped_pre_cutoff} pre-cutoff)")
+            return None
+        LOGGER.info(f"Stooq {symbol}: parsed {len(rows)} bars in window (skipped {skipped_pre_cutoff} pre-cutoff)")
+        return rows
+    except Exception as e:
+        LOGGER.warning(f"Stooq {symbol}: {e}")
+        return None
 
 
 def _try_polygon_ohlcv(symbol, period):

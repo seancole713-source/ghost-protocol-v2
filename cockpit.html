@@ -541,8 +541,10 @@ section.block{margin-bottom:32px}
           <input type="password" id="train-secret" placeholder="x-cron-secret" autocomplete="off" spellcheck="false">
           <button class="btn-train" onclick="handleTrainClick()">Train Now</button>
           <button class="btn-train secondary" onclick="handleStatusCheckClick()">Refresh Status</button>
+          <button class="btn-train secondary" onclick="handleDataSourcesClick()">Test Data Sources</button>
         </div>
         <div id="train-result" class="truth-note" style="margin-top:10px;min-height:18px"></div>
+        <div id="data-sources-result" style="margin-top:8px"></div>
       </div>
       <div class="truth-card" style="margin-bottom:0">
         <h4>Model lineage (loaded symbols)</h4>
@@ -1541,6 +1543,64 @@ async function handleStatusCheckClick(){
     if(slot) slot.innerHTML = renderModelTable(v3);
   } catch(e) {
     resultEl.innerHTML = '<span class="train-fail">&#10007;</span> ' + escHtml(String(e));
+  }
+}
+
+async function handleDataSourcesClick(){
+  var secretEl = document.getElementById('train-secret');
+  var resultEl = document.getElementById('data-sources-result');
+  var btns = document.querySelectorAll('.btn-train');
+  var secret = (secretEl && secretEl.value) ? secretEl.value : '';
+  resultEl.innerHTML = '<div class="truth-note"><span class="train-warn">&#x21BB; Probing data sources...</span></div>';
+  btns.forEach(function(b){ b.disabled = true; });
+  try{
+    var resp = await fetch('/api/diag/data-sources?symbol=WOLF&period=1y', {
+      headers: {'x-cron-secret': secret},
+    });
+    var body = {};
+    try { body = await resp.json(); } catch(_e) {}
+    if(resp.status === 403){
+      resultEl.innerHTML = '<div class="truth-note"><span class="train-fail">&#10007;</span> 403 (cron secret missing or wrong — paste it in the input above)</div>';
+      return;
+    }
+    if(!resp.ok || !body || body.ok === false){
+      resultEl.innerHTML = '<div class="truth-note"><span class="train-fail">&#10007;</span> '
+        + escHtml((body && body.error) || ('HTTP ' + resp.status)) + '</div>';
+      return;
+    }
+    var rows = body.results || [];
+    var working = (body.summary && body.summary.working) || [];
+    var html = '<table class="conf-tbl" style="margin-top:6px"><thead><tr>'
+      + '<th>Source</th><th>OK?</th><th>Bars</th><th>Latency</th><th>Detail</th>'
+      + '</tr></thead><tbody>';
+    rows.forEach(function(r){
+      var cls = r.ok ? 'train-ok' : 'train-fail';
+      var icon = r.ok ? '&#10003;' : '&#10007;';
+      var detail = r.ok
+        ? ('first=' + (r.first_ts || '—') + ' last=' + (r.last_ts || '—'))
+        : escHtml(r.error || '—');
+      html += '<tr>'
+        + '<td><span class="bucket-lbl">' + escHtml(r.source) + '</span></td>'
+        + '<td><span class="' + cls + '">' + icon + '</span></td>'
+        + '<td>' + (r.bars || 0) + '</td>'
+        + '<td>' + (r.elapsed_ms != null ? r.elapsed_ms + 'ms' : '—') + '</td>'
+        + '<td style="font-size:11px;color:#888">' + detail + '</td>'
+        + '</tr>';
+    });
+    html += '</tbody></table>';
+    var summaryLine;
+    if(working.length){
+      summaryLine = '<span class="train-ok">&#10003;</span> ' + working.length + ' source(s) working: ' + working.join(', ');
+    } else {
+      summaryLine = '<span class="train-fail">&#10007;</span> All probed sources broken — training cannot fetch bars';
+    }
+    resultEl.innerHTML = '<div class="truth-note" style="margin-bottom:6px">' + summaryLine + '</div>' + html
+      + '<p class="truth-note" style="margin-top:6px;font-size:10px">'
+      + escHtml(body.note || '') + '</p>';
+  } catch(e) {
+    resultEl.innerHTML = '<div class="truth-note"><span class="train-fail">&#10007;</span> Network error: ' + escHtml(String(e)) + '</div>';
+  } finally {
+    btns.forEach(function(b){ b.disabled = false; });
   }
 }
 
