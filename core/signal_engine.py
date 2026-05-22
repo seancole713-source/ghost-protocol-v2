@@ -407,11 +407,18 @@ def _fetch_ohlcv(symbol, asset_type, period='1y', interval='1d'):
         rows = _try_feed('iex')
         feed_used = 'iex'
     if not rows:
-        # yfinance third tier — Alpaca's IEX feed has no data for many
-        # NYSE-listed names (including post-restructure WOLF since the
-        # ticker doesn't print on IEX as a single venue), and SIP requires
-        # a paid entitlement. yfinance has broad coverage and no API key.
-        LOGGER.info(f"Alpaca IEX returned nothing for {symbol}, trying yfinance fallback")
+        # Polygon third tier — paid feed, used by scripts/wolf_backtest.py
+        # for the same reason: covers post-restructure WOLF where Alpaca's
+        # tiers don't. Gated on POLYGON_API_KEY env (skipped silently when unset).
+        LOGGER.info(f"Alpaca IEX returned nothing for {symbol}, trying Polygon fallback")
+        rows = _try_polygon_ohlcv(symbol, period)
+        feed_used = 'polygon'
+    if not rows:
+        # yfinance fourth tier — no API key, broad coverage. Post-restructure
+        # WOLF can trip Yahoo's 'delisted' code path on long periods, so
+        # _try_yfinance_ohlcv tries progressively shorter periods + explicit
+        # date ranges before giving up.
+        LOGGER.info(f"Polygon returned nothing for {symbol}, trying yfinance fallback")
         rows = _try_yfinance_ohlcv(symbol, period)
         feed_used = 'yfinance'
     if rows:
@@ -420,19 +427,115 @@ def _fetch_ohlcv(symbol, asset_type, period='1y', interval='1d'):
     return None
 
 
-def _try_yfinance_ohlcv(symbol, period):
-    """Fetch daily OHLCV from yfinance as fallback for Alpaca-unavailable symbols.
+def _try_polygon_ohlcv(symbol, period):
+    """Fetch daily OHLCV from Polygon REST. Same shape as Alpaca path.
 
-    Returns the same row shape as _fetch_ohlcv's Alpaca path:
-      {ts, open, high, low, close, volume}
+    Requires POLYGON_API_KEY env. Endpoint:
+      /v2/aggs/ticker/{SYM}/range/1/day/{from}/{to}?adjusted=true
     """
+    import os, requests as _req
+    from datetime import datetime, timedelta, timezone
+    api_key = os.getenv("POLYGON_API_KEY", "")
+    if not api_key:
+        return None
+    days_map = {'3m': 90, '6m': 180, '1y': 365, '2y': 730}
+    lookback_days = days_map.get(period, 365)
+    end_date = datetime.now(timezone.utc).date()
+    start_date = end_date - timedelta(days=lookback_days + 30)  # +30 for weekend/holiday buffer
+    try:
+        url = (
+            f"https://api.polygon.io/v2/aggs/ticker/{symbol.upper()}/range/1/day/"
+            f"{start_date.isoformat()}/{end_date.isoformat()}"
+            f"?adjusted=true&sort=asc&limit=5000&apiKey={api_key}"
+        )
+        r = _req.get(url, timeout=30)
+        if r.status_code != 200:
+            LOGGER.info(f"Polygon {symbol}: HTTP {r.status_code}")
+            return None
+        data = r.json()
+        status = data.get("status")
+        if status not in ("OK", "DELAYED"):
+            LOGGER.info(f"Polygon {symbol}: status={status}")
+            return None
+        rows = []
+        for bar in data.get("results", []) or []:
+            try:
+                close = float(bar.get("c", 0))
+                if close <= 0:
+                    continue
+                ts = datetime.fromtimestamp(bar["t"] / 1000, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+                rows.append({
+                    "ts": ts,
+                    "open": float(bar.get("o", 0)),
+                    "high": float(bar.get("h", 0)),
+                    "low": float(bar.get("l", 0)),
+                    "close": close,
+                    "volume": float(bar.get("v", 0)),
+                })
+            except Exception:
+                continue
+        return rows if rows else None
+    except Exception as e:
+        LOGGER.warning(f"Polygon {symbol}: {e}")
+        return None
+
+
+def _try_yfinance_ohlcv(symbol, period):
+    """yfinance fallback with multi-strategy retry.
+
+    For post-restructure tickers (Sept 2025 WOLF re-listing), Yahoo's symbol
+    resolver flags the long-period request as 'delisted' even though the new
+    shares are actively trading. Progressively shorter periods can succeed
+    because they cover only the post-restructure data window.
+
+    Strategy order:
+      1. Requested period (e.g. '1y')
+      2. '6mo' (skipped if primary was already shorter)
+      3. '3mo' (skipped if primary was already shorter)
+      4. Explicit start/end via tk.history(start=..., end=...) — ~240 days
+         back, covers post-restructure WOLF era only
+
+    Returns the standard row shape {ts, open, high, low, close, volume}
+    or None if all strategies fail.
+    """
+    import datetime as _dt
+    yf_period_primary = {'3m': '3mo', '6m': '6mo', '1y': '1y', '2y': '2y'}.get(period, '1y')
+    period_candidates = [yf_period_primary]
+    if yf_period_primary not in ('6mo', '3mo'):
+        period_candidates.append('6mo')
+    if yf_period_primary != '3mo':
+        period_candidates.append('3mo')
     try:
         import yfinance as yf
-        yf_period_map = {'3m': '3mo', '6m': '6mo', '1y': '1y', '2y': '2y'}
-        yf_period = yf_period_map.get(period, '1y')
         tk = yf.Ticker(symbol)
-        h = tk.history(period=yf_period, interval='1d')
-        if h is None or h.empty:
+        for p in period_candidates:
+            rows = _yf_rows_from_history(tk, period=p)
+            if rows:
+                LOGGER.info(f"yfinance {symbol}: {len(rows)} bars (period={p})")
+                return rows
+        end = _dt.datetime.now(_dt.timezone.utc)
+        start = end - _dt.timedelta(days=240)
+        rows = _yf_rows_from_history(tk, start=start, end=end)
+        if rows:
+            LOGGER.info(f"yfinance {symbol}: {len(rows)} bars (start={start.date()})")
+            return rows
+        return None
+    except Exception as e:
+        LOGGER.warning(f"yfinance fallback {symbol}: {e}")
+        return None
+
+
+def _yf_rows_from_history(tk, period=None, start=None, end=None):
+    """Run tk.history() with either a period or start/end pair; normalise
+    empty DataFrame / exception to None, and the OHLCV DataFrame to the
+    standard row shape consumed by backtest_symbol.
+    """
+    try:
+        if period is not None:
+            h = tk.history(period=period, interval='1d')
+        else:
+            h = tk.history(start=start, end=end, interval='1d')
+        if h is None or getattr(h, "empty", False):
             return None
         rows = []
         for ix, row in h.iterrows():
@@ -452,9 +555,9 @@ def _try_yfinance_ohlcv(symbol, period):
             except Exception:
                 continue
         return rows if rows else None
-    except Exception as e:
-        LOGGER.warning(f"yfinance fallback {symbol}: {e}")
+    except Exception:
         return None
+
 
 def backtest_symbol(symbol, asset_type):
     rows = _fetch_ohlcv(symbol, asset_type)
