@@ -1161,3 +1161,117 @@ def test_diag_data_sources_reports_per_source_status(monkeypatch):
     assert sources["stooq"]["ok"] is False
     assert out["summary"]["working"] == ["yfinance"]
     assert set(out["summary"]["broken"]) == {"polygon", "stooq"}
+
+
+# ── v3_train force param + state tracking + /api/v3/train/last ───────────
+
+class _StateCursor:
+    """Cursor that captures ghost_state INSERTs and serves SELECTs from them."""
+
+    def __init__(self):
+        self.state = {}
+        self.executed = []
+        self.last_sql = ""
+
+    def execute(self, sql, params=None):
+        self.last_sql = sql
+        self.executed.append((sql, params))
+        # Handle the upsert INSERT pattern used by _record_v3_train_state
+        if "INSERT INTO ghost_state" in sql and params and len(params) == 2:
+            self.state[params[0]] = params[1]
+
+    def fetchall(self):
+        if "SELECT key, val FROM ghost_state WHERE key LIKE 'last_v3_train_%'" in self.last_sql:
+            return [(k, v) for k, v in self.state.items() if k.startswith("last_v3_train_")]
+        return []
+
+    def fetchone(self):
+        return None
+
+
+def _patch_state_cursor(monkeypatch):
+    cur = _StateCursor()
+
+    class _Conn:
+        def cursor(self):
+            return cur
+
+    class _DbCtx:
+        def __enter__(self):
+            return _Conn()
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(wolf_app, "db_conn", lambda: _DbCtx())
+    return cur
+
+
+def test_record_v3_train_state_upserts_each_field(monkeypatch):
+    """Each field becomes a separate ghost_state row keyed last_v3_train_<name>."""
+    cur = _patch_state_cursor(monkeypatch)
+    wolf_app._record_v3_train_state(ts=12345, state="started", accuracy=None)
+    # 1 CREATE TABLE + 3 INSERTs (one per field)
+    inserts = [e for e in cur.executed if e[0].startswith("INSERT INTO ghost_state")]
+    assert len(inserts) == 3
+    assert cur.state["last_v3_train_ts"] == "12345"
+    assert cur.state["last_v3_train_state"] == "started"
+    assert cur.state["last_v3_train_accuracy"] == ""  # None → ""
+
+
+def test_v3_train_accepts_force_flag_and_starts_thread(monkeypatch):
+    """v3_train with force=True returns ok=true, includes force in response,
+    writes 'started' state immediately (before the bg thread runs)."""
+    monkeypatch.setenv("CRON_SECRET", "")
+    cur = _patch_state_cursor(monkeypatch)
+
+    # Block the background thread from doing real work
+    class _FakeThread:
+        def __init__(self, target=None, daemon=None):
+            self.target = target
+        def start(self):
+            pass  # never run the actual training
+    import threading as _th
+    monkeypatch.setattr(_th, "Thread", _FakeThread)
+
+    out = wolf_app.v3_train(x_cron_secret="", force=True)
+    assert out["ok"] is True
+    assert out["force"] is True
+    assert out["started_at"] > 0
+    # The 'started' phase write happened synchronously before the thread
+    assert cur.state["last_v3_train_state"] == "started"
+    assert cur.state["last_v3_train_force"] == "true"
+
+
+def test_v3_train_last_endpoint_returns_parsed_state(monkeypatch):
+    """/api/v3/train/last surfaces all last_v3_train_* fields with
+    numeric/boolean coercion. Reads from ghost_state."""
+    cur = _patch_state_cursor(monkeypatch)
+    cur.state.update({
+        "last_v3_train_ts": "1779470000",
+        "last_v3_train_state": "passed",
+        "last_v3_train_accuracy": "0.6234",
+        "last_v3_train_passed": "true",
+        "last_v3_train_force": "true",
+        "last_v3_train_models_before": "0",
+        "last_v3_train_models_after": "1",
+        "last_v3_train_finished_at": "1779470120",
+    })
+    out = wolf_app.v3_train_last()
+    assert out["ok"] is True
+    last = out["last"]
+    assert last["state"] == "passed"
+    assert last["accuracy"] == 0.6234        # coerced to float
+    assert last["passed"] is True            # coerced to bool
+    assert last["force"] is True
+    assert last["ts"] == 1779470000          # coerced to int
+    assert last["models_before"] == 0
+    assert last["models_after"] == 1
+
+
+def test_v3_train_last_endpoint_returns_none_when_no_history(monkeypatch):
+    """No prior train invocations → last=None, no crash."""
+    _patch_state_cursor(monkeypatch)
+    out = wolf_app.v3_train_last()
+    assert out["ok"] is True
+    assert out["last"] is None
