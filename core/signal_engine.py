@@ -406,10 +406,55 @@ def _fetch_ohlcv(symbol, asset_type, period='1y', interval='1d'):
         LOGGER.info(f"Alpaca SIP returned nothing for {symbol}, trying IEX fallback")
         rows = _try_feed('iex')
         feed_used = 'iex'
+    if not rows:
+        # yfinance third tier — Alpaca's IEX feed has no data for many
+        # NYSE-listed names (including post-restructure WOLF since the
+        # ticker doesn't print on IEX as a single venue), and SIP requires
+        # a paid entitlement. yfinance has broad coverage and no API key.
+        LOGGER.info(f"Alpaca IEX returned nothing for {symbol}, trying yfinance fallback")
+        rows = _try_yfinance_ohlcv(symbol, period)
+        feed_used = 'yfinance'
     if rows:
-        LOGGER.info(f"Alpaca daily {symbol}: {len(rows)} bars (feed={feed_used}, lookback={lookback_days}d)")
+        LOGGER.info(f"Daily {symbol}: {len(rows)} bars (feed={feed_used}, lookback={lookback_days}d)")
         return rows
     return None
+
+
+def _try_yfinance_ohlcv(symbol, period):
+    """Fetch daily OHLCV from yfinance as fallback for Alpaca-unavailable symbols.
+
+    Returns the same row shape as _fetch_ohlcv's Alpaca path:
+      {ts, open, high, low, close, volume}
+    """
+    try:
+        import yfinance as yf
+        yf_period_map = {'3m': '3mo', '6m': '6mo', '1y': '1y', '2y': '2y'}
+        yf_period = yf_period_map.get(period, '1y')
+        tk = yf.Ticker(symbol)
+        h = tk.history(period=yf_period, interval='1d')
+        if h is None or h.empty:
+            return None
+        rows = []
+        for ix, row in h.iterrows():
+            try:
+                close = float(row["Close"])
+                if close <= 0:
+                    continue
+                ts = ix.strftime('%Y-%m-%dT%H:%M:%SZ') if hasattr(ix, 'strftime') else str(ix)
+                rows.append({
+                    'ts': ts,
+                    'open': float(row["Open"]),
+                    'high': float(row["High"]),
+                    'low': float(row["Low"]),
+                    'close': close,
+                    'volume': float(row.get("Volume", 0) or 0),
+                })
+            except Exception:
+                continue
+        return rows if rows else None
+    except Exception as e:
+        LOGGER.warning(f"yfinance fallback {symbol}: {e}")
+        return None
 
 def backtest_symbol(symbol, asset_type):
     rows = _fetch_ohlcv(symbol, asset_type)

@@ -612,3 +612,98 @@ def test_backtest_symbol_window_governs_sample_count(monkeypatch):
     # Smaller window → strictly more samples (60 vs 120 = +60 more iterations)
     assert len(out_60) > len(out_120) > 0
     assert len(out_60) - len(out_120) == 60
+
+
+# ── _fetch_ohlcv yfinance fallback (PR fix/wolf-training-yfinance-fallback) ──
+
+def test_fetch_ohlcv_falls_back_to_yfinance_when_both_alpaca_feeds_empty(monkeypatch):
+    """Alpaca SIP empty + IEX empty → yfinance is the third tier. Without this
+    fallback, post-restructure WOLF training is dead — Alpaca's IEX feed
+    doesn't carry WOLF since it's NYSE-listed."""
+    import core.signal_engine as _se
+    monkeypatch.setenv("ALPACA_KEY_ID", "k")
+    monkeypatch.setenv("ALPACA_SECRET_KEY", "s")
+    alpaca_calls = []
+
+    def fake_get(url, headers=None, timeout=None):
+        alpaca_calls.append(url)
+        return _MockBarsResponse(200, [])  # both SIP and IEX return empty
+
+    monkeypatch.setattr("requests.get", fake_get)
+
+    yfinance_called_with = {}
+
+    def fake_yfinance(symbol, period):
+        yfinance_called_with["symbol"] = symbol
+        yfinance_called_with["period"] = period
+        return [{"ts": "2025-12-01", "open": 60.0, "high": 62.0, "low": 59.0,
+                 "close": 61.0, "volume": 1_000_000}]
+
+    monkeypatch.setattr(_se, "_try_yfinance_ohlcv", fake_yfinance)
+    rows = _se._fetch_ohlcv("WOLF", "stock")
+    assert rows is not None
+    assert len(rows) == 1
+    assert rows[0]["close"] == 61.0
+    # Both Alpaca feeds attempted before yfinance kicked in
+    assert len(alpaca_calls) == 2 and "feed=sip" in alpaca_calls[0] and "feed=iex" in alpaca_calls[1]
+    assert yfinance_called_with == {"symbol": "WOLF", "period": "1y"}
+
+
+def test_try_yfinance_ohlcv_returns_none_when_yfinance_empty(monkeypatch):
+    """yfinance .history() returning an empty DataFrame must produce None,
+    not crash and not return a partial result. Guards against pandas
+    quirks where an empty DataFrame might iterate zero rows but still
+    have a truthy-ish presence."""
+    import core.signal_engine as _se
+
+    class _EmptyDF:
+        empty = True
+
+        def iterrows(self):
+            return iter([])
+
+    class _FakeTicker:
+        def __init__(self, sym):
+            pass
+
+        def history(self, period=None, interval=None):
+            return _EmptyDF()
+
+    class _FakeYF:
+        Ticker = _FakeTicker
+
+    import sys
+    monkeypatch.setitem(sys.modules, "yfinance", _FakeYF)
+    out = _se._try_yfinance_ohlcv("WOLF", "1y")
+    assert out is None
+
+
+# ── v3_train WOLF-only filter (defense in depth like PR #7) ──────────────
+
+def test_v3_train_collect_symbols_filters_to_wolf_only(monkeypatch):
+    """Even with dirty STOCK_SYMBOLS env AND non-WOLF portfolio entries,
+    training only ever runs on WOLF. Matches the WOLF-only hardening from
+    PR #7 (scan_symbols and v3_status)."""
+    monkeypatch.setenv("STOCK_SYMBOLS", "TSLA,META,WOLF,AMZN,T")
+    # user_portfolio has 7 non-WOLF positions and 0 WOLF — should still resolve to WOLF only
+    portfolio_rows = [("NVDA",), ("AAPL",), ("GOOG",), ("MSFT",), ("AMD",), ("INTC",), ("CRM",)]
+    cur = QueueCursor(fetchall_values=[portfolio_rows])
+    _patch_db_conn_with_cursor(monkeypatch, cur)
+    out = wolf_app._v3_train_collect_symbols()
+    assert out == [("WOLF", "stock")]
+
+
+def test_v3_train_collect_symbols_falls_back_to_wolf_when_all_empty(monkeypatch):
+    """Empty env + DB error → still returns [(WOLF, stock)] as final safety net."""
+    monkeypatch.setenv("STOCK_SYMBOLS", "")
+
+    class _BrokenCtx:
+        def __enter__(self):
+            raise RuntimeError("db down")
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(wolf_app, "db_conn", lambda: _BrokenCtx())
+    out = wolf_app._v3_train_collect_symbols()
+    assert out == [("WOLF", "stock")]

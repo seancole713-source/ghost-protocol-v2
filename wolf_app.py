@@ -2420,11 +2420,36 @@ def cockpit_context():
 
 
 @APP.post("/api/v3/train")
+def _v3_train_collect_symbols() -> list:
+    """Collect symbols for v3 training, filtered to WOLF only.
+
+    WOLF-only hardening (matches the pattern in _compute_get_stats and
+    v3_status): even if STOCK_SYMBOLS env is dirty with non-WOLF rows
+    (e.g. TSLA/META/AMZN/T) or user_portfolio has stale non-WOLF
+    positions, training only ever runs on WOLF. Without this filter,
+    the user observed 0/13 symbols passing because all 12 non-WOLF
+    symbols also lacked Alpaca data, wasting compute and noise-logging.
+    """
+    stocks = [(s.strip(), "stock") for s in os.getenv("STOCK_SYMBOLS", "WOLF").split(",") if s.strip()] or [("WOLF", "stock")]
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT DISTINCT symbol FROM user_portfolio")
+            for (sym,) in cur.fetchall():
+                entry = (str(sym or "").strip().upper(), "stock")
+                if entry[0] and entry not in stocks:
+                    stocks.append(entry)
+    except Exception:
+        pass
+    return [s for s in stocks if s[0].upper() == "WOLF"] or [("WOLF", "stock")]
+
+
 def v3_train(x_cron_secret: str = Header(default="")):
     """
-    Train v3 XGBoost model on 6mo historical data.
+    Train v3 XGBoost model on 1yr historical data (WOLF-only).
     Takes 2-5 minutes. Runs in background, returns immediately.
-    Model only deployed if accuracy > 52% on holdout.
+    Model only deployed if accuracy > 52% on holdout (and the rest of
+    the v3.2 quality gates pass: walk-forward, edge, min wins).
     """
     if not _cron_ok(x_cron_secret):
         return JSONResponse({"ok":False,"error":"Forbidden"}, status_code=403)
@@ -2432,19 +2457,7 @@ def v3_train(x_cron_secret: str = Header(default="")):
     def _train():
         try:
             from core.signal_engine import train_and_validate
-            import os
-            stocks = [(s.strip(), "stock") for s in os.getenv("STOCK_SYMBOLS","WOLF").split(",") if s.strip()] or [("WOLF","stock")]
-            # Also include portfolio symbols
-            try:
-                from core.db import db_conn
-                with db_conn() as conn:
-                    cur = conn.cursor()
-                    cur.execute("SELECT DISTINCT symbol FROM user_portfolio")
-                    for (sym,) in cur.fetchall():
-                        entry = (str(sym or "").strip().upper(), "stock")
-                        if entry[0] and entry not in stocks:
-                            stocks.append(entry)
-            except Exception: pass
+            stocks = _v3_train_collect_symbols()
             model, accuracy, passed = train_and_validate(stocks)
             LOGGER.info(f"v3 training complete: accuracy={round(accuracy*100,1)}% passed={passed}")
             _bump_cockpit_db_cache()
