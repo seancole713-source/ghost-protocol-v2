@@ -1033,3 +1033,131 @@ def test_try_yfinance_ohlcv_returns_none_when_all_strategies_fail(monkeypatch):
     import sys
     monkeypatch.setitem(sys.modules, "yfinance", type("YF", (), {"Ticker": _Tk}))
     assert _se._try_yfinance_ohlcv("WOLF", "1y") is None
+
+
+# ── Stooq fifth-tier fallback (PR fix/data-sources-stooq-and-diag) ──────
+
+class _MockStooqResponse:
+    def __init__(self, status_code=200, text=""):
+        self.status_code = status_code
+        self.text = text
+
+
+_STOOQ_HAPPY_CSV = (
+    "Date,Open,High,Low,Close,Volume\n"
+    "2026-05-19,71.20,72.50,70.80,71.85,1234567\n"
+    "2026-05-20,71.85,73.10,71.50,72.95,1098765\n"
+    "2026-05-21,72.95,74.20,72.40,73.80,1456789\n"
+)
+
+
+def test_try_stooq_ohlcv_parses_csv_into_standard_row_shape(monkeypatch):
+    """Stooq CSV → list of {ts, open, high, low, close, volume}, in-window."""
+    import core.signal_engine as _se
+    captured = {}
+
+    def fake_get(url, timeout=None, headers=None, **kwargs):
+        captured["url"] = url
+        captured["ua"] = (headers or {}).get("User-Agent")
+        return _MockStooqResponse(200, _STOOQ_HAPPY_CSV)
+
+    monkeypatch.setattr("requests.get", fake_get)
+    rows = _se._try_stooq_ohlcv("WOLF", "1y")
+    assert rows is not None
+    assert len(rows) == 3
+    assert rows[0]["close"] == 71.85
+    assert rows[-1]["close"] == 73.80
+    assert set(rows[0].keys()) == {"ts", "open", "high", "low", "close", "volume"}
+    assert "stooq.com/q/d/l" in captured["url"]
+    assert "s=wolf.us" in captured["url"]
+    assert captured["ua"]  # set User-Agent (Stooq blocks default Python UA)
+
+
+def test_try_stooq_ohlcv_returns_none_on_http_error(monkeypatch):
+    import core.signal_engine as _se
+    monkeypatch.setattr("requests.get",
+                        lambda *a, **k: _MockStooqResponse(500, "Internal Server Error"))
+    assert _se._try_stooq_ohlcv("WOLF", "1y") is None
+
+
+def test_try_stooq_ohlcv_returns_none_when_no_data_body(monkeypatch):
+    """Stooq returns text 'No data' for unknown tickers — must produce None."""
+    import core.signal_engine as _se
+    monkeypatch.setattr("requests.get",
+                        lambda *a, **k: _MockStooqResponse(200, "No data\n"))
+    assert _se._try_stooq_ohlcv("ZZZNOEXIST", "1y") is None
+
+
+def test_try_stooq_ohlcv_skips_pre_cutoff_rows(monkeypatch):
+    """Rows older than the lookback window must be filtered out."""
+    import core.signal_engine as _se
+    from datetime import datetime, timezone
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # Mix of way-old and today rows; period='3m' = 90 days cutoff
+    csv = (
+        "Date,Open,High,Low,Close,Volume\n"
+        "2015-01-02,10,11,9,10.5,1000\n"   # 11 years old — well before cutoff
+        f"{today},71.20,72.50,70.80,71.85,1234567\n"
+    )
+    monkeypatch.setattr("requests.get",
+                        lambda *a, **k: _MockStooqResponse(200, csv))
+    rows = _se._try_stooq_ohlcv("WOLF", "3m")
+    assert rows is not None
+    assert len(rows) == 1   # only today's row passes cutoff
+    assert rows[0]["close"] == 71.85
+
+
+def test_fetch_ohlcv_chains_to_stooq_when_yfinance_empty(monkeypatch):
+    """SIP empty + IEX empty + Polygon skipped + yfinance empty → Stooq called."""
+    import core.signal_engine as _se
+    monkeypatch.setenv("ALPACA_KEY_ID", "k")
+    monkeypatch.setenv("ALPACA_SECRET_KEY", "s")
+    monkeypatch.delenv("POLYGON_API_KEY", raising=False)
+    # Alpaca always returns 200 OK with no bars
+    monkeypatch.setattr("requests.get",
+                        lambda url, **kwargs: _MockBarsResponse(200, [])
+                        if "alpaca.markets" in str(url)
+                        else _MockStooqResponse(200, _STOOQ_HAPPY_CSV))
+    # yfinance returns nothing
+    monkeypatch.setattr(_se, "_try_yfinance_ohlcv", lambda s, p: None)
+    rows = _se._fetch_ohlcv("WOLF", "stock")
+    assert rows is not None
+    assert len(rows) == 3
+    assert rows[0]["close"] == 71.85
+
+
+# ── /api/diag/data-sources endpoint ─────────────────────────────────────
+
+def test_diag_data_sources_requires_cron_secret_when_set(monkeypatch):
+    monkeypatch.setenv("CRON_SECRET", "supersecret")
+    from fastapi import HTTPException
+    try:
+        wolf_app.diag_data_sources(x_cron_secret="wrong")
+        assert False, "expected 403"
+    except HTTPException as e:
+        assert e.status_code == 403
+
+
+def test_diag_data_sources_reports_per_source_status(monkeypatch):
+    """Each source is probed independently. Mix of success/failure surfaces
+    in the results array with bar counts, errors, and latency."""
+    monkeypatch.setenv("CRON_SECRET", "")
+    import core.signal_engine as _se
+
+    fake_bars = [{"ts": "2026-01-01T00:00:00Z", "open": 60, "high": 61,
+                  "low": 59, "close": 60.5, "volume": 1000}]
+    monkeypatch.setattr(_se, "_try_polygon_ohlcv", lambda s, p: None)
+    monkeypatch.setattr(_se, "_try_yfinance_ohlcv", lambda s, p: fake_bars)
+    monkeypatch.setattr(_se, "_try_stooq_ohlcv", lambda s, p: None)
+
+    out = wolf_app.diag_data_sources(x_cron_secret="", symbol="WOLF", period="1y")
+    assert out["ok"] is True
+    assert out["symbol"] == "WOLF"
+    sources = {r["source"]: r for r in out["results"]}
+    assert sources["polygon"]["ok"] is False
+    assert sources["yfinance"]["ok"] is True
+    assert sources["yfinance"]["bars"] == 1
+    assert sources["yfinance"]["first_ts"] == "2026-01-01T00:00:00Z"
+    assert sources["stooq"]["ok"] is False
+    assert out["summary"]["working"] == ["yfinance"]
+    assert set(out["summary"]["broken"]) == {"polygon", "stooq"}

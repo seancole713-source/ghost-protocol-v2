@@ -1776,6 +1776,80 @@ def cron_signal_check(x_cron_secret: str = Header(default="")):
     return {"ok": True, "cron": "signal-check", "ran_at": ran_at, "alert_result": alert_result}
 
 
+@APP.get("/api/diag/data-sources")
+def diag_data_sources(x_cron_secret: str = Header(default=""), symbol: str = "WOLF", period: str = "1y"):
+    """Probe each OHLCV data source independently and report results.
+
+    Lets you see in-browser exactly which sources return bars and which
+    fail, without grep'ing training logs. Mirrors the chain order in
+    core/signal_engine._fetch_ohlcv (Alpaca SIP → IEX → Polygon → yfinance
+    → Stooq).
+
+    Each entry includes: ok, bar count, first/last timestamp on success,
+    error string on failure, and request latency in ms.
+    """
+    if not _cron_ok(x_cron_secret):
+        raise HTTPException(status_code=403)
+
+    try:
+        from core.signal_engine import (
+            _try_polygon_ohlcv,
+            _try_yfinance_ohlcv,
+            _try_stooq_ohlcv,
+        )
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": "import failed: " + str(e)[:200]}, status_code=500)
+
+    results = []
+
+    def _probe(name, fn):
+        t0 = time.time()
+        try:
+            rows = fn()
+            elapsed_ms = int((time.time() - t0) * 1000)
+            if rows:
+                results.append({
+                    "source": name,
+                    "ok": True,
+                    "bars": len(rows),
+                    "first_ts": rows[0].get("ts"),
+                    "last_ts": rows[-1].get("ts"),
+                    "elapsed_ms": elapsed_ms,
+                })
+            else:
+                results.append({
+                    "source": name,
+                    "ok": False,
+                    "bars": 0,
+                    "error": "returned no data (see Railway logs for per-branch detail)",
+                    "elapsed_ms": elapsed_ms,
+                })
+        except Exception as exc:
+            elapsed_ms = int((time.time() - t0) * 1000)
+            results.append({
+                "source": name,
+                "ok": False,
+                "bars": 0,
+                "error": str(exc)[:300],
+                "elapsed_ms": elapsed_ms,
+            })
+
+    _probe("polygon", lambda: _try_polygon_ohlcv(symbol, period))
+    _probe("yfinance", lambda: _try_yfinance_ohlcv(symbol, period))
+    _probe("stooq", lambda: _try_stooq_ohlcv(symbol, period))
+
+    working = [r["source"] for r in results if r["ok"]]
+    broken = [r["source"] for r in results if not r["ok"]]
+    return {
+        "ok": True,
+        "symbol": symbol,
+        "period": period,
+        "results": results,
+        "summary": {"working": working, "broken": broken, "total_working": len(working)},
+        "note": "Alpaca SIP/IEX are nested inside _fetch_ohlcv and not directly probed; check Railway logs for those.",
+    }
+
+
 @APP.post("/api/test-alert")
 def test_alert():
     """Send test message to Telegram to verify connection."""
