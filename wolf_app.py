@@ -2565,30 +2565,73 @@ def _v3_train_collect_symbols() -> list:
     return [s for s in stocks if s[0].upper() == "WOLF"] or [("WOLF", "stock")]
 
 
-def v3_train(x_cron_secret: str = Header(default="")):
+def _record_v3_train_state(**fields) -> None:
+    """Write v3_train phase markers into ghost_state for /api/v3/train/last.
+
+    Fields are keyed as last_v3_train_<name>; each call upserts only the
+    provided fields so partial updates work across the train phases.
+    """
+    if not fields:
+        return
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            for name, value in fields.items():
+                cur.execute(
+                    "INSERT INTO ghost_state(key,val) VALUES(%s,%s) "
+                    "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
+                    (f"last_v3_train_{name}", "" if value is None else str(value)),
+                )
+    except Exception as _e:
+        LOGGER.warning("v3_train state write failed: " + str(_e)[:120])
+
+
+def v3_train(x_cron_secret: str = Header(default=""), force: bool = False):
     """
     Train v3 XGBoost model on 1yr historical data (WOLF-only).
     Takes 2-5 minutes. Runs in background, returns immediately.
     Model only deployed if accuracy > 52% on holdout (and the rest of
     the v3.2 quality gates pass: walk-forward, edge, min wins).
 
+    `force` is currently a no-op safety flag — v3_train has no cooldown
+    or lock of its own, so manual invocations always run regardless.
+    It's reserved for future use if a guard is ever added and signals
+    operator intent to bypass any such guard. The scheduler-driven
+    _weekly_retrain has its own 7-day cooldown which is unrelated.
+
     PR #14 diag: emits PR14_DIAG markers at endpoint entry, background-
     thread start, and post-train_and_validate so a missing link reveals
     exactly where the chain breaks in Railway logs.
+
+    PR #18: also records per-phase state into ghost_state so the
+    /api/v3/train/last endpoint can report the actual outcome of the
+    most recent invocation (passed/failed + accuracy + error message).
+    The cockpit's "Refresh Status" button reads this.
     """
-    LOGGER.info("[v3_train] PR14_DIAG ENDPOINT_INVOKED")
+    LOGGER.info(f"[v3_train] PR14_DIAG ENDPOINT_INVOKED force={force}")
     if not _cron_ok(x_cron_secret):
         return JSONResponse({"ok":False,"error":"Forbidden"}, status_code=403)
+    started_at = int(time.time())
+    _record_v3_train_state(
+        ts=started_at, state="started", force=str(force).lower(),
+        accuracy="", passed="", error="", models_before="", models_after="",
+    )
     import threading
     def _train():
         try:
             LOGGER.info("[v3_train] PR14_DIAG BG_THREAD_STARTED importing train_and_validate")
-            from core.signal_engine import train_and_validate
+            from core.signal_engine import train_and_validate, get_model_status
             stocks = _v3_train_collect_symbols()
+            try:
+                models_before = int((get_model_status() or {}).get("models", 0))
+            except Exception:
+                models_before = 0
+            _record_v3_train_state(state="running", stocks=str(stocks), models_before=models_before)
             LOGGER.info(f"[v3_train] PR14_DIAG calling train_and_validate(stocks={stocks})")
             model, accuracy, passed = train_and_validate(stocks)
             LOGGER.info(f"[v3_train] PR14_DIAG train_and_validate returned passed={passed} acc={accuracy}")
-            LOGGER.info(f"v3 training complete: accuracy={round(accuracy*100,1)}% passed={passed}")
+            LOGGER.info(f"v3 training complete: accuracy={round((accuracy or 0)*100,1)}% passed={passed}")
             _bump_cockpit_db_cache()
             try:
                 purged = _auto_purge_bad_models()
@@ -2596,10 +2639,70 @@ def v3_train(x_cron_secret: str = Header(default="")):
                 LOGGER.info(f"Post-train purge: legacy={purged} v3={pv}")
             except Exception as _pe:
                 LOGGER.warning("Auto-purge after train failed: "+str(_pe)[:60])
+            try:
+                models_after = int((get_model_status() or {}).get("models", 0))
+            except Exception:
+                models_after = 0
+            _record_v3_train_state(
+                state="passed" if passed else "failed",
+                accuracy=f"{(accuracy or 0):.4f}",
+                passed=str(bool(passed)).lower(),
+                models_after=models_after,
+                finished_at=int(time.time()),
+                error="",
+            )
         except Exception as e:
             LOGGER.error("v3 training failed: " + str(e))
+            _record_v3_train_state(
+                state="exception",
+                error=str(e)[:300],
+                finished_at=int(time.time()),
+            )
     threading.Thread(target=_train, daemon=True).start()
-    return {"ok": True, "message": "Training started in background. Check /api/v3/status in 3-5 minutes."}
+    return {"ok": True, "message": "Training started in background. Check /api/v3/train/last in 3-5 minutes.",
+            "force": force, "started_at": started_at}
+
+
+@APP.get("/api/v3/train/last")
+def v3_train_last():
+    """Return the most recent v3_train invocation result from ghost_state.
+
+    Public read-only — same convention as /api/v3/status. Returns a flat
+    dict of the last_v3_train_* fields so the cockpit can render a
+    "Last training result" panel without needing the cron secret.
+    """
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            cur.execute(
+                "SELECT key, val FROM ghost_state WHERE key LIKE 'last_v3_train_%'"
+            )
+            rows = cur.fetchall()
+        out = {}
+        for key, val in rows:
+            short = key.replace("last_v3_train_", "", 1)
+            out[short] = val
+        # Coerce numeric fields when present
+        for num_key in ("ts", "finished_at", "models_before", "models_after"):
+            if num_key in out and out[num_key]:
+                try:
+                    out[num_key] = int(out[num_key])
+                except Exception:
+                    pass
+        if "accuracy" in out and out["accuracy"]:
+            try:
+                out["accuracy"] = float(out["accuracy"])
+            except Exception:
+                pass
+        if "passed" in out:
+            out["passed"] = out["passed"].lower() == "true"
+        if "force" in out:
+            out["force"] = out["force"].lower() == "true"
+        return {"ok": True, "last": out or None}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
 
 @APP.post("/api/v3/backtest")
 def v3_backtest(x_cron_secret: str = Header(default=""), symbol: str = "WOLF", asset_type: str = "stock"):

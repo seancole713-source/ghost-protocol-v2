@@ -1500,10 +1500,10 @@ async function handleTrainClick(){
   var resultEl = document.getElementById('train-result');
   var btns = document.querySelectorAll('.btn-train');
   var secret = (secretEl && secretEl.value) ? secretEl.value : '';
-  resultEl.innerHTML = '<span class="train-warn">&#x21BB; Triggering training...</span>';
+  resultEl.innerHTML = '<span class="train-warn">&#x21BB; Triggering training (force=true)...</span>';
   btns.forEach(function(b){ b.disabled = true; });
   try{
-    var resp = await fetch('/api/v3/train', {
+    var resp = await fetch('/api/v3/train?force=true', {
       method: 'POST',
       headers: {'x-cron-secret': secret, 'Content-Type': 'application/json'},
     });
@@ -1528,17 +1528,47 @@ async function handleTrainClick(){
 
 async function handleStatusCheckClick(){
   var resultEl = document.getElementById('train-result');
-  resultEl.innerHTML = '<span class="train-warn">&#x21BB; Checking /api/v3/status...</span>';
+  resultEl.innerHTML = '<span class="train-warn">&#x21BB; Checking /api/v3/status + /api/v3/train/last...</span>';
   try{
-    var v3 = await fetch('/api/v3/status').then(function(r){ return r.json(); });
+    var pair = await Promise.all([
+      fetch('/api/v3/status').then(function(r){ return r.json(); }),
+      fetch('/api/v3/train/last').then(function(r){ return r.json(); }).catch(function(){ return {ok:false}; }),
+    ]);
+    var v3 = pair[0], lastResp = pair[1];
+    var last = (lastResp && lastResp.last) ? lastResp.last : null;
+
+    // Headline status line
+    var headline;
     if(v3 && v3.trained){
       var nModels = v3.models != null ? v3.models : Object.keys(v3.symbols || {}).length;
-      resultEl.innerHTML = '<span class="train-ok">&#10003;</span> Trained &middot; '
+      headline = '<span class="train-ok">&#10003;</span> Trained &middot; '
         + nModels + ' model(s) loaded &middot; refresh page to see them in the cockpit';
     } else {
       var reason = (v3 && v3.reason) ? v3.reason : 'Not trained yet';
-      resultEl.innerHTML = '<span class="train-warn">&#x23F3;</span> ' + escHtml(reason);
+      headline = '<span class="train-warn">&#x23F3;</span> ' + escHtml(reason);
     }
+
+    // Last training result detail (PR #18)
+    var detail = '';
+    if(last && last.state){
+      var stateCls = last.state === 'passed' ? 'train-ok'
+                    : last.state === 'failed' ? 'train-fail'
+                    : last.state === 'exception' ? 'train-fail'
+                    : 'train-warn';
+      var bits = ['<span class="' + stateCls + '">state=' + escHtml(last.state) + '</span>'];
+      if(last.passed != null) bits.push('passed=' + (last.passed ? 'true' : 'false'));
+      if(last.accuracy != null) bits.push('acc=' + (Number(last.accuracy) * 100).toFixed(1) + '%');
+      if(last.error) bits.push('error=' + escHtml(String(last.error).slice(0, 200)));
+      if(last.models_before != null && last.models_after != null) {
+        bits.push('models ' + last.models_before + '&rarr;' + last.models_after);
+      }
+      if(last.ts) bits.push('started ' + fmtTimeAgo(last.ts));
+      detail = '<div class="truth-note" style="margin-top:6px;font-size:11px">'
+             + '<b>Last train</b> &middot; ' + bits.join(' &middot; ')
+             + '</div>';
+    }
+
+    resultEl.innerHTML = headline + detail;
     var slot = document.getElementById('t-models-slot');
     if(slot) slot.innerHTML = renderModelTable(v3);
   } catch(e) {
