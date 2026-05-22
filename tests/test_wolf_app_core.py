@@ -420,6 +420,128 @@ def test_signal_alert_check_requires_cron_secret_when_set(monkeypatch):
 
 # ── /api/wolf/predictions — buy_target / sell_target derivation ─────────
 
+# ── /api/cron/signal-check — wraps signal-alert + records state ─────────
+
+def test_cron_signal_check_delegates_and_records_state(monkeypatch):
+    """cron_signal_check must call wolf_signal_alert_check and write
+    last_signal_cron_ts + last_signal_cron_sent to ghost_state."""
+    monkeypatch.setenv("CRON_SECRET", "")
+    sent_messages = []
+
+    # The underlying alert check pulls from db_conn + sends Telegram.
+    # We patch both so the wrapper exercises its real code path.
+    candidates = [
+        (501, "BUY", 0.90, 60.0, 72.0, 56.0, int(time.time()) + 86400, int(time.time())),
+    ]
+    cur = _SignalAlertCursor(sent_today=0, candidates=candidates)
+    _patch_signal_alert(monkeypatch, cur, sent_messages)
+
+    out = wolf_app.cron_signal_check(x_cron_secret="")
+    assert out["ok"] is True
+    assert out["cron"] == "signal-check"
+    assert out["ran_at"] > 0
+    inner = out["alert_result"]
+    assert inner["ok"] is True
+    assert len(inner["sent"]) == 1
+    assert len(sent_messages) == 1
+    # The ghost_state writes happened (one for ts, one for sent count)
+    state_writes = [s for s, _ in cur.executed if "ghost_state" in s and "INSERT" in s]
+    assert len(state_writes) >= 2
+
+
+def test_cron_signal_check_requires_cron_secret_when_set(monkeypatch):
+    monkeypatch.setenv("CRON_SECRET", "supersecret")
+    from fastapi import HTTPException
+    try:
+        wolf_app.cron_signal_check(x_cron_secret="wrong")
+        assert False, "expected HTTPException"
+    except HTTPException as e:
+        assert e.status_code == 403
+
+
+# ── /api/wolf/ghost-score — composite scoring ───────────────────────────
+
+def test_ghost_score_pure_compute_strong_buy():
+    """All maxed bullish inputs → score in STRONG_BUY band, signal label set."""
+    import api.wolf_endpoints as we
+    now = int(time.time())
+    out = we.compute_ghost_score(
+        latest_pick={"direction": "BUY", "confidence": 0.95, "predicted_at": now - 60},
+        volume_ratio=2.5,
+        sector={"signal": "wolf_lagging_up"},
+        current_price=70.0,
+        sma_5d=65.0,
+        now_ts=now,
+    )
+    # model: 0.95 * 40 = 38; volume: min(20, 25) = 20; sector: 15; momentum: (5/65)=7.7% → 15; freshness: 10
+    # total = 38 + 20 + 15 + 15 + 10 = 98 → STRONG_BUY
+    assert out["score"] >= 95
+    assert out["signal"] == "STRONG_BUY"
+    assert set(out["components"]) == {"model", "volume", "sector", "momentum", "freshness"}
+
+
+def test_ghost_score_pure_compute_strong_sell():
+    """All maxed bearish inputs → score in STRONG_SELL band."""
+    import api.wolf_endpoints as we
+    now = int(time.time())
+    out = we.compute_ghost_score(
+        latest_pick={"direction": "SELL", "confidence": 0.95, "predicted_at": now - 60},
+        volume_ratio=0.1,
+        sector={"signal": None},
+        current_price=60.0,
+        sma_5d=65.0,
+        now_ts=now,
+    )
+    # model: (1-0.95)*40 = 2; volume: 0.1*10 = 1; sector: 7.5; momentum: -7.7% → 0; freshness: 10
+    # total = 2 + 1 + 7.5 + 0 + 10 = 20.5 → SELL (borderline; <20 is STRONG_SELL)
+    assert out["score"] < 30
+    assert out["signal"] in ("SELL", "STRONG_SELL")
+
+
+def test_ghost_score_pure_compute_hold_when_no_inputs():
+    """No data at all → neutral midpoint, HOLD signal."""
+    import api.wolf_endpoints as we
+    now = int(time.time())
+    out = we.compute_ghost_score(
+        latest_pick=None, volume_ratio=None, sector=None,
+        current_price=None, sma_5d=None, now_ts=now,
+    )
+    # model: 20 (neutral); volume: 10; sector: 7.5; momentum: 7.5; freshness: 0
+    # total = 45 → HOLD
+    assert out["signal"] == "HOLD"
+    assert 40 <= out["score"] <= 60
+
+
+def test_ghost_score_freshness_decays_to_zero(monkeypatch):
+    """A pick from > 48h ago contributes 0 freshness points."""
+    import api.wolf_endpoints as we
+    now = int(time.time())
+    stale = we.compute_ghost_score(
+        latest_pick={"direction": "BUY", "confidence": 0.9, "predicted_at": now - 72 * 3600},
+        volume_ratio=2.0,
+        sector={"signal": "wolf_lagging_up"},
+        current_price=70.0,
+        sma_5d=65.0,
+        now_ts=now,
+    )
+    assert stale["components"]["freshness"] == 0.0
+
+
+def test_ghost_score_signal_label_bands():
+    """Signal label boundaries: 80/60/40/20 thresholds."""
+    import api.wolf_endpoints as we
+    assert we._signal_label(85) == "STRONG_BUY"
+    assert we._signal_label(80) == "STRONG_BUY"
+    assert we._signal_label(79.9) == "BUY"
+    assert we._signal_label(60) == "BUY"
+    assert we._signal_label(59.9) == "HOLD"
+    assert we._signal_label(40) == "HOLD"
+    assert we._signal_label(39.9) == "SELL"
+    assert we._signal_label(20) == "SELL"
+    assert we._signal_label(19.9) == "STRONG_SELL"
+    assert we._signal_label(0) == "STRONG_SELL"
+
+
 def test_wolf_predictions_buy_sell_target_derivation(monkeypatch):
     """BUY pick → buy_target=entry, sell_target=target. SELL pick → inverted."""
     import api.wolf_endpoints as we

@@ -1741,6 +1741,41 @@ def wolf_signal_alert_check(x_cron_secret: str = Header(default="")):
             "daily_cap": daily_cap, "errors": errors}
 
 
+@APP.post("/api/cron/signal-check")
+def cron_signal_check(x_cron_secret: str = Header(default="")):
+    """Cron-triggered Telegram signal-alert sweep.
+
+    Thin wrapper around wolf_signal_alert_check that also records the
+    cron invocation in ghost_state for ops visibility. Wire this to your
+    Railway cron schedule (cron-job.org / Railway scheduled jobs) alongside
+    the existing prediction cycle — typical cadence: every 5-15 minutes
+    during market hours. Throttling and dedup live inside the underlying
+    check, so calling more frequently than needed is safe.
+    """
+    if not _cron_ok(x_cron_secret):
+        raise HTTPException(status_code=403)
+    ran_at = int(time.time())
+    alert_result = wolf_signal_alert_check(x_cron_secret=x_cron_secret)
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            cur.execute(
+                "INSERT INTO ghost_state(key,val) VALUES('last_signal_cron_ts',%s) "
+                "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
+                (str(ran_at),),
+            )
+            sent_count = len(alert_result.get("sent", [])) if isinstance(alert_result, dict) else 0
+            cur.execute(
+                "INSERT INTO ghost_state(key,val) VALUES('last_signal_cron_sent',%s) "
+                "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
+                (str(sent_count),),
+            )
+    except Exception as _e:
+        LOGGER.warning("cron_signal_check state write failed: " + str(_e)[:120])
+    return {"ok": True, "cron": "signal-check", "ran_at": ran_at, "alert_result": alert_result}
+
+
 @APP.post("/api/test-alert")
 def test_alert():
     """Send test message to Telegram to verify connection."""
