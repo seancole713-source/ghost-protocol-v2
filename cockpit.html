@@ -542,6 +542,8 @@ section.block{margin-bottom:32px}
           <button class="btn-train" onclick="handleTrainClick()">Train Now</button>
           <button class="btn-train secondary" onclick="handleStatusCheckClick()">Refresh Status</button>
           <button class="btn-train secondary" onclick="handleDataSourcesClick()">Test Data Sources</button>
+          <button class="btn-train secondary" onclick="handleTrainSyncClick()" title="Runs train synchronously, takes 1-5 min, returns actual result inline">Train (sync)</button>
+          <button class="btn-train secondary" onclick="handleVersionCheckClick()" title="Show running code version + deploy ID">Check Version</button>
         </div>
         <div id="train-result" class="truth-note" style="margin-top:10px;min-height:18px"></div>
         <div id="data-sources-result" style="margin-top:8px"></div>
@@ -1631,6 +1633,71 @@ async function handleDataSourcesClick(){
     resultEl.innerHTML = '<div class="truth-note"><span class="train-fail">&#10007;</span> Network error: ' + escHtml(String(e)) + '</div>';
   } finally {
     btns.forEach(function(b){ b.disabled = false; });
+  }
+}
+
+/* ─── /api/v3/train/sync — synchronous trainer (PR #19) ─── */
+async function handleTrainSyncClick(){
+  var secretEl = document.getElementById('train-secret');
+  var resultEl = document.getElementById('train-result');
+  var btns = document.querySelectorAll('.btn-train');
+  var secret = (secretEl && secretEl.value) ? secretEl.value : '';
+  if(!confirm('Sync training blocks the HTTP request for 1-5 minutes. Browser may show a spinner. Continue?')){
+    return;
+  }
+  resultEl.innerHTML = '<span class="train-warn">&#x21BB; Running sync train (1-5 min)... do not close this tab</span>';
+  btns.forEach(function(b){ b.disabled = true; });
+  try{
+    var resp = await fetch('/api/v3/train/sync?force=true', {
+      method: 'POST',
+      headers: {'x-cron-secret': secret, 'Content-Type': 'application/json'},
+    });
+    var body = {};
+    try { body = await resp.json(); } catch(_e) {}
+    if(resp.status === 403){
+      resultEl.innerHTML = '<span class="train-fail">&#10007;</span> 403 (cron secret missing or wrong)';
+      return;
+    }
+    if(!body || body._pr_version == null){
+      resultEl.innerHTML = '<span class="train-fail">&#10007;</span> Endpoint response missing _pr_version &mdash; deployed code is pre-PR-#19 (stale cache)';
+      return;
+    }
+    if(body.ok){
+      var icon = body.passed ? '<span class="train-ok">&#10003;</span>' : '<span class="train-warn">&#x23F3;</span>';
+      var pct = body.accuracy != null ? body.accuracy.toFixed(2) + '%' : '—';
+      resultEl.innerHTML = icon + ' <b>passed=' + body.passed + '</b> &middot; acc=' + pct
+        + ' &middot; models ' + body.models_before + '&rarr;' + body.models_after
+        + ' &middot; ' + (body.duration_s || 0) + 's'
+        + ' <span style="color:#666">(PR #' + body._pr_version + ')</span>';
+      if(secretEl) secretEl.value = '';
+    } else {
+      resultEl.innerHTML = '<span class="train-fail">&#10007;</span> ' + escHtml(body.error || 'sync train failed')
+        + ' &middot; ' + (body.duration_s || 0) + 's'
+        + ' <span style="color:#666">(PR #' + body._pr_version + ')</span>';
+    }
+  } catch(e) {
+    resultEl.innerHTML = '<span class="train-fail">&#10007;</span> Network/timeout error: ' + escHtml(String(e));
+  } finally {
+    btns.forEach(function(b){ b.disabled = false; });
+  }
+}
+
+async function handleVersionCheckClick(){
+  var resultEl = document.getElementById('train-result');
+  resultEl.innerHTML = '<span class="train-warn">&#x21BB; Checking /api/_version...</span>';
+  try{
+    var v = await fetch('/api/_version').then(function(r){ return r.json(); });
+    var rows = [
+      ['_pr_version', v._pr_version != null ? ('PR #' + v._pr_version) : '<span class="train-fail">missing &mdash; pre-PR-#19 code</span>'],
+      ['git_sha', escHtml(v.git_sha || '—')],
+      ['deploy_id', escHtml(v.deploy_id || '—')],
+      ['deploy_version_env', escHtml(v.deploy_version_env || 'unset')],
+    ];
+    var rowHtml = rows.map(function(r){ return '<div><b>' + r[0] + '</b>: ' + r[1] + '</div>'; }).join('');
+    resultEl.innerHTML = '<div class="truth-note" style="font-size:11px;line-height:1.7">'
+      + rowHtml + '</div>';
+  } catch(e) {
+    resultEl.innerHTML = '<span class="train-fail">&#10007;</span> ' + escHtml(String(e));
   }
 }
 
