@@ -20,7 +20,29 @@ LOGGER = logging.getLogger("ghost.signal_v3")
 LABEL_TYPE = "tp_sl_daily"
 # Daily bars only: approximate 48h stock hold with this many forward bars (24h each).
 V3_LABEL_HOLD_BARS = max(1, int(os.getenv("V3_LABEL_HOLD_BARS", "3")))
-MIN_TRAIN_ROWS = 80
+
+
+# Training thresholds. All read from env at call time so tests can
+# monkeypatch.setenv and so ops can ratchet defaults from Railway without
+# a code change. Defaults were lowered (post-restructure WOLF only has
+# ~250 trading days of SIP data, so the prior pre-bankruptcy defaults
+# locked out training entirely).
+def _min_train_rows() -> int:
+    """Min labeled samples required to attempt training (was 80)."""
+    return max(1, int(os.getenv("MIN_TRAIN_ROWS", "20")))
+
+
+def _min_backtest_bars() -> int:
+    """Min OHLCV rows from the feed before backtest_symbol bothers to label (was 100)."""
+    return max(1, int(os.getenv("MIN_BACKTEST_BARS", "50")))
+
+
+def _backtest_window() -> int:
+    """Trailing-history window each labeled sample sees (was hardcoded 220).
+    Smaller window = more labeled samples from limited data but noisier features."""
+    return max(20, int(os.getenv("V3_BACKTEST_WINDOW", "120")))
+
+
 MODEL_DB_KEY = "ghost_v3_model_pkl"
 FEATURES_DB_KEY = "ghost_v3_features_json"
 
@@ -391,11 +413,12 @@ def _fetch_ohlcv(symbol, asset_type, period='1y', interval='1d'):
 
 def backtest_symbol(symbol, asset_type):
     rows = _fetch_ohlcv(symbol, asset_type)
-    if not rows or len(rows) < 100:
+    min_bars = _min_backtest_bars()
+    if not rows or len(rows) < min_bars:
         return []
     vol_pct = base_vol_pct(symbol, asset_type)
     labeled = []
-    window = 220
+    window = _backtest_window()
     margin = V3_LABEL_HOLD_BARS + 1
     for i in range(window, len(rows) - margin):
         hist = rows[max(0, i - window) : i + 1]
@@ -415,7 +438,7 @@ def build_training_data(symbols_and_types):
     all_rows = []
     for symbol, asset_type in symbols_and_types:
         all_rows.extend(backtest_symbol(symbol, asset_type))
-    if len(all_rows) < MIN_TRAIN_ROWS: return None, None, []
+    if len(all_rows) < _min_train_rows(): return None, None, []
     X = np.array([[r['features'].get(c, 0.0) for c in FEATURE_COLS] for r in all_rows])
     y = np.array([r['label'] for r in all_rows])
     return X, y, FEATURE_COLS
@@ -433,10 +456,11 @@ def train_and_validate(symbols_and_types):
         try:
             rows = backtest_symbol(symbol, asset_type)
             n_samples = len(rows) if rows else 0
-            if not rows or n_samples < 80:
+            min_rows = _min_train_rows()
+            if not rows or n_samples < min_rows:
                 LOGGER.info(
                     f"RETRAIN [{symbol}]: acc=NA edge=NA wf_folds=NA wf_acc_mean=NA wf_edge_mean=NA wf_acc_min=NA "
-                    f"| FAIL: n_samples<{MIN_TRAIN_ROWS} ({n_samples})"
+                    f"| FAIL: n_samples<{min_rows} ({n_samples})"
                 )
                 continue
             X = np.array([[r["features"].get(c, 0.0) for c in FEATURE_COLS] for r in rows])
@@ -470,7 +494,7 @@ def train_and_validate(symbols_and_types):
             symbol_overrides = _v3_wf_acc_min_overrides()
             symbol_wf_acc_min = symbol_overrides.get(symbol.upper(), min_wf_acc_min)
             gate_checks = [
-                ("n_samples", n_samples >= MIN_TRAIN_ROWS, f"n_samples<{MIN_TRAIN_ROWS} ({n_samples})"),
+                ("n_samples", n_samples >= min_rows, f"n_samples<{min_rows} ({n_samples})"),
                 ("tp_sl_wins", wins_ct >= min_wins, f"tp_sl_wins<{min_wins} ({wins_ct})"),
                 ("holdout_acc", accuracy >= min_acc, f"holdout_acc < {min_acc*100:.1f}% ({accuracy*100:.1f}%)"),
                 ("edge", edge >= min_edge, f"edge < {min_edge*100:.1f}% ({edge*100:.1f}%)"),

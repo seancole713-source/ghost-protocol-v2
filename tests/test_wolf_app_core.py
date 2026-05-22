@@ -553,3 +553,62 @@ def test_fetch_ohlcv_period_plumbed_into_start_date(monkeypatch):
     two_y = _start_days_ago(captured_urls[1])
     assert 363 <= one_y <= 367, f"1y should be ~365 days, got {one_y}"
     assert 728 <= two_y <= 732, f"2y should be ~730 days, got {two_y}"
+
+
+# ── Training thresholds — env tunables ──────────────────────────────────
+
+def test_min_train_rows_default_and_env_override(monkeypatch):
+    """Default is 20; env override is honoured at call time."""
+    import core.signal_engine as _se
+    monkeypatch.delenv("MIN_TRAIN_ROWS", raising=False)
+    assert _se._min_train_rows() == 20
+    monkeypatch.setenv("MIN_TRAIN_ROWS", "5")
+    assert _se._min_train_rows() == 5
+    monkeypatch.setenv("MIN_TRAIN_ROWS", "0")  # floor at 1
+    assert _se._min_train_rows() == 1
+
+
+def test_min_backtest_bars_default_and_env_override(monkeypatch):
+    """Default is 50; env override is honoured at call time."""
+    import core.signal_engine as _se
+    monkeypatch.delenv("MIN_BACKTEST_BARS", raising=False)
+    assert _se._min_backtest_bars() == 50
+    monkeypatch.setenv("MIN_BACKTEST_BARS", "30")
+    assert _se._min_backtest_bars() == 30
+
+
+def test_backtest_window_default_and_env_override(monkeypatch):
+    """Default is 120; env override is honoured. Floor 20 prevents pathological values."""
+    import core.signal_engine as _se
+    monkeypatch.delenv("V3_BACKTEST_WINDOW", raising=False)
+    assert _se._backtest_window() == 120
+    monkeypatch.setenv("V3_BACKTEST_WINDOW", "60")
+    assert _se._backtest_window() == 60
+    monkeypatch.setenv("V3_BACKTEST_WINDOW", "5")  # floor at 20
+    assert _se._backtest_window() == 20
+
+
+def test_backtest_symbol_returns_empty_when_under_min_bars(monkeypatch):
+    """backtest_symbol must bail out cleanly when feed returns fewer rows than the env floor."""
+    import core.signal_engine as _se
+    monkeypatch.setenv("MIN_BACKTEST_BARS", "100")
+    monkeypatch.setattr(_se, "_fetch_ohlcv", lambda symbol, asset_type: [{"ts": "x", "close": 1.0}] * 90)
+    out = _se.backtest_symbol("WOLF", "stock")
+    assert out == []
+
+
+def test_backtest_symbol_window_governs_sample_count(monkeypatch):
+    """Smaller window must produce more labeled samples on the same input."""
+    import core.signal_engine as _se
+    # 200 deterministic bars — enough to label with either window
+    rows = [{"ts": f"2026-01-{i:02d}", "open": 60.0 + i*0.1, "high": 61.0 + i*0.1,
+             "low": 59.0 + i*0.1, "close": 60.0 + i*0.1, "volume": 100000} for i in range(1, 201)]
+    monkeypatch.setattr(_se, "_fetch_ohlcv", lambda symbol, asset_type: rows)
+    monkeypatch.setenv("MIN_BACKTEST_BARS", "10")
+    monkeypatch.setenv("V3_BACKTEST_WINDOW", "120")
+    out_120 = _se.backtest_symbol("WOLF", "stock")
+    monkeypatch.setenv("V3_BACKTEST_WINDOW", "60")
+    out_60 = _se.backtest_symbol("WOLF", "stock")
+    # Smaller window → strictly more samples (60 vs 120 = +60 more iterations)
+    assert len(out_60) > len(out_120) > 0
+    assert len(out_60) - len(out_120) == 60
