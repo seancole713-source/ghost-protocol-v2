@@ -208,3 +208,55 @@ def test_cron_ok_dev_mode_when_env_unset(monkeypatch):
     monkeypatch.delenv("CRON_SECRET", raising=False)
     assert wolf_app._cron_ok("") is True          # non-strict: dev-mode allow
     assert wolf_app._cron_ok("", strict=True) is False  # strict: always reject
+
+
+def _patch_db_conn_with_cursor(monkeypatch, cur):
+    class _Conn:
+        def cursor(self):
+            return cur
+
+    class _DbCtx:
+        def __enter__(self):
+            return _Conn()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(wolf_app, "db_conn", lambda: _DbCtx())
+
+
+def test_confidence_buckets_empty_db_returns_zeroed_shape(monkeypatch):
+    """No resolved picks → ok=True, 5 buckets, all zeros, labels in order."""
+    monkeypatch.setattr(wolf_app, "_v32_stats_start_ts", lambda cur: 0)
+    _patch_db_conn_with_cursor(monkeypatch, QueueCursor())
+    out = wolf_app.get_stats_confidence_buckets()
+    assert out["ok"] is True
+    assert out["start_ts"] == 0
+    assert len(out["buckets"]) == 5
+    assert [b["label"] for b in out["buckets"]] == ["<60", "60-70", "70-80", "80-90", "90+"]
+    for b in out["buckets"]:
+        assert b["wins"] == 0
+        assert b["losses"] == 0
+        assert b["total"] == 0
+        assert b["win_rate_pct"] == 0.0
+
+
+def test_confidence_buckets_computes_per_bucket_winrate(monkeypatch):
+    """Distinct W/L per bucket → win_rate_pct computed independently per band."""
+    monkeypatch.setattr(wolf_app, "_v32_stats_start_ts", lambda cur: 1775347200)
+    # One fetchall per bucket, in declared order: <60, 60-70, 70-80, 80-90, 90+
+    cur = QueueCursor(fetchall_values=[
+        [("WIN", 1), ("LOSS", 3)],   # <60:    1W/3L  = 25%
+        [("WIN", 5), ("LOSS", 5)],   # 60-70:  5W/5L  = 50%
+        [("WIN", 7), ("LOSS", 3)],   # 70-80:  7W/3L  = 70%
+        [("WIN", 8), ("LOSS", 2)],   # 80-90:  8W/2L  = 80%
+        [("WIN", 9), ("LOSS", 1)],   # 90+:    9W/1L  = 90%
+    ])
+    _patch_db_conn_with_cursor(monkeypatch, cur)
+    out = wolf_app.get_stats_confidence_buckets()
+    assert out["ok"] is True
+    assert out["start_ts"] == 1775347200
+    rates = {b["label"]: b["win_rate_pct"] for b in out["buckets"]}
+    assert rates == {"<60": 25.0, "60-70": 50.0, "70-80": 70.0, "80-90": 80.0, "90+": 90.0}
+    totals = {b["label"]: b["total"] for b in out["buckets"]}
+    assert totals == {"<60": 4, "60-70": 10, "70-80": 10, "80-90": 10, "90+": 10}

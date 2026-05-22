@@ -105,9 +105,25 @@ body{background:#0a0a0a;color:#fff;font-family:-apple-system,BlinkMacSystemFont,
 .truth-toggle .chev{color:#ff3b3b;font-size:14px}
 .truth-panel{padding:14px 20px 18px;max-width:1100px;margin:0 auto}
 .truth-panel.collapsed{display:none}
-.regime-bar{border-radius:10px;padding:12px 16px;margin-bottom:14px;font-size:13px;line-height:1.5}
-.regime-bar.ok{background:#071a0d;border:1px solid #14532d;color:#86efac}
-.regime-bar.block{background:#1a0a0a;border:1px solid #7f1d1d;color:#fca5a5}
+.activity-strip{display:flex;gap:18px;flex-wrap:wrap;background:#0d0d0d;border:1px solid #1e1e1e;border-radius:10px;padding:10px 16px;margin-bottom:14px;font-size:12px;color:#888}
+.activity-strip b{color:#fff;font-weight:700}
+.activity-strip .w{color:#22c55e;font-weight:700}
+.activity-strip .l{color:#ff3b3b;font-weight:700}
+.activity-strip .e{color:#f59e0b;font-weight:700}
+.conf-tbl{width:100%;border-collapse:collapse;font-size:12px}
+.conf-tbl th{font-size:9px;letter-spacing:1px;color:#555;padding:6px 8px;border-bottom:1px solid #252525;text-align:left;text-transform:uppercase}
+.conf-tbl td{padding:8px;border-bottom:1px solid #1a1a1a;color:#ccc;vertical-align:middle}
+.conf-tbl tr:last-child td{border:none}
+.conf-tbl .bucket-lbl{font-weight:700;color:#fff}
+.conf-bar-track{height:8px;background:#1a1a1a;border-radius:4px;overflow:hidden;min-width:80px}
+.conf-bar-bar{height:100%;border-radius:4px}
+.conf-bar-bar.good{background:#22c55e}
+.conf-bar-bar.mid{background:#f59e0b}
+.conf-bar-bar.bad{background:#ff3b3b}
+.conf-bar-bar.none{background:#333}
+.truth-big.pass{color:#4ade80}
+.truth-big.warn{color:#f59e0b}
+.truth-big.fail{color:#ff3b3b}
 .truth-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin-bottom:14px}
 .truth-card{background:#111;border:1px solid #1e1e1e;border-radius:12px;padding:14px 16px}
 .truth-card h4{font-size:10px;font-weight:700;letter-spacing:1.5px;color:#555;text-transform:uppercase;margin-bottom:10px}
@@ -147,7 +163,7 @@ body{background:#0a0a0a;color:#fff;font-family:-apple-system,BlinkMacSystemFont,
     <span class="chev" id="truth-chev">&#9660;</span>
   </button>
   <div class="truth-panel" id="truth-body">
-    <div id="regime-slot"></div>
+    <div class="activity-strip" id="activity-strip"></div>
     <div class="truth-grid">
       <div class="truth-card">
         <h4>Post&#8211;v3.2 window (decision metric)</h4>
@@ -168,6 +184,25 @@ body{background:#0a0a0a;color:#fff;font-family:-apple-system,BlinkMacSystemFont,
         <div class="truth-kv" id="t-sys-kv"></div>
       </div>
     </div>
+    <div class="truth-grid">
+      <div class="truth-card">
+        <h4>Last health audit</h4>
+        <div class="truth-big" id="t-audit-status">&#8212;</div>
+        <div class="truth-note">Most recent <code>/api/health/audit</code> run from <code>health_audit_runs</code>. PASS = zero critical findings. Coverage = % of open picks with feature snapshots resolved.</div>
+        <div class="truth-kv" id="t-audit-kv"></div>
+      </div>
+      <div class="truth-card">
+        <h4>Model coverage</h4>
+        <div class="truth-big" id="t-cov-loaded">&#8212;</div>
+        <div class="truth-note">Loaded v3 models vs <code>MODEL_COVERAGE_MIN_MODELS</code> floor. Auto-retrain fires when below floor and cooldown is clear.</div>
+        <div class="truth-kv" id="t-cov-kv"></div>
+      </div>
+    </div>
+    <div class="truth-card" style="margin-bottom:14px">
+      <h4>Confidence calibration (post v3.2)</h4>
+      <div class="truth-note" style="margin-bottom:10px">Realized win rate by confidence bucket since the v3.2 cutover. If the 80&#8211;90 or 90+ buckets win at the same rate as 60&#8211;70, the score has no information and the engine needs recalibration.</div>
+      <div id="t-conf-slot"><p class="truth-note">Loading&#8230;</p></div>
+    </div>
     <div class="truth-card" style="margin-bottom:0">
       <h4>Model lineage (loaded symbols)</h4>
       <div id="t-models-slot"><p class="truth-note">Loading&#8230;</p></div>
@@ -178,8 +213,7 @@ body{background:#0a0a0a;color:#fff;font-family:-apple-system,BlinkMacSystemFont,
 <div class="main">
   <div class="panel active" id="panel-stocks">
     <div class="sec-label">Today's WOLF Play</div>
-    <div class="grid" id="cgrid"><div class="empty"><div class="ico">&#9203;</div><p>Loading plays...</p></div></div>
-    <div id="sgrid"></div>
+    <div id="sgrid"><div class="empty"><div class="ico">&#9203;</div><p>Loading plays...</p></div></div>
   </div>
   <div class="panel" id="panel-portfolio">
     <div class="sec-label">My Portfolio</div>
@@ -314,7 +348,107 @@ function renderModelTable(v3) {
   return h;
 }
 
-function renderTruth(stats, health, regime, v3, dir) {
+function renderActivity(activity) {
+  var el = document.getElementById('activity-strip');
+  if (!el) return;
+  if (!activity) { el.innerHTML = '<span>Activity unavailable</span>'; return; }
+  var wo = activity.weekly_outcomes || {};
+  var wW = wo.WIN || 0, wL = wo.LOSS || 0, wE = wo.EXPIRED || 0;
+  el.innerHTML =
+    '<span>Open picks: <b>' + (activity.open_predictions != null ? activity.open_predictions : '\u2014') + '</b></span>'
+    + '<span>Resolved (24h): <b>' + (activity.resolved_24h != null ? activity.resolved_24h : '\u2014') + '</b></span>'
+    + '<span>This week: <span class="w">' + wW + 'W</span> / <span class="l">' + wL + 'L</span>'
+    + (wE ? ' / <span class="e">' + wE + 'E</span>' : '') + '</span>';
+}
+
+function renderAudit(audit) {
+  var bigEl = document.getElementById('t-audit-status');
+  var kvEl = document.getElementById('t-audit-kv');
+  if (!bigEl || !kvEl) return;
+  var runs = audit && audit.runs ? audit.runs : [];
+  if (!runs.length) {
+    bigEl.textContent = '\u2014';
+    bigEl.className = 'truth-big';
+    kvEl.innerHTML = '<b>No audit runs yet</b> \u2014 POST <code>/api/health/audit</code> with <code>x-cron-secret</code> to seed history.';
+    return;
+  }
+  var r = runs[0];
+  var st = (r.status || '').toUpperCase();
+  bigEl.textContent = st || '\u2014';
+  bigEl.className = 'truth-big ' + (st === 'PASS' ? 'pass' : st === 'WARN' ? 'warn' : 'fail');
+  kvEl.innerHTML =
+    '<b>Coverage</b> ' + (r.coverage_pct != null ? r.coverage_pct.toFixed(1) + '%' : '\u2014') + '<br>'
+    + '<b>Unresolved</b> ' + (r.unresolved_count != null ? r.unresolved_count : '\u2014')
+    + ' \u00b7 <b>Resolved</b> ' + (r.resolved_count != null ? r.resolved_count : '\u2014') + '<br>'
+    + '<b>Ran</b> ' + fmtTsIso(r.run_ts);
+}
+
+function renderCoverage(cov) {
+  var bigEl = document.getElementById('t-cov-loaded');
+  var kvEl = document.getElementById('t-cov-kv');
+  if (!bigEl || !kvEl) return;
+  if (!cov || cov.ok === false) {
+    bigEl.textContent = '\u2014';
+    bigEl.className = 'truth-big';
+    kvEl.innerHTML = '<b>Coverage unavailable</b>' + (cov && cov.error ? ' (' + escHtml(cov.error) + ')' : '');
+    return;
+  }
+  var c = cov.coverage || {};
+  var m = cov.maintenance || {};
+  var loaded = c.loaded_models != null ? c.loaded_models : 0;
+  var floor = c.min_models_floor != null ? c.min_models_floor : 0;
+  var below = !!c.below_floor;
+  bigEl.textContent = loaded + ' / ' + floor;
+  bigEl.className = 'truth-big ' + (below ? 'warn' : 'pass');
+  var lastTs = m.last_retrain_ts;
+  var cdRem = m.cooldown_remaining_s;
+  var cdMin = cdRem != null ? Math.ceil(cdRem / 60) : null;
+  kvEl.innerHTML =
+    '<b>Auto-retrain</b> ' + (m.enabled ? 'enabled' : 'disabled')
+    + (m.running ? ' <span style="color:#f59e0b">(running)</span>' : '')
+    + (m.eligible_now ? ' <span style="color:#f59e0b">(eligible now)</span>' : '') + '<br>'
+    + '<b>Last retrain</b> ' + (lastTs ? fmtTsIso(lastTs) : 'never') + '<br>'
+    + '<b>Cooldown</b> ' + (cdMin != null && cdMin > 0 ? cdMin + ' min left' : 'clear');
+}
+
+function renderConfidence(conf) {
+  var slot = document.getElementById('t-conf-slot');
+  if (!slot) return;
+  if (!conf || conf.ok === false) {
+    slot.innerHTML = '<p class="truth-note">Confidence calibration unavailable'
+      + (conf && conf.error ? ' (' + escHtml(conf.error) + ')' : '') + '.</p>';
+    return;
+  }
+  var buckets = conf.buckets || [];
+  if (!buckets.length) {
+    slot.innerHTML = '<p class="truth-note">No buckets returned.</p>';
+    return;
+  }
+  var anyData = buckets.some(function(b) { return (b.total || 0) > 0; });
+  if (!anyData) {
+    slot.innerHTML = '<p class="truth-note">No resolved picks in window yet'
+      + (conf.start_ts ? ' since ' + fmtTsIso(conf.start_ts) : '') + '.</p>';
+    return;
+  }
+  var h = '<table class="conf-tbl"><thead><tr><th>Bucket</th><th>N</th><th>W / L</th><th>Win rate</th><th></th></tr></thead><tbody>';
+  buckets.forEach(function(b) {
+    var tot = b.total || 0;
+    var wr = b.win_rate_pct != null ? b.win_rate_pct : 0;
+    var cls = tot === 0 ? 'none' : wr >= 70 ? 'good' : wr >= 55 ? 'mid' : 'bad';
+    var width = tot === 0 ? 0 : Math.max(2, Math.min(100, wr));
+    h += '<tr>';
+    h += '<td><span class="bucket-lbl">' + escHtml(b.label) + '</span></td>';
+    h += '<td>' + tot + '</td>';
+    h += '<td>' + (b.wins || 0) + ' / ' + (b.losses || 0) + '</td>';
+    h += '<td>' + (tot === 0 ? '\u2014' : wr + '%') + '</td>';
+    h += '<td style="width:140px"><div class="conf-bar-track"><div class="conf-bar-bar ' + cls + '" style="width:' + width + '%"></div></div></td>';
+    h += '</tr>';
+  });
+  h += '</tbody></table>';
+  slot.innerHTML = h;
+}
+
+function renderTruth(stats, health, v3, dir) {
   var pv = stats.post_v32 || {};
   var pr = stats.post_v32_resolved || {};
   var v32t = pv.total || 0;
@@ -352,21 +486,6 @@ function renderTruth(stats, health, regime, v3, dir) {
     + '<b>Price feeds</b> ' + escHtml(feeds) + '<br>'
     + '<b>Open picks</b> ' + (health.open_picks != null ? health.open_picks : '\u2014')
     + (health.dedup_blocked ? ' <span style="color:#f59e0b">(dedup cap)</span>' : '');
-
-  var rs = document.getElementById('regime-slot');
-  if (regime && regime.ok !== false) {
-    if (regime.block_crypto_buys) {
-      rs.innerHTML = '<div class="regime-bar block"><b>Regime gate</b> \u2014 Crypto BUYs blocked. '
-        + escHtml(regime.reason || '') + ' (BTC 24h: '
-        + (regime.btc_24h_pct != null ? regime.btc_24h_pct : '\u2014') + '%)</div>';
-    } else {
-      rs.innerHTML = '<div class="regime-bar ok"><b>Regime</b> \u2014 Crypto BUYs allowed. BTC 24h \u2248 '
-        + (regime.btc_24h_pct != null ? regime.btc_24h_pct : '\u2014') + '%</div>';
-    }
-  } else {
-    rs.innerHTML = '<div class="regime-bar ok" style="border-color:#333;color:#666"><b>Regime</b> \u2014 unavailable'
-      + (regime && regime.error ? ' (' + escHtml(regime.error) + ')' : '') + '</div>';
-  }
 
   document.getElementById('t-models-slot').innerHTML = renderModelTable(v3);
 }
@@ -479,36 +598,42 @@ async function delPos(id) {
 async function load() {
   try {
     var ctx = await fetch('/api/cockpit/context').then(function(r) { return r.json(); }).catch(function() { return {ok: false}; });
-    var h, stats, dir, regime, v3;
+    var h, stats, dir, v3, activity;
     if (ctx && ctx.ok === true && ctx.health && ctx.stats) {
       h = ctx.health;
       stats = ctx.stats;
       dir = ctx.direction || {};
-      regime = ctx.regime || {ok: false};
       v3 = ctx.v3 || {trained: false};
+      activity = ctx.activity || null;
     } else {
       h = await fetch('/health').then(function(r) { return r.json(); });
       stats = await fetch('/api/stats').then(function(r) { return r.json(); });
       dir = await fetch('/api/stats/direction').then(function(r) { return r.json(); }).catch(function() { return {}; });
-      regime = await fetch('/api/regime').then(function(r) { return r.json(); }).catch(function() { return {ok: false, error: 'fetch failed'}; });
       v3 = await fetch('/api/v3/status').then(function(r) { return r.json(); }).catch(function() { return {trained: false, reason: 'v3 status fetch failed'}; });
+      activity = null;
     }
     var pr = await Promise.all([
       fetch('/api/picks').then(function(r) { return r.json(); }),
       fetch('/api/v2/recent').then(function(r) { return r.json(); }).catch(function() { return {trades: []}; }),
-      fetch('/api/news').then(function(r) { return r.json(); }).catch(function() { return {articles: []}; })
+      fetch('/api/news').then(function(r) { return r.json(); }).catch(function() { return {articles: []}; }),
+      fetch('/api/health/audit/history?limit=1').then(function(r) { return r.json(); }).catch(function() { return {ok: false, runs: []}; }),
+      fetch('/api/coverage').then(function(r) { return r.json(); }).catch(function() { return {ok: false, error: 'fetch failed'}; }),
+      fetch('/api/stats/confidence-buckets').then(function(r) { return r.json(); }).catch(function() { return {ok: false, error: 'fetch failed'}; })
     ]);
     var picks = pr[0];
     var recent = pr[1];
     var news = pr[2];
+    var audit = pr[3];
+    var coverage = pr[4];
+    var confBuckets = pr[5];
 
     var buyWr = dir.by_direction && dir.by_direction.BUY ? dir.by_direction.BUY.win_rate_pct : (stats.win_rate_pct || 0);
     var pv = stats.post_v32 || {};
-    var pr = stats.post_v32_resolved || {};
+    var pres = stats.post_v32_resolved || {};
     var v32t = pv.total || 0;
-    var v32rt = pr.total || 0;
+    var v32rt = pres.total || 0;
     var v32wr = pv.win_rate_pct != null ? pv.win_rate_pct : 0;
-    var v32rwr = pr.win_rate_pct != null ? pr.win_rate_pct : 0;
+    var v32rwr = pres.win_rate_pct != null ? pres.win_rate_pct : 0;
     var wrEl = document.getElementById('wr');
     var wrSub = document.getElementById('wr-sub');
     if (v32t > 0) {
@@ -524,30 +649,19 @@ async function load() {
     document.getElementById('f-open').textContent = stats.open_positions || 0;
     document.getElementById('f-total').textContent = stats.total || 0;
 
-    var scan = (stats && stats.scan_symbols) ? stats.scan_symbols : {crypto: [], stocks: []};
+    var scan = (stats && stats.scan_symbols) ? stats.scan_symbols : {stocks: []};
     var stockWatchedLine = (scan.stocks && scan.stocks.length)
       ? ('Stocks watched: ' + scan.stocks.map(function(s) { return escHtml(s); }).join(', '))
       : 'Stock scan list is empty (configure <code>STOCK_SYMBOLS</code> on the server).';
 
     var active = picks.active || [];
-    var crypto = active.filter(function(p) { return p.asset_type !== 'stock'; });
     var stocks = active.filter(function(p) { return p.asset_type === 'stock'; });
-
-    var seen = {};
-    crypto.forEach(function(p) {
-      if (!seen[p.symbol] || p.confidence > seen[p.symbol].confidence) seen[p.symbol] = p;
-    });
-    var dc = Object.values(seen).sort(function(a, b) { return b.confidence - a.confidence; });
 
     var sdot = document.getElementById('sdot');
     var stxt = document.getElementById('stxt');
-    var totalActive = picks.active ? picks.active.length : 0;
+    var totalActive = stocks.length;
     if (totalActive > 0) { sdot.className = 'dot'; stxt.textContent = totalActive + ' active plays today'; }
     else { sdot.className = 'dot warn'; stxt.textContent = 'No plays yet'; }
-
-    document.getElementById('cgrid').innerHTML = dc.length > 0
-      ? dc.map(makeCard).join('')
-      : '<div class="empty"><div class="ico">&#128235;</div><p>No WOLF play yet today.<br>Check back at 8 AM CT.</p></div>';
 
     var sg = document.getElementById('sgrid');
     if (stocks.length > 0) {
@@ -601,7 +715,11 @@ async function load() {
       }).join('');
     }
 
-    renderTruth(stats, h, regime, v3, dir);
+    renderTruth(stats, h, v3, dir);
+    renderActivity(activity);
+    renderAudit(audit);
+    renderCoverage(coverage);
+    renderConfidence(confBuckets);
   } catch(e) {
     console.error(e);
     var st = document.getElementById('stxt');
@@ -676,55 +794,5 @@ setInterval(load, 60000);
 })();
 </script>
 
-<script>
-(function(){
-  // Store actual trade data from API
-  var _tradeData = [];
-  
-  // Intercept v2/recent to capture real outcomes
-  var _orig = window.fetch;
-  window.fetch = function(url, opts) {
-    var p = _orig.apply(this, arguments);
-    if (typeof url === 'string' && url.indexOf('v2/recent') !== -1) {
-      return p.then(function(r) {
-        var r2 = r.clone();
-        r2.json().then(function(d){ _tradeData = d.trades || []; }).catch(function(){});
-        return r;
-      });
-    }
-    return p;
-  };
-
-  // After any DOM mutation in results panel, fix outcome badges
-  var _observer = new MutationObserver(function() {
-    if (!_tradeData.length) return;
-    // Find all rows in results panel
-    var panel = document.getElementById('tab-results');
-    if (!panel) return;
-    var rows = panel.querySelectorAll('tr[data-id], div[data-id], tr, .result-row');
-    rows.forEach(function(row, i) {
-      var trade = _tradeData[i];
-      if (!trade) return;
-      if (trade.outcome !== 'EXPIRED') return;
-      // Find any badge-like element in this row showing LOSS
-      row.querySelectorAll('span,td,div').forEach(function(el) {
-        var txt = el.textContent.trim();
-        if (el.children.length === 0 && txt.indexOf('LOSS') !== -1) {
-          el.textContent = '⏳ EXPIRED';
-          el.style.cssText = 'color:#888;background:rgba(128,128,128,0.12);border:1px solid #555;padding:2px 6px;border-radius:4px;font-size:11px';
-        }
-      });
-    });
-  });
-
-  // Start observing once DOM ready
-  document.addEventListener('DOMContentLoaded', function() {
-    var panel = document.getElementById('tab-results');
-    if (panel) _observer.observe(panel, {childList:true, subtree:true});
-  });
-  // Also patch immediately in case already loaded
-  var panel = document.getElementById('tab-results');
-  if (panel) _observer.observe(panel, {childList:true, subtree:true});
-})();
-</script></body>
+</body>
 </html>
