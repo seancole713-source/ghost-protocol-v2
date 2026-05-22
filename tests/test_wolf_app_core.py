@@ -460,3 +460,96 @@ def test_wolf_predictions_buy_sell_target_derivation(monkeypatch):
     # SELL pick: buy_target = target (60.0), sell_target = entry (70.0)
     assert preds[2]["buy_target"] == 60.0
     assert preds[2]["sell_target"] == 70.0
+
+
+# ── _fetch_ohlcv — feed selection + period plumbing ─────────────────────
+
+class _MockBarsResponse:
+    def __init__(self, status_code=200, bars=None):
+        self.status_code = status_code
+        self._bars = bars or []
+
+    def json(self):
+        return {"bars": self._bars}
+
+
+def test_fetch_ohlcv_uses_sip_first(monkeypatch):
+    """Default feed must be SIP — IEX has no post-restructuring WOLF data."""
+    import core.signal_engine as _se
+    monkeypatch.setenv("ALPACA_KEY_ID", "k")
+    monkeypatch.setenv("ALPACA_SECRET_KEY", "s")
+    calls = []
+    sip_bars = [{"t": "2026-01-02T00:00:00Z", "o": 60, "h": 62, "l": 59, "c": 61, "v": 1_000_000}]
+
+    def fake_get(url, headers=None, timeout=None):
+        calls.append(url)
+        if "feed=sip" in url:
+            return _MockBarsResponse(200, sip_bars)
+        return _MockBarsResponse(200, [])
+
+    monkeypatch.setattr("requests.get", fake_get)
+    rows = _se._fetch_ohlcv("WOLF", "stock")
+    assert rows is not None
+    assert len(rows) == 1
+    assert rows[0]["close"] == 61.0
+    # Only SIP should have been called (no fallback needed)
+    assert len(calls) == 1 and "feed=sip" in calls[0]
+
+
+def test_fetch_ohlcv_falls_back_to_iex_when_sip_empty(monkeypatch):
+    """When SIP returns no rows (free-tier 403 or no data), retry on IEX."""
+    import core.signal_engine as _se
+    monkeypatch.setenv("ALPACA_KEY_ID", "k")
+    monkeypatch.setenv("ALPACA_SECRET_KEY", "s")
+    calls = []
+    iex_bars = [{"t": "2026-01-02T00:00:00Z", "o": 5, "h": 6, "l": 4.5, "c": 5.5, "v": 500}]
+
+    def fake_get(url, headers=None, timeout=None):
+        calls.append(url)
+        if "feed=sip" in url:
+            return _MockBarsResponse(200, [])   # SIP returns nothing
+        if "feed=iex" in url:
+            return _MockBarsResponse(200, iex_bars)
+        return _MockBarsResponse(404, [])
+
+    monkeypatch.setattr("requests.get", fake_get)
+    rows = _se._fetch_ohlcv("AAPL", "stock")
+    assert rows is not None
+    assert len(rows) == 1
+    assert rows[0]["close"] == 5.5
+    # Both feeds tried, in correct order
+    assert len(calls) == 2
+    assert "feed=sip" in calls[0]
+    assert "feed=iex" in calls[1]
+
+
+def test_fetch_ohlcv_period_plumbed_into_start_date(monkeypatch):
+    """period='1y' must send a start ~365 days ago; '2y' must send ~730."""
+    import core.signal_engine as _se
+    from datetime import datetime, timezone
+    monkeypatch.setenv("ALPACA_KEY_ID", "k")
+    monkeypatch.setenv("ALPACA_SECRET_KEY", "s")
+    captured_urls = []
+
+    def fake_get(url, headers=None, timeout=None):
+        captured_urls.append(url)
+        return _MockBarsResponse(200, [{"t": "2026-01-01T00:00:00Z", "o": 1, "h": 1, "l": 1, "c": 1, "v": 1}])
+
+    monkeypatch.setattr("requests.get", fake_get)
+    _se._fetch_ohlcv("WOLF", "stock", period="1y")
+    _se._fetch_ohlcv("WOLF", "stock", period="2y")
+
+    def _start_days_ago(url):
+        import re
+        m = re.search(r"start=(\d{4}-\d{2}-\d{2})T", url)
+        assert m, f"no start in {url}"
+        start = datetime.strptime(m.group(1), "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - start).days
+
+    # SIP succeeds on both calls → no IEX fallback → 2 URLs total
+    assert len(captured_urls) == 2, f"expected 2 SIP calls, got: {captured_urls}"
+    # ±2 day slack for clock drift / strftime rounding
+    one_y = _start_days_ago(captured_urls[0])
+    two_y = _start_days_ago(captured_urls[1])
+    assert 363 <= one_y <= 367, f"1y should be ~365 days, got {one_y}"
+    assert 728 <= two_y <= 732, f"2y should be ~730 days, got {two_y}"

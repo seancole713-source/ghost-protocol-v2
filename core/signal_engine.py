@@ -334,30 +334,60 @@ FEATURE_COLS = [
     'stoch_k','stoch_d','stoch_oversold','stoch_overbought',
 ]
 
-def _fetch_ohlcv(symbol, asset_type, period='2y', interval='1d'):
+def _fetch_ohlcv(symbol, asset_type, period='1y', interval='1d'):
+    """Fetch daily OHLCV bars from Alpaca.
+
+    Feed selection: tries SIP first (consolidated tape, the only feed that
+    carries post-restructuring WOLF shares since 2025-09-29), falls back to
+    IEX if SIP returns no rows or the account isn't entitled to SIP.
+
+    Default lookback is 1 year. WOLF emerged from Chapter 11 with new shares
+    trading from 2025-09-29, so >1y of data doesn't exist for the new ticker;
+    fetching 2y would waste a round-trip and could confuse downstream logic.
+    """
     import os, requests as _req
     from datetime import datetime, timedelta, timezone
-    key = os.getenv("ALPACA_KEY_ID",""); secret = os.getenv("ALPACA_SECRET_KEY","")
-    if not key or not secret: return None
+    key = os.getenv("ALPACA_KEY_ID", "")
+    secret = os.getenv("ALPACA_SECRET_KEY", "")
+    if not key or not secret:
+        return None
     headers = {"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret}
-    end_dt = datetime.now(timezone.utc); start_dt = end_dt - timedelta(days=730)
+    days_map = {'3m': 90, '6m': 180, '1y': 365, '2y': 730}
+    lookback_days = days_map.get(period, 365)
+    end_dt = datetime.now(timezone.utc)
+    start_dt = end_dt - timedelta(days=lookback_days)
     start_str = start_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
     end_str = end_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
-    try:
-        url = (f"https://data.alpaca.markets/v2/stocks/{symbol.upper()}/bars"
-               f"?timeframe=1Day&limit=1000&feed=iex"
-               f"&start={start_str}&end={end_str}")
-        r = _req.get(url, headers=headers, timeout=30)
-        if r.status_code != 200: return None
-        bars = r.json().get('bars', [])
-        rows = [{'ts': b.get('t',''), 'open': float(b.get('o',0)),
-                 'high': float(b.get('h',0)), 'low': float(b.get('l',0)),
-                 'close': float(b.get('c',0)), 'volume': float(b.get('v',0))}
-                for b in bars if b.get('c',0) > 0]
-        LOGGER.info(f"Alpaca daily {symbol}: {len(rows)} bars")
-        return rows if rows else None
-    except Exception as e:
-        LOGGER.warning(f"Alpaca fetch failed {symbol}: {e}"); return None
+
+    def _try_feed(feed):
+        try:
+            url = (f"https://data.alpaca.markets/v2/stocks/{symbol.upper()}/bars"
+                   f"?timeframe=1Day&limit=1000&feed={feed}"
+                   f"&start={start_str}&end={end_str}")
+            r = _req.get(url, headers=headers, timeout=30)
+            if r.status_code != 200:
+                LOGGER.info(f"Alpaca feed={feed} {symbol}: HTTP {r.status_code}")
+                return None
+            bars = r.json().get('bars', [])
+            rows = [{'ts': b.get('t', ''), 'open': float(b.get('o', 0)),
+                     'high': float(b.get('h', 0)), 'low': float(b.get('l', 0)),
+                     'close': float(b.get('c', 0)), 'volume': float(b.get('v', 0))}
+                    for b in bars if b.get('c', 0) > 0]
+            return rows if rows else None
+        except Exception as e:
+            LOGGER.warning(f"Alpaca feed={feed} {symbol}: {e}")
+            return None
+
+    rows = _try_feed('sip')
+    feed_used = 'sip'
+    if not rows:
+        LOGGER.info(f"Alpaca SIP returned nothing for {symbol}, trying IEX fallback")
+        rows = _try_feed('iex')
+        feed_used = 'iex'
+    if rows:
+        LOGGER.info(f"Alpaca daily {symbol}: {len(rows)} bars (feed={feed_used}, lookback={lookback_days}d)")
+        return rows
+    return None
 
 def backtest_symbol(symbol, asset_type):
     rows = _fetch_ohlcv(symbol, asset_type)
