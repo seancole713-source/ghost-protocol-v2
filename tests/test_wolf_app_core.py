@@ -1754,3 +1754,218 @@ def test_telegram_status_handles_missing_table_gracefully(monkeypatch):
     assert out["ok"] is True
     assert out["configured"] is False
     assert out["recent_alerts"] == []
+
+
+# ── PR #23: ops cleanup + admin auth + news filter tightening ───────────
+
+def test_purge_ghost_portfolio_dry_run_lists_without_deleting(monkeypatch):
+    """dry_run=true reports matches without firing DELETE statements."""
+    monkeypatch.setenv("CRON_SECRET", "testsecret")
+    rows = [
+        (1, "ZZE2E1779472312548"),
+        (2, "STOCK GHOST"),
+        (3, "WOLF"),
+        (4, "ZZ_TEST"),
+        (5, "TESTPOS"),
+    ]
+    executed = []
+
+    class _Cur:
+        def __init__(self):
+            self._returned = False
+
+        def execute(self, sql, params=None):
+            executed.append((sql, params))
+
+        def fetchall(self):
+            if not self._returned:
+                self._returned = True
+                return rows
+            return []
+
+        def fetchone(self):
+            return None
+
+    class _Conn:
+        def cursor(self): return _Cur()
+
+    class _DbCtx:
+        def __enter__(self): return _Conn()
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(wolf_app, "db_conn", lambda: _DbCtx())
+    import asyncio
+    out = asyncio.run(wolf_app.purge_ghost_portfolio(x_cron_secret="testsecret", dry_run=True))
+    assert out["ok"] is True
+    assert out["dry_run"] is True
+    assert {r["id"] for r in out["would_delete"]} == {1, 2, 4, 5}
+    assert out["kept"] == 1
+    assert not any("DELETE FROM user_portfolio" in e[0] for e in executed)
+
+
+def test_purge_ghost_portfolio_real_run_deletes_matched_rows(monkeypatch):
+    """dry_run=false issues one DELETE per matched row."""
+    monkeypatch.setenv("CRON_SECRET", "testsecret")
+    rows = [
+        (10, "ZZE2EABCDEF"),
+        (11, "GHOST123"),
+        (12, "WOLF"),
+    ]
+
+    class _Cur:
+        def __init__(self):
+            self.executed = []
+            self._returned = False
+
+        def execute(self, sql, params=None):
+            self.executed.append((sql, params))
+
+        def fetchall(self):
+            if not self._returned:
+                self._returned = True
+                return rows
+            return []
+
+        def fetchone(self):
+            return None
+
+    cur = _Cur()
+
+    class _Conn:
+        def cursor(self): return cur
+
+    class _DbCtx:
+        def __enter__(self): return _Conn()
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(wolf_app, "db_conn", lambda: _DbCtx())
+    import asyncio
+    out = asyncio.run(wolf_app.purge_ghost_portfolio(x_cron_secret="testsecret", dry_run=False))
+    assert out["ok"] is True
+    assert out["dry_run"] is False
+    assert {r["id"] for r in out["deleted"]} == {10, 11}
+    assert out["kept"] == 1
+    deletes = [e for e in cur.executed if "DELETE FROM user_portfolio" in e[0]]
+    assert len(deletes) == 2
+
+
+def test_admin_route_returns_401_without_basic_auth(monkeypatch):
+    """No credentials when CRON_SECRET set → 401 + WWW-Authenticate."""
+    monkeypatch.setenv("CRON_SECRET", "supersecret")
+    from fastapi import HTTPException
+    try:
+        wolf_app._require_admin_auth(None)
+        assert False, "expected 401"
+    except HTTPException as e:
+        assert e.status_code == 401
+        assert "WWW-Authenticate" in (e.headers or {})
+
+
+def test_admin_route_allows_when_cron_secret_unset(monkeypatch):
+    """Dev mode (no CRON_SECRET) → admin allowed without auth."""
+    monkeypatch.delenv("CRON_SECRET", raising=False)
+    out = wolf_app._require_admin_auth(None)
+    assert out == "admin-dev"
+
+
+def test_admin_route_validates_basic_credentials(monkeypatch):
+    """Correct password passes; wrong password 401s."""
+    from fastapi.security import HTTPBasicCredentials
+    from fastapi import HTTPException
+    monkeypatch.setenv("CRON_SECRET", "letmein")
+    ok = wolf_app._require_admin_auth(HTTPBasicCredentials(username="ops", password="letmein"))
+    assert ok == "ops"
+    try:
+        wolf_app._require_admin_auth(HTTPBasicCredentials(username="ops", password="bogus"))
+        assert False, "expected 401 on wrong password"
+    except HTTPException as e:
+        assert e.status_code == 401
+
+
+def test_news_filter_drops_articles_without_wolf_mention(monkeypatch):
+    """Articles with no symbol tags AND no WOLF mention must be dropped.
+    Pre-PR-#23 the empty-syms branch fell through and leaked Zoom / IBM /
+    Ralph Lauren / etc. into the investor news feed."""
+    import api.wolf_endpoints as we
+    we._CACHE.clear()
+    fake_articles = [
+        {"title": "Zoom hits new highs after earnings", "symbols": []},
+        {"title": "IBM announces partnership", "symbols": []},
+        {"title": "Wolfspeed posts Q1 results", "symbols": []},
+        {"title": "WOLF, AAPL, NVDA: today's movers", "symbols": []},
+        {"title": "Ralph Lauren launches new collection", "symbols": []},
+        {"title": "Random tech news", "symbols": ["TSLA"]},
+        {"title": "Generic market wrap", "symbols": ["WOLF", "NVDA"]},
+    ]
+    import core.news as _news
+    monkeypatch.setattr(_news, "get_recent_articles", lambda n: fake_articles)
+    import sys, types
+    fake_yf = types.ModuleType("yfinance")
+
+    class _Tk:
+        def __init__(self, sym): pass
+        news = []
+
+    fake_yf.Ticker = _Tk
+    monkeypatch.setitem(sys.modules, "yfinance", fake_yf)
+
+    import asyncio
+    resp = asyncio.run(we.get_wolf_news(category="all"))
+    import json
+    body = json.loads(resp.body)
+    titles = {a["title"] for a in body.get("articles", [])}
+    assert "Wolfspeed posts Q1 results" in titles
+    assert "WOLF, AAPL, NVDA: today's movers" in titles
+    assert "Generic market wrap" in titles
+    assert "Zoom hits new highs after earnings" not in titles
+    assert "IBM announces partnership" not in titles
+    assert "Ralph Lauren launches new collection" not in titles
+    assert "Random tech news" not in titles
+
+
+def test_news_filter_replaces_finnhub_stock_source_label(monkeypatch):
+    """Internal 'finnhub_stock' source label is sanitised to 'News'."""
+    import api.wolf_endpoints as we
+    we._CACHE.clear()
+    fake_articles = [
+        {"title": "WOLFSPEED inks deal", "symbols": [], "source": "finnhub_stock"},
+    ]
+    import core.news as _news
+    monkeypatch.setattr(_news, "get_recent_articles", lambda n: fake_articles)
+    import sys, types
+    fake_yf = types.ModuleType("yfinance")
+
+    class _Tk:
+        def __init__(self, sym): pass
+        news = []
+
+    fake_yf.Ticker = _Tk
+    monkeypatch.setitem(sys.modules, "yfinance", fake_yf)
+
+    import asyncio
+    resp = asyncio.run(we.get_wolf_news(category="all"))
+    import json
+    body = json.loads(resp.body)
+    sources = [a["source"] for a in body["articles"]]
+    assert "finnhub_stock" not in sources
+    assert "News" in sources
+
+
+def test_safe_float_rejects_dict_input():
+    """Defensive scrub: newer yfinance can return dicts like
+    {'raw': 70.5, 'fmt': '70.50'} for some fields — must coerce to None
+    rather than raw-stringify the dict (currentTradingPeriod-leak repro)."""
+    import api.wolf_endpoints as we
+    assert we._safe_float({"raw": 70.5, "fmt": "70.50"}) is None
+    assert we._safe_float([1, 2, 3]) is None
+    assert we._safe_float(70.5) == 70.5
+    assert we._safe_float("70.5") == 70.5
+    assert we._safe_float(None) is None
+
+
+def test_safe_int_rejects_dict_input():
+    import api.wolf_endpoints as we
+    assert we._safe_int({"raw": 1000}) is None
+    assert we._safe_int([1, 2]) is None
+    assert we._safe_int(1000) == 1000
+    assert we._safe_int(None) is None

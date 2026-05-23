@@ -383,6 +383,11 @@ async def get_wolf_stats():
     # Sector correlation — SiC / power semis peers
     out["sector_correlation"] = _fetch_sector_correlation()
 
+    # PR #23: never leak raw yfinance exception strings (they can contain
+    # internal JSON key names like 'currentTradingPeriod' that show up
+    # verbatim in the cockpit). Use a generic friendly message.
+    if err is not None:
+        err = "Stats unavailable"
     payload = _ok(out) if err is None else _err(err, **out)
     _cache_set("stats", payload)
     return JSONResponse(content=payload)
@@ -432,9 +437,12 @@ def _fetch_sector_correlation() -> Dict[str, Any]:
 
 
 def _safe_float(v) -> Optional[float]:
+    # PR #23: explicitly reject dict / list — newer yfinance returns nested
+    # objects (e.g. {"raw": 70.5, "fmt": "70.50"}) for some fields, which
+    # would coerce to garbage via float() or leak the dict downstream.
+    if v is None or isinstance(v, (dict, list, tuple, set)):
+        return None
     try:
-        if v is None:
-            return None
         f = float(v)
         if math.isnan(f) or math.isinf(f):
             return None
@@ -444,12 +452,29 @@ def _safe_float(v) -> Optional[float]:
 
 
 def _safe_int(v) -> Optional[int]:
+    if v is None or isinstance(v, (dict, list, tuple, set)):
+        return None
     try:
-        if v is None:
-            return None
         return int(v)
     except Exception:
         return None
+
+
+def _scrub_payload_dict(d: dict, allowed_keys: set) -> dict:
+    """Return a copy of d keeping ONLY allowed_keys and scalar values.
+
+    Defensive scrub so unexpected yfinance nested objects (currentTradingPeriod
+    etc.) can never leak as raw JSON keys into the UI. Any value that isn't
+    str/int/float/bool/None is dropped.
+    """
+    out = {}
+    for k in allowed_keys:
+        v = d.get(k)
+        if v is None or isinstance(v, (str, int, float, bool)):
+            out[k] = v
+        else:
+            out[k] = None
+    return out
 
 
 # ────────────────────────────────────────────────────────────────
@@ -637,8 +662,11 @@ async def get_wolf_analyst():
 
     has_targets = any([out["price_target_low"], out["price_target_avg"], out["price_target_high"]])
     rec_total = sum(out["recommendations"].values())
+    # PR #23: clean error string — never leak raw yfinance exception text
+    # (e.g. JSON parse errors like "Expecting value: line 1 column 1 (char 0)").
     if not has_targets and rec_total == 0:
-        payload = _err(err or "No analyst data", **out)
+        clean_err = "Analyst data unavailable"
+        payload = _err(clean_err, **out)
     else:
         payload = _ok(out)
     _cache_set("analyst", payload)
@@ -682,17 +710,30 @@ async def get_wolf_news(category: str = "all"):
         try:
             title = a.get("title") or a.get("headline") or ""
             syms = [str(s).upper() for s in (a.get("symbols") or [])]
-            # Keep WOLF-mentioned items or generic market news
-            wolf_match = (WOLF_SYMBOL in syms) or ("WOLFSPEED" in title.upper()) or (WOLF_SYMBOL in title.upper().split())
-            if not wolf_match and syms and WOLF_SYMBOL not in syms:
-                # Has symbol tags but none are WOLF → skip
+            # PR #23: STRICT WOLF-only filter. Previous behaviour fell through
+            # for articles with no symbol tags, leaking unrelated names
+            # (Zoom / IBM / Ross Stores / Ralph Lauren / AAP). Now: article
+            # must explicitly mention WOLF in symbols OR have "WOLFSPEED" /
+            # "WOLF" as a standalone word in the title.
+            title_upper = title.upper()
+            title_words = set(title_upper.replace(",", " ").replace(".", " ").replace(":", " ").split())
+            wolf_match = (
+                (WOLF_SYMBOL in syms)
+                or ("WOLFSPEED" in title_upper)
+                or (WOLF_SYMBOL in title_words)
+            )
+            if not wolf_match:
                 continue
             article_cat = _categorize(title)
             if cat != "all" and article_cat != cat:
                 continue
+            # PR #23: drop the internal "finnhub_stock" source label that
+            # leaked into the UI — show only real publisher names.
+            raw_source = a.get("source") or "News"
+            source = "News" if str(raw_source).lower().startswith("finnhub") else raw_source
             articles_out.append({
                 "title": title,
-                "source": a.get("source") or "News",
+                "source": source,
                 "url": a.get("url") or a.get("link") or "",
                 "published_at": _safe_int(a.get("published_at") or a.get("ts") or a.get("publishedAt")),
                 "category": article_cat,

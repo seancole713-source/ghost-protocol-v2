@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ghost Protocol — Admin</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0a0a0a;color:#fff;font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;line-height:1.5}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;color:#aaa;background:#1a1a1a;padding:1px 5px;border-radius:3px}
+.topbar{background:#1a0707;border-bottom:2px solid #5b1a1a;padding:14px 24px;display:flex;justify-content:space-between;align-items:center}
+.logo{font-size:16px;font-weight:800;letter-spacing:2px;color:#fff}
+.logo span{color:#ff3b3b}
+.badge-admin{font-size:11px;font-weight:700;letter-spacing:1.5px;padding:4px 10px;border-radius:20px;background:#ff3b3b;color:#fff}
+.main{max-width:1100px;margin:0 auto;padding:24px 24px 60px}
+.note{background:#1a1206;border:1px solid #5b4112;color:#fbbf24;padding:12px 16px;border-radius:10px;margin-bottom:20px;font-size:13px;line-height:1.6}
+.note b{color:#fff}
+.sec-label{font-size:10px;font-weight:700;letter-spacing:2px;color:#666;text-transform:uppercase;margin:24px 0 12px}
+.card{background:#111;border:1px solid #1e1e1e;border-radius:12px;padding:18px;margin-bottom:14px}
+.card h3{font-size:13px;font-weight:700;color:#ccc;margin-bottom:8px;letter-spacing:.5px}
+.card .desc{font-size:12px;color:#666;line-height:1.5;margin-bottom:12px}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+input[type=password],input[type=text]{flex:1;min-width:200px;background:#0a0a0a;border:1px solid #2a2a2a;color:#fff;padding:8px 12px;border-radius:6px;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+button{background:#ff3b3b;color:#fff;border:none;padding:8px 14px;border-radius:6px;font-size:12px;font-weight:700;letter-spacing:.5px;cursor:pointer;white-space:nowrap}
+button:hover{background:#e03333}
+button.secondary{background:#1a1a1a;border:1px solid #2a2a2a;color:#888}
+button.secondary:hover{background:#222;color:#ccc}
+button:disabled{opacity:.5;cursor:not-allowed}
+.result{font-size:12px;color:#888;margin-top:10px;min-height:18px}
+.ok{color:#22c55e;font-weight:700}
+.warn{color:#f59e0b;font-weight:700}
+.fail{color:#ff3b3b;font-weight:700}
+.tbl{width:100%;border-collapse:collapse;font-size:12px;margin-top:10px}
+.tbl th{text-align:left;font-size:9px;letter-spacing:1px;color:#666;padding:6px 8px;border-bottom:1px solid #252525;text-transform:uppercase}
+.tbl td{padding:8px;border-bottom:1px solid #1a1a1a;color:#ccc}
+.tbl tr:last-child td{border:none}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media (max-width:640px){.grid{grid-template-columns:1fr}}
+.big{font-size:24px;font-weight:800;margin-bottom:4px}
+.big.pass{color:#4ade80}.big.warn{color:#facc15}.big.fail{color:#ef4444}
+.kv{font-size:11px;color:#888;line-height:1.7;margin-top:8px}
+.kv b{color:#aaa}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="logo">&#128123; GHOST <span>ADMIN</span></div>
+  <span class="badge-admin">PR23 OPERATOR CONSOLE</span>
+</div>
+
+<div class="main">
+
+<div class="note">
+  <b>Operator-only view.</b> Behind HTTP Basic Auth (password = <code>CRON_SECRET</code>).
+  Investor cockpit at <a href="/cockpit" style="color:#fbbf24">/cockpit</a> &mdash; no admin
+  controls there. Every action below also requires the cron secret in the
+  <code>x-cron-secret</code> field (paste it once and it sticks for the session).
+</div>
+
+<!-- ─── Training controls ─── -->
+<div class="sec-label">Training</div>
+<div class="card">
+  <h3>v3 Model Controls</h3>
+  <div class="desc">Synchronous training takes 1-5 min and returns the actual outcome inline. Async <b>Train Now</b> returns immediately; use <b>Refresh Status</b> after 3-5 min.</div>
+  <div class="row">
+    <input type="password" id="train-secret" placeholder="x-cron-secret" autocomplete="off" spellcheck="false">
+    <button onclick="trainNow()">Train Now</button>
+    <button class="secondary" onclick="trainSync()" title="Blocks 1-5 min, returns actual result">Train (sync)</button>
+    <button class="secondary" onclick="refreshStatus()">Refresh Status</button>
+    <button class="secondary" onclick="testDataSources()">Test Data Sources</button>
+    <button class="secondary" onclick="checkVersion()">Check Version</button>
+  </div>
+  <div id="train-result" class="result"></div>
+  <div id="data-sources-result" style="margin-top:8px"></div>
+</div>
+
+<!-- ─── Maintenance / purges ─── -->
+<div class="sec-label">Maintenance</div>
+<div class="card">
+  <h3>Database Cleanups</h3>
+  <div class="desc">Hard-deletes stale rows. Both confirm before firing.</div>
+  <div class="row">
+    <button class="secondary" onclick="purgeNonWolf()">Purge Non-WOLF Models</button>
+    <button class="secondary" onclick="purgeGhostPortfolio(false)">Purge Ghost Portfolio</button>
+    <button class="secondary" onclick="purgeGhostPortfolio(true)">Dry-Run Ghost Portfolio</button>
+  </div>
+  <div id="purge-result" class="result"></div>
+</div>
+
+<!-- ─── Engine quality ─── -->
+<div class="sec-label">Engine Quality</div>
+<div class="grid">
+  <div class="card">
+    <h3>Last Health Audit</h3>
+    <div class="big" id="t-audit-status">&#8212;</div>
+    <div class="kv" id="t-audit-kv"></div>
+  </div>
+  <div class="card">
+    <h3>Model Coverage</h3>
+    <div class="big" id="t-cov-loaded">&#8212;</div>
+    <div class="kv" id="t-cov-kv"></div>
+  </div>
+  <div class="card">
+    <h3>Telegram Alerts</h3>
+    <div class="big" id="t-tg-status">&#8212;</div>
+    <div class="kv" id="t-tg-kv"></div>
+  </div>
+  <div class="card">
+    <h3>Confidence Calibration (post v3.2)</h3>
+    <div class="desc">Win rate by confidence band. If 80-90 wins at the same rate as 60-70, the score has no information.</div>
+    <div id="t-conf-slot"><p class="kv">Loading&#8230;</p></div>
+  </div>
+</div>
+
+<div class="card">
+  <h3>Model Lineage (loaded symbols)</h3>
+  <div id="t-models-slot"><p class="kv">Loading&#8230;</p></div>
+</div>
+
+</div>
+
+<script>
+function escHtml(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/'/g,'&#39;').replace(/"/g,'&quot;')}
+function fmtTsIso(ts){if(ts==null||ts===0)return '—';var s=Number(ts);if(s>1e12)s=Math.floor(s/1000);var d=new Date(s*1000);if(isNaN(d.getTime()))return '—';return d.toISOString().replace('T',' ').slice(0,19)+' UTC'}
+function fmtTimeAgo(ts){if(!ts)return '';var s=Math.floor(Date.now()/1000)-Number(ts);if(s<60)return 'just now';if(s<3600)return Math.floor(s/60)+'m ago';if(s<86400)return Math.floor(s/3600)+'h ago';return Math.floor(s/86400)+'d ago'}
+
+function getSecret(){var el=document.getElementById('train-secret');return el && el.value ? el.value : ''}
+function setBtns(disabled){document.querySelectorAll('button').forEach(function(b){b.disabled=disabled})}
+
+async function trainNow(){
+  var r=document.getElementById('train-result');
+  r.innerHTML='<span class="warn">&#x21BB; Triggering background training (force=true)...</span>';
+  setBtns(true);
+  try{
+    var resp=await fetch('/api/v3/train?force=true',{method:'POST',headers:{'x-cron-secret':getSecret(),'Content-Type':'application/json'}});
+    var b={};try{b=await resp.json()}catch(_){}
+    if(resp.status===403){r.innerHTML='<span class="fail">&#10007;</span> 403 (cron secret wrong)';return}
+    if(resp.ok&&b.ok){r.innerHTML='<span class="ok">&#10003;</span> '+escHtml(b.message||'started')+' — click Refresh Status in 3-5 min'}
+    else r.innerHTML='<span class="fail">&#10007;</span> '+escHtml((b&&b.error)||('HTTP '+resp.status));
+  }catch(e){r.innerHTML='<span class="fail">&#10007;</span> '+escHtml(String(e))}
+  finally{setBtns(false)}
+}
+
+async function trainSync(){
+  var r=document.getElementById('train-result');
+  if(!confirm('Sync training blocks the HTTP request for 1-5 min. Do not close this tab. Continue?'))return;
+  r.innerHTML='<span class="warn">&#x21BB; Running sync train (1-5 min)...</span>';
+  setBtns(true);
+  try{
+    var resp=await fetch('/api/v3/train/sync?force=true',{method:'POST',headers:{'x-cron-secret':getSecret(),'Content-Type':'application/json'}});
+    var b={};try{b=await resp.json()}catch(_){}
+    if(resp.status===403){r.innerHTML='<span class="fail">&#10007;</span> 403 (cron secret wrong)';return}
+    if(b.ok){
+      var icon=b.passed?'<span class="ok">&#10003;</span>':'<span class="warn">&#x23F3;</span>';
+      var pct=b.accuracy!=null?b.accuracy.toFixed(2)+'%':'—';
+      r.innerHTML=icon+' <b>passed='+b.passed+'</b> · acc='+pct+' · models '+b.models_before+'&rarr;'+b.models_after+' · '+(b.duration_s||0)+'s'+renderTrainDetails(b.train_details);
+    }else{
+      r.innerHTML='<span class="fail">&#10007;</span> '+escHtml((b&&b.error)||'sync train failed');
+    }
+  }catch(e){r.innerHTML='<span class="fail">&#10007;</span> '+escHtml(String(e))}
+  finally{setBtns(false)}
+}
+
+function renderTrainDetails(td){
+  if(!td||!td.symbols||!td.symbols.length)return '';
+  var html='<div style="margin-top:10px"><div class="kv"><b>Per-symbol detail</b></div>';
+  td.symbols.forEach(function(s){
+    var cls=s.passed?'ok':'fail';
+    var icon=s.passed?'&#10003;':'&#10007;';
+    html+='<div style="font-size:12px;line-height:1.7;margin-top:6px">'
+      +'<span class="'+cls+'">'+icon+'</span> <b>'+escHtml(s.symbol)+'</b> · passed='+s.passed
+      +(s.fail_reason?' · fail: <span class="fail">'+escHtml(s.fail_reason)+'</span>':'')
+      +'</div>';
+    if(s.stage==='trained'){
+      var rows=[
+        ['n_samples',s.n_samples,s.thresholds&&s.thresholds.min_train_rows],
+        ['tp_sl_wins',s.wins_ct,s.thresholds&&s.thresholds.min_tp_sl_wins],
+        ['holdout_acc',(s.holdout_acc!=null?(s.holdout_acc*100).toFixed(1)+'%':'—'),(s.thresholds&&s.thresholds.min_holdout_acc!=null?(s.thresholds.min_holdout_acc*100).toFixed(1)+'%':'—')],
+        ['edge',(s.edge!=null?(s.edge*100).toFixed(1)+'%':'—'),(s.thresholds&&s.thresholds.min_edge!=null?(s.thresholds.min_edge*100).toFixed(1)+'%':'—')],
+        ['wf_folds',s.wf_fold_count,s.thresholds&&s.thresholds.min_wf_folds],
+        ['wf_acc_mean',(s.wf_acc_mean!=null?(s.wf_acc_mean*100).toFixed(1)+'%':'—'),(s.thresholds&&s.thresholds.min_wf_acc_mean!=null?(s.thresholds.min_wf_acc_mean*100).toFixed(1)+'%':'—')],
+      ];
+      html+='<table class="tbl" style="margin-left:14px"><tr>'+rows.map(function(m){
+        return '<td style="color:#888">'+m[0]+'</td><td style="color:#fff"><b>'+escHtml(String(m[1]))+'</b></td><td style="color:#666">need&ge; '+escHtml(String(m[2]))+'</td>';
+      }).join('</tr><tr>')+'</tr></table>';
+    }
+  });
+  html+='</div>';
+  return html;
+}
+
+async function refreshStatus(){
+  var r=document.getElementById('train-result');
+  r.innerHTML='<span class="warn">&#x21BB; Checking /api/v3/status + /api/v3/train/last...</span>';
+  try{
+    var pair=await Promise.all([
+      fetch('/api/v3/status').then(function(x){return x.json()}),
+      fetch('/api/v3/train/last').then(function(x){return x.json()}).catch(function(){return {ok:false}}),
+    ]);
+    var v3=pair[0],lastResp=pair[1],last=lastResp&&lastResp.last?lastResp.last:null;
+    var headline;
+    if(v3&&v3.trained){
+      var n=v3.models!=null?v3.models:Object.keys(v3.symbols||{}).length;
+      headline='<span class="ok">&#10003;</span> Trained · '+n+' model(s) loaded';
+    }else headline='<span class="warn">&#x23F3;</span> '+escHtml((v3&&v3.reason)||'Not trained yet');
+    var detail='';
+    if(last&&last.state){
+      var bits=['<span class="'+(last.state==='passed'?'ok':last.state==='failed'?'fail':last.state==='exception'?'fail':'warn')+'">state='+escHtml(last.state)+'</span>'];
+      if(last.passed!=null)bits.push('passed='+(last.passed?'true':'false'));
+      if(last.accuracy!=null)bits.push('acc='+(Number(last.accuracy)*100).toFixed(1)+'%');
+      if(last.error)bits.push('error='+escHtml(String(last.error).slice(0,200)));
+      if(last.models_before!=null&&last.models_after!=null)bits.push('models '+last.models_before+'&rarr;'+last.models_after);
+      if(last.ts)bits.push('started '+fmtTimeAgo(last.ts));
+      detail='<div class="kv" style="margin-top:6px"><b>Last train</b> · '+bits.join(' · ')+'</div>';
+    }
+    r.innerHTML=headline+detail;
+    document.getElementById('t-models-slot').innerHTML=renderModelTable(v3);
+  }catch(e){r.innerHTML='<span class="fail">&#10007;</span> '+escHtml(String(e))}
+}
+
+async function testDataSources(){
+  var r=document.getElementById('data-sources-result');
+  r.innerHTML='<div class="kv"><span class="warn">&#x21BB; Probing data sources...</span></div>';
+  setBtns(true);
+  try{
+    var resp=await fetch('/api/diag/data-sources?symbol=WOLF&period=1y',{headers:{'x-cron-secret':getSecret()}});
+    var b={};try{b=await resp.json()}catch(_){}
+    if(resp.status===403){r.innerHTML='<div class="kv"><span class="fail">&#10007;</span> 403 (cron secret wrong)</div>';return}
+    if(!b||b.ok===false){r.innerHTML='<div class="kv"><span class="fail">&#10007;</span> '+escHtml((b&&b.error)||('HTTP '+resp.status))+'</div>';return}
+    var rows=b.results||[];
+    var working=(b.summary&&b.summary.working)||[];
+    var html='<table class="tbl"><thead><tr><th>Source</th><th>OK?</th><th>Bars</th><th>Latency</th><th>Detail</th></tr></thead><tbody>';
+    rows.forEach(function(rw){
+      var cls=rw.ok?'ok':'fail',icon=rw.ok?'&#10003;':'&#10007;';
+      var detail=rw.ok?('first='+(rw.first_ts||'—')+' last='+(rw.last_ts||'—')):escHtml(rw.error||'—');
+      html+='<tr><td><b>'+escHtml(rw.source)+'</b></td><td><span class="'+cls+'">'+icon+'</span></td><td>'+(rw.bars||0)+'</td><td>'+(rw.elapsed_ms!=null?rw.elapsed_ms+'ms':'—')+'</td><td style="font-size:11px">'+detail+'</td></tr>';
+    });
+    html+='</tbody></table>';
+    var summary=working.length?('<span class="ok">&#10003;</span> '+working.length+' working: '+working.join(', ')):'<span class="fail">&#10007;</span> all probed sources broken';
+    r.innerHTML='<div class="kv" style="margin-bottom:6px">'+summary+'</div>'+html;
+  }catch(e){r.innerHTML='<div class="kv"><span class="fail">&#10007;</span> '+escHtml(String(e))+'</div>'}
+  finally{setBtns(false)}
+}
+
+async function checkVersion(){
+  var r=document.getElementById('train-result');
+  r.innerHTML='<span class="warn">&#x21BB; Checking /api/_version...</span>';
+  try{
+    var v=await fetch('/api/_version').then(function(x){return x.json()});
+    var rows=[
+      ['_pr_version',v._pr_version!=null?('PR #'+v._pr_version):'<span class="fail">missing</span>'],
+      ['git_sha',escHtml(v.git_sha||'—')],
+      ['deploy_id',escHtml(v.deploy_id||'—')],
+      ['deploy_version_env',escHtml(v.deploy_version_env||'unset')],
+    ];
+    r.innerHTML='<div class="kv">'+rows.map(function(rr){return '<div><b>'+rr[0]+'</b>: '+rr[1]+'</div>'}).join('')+'</div>';
+  }catch(e){r.innerHTML='<span class="fail">&#10007;</span> '+escHtml(String(e))}
+}
+
+async function purgeNonWolf(){
+  var r=document.getElementById('purge-result');
+  if(!confirm('Delete EVERY ghost_v3_model row whose symbol is not WOLF? Permanent. Continue?'))return;
+  r.innerHTML='<span class="warn">&#x21BB; Purging non-WOLF models...</span>';
+  setBtns(true);
+  try{
+    var resp=await fetch('/api/admin/delete-model?non_wolf_only=true',{method:'POST',headers:{'x-cron-secret':getSecret(),'Content-Type':'application/json'}});
+    var b={};try{b=await resp.json()}catch(_){}
+    if(resp.status===403){r.innerHTML='<span class="fail">&#10007;</span> 403 (cron secret wrong)';return}
+    if(b.ok){
+      var d=b.deleted||[],k=b.kept||[];
+      var icon=d.length?'<span class="ok">&#10003;</span>':'<span class="warn">&#x21BB;</span>';
+      r.innerHTML=icon+' Purged <b>'+d.length+'</b> non-WOLF model(s) · kept <b>'+k.length+'</b>'
+        +(d.length?'<div class="kv" style="margin-top:6px">Deleted: '+escHtml(d.join(', '))+'</div>':'')
+        +(k.length?'<div class="kv">Kept: '+escHtml(k.join(', '))+'</div>':'');
+    }else r.innerHTML='<span class="fail">&#10007;</span> '+escHtml((b&&b.error)||('HTTP '+resp.status));
+  }catch(e){r.innerHTML='<span class="fail">&#10007;</span> '+escHtml(String(e))}
+  finally{setBtns(false)}
+}
+
+async function purgeGhostPortfolio(dry){
+  var r=document.getElementById('purge-result');
+  if(!dry && !confirm('Delete ZZE2E* / STOCK GHOST / TEST* / ZZ* rows from user_portfolio? Permanent. Continue?'))return;
+  r.innerHTML='<span class="warn">&#x21BB; '+(dry?'Dry-running':'Purging')+' ghost portfolio rows...</span>';
+  setBtns(true);
+  try{
+    var resp=await fetch('/api/admin/purge-ghost-portfolio?dry_run='+(dry?'true':'false'),{method:'POST',headers:{'x-cron-secret':getSecret(),'Content-Type':'application/json'}});
+    var b={};try{b=await resp.json()}catch(_){}
+    if(resp.status===403){r.innerHTML='<span class="fail">&#10007;</span> 403 (cron secret wrong)';return}
+    if(b.ok){
+      var d=b.deleted||[],w=b.would_delete||[],kept=b.kept;
+      var which=dry?w:d;
+      var icon=which.length?'<span class="ok">&#10003;</span>':'<span class="warn">&#x21BB;</span>';
+      var verb=dry?'Would delete':'Deleted';
+      r.innerHTML=icon+' '+verb+' <b>'+which.length+'</b> ghost row(s) · kept <b>'+kept+'</b> real positions'
+        +(which.length?'<div class="kv" style="margin-top:6px">'+which.map(function(x){return '#'+x.id+' '+escHtml(x.symbol)}).join(', ')+'</div>':'');
+    }else r.innerHTML='<span class="fail">&#10007;</span> '+escHtml((b&&b.error)||('HTTP '+resp.status));
+  }catch(e){r.innerHTML='<span class="fail">&#10007;</span> '+escHtml(String(e))}
+  finally{setBtns(false)}
+}
+
+function renderModelTable(v3){
+  if(!v3||!v3.trained)return '<p class="kv">'+escHtml(v3&&v3.reason?v3.reason:'No v3 models loaded.')+'</p>';
+  var syms=v3.symbols||{},keys=Object.keys(syms).sort();
+  if(!keys.length)return '<p class="kv">No symbol rows.</p>';
+  var h='<table class="tbl"><thead><tr><th>Symbol</th><th>Engine</th><th>Label</th><th>Acc</th><th>WF mean</th><th>WF min</th><th>Edge</th><th>N</th></tr></thead><tbody>';
+  keys.forEach(function(k){
+    var m=syms[k];
+    h+='<tr><td><b>'+escHtml(k)+'</b></td><td>'+escHtml(m.engine!=null?m.engine:'—')+'</td>'
+      +'<td>'+escHtml(m.label_type||'—')+'</td>'
+      +'<td>'+(m.accuracy!=null?m.accuracy:'—')+'%</td>'
+      +'<td>'+(m.wf_acc_mean!=null?m.wf_acc_mean:'—')+'%</td>'
+      +'<td>'+(m.wf_acc_min!=null?m.wf_acc_min:'—')+'%</td>'
+      +'<td>'+(m.edge!=null?m.edge:'—')+'%</td>'
+      +'<td>'+(m.n_samples!=null?m.n_samples:0)+'</td></tr>';
+  });
+  h+='</tbody></table>';
+  return h;
+}
+
+async function loadEngineQuality(){
+  try{
+    var batch=await Promise.all([
+      fetch('/api/health/audit/history?limit=1').then(function(r){return r.json()}).catch(function(){return {ok:false,runs:[]}}),
+      fetch('/api/coverage').then(function(r){return r.json()}).catch(function(){return {ok:false}}),
+      fetch('/api/telegram/status').then(function(r){return r.json()}).catch(function(){return {ok:false}}),
+      fetch('/api/stats/confidence-buckets').then(function(r){return r.json()}).catch(function(){return {ok:false}}),
+      fetch('/api/v3/status').then(function(r){return r.json()}).catch(function(){return {trained:false}}),
+    ]);
+    renderAudit(batch[0]);
+    renderCoverage(batch[1]);
+    renderTelegram(batch[2]);
+    renderConfidence(batch[3]);
+    document.getElementById('t-models-slot').innerHTML=renderModelTable(batch[4]);
+  }catch(e){console.error(e)}
+}
+
+function renderAudit(audit){
+  var b=document.getElementById('t-audit-status'),k=document.getElementById('t-audit-kv');
+  var runs=audit&&audit.runs?audit.runs:[];
+  if(!runs.length){b.textContent='—';b.className='big';k.innerHTML='<b>No audit runs yet</b>';return}
+  var r=runs[0],st=(r.status||'').toUpperCase();
+  b.textContent=st||'—';b.className='big '+(st==='PASS'?'pass':st==='WARN'?'warn':'fail');
+  k.innerHTML='<b>Coverage</b> '+(r.coverage_pct!=null?r.coverage_pct.toFixed(1)+'%':'—')+'<br>'
+    +'<b>Unresolved</b> '+(r.unresolved_count!=null?r.unresolved_count:'—')+' · <b>Resolved</b> '+(r.resolved_count!=null?r.resolved_count:'—')+'<br>'
+    +'<b>Ran</b> '+fmtTsIso(r.run_ts);
+}
+
+function renderCoverage(cov){
+  var b=document.getElementById('t-cov-loaded'),k=document.getElementById('t-cov-kv');
+  if(!cov||cov.ok===false){b.textContent='—';b.className='big';k.innerHTML='<b>Coverage unavailable</b>';return}
+  var c=cov.coverage||{},m=cov.maintenance||{},loaded=c.loaded_models!=null?c.loaded_models:0,floor=c.min_models_floor!=null?c.min_models_floor:0,below=!!c.below_floor;
+  b.textContent=loaded+' / '+floor;b.className='big '+(below?'warn':'pass');
+  var cdMin=m.cooldown_remaining_s!=null?Math.ceil(m.cooldown_remaining_s/60):null;
+  k.innerHTML='<b>Auto-retrain</b> '+(m.enabled?'enabled':'disabled')+(m.running?' <span style="color:#f59e0b">(running)</span>':'')+'<br>'
+    +'<b>Last retrain</b> '+(m.last_retrain_ts?fmtTsIso(m.last_retrain_ts):'never')+'<br>'
+    +'<b>Cooldown</b> '+(cdMin!=null&&cdMin>0?cdMin+' min left':'clear');
+}
+
+function renderTelegram(tg){
+  var b=document.getElementById('t-tg-status'),k=document.getElementById('t-tg-kv');
+  if(!tg||tg.ok===false){b.textContent='—';b.className='big';k.innerHTML='<b>Telegram status unavailable</b>';return}
+  var configured=!!tg.configured,nRecent=(tg.recent_alerts||[]).length;
+  b.textContent=configured?(nRecent+' sent'):'unconfigured';
+  b.className='big '+(!configured?'warn':nRecent>0?'pass':'warn');
+  var lines=['<b>Bot configured</b> '+(configured?'yes':'<span class="warn">no &mdash; set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID</span>')];
+  lines.push('<b>Last cron run</b> '+(tg.last_cron_ts?fmtTsIso(tg.last_cron_ts):'never'));
+  lines.push('<b>Last cron sent</b> '+(tg.last_cron_sent!=null?tg.last_cron_sent+' alert(s)':'—'));
+  if(nRecent>0){
+    var alerts=tg.recent_alerts.map(function(a){
+      var dir=a.direction||'—',conf=a.confidence!=null?Math.round(a.confidence*100)+'%':'—';
+      return '<div style="font-size:11px;color:#888;margin-top:3px"><b>#'+a.prediction_id+'</b> '+escHtml(dir)+' @ $'+(a.entry_price!=null?a.entry_price.toFixed(2):'—')+' &rarr; $'+(a.target_price!=null?a.target_price.toFixed(2):'—')+' · conf='+conf+' · '+(a.sent_at?fmtTimeAgo(a.sent_at):'—')+'</div>';
+    }).join('');
+    lines.push('<div style="margin-top:6px"><b>Recent alerts</b>'+alerts+'</div>');
+  }
+  k.innerHTML=lines.join('<br>');
+}
+
+function renderConfidence(conf){
+  var slot=document.getElementById('t-conf-slot');
+  if(!conf||conf.ok===false){slot.innerHTML='<p class="kv">Confidence calibration unavailable.</p>';return}
+  var buckets=conf.buckets||[];
+  if(!buckets.length||!buckets.some(function(b){return (b.total||0)>0})){
+    slot.innerHTML='<p class="kv">No resolved picks in window yet'+(conf.start_ts?' since '+fmtTsIso(conf.start_ts):'')+'.</p>';return;
+  }
+  var h='<table class="tbl"><thead><tr><th>Bucket</th><th>N</th><th>W / L</th><th>Win rate</th></tr></thead><tbody>';
+  buckets.forEach(function(b){
+    var tot=b.total||0,wr=b.win_rate_pct!=null?b.win_rate_pct:0;
+    h+='<tr><td><b>'+escHtml(b.label)+'</b></td><td>'+tot+'</td><td>'+(b.wins||0)+' / '+(b.losses||0)+'</td><td>'+(tot===0?'—':wr+'%')+'</td></tr>';
+  });
+  h+='</tbody></table>';
+  slot.innerHTML=h;
+}
+
+loadEngineQuality();
+setInterval(loadEngineQuality, 60000);
+</script>
+
+</body>
+</html>
