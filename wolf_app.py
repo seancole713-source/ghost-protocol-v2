@@ -1,9 +1,10 @@
-import os, sys, time, logging, threading, hmac
+import os, sys, time, logging, threading, hmac, secrets as _secrets
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.responses import JSONResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from core.db import db_conn, init_db
 
 logging.basicConfig(
@@ -1190,6 +1191,54 @@ async def delete_model(x_cron_secret: str = Header(None), non_wolf_only: bool = 
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
+
+
+_GHOST_PORTFOLIO_PATTERNS = ("ZZE2E", "STOCK GHOST", "GHOST", "ZZ", "TEST")
+
+
+@APP.post("/api/admin/purge-ghost-portfolio")
+async def purge_ghost_portfolio(x_cron_secret: str = Header(None), dry_run: bool = False):
+    """Hard-delete ghost / test rows from user_portfolio.
+
+    Targets symbols matching one of _GHOST_PORTFOLIO_PATTERNS (case-
+    insensitive prefix or exact match). Common pollutants:
+      - 'ZZE2E*' — yfinance probe tickers (PR #13/14 left visible by mistake)
+      - 'STOCK GHOST', 'GHOST*' — test rows
+      - 'ZZ*', 'TEST*' — manual test entries
+
+    dry_run=true: report what would be deleted without deleting.
+    """
+    if not _cron_ok(x_cron_secret, strict=True):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    deleted = []
+    would_delete = []
+    kept_count = 0
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT id, symbol FROM user_portfolio")
+            rows = cur.fetchall()
+            for rid, sym in rows:
+                up = (str(sym or "").strip().upper())
+                hit = any(up.startswith(p) or up == p for p in _GHOST_PORTFOLIO_PATTERNS)
+                if not hit:
+                    kept_count += 1
+                    continue
+                if dry_run:
+                    would_delete.append({"id": int(rid), "symbol": sym})
+                else:
+                    cur.execute("DELETE FROM user_portfolio WHERE id=%s", (int(rid),))
+                    deleted.append({"id": int(rid), "symbol": sym})
+        return {
+            "ok": True,
+            "dry_run": dry_run,
+            "patterns": list(_GHOST_PORTFOLIO_PATTERNS),
+            "deleted": deleted,
+            "would_delete": would_delete,
+            "kept": kept_count,
+        }
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
 
 
 @APP.post("/api/admin/fix-stock-expiry")
@@ -2477,6 +2526,52 @@ def cockpit():
     _path = _os.path.join(_os.path.dirname(__file__), "cockpit.html")
     with open(_path, encoding="utf-8") as _f:
         return HTMLResponse(_f.read())
+
+
+# ────────────────────────────────────────────────────────────────
+# /admin — HTTPBasic-gated operator console (PR #23)
+# ────────────────────────────────────────────────────────────────
+_basic_auth = HTTPBasic(auto_error=False)
+
+
+def _require_admin_auth(creds: HTTPBasicCredentials = Depends(_basic_auth)):
+    """HTTPBasic dep that validates the password against CRON_SECRET.
+
+    Username is ignored; only the password must match CRON_SECRET. If
+    CRON_SECRET is unset (dev mode), allows access without a password.
+
+    Returns the username (or "admin" in dev) on success, raises 401 with
+    WWW-Authenticate header on failure so browsers prompt for credentials.
+    """
+    expected = os.environ.get("CRON_SECRET", "")
+    if not expected:
+        # Dev mode: no secret configured, allow access. Mirrors _cron_ok
+        # strict=False semantics.
+        return (creds.username if creds else "admin-dev")
+    if creds is None or not hmac.compare_digest(
+        (creds.password or "").encode("utf-8"), expected.encode("utf-8")
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail="Admin authentication required",
+            headers={"WWW-Authenticate": 'Basic realm="Ghost Protocol Admin"'},
+        )
+    return creds.username
+
+
+@APP.get("/admin", include_in_schema=False)
+def admin_page(_user: str = Depends(_require_admin_auth)):
+    """Serve admin.html behind HTTP Basic Auth.
+
+    Password = CRON_SECRET. Username can be anything (it's logged but
+    not validated). Browsers will prompt for credentials and remember
+    them for the session.
+    """
+    import os as _os
+    _path = _os.path.join(_os.path.dirname(__file__), "admin.html")
+    with open(_path, encoding="utf-8") as _f:
+        return HTMLResponse(_f.read())
+
 
 if os.path.exists("static"):
     APP.mount("/static", StaticFiles(directory="static"), name="static")

@@ -424,7 +424,7 @@ section.block{margin-bottom:32px}
   </section>
 
   <!-- ─── Earnings ─── -->
-  <section class="block">
+  <section class="block" id="earnings-section" style="display:none">
     <div class="sec-label">Earnings &amp; Revenue</div>
     <div class="earn-row">
       <div class="earn-card">
@@ -513,52 +513,9 @@ section.block{margin-bottom:32px}
           <div class="truth-kv" id="t-sys-kv"></div>
         </div>
       </div>
-      <div class="truth-grid">
-        <div class="truth-card">
-          <h4>Last health audit</h4>
-          <div class="truth-big" id="t-audit-status">&#8212;</div>
-          <div class="truth-note">Most recent <code>/api/health/audit</code> run. PASS = zero critical findings. Coverage = % of open picks with feature snapshots resolved.</div>
-          <div class="truth-kv" id="t-audit-kv"></div>
-        </div>
-        <div class="truth-card">
-          <h4>Model coverage</h4>
-          <div class="truth-big" id="t-cov-loaded">&#8212;</div>
-          <div class="truth-note">Loaded v3 models vs <code>MODEL_COVERAGE_MIN_MODELS</code> floor. Auto-retrain fires when below floor and cooldown is clear.</div>
-          <div class="truth-kv" id="t-cov-kv"></div>
-        </div>
-        <div class="truth-card">
-          <h4>Telegram alerts</h4>
-          <div class="truth-big" id="t-tg-status">&#8212;</div>
-          <div class="truth-note">Signal-alert cron (PR #8) state from <code>ghost_state.last_signal_cron_*</code>. Recent picks fired via Telegram show in <code>wolf_signal_alerts</code>.</div>
-          <div class="truth-kv" id="t-tg-kv"></div>
-        </div>
-      </div>
-      <div class="truth-card" style="margin-bottom:14px">
-        <h4>Confidence calibration (post v3.2)</h4>
-        <div class="truth-note" style="margin-bottom:10px">Realized win rate by confidence bucket since the v3.2 cutover. If 80&#8211;90 or 90+ buckets win at the same rate as 60&#8211;70, the score has no information.</div>
-        <div id="t-conf-slot"><p class="truth-note">Loading&#8230;</p></div>
-      </div>
-      <div class="truth-card" style="margin-bottom:14px">
-        <h4>Train v3 Model</h4>
-        <div class="truth-note" style="margin-bottom:10px">
-          Manually trigger a v3.2 training run. Requires the cron secret (set via Railway env <code>CRON_SECRET</code>). Training runs in the background &mdash; 3-5 minutes for data fetch + walk-forward validation. Click <b>Refresh Status</b> after to see the result.
-        </div>
-        <div class="train-row">
-          <input type="password" id="train-secret" placeholder="x-cron-secret" autocomplete="off" spellcheck="false">
-          <button class="btn-train" onclick="handleTrainClick()">Train Now</button>
-          <button class="btn-train secondary" onclick="handleStatusCheckClick()">Refresh Status</button>
-          <button class="btn-train secondary" onclick="handleDataSourcesClick()">Test Data Sources</button>
-          <button class="btn-train secondary" onclick="handleTrainSyncClick()" title="Runs train synchronously, takes 1-5 min, returns actual result inline">Train (sync)</button>
-          <button class="btn-train secondary" onclick="handleVersionCheckClick()" title="Show running code version + deploy ID">Check Version</button>
-          <button class="btn-train secondary" onclick="handlePurgeNonWolfClick()" title="Delete every ghost_v3_model row whose symbol is not WOLF (cleans the 3 stale crypto-era rows)">Purge Non-WOLF Models</button>
-        </div>
-        <div id="train-result" class="truth-note" style="margin-top:10px;min-height:18px"></div>
-        <div id="data-sources-result" style="margin-top:8px"></div>
-      </div>
-      <div class="truth-card" style="margin-bottom:0">
-        <h4>Model lineage (loaded symbols)</h4>
-        <div id="t-models-slot"><p class="truth-note">Loading&#8230;</p></div>
-      </div>
+      <p class="truth-note" style="text-align:center;margin-top:10px;font-size:11px">
+        Operator controls (training, calibration, audit, coverage, model lineage, Telegram alerts) moved to <a href="/admin" style="color:#fbbf24">/admin</a> &mdash; HTTP Basic Auth.
+      </p>
     </div>
   </section>
 
@@ -631,7 +588,19 @@ function gsBarLevel(value, weight){
   return 'lvl-n';
 }
 
-function renderGhostScore(gs){
+/* ─── Freshness gate (PR #23) ─── */
+// Single source of truth for "are we in WATCHING mode?". Returns
+// {watching: bool, days: int} so renderers can show consistent copy.
+// Threshold: 7 days since the newest pick row in DB.
+function _computeWatching(health){
+  if(!health) return {watching: false, days: 0};
+  var pickFreshMin = health.predictions_freshness_min;
+  if(pickFreshMin == null) return {watching: false, days: 0};
+  var days = Math.floor(Number(pickFreshMin) / (60 * 24));
+  return {watching: days >= 7, days: days};
+}
+
+function renderGhostScore(gs, watching){
   var fg = document.getElementById('gs-gauge-fg');
   var scoreEl = document.getElementById('gs-score');
   var sigEl = document.getElementById('gs-signal');
@@ -652,12 +621,24 @@ function renderGhostScore(gs){
 
   var score = Number(gs.score) || 0;
   var color = gsScoreColor(score);
-  fg.setAttribute('d', gsArcPath(score));
-  fg.setAttribute('stroke', color);
-  scoreEl.textContent = Math.round(score);
-  scoreEl.style.color = color;
-  sigEl.textContent = (gs.signal || 'HOLD').replace('_', ' ');
-  sigEl.className = 'gs-signal ' + gsSignalClass(gs.signal);
+  // PR #23: in WATCHING mode (no signal cleared the floor in 7+ days),
+  // the gauge label MUST say WATCHING — not the computed signal — to
+  // match the hero/play story. Score number stays but signal text overrides.
+  if(watching && watching.watching){
+    fg.setAttribute('d', gsArcPath(score));
+    fg.setAttribute('stroke', '#666');
+    scoreEl.textContent = Math.round(score);
+    scoreEl.style.color = '#888';
+    sigEl.textContent = 'WATCHING';
+    sigEl.className = 'gs-signal hold';
+  } else {
+    fg.setAttribute('d', gsArcPath(score));
+    fg.setAttribute('stroke', color);
+    scoreEl.textContent = Math.round(score);
+    scoreEl.style.color = color;
+    sigEl.textContent = (gs.signal || 'HOLD').replace('_', ' ');
+    sigEl.className = 'gs-signal ' + gsSignalClass(gs.signal);
+  }
 
   var components = gs.components || {};
   var weights = gs.weights || {model_confidence:40, volume_signal:20, sector_alignment:15, price_momentum:15, freshness:10};
@@ -702,7 +683,7 @@ function renderGhostScore(gs){
 }
 
 /* ─── Hero & market status ─── */
-function renderHero(price){
+function renderHero(price, watching){
   var pe = document.getElementById('hero-price');
   var ce = document.getElementById('hero-change');
   var ae = document.getElementById('hero-ah');
@@ -748,6 +729,13 @@ function renderHero(price){
   mb.className = 'mkt-badge ' + (st.indexOf('open') >= 0 ? 'open'
                               : st.indexOf('after') >= 0 || st.indexOf('pre') >= 0 ? 'after'
                               : 'closed');
+  // PR #23: hero subtitle reflects WATCHING when no signal has fired
+  // for 7+ days. Replaces any prior bullish/bearish framing.
+  if(watching && watching.watching){
+    ce.className = 'hero-change flat';
+    ce.innerHTML = '<span style="color:#888">WATCHING &mdash; no signal cleared 80% confidence in '
+      + watching.days + ' day' + (watching.days === 1 ? '' : 's') + '</span>';
+  }
 }
 
 /* ─── Performance strip ─── */
@@ -850,10 +838,20 @@ function renderPerf(stats, conf, recent){
 }
 
 /* ─── Today's play ─── */
-function renderPlay(picks){
+function renderPlay(picks, watching){
   var sg = document.getElementById('sgrid');
   var active = (picks && picks.active) || [];
   var stocks = active.filter(function(p){return p.asset_type === 'stock' && (p.symbol||'').toUpperCase() === 'WOLF'});
+  // PR #23: WATCHING mode suppresses any BUY/SELL card from rendering —
+  // even if an old open pick is still in the DB, we don't surface it as
+  // actionable when the engine hasn't fired a fresh signal in 7+ days.
+  if(watching && watching.watching){
+    sg.innerHTML = '<div class="info-box"><b>WATCHING &mdash; no signal cleared 80% confidence in '
+      + watching.days + ' day' + (watching.days === 1 ? '' : 's') + '.</b><br><br>'
+      + 'Ghost is scanning every cycle but the engine has not produced a high-confidence pick. '
+      + 'When a new signal clears the floor, it will appear here.</div>';
+    return;
+  }
   if(!stocks.length){
     var now = new Date();
     var et = new Date(now.toLocaleString('en-US',{timeZone:'America/New_York'}));
@@ -1126,16 +1124,24 @@ function renderStats(s){
 
 /* ─── Earnings & revenue charts ─── */
 function renderEarnings(e){
+  var section = document.getElementById('earnings-section');
   var epsCtx = document.getElementById('eps-chart').getContext('2d');
   var revCtx = document.getElementById('rev-chart').getContext('2d');
   if(_charts.eps){ _charts.eps.destroy(); }
   if(_charts.rev){ _charts.rev.destroy(); }
   var quarters = (e && e.quarters) || [];
-  if(!quarters.length){
-    epsCtx.canvas.style.opacity = 0.3;
-    revCtx.canvas.style.opacity = 0.3;
+  // PR #23: hide the entire section when there's no data — empty titled
+  // cards are worse than no cards. Section is display:none by default in
+  // HTML; only shown when we actually have quarters to render.
+  var hasAnyData = quarters.some(function(q){
+    return q.estimate_eps != null || q.actual_eps != null
+        || q.revenue != null || q.earnings != null;
+  });
+  if(!quarters.length || !hasAnyData){
+    if(section) section.style.display = 'none';
     return;
   }
+  if(section) section.style.display = '';
   epsCtx.canvas.style.opacity = 1;
   revCtx.canvas.style.opacity = 1;
   var labels = quarters.map(function(q){return q.quarter || ''});
@@ -1424,407 +1430,6 @@ function renderActivity(activity){
     + (wE ? ' / <span class="e">' + wE + 'E</span>' : '') + '</span>';
 }
 
-function renderAudit(audit){
-  var bigEl = document.getElementById('t-audit-status');
-  var kvEl = document.getElementById('t-audit-kv');
-  if(!bigEl||!kvEl) return;
-  var runs = audit && audit.runs ? audit.runs : [];
-  if(!runs.length){
-    bigEl.textContent = '—';
-    bigEl.className = 'truth-big';
-    kvEl.innerHTML = '<b>No audit runs yet</b> — POST <code>/api/health/audit</code> with <code>x-cron-secret</code> to seed history.';
-    return;
-  }
-  var r = runs[0];
-  var st = (r.status||'').toUpperCase();
-  bigEl.textContent = st || '—';
-  bigEl.className = 'truth-big ' + (st === 'PASS' ? 'pass' : st === 'WARN' ? 'warn' : 'fail');
-  kvEl.innerHTML =
-    '<b>Coverage</b> ' + (r.coverage_pct != null ? r.coverage_pct.toFixed(1) + '%' : '—') + '<br>'
-    + '<b>Unresolved</b> ' + (r.unresolved_count != null ? r.unresolved_count : '—')
-    + ' · <b>Resolved</b> ' + (r.resolved_count != null ? r.resolved_count : '—') + '<br>'
-    + '<b>Ran</b> ' + fmtTsIso(r.run_ts);
-}
-
-function renderCoverage(cov){
-  var bigEl = document.getElementById('t-cov-loaded');
-  var kvEl = document.getElementById('t-cov-kv');
-  if(!bigEl||!kvEl) return;
-  if(!cov || cov.ok === false){
-    bigEl.textContent = '—';
-    bigEl.className = 'truth-big';
-    kvEl.innerHTML = '<b>Coverage unavailable</b>' + (cov && cov.error ? ' (' + escHtml(cov.error) + ')' : '');
-    return;
-  }
-  var c = cov.coverage || {};
-  var m = cov.maintenance || {};
-  var loaded = c.loaded_models != null ? c.loaded_models : 0;
-  var floor = c.min_models_floor != null ? c.min_models_floor : 0;
-  var below = !!c.below_floor;
-  bigEl.textContent = loaded + ' / ' + floor;
-  bigEl.className = 'truth-big ' + (below ? 'warn' : 'pass');
-  var lastTs = m.last_retrain_ts;
-  var cdRem = m.cooldown_remaining_s;
-  var cdMin = cdRem != null ? Math.ceil(cdRem/60) : null;
-  kvEl.innerHTML =
-    '<b>Auto-retrain</b> ' + (m.enabled ? 'enabled' : 'disabled')
-    + (m.running ? ' <span style="color:#f59e0b">(running)</span>' : '')
-    + (m.eligible_now ? ' <span style="color:#f59e0b">(eligible now)</span>' : '') + '<br>'
-    + '<b>Last retrain</b> ' + (lastTs ? fmtTsIso(lastTs) : 'never') + '<br>'
-    + '<b>Cooldown</b> ' + (cdMin != null && cdMin > 0 ? cdMin + ' min left' : 'clear');
-}
-
-function renderConfidence(conf){
-  var slot = document.getElementById('t-conf-slot');
-  if(!slot) return;
-  if(!conf || conf.ok === false){
-    slot.innerHTML = '<p class="truth-note">Confidence calibration unavailable' + (conf && conf.error ? ' (' + escHtml(conf.error) + ')' : '') + '.</p>';
-    return;
-  }
-  var buckets = conf.buckets || [];
-  if(!buckets.length){ slot.innerHTML = '<p class="truth-note">No buckets returned.</p>'; return; }
-  var anyData = buckets.some(function(b){return (b.total||0) > 0});
-  if(!anyData){
-    slot.innerHTML = '<p class="truth-note">No resolved picks in window yet' + (conf.start_ts ? ' since ' + fmtTsIso(conf.start_ts) : '') + '.</p>';
-    return;
-  }
-  var h = '<table class="conf-tbl"><thead><tr><th>Bucket</th><th>N</th><th>W / L</th><th>Win rate</th><th></th></tr></thead><tbody>';
-  buckets.forEach(function(b){
-    var tot = b.total || 0;
-    var wr = b.win_rate_pct != null ? b.win_rate_pct : 0;
-    var cls = tot === 0 ? 'none' : wr >= 70 ? 'good' : wr >= 55 ? 'mid' : 'bad';
-    var width = tot === 0 ? 0 : Math.max(2, Math.min(100, wr));
-    h += '<tr><td><span class="bucket-lbl">'+escHtml(b.label)+'</span></td>'
-      + '<td>'+tot+'</td><td>'+(b.wins||0)+' / '+(b.losses||0)+'</td>'
-      + '<td>'+(tot===0?'—':wr+'%')+'</td>'
-      + '<td style="width:140px"><div class="conf-bar-track"><div class="conf-bar-bar '+cls+'" style="width:'+width+'%"></div></div></td></tr>';
-  });
-  h += '</tbody></table>';
-  slot.innerHTML = h;
-}
-
-/* ─── Train v3 model control (PR #16) ─── */
-async function handleTrainClick(){
-  var secretEl = document.getElementById('train-secret');
-  var resultEl = document.getElementById('train-result');
-  var btns = document.querySelectorAll('.btn-train');
-  var secret = (secretEl && secretEl.value) ? secretEl.value : '';
-  resultEl.innerHTML = '<span class="train-warn">&#x21BB; Triggering training (force=true)...</span>';
-  btns.forEach(function(b){ b.disabled = true; });
-  try{
-    var resp = await fetch('/api/v3/train?force=true', {
-      method: 'POST',
-      headers: {'x-cron-secret': secret, 'Content-Type': 'application/json'},
-    });
-    var body = {};
-    try { body = await resp.json(); } catch(_e) {}
-    if(resp.ok && body && body.ok){
-      var msg = body.message || 'Training started';
-      resultEl.innerHTML = '<span class="train-ok">&#10003;</span> ' + escHtml(msg)
-        + ' &middot; click <b>Refresh Status</b> in 3-5 min to see the result';
-      if(secretEl) secretEl.value = '';
-    } else {
-      var err = (body && body.error) ? body.error : ('HTTP ' + resp.status);
-      var hint = resp.status === 403 ? ' (cron secret missing or wrong)' : '';
-      resultEl.innerHTML = '<span class="train-fail">&#10007;</span> ' + escHtml(err) + escHtml(hint);
-    }
-  } catch(e) {
-    resultEl.innerHTML = '<span class="train-fail">&#10007;</span> Network error: ' + escHtml(String(e));
-  } finally {
-    btns.forEach(function(b){ b.disabled = false; });
-  }
-}
-
-async function handleStatusCheckClick(){
-  var resultEl = document.getElementById('train-result');
-  resultEl.innerHTML = '<span class="train-warn">&#x21BB; Checking /api/v3/status + /api/v3/train/last...</span>';
-  try{
-    var pair = await Promise.all([
-      fetch('/api/v3/status').then(function(r){ return r.json(); }),
-      fetch('/api/v3/train/last').then(function(r){ return r.json(); }).catch(function(){ return {ok:false}; }),
-    ]);
-    var v3 = pair[0], lastResp = pair[1];
-    var last = (lastResp && lastResp.last) ? lastResp.last : null;
-
-    // Headline status line
-    var headline;
-    if(v3 && v3.trained){
-      var nModels = v3.models != null ? v3.models : Object.keys(v3.symbols || {}).length;
-      headline = '<span class="train-ok">&#10003;</span> Trained &middot; '
-        + nModels + ' model(s) loaded &middot; refresh page to see them in the cockpit';
-    } else {
-      var reason = (v3 && v3.reason) ? v3.reason : 'Not trained yet';
-      headline = '<span class="train-warn">&#x23F3;</span> ' + escHtml(reason);
-    }
-
-    // Last training result detail (PR #18)
-    var detail = '';
-    if(last && last.state){
-      var stateCls = last.state === 'passed' ? 'train-ok'
-                    : last.state === 'failed' ? 'train-fail'
-                    : last.state === 'exception' ? 'train-fail'
-                    : 'train-warn';
-      var bits = ['<span class="' + stateCls + '">state=' + escHtml(last.state) + '</span>'];
-      if(last.passed != null) bits.push('passed=' + (last.passed ? 'true' : 'false'));
-      if(last.accuracy != null) bits.push('acc=' + (Number(last.accuracy) * 100).toFixed(1) + '%');
-      if(last.error) bits.push('error=' + escHtml(String(last.error).slice(0, 200)));
-      if(last.models_before != null && last.models_after != null) {
-        bits.push('models ' + last.models_before + '&rarr;' + last.models_after);
-      }
-      if(last.ts) bits.push('started ' + fmtTimeAgo(last.ts));
-      detail = '<div class="truth-note" style="margin-top:6px;font-size:11px">'
-             + '<b>Last train</b> &middot; ' + bits.join(' &middot; ')
-             + '</div>';
-    }
-
-    resultEl.innerHTML = headline + detail;
-    var slot = document.getElementById('t-models-slot');
-    if(slot) slot.innerHTML = renderModelTable(v3);
-  } catch(e) {
-    resultEl.innerHTML = '<span class="train-fail">&#10007;</span> ' + escHtml(String(e));
-  }
-}
-
-async function handleDataSourcesClick(){
-  var secretEl = document.getElementById('train-secret');
-  var resultEl = document.getElementById('data-sources-result');
-  var btns = document.querySelectorAll('.btn-train');
-  var secret = (secretEl && secretEl.value) ? secretEl.value : '';
-  resultEl.innerHTML = '<div class="truth-note"><span class="train-warn">&#x21BB; Probing data sources...</span></div>';
-  btns.forEach(function(b){ b.disabled = true; });
-  try{
-    var resp = await fetch('/api/diag/data-sources?symbol=WOLF&period=1y', {
-      headers: {'x-cron-secret': secret},
-    });
-    var body = {};
-    try { body = await resp.json(); } catch(_e) {}
-    if(resp.status === 403){
-      resultEl.innerHTML = '<div class="truth-note"><span class="train-fail">&#10007;</span> 403 (cron secret missing or wrong — paste it in the input above)</div>';
-      return;
-    }
-    if(!resp.ok || !body || body.ok === false){
-      resultEl.innerHTML = '<div class="truth-note"><span class="train-fail">&#10007;</span> '
-        + escHtml((body && body.error) || ('HTTP ' + resp.status)) + '</div>';
-      return;
-    }
-    var rows = body.results || [];
-    var working = (body.summary && body.summary.working) || [];
-    var html = '<table class="conf-tbl" style="margin-top:6px"><thead><tr>'
-      + '<th>Source</th><th>OK?</th><th>Bars</th><th>Latency</th><th>Detail</th>'
-      + '</tr></thead><tbody>';
-    rows.forEach(function(r){
-      var cls = r.ok ? 'train-ok' : 'train-fail';
-      var icon = r.ok ? '&#10003;' : '&#10007;';
-      var detail = r.ok
-        ? ('first=' + (r.first_ts || '—') + ' last=' + (r.last_ts || '—'))
-        : escHtml(r.error || '—');
-      html += '<tr>'
-        + '<td><span class="bucket-lbl">' + escHtml(r.source) + '</span></td>'
-        + '<td><span class="' + cls + '">' + icon + '</span></td>'
-        + '<td>' + (r.bars || 0) + '</td>'
-        + '<td>' + (r.elapsed_ms != null ? r.elapsed_ms + 'ms' : '—') + '</td>'
-        + '<td style="font-size:11px;color:#888">' + detail + '</td>'
-        + '</tr>';
-    });
-    html += '</tbody></table>';
-    var summaryLine;
-    if(working.length){
-      summaryLine = '<span class="train-ok">&#10003;</span> ' + working.length + ' source(s) working: ' + working.join(', ');
-    } else {
-      summaryLine = '<span class="train-fail">&#10007;</span> All probed sources broken — training cannot fetch bars';
-    }
-    resultEl.innerHTML = '<div class="truth-note" style="margin-bottom:6px">' + summaryLine + '</div>' + html
-      + '<p class="truth-note" style="margin-top:6px;font-size:10px">'
-      + escHtml(body.note || '') + '</p>';
-  } catch(e) {
-    resultEl.innerHTML = '<div class="truth-note"><span class="train-fail">&#10007;</span> Network error: ' + escHtml(String(e)) + '</div>';
-  } finally {
-    btns.forEach(function(b){ b.disabled = false; });
-  }
-}
-
-/* ─── /api/v3/train/sync — synchronous trainer (PR #19) ─── */
-async function handleTrainSyncClick(){
-  var secretEl = document.getElementById('train-secret');
-  var resultEl = document.getElementById('train-result');
-  var btns = document.querySelectorAll('.btn-train');
-  var secret = (secretEl && secretEl.value) ? secretEl.value : '';
-  if(!confirm('Sync training blocks the HTTP request for 1-5 minutes. Browser may show a spinner. Continue?')){
-    return;
-  }
-  resultEl.innerHTML = '<span class="train-warn">&#x21BB; Running sync train (1-5 min)... do not close this tab</span>';
-  btns.forEach(function(b){ b.disabled = true; });
-  try{
-    var resp = await fetch('/api/v3/train/sync?force=true', {
-      method: 'POST',
-      headers: {'x-cron-secret': secret, 'Content-Type': 'application/json'},
-    });
-    var body = {};
-    try { body = await resp.json(); } catch(_e) {}
-    if(resp.status === 403){
-      resultEl.innerHTML = '<span class="train-fail">&#10007;</span> 403 (cron secret missing or wrong)';
-      return;
-    }
-    if(!body || body._pr_version == null){
-      resultEl.innerHTML = '<span class="train-fail">&#10007;</span> Endpoint response missing _pr_version &mdash; deployed code is pre-PR-#19 (stale cache)';
-      return;
-    }
-    if(body.ok){
-      var icon = body.passed ? '<span class="train-ok">&#10003;</span>' : '<span class="train-warn">&#x23F3;</span>';
-      var pct = body.accuracy != null ? body.accuracy.toFixed(2) + '%' : '—';
-      var headline = icon + ' <b>passed=' + body.passed + '</b> &middot; acc=' + pct
-        + ' &middot; models ' + body.models_before + '&rarr;' + body.models_after
-        + ' &middot; ' + (body.duration_s || 0) + 's'
-        + ' <span style="color:#666">(PR #' + body._pr_version + ')</span>';
-      // PR #20: per-symbol gate detail
-      var detail = renderTrainDetails(body.train_details);
-      resultEl.innerHTML = headline + detail;
-      if(secretEl) secretEl.value = '';
-    } else {
-      resultEl.innerHTML = '<span class="train-fail">&#10007;</span> ' + escHtml(body.error || 'sync train failed')
-        + ' &middot; ' + (body.duration_s || 0) + 's'
-        + ' <span style="color:#666">(PR #' + body._pr_version + ')</span>';
-    }
-  } catch(e) {
-    resultEl.innerHTML = '<span class="train-fail">&#10007;</span> Network/timeout error: ' + escHtml(String(e));
-  } finally {
-    btns.forEach(function(b){ b.disabled = false; });
-  }
-}
-
-function renderTrainDetails(td){
-  if(!td || !td.symbols || !td.symbols.length) return '';
-  var html = '<div style="margin-top:10px"><div class="truth-note" style="margin-bottom:6px"><b>Per-symbol gate detail</b></div>';
-  td.symbols.forEach(function(s){
-    var statusCls = s.passed ? 'train-ok' : 'train-fail';
-    var statusIcon = s.passed ? '&#10003;' : '&#10007;';
-    var lines = [];
-    lines.push('<div style="font-size:12px;line-height:1.7">');
-    lines.push('<span class="' + statusCls + '">' + statusIcon + '</span> '
-      + '<b>' + escHtml(s.symbol) + '</b> &middot; <b>passed=' + s.passed + '</b>'
-      + (s.fail_reason ? ' &middot; fail: <span class="train-fail">' + escHtml(s.fail_reason) + '</span>' : ''));
-
-    if(s.stage === 'pre_train'){
-      lines.push('<div style="color:#888;font-size:11px;margin-left:14px">'
-        + 'Stage: pre_train (didn\'t reach model fit) &middot; n_samples=' + (s.n_samples != null ? s.n_samples : '—')
-        + '</div>');
-    } else if(s.stage === 'exception'){
-      lines.push('<div style="color:#888;font-size:11px;margin-left:14px">Stage: exception — see Railway logs for stack trace</div>');
-    } else if(s.stage === 'trained'){
-      var metrics = [
-        ['n_samples', s.n_samples, s.thresholds && s.thresholds.min_train_rows],
-        ['tp_sl_wins', s.wins_ct, s.thresholds && s.thresholds.min_tp_sl_wins],
-        ['holdout_acc', (s.holdout_acc != null ? (s.holdout_acc * 100).toFixed(1) + '%' : '—'),
-          (s.thresholds && s.thresholds.min_holdout_acc != null ? (s.thresholds.min_holdout_acc * 100).toFixed(1) + '%' : '—')],
-        ['edge', (s.edge != null ? (s.edge * 100).toFixed(1) + '%' : '—'),
-          (s.thresholds && s.thresholds.min_edge != null ? (s.thresholds.min_edge * 100).toFixed(1) + '%' : '—')],
-        ['wf_folds', s.wf_fold_count, s.thresholds && s.thresholds.min_wf_folds],
-        ['wf_acc_mean', (s.wf_acc_mean != null ? (s.wf_acc_mean * 100).toFixed(1) + '%' : '—'),
-          (s.thresholds && s.thresholds.min_wf_acc_mean != null ? (s.thresholds.min_wf_acc_mean * 100).toFixed(1) + '%' : '—')],
-        ['wf_acc_min', (s.wf_acc_min != null ? (s.wf_acc_min * 100).toFixed(1) + '%' : '—'),
-          (s.thresholds && s.thresholds.min_wf_acc_min != null ? (s.thresholds.min_wf_acc_min * 100).toFixed(1) + '%' : '—')],
-        ['natural_rate', (s.natural_rate != null ? (s.natural_rate * 100).toFixed(1) + '%' : '—'), '—'],
-      ];
-      var rows = metrics.map(function(m){
-        return '<tr><td style="padding:2px 8px;color:#888">' + m[0] + '</td>'
-          + '<td style="padding:2px 8px;color:#fff"><b>' + escHtml(String(m[1])) + '</b></td>'
-          + '<td style="padding:2px 8px;color:#666">need &ge; ' + escHtml(String(m[2])) + '</td></tr>';
-      }).join('');
-      lines.push('<table style="margin-left:14px;margin-top:4px;font-size:11px;border-collapse:collapse">'
-        + '<thead><tr><th style="text-align:left;color:#555;padding:2px 8px;font-weight:600">metric</th>'
-        + '<th style="text-align:left;color:#555;padding:2px 8px;font-weight:600">actual</th>'
-        + '<th style="text-align:left;color:#555;padding:2px 8px;font-weight:600">threshold</th></tr></thead>'
-        + '<tbody>' + rows + '</tbody></table>');
-    }
-    lines.push('</div>');
-    html += lines.join('');
-  });
-  html += '</div>';
-  return html;
-}
-
-async function handleVersionCheckClick(){
-  var resultEl = document.getElementById('train-result');
-  resultEl.innerHTML = '<span class="train-warn">&#x21BB; Checking /api/_version...</span>';
-  try{
-    var v = await fetch('/api/_version').then(function(r){ return r.json(); });
-    var rows = [
-      ['_pr_version', v._pr_version != null ? ('PR #' + v._pr_version) : '<span class="train-fail">missing &mdash; pre-PR-#19 code</span>'],
-      ['git_sha', escHtml(v.git_sha || '—')],
-      ['deploy_id', escHtml(v.deploy_id || '—')],
-      ['deploy_version_env', escHtml(v.deploy_version_env || 'unset')],
-    ];
-    var rowHtml = rows.map(function(r){ return '<div><b>' + r[0] + '</b>: ' + r[1] + '</div>'; }).join('');
-    resultEl.innerHTML = '<div class="truth-note" style="font-size:11px;line-height:1.7">'
-      + rowHtml + '</div>';
-  } catch(e) {
-    resultEl.innerHTML = '<span class="train-fail">&#10007;</span> ' + escHtml(String(e));
-  }
-}
-
-/* ─── Purge non-WOLF models button (PR #22) ─── */
-async function handlePurgeNonWolfClick(){
-  var secretEl = document.getElementById('train-secret');
-  var resultEl = document.getElementById('train-result');
-  var btns = document.querySelectorAll('.btn-train');
-  var secret = (secretEl && secretEl.value) ? secretEl.value : '';
-  if(!confirm('Delete EVERY ghost_v3_model row whose symbol is not WOLF? This is permanent. Continue?')){
-    return;
-  }
-  resultEl.innerHTML = '<span class="train-warn">&#x21BB; Purging non-WOLF models...</span>';
-  btns.forEach(function(b){ b.disabled = true; });
-  try{
-    var resp = await fetch('/api/admin/delete-model?non_wolf_only=true', {
-      method: 'POST',
-      headers: {'x-cron-secret': secret, 'Content-Type': 'application/json'},
-    });
-    var body = {};
-    try { body = await resp.json(); } catch(_e) {}
-    if(resp.status === 403){
-      resultEl.innerHTML = '<span class="train-fail">&#10007;</span> 403 (cron secret missing or wrong)';
-      return;
-    }
-    if(resp.ok && body && body.ok){
-      var deleted = body.deleted || [];
-      var kept = body.kept || [];
-      var icon = deleted.length ? '<span class="train-ok">&#10003;</span>' : '<span class="train-warn">&#x21BB;</span>';
-      resultEl.innerHTML = icon + ' Purged <b>' + deleted.length + '</b> non-WOLF model(s) &middot; kept <b>'
-        + kept.length + '</b>'
-        + (deleted.length ? '<div class="truth-note" style="margin-top:6px;font-size:11px">Deleted: ' + escHtml(deleted.join(', ')) + '</div>' : '')
-        + (kept.length ? '<div class="truth-note" style="margin-top:2px;font-size:11px">Kept: ' + escHtml(kept.join(', ')) + '</div>' : '');
-      if(secretEl) secretEl.value = '';
-    } else {
-      resultEl.innerHTML = '<span class="train-fail">&#10007;</span> ' + escHtml(body.error || ('HTTP ' + resp.status));
-    }
-  } catch(e) {
-    resultEl.innerHTML = '<span class="train-fail">&#10007;</span> Network error: ' + escHtml(String(e));
-  } finally {
-    btns.forEach(function(b){ b.disabled = false; });
-  }
-}
-
-function renderModelTable(v3){
-  if(!v3 || !v3.trained){
-    return '<p class="truth-note">' + escHtml(v3 && v3.reason ? v3.reason : 'No v3 models loaded.') + '</p>';
-  }
-  var syms = v3.symbols || {};
-  var keys = Object.keys(syms).sort();
-  if(!keys.length) return '<p class="truth-note">No symbol rows.</p>';
-  var h = '<table class="models-tbl"><thead><tr><th>Symbol</th><th>Engine</th><th>Label</th><th>Hold bars</th><th>Acc</th><th>WF mean</th><th>Edge</th><th>N</th></tr></thead><tbody>';
-  keys.forEach(function(k){
-    var m = syms[k];
-    h += '<tr><td><b>'+escHtml(k)+'</b></td>'
-      + '<td>'+escHtml(m.engine!=null?m.engine:'—')+'</td>'
-      + '<td>'+escHtml(m.label_type||'—')+'</td>'
-      + '<td>'+(m.label_hold_bars!=null?m.label_hold_bars:'—')+'</td>'
-      + '<td>'+(m.accuracy!=null?m.accuracy:'—')+'%</td>'
-      + '<td>'+(m.wf_acc_mean!=null?m.wf_acc_mean:'—')+'%</td>'
-      + '<td>'+(m.edge!=null?m.edge:'—')+'%</td>'
-      + '<td>'+(m.n_samples!=null?m.n_samples:0)+'</td></tr>';
-  });
-  h += '</tbody></table>';
-  return h;
-}
 
 function renderTruth(stats, health, v3, dir){
   var pv = stats.post_v32 || {};
@@ -1869,43 +1474,8 @@ function renderTruth(stats, health, v3, dir){
     + '<b>Open picks</b> ' + (health.open_picks != null ? health.open_picks : '—')
     + (health.dedup_blocked ? ' <span style="color:#f59e0b">(dedup cap)</span>' : '');
 
-  document.getElementById('t-models-slot').innerHTML = renderModelTable(v3);
 }
 
-/* ─── Telegram alerts card (PR #22) ─── */
-function renderTelegram(tg){
-  var bigEl = document.getElementById('t-tg-status');
-  var kvEl = document.getElementById('t-tg-kv');
-  if(!bigEl || !kvEl) return;
-  if(!tg || tg.ok === false){
-    bigEl.textContent = '—';
-    bigEl.className = 'truth-big';
-    kvEl.innerHTML = '<b>Telegram status unavailable</b>' + (tg && tg.error ? ' (' + escHtml(tg.error) + ')' : '');
-    return;
-  }
-  var configured = !!tg.configured;
-  var nRecent = (tg.recent_alerts || []).length;
-  bigEl.textContent = configured ? (nRecent + ' sent') : 'unconfigured';
-  bigEl.className = 'truth-big ' + (!configured ? 'warn' : nRecent > 0 ? 'pass' : 'warn');
-  var lines = [];
-  lines.push('<b>Bot configured</b> ' + (configured ? 'yes' : '<span style="color:#f59e0b">no &mdash; set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID</span>'));
-  lines.push('<b>Last cron run</b> ' + (tg.last_cron_ts ? fmtTsIso(tg.last_cron_ts) : 'never'));
-  lines.push('<b>Last cron sent</b> ' + (tg.last_cron_sent != null ? tg.last_cron_sent + ' alert(s)' : '—'));
-  if(nRecent > 0){
-    var alerts = tg.recent_alerts.map(function(a){
-      var dir = a.direction || '—';
-      var conf = a.confidence != null ? Math.round(a.confidence * 100) + '%' : '—';
-      return '<div style="font-size:11px;color:#888;margin-top:3px">'
-        + '<b>#' + a.prediction_id + '</b> ' + escHtml(dir)
-        + ' @ $' + (a.entry_price != null ? a.entry_price.toFixed(2) : '—')
-        + ' &rarr; $' + (a.target_price != null ? a.target_price.toFixed(2) : '—')
-        + ' &middot; conf=' + conf
-        + ' &middot; ' + (a.sent_at ? fmtTimeAgo(a.sent_at) : '—') + '</div>';
-    }).join('');
-    lines.push('<div style="margin-top:6px"><b>Recent alerts</b>' + alerts + '</div>');
-  }
-  kvEl.innerHTML = lines.join('<br>');
-}
 
 (function initTruthToggle(){
   var btn = document.getElementById('truth-toggle');
@@ -1943,20 +1513,23 @@ async function load(){
       fetch('/api/wolf/news?category=' + encodeURIComponent(_newsCat)).then(function(r){return r.json()}).catch(function(){return {ok:false,articles:[]}}),
       fetch('/api/picks').then(function(r){return r.json()}),
       fetch('/api/v2/recent').then(function(r){return r.json()}).catch(function(){return {trades:[]}}),
-      fetch('/api/health/audit/history?limit=1').then(function(r){return r.json()}).catch(function(){return {ok:false,runs:[]}}),
-      fetch('/api/coverage').then(function(r){return r.json()}).catch(function(){return {ok:false}}),
       fetch('/api/stats/confidence-buckets').then(function(r){return r.json()}).catch(function(){return {ok:false}}),
       fetch('/api/wolf/ghost-score').then(function(r){return r.json()}).catch(function(){return {ok:false}}),
-      fetch('/api/telegram/status').then(function(r){return r.json()}).catch(function(){return {ok:false}}),
     ]);
     var price=batch[0], history=batch[1], predictions=batch[2], wstats=batch[3], earnings=batch[4],
-        analyst=batch[5], news=batch[6], picks=batch[7], recent=batch[8], audit=batch[9],
-        coverage=batch[10], conf=batch[11], ghostScore=batch[12], telegram=batch[13];
+        analyst=batch[5], news=batch[6], picks=batch[7], recent=batch[8],
+        conf=batch[9], ghostScore=batch[10];
 
-    renderGhostScore(ghostScore);
-    renderHero(price);
+    // PR #23: compute a single freshness gate once, then ALL renderers
+    // (hero, today's play, ghost score) consult it so the cockpit tells
+    // ONE consistent story. If pick freshness > 7 days, we're WATCHING
+    // — no signal has cleared the alert floor in a long time.
+    var watching = _computeWatching(h);
+
+    renderGhostScore(ghostScore, watching);
+    renderHero(price, watching);
     renderPerf(stats, conf, recent);
-    renderPlay(picks);
+    renderPlay(picks, watching);
     renderPredictionChart(history, predictions);
     renderStats(wstats);
     renderEarnings(earnings);
@@ -1964,10 +1537,6 @@ async function load(){
     renderNews(news);
     renderTruth(stats, h, v3, dir);
     renderActivity(activity);
-    renderAudit(audit);
-    renderCoverage(coverage);
-    renderTelegram(telegram);
-    renderConfidence(conf);
 
     document.getElementById('f-open').textContent = stats.open_positions || 0;
     document.getElementById('f-total').textContent = stats.total || 0;
