@@ -1849,37 +1849,59 @@ def test_purge_ghost_portfolio_real_run_deletes_matched_rows(monkeypatch):
     assert len(deletes) == 2
 
 
-def test_admin_route_returns_401_without_basic_auth(monkeypatch):
-    """No credentials when CRON_SECRET set → 401 + WWW-Authenticate."""
-    monkeypatch.setenv("CRON_SECRET", "supersecret")
-    from fastapi import HTTPException
-    try:
-        wolf_app._require_admin_auth(None)
-        assert False, "expected 401"
-    except HTTPException as e:
-        assert e.status_code == 401
-        assert "WWW-Authenticate" in (e.headers or {})
-
-
-def test_admin_route_allows_when_cron_secret_unset(monkeypatch):
-    """Dev mode (no CRON_SECRET) → admin allowed without auth."""
-    monkeypatch.delenv("CRON_SECRET", raising=False)
-    out = wolf_app._require_admin_auth(None)
-    assert out == "admin-dev"
-
-
-def test_admin_route_validates_basic_credentials(monkeypatch):
-    """Correct password passes; wrong password 401s."""
-    from fastapi.security import HTTPBasicCredentials
-    from fastapi import HTTPException
+def test_admin_cookie_token_roundtrip(monkeypatch):
+    """A freshly minted token validates; a forged/tampered one does not.
+    (PR #28 cookie login replaced HTTP Basic Auth, which blank-paged on prod.)"""
     monkeypatch.setenv("CRON_SECRET", "letmein")
-    ok = wolf_app._require_admin_auth(HTTPBasicCredentials(username="ops", password="letmein"))
-    assert ok == "ops"
-    try:
-        wolf_app._require_admin_auth(HTTPBasicCredentials(username="ops", password="bogus"))
-        assert False, "expected 401 on wrong password"
-    except HTTPException as e:
-        assert e.status_code == 401
+    tok = wolf_app._admin_mint_token()
+    assert wolf_app._admin_token_valid(tok) is True
+    # Tampered signature
+    exp, _sig = tok.rsplit(".", 1)
+    assert wolf_app._admin_token_valid(exp + ".deadbeef") is False
+    # Garbage / empty
+    assert wolf_app._admin_token_valid("") is False
+    assert wolf_app._admin_token_valid("nope") is False
+
+
+def test_admin_cookie_token_expiry(monkeypatch):
+    """An expired token (negative TTL) is rejected."""
+    monkeypatch.setenv("CRON_SECRET", "letmein")
+    expired = wolf_app._admin_mint_token(ttl_s=-10)
+    assert wolf_app._admin_token_valid(expired) is False
+
+
+def test_admin_token_valid_dev_mode_when_secret_unset(monkeypatch):
+    """No CRON_SECRET → any token (even empty) is accepted (dev mode)."""
+    monkeypatch.delenv("CRON_SECRET", raising=False)
+    assert wolf_app._admin_token_valid("") is True
+    assert wolf_app._admin_token_valid("anything") is True
+
+
+def test_admin_page_serves_login_without_cookie(monkeypatch):
+    """GET /admin with no valid cookie (secret set) serves the login page,
+    NOT a 401 — this is the fix for the blank-page Basic-Auth issue."""
+    monkeypatch.setenv("CRON_SECRET", "letmein")
+    from fastapi.testclient import TestClient
+    c = TestClient(wolf_app.APP)
+    r = c.get("/admin")
+    assert r.status_code == 200
+    assert "Admin Login" in r.text or "Sign in" in r.text
+
+
+def test_admin_login_sets_cookie_then_admin_serves_console(monkeypatch):
+    """POST /admin/login with correct secret sets the cookie; subsequent
+    GET /admin serves the real console (admin.html)."""
+    monkeypatch.setenv("CRON_SECRET", "letmein")
+    from fastapi.testclient import TestClient
+    c = TestClient(wolf_app.APP)
+    bad = c.post("/admin/login", json={"secret": "wrong"})
+    assert bad.status_code == 401
+    ok = c.post("/admin/login", json={"secret": "letmein"})
+    assert ok.status_code == 200 and ok.json()["ok"] is True
+    # TestClient persists the Set-Cookie → next /admin should serve console
+    r = c.get("/admin")
+    assert r.status_code == 200
+    assert "Objective Gate Monitor" in r.text or "GHOST <span>ADMIN" in r.text
 
 
 def test_news_filter_drops_articles_without_wolf_mention(monkeypatch):
