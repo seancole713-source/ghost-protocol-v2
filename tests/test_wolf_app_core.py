@@ -2453,3 +2453,69 @@ def test_pick_journal_insufficient_samples(monkeypatch):
     f = out["verdict"]["falsification"]
     assert f["falsified"] is False
     assert f["status"] == "insufficient_samples"
+
+
+# ── audit §2: kill conditions ───────────────────────────────────────────
+
+def _kill_db(rows, monkeypatch):
+    """Wire core.prediction.db_conn so evaluate_kill_conditions sees `rows`
+    (newest-first list of (confidence, outcome, pnl_pct))."""
+    import core.prediction as _pred
+
+    class _Cur:
+        def execute(self, sql, params=None):
+            self._limit = params[0] if params else len(rows)
+        def fetchall(self):
+            return rows[: getattr(self, "_limit", len(rows))]
+
+    class _Conn:
+        def cursor(self): return _Cur()
+
+    class _DbCtx:
+        def __enter__(self): return _Conn()
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(_pred, "db_conn", lambda: _DbCtx())
+
+
+def test_kill_conditions_inert_during_cold_start(monkeypatch):
+    """Few resolved picks => every gated condition reads 'insufficient' and
+    nothing trips. Silence-by-design must not raise a false kill alarm."""
+    import core.prediction as _pred
+    _kill_db([(0.8, "WIN", 4.0), (0.8, "LOSS", -3.0)], monkeypatch)
+    out = _pred.evaluate_kill_conditions()
+    assert out["ok"] is True
+    assert out["any_triggered"] is False
+    by = {c["name"]: c for c in out["conditions"]}
+    assert by["win_rate"]["status"] == "insufficient"
+    assert by["brier"]["status"] == "insufficient"
+    assert by["expectancy"]["status"] == "insufficient"
+    # consecutive_losses isn't sample-gated: most recent is a WIN -> green
+    assert by["consecutive_losses"]["status"] == "green"
+
+
+def test_kill_conditions_trip_on_low_winrate_and_consec_losses(monkeypatch):
+    """Full windows of poor results trip win_rate / brier / expectancy; a recent
+    LOSS streak trips consecutive_losses."""
+    import core.prediction as _pred
+    monkeypatch.setenv("KILL_WINRATE_WINDOW", "30")
+    monkeypatch.setenv("KILL_BRIER_WINDOW", "30")
+    monkeypatch.setenv("KILL_EXPECTANCY_WINDOW", "20")
+    monkeypatch.setenv("KILL_CONSEC_LOSSES", "3")
+    # newest-first: 5 fresh losses (streak), then 5 wins, then 20 more losses (30 total)
+    rows = [(0.85, "LOSS", -3.0)] * 5 + [(0.85, "WIN", 2.0)] * 5 + [(0.85, "LOSS", -3.0)] * 20
+    _kill_db(rows, monkeypatch)
+    out = _pred.evaluate_kill_conditions()
+    by = {c["name"]: c for c in out["conditions"]}
+    # win rate over 30 = 5/30 = 0.167 < 0.70
+    assert by["win_rate"]["status"] == "red"
+    assert by["win_rate"]["current"] < 0.70
+    # 5 leading losses >= 3
+    assert by["consecutive_losses"]["status"] == "red"
+    assert by["consecutive_losses"]["current"] == 5
+    # brier: 25 losses at conf .85 contribute .7225 each -> mean well above .35
+    assert by["brier"]["status"] == "red"
+    # expectancy over 20 = (5*-3 + 5*2 + 10*-3)/20 = -1.75 < 0
+    assert by["expectancy"]["status"] == "red"
+    assert by["expectancy"]["current"] < 0
+    assert out["any_triggered"] is True

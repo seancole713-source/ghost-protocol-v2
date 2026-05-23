@@ -118,6 +118,13 @@ button:disabled{opacity:.5;cursor:not-allowed}
   <div id="gate-history" style="margin-top:10px"><div class="kv">Loading&#8230;</div></div>
 </div>
 
+<div class="card">
+  <h3>Kill Conditions</h3>
+  <div class="desc">Env-tunable safety thresholds evaluated over the rolling resolved-pick history. Each shows current value vs threshold with a red/green flag. Inert (<b>insufficient</b>) until enough picks accumulate — silence by design, not a false alarm. Read-only here; enforcement is separate.</div>
+  <div class="row"><button class="secondary" onclick="loadKillStatus()">Refresh</button></div>
+  <div id="kill-status" style="margin-top:10px"><div class="kv">Loading&#8230;</div></div>
+</div>
+
 <!-- ─── Engine quality ─── -->
 <div class="sec-label">Engine Quality</div>
 <div class="grid">
@@ -574,6 +581,41 @@ async function loadGateHistory(){
   }
 }
 
+/* ─── Kill conditions (audit §2) ─── */
+async function loadKillStatus(){
+  var el = document.getElementById('kill-status');
+  if(!el) return;
+  el.innerHTML = '<div class="kv"><span class="warn">&#x21BB; Loading...</span></div>';
+  try{
+    var g = await fetch('/api/wolf/kill-status').then(function(r){return r.json()});
+    if(!g || g.ok === false){
+      el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml((g&&g.error)||'unavailable') + '</div>';
+      return;
+    }
+    var head = '<div class="kv" style="margin-bottom:8px">'
+      + (g.enabled ? '<span class="ok">&#10003; enabled</span>' : '<span class="warn">disabled (KILL_SWITCH_ENABLED=0)</span>')
+      + ' &middot; ' + (g.any_triggered ? '<span class="fail"><b>&#9888; condition triggered</b></span>' : '<span class="ok">all clear</span>')
+      + ' &middot; ' + g.resolved_available + ' resolved picks available</div>';
+    function badge(s){
+      if(s === 'red')   return '<span class="fail">&#10007; TRIPPED</span>';
+      if(s === 'green') return '<span class="ok">&#10003; ok</span>';
+      return '<span class="warn">&#8230; insufficient</span>';
+    }
+    var rows = (g.conditions || []).map(function(c){
+      var cur = (c.current === null || c.current === undefined) ? '—' : c.current;
+      return '<tr><td><b>' + escHtml(c.name) + '</b><br><span style="color:#8b96a8;font-size:11px">' + escHtml(c.action) + '</span></td>'
+        + '<td>' + cur + ' <span style="color:#8b96a8">' + escHtml(c.comparator) + ' ' + c.threshold + '</span></td>'
+        + '<td>' + c.samples + '/' + c.window + '</td>'
+        + '<td>' + badge(c.status) + '</td></tr>';
+    }).join('');
+    el.innerHTML = head
+      + '<table class="tbl"><thead><tr><th>Condition</th><th>Current vs threshold</th><th>Samples/window</th><th>Status</th></tr></thead><tbody>'
+      + rows + '</tbody></table>';
+  }catch(e){
+    el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml(String(e)) + '</div>';
+  }
+}
+
 async function adminLogout(){
   try{ await fetch('/admin/logout', {method:'POST'}); }catch(_){}
   location.reload();
@@ -582,9 +624,11 @@ async function adminLogout(){
 loadEngineQuality();
 loadGateStatus();
 loadGateHistory();
+loadKillStatus();
 setInterval(loadGateHistory, 120000);
 setInterval(loadEngineQuality, 60000);
 setInterval(loadGateStatus, 60000);
+setInterval(loadKillStatus, 120000);
 </script>
 
 </body>

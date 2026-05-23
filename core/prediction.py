@@ -47,6 +47,120 @@ FALSIFICATION_THRESHOLD: Dict[str, float] = {
 CRYPTO_SYMBOLS: List[str] = []
 STOCK_SYMBOLS: List[str] = ["WOLF"]
 
+
+# Kill conditions — env-tunable safety thresholds (audit §2). Each evaluates over
+# a rolling window of resolved high-conviction picks and maps to a degrade action.
+# All thresholds are env vars (read at call time so ops can retune without deploy).
+# This module only EVALUATES; enforcement (pause/degrade/Telegram) is wired separately.
+#   win_rate  < floor   over N  -> auto_pause          (KILL_WINRATE_FLOOR / _WINDOW)
+#   brier     > ceiling over N  -> degrade_watching    (KILL_BRIER_CEILING / _WINDOW)
+#   consecutive losses  >= K    -> cooldown            (KILL_CONSEC_LOSSES)
+#   expectancy (mean pnl%) < 0  over N -> halt_manual_review (KILL_EXPECTANCY_WINDOW)
+def _kill_cfg() -> Dict[str, Any]:
+    g = os.getenv
+    return {
+        "enabled": g("KILL_SWITCH_ENABLED", "1") not in ("0", "false", "False", ""),
+        "winrate_floor": float(g("KILL_WINRATE_FLOOR", "0.70")),
+        "winrate_window": max(1, int(g("KILL_WINRATE_WINDOW", "30"))),
+        "brier_ceiling": float(g("KILL_BRIER_CEILING", "0.35")),
+        "brier_window": max(1, int(g("KILL_BRIER_WINDOW", "30"))),
+        "consec_losses": max(1, int(g("KILL_CONSEC_LOSSES", "3"))),
+        "expectancy_window": max(1, int(g("KILL_EXPECTANCY_WINDOW", "20"))),
+    }
+
+
+def evaluate_kill_conditions() -> Dict[str, Any]:
+    """Read-only evaluation of the kill conditions over the rolling resolved-pick
+    history (WOLF, v3.2 era). Returns per-condition status with current value vs
+    threshold and a green/red/insufficient flag. Does NOT enforce. During the
+    cold start (few resolved picks) every gated condition reads 'insufficient'
+    and never trips — silence-by-design, not a false alarm."""
+    cfg = _kill_cfg()
+    need = max(cfg["winrate_window"], cfg["brier_window"],
+               cfg["expectancy_window"], cfg["consec_losses"])
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT confidence, outcome, pnl_pct FROM predictions "
+                "WHERE symbol='WOLF' AND id >= 223438 AND outcome IS NOT NULL "
+                "ORDER BY resolved_at DESC NULLS LAST, id DESC LIMIT %s",
+                (need,))
+            rows = cur.fetchall()   # newest first
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:160]}
+
+    def _status(triggered: bool, enough: bool) -> str:
+        if not enough:
+            return "insufficient"
+        return "red" if triggered else "green"
+
+    conds = []
+
+    # 1. Win rate over rolling window -> auto_pause
+    wr_rows = rows[: cfg["winrate_window"]]
+    wr_n = len(wr_rows)
+    wr_wins = sum(1 for _c, o, _p in wr_rows if o == "WIN")
+    wr = (wr_wins / wr_n) if wr_n else None
+    wr_enough = wr_n >= cfg["winrate_window"]
+    wr_trig = bool(wr_enough and wr is not None and wr < cfg["winrate_floor"])
+    conds.append({
+        "name": "win_rate", "action": "auto_pause", "window": cfg["winrate_window"],
+        "samples": wr_n, "current": round(wr, 4) if wr is not None else None,
+        "threshold": cfg["winrate_floor"], "comparator": "<",
+        "triggered": wr_trig, "status": _status(wr_trig, wr_enough),
+    })
+
+    # 2. Brier score over rolling window -> degrade_watching
+    br_terms = [(float(c) - (1.0 if o == "WIN" else 0.0)) ** 2
+                for c, o, _p in rows[: cfg["brier_window"]] if c is not None]
+    br_n = len(br_terms)
+    brier = (sum(br_terms) / br_n) if br_n else None
+    br_enough = br_n >= cfg["brier_window"]
+    br_trig = bool(br_enough and brier is not None and brier > cfg["brier_ceiling"])
+    conds.append({
+        "name": "brier", "action": "degrade_watching", "window": cfg["brier_window"],
+        "samples": br_n, "current": round(brier, 4) if brier is not None else None,
+        "threshold": cfg["brier_ceiling"], "comparator": ">",
+        "triggered": br_trig, "status": _status(br_trig, br_enough),
+    })
+
+    # 3. Consecutive losses (most recent K resolved all LOSS) -> cooldown
+    streak = 0
+    for _c, o, _p in rows:
+        if o == "LOSS":
+            streak += 1
+        else:
+            break
+    cl_trig = streak >= cfg["consec_losses"]
+    conds.append({
+        "name": "consecutive_losses", "action": "cooldown", "window": cfg["consec_losses"],
+        "samples": len(rows), "current": streak, "threshold": cfg["consec_losses"],
+        "comparator": ">=", "triggered": bool(cl_trig),
+        "status": "red" if cl_trig else "green",
+    })
+
+    # 4. Expectancy (mean realized pnl%) over rolling window -> halt_manual_review
+    ex_pnls = [float(p) for _c, _o, p in rows[: cfg["expectancy_window"]] if p is not None]
+    ex_n = len(ex_pnls)
+    expectancy = (sum(ex_pnls) / ex_n) if ex_n else None
+    ex_enough = ex_n >= cfg["expectancy_window"]
+    ex_trig = bool(ex_enough and expectancy is not None and expectancy < 0)
+    conds.append({
+        "name": "expectancy", "action": "halt_manual_review", "window": cfg["expectancy_window"],
+        "samples": ex_n, "current": round(expectancy, 4) if expectancy is not None else None,
+        "threshold": 0.0, "comparator": "<",
+        "triggered": ex_trig, "status": _status(ex_trig, ex_enough),
+    })
+
+    return {
+        "ok": True,
+        "enabled": cfg["enabled"],
+        "any_triggered": any(c["triggered"] for c in conds),
+        "resolved_available": len(rows),
+        "conditions": conds,
+    }
+
 def _is_market_hours():
     """Returns True if US market is open (9:30 AM - 4:00 PM CT, Mon-Fri)."""
     import datetime as _dt, pytz as _tz
