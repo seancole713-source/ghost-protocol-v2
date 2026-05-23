@@ -970,6 +970,13 @@ def predict_live_ex(symbol, asset_type, scores=None):
             "rsi": round(float(rsi), 2),
             "stoch_k": round(float(stoch_k), 2),
         }
+        # Full indicator vector at issuance (audit §4 pick journal): RSI, MACD,
+        # Bollinger, ATR, volume, momentum, EMA/ADX/OBV/stochastic. Captured even
+        # when a gate later blocks the pick, so every cycle is journaled.
+        scores["features"] = {
+            k: (round(float(v), 6) if isinstance(v, (int, float)) else v)
+            for k, v in features.items()
+        }
 
     # Gate 1: below EMA200 + choppy = high-probability loss setup
     if above_ema200 == 0 and adx_trending == 0:

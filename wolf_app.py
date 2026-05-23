@@ -2216,6 +2216,18 @@ def wolf_pick_journal(limit: int = 50, offset: int = 0, symbol: str = "WOLF"):
         for r in rows:
             (pid, sym, direction, conf, entry, target, stop, pred_at, exp_at,
              res_at, outcome, exit_p, pnl, feats, scrs) = r
+            _sc = _coerce_json(scrs)
+            # Flatten the indicator vector at issuance (audit §4) for direct display.
+            _fv = (_sc.get("features") if isinstance(_sc, dict) else None) or {}
+            _rg = (_sc.get("regime") if isinstance(_sc, dict) else None) or {}
+            indicators = None
+            if _fv:
+                indicators = {
+                    "rsi": _fv.get("rsi"), "macd_hist": _fv.get("macd_hist"),
+                    "pct_b": _fv.get("pct_b"), "atr_pct": _fv.get("atr_pct"),
+                    "volume_ratio": _fv.get("volume_ratio"), "mom_4h": _fv.get("mom_4h"),
+                    "adx": _fv.get("adx"), "regime": _rg.get("label"),
+                }
             picks.append({
                 "id": pid, "symbol": sym, "direction": direction,
                 "confidence": float(conf) if conf is not None else None,
@@ -2223,7 +2235,8 @@ def wolf_pick_journal(limit: int = 50, offset: int = 0, symbol: str = "WOLF"):
                 "predicted_at": pred_at, "expires_at": exp_at, "resolved_at": res_at,
                 "outcome": outcome, "exit_price": exit_p,
                 "pnl_pct": float(pnl) if pnl is not None else None,
-                "features": _coerce_json(feats), "scores": _coerce_json(scrs),
+                "features": _coerce_json(feats), "scores": _sc,
+                "indicators": indicators,
             })
 
         n = len(resolved)
