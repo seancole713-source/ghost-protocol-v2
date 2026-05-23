@@ -1445,7 +1445,7 @@ def test_deploy_version_exposes_pr_marker_and_endpoint_inventory():
     Lets the operator verify code freshness from a single curl."""
     out = wolf_app.deploy_version()
     assert out["ok"] is True
-    assert out["_pr_version"] == 34
+    assert out["_pr_version"] == 50
     assert isinstance(out["endpoints_present"], dict)
     # All of the recent endpoint flags must be present and true
     expected = {"v3_train_force_param", "v3_train_last", "v3_train_sync",
@@ -1473,7 +1473,7 @@ def test_v3_train_sync_returns_actual_result_with_pr_version(monkeypatch):
 
     out = wolf_app.v3_train_sync(x_cron_secret="", force=True)
     assert out["ok"] is True
-    assert out["_pr_version"] == 34
+    assert out["_pr_version"] == 50
     assert out["passed"] is True
     assert out["accuracy"] == 62.34
     assert "stocks" in out
@@ -1501,7 +1501,7 @@ def test_v3_train_sync_returns_500_with_error_on_exception(monkeypatch):
     assert resp.status_code == 500
     assert body["ok"] is False
     assert "xgboost died" in body["error"]
-    assert body["_pr_version"] == 34
+    assert body["_pr_version"] == 50
     assert cur.state["last_v3_train_state"] == "exception"
     assert "xgboost died" in cur.state["last_v3_train_error"]
 
@@ -3260,3 +3260,14 @@ def test_short_trend_direction():
     falling = _short_trend(80, 100)
     assert falling["direction"] == "falling" and falling["pct"] == -20.0
     assert _short_trend(100, 100)["direction"] == "flat"
+
+
+# ── feat/version-bump: /api/_version reports 2.1.0 / PR 50 ──────────────
+
+def test_deploy_version_reports_bumped_version():
+    out = wolf_app.deploy_version()
+    assert out["ok"] is True
+    assert out["app_version"] == "2.1.0"
+    assert out["_pr_version"] == 50
+    assert wolf_app.APP_VERSION == "2.1.0"
+    assert wolf_app.APP.version == "2.1.0"
