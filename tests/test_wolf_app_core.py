@@ -2516,6 +2516,63 @@ def test_pick_journal_insufficient_samples(monkeypatch):
     assert f["status"] == "insufficient_samples"
 
 
+# ── audit §4: pick journal full feature vector ──────────────────────────
+
+def test_predict_live_ex_journals_full_feature_vector(monkeypatch):
+    """predict_live_ex writes the complete indicator vector (RSI/MACD/Bollinger/
+    ATR/volume/momentum/EMA/ADX) into scores['features'] via real
+    _calculate_features, so the pick journal captures it."""
+    import core.signal_engine as _se
+    import numpy as _np
+    # 220 steadily-rising 1h bars -> uptrend that clears the regime gates
+    rows = []
+    for i in range(220):
+        px = 100.0 + i * 0.4
+        rows.append({"ts": "2026-05-20T%02d:00:00Z" % (i % 24),
+                     "open": px - 0.2, "high": px + 0.5, "low": px - 0.5,
+                     "close": px, "volume": 1000 + i * 5})
+    monkeypatch.setattr(_se, "_fetch_ohlcv",
+                        lambda s, a, period="5d", interval="1h": rows)
+
+    class _M:
+        def predict_proba(self, X): return _np.array([[0.1, 0.9]])
+    meta = {"edge": 0.3, "accuracy": 0.66, "wf_acc_mean": 0.64,
+            "wf_edge_mean": 0.2, "wf_fold_count": 4, "trained_at": time.time()}
+    monkeypatch.setattr(_se, "load_model", lambda s: (_M(), _se.FEATURE_COLS, meta))
+    for k, v in {"V3_MIN_WIN_PROBA": "0.55", "V3_MIN_EDGE": "0.0",
+                 "V3_MIN_HOLDOUT_ACC": "0.0", "V3_MIN_WF_ACC_MEAN": "0.0"}.items():
+        monkeypatch.setenv(k, v)
+
+    scores = {}
+    sig, reason = _se.predict_live_ex("WOLF", "stock", scores=scores)
+    assert sig is not None and sig[0] == "UP"   # cleared the gates and fired
+    fv = scores.get("features")
+    assert isinstance(fv, dict)
+    for k in ("rsi", "macd_hist", "pct_b", "atr_pct", "volume_ratio",
+              "mom_4h", "adx", "obv_slope", "stoch_k"):
+        assert k in fv, "missing journaled feature: " + k
+
+
+def test_pick_journal_flattens_indicators(monkeypatch):
+    """The journal exposes a flat `indicators` block pulled from scores.features
+    so the issuance-time vector is directly readable."""
+    listing = [(
+        302, "WOLF", "UP", 0.83, 10.0, 10.6, 9.7, 5000, 5100, 5200,
+        "WIN", 10.6, 6.0,
+        {"hour_of_day": 10},
+        {"regime": {"label": "Trend-up"},
+         "features": {"rsi": 58.2, "macd_hist": 0.12, "pct_b": 0.71,
+                      "atr_pct": 0.021, "volume_ratio": 1.4, "mom_4h": 0.8, "adx": 27.5}},
+    )]
+    _pick_journal_db(1, listing, [(0.83, "WIN", 6.0)], monkeypatch)
+    out = wolf_app.wolf_pick_journal(limit=25)
+    ind = out["picks"][0]["indicators"]
+    assert ind["rsi"] == 58.2
+    assert ind["macd_hist"] == 0.12
+    assert ind["atr_pct"] == 0.021
+    assert ind["regime"] == "Trend-up"
+
+
 # ── audit §2: kill conditions ───────────────────────────────────────────
 
 def _kill_db(rows, monkeypatch):
