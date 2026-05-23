@@ -826,12 +826,12 @@ async def get_wolf_news(category: str = "all"):
         try:
             title = a.get("title") or a.get("headline") or ""
             syms = [str(s).upper() for s in (a.get("symbols") or [])]
-            # PR #23: STRICT WOLF-only filter. Previous behaviour fell through
-            # for articles with no symbol tags, leaking unrelated names
-            # (Zoom / IBM / Ross Stores / Ralph Lauren / AAP). PR #25
-            # widens the match keywords AND checks the body/summary text,
-            # not just the title — Finnhub's stock-news cache sometimes
-            # stores body in 'summary' or 'description' fields.
+            # PR #26: REQUIRE a textual WOLF mention. The previous symbols-tag
+            # shortcut (WOLF in syms) was the leak source — core/news fetches
+            # Finnhub *company-news for WOLF* and tags EVERY returned article
+            # with ["WOLF"], including market-roundup pieces that are actually
+            # about IBM / Zoom / Ross Stores / Ralph Lauren. The tag is
+            # therefore unreliable; only trust the article TEXT.
             title_upper = title.upper()
             body_text = (a.get("summary") or a.get("description") or "")
             blob_upper = (title + " " + body_text).upper()
@@ -839,8 +839,7 @@ async def get_wolf_news(category: str = "all"):
                              .replace(":", " ").replace(";", " ")
                              .replace("(", " ").replace(")", " ").split())
             wolf_match = (
-                (WOLF_SYMBOL in syms)
-                or ("WOLFSPEED" in blob_upper)
+                ("WOLFSPEED" in blob_upper)
                 or (WOLF_SYMBOL in blob_words)
                 or ("SIC" in blob_words)
                 or ("SILICON CARBIDE" in blob_upper)

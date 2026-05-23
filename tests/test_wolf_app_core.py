@@ -1895,7 +1895,10 @@ def test_news_filter_drops_articles_without_wolf_mention(monkeypatch):
         {"title": "WOLF, AAPL, NVDA: today's movers", "symbols": []},
         {"title": "Ralph Lauren launches new collection", "symbols": []},
         {"title": "Random tech news", "symbols": ["TSLA"]},
-        {"title": "Generic market wrap", "symbols": ["WOLF", "NVDA"]},
+        # PR #26: tagged ["WOLF"] by the Finnhub roundup but the TEXT is
+        # about other names — this is exactly the leak case. Must be DROPPED
+        # now that we require a textual mention, not just the symbols tag.
+        {"title": "Stocks to watch: Ross Stores, Advance Auto Parts", "symbols": ["WOLF", "NVDA"]},
     ]
     import core.news as _news
     monkeypatch.setattr(_news, "get_recent_articles", lambda n: fake_articles)
@@ -1916,11 +1919,12 @@ def test_news_filter_drops_articles_without_wolf_mention(monkeypatch):
     titles = {a["title"] for a in body.get("articles", [])}
     assert "Wolfspeed posts Q1 results" in titles
     assert "WOLF, AAPL, NVDA: today's movers" in titles
-    assert "Generic market wrap" in titles
     assert "Zoom hits new highs after earnings" not in titles
     assert "IBM announces partnership" not in titles
     assert "Ralph Lauren launches new collection" not in titles
     assert "Random tech news" not in titles
+    # The key PR #26 assertion: WOLF-tagged but textually off-topic → DROPPED
+    assert "Stocks to watch: Ross Stores, Advance Auto Parts" not in titles
 
 
 def test_news_filter_replaces_finnhub_stock_source_label(monkeypatch):
