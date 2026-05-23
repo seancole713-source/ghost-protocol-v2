@@ -948,6 +948,29 @@ def predict_live_ex(symbol, asset_type, scores=None):
     rsi = features.get('rsi', 50)
     stoch_k = features.get('stoch_k', 50)
 
+    # Coarse regime label from the gate indicators — placeholder until the HMM
+    # specialist (blueprint §3). Captured even when a gate later blocks the pick,
+    # so the operator can see the regime at issuance on every cycle.
+    if ema_trend_bullish == 1 and adx_trending == 1 and above_ema200 == 1:
+        regime_label = "Trend-up"
+    elif ema_trend_bullish == 0 and above_ema200 == 0:
+        regime_label = "Trend-down"
+    elif adx_trending == 0:
+        regime_label = "Chop"
+    else:
+        regime_label = "Neutral"
+    if scores is not None:
+        scores["schema"] = 1
+        scores["regime"] = {
+            "label": regime_label,
+            "above_ema200": int(above_ema200),
+            "adx": round(float(adx_val), 2),
+            "adx_trending": int(adx_trending),
+            "ema_trend_bullish": int(ema_trend_bullish),
+            "rsi": round(float(rsi), 2),
+            "stoch_k": round(float(stoch_k), 2),
+        }
+
     # Gate 1: below EMA200 + choppy = high-probability loss setup
     if above_ema200 == 0 and adx_trending == 0:
         LOGGER.info(f"REGIME GATE [{symbol}]: below EMA200 + ADX={adx_val:.1f}<20 — skip BUY")
@@ -969,6 +992,29 @@ def predict_live_ex(symbol, asset_type, scores=None):
     wf_acc_mean = float(meta.get("wf_acc_mean", meta.get("accuracy", 0)))
     wf_edge_mean = float(meta.get("wf_edge_mean", meta.get("edge", 0)))
     wf_fold_count = int(meta.get("wf_fold_count", 0))
+    accuracy = meta.get('accuracy', min_acc)
+
+    # Capture the model score vector NOW — before the meta gates and the prob_low
+    # return — so /api/wolf/gate-status can show where up_prob landed relative to
+    # the gates even on cycles that do not fire.
+    if scores is not None:
+        fires = up_prob > min_p
+        scores["up_prob"] = round(up_prob, 4)
+        scores["specialists"] = {
+            "daily_swing": {"model": "xgboost_v3", "up_prob": round(up_prob, 4),
+                            "vote": "UP" if fires else "none"},
+        }
+        scores["specialist_count"] = 1
+        scores["specialist_agree_up"] = 1 if fires else 0
+        scores["model_meta"] = {
+            "accuracy": round(float(accuracy), 4),
+            "edge": round(float(edge), 4),
+            "wf_acc_mean": round(wf_acc_mean, 4),
+            "wf_edge_mean": round(wf_edge_mean, 4),
+            "wf_fold_count": wf_fold_count,
+            "min_win_proba": round(float(min_p), 4),
+        }
+
     if edge < min_edge:
         return None, "meta_gate"
     if meta.get('accuracy', 0) < min_acc:
@@ -977,47 +1023,9 @@ def predict_live_ex(symbol, asset_type, scores=None):
         return None, "meta_gate"
 
     # Confidence = holdout TP/SL WIN rate + strength above min win-probability
-    accuracy = meta.get('accuracy', min_acc)
-
     if up_prob > min_p:
         signal_strength = (up_prob - min_p) * 4.0
         conf = round(min(0.95, max(0.75, accuracy + signal_strength)), 3)
-        if scores is not None:
-            # Derive a coarse regime label from the gate indicators. Placeholder
-            # until the HMM specialist (blueprint §3) lands; captures the regime
-            # the pick was issued in so calibration can later be regime-conditional.
-            if ema_trend_bullish == 1 and adx_trending == 1 and above_ema200 == 1:
-                regime_label = "Trend-up"
-            elif ema_trend_bullish == 0 and above_ema200 == 0:
-                regime_label = "Trend-down"
-            elif adx_trending == 0:
-                regime_label = "Chop"
-            else:
-                regime_label = "Neutral"
-            scores.update({
-                "schema": 1,
-                "specialists": {
-                    "daily_swing": {"model": "xgboost_v3", "up_prob": round(up_prob, 4), "vote": "UP"},
-                },
-                "specialist_count": 1,
-                "specialist_agree_up": 1,
-                "model_meta": {
-                    "accuracy": round(float(accuracy), 4),
-                    "edge": round(float(edge), 4),
-                    "wf_acc_mean": round(wf_acc_mean, 4),
-                    "wf_edge_mean": round(wf_edge_mean, 4),
-                    "wf_fold_count": wf_fold_count,
-                },
-                "regime": {
-                    "label": regime_label,
-                    "above_ema200": int(above_ema200),
-                    "adx": round(float(adx_val), 2),
-                    "adx_trending": int(adx_trending),
-                    "ema_trend_bullish": int(ema_trend_bullish),
-                    "rsi": round(float(rsi), 2),
-                    "stoch_k": round(float(stoch_k), 2),
-                },
-            })
         return ("UP", conf), None
     # DOWN signals disabled — 1.5% WR on 274 trades, not viable
     # Ghost is BUY-only system

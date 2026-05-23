@@ -477,13 +477,39 @@ async function loadGateStatus(){
       + ' &middot; <b>' + escHtml(ss.phase || '—') + '</b> phase</td></tr>';
     html += '</tbody></table>';
 
+    // up_prob readout — shows where the model landed vs the binding threshold,
+    // whether or not the pick fired (the "how close did it come" view).
+    var probHtml = '';
+    if(lp.up_prob != null){
+      probHtml += '<table class="tbl"><tbody>';
+      probHtml += '<tr><td>Model up_prob</td><td><b>' + lp.up_prob.toFixed(4) + '</b>'
+        + (lp.regime && lp.regime.label ? ' &middot; regime <b>' + escHtml(lp.regime.label) + '</b>' : '') + '</td></tr>';
+      if(lp.up_prob_needed_to_fire != null){
+        probHtml += '<tr><td>up_prob needed to fire</td><td>' + lp.up_prob_needed_to_fire.toFixed(4)
+          + ' <span style="color:#8b96a8">(binding conf '
+          + (lp.binding_confidence_threshold != null ? (lp.binding_confidence_threshold*100).toFixed(0)+'%' : '—') + ')</span></td></tr>';
+        var gap = lp.up_prob_gap;
+        if(gap != null){
+          var gapCls = gap >= 0 ? 'ok' : 'fail';
+          probHtml += '<tr><td>Gap to clear</td><td><span class="' + gapCls + '"><b>'
+            + (gap >= 0 ? '+' : '') + gap.toFixed(4) + '</b></span> '
+            + (gap >= 0 ? '(cleared)' : '(short)') + '</td></tr>';
+        }
+      }
+      probHtml += '</tbody></table>';
+    } else if(lp.reason){
+      probHtml += '<div class="kv"><span style="color:#8b96a8">up_prob not computed — a gate fired before the model ran (<code>'
+        + escHtml(lp.reason) + '</code>)</span></div>';
+    }
+
     // Live prediction + gate analysis
     html += '<div class="kv" style="margin-top:10px"><b>Latest model prediction (WOLF)</b></div>';
     if(lp.error){
       html += '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml(lp.error) + '</div>';
     } else if(!lp.model_emitted){
       html += '<div class="kv"><span class="warn">&#x23F3;</span> Model emitted NO signal &middot; reason: <code>'
-        + escHtml(lp.reason || 'none') + '</code> (gates upstream of confidence)</div>';
+        + escHtml(lp.reason || 'none') + '</code></div>';
+      html += probHtml;
     } else {
       var wa = lp.would_alert;
       var icon = wa ? '<span class="ok">&#10003;</span>' : '<span class="warn">&#x23F3;</span>';
@@ -495,6 +521,7 @@ async function loadGateStatus(){
         + (lp.objective_skip_reason ? ' <code>'+escHtml(lp.objective_skip_reason)+'</code>' : '') + '</td></tr>';
       html += '<tr><td><b>WOULD ALERT</b></td><td>' + icon + ' <b>' + (wa ? 'YES' : 'NO') + '</b></td></tr>';
       html += '</tbody></table>';
+      html += probHtml;
     }
     el.innerHTML = html;
   }catch(e){
