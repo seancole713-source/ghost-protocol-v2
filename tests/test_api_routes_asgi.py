@@ -93,3 +93,32 @@ def test_api_cockpit_context_route_error(monkeypatch):
     body = r.json()
     assert body["ok"] is False
     assert "boom" in body["error"]
+
+
+# ── security hardening (audit) ──────────────────────────────────────────
+
+def test_docs_disabled_by_default(monkeypatch):
+    """DOCS_ENABLED is unset in CI, so Swagger UI / ReDoc / OpenAPI schema are
+    all 404 — destructive admin endpoints aren't browsable or callable."""
+    with _client_with_test_mode(monkeypatch) as client:
+        assert client.get("/docs").status_code == 404
+        assert client.get("/redoc").status_code == 404
+        assert client.get("/openapi.json").status_code == 404
+
+
+def test_diagnostics_404_without_admin_cookie(monkeypatch):
+    """/api/diagnostics leaks internals, so it is gated behind the admin cookie
+    and returns 404 (undiscoverable) when unauthenticated."""
+    monkeypatch.setenv("CRON_SECRET", "testsecret")   # activate the gate
+    with _client_with_test_mode(monkeypatch) as client:
+        r = client.get("/api/diagnostics")
+    assert r.status_code == 404
+
+
+def test_diagnostics_route_is_registered_but_hidden():
+    """The 404 above is the auth wall, not a missing route: the path IS
+    registered, yet hidden from the OpenAPI schema (include_in_schema=False)."""
+    paths = [getattr(r, "path", None) for r in wolf_app.APP.routes]
+    assert "/api/diagnostics" in paths
+    diag = next(r for r in wolf_app.APP.routes if getattr(r, "path", None) == "/api/diagnostics")
+    assert diag.include_in_schema is False

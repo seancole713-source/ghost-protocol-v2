@@ -835,7 +835,17 @@ async def lifespan(app: FastAPI):
     yield
     scheduler.stop()
 
-APP = FastAPI(title="Ghost Protocol v2", version="2.0.0", lifespan=lifespan)
+# Security (audit): /docs (Swagger UI), /redoc, and the OpenAPI schema are
+# disabled unless DOCS_ENABLED is explicitly truthy. When the schema IS exposed,
+# every /api/admin/* route sets include_in_schema=False so destructive endpoints
+# never appear in openapi.json or "Try it out".
+_DOCS_ENABLED = os.getenv("DOCS_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
+APP = FastAPI(
+    title="Ghost Protocol v2", version="2.0.0", lifespan=lifespan,
+    docs_url="/docs" if _DOCS_ENABLED else None,
+    redoc_url="/redoc" if _DOCS_ENABLED else None,
+    openapi_url="/openapi.json" if _DOCS_ENABLED else None,
+)
 APP.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 # Mount portfolio router — WOLF position tracking, price refresh, ghost predictions
@@ -853,9 +863,18 @@ except Exception as _we:
 
 
 
-@APP.get("/api/diagnostics")
-async def diagnostics():
-    """Full logic correctness check — catches bugs /health misses."""
+@APP.get("/api/diagnostics", include_in_schema=False)
+async def diagnostics(request: Request = None):
+    """Full logic correctness check — catches bugs /health misses.
+
+    Security (audit): leaks scheduler intervals, Telegram gate hashes, model
+    internals and health-check details, so it is gated behind the same admin
+    cookie as /admin. Returns 404 (not 403) when unauthenticated so the endpoint
+    is undiscoverable. FastAPI always injects `request` for HTTP calls; trusted
+    internal callers invoke diagnostics() with no request and bypass the gate.
+    """
+    if request is not None and not _admin_token_valid(request.cookies.get(_ADMIN_COOKIE, "")):
+        raise HTTPException(status_code=404)
     import time as _t, json as _j2, datetime as _dt, pytz as _tz
     _now = int(_t.time())
     _passed = []
@@ -1163,7 +1182,7 @@ def _auto_purge_bad_models():
         return purged
     except Exception: return 0
 
-@APP.post("/api/admin/delete-model")
+@APP.post("/api/admin/delete-model", include_in_schema=False)
 async def delete_model(x_cron_secret: str = Header(None), non_wolf_only: bool = False):
     """Delete v3 models from ghost_v3_model.
 
@@ -1218,7 +1237,7 @@ async def delete_model(x_cron_secret: str = Header(None), non_wolf_only: bool = 
 _GHOST_PORTFOLIO_PATTERNS = ("ZZE2E", "STOCK GHOST", "GHOST", "ZZ", "TEST")
 
 
-@APP.post("/api/admin/purge-ghost-portfolio")
+@APP.post("/api/admin/purge-ghost-portfolio", include_in_schema=False)
 async def purge_ghost_portfolio(x_cron_secret: str = Header(None), dry_run: bool = False):
     """Hard-delete ghost / test rows from user_portfolio.
 
@@ -1263,7 +1282,7 @@ async def purge_ghost_portfolio(x_cron_secret: str = Header(None), dry_run: bool
         return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
 
 
-@APP.post("/api/admin/fix-stock-expiry")
+@APP.post("/api/admin/fix-stock-expiry", include_in_schema=False)
 async def fix_stock_expiry(x_cron_secret: str = Header(None)):
     """Fix stock picks that were created before the weekend-expiry fix and expire before market open."""
     if not _cron_ok(x_cron_secret, strict=True):
@@ -2327,7 +2346,7 @@ def wolf_kill_status():
         return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
 
 
-@APP.post("/api/admin/resume-engine")
+@APP.post("/api/admin/resume-engine", include_in_schema=False)
 def admin_resume_engine(x_cron_secret: str = Header(default="")):
     """Clear a kill-condition pause and resume firing (audit §2 enforcement).
     Manual recovery for pause/degrade/halt trips that do not auto-resume."""

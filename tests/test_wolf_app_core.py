@@ -2573,6 +2573,42 @@ def test_pick_journal_flattens_indicators(monkeypatch):
     assert ind["regime"] == "Trend-up"
 
 
+# ── security: /api/v2/recent WOLF-only default ──────────────────────────
+
+def test_v2_recent_defaults_to_wolf(monkeypatch):
+    import core.portfolio_routes as pr
+    captured = {}
+
+    class _Cur:
+        def execute(self, sql, params=None):
+            captured["sql"] = sql
+            captured["params"] = params
+        def fetchall(self): return []
+
+    class _Conn:
+        def cursor(self): return _Cur()
+
+    class _Ctx:
+        def __enter__(self): return _Conn()
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(pr, "db_conn", lambda: _Ctx())
+
+    out = pr.v2_recent()   # default symbol => WOLF-only
+    assert out["ok"] is True
+    assert "symbol=%s" in captured["sql"]
+    assert captured["params"] == ("WOLF",)
+
+    # explicit symbol is upper-cased and filtered
+    pr.v2_recent(symbol="tsla")
+    assert captured["params"] == ("TSLA",)
+
+    # ALL bypasses the filter (internal cross-symbol listing)
+    pr.v2_recent(symbol="ALL")
+    assert "symbol=%s" not in captured["sql"]
+    assert captured["params"] is None
+
+
 # ── audit §2: kill conditions ───────────────────────────────────────────
 
 def _kill_db(rows, monkeypatch):
