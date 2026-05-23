@@ -560,6 +560,64 @@ def test_ghost_score_signal_label_bands():
     assert we._signal_label(0) == "STRONG_SELL"
 
 
+# ── audit §3: rule-based market regime + Ghost Score modifier ───────────
+
+def test_classify_regime_rules():
+    from core.regime import classify_regime
+    # +7.7% over SMA, high volume => Strong Uptrend, boost modifier
+    r = classify_regime(70.0, 65.0, volume_ratio=2.0)
+    assert r["label"] == "Strong Uptrend"
+    assert r["modifier"] == 1.10
+    assert r["delta_pct"] == 7.69
+    # +7.7% but normal volume => plain Uptrend
+    assert classify_regime(70.0, 65.0, volume_ratio=1.0)["label"] == "Uptrend"
+    # +1.5% => Uptrend
+    assert classify_regime(101.5, 100.0)["label"] == "Uptrend"
+    # within +/-1% => Choppy, neutral modifier
+    flat = classify_regime(100.5, 100.0)
+    assert flat["label"] == "Choppy" and flat["modifier"] == 1.0
+    # -2% => Downtrend; -5% => Strong Downtrend
+    assert classify_regime(98.0, 100.0)["label"] == "Downtrend"
+    assert classify_regime(95.0, 100.0)["label"] == "Strong Downtrend"
+    # missing data => Unknown, neutral
+    u = classify_regime(None, None)
+    assert u["label"] == "Unknown" and u["modifier"] == 1.0 and u["delta_pct"] is None
+
+
+def test_ghost_score_applies_regime_modifier():
+    """Same inputs, different regimes: bearish downgrades, bullish boosts, and
+    raw_score stays the pre-modifier value."""
+    import api.wolf_endpoints as we
+    from core.regime import classify_regime
+    now = int(time.time())
+    base = dict(
+        latest_pick={"direction": "BUY", "confidence": 0.80, "predicted_at": now - 60},
+        volume_ratio=1.0, sector={"signal": None},
+        current_price=50.0, sma_5d=50.0, now_ts=now,
+    )
+    # raw: model 32 + volume 10 + sector 7.5 + momentum 7.5 + freshness 10 = 67
+    neutral = we.compute_ghost_score(**base, regime={"modifier": 1.0})
+    assert neutral["raw_score"] == 67.0
+    assert neutral["score"] == 67.0
+
+    down = we.compute_ghost_score(**base, regime=classify_regime(49.0, 50.0))  # -2% => Downtrend ×0.90
+    assert down["raw_score"] == 67.0
+    assert abs(down["score"] - 60.3) < 1e-6        # 67 * 0.90
+    assert down["regime"]["label"] == "Downtrend"
+
+    up = we.compute_ghost_score(**base, regime=classify_regime(53.0, 50.0, volume_ratio=2.0))  # Strong Uptrend ×1.10
+    assert abs(up["score"] - 73.7) < 1e-6          # 67 * 1.10
+
+    # modifier never pushes the score past 100
+    maxed = we.compute_ghost_score(
+        latest_pick={"direction": "BUY", "confidence": 0.99, "predicted_at": now - 60},
+        volume_ratio=3.0, sector={"signal": "wolf_lagging_up"},
+        current_price=60.0, sma_5d=50.0, now_ts=now,
+        regime=classify_regime(60.0, 50.0, volume_ratio=3.0),
+    )
+    assert maxed["score"] <= 100.0
+
+
 def test_wolf_predictions_buy_sell_target_derivation(monkeypatch):
     """BUY pick → buy_target=entry, sell_target=target. SELL pick → inverted."""
     import api.wolf_endpoints as we

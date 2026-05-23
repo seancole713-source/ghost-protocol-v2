@@ -1078,8 +1078,13 @@ def _signal_label(score: float) -> str:
     return "STRONG_SELL"
 
 
-def compute_ghost_score(latest_pick, volume_ratio, sector, current_price, sma_5d, now_ts, last_scan_ts=None):
-    """Pure scoring function — all I/O lifted to the caller for testability."""
+def compute_ghost_score(latest_pick, volume_ratio, sector, current_price, sma_5d, now_ts,
+                        last_scan_ts=None, regime=None):
+    """Pure scoring function — all I/O lifted to the caller for testability.
+
+    `regime` (audit §3) is the rule-based market-regime tag; its modifier scales
+    the raw component sum so the score is downgraded in bearish regimes and
+    modestly boosted in confirmed uptrends. raw_score is the pre-modifier value."""
     # Freshness reflects engine activity (last scan), falling back to last pick.
     activity_ts = last_scan_ts or (latest_pick.get("predicted_at") if latest_pick else None)
     components = {
@@ -1089,13 +1094,16 @@ def compute_ghost_score(latest_pick, volume_ratio, sector, current_price, sma_5d
         "momentum": _score_momentum(current_price, sma_5d),
         "freshness": _score_freshness(activity_ts, now_ts),
     }
-    score = sum(components.values())
-    score = max(0.0, min(100.0, score))
+    raw = max(0.0, min(100.0, sum(components.values())))
+    modifier = float((regime or {}).get("modifier", 1.0))
+    score = max(0.0, min(100.0, raw * modifier))
     return {
         "score": round(score, 1),
+        "raw_score": round(raw, 1),
         "signal": _signal_label(score),
         "components": {k: round(v, 2) for k, v in components.items()},
         "weights": dict(_GHOST_WEIGHTS),
+        "regime": regime,
     }
 
 
@@ -1200,14 +1208,19 @@ async def get_ghost_score():
         errors.append("scan_ts: " + str(e)[:80])
 
     now_ts = int(time.time())
+    # Rule-based market regime (audit §3) — modifies the score + shown in cockpit.
+    from core.regime import classify_regime
+    regime = classify_regime(current_price, sma_5d, volume_ratio)
     scored = compute_ghost_score(latest_pick, volume_ratio, sector, current_price, sma_5d, now_ts,
-                                 last_scan_ts=last_scan_ts)
+                                 last_scan_ts=last_scan_ts, regime=regime)
 
     payload = _ok({
         "symbol": WOLF_SYMBOL,
         "updated_at": now_ts,
         "score": scored["score"],
+        "raw_score": scored["raw_score"],
         "signal": scored["signal"],
+        "regime": regime,
         "components": scored["components"],
         "weights": scored["weights"],
         "inputs": {
