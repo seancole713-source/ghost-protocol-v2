@@ -1,6 +1,42 @@
 # Ghost Protocol v2 — PROJECT STATE
-**Last updated:** 2026-05-21
+**Last updated:** 2026-05-23
 **Read this first.** Any agent picking up this project must read this file before touching any code.
+
+> This file was significantly stale (pre-v3.2) until 2026-05-23. It now reflects
+> the v3.2 XGBoost engine, the four-gate chain, aggressive objective mode, the
+> cookie-login `/admin` console, and the pick-journal credibility ledger.
+
+---
+
+## THE NORTH-STAR
+
+**~80% prediction accuracy on WOLF — but only under an honest, narrow contract.**
+
+80% is *not* achievable on "WOLF goes up tomorrow" (that's ≤55% for the best funds
+alive). It is achievable on a conditional, selective question: *given a
+high-conviction setup, will WOLF move in direction D before stop S over horizon
+H, with N≥30 samples/year?* The system is built for **selective prediction** —
+it stays silent most of the time and only fires when the gates agree.
+**Silence is the product, not a bug.**
+
+The full vision is the "WOLFSPEED-Only Prediction Engine" blueprint (7 specialist
+models → meta-model, 12 data categories, regime detection, options flow, etc.).
+Today we have the *bones*: one model, one ticker, a confidence gate, a calibration
+path, and (as of PR #30) the credibility ledger. The path forward is disciplined
+additions, gated by **data accumulation** — see "Honesty layer" below.
+
+### Honesty layer (pre-registered, do not move the goalposts)
+
+- WOLF is **post-Chapter-11** (new shares 2025-09-29) → only ~250 trading days of
+  the security that actually exists. Pre-bankruptcy WOLF is a *different
+  instrument* — never train on it as if continuous.
+- The 80% claim is judged only after enough resolved high-conviction picks
+  accumulate. Until then the journal reads **insufficient_samples** by design.
+- **Kill condition** (`core/prediction.py → FALSIFICATION_THRESHOLD`): once N≥30
+  resolved high-conviction picks, if win rate < 70% **and** the 95% CI excludes
+  80%, the 80% claim is **abandoned** and the system repositions as a
+  lower-confidence directional aid. Surfaced at `verdict.falsification` on
+  `/api/wolf/pick-journal`.
 
 ---
 
@@ -14,244 +50,219 @@
 | Railway service (v2) | `98593080-065d-43ef-840c-4a3d36a1b572` |
 | Railway service (v1, silenced) | `098281d7-7dba-447c-981e-0ebd625cecad` |
 | Health endpoint | `/health` — should return score 100 |
+| Operator console | `/admin` — cookie login (see Admin section) |
+| Investor cockpit | `/cockpit` — WOLF-first UI |
 | Cron trigger | cron-job.org fires `POST /api/morning-card` daily 8 AM CT |
-| Cron schedule | America/Chicago timezone, `0 8 * * *` |
-| Auth header name | `x-cron-secret` (value stored in Railway env as CRON_SECRET) |
+| Auth header name | `x-cron-secret` (value in Railway env as `CRON_SECRET`) |
+
+**Sandbox cannot reach Railway** (egress allowlist) — all production verification
+is done by the user. Agents must not claim prod-verified without user confirmation.
+
+### Live env config (set in Railway, confirmed by user)
+- `OBJECTIVE_MODE=aggressive`
+- `OBJECTIVE_AUTO_MODE_ENABLED=0` (env wins; runtime auto-mode override disabled)
+- `MIN_ALERT_CONFIDENCE=0.75`
 
 ---
 
-## ARCHITECTURE — 15 FILES
+## HOW PICKS ARE GENERATED (v3.2 engine)
 
-```
-ghost-protocol-v2/
-├── wolf_app.py              FastAPI app, all endpoints, lifespan startup
-├── core/
-│   ├── db.py                DB pool, schema migration (handles v1 NOT NULL columns)
-│   ├── prices.py            yfinance/Polygon for stocks; WOLF is primary symbol
-│   ├── scheduler.py         Single background task runner
-│   ├── prediction.py        WIN-RATE SIGNAL ENGINE — WOLF-only, STOCK_SYMBOLS default="WOLF"
-│   ├── telegram.py          Morning card, position alerts, weekly summary
-│   └── news.py              Finnhub news every 30 min
-├── templates/
-│   └── cockpit_v5.html      WOLF-first cockpit UI (served at GET /cockpit)
-├── static/
-│   ├── cockpit_v5.js        All cockpit JS — wired to real v2 endpoints
-│   └── cockpit_v5.css       Cockpit styles incl. WOLF intel panel
-├── scripts/
-│   ├── retrain.py           XGBoost trainer (unused - see Known Issues)
-│   └── __init__.py
-├── Procfile / requirements.txt / nixpacks.toml
-└── PROJECT_STATE.md         THIS FILE
-```
+**XGBoost is BACK.** The old "win-rate-from-gpo, no XGBoost" design is gone. The
+live engine is the **v3.2 XGBoost model** trained on TP/SL daily-bar outcomes with
+walk-forward validation. The WOLF model trained at **~65.4% holdout accuracy**
+(PR #21 was the fix that finally produced folds — see Change Log).
 
----
+`core/signal_engine.py → predict_live_ex(symbol, asset_type, scores=None)`:
+1. Load model; fetch intraday OHLCV (5d/1h).
+2. **Regime gates** (inside the engine): skip BUY if below EMA200 + ADX<20
+   (downtrend + chop); skip if full bearish EMA stack and not oversold.
+3. Model `predict_proba` → `up_prob`.
+4. **Meta gates**: reject if `edge < V3_MIN_EDGE`, holdout `accuracy < V3_MIN_HOLDOUT_ACC`,
+   or walk-forward acc/edge below floors.
+5. Confidence: `conf = clamp(accuracy + (up_prob − min_p) × 4.0, 0.75, 0.95)`
+   where `accuracy ≈ 0.654` (model holdout) and `min_p = V3_MIN_WIN_PROBA` (0.55).
+6. If `scores` dict is passed, it's populated with the **specialist score vector
+   + regime-at-issuance** (PR #30) for the pick journal.
 
-## WOLF PIVOT — 2026-05-21
+### The four-gate chain (why the system is usually silent)
+1. **Model gate** — engine emits a signal at all (regime + meta gates above).
+2. **Confidence floor** — `MIN_ALERT_CONFIDENCE` (`CONFIDENCE_FLOOR`, 0.75 live).
+3. **SELL block** — BUY-only. DOWN signals blocked (1.9% historical WR).
+4. **Objective gate** — `core/prediction.py → _objective_gate`.
 
-Ghost Protocol v2 is now **WOLF-only**. All crypto defaults removed.
+### Objective gate modes
+| Mode | target_wr | min_samples | bootstrap_min_conf |
+|---|---|---|---|
+| precision | 0.80 | 20 | 0.90 |
+| balanced | 0.70 | 12 | 0.85 |
+| **aggressive (live)** | 0.62 | 8 | 0.78 |
 
-- `core/prediction.py`: `STOCK_SYMBOLS` env default = `"WOLF"`, `CRYPTO_SYMBOLS` default = `""`
-- `wolf_app.py`: all `asset_type` fallbacks changed from `"crypto"` → `"stock"`
-- Cockpit UI: crypto tab removed, WOLF tab is the default landing page
-- Ticker bar: BTC/ETH replaced with WOLF/DRIV
-- Target symbol: **WOLF** (Wolfspeed Inc, NYSE)
-
----
-
-## HOW PICKS ARE GENERATED
-
-**No XGBoost.** It was removed. See Known Issues for why.
-
-**Signal: Per-symbol win rate from `ghost_prediction_outcomes` table (13,945 rows)**
-
-Logic in `core/prediction.py → _get_symbol_signal()`:
-1. Query `ghost_prediction_outcomes` for symbol (up to 200 rows)
-2. Calculate UP win rate and DOWN win rate separately
-3. If either > 55%: predict that direction at that confidence
-4. If overall win rate < 45%: inverse signal
-5. If 45-55% zone: skip (no edge)
-
-MIN_SAMPLES = 5 (raise to 20 once 200+ v2 picks resolved)
-CONFIDENCE_FLOOR = 0.52
-
-**Check `/api/symbol-accuracy` to see real per-symbol win rates.**
+`OBJECTIVE_AUTO_MODE_ENABLED=1` lets the engine override `OBJECTIVE_MODE` via
+`ghost_state.objective_mode_runtime`. We currently run with auto-mode **off** so
+the env value is authoritative. Inspect live gating at `/api/wolf/gate-status`.
 
 ---
 
-## ACTIVE SYMBOLS
+## DATA FEED CHAIN
 
-**Stocks:** `WOLF` (primary), optionally `DRIV` — set via `STOCK_SYMBOLS` Railway env var
-**Crypto:** DISABLED — `CRYPTO_SYMBOLS` env defaults to empty string
-**NEVER ADD BACK:** HOOD (11.6% wr), COIN (14% wr), any crypto defaults
+`core/signal_engine.py → _fetch_ohlcv` tries, in order:
+**Alpaca SIP → Alpaca IEX → Polygon → yfinance → Stooq** (5-tier, PR #9/#12/#17).
+Health probe uses `HEALTH_PROBE_SYMBOL` (AAPL, not WOLF) so feed health isn't
+conflated with WOLF data gaps (PR #24).
+
+**Known feed-data limits (NOT code bugs):** Key Stats, Analyst targets, Short
+Interest often return empty for this account tier (yfinance/Polygon). Fixing
+these needs a **paid provider decision** (Finnhub paid / Tiingo / Alpha Vantage),
+not more code.
 
 ---
 
 ## DATABASE — KEY TABLES
 
-| Table | Rows | Notes |
-|---|---|---|
-| `predictions` | 223,449 | v1 + v2 picks. Has NOT NULL constraints on run_at/method/horizon_h |
-| `ghost_prediction_outcomes` | 13,945 | PRIMARY SIGNAL SOURCE — query this, not predictions |
-| `paper_trades` | 961 | Old v1 tracking |
+| Table | Notes |
+|---|---|
+| `predictions` | v1 + v2/v3 picks. **v3.2 era = `id >= 223438`** (used everywhere to exclude ~223k legacy rows). Columns incl. `outcome`, `exit_price`, `pnl_pct`, `resolved_at`, `features JSONB`, **`scores JSONB`** (PR #30) |
+| `ghost_state` | key/val cross-cycle state (objective_mode_runtime, gate_outcome_history, v32_stats_start_ts, last_train_details, etc.) |
+| `ghost_prediction_outcomes` | legacy v1 signal source — no longer the engine |
+| `ghost_v3_model` | trained v3 model blob + meta_* rows |
 
-**CRITICAL:** When INSERTing v2 predictions, always set `run_at = predicted_at`.
-The v1 schema has NOT NULL on run_at. `core/db.py` drops this on startup but it may return.
+`core/db.py` migrations are additive/`IF NOT EXISTS` and non-destructive. The
+`scores JSONB` column is added on boot.
 
-**GARBAGE:** ~120 predictions have `entry_price = 0.50` from a bug.
-Run `POST /api/clean-garbage` (auth required) to delete them and restore real accuracy stats.
-
----
-
-## BACKGROUND TASKS
-
-| Task | Interval | What it does |
-|---|---|---|
-| `morning_card` | 86400s | Predictions + Telegram card. DO NOT change back to 3600 |
-| `reconcile` | 900s | Marks WIN/LOSS/EXPIRED on open picks |
-| `news` | 1800s | Fetches Finnhub + CryptoPanic, alerts on bearish news |
+**CRITICAL:** when INSERTing v2/v3 predictions, set `run_at = predicted_at` (v1
+schema had NOT NULL on run_at; migration drops it but it may return).
 
 ---
 
-## API ENDPOINTS
+## API ENDPOINTS (current)
 
 **Public (no auth):**
-`GET /health` — health score + task status
-`GET /api/picks` — active + recent predictions (array directly, NOT wrapped in .picks)
-`GET /api/v2/recent` — resolved trades: `{ok, trades[], wins, losses, win_rate_pct}`
-`GET /api/history` — resolved picks
-`GET /api/stats` — win/loss counts
-`GET /api/stats/v32` — v3.2 era WOLF stats: `{ok, era, wins, losses, win_rate_pct, open_picks, verdict}`
-`GET /api/objective` — win-rate objective progress: `{ok, target_pct, current_pct, on_track, trades_evaluated}`
-`GET /api/cockpit/context` — master context: `{ok, health, stats, direction, regime, v3, activity}`
-`GET /api/symbol-accuracy` — per-symbol win rates from gpo
-`GET /api/news` — recent articles (array or `{items:[]}` shape)
-`GET /api/price/{symbol}?asset_type=stock` — live price: `{symbol, price, ok}`
-`GET /api/wolf/price` — WOLF-specific price: `{ok, symbol, price}`
-`GET /api/wolf/context` — WOLF deep intel: `{earnings, short_data, edgar_alert, competitor_signals, reasons[]}`
-`POST /api/test-alert` — send test Telegram message
+- `GET /health` — health score + task status
+- `GET /api/picks` — active + recent (array directly)
+- `GET /api/v2/recent` — resolved trades summary
+- `GET /api/stats/v32` — v3.2-era WOLF stats
+- `GET /api/objective` — win-rate objective progress
+- `GET /api/cockpit/context` — master cockpit payload
+- `GET /api/wolf/price | /predictions | /stats | /earnings | /analyst | /news | /ghost-score | /context`
+- `GET /api/wolf/gate-status` — **live four-gate diagnostic** (mode, floor, live prediction, would_alert) (PR #27)
+- `GET /api/wolf/gate-history` — **rolling per-cycle gate outcomes** (last 50) (PR #29)
+- `GET /api/wolf/pick-journal` — **credibility ledger** (PR #30): paginated audit
+  trail + win rate w/ 95% Wilson CI + expectancy + Brier + `verdict.falsification`
+- `GET /api/_version` — running PR version marker
+- `GET /api/diag/data-sources` — feed-tier visibility
 
-**Protected (needs x-cron-secret header):**
-`POST /api/run-predictions` — cycle only, NO Telegram
-`POST /api/morning-card` — cycle + Telegram card
-`POST /api/reconcile` — manual reconcile
-`POST /api/retrain` — train XGBoost (unused, see Known Issues)
-`POST /api/migrate-outcomes` — import gpo into predictions
-`POST /api/clean-garbage` — delete $0.50 garbage picks
+**Protected (`x-cron-secret`):**
+- `POST /api/run-predictions` | `/api/morning-card` | `/api/reconcile`
+- `POST /api/v3/train/sync` — synchronous train + gate report (PR #18/#20)
+- `POST /api/cron/signal-check` — Telegram signal alert (PR #8)
+- `POST /api/admin/purge-ghost-portfolio`
+- `POST /api/clean-garbage`
 
----
-
-## COCKPIT UI — WIRING REFERENCE
-
-File: `templates/cockpit_v5.html` + `static/cockpit_v5.js` + `static/cockpit_v5.css`
-
-**Default active tab:** WOLF Intel
-**Ticker bar:** SPY, DIA, QQQ, WOLF, DRIV, VIX — each fetched via `/api/price/{sym}?asset_type=stock`
-
-**v2 API field names (JS must use these, not old v4 names):**
-- Outcome: `p.outcome` (`null`=active, `"WIN"`, `"LOSS"`, `"EXPIRED"`) — NOT `p.status`
-- Stop price: `p.stop_price` — NOT `p.stop_loss`
-- Gain pct: calculate `(target-entry)/entry*100` — NOT `p.gain_pct`
-- Expiry: `p.expires_at` (unix timestamp) — NOT `p.done_by`
-
-**loadAll() calls (in order):**
-```
-/api/picks            → window._picks  (array)
-/api/v2/recent        → window._history, _accuracy fallback
-/api/news             → window._news
-/api/cockpit/context  → _heartbeat, _audit, _accuracy (primary)
-/api/stats/v32        → window._statsV32
-/api/objective        → window._objective
-```
+**Admin (`/admin`, cookie auth — PR #28):**
+- `GET /admin` — operator console (login form if no cookie)
+- `POST /admin/login` (JSON body — no python-multipart dep) / `POST /admin/logout`
+- Console cards: gate monitor, gate history, train/purge/data-source, engine quality.
 
 ---
 
-## KNOWN ISSUES — FIX BEFORE ADDING FEATURES
+## ADMIN AUTH (PR #28)
 
-**P1 — Garbage predictions corrupting stats**
-~120 picks with entry_price=0.50 making win rate show 15% instead of real number.
-Fix: `POST /api/clean-garbage` (run once).
+HTTP Basic Auth (PR #23) returned a correct 401 locally but **blank-paged on
+Railway** (edge/browser mishandling the Basic challenge). Replaced with
+**HMAC-signed cookie login**: JSON-body `POST /admin/login` mints an HttpOnly,
+SameSite=Lax, Secure (`ADMIN_COOKIE_SECURE`, default on) token. Do not reintroduce
+HTTP Basic.
 
-**P2 — XGBoost retrain endpoint works but has no effect**
-`prediction.py` no longer loads any model. `/api/retrain` trains but nothing uses the file.
-Do not re-enable until 500+ clean v2 picks exist and confidence correlates with win rate.
+---
 
-**P3 — Stock prices only available market hours**
-Polygon/yfinance returns null on weekends/evenings.
-Fix: add Alpha Vantage delayed quotes or accept daytime-only.
+## COCKPIT UI
 
-**P4 — Weekly summary never fires**
-`send_weekly_summary()` exists in telegram.py but no scheduler task calls it.
-Add: Friday 4 PM CT scheduler task.
+- **Investor cockpit:** `cockpit.html` at `GET /cockpit`. Modules incl. hero,
+  perf strip, prediction chart, stats, earnings, analyst, news, short interest,
+  catalysts, portfolio, **Pick Journal (blueprint module 7)** (PR #30), Truth Mode.
+- **Operator console:** `admin.html` at `GET /admin` (cookie-gated).
+- Cockpit JS uses v2 field names: `outcome` (not status), `stop_price` (not
+  stop_loss), `expires_at` (unix). Calculate gain as `(target-entry)/entry*100`.
 
-**P5 — Watchdog not built**
-No real-time alert when a pick hits target/stop. Reconciler catches it within 15 min.
-Build: `core/watchdog.py`
+---
 
-**P6 — /api/stats/v32, /api/objective, /api/wolf/price endpoints may not exist yet**
-The cockpit JS calls these. If they return 404 the UI degrades gracefully (shows loading…).
-Verify they exist in wolf_app.py before assuming UI is fully wired.
+## CACHE-BUSTING RAILWAY (recurring pain)
+
+Railway/Nixpacks has served stale containers repeatedly. Bust the cache by bumping
+ALL of: `Procfile` boot-echo string, `nixpacks.toml` `cache_bust` comment, and the
+`wolf_app.py` boot banner / `_RUNNING_PR_VERSION`. Verify deploy via `/api/_version`.
 
 ---
 
 ## WHAT FAILED — DO NOT REPEAT
 
-- **XGBoost on gpo data** — 86% val accuracy was overfitting on skewed bear data. Predicted DOWN 100%. Removed.
-- **Migrating v1 outcomes INTO predictions table** — NOT NULL constraints block every INSERT. Use gpo directly.
-- **Reuters RSS** — Railway network blocks feeds.reuters.com. Use Finnhub API.
-- **features[0] as price** — Never put confidence as features[0]. Price and features are always separate.
-- **morning_card at interval_s=3600** — Sent 24 cards/day. Always 86400.
-- **HOOD/COIN in stocks** — 11-14% historical win rate. Never add back.
-- **Crypto defaults in prediction.py** — `CRYPTO_SYMBOLS` was hardcoded `"ETH,SOL,UNI,BCH"`. Now default=`""`. Never hardcode crypto defaults again.
-- **v4/v3 endpoint names in cockpit JS** — The old JS called `/api/v4/picks`, `/api/v3/watchlist/enriched` etc. — none exist in v2. All calls now use real v2 endpoints.
+- **(SUPERSEDED) "XGBoost removed."** The 2026-03 note said XGBoost overfit on
+  skewed gpo data and was removed. The v3.2 engine (PR #10/#21) retrains on **TP/SL
+  daily-bar labels with walk-forward validation + holdout gates**, which is a
+  different setup — it is now the live engine at ~65.4%. The old caution (don't
+  train on bear-skewed gpo direction labels) still stands; the blanket "no XGBoost"
+  does not.
+- **Walk-forward produced 0 folds** — hardcoded `min_train=max(120, n*0.5)` with
+  n≈127 → 0 folds → no model. Fixed PR #21 by making floors env-tunable
+  (`V3_WF_MIN_TRAIN` default 60, `V3_WF_TEST_SIZE` default 15). **This trained the model.**
+- **News leak (Zoom/IBM/Ralph Lauren)** — Finnhub tags every WOLF-query article
+  `["WOLF"]`, so the `WOLF in syms` shortcut passed everything. Fixed PR #26 by
+  requiring a textual mention (WOLFSPEED/WOLF/SiC/silicon carbide).
+- **/admin blank page** — HTTP Basic Auth on Railway. Fixed with cookie login (PR #28).
+- **Pushing fixes to an already-merged branch** — always branch fresh from `main`.
+- **Reuters RSS / morning_card 3600 / HOOD-COIN / crypto defaults** — see history;
+  still applies.
 
 ---
 
-## COMPLETED
+## NOT YET BUILT (blueprint backlog, dependency-ordered)
 
-- [x] Ghost v2 live on Railway, health 100/100
-- [x] DB connected, schema migration running
-- [x] Crypto price feeds (CoinGecko + Coinbase)
-- [x] Per-symbol win rate signal from 13,945 outcomes
-- [x] Regime gate (BTC crash blocks crypto BUYs)
-- [x] Telegram morning card with real prices and real confidence
-- [x] News monitoring (Finnhub)
-- [x] Outcome reconciler (15 min cycle)
-- [x] cron-job.org wired to 8 AM CT daily
-- [x] Ghost v1 Telegram silenced
-- [x] Bad symbols removed (HOOD, COIN)
-- [x] Edge symbols added (T 68%, XPO 61%, NET 55%)
-- [x] PROJECT_STATE.md created
-- [x] **WOLF PIVOT** — crypto defaults stripped, STOCK_SYMBOLS default="WOLF" (commit `3ceebd3`)
-- [x] **WOLF-first cockpit UI** — real v2 endpoints, WOLF intel hero tab default, no crypto (commit `9073d1b`)
-  - Ticker: WOLF + DRIV replace BTC/ETH
-  - loadAll() wired to 6 real endpoints
-  - renderPicks() uses v2 field names (outcome, stop_price, expires_at)
-  - WOLF tab: current signal, v3.2 stats row, objective progress bar
-  - Crypto tab, nav button, and all filter buttons removed
-
-## NOT YET BUILT
-
-- [ ] Verify `/api/stats/v32`, `/api/objective`, `/api/wolf/price`, `/api/wolf/context` exist in wolf_app.py
-- [ ] Run /api/clean-garbage to fix corrupted win rate stats
-- [ ] Watchdog (real-time hit alerts)
-- [ ] Weekly Friday summary scheduler task
-- [ ] Stock prices outside market hours (Alpha Vantage)
-- [ ] Raise MIN_SAMPLES to 20 (after 200+ resolved WOLF picks)
+- [ ] **Accumulate ~30+ resolved high-conviction picks** so the falsification gate
+      can be honestly evaluated (cold-start; gates everything below).
+- [ ] **Regime detector (HMM)** — Squeeze/Trend-up/Trend-down/Chop/Capitulation.
+      Deferred per honesty layer: ~250 days is too thin for a 5-state HMM, and it
+      adds a *new* silencing gate to an engine that barely fires. Build after the
+      journal shows where losses cluster.
+- [ ] Options-flow model (Polygon) — put/call, IV skew, GEX. **Validate WOLF
+      options depth first** before assuming mega-cap GEX techniques transfer.
+- [ ] Sentiment model (FinBERT) on the existing news pipeline.
+- [ ] Feature-drift monitoring (KL divergence).
+- [ ] Paid data provider for Key Stats / Analyst / Short Interest (budget decision).
+- [ ] Regime-conditional calibration (separate isotonic maps per regime) — the
+      journal already captures regime-at-issuance to enable this.
 
 ---
 
-## THE GOAL
+## CHANGE LOG (this era)
 
-Paper trade WOLF for 4 consecutive weeks with 55%+ win rate.
-Only then consider real money.
-Do not add features. Fix the foundation first.
-
----
-
-## CHANGE LOG
-
-| Date | Commit | What changed |
+| PR | Date | What changed |
 |---|---|---|
-| 2026-05-21 | `d0be424` | WOLF pivot phases 1–6: agents, intel, metrics, risk, patterns |
-| 2026-05-21 | `3ceebd3` | Crypto defaults stripped from prediction.py + wolf_app.py asset_type fallbacks |
-| 2026-05-21 | `9073d1b` | WOLF-first cockpit UI: real v2 endpoints, no crypto, WOLF intel hero tab |
+| #2 | 05-22 | inverse confidence + constant-time cron auth + pytest in CI |
+| #3 | 05-22 | WOLF-only cleanup (23 files) — drop crypto code paths |
+| #4 | 05-22 | correct `/api/clean-garbage` SQL filter |
+| #5 | 05-22 | `_cron_ok` reads `CRON_SECRET` at call time |
+| #6 | 05-22 | cockpit display upgrade — Truth Mode + confidence calibration |
+| #7 | 05-22 | WOLF command center cockpit + 7 backend endpoints |
+| #8 | 05-22 | Telegram signal-alert cron wiring + Ghost Score composite |
+| #9 | 05-22 | `_fetch_ohlcv` SIP feed + IEX fallback for post-restructure WOLF |
+| #10 | 05-22 | lower v3 training thresholds for limited WOLF data |
+| #11 | 05-22 | yfinance fallback + WOLF-only train filter |
+| #12 | 05-22 | Polygon + multi-strategy yfinance fallback for training |
+| #13 | 05-22 | Polygon path logs every branch (surface silent skips) |
+| #14 | 05-22 | PR14 diag markers across the v3 training path |
+| #15 | 05-22 | PR15 cache-bust — Procfile + nixpacks + boot banner |
+| #16 | 05-22 | "Train v3 Model" button in cockpit Truth Mode |
+| #17 | 05-22 | Stooq fifth-tier data source + `/api/diag/data-sources` |
+| #18 | 05-22 | v3_train force flag + per-phase state + `/api/v3/train/last` |
+| #19 | 05-22 | PR19 cache-bust + `/api/_version` + `/api/v3/train/sync` |
+| #20 | 05-22 | surface per-symbol gate-fail detail in train-sync response |
+| **#21** | 05-22 | **walk-forward fold floors env-tunable — TRAINED THE MODEL (~65.4%)** |
+| #22 | 05-23 | ops polish — purge non-WOLF / Telegram status / split freshness |
+| #23 | 05-23 | critical investor-view cleanup (items 1–7 of 15) |
+| #24 | 05-23 | investor-view polish (items 8–15) + `HEALTH_PROBE_SYMBOL` |
+| #25 | 05-23 | news leak + Polygon/short-data fallbacks + PR25 cache-bust |
+| #26 | 05-23 | news textual filter + auto-purge ghost portfolio on boot |
+| #27 | 05-23 | `/admin` objective-gate monitor + `/api/wolf/gate-status` |
+| #28 | 05-23 | `/admin` cookie login (replaces blank-page HTTP Basic Auth) |
+| #29 | 05-23 | per-cycle gate-outcome recorder + history endpoint + admin table |
+| **#30** | 05-23 | **pick journal — credibility ledger (audit trail + expectancy/Brier + kill condition)** |
