@@ -2573,6 +2573,78 @@ def test_pick_journal_flattens_indicators(monkeypatch):
     assert ind["regime"] == "Trend-up"
 
 
+# ── audit §5: realized P&L tracking ─────────────────────────────────────
+
+def test_realized_pnl_compounds_and_aggregates():
+    from core.pnl import realized_pnl
+    trades = [
+        {"resolved_at": 1, "symbol": "WOLF", "outcome": "WIN", "pnl_pct": 10.0,
+         "entry_price": 10.0, "exit_price": 11.0},
+        {"resolved_at": 2, "symbol": "WOLF", "outcome": "LOSS", "pnl_pct": -5.0,
+         "entry_price": 11.0, "exit_price": 10.45},
+        {"resolved_at": 3, "symbol": "WOLF", "outcome": "WIN", "pnl_pct": 20.0,
+         "entry_price": 10.45, "exit_price": 12.54},
+    ]
+    out = realized_pnl(trades, bankroll=1000.0, stake_fraction=1.0)
+    assert out["count"] == 3
+    assert out["wins"] == 2 and out["losses"] == 1
+    # 1000 * 1.10 * 0.95 * 1.20 = 1254.0
+    assert abs(out["final_equity"] - 1254.0) < 1e-6
+    assert abs(out["realized_pnl_usd"] - 254.0) < 1e-6
+    assert abs(out["total_return_pct"] - 25.4) < 1e-6
+    # profit factor = gross_win / gross_loss = (10+20)/5 = 6.0
+    assert out["profit_factor"] == 6.0
+    assert out["best_trade_pct"] == 20.0
+    assert out["worst_trade_pct"] == -5.0
+    # win rate over decided (WIN+LOSS) trades = 2/3
+    assert out["win_rate"] == round(2 / 3, 4)
+    assert len(out["curve"]) == 3
+    assert out["curve"][-1]["equity"] == 1254.0
+
+
+def test_realized_pnl_drawdown_and_empty():
+    from core.pnl import realized_pnl
+    # peak after +50% (1500), trough after -40% (900) => drawdown 40%
+    trades = [
+        {"resolved_at": 1, "outcome": "WIN", "pnl_pct": 50.0},
+        {"resolved_at": 2, "outcome": "LOSS", "pnl_pct": -40.0},
+    ]
+    out = realized_pnl(trades, bankroll=1000.0, stake_fraction=1.0)
+    assert abs(out["max_drawdown_pct"] - 40.0) < 1e-6
+    empty = realized_pnl([], bankroll=500.0)
+    assert empty["count"] == 0
+    assert empty["final_equity"] == 500.0
+    assert empty["realized_pnl_usd"] == 0.0
+    assert empty["curve"] == []
+
+
+def test_wolf_pnl_endpoint_reads_db(monkeypatch):
+    rows = [
+        (1000, "WOLF", "WIN", 10.0, 10.0, 11.0),
+        (2000, "WOLF", "LOSS", -5.0, 11.0, 10.45),
+    ]
+
+    class _Cur:
+        def execute(self, sql, params=None): self.last = sql
+        def fetchall(self): return rows
+        def fetchone(self): return None
+
+    class _Conn:
+        def cursor(self): return _Cur()
+
+    class _DbCtx:
+        def __enter__(self): return _Conn()
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(wolf_app, "db_conn", lambda: _DbCtx())
+    out = wolf_app.wolf_pnl(symbol="WOLF")
+    assert out["ok"] is True
+    assert out["symbol"] == "WOLF"
+    assert out["count"] == 2
+    # 1000 * 1.10 * 0.95 = 1045.0
+    assert abs(out["final_equity"] - 1045.0) < 1e-6
+
+
 # ── security: /api/v2/recent WOLF-only default ──────────────────────────
 
 def test_v2_recent_defaults_to_wolf(monkeypatch):

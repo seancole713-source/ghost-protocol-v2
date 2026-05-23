@@ -119,6 +119,13 @@ button:disabled{opacity:.5;cursor:not-allowed}
 </div>
 
 <div class="card">
+  <h3>Realized P&amp;L</h3>
+  <div class="desc">Aggregate of the per-pick entry/exit ledger: sequential-compounding equity curve, profit factor, max drawdown, expectancy. Resolved v3.2-era picks only. Bankroll/stake via <code>GHOST_PNL_BANKROLL</code> / <code>GHOST_PNL_STAKE_FRACTION</code>.</div>
+  <div class="row"><button class="secondary" onclick="loadPnl()">Refresh</button></div>
+  <div id="pnl" style="margin-top:10px"><div class="kv">Loading&#8230;</div></div>
+</div>
+
+<div class="card">
   <h3>Kill Conditions</h3>
   <div class="desc">Env-tunable safety thresholds evaluated over the rolling resolved-pick history. Each shows current value vs threshold with a red/green flag. Inert (<b>insufficient</b>) until enough picks accumulate — silence by design, not a false alarm. Read-only here; enforcement is separate.</div>
   <div class="row"><button class="secondary" onclick="loadKillStatus()">Refresh</button></div>
@@ -601,6 +608,43 @@ async function loadGateHistory(){
   }
 }
 
+/* ─── Realized P&L (audit §5) ─── */
+async function loadPnl(){
+  var el = document.getElementById('pnl');
+  if(!el) return;
+  el.innerHTML = '<div class="kv"><span class="warn">&#x21BB; Loading...</span></div>';
+  try{
+    var g = await fetch('/api/wolf/pnl').then(function(r){return r.json()});
+    if(!g || g.ok === false){
+      el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml((g&&g.error)||'unavailable') + '</div>';
+      return;
+    }
+    if(!g.count){
+      el.innerHTML = '<div class="kv">No resolved trades yet — P&amp;L populates as picks resolve.</div>';
+      return;
+    }
+    function money(v){ return (v>=0?'+$':'-$') + Math.abs(v).toFixed(2); }
+    function pct(v){ return (v>=0?'+':'') + (v===null||v===undefined?'—':v) + '%'; }
+    var pnlCls = g.realized_pnl_usd >= 0 ? 'ok' : 'fail';
+    var pf = (g.profit_factor === null) ? '—' : (g.profit_factor === 'Infinity' || g.profit_factor === Infinity ? '∞' : g.profit_factor);
+    el.innerHTML = '<div class="kv" style="margin-bottom:8px">'
+        + '<b class="' + pnlCls + '">' + money(g.realized_pnl_usd) + '</b> realized '
+        + '(<span class="' + pnlCls + '">' + pct(g.total_return_pct) + '</span> on $' + g.bankroll + ', stake ' + (g.stake_fraction*100) + '%)'
+        + ' &middot; equity <b>$' + g.final_equity + '</b></div>'
+      + '<table class="tbl"><tbody>'
+      + '<tr><td>Trades</td><td><b>' + g.count + '</b> (' + g.wins + 'W / ' + g.losses + 'L / ' + g.expired + 'X)</td></tr>'
+      + '<tr><td>Win rate</td><td>' + (g.win_rate===null?'—':(g.win_rate*100).toFixed(1)+'%') + '</td></tr>'
+      + '<tr><td>Expectancy / trade</td><td>' + pct(g.expectancy_pct) + '</td></tr>'
+      + '<tr><td>Avg win / loss</td><td><span class="ok">' + pct(g.avg_win_pct) + '</span> / <span class="fail">' + pct(g.avg_loss_pct) + '</span></td></tr>'
+      + '<tr><td>Profit factor</td><td>' + pf + '</td></tr>'
+      + '<tr><td>Max drawdown</td><td><span class="fail">-' + g.max_drawdown_pct + '%</span></td></tr>'
+      + '<tr><td>Best / worst</td><td><span class="ok">' + pct(g.best_trade_pct) + '</span> / <span class="fail">' + pct(g.worst_trade_pct) + '</span></td></tr>'
+      + '</tbody></table>';
+  }catch(e){
+    el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml(String(e)) + '</div>';
+  }
+}
+
 /* ─── Kill conditions (audit §2) ─── */
 async function resumeEngine(){
   if(!confirm('Clear the kill-condition pause and resume firing?')) return;
@@ -663,6 +707,8 @@ loadEngineQuality();
 loadGateStatus();
 loadGateHistory();
 loadKillStatus();
+loadPnl();
+setInterval(loadPnl, 120000);
 setInterval(loadGateHistory, 120000);
 setInterval(loadEngineQuality, 60000);
 setInterval(loadGateStatus, 60000);
