@@ -1575,14 +1575,18 @@ function renderCatalysts(ctx, analyst, news){
   if(!section || !slot) return;
   var events = [];
   // 1. Earnings: next earnings date from WolfContext (Finviz-scraped)
-  if(ctx && ctx.ok !== false && ctx.earnings && ctx.earnings.date_str){
+  // PR #26: only add an earnings row when we have a REAL date — skip
+  // "Unknown" / "N/A" / "-" placeholders that rendered as "Next earnings:
+  // Unknown" noise.
+  var _ed = ctx && ctx.ok !== false && ctx.earnings ? (ctx.earnings.date_str || '') : '';
+  var _edClean = String(_ed).trim();
+  if(_edClean && !/^(unknown|n\/a|-|none|null)$/i.test(_edClean)){
     var em = ctx.earnings;
-    var when = em.date_str || '';
     events.push({
       sort: Date.now() / 1000 + 86400 * 365,  // future earnings sorted last
       kind: 'earnings',
-      when: when,
-      body: '<b>Next earnings</b> ' + escHtml(em.date_str)
+      when: _edClean,
+      body: '<b>Next earnings</b> ' + escHtml(_edClean)
         + (em.is_earnings_week ? ' <span style="color:#fbbf24">(within 5 trading days)</span>' : ''),
     });
   }

@@ -652,6 +652,29 @@ async def lifespan(app: FastAPI):
     except Exception as _bpe:
         LOGGER.warning("Boot purge failed: "+str(_bpe)[:60])
 
+    # PR #26: auto-purge ghost/test rows from user_portfolio on every boot.
+    # The /admin "Purge Ghost Portfolio" button (PR #23) was never run —
+    # the ZZE2E* probe-ticker rows persisted. Self-healing: deletes rows
+    # matching the ghost patterns on each startup so they can't pollute
+    # the investor portfolio totals. Legit WOLF (and any deliberately-added
+    # non-ghost symbol) is untouched.
+    try:
+        with db_conn() as _pc:
+            _pcur = _pc.cursor()
+            _pcur.execute("SELECT id, symbol FROM user_portfolio")
+            _prows = _pcur.fetchall()
+            _purged_ids = []
+            for _rid, _sym in _prows:
+                _up = str(_sym or "").strip().upper()
+                if any(_up.startswith(p) or _up == p for p in _GHOST_PORTFOLIO_PATTERNS):
+                    _pcur.execute("DELETE FROM user_portfolio WHERE id=%s", (int(_rid),))
+                    _purged_ids.append(_rid)
+            if _purged_ids:
+                LOGGER.info("Boot portfolio purge: removed %s ghost rows %s",
+                            len(_purged_ids), _purged_ids[:10])
+    except Exception as _ppe:
+        LOGGER.warning("Boot portfolio purge failed: " + str(_ppe)[:80])
+
     # Self-healing: if app restarts between 8AM-noon CT and last card was >8h ago, fire now
     # Prevents silent card misses when Railway restarts during cron window
     try:
