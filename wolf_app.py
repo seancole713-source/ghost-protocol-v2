@@ -40,6 +40,11 @@ def _cron_ok(provided: str, strict: bool = False) -> bool:
     return hmac.compare_digest((provided or "").encode("utf-8"),
                                secret.encode("utf-8"))
 
+# Semantic app version. Bumped to 2.1.0 for the audit batch: kill conditions +
+# enforcement, full pick journal, realized P&L, security hardening, regime tag,
+# Telegram cards, admin lineage/audit, rate limiting, short-interest wiring.
+APP_VERSION = "2.1.0"
+
 _COVERAGE_RETRAIN_RUNNING = False
 _RETRAIN_JOB_LOCK = threading.Lock()
 _APP_BOOT_TS = time.time()
@@ -1047,7 +1052,7 @@ async def lifespan(app: FastAPI):
 # never appear in openapi.json or "Try it out".
 _DOCS_ENABLED = os.getenv("DOCS_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
 APP = FastAPI(
-    title="Ghost Protocol v2", version="2.0.0", lifespan=lifespan,
+    title="Ghost Protocol v2", version=APP_VERSION, lifespan=lifespan,
     docs_url="/docs" if _DOCS_ENABLED else None,
     redoc_url="/redoc" if _DOCS_ENABLED else None,
     openapi_url="/openapi.json" if _DOCS_ENABLED else None,
@@ -3808,7 +3813,7 @@ def v3_train(x_cron_secret: str = Header(default=""), force: bool = False):
 
 # PR #19 deploy-version constant. Bump on every "did Railway pick up
 # the new code?" PR so /api/_version reveals the truth in one curl.
-_RUNNING_PR_VERSION = 34
+_RUNNING_PR_VERSION = 50
 
 
 @APP.get("/api/_version")
@@ -3821,6 +3826,7 @@ def deploy_version():
     """
     return {
         "ok": True,
+        "app_version": APP_VERSION,
         "_pr_version": _RUNNING_PR_VERSION,
         "git_sha": os.getenv("RAILWAY_GIT_COMMIT_SHA", "unset"),
         "deploy_id": os.getenv("RAILWAY_DEPLOYMENT_ID", "unset"),
