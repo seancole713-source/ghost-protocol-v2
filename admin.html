@@ -75,6 +75,17 @@ button:disabled{opacity:.5;cursor:not-allowed}
   <div id="data-sources-result" style="margin-top:8px"></div>
 </div>
 
+<!-- ─── Telegram cron trigger (PR #24 item 15) ─── -->
+<div class="sec-label">Telegram Alerts</div>
+<div class="card">
+  <h3>Fire Signal-Alert Cron</h3>
+  <div class="desc">Manually fire <code>POST /api/cron/signal-check</code>. Records <code>ghost_state.last_signal_cron_*</code>, scans unalerted WOLF picks &ge; 0.80 confidence, sends Telegram per pick (capped at <code>WOLF_ALERT_DAILY_CAP</code>, default 2/day). Once-only kick to flip "Last cron run: never" status.</div>
+  <div class="row">
+    <button class="secondary" onclick="fireSignalCron()">Fire Signal-Alert Cron Now</button>
+  </div>
+  <div id="cron-result" class="result"></div>
+</div>
+
 <!-- ─── Maintenance / purges ─── -->
 <div class="sec-label">Maintenance</div>
 <div class="card">
@@ -274,6 +285,31 @@ async function purgeNonWolf(){
         +(d.length?'<div class="kv" style="margin-top:6px">Deleted: '+escHtml(d.join(', '))+'</div>':'')
         +(k.length?'<div class="kv">Kept: '+escHtml(k.join(', '))+'</div>':'');
     }else r.innerHTML='<span class="fail">&#10007;</span> '+escHtml((b&&b.error)||('HTTP '+resp.status));
+  }catch(e){r.innerHTML='<span class="fail">&#10007;</span> '+escHtml(String(e))}
+  finally{setBtns(false)}
+}
+
+async function fireSignalCron(){
+  var r=document.getElementById('cron-result');
+  if(!confirm('Fire the signal-alert cron now? Sends Telegram for any unalerted WOLF picks above the confidence floor (respects daily cap).'))return;
+  r.innerHTML='<span class="warn">&#x21BB; Firing /api/cron/signal-check...</span>';
+  setBtns(true);
+  try{
+    var resp=await fetch('/api/cron/signal-check',{method:'POST',headers:{'x-cron-secret':getSecret(),'Content-Type':'application/json'}});
+    var b={};try{b=await resp.json()}catch(_){}
+    if(resp.status===403){r.innerHTML='<span class="fail">&#10007;</span> 403 (cron secret wrong)';return}
+    if(b.ok){
+      var alertResult=b.alert_result||{};
+      var sentList=alertResult.sent||[];
+      var skipped=alertResult.skipped_reason;
+      var icon=sentList.length?'<span class="ok">&#10003;</span>':skipped?'<span class="warn">&#x21BB;</span>':'<span class="warn">&#x23F3;</span>';
+      r.innerHTML=icon+' Cron ran at '+fmtTsIso(b.ran_at)
+        +(sentList.length?' · sent <b>'+sentList.length+'</b> alert(s)':' · 0 alerts sent')
+        +(skipped?' <span style="color:#888">('+escHtml(skipped)+')</span>':'')
+        +(sentList.length?'<div class="kv" style="margin-top:6px">'+sentList.map(function(s){return '#'+s.prediction_id+' '+escHtml(s.direction)+' @ $'+(s.entry_price!=null?s.entry_price.toFixed(2):'—')+' · conf='+(s.confidence!=null?Math.round(s.confidence*100)+'%':'—')}).join('<br>')+'</div>':'');
+    }else{
+      r.innerHTML='<span class="fail">&#10007;</span> '+escHtml((b&&b.error)||('HTTP '+resp.status));
+    }
   }catch(e){r.innerHTML='<span class="fail">&#10007;</span> '+escHtml(String(e))}
   finally{setBtns(false)}
 }

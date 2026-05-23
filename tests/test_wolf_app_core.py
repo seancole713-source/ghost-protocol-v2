@@ -1969,3 +1969,38 @@ def test_safe_int_rejects_dict_input():
     assert we._safe_int([1, 2]) is None
     assert we._safe_int(1000) == 1000
     assert we._safe_int(None) is None
+
+
+# ── PR #24 (items 8-15): investor-view polish ───────────────────────────
+
+def test_check_feeds_probes_with_aapl_not_wolf(monkeypatch):
+    """check_feeds must use a universally-covered symbol so 'feed alive'
+    isn't conflated with 'has WOLF' (Alpaca free tier doesn't carry
+    post-restructure WOLF, previously reported alpaca_stock=false even
+    though the feed itself was healthy)."""
+    import core.prices as _prices
+    probed = []
+    monkeypatch.setattr(_prices, "_alpaca", lambda sym: (probed.append(("alpaca", sym)), 192.5)[1])
+    monkeypatch.setattr(_prices, "_yfinance", lambda sym: (probed.append(("yfinance", sym)), 192.5)[1])
+    monkeypatch.delenv("HEALTH_PROBE_SYMBOL", raising=False)
+    r = _prices.check_feeds()
+    assert r["alpaca_stock"] is True
+    assert r["yfinance"] is True
+    assert r["probe_symbol"] == "AAPL"
+    assert "AAPL" in r["summary"]
+    assert "2/2 feeds responding" in r["summary"]
+    assert all(sym == "AAPL" for (_kind, sym) in probed)
+
+
+def test_check_feeds_respects_health_probe_symbol_env(monkeypatch):
+    """Operators can override the probe symbol via HEALTH_PROBE_SYMBOL env."""
+    import core.prices as _prices
+    monkeypatch.setattr(_prices, "_alpaca", lambda sym: 1.0)
+    monkeypatch.setattr(_prices, "_yfinance", lambda sym: None)
+    monkeypatch.setenv("HEALTH_PROBE_SYMBOL", "MSFT")
+    r = _prices.check_feeds()
+    assert r["probe_symbol"] == "MSFT"
+    assert r["alpaca_stock"] is True
+    assert r["yfinance"] is False
+    assert "1/2" in r["summary"]
+    assert "MSFT" in r["summary"]

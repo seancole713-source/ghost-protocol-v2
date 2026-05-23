@@ -92,10 +92,19 @@ def get_vix():
 
 
 def check_feeds():
-    """Health check - test stock price feeds (Alpaca + yfinance)."""
-    _al = _alpaca("WOLF") is not None
-    _yf = _yfinance("WOLF") is not None
-    r = {"alpaca_stock": _al, "yfinance": _yf}
-    working = sum(1 for v in r.values() if v)
-    r["summary"] = f"{working}/{len(r)} feeds responding"
+    """Health check - test stock price feeds.
+
+    PR #24 fix: probe with a universally-available symbol (AAPL) instead
+    of WOLF, since Alpaca's free/IEX tier doesn't carry post-restructure
+    WOLF. The previous "1/2 feeds responding" status was misleading —
+    Alpaca itself was working; it just didn't have WOLF. Probing with a
+    well-covered ticker measures FEED HEALTH, not WOLF coverage. The
+    WOLF-specific coverage check lives at /api/diag/data-sources.
+    """
+    probe = os.getenv("HEALTH_PROBE_SYMBOL", "AAPL")
+    _al = _alpaca(probe) is not None
+    _yf = _yfinance(probe) is not None
+    r = {"alpaca_stock": _al, "yfinance": _yf, "probe_symbol": probe}
+    working = sum(1 for v in (_al, _yf) if v)
+    r["summary"] = f"{working}/2 feeds responding (probed with {probe})"
     return r
