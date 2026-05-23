@@ -559,22 +559,42 @@ async function loadGateHistory(){
     var bindingStr = Object.keys(g.binding_gates || {}).map(function(k){
       return escHtml(k) + ' &times;' + g.binding_gates[k];
     }).join(' &middot; ') || '—';
+    // "How close" formatter: best up_prob vs its threshold, with the gap.
+    function fmtNear(nm){
+      if(!nm || nm.up_prob === null || nm.up_prob === undefined) return '—';
+      var s = (nm.symbol ? escHtml(nm.symbol)+' ' : '') + 'p=' + nm.up_prob;
+      if(nm.min_win_proba !== null && nm.min_win_proba !== undefined){
+        s += '<span style="color:#8b96a8">/' + nm.min_win_proba + '</span>';
+      }
+      if(nm.prob_gap !== null && nm.prob_gap !== undefined){
+        var cls = nm.prob_gap >= 0 ? 'ok' : 'warn';
+        s += ' <span class="' + cls + '">' + (nm.prob_gap >= 0 ? '+' : '') + nm.prob_gap + '</span>';
+      }
+      if(nm.conf_gap !== null && nm.conf_gap !== undefined){
+        s += ' <span style="color:#8b96a8" title="confidence vs floor">conf ' + (nm.conf_gap>=0?'+':'') + nm.conf_gap + '</span>';
+      }
+      return s;
+    }
+    var cn = g.closest_near_miss;
+    var closestStr = cn ? (' &middot; closest: ' + fmtNear(cn)) : '';
     var summary = '<div class="kv" style="margin-bottom:8px">'
       + '<b>' + g.fired_count + '</b> of <b>' + g.count + '</b> recent cycles cleared all gates'
-      + ' &middot; binding gates: ' + bindingStr + '</div>';
+      + ' &middot; binding gates: ' + bindingStr + closestStr + '</div>';
     var rows = hist.map(function(h){
       var fired = h.would_fire;
       var icon = fired ? '<span class="ok">&#10003; would fire</span>' : '<span class="warn">&#x23F3; no</span>';
+      if(h.paused) icon = '<span class="fail">&#9209; paused</span>';
       return '<tr>'
         + '<td>' + fmtTimeAgo(h.ts) + '</td>'
         + '<td>' + icon + '</td>'
         + '<td>cand ' + (h.candidates||0) + ' / saved ' + (h.saved||0)
           + (h.dedup_blocked ? ' / dedup ' + h.dedup_blocked : '') + '</td>'
         + '<td>' + (h.top_skip ? '<code>'+escHtml(h.top_skip)+'</code>' : '—') + '</td>'
+        + '<td>' + fmtNear(h.near_miss) + '</td>'
         + '</tr>';
     }).join('');
     el.innerHTML = summary
-      + '<table class="tbl"><thead><tr><th>When</th><th>Outcome</th><th>Candidates/Saved</th><th>Binding gate</th></tr></thead><tbody>'
+      + '<table class="tbl"><thead><tr><th>When</th><th>Outcome</th><th>Candidates/Saved</th><th>Binding gate</th><th>How close</th></tr></thead><tbody>'
       + rows + '</tbody></table>';
   }catch(e){
     el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml(String(e)) + '</div>';
