@@ -115,6 +115,46 @@ def test_diagnostics_404_without_admin_cookie(monkeypatch):
     assert r.status_code == 404
 
 
+def test_rate_limit_returns_429_over_limit(monkeypatch):
+    """A public /api/ path 429s once an IP exceeds RATE_LIMIT_RPM in the window."""
+    monkeypatch.setenv("RATE_LIMIT_ENABLED", "1")
+    monkeypatch.setenv("RATE_LIMIT_RPM", "2")
+    wolf_app._RL_HITS.clear()
+    with _client_with_test_mode(monkeypatch) as client:
+        r1 = client.get("/api/coverage")
+        r2 = client.get("/api/coverage")
+        r3 = client.get("/api/coverage")
+    assert r1.status_code != 429
+    assert r2.status_code != 429
+    assert r3.status_code == 429
+    body = r3.json()
+    assert body["error"] == "rate_limited"
+    assert r3.headers.get("Retry-After") is not None
+
+
+def test_rate_limit_exempts_health(monkeypatch):
+    """/api/health is exempt so uptime monitors are never throttled."""
+    monkeypatch.setenv("RATE_LIMIT_ENABLED", "1")
+    monkeypatch.setenv("RATE_LIMIT_RPM", "1")
+    wolf_app._RL_HITS.clear()
+    monkeypatch.setattr(wolf_app, "health", lambda: {"status": "healthy", "score": 100, "issues": []})
+    last = None
+    with _client_with_test_mode(monkeypatch) as client:
+        for _ in range(5):
+            last = client.get("/api/health")
+    assert last.status_code == 200
+
+
+def test_rate_limit_disabled_passes_through(monkeypatch):
+    """RATE_LIMIT_ENABLED=0 disables throttling entirely."""
+    monkeypatch.setenv("RATE_LIMIT_ENABLED", "0")
+    monkeypatch.setenv("RATE_LIMIT_RPM", "1")
+    wolf_app._RL_HITS.clear()
+    with _client_with_test_mode(monkeypatch) as client:
+        codes = [client.get("/api/coverage").status_code for _ in range(4)]
+    assert all(c != 429 for c in codes)
+
+
 def test_diagnostics_route_is_registered_but_hidden():
     """The 404 above is the auth wall, not a missing route: the path IS
     registered, yet hidden from the OpenAPI schema (include_in_schema=False)."""

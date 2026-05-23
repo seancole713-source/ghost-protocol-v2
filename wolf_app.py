@@ -1054,6 +1054,60 @@ APP = FastAPI(
 )
 APP.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
+
+# ── Public-endpoint rate limiting (audit) ────────────────────────────────
+# In-process per-IP sliding window (60s). The app runs single-instance on
+# Railway, so process-local state is sufficient. Admin/cron routes have their
+# own auth and are exempt; /api/health is exempt for uptime monitors.
+import collections as _collections
+
+_RL_LOCK = threading.Lock()
+_RL_HITS = _collections.defaultdict(_collections.deque)  # ip -> deque[ts]
+_RL_EXEMPT_PREFIXES = ("/api/admin", "/api/cron", "/api/v3/train")
+_RL_EXEMPT_PATHS = ("/api/health",)
+
+
+def _rate_limit_cfg():
+    enabled = os.getenv("RATE_LIMIT_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
+    try:
+        rpm = max(1, int(os.getenv("RATE_LIMIT_RPM", "120")))
+    except Exception:
+        rpm = 120
+    return enabled, rpm
+
+
+def _client_ip(request: Request) -> str:
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+@APP.middleware("http")
+async def _rate_limit_mw(request: Request, call_next):
+    enabled, rpm = _rate_limit_cfg()
+    path = request.url.path
+    if (enabled and request.method != "OPTIONS" and path.startswith("/api/")
+            and not path.startswith(_RL_EXEMPT_PREFIXES) and path not in _RL_EXEMPT_PATHS):
+        ip = _client_ip(request)
+        now = time.time()
+        with _RL_LOCK:
+            dq = _RL_HITS[ip]
+            cutoff = now - 60
+            while dq and dq[0] < cutoff:
+                dq.popleft()
+            if len(dq) >= rpm:
+                retry = int(60 - (now - dq[0])) + 1
+                return JSONResponse(
+                    {"ok": False, "error": "rate_limited", "retry_after_s": retry},
+                    status_code=429, headers={"Retry-After": str(retry)})
+            dq.append(now)
+            # Bound memory: drop emptied buckets when the table grows large.
+            if len(_RL_HITS) > 4096:
+                for _k in [k for k, v in list(_RL_HITS.items()) if not v]:
+                    _RL_HITS.pop(_k, None)
+    return await call_next(request)
+
 # Mount portfolio router — WOLF position tracking, price refresh, ghost predictions
 from core.portfolio_routes import portfolio_router
 from core.stats_direction import compute_stats_by_direction
