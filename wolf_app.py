@@ -2291,6 +2291,20 @@ def wolf_pick_journal(limit: int = 50, offset: int = 0, symbol: str = "WOLF"):
         return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
 
 
+@APP.get("/api/wolf/kill-status")
+def wolf_kill_status():
+    """Live kill-condition dashboard (audit §2). Evaluates the env-tunable
+    safety thresholds (win rate / Brier / consecutive losses / expectancy) over
+    the rolling resolved-pick history and returns per-condition current-vs-
+    threshold with a green/red/insufficient flag. Read-only — does not enforce.
+    """
+    try:
+        from core.prediction import evaluate_kill_conditions
+        return evaluate_kill_conditions()
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
 @APP.post("/api/test-alert")
 def test_alert():
     """Send test message to Telegram to verify connection."""
