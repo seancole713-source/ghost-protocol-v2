@@ -1141,8 +1141,17 @@ def _auto_purge_bad_models():
     except Exception: return 0
 
 @APP.post("/api/admin/delete-model")
-async def delete_model(x_cron_secret: str = Header(None)):
-    """Delete models below accuracy threshold. Purges bad models so they stop generating picks."""
+async def delete_model(x_cron_secret: str = Header(None), non_wolf_only: bool = False):
+    """Delete v3 models from ghost_v3_model.
+
+    Default mode: delete models with accuracy < V3_MIN_HOLDOUT_ACC (cleanup
+    of weak models below the deploy gate).
+
+    non_wolf_only=true mode: delete every model whose symbol is not WOLF,
+    regardless of accuracy. Use to clean up stale rows from the pre-WOLF
+    crypto / multi-stock era that v3_status already filters out at read
+    time (per PR #7 WOLF-only hardening) but still occupy DB rows.
+    """
     if not _cron_ok(x_cron_secret, strict=True):
         raise HTTPException(status_code=403, detail="Forbidden")
     import json as _j
@@ -1153,11 +1162,18 @@ async def delete_model(x_cron_secret: str = Header(None)):
     try:
         with db_conn() as conn:
             cur = conn.cursor()
-            # Delete all models below accuracy floor
             cur.execute("SELECT key, value FROM ghost_v3_model WHERE key LIKE 'meta_%'")
             rows = cur.fetchall()
             for key, val in rows:
                 sym = key.replace("meta_", "")
+                if non_wolf_only:
+                    if str(sym).upper() == "WOLF":
+                        kept.append(f"{sym}(WOLF)")
+                        continue
+                    cur.execute("DELETE FROM ghost_v3_model WHERE key IN (%s, %s)",
+                               (f"model_{sym}", f"meta_{sym}"))
+                    deleted.append(f"{sym}(non-WOLF)")
+                    continue
                 try:
                     meta = _j.loads(val)
                     acc = meta.get("accuracy", 0)
@@ -1167,8 +1183,10 @@ async def delete_model(x_cron_secret: str = Header(None)):
                         deleted.append(f"{sym}(acc={round(acc*100,1)}%)")
                     else:
                         kept.append(f"{sym}(acc={round(acc*100,1)}%)")
-                except Exception: pass
-        return {"ok": True, "deleted": deleted, "kept": kept}
+                except Exception:
+                    pass
+        return {"ok": True, "mode": "non_wolf_only" if non_wolf_only else "low_accuracy",
+                "deleted": deleted, "kept": kept}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
@@ -1848,6 +1866,63 @@ def diag_data_sources(x_cron_secret: str = Header(default=""), symbol: str = "WO
         "summary": {"working": working, "broken": broken, "total_working": len(working)},
         "note": "Alpaca SIP/IEX are nested inside _fetch_ohlcv and not directly probed; check Railway logs for those.",
     }
+
+
+@APP.get("/api/telegram/status")
+def telegram_status():
+    """Telegram delivery visibility for the cockpit.
+
+    Public read (matches /api/v3/status convention). Returns:
+      - configured: whether Telegram env vars are set
+      - last_cron_ts / last_cron_sent: from ghost_state (PR #8 signal-alert)
+      - recent_alerts: last 5 rows from wolf_signal_alerts table
+    """
+    out = {
+        "ok": True,
+        "configured": bool(os.getenv("TELEGRAM_BOT_TOKEN") and os.getenv("TELEGRAM_CHAT_ID")),
+        "last_cron_ts": None,
+        "last_cron_sent": None,
+        "recent_alerts": [],
+    }
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            cur.execute("SELECT val FROM ghost_state WHERE key='last_signal_cron_ts'")
+            row = cur.fetchone()
+            if row and row[0]:
+                try:
+                    out["last_cron_ts"] = int(row[0])
+                except Exception:
+                    pass
+            cur.execute("SELECT val FROM ghost_state WHERE key='last_signal_cron_sent'")
+            row = cur.fetchone()
+            if row and row[0]:
+                try:
+                    out["last_cron_sent"] = int(row[0])
+                except Exception:
+                    pass
+            # wolf_signal_alerts table is created lazily by signal-alert/check;
+            # tolerate it not existing yet on fresh deploys.
+            try:
+                cur.execute(
+                    "SELECT prediction_id, sent_at, direction, entry_price, target_price, confidence "
+                    "FROM wolf_signal_alerts ORDER BY sent_at DESC LIMIT 5"
+                )
+                for r in cur.fetchall():
+                    out["recent_alerts"].append({
+                        "prediction_id": int(r[0]),
+                        "sent_at": int(r[1]) if r[1] else None,
+                        "direction": r[2],
+                        "entry_price": float(r[3]) if r[3] is not None else None,
+                        "target_price": float(r[4]) if r[4] is not None else None,
+                        "confidence": float(r[5]) if r[5] is not None else None,
+                    })
+            except Exception:
+                pass
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+    return out
 
 
 @APP.post("/api/test-alert")
