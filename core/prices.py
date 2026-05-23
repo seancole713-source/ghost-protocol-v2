@@ -92,19 +92,21 @@ def get_vix():
 
 
 def check_feeds():
-    """Health check - test stock price feeds.
+    """Health check — can we price the target symbol right now?
 
-    PR #24 fix: probe with a universally-available symbol (AAPL) instead
-    of WOLF, since Alpaca's free/IEX tier doesn't carry post-restructure
-    WOLF. The previous "1/2 feeds responding" status was misleading —
-    Alpaca itself was working; it just didn't have WOLF. Probing with a
-    well-covered ticker measures FEED HEALTH, not WOLF coverage. The
-    WOLF-specific coverage check lives at /api/diag/data-sources.
+    WOLF-only system: probe the actual target (WOLF), not a proxy ticker. The
+    earlier AAPL probe measured generic "feed alive" but hid whether we can
+    actually price WOLF — misleading for a single-ticker product. Reports each
+    spot-price feed plus an overall `priceable` flag. Full multi-tier OHLCV
+    coverage detail lives at /api/diag/data-sources. Override with
+    HEALTH_PROBE_SYMBOL if you specifically want to test generic feed health.
     """
-    probe = os.getenv("HEALTH_PROBE_SYMBOL", "AAPL")
+    probe = os.getenv("HEALTH_PROBE_SYMBOL", "WOLF")
     _al = _alpaca(probe) is not None
     _yf = _yfinance(probe) is not None
-    r = {"alpaca_stock": _al, "yfinance": _yf, "probe_symbol": probe}
+    priceable = bool(_al or _yf)
+    r = {"alpaca_stock": _al, "yfinance": _yf, "probe_symbol": probe, "priceable": priceable}
     working = sum(1 for v in (_al, _yf) if v)
-    r["summary"] = f"{working}/2 feeds responding (probed with {probe})"
+    r["summary"] = (f"{probe} priceable ({working}/2 feeds)" if priceable
+                    else f"{probe} NOT priceable (0/2 feeds)")
     return r
