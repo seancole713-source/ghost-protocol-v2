@@ -755,6 +755,25 @@ def _persist_train_details(details_list) -> None:
                 "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
                 (json.dumps({"ts": int(time.time()), "symbols": details_list}),),
             )
+            # Model lineage (audit): append this run to a rolling history (last 50)
+            # so /admin can show how accuracy/edge evolved across retrains.
+            cur.execute("SELECT val FROM ghost_state WHERE key='model_lineage'")
+            _row = cur.fetchone()
+            _hist = []
+            if _row and _row[0]:
+                try:
+                    _hist = json.loads(_row[0])
+                except Exception:
+                    _hist = []
+            if not isinstance(_hist, list):
+                _hist = []
+            _hist.append({"ts": int(time.time()), "symbols": details_list})
+            _hist = _hist[-50:]
+            cur.execute(
+                "INSERT INTO ghost_state(key,val) VALUES('model_lineage', %s) "
+                "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
+                (json.dumps(_hist),),
+            )
     except Exception as _e:
         LOGGER.warning("train details persist failed: " + str(_e)[:120])
 

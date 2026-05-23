@@ -3131,3 +3131,107 @@ def test_format_silence_card():
     assert "Ghost Score: 72/100" in out
     assert "Insufficient edge — model confidence 72%" in out
     assert "Next scan: Tomorrow 8 AM CT" in out
+
+
+# ── feat/admin-lineage-audit: model lineage + admin action log ──────────
+
+def test_record_admin_action_appends_and_caps(monkeypatch):
+    store = {}
+
+    class _Cur:
+        last = ""
+        def execute(self, sql, params=None):
+            self.last = sql
+            # _record_admin_action uses an inline key + single val param
+            if sql.strip().startswith("INSERT INTO ghost_state") and "admin_audit_log" in sql and params:
+                store["admin_audit_log"] = params[0]
+        def fetchone(self):
+            if "admin_audit_log" in self.last:
+                return (store.get("admin_audit_log"),)
+            return None
+
+    class _Conn:
+        def cursor(self): return _Cur()
+
+    class _DbCtx:
+        def __enter__(self): return _Conn()
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(wolf_app, "db_conn", lambda: _DbCtx())
+    wolf_app._record_admin_action("purge_test_predictions", "deleted=3")
+    logged = json.loads(store["admin_audit_log"])
+    assert logged[-1]["action"] == "purge_test_predictions"
+    assert logged[-1]["detail"] == "deleted=3"
+    assert "ts" in logged[-1]
+
+
+def test_v3_lineage_endpoint_newest_first(monkeypatch):
+    hist = [
+        {"ts": 1000, "symbols": [{"symbol": "WOLF", "accuracy": 0.66, "passed": True}]},
+        {"ts": 2000, "symbols": [{"symbol": "WOLF", "accuracy": 0.70, "passed": True}]},
+    ]
+
+    class _Cur:
+        def execute(self, sql, params=None): self.last = sql
+        def fetchone(self):
+            if "model_lineage" in self.last:
+                return (json.dumps(hist),)
+            return None
+
+    class _Conn:
+        def cursor(self): return _Cur()
+
+    class _DbCtx:
+        def __enter__(self): return _Conn()
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(wolf_app, "db_conn", lambda: _DbCtx())
+    out = wolf_app.v3_lineage(limit=50)
+    assert out["ok"] is True
+    assert out["count"] == 2
+    assert out["runs"][0]["ts"] == 2000   # newest first
+
+
+def test_admin_audit_log_requires_cookie(monkeypatch):
+    monkeypatch.setenv("CRON_SECRET", "testsecret")
+    from fastapi import HTTPException
+
+    class _Req:
+        cookies = {}
+
+    try:
+        wolf_app.admin_audit_log(request=_Req(), limit=50)
+        assert False, "expected 404"
+    except HTTPException as e:
+        assert e.status_code == 404
+
+
+def test_admin_audit_log_returns_entries_with_valid_cookie(monkeypatch):
+    monkeypatch.setenv("CRON_SECRET", "testsecret")
+    log = [{"ts": 1, "action": "resume_engine", "detail": "cleared"},
+           {"ts": 2, "action": "purge_test_predictions", "detail": "deleted=3"}]
+
+    class _Cur:
+        def execute(self, sql, params=None): self.last = sql
+        def fetchone(self):
+            if "admin_audit_log" in self.last:
+                return (json.dumps(log),)
+            return None
+
+    class _Conn:
+        def cursor(self): return _Cur()
+
+    class _DbCtx:
+        def __enter__(self): return _Conn()
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(wolf_app, "db_conn", lambda: _DbCtx())
+    token = wolf_app._admin_mint_token()
+
+    class _Req:
+        cookies = {wolf_app._ADMIN_COOKIE: token}
+
+    out = wolf_app.admin_audit_log(request=_Req(), limit=50)
+    assert out["ok"] is True
+    assert out["count"] == 2
+    assert out["actions"][0]["ts"] == 2   # newest first

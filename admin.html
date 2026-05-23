@@ -166,6 +166,20 @@ button:disabled{opacity:.5;cursor:not-allowed}
   <div id="t-models-slot"><p class="kv">Loading&#8230;</p></div>
 </div>
 
+<div class="card">
+  <h3>Model Training Lineage</h3>
+  <div class="desc">History of training runs (accuracy / edge / pass) across retrains. Newest first.</div>
+  <div class="row"><button class="secondary" onclick="loadLineage()">Refresh</button></div>
+  <div id="lineage-history" style="margin-top:10px"><div class="kv">Loading&#8230;</div></div>
+</div>
+
+<div class="card">
+  <h3>Admin Action Log</h3>
+  <div class="desc">Operator actions (purges, training, engine resume). Cookie-gated audit trail. Newest first.</div>
+  <div class="row"><button class="secondary" onclick="loadAuditLog()">Refresh</button></div>
+  <div id="audit-log" style="margin-top:10px"><div class="kv">Loading&#8230;</div></div>
+</div>
+
 </div>
 
 <script>
@@ -738,11 +752,52 @@ async function adminLogout(){
   location.reload();
 }
 
+async function loadLineage(){
+  var el=document.getElementById('lineage-history');
+  if(!el)return;
+  el.innerHTML='<div class="kv"><span class="warn">&#x21BB; Loading...</span></div>';
+  try{
+    var g=await fetch('/api/v3/lineage?limit=30').then(function(r){return r.json()});
+    if(!g||g.ok===false){el.innerHTML='<div class="kv"><span class="fail">&#10007;</span> '+escHtml((g&&g.error)||'unavailable')+'</div>';return}
+    var runs=g.runs||[];
+    if(!runs.length){el.innerHTML='<div class="kv">No training runs recorded yet.</div>';return}
+    var rows=runs.map(function(run){
+      var syms=(run.symbols||[]).map(function(s){
+        var acc=s.accuracy!=null?(Number(s.accuracy)*(s.accuracy<=1?100:1)).toFixed(1)+'%':'—';
+        var pass=s.passed?'<span class="ok">pass</span>':'<span class="fail">fail</span>';
+        return escHtml(s.symbol||'?')+' '+acc+' '+pass;
+      }).join(', ');
+      return '<tr><td>'+fmtTimeAgo(run.ts)+'</td><td>'+(syms||'—')+'</td></tr>';
+    }).join('');
+    el.innerHTML='<table class="tbl"><thead><tr><th>When</th><th>Symbols (acc · pass)</th></tr></thead><tbody>'+rows+'</tbody></table>';
+  }catch(e){el.innerHTML='<div class="kv"><span class="fail">&#10007;</span> '+escHtml(String(e))+'</div>'}
+}
+
+async function loadAuditLog(){
+  var el=document.getElementById('audit-log');
+  if(!el)return;
+  el.innerHTML='<div class="kv"><span class="warn">&#x21BB; Loading...</span></div>';
+  try{
+    var resp=await fetch('/api/admin/audit-log?limit=50');
+    if(resp.status===404){el.innerHTML='<div class="kv"><span class="warn">Sign in (admin cookie) to view the action log.</span></div>';return}
+    var g=await resp.json();
+    if(!g||g.ok===false){el.innerHTML='<div class="kv"><span class="fail">&#10007;</span> '+escHtml((g&&g.error)||'unavailable')+'</div>';return}
+    var acts=g.actions||[];
+    if(!acts.length){el.innerHTML='<div class="kv">No admin actions recorded yet.</div>';return}
+    var rows=acts.map(function(a){
+      return '<tr><td>'+fmtTimeAgo(a.ts)+'</td><td><code>'+escHtml(a.action)+'</code></td><td>'+escHtml(a.detail||'')+'</td></tr>';
+    }).join('');
+    el.innerHTML='<table class="tbl"><thead><tr><th>When</th><th>Action</th><th>Detail</th></tr></thead><tbody>'+rows+'</tbody></table>';
+  }catch(e){el.innerHTML='<div class="kv"><span class="fail">&#10007;</span> '+escHtml(String(e))+'</div>'}
+}
+
 loadEngineQuality();
 loadGateStatus();
 loadGateHistory();
 loadKillStatus();
 loadPnl();
+loadLineage();
+loadAuditLog();
 setInterval(loadPnl, 120000);
 setInterval(loadGateHistory, 120000);
 setInterval(loadEngineQuality, 60000);
