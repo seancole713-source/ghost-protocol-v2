@@ -44,6 +44,36 @@ _COVERAGE_RETRAIN_RUNNING = False
 _RETRAIN_JOB_LOCK = threading.Lock()
 _APP_BOOT_TS = time.time()
 
+
+def _record_admin_action(action: str, detail: str = "") -> None:
+    """Append an operator action to a rolling audit log in ghost_state (last 100).
+    Best-effort: never raises into the calling endpoint. Audit trail for
+    destructive/admin mutations (purges, training, engine resume, etc.)."""
+    try:
+        import json as _j
+        entry = {"ts": int(time.time()), "action": str(action)[:60], "detail": str(detail)[:200]}
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            cur.execute("SELECT val FROM ghost_state WHERE key='admin_audit_log'")
+            row = cur.fetchone()
+            log = []
+            if row and row[0]:
+                try:
+                    log = _j.loads(row[0])
+                except Exception:
+                    log = []
+            if not isinstance(log, list):
+                log = []
+            log.append(entry)
+            log = log[-100:]
+            cur.execute(
+                "INSERT INTO ghost_state(key,val) VALUES('admin_audit_log', %s) "
+                "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val", (_j.dumps(log),))
+    except Exception as _e:
+        LOGGER.warning("admin audit log write failed: " + str(_e)[:80])
+
+
 _COCKPIT_DB_CACHE = {"t": 0.0, "stats": None, "direction": None, "v3": None, "activity": None}
 
 
@@ -1446,6 +1476,8 @@ async def purge_ghost_portfolio(x_cron_secret: str = Header(None), dry_run: bool
                 else:
                     cur.execute("DELETE FROM user_portfolio WHERE id=%s", (int(rid),))
                     deleted.append({"id": int(rid), "symbol": sym})
+        if not dry_run:
+            _record_admin_action("purge_ghost_portfolio", f"deleted={len(deleted)}")
         return {
             "ok": True,
             "dry_run": dry_run,
@@ -1489,6 +1521,8 @@ async def purge_test_predictions(x_cron_secret: str = Header(None), dry_run: boo
             if not dry_run and total:
                 cur.execute("DELETE FROM predictions WHERE symbol ILIKE ANY(%s)", (patterns,))
                 deleted = cur.rowcount
+        if not dry_run:
+            _record_admin_action("purge_test_predictions", f"deleted={deleted} matched={total}")
         return {
             "ok": True,
             "dry_run": dry_run,
@@ -2603,7 +2637,9 @@ def admin_resume_engine(x_cron_secret: str = Header(default="")):
         raise HTTPException(status_code=403)
     try:
         from core.prediction import resume_engine
-        return resume_engine()
+        out = resume_engine()
+        _record_admin_action("resume_engine", "kill-condition pause cleared")
+        return out
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
 
@@ -3425,6 +3461,62 @@ def v3_status():
                 st["reason"] = "No WOLF model trained — run /api/v3/train"
     st["system"] = _v3_system_health(st)
     return st
+
+
+@APP.get("/api/v3/lineage")
+def v3_lineage(limit: int = 50):
+    """Model lineage (audit) — rolling history of training runs (accuracy/edge/
+    pass per symbol) so /admin can show how the model evolved across retrains.
+    Newest first. Public, read-only."""
+    try:
+        import json as _j
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            cur.execute("SELECT val FROM ghost_state WHERE key='model_lineage'")
+            row = cur.fetchone()
+        hist = []
+        if row and row[0]:
+            try:
+                hist = _j.loads(row[0])
+            except Exception:
+                hist = []
+        if not isinstance(hist, list):
+            hist = []
+        lim = max(1, min(200, int(limit)))
+        recent = list(reversed(hist))[:lim]
+        return {"ok": True, "count": len(recent), "runs": recent}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
+@APP.get("/api/admin/audit-log", include_in_schema=False)
+def admin_audit_log(request: Request, limit: int = 100):
+    """Operator action audit log (audit) — purges, training, engine resume, etc.
+    Gated behind the admin cookie like /api/diagnostics; 404 when unauthenticated
+    so it is undiscoverable. Newest first."""
+    if not _admin_token_valid(request.cookies.get(_ADMIN_COOKIE, "")):
+        raise HTTPException(status_code=404)
+    try:
+        import json as _j
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            cur.execute("SELECT val FROM ghost_state WHERE key='admin_audit_log'")
+            row = cur.fetchone()
+        log = []
+        if row and row[0]:
+            try:
+                log = _j.loads(row[0])
+            except Exception:
+                log = []
+        if not isinstance(log, list):
+            log = []
+        lim = max(1, min(200, int(limit)))
+        recent = list(reversed(log))[:lim]
+        return {"ok": True, "count": len(recent), "actions": recent}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
 
 
 @APP.get("/api/coverage")
