@@ -2344,3 +2344,67 @@ def test_gate_history_empty_when_no_record(monkeypatch):
     assert out["count"] == 0
     assert out["fired_count"] == 0
     assert out["history"] == []
+
+
+def _pick_journal_db(total, listing_rows, resolved_rows, monkeypatch):
+    """Wire wolf_app.db_conn to a fake cursor that answers the three queries
+    the pick-journal endpoint issues (count / listing / resolved)."""
+    class _Cur:
+        def __init__(self): self.last = ""
+        def execute(self, sql, params=None): self.last = sql
+        def fetchone(self):
+            if "COUNT(" in self.last:
+                return (total,)
+            return None
+        def fetchall(self):
+            if "ORDER BY" in self.last:
+                return listing_rows
+            if "outcome IS NOT NULL" in self.last:
+                return resolved_rows
+            return []
+
+    class _Conn:
+        def cursor(self): return _Cur()
+
+    class _DbCtx:
+        def __enter__(self): return _Conn()
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(wolf_app, "db_conn", lambda: _DbCtx())
+
+
+def test_pick_journal_kill_condition_triggers(monkeypatch):
+    """N>=30, 50% win rate, 95% CI below 80% => falsification gate fires."""
+    # listing row order matches the SELECT column list (15 cols incl. features/scores)
+    listing = [(
+        301, "WOLF", "UP", 0.80, 10.0, 10.6, 9.7, 4000, 4100, 4200,
+        "WIN", 10.6, 6.0,
+        {"hour_of_day": 9},
+        {"regime": {"label": "Trend-up"}, "specialists": {"daily_swing": {"up_prob": 0.61}}},
+    )]
+    resolved = [(0.80, "WIN", 6.0)] * 15 + [(0.80, "LOSS", -3.0)] * 15
+    _pick_journal_db(30, listing, resolved, monkeypatch)
+    out = wolf_app.wolf_pick_journal(limit=25, offset=0)
+    assert out["ok"] is True
+    assert out["metrics"]["resolved"] == 30
+    assert out["metrics"]["win_rate"] == 0.5
+    assert abs(out["metrics"]["expectancy_pct"] - 1.5) < 1e-6
+    assert abs(out["metrics"]["brier"] - 0.34) < 1e-6
+    f = out["verdict"]["falsification"]
+    assert f["falsified"] is True
+    assert f["status"] == "ABANDON_80_CLAIM"
+    assert f["ci95_high"] < 0.80
+    # listing surfaces the captured score vector / regime-at-issuance
+    assert out["picks"][0]["scores"]["regime"]["label"] == "Trend-up"
+
+
+def test_pick_journal_insufficient_samples(monkeypatch):
+    """Below min_samples => not falsified, status reports gathering evidence."""
+    resolved = [(0.82, "WIN", 5.0)] * 4 + [(0.82, "LOSS", -3.0)] * 1
+    _pick_journal_db(5, [], resolved, monkeypatch)
+    out = wolf_app.wolf_pick_journal()
+    assert out["ok"] is True
+    assert out["metrics"]["resolved"] == 5
+    f = out["verdict"]["falsification"]
+    assert f["falsified"] is False
+    assert f["status"] == "insufficient_samples"

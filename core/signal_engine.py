@@ -921,10 +921,15 @@ def load_model(symbol=None):
     except Exception as e:
         LOGGER.warning(f"load_model {symbol}: {e}"); return None, None, None
 
-def predict_live_ex(symbol, asset_type):
+def predict_live_ex(symbol, asset_type, scores=None):
     """
     Like predict_live but returns (signal_tuple_or_None, reason_code_or_None).
     reason_code is for diagnostics/metrics only.
+
+    If a mutable `scores` dict is passed, it is populated on the success path
+    with the specialist score vector + regime-at-issuance (blueprint §4: the
+    pick journal must capture the full score vector, not just the outcome).
+    Callers that omit it are unaffected.
     """
     model, feature_cols, meta = load_model(symbol)
     if model is None:
@@ -977,6 +982,42 @@ def predict_live_ex(symbol, asset_type):
     if up_prob > min_p:
         signal_strength = (up_prob - min_p) * 4.0
         conf = round(min(0.95, max(0.75, accuracy + signal_strength)), 3)
+        if scores is not None:
+            # Derive a coarse regime label from the gate indicators. Placeholder
+            # until the HMM specialist (blueprint §3) lands; captures the regime
+            # the pick was issued in so calibration can later be regime-conditional.
+            if ema_trend_bullish == 1 and adx_trending == 1 and above_ema200 == 1:
+                regime_label = "Trend-up"
+            elif ema_trend_bullish == 0 and above_ema200 == 0:
+                regime_label = "Trend-down"
+            elif adx_trending == 0:
+                regime_label = "Chop"
+            else:
+                regime_label = "Neutral"
+            scores.update({
+                "schema": 1,
+                "specialists": {
+                    "daily_swing": {"model": "xgboost_v3", "up_prob": round(up_prob, 4), "vote": "UP"},
+                },
+                "specialist_count": 1,
+                "specialist_agree_up": 1,
+                "model_meta": {
+                    "accuracy": round(float(accuracy), 4),
+                    "edge": round(float(edge), 4),
+                    "wf_acc_mean": round(wf_acc_mean, 4),
+                    "wf_edge_mean": round(wf_edge_mean, 4),
+                    "wf_fold_count": wf_fold_count,
+                },
+                "regime": {
+                    "label": regime_label,
+                    "above_ema200": int(above_ema200),
+                    "adx": round(float(adx_val), 2),
+                    "adx_trending": int(adx_trending),
+                    "ema_trend_bullish": int(ema_trend_bullish),
+                    "rsi": round(float(rsi), 2),
+                    "stoch_k": round(float(stoch_k), 2),
+                },
+            })
         return ("UP", conf), None
     # DOWN signals disabled — 1.5% WR on 274 trades, not viable
     # Ghost is BUY-only system

@@ -2126,6 +2126,146 @@ def wolf_gate_history(limit: int = 50):
         return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
 
 
+# v3.2 era marker — predictions with id >= this are Ghost's high-conviction
+# v3.2-engine picks. Used across the codebase (core.stats_direction, core.prediction)
+# to exclude ~223k legacy v1 rows from credibility stats.
+_V32_ERA_MIN_ID = 223438
+
+
+def _coerce_json(v):
+    """psycopg2 may hand back JSONB as dict already, or as text. Normalise to obj."""
+    if v is None:
+        return {}
+    if isinstance(v, (dict, list)):
+        return v
+    try:
+        import json as _j
+        return _j.loads(v)
+    except Exception:
+        return {}
+
+
+@APP.get("/api/wolf/pick-journal")
+def wolf_pick_journal(limit: int = 50, offset: int = 0, symbol: str = "WOLF"):
+    """Pick journal — the credibility ledger (blueprint module 7).
+
+    Every historical v3.2-era pick with full audit trail: confidence, the
+    specialist score vector + regime-at-issuance (predictions.scores), entry/
+    target/stop, resolution, exit, P&L. Plus aggregate honesty metrics computed
+    over ALL resolved picks (not just the page): win rate with a 95% Wilson CI,
+    expectancy, Brier score, and the pre-registered falsification verdict
+    (core.prediction.FALSIFICATION_THRESHOLD, blueprint §10). Paginated, newest
+    first. Public, read-only — this is the auditable record the 80% claim rests on.
+    """
+    import math as _m
+    from core.prediction import FALSIFICATION_THRESHOLD
+    try:
+        lim = max(1, min(200, int(limit)))
+        off = max(0, int(offset))
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT COUNT(*) FROM predictions WHERE symbol=%s AND id >= %s",
+                (symbol, _V32_ERA_MIN_ID))
+            total = cur.fetchone()[0]
+            cur.execute(
+                "SELECT id,symbol,direction,confidence,entry_price,target_price,stop_price,"
+                "predicted_at,expires_at,resolved_at,outcome,exit_price,pnl_pct,features,scores "
+                "FROM predictions WHERE symbol=%s AND id >= %s "
+                "ORDER BY predicted_at DESC NULLS LAST, id DESC LIMIT %s OFFSET %s",
+                (symbol, _V32_ERA_MIN_ID, lim, off))
+            rows = cur.fetchall()
+            cur.execute(
+                "SELECT confidence,outcome,pnl_pct FROM predictions "
+                "WHERE symbol=%s AND id >= %s AND outcome IS NOT NULL",
+                (symbol, _V32_ERA_MIN_ID))
+            resolved = cur.fetchall()
+
+        picks = []
+        for r in rows:
+            (pid, sym, direction, conf, entry, target, stop, pred_at, exp_at,
+             res_at, outcome, exit_p, pnl, feats, scrs) = r
+            picks.append({
+                "id": pid, "symbol": sym, "direction": direction,
+                "confidence": float(conf) if conf is not None else None,
+                "entry_price": entry, "target_price": target, "stop_price": stop,
+                "predicted_at": pred_at, "expires_at": exp_at, "resolved_at": res_at,
+                "outcome": outcome, "exit_price": exit_p,
+                "pnl_pct": float(pnl) if pnl is not None else None,
+                "features": _coerce_json(feats), "scores": _coerce_json(scrs),
+            })
+
+        n = len(resolved)
+        wins = sum(1 for c, o, p in resolved if o == "WIN")
+        losses = sum(1 for c, o, p in resolved if o == "LOSS")
+        expired = sum(1 for c, o, p in resolved if o == "EXPIRED")
+        win_rate = (wins / n) if n else None
+        pnls = [float(p) for c, o, p in resolved if p is not None]
+        expectancy_pct = (sum(pnls) / len(pnls)) if pnls else None
+        win_pnls = [float(p) for c, o, p in resolved if o == "WIN" and p is not None]
+        loss_pnls = [float(p) for c, o, p in resolved if o in ("LOSS", "EXPIRED") and p is not None]
+        avg_win_pct = (sum(win_pnls) / len(win_pnls)) if win_pnls else None
+        avg_loss_pct = (sum(loss_pnls) / len(loss_pnls)) if loss_pnls else None
+        # Brier: p = stated confidence (P(win)); y = 1 if WIN else 0. Lower is better.
+        brier_terms = [(float(c) - (1.0 if o == "WIN" else 0.0)) ** 2
+                       for c, o, p in resolved if c is not None]
+        brier = (sum(brier_terms) / len(brier_terms)) if brier_terms else None
+        # 95% Wilson score interval on win rate (robust at small N, never leaves [0,1])
+        ci_low = ci_high = None
+        if n:
+            z = 1.96
+            phat = wins / n
+            denom = 1.0 + z * z / n
+            center = (phat + z * z / (2 * n)) / denom
+            margin = (z * _m.sqrt(phat * (1 - phat) / n + z * z / (4 * n * n))) / denom
+            ci_low = max(0.0, center - margin)
+            ci_high = min(1.0, center + margin)
+
+        ft = FALSIFICATION_THRESHOLD
+        falsified = False
+        fal_status = "insufficient_samples"
+        if n >= ft["min_samples"]:
+            ci_excludes_north_star = (ci_high is not None and ci_high < ft["north_star"])
+            if win_rate is not None and win_rate < ft["win_rate_floor"] and ci_excludes_north_star:
+                falsified = True
+                fal_status = "ABANDON_80_CLAIM"
+            elif win_rate is not None and win_rate >= ft["win_rate_floor"]:
+                fal_status = "on_track"
+            else:
+                fal_status = "watch"   # below floor but CI still admits 80% — not yet falsified
+
+        return {
+            "ok": True,
+            "symbol": symbol,
+            "total": total,
+            "limit": lim,
+            "offset": off,
+            "returned": len(picks),
+            "picks": picks,
+            "metrics": {
+                "resolved": n, "wins": wins, "losses": losses, "expired": expired,
+                "win_rate": round(win_rate, 4) if win_rate is not None else None,
+                "win_rate_ci95": [round(ci_low, 4), round(ci_high, 4)] if ci_low is not None else None,
+                "expectancy_pct": round(expectancy_pct, 4) if expectancy_pct is not None else None,
+                "avg_win_pct": round(avg_win_pct, 4) if avg_win_pct is not None else None,
+                "avg_loss_pct": round(avg_loss_pct, 4) if avg_loss_pct is not None else None,
+                "brier": round(brier, 4) if brier is not None else None,
+            },
+            "verdict": {
+                "falsification": {
+                    "status": fal_status,
+                    "falsified": falsified,
+                    "threshold": ft,
+                    "samples": n,
+                    "win_rate": round(win_rate, 4) if win_rate is not None else None,
+                    "ci95_high": round(ci_high, 4) if ci_high is not None else None,
+                },
+            },
+        }
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
 @APP.post("/api/test-alert")
 def test_alert():
     """Send test message to Telegram to verify connection."""
