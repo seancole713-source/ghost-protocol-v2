@@ -2213,7 +2213,14 @@ def test_gate_status_reports_config_and_live_prediction(monkeypatch):
                         lambda s, d: {"combined_total": 3, "combined_wins": 2, "combined_wr": 0.667})
     monkeypatch.setattr(_pred, "_objective_gate",
                         lambda s, d, c: (c >= 0.78, None if c >= 0.78 else "objective_bootstrap_conf", {}))
-    monkeypatch.setattr(_se, "predict_live_ex", lambda s, a: (("UP", 0.81), None))
+
+    def _ple(s, a, scores=None):
+        if scores is not None:
+            scores["up_prob"] = 0.62
+            scores["regime"] = {"label": "Trend-up"}
+            scores["model_meta"] = {"accuracy": 0.654, "min_win_proba": 0.55}
+        return (("UP", 0.81), None)
+    monkeypatch.setattr(_se, "predict_live_ex", _ple)
 
     out = wolf_app.wolf_gate_status()
     assert out["ok"] is True
@@ -2228,6 +2235,13 @@ def test_gate_status_reports_config_and_live_prediction(monkeypatch):
     assert lp["passes_confidence_floor"] is True
     assert lp["passes_objective_gate"] is True
     assert lp["would_alert"] is True
+    # up_prob + binding threshold surfaced
+    assert lp["up_prob"] == 0.62
+    assert lp["bootstrap_min_conf"] == 0.78
+    assert lp["binding_confidence_threshold"] == 0.78   # bootstrap: max(0.75, 0.78)
+    # needed = 0.55 + (0.78 - 0.654)/4 = 0.5815
+    assert lp["up_prob_needed_to_fire"] == 0.5815
+    assert lp["up_prob_gap"] == 0.0385                  # 0.62 - 0.5815, cleared
 
 
 def test_gate_status_shows_no_alert_when_below_bootstrap_conf(monkeypatch):
@@ -2247,7 +2261,7 @@ def test_gate_status_shows_no_alert_when_below_bootstrap_conf(monkeypatch):
                         lambda s, d: {"combined_total": 2, "combined_wins": 1, "combined_wr": 0.5})
     monkeypatch.setattr(_pred, "_objective_gate",
                         lambda s, d, c: (c >= 0.78, None if c >= 0.78 else "objective_bootstrap_conf", {}))
-    monkeypatch.setattr(_se, "predict_live_ex", lambda s, a: (("UP", 0.76), None))
+    monkeypatch.setattr(_se, "predict_live_ex", lambda s, a, scores=None: (("UP", 0.76), None))
 
     out = wolf_app.wolf_gate_status()
     lp = out["live_prediction"]
@@ -2271,13 +2285,26 @@ def test_gate_status_handles_no_model_signal(monkeypatch):
     monkeypatch.setattr(_pred, "CONFIDENCE_FLOOR", 0.75)
     monkeypatch.setattr(_pred, "_objective_symbol_stats",
                         lambda s, d: {"combined_total": 0, "combined_wins": 0, "combined_wr": 0.0})
-    monkeypatch.setattr(_se, "predict_live_ex", lambda s, a: (None, "prob_low"))
+
+    def _ple(s, a, scores=None):
+        # Model didn't fire (up_prob below min_p) but the score vector is still
+        # captured — this is the Tuesday "how close did it come" case.
+        if scores is not None:
+            scores["up_prob"] = 0.54
+            scores["regime"] = {"label": "Chop"}
+            scores["model_meta"] = {"accuracy": 0.654, "min_win_proba": 0.55}
+        return (None, "prob_low")
+    monkeypatch.setattr(_se, "predict_live_ex", _ple)
 
     out = wolf_app.wolf_gate_status()
     lp = out["live_prediction"]
     assert lp["model_emitted"] is False
     assert lp["reason"] == "prob_low"
     assert lp["would_alert"] is False
+    # up_prob surfaced even though the model didn't fire
+    assert lp["up_prob"] == 0.54
+    assert lp["up_prob_needed_to_fire"] == 0.5815
+    assert lp["up_prob_gap"] == -0.0415   # negative — how far short it landed
 
 
 # ── PR #29: per-cycle gate-outcome history ──────────────────────────────

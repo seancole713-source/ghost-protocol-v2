@@ -2044,11 +2044,36 @@ def wolf_gate_status():
         except Exception as e:
             out["symbol_stats"] = {"error": str(e)[:120]}
 
-        # Live model prediction + per-gate analysis
+        # Live model prediction + per-gate analysis. Pass a scores dict so we can
+        # surface up_prob and the binding threshold even on cycles that don't fire.
         try:
             from core.signal_engine import predict_live_ex
-            signal, reason = predict_live_ex("WOLF", "stock")
+            _scores = {}
+            signal, reason = predict_live_ex("WOLF", "stock", scores=_scores)
             lp = {"reason": reason}
+
+            phase = (out.get("symbol_stats") or {}).get("phase")
+            boot_conf = float(cfg.get("bootstrap_min_conf"))
+            # Binding confidence requirement: in the bootstrap phase the objective
+            # gate needs conf >= bootstrap_min_conf; the floor needs conf >= floor.
+            binding_conf = max(float(floor), boot_conf) if phase == "bootstrap" else float(floor)
+            up_prob = _scores.get("up_prob")
+            mm = _scores.get("model_meta") or {}
+            acc = mm.get("accuracy")
+            min_p = mm.get("min_win_proba")
+            lp["up_prob"] = up_prob
+            lp["regime"] = _scores.get("regime")
+            lp["binding_confidence_threshold"] = round(binding_conf, 3)
+            lp["bootstrap_min_conf"] = round(boot_conf, 3)
+            # up_prob needed to clear the binding threshold, inverting
+            # conf = clamp(accuracy + (up_prob - min_p) * 4, 0.75, 0.95):
+            if acc is not None and min_p is not None:
+                needed = min_p + (binding_conf - acc) / 4.0
+                needed = max(needed, min_p)   # must also exceed min_p to emit UP
+                lp["up_prob_needed_to_fire"] = round(needed, 4)
+                if up_prob is not None:
+                    lp["up_prob_gap"] = round(up_prob - needed, 4)
+
             if signal:
                 direction, conf = signal
                 conf = float(conf)
