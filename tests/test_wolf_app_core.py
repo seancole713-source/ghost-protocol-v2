@@ -1925,6 +1925,67 @@ def test_purge_ghost_portfolio_real_run_deletes_matched_rows(monkeypatch):
     assert len(deletes) == 2
 
 
+# ── audit: purge ZZE2E* test rows from the predictions table ────────────
+
+def _purge_test_pred_db(grouped, monkeypatch):
+    executed = []
+
+    class _Cur:
+        rowcount = 0
+        def execute(self, sql, params=None):
+            executed.append((sql, params))
+            if sql.strip().upper().startswith("DELETE"):
+                self.rowcount = sum(c for _, c in grouped)
+        def fetchall(self): return grouped
+        def fetchone(self): return None
+
+    class _Conn:
+        def cursor(self): return _Cur()
+
+    class _DbCtx:
+        def __enter__(self): return _Conn()
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(wolf_app, "db_conn", lambda: _DbCtx())
+    return executed
+
+
+def test_purge_test_predictions_dry_run_reports_without_deleting(monkeypatch):
+    monkeypatch.setenv("CRON_SECRET", "testsecret")
+    executed = _purge_test_pred_db([("ZZE2E1779", 3), ("ZZ_PROBE", 1)], monkeypatch)
+    import asyncio
+    out = asyncio.run(wolf_app.purge_test_predictions(x_cron_secret="testsecret", dry_run=True))
+    assert out["ok"] is True and out["dry_run"] is True
+    assert out["total_matched"] == 4
+    assert out["deleted"] == 0
+    assert {m["symbol"] for m in out["matched"]} == {"ZZE2E1779", "ZZ_PROBE"}
+    assert not any(e[0].strip().upper().startswith("DELETE") for e in executed)
+
+
+def test_purge_test_predictions_real_run_deletes(monkeypatch):
+    monkeypatch.setenv("CRON_SECRET", "testsecret")
+    executed = _purge_test_pred_db([("ZZE2EABC", 5)], monkeypatch)
+    import asyncio
+    out = asyncio.run(wolf_app.purge_test_predictions(x_cron_secret="testsecret", dry_run=False))
+    assert out["ok"] is True and out["dry_run"] is False
+    assert out["deleted"] == 5
+    deletes = [e for e in executed if e[0].strip().upper().startswith("DELETE")]
+    assert len(deletes) == 1
+    assert "ILIKE ANY" in deletes[0][0]
+
+
+def test_purge_test_predictions_requires_secret(monkeypatch):
+    monkeypatch.setenv("CRON_SECRET", "testsecret")
+    _purge_test_pred_db([], monkeypatch)
+    import asyncio
+    from fastapi import HTTPException
+    try:
+        asyncio.run(wolf_app.purge_test_predictions(x_cron_secret="wrong", dry_run=True))
+        assert False, "expected 403"
+    except HTTPException as e:
+        assert e.status_code == 403
+
+
 def test_admin_cookie_token_roundtrip(monkeypatch):
     """A freshly minted token validates; a forged/tampered one does not.
     (PR #28 cookie login replaced HTTP Basic Auth, which blank-paged on prod.)"""
