@@ -3108,9 +3108,128 @@ if os.path.exists("static"):
 # GHOST v3 ENDPOINTS — Backtested signal engine
 # ════════════════════════════════════════════════════════════
 
+def _v3_system_health(model_status: dict) -> dict:
+    """Aggregate, DB-cheap system health (audit). Composes engine heartbeat,
+    kill-condition + pause state, model coverage, recent activity and realized
+    P&L into one snapshot with a healthy/degraded/critical roll-up. Every block
+    is independently guarded so a single failure degrades gracefully rather than
+    500-ing the status endpoint."""
+    now = int(time.time())
+    issues = []
+
+    db_ok = True
+    try:
+        with db_conn() as c:
+            c.cursor().execute("SELECT 1")
+    except Exception:
+        db_ok = False
+        issues.append("db_unreachable")
+
+    cycle = {"ts": None, "saved": None, "scanned": None, "age_min": None}
+    try:
+        with db_conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                "SELECT key,val FROM ghost_state WHERE key IN "
+                "('last_prediction_cycle_ts','last_prediction_cycle_saved','last_prediction_cycle_scanned')")
+            kv = {k: v for k, v in cur.fetchall()}
+        if kv.get("last_prediction_cycle_ts"):
+            cycle["ts"] = int(kv["last_prediction_cycle_ts"])
+            cycle["age_min"] = int((now - cycle["ts"]) / 60)
+        if kv.get("last_prediction_cycle_saved") is not None:
+            cycle["saved"] = int(kv["last_prediction_cycle_saved"])
+        if kv.get("last_prediction_cycle_scanned") is not None:
+            cycle["scanned"] = int(kv["last_prediction_cycle_scanned"])
+    except Exception:
+        pass
+
+    pause = {"paused": False}
+    try:
+        from core.prediction import engine_pause_state
+        pause = engine_pause_state()
+    except Exception:
+        pass
+    if pause.get("paused"):
+        issues.append("engine_paused")
+
+    kill = {"enabled": None, "any_triggered": None, "resolved_available": None}
+    try:
+        from core.prediction import evaluate_kill_conditions
+        ev = evaluate_kill_conditions()
+        kill = {"enabled": ev.get("enabled"), "any_triggered": ev.get("any_triggered"),
+                "resolved_available": ev.get("resolved_available")}
+        if ev.get("any_triggered"):
+            issues.append("kill_condition_triggered")
+    except Exception:
+        pass
+
+    trained = bool(model_status.get("trained"))
+    if not trained:
+        issues.append("no_model")
+    min_models = max(1, int(os.getenv("MODEL_COVERAGE_MIN_MODELS", "3")))
+    loaded = int(model_status.get("models", 0)) if trained else 0
+    if loaded < min_models:
+        issues.append("coverage_below_floor")
+
+    activity = {"open": None, "resolved_24h": None}
+    pnl = None
+    try:
+        with db_conn() as c:
+            cur = c.cursor()
+            cur.execute("SELECT COUNT(*) FROM predictions WHERE symbol='WOLF' AND outcome IS NULL AND expires_at > %s", (now,))
+            activity["open"] = int(cur.fetchone()[0])
+            cur.execute("SELECT COUNT(*) FROM predictions WHERE symbol='WOLF' AND resolved_at >= %s", (now - 86400,))
+            activity["resolved_24h"] = int(cur.fetchone()[0])
+            cur.execute(
+                "SELECT resolved_at,symbol,outcome,pnl_pct,entry_price,exit_price FROM predictions "
+                "WHERE symbol='WOLF' AND id >= %s AND outcome IS NOT NULL AND pnl_pct IS NOT NULL "
+                "ORDER BY resolved_at ASC NULLS LAST, id ASC", (_V32_ERA_MIN_ID,))
+            rows = cur.fetchall()
+        from core.pnl import realized_pnl
+        trades = [{"resolved_at": r[0], "symbol": r[1], "outcome": r[2],
+                   "pnl_pct": float(r[3]) if r[3] is not None else None,
+                   "entry_price": r[4], "exit_price": r[5]} for r in rows]
+        full = realized_pnl(trades)
+        pnl = {k: full[k] for k in ("count", "wins", "losses", "win_rate",
+                                    "realized_pnl_usd", "total_return_pct",
+                                    "profit_factor", "max_drawdown_pct")}
+    except Exception:
+        pass
+
+    if not db_ok or not trained:
+        status = "critical"
+    elif issues:
+        status = "degraded"
+    else:
+        status = "healthy"
+
+    return {
+        "status": status,
+        "issues": issues,
+        "db_ok": db_ok,
+        "engine": {
+            "last_cycle": cycle,
+            "paused": bool(pause.get("paused")),
+            "pause_reason": pause.get("reason"),
+            "pause_auto_resume_at": pause.get("auto_resume_at"),
+        },
+        "kill": kill,
+        "coverage": {"loaded_models": loaded, "min_models_floor": min_models,
+                     "below_floor": loaded < min_models},
+        "activity": activity,
+        "pnl": pnl,
+        "checked_at": now,
+    }
+
+
 @APP.get("/api/v3/status")
 def v3_status():
-    """Model status — accuracy, edge over random, top features.
+    """Full system-health snapshot (audit), built on the v3 model status.
+
+    Preserves the model-status contract (trained / models / symbols / accuracy)
+    that /admin and health_audit consume, and adds a `system` block: engine
+    heartbeat, kill-condition + pause state, coverage, recent activity, realized
+    P&L, and a healthy/degraded/critical roll-up.
 
     WOLF-only hardening (PR #8): even if ghost_v3_model has stale rows for
     other symbols (e.g. BCH/SOL/UNI from the pre-WOLF crypto era), this
@@ -3128,6 +3247,7 @@ def v3_status():
             if not wolf_only:
                 st["trained"] = False
                 st["reason"] = "No WOLF model trained — run /api/v3/train"
+    st["system"] = _v3_system_health(st)
     return st
 
 

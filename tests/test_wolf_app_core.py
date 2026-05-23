@@ -315,6 +315,91 @@ def test_v3_status_flips_to_untrained_when_no_wolf_model(monkeypatch):
     assert "WOLF" in str(out.get("reason", ""))
 
 
+def test_v3_status_system_health_block_healthy(monkeypatch):
+    """The system block rolls up engine/kill/coverage/activity/pnl into a
+    healthy snapshot when every signal is nominal."""
+    import core.signal_engine as _se, core.prediction as _pred
+    monkeypatch.setattr(_se, "get_model_status",
+                        lambda: {"trained": True, "models": 3, "symbols": {"WOLF": {"accuracy": 70.0}}})
+    monkeypatch.setattr(_pred, "engine_pause_state", lambda: {"paused": False})
+    monkeypatch.setattr(_pred, "evaluate_kill_conditions",
+                        lambda: {"enabled": True, "any_triggered": False, "resolved_available": 4})
+    monkeypatch.setenv("MODEL_COVERAGE_MIN_MODELS", "1")
+
+    gs_rows = [("last_prediction_cycle_ts", str(int(time.time()) - 120)),
+               ("last_prediction_cycle_saved", "0"),
+               ("last_prediction_cycle_scanned", "1")]
+    resolved = [(100, "WOLF", "WIN", 10.0, 10.0, 11.0),
+                (200, "WOLF", "LOSS", -5.0, 11.0, 10.45)]
+
+    class _Cur:
+        last = ""
+        def execute(self, sql, params=None): self.last = sql
+        def fetchall(self):
+            if "ghost_state" in self.last: return gs_rows
+            if "ORDER BY resolved_at" in self.last: return resolved
+            return []
+        def fetchone(self):
+            if "COUNT(*)" in self.last and "outcome IS NULL" in self.last: return (2,)
+            if "COUNT(*)" in self.last and "resolved_at >=" in self.last: return (5,)
+            return (0,)
+
+    class _Conn:
+        def cursor(self): return _Cur()
+
+    class _DbCtx:
+        def __enter__(self): return _Conn()
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(wolf_app, "db_conn", lambda: _DbCtx())
+    out = wolf_app.v3_status()
+    assert out["trained"] is True
+    sysh = out["system"]
+    assert sysh["status"] == "healthy"
+    assert sysh["db_ok"] is True
+    assert sysh["issues"] == []
+    assert sysh["engine"]["paused"] is False
+    assert sysh["engine"]["last_cycle"]["scanned"] == 1
+    assert sysh["kill"]["any_triggered"] is False
+    assert sysh["coverage"]["below_floor"] is False
+    assert sysh["activity"]["open"] == 2
+    assert sysh["activity"]["resolved_24h"] == 5
+    assert sysh["pnl"]["count"] == 2
+    assert abs(sysh["pnl"]["realized_pnl_usd"] - 45.0) < 1e-6
+
+
+def test_v3_status_system_health_degrades_on_pause(monkeypatch):
+    """Engine pause + kill trip surface as issues and downgrade the roll-up."""
+    import core.signal_engine as _se, core.prediction as _pred
+    monkeypatch.setattr(_se, "get_model_status",
+                        lambda: {"trained": True, "models": 3, "symbols": {"WOLF": {}}})
+    monkeypatch.setattr(_pred, "engine_pause_state",
+                        lambda: {"paused": True, "reason": "win_rate->auto_pause"})
+    monkeypatch.setattr(_pred, "evaluate_kill_conditions",
+                        lambda: {"enabled": True, "any_triggered": True, "resolved_available": 40})
+    monkeypatch.setenv("MODEL_COVERAGE_MIN_MODELS", "1")
+
+    class _Cur:
+        last = ""
+        def execute(self, sql, params=None): self.last = sql
+        def fetchall(self): return []
+        def fetchone(self): return (0,)
+
+    class _Conn:
+        def cursor(self): return _Cur()
+
+    class _DbCtx:
+        def __enter__(self): return _Conn()
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(wolf_app, "db_conn", lambda: _DbCtx())
+    sysh = wolf_app.v3_status()["system"]
+    assert sysh["status"] == "degraded"
+    assert "engine_paused" in sysh["issues"]
+    assert "kill_condition_triggered" in sysh["issues"]
+    assert sysh["engine"]["pause_reason"] == "win_rate->auto_pause"
+
+
 # ── /api/wolf/signal-alert/check — Telegram alert throttling ───────────
 
 class _SignalAlertCursor:

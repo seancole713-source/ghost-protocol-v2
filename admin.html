@@ -262,7 +262,17 @@ async function refreshStatus(){
       if(last.ts)bits.push('started '+fmtTimeAgo(last.ts));
       detail='<div class="kv" style="margin-top:6px"><b>Last train</b> · '+bits.join(' · ')+'</div>';
     }
-    r.innerHTML=headline+detail;
+    var sysLine='';
+    var sys=v3&&v3.system;
+    if(sys){
+      var sc=sys.status==='healthy'?'ok':(sys.status==='critical'?'fail':'warn');
+      var sb=['<span class="'+sc+'">'+escHtml(sys.status||'?')+'</span>'];
+      if(sys.issues&&sys.issues.length)sb.push('issues: '+sys.issues.map(escHtml).join(', '));
+      if(sys.engine&&sys.engine.last_cycle&&sys.engine.last_cycle.age_min!=null)sb.push('last cycle '+sys.engine.last_cycle.age_min+'m ago');
+      if(sys.pnl&&sys.pnl.realized_pnl_usd!=null)sb.push('P&L $'+sys.pnl.realized_pnl_usd);
+      sysLine='<div class="kv" style="margin-top:6px"><b>System</b> · '+sb.join(' · ')+'</div>';
+    }
+    r.innerHTML=headline+detail+sysLine;
     document.getElementById('t-models-slot').innerHTML=renderModelTable(v3);
   }catch(e){r.innerHTML='<span class="fail">&#10007;</span> '+escHtml(String(e))}
 }
