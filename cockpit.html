@@ -42,6 +42,10 @@ section.block{margin-bottom:32px}
 .gs-signal.strong-sell{background:#2a0d0d;color:#ef4444}
 .gs-side{display:flex;flex-direction:column;gap:8px;min-width:0}
 .gs-side-head{font-size:11px;font-weight:700;letter-spacing:2px;color:#666;text-transform:uppercase}
+.gs-regime{font-size:10px;font-weight:700;letter-spacing:1px;padding:2px 8px;border-radius:10px;background:#1a1a1a;color:#888;margin-left:6px}
+.gs-regime.up{background:#0a2a14;color:#4ade80}
+.gs-regime.down{background:#2a0d0d;color:#ef4444}
+.gs-regime.flat{background:#1a1a06;color:#facc15}
 .gs-side-sub{font-size:12px;color:#666;line-height:1.5}
 .gs-bars{display:flex;flex-direction:column;gap:5px;margin-top:6px}
 .gs-bar-row{display:grid;grid-template-columns:90px 1fr 60px;align-items:center;gap:8px;font-size:11px}
@@ -351,7 +355,7 @@ section.block{margin-bottom:32px}
       </div>
     </div>
     <div class="gs-side">
-      <div class="gs-side-head">Ghost Score</div>
+      <div class="gs-side-head">Ghost Score <span class="gs-regime" id="gs-regime"></span></div>
       <div class="gs-side-sub" id="gs-side-sub">A composite read of WOLF &mdash; model + volume + sector + momentum + freshness.</div>
       <div class="gs-bars" id="gs-bars"></div>
       <div class="gs-meta" id="gs-meta"></div>
@@ -644,6 +648,7 @@ function renderGhostScore(gs, watching){
   var barsEl = document.getElementById('gs-bars');
   var metaEl = document.getElementById('gs-meta');
   var subEl = document.getElementById('gs-side-sub');
+  var regimeEl = document.getElementById('gs-regime');
 
   if(!gs || gs.ok === false){
     fg.setAttribute('d', gsArcPath(0));
@@ -652,8 +657,25 @@ function renderGhostScore(gs, watching){
     sigEl.textContent = 'unavailable';
     sigEl.className = 'gs-signal';
     barsEl.innerHTML = '';
+    if(regimeEl){ regimeEl.textContent = ''; regimeEl.className = 'gs-regime'; }
     metaEl.textContent = gs && gs.error ? 'Score feed: ' + gs.error : 'Score feed unavailable';
     return;
+  }
+
+  // Rule-based market-regime tag (audit §3).
+  if(regimeEl){
+    var rg = gs.regime;
+    if(rg && rg.label && rg.label !== 'Unknown'){
+      var lab = String(rg.label);
+      var cls = lab.indexOf('Up') >= 0 ? 'up' : (lab.indexOf('Down') >= 0 ? 'down' : 'flat');
+      var dl = (rg.delta_pct != null) ? ' ' + (rg.delta_pct >= 0 ? '+' : '') + rg.delta_pct + '%' : '';
+      regimeEl.textContent = lab + dl;
+      regimeEl.className = 'gs-regime ' + cls;
+      regimeEl.title = 'Market regime · score modifier ×' + (rg.modifier != null ? rg.modifier : 1);
+    } else {
+      regimeEl.textContent = '';
+      regimeEl.className = 'gs-regime';
+    }
   }
 
   var score = Number(gs.score) || 0;
@@ -712,7 +734,10 @@ function renderGhostScore(gs, watching){
   if(inputs.predicted_at){
     parts.push('signal ' + fmtTimeAgo(inputs.predicted_at));
   }
-  metaEl.textContent = parts.length ? parts.join(' · ') : 'No input data';
+  if(gs.regime && gs.regime.modifier != null && gs.regime.modifier !== 1 && gs.raw_score != null){
+    parts.push('regime &times;' + gs.regime.modifier + ' (raw ' + gs.raw_score + ')');
+  }
+  metaEl.innerHTML = parts.length ? parts.join(' · ') : 'No input data';
   if(subEl){
     subEl.textContent = 'Updated ' + (gs.updated_at ? fmtTimeAgo(gs.updated_at) : 'just now')
       + ' · weights: model 40 · volume 20 · sector 15 · momentum 15 · freshness 10';
