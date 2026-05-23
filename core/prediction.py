@@ -66,6 +66,7 @@ def _kill_cfg() -> Dict[str, Any]:
         "brier_window": max(1, int(g("KILL_BRIER_WINDOW", "30"))),
         "consec_losses": max(1, int(g("KILL_CONSEC_LOSSES", "3"))),
         "expectancy_window": max(1, int(g("KILL_EXPECTANCY_WINDOW", "20"))),
+        "cooldown_minutes": max(1, int(g("KILL_COOLDOWN_MINUTES", "1440"))),
     }
 
 
@@ -160,6 +161,131 @@ def evaluate_kill_conditions() -> Dict[str, Any]:
         "resolved_available": len(rows),
         "conditions": conds,
     }
+
+
+_ENGINE_PAUSE_KEYS = (
+    "engine_paused", "engine_pause_reason", "engine_pause_ts",
+    "engine_pause_auto_resume_at", "engine_pause_alerted",
+)
+
+
+def _clear_engine_pause():
+    try:
+        with db_conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                "DELETE FROM ghost_state WHERE key IN ("
+                + ",".join(["%s"] * len(_ENGINE_PAUSE_KEYS)) + ")",
+                _ENGINE_PAUSE_KEYS,
+            )
+    except Exception as e:
+        LOGGER.warning("clear engine pause failed: " + str(e)[:80])
+
+
+def engine_pause_state() -> Dict[str, Any]:
+    """Current kill-condition pause state. A cooldown-only pause auto-resumes
+    once its window elapses; harder trips require manual resume."""
+    try:
+        with db_conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                "SELECT key,val FROM ghost_state WHERE key IN ("
+                + ",".join(["%s"] * len(_ENGINE_PAUSE_KEYS)) + ")",
+                _ENGINE_PAUSE_KEYS,
+            )
+            st = {k: v for k, v in cur.fetchall()}
+    except Exception:
+        return {"paused": False}
+    if st.get("engine_paused") != "1":
+        return {"paused": False}
+    auto = st.get("engine_pause_auto_resume_at")
+    if auto:
+        try:
+            if int(time.time()) >= int(auto):
+                _clear_engine_pause()
+                return {"paused": False, "auto_resumed": True}
+        except Exception:
+            pass
+    return {
+        "paused": True,
+        "reason": st.get("engine_pause_reason") or "",
+        "since": int(st["engine_pause_ts"]) if st.get("engine_pause_ts") else None,
+        "auto_resume_at": int(auto) if auto else None,
+    }
+
+
+def resume_engine() -> Dict[str, Any]:
+    """Manual resume — clears any kill-condition pause."""
+    _clear_engine_pause()
+    LOGGER.warning("ENGINE RESUMED (manual): kill-condition pause cleared")
+    return {"ok": True, "resumed": True}
+
+
+def enforce_kill_conditions() -> Dict[str, Any]:
+    """Evaluate the kill conditions and, if any tripped (and the switch is
+    enabled), pause the engine + fire a one-time Telegram alert. Returns the
+    resulting pause state. Cooldown-only trips auto-resume after
+    KILL_COOLDOWN_MINUTES; harder trips (pause/degrade/halt) need manual resume.
+    Inert during cold start: with too few resolved picks nothing trips."""
+    cfg = _kill_cfg()
+    if not cfg["enabled"]:
+        return {"paused": False, "enabled": False}
+    ev = evaluate_kill_conditions()
+    if not ev.get("ok"):
+        return engine_pause_state()
+    tripped = [c for c in ev["conditions"] if c["triggered"]]
+    if not tripped:
+        return engine_pause_state()
+
+    actions = sorted({c["action"] for c in tripped})
+    reason = "; ".join(c["name"] + "->" + c["action"] for c in tripped)
+    cooldown_only = actions == ["cooldown"]
+    now = int(time.time())
+    auto_resume_at = (now + cfg["cooldown_minutes"] * 60) if cooldown_only else None
+    prev = engine_pause_state()
+
+    try:
+        with db_conn() as c:
+            cur = c.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            pairs = [("engine_paused", "1"), ("engine_pause_reason", reason),
+                     ("engine_pause_ts", str(now))]
+            for k, v in pairs:
+                cur.execute(
+                    "INSERT INTO ghost_state(key,val) VALUES(%s,%s) "
+                    "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val", (k, v))
+            if auto_resume_at:
+                cur.execute(
+                    "INSERT INTO ghost_state(key,val) VALUES('engine_pause_auto_resume_at',%s) "
+                    "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val", (str(auto_resume_at),))
+            else:
+                cur.execute("DELETE FROM ghost_state WHERE key='engine_pause_auto_resume_at'")
+    except Exception as e:
+        LOGGER.error("engine pause write failed: " + str(e)[:80])
+
+    # One-time Telegram alert per new trip reason.
+    if not prev.get("paused") or prev.get("reason") != reason:
+        LOGGER.warning("KILL CONDITION TRIPPED — engine paused: %s", reason)
+        try:
+            from core.telegram import send_health_alert
+            msg = ("KILL CONDITION TRIPPED — engine paused: " + reason
+                   + (" (auto-resume in " + str(cfg["cooldown_minutes"]) + "m)"
+                      if auto_resume_at else " (manual resume required)"))
+            send_health_alert(msg)
+        except Exception as e:
+            LOGGER.error("kill alert failed: " + str(e)[:80])
+        try:
+            with db_conn() as c2:
+                cur2 = c2.cursor()
+                cur2.execute(
+                    "INSERT INTO ghost_state(key,val) VALUES('engine_pause_alerted',%s) "
+                    "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val", (str(now),))
+        except Exception:
+            pass
+
+    return {"paused": True, "reason": reason, "since": now,
+            "auto_resume_at": auto_resume_at, "actions": actions}
+
 
 def _is_market_hours():
     """Returns True if US market is open (9:30 AM - 4:00 PM CT, Mon-Fri)."""
@@ -854,6 +980,16 @@ def run_prediction_cycle(with_diag: bool = False):
                 _cb_floor = min(0.92, CONFIDENCE_FLOOR + 0.10)
                 LOGGER.warning("T23 CIRCUIT BREAKER: 5 consecutive losses — raising floor to " + str(_cb_floor))
     except Exception: pass
+    # Kill-condition enforcement (audit §2): pause/alert if a safety threshold
+    # tripped. Scanning + gate recording still run while paused so the operator
+    # sees where cycles land; only firing (saving picks) is suppressed.
+    _pause = {"paused": False}
+    try:
+        _pause = enforce_kill_conditions()
+    except Exception as _ke:
+        LOGGER.error("Kill enforcement failed: " + str(_ke)[:80])
+    engine_paused = bool(_pause.get("paused"))
+
     auto_mode_state = objective_autotune_mode()
     regime = _check_regime()
     regime['confidence_floor_override'] = _cb_floor
@@ -884,6 +1020,11 @@ def run_prediction_cycle(with_diag: bool = False):
 
     all_picks.sort(key=lambda x: x["confidence"], reverse=True)
     top = all_picks[:DAILY_CAP]
+    if engine_paused:
+        LOGGER.warning(
+            "ENGINE PAUSED (kill condition) — suppressing %d candidate(s): %s",
+            len(top), _pause.get("reason"))
+        top = []   # scan + record continue; firing suppressed
     saved = []
     dedup_blocked = 0
     # Pre-fetch open symbols once (separate conn avoids cursor state corruption mid-loop)
@@ -953,6 +1094,7 @@ def run_prediction_cycle(with_diag: bool = False):
             "would_fire": len(all_picks) > 0,
             "top_skip": _top_skip,
             "skip_counts": dict(skip_counts),
+            "paused": engine_paused,
         }
         with db_conn() as _gc:
             _gcur = _gc.cursor()

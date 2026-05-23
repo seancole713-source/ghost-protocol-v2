@@ -582,6 +582,16 @@ async function loadGateHistory(){
 }
 
 /* ─── Kill conditions (audit §2) ─── */
+async function resumeEngine(){
+  if(!confirm('Clear the kill-condition pause and resume firing?')) return;
+  try{
+    var r = await fetch('/api/admin/resume-engine',{method:'POST',headers:{'x-cron-secret':getSecret(),'Content-Type':'application/json'}});
+    if(r.status === 403){ alert('Resume failed: bad or missing x-cron-secret'); return; }
+    await r.json().catch(function(){return {};});
+  }catch(e){ alert('Resume failed: ' + e); }
+  loadKillStatus();
+}
+
 async function loadKillStatus(){
   var el = document.getElementById('kill-status');
   if(!el) return;
@@ -596,6 +606,14 @@ async function loadKillStatus(){
       + (g.enabled ? '<span class="ok">&#10003; enabled</span>' : '<span class="warn">disabled (KILL_SWITCH_ENABLED=0)</span>')
       + ' &middot; ' + (g.any_triggered ? '<span class="fail"><b>&#9888; condition triggered</b></span>' : '<span class="ok">all clear</span>')
       + ' &middot; ' + g.resolved_available + ' resolved picks available</div>';
+    // Enforcement banner: if the engine is paused, show why + a Resume control.
+    var ep = g.engine_pause || {};
+    if(ep.paused){
+      var ar = ep.auto_resume_at ? (' &middot; auto-resume ' + new Date(ep.auto_resume_at*1000).toLocaleString()) : ' &middot; manual resume required';
+      head += '<div class="kv" style="border-left:4px solid #ff4d4f;background:rgba(255,77,79,.08);padding:8px 12px;border-radius:6px;margin-bottom:8px">'
+        + '<span class="fail"><b>&#9209; ENGINE PAUSED</b></span> &middot; ' + escHtml(ep.reason || '') + ar
+        + '<br><button class="secondary" style="margin-top:6px" onclick="resumeEngine()">Resume engine</button></div>';
+    }
     function badge(s){
       if(s === 'red')   return '<span class="fail">&#10007; TRIPPED</span>';
       if(s === 'green') return '<span class="ok">&#10003; ok</span>';

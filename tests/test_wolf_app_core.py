@@ -2519,3 +2519,104 @@ def test_kill_conditions_trip_on_low_winrate_and_consec_losses(monkeypatch):
     assert by["expectancy"]["status"] == "red"
     assert by["expectancy"]["current"] < 0
     assert out["any_triggered"] is True
+
+
+# ── audit §2: kill-condition ENFORCEMENT (pause / cooldown / resume) ─────
+
+def _enforcement_db(resolved_rows, state, monkeypatch):
+    """Stateful fake DB: resolved-pick SELECTs return `resolved_rows`; ghost_state
+    reads/writes are backed by the shared `state` dict so pause persists across
+    db_conn() contexts."""
+    import core.prediction as _pred
+
+    class _Cur:
+        def execute(self, sql, params=None):
+            s = sql.strip()
+            self._mode = None
+            self._keys = None
+            if s.startswith("CREATE TABLE"):
+                return
+            if "FROM predictions" in s:
+                self._mode = "resolved"
+            elif s.startswith("SELECT key,val FROM ghost_state"):
+                self._mode = "state_select"
+                self._keys = params
+            elif s.startswith("INSERT INTO ghost_state"):
+                if params and len(params) == 2:
+                    state[params[0]] = params[1]
+            elif s.startswith("DELETE FROM ghost_state"):
+                for k in (params or []):
+                    state.pop(k, None)
+
+        def fetchall(self):
+            if self._mode == "resolved":
+                return list(resolved_rows)
+            if self._mode == "state_select":
+                return [(k, state[k]) for k in (self._keys or []) if k in state]
+            return []
+
+        def fetchone(self):
+            return None
+
+    class _Conn:
+        def cursor(self): return _Cur()
+
+    class _DbCtx:
+        def __enter__(self): return _Conn()
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(_pred, "db_conn", lambda: _DbCtx())
+
+
+def test_enforce_pauses_on_trip_and_manual_resume(monkeypatch):
+    """A hard trip (auto_pause etc.) pauses the engine with no auto-resume; the
+    state persists and resume_engine() clears it. Telegram is stubbed."""
+    import core.prediction as _pred, core.telegram as _tel
+    monkeypatch.setattr(_tel, "send_health_alert", lambda *a, **k: None)
+    monkeypatch.setenv("KILL_WINRATE_WINDOW", "30")
+    monkeypatch.setenv("KILL_EXPECTANCY_WINDOW", "20")
+    state = {}
+    rows = [(0.85, "LOSS", -3.0)] * 30   # trips win_rate/brier/expectancy/consec
+    _enforcement_db(rows, state, monkeypatch)
+
+    res = _pred.enforce_kill_conditions()
+    assert res["paused"] is True
+    assert "win_rate" in res["reason"]
+    assert res["auto_resume_at"] is None          # hard trip => manual resume
+    assert state["engine_paused"] == "1"
+    assert _pred.engine_pause_state()["paused"] is True
+
+    _pred.resume_engine()
+    assert _pred.engine_pause_state()["paused"] is False
+    assert "engine_paused" not in state
+
+
+def test_enforce_cooldown_only_sets_autoresume(monkeypatch):
+    """Only consecutive-losses trips (insufficient samples elsewhere) => cooldown
+    with an auto-resume time; the pause clears itself once that time passes."""
+    import core.prediction as _pred, core.telegram as _tel
+    monkeypatch.setattr(_tel, "send_health_alert", lambda *a, **k: None)
+    monkeypatch.setenv("KILL_CONSEC_LOSSES", "3")
+    monkeypatch.setenv("KILL_COOLDOWN_MINUTES", "60")
+    state = {}
+    rows = [(0.85, "LOSS", -3.0)] * 3   # consec trips; windows of 30/20 insufficient
+    _enforcement_db(rows, state, monkeypatch)
+
+    res = _pred.enforce_kill_conditions()
+    assert res["paused"] is True
+    assert res["actions"] == ["cooldown"]
+    assert res["auto_resume_at"] is not None
+    # force the auto-resume time into the past -> next read auto-resumes
+    state["engine_pause_auto_resume_at"] = str(int(time.time()) - 1)
+    assert _pred.engine_pause_state()["paused"] is False
+
+
+def test_enforce_inert_when_disabled(monkeypatch):
+    """KILL_SWITCH_ENABLED=0 => enforcement never pauses, even on a tripping set."""
+    import core.prediction as _pred
+    monkeypatch.setenv("KILL_SWITCH_ENABLED", "0")
+    state = {}
+    _enforcement_db([(0.85, "LOSS", -3.0)] * 30, state, monkeypatch)
+    res = _pred.enforce_kill_conditions()
+    assert res["paused"] is False
+    assert state == {}
