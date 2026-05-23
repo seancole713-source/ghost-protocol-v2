@@ -99,6 +99,17 @@ button:disabled{opacity:.5;cursor:not-allowed}
   <div id="purge-result" class="result"></div>
 </div>
 
+<!-- ─── Objective gate monitor (PR #27) ─── -->
+<div class="sec-label">Objective Gate Monitor</div>
+<div class="card">
+  <h3>Where Each Cycle Lands vs the Gates</h3>
+  <div class="desc">Live view of the prediction gating chain: active objective mode + thresholds, the alert confidence floor, WOLF's resolved-pick phase, and a fresh model prediction with per-gate pass/fail. Refreshes every 60s; <b>Refresh Now</b> forces a re-poll (runs the model, ~1-2s).</div>
+  <div class="row">
+    <button class="secondary" onclick="loadGateStatus()">Refresh Now</button>
+  </div>
+  <div id="gate-status" style="margin-top:10px"><div class="kv">Loading&#8230;</div></div>
+</div>
+
 <!-- ─── Engine quality ─── -->
 <div class="sec-label">Engine Quality</div>
 <div class="grid">
@@ -428,8 +439,69 @@ function renderConfidence(conf){
   slot.innerHTML=h;
 }
 
+/* ─── Objective gate monitor (PR #27) ─── */
+async function loadGateStatus(){
+  var el = document.getElementById('gate-status');
+  if(!el) return;
+  el.innerHTML = '<div class="kv"><span class="warn">&#x21BB; Polling /api/wolf/gate-status (runs model)...</span></div>';
+  try{
+    var g = await fetch('/api/wolf/gate-status').then(function(r){return r.json()});
+    if(!g || g.ok === false){
+      el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml((g&&g.error)||'unavailable') + '</div>';
+      return;
+    }
+    var o = g.objective || {};
+    var ss = g.symbol_stats || {};
+    var lp = g.live_prediction || {};
+    var floor = g.confidence_floor;
+
+    // Objective config block
+    var html = '<table class="tbl"><tbody>';
+    html += '<tr><td>Objective mode</td><td><b>' + escHtml(o.mode || '—') + '</b>'
+      + (o.enforced ? '' : ' <span class="warn">(NOT enforced)</span>')
+      + (o.auto_mode_enabled ? ' <span class="warn">(auto-mode ON — env override may not stick!)</span>' : '') + '</td></tr>';
+    html += '<tr><td>Target win-rate</td><td>' + (o.target_wr != null ? (o.target_wr*100).toFixed(0)+'%' : '—') + '</td></tr>';
+    html += '<tr><td>Min samples</td><td>' + (o.min_samples != null ? o.min_samples : '—') + '</td></tr>';
+    html += '<tr><td>Bootstrap min conf</td><td>' + (o.bootstrap_min_conf != null ? (o.bootstrap_min_conf*100).toFixed(0)+'%' : '—') + '</td></tr>';
+    html += '<tr><td>Alert confidence floor</td><td>' + (floor != null ? (floor*100).toFixed(0)+'%' : '—') + '</td></tr>';
+    html += '<tr><td>WOLF resolved picks</td><td>' + (ss.combined_total != null ? ss.combined_total : '—')
+      + ' &middot; WR ' + (ss.combined_wr != null ? (ss.combined_wr*100).toFixed(1)+'%' : '—')
+      + ' &middot; <b>' + escHtml(ss.phase || '—') + '</b> phase</td></tr>';
+    html += '</tbody></table>';
+
+    // Live prediction + gate analysis
+    html += '<div class="kv" style="margin-top:10px"><b>Latest model prediction (WOLF)</b></div>';
+    if(lp.error){
+      html += '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml(lp.error) + '</div>';
+    } else if(!lp.model_emitted){
+      html += '<div class="kv"><span class="warn">&#x23F3;</span> Model emitted NO signal &middot; reason: <code>'
+        + escHtml(lp.reason || 'none') + '</code> (gates upstream of confidence)</div>';
+    } else {
+      var wa = lp.would_alert;
+      var icon = wa ? '<span class="ok">&#10003;</span>' : '<span class="warn">&#x23F3;</span>';
+      html += '<table class="tbl"><tbody>';
+      html += '<tr><td>Direction</td><td><b>' + escHtml(lp.direction) + '</b></td></tr>';
+      html += '<tr><td>Confidence</td><td><b>' + (lp.confidence*100).toFixed(1) + '%</b></td></tr>';
+      html += '<tr><td>Passes confidence floor</td><td>' + gateBadge(lp.passes_confidence_floor) + '</td></tr>';
+      html += '<tr><td>Passes objective gate</td><td>' + gateBadge(lp.passes_objective_gate)
+        + (lp.objective_skip_reason ? ' <code>'+escHtml(lp.objective_skip_reason)+'</code>' : '') + '</td></tr>';
+      html += '<tr><td><b>WOULD ALERT</b></td><td>' + icon + ' <b>' + (wa ? 'YES' : 'NO') + '</b></td></tr>';
+      html += '</tbody></table>';
+    }
+    el.innerHTML = html;
+  }catch(e){
+    el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml(String(e)) + '</div>';
+  }
+}
+
+function gateBadge(pass){
+  return pass ? '<span class="ok">&#10003; pass</span>' : '<span class="fail">&#10007; fail</span>';
+}
+
 loadEngineQuality();
+loadGateStatus();
 setInterval(loadEngineQuality, 60000);
+setInterval(loadGateStatus, 60000);
 </script>
 
 </body>

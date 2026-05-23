@@ -1997,6 +1997,90 @@ def telegram_status():
     return out
 
 
+@APP.get("/api/wolf/gate-status")
+def wolf_gate_status():
+    """Live diagnostic of the prediction gating chain (PR #27).
+
+    Surfaces, for the /admin monitor:
+      - active objective mode + effective thresholds (target_wr,
+        min_samples, bootstrap_min_conf, lookback_days) and whether
+        the gate is enforced / auto-mode is on
+      - the MIN_ALERT_CONFIDENCE floor
+      - WOLF's resolved-pick stats (bootstrap vs established phase)
+      - a LIVE model prediction for WOLF with per-gate pass/fail so the
+        operator can see exactly where each cycle lands relative to the
+        gates after the aggressive-mode env change.
+
+    Read-only; runs the model once per call (~1-2s). No auth (same
+    convention as /api/v3/status); the /admin page that consumes it is
+    behind Basic Auth.
+    """
+    out = {"ok": True}
+    try:
+        from core import prediction as _pred
+        cfg = _pred._objective_effective_config()
+        enforced = _pred._objective_enforced()
+        floor = _pred.CONFIDENCE_FLOOR
+        out["objective"] = {
+            "enforced": enforced,
+            "auto_mode_enabled": _pred._objective_auto_enabled(),
+            "mode": cfg.get("mode"),
+            "target_wr": cfg.get("target_wr"),
+            "min_samples": cfg.get("min_samples"),
+            "bootstrap_min_conf": cfg.get("bootstrap_min_conf"),
+            "lookback_days": cfg.get("lookback_days"),
+        }
+        out["confidence_floor"] = floor
+
+        # WOLF resolved-pick stats → bootstrap vs established phase
+        try:
+            stats = _pred._objective_symbol_stats("WOLF", "UP")
+            total = int(stats.get("combined_total", 0))
+            out["symbol_stats"] = {
+                "combined_total": total,
+                "combined_wins": stats.get("combined_wins"),
+                "combined_wr": stats.get("combined_wr"),
+                "phase": "established" if total >= int(cfg["min_samples"]) else "bootstrap",
+            }
+        except Exception as e:
+            out["symbol_stats"] = {"error": str(e)[:120]}
+
+        # Live model prediction + per-gate analysis
+        try:
+            from core.signal_engine import predict_live_ex
+            signal, reason = predict_live_ex("WOLF", "stock")
+            lp = {"reason": reason}
+            if signal:
+                direction, conf = signal
+                conf = float(conf)
+                passes_floor = conf >= float(floor)
+                obj_ok, obj_skip = True, None
+                if enforced:
+                    obj_ok, obj_skip, _ = _pred._objective_gate("WOLF", direction, conf)
+                sell_blocked = (direction == "DOWN")
+                lp.update({
+                    "direction": direction,
+                    "confidence": round(conf, 3),
+                    "model_emitted": True,
+                    "passes_confidence_floor": passes_floor,
+                    "passes_objective_gate": bool(obj_ok),
+                    "objective_skip_reason": obj_skip,
+                    "sell_blocked": sell_blocked,
+                    "would_alert": bool(passes_floor and obj_ok and not sell_blocked),
+                })
+            else:
+                lp.update({
+                    "direction": None, "confidence": None, "model_emitted": False,
+                    "would_alert": False,
+                })
+            out["live_prediction"] = lp
+        except Exception as e:
+            out["live_prediction"] = {"error": str(e)[:160]}
+        return out
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
 @APP.post("/api/test-alert")
 def test_alert():
     """Send test message to Telegram to verify connection."""

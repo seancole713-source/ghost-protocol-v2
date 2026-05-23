@@ -2169,3 +2169,90 @@ def test_polygon_stats_fallback_skipped_without_key(monkeypatch):
     assert filled is False
     assert called == []
     assert out == {"market_cap": None, "open": None}
+
+
+# ── PR #27: /api/wolf/gate-status objective-gate monitor ────────────────
+
+def test_gate_status_reports_config_and_live_prediction(monkeypatch):
+    """gate-status surfaces objective config + floor + symbol phase + a live
+    prediction with per-gate pass/fail. Signal clearing both gates →
+    would_alert True."""
+    import core.prediction as _pred
+    import core.signal_engine as _se
+
+    monkeypatch.setattr(_pred, "_objective_effective_config", lambda: {
+        "mode": "aggressive", "target_wr": 0.62, "min_samples": 8,
+        "bootstrap_min_conf": 0.78, "lookback_days": 120,
+    })
+    monkeypatch.setattr(_pred, "_objective_enforced", lambda: True)
+    monkeypatch.setattr(_pred, "_objective_auto_enabled", lambda: False)
+    monkeypatch.setattr(_pred, "CONFIDENCE_FLOOR", 0.75)
+    monkeypatch.setattr(_pred, "_objective_symbol_stats",
+                        lambda s, d: {"combined_total": 3, "combined_wins": 2, "combined_wr": 0.667})
+    monkeypatch.setattr(_pred, "_objective_gate",
+                        lambda s, d, c: (c >= 0.78, None if c >= 0.78 else "objective_bootstrap_conf", {}))
+    monkeypatch.setattr(_se, "predict_live_ex", lambda s, a: (("UP", 0.81), None))
+
+    out = wolf_app.wolf_gate_status()
+    assert out["ok"] is True
+    assert out["objective"]["mode"] == "aggressive"
+    assert out["objective"]["auto_mode_enabled"] is False
+    assert out["confidence_floor"] == 0.75
+    assert out["symbol_stats"]["phase"] == "bootstrap"
+    lp = out["live_prediction"]
+    assert lp["model_emitted"] is True
+    assert lp["direction"] == "UP"
+    assert lp["confidence"] == 0.81
+    assert lp["passes_confidence_floor"] is True
+    assert lp["passes_objective_gate"] is True
+    assert lp["would_alert"] is True
+
+
+def test_gate_status_shows_no_alert_when_below_bootstrap_conf(monkeypatch):
+    """Signal clears the floor but not the bootstrap objective threshold →
+    would_alert False with the skip reason surfaced."""
+    import core.prediction as _pred
+    import core.signal_engine as _se
+
+    monkeypatch.setattr(_pred, "_objective_effective_config", lambda: {
+        "mode": "aggressive", "target_wr": 0.62, "min_samples": 8,
+        "bootstrap_min_conf": 0.78, "lookback_days": 120,
+    })
+    monkeypatch.setattr(_pred, "_objective_enforced", lambda: True)
+    monkeypatch.setattr(_pred, "_objective_auto_enabled", lambda: False)
+    monkeypatch.setattr(_pred, "CONFIDENCE_FLOOR", 0.75)
+    monkeypatch.setattr(_pred, "_objective_symbol_stats",
+                        lambda s, d: {"combined_total": 2, "combined_wins": 1, "combined_wr": 0.5})
+    monkeypatch.setattr(_pred, "_objective_gate",
+                        lambda s, d, c: (c >= 0.78, None if c >= 0.78 else "objective_bootstrap_conf", {}))
+    monkeypatch.setattr(_se, "predict_live_ex", lambda s, a: (("UP", 0.76), None))
+
+    out = wolf_app.wolf_gate_status()
+    lp = out["live_prediction"]
+    assert lp["passes_confidence_floor"] is True
+    assert lp["passes_objective_gate"] is False
+    assert lp["objective_skip_reason"] == "objective_bootstrap_conf"
+    assert lp["would_alert"] is False
+
+
+def test_gate_status_handles_no_model_signal(monkeypatch):
+    """When the model emits no signal (prob_low etc), gate-status reports
+    model_emitted False + the reason, never crashes."""
+    import core.prediction as _pred
+    import core.signal_engine as _se
+    monkeypatch.setattr(_pred, "_objective_effective_config", lambda: {
+        "mode": "aggressive", "target_wr": 0.62, "min_samples": 8,
+        "bootstrap_min_conf": 0.78, "lookback_days": 120,
+    })
+    monkeypatch.setattr(_pred, "_objective_enforced", lambda: True)
+    monkeypatch.setattr(_pred, "_objective_auto_enabled", lambda: False)
+    monkeypatch.setattr(_pred, "CONFIDENCE_FLOOR", 0.75)
+    monkeypatch.setattr(_pred, "_objective_symbol_stats",
+                        lambda s, d: {"combined_total": 0, "combined_wins": 0, "combined_wr": 0.0})
+    monkeypatch.setattr(_se, "predict_live_ex", lambda s, a: (None, "prob_low"))
+
+    out = wolf_app.wolf_gate_status()
+    lp = out["live_prediction"]
+    assert lp["model_emitted"] is False
+    assert lp["reason"] == "prob_low"
+    assert lp["would_alert"] is False
