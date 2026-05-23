@@ -940,6 +940,36 @@ def load_model(symbol=None):
     except Exception as e:
         LOGGER.warning(f"load_model {symbol}: {e}"); return None, None, None
 
+def _daily_trend_context(symbol, asset_type):
+    """Long-term trend flags from DAILY bars, for the regime gate only.
+
+    The live feed (5d/1h, ~35 bars) is too short for EMA50/EMA200 — in
+    _calculate_features they fall back to the current price, which forces
+    above_ema200 (cur>cur) and ema_trend_bullish to a structural 0 every cycle
+    and over-blocks BUYs (permanent WATCHING). This recomputes those two flags
+    from ~250 daily bars so the gate reflects the real trend. The model's
+    feature vector is left untouched. Returns None on any failure, in which case
+    the gate keeps its prior (intraday) values — safe no-op fallback.
+    """
+    try:
+        rows = _fetch_ohlcv(symbol, asset_type, period='1y', interval='1d')
+        if not rows or len(rows) < 60:
+            return None
+        closes = np.array([c['close'] for c in rows], dtype=float)
+        cur = float(closes[-1])
+        ema20 = _ema(closes, 20)
+        ema50 = _ema(closes, 50) if len(closes) >= 50 else cur
+        ema200 = _ema(closes, 200) if len(closes) >= 200 else ema50
+        return {
+            "above_ema200": 1 if cur > ema200 else 0,
+            "ema_trend_bullish": 1 if (ema20 > ema50 and ema50 > ema200) else 0,
+            "bars": len(closes),
+        }
+    except Exception as _e:
+        LOGGER.warning("daily trend context failed for " + str(symbol) + ": " + str(_e)[:100])
+        return None
+
+
 def predict_live_ex(symbol, asset_type, scores=None):
     """
     Like predict_live but returns (signal_tuple_or_None, reason_code_or_None).
@@ -966,6 +996,15 @@ def predict_live_ex(symbol, asset_type, scores=None):
     ema_trend_bullish = features.get('ema_trend_bullish', 1)
     rsi = features.get('rsi', 50)
     stoch_k = features.get('stoch_k', 50)
+
+    # Correct the long-term trend flags using DAILY bars before they drive the
+    # regime gate / regime label. On the intraday feed above_ema200 and
+    # ema_trend_bullish are structurally 0 (too few bars for EMA50/200), which
+    # held the BUY-only engine in permanent WATCHING. Model features unchanged.
+    _trend = _daily_trend_context(symbol, asset_type)
+    if _trend is not None:
+        above_ema200 = _trend["above_ema200"]
+        ema_trend_bullish = _trend["ema_trend_bullish"]
 
     # Coarse regime label from the gate indicators — placeholder until the HMM
     # specialist (blueprint §3). Captured even when a gate later blocks the pick,

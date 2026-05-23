@@ -3317,3 +3317,67 @@ def test_is_ghost_symbol():
     assert _is_ghost_symbol("TESTPOS") is True
     assert _is_ghost_symbol("WOLF") is False
     assert _is_ghost_symbol("AAPL") is False
+
+
+# ── fix/watching: regime gate uses real DAILY trend (not always-bearish) ──
+
+def _daily_series(direction):
+    """Synthetic 250 daily bars: rising or falling."""
+    rows = []
+    for i in range(250):
+        px = (100.0 + i * 0.4) if direction == "up" else (200.0 - i * 0.4)
+        rows.append({"ts": "2026-01-01", "open": px, "high": px + 0.5,
+                     "low": px - 0.5, "close": px, "volume": 1000})
+    return rows
+
+
+def test_daily_trend_context_uptrend_vs_downtrend(monkeypatch):
+    import core.signal_engine as _se
+    monkeypatch.setattr(_se, "_fetch_ohlcv",
+                        lambda s, a, period="1y", interval="1d": _daily_series("up"))
+    up = _se._daily_trend_context("WOLF", "stock")
+    assert up["above_ema200"] == 1 and up["ema_trend_bullish"] == 1
+
+    monkeypatch.setattr(_se, "_fetch_ohlcv",
+                        lambda s, a, period="1y", interval="1d": _daily_series("down"))
+    dn = _se._daily_trend_context("WOLF", "stock")
+    assert dn["above_ema200"] == 0 and dn["ema_trend_bullish"] == 0
+
+
+def test_daily_trend_context_fallback_on_short_series(monkeypatch):
+    import core.signal_engine as _se
+    monkeypatch.setattr(_se, "_fetch_ohlcv",
+                        lambda s, a, period="1y", interval="1d": _daily_series("up")[:30])
+    assert _se._daily_trend_context("WOLF", "stock") is None   # <60 bars -> safe no-op
+
+
+def test_predict_live_ex_uses_daily_trend_for_gate(monkeypatch):
+    """A short intraday feed (EMA50/200 -> cur, flags structurally 0) no longer
+    forces a regime-gate skip: the daily uptrend context clears it and the model
+    fires. Reproduces the WATCHING root cause and its fix."""
+    import core.signal_engine as _se, numpy as _np
+
+    intraday = []                      # 40 bars -> EMA50/200 fall back to cur
+    for i in range(40):
+        px = 100.0 + i * 0.5
+        intraday.append({"ts": "2026-05-20T%02d:00:00Z" % (i % 24), "open": px - 0.2,
+                         "high": px + 0.5, "low": px - 0.5, "close": px, "volume": 1000 + i})
+
+    def _fetch(s, a, period="5d", interval="1h"):
+        return _daily_series("up") if interval == "1d" else intraday
+    monkeypatch.setattr(_se, "_fetch_ohlcv", _fetch)
+
+    class _M:
+        def predict_proba(self, X): return _np.array([[0.1, 0.9]])
+    meta = {"edge": 0.3, "accuracy": 0.66, "wf_acc_mean": 0.64, "wf_edge_mean": 0.2,
+            "wf_fold_count": 4, "trained_at": time.time()}
+    monkeypatch.setattr(_se, "load_model", lambda s: (_M(), _se.FEATURE_COLS, meta))
+    for k, v in {"V3_MIN_WIN_PROBA": "0.55", "V3_MIN_EDGE": "0.0",
+                 "V3_MIN_HOLDOUT_ACC": "0.0", "V3_MIN_WF_ACC_MEAN": "0.0"}.items():
+        monkeypatch.setenv(k, v)
+
+    scores = {}
+    sig, reason = _se.predict_live_ex("WOLF", "stock", scores=scores)
+    assert sig is not None and sig[0] == "UP"          # not blocked by regime gate
+    assert scores["regime"]["above_ema200"] == 1       # gate saw the real daily uptrend
+    assert scores["regime"]["ema_trend_bullish"] == 1
