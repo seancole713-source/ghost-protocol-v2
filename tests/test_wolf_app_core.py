@@ -2391,6 +2391,67 @@ def test_gate_history_empty_when_no_record(monkeypatch):
     assert out["history"] == []
 
 
+# ── audit §3: silence-cycle "how close" logging ─────────────────────────
+
+def test_predict_ex_captures_near_miss_on_floor_skip(monkeypatch):
+    """A below-floor signal returns the skip code AND writes up_prob +
+    confidence/floor into scores_out so the cycle can log how close it came."""
+    import core.prediction as _pred, core.signal_engine as _se
+    monkeypatch.setattr(_pred, "get_price", lambda s, a=None: 100.0)
+
+    def _ple(s, a, scores=None):
+        if scores is not None:
+            scores["up_prob"] = 0.58
+            scores["model_meta"] = {"min_win_proba": 0.55}
+        return (("UP", 0.62), None)   # below a 0.80 floor
+    monkeypatch.setattr(_se, "predict_live_ex", _ple)
+
+    sv = {}
+    pick, skip = _pred._predict_symbol_ex("WOLF", "stock",
+                                          {"confidence_floor_override": 0.80}, scores_out=sv)
+    assert pick is None
+    assert skip == "below_confidence_floor"
+    assert sv["up_prob"] == 0.58
+    assert sv["confidence"] == 0.62
+    assert sv["confidence_floor"] == 0.80
+
+
+def test_gate_history_aggregates_closest_near_miss(monkeypatch):
+    """closest_near_miss = the highest-up_prob near miss across the window,
+    with prob_gap relative to its threshold surfaced."""
+    import json as _json
+    history_json = _json.dumps([
+        {"ts": 1000, "would_fire": False, "top_skip": "v3_prob_low",
+         "near_miss": {"symbol": "WOLF", "up_prob": 0.51, "min_win_proba": 0.55, "prob_gap": -0.04}},
+        {"ts": 2000, "would_fire": False, "top_skip": "v3_prob_low",
+         "near_miss": {"symbol": "WOLF", "up_prob": 0.54, "min_win_proba": 0.55, "prob_gap": -0.01}},
+        {"ts": 3000, "would_fire": False, "top_skip": "v3_prob_low",
+         "near_miss": {"symbol": "WOLF", "up_prob": 0.49, "min_win_proba": 0.55, "prob_gap": -0.06}},
+    ])
+
+    class _Cur:
+        def __init__(self): self.last_sql = ""
+        def execute(self, sql, params=None): self.last_sql = sql
+        def fetchone(self):
+            return (history_json,) if "gate_outcome_history" in self.last_sql else None
+        def fetchall(self): return []
+
+    class _Conn:
+        def cursor(self): return _Cur()
+
+    class _DbCtx:
+        def __enter__(self): return _Conn()
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(wolf_app, "db_conn", lambda: _DbCtx())
+    out = wolf_app.wolf_gate_history(limit=50)
+    assert out["ok"] is True
+    cn = out["closest_near_miss"]
+    assert cn["up_prob"] == 0.54        # highest across the window
+    assert cn["prob_gap"] == -0.01
+    assert cn["ts"] == 2000
+
+
 def _pick_journal_db(total, listing_rows, resolved_rows, monkeypatch):
     """Wire wolf_app.db_conn to a fake cursor that answers the three queries
     the pick-journal endpoint issues (count / listing / resolved)."""

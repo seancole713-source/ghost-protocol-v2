@@ -801,10 +801,13 @@ def _legacy_signal(symbol, current_price):
         return None
 
 
-def _predict_symbol_ex(symbol, asset_type, regime):
+def _predict_symbol_ex(symbol, asset_type, regime, scores_out=None):
     """
     Like predict_symbol but returns (pick_or_None, skip_code_or_None).
     skip_code is for morning-card diagnostics only (not an API contract).
+    If `scores_out` (a dict) is passed, the model score vector — up_prob,
+    min_win_proba, and (on a confidence-floor miss) confidence vs floor — is
+    written into it so callers can log how close a silent cycle came to firing.
     """
     sym = symbol.strip()
     if sym in EXCLUDE or not sym:
@@ -821,7 +824,7 @@ def _predict_symbol_ex(symbol, asset_type, regime):
             LOGGER.warning("Prev-close fallback failed " + symbol + ": " + str(_pe))
     if not price or price <= 0:
         return None, "no_price"
-    score_vector = {}
+    score_vector = scores_out if scores_out is not None else {}
     try:
         from core.signal_engine import predict_live_ex
         signal, v3_reason = predict_live_ex(symbol, "stock", scores=score_vector)
@@ -845,6 +848,8 @@ def _predict_symbol_ex(symbol, asset_type, regime):
 
     _floor = regime.get('confidence_floor_override', CONFIDENCE_FLOOR) if isinstance(regime, dict) else CONFIDENCE_FLOOR
     if confidence < _floor:
+        score_vector["confidence"] = float(confidence)
+        score_vector["confidence_floor"] = float(_floor)
         return None, "below_confidence_floor"
 
     # SELL signals blocked: 1.9% win rate across 211 trades (data as of 2026-03-25)
@@ -1011,12 +1016,24 @@ def run_prediction_cycle(with_diag: bool = False):
         LOGGER.warning("Could not load portfolio symbols: " + str(_pe))
     skip_counts = {}
     all_picks = []
+    closest = None   # silence logging (audit §3): track the highest-up_prob candidate
     for symbol, asset_type in symbols:
-        pick, skip = _predict_symbol_ex(symbol, asset_type, regime)
+        _sv = {}
+        pick, skip = _predict_symbol_ex(symbol, asset_type, regime, scores_out=_sv)
         if pick:
             all_picks.append(pick)
         elif skip:
             skip_counts[skip] = skip_counts.get(skip, 0) + 1
+        _up = _sv.get("up_prob")
+        if _up is not None and (closest is None or _up > closest["up_prob"]):
+            closest = {
+                "symbol": symbol,
+                "up_prob": _up,
+                "min_win_proba": (_sv.get("model_meta") or {}).get("min_win_proba"),
+                "confidence": _sv.get("confidence"),
+                "confidence_floor": _sv.get("confidence_floor"),
+                "skip": skip,
+            }
 
     all_picks.sort(key=lambda x: x["confidence"], reverse=True)
     top = all_picks[:DAILY_CAP]
@@ -1085,6 +1102,16 @@ def run_prediction_cycle(with_diag: bool = False):
     try:
         import json as _gj
         _top_skip = max(skip_counts.items(), key=lambda kv: kv[1])[0] if skip_counts else None
+        # Silence logging (audit §3): on a quiet cycle, how close did the best
+        # candidate come? prob_gap = up_prob - min_win_proba (>=0 cleared the
+        # prob gate); conf_gap = confidence - floor (only set on a floor miss).
+        _near_miss = None
+        if closest:
+            _near_miss = dict(closest)
+            if _near_miss.get("up_prob") is not None and _near_miss.get("min_win_proba") is not None:
+                _near_miss["prob_gap"] = round(_near_miss["up_prob"] - _near_miss["min_win_proba"], 4)
+            if _near_miss.get("confidence") is not None and _near_miss.get("confidence_floor") is not None:
+                _near_miss["conf_gap"] = round(_near_miss["confidence"] - _near_miss["confidence_floor"], 4)
         _entry = {
             "ts": int(time.time()),
             "scanned": len(symbols),
@@ -1095,6 +1122,7 @@ def run_prediction_cycle(with_diag: bool = False):
             "top_skip": _top_skip,
             "skip_counts": dict(skip_counts),
             "paused": engine_paused,
+            "near_miss": _near_miss,
         }
         with db_conn() as _gc:
             _gcur = _gc.cursor()

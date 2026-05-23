@@ -2136,15 +2136,21 @@ def wolf_gate_history(limit: int = 50):
         fired = sum(1 for h in recent if h.get("would_fire"))
         # Aggregate which gate was binding across the window
         binding = {}
+        closest = None   # best (highest up_prob) near-miss across the window
         for h in recent:
             ts_skip = h.get("top_skip")
             if ts_skip:
                 binding[ts_skip] = binding.get(ts_skip, 0) + 1
+            nm = h.get("near_miss")
+            if nm and nm.get("up_prob") is not None:
+                if closest is None or nm["up_prob"] > closest.get("up_prob", -1):
+                    closest = dict(nm, ts=h.get("ts"))
         return {
             "ok": True,
             "count": len(recent),
             "fired_count": fired,
             "binding_gates": binding,
+            "closest_near_miss": closest,
             "history": recent,
         }
     except Exception as e:
