@@ -98,6 +98,27 @@ section.block{margin-bottom:32px}
 .chart-toggle:not(.active):hover{color:#ccc}
 .chart-canvas-wrap{position:relative;height:280px}
 .chart-canvas-wrap.tall{height:340px}
+/* PR #24 (items 11, 12): short-interest tile + catalyst timeline */
+.short-tile{background:linear-gradient(135deg,#1a0707 0%,#0d0d0d 100%);border:1px solid #5b1a1a;border-radius:14px;padding:20px 24px;display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:18px;align-items:center}
+.short-tile .st-block{display:flex;flex-direction:column;gap:4px}
+.short-tile .st-label{font-size:10px;color:#888;font-weight:700;letter-spacing:1.5px;text-transform:uppercase}
+.short-tile .st-val{font-size:22px;font-weight:800;color:#fff}
+.short-tile .st-val.high{color:#fb923c}
+.short-tile .st-val.medium{color:#facc15}
+.short-tile .st-val.low{color:#86efac}
+.short-tile .st-sub{font-size:11px;color:#888}
+.catalyst-timeline{background:#111;border:1px solid #1e1e1e;border-radius:14px;padding:18px}
+.cat-row{display:grid;grid-template-columns:120px 110px 1fr;gap:14px;padding:10px 6px;border-bottom:1px solid #1a1a1a;font-size:13px;align-items:start}
+.cat-row:last-child{border:none}
+.cat-when{font-size:11px;color:#888;font-weight:600;font-variant-numeric:tabular-nums}
+.cat-kind{font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase;padding:2px 8px;border-radius:4px;justify-self:start;height:fit-content}
+.cat-kind.news{background:#1a1a1a;color:#888}
+.cat-kind.earnings{background:#1a1206;color:#fbbf24}
+.cat-kind.press{background:#0a1a1f;color:#7dd3fc}
+.cat-kind.rating{background:#0a1f0d;color:#86efac}
+.cat-body{color:#ddd;line-height:1.5}
+.cat-body a{color:#60a5fa;text-decoration:none}
+.cat-body a:hover{text-decoration:underline}
 .chart-legend{display:flex;gap:18px;margin-top:14px;font-size:11px;color:#888;flex-wrap:wrap}
 .chart-legend .leg{display:flex;align-items:center;gap:6px}
 .chart-legend .leg-swatch{width:14px;height:3px;border-radius:2px;background:#22c55e}
@@ -413,6 +434,18 @@ section.block{margin-bottom:32px}
     </div>
   </section>
 
+  <!-- ─── Short interest / squeeze tile (PR #24 item 11) ─── -->
+  <section class="block" id="short-section" style="display:none">
+    <div class="sec-label">Short Interest &middot; Squeeze Context</div>
+    <div id="short-tile" class="short-tile"></div>
+  </section>
+
+  <!-- ─── "Why is WOLF moving?" catalyst timeline (PR #24 item 12) ─── -->
+  <section class="block" id="catalyst-section" style="display:none">
+    <div class="sec-label">Why WOLF Is Moving &middot; Catalyst Timeline</div>
+    <div id="catalyst-timeline" class="catalyst-timeline"></div>
+  </section>
+
   <!-- ─── Key stats ─── -->
   <section class="block">
     <div class="sec-label">Key Stats</div>
@@ -501,15 +534,8 @@ section.block{margin-bottom:32px}
           <div class="truth-kv" id="t-v32-kv"></div>
         </div>
         <div class="truth-card">
-          <h4>Legacy / all&#8211;time (context only)</h4>
-          <div class="truth-big legacy" id="t-leg-wr">&#8212;</div>
-          <div class="truth-note">Includes older engines and migrated rows. Do not use alone to judge v3.2.</div>
-          <div class="truth-kv" id="t-leg-kv"></div>
-        </div>
-        <div class="truth-card">
           <h4>System freshness</h4>
           <div class="truth-big" id="t-fresh">&#8212;</div>
-          <div class="truth-note"><b>Pick freshness</b> — minutes since the newest <code>predicted_at</code> row. <b>Cycle freshness</b> — minutes since the engine last scanned for picks (shown in kv below). Engine-fresh + zero new picks is a CORRECT outcome (no signal cleared the floor).</div>
           <div class="truth-kv" id="t-sys-kv"></div>
         </div>
       </div>
@@ -524,8 +550,7 @@ section.block{margin-bottom:32px}
 <div class="footer">
   <span>Ghost Protocol v2 &middot; WOLF command center</span>
   <span>Open: <b id="f-open">&#8212;</b></span>
-  <span>Resolved: <b id="f-total">&#8212;</b></span>
-  <span style="margin-left:auto;color:#333">Refresh: 60s · Price feed: Alpaca → yfinance</span>
+  <span style="margin-left:auto;color:#333">Refresh: 60s · Price feed: Alpaca → Polygon → yfinance → Stooq</span>
 </div>
 
 <script>
@@ -908,11 +933,34 @@ function computeDecay(initialConf, predictedAt, expiresAt){
 
 /* ─── Prediction vs Reality chart ─── */
 function renderPredictionChart(history, predictions){
-  var ctx = document.getElementById('pred-chart').getContext('2d');
+  var canvas = document.getElementById('pred-chart');
+  var ctx = canvas.getContext('2d');
   var points = (history && history.points) || [];
   var preds = (predictions && predictions.predictions) || [];
 
-  if(_charts.pred){ _charts.pred.destroy(); }
+  if(_charts.pred){ _charts.pred.destroy(); _charts.pred = null; }
+
+  // PR #24 (item 8): explicit empty-state when no data. Previous behaviour
+  // rendered empty axes with a 5-item legend, which looks broken.
+  var emptyOverlay = document.getElementById('pred-empty-overlay');
+  if(!emptyOverlay){
+    emptyOverlay = document.createElement('div');
+    emptyOverlay.id = 'pred-empty-overlay';
+    emptyOverlay.style.cssText = 'position:absolute;inset:0;display:none;align-items:center;justify-content:center;text-align:center;color:#666;font-size:13px;line-height:1.6;pointer-events:none';
+    if(canvas.parentNode) canvas.parentNode.appendChild(emptyOverlay);
+  }
+  if(!points.length && !preds.length){
+    canvas.style.display = 'none';
+    emptyOverlay.style.display = 'flex';
+    emptyOverlay.innerHTML = '<div><b style="color:#888;font-size:14px">No predictions in this window</b><br>'
+      + 'Live price feed returned no bars and no WOLF picks were issued in the selected range.<br>'
+      + 'Switch range above, or wait for the next prediction cycle to fire a new pick.</div>';
+    var z = document.getElementById('zone-callouts');
+    if(z) z.innerHTML = '';
+    return;
+  }
+  canvas.style.display = '';
+  emptyOverlay.style.display = 'none';
 
   if(!points.length){
     _charts.pred = new Chart(ctx, {
@@ -1444,36 +1492,131 @@ function renderTruth(stats, health, v3, dir){
     + '<b>Closed after cutover</b> ' + (pres.wins||0) + 'W / ' + (pres.losses||0) + 'L / ' + v32rt + (v32rt>0?' · '+v32rwr+'%':'') + '<br>'
     + '<b>Window start</b> ' + fmtTsIso(pv.start_ts);
 
-  var buyDir = dir && dir.by_direction && dir.by_direction.BUY;
-  var legPct = buyDir && buyDir.win_rate_pct != null ? buyDir.win_rate_pct : (stats.win_rate_pct || 0);
-  document.getElementById('t-leg-wr').textContent = legPct + '%';
-  if(buyDir){
-    document.getElementById('t-leg-kv').innerHTML =
-      '<b>BUY cohort</b> ' + buyDir.wins + 'W / ' + buyDir.losses + 'L / ' + buyDir.total + ' resolved (includes EXPIRED per <code>/api/stats/direction</code>)';
+  // PR #24 (item 13): single-line, investor-honest freshness summary.
+  // Replaces the previous 5-row kv block that mixed pick/cycle minutes,
+  // confidence floor, and price feed status. The big number stays as a
+  // single human-readable headline; the kv shows two lines max.
+  var pickFreshMin = health.predictions_freshness_min;
+  var cycleFreshMin = health.prediction_cycle_freshness_min;
+  var pickDays = pickFreshMin != null ? Math.floor(pickFreshMin / (60*24)) : null;
+  var bigText;
+  if(pickFreshMin == null){
+    bigText = '—';
+  } else if(pickDays >= 1){
+    bigText = pickDays + ' day' + (pickDays === 1 ? '' : 's');
   } else {
-    document.getElementById('t-leg-kv').innerHTML =
-      '<b>All outcomes</b> ' + (stats.wins||0) + 'W / ' + (stats.losses||0) + 'L / ' + (stats.total||0);
+    bigText = pickFreshMin + ' min';
   }
-
-  // PR #22: System Freshness now distinguishes pick vs cycle freshness.
-  // Pick freshness = newest predicted_at row. Cycle freshness = engine ran.
-  // Engine-fresh + zero new picks is correct (no signal above floor).
-  var pickFresh = health.predictions_freshness_min;
-  var cycleFresh = health.prediction_cycle_freshness_min;
-  document.getElementById('t-fresh').textContent = pickFresh != null ? pickFresh + ' min' : '—';
+  document.getElementById('t-fresh').textContent = bigText;
   var feeds = health.price_feeds && health.price_feeds.summary ? health.price_feeds.summary : '—';
-  var cf = health.confidence_floor;
-  var cfStr = cf != null ? (Math.round(cf*1000)/10).toFixed(1) : '—';
   document.getElementById('t-sys-kv').innerHTML =
-    '<b>Pick freshness</b> ' + (pickFresh != null ? pickFresh + ' min' : '—') + '<br>'
-    + '<b>Cycle freshness</b> ' + (cycleFresh != null ? cycleFresh + ' min' : '—')
-    + (cycleFresh != null && pickFresh != null && cycleFresh < pickFresh
-        ? ' <span style="color:#888">(engine ran but no new pick — signal below floor)</span>' : '') + '<br>'
-    + '<b>Alert confidence floor</b> ' + cfStr + '%<br>'
-    + '<b>Price feeds</b> ' + escHtml(feeds) + '<br>'
-    + '<b>Open picks</b> ' + (health.open_picks != null ? health.open_picks : '—')
-    + (health.dedup_blocked ? ' <span style="color:#f59e0b">(dedup cap)</span>' : '');
+    '<b>Engine scanned</b> ' + (cycleFreshMin != null ? cycleFreshMin + ' min ago' : 'unknown')
+    + ' &middot; <b>last signal at 80% confidence</b> '
+    + (pickFreshMin == null ? 'never' :
+       pickDays >= 1 ? pickDays + ' day' + (pickDays === 1 ? '' : 's') + ' ago' :
+       pickFreshMin + ' min ago')
+    + '<br>'
+    + '<b>Price feeds</b> ' + escHtml(feeds);
+}
 
+/* ─── Short interest tile (PR #24 item 11) ─── */
+function renderShortInterest(ctx){
+  var section = document.getElementById('short-section');
+  var tile = document.getElementById('short-tile');
+  if(!section || !tile) return;
+  if(!ctx || ctx.ok === false || !ctx.short_data){
+    section.style.display = 'none';
+    return;
+  }
+  var sd = ctx.short_data || {};
+  var sf = sd.short_float;        // 0..1 (fraction)
+  var dtc = sd.days_to_cover;
+  if(sf == null && dtc == null){
+    section.style.display = 'none';
+    return;
+  }
+  // Squeeze risk band: short_float ≥ 25% AND days_to_cover ≥ 5 → HIGH
+  // short_float ≥ 15% OR days_to_cover ≥ 3 → MEDIUM
+  // else LOW
+  var risk = 'low';
+  if(sf != null && sf >= 0.25 && dtc != null && dtc >= 5) risk = 'high';
+  else if((sf != null && sf >= 0.15) || (dtc != null && dtc >= 3)) risk = 'medium';
+  var sfPct = sf != null ? (sf * 100).toFixed(2) + '%' : '—';
+  var dtcStr = dtc != null ? dtc.toFixed(2) + ' days' : '—';
+  // Estimate share count if we know float — leave blank otherwise. Many
+  // tickers don't expose float in WolfShortData; tile shows what's available.
+  tile.innerHTML =
+    '<div class="st-block"><div class="st-label">Short Float</div>'
+    +   '<div class="st-val">' + sfPct + '</div>'
+    +   '<div class="st-sub">of public float</div></div>'
+    + '<div class="st-block"><div class="st-label">Days to Cover</div>'
+    +   '<div class="st-val">' + dtcStr + '</div>'
+    +   '<div class="st-sub">at avg daily volume</div></div>'
+    + '<div class="st-block"><div class="st-label">Squeeze Risk</div>'
+    +   '<div class="st-val ' + risk + '">' + risk.toUpperCase() + '</div>'
+    +   '<div class="st-sub">' + (risk === 'high' ? 'High short interest + tight cover days'
+                                : risk === 'medium' ? 'Elevated short pressure'
+                                : 'Below squeeze thresholds') + '</div></div>';
+  section.style.display = '';
+}
+
+/* ─── Catalyst timeline (PR #24 item 12) ─── */
+function renderCatalysts(ctx, analyst, news){
+  var section = document.getElementById('catalyst-section');
+  var slot = document.getElementById('catalyst-timeline');
+  if(!section || !slot) return;
+  var events = [];
+  // 1. Earnings: next earnings date from WolfContext (Finviz-scraped)
+  if(ctx && ctx.ok !== false && ctx.earnings && ctx.earnings.date_str){
+    var em = ctx.earnings;
+    var when = em.date_str || '';
+    events.push({
+      sort: Date.now() / 1000 + 86400 * 365,  // future earnings sorted last
+      kind: 'earnings',
+      when: when,
+      body: '<b>Next earnings</b> ' + escHtml(em.date_str)
+        + (em.is_earnings_week ? ' <span style="color:#fbbf24">(within 5 trading days)</span>' : ''),
+    });
+  }
+  // 2. Latest analyst rating
+  if(analyst && analyst.latest_rating && (analyst.latest_rating.analyst || analyst.latest_rating.rating)){
+    var lr = analyst.latest_rating;
+    events.push({
+      sort: lr.date || 0,
+      kind: 'rating',
+      when: lr.date ? fmtDateShort(lr.date) : 'recent',
+      body: '<b>' + escHtml(lr.analyst || 'Analyst') + '</b> '
+        + escHtml(lr.action || lr.rating || 'rating') + ' &rarr; ' + escHtml(lr.rating || '—')
+        + (lr.from_rating ? ' <span style="color:#888">(was ' + escHtml(lr.from_rating) + ')</span>' : ''),
+    });
+  }
+  // 3. Recent WOLF news (top 5)
+  var articles = (news && news.articles) || [];
+  articles.slice(0, 5).forEach(function(a){
+    events.push({
+      sort: a.published_at || 0,
+      kind: a.category === 'earnings' ? 'earnings' : a.category === 'press' ? 'press' : 'news',
+      when: a.published_at ? fmtTimeAgo(a.published_at) : '—',
+      body: (a.url
+        ? '<a href="' + escHtml(a.url) + '" target="_blank" rel="noopener">' + escHtml(a.title || '') + '</a>'
+        : escHtml(a.title || ''))
+        + ' <span style="color:#666">&middot; ' + escHtml(a.source || 'News') + '</span>',
+    });
+  });
+
+  if(!events.length){
+    section.style.display = 'none';
+    return;
+  }
+  events.sort(function(a, b){ return (b.sort || 0) - (a.sort || 0); });
+  slot.innerHTML = events.map(function(ev){
+    return '<div class="cat-row">'
+      + '<div class="cat-when">' + escHtml(ev.when) + '</div>'
+      + '<div class="cat-kind ' + ev.kind + '">' + ev.kind + '</div>'
+      + '<div class="cat-body">' + ev.body + '</div>'
+      + '</div>';
+  }).join('');
+  section.style.display = '';
 }
 
 
@@ -1515,10 +1658,11 @@ async function load(){
       fetch('/api/v2/recent').then(function(r){return r.json()}).catch(function(){return {trades:[]}}),
       fetch('/api/stats/confidence-buckets').then(function(r){return r.json()}).catch(function(){return {ok:false}}),
       fetch('/api/wolf/ghost-score').then(function(r){return r.json()}).catch(function(){return {ok:false}}),
+      fetch('/api/wolf/context').then(function(r){return r.json()}).catch(function(){return {ok:false}}),
     ]);
     var price=batch[0], history=batch[1], predictions=batch[2], wstats=batch[3], earnings=batch[4],
         analyst=batch[5], news=batch[6], picks=batch[7], recent=batch[8],
-        conf=batch[9], ghostScore=batch[10];
+        conf=batch[9], ghostScore=batch[10], wolfCtx=batch[11];
 
     // PR #23: compute a single freshness gate once, then ALL renderers
     // (hero, today's play, ghost score) consult it so the cockpit tells
@@ -1535,11 +1679,12 @@ async function load(){
     renderEarnings(earnings);
     renderAnalyst(analyst);
     renderNews(news);
+    renderShortInterest(wolfCtx);
+    renderCatalysts(wolfCtx, analyst, news);
     renderTruth(stats, h, v3, dir);
     renderActivity(activity);
 
     document.getElementById('f-open').textContent = stats.open_positions || 0;
-    document.getElementById('f-total').textContent = stats.total || 0;
   } catch(e){
     console.error(e);
     var ce = document.getElementById('hero-change');
