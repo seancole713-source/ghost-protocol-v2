@@ -3050,3 +3050,84 @@ def test_enforce_inert_when_disabled(monkeypatch):
     res = _pred.enforce_kill_conditions()
     assert res["paused"] is False
     assert state == {}
+
+
+# ── feat/telegram-cards: daily card / weekly summary / silence formatters ──
+
+def test_conviction_and_news_influence():
+    from core.telegram_cards import conviction_from_confidence, compute_news_influence
+    assert conviction_from_confidence(0.92) == "HIGH"
+    assert conviction_from_confidence(0.86) == "MEDIUM"
+    assert conviction_from_confidence(0.80) == "LOW"
+    # no nudge => 0% news, 100% model
+    assert compute_news_influence(0.80, 0.80) == {"influence_pct": 0, "model_pct": 100}
+    # confidence moved 0.72 -> 0.80 by news => ~10% influence
+    n = compute_news_influence(0.80, 0.72)
+    assert n["influence_pct"] == 10 and n["model_pct"] == 90
+    # model logic is never 0 even on a huge nudge (capped at 95% news)
+    capped = compute_news_influence(0.90, 0.05)
+    assert capped["influence_pct"] <= 95 and capped["model_pct"] >= 5
+
+
+def test_format_daily_card_with_and_without_news():
+    from core.telegram_cards import format_daily_card
+    base = {
+        "date": "Monday May 26, 2026", "direction": "UP", "confidence": 0.88,
+        "current_price": 12.34, "buy_point": 12.34, "sell_target": 12.71,
+        "stop_loss": 12.10, "expected_move_pct": 3.0,
+        "rates": {"today_pct": 88, "week_high_pct": 91, "week_low_pct": 80},
+        "track_record": {"wins": 40, "losses": 12, "win_rate_pct": 76.9,
+                         "last5": ["W", "W", "L", "W", "W"], "streak": "3W"},
+    }
+    # no news
+    out = format_daily_card({**base, "news": {"influence_pct": 0, "model_pct": 100}})
+    assert "WOLF Daily Card" in out
+    assert "Conviction: MEDIUM" in out
+    assert "Confidence: 88%" in out
+    assert "Buy Point (entry): $12.34" in out
+    assert "Expected Move: +3.0%" in out
+    assert "No material news in last 48hrs. Prediction is 100% model-driven." in out
+    assert "All-time: 40-12 (76.9%)" in out
+    assert "Last 5: W W L W W" in out
+    assert "Streak: 3W" in out
+    # with news
+    out2 = format_daily_card({**base, "news": {"influence_pct": 35, "model_pct": 65,
+                                               "summary": "Wolfspeed wins $2B chip subsidy."}})
+    assert "Wolfspeed wins $2B chip subsidy." in out2
+    assert "News influence: 35% | Model logic: 65%" in out2
+
+
+def test_format_weekly_summary():
+    from core.telegram_cards import format_weekly_summary
+    out = format_weekly_summary({
+        "week_range": "May 19 - May 23",
+        "followed": {"wins": 4, "losses": 1, "win_rate_pct": 80.0, "pnl_usd": 120.5},
+        "alltime": {"win_rate_pct": 76.9, "wins": 40, "losses": 12},
+        "retrain_in_days": 9,
+        "top_pick": {"day": "Tuesday", "confidence_pct": 91},
+        "weakest_pick": {"day": "Thursday", "confidence_pct": 85},
+        "news_driven": {"count": 2, "total": 5},
+    })
+    assert "WOLF Weekly Summary" in out
+    assert "4W / 1L — 80.0%" in out
+    assert "+$120.50 on $1,000 deployed" in out
+    assert "All-time: 76.9% accuracy (40W/12L)" in out
+    assert "Model retrains in: 9 days" in out
+    assert "Top Confidence Pick: Tuesday @ 91%" in out
+    assert "Weakest Pick: Thursday @ 85%" in out
+    assert "News-Driven Picks: 2 of 5" in out
+
+
+def test_format_weekly_summary_negative_pnl():
+    from core.telegram_cards import format_weekly_summary
+    out = format_weekly_summary({"followed": {"wins": 1, "losses": 3, "win_rate_pct": 25.0, "pnl_usd": -47.25}})
+    assert "-$47.25 on $1,000 deployed" in out
+
+
+def test_format_silence_card():
+    from core.telegram_cards import format_silence_card
+    out = format_silence_card({"ghost_score": 72, "reason": "Insufficient edge — model confidence 72%"})
+    assert "Status: SILENCE — No high-conviction signal today" in out
+    assert "Ghost Score: 72/100" in out
+    assert "Insufficient edge — model confidence 72%" in out
+    assert "Next scan: Tomorrow 8 AM CT" in out
