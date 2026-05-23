@@ -116,6 +116,7 @@ section.block{margin-bottom:32px}
 .cat-kind.earnings{background:#1a1206;color:#fbbf24}
 .cat-kind.press{background:#0a1a1f;color:#7dd3fc}
 .cat-kind.rating{background:#0a1f0d;color:#86efac}
+.cat-kind.opex{background:#1a0f1f;color:#c4b5fd}
 .cat-body{color:#ddd;line-height:1.5}
 .cat-body a{color:#60a5fa;text-decoration:none}
 .cat-body a:hover{text-decoration:underline}
@@ -447,7 +448,7 @@ section.block{margin-bottom:32px}
   </section>
 
   <!-- ─── Key stats ─── -->
-  <section class="block">
+  <section class="block" id="stats-section">
     <div class="sec-label">Key Stats</div>
     <div id="signal-banners"></div>
     <div class="stats-grid" id="stats-grid">
@@ -472,7 +473,7 @@ section.block{margin-bottom:32px}
   </section>
 
   <!-- ─── Analyst insights ─── -->
-  <section class="block">
+  <section class="block" id="analyst-section">
     <div class="sec-label">Analyst Insights</div>
     <div class="analyst-card">
       <h4>Price Targets</h4>
@@ -551,7 +552,7 @@ section.block{margin-bottom:32px}
         </div>
       </div>
       <p class="truth-note" style="text-align:center;margin-top:10px;font-size:11px">
-        Operator controls (training, calibration, audit, coverage, model lineage, Telegram alerts) moved to <a href="/admin" style="color:#fbbf24">/admin</a> &mdash; HTTP Basic Auth.
+        Operator controls (training, calibration, audit, coverage, model lineage, Telegram alerts) moved to <a href="/admin" style="color:#fbbf24">/admin</a> &mdash; secured login.
       </p>
     </div>
   </section>
@@ -769,7 +770,7 @@ function renderHero(price, watching){
   // for 7+ days. Replaces any prior bullish/bearish framing.
   if(watching && watching.watching){
     ce.className = 'hero-change flat';
-    ce.innerHTML = '<span style="color:#888">WATCHING &mdash; no signal cleared 80% confidence in '
+    ce.innerHTML = '<span style="color:#888">WATCHING &mdash; no signal cleared the confidence floor in '
       + watching.days + ' day' + (watching.days === 1 ? '' : 's') + '</span>';
   }
 }
@@ -882,7 +883,7 @@ function renderPlay(picks, watching){
   // even if an old open pick is still in the DB, we don't surface it as
   // actionable when the engine hasn't fired a fresh signal in 7+ days.
   if(watching && watching.watching){
-    sg.innerHTML = '<div class="info-box"><b>WATCHING &mdash; no signal cleared 80% confidence in '
+    sg.innerHTML = '<div class="info-box"><b>WATCHING &mdash; no signal cleared the confidence floor in '
       + watching.days + ' day' + (watching.days === 1 ? '' : 's') + '.</b><br><br>'
       + 'Ghost is scanning every cycle but the engine has not produced a high-confidence pick. '
       + 'When a new signal clears the floor, it will appear here.</div>';
@@ -1119,16 +1120,18 @@ async function reloadChartOnly(){
 
 /* ─── Key stats grid ─── */
 function renderStats(s){
+  var section = document.getElementById('stats-section');
   var left = document.getElementById('stats-col-l');
   var right = document.getElementById('stats-col-r');
   var banners = document.getElementById('signal-banners');
   banners.innerHTML = '';
+  // Hide the whole panel when the stats feed is unavailable, so the cockpit
+  // looks intentional rather than showing a broken "Stats unavailable" panel.
   if(!s || s.ok === false){
-    var msg = (s && s.error) ? s.error : 'Stats unavailable';
-    left.innerHTML = '<div class="stat-row"><span class="stat-key">Stats feed</span><span class="stat-val">' + escHtml(msg) + '</span></div>';
-    right.innerHTML = '';
+    if(section) section.style.display = 'none';
     return;
   }
+  if(section) section.style.display = '';
   var earningsDisplay = s.earnings_date ? fmtDateShort(s.earnings_date) : (s.earnings_date_str || '—');
   var weekRange = (s.week52_low != null && s.week52_high != null)
     ? fmtPrice(s.week52_low) + ' – ' + fmtPrice(s.week52_high) : '—';
@@ -1236,20 +1239,19 @@ function renderEarnings(e){
 
 /* ─── Analyst insights ─── */
 function renderAnalyst(a){
+  var section = document.getElementById('analyst-section');
   var track = document.getElementById('target-track');
   var summary = document.getElementById('target-summary');
   var bar = document.getElementById('rec-bar');
   var legend = document.getElementById('rec-legend');
   var latestWrap = document.getElementById('latest-rating-wrap');
 
+  // Hide the whole panel when the analyst feed is unavailable.
   if(!a || a.ok === false){
-    track.innerHTML = '';
-    summary.textContent = (a && a.error) ? 'Analyst feed: ' + a.error : 'Analyst feed unavailable';
-    bar.innerHTML = '';
-    legend.innerHTML = '';
-    latestWrap.innerHTML = '';
+    if(section) section.style.display = 'none';
     return;
   }
+  if(section) section.style.display = '';
 
   var lo = a.price_target_low, avg = a.price_target_avg, hi = a.price_target_high, cur = a.current_price;
   if(lo != null && hi != null && hi > lo){
@@ -1522,7 +1524,7 @@ function renderTruth(stats, health, v3, dir){
   var feeds = health.price_feeds && health.price_feeds.summary ? health.price_feeds.summary : '—';
   document.getElementById('t-sys-kv').innerHTML =
     '<b>Engine scanned</b> ' + (cycleFreshMin != null ? cycleFreshMin + ' min ago' : 'unknown')
-    + ' &middot; <b>last signal at 80% confidence</b> '
+    + ' &middot; <b>last signal</b> '
     + (pickFreshMin == null ? 'never' :
        pickDays >= 1 ? pickDays + ' day' + (pickDays === 1 ? '' : 's') + ' ago' :
        pickFreshMin + ' min ago')
@@ -1626,6 +1628,32 @@ function renderCatalysts(ctx, analyst, news){
         + ' <span style="color:#666">&middot; ' + escHtml(a.source || 'News') + '</span>',
     });
   });
+
+  // 4. Computed market-structure catalysts — exact date math, no external
+  //    feed and no fabricated dates: monthly options expiration (3rd Friday)
+  //    and quarterly quad-witching (3rd Friday of Mar/Jun/Sep/Dec).
+  (function(){
+    function thirdFriday(y, m){               // m may exceed 11; Date.UTC normalizes
+      var first = new Date(Date.UTC(y, m, 1));
+      var firstFri = 1 + ((5 - first.getUTCDay() + 7) % 7);
+      return new Date(Date.UTC(y, m, firstFri + 14));
+    }
+    var now = new Date();
+    var added = 0;
+    for(var i = 0; i < 5 && added < 3; i++){
+      var dt = thirdFriday(now.getUTCFullYear(), now.getUTCMonth() + i);
+      if(dt.getTime() < now.getTime() - 86400000) continue;   // skip already-passed
+      var quad = [2, 5, 8, 11].indexOf(dt.getUTCMonth()) >= 0; // Mar Jun Sep Dec
+      events.push({
+        sort: dt.getTime() / 1000,
+        kind: 'opex',
+        when: dt.toLocaleDateString('en-US', {month: 'short', day: 'numeric'}),
+        body: '<b>' + (quad ? 'Quarterly options expiration (quad witching)' : 'Monthly options expiration')
+          + '</b> <span style="color:#888">&middot; elevated volume &amp; pinning risk</span>',
+      });
+      added++;
+    }
+  })();
 
   if(!events.length){
     section.style.display = 'none';
