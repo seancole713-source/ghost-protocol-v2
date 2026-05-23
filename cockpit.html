@@ -518,6 +518,17 @@ section.block{margin-bottom:32px}
     <div id="gp-section"></div>
   </section>
 
+  <!-- ─── Pick Journal (blueprint module 7 — the credibility ledger) ─── -->
+  <section class="block" id="pick-journal-section">
+    <div class="sec-label">Pick Journal &middot; the credibility ledger</div>
+    <div id="pj-verdict" style="margin-bottom:12px"></div>
+    <div id="pj-metrics" style="margin-bottom:12px"></div>
+    <div class="pj-list" id="pj-list"><div class="empty"><div class="ico">&#9203;</div>Loading pick journal…</div></div>
+    <div id="pj-more-wrap" style="text-align:center;margin-top:10px;display:none">
+      <button class="btn-add" id="pj-more" onclick="loadMorePickJournal()">Load older picks</button>
+    </div>
+  </section>
+
   <!-- ─── Truth mode (PR #6 panels, collapsible) ─── -->
   <section class="truth-wrap">
     <button type="button" class="truth-toggle" id="truth-toggle" aria-expanded="true">
@@ -1704,6 +1715,85 @@ async function load(){
   }
 }
 
+// ─── Pick Journal (blueprint module 7) ───
+var _pjOffset = 0;
+var _pjLimit = 25;
+
+function _pjPct(v){ return (v === null || v === undefined) ? '—' : (v >= 0 ? '+' : '') + v.toFixed(2) + '%'; }
+function _pjDate(ts){ if(!ts) return '—'; return new Date(ts*1000).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'2-digit'}); }
+
+function _renderPjVerdict(m, v){
+  var f = (v && v.falsification) || {};
+  var st = f.status || 'insufficient_samples';
+  var color = '#8b96a8', label = 'GATHERING EVIDENCE', msg = '';
+  if(st === 'ABANDON_80_CLAIM'){ color = '#ff4d4f'; label = 'KILL CONDITION TRIGGERED';
+    msg = 'Win rate below ' + Math.round(f.threshold.win_rate_floor*100) + '% with the 95% CI excluding 80%. Per the pre-registered falsification gate, the 80% claim is abandoned — reposition as a lower-confidence directional aid.'; }
+  else if(st === 'on_track'){ color = '#1ec77d'; label = 'ON TRACK';
+    msg = 'Win rate at or above the ' + Math.round(f.threshold.win_rate_floor*100) + '% floor across ' + f.samples + ' resolved high-conviction picks.'; }
+  else if(st === 'watch'){ color = '#f5a623'; label = 'WATCH';
+    msg = 'Win rate below the ' + Math.round(f.threshold.win_rate_floor*100) + '% floor, but the 95% CI still admits 80% — not yet falsified. ' + f.samples + ' resolved picks.'; }
+  else { var need = (f.threshold ? f.threshold.min_samples : 30); var have = (f.samples||0);
+    msg = 'Need ' + need + ' resolved high-conviction picks before the 80% claim can be honestly judged. Have ' + have + '. Silence until then is the design, not a bug.'; }
+  return '<div style="border-left:4px solid ' + color + ';background:rgba(255,255,255,.03);padding:10px 14px;border-radius:6px">' +
+    '<div style="font-weight:700;letter-spacing:.04em;color:' + color + ';font-size:12px">' + label + '</div>' +
+    '<div class="truth-note" style="margin-top:4px">' + msg + '</div></div>';
+}
+
+function _renderPjMetrics(m){
+  if(!m) return '';
+  function cell(lbl, val){ return '<div style="flex:1;min-width:90px"><div style="font-size:10px;color:#8b96a8;letter-spacing:.05em">' + lbl + '</div><div style="font-size:15px;font-weight:700;margin-top:2px">' + val + '</div></div>'; }
+  var wr = (m.win_rate === null || m.win_rate === undefined) ? '—' : (m.win_rate*100).toFixed(1) + '%';
+  var ci = m.win_rate_ci95 ? ' <span style="font-size:10px;color:#8b96a8">[' + (m.win_rate_ci95[0]*100).toFixed(0) + '–' + (m.win_rate_ci95[1]*100).toFixed(0) + ']</span>' : '';
+  var br = (m.brier === null || m.brier === undefined) ? '—' : m.brier.toFixed(3);
+  var ex = _pjPct(m.expectancy_pct);
+  return '<div style="display:flex;flex-wrap:wrap;gap:14px;background:rgba(255,255,255,.02);padding:12px 14px;border-radius:6px">' +
+    cell('RESOLVED', m.resolved + ' <span style="font-size:10px;color:#8b96a8">(' + m.wins + 'W/' + m.losses + 'L/' + m.expired + 'E)</span>') +
+    cell('WIN RATE', wr + ci) +
+    cell('EXPECTANCY', ex) +
+    cell('BRIER', br) + '</div>';
+}
+
+function _outcomeBadge(o){
+  var map = {WIN:['#1ec77d','WIN'], LOSS:['#ff4d4f','LOSS'], EXPIRED:['#8b96a8','EXP']};
+  if(!o) return '<span style="color:#f5a623;font-weight:600">OPEN</span>';
+  var x = map[o] || ['#8b96a8', o];
+  return '<span style="color:' + x[0] + ';font-weight:700">' + x[1] + '</span>';
+}
+
+function _renderPjList(picks, append){
+  var el = document.getElementById('pj-list');
+  if(!picks || !picks.length){ if(!append) el.innerHTML = '<div class="empty"><div class="ico">&#128221;</div>No picks logged yet in the v3.2 era.</div>'; return; }
+  var rows = picks.map(function(p){
+    var regime = (p.scores && p.scores.regime && p.scores.regime.label) ? p.scores.regime.label : '—';
+    var upProb = (p.scores && p.scores.specialists && p.scores.specialists.daily_swing) ? p.scores.specialists.daily_swing.up_prob : null;
+    var conf = (p.confidence === null || p.confidence === undefined) ? '—' : (p.confidence*100).toFixed(0) + '%';
+    return '<div style="display:flex;align-items:center;gap:10px;padding:8px 6px;border-bottom:1px solid rgba(255,255,255,.05);font-size:12px">' +
+      '<div style="width:62px;color:#8b96a8">' + _pjDate(p.predicted_at) + '</div>' +
+      '<div style="width:42px;font-weight:700">' + (p.direction||'—') + '</div>' +
+      '<div style="width:46px" title="confidence at issuance">' + conf + '</div>' +
+      '<div style="flex:1;color:#8b96a8" title="regime + model P(up) at issuance">' + regime + (upProb!==null ? ' &middot; p=' + upProb.toFixed(2) : '') + '</div>' +
+      '<div style="width:64px;text-align:right">' + _pjPct(p.pnl_pct) + '</div>' +
+      '<div style="width:46px;text-align:right">' + _outcomeBadge(p.outcome) + '</div></div>';
+  }).join('');
+  if(append) el.insertAdjacentHTML('beforeend', rows); else el.innerHTML = rows;
+}
+
+async function loadPickJournal(reset){
+  if(reset){ _pjOffset = 0; }
+  var data = await fetch('/api/wolf/pick-journal?limit=' + _pjLimit + '&offset=' + _pjOffset)
+    .then(function(r){return r.json()}).catch(function(){return {ok:false}});
+  if(!data || data.ok !== true){ return; }
+  if(_pjOffset === 0){
+    document.getElementById('pj-verdict').innerHTML = _renderPjVerdict(data.metrics, data.verdict);
+    document.getElementById('pj-metrics').innerHTML = _renderPjMetrics(data.metrics);
+  }
+  _renderPjList(data.picks, _pjOffset > 0);
+  var moreWrap = document.getElementById('pj-more-wrap');
+  moreWrap.style.display = (data.total > _pjOffset + (data.returned||0)) ? 'block' : 'none';
+}
+
+function loadMorePickJournal(){ _pjOffset += _pjLimit; loadPickJournal(false); }
+
 setInterval(function(){
   var d = new Date();
   document.getElementById('clock').textContent = d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',timeZone:'America/Chicago'}) + ' CT';
@@ -1711,7 +1801,9 @@ setInterval(function(){
 
 load();
 loadPortfolio();
+loadPickJournal(true);
 setInterval(load, 60000);
+setInterval(function(){ loadPickJournal(true); }, 120000);
 </script>
 </body>
 </html>

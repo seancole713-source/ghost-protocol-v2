@@ -29,6 +29,20 @@ MIN_SAMPLES      = int(os.getenv("MIN_SAMPLES", "10"))
 EDGE_THRESHOLD   = 0.55
 INVERSE_THRESHOLD = 0.40
 
+# Kill condition — honesty-layer falsification gate (blueprint §10).
+# Pre-registered BEFORE the data so the stop is a decision, not a rationalization:
+# once we have >= min_samples resolved high-conviction picks, if the win rate is
+# below win_rate_floor AND the 95% CI upper bound is below north_star (i.e. the CI
+# excludes 80%), the 80% claim is falsified — abandon it and reposition the system
+# as a lower-confidence directional aid rather than moving the goalposts.
+# Surfaced via GET /api/wolf/pick-journal -> verdict.falsification.
+FALSIFICATION_THRESHOLD: Dict[str, float] = {
+    "min_samples": 30,      # N: resolved high-conviction picks required before judging
+    "win_rate_floor": 0.70, # below this realized win rate ...
+    "north_star": 0.80,     # ... and 95% CI upper-bound below this => abandon the 80% claim
+    "ci_level": 0.95,
+}
+
 # WOLF-only mode — these legacy names retained for back-compat with any importer.
 CRYPTO_SYMBOLS: List[str] = []
 STOCK_SYMBOLS: List[str] = ["WOLF"]
@@ -567,9 +581,10 @@ def _predict_symbol_ex(symbol, asset_type, regime):
             LOGGER.warning("Prev-close fallback failed " + symbol + ": " + str(_pe))
     if not price or price <= 0:
         return None, "no_price"
+    score_vector = {}
     try:
         from core.signal_engine import predict_live_ex
-        signal, v3_reason = predict_live_ex(symbol, "stock")
+        signal, v3_reason = predict_live_ex(symbol, "stock", scores=score_vector)
     except Exception as _pe:
         LOGGER.warning("v3 engine error for " + symbol + ": " + str(_pe))
         return None, "v3_engine_error"
@@ -695,6 +710,7 @@ def _predict_symbol_ex(symbol, asset_type, regime):
         "expires_at":   now + hold,
         "asset_type":   asset_type,
         "features":     features,
+        "scores":       score_vector,
         "pos_size_pct": pos_pct,
         "objective_expected_wr": objective_meta.get("combined_wr"),
         "objective_samples": objective_meta.get("combined_total"),
@@ -774,11 +790,11 @@ def run_prediction_cycle(with_diag: bool = False):
                     dedup_blocked += 1
                     continue
                 cur.execute(
-                    "INSERT INTO predictions (symbol,direction,confidence,entry_price,target_price,stop_price,run_at,predicted_at,expires_at,asset_type,features) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+                    "INSERT INTO predictions (symbol,direction,confidence,entry_price,target_price,stop_price,run_at,predicted_at,expires_at,asset_type,features,scores) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
                     (pick["symbol"], pick["direction"], pick["confidence"], pick["entry_price"],
                      pick["target_price"], pick["stop_price"], pick["predicted_at"],
                      pick["predicted_at"], pick["expires_at"], pick["asset_type"],
-                     json.dumps(pick.get("features", {})))
+                     json.dumps(pick.get("features", {})), json.dumps(pick.get("scores", {})))
                 )
                 pred_id = cur.fetchone()[0]
                 pick["id"] = pred_id
