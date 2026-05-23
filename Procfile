@@ -1,1 +1,1 @@
-web: echo "[BOOT] PR25_CACHEBUST DEPLOY_VERSION=${DEPLOY_VERSION:-unset} GIT_SHA=${RAILWAY_GIT_COMMIT_SHA:-unset} DEPLOY_ID=${RAILWAY_DEPLOYMENT_ID:-unset}" && uvicorn wolf_app:APP --host 0.0.0.0 --port $PORT --log-config uvicorn_log.json
+web: echo "[BOOT] PR34_CACHEBUST DEPLOY_VERSION=${DEPLOY_VERSION:-unset} GIT_SHA=${RAILWAY_GIT_COMMIT_SHA:-unset} DEPLOY_ID=${RAILWAY_DEPLOYMENT_ID:-unset}" && uvicorn wolf_app:APP --host 0.0.0.0 --port $PORT --log-config uvicorn_log.json
