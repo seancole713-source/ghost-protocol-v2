@@ -960,6 +960,75 @@ def _categorize(title: str) -> str:
     return "news"
 
 
+def _squeeze_risk_tag(short_float_pct, days_to_cover) -> str:
+    """low/medium/high/extreme from short %-of-float and days-to-cover
+    (mirrors core.wolf_context._build_short_data thresholds)."""
+    sfp = short_float_pct or 0
+    dtc = days_to_cover or 0
+    if sfp >= 35 or dtc >= 5:
+        return "extreme"
+    if sfp >= 25 or dtc >= 3:
+        return "high"
+    if sfp >= 15 or dtc >= 2:
+        return "medium"
+    return "low"
+
+
+def _short_trend(shares_short, prior):
+    """Month-over-month short-interest trend, or None if either side is missing."""
+    if shares_short is None or not prior:
+        return None
+    delta = shares_short - prior
+    return {
+        "delta": delta,
+        "pct": round(delta / prior * 100, 1) if prior else None,
+        "direction": "rising" if delta > 0 else "falling" if delta < 0 else "flat",
+    }
+
+
+@router.get("/short-interest")
+async def get_wolf_short_interest():
+    """Short interest + squeeze context (audit free-API wiring). Best-effort via
+    yfinance .info: short % of float, days-to-cover (shortRatio), shares short and
+    the prior-month trend, plus a low/medium/high/extreme squeeze-risk tag. Cached
+    1h. `available` is False (and the cockpit hides the tile) when the feed has no
+    short data."""
+    cached = _cache_get("short-interest", 3600)
+    if cached:
+        return JSONResponse(content=cached)
+
+    short_float_pct = days_to_cover = shares_short = shares_short_prior = None
+    err = None
+    try:
+        import yfinance as yf
+        info = yf.Ticker(WOLF_SYMBOL).info or {}
+        sf = _safe_float(info.get("shortPercentOfFloat"))  # yfinance returns 0..1
+        if sf is not None:
+            short_float_pct = round(sf * 100, 2)
+        days_to_cover = _safe_float(info.get("shortRatio"))
+        shares_short = _safe_int(info.get("sharesShort"))
+        shares_short_prior = _safe_int(info.get("sharesShortPriorMonth"))
+    except Exception as e:
+        err = str(e)[:200]
+
+    risk = _squeeze_risk_tag(short_float_pct, days_to_cover)
+    trend = _short_trend(shares_short, shares_short_prior)
+    available = any(v is not None for v in (short_float_pct, days_to_cover, shares_short))
+    payload = _ok({
+        "symbol": WOLF_SYMBOL,
+        "available": available,
+        "short_float_pct": short_float_pct,
+        "days_to_cover": days_to_cover,
+        "shares_short": shares_short,
+        "shares_short_prior_month": shares_short_prior,
+        "trend": trend,
+        "squeeze_risk": risk if available else None,
+        "error": err,
+    })
+    _cache_set("short-interest", payload)
+    return JSONResponse(content=payload)
+
+
 # ────────────────────────────────────────────────────────────────
 # /api/wolf/ghost-score — composite intelligence rating
 # ────────────────────────────────────────────────────────────────

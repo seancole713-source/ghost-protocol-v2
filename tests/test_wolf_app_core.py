@@ -3235,3 +3235,28 @@ def test_admin_audit_log_returns_entries_with_valid_cookie(monkeypatch):
     assert out["ok"] is True
     assert out["count"] == 2
     assert out["actions"][0]["ts"] == 2   # newest first
+
+
+# ── feat/free-api-wiring: short-interest squeeze risk + trend ───────────
+
+def test_squeeze_risk_tag_bands():
+    from api.wolf_endpoints import _squeeze_risk_tag
+    assert _squeeze_risk_tag(40, 1) == "extreme"   # float >= 35
+    assert _squeeze_risk_tag(10, 6) == "extreme"   # dtc >= 5
+    assert _squeeze_risk_tag(28, 1) == "high"      # float >= 25
+    assert _squeeze_risk_tag(10, 3.5) == "high"    # dtc >= 3
+    assert _squeeze_risk_tag(18, 1) == "medium"    # float >= 15
+    assert _squeeze_risk_tag(10, 2) == "medium"    # dtc >= 2
+    assert _squeeze_risk_tag(5, 1) == "low"
+    assert _squeeze_risk_tag(None, None) == "low"
+
+
+def test_short_trend_direction():
+    from api.wolf_endpoints import _short_trend
+    assert _short_trend(None, 100) is None
+    assert _short_trend(100, None) is None
+    rising = _short_trend(120, 100)
+    assert rising["direction"] == "rising" and rising["delta"] == 20 and rising["pct"] == 20.0
+    falling = _short_trend(80, 100)
+    assert falling["direction"] == "falling" and falling["pct"] == -20.0
+    assert _short_trend(100, 100)["direction"] == "flat"

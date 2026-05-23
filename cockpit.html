@@ -1439,6 +1439,35 @@ async function loadEquityChart(){
   }catch(e){ sec.style.display = 'none'; }
 }
 
+/* ─── Short interest / squeeze context (audit free-API wiring) ─── */
+async function loadShortInterest(){
+  var sec = document.getElementById('short-section');
+  var tile = document.getElementById('short-tile');
+  if(!sec || !tile) return;
+  try{
+    var g = await fetch('/api/wolf/short-interest').then(function(r){return r.json()});
+    if(!g || g.ok === false || !g.available){ sec.style.display = 'none'; return; }
+    sec.style.display = '';
+    var riskCls = (g.squeeze_risk === 'extreme' || g.squeeze_risk === 'high') ? 'high'
+      : (g.squeeze_risk === 'medium' ? 'medium' : 'low');
+    function block(label, val, sub, cls){
+      return '<div class="st-block"><div class="st-label">' + escHtml(label) + '</div>'
+        + '<div class="st-val' + (cls ? ' ' + cls : '') + '">' + escHtml(val) + '</div>'
+        + (sub ? '<div class="st-sub">' + escHtml(sub) + '</div>' : '') + '</div>';
+    }
+    var trendSub = '';
+    if(g.trend && g.trend.direction){
+      trendSub = g.trend.direction + (g.trend.pct != null ? ' ' + (g.trend.pct >= 0 ? '+' : '') + g.trend.pct + '%' : '');
+    }
+    tile.innerHTML = [
+      block('Short Float', g.short_float_pct != null ? g.short_float_pct + '%' : '—'),
+      block('Days to Cover', g.days_to_cover != null ? g.days_to_cover : '—'),
+      block('Shares Short', g.shares_short != null ? Number(g.shares_short).toLocaleString('en-US') : '—', trendSub),
+      block('Squeeze Risk', String(g.squeeze_risk || '—').toUpperCase(), '', riskCls),
+    ].join('');
+  }catch(e){ sec.style.display = 'none'; }
+}
+
 /* ─── Portfolio (kept from prior cockpit) ─── */
 async function loadPortfolio(){
   var data = await fetch('/api/portfolio').then(function(r){return r.json()}).catch(function(){return {positions:[]}});
@@ -1904,9 +1933,11 @@ setInterval(function(){
 load();
 loadPortfolio();
 loadEquityChart();
+loadShortInterest();
 loadPickJournal(true);
 setInterval(load, 60000);
 setInterval(loadEquityChart, 120000);
+setInterval(loadShortInterest, 300000);
 setInterval(function(){ loadPickJournal(true); }, 120000);
 </script>
 </body>
