@@ -1,10 +1,9 @@
 import os, sys, time, logging, threading, hmac, secrets as _secrets
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Header, HTTPException, Depends
+from fastapi import FastAPI, Header, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from core.db import db_conn, init_db
 
 logging.basicConfig(
@@ -2636,48 +2635,118 @@ def cockpit():
 
 
 # ────────────────────────────────────────────────────────────────
-# /admin — HTTPBasic-gated operator console (PR #23)
+# /admin — cookie-login operator console (PR #28)
 # ────────────────────────────────────────────────────────────────
-_basic_auth = HTTPBasic(auto_error=False)
+# Replaced HTTP Basic Auth (PR #23) which rendered blank on production —
+# browsers/edge proxies mishandle the 401 Basic challenge. Cookie login is
+# a plain HTML form → no browser auth dialog, no proxy quirks. The cookie
+# is an HMAC-signed {expiry}.{sig} token so it can't be forged client-side.
+_ADMIN_COOKIE = "gp_admin"
+_ADMIN_TTL_S = 28800  # 8 hours
 
 
-def _require_admin_auth(creds: HTTPBasicCredentials = Depends(_basic_auth)):
-    """HTTPBasic dep that validates the password against CRON_SECRET.
+def _admin_mint_token(ttl_s: int = _ADMIN_TTL_S) -> str:
+    secret = os.environ.get("CRON_SECRET", "")
+    exp = str(int(time.time()) + ttl_s)
+    sig = hmac.new(secret.encode("utf-8"), exp.encode("utf-8"), "sha256").hexdigest()
+    return exp + "." + sig
 
-    Username is ignored; only the password must match CRON_SECRET. If
-    CRON_SECRET is unset (dev mode), allows access without a password.
 
-    Returns the username (or "admin" in dev) on success, raises 401 with
-    WWW-Authenticate header on failure so browsers prompt for credentials.
+def _admin_token_valid(token: str) -> bool:
+    """True if the cookie token is a non-expired, correctly-signed value.
+
+    Dev mode (no CRON_SECRET) always returns True — mirrors _cron_ok
+    strict=False semantics.
     """
-    expected = os.environ.get("CRON_SECRET", "")
-    if not expected:
-        # Dev mode: no secret configured, allow access. Mirrors _cron_ok
-        # strict=False semantics.
-        return (creds.username if creds else "admin-dev")
-    if creds is None or not hmac.compare_digest(
-        (creds.password or "").encode("utf-8"), expected.encode("utf-8")
-    ):
-        raise HTTPException(
-            status_code=401,
-            detail="Admin authentication required",
-            headers={"WWW-Authenticate": 'Basic realm="Ghost Protocol Admin"'},
-        )
-    return creds.username
+    secret = os.environ.get("CRON_SECRET", "")
+    if not secret:
+        return True
+    if not token or "." not in token:
+        return False
+    try:
+        exp_str, sig = token.rsplit(".", 1)
+        if int(exp_str) < int(time.time()):
+            return False
+        expected = hmac.new(secret.encode("utf-8"), exp_str.encode("utf-8"), "sha256").hexdigest()
+        return hmac.compare_digest(sig, expected)
+    except Exception:
+        return False
+
+
+_ADMIN_LOGIN_HTML = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Ghost Protocol — Admin Login</title>
+<style>*{margin:0;padding:0;box-sizing:border-box}body{background:#0a0a0a;color:#fff;
+font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;min-height:100vh;
+display:flex;align-items:center;justify-content:center}
+.box{background:#111;border:1px solid #1e1e1e;border-radius:14px;padding:32px;width:340px;max-width:90vw}
+.logo{font-size:16px;font-weight:800;letter-spacing:2px;margin-bottom:6px}.logo span{color:#ff3b3b}
+.sub{font-size:12px;color:#666;margin-bottom:20px}
+input{width:100%;background:#0a0a0a;border:1px solid #2a2a2a;color:#fff;padding:11px 12px;
+border-radius:8px;font-size:14px;font-family:ui-monospace,Menlo,monospace;margin-bottom:12px}
+button{width:100%;background:#ff3b3b;color:#fff;border:none;padding:11px;border-radius:8px;
+font-size:13px;font-weight:700;letter-spacing:.5px;cursor:pointer}button:hover{background:#e03333}
+.err{color:#ff3b3b;font-size:12px;min-height:16px;margin-top:10px}</style></head><body>
+<div class="box"><div class="logo">&#128123; GHOST <span>ADMIN</span></div>
+<div class="sub">Enter the cron secret to access the operator console.</div>
+<input type="password" id="secret" placeholder="CRON_SECRET" autocomplete="off" autofocus
+onkeydown="if(event.key==='Enter')doLogin()">
+<button onclick="doLogin()">Sign in</button><div class="err" id="err"></div></div>
+<script>
+async function doLogin(){
+  var s=document.getElementById('secret').value||'';
+  var e=document.getElementById('err');e.textContent='Signing in...';
+  try{
+    var r=await fetch('/admin/login',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({secret:s})});
+    if(r.ok){location.reload();}
+    else{e.textContent='Wrong secret. Try again.';}
+  }catch(_){e.textContent='Network error.';}
+}
+</script></body></html>"""
 
 
 @APP.get("/admin", include_in_schema=False)
-def admin_page(_user: str = Depends(_require_admin_auth)):
-    """Serve admin.html behind HTTP Basic Auth.
-
-    Password = CRON_SECRET. Username can be anything (it's logged but
-    not validated). Browsers will prompt for credentials and remember
-    them for the session.
-    """
+def admin_page(request: Request):
+    """Serve admin.html when the cookie is valid; else the login page."""
+    token = request.cookies.get(_ADMIN_COOKIE, "")
+    if not _admin_token_valid(token):
+        return HTMLResponse(_ADMIN_LOGIN_HTML)
     import os as _os
     _path = _os.path.join(_os.path.dirname(__file__), "admin.html")
     with open(_path, encoding="utf-8") as _f:
         return HTMLResponse(_f.read())
+
+
+@APP.post("/admin/login", include_in_schema=False)
+async def admin_login(request: Request):
+    """Validate the posted secret against CRON_SECRET; set the signed cookie.
+
+    JSON body {"secret": "..."} (no python-multipart dependency). On success
+    sets an HttpOnly, SameSite=Lax cookie valid for 8h and returns {ok:true}.
+    """
+    expected = os.environ.get("CRON_SECRET", "")
+    provided = ""
+    try:
+        body = await request.json()
+        provided = str(body.get("secret", "") or "")
+    except Exception:
+        provided = ""
+    if expected and not hmac.compare_digest(provided.encode("utf-8"), expected.encode("utf-8")):
+        return JSONResponse({"ok": False, "error": "invalid secret"}, status_code=401)
+    resp = JSONResponse({"ok": True})
+    resp.set_cookie(
+        _ADMIN_COOKIE, _admin_mint_token(),
+        max_age=_ADMIN_TTL_S, httponly=True, samesite="lax",
+        secure=os.getenv("ADMIN_COOKIE_SECURE", "1").strip() in ("1", "true", "yes", "on"),
+    )
+    return resp
+
+
+@APP.post("/admin/logout", include_in_schema=False)
+def admin_logout():
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(_ADMIN_COOKIE)
+    return resp
 
 
 if os.path.exists("static"):

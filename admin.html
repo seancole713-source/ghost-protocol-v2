@@ -51,11 +51,12 @@ button:disabled{opacity:.5;cursor:not-allowed}
 
 <div class="main">
 
-<div class="note">
-  <b>Operator-only view.</b> Behind HTTP Basic Auth (password = <code>CRON_SECRET</code>).
+<div class="note" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+  <span><b>Operator-only view.</b> Cookie-authenticated (signed in with <code>CRON_SECRET</code>).
   Investor cockpit at <a href="/cockpit" style="color:#fbbf24">/cockpit</a> &mdash; no admin
-  controls there. Every action below also requires the cron secret in the
-  <code>x-cron-secret</code> field (paste it once and it sticks for the session).
+  controls there. Mutating actions below still require the cron secret in the
+  <code>x-cron-secret</code> field.</span>
+  <button class="secondary" style="white-space:nowrap" onclick="adminLogout()">Sign out</button>
 </div>
 
 <!-- ─── Training controls ─── -->
@@ -496,6 +497,11 @@ async function loadGateStatus(){
 
 function gateBadge(pass){
   return pass ? '<span class="ok">&#10003; pass</span>' : '<span class="fail">&#10007; fail</span>';
+}
+
+async function adminLogout(){
+  try{ await fetch('/admin/logout', {method:'POST'}); }catch(_){}
+  location.reload();
 }
 
 loadEngineQuality();
