@@ -2310,6 +2310,36 @@ def wolf_pick_journal(limit: int = 50, offset: int = 0, symbol: str = "WOLF"):
         return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
 
 
+@APP.get("/api/wolf/pnl")
+def wolf_pnl(symbol: str = "WOLF"):
+    """Realized-P&L tracker (audit §5). Turns the per-pick entry/exit ledger into
+    an aggregate: sequential-compounding equity curve plus profit factor, max
+    drawdown, expectancy and dollar P&L. Resolved v3.2-era picks only, oldest
+    first. Public, read-only. Bankroll/stake via GHOST_PNL_BANKROLL /
+    GHOST_PNL_STAKE_FRACTION env."""
+    try:
+        from core.pnl import realized_pnl
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT resolved_at,symbol,outcome,pnl_pct,entry_price,exit_price "
+                "FROM predictions WHERE symbol=%s AND id >= %s AND outcome IS NOT NULL "
+                "AND pnl_pct IS NOT NULL ORDER BY resolved_at ASC NULLS LAST, id ASC",
+                (symbol, _V32_ERA_MIN_ID))
+            rows = cur.fetchall()
+        trades = [{
+            "resolved_at": r[0], "symbol": r[1], "outcome": r[2],
+            "pnl_pct": float(r[3]) if r[3] is not None else None,
+            "entry_price": float(r[4]) if r[4] is not None else None,
+            "exit_price": float(r[5]) if r[5] is not None else None,
+        } for r in rows]
+        out = realized_pnl(trades)
+        out["symbol"] = symbol
+        return out
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
 @APP.get("/api/wolf/kill-status")
 def wolf_kill_status():
     """Live kill-condition dashboard (audit §2). Evaluates the env-tunable
