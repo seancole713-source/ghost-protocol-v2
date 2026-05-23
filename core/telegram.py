@@ -133,6 +133,27 @@ def send_weekly_summary(wins_or_stats, losses=None, wr=None, avg_win=None, avg_l
     ])
     return _send(NL.join(parts))
 
+def send_daily_card(data):
+    """Overhauled WOLF daily card (prediction + price levels + news influence +
+    rates + track record). `data` is assembled by the caller; see
+    core.telegram_cards.format_daily_card."""
+    from core.telegram_cards import format_daily_card
+    return _send(format_daily_card(data))
+
+
+def send_silence_card(data):
+    """Daily SILENCE card when no pick clears the high-conviction threshold."""
+    from core.telegram_cards import format_silence_card
+    return _send(format_silence_card(data))
+
+
+def send_weekly_card(data):
+    """Overhauled weekly summary (followed-picks P&L, all-time, retrain
+    countdown, top/weakest pick, news-driven count)."""
+    from core.telegram_cards import format_weekly_summary
+    return _send(format_weekly_summary(data))
+
+
 def send_health_alert(issue):
     return _send(NL.join(["<b>GHOST HEALTH ALERT</b>", issue]))
 

@@ -328,11 +328,158 @@ def _expire_open_picks_without_v3_model():
         return 0
 
 
+# ── Telegram card assembly (feat/telegram-cards) ─────────────────────────
+
+def _daily_min_conf() -> float:
+    """High-conviction threshold below which the daily card goes to SILENCE."""
+    try:
+        return float(os.getenv("TELEGRAM_DAILY_MIN_CONF", "0.85"))
+    except Exception:
+        return 0.85
+
+
+def _wolf_track_record() -> dict:
+    """All-time W/L, win rate, last-5 (newest first), and current streak for
+    WOLF v3.2-era resolved picks."""
+    out = {"wins": 0, "losses": 0, "win_rate_pct": 0, "last5": [], "streak": "--"}
+    try:
+        with db_conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                "SELECT outcome FROM predictions WHERE symbol='WOLF' AND id >= %s "
+                "AND outcome IN ('WIN','LOSS') ORDER BY resolved_at DESC NULLS LAST, id DESC",
+                (_V32_ERA_MIN_ID,))
+            outs = [r[0] for r in cur.fetchall()]
+        wins = outs.count("WIN")
+        losses = outs.count("LOSS")
+        tot = wins + losses
+        out["wins"], out["losses"] = wins, losses
+        out["win_rate_pct"] = round(wins / tot * 100, 1) if tot else 0
+        out["last5"] = ["W" if o == "WIN" else "L" for o in outs[:5]]
+        if outs:
+            first = outs[0]
+            n = 0
+            for o in outs:
+                if o == first:
+                    n += 1
+                else:
+                    break
+            out["streak"] = str(n) + ("W" if first == "WIN" else "L")
+    except Exception:
+        pass
+    return out
+
+
+def _wolf_week_rate_bounds():
+    """(highest, lowest) confidence pct among WOLF picks predicted in last 7d."""
+    try:
+        with db_conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                "SELECT MAX(confidence), MIN(confidence) FROM predictions "
+                "WHERE symbol='WOLF' AND predicted_at >= %s",
+                (int(time.time()) - 7 * 86400,))
+            r = cur.fetchone()
+        if r and r[0] is not None:
+            return int(round(float(r[0]) * 100)), int(round(float(r[1]) * 100))
+    except Exception:
+        pass
+    return None, None
+
+
+def _wolf_retrain_in_days():
+    """Days until the WOLF model goes stale (14d window from trained_at)."""
+    try:
+        with db_conn() as c:
+            cur = c.cursor()
+            cur.execute("SELECT value FROM ghost_v3_model WHERE key='meta_WOLF'")
+            r = cur.fetchone()
+        if r and r[0]:
+            ta = json.loads(r[0]).get("trained_at")
+            if ta:
+                return max(0, int(round(14 - (time.time() - float(ta)) / 86400)))
+    except Exception:
+        pass
+    return None
+
+
+def _build_daily_card_data(pick: dict) -> dict:
+    """Assemble the daily-card payload from a saved pick + DB-derived context."""
+    import datetime as _dt, pytz as _tz
+    from core.telegram_cards import conviction_from_confidence, compute_news_influence
+    tz = _tz.timezone(os.getenv("GHOST_TZ", "America/Chicago"))
+    conf = float(pick.get("confidence") or 0)
+    entry = float(pick.get("entry_price") or 0)
+    target = float(pick.get("target_price") or 0)
+    stop = float(pick.get("stop_price") or 0)
+    direction = pick.get("direction", "UP")
+    exp_move = ((target - entry) / entry * 100) if entry else 0.0
+    feats = pick.get("features") or {}
+    conf_raw = feats.get("confidence_raw", conf)
+    news = compute_news_influence(conf, conf_raw)
+    if news["influence_pct"] > 0:
+        news["summary"] = _wolf_news_summary()
+    hi, lo = _wolf_week_rate_bounds()
+    conf_pct = int(round(conf * 100))
+    return {
+        "date": _dt.datetime.now(tz).strftime("%A %b %d, %Y"),
+        "model_version": "v3.2",
+        "direction": direction,
+        "confidence": conf,
+        "conviction": conviction_from_confidence(conf),
+        "current_price": entry,
+        "buy_point": entry,
+        "sell_target": target,
+        "stop_loss": stop,
+        "expected_move_pct": round(exp_move, 1),
+        "news": news,
+        "rates": {"today_pct": conf_pct,
+                  "week_high_pct": hi if hi is not None else conf_pct,
+                  "week_low_pct": lo if lo is not None else conf_pct},
+        "track_record": _wolf_track_record(),
+    }
+
+
+def _wolf_news_summary():
+    """Best-effort 1-line catalyst headline for the news-influence section.
+    Returns None on any failure (formatter then shows just the influence split)."""
+    try:
+        from core.wolf_context import _get_catalyst_news_score
+        _score, headlines = _get_catalyst_news_score("UP")
+        if headlines:
+            return str(headlines[0])[:160]
+    except Exception:
+        pass
+    return None
+
+
+def _build_silence_card_data(diag: dict) -> dict:
+    """Assemble the SILENCE card from the cycle diagnostics + a Ghost Score."""
+    reason = "No qualifying signal — gates not cleared"
+    try:
+        floor = diag.get("confidence_floor")
+        label = diag.get("top_reason_label") or diag.get("top_reason_code")
+        if label:
+            reason = str(label)
+        if floor:
+            reason += " (floor " + str(int(round(float(floor) * 100))) + "%)"
+    except Exception:
+        pass
+    score = "--"
+    try:
+        from api.wolf_endpoints import _cache_get
+        cached = _cache_get("ghost-score", 86400)
+        if cached and cached.get("score") is not None:
+            score = int(round(float(cached["score"])))
+    except Exception:
+        pass
+    return {"ghost_score": score, "reason": reason}
+
+
 def _morning_card_job():
     """Run prediction cycle and send morning Telegram card."""
     import datetime as _dt, pytz as _pytz, time as _t2
     from core.prediction import run_prediction_cycle
-    from core.telegram import send_morning_card
     from core.db import db_conn
     _cycle_diag = {}
     # Dedup: Telegram morning card only once per CT day — but always run prediction cycle
@@ -353,31 +500,6 @@ def _morning_card_job():
     except Exception as _de:
         LOGGER.warning("Dedup check failed: "+str(_de)[:60])
     picks, _cycle_diag = run_prediction_cycle(with_diag=True)
-    # Get week stats
-    try:
-        with db_conn() as conn:
-            cur = conn.cursor()
-            cutoff = int(time.time()) - 7*86400
-            cur.execute(
-                "SELECT outcome, pnl_pct FROM predictions WHERE resolved_at > %s AND outcome IN ('WIN','LOSS') AND direction='UP'",
-                (cutoff,)
-            )
-            rows = cur.fetchall()
-            wins = sum(1 for r in rows if r[0] == "WIN")
-            losses = len(rows) - wins
-            # $100 per trade simulation
-            # Correct P&L: $100 per trade simulation using pnl_pct
-            pnl = sum((100 * (r[1] or 0) / 100) for r in rows)  # dollar gain per $100 bet
-            # Scope to v2 predictions only (predicted_at is set, not NULL)
-            cur.execute("SELECT outcome FROM predictions WHERE outcome IN ('WIN','LOSS') AND predicted_at IS NOT NULL ORDER BY id DESC LIMIT 2000")
-            all_rows = cur.fetchall()
-            # Only count WIN/LOSS — exclude EXPIRED from denominator
-            resolved = [r for r in all_rows if r[0] in ("WIN","LOSS")]
-            all_wins = sum(1 for r in resolved if r[0] == "WIN")
-            alltime_wr = round(all_wins/len(resolved)*100,1) if resolved else 0
-    except:
-        wins, losses, pnl, alltime_wr = 0, 0, 0.0, 0
-    week_stats = {"wins": wins, "losses": losses, "pnl_usd": pnl, "alltime_wr": alltime_wr}
     # Record card fire time for startup self-healing check
     try:
         import datetime as _dt2, pytz as _pytz2
@@ -398,100 +520,149 @@ def _morning_card_job():
     if _skip_telegram:
         LOGGER.info("Morning card: Telegram skipped (same CT day); cycle returned %s saved picks", len(picks or []))
         return picks
-    if picks:
-        send_morning_card(picks, week_stats)
+    # Overhauled cards (feat/telegram-cards): a high-conviction pick gets the
+    # full daily card; otherwise the SILENCE card. The once-per-CT-day dedup
+    # above (last_morning_card_date) prevents duplicate sends on restart/self-heal.
+    min_conf = _daily_min_conf()
+    top = max(picks, key=lambda p: float(p.get("confidence") or 0)) if picks else None
+    if top and float(top.get("confidence") or 0) >= min_conf:
+        try:
+            from core.telegram import send_daily_card
+            send_daily_card(_build_daily_card_data(top))
+            LOGGER.info("Daily card sent: %s %s @ %.0f%%", top.get("symbol"),
+                        top.get("direction"), float(top.get("confidence") or 0) * 100)
+        except Exception as _ce:
+            LOGGER.error("Daily card send failed: " + str(_ce)[:120])
     else:
         try:
-            with db_conn() as _oc:
-                _cur2 = _oc.cursor()
-                _cur2.execute(
-                    "SELECT symbol,direction,confidence,entry_price,target_price,stop_price,expires_at FROM predictions WHERE outcome IS NULL AND expires_at > %s ORDER BY confidence DESC LIMIT 10",
-                    (int(time.time()),)
-                )
-                _open = [{"symbol":r[0],"direction":r[1],"confidence":r[2],"entry_price":r[3],"target_price":r[4],"stop_price":r[5],"expires_at":r[6],"pos_size_pct":2.0} for r in _cur2.fetchall()]
-            if _open:
-                # Only send OPEN POSITIONS if picks have changed since last send
-                import hashlib as _hl
-                _pick_hash = _hl.md5(','.join(sorted(p['symbol'] for p in _open)).encode()).hexdigest()[:8]
-                _hash_key = "last_open_pos_hash"
-                try:
-                    with db_conn() as _hc:
-                        _hcur = _hc.cursor()
-                        _hcur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
-                        _hcur.execute("SELECT val FROM ghost_state WHERE key=%s", (_hash_key,))
-                        _hrow = _hcur.fetchone()
-                        _last_hash = _hrow[0] if _hrow else ""
-                    if _pick_hash != _last_hash:
-                        send_morning_card(_open, week_stats, is_update=True)
-                        with db_conn() as _hc2:
-                            _hc2.cursor().execute("INSERT INTO ghost_state(key,val) VALUES(%s,%s) ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val", (_hash_key, _pick_hash))
-                except Exception:
-                    send_morning_card(_open, week_stats, is_update=True)
-            else:
-                # Rate-limit: only send "no picks" message once per 4 hours
-                import time as _rt
-                _last_key = "last_no_picks_sent"
-                _now = int(_rt.time())
-                try:
-                    with db_conn() as _rc:
-                        _npcur = _rc.cursor()
-                        _npcur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
-                        _npcur.execute("SELECT val FROM ghost_state WHERE key=%s", (_last_key,))
-                        _last_row = _npcur.fetchone()
-                        _last_sent = int(_last_row[0]) if _last_row else 0
-                    if _now - _last_sent > 14400:  # 4 hours
-                        from core.telegram import _send
-                        _cd = _cycle_diag if isinstance(_cycle_diag, dict) else {}
-                        _top = (_cd.get("top_reason_label") or "unknown").strip()
-                        _sum = (_cd.get("skip_summary") or "").strip()
-                        _reg = (_cd.get("regime") or "").strip()
-                        _cf = _cd.get("confidence_floor")
-                        _sc = _cd.get("symbols_scanned")
-                        _cand = _cd.get("candidates")
-                        _saved = _cd.get("saved")
-                        _dd = _cd.get("dedup_blocked")
-                        _detail = (
-                            f"scanned={_sc}, candidates={_cand}, saved={_saved}, dedup={_dd}. "
-                            f"Top: {_top}"
-                            + (f". Counts: {_sum}" if _sum else "")
-                            + (f". Regime: {_reg}" if _reg else "")
-                            + (
-                                f". Conf floor {float(_cf)*100:.1f}%"
-                                if isinstance(_cf, (int, float))
-                                else ""
-                            )
-                        )
-                        _send(
-                            "Ghost Protocol v2 — No new picks inserted today.\n"
-                            "Reason: " + _detail
-                        )
-                        with db_conn() as _rc2:
-                            _rc2.cursor().execute("INSERT INTO ghost_state(key,val) VALUES(%s,%s) ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val", (_last_key, str(_now)))
-                except Exception: pass
-        except Exception as _oe:
-            LOGGER.warning("Open positions update failed: " + str(_oe))
+            from core.telegram import send_silence_card
+            send_silence_card(_build_silence_card_data(_cycle_diag if isinstance(_cycle_diag, dict) else {}))
+            LOGGER.info("Silence card sent (no pick >= %.0f%%)", min_conf * 100)
+        except Exception as _se:
+            LOGGER.error("Silence card send failed: " + str(_se)[:120])
     return picks
 
-def _weekly_summary_job():
-    """Fire weekly summary on Fridays at 4 PM CT (22:00 UTC). Skips other days."""
-    import datetime, pytz
-    ct = pytz.timezone("America/Chicago")
-    now_ct = datetime.datetime.now(ct)
-    # Only fire Friday (weekday=4) between 4:00-4:59 PM CT
-    if not (now_ct.weekday() == 4 and now_ct.hour == 16):
-        return  # Not Friday 4 PM CT, skip silently
-    from core.telegram import send_weekly_summary
+_WEEKDAY_INDEX = {"monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+                  "friday": 4, "saturday": 5, "sunday": 6}
+
+
+def _build_weekly_card_data() -> dict:
+    """Assemble the overhauled weekly-summary payload: followed-pick P&L over the
+    week (via core.pnl), all-time record, retrain countdown, top/weakest pick by
+    confidence, and how many of the week's picks were news-driven."""
+    import datetime as _dt, pytz as _tz
+    tz = _tz.timezone(os.getenv("GHOST_TZ", "America/Chicago"))
+    now = int(time.time())
+    cutoff = now - 7 * 86400
+
+    pnl_trades = []
+    wk_wins = wk_losses = 0
+    prows = []
     try:
-        with db_conn() as conn:
-            cur = conn.cursor()
-            cutoff = int(time.time()) - 7*86400
-            cur.execute("SELECT outcome, pnl_pct FROM predictions WHERE predicted_at > %s AND outcome IN ('WIN','LOSS')", (cutoff,))
-            rows = cur.fetchall()
-        wins = sum(1 for r in rows if r[0] == "WIN")
-        losses = len(rows) - wins
-        pnl = sum((r[1] or 0) / 100 * 100 for r in rows)
-        send_weekly_summary({"wins": wins, "losses": losses, "pnl": round(pnl, 2)})
-        LOGGER.info("Weekly summary sent: " + str(wins) + "W/" + str(losses) + "L")
+        with db_conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                "SELECT resolved_at,outcome,pnl_pct,entry_price,exit_price FROM predictions "
+                "WHERE symbol='WOLF' AND resolved_at >= %s AND outcome IN ('WIN','LOSS') ORDER BY resolved_at ASC",
+                (cutoff,))
+            for r in cur.fetchall():
+                if r[1] == "WIN":
+                    wk_wins += 1
+                elif r[1] == "LOSS":
+                    wk_losses += 1
+                if r[2] is not None:
+                    pnl_trades.append({"resolved_at": r[0], "outcome": r[1],
+                                       "pnl_pct": float(r[2]), "entry_price": r[3], "exit_price": r[4]})
+            cur.execute(
+                "SELECT predicted_at,confidence,features FROM predictions "
+                "WHERE symbol='WOLF' AND predicted_at >= %s ORDER BY confidence DESC",
+                (cutoff,))
+            prows = cur.fetchall()
+    except Exception:
+        pass
+
+    from core.pnl import realized_pnl
+    pnl = realized_pnl(pnl_trades)
+
+    def _day(ts):
+        try:
+            return _dt.datetime.fromtimestamp(float(ts), tz=_tz.utc).astimezone(tz).strftime("%A")
+        except Exception:
+            return "--"
+
+    top = weak = {}
+    news_driven = 0
+    total_week = len(prows)
+    if prows:
+        hi, lo = prows[0], prows[-1]
+        top = {"day": _day(hi[0]), "confidence_pct": int(round(float(hi[1]) * 100))}
+        weak = {"day": _day(lo[0]), "confidence_pct": int(round(float(lo[1]) * 100))}
+        for pr in prows:
+            try:
+                f = pr[2]
+                if isinstance(f, str):
+                    f = json.loads(f)
+                if isinstance(f, dict):
+                    cr = f.get("confidence_raw")
+                    if cr is not None and abs(float(pr[1]) - float(cr)) > 1e-9:
+                        news_driven += 1
+            except Exception:
+                pass
+
+    tr = _wolf_track_record()
+    wk_tot = wk_wins + wk_losses
+    start = _dt.datetime.now(tz) - _dt.timedelta(days=6)
+    week_range = start.strftime("%b %d") + " - " + _dt.datetime.now(tz).strftime("%b %d")
+    retrain = _wolf_retrain_in_days()
+    return {
+        "week_range": week_range,
+        "followed": {"wins": wk_wins, "losses": wk_losses,
+                     "win_rate_pct": round(wk_wins / wk_tot * 100, 1) if wk_tot else 0,
+                     "pnl_usd": pnl["realized_pnl_usd"]},
+        "alltime": {"win_rate_pct": tr["win_rate_pct"], "wins": tr["wins"], "losses": tr["losses"]},
+        "retrain_in_days": retrain if retrain is not None else "--",
+        "top_pick": top,
+        "weakest_pick": weak,
+        "news_driven": {"count": news_driven, "total": total_week},
+    }
+
+
+def _weekly_summary_job():
+    """Fire the weekly summary once on the configured day/hour CT (default Sunday
+    6 PM). Registered hourly; an ISO-week dedup in ghost_state guarantees a single
+    send per week even across restarts."""
+    import datetime, pytz
+    ct = pytz.timezone(os.getenv("GHOST_TZ", "America/Chicago"))
+    now_ct = datetime.datetime.now(ct)
+    want_day = _WEEKDAY_INDEX.get(os.getenv("TELEGRAM_WEEKLY_DAY", "sunday").strip().lower(), 6)
+    try:
+        want_hour = int(os.getenv("TELEGRAM_WEEKLY_HOUR", "18"))
+    except Exception:
+        want_hour = 18
+    if not (now_ct.weekday() == want_day and now_ct.hour == want_hour):
+        return  # not the configured slot
+
+    iso = now_ct.isocalendar()
+    week_tag = str(iso[0]) + "-W" + str(iso[1])
+    try:
+        with db_conn() as c:
+            cur = c.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            cur.execute("SELECT val FROM ghost_state WHERE key='last_weekly_summary_week'")
+            row = cur.fetchone()
+            if row and row[0] == week_tag:
+                return  # already sent this ISO week
+    except Exception:
+        pass
+
+    from core.telegram import send_weekly_card
+    try:
+        send_weekly_card(_build_weekly_card_data())
+        with db_conn() as c:
+            c.cursor().execute(
+                "INSERT INTO ghost_state(key,val) VALUES('last_weekly_summary_week',%s) "
+                "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val", (week_tag,))
+        LOGGER.info("Weekly summary sent (%s)", week_tag)
     except Exception as e:
         LOGGER.error("Weekly summary failed: " + str(e))
 
@@ -674,14 +845,19 @@ async def lifespan(app: FastAPI):
     except Exception as _ppe:
         LOGGER.warning("Boot portfolio purge failed: " + str(_ppe)[:80])
 
-    # Self-healing: if app restarts between 8AM-noon CT and last card was >8h ago, fire now
-    # Prevents silent card misses when Railway restarts during cron window
+    # Self-healing: if app restarts within the morning card window (TELEGRAM_DAILY_HOUR
+    # .. +4h CT) and last card was >8h ago, fire now. Prevents silent card misses
+    # when Railway restarts during the cron window.
     try:
         import datetime as _sdt, pytz as _stz
         _ct = _stz.timezone("America/Chicago")
         _now_ct = _sdt.datetime.now(_ct)
         _hour_ct = _now_ct.hour
-        if 8 <= _hour_ct < 12:  # morning window
+        try:
+            _daily_hour = int(os.getenv("TELEGRAM_DAILY_HOUR", "8"))
+        except Exception:
+            _daily_hour = 8
+        if _daily_hour <= _hour_ct < _daily_hour + 4:  # morning window
             with db_conn() as _sc:
                 _scur = _sc.cursor()
                 _scur.execute("SELECT val FROM ghost_state WHERE key='last_morning_card_ts'")
@@ -704,7 +880,7 @@ async def lifespan(app: FastAPI):
     scheduler.register("watchdog", run_watchdog, interval_s=300)
     # Weekly summary: every Friday at 4 PM CT = 22:00 UTC = 79200s from midnight
     # Approximated as 7-day interval - fires on first Friday after deploy
-    scheduler.register("weekly_summary", _weekly_summary_job, interval_s=604800)
+    scheduler.register("weekly_summary", _weekly_summary_job, interval_s=3600)
     scheduler.register("reconcile", reconcile_outcomes, interval_s=900)
     # T19: Auto-refresh portfolio stock prices every 15 min
     from core.portfolio_routes import auto_refresh_portfolio_prices
@@ -904,10 +1080,10 @@ async def diagnostics(request: Request = None):
         _ws = _sched._tasks.get("weekly_summary")
         if not _ws:
             _score -= _fail("scheduler.weekly_summary", "not registered")
-        elif _ws.interval_s != 604800:
-            _score -= _fail("scheduler.weekly_summary", f"interval={_ws.interval_s}s want 604800 — will spam")
+        elif _ws.interval_s != 3600:
+            _score -= _fail("scheduler.weekly_summary", f"interval={_ws.interval_s}s want 3600 — hourly check + ISO-week dedup")
         else:
-            _ok("scheduler.weekly_summary", f"1x at {_ws.interval_s}s")
+            _ok("scheduler.weekly_summary", f"hourly check at {_ws.interval_s}s (week-deduped)")
 
         # Check for duplicate weekly_summary registrations
         _ws_count = sum(1 for k in _sched._tasks if k == "weekly_summary")
