@@ -110,12 +110,21 @@ def root():
     return RedirectResponse(url="/cockpit")
 
 @portfolio_router.get("/api/v2/recent")
-def v2_recent():
+def v2_recent(symbol: str = "WOLF"):
+    """Recent resolved trades. Security (audit): defaults to WOLF-only so the
+    public investor view never leaks the full multi-symbol history. Pass
+    ?symbol=ALL for the unfiltered cross-symbol listing (internal use)."""
+    _all = str(symbol).strip().upper() in ("ALL", "*", "")
     with db_conn() as conn:
         cur = conn.cursor()
-        cur.execute("""SELECT id,symbol,direction,confidence,entry_price,exit_price,pnl_pct,outcome,predicted_at,expires_at,asset_type
-            FROM predictions WHERE outcome IS NOT NULL AND predicted_at IS NOT NULL
-            ORDER BY expires_at DESC NULLS LAST LIMIT 50""")
+        if _all:
+            cur.execute("""SELECT id,symbol,direction,confidence,entry_price,exit_price,pnl_pct,outcome,predicted_at,expires_at,asset_type
+                FROM predictions WHERE outcome IS NOT NULL AND predicted_at IS NOT NULL
+                ORDER BY expires_at DESC NULLS LAST LIMIT 50""")
+        else:
+            cur.execute("""SELECT id,symbol,direction,confidence,entry_price,exit_price,pnl_pct,outcome,predicted_at,expires_at,asset_type
+                FROM predictions WHERE outcome IS NOT NULL AND predicted_at IS NOT NULL AND symbol=%s
+                ORDER BY expires_at DESC NULLS LAST LIMIT 50""", (symbol.strip().upper(),))
         rows = cur.fetchall()
     trades=[]; wins=losses=0
     for r in rows:
@@ -136,7 +145,7 @@ def stats_by_direction():
         return compute_stats_by_direction(conn.cursor())
 
 
-@portfolio_router.post("/api/admin/expire-picks")
+@portfolio_router.post("/api/admin/expire-picks", include_in_schema=False)
 def force_expire_picks(x_cron_secret: str = Header(default="")):
     """Force-expire all open picks so fresh ones can be generated."""
     import os, time as _time
