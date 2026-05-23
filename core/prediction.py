@@ -805,6 +805,48 @@ def run_prediction_cycle(with_diag: bool = False):
             )
     except Exception as _he:
         LOGGER.warning("Cycle heartbeat write failed: " + str(_he)[:80])
+
+    # PR #29: per-cycle gate-outcome recorder. Rolling history (last 50
+    # cycles) in ghost_state so ops can review "did any cycle clear the
+    # gates today, and which gate was binding?" without watching the live
+    # /admin monitor. `would_fire` = a candidate cleared ALL gates (it may
+    # still have been dedup-blocked from saving).
+    try:
+        import json as _gj
+        _top_skip = max(skip_counts.items(), key=lambda kv: kv[1])[0] if skip_counts else None
+        _entry = {
+            "ts": int(time.time()),
+            "scanned": len(symbols),
+            "candidates": len(all_picks),
+            "saved": len(saved),
+            "dedup_blocked": dedup_blocked,
+            "would_fire": len(all_picks) > 0,
+            "top_skip": _top_skip,
+            "skip_counts": dict(skip_counts),
+        }
+        with db_conn() as _gc:
+            _gcur = _gc.cursor()
+            _gcur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            _gcur.execute("SELECT val FROM ghost_state WHERE key='gate_outcome_history'")
+            _grow = _gcur.fetchone()
+            _hist = []
+            if _grow and _grow[0]:
+                try:
+                    _hist = _gj.loads(_grow[0])
+                except Exception:
+                    _hist = []
+            if not isinstance(_hist, list):
+                _hist = []
+            _hist.append(_entry)
+            _hist = _hist[-50:]
+            _gcur.execute(
+                "INSERT INTO ghost_state(key,val) VALUES('gate_outcome_history', %s) "
+                "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
+                (_gj.dumps(_hist),),
+            )
+    except Exception as _ge:
+        LOGGER.warning("Gate-outcome record failed: " + str(_ge)[:80])
+
     if not with_diag:
         return saved
     # --- diagnostics for Telegram "no picks" accuracy ---

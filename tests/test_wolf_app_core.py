@@ -2278,3 +2278,69 @@ def test_gate_status_handles_no_model_signal(monkeypatch):
     assert lp["model_emitted"] is False
     assert lp["reason"] == "prob_low"
     assert lp["would_alert"] is False
+
+
+# ── PR #29: per-cycle gate-outcome history ──────────────────────────────
+
+def test_gate_history_parses_and_aggregates(monkeypatch):
+    """gate-history reads ghost_state.gate_outcome_history, returns newest
+    first, and aggregates fired_count + binding_gates across the window."""
+    import json as _json
+    history_json = _json.dumps([
+        {"ts": 1000, "scanned": 1, "candidates": 0, "saved": 0, "dedup_blocked": 0,
+         "would_fire": False, "top_skip": "v3_prob_low", "skip_counts": {"v3_prob_low": 1}},
+        {"ts": 2000, "scanned": 1, "candidates": 0, "saved": 0, "dedup_blocked": 0,
+         "would_fire": False, "top_skip": "below_confidence_floor", "skip_counts": {"below_confidence_floor": 1}},
+        {"ts": 3000, "scanned": 1, "candidates": 1, "saved": 1, "dedup_blocked": 0,
+         "would_fire": True, "top_skip": None, "skip_counts": {}},
+        {"ts": 4000, "scanned": 1, "candidates": 0, "saved": 0, "dedup_blocked": 0,
+         "would_fire": False, "top_skip": "v3_prob_low", "skip_counts": {"v3_prob_low": 1}},
+    ])
+
+    class _Cur:
+        def __init__(self): self.last_sql = ""
+        def execute(self, sql, params=None): self.last_sql = sql
+        def fetchone(self):
+            if "gate_outcome_history" in self.last_sql:
+                return (history_json,)
+            return None
+        def fetchall(self): return []
+
+    class _Conn:
+        def cursor(self): return _Cur()
+
+    class _DbCtx:
+        def __enter__(self): return _Conn()
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(wolf_app, "db_conn", lambda: _DbCtx())
+    out = wolf_app.wolf_gate_history(limit=50)
+    assert out["ok"] is True
+    assert out["count"] == 4
+    assert out["fired_count"] == 1
+    assert out["history"][0]["ts"] == 4000     # newest first
+    assert out["history"][-1]["ts"] == 1000
+    assert out["binding_gates"]["v3_prob_low"] == 2
+    assert out["binding_gates"]["below_confidence_floor"] == 1
+
+
+def test_gate_history_empty_when_no_record(monkeypatch):
+    """No history row yet → empty list, zero counts, no crash."""
+    class _Cur:
+        def execute(self, sql, params=None): pass
+        def fetchone(self): return None
+        def fetchall(self): return []
+
+    class _Conn:
+        def cursor(self): return _Cur()
+
+    class _DbCtx:
+        def __enter__(self): return _Conn()
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(wolf_app, "db_conn", lambda: _DbCtx())
+    out = wolf_app.wolf_gate_history()
+    assert out["ok"] is True
+    assert out["count"] == 0
+    assert out["fired_count"] == 0
+    assert out["history"] == []

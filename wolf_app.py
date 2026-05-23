@@ -2080,6 +2080,52 @@ def wolf_gate_status():
         return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
 
 
+@APP.get("/api/wolf/gate-history")
+def wolf_gate_history(limit: int = 50):
+    """Rolling per-cycle gate-outcome history (PR #29).
+
+    Each prediction cycle records {ts, scanned, candidates, saved,
+    dedup_blocked, would_fire, top_skip, skip_counts} to
+    ghost_state.gate_outcome_history (last 50 cycles). This lets the
+    operator review whether any recent cycle cleared the gates — and
+    which gate was binding when none did — without watching the live
+    monitor. Newest first. Read-only.
+    """
+    try:
+        import json as _j
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            cur.execute("SELECT val FROM ghost_state WHERE key='gate_outcome_history'")
+            row = cur.fetchone()
+        hist = []
+        if row and row[0]:
+            try:
+                hist = _j.loads(row[0])
+            except Exception:
+                hist = []
+        if not isinstance(hist, list):
+            hist = []
+        lim = max(1, min(200, int(limit)))
+        recent = list(reversed(hist))[:lim]   # newest first
+        fired = sum(1 for h in recent if h.get("would_fire"))
+        # Aggregate which gate was binding across the window
+        binding = {}
+        for h in recent:
+            ts_skip = h.get("top_skip")
+            if ts_skip:
+                binding[ts_skip] = binding.get(ts_skip, 0) + 1
+        return {
+            "ok": True,
+            "count": len(recent),
+            "fired_count": fired,
+            "binding_gates": binding,
+            "history": recent,
+        }
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
 @APP.post("/api/test-alert")
 def test_alert():
     """Send test message to Telegram to verify connection."""
