@@ -439,6 +439,18 @@ section.block{margin-bottom:32px}
     </div>
   </section>
 
+  <!-- ─── Realized equity curve (if you followed every pick) ─── -->
+  <section class="block" id="equity-section" style="display:none">
+    <div class="sec-label">If You Followed Every Pick</div>
+    <div class="chart-wrap">
+      <div id="equity-summary" class="kv" style="margin-bottom:12px;color:#888"></div>
+      <div class="chart-canvas-wrap"><canvas id="equity-chart"></canvas></div>
+      <div class="chart-legend">
+        <span class="leg"><span class="leg-swatch"></span>Equity (sequential compounding, $1k start)</span>
+      </div>
+    </div>
+  </section>
+
   <!-- ─── Short interest / squeeze tile (PR #24 item 11) ─── -->
   <section class="block" id="short-section" style="display:none">
     <div class="sec-label">Short Interest &middot; Squeeze Context</div>
@@ -1390,6 +1402,43 @@ function renderNews(n){
   }).join('');
 }
 
+/* ─── Realized equity curve — "if you followed every pick" (audit) ─── */
+async function loadEquityChart(){
+  var sec = document.getElementById('equity-section');
+  var sumEl = document.getElementById('equity-summary');
+  var canvas = document.getElementById('equity-chart');
+  if(!sec || !canvas) return;
+  try{
+    var g = await fetch('/api/wolf/pnl').then(function(r){return r.json()});
+    if(!g || g.ok === false || !g.curve || !g.curve.length){ sec.style.display = 'none'; return; }
+    sec.style.display = '';
+    var labels = g.curve.map(function(p, i){
+      if(p.ts){ var t = Number(p.ts); if(t > 1e12) t = Math.floor(t/1000); var d = new Date(t*1000); if(!isNaN(d.getTime())) return (d.getMonth()+1)+'/'+d.getDate(); }
+      return String(i+1);
+    });
+    var data = g.curve.map(function(p){ return p.equity; });
+    var pos = (g.realized_pnl_usd || 0) >= 0;
+    var pf = (g.profit_factor == null) ? '—' : g.profit_factor;
+    var wr = (g.win_rate != null) ? (g.win_rate*100).toFixed(0)+'%' : '—';
+    sumEl.innerHTML = '<b class="'+(pos?'pos':'neg')+'">'+(pos?'+':'-')+'$'+Math.abs(g.realized_pnl_usd).toFixed(2)+'</b>'
+      + ' realized · <span class="'+(pos?'pos':'neg')+'">'+((g.total_return_pct>=0?'+':'')+g.total_return_pct)+'%</span>'
+      + ' · '+g.count+' trades · win '+wr+' · PF '+pf+' · maxDD -'+g.max_drawdown_pct+'%';
+    var ctx = canvas.getContext('2d');
+    if(_charts.equity) _charts.equity.destroy();
+    var line = pos ? '#22c55e' : '#ff3b3b';
+    _charts.equity = new Chart(ctx, {
+      type: 'line',
+      data: { labels: labels, datasets: [{ data: data, borderColor: line,
+        backgroundColor: 'rgba(34,197,94,0.08)', borderWidth: 2, fill: true, pointRadius: 0, tension: 0.25 }] },
+      options: { responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false },
+          tooltip: { callbacks: { label: function(c){ return '$' + Number(c.parsed.y).toFixed(2); } } } },
+        scales: { x: { ticks: { color: '#666', maxTicksLimit: 8 }, grid: { display: false } },
+          y: { ticks: { color: '#666', callback: function(v){ return '$' + v; } }, grid: { color: '#1a1a1a' } } } }
+    });
+  }catch(e){ sec.style.display = 'none'; }
+}
+
 /* ─── Portfolio (kept from prior cockpit) ─── */
 async function loadPortfolio(){
   var data = await fetch('/api/portfolio').then(function(r){return r.json()}).catch(function(){return {positions:[]}});
@@ -1854,8 +1903,10 @@ setInterval(function(){
 
 load();
 loadPortfolio();
+loadEquityChart();
 loadPickJournal(true);
 setInterval(load, 60000);
+setInterval(loadEquityChart, 120000);
 setInterval(function(){ loadPickJournal(true); }, 120000);
 </script>
 </body>
