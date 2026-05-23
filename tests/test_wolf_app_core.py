@@ -527,6 +527,24 @@ def test_ghost_score_freshness_decays_to_zero(monkeypatch):
     assert stale["components"]["freshness"] == 0.0
 
 
+def test_ghost_score_freshness_uses_scan_not_pick(monkeypatch):
+    """Freshness keys to last scan, not last pick: a stale pick (>48h) with a
+    recent scan cycle still scores full freshness — silence-by-design no longer
+    drags the Ghost Score down."""
+    import api.wolf_endpoints as we
+    now = int(time.time())
+    out = we.compute_ghost_score(
+        latest_pick={"direction": "BUY", "confidence": 0.9, "predicted_at": now - 72 * 3600},
+        volume_ratio=2.0,
+        sector={"signal": "wolf_lagging_up"},
+        current_price=70.0,
+        sma_5d=65.0,
+        now_ts=now,
+        last_scan_ts=now - 14 * 60,   # scanned 14 min ago
+    )
+    assert out["components"]["freshness"] == 10.0
+
+
 def test_ghost_score_signal_label_bands():
     """Signal label boundaries: 80/60/40/20 thresholds."""
     import api.wolf_endpoints as we
@@ -1999,23 +2017,23 @@ def test_safe_int_rejects_dict_input():
 
 # ── PR #24 (items 8-15): investor-view polish ───────────────────────────
 
-def test_check_feeds_probes_with_aapl_not_wolf(monkeypatch):
-    """check_feeds must use a universally-covered symbol so 'feed alive'
-    isn't conflated with 'has WOLF' (Alpaca free tier doesn't carry
-    post-restructure WOLF, previously reported alpaca_stock=false even
-    though the feed itself was healthy)."""
+def test_check_feeds_probes_wolf_by_default(monkeypatch):
+    """WOLF-only system: check_feeds probes the actual target (WOLF), not a
+    proxy, and reports whether WOLF is priceable. (Reverses the PR #24 AAPL
+    proxy — a single-ticker product should report WOLF availability honestly.)"""
     import core.prices as _prices
     probed = []
-    monkeypatch.setattr(_prices, "_alpaca", lambda sym: (probed.append(("alpaca", sym)), 192.5)[1])
-    monkeypatch.setattr(_prices, "_yfinance", lambda sym: (probed.append(("yfinance", sym)), 192.5)[1])
+    monkeypatch.setattr(_prices, "_alpaca", lambda sym: (probed.append(("alpaca", sym)), None)[1])
+    monkeypatch.setattr(_prices, "_yfinance", lambda sym: (probed.append(("yfinance", sym)), 42.0)[1])
     monkeypatch.delenv("HEALTH_PROBE_SYMBOL", raising=False)
     r = _prices.check_feeds()
-    assert r["alpaca_stock"] is True
+    assert r["probe_symbol"] == "WOLF"
+    assert r["alpaca_stock"] is False
     assert r["yfinance"] is True
-    assert r["probe_symbol"] == "AAPL"
-    assert "AAPL" in r["summary"]
-    assert "2/2 feeds responding" in r["summary"]
-    assert all(sym == "AAPL" for (_kind, sym) in probed)
+    assert r["priceable"] is True
+    assert "WOLF priceable" in r["summary"]
+    assert "1/2" in r["summary"]
+    assert all(sym == "WOLF" for (_kind, sym) in probed)
 
 
 def test_check_feeds_respects_health_probe_symbol_env(monkeypatch):

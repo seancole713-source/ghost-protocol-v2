@@ -1045,10 +1045,14 @@ def _score_momentum(current: Optional[float], sma_5d: Optional[float]) -> float:
     return 0.0
 
 
-def _score_freshness(predicted_at: Optional[int], now_ts: int) -> float:
-    if not predicted_at:
+def _score_freshness(activity_ts: Optional[int], now_ts: int) -> float:
+    # activity_ts = most recent ENGINE ACTIVITY (last scan cycle), falling back
+    # to the last pick. Keyed to scan, not pick: a selective engine is silent
+    # most of the time by design, so scoring "hours since last pick" wrongly
+    # zeroed freshness during long, healthy WATCHING stretches.
+    if not activity_ts:
         return 0.0
-    age_h = max(0.0, (now_ts - int(predicted_at)) / 3600.0)
+    age_h = max(0.0, (now_ts - int(activity_ts)) / 3600.0)
     if age_h <= 2:
         return 10.0
     if age_h <= 6:
@@ -1074,14 +1078,16 @@ def _signal_label(score: float) -> str:
     return "STRONG_SELL"
 
 
-def compute_ghost_score(latest_pick, volume_ratio, sector, current_price, sma_5d, now_ts):
+def compute_ghost_score(latest_pick, volume_ratio, sector, current_price, sma_5d, now_ts, last_scan_ts=None):
     """Pure scoring function — all I/O lifted to the caller for testability."""
+    # Freshness reflects engine activity (last scan), falling back to last pick.
+    activity_ts = last_scan_ts or (latest_pick.get("predicted_at") if latest_pick else None)
     components = {
         "model": _score_model(latest_pick),
         "volume": _score_volume(volume_ratio),
         "sector": _score_sector(sector),
         "momentum": _score_momentum(current_price, sma_5d),
-        "freshness": _score_freshness(latest_pick.get("predicted_at") if latest_pick else None, now_ts),
+        "freshness": _score_freshness(activity_ts, now_ts),
     }
     score = sum(components.values())
     score = max(0.0, min(100.0, score))
@@ -1179,8 +1185,23 @@ async def get_ghost_score():
     except Exception as e:
         errors.append("momentum: " + str(e)[:80])
 
+    # Engine activity (last scan cycle) for freshness — "is the engine alive",
+    # not "did it fire". Recorded by run_prediction_cycle every cycle.
+    last_scan_ts = None
+    try:
+        from core.db import db_conn
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT val FROM ghost_state WHERE key='last_prediction_cycle_ts'")
+            r = cur.fetchone()
+            if r and r[0]:
+                last_scan_ts = int(float(r[0]))
+    except Exception as e:
+        errors.append("scan_ts: " + str(e)[:80])
+
     now_ts = int(time.time())
-    scored = compute_ghost_score(latest_pick, volume_ratio, sector, current_price, sma_5d, now_ts)
+    scored = compute_ghost_score(latest_pick, volume_ratio, sector, current_price, sma_5d, now_ts,
+                                 last_scan_ts=last_scan_ts)
 
     payload = _ok({
         "symbol": WOLF_SYMBOL,
@@ -1194,6 +1215,7 @@ async def get_ghost_score():
             "model_direction": latest_pick.get("direction") if latest_pick else None,
             "model_confidence": latest_pick.get("confidence") if latest_pick else None,
             "predicted_at": latest_pick.get("predicted_at") if latest_pick else None,
+            "last_scan_ts": last_scan_ts,
             "volume_ratio": volume_ratio,
             "current_price": current_price,
             "sma_5d": sma_5d,
