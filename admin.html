@@ -111,6 +111,13 @@ button:disabled{opacity:.5;cursor:not-allowed}
   <div id="gate-status" style="margin-top:10px"><div class="kv">Loading&#8230;</div></div>
 </div>
 
+<div class="card">
+  <h3>Per-Cycle Gate History</h3>
+  <div class="desc">Last 50 prediction cycles — did any clear the gates (<b>would_fire</b>), and which gate was binding when none did. Recorded automatically each cycle; no need to watch live. Newest first.</div>
+  <div class="row"><button class="secondary" onclick="loadGateHistory()">Refresh</button></div>
+  <div id="gate-history" style="margin-top:10px"><div class="kv">Loading&#8230;</div></div>
+</div>
+
 <!-- ─── Engine quality ─── -->
 <div class="sec-label">Engine Quality</div>
 <div class="grid">
@@ -499,6 +506,47 @@ function gateBadge(pass){
   return pass ? '<span class="ok">&#10003; pass</span>' : '<span class="fail">&#10007; fail</span>';
 }
 
+/* ─── Per-cycle gate history (PR #29) ─── */
+async function loadGateHistory(){
+  var el = document.getElementById('gate-history');
+  if(!el) return;
+  el.innerHTML = '<div class="kv"><span class="warn">&#x21BB; Loading...</span></div>';
+  try{
+    var g = await fetch('/api/wolf/gate-history?limit=50').then(function(r){return r.json()});
+    if(!g || g.ok === false){
+      el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml((g&&g.error)||'unavailable') + '</div>';
+      return;
+    }
+    var hist = g.history || [];
+    if(!hist.length){
+      el.innerHTML = '<div class="kv">No cycles recorded yet. The recorder writes one entry per prediction cycle (every ~30 min during market hours).</div>';
+      return;
+    }
+    var bindingStr = Object.keys(g.binding_gates || {}).map(function(k){
+      return escHtml(k) + ' &times;' + g.binding_gates[k];
+    }).join(' &middot; ') || '—';
+    var summary = '<div class="kv" style="margin-bottom:8px">'
+      + '<b>' + g.fired_count + '</b> of <b>' + g.count + '</b> recent cycles cleared all gates'
+      + ' &middot; binding gates: ' + bindingStr + '</div>';
+    var rows = hist.map(function(h){
+      var fired = h.would_fire;
+      var icon = fired ? '<span class="ok">&#10003; would fire</span>' : '<span class="warn">&#x23F3; no</span>';
+      return '<tr>'
+        + '<td>' + fmtTimeAgo(h.ts) + '</td>'
+        + '<td>' + icon + '</td>'
+        + '<td>cand ' + (h.candidates||0) + ' / saved ' + (h.saved||0)
+          + (h.dedup_blocked ? ' / dedup ' + h.dedup_blocked : '') + '</td>'
+        + '<td>' + (h.top_skip ? '<code>'+escHtml(h.top_skip)+'</code>' : '—') + '</td>'
+        + '</tr>';
+    }).join('');
+    el.innerHTML = summary
+      + '<table class="tbl"><thead><tr><th>When</th><th>Outcome</th><th>Candidates/Saved</th><th>Binding gate</th></tr></thead><tbody>'
+      + rows + '</tbody></table>';
+  }catch(e){
+    el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml(String(e)) + '</div>';
+  }
+}
+
 async function adminLogout(){
   try{ await fetch('/admin/logout', {method:'POST'}); }catch(_){}
   location.reload();
@@ -506,6 +554,8 @@ async function adminLogout(){
 
 loadEngineQuality();
 loadGateStatus();
+loadGateHistory();
+setInterval(loadGateHistory, 120000);
 setInterval(loadEngineQuality, 60000);
 setInterval(loadGateStatus, 60000);
 </script>
