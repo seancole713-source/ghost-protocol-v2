@@ -360,6 +360,29 @@ async def get_wolf_stats():
     except Exception as e:
         err = str(e)[:200]
 
+    # PR #25 fallback: if yfinance returned nothing for the key fundamentals,
+    # try Polygon (we already have POLYGON_API_KEY set). Polygon's
+    # /v3/reference/tickers/{sym} returns market_cap, total_employees, etc;
+    # its /v2/aggs/.../prev gives day OHLC + volume.
+    _polygon_filled = _try_polygon_stats_fallback(out)
+
+    # PR #25: short interest from yfinance.info (item 5). Surfaces in the
+    # cockpit Short Interest tile via /api/wolf/context, but having it on
+    # /api/wolf/stats too gives the cockpit a redundant path.
+    out["short_float"] = None
+    out["short_days_to_cover"] = None
+    try:
+        import yfinance as yf
+        info = yf.Ticker(WOLF_SYMBOL).info or {}
+        sf = info.get("shortPercentOfFloat")
+        if sf is not None:
+            out["short_float"] = _safe_float(sf)  # already 0..1
+        dtc = info.get("shortRatio")  # days-to-cover from yfinance
+        if dtc is not None:
+            out["short_days_to_cover"] = _safe_float(dtc)
+    except Exception:
+        pass
+
     if out["earnings_date"] is None:
         try:
             from core.wolf_context import get_wolf_context
@@ -434,6 +457,99 @@ def _fetch_sector_correlation() -> Dict[str, Any]:
         elif dns >= 2 and wolf_chg > -0.5:
             signal = "wolf_holding_down"
     return {"wolf_change_pct": wolf_chg, "peers": peers_out, "signal": signal}
+
+
+def _try_polygon_stats_fallback(out: dict) -> bool:
+    """PR #25 (item 4): when yfinance returns nothing, populate market_cap +
+    volume + OHLC fields from Polygon. We already have POLYGON_API_KEY
+    configured (PR #12 OHLCV fallback uses it).
+
+    Mutates `out` in place. Returns True if at least one field was filled.
+    """
+    import os as _os
+    api_key = _os.getenv("POLYGON_API_KEY", "")
+    if not api_key:
+        return False
+    filled = False
+    try:
+        import requests as _req
+        sym = WOLF_SYMBOL.upper()
+        # Ticker reference (market cap, name, etc)
+        if out.get("market_cap") is None:
+            try:
+                r = _req.get(
+                    f"https://api.polygon.io/v3/reference/tickers/{sym}?apiKey={api_key}",
+                    timeout=15,
+                )
+                if r.status_code == 200:
+                    res = (r.json() or {}).get("results") or {}
+                    mc = res.get("market_cap")
+                    if mc:
+                        out["market_cap"] = _safe_int(mc)
+                        filled = True
+            except Exception as _e:
+                LOGGER.info(f"Polygon ref {sym}: {str(_e)[:80]}")
+        # Previous day's OHLC + volume
+        if any(out.get(k) is None for k in ("open", "high", "low", "volume")):
+            try:
+                r = _req.get(
+                    f"https://api.polygon.io/v2/aggs/ticker/{sym}/prev?adjusted=true&apiKey={api_key}",
+                    timeout=15,
+                )
+                if r.status_code == 200:
+                    results = (r.json() or {}).get("results") or []
+                    if results:
+                        bar = results[0]
+                        if out.get("open") is None:
+                            out["open"] = _safe_float(bar.get("o"))
+                            filled = True
+                        if out.get("high") is None:
+                            out["high"] = _safe_float(bar.get("h"))
+                            filled = True
+                        if out.get("low") is None:
+                            out["low"] = _safe_float(bar.get("l"))
+                            filled = True
+                        if out.get("volume") is None:
+                            out["volume"] = _safe_int(bar.get("v"))
+                            filled = True
+            except Exception as _e:
+                LOGGER.info(f"Polygon prev {sym}: {str(_e)[:80]}")
+        # 52-week range — derive from the last 365 daily bars
+        if out.get("week52_low") is None or out.get("week52_high") is None:
+            try:
+                from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+                end = _dt.now(_tz.utc).date()
+                start = end - _td(days=365)
+                r = _req.get(
+                    f"https://api.polygon.io/v2/aggs/ticker/{sym}/range/1/day/"
+                    f"{start.isoformat()}/{end.isoformat()}"
+                    f"?adjusted=true&sort=asc&limit=5000&apiKey={api_key}",
+                    timeout=20,
+                )
+                if r.status_code == 200:
+                    bars = (r.json() or {}).get("results") or []
+                    closes = [b.get("c") for b in bars if b.get("c")]
+                    highs = [b.get("h") for b in bars if b.get("h")]
+                    lows = [b.get("l") for b in bars if b.get("l")]
+                    if highs and out.get("week52_high") is None:
+                        out["week52_high"] = _safe_float(max(highs))
+                        filled = True
+                    if lows and out.get("week52_low") is None:
+                        out["week52_low"] = _safe_float(min(lows))
+                        filled = True
+                    # Volume — average over the window if avg_volume missing
+                    if out.get("avg_volume") is None and bars:
+                        vols = [b.get("v") for b in bars[-20:] if b.get("v")]
+                        if vols:
+                            out["avg_volume"] = _safe_int(sum(vols) / len(vols))
+                            filled = True
+            except Exception as _e:
+                LOGGER.info(f"Polygon range {sym}: {str(_e)[:80]}")
+        if filled:
+            LOGGER.info(f"Polygon stats fallback {sym}: populated {[k for k in out if out.get(k) is not None]}")
+    except Exception as e:
+        LOGGER.warning(f"Polygon stats fallback {sym}: {str(e)[:120]}")
+    return filled
 
 
 def _safe_float(v) -> Optional[float]:
@@ -712,25 +828,52 @@ async def get_wolf_news(category: str = "all"):
             syms = [str(s).upper() for s in (a.get("symbols") or [])]
             # PR #23: STRICT WOLF-only filter. Previous behaviour fell through
             # for articles with no symbol tags, leaking unrelated names
-            # (Zoom / IBM / Ross Stores / Ralph Lauren / AAP). Now: article
-            # must explicitly mention WOLF in symbols OR have "WOLFSPEED" /
-            # "WOLF" as a standalone word in the title.
+            # (Zoom / IBM / Ross Stores / Ralph Lauren / AAP). PR #25
+            # widens the match keywords AND checks the body/summary text,
+            # not just the title — Finnhub's stock-news cache sometimes
+            # stores body in 'summary' or 'description' fields.
             title_upper = title.upper()
-            title_words = set(title_upper.replace(",", " ").replace(".", " ").replace(":", " ").split())
+            body_text = (a.get("summary") or a.get("description") or "")
+            blob_upper = (title + " " + body_text).upper()
+            blob_words = set(blob_upper.replace(",", " ").replace(".", " ")
+                             .replace(":", " ").replace(";", " ")
+                             .replace("(", " ").replace(")", " ").split())
             wolf_match = (
                 (WOLF_SYMBOL in syms)
-                or ("WOLFSPEED" in title_upper)
-                or (WOLF_SYMBOL in title_words)
+                or ("WOLFSPEED" in blob_upper)
+                or (WOLF_SYMBOL in blob_words)
+                or ("SIC" in blob_words)
+                or ("SILICON CARBIDE" in blob_upper)
             )
             if not wolf_match:
                 continue
             article_cat = _categorize(title)
             if cat != "all" and article_cat != cat:
                 continue
-            # PR #23: drop the internal "finnhub_stock" source label that
-            # leaked into the UI — show only real publisher names.
-            raw_source = a.get("source") or "News"
-            source = "News" if str(raw_source).lower().startswith("finnhub") else raw_source
+            # PR #25: aggressively extract real publisher name — articles can
+            # carry it under 'source', 'publisher', 'source_name', or 'name'.
+            # Strip internal labels (finnhub*, gnews*, generic 'News').
+            raw_source = (
+                a.get("publisher")
+                or a.get("source_name")
+                or a.get("name")
+                or a.get("source")
+                or "News"
+            )
+            rs_lower = str(raw_source).lower()
+            # Strip internal-only labels. If we have a URL, derive publisher
+            # from hostname; otherwise fall back to the generic "News" placeholder.
+            if rs_lower.startswith("finnhub") or rs_lower.startswith("gnews"):
+                url = a.get("url") or a.get("link") or ""
+                host = None
+                if url:
+                    try:
+                        from urllib.parse import urlparse
+                        host = urlparse(url).netloc.replace("www.", "")
+                    except Exception:
+                        host = None
+                raw_source = host if host else "News"
+            source = raw_source if raw_source else "News"
             articles_out.append({
                 "title": title,
                 "source": source,
@@ -743,21 +886,42 @@ async def get_wolf_news(category: str = "all"):
         except Exception:
             continue
 
-    # Augment with yfinance news (often catches press releases the cron misses)
+    # Augment with yfinance news. PR #25: this used to bypass the WOLF
+    # filter entirely — Yahoo's news endpoint returns related-ticker noise
+    # (Zoom / IBM / Ross Stores / Ralph Lauren) tagged to a target ticker,
+    # which leaked straight into the investor feed. Now: same word-boundary
+    # check the main loop uses, applied to title + (yfinance summary if any).
     try:
         import yfinance as yf
         tk = yf.Ticker(WOLF_SYMBOL)
         for item in (tk.news or [])[:15]:
             try:
                 title = item.get("title") or ""
+                summary = item.get("summary") or ""
                 if not title:
+                    continue
+                blob_upper = (title + " " + summary).upper()
+                blob_words = set(blob_upper.replace(",", " ").replace(".", " ")
+                                 .replace(":", " ").replace(";", " ")
+                                 .replace("(", " ").replace(")", " ").split())
+                wolf_match = (
+                    "WOLFSPEED" in blob_upper
+                    or WOLF_SYMBOL in blob_words
+                    or "SIC" in blob_words            # silicon carbide ticker tag
+                    or "SILICON CARBIDE" in blob_upper
+                )
+                if not wolf_match:
                     continue
                 article_cat = _categorize(title)
                 if cat != "all" and article_cat != cat:
                     continue
+                # PR #25: use yfinance's `publisher` field as the real source
+                # (e.g. "Seeking Alpha", "Benzinga", "Business Wire"); fall back
+                # to "Yahoo Finance" not the generic "News" placeholder.
+                publisher = item.get("publisher") or "Yahoo Finance"
                 articles_out.append({
                     "title": title,
-                    "source": item.get("publisher") or "Yahoo Finance",
+                    "source": publisher,
                     "url": item.get("link") or "",
                     "published_at": _safe_int(item.get("providerPublishTime")),
                     "category": article_cat,

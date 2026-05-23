@@ -1520,17 +1520,25 @@ function renderTruth(stats, health, v3, dir){
 }
 
 /* ─── Short interest tile (PR #24 item 11) ─── */
-function renderShortInterest(ctx){
+function renderShortInterest(ctx, wstats){
   var section = document.getElementById('short-section');
   var tile = document.getElementById('short-tile');
   if(!section || !tile) return;
-  if(!ctx || ctx.ok === false || !ctx.short_data){
-    section.style.display = 'none';
-    return;
+  // PR #25 (item 5): pull short data from /api/wolf/context first (Finviz
+  // scrape via wolf_context.py), fall back to /api/wolf/stats which now
+  // exposes yfinance.info shortPercentOfFloat + shortRatio. Either source
+  // populates the tile so a Finviz outage doesn't blank it.
+  var sf = null, dtc = null;
+  if(ctx && ctx.ok !== false && ctx.short_data){
+    sf = ctx.short_data.short_float;
+    dtc = ctx.short_data.days_to_cover;
   }
-  var sd = ctx.short_data || {};
-  var sf = sd.short_float;        // 0..1 (fraction)
-  var dtc = sd.days_to_cover;
+  if(sf == null && wstats && wstats.ok !== false){
+    if(wstats.short_float != null) sf = wstats.short_float;
+  }
+  if(dtc == null && wstats && wstats.ok !== false){
+    if(wstats.short_days_to_cover != null) dtc = wstats.short_days_to_cover;
+  }
   if(sf == null && dtc == null){
     section.style.display = 'none';
     return;
@@ -1679,7 +1687,7 @@ async function load(){
     renderEarnings(earnings);
     renderAnalyst(analyst);
     renderNews(news);
-    renderShortInterest(wolfCtx);
+    renderShortInterest(wolfCtx, wstats);
     renderCatalysts(wolfCtx, analyst, news);
     renderTruth(stats, h, v3, dir);
     renderActivity(activity);

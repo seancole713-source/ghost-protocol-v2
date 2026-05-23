@@ -1284,7 +1284,7 @@ def test_deploy_version_exposes_pr_marker_and_endpoint_inventory():
     Lets the operator verify code freshness from a single curl."""
     out = wolf_app.deploy_version()
     assert out["ok"] is True
-    assert out["_pr_version"] == 19
+    assert out["_pr_version"] == 25
     assert isinstance(out["endpoints_present"], dict)
     # All of the recent endpoint flags must be present and true
     expected = {"v3_train_force_param", "v3_train_last", "v3_train_sync",
@@ -1312,7 +1312,7 @@ def test_v3_train_sync_returns_actual_result_with_pr_version(monkeypatch):
 
     out = wolf_app.v3_train_sync(x_cron_secret="", force=True)
     assert out["ok"] is True
-    assert out["_pr_version"] == 19
+    assert out["_pr_version"] == 25
     assert out["passed"] is True
     assert out["accuracy"] == 62.34
     assert "stocks" in out
@@ -1340,7 +1340,7 @@ def test_v3_train_sync_returns_500_with_error_on_exception(monkeypatch):
     assert resp.status_code == 500
     assert body["ok"] is False
     assert "xgboost died" in body["error"]
-    assert body["_pr_version"] == 19
+    assert body["_pr_version"] == 25
     assert cur.state["last_v3_train_state"] == "exception"
     assert "xgboost died" in cur.state["last_v3_train_error"]
 
@@ -2004,3 +2004,164 @@ def test_check_feeds_respects_health_probe_symbol_env(monkeypatch):
     assert r["yfinance"] is False
     assert "1/2" in r["summary"]
     assert "MSFT" in r["summary"]
+
+
+# ── PR #25: news yfinance leak + source extraction + polygon stats ──────
+
+def test_news_yfinance_augmentation_applies_wolf_filter(monkeypatch):
+    """yfinance.Ticker(WOLF).news returns related-ticker noise (IBM, Zoom,
+    Ralph Lauren) tagged to WOLF. PR #25 closes the leak: every yfinance
+    item must mention WOLFSPEED/WOLF/SiC/silicon carbide in title or
+    summary to survive."""
+    import api.wolf_endpoints as we
+    we._CACHE.clear()
+    import core.news as _news
+    monkeypatch.setattr(_news, "get_recent_articles", lambda n: [])
+
+    yf_items = [
+        {"title": "Zoom hits new highs", "publisher": "Reuters", "link": "https://reuters.com/zoom"},
+        {"title": "IBM announces partnership", "publisher": "Bloomberg", "link": "https://bloomberg.com/ibm"},
+        {"title": "Wolfspeed (WOLF) earnings beat estimates", "publisher": "Benzinga", "link": "https://benzinga.com/wolf"},
+        {"title": "SiC market grows 30% YoY", "publisher": "Seeking Alpha", "link": "https://seekingalpha.com/sic"},
+        {"title": "Random tech news", "publisher": "TechCrunch", "summary": "About silicon carbide chips"},
+        {"title": "Ralph Lauren launches collection", "publisher": "Reuters", "link": "https://reuters.com/rl"},
+    ]
+    import sys, types
+    fake_yf = types.ModuleType("yfinance")
+
+    class _Tk:
+        def __init__(self, sym): pass
+
+        @property
+        def news(self): return yf_items
+
+    fake_yf.Ticker = _Tk
+    monkeypatch.setitem(sys.modules, "yfinance", fake_yf)
+
+    import asyncio
+    resp = asyncio.run(we.get_wolf_news(category="all"))
+    import json
+    body = json.loads(resp.body)
+    titles = {a["title"] for a in body.get("articles", [])}
+    assert "Wolfspeed (WOLF) earnings beat estimates" in titles
+    assert "SiC market grows 30% YoY" in titles
+    assert "Random tech news" in titles  # silicon carbide in summary
+    assert "Zoom hits new highs" not in titles
+    assert "IBM announces partnership" not in titles
+    assert "Ralph Lauren launches collection" not in titles
+
+
+def test_news_source_label_uses_publisher_not_generic_news(monkeypatch):
+    """yfinance items expose publisher (e.g. 'Benzinga', 'Seeking Alpha').
+    PR #25 keeps the real publisher name."""
+    import api.wolf_endpoints as we
+    we._CACHE.clear()
+    import core.news as _news
+    monkeypatch.setattr(_news, "get_recent_articles", lambda n: [])
+    import sys, types
+    fake_yf = types.ModuleType("yfinance")
+
+    class _Tk:
+        def __init__(self, sym): pass
+
+        @property
+        def news(self):
+            return [
+                {"title": "WOLFSPEED hits new high", "publisher": "Benzinga", "link": "https://benzinga.com/x"},
+                {"title": "Wolfspeed quarterly results", "publisher": "Seeking Alpha", "link": "https://seekingalpha.com/y"},
+            ]
+
+    fake_yf.Ticker = _Tk
+    monkeypatch.setitem(sys.modules, "yfinance", fake_yf)
+
+    import asyncio
+    resp = asyncio.run(we.get_wolf_news(category="all"))
+    import json
+    body = json.loads(resp.body)
+    sources = {a["source"] for a in body["articles"]}
+    assert "Benzinga" in sources
+    assert "Seeking Alpha" in sources
+
+
+def test_news_source_falls_back_to_hostname_when_only_finnhub_label(monkeypatch):
+    """If the only source label is the internal 'finnhub_stock' and the
+    article has a URL, derive publisher from hostname."""
+    import api.wolf_endpoints as we
+    we._CACHE.clear()
+    import core.news as _news
+    monkeypatch.setattr(_news, "get_recent_articles", lambda n: [
+        {"title": "WOLFSPEED announces deal", "source": "finnhub_stock",
+         "url": "https://www.reuters.com/article/wolf-deal", "symbols": []},
+    ])
+    import sys, types
+    fake_yf = types.ModuleType("yfinance")
+
+    class _Tk:
+        def __init__(self, sym): pass
+        news = []
+
+    fake_yf.Ticker = _Tk
+    monkeypatch.setitem(sys.modules, "yfinance", fake_yf)
+
+    import asyncio
+    resp = asyncio.run(we.get_wolf_news(category="all"))
+    import json
+    body = json.loads(resp.body)
+    sources = {a["source"] for a in body["articles"]}
+    assert "reuters.com" in sources
+    assert "finnhub_stock" not in sources
+    assert "News" not in sources
+
+
+def test_polygon_stats_fallback_populates_missing_fields(monkeypatch):
+    """When yfinance returns no market_cap / volume / OHLC, polygon fallback
+    fills them from /v3/reference/tickers + /v2/aggs endpoints."""
+    import api.wolf_endpoints as we
+    monkeypatch.setenv("POLYGON_API_KEY", "polykey")
+
+    out = {
+        "open": None, "high": None, "low": None, "volume": None,
+        "avg_volume": None, "market_cap": None, "week52_low": None, "week52_high": None,
+    }
+
+    class _Resp:
+        def __init__(self, status_code, body):
+            self.status_code = status_code
+            self._body = body
+
+        def json(self): return self._body
+
+    def fake_get(url, timeout=None, **kwargs):
+        if "/v3/reference/tickers/WOLF" in url:
+            return _Resp(200, {"results": {"market_cap": 12_500_000_000}})
+        if "/v2/aggs/ticker/WOLF/prev" in url:
+            return _Resp(200, {"results": [{"o": 70.5, "h": 73.1, "l": 69.8, "c": 72.4, "v": 5_200_000}]})
+        if "/v2/aggs/ticker/WOLF/range" in url:
+            return _Resp(200, {"results": [
+                {"c": 50.0, "h": 51.0, "l": 49.0, "v": 1_000_000},
+                {"c": 80.0, "h": 82.0, "l": 78.0, "v": 2_000_000},
+            ]})
+        return _Resp(404, {})
+
+    monkeypatch.setattr("requests.get", fake_get)
+    filled = we._try_polygon_stats_fallback(out)
+    assert filled is True
+    assert out["market_cap"] == 12_500_000_000
+    assert out["open"] == 70.5
+    assert out["high"] == 73.1
+    assert out["volume"] == 5_200_000
+    assert out["week52_high"] == 82.0
+    assert out["week52_low"] == 49.0
+
+
+def test_polygon_stats_fallback_skipped_without_key(monkeypatch):
+    """No POLYGON_API_KEY → no HTTP call, no mutation, returns False."""
+    import api.wolf_endpoints as we
+    monkeypatch.delenv("POLYGON_API_KEY", raising=False)
+    called = []
+    monkeypatch.setattr("requests.get", lambda *a, **k: called.append(1))
+    out = {"market_cap": None, "open": None}
+    filled = we._try_polygon_stats_fallback(out)
+    assert filled is False
+    assert called == []
+    assert out == {"market_cap": None, "open": None}
