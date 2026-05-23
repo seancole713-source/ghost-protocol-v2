@@ -1282,6 +1282,49 @@ async def purge_ghost_portfolio(x_cron_secret: str = Header(None), dry_run: bool
         return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
 
 
+# Synthetic/test symbols that pollute the predictions ledger (e2e roundtrips
+# create ZZE2E<ts> rows; ZZ/TEST/GHOST are manual probes). Real tickers never
+# match these prefixes. user_portfolio is already self-healed on boot; this
+# covers the predictions table, which feeds stats and the pick journal.
+_TEST_PREDICTION_PATTERNS = ("ZZE2E%", "ZZ%", "TEST%", "GHOST%", "STOCK GHOST%")
+
+
+@APP.post("/api/admin/purge-test-predictions", include_in_schema=False)
+async def purge_test_predictions(x_cron_secret: str = Header(None), dry_run: bool = True):
+    """Hard-delete synthetic/test rows from the predictions table (audit).
+
+    Targets symbols matching _TEST_PREDICTION_PATTERNS — chiefly the 'ZZE2E*'
+    probe tickers the e2e roundtrip leaves behind. dry_run defaults to TRUE: it
+    reports the per-symbol counts that WOULD be deleted so the operator can
+    confirm before running with dry_run=false. Destructive and irreversible.
+    """
+    if not _cron_ok(x_cron_secret, strict=True):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    patterns = list(_TEST_PREDICTION_PATTERNS)
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT symbol, COUNT(*) FROM predictions WHERE symbol ILIKE ANY(%s) GROUP BY symbol",
+                (patterns,))
+            matched = [{"symbol": s, "count": int(c)} for s, c in cur.fetchall()]
+            total = sum(m["count"] for m in matched)
+            deleted = 0
+            if not dry_run and total:
+                cur.execute("DELETE FROM predictions WHERE symbol ILIKE ANY(%s)", (patterns,))
+                deleted = cur.rowcount
+        return {
+            "ok": True,
+            "dry_run": dry_run,
+            "patterns": patterns,
+            "matched": matched,
+            "total_matched": total,
+            "deleted": deleted,
+        }
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
 @APP.post("/api/admin/fix-stock-expiry", include_in_schema=False)
 async def fix_stock_expiry(x_cron_secret: str = Header(None)):
     """Fix stock picks that were created before the weekend-expiry fix and expire before market open."""

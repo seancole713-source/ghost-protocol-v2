@@ -97,6 +97,10 @@ button:disabled{opacity:.5;cursor:not-allowed}
     <button class="secondary" onclick="purgeGhostPortfolio(false)">Purge Ghost Portfolio</button>
     <button class="secondary" onclick="purgeGhostPortfolio(true)">Dry-Run Ghost Portfolio</button>
   </div>
+  <div class="row" style="margin-top:8px">
+    <button class="secondary" onclick="purgeTestPredictions(true)">Dry-Run Test Predictions</button>
+    <button class="secondary" onclick="purgeTestPredictions(false)">Purge Test Predictions</button>
+  </div>
   <div id="purge-result" class="result"></div>
 </div>
 
@@ -363,6 +367,27 @@ async function purgeGhostPortfolio(dry){
       var verb=dry?'Would delete':'Deleted';
       r.innerHTML=icon+' '+verb+' <b>'+which.length+'</b> ghost row(s) · kept <b>'+kept+'</b> real positions'
         +(which.length?'<div class="kv" style="margin-top:6px">'+which.map(function(x){return '#'+x.id+' '+escHtml(x.symbol)}).join(', ')+'</div>':'');
+    }else r.innerHTML='<span class="fail">&#10007;</span> '+escHtml((b&&b.error)||('HTTP '+resp.status));
+  }catch(e){r.innerHTML='<span class="fail">&#10007;</span> '+escHtml(String(e))}
+  finally{setBtns(false)}
+}
+
+async function purgeTestPredictions(dry){
+  var r=document.getElementById('purge-result');
+  if(!dry && !confirm('Delete ZZE2E* / ZZ* / TEST* / GHOST* rows from the predictions table? Permanent. Continue?'))return;
+  r.innerHTML='<span class="warn">&#x21BB; '+(dry?'Dry-running':'Purging')+' test predictions...</span>';
+  setBtns(true);
+  try{
+    var resp=await fetch('/api/admin/purge-test-predictions?dry_run='+(dry?'true':'false'),{method:'POST',headers:{'x-cron-secret':getSecret(),'Content-Type':'application/json'}});
+    var b={};try{b=await resp.json()}catch(_){}
+    if(resp.status===403){r.innerHTML='<span class="fail">&#10007;</span> 403 (cron secret wrong)';return}
+    if(b.ok){
+      var matched=b.matched||[];
+      var icon=b.total_matched?'<span class="ok">&#10003;</span>':'<span class="warn">&#x21BB;</span>';
+      var verb=dry?'Would delete':'Deleted';
+      var n=dry?b.total_matched:b.deleted;
+      r.innerHTML=icon+' '+verb+' <b>'+(n||0)+'</b> test prediction row(s)'
+        +(matched.length?'<div class="kv" style="margin-top:6px">'+matched.map(function(x){return escHtml(x.symbol)+' &times;'+x.count}).join(', ')+'</div>':'');
     }else r.innerHTML='<span class="fail">&#10007;</span> '+escHtml((b&&b.error)||('HTTP '+resp.status));
   }catch(e){r.innerHTML='<span class="fail">&#10007;</span> '+escHtml(String(e))}
   finally{setBtns(false)}
