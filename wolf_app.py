@@ -2299,8 +2299,24 @@ def wolf_kill_status():
     threshold with a green/red/insufficient flag. Read-only — does not enforce.
     """
     try:
-        from core.prediction import evaluate_kill_conditions
-        return evaluate_kill_conditions()
+        from core.prediction import evaluate_kill_conditions, engine_pause_state
+        out = evaluate_kill_conditions()
+        if isinstance(out, dict):
+            out["engine_pause"] = engine_pause_state()
+        return out
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
+@APP.post("/api/admin/resume-engine")
+def admin_resume_engine(x_cron_secret: str = Header(default="")):
+    """Clear a kill-condition pause and resume firing (audit §2 enforcement).
+    Manual recovery for pause/degrade/halt trips that do not auto-resume."""
+    if not _cron_ok(x_cron_secret, strict=True):
+        raise HTTPException(status_code=403)
+    try:
+        from core.prediction import resume_engine
+        return resume_engine()
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
 
