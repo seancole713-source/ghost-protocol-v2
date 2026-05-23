@@ -303,16 +303,6 @@ section.block{margin-bottom:32px}
 .conf-bar-bar.mid{background:#f59e0b}
 .conf-bar-bar.bad{background:#ff3b3b}
 .conf-bar-bar.none{background:#333}
-.train-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-.train-row input{flex:1;min-width:160px;background:#0a0a0a;border:1px solid #2a2a2a;color:#fff;padding:8px 12px;border-radius:6px;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-.btn-train{background:#ff3b3b;color:#fff;border:none;padding:8px 14px;border-radius:6px;font-size:12px;font-weight:700;letter-spacing:.5px;cursor:pointer;white-space:nowrap}
-.btn-train:hover{background:#e03333}
-.btn-train.secondary{background:#1a1a1a;border:1px solid #2a2a2a;color:#888}
-.btn-train.secondary:hover{background:#222;color:#ccc}
-.btn-train:disabled{opacity:.5;cursor:not-allowed}
-.train-ok{color:#22c55e;font-weight:700}
-.train-warn{color:#f59e0b;font-weight:700}
-.train-fail{color:#ff3b3b;font-weight:700}
 .models-tbl{width:100%;border-collapse:collapse;font-size:12px}
 .models-tbl th{text-align:left;font-size:9px;letter-spacing:1px;color:#666;padding:8px 10px;border-bottom:1px solid #252525}
 .models-tbl td{padding:10px;border-bottom:1px solid #1a1a1a;color:#ccc}
@@ -519,7 +509,8 @@ section.block{margin-bottom:32px}
   <!-- ─── Portfolio ─── -->
   <section class="block">
     <div class="sec-label">My Portfolio</div>
-    <div class="port-form">
+    <button class="btn-add" id="add-pos-toggle" onclick="toggleAddPos()" style="margin-bottom:12px">+ Add a Position</button>
+    <div class="port-form" id="port-form" style="display:none">
       <h3>Add a Position</h3>
       <div class="form-row">
         <div><label>SYMBOL</label><input id="p-sym" placeholder="WOLF" value="WOLF"></div>
@@ -1546,6 +1537,16 @@ async function loadPortfolio(){
   }catch(e){ gp.innerHTML = ''; }
 }
 
+function toggleAddPos(){
+  var f = document.getElementById('port-form');
+  var b = document.getElementById('add-pos-toggle');
+  if(!f) return;
+  var open = f.style.display !== 'none';
+  f.style.display = open ? 'none' : '';
+  if(b) b.textContent = open ? '+ Add a Position' : '− Hide';
+  if(!open){ var s = document.getElementById('p-sym'); if(s) s.focus(); }
+}
+
 async function addPos(){
   var sym = document.getElementById('p-sym').value.trim().toUpperCase();
   var qty = parseFloat(document.getElementById('p-qty').value || 0);
@@ -1562,6 +1563,8 @@ async function addPos(){
     document.getElementById('p-sym').value = 'WOLF';
     document.getElementById('p-qty').value = '';
     document.getElementById('p-bp').value = '';
+    var f = document.getElementById('port-form'); if(f) f.style.display = 'none';
+    var b = document.getElementById('add-pos-toggle'); if(b) b.textContent = '+ Add a Position';
     loadPortfolio();
   } else {
     err.textContent = r.error || 'Failed';

@@ -3271,3 +3271,49 @@ def test_deploy_version_reports_bumped_version():
     assert out["_pr_version"] == 50
     assert wolf_app.APP_VERSION == "2.1.0"
     assert wolf_app.APP.version == "2.1.0"
+
+
+# ── fix/cockpit-ghost-rows: portfolio API filters ZZE2E/test rows ───────
+
+def test_get_portfolio_filters_ghost_rows(monkeypatch):
+    import core.portfolio_routes as pr
+    # rows: (id,symbol,asset_type,quantity,buy_price,buy_date,notes,manual_price)
+    rows = [
+        (1, "WOLF", "stock", 100.0, 3.50, "", "", 4.00),
+        (2, "ZZE2E1779572554878", "stock", 1.0, 1.000, "", "", None),
+        (3, "ZZE2E1779572468489", "stock", 1.0, 1.000, "", "", None),
+        (4, "ZZTEST", "stock", 5.0, 2.0, "", "", None),
+    ]
+
+    class _Cur:
+        def execute(self, sql, params=None): self.last = sql
+        def fetchall(self):
+            return rows if "user_portfolio" in getattr(self, "last", "") else []
+        def fetchone(self): return None
+
+    class _Conn:
+        def cursor(self): return _Cur()
+        def commit(self): pass
+
+    class _Ctx:
+        def __enter__(self): return _Conn()
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(pr, "db_conn", lambda: _Ctx())
+    monkeypatch.setattr("core.prices.get_price", lambda s, a=None: 4.00)
+
+    out = pr.get_portfolio()
+    syms = [p["symbol"] for p in out["positions"]]
+    assert syms == ["WOLF"]                       # ghost/test rows excluded
+    # totals only reflect the real WOLF position (100 * 3.50 = 350), not $3k+
+    assert out["total_cost"] == 350.0
+
+
+def test_is_ghost_symbol():
+    from core.portfolio_routes import _is_ghost_symbol
+    assert _is_ghost_symbol("ZZE2E1779572554878") is True
+    assert _is_ghost_symbol("zze2e123") is True   # case-insensitive
+    assert _is_ghost_symbol("STOCK GHOST") is True
+    assert _is_ghost_symbol("TESTPOS") is True
+    assert _is_ghost_symbol("WOLF") is False
+    assert _is_ghost_symbol("AAPL") is False

@@ -7,6 +7,18 @@ import time
 
 portfolio_router = APIRouter()
 
+# Synthetic/test rows that must never reach the investor portfolio view. e2e
+# roundtrips create ZZE2E<ts>; ZZ/TEST/GHOST are manual probes. Real tickers
+# never match these. Filtered at the API layer (defense-in-depth) so a stale DB
+# row can't pollute totals even if the boot purge hasn't run.
+_GHOST_SYMBOL_PATTERNS = ("ZZE2E", "STOCK GHOST", "GHOST", "ZZ", "TEST")
+
+
+def _is_ghost_symbol(sym) -> bool:
+    up = str(sym or "").strip().upper()
+    return any(up.startswith(p) or up == p for p in _GHOST_SYMBOL_PATTERNS)
+
+
 _CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS user_portfolio (
     id SERIAL PRIMARY KEY,
@@ -31,6 +43,8 @@ def get_portfolio():
     positions = []
     for r in rows:
         sym, atype, qty, bp = r[1], r[2], float(r[3]), float(r[4])
+        if _is_ghost_symbol(sym):
+            continue  # never surface synthetic/test rows or count them in totals
         cost = round(qty * bp, 2)
         live = None
         manual_p = r[7] if len(r) > 7 else None  # manual_price column (index 7)
