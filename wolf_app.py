@@ -511,6 +511,106 @@ def _build_silence_card_data(diag: dict) -> dict:
     return {"ghost_score": score, "reason": reason}
 
 
+def _build_daily_summary():
+    """Aggregate the day's engine activity (roadmap #3b): scans + candidates +
+    saves from the per-cycle gate history, today's resolutions, and the engine
+    pause state. Pure of scheduling — callable any time."""
+    import datetime as _dt, pytz as _tz, json as _j
+    tz = _tz.timezone(os.getenv("GHOST_TZ", "America/Chicago"))
+    now_ct = _dt.datetime.now(tz)
+    day_start = int(now_ct.replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+    s = {"date": now_ct.strftime("%Y-%m-%d"), "ts": int(time.time()),
+         "scans": 0, "candidates": 0, "saved": 0, "would_fire_cycles": 0,
+         "resolved": {"wins": 0, "losses": 0, "pnl_pct": 0.0}, "engine_paused": False}
+    try:
+        with db_conn() as c:
+            cur = c.cursor()
+            cur.execute("SELECT val FROM ghost_state WHERE key='gate_outcome_history'")
+            row = cur.fetchone()
+            hist = []
+            if row and row[0]:
+                try:
+                    hist = _j.loads(row[0])
+                except Exception:
+                    hist = []
+            for h in hist if isinstance(hist, list) else []:
+                if (h.get("ts") or 0) >= day_start:
+                    s["scans"] += 1
+                    s["candidates"] += h.get("candidates", 0) or 0
+                    s["saved"] += h.get("saved", 0) or 0
+                    if h.get("would_fire"):
+                        s["would_fire_cycles"] += 1
+            cur.execute(
+                "SELECT outcome, pnl_pct FROM predictions WHERE symbol='WOLF' "
+                "AND resolved_at >= %s AND outcome IN ('WIN','LOSS')", (day_start,))
+            for o, p in cur.fetchall():
+                if o == "WIN":
+                    s["resolved"]["wins"] += 1
+                elif o == "LOSS":
+                    s["resolved"]["losses"] += 1
+                s["resolved"]["pnl_pct"] += float(p or 0)
+            s["resolved"]["pnl_pct"] = round(s["resolved"]["pnl_pct"], 3)
+    except Exception as e:
+        LOGGER.warning("daily summary build failed: " + str(e)[:80])
+    try:
+        from core.prediction import engine_pause_state
+        s["engine_paused"] = bool(engine_pause_state().get("paused"))
+    except Exception:
+        pass
+    return s
+
+
+def _daily_summary_job():
+    """Store one daily summary per CT day at DAILY_SUMMARY_HOUR (default 16, after
+    close). Registered hourly with an ISO-date dedup so it fires once/day across
+    restarts. Appends to ghost_state.daily_summary_history (last 30)."""
+    import datetime, pytz, json as _j
+    if os.getenv("DAILY_SUMMARY_ENABLED", "1").strip().lower() not in ("1", "true", "yes", "on"):
+        return
+    ct = pytz.timezone(os.getenv("GHOST_TZ", "America/Chicago"))
+    now_ct = datetime.datetime.now(ct)
+    try:
+        want_hour = int(os.getenv("DAILY_SUMMARY_HOUR", "16"))
+    except Exception:
+        want_hour = 16
+    if now_ct.hour != want_hour:
+        return
+    date_str = now_ct.strftime("%Y-%m-%d")
+    try:
+        with db_conn() as c:
+            cur = c.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            cur.execute("SELECT val FROM ghost_state WHERE key='last_daily_summary_date'")
+            row = cur.fetchone()
+            if row and row[0] == date_str:
+                return  # already stored today
+    except Exception:
+        pass
+    summary = _build_daily_summary()
+    try:
+        with db_conn() as c:
+            cur = c.cursor()
+            cur.execute("SELECT val FROM ghost_state WHERE key='daily_summary_history'")
+            row = cur.fetchone()
+            hist = []
+            if row and row[0]:
+                try:
+                    hist = _j.loads(row[0])
+                except Exception:
+                    hist = []
+            if not isinstance(hist, list):
+                hist = []
+            hist.append(summary)
+            hist = hist[-30:]
+            cur.execute("INSERT INTO ghost_state(key,val) VALUES('daily_summary_history',%s) "
+                        "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val", (_j.dumps(hist),))
+            cur.execute("INSERT INTO ghost_state(key,val) VALUES('last_daily_summary_date',%s) "
+                        "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val", (date_str,))
+        LOGGER.info("Daily summary stored %s: scans=%d saved=%d", date_str, summary["scans"], summary["saved"])
+    except Exception as e:
+        LOGGER.error("daily summary store failed: " + str(e)[:100])
+
+
 def _market_scan_gap_s(now_ct):
     """Required seconds between scans (roadmap #3a): shorter during US market
     hours (8:30-15:00 CT, Mon-Fri), longer off-hours. Returns (gap_s, is_market)."""
@@ -979,6 +1079,8 @@ async def lifespan(app: FastAPI):
     # Weekly summary: every Friday at 4 PM CT = 22:00 UTC = 79200s from midnight
     # Approximated as 7-day interval - fires on first Friday after deploy
     scheduler.register("weekly_summary", _weekly_summary_job, interval_s=3600)
+    # Daily summary (roadmap #3b): hourly tick, fires once/day at DAILY_SUMMARY_HOUR.
+    scheduler.register("daily_summary", _daily_summary_job, interval_s=3600)
     scheduler.register("reconcile", reconcile_outcomes, interval_s=900)
     # T19: Auto-refresh portfolio stock prices every 15 min
     from core.portfolio_routes import auto_refresh_portfolio_prices
@@ -2824,6 +2926,33 @@ def wolf_pick_journal(limit: int = 50, offset: int = 0, symbol: str = "WOLF"):
                 },
             },
         }
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
+@APP.get("/api/wolf/daily-summary")
+def wolf_daily_summary(limit: int = 30):
+    """Stored daily engine summaries (roadmap #3b): per-day scans, candidates,
+    saves, would-fire cycles, resolutions and engine-pause state. Newest first.
+    Public, read-only."""
+    try:
+        import json as _j
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            cur.execute("SELECT val FROM ghost_state WHERE key='daily_summary_history'")
+            row = cur.fetchone()
+        hist = []
+        if row and row[0]:
+            try:
+                hist = _j.loads(row[0])
+            except Exception:
+                hist = []
+        if not isinstance(hist, list):
+            hist = []
+        lim = max(1, min(90, int(limit)))
+        recent = list(reversed(hist))[:lim]
+        return {"ok": True, "count": len(recent), "days": recent, "today": _build_daily_summary()}
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
 
