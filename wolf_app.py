@@ -511,6 +511,62 @@ def _build_silence_card_data(diag: dict) -> dict:
     return {"ghost_score": score, "reason": reason}
 
 
+def _market_scan_gap_s(now_ct):
+    """Required seconds between scans (roadmap #3a): shorter during US market
+    hours (8:30-15:00 CT, Mon-Fri), longer off-hours. Returns (gap_s, is_market)."""
+    try:
+        market_min = int(os.getenv("SCAN_INTERVAL_MARKET_MIN", "30"))
+        off_min = int(os.getenv("SCAN_INTERVAL_OFFHOURS_MIN", "60"))
+    except Exception:
+        market_min, off_min = 30, 60
+    hm = now_ct.hour * 60 + now_ct.minute
+    is_market = (now_ct.weekday() < 5) and (8 * 60 + 30) <= hm < (15 * 60)
+    return (market_min if is_market else off_min) * 60, is_market
+
+
+def _market_scan_job():
+    """Run the prediction cycle on a market-aware cadence (roadmap #3a).
+
+    Registered at the short (market) interval; self-gates via ghost_state so it
+    actually scans every SCAN_INTERVAL_MARKET_MIN during market hours and only
+    every SCAN_INTERVAL_OFFHOURS_MIN otherwise. This is the scan loop the engine
+    lacked — previously it only ran once/day with the morning card. Saving is
+    deduped inside run_prediction_cycle (one open WOLF pick at a time), and any
+    pick that fires is pushed through the alert sweep (Telegram + email/SMS)."""
+    if os.getenv("MARKET_SCAN_ENABLED", "1").strip().lower() not in ("1", "true", "yes", "on"):
+        return
+    import datetime as _dt, pytz as _tz
+    from core.prediction import run_prediction_cycle
+    now = int(time.time())
+    now_ct = _dt.datetime.now(_tz.timezone("America/Chicago"))
+    gap, is_market = _market_scan_gap_s(now_ct)
+    try:
+        with db_conn() as c:
+            cur = c.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            cur.execute("SELECT val FROM ghost_state WHERE key='last_market_scan_ts'")
+            row = cur.fetchone()
+            last = int(row[0]) if row and row[0] else 0
+        if now - last < gap - 30:   # 30s slack for scheduler tick jitter
+            return
+    except Exception as _ge:
+        LOGGER.warning("market scan gate failed: " + str(_ge)[:80])
+    try:
+        picks = run_prediction_cycle()
+        with db_conn() as c:
+            c.cursor().execute(
+                "INSERT INTO ghost_state(key,val) VALUES('last_market_scan_ts',%s) "
+                "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val", (str(now),))
+        LOGGER.info("Market scan: %d pick(s) saved (market_hours=%s)", len(picks or []), is_market)
+        # Notify on any freshly-fired pick (Telegram + email/SMS), deduped internally.
+        try:
+            wolf_signal_alert_check(x_cron_secret=os.getenv("CRON_SECRET", ""))
+        except Exception:
+            pass
+    except Exception as e:
+        LOGGER.error("Market scan failed: " + str(e)[:120])
+
+
 def _morning_card_job():
     """Run prediction cycle and send morning Telegram card."""
     import datetime as _dt, pytz as _pytz, time as _t2
@@ -910,6 +966,13 @@ async def lifespan(app: FastAPI):
     from core.prediction import reconcile_outcomes
     from core.news import run_news_cycle
     scheduler.register("morning_card", _morning_card_job, interval_s=86400)
+    # Market-hours scan loop (roadmap #3a): tick at the market interval; the job
+    # self-gates to SCAN_INTERVAL_MARKET_MIN / SCAN_INTERVAL_OFFHOURS_MIN.
+    try:
+        _scan_tick = max(300, int(os.getenv("SCAN_INTERVAL_MARKET_MIN", "30")) * 60)
+    except Exception:
+        _scan_tick = 1800
+    scheduler.register("market_scan", _market_scan_job, interval_s=_scan_tick)
     # Watchdog: real-time hit alerts every 5 minutes
     from core.watchdog import run_watchdog
     scheduler.register("watchdog", run_watchdog, interval_s=300)
