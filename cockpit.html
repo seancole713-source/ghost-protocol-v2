@@ -584,6 +584,13 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
     </div>
   </section>
 
+  <!-- ─── Signal History (roadmap #4c — every engine evaluation) ─── -->
+  <section class="block" id="signal-history-section">
+    <div class="sec-label">Signal History &middot; every scan</div>
+    <div id="sh-summary" class="kv" style="margin-bottom:10px;color:#888"></div>
+    <div id="sh-list"><div class="empty"><div class="ico">&#9203;</div>Loading signal history…</div></div>
+  </section>
+
   <!-- ─── Truth mode (PR #6 panels, collapsible) ─── -->
   <section class="truth-wrap">
     <button type="button" class="truth-toggle" id="truth-toggle" aria-expanded="true">
@@ -2082,6 +2089,41 @@ async function loadPickJournal(reset){
 
 function loadMorePickJournal(){ _pjOffset += _pjLimit; loadPickJournal(false); }
 
+/* ─── Signal History (roadmap #4c) — every engine evaluation from gate-history ─── */
+async function loadSignalHistory(){
+  var sumEl = document.getElementById('sh-summary');
+  var listEl = document.getElementById('sh-list');
+  if(!listEl) return;
+  try{
+    var g = await fetch('/api/wolf/gate-history?limit=50').then(function(r){return r.json()});
+    if(!g || g.ok === false){ listEl.innerHTML = '<div class="empty">Signal history unavailable.</div>'; return; }
+    var hist = g.history || [];
+    if(!hist.length){ listEl.innerHTML = '<div class="empty"><div class="ico">&#9203;</div>No scans recorded yet — the recorder logs one row per cycle.</div>'; return; }
+    var cn = g.closest_near_miss;
+    sumEl.innerHTML = '<b>' + (g.fired_count || 0) + '</b> of <b>' + g.count + '</b> recent scans crossed the floor'
+      + (cn && cn.up_prob != null ? ' &middot; closest: p=' + cn.up_prob + (cn.prob_gap != null ? ' (' + (cn.prob_gap >= 0 ? '+' : '') + cn.prob_gap + ')' : '') : '');
+    function near(nm){
+      if(!nm || nm.up_prob == null) return '—';
+      var s = 'p=' + nm.up_prob + (nm.min_win_proba != null ? '/' + nm.min_win_proba : '');
+      if(nm.prob_gap != null) s += ' <span class="' + (nm.prob_gap >= 0 ? 'pos' : 'neg') + '">' + (nm.prob_gap >= 0 ? '+' : '') + nm.prob_gap + '</span>';
+      return s;
+    }
+    var rows = hist.map(function(h){
+      var crossed = h.would_fire
+        ? '<span class="pos">&#10003; crossed</span>'
+        : (h.paused ? '<span class="neg">&#9209; paused</span>' : '<span style="color:#888">&#x23F3; no</span>');
+      return '<tr>'
+        + '<td>' + fmtTimeAgo(h.ts) + '</td>'
+        + '<td>' + crossed + '</td>'
+        + '<td>cand ' + (h.candidates || 0) + ' / saved ' + (h.saved || 0) + '</td>'
+        + '<td>' + (h.top_skip ? '<code>' + escHtml(h.top_skip) + '</code>' : '—') + '</td>'
+        + '<td>' + near(h.near_miss) + '</td>'
+        + '</tr>';
+    }).join('');
+    listEl.innerHTML = '<table class="tbl"><thead><tr><th>When</th><th>Floor</th><th>Cand/Saved</th><th>Binding gate</th><th>How close</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  }catch(e){ listEl.innerHTML = '<div class="empty">Signal history error.</div>'; }
+}
+
 setInterval(function(){
   var d = new Date();
   document.getElementById('clock').textContent = d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',timeZone:'America/Chicago'}) + ' CT';
@@ -2092,6 +2134,7 @@ loadPortfolio();
 loadEquityChart();
 loadShortInterest();
 loadPickJournal(true);
+loadSignalHistory();
 // Visibility-aware polling (roadmap #3c): skip refreshes while the tab is
 // hidden (a load() fires on return via visibilitychange), so we don't hammer
 // the API in backgrounded tabs.
@@ -2099,6 +2142,7 @@ setInterval(function(){ if(!document.hidden) load(); }, 60000);
 setInterval(function(){ if(!document.hidden) loadEquityChart(); }, 120000);
 setInterval(function(){ if(!document.hidden) loadShortInterest(); }, 300000);
 setInterval(function(){ if(!document.hidden) loadPickJournal(true); }, 120000);
+setInterval(function(){ if(!document.hidden) loadSignalHistory(); }, 120000);
 _renderAutoStatus();
 </script>
 </body>
