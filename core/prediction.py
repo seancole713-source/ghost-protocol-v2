@@ -967,24 +967,53 @@ def predict_symbol(symbol, asset_type, regime):
     return pick
 
 
+def _circuit_breaker_floor():
+    """T23 circuit breaker (roadmap #1c). After a streak of consecutive UP losses,
+    raise the confidence floor. Now env-tunable AND recency-guarded: a STALE loss
+    streak no longer suppresses firing forever. The old hard-coded version could
+    deadlock the engine at 0.90 — if it stopped firing, the last-N resolved never
+    refreshed, so the breaker stayed latched indefinitely.
+
+    Env: CB_LOSS_STREAK(5), CB_FLOOR_DELTA(0.10), CB_FLOOR_CAP(0.92),
+         CB_RECENCY_DAYS(14, 0 disables the recency guard).
+    Returns (floor, active, detail)."""
+    base = CONFIDENCE_FLOOR
+    try:
+        streak_n = max(1, int(os.getenv("CB_LOSS_STREAK", "5")))
+        delta = float(os.getenv("CB_FLOOR_DELTA", "0.10"))
+        cap = float(os.getenv("CB_FLOOR_CAP", "0.92"))
+        recency_days = max(0, int(os.getenv("CB_RECENCY_DAYS", "14")))
+    except Exception:
+        streak_n, delta, cap, recency_days = 5, 0.10, 0.92, 14
+    try:
+        with db_conn() as _cb:
+            _cc = _cb.cursor()
+            _cc.execute(
+                "SELECT outcome, resolved_at FROM predictions WHERE outcome IN ('WIN','LOSS') "
+                "AND direction='UP' AND id >= 223438 ORDER BY resolved_at DESC LIMIT %s",
+                (streak_n,))
+            rows = _cc.fetchall()
+        if len(rows) == streak_n and all(r[0] == 'LOSS' for r in rows):
+            newest = int(rows[0][1] or 0)
+            if recency_days > 0 and newest and (int(time.time()) - newest) > recency_days * 86400:
+                LOGGER.info("T23 breaker: %d-loss streak but stale (>%dd) — floor not raised",
+                            streak_n, recency_days)
+                return base, False, "stale_streak"
+            floor = min(cap, base + delta)
+            LOGGER.warning("T23 CIRCUIT BREAKER: %d consecutive losses — floor -> %.3f", streak_n, floor)
+            return floor, True, str(streak_n) + "_loss_streak"
+    except Exception as e:
+        LOGGER.warning("circuit breaker check failed: " + str(e)[:80])
+    return base, False, "clear"
+
+
 def run_prediction_cycle(with_diag: bool = False):
     """Run predictions. Returns list of saved picks. Does NOT send Telegram.
 
     If with_diag=True, returns (saved_picks, diag_dict) for Telegram copy.
     """
-    # T23: Circuit breaker — if last 5 resolved picks are all losses, raise confidence floor
-    _cb_floor = CONFIDENCE_FLOOR
-    try:
-        with db_conn() as _cb:
-            _cc = _cb.cursor()
-            _cc.execute(
-                "SELECT outcome FROM predictions WHERE outcome IN ('WIN','LOSS') AND direction='UP' AND id >= 223438 ORDER BY resolved_at DESC LIMIT 5"
-            )
-            _last5 = [r[0] for r in _cc.fetchall()]
-            if len(_last5) == 5 and all(o == 'LOSS' for o in _last5):
-                _cb_floor = min(0.92, CONFIDENCE_FLOOR + 0.10)
-                LOGGER.warning("T23 CIRCUIT BREAKER: 5 consecutive losses — raising floor to " + str(_cb_floor))
-    except Exception: pass
+    # T23 circuit breaker (roadmap #1c): env-tunable + recency-guarded (no deadlock).
+    _cb_floor, _cb_active, _cb_detail = _circuit_breaker_floor()
     # Kill-condition enforcement (audit §2): pause/alert if a safety threshold
     # tripped. Scanning + gate recording still run while paused so the operator
     # sees where cycles land; only firing (saving picks) is suppressed.
@@ -1202,6 +1231,7 @@ def run_prediction_cycle(with_diag: bool = False):
         "skip_counts": dict(sorted(skip_counts.items(), key=lambda kv: (-kv[1], kv[0]))),
         "regime": regime.get("reason") or "",
         "confidence_floor": regime.get("confidence_floor_override", CONFIDENCE_FLOOR),
+        "circuit_breaker": {"active": _cb_active, "detail": _cb_detail, "floor": _cb_floor},
         "objective_mode": _objective_mode(),
         "objective_mode_auto": auto_mode_state,
         "top_reason_code": top_reason,
