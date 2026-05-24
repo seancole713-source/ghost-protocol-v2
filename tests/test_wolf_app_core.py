@@ -97,9 +97,13 @@ def test_compute_get_stats_uses_v32_breakdowns(monkeypatch):
 
 
 def test_api_health_alias_calls_health(monkeypatch):
-    expected = {"status": "healthy", "score": 100}
-    monkeypatch.setattr(wolf_app, "health", lambda: expected)
-    assert wolf_app.api_health() == expected
+    # audit v2 #10: /api/health is now a SLIM liveness probe (status/score/ts),
+    # not the full internals dict.
+    monkeypatch.setattr(wolf_app, "health", lambda: {
+        "status": "healthy", "score": 100, "telegram_configured": True, "tasks": [1]})
+    out = wolf_app.api_health()
+    assert out["status"] == "healthy" and out["score"] == 100
+    assert "telegram_configured" not in out and "tasks" not in out
 
 
 def test_api_health_route_registered_once():
@@ -3317,3 +3321,58 @@ def test_is_ghost_symbol():
     assert _is_ghost_symbol("TESTPOS") is True
     assert _is_ghost_symbol("WOLF") is False
     assert _is_ghost_symbol("AAPL") is False
+
+
+# ── audit v2: /api/news WOLF filter + /api/picks WOLF-only default ──────
+
+def test_is_wolf_relevant_filters_offtopic():
+    from wolf_app import _is_wolf_relevant
+    assert _is_wolf_relevant({"title": "Wolfspeed announces new SiC fab", "summary": ""}) is True
+    assert _is_wolf_relevant({"title": "WOLF jumps 10%", "summary": "shares rally"}) is True
+    assert _is_wolf_relevant({"title": "Zoom Video beats earnings", "summary": "video calls"}) is False
+    assert _is_wolf_relevant({"title": "Ross Stores raises guidance", "summary": "retail"}) is False
+    assert _is_wolf_relevant({"title": "Lionsgate, Advance Auto Parts movers", "summary": ""}) is False
+
+
+def test_get_news_filters_offtopic(monkeypatch):
+    import core.news as _news
+    arts = [
+        {"title": "Wolfspeed expands SiC capacity", "summary": "x"},
+        {"title": "Zoom Video tops estimates", "summary": "video"},
+        {"title": "Ross Stores Q1 results", "summary": "retail"},
+    ]
+    monkeypatch.setattr(_news, "get_recent_articles", lambda n=20: arts)
+    out = wolf_app.get_news()
+    assert out["ok"] is True
+    assert [a["title"] for a in out["articles"]] == ["Wolfspeed expands SiC capacity"]
+    assert out["count"] == 1
+
+
+def test_get_picks_defaults_to_wolf_and_honors_asset_type(monkeypatch):
+    captured = {}
+
+    class _Cur:
+        description = [("id",), ("symbol",), ("outcome",)]
+        def execute(self, sql, params=None):
+            captured["sql"] = sql
+            captured["params"] = params
+        def fetchall(self): return []
+
+    class _Conn:
+        def cursor(self): return _Cur()
+
+    class _Ctx:
+        def __enter__(self): return _Conn()
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(wolf_app, "db_conn", lambda: _Ctx())
+
+    out = wolf_app.get_picks()                       # default => WOLF-only
+    assert out["ok"] is True
+    assert "symbol = %s" in captured["sql"]
+    assert captured["params"] == ("WOLF",)
+
+    wolf_app.get_picks(symbol="ALL", asset_type="stock")   # ALL bypasses symbol, asset_type honored
+    assert "symbol = %s" not in captured["sql"]
+    assert "asset_type = %s" in captured["sql"]
+    assert captured["params"] == ("stock",)

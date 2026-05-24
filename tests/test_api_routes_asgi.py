@@ -155,6 +155,64 @@ def test_rate_limit_disabled_passes_through(monkeypatch):
     assert all(c != 429 for c in codes)
 
 
+def test_version_and_seo_routes(monkeypatch):
+    """audit v2 #1/#2/#3: /version, /robots.txt, /sitemap.xml exist (were 404)."""
+    with _client_with_test_mode(monkeypatch) as client:
+        v = client.get("/version")
+        assert v.status_code == 200 and v.json().get("app_version")
+        r = client.get("/robots.txt")
+        assert r.status_code == 200 and "Disallow: /admin" in r.text
+        s = client.get("/sitemap.xml")
+        assert s.status_code == 200 and "<urlset" in s.text
+
+
+def test_security_headers_present(monkeypatch):
+    """audit v2 #6/#7: every response carries security headers incl. CSP."""
+    monkeypatch.setattr(wolf_app, "health", lambda: {"status": "healthy", "score": 100, "issues": []})
+    with _client_with_test_mode(monkeypatch) as client:
+        r = client.get("/api/health")
+    assert "Content-Security-Policy" in r.headers
+    assert "cdn.jsdelivr.net" in r.headers["Content-Security-Policy"]
+    assert r.headers.get("X-Frame-Options") == "DENY"
+    assert r.headers.get("X-Content-Type-Options") == "nosniff"
+    assert r.headers.get("Referrer-Policy")
+    assert r.headers.get("Permissions-Policy")
+    assert r.headers.get("Strict-Transport-Security")
+
+
+def test_health_public_is_slim(monkeypatch):
+    """audit v2 #10: public /health and /api/health expose liveness only."""
+    monkeypatch.setattr(wolf_app, "health", lambda: {
+        "status": "healthy", "score": 90, "telegram_configured": True,
+        "price_feeds": {"x": 1}, "tasks": [1, 2], "confidence_floor": 0.8,
+        "dedup_blocked": 3, "predictions_freshness_min": 12})
+    with _client_with_test_mode(monkeypatch) as client:
+        for path in ("/health", "/api/health"):
+            b = client.get(path).json()
+            assert b["status"] == "healthy" and b["score"] == 90
+            for leaked in ("telegram_configured", "price_feeds", "tasks",
+                           "confidence_floor", "dedup_blocked", "predictions_freshness_min"):
+                assert leaked not in b, path + " leaked " + leaked
+
+
+def test_admin_health_gated(monkeypatch):
+    """audit v2 #10: full health detail only behind the admin cookie (404 else)."""
+    monkeypatch.setenv("CRON_SECRET", "testsecret")
+    monkeypatch.setattr(wolf_app, "health", lambda: {
+        "status": "healthy", "score": 90, "telegram_configured": True})
+    with _client_with_test_mode(monkeypatch) as client:
+        assert client.get("/admin/health").status_code == 404
+        client.cookies.set(wolf_app._ADMIN_COOKIE, wolf_app._admin_mint_token())
+        r = client.get("/admin/health")
+    assert r.status_code == 200 and r.json().get("telegram_configured") is True
+
+
+def test_v1_ghost_score_route_registered():
+    """audit v2 #9: /api/v1/ghost-score alias exists (was 404)."""
+    paths = [getattr(r, "path", None) for r in wolf_app.APP.routes]
+    assert "/api/v1/ghost-score" in paths
+
+
 def test_diagnostics_route_is_registered_but_hidden():
     """The 404 above is the auth wall, not a missing route: the path IS
     registered, yet hidden from the OpenAPI schema (include_in_schema=False)."""
