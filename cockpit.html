@@ -336,6 +336,12 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
 .donut-center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none}
 .donut-total{font-size:30px;font-weight:800;letter-spacing:-.6px}
 .donut-total-lbl{font-size:11px;color:#888}
+/* Live auto-refresh indicator (roadmap #3c) */
+.auto-status{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:700;letter-spacing:.5px;color:#86efac;background:#0a2a14;border:1px solid #14532d;border-radius:14px;padding:4px 10px;margin-right:8px;white-space:nowrap;vertical-align:middle}
+.auto-status.paused{color:#facc15;background:#1a1a06;border-color:#5b4112}
+.auto-dot{width:7px;height:7px;border-radius:50%;background:#22c55e;animation:autopulse 2s ease-in-out infinite}
+.auto-status.paused .auto-dot{background:#facc15;animation:none}
+@keyframes autopulse{0%,100%{opacity:1}50%{opacity:.35}}
 </style>
 </head>
 <body>
@@ -387,7 +393,8 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
         <div class="hero-ah" id="hero-ah"></div>
       </div>
       <div class="hero-right">
-        <button class="hero-refresh" onclick="load()" title="Refresh">&#x21BB; Refresh</button>
+        <span class="auto-status" id="auto-status" title="Cockpit auto-refreshes; pauses when the tab is hidden"><span class="auto-dot"></span>Auto</span>
+        <button class="hero-refresh" onclick="load()" title="Refresh now">&#x21BB; Refresh</button>
         <div class="hero-ts" id="hero-ts"></div>
       </div>
     </div>
@@ -1965,12 +1972,36 @@ async function load(){
     renderActivity(activity);
 
     document.getElementById('f-open').textContent = stats.open_positions || 0;
+    window._lastLoad = Date.now();   // roadmap #3c: mark a successful refresh
+    _renderAutoStatus();
   } catch(e){
     console.error(e);
     var ce = document.getElementById('hero-change');
     if(ce){ ce.textContent = 'Load error — refresh'; ce.className = 'hero-change neg'; }
   }
 }
+
+/* ─── Auto-refresh status + visibility-aware polling (roadmap #3c) ─── */
+function _renderAutoStatus(){
+  var el = document.getElementById('auto-status');
+  if(!el) return;
+  if(document.hidden){
+    el.className = 'auto-status paused';
+    el.innerHTML = '<span class="auto-dot"></span>Paused';
+    return;
+  }
+  var ago = window._lastLoad ? Math.floor((Date.now() - window._lastLoad) / 1000) : null;
+  var when = ago == null ? 'live' : ago < 5 ? 'just now' : ago < 60 ? ago + 's ago' : Math.floor(ago / 60) + 'm ago';
+  el.className = 'auto-status';
+  el.innerHTML = '<span class="auto-dot"></span>Auto · ' + when;
+}
+setInterval(_renderAutoStatus, 1000);
+// Pause polling when the tab is hidden; refresh immediately on return so the
+// investor never sees stale data and we don't poll a backgrounded tab.
+document.addEventListener('visibilitychange', function(){
+  _renderAutoStatus();
+  if(!document.hidden) load();
+});
 
 // ─── Pick Journal (blueprint module 7) ───
 var _pjOffset = 0;
@@ -2061,10 +2092,14 @@ loadPortfolio();
 loadEquityChart();
 loadShortInterest();
 loadPickJournal(true);
-setInterval(load, 60000);
-setInterval(loadEquityChart, 120000);
-setInterval(loadShortInterest, 300000);
-setInterval(function(){ loadPickJournal(true); }, 120000);
+// Visibility-aware polling (roadmap #3c): skip refreshes while the tab is
+// hidden (a load() fires on return via visibilitychange), so we don't hammer
+// the API in backgrounded tabs.
+setInterval(function(){ if(!document.hidden) load(); }, 60000);
+setInterval(function(){ if(!document.hidden) loadEquityChart(); }, 120000);
+setInterval(function(){ if(!document.hidden) loadShortInterest(); }, 300000);
+setInterval(function(){ if(!document.hidden) loadPickJournal(true); }, 120000);
+_renderAutoStatus();
 </script>
 </body>
 </html>
