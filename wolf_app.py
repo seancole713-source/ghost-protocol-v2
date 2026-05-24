@@ -1113,6 +1113,73 @@ async def _rate_limit_mw(request: Request, call_next):
                     _RL_HITS.pop(_k, None)
     return await call_next(request)
 
+
+# ── Security headers + CSP (audit v2 #6/#7) ──────────────────────────────
+# CSP allows the cockpit's CDN (Chart.js from jsdelivr) and the inline
+# <style>/<script>/onclick the pages rely on ('unsafe-inline'); frame-ancestors
+# 'none' + X-Frame-Options DENY block clickjacking. HSTS only on HTTPS.
+_CSP = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; "
+    "connect-src 'self'; "
+    "base-uri 'self'; "
+    "frame-ancestors 'none'"
+)
+
+
+@APP.middleware("http")
+async def _security_headers_mw(request: Request, call_next):
+    resp = await call_next(request)
+    resp.headers.setdefault("Content-Security-Policy", _CSP)
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("X-Frame-Options", "DENY")
+    resp.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    resp.headers.setdefault("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+    resp.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return resp
+
+
+# ── Static/SEO + version routes (audit v2 #1/#2/#3/#9) ───────────────────
+_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://ghost-protocol-v2-production.up.railway.app").rstrip("/")
+
+
+@APP.get("/robots.txt", include_in_schema=False)
+def robots_txt():
+    body = ("User-agent: *\n"
+            "Allow: /\n"
+            "Allow: /cockpit\n"
+            "Disallow: /admin\n"
+            "Disallow: /api/\n"
+            "Sitemap: " + _BASE_URL + "/sitemap.xml\n")
+    return Response(content=body, media_type="text/plain")
+
+
+@APP.get("/sitemap.xml", include_in_schema=False)
+def sitemap_xml():
+    urls = ["/", "/cockpit"]
+    items = "".join("<url><loc>" + _BASE_URL + u + "</loc></url>" for u in urls)
+    body = ('<?xml version="1.0" encoding="UTF-8"?>'
+            '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+            + items + "</urlset>")
+    return Response(content=body, media_type="application/xml")
+
+
+@APP.get("/version")
+def version_public():
+    """Public deploy-metadata endpoint (audit v2 #1). Same payload as
+    /api/_version — app version + Railway git/deploy IDs for one-curl checks."""
+    return deploy_version()
+
+
+@APP.get("/api/v1/ghost-score")
+async def v1_ghost_score():
+    """Stable /api/v1 alias for the WOLF Ghost Score (audit v2 #9)."""
+    from api.wolf_endpoints import get_ghost_score
+    return await get_ghost_score()
+
+
 # Mount portfolio router — WOLF position tracking, price refresh, ghost predictions
 from core.portfolio_routes import portfolio_router
 from core.stats_direction import compute_stats_by_direction
@@ -1660,7 +1727,6 @@ def dedup_picks(x_cron_secret: str = Header(None)):
         return {"ok": False, "error": str(e)}
 
 
-@APP.get("/health")
 def health():
     import os, time as _t
     from core.prices import check_feeds
@@ -1786,9 +1852,31 @@ def health():
         "price_feeds": feeds, "tasks": tasks, "issues": issues, "warnings": warnings,
     }
 
+def _health_public():
+    """Slim public health (audit v2 #10): liveness only — no internals
+    (telegram config, confidence floor, dedup, freshness, tasks, price feeds).
+    Full detail moved to the cookie-gated /admin/health."""
+    full = health()
+    return {"status": full.get("status"), "score": full.get("score"), "ts": int(time.time())}
+
+
+@APP.get("/health")
+def health_public_route():
+    return _health_public()
+
+
 @APP.get("/api/health")
 def api_health():
-    """Alias for health endpoint used by external monitors."""
+    """Public liveness probe for external monitors — slimmed (no internals)."""
+    return _health_public()
+
+
+@APP.get("/admin/health", include_in_schema=False)
+def admin_health(request: Request):
+    """Full health detail, cookie-gated like /api/diagnostics — 404 when
+    unauthenticated so internals are not publicly discoverable (audit v2 #10)."""
+    if not _admin_token_valid(request.cookies.get(_ADMIN_COOKIE, "")):
+        raise HTTPException(status_code=404)
     return health()
 
 
@@ -1986,18 +2074,30 @@ def _norm_pred(r):
     }
 
 @APP.get("/api/picks")
-def get_picks():
+def get_picks(symbol: str = "WOLF", asset_type: str = None):
+    """Recent picks. WOLF-only by default (this is a WOLF product) so it no
+    longer leaks legacy crypto rows like UNI (audit v2 bonus). ?symbol=ALL
+    restores the full cross-symbol list; ?asset_type=stock filters by type."""
     try:
+        clauses, params = [], []
+        if str(symbol).strip().upper() not in ("ALL", "*", ""):
+            clauses.append("symbol = %s")
+            params.append(symbol.strip().upper())
+        if asset_type:
+            clauses.append("asset_type = %s")
+            params.append(asset_type.strip().lower())
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
         with db_conn() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT * FROM predictions ORDER BY id DESC LIMIT 50")
+            cur.execute("SELECT * FROM predictions" + where + " ORDER BY id DESC LIMIT 50", tuple(params))
             cols = [d[0] for d in cur.description]
             rows = [_norm_pred(dict(zip(cols, r))) for r in cur.fetchall()]
         active = [r for r in rows if r["outcome"] is None]
         resolved = [r for r in rows if r["outcome"] is not None]
         wins = sum(1 for r in resolved if r["outcome"] == "WIN")
         total = len(resolved)
-        return {"ok": True, "active": active, "recent": resolved[:20],
+        return {"ok": True, "symbol": symbol, "asset_type": asset_type,
+                "active": active, "recent": resolved[:20],
                 "accuracy_pct": round(wins/total*100,1) if total else 0,
                 "wins": wins, "losses": total-wins, "total": total}
     except Exception as e:
@@ -2022,11 +2122,28 @@ def get_history(limit: int = 200):
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
+def _is_wolf_relevant(a: dict) -> bool:
+    """True only if the article TEXT mentions WOLF/Wolfspeed/SiC. The Finnhub
+    company-news feed tags every article ['WOLF'] including market-roundup
+    pieces about other tickers, so the tag is unreliable — trust the text."""
+    title = a.get("title") or a.get("headline") or ""
+    body = a.get("summary") or a.get("description") or ""
+    blob = (title + " " + body).upper()
+    words = set(blob.replace(",", " ").replace(".", " ").replace(":", " ")
+                .replace(";", " ").replace("(", " ").replace(")", " ").split())
+    return ("WOLFSPEED" in blob or "WOLF" in words or "SIC" in words
+            or "SILICON CARBIDE" in blob)
+
+
 @APP.get("/api/news")
 def get_news():
+    """WOLF-relevant news only (audit v2 #4). The raw feed leaked off-topic
+    market-roundup articles (Zoom, Ross Stores, …); now filtered to the WOLF
+    text match used by /api/wolf/news."""
     try:
         from core.news import get_recent_articles
-        articles = get_recent_articles(20)
+        raw = get_recent_articles(50) or []
+        articles = [a for a in raw if _is_wolf_relevant(a)][:20]
         return {"ok": True, "articles": articles, "count": len(articles)}
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)

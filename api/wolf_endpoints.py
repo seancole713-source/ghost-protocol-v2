@@ -1283,12 +1283,17 @@ async def get_ghost_score():
     scored = compute_ghost_score(latest_pick, volume_ratio, sector, current_price, sma_5d, now_ts,
                                  last_scan_ts=last_scan_ts, regime=regime)
 
+    try:
+        from core.prediction import CONFIDENCE_FLOOR as _floor
+    except Exception:
+        _floor = None
     payload = _ok({
         "symbol": WOLF_SYMBOL,
         "updated_at": now_ts,
         "score": scored["score"],
         "raw_score": scored["raw_score"],
         "signal": scored["signal"],
+        "confidence_floor": _floor,
         "regime": regime,
         "components": scored["components"],
         "weights": scored["weights"],

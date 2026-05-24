@@ -636,11 +636,21 @@ function gsBarLevel(value, weight){
 // Single source of truth for "are we in WATCHING mode?". Returns
 // {watching: bool, days: int} so renderers can show consistent copy.
 // Threshold: 7 days since the newest pick row in DB.
-function _computeWatching(health){
-  if(!health) return {watching: false, days: 0};
-  var pickFreshMin = health.predictions_freshness_min;
-  if(pickFreshMin == null) return {watching: false, days: 0};
-  var days = Math.floor(Number(pickFreshMin) / (60 * 24));
+function _computeWatching(health, gs){
+  // Single source of truth for the "days since last signal" count. Audit v2 #5:
+  // the gauge showed "signal Nd ago" from the ghost-score's predicted_at while
+  // the WATCHING copy used health.predictions_freshness_min — two timers that
+  // disagreed (57d vs 40d). Prefer the ghost-score predicted_at so every
+  // renderer shows the SAME number; fall back to health only when absent.
+  var predTs = (gs && gs.inputs) ? gs.inputs.predicted_at : null;
+  var days;
+  if(predTs){
+    days = Math.floor((Date.now() / 1000 - Number(predTs)) / 86400);
+  } else if(health && health.predictions_freshness_min != null){
+    days = Math.floor(Number(health.predictions_freshness_min) / (60 * 24));
+  } else {
+    return {watching: false, days: 0};
+  }
   return {watching: days >= 7, days: days};
 }
 
@@ -739,6 +749,13 @@ function renderGhostScore(gs, watching){
   }
   if(gs.regime && gs.regime.modifier != null && gs.regime.modifier !== 1 && gs.raw_score != null){
     parts.push('regime &times;' + gs.regime.modifier + ' (raw ' + gs.raw_score + ')');
+  }
+  // Audit v2 #8: when WATCHING, disambiguate the score from the firing gate —
+  // the gauge number is the composite Ghost Score, NOT a fireable signal; what
+  // gates a trade is the confidence floor, which no pick has cleared.
+  if(watching && watching.watching){
+    var _flr = (gs.confidence_floor != null) ? (Math.round(gs.confidence_floor * 100) + '%') : 'the confidence';
+    parts.unshift('composite score · no pick ≥ ' + _flr + ' floor in ' + watching.days + 'd');
   }
   metaEl.innerHTML = parts.length ? parts.join(' · ') : 'No input data';
   if(subEl){
@@ -1825,7 +1842,7 @@ async function load(){
     // (hero, today's play, ghost score) consult it so the cockpit tells
     // ONE consistent story. If pick freshness > 7 days, we're WATCHING
     // — no signal has cleared the alert floor in a long time.
-    var watching = _computeWatching(h);
+    var watching = _computeWatching(h, ghostScore);
 
     renderGhostScore(ghostScore, watching);
     renderHero(price, watching);
