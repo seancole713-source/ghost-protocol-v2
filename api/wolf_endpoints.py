@@ -1029,6 +1029,37 @@ async def get_wolf_short_interest():
     return JSONResponse(content=payload)
 
 
+@router.get("/backtest")
+async def get_wolf_backtest():
+    """Backtest metrics over resolved v3.2-era WOLF picks (roadmap #4a): Sharpe,
+    max drawdown, win-rate by confidence bucket, average hold time, expectancy,
+    profit factor. Public read-only, cached 5 min."""
+    cached = _cache_get("backtest", 300)
+    if cached:
+        return JSONResponse(content=cached)
+    try:
+        from core.db import db_conn
+        from core.backtest import backtest
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT predicted_at, resolved_at, outcome, pnl_pct, confidence FROM predictions "
+                "WHERE symbol='WOLF' AND id >= 223438 AND outcome IS NOT NULL AND pnl_pct IS NOT NULL "
+                "ORDER BY predicted_at ASC NULLS LAST, id ASC")
+            rows = cur.fetchall()
+        trades = [{
+            "predicted_at": r[0], "resolved_at": r[1], "outcome": r[2],
+            "pnl_pct": float(r[3]) if r[3] is not None else None,
+            "confidence": float(r[4]) if r[4] is not None else None,
+        } for r in rows]
+        out = backtest(trades)
+        out["symbol"] = WOLF_SYMBOL
+        _cache_set("backtest", out)
+        return JSONResponse(content=out)
+    except Exception as e:
+        return JSONResponse(content=_err(str(e)))
+
+
 # ────────────────────────────────────────────────────────────────
 # /api/wolf/ghost-score — composite intelligence rating
 # ────────────────────────────────────────────────────────────────
