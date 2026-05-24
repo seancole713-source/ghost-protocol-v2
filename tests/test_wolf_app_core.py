@@ -3424,3 +3424,76 @@ def test_calc_features_too_few_bars_neutral_trend():
     f = _se._calculate_features(_ohlcv_series(12, "up"))
     assert f["above_ema200"] == 1
     assert f["ema_trend_bullish"] == 1
+
+
+# ── roadmap #1d: out-of-band pick-fire alerts (email/SMS) ───────────────
+
+def test_notify_gating_when_unconfigured(monkeypatch):
+    import core.notify as _n
+    for k in ("SMTP_HOST", "SMTP_FROM", "ALERT_EMAIL_TO", "TWILIO_ACCOUNT_SID",
+              "TWILIO_AUTH_TOKEN", "TWILIO_FROM", "ALERT_SMS_TO"):
+        monkeypatch.delenv(k, raising=False)
+    assert _n.email_configured() is False
+    assert _n.sms_configured() is False
+    assert _n.send_email("s", "b") is False
+    assert _n.send_sms("b") is False
+    assert _n.notify_pick_fired("s", "b") == {"email": False, "sms": False}
+
+
+def test_notify_email_sends_when_configured(monkeypatch):
+    import core.notify as _n
+    monkeypatch.setenv("ALERTS_ENABLED", "1")
+    monkeypatch.setenv("SMTP_HOST", "smtp.example.com")
+    monkeypatch.setenv("SMTP_FROM", "ghost@example.com")
+    monkeypatch.setenv("ALERT_EMAIL_TO", "me@example.com")
+    monkeypatch.setenv("SMTP_USER", "u")
+    monkeypatch.setenv("SMTP_PASS", "p")
+    sent = {}
+
+    class _SMTP:
+        def __init__(self, host, port, timeout=15): sent["host"] = host
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def starttls(self): sent["tls"] = True
+        def login(self, u, p): sent["login"] = (u, p)
+        def sendmail(self, frm, to, msg): sent["mail"] = (frm, to, msg)
+
+    monkeypatch.setattr(_n.smtplib, "SMTP", _SMTP)
+    assert _n.send_email("Subj", "Body text") is True
+    assert sent["host"] == "smtp.example.com"
+    assert sent["login"] == ("u", "p")
+    assert sent["mail"][0] == "ghost@example.com" and sent["mail"][1] == ["me@example.com"]
+    assert "Body text" in sent["mail"][2] and "Subj" in sent["mail"][2]
+
+
+def test_notify_sms_sends_when_configured(monkeypatch):
+    import core.notify as _n
+    monkeypatch.setenv("ALERTS_ENABLED", "1")
+    monkeypatch.setenv("TWILIO_ACCOUNT_SID", "ACxxx")
+    monkeypatch.setenv("TWILIO_AUTH_TOKEN", "tok")
+    monkeypatch.setenv("TWILIO_FROM", "+15550001111")
+    monkeypatch.setenv("ALERT_SMS_TO", "+15550002222,+15550003333")
+    calls = []
+
+    class _Resp:
+        ok = True
+        text = ""
+
+    def _post(url, auth=None, data=None, timeout=None):
+        calls.append({"url": url, "auth": auth, "data": data})
+        return _Resp()
+
+    import requests
+    monkeypatch.setattr(requests, "post", _post)
+    assert _n.send_sms("Fire!") is True
+    assert len(calls) == 2                       # one per recipient
+    assert "ACxxx" in calls[0]["url"]
+    assert calls[0]["auth"] == ("ACxxx", "tok")
+    assert calls[0]["data"]["Body"] == "Fire!" and calls[0]["data"]["From"] == "+15550001111"
+
+
+def test_notify_pick_fired_dispatches_both(monkeypatch):
+    import core.notify as _n
+    monkeypatch.setattr(_n, "send_email", lambda s, b: True)
+    monkeypatch.setattr(_n, "send_sms", lambda b: True)
+    assert _n.notify_pick_fired("s", "b") == {"email": True, "sms": True}

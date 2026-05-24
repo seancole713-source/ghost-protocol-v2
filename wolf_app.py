@@ -2258,6 +2258,13 @@ def wolf_signal_alert_check(x_cron_secret: str = Header(default="")):
                 except Exception as _se:
                     errors.append(f"id={pid} telegram: {str(_se)[:80]}")
                     continue
+                # Out-of-band fire alert (roadmap #1d) — email/SMS, env-gated,
+                # best-effort. Same dedup as Telegram (one row per prediction id).
+                try:
+                    from core.notify import notify_pick_fired
+                    notify_pick_fired("Ghost Protocol — WOLF " + head, body)
+                except Exception as _ne:
+                    errors.append(f"id={pid} notify: {str(_ne)[:60]}")
                 cur.execute(
                     "INSERT INTO wolf_signal_alerts(prediction_id, sent_at, direction, "
                     "entry_price, target_price, confidence) VALUES (%s,%s,%s,%s,%s,%s) "
