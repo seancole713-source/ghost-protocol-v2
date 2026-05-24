@@ -3376,3 +3376,51 @@ def test_get_picks_defaults_to_wolf_and_honors_asset_type(monkeypatch):
     assert "symbol = %s" not in captured["sql"]
     assert "asset_type = %s" in captured["sql"]
     assert captured["params"] == ("stock",)
+
+
+# ── fix/ema-fallback: _calculate_features trend flags for young tickers ──
+
+def _ohlcv_series(n, direction):
+    """n synthetic daily bars, rising or falling, shaped like _fetch_ohlcv rows."""
+    rows = []
+    for i in range(n):
+        px = (100.0 + i * 0.5) if direction == "up" else (300.0 - i * 0.5)
+        rows.append({"ts": "2026-01-01T00:00:00Z", "open": px, "high": px + 0.6,
+                     "low": px - 0.6, "close": px, "volume": 1000 + i})
+    return rows
+
+
+def test_calc_features_young_ticker_uptrend_not_structurally_bearish():
+    """~168 daily bars (<200, like post-Ch.11 WOLF), uptrend: the old code forced
+    above_ema200/ema_trend_bullish to 0 (EMA200 fell back to cur). Now they
+    reflect the real short/mid trend."""
+    import core.signal_engine as _se
+    f = _se._calculate_features(_ohlcv_series(168, "up"))
+    assert f["above_ema200"] == 1
+    assert f["ema_trend_bullish"] == 1
+
+
+def test_calc_features_young_ticker_downtrend_flags_zero():
+    """<200 bars, downtrend: flags are 0 (the fix isn't just forcing 1)."""
+    import core.signal_engine as _se
+    f = _se._calculate_features(_ohlcv_series(168, "down"))
+    assert f["above_ema200"] == 0
+    assert f["ema_trend_bullish"] == 0
+
+
+def test_calc_features_mature_ticker_uses_real_ema200():
+    """>=200 bars: full 20>50>200 stack. Uptrend -> 1, downtrend -> 0."""
+    import core.signal_engine as _se
+    up = _se._calculate_features(_ohlcv_series(250, "up"))
+    assert up["above_ema200"] == 1 and up["ema_trend_bullish"] == 1
+    dn = _se._calculate_features(_ohlcv_series(250, "down"))
+    assert dn["above_ema200"] == 0 and dn["ema_trend_bullish"] == 0
+
+
+def test_calc_features_too_few_bars_neutral_trend():
+    """<20 bars: no meaningful EMA stack -> neutral (1) so the regime gate
+    doesn't permanently block BUYs for a brand-new ticker."""
+    import core.signal_engine as _se
+    f = _se._calculate_features(_ohlcv_series(12, "up"))
+    assert f["above_ema200"] == 1
+    assert f["ema_trend_bullish"] == 1

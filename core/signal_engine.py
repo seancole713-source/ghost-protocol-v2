@@ -355,9 +355,33 @@ def _calculate_features(df):
         hod, dow = 12, 0
 
     cur = float(closes[-1])
+    n = len(closes)
     ema20 = _ema(closes, 20)
-    ema50 = _ema(closes, 50) if len(closes) >= 50 else cur
-    ema200 = _ema(closes, 200) if len(closes) >= 200 else cur
+    # Young-ticker EMA fallback. With too little history for the longer EMAs,
+    # fall back to the longest EMA that IS valid (NOT `cur`). The old `else cur`
+    # made above_emaX = (cur>cur) = 0 and ema_trend_bullish = 0 *permanently*,
+    # which kept the BUY-only regime gate in WATCHING for new tickers like
+    # post-Ch.11 WOLF (~168 trading days < 200). Applied inside _calculate_features
+    # so train and serve stay consistent (no skew).
+    ema50 = _ema(closes, 50) if n >= 50 else ema20
+    ema200 = _ema(closes, 200) if n >= 200 else ema50
+    # Long-trend flags degrade gracefully:
+    #   n >= 200 -> full 20>50>200 stack
+    #   50 <= n < 200 -> valid 20>50 stack (ema200 is a fallback, so the strict
+    #                    ema50>ema200 self-comparison would wrongly read 0)
+    #   20 <= n < 50 -> price-vs-ema20 (only ema20 is a true EMA)
+    #   n < 20 -> neutral (1): not enough history to judge; don't block BUYs
+    if n < 20:
+        above_ema200_flag = 1
+        ema_trend_bullish = 1
+    else:
+        above_ema200_flag = 1 if cur > ema200 else 0
+        if n >= 200:
+            ema_trend_bullish = 1 if (ema20 > ema50 and ema50 > ema200) else 0
+        elif n >= 50:
+            ema_trend_bullish = 1 if (cur > ema20 and ema20 > ema50) else 0
+        else:
+            ema_trend_bullish = 1 if cur > ema20 else 0
     adx = _adx(highs, lows, closes)
     atr = _atr(highs, lows, closes)
     obv_slope = _obv_slope(closes, volumes)
@@ -384,8 +408,8 @@ def _calculate_features(df):
         'is_weekend': 1 if dow >= 5 else 0,
         'above_ema20': 1 if cur > ema20 else 0,
         'above_ema50': 1 if cur > ema50 else 0,
-        'above_ema200': 1 if cur > ema200 else 0,
-        'ema_trend_bullish': 1 if (ema20 > ema50 and ema50 > ema200) else 0,
+        'above_ema200': above_ema200_flag,
+        'ema_trend_bullish': ema_trend_bullish,
         'ema20_vs_ema50': float((ema20 - ema50) / ema50) if ema50 > 0 else 0.0,
         'adx': adx,
         'adx_trending': 1 if adx > 20 else 0,
