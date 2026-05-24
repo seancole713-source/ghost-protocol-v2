@@ -1060,6 +1060,52 @@ async def get_wolf_backtest():
         return JSONResponse(content=_err(str(e)))
 
 
+@router.get("/attribution")
+async def get_wolf_attribution():
+    """Performance attribution (roadmap #4b): WIN-vs-LOSS averages of the
+    journaled model features + win-rate by regime (A, all history), and
+    WIN-vs-LOSS ghost-score component averages (B, accrues from new picks).
+    Resolved v3.2-era WOLF picks. Public read-only, cached 5 min."""
+    cached = _cache_get("attribution", 300)
+    if cached:
+        return JSONResponse(content=cached)
+    try:
+        import json as _j
+        from core.db import db_conn
+        from core.attribution import feature_attribution, component_attribution
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT outcome, scores FROM predictions WHERE symbol='WOLF' AND id >= 223438 "
+                "AND outcome IN ('WIN','LOSS') AND scores IS NOT NULL ORDER BY predicted_at ASC NULLS LAST, id ASC")
+            rows = cur.fetchall()
+        trades = []
+        for outcome, scores in rows:
+            sc = scores
+            if isinstance(sc, str):
+                try:
+                    sc = _j.loads(sc)
+                except Exception:
+                    sc = {}
+            if not isinstance(sc, dict):
+                sc = {}
+            trades.append({
+                "outcome": outcome,
+                "features": sc.get("features"),
+                "regime_label": (sc.get("regime") or {}).get("label") if isinstance(sc.get("regime"), dict) else None,
+                "components": sc.get("ghost_components"),
+            })
+        out = _ok({
+            "symbol": WOLF_SYMBOL,
+            "feature_attribution": feature_attribution(trades),
+            "component_attribution": component_attribution(trades),
+        })
+        _cache_set("attribution", out)
+        return JSONResponse(content=out)
+    except Exception as e:
+        return JSONResponse(content=_err(str(e)))
+
+
 # ────────────────────────────────────────────────────────────────
 # /api/wolf/ghost-score — composite intelligence rating
 # ────────────────────────────────────────────────────────────────

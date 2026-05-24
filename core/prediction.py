@@ -944,6 +944,15 @@ def _predict_symbol_ex(symbol, asset_type, regime, scores_out=None):
     elif confidence >= 0.80: pos_pct = 3.0
     elif confidence >= 0.75: pos_pct = 2.0
     else:                    pos_pct = 1.0
+    # Journal a ghost-score component snapshot (roadmap #4b/B) so true component
+    # attribution accrues going forward. Best-effort — never blocks a pick.
+    try:
+        from core.attribution import ghost_components
+        if isinstance(score_vector, dict):
+            score_vector["ghost_components"] = ghost_components(
+                confidence, direction, score_vector.get("features"), now, now)
+    except Exception:
+        pass
     return {
         "symbol":       symbol,
         "direction":    direction,
