@@ -596,6 +596,15 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
     <div id="sh-list"><div class="empty"><div class="ico">&#9203;</div>Loading signal history…</div></div>
   </section>
 
+  <!-- ─── Performance Attribution (roadmap #4b — what separates winners) ─── -->
+  <section class="block" id="attribution-section">
+    <div class="sec-label">Performance Attribution &middot; winners vs losers</div>
+    <div id="attr-summary" class="kv" style="margin-bottom:10px;color:#888"></div>
+    <div id="attr-features"><div class="empty"><div class="ico">&#9203;</div>Loading attribution…</div></div>
+    <div id="attr-regime" style="margin-top:12px"></div>
+    <div id="attr-components" style="margin-top:12px"></div>
+  </section>
+
   <!-- ─── Truth mode (PR #6 panels, collapsible) ─── -->
   <section class="truth-wrap">
     <button type="button" class="truth-toggle" id="truth-toggle" aria-expanded="true">
@@ -2105,6 +2114,57 @@ async function loadPickJournal(reset){
 function loadMorePickJournal(){ _pjOffset += _pjLimit; loadPickJournal(false); }
 
 /* ─── Signal History (roadmap #4c) — every engine evaluation from gate-history ─── */
+/* ─── Performance Attribution (roadmap #4b) — /api/wolf/attribution ─── */
+function _attrDelta(d){
+  if(d == null) return '—';
+  var cls = d > 0 ? 'pos' : d < 0 ? 'neg' : '';
+  return '<span class="' + cls + '">' + (d > 0 ? '+' : '') + d + '</span>';
+}
+async function loadAttribution(){
+  var sumEl = document.getElementById('attr-summary');
+  var featEl = document.getElementById('attr-features');
+  var regEl = document.getElementById('attr-regime');
+  var compEl = document.getElementById('attr-components');
+  if(!featEl) return;
+  try{
+    var g = await fetch('/api/wolf/attribution').then(function(r){return r.json()});
+    if(!g || g.ok === false){ featEl.innerHTML = '<div class="empty">Attribution unavailable.</div>'; return; }
+    var fa = g.feature_attribution || {};
+    var feats = fa.features || [];
+    if(!(fa.wins || fa.losses)){
+      featEl.innerHTML = '<div class="empty"><div class="ico">&#128202;</div>No resolved picks yet — attribution builds as picks close.</div>';
+      regEl.innerHTML = ''; compEl.innerHTML = ''; return;
+    }
+    if(sumEl) sumEl.innerHTML = 'Comparing <b class="pos">' + fa.wins + ' wins</b> vs <b class="neg">' + fa.losses + ' losses</b> across the journaled signal vector.';
+    var frows = feats.map(function(f){
+      return '<tr><td><b>' + escHtml(f.feature) + '</b></td>'
+        + '<td><span class="pos">' + (f.win_avg == null ? '—' : f.win_avg) + '</span></td>'
+        + '<td><span class="neg">' + (f.loss_avg == null ? '—' : f.loss_avg) + '</span></td>'
+        + '<td>' + _attrDelta(f.delta) + '</td></tr>';
+    }).join('');
+    featEl.innerHTML = '<table class="tbl"><thead><tr><th>Signal</th><th>Win avg</th><th>Loss avg</th><th>Δ (win−loss)</th></tr></thead><tbody>' + frows + '</tbody></table>';
+    var reg = fa.by_regime || [];
+    regEl.innerHTML = reg.length
+      ? '<div class="sec-label" style="margin:4px 0 8px">Win rate by regime</div><table class="tbl"><tbody>'
+        + reg.map(function(r){ return '<tr><td><b>' + escHtml(r.regime) + '</b></td><td>' + r.wins + 'W / ' + r.losses + 'L</td><td>' + (r.win_rate_pct == null ? '—' : r.win_rate_pct + '%') + '</td></tr>'; }).join('')
+        + '</tbody></table>'
+      : '';
+    var ca = g.component_attribution || {};
+    if(ca.available){
+      var crows = (ca.components || []).map(function(c){
+        return '<tr><td><b>' + escHtml(c.component) + '</b></td>'
+          + '<td><span class="pos">' + (c.win_avg == null ? '—' : c.win_avg) + '</span></td>'
+          + '<td><span class="neg">' + (c.loss_avg == null ? '—' : c.loss_avg) + '</span></td>'
+          + '<td>' + _attrDelta(c.delta) + '</td></tr>';
+      }).join('');
+      compEl.innerHTML = '<div class="sec-label" style="margin:4px 0 8px">Ghost-score components (win vs loss)</div>'
+        + '<table class="tbl"><thead><tr><th>Component</th><th>Win avg</th><th>Loss avg</th><th>Δ</th></tr></thead><tbody>' + crows + '</tbody></table>';
+    } else {
+      compEl.innerHTML = '<div class="kv" style="color:#666">Ghost-score component attribution accrues as new picks (which journal a component snapshot) resolve.</div>';
+    }
+  }catch(e){ featEl.innerHTML = '<div class="empty">Attribution error.</div>'; }
+}
+
 async function loadSignalHistory(){
   var sumEl = document.getElementById('sh-summary');
   var listEl = document.getElementById('sh-list');
@@ -2150,6 +2210,7 @@ loadEquityChart();
 loadShortInterest();
 loadPickJournal(true);
 loadSignalHistory();
+loadAttribution();
 // Visibility-aware polling (roadmap #3c): skip refreshes while the tab is
 // hidden (a load() fires on return via visibilitychange), so we don't hammer
 // the API in backgrounded tabs.
@@ -2158,6 +2219,7 @@ setInterval(function(){ if(!document.hidden) loadEquityChart(); }, 120000);
 setInterval(function(){ if(!document.hidden) loadShortInterest(); }, 300000);
 setInterval(function(){ if(!document.hidden) loadPickJournal(true); }, 120000);
 setInterval(function(){ if(!document.hidden) loadSignalHistory(); }, 120000);
+setInterval(function(){ if(!document.hidden) loadAttribution(); }, 300000);
 _renderAutoStatus();
 </script>
 </body>
