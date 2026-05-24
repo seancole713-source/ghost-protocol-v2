@@ -1147,13 +1147,31 @@ def _signal_label(score: float) -> str:
     return "STRONG_SELL"
 
 
+# Short-interest squeeze modifier (roadmap #1b). High short interest = elevated
+# short-squeeze potential, a tailwind for this BUY-only system, so it nudges the
+# composite UP — bounded and small, like the regime modifier. Stacks
+# multiplicatively with regime; both are capped so the score stays sane.
+_SQUEEZE_MODIFIER = {"extreme": 1.08, "high": 1.05, "medium": 1.02, "low": 1.00}
+
+
+def squeeze_signal(short_float_pct, days_to_cover) -> dict:
+    """Rule-based squeeze tag + Ghost Score modifier from short %-of-float and
+    days-to-cover. Returns {risk, modifier, short_float_pct, days_to_cover}.
+    Unknown/missing inputs => neutral (modifier 1.0)."""
+    if short_float_pct is None and days_to_cover is None:
+        return {"risk": None, "modifier": 1.0, "short_float_pct": None, "days_to_cover": None}
+    risk = _squeeze_risk_tag(short_float_pct, days_to_cover)
+    return {"risk": risk, "modifier": _SQUEEZE_MODIFIER.get(risk, 1.0),
+            "short_float_pct": short_float_pct, "days_to_cover": days_to_cover}
+
+
 def compute_ghost_score(latest_pick, volume_ratio, sector, current_price, sma_5d, now_ts,
-                        last_scan_ts=None, regime=None):
+                        last_scan_ts=None, regime=None, squeeze=None):
     """Pure scoring function — all I/O lifted to the caller for testability.
 
-    `regime` (audit §3) is the rule-based market-regime tag; its modifier scales
-    the raw component sum so the score is downgraded in bearish regimes and
-    modestly boosted in confirmed uptrends. raw_score is the pre-modifier value."""
+    `regime` (audit §3) and `squeeze` (roadmap #1b) are bounded multiplicative
+    modifiers on the raw component sum: regime down-weights bearish markets,
+    squeeze up-weights high short-squeeze potential. raw_score is pre-modifier."""
     # Freshness reflects engine activity (last scan), falling back to last pick.
     activity_ts = last_scan_ts or (latest_pick.get("predicted_at") if latest_pick else None)
     components = {
@@ -1165,7 +1183,8 @@ def compute_ghost_score(latest_pick, volume_ratio, sector, current_price, sma_5d
     }
     raw = max(0.0, min(100.0, sum(components.values())))
     modifier = float((regime or {}).get("modifier", 1.0))
-    score = max(0.0, min(100.0, raw * modifier))
+    sq_mod = float((squeeze or {}).get("modifier", 1.0))
+    score = max(0.0, min(100.0, raw * modifier * sq_mod))
     return {
         "score": round(score, 1),
         "raw_score": round(raw, 1),
@@ -1173,6 +1192,7 @@ def compute_ghost_score(latest_pick, volume_ratio, sector, current_price, sma_5d
         "components": {k: round(v, 2) for k, v in components.items()},
         "weights": dict(_GHOST_WEIGHTS),
         "regime": regime,
+        "squeeze": squeeze,
     }
 
 
@@ -1195,6 +1215,8 @@ async def get_ghost_score():
     current_price = None
     sma_5d = None
     sector = None
+    short_pct = None      # short %-of-float (0-100); read from the same yf.info
+    short_dtc = None      # days-to-cover (shortRatio)
     errors: List[str] = []
 
     # 1. Latest WOLF pick (any status, ordered by predicted_at)
@@ -1233,6 +1255,11 @@ async def get_ghost_score():
         try:
             info = tk.info or {}
             avg_vol = _safe_int(info.get("averageVolume") or info.get("averageDailyVolume10Day"))
+            # Short interest from the SAME info object (roadmap #1b — no extra fetch)
+            _sf = _safe_float(info.get("shortPercentOfFloat"))   # yfinance returns 0..1
+            if _sf is not None:
+                short_pct = round(_sf * 100, 2)
+            short_dtc = _safe_float(info.get("shortRatio"))
         except Exception:
             avg_vol = None
         if last_vol and avg_vol and avg_vol > 0:
@@ -1280,8 +1307,10 @@ async def get_ghost_score():
     # Rule-based market regime (audit §3) — modifies the score + shown in cockpit.
     from core.regime import classify_regime
     regime = classify_regime(current_price, sma_5d, volume_ratio)
+    # Short-interest squeeze (roadmap #1b) — new data source feeding the composite.
+    squeeze = squeeze_signal(short_pct, short_dtc)
     scored = compute_ghost_score(latest_pick, volume_ratio, sector, current_price, sma_5d, now_ts,
-                                 last_scan_ts=last_scan_ts, regime=regime)
+                                 last_scan_ts=last_scan_ts, regime=regime, squeeze=squeeze)
 
     try:
         from core.prediction import CONFIDENCE_FLOOR as _floor
@@ -1295,6 +1324,7 @@ async def get_ghost_score():
         "signal": scored["signal"],
         "confidence_floor": _floor,
         "regime": regime,
+        "squeeze": squeeze,
         "components": scored["components"],
         "weights": scored["weights"],
         "inputs": {
