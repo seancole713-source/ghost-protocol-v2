@@ -336,6 +336,11 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
 .donut-center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none}
 .donut-total{font-size:30px;font-weight:800;letter-spacing:-.6px}
 .donut-total-lbl{font-size:11px;color:#888}
+/* Section consistency (roadmap #2d): frame the bare list sections so they match
+   the carded sections' depth/radius. */
+#sh-list, .pj-list{background:#0d0d0d;border:1px solid #23232e;border-radius:16px;padding:6px 12px;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.03)}
+#sh-list .tbl, .pj-list .empty{margin:6px 0}
 /* Live auto-refresh indicator (roadmap #3c) */
 .auto-status{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:700;letter-spacing:.5px;color:#86efac;background:#0a2a14;border:1px solid #14532d;border-radius:14px;padding:4px 10px;margin-right:8px;white-space:nowrap;vertical-align:middle}
 .auto-status.paused{color:#facc15;background:#1a1a06;border-color:#5b4112}
@@ -1128,9 +1133,14 @@ function renderPredictionChart(history, predictions){
   if(!points.length && !preds.length){
     canvas.style.display = 'none';
     emptyOverlay.style.display = 'flex';
-    emptyOverlay.innerHTML = '<div><b style="color:#888;font-size:14px">No predictions in this window</b><br>'
-      + 'Live price feed returned no bars and no WOLF picks were issued in the selected range.<br>'
-      + 'Switch range above, or wait for the next prediction cycle to fire a new pick.</div>';
+    emptyOverlay.innerHTML = '<div style="max-width:340px;padding:24px">'
+      + '<div style="font-size:40px;opacity:.5;margin-bottom:10px">&#128202;</div>'
+      + '<b style="color:#cbd5e1;font-size:15px">No predictions in this window</b>'
+      + '<div style="color:#6b7280;font-size:12px;margin-top:8px;line-height:1.7">'
+      + 'No WOLF picks were issued in the selected range. The engine scans on a market-aware '
+      + 'cadence and fires only when a signal clears the floor.</div>'
+      + '<div style="margin-top:14px;font-size:11px;color:#8b5cf6;font-weight:700;letter-spacing:.5px">'
+      + 'TRY A WIDER RANGE ABOVE &middot; OR WAIT FOR THE NEXT SCAN</div></div>';
     var z = document.getElementById('zone-callouts');
     if(z) z.innerHTML = '';
     return;
@@ -1379,8 +1389,8 @@ function renderEarnings(e){
   _charts.eps = new Chart(epsCtx, {
     type:'bar',
     data:{labels:labels, datasets:[
-      {label:'Estimate', data:estimates, backgroundColor:'#3f3f46', borderRadius:4},
-      {label:'Actual', data:actuals, backgroundColor:quarters.map(function(q){return q.beat ? '#22c55e' : '#ff3b3b'}), borderRadius:4},
+      {label:'Estimate', data:estimates, backgroundColor:'#3a3550', borderRadius:6, maxBarThickness:26},
+      {label:'Actual', data:actuals, backgroundColor:quarters.map(function(q){return q.beat ? '#22c55e' : '#ff3b3b'}), borderRadius:6, maxBarThickness:26},
     ]},
     options:{responsive:true, maintainAspectRatio:false, animation:false,
       plugins:{legend:{labels:{color:'#888',font:{size:11}}}, tooltip:{callbacks:{label:function(c){return c.dataset.label+': $'+Number(c.parsed.y||0).toFixed(2)}}}},
@@ -1391,8 +1401,8 @@ function renderEarnings(e){
   _charts.rev = new Chart(revCtx, {
     type:'bar',
     data:{labels:labels, datasets:[
-      {label:'Revenue', data:revenues, backgroundColor:'#60a5fa', borderRadius:4},
-      {label:'Net Income', data:earningsVals, backgroundColor:'#a78bfa', borderRadius:4},
+      {label:'Revenue', data:revenues, backgroundColor:'#8b5cf6', borderRadius:6, maxBarThickness:26},
+      {label:'Net Income', data:earningsVals, backgroundColor:'#c4b5fd', borderRadius:6, maxBarThickness:26},
     ]},
     options:{responsive:true, maintainAspectRatio:false, animation:false,
       plugins:{legend:{labels:{color:'#888',font:{size:11}}}, tooltip:{callbacks:{label:function(c){return c.dataset.label+': '+fmtMoney(c.parsed.y,2)}}}},
@@ -1553,6 +1563,10 @@ async function loadEquityChart(){
     var ctx = canvas.getContext('2d');
     if(_charts.equity) _charts.equity.destroy();
     var line = pos ? '#22c55e' : '#ff3b3b';
+    // Roadmap #2c: tighten the Y axis around the real range so a near-flat curve
+    // with a small dip is legible (instead of a flat line pinned to $1000).
+    var dmin = Math.min.apply(null, data), dmax = Math.max.apply(null, data);
+    var pad = Math.max((dmax - dmin) * 0.2, dmax * 0.003, 1);
     _charts.equity = new Chart(ctx, {
       type: 'line',
       data: { labels: labels, datasets: [{ data: data, borderColor: line,
@@ -1561,7 +1575,8 @@ async function loadEquityChart(){
         plugins: { legend: { display: false },
           tooltip: { callbacks: { label: function(c){ return '$' + Number(c.parsed.y).toFixed(2); } } } },
         scales: { x: { ticks: { color: '#666', maxTicksLimit: 8 }, grid: { display: false } },
-          y: { ticks: { color: '#666', callback: function(v){ return '$' + v; } }, grid: { color: '#1a1a1a' } } } }
+          y: { suggestedMin: dmin - pad, suggestedMax: dmax + pad,
+               ticks: { color: '#666', callback: function(v){ return '$' + Number(v).toFixed(0); } }, grid: { color: '#1a1a1a' } } } }
     });
   }catch(e){ sec.style.display = 'none'; }
 }
