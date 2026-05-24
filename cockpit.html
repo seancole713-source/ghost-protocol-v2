@@ -326,6 +326,16 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
 .sec-label{position:relative;padding-left:12px}
 .sec-label::before{content:"";position:absolute;left:0;top:1px;bottom:1px;width:3px;border-radius:2px;
   background:linear-gradient(180deg,#8b5cf6,#6d28d9)}
+/* KPI delta chips + outcome donut (design v2) */
+.perf-delta{font-size:11px;font-weight:700;letter-spacing:0;margin-left:7px;vertical-align:middle}
+.perf-delta.up{color:#22c55e}
+.perf-delta.down{color:#ff3b3b}
+.perf-delta.flat{color:#666}
+.donut-wrap{display:flex;align-items:center;gap:28px;flex-wrap:wrap}
+.donut-box{position:relative;width:180px;height:180px;flex:0 0 auto}
+.donut-center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none}
+.donut-total{font-size:30px;font-weight:800;letter-spacing:-.6px}
+.donut-total-lbl{font-size:11px;color:#888}
 </style>
 </head>
 <body>
@@ -453,6 +463,21 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
       <div class="chart-legend">
         <span class="leg"><span class="leg-swatch"></span>Equity (sequential compounding, $1k start)</span>
       </div>
+    </div>
+  </section>
+
+  <!-- ─── Pick-outcome donut (design v2) ─── -->
+  <section class="block" id="outcome-section" style="display:none">
+    <div class="sec-label">Pick Outcomes</div>
+    <div class="chart-wrap donut-wrap">
+      <div class="donut-box">
+        <canvas id="outcome-donut"></canvas>
+        <div class="donut-center">
+          <div class="donut-total" id="outcome-total">0</div>
+          <div class="donut-total-lbl">resolved</div>
+        </div>
+      </div>
+      <div id="outcome-legend" class="chart-legend" style="flex-direction:column;gap:8px"></div>
     </div>
   </section>
 
@@ -596,6 +621,59 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
  * ═══════════════════════════════════════════════════════════════ */
 
 const _charts = {};                              // Chart.js instance cache
+// Vertical gradient fill for area charts (audit design v2) — color at top
+// fading to transparent at the bottom, the signature analytics-dashboard look.
+function _areaGradient(ctx, hex){
+  try{
+    var h = (ctx.canvas && ctx.canvas.height) ? ctx.canvas.height : 280;
+    var g = ctx.createLinearGradient(0, 0, 0, h);
+    g.addColorStop(0, hex + '66');   // ~40% at top
+    g.addColorStop(1, hex + '00');   // transparent at bottom
+    return g;
+  }catch(e){ return hex + '22'; }
+}
+// KPI deltas (design v2): real period-over-period chips only — no fabrication.
+function _wrDelta(trades){
+  var resolved = (trades || []).filter(function(t){ return t.outcome === 'WIN' || t.outcome === 'LOSS'; });
+  if(resolved.length < 20) return null;   // need two full windows to compare
+  function wr(arr){ if(!arr.length) return null; var w = arr.filter(function(t){ return t.outcome === 'WIN'; }).length; return w / arr.length * 100; }
+  var recent = wr(resolved.slice(0, 10)), prior = wr(resolved.slice(10, 20));   // trades newest-first
+  if(recent == null || prior == null) return null;
+  return Math.round(recent - prior);
+}
+function _deltaChip(d, unit){
+  if(d == null) return '';
+  var cls = d > 0 ? 'up' : d < 0 ? 'down' : 'flat';
+  var arrow = d > 0 ? '▲' : d < 0 ? '▼' : '–';
+  return ' <span class="perf-delta ' + cls + '">' + arrow + ' ' + (d > 0 ? '+' : '') + d + (unit || '') + '</span>';
+}
+function renderOutcomeDonut(recent){
+  var sec = document.getElementById('outcome-section');
+  var canvas = document.getElementById('outcome-donut');
+  if(!sec || !canvas) return;
+  var trades = (recent && recent.trades) || [];
+  var w = 0, l = 0, e = 0;
+  trades.forEach(function(t){ if(t.outcome === 'WIN') w++; else if(t.outcome === 'LOSS') l++; else if(t.outcome === 'EXPIRED') e++; });
+  var total = w + l + e;
+  if(total === 0){ sec.style.display = 'none'; return; }
+  sec.style.display = '';
+  document.getElementById('outcome-total').textContent = total;
+  var ctx = canvas.getContext('2d');
+  if(_charts.outcome) _charts.outcome.destroy();
+  _charts.outcome = new Chart(ctx, {
+    type: 'doughnut',
+    data: { labels: ['Win', 'Loss', 'Expired'], datasets: [{ data: [w, l, e],
+      backgroundColor: ['#22c55e', '#ff3b3b', '#6b7280'], borderColor: '#0a0a0a', borderWidth: 3, hoverOffset: 4 }] },
+    options: { responsive: true, maintainAspectRatio: false, cutout: '70%',
+      plugins: { legend: { display: false },
+        tooltip: { callbacks: { label: function(c){ return c.label + ': ' + c.parsed + ' (' + Math.round(c.parsed / total * 100) + '%)'; } } } } }
+  });
+  var leg = document.getElementById('outcome-legend');
+  leg.innerHTML = [['Win', w, '#22c55e'], ['Loss', l, '#ff3b3b'], ['Expired', e, '#6b7280']].map(function(x){
+    return '<span class="leg"><span class="leg-swatch" style="background:' + x[2] + ';width:10px;height:10px;border-radius:50%"></span>'
+      + x[0] + ' · ' + x[1] + ' (' + Math.round(x[1] / total * 100) + '%)</span>';
+  }).join('');
+}
 let _chartRange = '1d';
 let _newsCat = 'all';
 
@@ -905,6 +983,18 @@ function renderPerf(stats, conf, recent){
   weekEl.className = 'perf-val';
   var weekTot = wW + wL;
   weekSub.textContent = weekTot > 0 ? Math.round(wW / weekTot * 100) + '% win' : 'last 7 days';
+
+  // KPI deltas (design v2): only where a real period-over-period comparison exists.
+  var wrD = _wrDelta(trades);
+  if(wrD != null && wrEl.textContent.indexOf('%') >= 0){
+    wrEl.innerHTML = wrEl.textContent + _deltaChip(wrD, 'pp');
+  }
+  var twoWeek = Math.floor(Date.now() / 1000) - 14 * 86400;
+  var lwW = 0;
+  trades.forEach(function(t){
+    if(t.resolved_at && t.resolved_at >= twoWeek && t.resolved_at < oneWeek && t.outcome === 'WIN') lwW++;
+  });
+  weekEl.innerHTML = weekEl.innerHTML + _deltaChip(wW - lwW, 'W');
 
   // Calibration mini-bar
   var calBar = document.getElementById('perf-cal-bar');
@@ -1452,7 +1542,7 @@ async function loadEquityChart(){
     _charts.equity = new Chart(ctx, {
       type: 'line',
       data: { labels: labels, datasets: [{ data: data, borderColor: line,
-        backgroundColor: 'rgba(34,197,94,0.08)', borderWidth: 2, fill: true, pointRadius: 0, tension: 0.25 }] },
+        backgroundColor: _areaGradient(ctx, line), borderWidth: 2, fill: true, pointRadius: 0, tension: 0.25 }] },
       options: { responsive: true, maintainAspectRatio: false,
         plugins: { legend: { display: false },
           tooltip: { callbacks: { label: function(c){ return '$' + Number(c.parsed.y).toFixed(2); } } } },
@@ -1862,6 +1952,7 @@ async function load(){
     renderGhostScore(ghostScore, watching);
     renderHero(price, watching);
     renderPerf(stats, conf, recent);
+    renderOutcomeDonut(recent);
     renderPlay(picks, watching);
     renderPredictionChart(history, predictions);
     renderStats(wstats);
