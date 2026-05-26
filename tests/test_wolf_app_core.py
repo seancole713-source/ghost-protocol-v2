@@ -3623,6 +3623,54 @@ def test_active_feature_cols_appends_sector_only_when_on(monkeypatch):
     assert len(cols) == len(_se.FEATURE_COLS) + 1
 
 
+def test_proba_ensemble_averages_and_predicts():
+    import numpy as np
+    import core.signal_engine as _se
+
+    class _Stub:
+        classes_ = np.array([0, 1])
+        def __init__(self, p):
+            self._p = np.array(p)
+        def predict_proba(self, X):
+            return np.tile(self._p, (len(X), 1))
+
+    ens = _se._ProbaEnsemble([_Stub([0.8, 0.2]), _Stub([0.4, 0.6])])
+    proba = ens.predict_proba([[0], [0]])
+    assert proba.shape == (2, 2)
+    assert proba[0][0] == pytest.approx(0.6)   # mean(0.8, 0.4)
+    assert proba[0][1] == pytest.approx(0.4)    # mean(0.2, 0.6)
+    assert list(ens.predict([[0]])) == [0]      # argmax -> class 0
+    assert list(ens.classes_) == [0, 1]
+
+
+def test_proba_ensemble_weighted():
+    import numpy as np
+    import core.signal_engine as _se
+
+    class _Stub:
+        classes_ = np.array([0, 1])
+        def __init__(self, p):
+            self._p = np.array(p)
+        def predict_proba(self, X):
+            return np.tile(self._p, (len(X), 1))
+
+    ens = _se._ProbaEnsemble([_Stub([1.0, 0.0]), _Stub([0.0, 1.0])], weights=[3.0, 1.0])
+    proba = ens.predict_proba([[0]])
+    assert proba[0][1] == pytest.approx(0.25)   # 1/(3+1) weight on second model
+
+
+def test_prune_features_removes_columns(monkeypatch):
+    import core.signal_engine as _se
+    monkeypatch.setenv("V3_SECTOR_FEATURE", "off")
+    monkeypatch.setenv("V3_PRUNE_FEATURES", "hour_of_day, day_of_week ,is_weekend")
+    cols = _se._active_feature_cols()
+    assert "hour_of_day" not in cols and "day_of_week" not in cols and "is_weekend" not in cols
+    assert len(cols) == len(_se.FEATURE_COLS) - 3
+    # sector column still added on top of pruning when enabled
+    monkeypatch.setenv("V3_SECTOR_FEATURE", "on")
+    assert _se._active_feature_cols()[-1] == "sector_rel_strength"
+
+
 def test_align_sector_closes_forward_fills_and_no_lookahead():
     import core.signal_engine as _se
     target = [{"ts": "2026-01-02T00:00:00Z"}, {"ts": "2026-01-03T00:00:00Z"},

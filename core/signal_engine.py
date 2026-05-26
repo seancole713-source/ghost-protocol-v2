@@ -227,18 +227,67 @@ def _v3_sector_lookback() -> int:
     return max(2, int(os.getenv("V3_SECTOR_LOOKBACK", "20")))
 
 
+def _v3_ensemble_enabled() -> bool:
+    """Whether to blend a second model with XGBoost (W5).
+
+    Off by default: it changes the persisted model and must be validated before
+    it's trusted. V3_ENSEMBLE=on enables a soft-voting blend of XGBoost with a
+    RandomForest, each individually probability-calibrated.
+    """
+    return (os.getenv("V3_ENSEMBLE", "off") or "off").strip().lower() in (
+        "1", "on", "true", "yes",
+    )
+
+
+def _v3_prune_features() -> set:
+    """Feature columns to drop from the model (W5 feature pruning).
+
+    Operator-driven from the attribution view: set V3_PRUNE_FEATURES to a comma
+    list of column names that don't separate winners from losers. Empty by
+    default. Skew-safe without a schema bump because prediction reads the trained
+    column set back from model meta.
+    """
+    raw = (os.getenv("V3_PRUNE_FEATURES", "") or "").strip()
+    return {p.strip() for p in raw.split(",") if p.strip()}
+
+
 def _active_feature_cols() -> list:
     """Feature columns the model trains and predicts on.
 
     Appends the W3 sector relative-strength column only when V3_SECTOR_FEATURE
-    is on, so toggling it changes the model shape (and feature_schema, forcing a
-    retrain). Training persists this list in meta; prediction reads it back, so
-    the two never disagree on the column set.
+    is on, and drops any V3_PRUNE_FEATURES columns (W5). Toggling the sector
+    column changes feature_schema (forcing a retrain); pruning is handled via
+    the persisted meta feature_cols, so training persists this list and
+    prediction reads it back — the two never disagree on the column set.
     """
-    cols = list(FEATURE_COLS)
-    if _v3_sector_feature_enabled():
+    prune = _v3_prune_features()
+    cols = [c for c in FEATURE_COLS if c not in prune]
+    if _v3_sector_feature_enabled() and "sector_rel_strength" not in prune:
         cols.append("sector_rel_strength")
     return cols
+
+
+class _ProbaEnsemble:
+    """Soft-voting blend of fitted classifiers — averages predict_proba (W5).
+
+    Top-level (picklable) so it persists exactly like a bare model, and exposes
+    the small slice of the sklearn classifier surface that predict_live_ex and
+    the calibration wrapper rely on (classes_, predict_proba, predict). Members
+    must all order their classes the same way ([0, 1] here).
+    """
+
+    def __init__(self, models, weights=None):
+        self.models = models
+        self.weights = weights or [1.0] * len(models)
+        self.classes_ = getattr(models[0], "classes_", np.array([0, 1]))
+
+    def predict_proba(self, X):
+        w = np.array(self.weights, dtype=float)
+        w = w / w.sum()
+        return sum(wi * m.predict_proba(X) for wi, m in zip(w, self.models))
+
+    def predict(self, X):
+        return self.classes_[np.argmax(self.predict_proba(X), axis=1)]
 
 
 def _v3_feature_schema() -> str:
@@ -1058,6 +1107,40 @@ def _maybe_calibrate(model, X_calib, y_calib):
         return model, info
 
 
+def _build_ensemble(xgb_model, X_fit, y_fit, sample_weight, X_calib, y_calib):
+    """Soft-voting blend of the fitted XGB model with a RandomForest (W5).
+
+    Each component is individually probability-calibrated on the WOLF holdout,
+    then their probabilities are averaged. Returns (model, calib_info) with the
+    same calib_info shape _maybe_calibrate produces, plus ensemble metadata.
+    Falls back to the calibrated single XGB model if anything goes wrong, so
+    enabling the ensemble can never break a training run.
+    """
+    try:
+        from sklearn.ensemble import RandomForestClassifier
+        rf = RandomForestClassifier(
+            n_estimators=300, max_depth=6, min_samples_leaf=3,
+            class_weight="balanced", random_state=42,
+        )
+        rf.fit(X_fit, y_fit, sample_weight=sample_weight)
+        cal_xgb, info_x = _maybe_calibrate(xgb_model, X_calib, y_calib)
+        cal_rf, _info_r = _maybe_calibrate(rf, X_calib, y_calib)
+        ens = _ProbaEnsemble([cal_xgb, cal_rf])
+        info = {
+            "calibrated": bool(info_x.get("calibrated", False)),
+            "method": info_x.get("method"),
+            "n_calib": int(len(X_calib)),
+            "ensemble": True,
+            "members": ["xgboost", "random_forest"],
+        }
+        return ens, info
+    except Exception as e:
+        final_model, info = _maybe_calibrate(xgb_model, X_calib, y_calib)
+        info["ensemble"] = False
+        info["ensemble_skip_reason"] = "exception: " + str(e)[:120]
+        return final_model, info
+
+
 def _assemble_pooled_training(X_train, y_train, peer_rows, feature_cols, wolf_weight):
     """Stack the target's training slice with peer samples for pooled fitting (W1).
 
@@ -1225,7 +1308,11 @@ def train_and_validate(symbols_and_types):
                 },
             })
             if passes:
-                final_model, calib_info = _maybe_calibrate(model, X_test, y_test)
+                if _v3_ensemble_enabled():
+                    final_model, calib_info = _build_ensemble(
+                        model, X_fit, y_fit, sample_weight, X_test, y_test)
+                else:
+                    final_model, calib_info = _maybe_calibrate(model, X_test, y_test)
                 symbol_detail["calibration"] = calib_info
             details.append(symbol_detail)
             if passes:
@@ -1240,6 +1327,8 @@ def train_and_validate(symbols_and_types):
                     "label_hold_bars": V3_LABEL_HOLD_BARS,
                     "calibrated": calib_info["calibrated"],
                     "calibration_method": calib_info.get("method"),
+                    "ensemble": bool(calib_info.get("ensemble", False)),
+                    "ensemble_members": calib_info.get("members"),
                     "pool_enabled": pool_info["enabled"],
                     "pool_peer_sample_count": pool_info["peer_sample_count"],
                     "pool_peers": [p["symbol"] for p in peers_used],
@@ -1407,6 +1496,7 @@ def predict_live_ex(symbol, asset_type, scores=None):
             "min_win_proba": round(float(min_p), 4),
             "calibrated": bool(meta.get("calibrated", False)),
             "calibration_method": meta.get("calibration_method"),
+            "ensemble": bool(meta.get("ensemble", False)),
         }
 
     if edge < min_edge:
