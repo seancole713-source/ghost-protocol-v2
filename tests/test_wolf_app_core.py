@@ -3601,12 +3601,62 @@ def test_collect_peer_rows_skips_thin_and_failed(monkeypatch):
     assert used == [{"symbol": "GOOD", "n": 5}]
 
 
-def test_feature_schema_tracks_pool_flag(monkeypatch):
+def test_feature_schema_tracks_pool_and_sector_flags(monkeypatch):
     import core.signal_engine as _se
+    monkeypatch.setenv("V3_SECTOR_FEATURE", "off")
     monkeypatch.setenv("V3_POOL_TRAINING", "on")
-    assert _se._v3_feature_schema() == "macd_pct_v1"
+    assert _se._v3_feature_schema() == "macd_pct_v1+sec0"
     monkeypatch.setenv("V3_POOL_TRAINING", "off")
-    assert _se._v3_feature_schema() == "macd_raw_v0"
+    assert _se._v3_feature_schema() == "macd_raw_v0+sec0"
+    monkeypatch.setenv("V3_SECTOR_FEATURE", "on")
+    assert _se._v3_feature_schema() == "macd_raw_v0+sec1"
+
+
+def test_active_feature_cols_appends_sector_only_when_on(monkeypatch):
+    import core.signal_engine as _se
+    monkeypatch.setenv("V3_SECTOR_FEATURE", "off")
+    assert "sector_rel_strength" not in _se._active_feature_cols()
+    assert _se._active_feature_cols() == list(_se.FEATURE_COLS)
+    monkeypatch.setenv("V3_SECTOR_FEATURE", "on")
+    cols = _se._active_feature_cols()
+    assert cols[-1] == "sector_rel_strength"
+    assert len(cols) == len(_se.FEATURE_COLS) + 1
+
+
+def test_align_sector_closes_forward_fills_and_no_lookahead():
+    import core.signal_engine as _se
+    target = [{"ts": "2026-01-02T00:00:00Z"}, {"ts": "2026-01-03T00:00:00Z"},
+              {"ts": "2026-01-06T00:00:00Z"}]
+    sector = [{"ts": "2026-01-02T00:00:00Z", "close": 100.0},
+              # no 01-03 bar -> forward-fill 100.0
+              {"ts": "2026-01-06T00:00:00Z", "close": 110.0}]
+    aligned = _se._align_sector_closes(target, sector)
+    assert aligned == [100.0, 100.0, 110.0]
+
+
+def test_align_sector_closes_none_before_data():
+    import core.signal_engine as _se
+    target = [{"ts": "2026-01-01T00:00:00Z"}, {"ts": "2026-01-05T00:00:00Z"}]
+    sector = [{"ts": "2026-01-05T00:00:00Z", "close": 50.0}]
+    # first target bar predates any sector data -> None (neutral, not guessed)
+    assert _se._align_sector_closes(target, sector) == [None, 50.0]
+
+
+def test_sector_rel_at_point_in_time():
+    import core.signal_engine as _se
+    # target +20% over 2 bars, sector +10% -> rel strength = +10%
+    rows = [{"close": 100.0}, {"close": 0.0}, {"close": 120.0}]
+    aligned = [10.0, None, 11.0]
+    assert _se._sector_rel_at(rows, aligned, 2, 2) == pytest.approx(0.20 - 0.10)
+
+
+def test_sector_rel_at_insufficient_history_is_neutral():
+    import core.signal_engine as _se
+    rows = [{"close": 100.0}, {"close": 120.0}]
+    aligned = [10.0, 11.0]
+    assert _se._sector_rel_at(rows, aligned, 1, 5) == 0.0     # i < lookback
+    # missing sector close -> neutral, never a future guess
+    assert _se._sector_rel_at(rows, [None, 11.0], 1, 1) == 0.0
 
 
 def test_macd_hist_normalized_only_when_pooling_on(monkeypatch):

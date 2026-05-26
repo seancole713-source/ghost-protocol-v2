@@ -204,16 +204,55 @@ def _v3_wolf_sample_weight() -> float:
         return 3.0
 
 
+def _v3_sector_feature_enabled() -> bool:
+    """Whether to add the sector relative-strength feature to the model (W3).
+
+    Off by default: it changes the model's feature vector and needs offline
+    validation before it can be trusted, so the operator opts in via
+    V3_SECTOR_FEATURE=on and re-validates. When off the column isn't added at
+    all, so model shape and behavior are unchanged.
+    """
+    return (os.getenv("V3_SECTOR_FEATURE", "off") or "off").strip().lower() in (
+        "1", "on", "true", "yes",
+    )
+
+
+def _v3_sector_proxy() -> str:
+    """Ticker whose price series stands in for the sector (W3 relative strength)."""
+    return (os.getenv("SECTOR_PROXY", "SMH") or "SMH").strip().upper()
+
+
+def _v3_sector_lookback() -> int:
+    """Bars over which sector relative strength is measured (W3)."""
+    return max(2, int(os.getenv("V3_SECTOR_LOOKBACK", "20")))
+
+
+def _active_feature_cols() -> list:
+    """Feature columns the model trains and predicts on.
+
+    Appends the W3 sector relative-strength column only when V3_SECTOR_FEATURE
+    is on, so toggling it changes the model shape (and feature_schema, forcing a
+    retrain). Training persists this list in meta; prediction reads it back, so
+    the two never disagree on the column set.
+    """
+    cols = list(FEATURE_COLS)
+    if _v3_sector_feature_enabled():
+        cols.append("sector_rel_strength")
+    return cols
+
+
 def _v3_feature_schema() -> str:
     """Version tag for the feature vector's *semantics* (not just its columns).
 
     load_model rejects any persisted model whose feature_schema differs from the
     current one, forcing a retrain. This prevents train/serve skew when a
     feature's scale/meaning changes — e.g. the macd_hist price-normalization
-    that flips with V3_POOL_TRAINING. A model trained on raw macd_hist must not
-    be served features computed as macd_hist/price, and vice versa.
+    that flips with V3_POOL_TRAINING, or the W3 sector column toggling. A model
+    trained under one schema must not be served features computed under another.
     """
-    return "macd_pct_v1" if _v3_pool_training_enabled() else "macd_raw_v0"
+    macd = "macd_pct_v1" if _v3_pool_training_enabled() else "macd_raw_v0"
+    sector = "sec1" if _v3_sector_feature_enabled() else "sec0"
+    return f"{macd}+{sector}"
 
 
 def _v3_wf_purge() -> int:
@@ -551,6 +590,64 @@ FEATURE_COLS = [
     'stoch_k','stoch_d','stoch_oversold','stoch_overbought',
 ]
 
+
+def _date_key(ts) -> str:
+    """Date portion (YYYY-MM-DD) of an ISO/Alpaca timestamp, used for alignment."""
+    return str(ts or "")[:10]
+
+
+def _align_sector_closes(target_rows, sector_rows):
+    """Sector closes aligned 1:1 to target_rows by date (W3).
+
+    For each target bar, take the sector close on the same date; if the sector
+    has no bar that day (holiday/feed mismatch), forward-fill the most recent
+    *prior* sector close. Returns a list parallel to target_rows (None before
+    any sector data exists). Only same-or-earlier sector bars are ever used, so
+    there is no look-ahead. Assumes both series are in ascending date order
+    (as the feed returns them). Pure / unit-testable.
+    """
+    by_date = {}
+    for r in sector_rows or []:
+        by_date[_date_key(r.get("ts"))] = float(r.get("close", 0.0))
+    sector_sorted = sorted(by_date.items())
+    out, last, si = [], None, 0
+    for tr in target_rows:
+        d = _date_key(tr.get("ts"))
+        while si < len(sector_sorted) and sector_sorted[si][0] <= d:
+            last = sector_sorted[si][1]
+            si += 1
+        out.append(by_date.get(d, last))
+    return out
+
+
+def _sector_rel_at(target_rows, aligned_sector, i, lookback):
+    """Point-in-time sector relative strength at bar i (W3).
+
+    target trailing return over `lookback` bars minus the sector's, using only
+    bars at or before i. Returns 0.0 when there isn't enough history or the
+    aligned sector close is missing — a neutral value, never a guess from the
+    future.
+    """
+    if i < lookback:
+        return 0.0
+    t_past = float(target_rows[i - lookback]["close"])
+    t_cur = float(target_rows[i]["close"])
+    s_past = aligned_sector[i - lookback]
+    s_cur = aligned_sector[i]
+    if s_past is None or s_cur is None or t_past <= 0 or s_past <= 0:
+        return 0.0
+    return float((t_cur - t_past) / t_past - (s_cur - s_past) / s_past)
+
+
+def _fetch_sector_series(period='1y'):
+    """Sector proxy OHLCV for the W3 relative-strength feature (best-effort)."""
+    try:
+        return _fetch_ohlcv(_v3_sector_proxy(), "stock", period=period) or []
+    except Exception as e:
+        LOGGER.info(f"sector series fetch failed: {str(e)[:80]}")
+        return []
+
+
 def _fetch_ohlcv(symbol, asset_type, period='1y', interval='1d'):
     """Fetch daily OHLCV bars from Alpaca.
 
@@ -856,11 +953,18 @@ def backtest_symbol(symbol, asset_type):
     labeled = []
     window = _backtest_window()
     margin = V3_LABEL_HOLD_BARS + 1
+    # W3: align a sector series to these bars once, then read it point-in-time
+    # per bar below. Only computed when the feature is enabled.
+    sector_on = _v3_sector_feature_enabled()
+    aligned_sector = _align_sector_closes(rows, _fetch_sector_series()) if sector_on else None
+    sector_lookback = _v3_sector_lookback()
     for i in range(window, len(rows) - margin):
         hist = rows[max(0, i - window) : i + 1]
         features = _calculate_features(hist)
         features["symbol"] = symbol
         features["asset_type"] = asset_type
+        if sector_on:
+            features["sector_rel_strength"] = _sector_rel_at(rows, aligned_sector, i, sector_lookback)
         outcome = _simulate_up_tp_sl(rows, i, V3_LABEL_HOLD_BARS, vol_pct)
         labeled.append({"features": features, "label": 1 if outcome == "WIN" else 0, "outcome": outcome})
     wins = sum(1 for r in labeled if r["label"] == 1)
@@ -875,9 +979,10 @@ def build_training_data(symbols_and_types):
     for symbol, asset_type in symbols_and_types:
         all_rows.extend(backtest_symbol(symbol, asset_type))
     if len(all_rows) < _min_train_rows(): return None, None, []
-    X = np.array([[r['features'].get(c, 0.0) for c in FEATURE_COLS] for r in all_rows])
+    active_cols = _active_feature_cols()
+    X = np.array([[r['features'].get(c, 0.0) for c in active_cols] for r in all_rows])
     y = np.array([r['label'] for r in all_rows])
-    return X, y, FEATURE_COLS
+    return X, y, active_cols
 
 def _persist_train_details(details_list) -> None:
     """Persist per-symbol training diagnostics to ghost_state.last_train_details.
@@ -1026,7 +1131,8 @@ def train_and_validate(symbols_and_types):
                 })
                 details.append(symbol_detail)
                 continue
-            X = np.array([[r["features"].get(c, 0.0) for c in FEATURE_COLS] for r in rows])
+            active_cols = _active_feature_cols()
+            X = np.array([[r["features"].get(c, 0.0) for c in active_cols] for r in rows])
             y = np.array([r["label"] for r in rows])
             wins_ct = int(np.sum(y))
             min_wins = _v3_min_tp_sl_wins()
@@ -1042,7 +1148,7 @@ def train_and_validate(symbols_and_types):
             if _v3_pool_training_enabled():
                 peer_rows, peers_used = _collect_peer_rows(symbol)
             X_fit, y_fit, sample_weight = _assemble_pooled_training(
-                X_train, y_train, peer_rows, FEATURE_COLS, _v3_wolf_sample_weight()
+                X_train, y_train, peer_rows, active_cols, _v3_wolf_sample_weight()
             )
             pool_info = {
                 "enabled": _v3_pool_training_enabled(),
@@ -1125,7 +1231,7 @@ def train_and_validate(symbols_and_types):
             if passes:
                 model_bytes = base64.b64encode(pickle.dumps(final_model)).decode('ascii')
                 meta = json.dumps({
-                    "feature_cols": FEATURE_COLS, "accuracy": accuracy,
+                    "feature_cols": active_cols, "accuracy": accuracy,
                     "natural_rate": natural_rate, "edge": edge,
                     "trained_at": time.time(), "n_samples": len(rows),
                     "engine_version": "v3.2_tp_sl_daily",
@@ -1211,6 +1317,14 @@ def predict_live_ex(symbol, asset_type, scores=None):
         return None, "intraday_data"
 
     features = _calculate_features(rows)
+
+    # W3: same point-in-time sector relative strength as training, for the
+    # current (last) bar. Only when enabled, matching the persisted feature set.
+    if _v3_sector_feature_enabled():
+        aligned_sector = _align_sector_closes(rows, _fetch_sector_series())
+        features["sector_rel_strength"] = _sector_rel_at(
+            rows, aligned_sector, len(rows) - 1, _v3_sector_lookback()
+        )
 
     above_ema200 = features.get('above_ema200', 1)
     adx_trending = features.get('adx_trending', 1)
