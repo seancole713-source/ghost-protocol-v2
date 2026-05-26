@@ -4003,7 +4003,6 @@ def cockpit_context():
         return JSONResponse({"ok": False, "error": str(e)[:120]}, status_code=500)
 
 
-@APP.post("/api/v3/train")
 def _v3_train_collect_symbols() -> list:
     """Collect symbols for v3 training, filtered to WOLF only.
 
@@ -4050,6 +4049,7 @@ def _record_v3_train_state(**fields) -> None:
         LOGGER.warning("v3_train state write failed: " + str(_e)[:120])
 
 
+@APP.post("/api/v3/train")
 def v3_train(x_cron_secret: str = Header(default=""), force: bool = False):
     """
     Train v3 XGBoost model on 1yr historical data (WOLF-only).
