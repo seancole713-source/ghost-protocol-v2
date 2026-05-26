@@ -2682,6 +2682,8 @@ def wolf_gate_status():
             acc = mm.get("accuracy")
             min_p = mm.get("min_win_proba")
             lp["up_prob"] = up_prob
+            lp["calibrated"] = bool(mm.get("calibrated", False))
+            lp["calibration_method"] = mm.get("calibration_method")
             lp["regime"] = _scores.get("regime")
             lp["binding_confidence_threshold"] = round(binding_conf, 3)
             lp["bootstrap_min_conf"] = round(boot_conf, 3)

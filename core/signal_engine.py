@@ -137,6 +137,28 @@ def _v3_wf_test_size_frac() -> float:
         return 0.10
 
 
+def _v3_calibration_enabled() -> bool:
+    """Whether to wrap the trained model with probability calibration.
+
+    Calibration turns raw XGBoost predict_proba into a true win-probability so
+    the V3_MIN_WIN_PROBA firing threshold and the displayed confidence track
+    the realized win-rate. On by default; set V3_CALIBRATION=off to disable.
+    """
+    return (os.getenv("V3_CALIBRATION", "on") or "on").strip().lower() not in (
+        "0", "off", "false", "no",
+    )
+
+
+def _v3_calibration_method() -> str:
+    """Calibration map: isotonic | sigmoid | auto.
+
+    auto picks sigmoid (Platt) for small calibration sets and isotonic once
+    there is enough data for a stable non-parametric fit — isotonic overfits
+    on the ~25-sample WOLF holdout, sigmoid does not.
+    """
+    return (os.getenv("V3_CALIBRATION_METHOD", "auto") or "auto").strip().lower()
+
+
 def _walk_forward_scores(X, y):
     """
     Rolling walk-forward validation over time-ordered samples.
@@ -802,6 +824,41 @@ def _persist_train_details(details_list) -> None:
         LOGGER.warning("train details persist failed: " + str(_e)[:120])
 
 
+def _maybe_calibrate(model, X_calib, y_calib):
+    """Wrap a fitted base model with prefit probability calibration.
+
+    The base model was fit on the training slice and never saw X_calib, so the
+    held-out slice is a valid post-hoc calibration set (strictly time-ordered:
+    it is the most recent ~20% of the series). Returns (final_model, info).
+
+    Falls back to the raw model (info["calibrated"]=False) whenever calibration
+    isn't viable — disabled, too few points, or a single-class calib slice — so
+    training never breaks on this. Calibration quality itself is validated live
+    via the confidence-bucket calibration curve, not offline here.
+    """
+    info = {"calibrated": False, "method": None, "n_calib": int(len(X_calib))}
+    if not _v3_calibration_enabled():
+        info["skip_reason"] = "disabled"
+        return model, info
+    if len(X_calib) < 10 or np.unique(y_calib).size < 2:
+        info["skip_reason"] = "insufficient_calib_data"
+        return model, info
+    method = _v3_calibration_method()
+    if method == "auto":
+        method = "isotonic" if len(X_calib) >= 200 else "sigmoid"
+    if method not in ("isotonic", "sigmoid"):
+        method = "sigmoid"
+    try:
+        from sklearn.calibration import CalibratedClassifierCV
+        calibrated = CalibratedClassifierCV(model, method=method, cv="prefit")
+        calibrated.fit(X_calib, y_calib)
+        info.update({"calibrated": True, "method": method})
+        return calibrated, info
+    except Exception as e:
+        info["skip_reason"] = "exception: " + str(e)[:120]
+        return model, info
+
+
 def train_and_validate(symbols_and_types):
     try:
         from xgboost import XGBClassifier
@@ -903,9 +960,12 @@ def train_and_validate(symbols_and_types):
                     "min_wf_acc_min": symbol_wf_acc_min,
                 },
             })
+            if passes:
+                final_model, calib_info = _maybe_calibrate(model, X_test, y_test)
+                symbol_detail["calibration"] = calib_info
             details.append(symbol_detail)
             if passes:
-                model_bytes = base64.b64encode(pickle.dumps(model)).decode('ascii')
+                model_bytes = base64.b64encode(pickle.dumps(final_model)).decode('ascii')
                 meta = json.dumps({
                     "feature_cols": FEATURE_COLS, "accuracy": accuracy,
                     "natural_rate": natural_rate, "edge": edge,
@@ -913,6 +973,8 @@ def train_and_validate(symbols_and_types):
                     "engine_version": "v3.2_tp_sl_daily",
                     "label_type": LABEL_TYPE,
                     "label_hold_bars": V3_LABEL_HOLD_BARS,
+                    "calibrated": calib_info["calibrated"],
+                    "calibration_method": calib_info.get("method"),
                     "wf_fold_count": wf["fold_count"],
                     "wf_acc_mean": wf["acc_mean"],
                     "wf_acc_min": wf["acc_min"],
@@ -1063,6 +1125,8 @@ def predict_live_ex(symbol, asset_type, scores=None):
             "wf_edge_mean": round(wf_edge_mean, 4),
             "wf_fold_count": wf_fold_count,
             "min_win_proba": round(float(min_p), 4),
+            "calibrated": bool(meta.get("calibrated", False)),
+            "calibration_method": meta.get("calibration_method"),
         }
 
     if edge < min_edge:

@@ -1,6 +1,8 @@
 import json
 import time
 
+import pytest
+
 import wolf_app
 
 
@@ -2444,7 +2446,10 @@ def test_gate_status_reports_config_and_live_prediction(monkeypatch):
         if scores is not None:
             scores["up_prob"] = 0.62
             scores["regime"] = {"label": "Trend-up"}
-            scores["model_meta"] = {"accuracy": 0.654, "min_win_proba": 0.55}
+            scores["model_meta"] = {
+                "accuracy": 0.654, "min_win_proba": 0.55,
+                "calibrated": True, "calibration_method": "sigmoid",
+            }
         return (("UP", 0.81), None)
     monkeypatch.setattr(_se, "predict_live_ex", _ple)
 
@@ -2463,6 +2468,8 @@ def test_gate_status_reports_config_and_live_prediction(monkeypatch):
     assert lp["would_alert"] is True
     # up_prob + binding threshold surfaced
     assert lp["up_prob"] == 0.62
+    assert lp["calibrated"] is True
+    assert lp["calibration_method"] == "sigmoid"
     assert lp["bootstrap_min_conf"] == 0.78
     assert lp["binding_confidence_threshold"] == 0.78   # bootstrap: max(0.75, 0.78)
     # needed = 0.55 + (0.78 - 0.654)/4 = 0.5815
@@ -3497,3 +3504,67 @@ def test_notify_pick_fired_dispatches_both(monkeypatch):
     monkeypatch.setattr(_n, "send_email", lambda s, b: True)
     monkeypatch.setattr(_n, "send_sms", lambda b: True)
     assert _n.notify_pick_fired("s", "b") == {"email": True, "sms": True}
+
+
+def _fit_tiny_model():
+    """A cheap fitted binary classifier for calibration tests (no XGBoost)."""
+    pytest.importorskip("sklearn")  # ML deps are prod-only; skip where absent
+    import numpy as np
+    from sklearn.linear_model import LogisticRegression
+    rng = np.random.RandomState(0)
+    X = rng.rand(40, 3)
+    y = (X[:, 0] + rng.rand(40) * 0.3 > 0.6).astype(int)
+    y[0], y[1] = 0, 1  # guarantee both classes
+    return LogisticRegression().fit(X, y), X, y
+
+
+def test_maybe_calibrate_wraps_when_viable(monkeypatch):
+    import numpy as np
+    import core.signal_engine as _se
+    monkeypatch.delenv("V3_CALIBRATION", raising=False)
+    monkeypatch.setenv("V3_CALIBRATION_METHOD", "auto")
+    model, X, _ = _fit_tiny_model()
+    Xc = X[:20]
+    yc = np.array([i % 2 for i in range(20)])
+    final, info = _se._maybe_calibrate(model, Xc, yc)
+    assert info["calibrated"] is True
+    assert info["method"] == "sigmoid"            # auto -> sigmoid for small calib set
+    assert info["n_calib"] == 20
+    proba = final.predict_proba(X[:1])
+    assert proba.shape == (1, 2)
+    assert abs(float(proba[0].sum()) - 1.0) < 1e-6
+
+
+# The fallback paths return before touching sklearn, so they use a sentinel
+# "model" and synthetic numpy arrays — verifiable without the ML deps installed.
+def test_maybe_calibrate_disabled_returns_raw(monkeypatch):
+    import numpy as np
+    import core.signal_engine as _se
+    monkeypatch.setenv("V3_CALIBRATION", "off")
+    sentinel = object()
+    final, info = _se._maybe_calibrate(sentinel, np.zeros((20, 3)), np.array([i % 2 for i in range(20)]))
+    assert info["calibrated"] is False
+    assert info["skip_reason"] == "disabled"
+    assert final is sentinel
+
+
+def test_maybe_calibrate_single_class_calib_falls_back(monkeypatch):
+    import numpy as np
+    import core.signal_engine as _se
+    monkeypatch.delenv("V3_CALIBRATION", raising=False)
+    sentinel = object()
+    final, info = _se._maybe_calibrate(sentinel, np.zeros((15, 3)), np.zeros(15, dtype=int))
+    assert info["calibrated"] is False
+    assert info["skip_reason"] == "insufficient_calib_data"
+    assert final is sentinel
+
+
+def test_maybe_calibrate_too_few_points_falls_back(monkeypatch):
+    import numpy as np
+    import core.signal_engine as _se
+    monkeypatch.delenv("V3_CALIBRATION", raising=False)
+    sentinel = object()
+    final, info = _se._maybe_calibrate(sentinel, np.zeros((6, 3)), np.array([0, 1, 0, 1, 0, 1]))
+    assert info["calibrated"] is False
+    assert info["skip_reason"] == "insufficient_calib_data"
+    assert final is sentinel
