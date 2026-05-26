@@ -1,6 +1,8 @@
 import json
 import time
 
+import pytest
+
 import wolf_app
 
 
@@ -2444,7 +2446,10 @@ def test_gate_status_reports_config_and_live_prediction(monkeypatch):
         if scores is not None:
             scores["up_prob"] = 0.62
             scores["regime"] = {"label": "Trend-up"}
-            scores["model_meta"] = {"accuracy": 0.654, "min_win_proba": 0.55}
+            scores["model_meta"] = {
+                "accuracy": 0.654, "min_win_proba": 0.55,
+                "calibrated": True, "calibration_method": "sigmoid",
+            }
         return (("UP", 0.81), None)
     monkeypatch.setattr(_se, "predict_live_ex", _ple)
 
@@ -2463,6 +2468,8 @@ def test_gate_status_reports_config_and_live_prediction(monkeypatch):
     assert lp["would_alert"] is True
     # up_prob + binding threshold surfaced
     assert lp["up_prob"] == 0.62
+    assert lp["calibrated"] is True
+    assert lp["calibration_method"] == "sigmoid"
     assert lp["bootstrap_min_conf"] == 0.78
     assert lp["binding_confidence_threshold"] == 0.78   # bootstrap: max(0.75, 0.78)
     # needed = 0.55 + (0.78 - 0.654)/4 = 0.5815
@@ -3497,3 +3504,288 @@ def test_notify_pick_fired_dispatches_both(monkeypatch):
     monkeypatch.setattr(_n, "send_email", lambda s, b: True)
     monkeypatch.setattr(_n, "send_sms", lambda b: True)
     assert _n.notify_pick_fired("s", "b") == {"email": True, "sms": True}
+
+
+def test_wf_fold_bounds_purges_label_horizon():
+    """Default purged layout leaves a hold_bars gap between train and test."""
+    import core.signal_engine as _se
+    bounds = _se._wf_fold_bounds(
+        n=127, min_train=60, test_size=15, step=15, purge=3,
+        min_train_floor=60, test_size_floor=15,
+    )
+    assert bounds == [(60, 63, 78), (75, 78, 93), (90, 93, 108), (105, 108, 123)]
+    # every fold: train ends purge bars before its test block, no overlap
+    for train_end, test_start, _test_end in bounds:
+        assert test_start - train_end == 3
+        assert train_end >= 60
+
+
+def test_wf_fold_bounds_purge_zero_is_contiguous():
+    """purge=0 reproduces the old contiguous walk-forward (train_end==test_start)."""
+    import core.signal_engine as _se
+    bounds = _se._wf_fold_bounds(
+        n=127, min_train=60, test_size=15, step=15, purge=0,
+        min_train_floor=60, test_size_floor=15,
+    )
+    assert bounds[0] == (60, 60, 75)
+    for train_end, test_start, _ in bounds:
+        assert train_end == test_start
+
+
+def test_wf_fold_bounds_respects_floors_and_fits_n():
+    """Folds never exceed n and never train below the floor."""
+    import core.signal_engine as _se
+    bounds = _se._wf_fold_bounds(
+        n=80, min_train=60, test_size=15, step=15, purge=3,
+        min_train_floor=60, test_size_floor=15,
+    )
+    # n=80: start=63 -> test[63:78] ok (train_end 60); next start=78 -> 78+15>80 stop
+    assert bounds == [(60, 63, 78)]
+    for _train_end, _test_start, test_end in bounds:
+        assert test_end <= 80
+
+
+def test_assemble_pooled_training_stacks_with_weights():
+    import numpy as np
+    import core.signal_engine as _se
+    X_train = np.array([[1.0, 2.0], [3.0, 4.0]])
+    y_train = np.array([1, 0])
+    peer_rows = [
+        {"features": {"a": 5.0, "b": 6.0}, "label": 1},
+        {"features": {"a": 7.0, "b": 8.0}, "label": 0},
+        {"features": {"a": 9.0, "b": 10.0}, "label": 1},
+    ]
+    X, y, sw = _se._assemble_pooled_training(X_train, y_train, peer_rows, ["a", "b"], 3.0)
+    assert X.shape == (5, 2)
+    assert list(y) == [1, 0, 1, 0, 1]
+    assert list(sw) == [3.0, 3.0, 1.0, 1.0, 1.0]   # WOLF weighted, peers = 1.0
+    assert list(X[2]) == [5.0, 6.0]                 # peer row mapped by col order
+
+
+def test_assemble_pooled_training_no_peers_returns_target():
+    import numpy as np
+    import core.signal_engine as _se
+    X_train = np.array([[1.0], [2.0]])
+    y_train = np.array([1, 0])
+    X, y, sw = _se._assemble_pooled_training(X_train, y_train, [], ["a"], 2.5)
+    assert X is X_train and y is y_train
+    assert list(sw) == [2.5, 2.5]
+
+
+def test_peer_symbols_parsing(monkeypatch):
+    import core.signal_engine as _se
+    monkeypatch.delenv("PEER_SYMBOLS", raising=False)
+    default = _se._v3_peer_symbols()
+    assert "ON" in default and "STM" in default
+    monkeypatch.setenv("PEER_SYMBOLS", "on, stm ,ON,,POWI")
+    assert _se._v3_peer_symbols() == ["ON", "STM", "POWI"]   # upper, dedupe, drop empties
+
+
+def test_collect_peer_rows_skips_thin_and_failed(monkeypatch):
+    import core.signal_engine as _se
+    monkeypatch.setattr(_se, "_v3_peer_symbols", lambda: ["WOLF", "GOOD", "THIN", "BOOM"])
+    monkeypatch.setattr(_se, "_min_train_rows", lambda: 3)
+
+    def fake_bt(sym, atype):
+        if sym == "GOOD":
+            return [{"features": {}, "label": 1}] * 5
+        if sym == "THIN":
+            return [{"features": {}, "label": 0}] * 2   # below min_train_rows
+        if sym == "BOOM":
+            raise RuntimeError("feed down")
+        return []
+    monkeypatch.setattr(_se, "backtest_symbol", fake_bt)
+
+    pooled, used = _se._collect_peer_rows("WOLF")       # target excluded from peers
+    assert len(pooled) == 5
+    assert used == [{"symbol": "GOOD", "n": 5}]
+
+
+def test_feature_schema_tracks_pool_and_sector_flags(monkeypatch):
+    import core.signal_engine as _se
+    monkeypatch.setenv("V3_SECTOR_FEATURE", "off")
+    monkeypatch.setenv("V3_POOL_TRAINING", "on")
+    assert _se._v3_feature_schema() == "macd_pct_v1+sec0"
+    monkeypatch.setenv("V3_POOL_TRAINING", "off")
+    assert _se._v3_feature_schema() == "macd_raw_v0+sec0"
+    monkeypatch.setenv("V3_SECTOR_FEATURE", "on")
+    assert _se._v3_feature_schema() == "macd_raw_v0+sec1"
+
+
+def test_active_feature_cols_appends_sector_only_when_on(monkeypatch):
+    import core.signal_engine as _se
+    monkeypatch.setenv("V3_SECTOR_FEATURE", "off")
+    assert "sector_rel_strength" not in _se._active_feature_cols()
+    assert _se._active_feature_cols() == list(_se.FEATURE_COLS)
+    monkeypatch.setenv("V3_SECTOR_FEATURE", "on")
+    cols = _se._active_feature_cols()
+    assert cols[-1] == "sector_rel_strength"
+    assert len(cols) == len(_se.FEATURE_COLS) + 1
+
+
+def test_proba_ensemble_averages_and_predicts():
+    import numpy as np
+    import core.signal_engine as _se
+
+    class _Stub:
+        classes_ = np.array([0, 1])
+        def __init__(self, p):
+            self._p = np.array(p)
+        def predict_proba(self, X):
+            return np.tile(self._p, (len(X), 1))
+
+    ens = _se._ProbaEnsemble([_Stub([0.8, 0.2]), _Stub([0.4, 0.6])])
+    proba = ens.predict_proba([[0], [0]])
+    assert proba.shape == (2, 2)
+    assert proba[0][0] == pytest.approx(0.6)   # mean(0.8, 0.4)
+    assert proba[0][1] == pytest.approx(0.4)    # mean(0.2, 0.6)
+    assert list(ens.predict([[0]])) == [0]      # argmax -> class 0
+    assert list(ens.classes_) == [0, 1]
+
+
+def test_proba_ensemble_weighted():
+    import numpy as np
+    import core.signal_engine as _se
+
+    class _Stub:
+        classes_ = np.array([0, 1])
+        def __init__(self, p):
+            self._p = np.array(p)
+        def predict_proba(self, X):
+            return np.tile(self._p, (len(X), 1))
+
+    ens = _se._ProbaEnsemble([_Stub([1.0, 0.0]), _Stub([0.0, 1.0])], weights=[3.0, 1.0])
+    proba = ens.predict_proba([[0]])
+    assert proba[0][1] == pytest.approx(0.25)   # 1/(3+1) weight on second model
+
+
+def test_prune_features_removes_columns(monkeypatch):
+    import core.signal_engine as _se
+    monkeypatch.setenv("V3_SECTOR_FEATURE", "off")
+    monkeypatch.setenv("V3_PRUNE_FEATURES", "hour_of_day, day_of_week ,is_weekend")
+    cols = _se._active_feature_cols()
+    assert "hour_of_day" not in cols and "day_of_week" not in cols and "is_weekend" not in cols
+    assert len(cols) == len(_se.FEATURE_COLS) - 3
+    # sector column still added on top of pruning when enabled
+    monkeypatch.setenv("V3_SECTOR_FEATURE", "on")
+    assert _se._active_feature_cols()[-1] == "sector_rel_strength"
+
+
+def test_align_sector_closes_forward_fills_and_no_lookahead():
+    import core.signal_engine as _se
+    target = [{"ts": "2026-01-02T00:00:00Z"}, {"ts": "2026-01-03T00:00:00Z"},
+              {"ts": "2026-01-06T00:00:00Z"}]
+    sector = [{"ts": "2026-01-02T00:00:00Z", "close": 100.0},
+              # no 01-03 bar -> forward-fill 100.0
+              {"ts": "2026-01-06T00:00:00Z", "close": 110.0}]
+    aligned = _se._align_sector_closes(target, sector)
+    assert aligned == [100.0, 100.0, 110.0]
+
+
+def test_align_sector_closes_none_before_data():
+    import core.signal_engine as _se
+    target = [{"ts": "2026-01-01T00:00:00Z"}, {"ts": "2026-01-05T00:00:00Z"}]
+    sector = [{"ts": "2026-01-05T00:00:00Z", "close": 50.0}]
+    # first target bar predates any sector data -> None (neutral, not guessed)
+    assert _se._align_sector_closes(target, sector) == [None, 50.0]
+
+
+def test_sector_rel_at_point_in_time():
+    import core.signal_engine as _se
+    # target +20% over 2 bars, sector +10% -> rel strength = +10%
+    rows = [{"close": 100.0}, {"close": 0.0}, {"close": 120.0}]
+    aligned = [10.0, None, 11.0]
+    assert _se._sector_rel_at(rows, aligned, 2, 2) == pytest.approx(0.20 - 0.10)
+
+
+def test_sector_rel_at_insufficient_history_is_neutral():
+    import core.signal_engine as _se
+    rows = [{"close": 100.0}, {"close": 120.0}]
+    aligned = [10.0, 11.0]
+    assert _se._sector_rel_at(rows, aligned, 1, 5) == 0.0     # i < lookback
+    # missing sector close -> neutral, never a future guess
+    assert _se._sector_rel_at(rows, [None, 11.0], 1, 1) == 0.0
+
+
+def test_macd_hist_normalized_only_when_pooling_on(monkeypatch):
+    import core.signal_engine as _se
+    bars = []
+    price = 100.0
+    for i in range(60):                                 # rising series -> macd_hist != 0
+        price *= 1.01
+        bars.append({"close": price, "high": price * 1.01,
+                     "low": price * 0.99, "volume": 1000 + i})
+    last = bars[-1]["close"]
+
+    monkeypatch.setenv("V3_POOL_TRAINING", "off")
+    raw = _se._calculate_features(bars)["macd_hist"]
+    monkeypatch.setenv("V3_POOL_TRAINING", "on")
+    feat_on = _se._calculate_features(bars)
+
+    assert abs(raw) > 1e-6
+    assert feat_on["macd_hist"] == pytest.approx(raw / last, rel=1e-6)  # price-normalized
+    assert feat_on["macd_bullish"] == (1 if raw > 0 else 0)             # sign preserved
+
+
+def _fit_tiny_model():
+    """A cheap fitted binary classifier for calibration tests (no XGBoost)."""
+    pytest.importorskip("sklearn")  # ML deps are prod-only; skip where absent
+    import numpy as np
+    from sklearn.linear_model import LogisticRegression
+    rng = np.random.RandomState(0)
+    X = rng.rand(40, 3)
+    y = (X[:, 0] + rng.rand(40) * 0.3 > 0.6).astype(int)
+    y[0], y[1] = 0, 1  # guarantee both classes
+    return LogisticRegression().fit(X, y), X, y
+
+
+def test_maybe_calibrate_wraps_when_viable(monkeypatch):
+    import numpy as np
+    import core.signal_engine as _se
+    monkeypatch.delenv("V3_CALIBRATION", raising=False)
+    monkeypatch.setenv("V3_CALIBRATION_METHOD", "auto")
+    model, X, _ = _fit_tiny_model()
+    Xc = X[:20]
+    yc = np.array([i % 2 for i in range(20)])
+    final, info = _se._maybe_calibrate(model, Xc, yc)
+    assert info["calibrated"] is True
+    assert info["method"] == "sigmoid"            # auto -> sigmoid for small calib set
+    assert info["n_calib"] == 20
+    proba = final.predict_proba(X[:1])
+    assert proba.shape == (1, 2)
+    assert abs(float(proba[0].sum()) - 1.0) < 1e-6
+
+
+# The fallback paths return before touching sklearn, so they use a sentinel
+# "model" and synthetic numpy arrays — verifiable without the ML deps installed.
+def test_maybe_calibrate_disabled_returns_raw(monkeypatch):
+    import numpy as np
+    import core.signal_engine as _se
+    monkeypatch.setenv("V3_CALIBRATION", "off")
+    sentinel = object()
+    final, info = _se._maybe_calibrate(sentinel, np.zeros((20, 3)), np.array([i % 2 for i in range(20)]))
+    assert info["calibrated"] is False
+    assert info["skip_reason"] == "disabled"
+    assert final is sentinel
+
+
+def test_maybe_calibrate_single_class_calib_falls_back(monkeypatch):
+    import numpy as np
+    import core.signal_engine as _se
+    monkeypatch.delenv("V3_CALIBRATION", raising=False)
+    sentinel = object()
+    final, info = _se._maybe_calibrate(sentinel, np.zeros((15, 3)), np.zeros(15, dtype=int))
+    assert info["calibrated"] is False
+    assert info["skip_reason"] == "insufficient_calib_data"
+    assert final is sentinel
+
+
+def test_maybe_calibrate_too_few_points_falls_back(monkeypatch):
+    import numpy as np
+    import core.signal_engine as _se
+    monkeypatch.delenv("V3_CALIBRATION", raising=False)
+    sentinel = object()
+    final, info = _se._maybe_calibrate(sentinel, np.zeros((6, 3)), np.array([0, 1, 0, 1, 0, 1]))
+    assert info["calibrated"] is False
+    assert info["skip_reason"] == "insufficient_calib_data"
+    assert final is sentinel

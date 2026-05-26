@@ -220,3 +220,13 @@ def test_diagnostics_route_is_registered_but_hidden():
     assert "/api/diagnostics" in paths
     diag = next(r for r in wolf_app.APP.routes if getattr(r, "path", None) == "/api/diagnostics")
     assert diag.include_in_schema is False
+
+
+def test_v3_train_route_maps_to_trainer_not_helper():
+    """Regression: POST /api/v3/train must invoke the background trainer
+    (v3_train), not the _v3_train_collect_symbols helper the decorator was
+    accidentally attached to — which returned the symbol list and never trained."""
+    route = next(r for r in wolf_app.APP.routes
+                 if getattr(r, "path", None) == "/api/v3/train")
+    assert route.endpoint is wolf_app.v3_train
+    assert "POST" in route.methods

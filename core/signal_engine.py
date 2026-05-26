@@ -137,6 +137,205 @@ def _v3_wf_test_size_frac() -> float:
         return 0.10
 
 
+def _v3_calibration_enabled() -> bool:
+    """Whether to wrap the trained model with probability calibration.
+
+    Calibration turns raw XGBoost predict_proba into a true win-probability so
+    the V3_MIN_WIN_PROBA firing threshold and the displayed confidence track
+    the realized win-rate. On by default; set V3_CALIBRATION=off to disable.
+    """
+    return (os.getenv("V3_CALIBRATION", "on") or "on").strip().lower() not in (
+        "0", "off", "false", "no",
+    )
+
+
+def _v3_calibration_method() -> str:
+    """Calibration map: isotonic | sigmoid | auto.
+
+    auto picks sigmoid (Platt) for small calibration sets and isotonic once
+    there is enough data for a stable non-parametric fit — isotonic overfits
+    on the ~25-sample WOLF holdout, sigmoid does not.
+    """
+    return (os.getenv("V3_CALIBRATION_METHOD", "auto") or "auto").strip().lower()
+
+
+def _v3_pool_training_enabled() -> bool:
+    """Whether to pool peer/sector samples into the model's training set (W1).
+
+    WOLF's post-Ch.11 history yields only ~127 labeled samples — too few for a
+    stable model. Pooling labeled samples from sector peers multiplies the
+    training data; all quality gates still judge the model on WOLF's own
+    holdout. Enabling pooling also price-normalizes macd_hist (the one raw
+    price-unit feature) so it is comparable across tickers. On by default; set
+    V3_POOL_TRAINING=off for the prior WOLF-only behavior.
+    """
+    return (os.getenv("V3_POOL_TRAINING", "on") or "on").strip().lower() not in (
+        "0", "off", "false", "no",
+    )
+
+
+def _v3_peer_symbols() -> list:
+    """Sector-peer tickers pooled into training (W1).
+
+    Default basket = liquid US-listed SiC / power-semiconductor names in WOLF's
+    sector. Peers that fail to fetch or have too few bars are skipped at
+    collection, so a stale default ticker is harmless. Override via
+    PEER_SYMBOLS="ON,STM,POWI".
+    """
+    raw = (os.getenv("PEER_SYMBOLS", "ON,STM,POWI,NVTS,ALGM,MPWR,MCHP,AOSL") or "").strip()
+    out, seen = [], set()
+    for part in raw.split(","):
+        sym = part.strip().upper()
+        if sym and sym not in seen:
+            seen.add(sym)
+            out.append(sym)
+    return out
+
+
+def _v3_wolf_sample_weight() -> float:
+    """Training weight on the target's own rows relative to peer rows (W1).
+
+    Peers broaden the fit but the model must still specialize to WOLF, so WOLF
+    samples are up-weighted. Default 3.0; set V3_WOLF_SAMPLE_WEIGHT to tune.
+    """
+    try:
+        return max(1.0, float(os.getenv("V3_WOLF_SAMPLE_WEIGHT", "3.0")))
+    except Exception:
+        return 3.0
+
+
+def _v3_sector_feature_enabled() -> bool:
+    """Whether to add the sector relative-strength feature to the model (W3).
+
+    Off by default: it changes the model's feature vector and needs offline
+    validation before it can be trusted, so the operator opts in via
+    V3_SECTOR_FEATURE=on and re-validates. When off the column isn't added at
+    all, so model shape and behavior are unchanged.
+    """
+    return (os.getenv("V3_SECTOR_FEATURE", "off") or "off").strip().lower() in (
+        "1", "on", "true", "yes",
+    )
+
+
+def _v3_sector_proxy() -> str:
+    """Ticker whose price series stands in for the sector (W3 relative strength)."""
+    return (os.getenv("SECTOR_PROXY", "SMH") or "SMH").strip().upper()
+
+
+def _v3_sector_lookback() -> int:
+    """Bars over which sector relative strength is measured (W3)."""
+    return max(2, int(os.getenv("V3_SECTOR_LOOKBACK", "20")))
+
+
+def _v3_ensemble_enabled() -> bool:
+    """Whether to blend a second model with XGBoost (W5).
+
+    Off by default: it changes the persisted model and must be validated before
+    it's trusted. V3_ENSEMBLE=on enables a soft-voting blend of XGBoost with a
+    RandomForest, each individually probability-calibrated.
+    """
+    return (os.getenv("V3_ENSEMBLE", "off") or "off").strip().lower() in (
+        "1", "on", "true", "yes",
+    )
+
+
+def _v3_prune_features() -> set:
+    """Feature columns to drop from the model (W5 feature pruning).
+
+    Operator-driven from the attribution view: set V3_PRUNE_FEATURES to a comma
+    list of column names that don't separate winners from losers. Empty by
+    default. Skew-safe without a schema bump because prediction reads the trained
+    column set back from model meta.
+    """
+    raw = (os.getenv("V3_PRUNE_FEATURES", "") or "").strip()
+    return {p.strip() for p in raw.split(",") if p.strip()}
+
+
+def _active_feature_cols() -> list:
+    """Feature columns the model trains and predicts on.
+
+    Appends the W3 sector relative-strength column only when V3_SECTOR_FEATURE
+    is on, and drops any V3_PRUNE_FEATURES columns (W5). Toggling the sector
+    column changes feature_schema (forcing a retrain); pruning is handled via
+    the persisted meta feature_cols, so training persists this list and
+    prediction reads it back — the two never disagree on the column set.
+    """
+    prune = _v3_prune_features()
+    cols = [c for c in FEATURE_COLS if c not in prune]
+    if _v3_sector_feature_enabled() and "sector_rel_strength" not in prune:
+        cols.append("sector_rel_strength")
+    return cols
+
+
+class _ProbaEnsemble:
+    """Soft-voting blend of fitted classifiers — averages predict_proba (W5).
+
+    Top-level (picklable) so it persists exactly like a bare model, and exposes
+    the small slice of the sklearn classifier surface that predict_live_ex and
+    the calibration wrapper rely on (classes_, predict_proba, predict). Members
+    must all order their classes the same way ([0, 1] here).
+    """
+
+    def __init__(self, models, weights=None):
+        self.models = models
+        self.weights = weights or [1.0] * len(models)
+        self.classes_ = getattr(models[0], "classes_", np.array([0, 1]))
+
+    def predict_proba(self, X):
+        w = np.array(self.weights, dtype=float)
+        w = w / w.sum()
+        return sum(wi * m.predict_proba(X) for wi, m in zip(w, self.models))
+
+    def predict(self, X):
+        return self.classes_[np.argmax(self.predict_proba(X), axis=1)]
+
+
+def _v3_feature_schema() -> str:
+    """Version tag for the feature vector's *semantics* (not just its columns).
+
+    load_model rejects any persisted model whose feature_schema differs from the
+    current one, forcing a retrain. This prevents train/serve skew when a
+    feature's scale/meaning changes — e.g. the macd_hist price-normalization
+    that flips with V3_POOL_TRAINING, or the W3 sector column toggling. A model
+    trained under one schema must not be served features computed under another.
+    """
+    macd = "macd_pct_v1" if _v3_pool_training_enabled() else "macd_raw_v0"
+    sector = "sec1" if _v3_sector_feature_enabled() else "sec0"
+    return f"{macd}+{sector}"
+
+
+def _v3_wf_purge() -> int:
+    """Bars to purge between each walk-forward train block and its test block.
+
+    The triple-barrier label looks ahead V3_LABEL_HOLD_BARS bars, so the last
+    few training samples before a test block carry outcomes that resolve inside
+    the test period — naive walk-forward leaks that future into training. Purging
+    hold_bars samples at the boundary removes the overlap (López de Prado purged
+    CV). Defaults to the label horizon; set V3_WF_PURGE=0 to disable.
+    """
+    return max(0, int(os.getenv("V3_WF_PURGE", str(V3_LABEL_HOLD_BARS))))
+
+
+def _wf_fold_bounds(n, min_train, test_size, step, purge,
+                    min_train_floor, test_size_floor):
+    """Index bounds for purged, expanding-window walk-forward folds.
+
+    Returns a list of (train_end, test_start, test_end). The train block is
+    X[:train_end] with train_end = test_start - purge, leaving a purge-bar gap
+    so look-ahead labels can't leak across the boundary. Pure/index-only so it
+    is unit-testable without xgboost/sklearn installed.
+    """
+    bounds = []
+    start = min_train + purge          # so the first train block still ~min_train
+    while start + test_size <= n:
+        train_end = start - purge
+        test_start, test_end = start, start + test_size
+        if train_end >= min_train_floor and (test_end - test_start) >= test_size_floor:
+            bounds.append((train_end, test_start, test_end))
+        start += step
+    return bounds
+
+
 def _walk_forward_scores(X, y):
     """
     Rolling walk-forward validation over time-ordered samples.
@@ -147,11 +346,15 @@ def _walk_forward_scores(X, y):
     post-restructure samples couldn't generate folds with the prior
     hardcoded floors (120 / 20).
 
-    Example fold layout for n=127 with defaults (60 / 15):
-      fold 1: train=X[:60],  test=X[60:75]
-      fold 2: train=X[:75],  test=X[75:90]
-      fold 3: train=X[:90],  test=X[90:105]
-      fold 4: train=X[:105], test=X[105:120]
+    W4: a purge gap of V3_WF_PURGE bars (default = label horizon) sits between
+    each train block and its test block so look-ahead labels can't leak across
+    the boundary (purged walk-forward).
+
+    Example fold layout for n=127 with defaults (60 / 15, purge=3):
+      fold 1: train=X[:60],  test=X[63:78]
+      fold 2: train=X[:75],  test=X[78:93]
+      fold 3: train=X[:90],  test=X[93:108]
+      fold 4: train=X[:105], test=X[108:123]
     """
     from xgboost import XGBClassifier
     from sklearn.metrics import accuracy_score
@@ -164,20 +367,16 @@ def _walk_forward_scores(X, y):
     min_train = max(min_train_floor, int(n * min_train_frac))
     test_size = max(test_size_floor, int(n * test_size_frac))
     step = test_size
+    purge = _v3_wf_purge()
+    bounds = _wf_fold_bounds(n, min_train, test_size, step, purge,
+                             min_train_floor, test_size_floor)
     folds = []
-    start = min_train
-    while start + test_size <= n:
-        X_train, y_train = X[:start], y[:start]
-        X_test, y_test = X[start : start + test_size], y[start : start + test_size]
-        # Inner safety check: skip degenerate folds. Tied to the env-tunable
-        # floors so the inner & outer constraints stay coherent.
-        if len(X_train) < min_train_floor or len(X_test) < test_size_floor:
-            start += step
-            continue
+    for train_end, test_start, test_end in bounds:
+        X_train, y_train = X[:train_end], y[:train_end]
+        X_test, y_test = X[test_start:test_end], y[test_start:test_end]
         pos_ct = int(np.sum(y_train))
         neg_ct = int(len(y_train) - pos_ct)
         if pos_ct <= 0:
-            start += step
             continue
         natural_rate = float(np.mean(y_test))
         model = XGBClassifier(
@@ -194,7 +393,6 @@ def _walk_forward_scores(X, y):
         model.fit(X_train, y_train)
         acc = float(accuracy_score(y_test, model.predict(X_test)))
         folds.append({"acc": acc, "nat": natural_rate, "edge": acc - natural_rate})
-        start += step
 
     if not folds:
         return {"fold_count": 0, "acc_mean": 0.0, "acc_min": 0.0, "edge_mean": 0.0, "edge_min": 0.0}
@@ -387,11 +585,17 @@ def _calculate_features(df):
     obv_slope = _obv_slope(closes, volumes)
     stoch_k, stoch_d = _stochastic(highs, lows, closes)
 
+    # macd_hist is in raw price units, so its scale tracks the share price. For
+    # cross-ticker pooling (W1) that makes a $5 stock incomparable to a $200
+    # one, so express it as a fraction of price. Read at runtime in both the
+    # train and live paths, so the two stay consistent regardless of the flag.
+    macd_hist_feat = (macd_hist / cur) if (_v3_pool_training_enabled() and cur > 0) else macd_hist
+
     return {
         'rsi': rsi,
         'rsi_oversold': 1 if rsi < 35 else 0,
         'rsi_overbought': 1 if rsi > 65 else 0,
-        'macd_hist': macd_hist,
+        'macd_hist': macd_hist_feat,
         'macd_bullish': 1 if macd_hist > 0 else 0,
         'pct_b': pct_b,
         'bb_squeeze': 1 if band_width < 0.05 else 0,
@@ -434,6 +638,64 @@ FEATURE_COLS = [
     'obv_slope','obv_accumulating',
     'stoch_k','stoch_d','stoch_oversold','stoch_overbought',
 ]
+
+
+def _date_key(ts) -> str:
+    """Date portion (YYYY-MM-DD) of an ISO/Alpaca timestamp, used for alignment."""
+    return str(ts or "")[:10]
+
+
+def _align_sector_closes(target_rows, sector_rows):
+    """Sector closes aligned 1:1 to target_rows by date (W3).
+
+    For each target bar, take the sector close on the same date; if the sector
+    has no bar that day (holiday/feed mismatch), forward-fill the most recent
+    *prior* sector close. Returns a list parallel to target_rows (None before
+    any sector data exists). Only same-or-earlier sector bars are ever used, so
+    there is no look-ahead. Assumes both series are in ascending date order
+    (as the feed returns them). Pure / unit-testable.
+    """
+    by_date = {}
+    for r in sector_rows or []:
+        by_date[_date_key(r.get("ts"))] = float(r.get("close", 0.0))
+    sector_sorted = sorted(by_date.items())
+    out, last, si = [], None, 0
+    for tr in target_rows:
+        d = _date_key(tr.get("ts"))
+        while si < len(sector_sorted) and sector_sorted[si][0] <= d:
+            last = sector_sorted[si][1]
+            si += 1
+        out.append(by_date.get(d, last))
+    return out
+
+
+def _sector_rel_at(target_rows, aligned_sector, i, lookback):
+    """Point-in-time sector relative strength at bar i (W3).
+
+    target trailing return over `lookback` bars minus the sector's, using only
+    bars at or before i. Returns 0.0 when there isn't enough history or the
+    aligned sector close is missing — a neutral value, never a guess from the
+    future.
+    """
+    if i < lookback:
+        return 0.0
+    t_past = float(target_rows[i - lookback]["close"])
+    t_cur = float(target_rows[i]["close"])
+    s_past = aligned_sector[i - lookback]
+    s_cur = aligned_sector[i]
+    if s_past is None or s_cur is None or t_past <= 0 or s_past <= 0:
+        return 0.0
+    return float((t_cur - t_past) / t_past - (s_cur - s_past) / s_past)
+
+
+def _fetch_sector_series(period='1y'):
+    """Sector proxy OHLCV for the W3 relative-strength feature (best-effort)."""
+    try:
+        return _fetch_ohlcv(_v3_sector_proxy(), "stock", period=period) or []
+    except Exception as e:
+        LOGGER.info(f"sector series fetch failed: {str(e)[:80]}")
+        return []
+
 
 def _fetch_ohlcv(symbol, asset_type, period='1y', interval='1d'):
     """Fetch daily OHLCV bars from Alpaca.
@@ -740,11 +1002,18 @@ def backtest_symbol(symbol, asset_type):
     labeled = []
     window = _backtest_window()
     margin = V3_LABEL_HOLD_BARS + 1
+    # W3: align a sector series to these bars once, then read it point-in-time
+    # per bar below. Only computed when the feature is enabled.
+    sector_on = _v3_sector_feature_enabled()
+    aligned_sector = _align_sector_closes(rows, _fetch_sector_series()) if sector_on else None
+    sector_lookback = _v3_sector_lookback()
     for i in range(window, len(rows) - margin):
         hist = rows[max(0, i - window) : i + 1]
         features = _calculate_features(hist)
         features["symbol"] = symbol
         features["asset_type"] = asset_type
+        if sector_on:
+            features["sector_rel_strength"] = _sector_rel_at(rows, aligned_sector, i, sector_lookback)
         outcome = _simulate_up_tp_sl(rows, i, V3_LABEL_HOLD_BARS, vol_pct)
         labeled.append({"features": features, "label": 1 if outcome == "WIN" else 0, "outcome": outcome})
     wins = sum(1 for r in labeled if r["label"] == 1)
@@ -759,9 +1028,10 @@ def build_training_data(symbols_and_types):
     for symbol, asset_type in symbols_and_types:
         all_rows.extend(backtest_symbol(symbol, asset_type))
     if len(all_rows) < _min_train_rows(): return None, None, []
-    X = np.array([[r['features'].get(c, 0.0) for c in FEATURE_COLS] for r in all_rows])
+    active_cols = _active_feature_cols()
+    X = np.array([[r['features'].get(c, 0.0) for c in active_cols] for r in all_rows])
     y = np.array([r['label'] for r in all_rows])
-    return X, y, FEATURE_COLS
+    return X, y, active_cols
 
 def _persist_train_details(details_list) -> None:
     """Persist per-symbol training diagnostics to ghost_state.last_train_details.
@@ -802,6 +1072,120 @@ def _persist_train_details(details_list) -> None:
         LOGGER.warning("train details persist failed: " + str(_e)[:120])
 
 
+def _maybe_calibrate(model, X_calib, y_calib):
+    """Wrap a fitted base model with prefit probability calibration.
+
+    The base model was fit on the training slice and never saw X_calib, so the
+    held-out slice is a valid post-hoc calibration set (strictly time-ordered:
+    it is the most recent ~20% of the series). Returns (final_model, info).
+
+    Falls back to the raw model (info["calibrated"]=False) whenever calibration
+    isn't viable — disabled, too few points, or a single-class calib slice — so
+    training never breaks on this. Calibration quality itself is validated live
+    via the confidence-bucket calibration curve, not offline here.
+    """
+    info = {"calibrated": False, "method": None, "n_calib": int(len(X_calib))}
+    if not _v3_calibration_enabled():
+        info["skip_reason"] = "disabled"
+        return model, info
+    if len(X_calib) < 10 or np.unique(y_calib).size < 2:
+        info["skip_reason"] = "insufficient_calib_data"
+        return model, info
+    method = _v3_calibration_method()
+    if method == "auto":
+        method = "isotonic" if len(X_calib) >= 200 else "sigmoid"
+    if method not in ("isotonic", "sigmoid"):
+        method = "sigmoid"
+    try:
+        from sklearn.calibration import CalibratedClassifierCV
+        calibrated = CalibratedClassifierCV(model, method=method, cv="prefit")
+        calibrated.fit(X_calib, y_calib)
+        info.update({"calibrated": True, "method": method})
+        return calibrated, info
+    except Exception as e:
+        info["skip_reason"] = "exception: " + str(e)[:120]
+        return model, info
+
+
+def _build_ensemble(xgb_model, X_fit, y_fit, sample_weight, X_calib, y_calib):
+    """Soft-voting blend of the fitted XGB model with a RandomForest (W5).
+
+    Each component is individually probability-calibrated on the WOLF holdout,
+    then their probabilities are averaged. Returns (model, calib_info) with the
+    same calib_info shape _maybe_calibrate produces, plus ensemble metadata.
+    Falls back to the calibrated single XGB model if anything goes wrong, so
+    enabling the ensemble can never break a training run.
+    """
+    try:
+        from sklearn.ensemble import RandomForestClassifier
+        rf = RandomForestClassifier(
+            n_estimators=300, max_depth=6, min_samples_leaf=3,
+            class_weight="balanced", random_state=42,
+        )
+        rf.fit(X_fit, y_fit, sample_weight=sample_weight)
+        cal_xgb, info_x = _maybe_calibrate(xgb_model, X_calib, y_calib)
+        cal_rf, _info_r = _maybe_calibrate(rf, X_calib, y_calib)
+        ens = _ProbaEnsemble([cal_xgb, cal_rf])
+        info = {
+            "calibrated": bool(info_x.get("calibrated", False)),
+            "method": info_x.get("method"),
+            "n_calib": int(len(X_calib)),
+            "ensemble": True,
+            "members": ["xgboost", "random_forest"],
+        }
+        return ens, info
+    except Exception as e:
+        final_model, info = _maybe_calibrate(xgb_model, X_calib, y_calib)
+        info["ensemble"] = False
+        info["ensemble_skip_reason"] = "exception: " + str(e)[:120]
+        return final_model, info
+
+
+def _assemble_pooled_training(X_train, y_train, peer_rows, feature_cols, wolf_weight):
+    """Stack the target's training slice with peer samples for pooled fitting (W1).
+
+    Returns (X_pooled, y_pooled, sample_weight). Target (WOLF) rows keep
+    wolf_weight so the model specializes to WOLF; peer rows get weight 1.0 so
+    they broaden the fit without dominating it. Pure/numpy so it's unit-testable
+    without xgboost/sklearn installed.
+    """
+    wolf_sw = np.full(len(X_train), float(wolf_weight))
+    if not peer_rows:
+        return X_train, y_train, wolf_sw
+    Xp = np.array([[r["features"].get(c, 0.0) for c in feature_cols] for r in peer_rows])
+    yp = np.array([r["label"] for r in peer_rows])
+    X_pooled = np.vstack([X_train, Xp])
+    y_pooled = np.concatenate([y_train, yp])
+    sample_weight = np.concatenate([wolf_sw, np.ones(len(Xp))])
+    return X_pooled, y_pooled, sample_weight
+
+
+def _collect_peer_rows(target_symbol):
+    """Labeled samples from sector peers for pooled training (W1).
+
+    Each peer is labeled by the same triple-barrier backtest as the target,
+    using the peer's own volatility, so labels are consistent across symbols.
+    Peers that fail to fetch or have too few labeled rows are skipped. Returns
+    (pooled_rows, peers_used) where peers_used is a per-peer sample-count list.
+    """
+    target = (target_symbol or "").upper()
+    peers = [p for p in _v3_peer_symbols() if p != target]
+    pooled, used = [], []
+    min_rows = _min_train_rows()
+    for p in peers:
+        try:
+            rows = backtest_symbol(p, "stock")
+        except Exception as e:
+            LOGGER.info(f"pool: peer {p} skipped ({str(e)[:80]})")
+            continue
+        if rows and len(rows) >= min_rows:
+            pooled.extend(rows)
+            used.append({"symbol": p, "n": len(rows)})
+        else:
+            LOGGER.info(f"pool: peer {p} skipped (only {len(rows) if rows else 0} rows)")
+    return pooled, used
+
+
 def train_and_validate(symbols_and_types):
     try:
         from xgboost import XGBClassifier
@@ -830,7 +1214,8 @@ def train_and_validate(symbols_and_types):
                 })
                 details.append(symbol_detail)
                 continue
-            X = np.array([[r["features"].get(c, 0.0) for c in FEATURE_COLS] for r in rows])
+            active_cols = _active_feature_cols()
+            X = np.array([[r["features"].get(c, 0.0) for c in active_cols] for r in rows])
             y = np.array([r["label"] for r in rows])
             wins_ct = int(np.sum(y))
             min_wins = _v3_min_tp_sl_wins()
@@ -838,8 +1223,26 @@ def train_and_validate(symbols_and_types):
             X_train, X_test = X[:split], X[split:]
             y_train, y_test = y[:split], y[split:]
             natural_rate = float(np.mean(y_test))
-            pos_ct = int(np.sum(y_train))
-            neg_ct = int(len(y_train) - pos_ct)
+            # W1: pool peer/sector samples into the FIT set to break the
+            # small-data wall. The holdout (X_test), walk-forward, and
+            # calibration all stay WOLF-only below, so every quality gate still
+            # judges the model on WOLF's own out-of-sample data.
+            peer_rows, peers_used = ([], [])
+            if _v3_pool_training_enabled():
+                peer_rows, peers_used = _collect_peer_rows(symbol)
+            X_fit, y_fit, sample_weight = _assemble_pooled_training(
+                X_train, y_train, peer_rows, active_cols, _v3_wolf_sample_weight()
+            )
+            pool_info = {
+                "enabled": _v3_pool_training_enabled(),
+                "peer_sample_count": int(len(peer_rows)),
+                "peers": peers_used,
+                "pooled_train_n": int(len(X_fit)),
+                "wolf_train_n": int(len(X_train)),
+                "wolf_sample_weight": _v3_wolf_sample_weight(),
+            }
+            pos_ct = int(np.sum(y_fit))
+            neg_ct = int(len(y_fit) - pos_ct)
             spw = (neg_ct / pos_ct) if pos_ct > 0 else 1.0
             min_acc = _v3_min_holdout_acc()
             min_edge = _v3_min_edge()
@@ -849,7 +1252,7 @@ def train_and_validate(symbols_and_types):
                 scale_pos_weight=min(25.0, max(1.0, float(spw))),
                 eval_metric='logloss', random_state=42
             )
-            model.fit(X_train, y_train)
+            model.fit(X_fit, y_fit, sample_weight=sample_weight)
             accuracy = float(accuracy_score(y_test, model.predict(X_test)))
             edge = accuracy - natural_rate
             wf = _walk_forward_scores(X, y)
@@ -892,6 +1295,7 @@ def train_and_validate(symbols_and_types):
                 "wf_acc_min": round(wf["acc_min"], 4),
                 "wf_edge_mean": round(wf["edge_mean"], 4),
                 "wf_edge_min": round(wf["edge_min"], 4),
+                "pool": pool_info,
                 "gates": [{"name": n, "passed": bool(p), "msg": m} for n, p, m in gate_checks],
                 "thresholds": {
                     "min_train_rows": min_rows,
@@ -903,16 +1307,31 @@ def train_and_validate(symbols_and_types):
                     "min_wf_acc_min": symbol_wf_acc_min,
                 },
             })
+            if passes:
+                if _v3_ensemble_enabled():
+                    final_model, calib_info = _build_ensemble(
+                        model, X_fit, y_fit, sample_weight, X_test, y_test)
+                else:
+                    final_model, calib_info = _maybe_calibrate(model, X_test, y_test)
+                symbol_detail["calibration"] = calib_info
             details.append(symbol_detail)
             if passes:
-                model_bytes = base64.b64encode(pickle.dumps(model)).decode('ascii')
+                model_bytes = base64.b64encode(pickle.dumps(final_model)).decode('ascii')
                 meta = json.dumps({
-                    "feature_cols": FEATURE_COLS, "accuracy": accuracy,
+                    "feature_cols": active_cols, "accuracy": accuracy,
                     "natural_rate": natural_rate, "edge": edge,
                     "trained_at": time.time(), "n_samples": len(rows),
                     "engine_version": "v3.2_tp_sl_daily",
                     "label_type": LABEL_TYPE,
+                    "feature_schema": _v3_feature_schema(),
                     "label_hold_bars": V3_LABEL_HOLD_BARS,
+                    "calibrated": calib_info["calibrated"],
+                    "calibration_method": calib_info.get("method"),
+                    "ensemble": bool(calib_info.get("ensemble", False)),
+                    "ensemble_members": calib_info.get("members"),
+                    "pool_enabled": pool_info["enabled"],
+                    "pool_peer_sample_count": pool_info["peer_sample_count"],
+                    "pool_peers": [p["symbol"] for p in peers_used],
                     "wf_fold_count": wf["fold_count"],
                     "wf_acc_mean": wf["acc_mean"],
                     "wf_acc_min": wf["acc_min"],
@@ -959,6 +1378,10 @@ def load_model(symbol=None):
             if meta.get("label_type") != LABEL_TYPE:
                 LOGGER.info("load_model %s: wrong label_type (retrain for v3.2 TP/SL)", symbol)
                 return None, None, None
+            if meta.get("feature_schema") != _v3_feature_schema():
+                LOGGER.info("load_model %s: feature_schema changed (%s != %s) — retrain needed",
+                            symbol, meta.get("feature_schema"), _v3_feature_schema())
+                return None, None, None
             if time.time() - meta.get('trained_at', 0) > 14 * 86400: return None, None, None
             return model, meta.get('feature_cols', FEATURE_COLS), meta
     except Exception as e:
@@ -983,6 +1406,14 @@ def predict_live_ex(symbol, asset_type, scores=None):
         return None, "intraday_data"
 
     features = _calculate_features(rows)
+
+    # W3: same point-in-time sector relative strength as training, for the
+    # current (last) bar. Only when enabled, matching the persisted feature set.
+    if _v3_sector_feature_enabled():
+        aligned_sector = _align_sector_closes(rows, _fetch_sector_series())
+        features["sector_rel_strength"] = _sector_rel_at(
+            rows, aligned_sector, len(rows) - 1, _v3_sector_lookback()
+        )
 
     above_ema200 = features.get('above_ema200', 1)
     adx_trending = features.get('adx_trending', 1)
@@ -1063,6 +1494,9 @@ def predict_live_ex(symbol, asset_type, scores=None):
             "wf_edge_mean": round(wf_edge_mean, 4),
             "wf_fold_count": wf_fold_count,
             "min_win_proba": round(float(min_p), 4),
+            "calibrated": bool(meta.get("calibrated", False)),
+            "calibration_method": meta.get("calibration_method"),
+            "ensemble": bool(meta.get("ensemble", False)),
         }
 
     if edge < min_edge:
