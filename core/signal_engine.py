@@ -159,6 +159,63 @@ def _v3_calibration_method() -> str:
     return (os.getenv("V3_CALIBRATION_METHOD", "auto") or "auto").strip().lower()
 
 
+def _v3_pool_training_enabled() -> bool:
+    """Whether to pool peer/sector samples into the model's training set (W1).
+
+    WOLF's post-Ch.11 history yields only ~127 labeled samples — too few for a
+    stable model. Pooling labeled samples from sector peers multiplies the
+    training data; all quality gates still judge the model on WOLF's own
+    holdout. Enabling pooling also price-normalizes macd_hist (the one raw
+    price-unit feature) so it is comparable across tickers. On by default; set
+    V3_POOL_TRAINING=off for the prior WOLF-only behavior.
+    """
+    return (os.getenv("V3_POOL_TRAINING", "on") or "on").strip().lower() not in (
+        "0", "off", "false", "no",
+    )
+
+
+def _v3_peer_symbols() -> list:
+    """Sector-peer tickers pooled into training (W1).
+
+    Default basket = liquid US-listed SiC / power-semiconductor names in WOLF's
+    sector. Peers that fail to fetch or have too few bars are skipped at
+    collection, so a stale default ticker is harmless. Override via
+    PEER_SYMBOLS="ON,STM,POWI".
+    """
+    raw = (os.getenv("PEER_SYMBOLS", "ON,STM,POWI,NVTS,ALGM,MPWR,MCHP,AOSL") or "").strip()
+    out, seen = [], set()
+    for part in raw.split(","):
+        sym = part.strip().upper()
+        if sym and sym not in seen:
+            seen.add(sym)
+            out.append(sym)
+    return out
+
+
+def _v3_wolf_sample_weight() -> float:
+    """Training weight on the target's own rows relative to peer rows (W1).
+
+    Peers broaden the fit but the model must still specialize to WOLF, so WOLF
+    samples are up-weighted. Default 3.0; set V3_WOLF_SAMPLE_WEIGHT to tune.
+    """
+    try:
+        return max(1.0, float(os.getenv("V3_WOLF_SAMPLE_WEIGHT", "3.0")))
+    except Exception:
+        return 3.0
+
+
+def _v3_feature_schema() -> str:
+    """Version tag for the feature vector's *semantics* (not just its columns).
+
+    load_model rejects any persisted model whose feature_schema differs from the
+    current one, forcing a retrain. This prevents train/serve skew when a
+    feature's scale/meaning changes — e.g. the macd_hist price-normalization
+    that flips with V3_POOL_TRAINING. A model trained on raw macd_hist must not
+    be served features computed as macd_hist/price, and vice versa.
+    """
+    return "macd_pct_v1" if _v3_pool_training_enabled() else "macd_raw_v0"
+
+
 def _v3_wf_purge() -> int:
     """Bars to purge between each walk-forward train block and its test block.
 
@@ -440,11 +497,17 @@ def _calculate_features(df):
     obv_slope = _obv_slope(closes, volumes)
     stoch_k, stoch_d = _stochastic(highs, lows, closes)
 
+    # macd_hist is in raw price units, so its scale tracks the share price. For
+    # cross-ticker pooling (W1) that makes a $5 stock incomparable to a $200
+    # one, so express it as a fraction of price. Read at runtime in both the
+    # train and live paths, so the two stay consistent regardless of the flag.
+    macd_hist_feat = (macd_hist / cur) if (_v3_pool_training_enabled() and cur > 0) else macd_hist
+
     return {
         'rsi': rsi,
         'rsi_oversold': 1 if rsi < 35 else 0,
         'rsi_overbought': 1 if rsi > 65 else 0,
-        'macd_hist': macd_hist,
+        'macd_hist': macd_hist_feat,
         'macd_bullish': 1 if macd_hist > 0 else 0,
         'pct_b': pct_b,
         'bb_squeeze': 1 if band_width < 0.05 else 0,
@@ -890,6 +953,51 @@ def _maybe_calibrate(model, X_calib, y_calib):
         return model, info
 
 
+def _assemble_pooled_training(X_train, y_train, peer_rows, feature_cols, wolf_weight):
+    """Stack the target's training slice with peer samples for pooled fitting (W1).
+
+    Returns (X_pooled, y_pooled, sample_weight). Target (WOLF) rows keep
+    wolf_weight so the model specializes to WOLF; peer rows get weight 1.0 so
+    they broaden the fit without dominating it. Pure/numpy so it's unit-testable
+    without xgboost/sklearn installed.
+    """
+    wolf_sw = np.full(len(X_train), float(wolf_weight))
+    if not peer_rows:
+        return X_train, y_train, wolf_sw
+    Xp = np.array([[r["features"].get(c, 0.0) for c in feature_cols] for r in peer_rows])
+    yp = np.array([r["label"] for r in peer_rows])
+    X_pooled = np.vstack([X_train, Xp])
+    y_pooled = np.concatenate([y_train, yp])
+    sample_weight = np.concatenate([wolf_sw, np.ones(len(Xp))])
+    return X_pooled, y_pooled, sample_weight
+
+
+def _collect_peer_rows(target_symbol):
+    """Labeled samples from sector peers for pooled training (W1).
+
+    Each peer is labeled by the same triple-barrier backtest as the target,
+    using the peer's own volatility, so labels are consistent across symbols.
+    Peers that fail to fetch or have too few labeled rows are skipped. Returns
+    (pooled_rows, peers_used) where peers_used is a per-peer sample-count list.
+    """
+    target = (target_symbol or "").upper()
+    peers = [p for p in _v3_peer_symbols() if p != target]
+    pooled, used = [], []
+    min_rows = _min_train_rows()
+    for p in peers:
+        try:
+            rows = backtest_symbol(p, "stock")
+        except Exception as e:
+            LOGGER.info(f"pool: peer {p} skipped ({str(e)[:80]})")
+            continue
+        if rows and len(rows) >= min_rows:
+            pooled.extend(rows)
+            used.append({"symbol": p, "n": len(rows)})
+        else:
+            LOGGER.info(f"pool: peer {p} skipped (only {len(rows) if rows else 0} rows)")
+    return pooled, used
+
+
 def train_and_validate(symbols_and_types):
     try:
         from xgboost import XGBClassifier
@@ -926,8 +1034,26 @@ def train_and_validate(symbols_and_types):
             X_train, X_test = X[:split], X[split:]
             y_train, y_test = y[:split], y[split:]
             natural_rate = float(np.mean(y_test))
-            pos_ct = int(np.sum(y_train))
-            neg_ct = int(len(y_train) - pos_ct)
+            # W1: pool peer/sector samples into the FIT set to break the
+            # small-data wall. The holdout (X_test), walk-forward, and
+            # calibration all stay WOLF-only below, so every quality gate still
+            # judges the model on WOLF's own out-of-sample data.
+            peer_rows, peers_used = ([], [])
+            if _v3_pool_training_enabled():
+                peer_rows, peers_used = _collect_peer_rows(symbol)
+            X_fit, y_fit, sample_weight = _assemble_pooled_training(
+                X_train, y_train, peer_rows, FEATURE_COLS, _v3_wolf_sample_weight()
+            )
+            pool_info = {
+                "enabled": _v3_pool_training_enabled(),
+                "peer_sample_count": int(len(peer_rows)),
+                "peers": peers_used,
+                "pooled_train_n": int(len(X_fit)),
+                "wolf_train_n": int(len(X_train)),
+                "wolf_sample_weight": _v3_wolf_sample_weight(),
+            }
+            pos_ct = int(np.sum(y_fit))
+            neg_ct = int(len(y_fit) - pos_ct)
             spw = (neg_ct / pos_ct) if pos_ct > 0 else 1.0
             min_acc = _v3_min_holdout_acc()
             min_edge = _v3_min_edge()
@@ -937,7 +1063,7 @@ def train_and_validate(symbols_and_types):
                 scale_pos_weight=min(25.0, max(1.0, float(spw))),
                 eval_metric='logloss', random_state=42
             )
-            model.fit(X_train, y_train)
+            model.fit(X_fit, y_fit, sample_weight=sample_weight)
             accuracy = float(accuracy_score(y_test, model.predict(X_test)))
             edge = accuracy - natural_rate
             wf = _walk_forward_scores(X, y)
@@ -980,6 +1106,7 @@ def train_and_validate(symbols_and_types):
                 "wf_acc_min": round(wf["acc_min"], 4),
                 "wf_edge_mean": round(wf["edge_mean"], 4),
                 "wf_edge_min": round(wf["edge_min"], 4),
+                "pool": pool_info,
                 "gates": [{"name": n, "passed": bool(p), "msg": m} for n, p, m in gate_checks],
                 "thresholds": {
                     "min_train_rows": min_rows,
@@ -1003,9 +1130,13 @@ def train_and_validate(symbols_and_types):
                     "trained_at": time.time(), "n_samples": len(rows),
                     "engine_version": "v3.2_tp_sl_daily",
                     "label_type": LABEL_TYPE,
+                    "feature_schema": _v3_feature_schema(),
                     "label_hold_bars": V3_LABEL_HOLD_BARS,
                     "calibrated": calib_info["calibrated"],
                     "calibration_method": calib_info.get("method"),
+                    "pool_enabled": pool_info["enabled"],
+                    "pool_peer_sample_count": pool_info["peer_sample_count"],
+                    "pool_peers": [p["symbol"] for p in peers_used],
                     "wf_fold_count": wf["fold_count"],
                     "wf_acc_mean": wf["acc_mean"],
                     "wf_acc_min": wf["acc_min"],
@@ -1051,6 +1182,10 @@ def load_model(symbol=None):
             meta = json.loads(mrow[0])
             if meta.get("label_type") != LABEL_TYPE:
                 LOGGER.info("load_model %s: wrong label_type (retrain for v3.2 TP/SL)", symbol)
+                return None, None, None
+            if meta.get("feature_schema") != _v3_feature_schema():
+                LOGGER.info("load_model %s: feature_schema changed (%s != %s) — retrain needed",
+                            symbol, meta.get("feature_schema"), _v3_feature_schema())
                 return None, None, None
             if time.time() - meta.get('trained_at', 0) > 14 * 86400: return None, None, None
             return model, meta.get('feature_cols', FEATURE_COLS), meta

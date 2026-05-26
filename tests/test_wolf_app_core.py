@@ -3545,6 +3545,90 @@ def test_wf_fold_bounds_respects_floors_and_fits_n():
         assert test_end <= 80
 
 
+def test_assemble_pooled_training_stacks_with_weights():
+    import numpy as np
+    import core.signal_engine as _se
+    X_train = np.array([[1.0, 2.0], [3.0, 4.0]])
+    y_train = np.array([1, 0])
+    peer_rows = [
+        {"features": {"a": 5.0, "b": 6.0}, "label": 1},
+        {"features": {"a": 7.0, "b": 8.0}, "label": 0},
+        {"features": {"a": 9.0, "b": 10.0}, "label": 1},
+    ]
+    X, y, sw = _se._assemble_pooled_training(X_train, y_train, peer_rows, ["a", "b"], 3.0)
+    assert X.shape == (5, 2)
+    assert list(y) == [1, 0, 1, 0, 1]
+    assert list(sw) == [3.0, 3.0, 1.0, 1.0, 1.0]   # WOLF weighted, peers = 1.0
+    assert list(X[2]) == [5.0, 6.0]                 # peer row mapped by col order
+
+
+def test_assemble_pooled_training_no_peers_returns_target():
+    import numpy as np
+    import core.signal_engine as _se
+    X_train = np.array([[1.0], [2.0]])
+    y_train = np.array([1, 0])
+    X, y, sw = _se._assemble_pooled_training(X_train, y_train, [], ["a"], 2.5)
+    assert X is X_train and y is y_train
+    assert list(sw) == [2.5, 2.5]
+
+
+def test_peer_symbols_parsing(monkeypatch):
+    import core.signal_engine as _se
+    monkeypatch.delenv("PEER_SYMBOLS", raising=False)
+    default = _se._v3_peer_symbols()
+    assert "ON" in default and "STM" in default
+    monkeypatch.setenv("PEER_SYMBOLS", "on, stm ,ON,,POWI")
+    assert _se._v3_peer_symbols() == ["ON", "STM", "POWI"]   # upper, dedupe, drop empties
+
+
+def test_collect_peer_rows_skips_thin_and_failed(monkeypatch):
+    import core.signal_engine as _se
+    monkeypatch.setattr(_se, "_v3_peer_symbols", lambda: ["WOLF", "GOOD", "THIN", "BOOM"])
+    monkeypatch.setattr(_se, "_min_train_rows", lambda: 3)
+
+    def fake_bt(sym, atype):
+        if sym == "GOOD":
+            return [{"features": {}, "label": 1}] * 5
+        if sym == "THIN":
+            return [{"features": {}, "label": 0}] * 2   # below min_train_rows
+        if sym == "BOOM":
+            raise RuntimeError("feed down")
+        return []
+    monkeypatch.setattr(_se, "backtest_symbol", fake_bt)
+
+    pooled, used = _se._collect_peer_rows("WOLF")       # target excluded from peers
+    assert len(pooled) == 5
+    assert used == [{"symbol": "GOOD", "n": 5}]
+
+
+def test_feature_schema_tracks_pool_flag(monkeypatch):
+    import core.signal_engine as _se
+    monkeypatch.setenv("V3_POOL_TRAINING", "on")
+    assert _se._v3_feature_schema() == "macd_pct_v1"
+    monkeypatch.setenv("V3_POOL_TRAINING", "off")
+    assert _se._v3_feature_schema() == "macd_raw_v0"
+
+
+def test_macd_hist_normalized_only_when_pooling_on(monkeypatch):
+    import core.signal_engine as _se
+    bars = []
+    price = 100.0
+    for i in range(60):                                 # rising series -> macd_hist != 0
+        price *= 1.01
+        bars.append({"close": price, "high": price * 1.01,
+                     "low": price * 0.99, "volume": 1000 + i})
+    last = bars[-1]["close"]
+
+    monkeypatch.setenv("V3_POOL_TRAINING", "off")
+    raw = _se._calculate_features(bars)["macd_hist"]
+    monkeypatch.setenv("V3_POOL_TRAINING", "on")
+    feat_on = _se._calculate_features(bars)
+
+    assert abs(raw) > 1e-6
+    assert feat_on["macd_hist"] == pytest.approx(raw / last, rel=1e-6)  # price-normalized
+    assert feat_on["macd_bullish"] == (1 if raw > 0 else 0)             # sign preserved
+
+
 def _fit_tiny_model():
     """A cheap fitted binary classifier for calibration tests (no XGBoost)."""
     pytest.importorskip("sklearn")  # ML deps are prod-only; skip where absent
