@@ -92,10 +92,21 @@ def get_vix():
 
 
 def check_feeds():
-    """Health check - test stock price feeds (Alpaca + yfinance)."""
-    _al = _alpaca("WOLF") is not None
-    _yf = _yfinance("WOLF") is not None
-    r = {"alpaca_stock": _al, "yfinance": _yf}
-    working = sum(1 for v in r.values() if v)
-    r["summary"] = f"{working}/{len(r)} feeds responding"
+    """Health check — can we price the target symbol right now?
+
+    WOLF-only system: probe the actual target (WOLF), not a proxy ticker. The
+    earlier AAPL probe measured generic "feed alive" but hid whether we can
+    actually price WOLF — misleading for a single-ticker product. Reports each
+    spot-price feed plus an overall `priceable` flag. Full multi-tier OHLCV
+    coverage detail lives at /api/diag/data-sources. Override with
+    HEALTH_PROBE_SYMBOL if you specifically want to test generic feed health.
+    """
+    probe = os.getenv("HEALTH_PROBE_SYMBOL", "WOLF")
+    _al = _alpaca(probe) is not None
+    _yf = _yfinance(probe) is not None
+    priceable = bool(_al or _yf)
+    r = {"alpaca_stock": _al, "yfinance": _yf, "probe_symbol": probe, "priceable": priceable}
+    working = sum(1 for v in (_al, _yf) if v)
+    r["summary"] = (f"{probe} priceable ({working}/2 feeds)" if priceable
+                    else f"{probe} NOT priceable (0/2 feeds)")
     return r

@@ -486,7 +486,6 @@ def run_health_audit(
         with open(cockpit_path, "r", encoding="utf-8") as f:
             html = f.read()
         required_tokens = [
-            "tab-crypto",
             "tab-stocks",
             "tab-portfolio",
             "addPos()",

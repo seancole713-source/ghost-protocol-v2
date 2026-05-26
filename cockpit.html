@@ -3,732 +3,2224 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Ghost Protocol</title>
+<title>Ghost Protocol — WOLF Command Center</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{background:#0a0a0a;color:#fff;font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;min-height:100vh}
-.topbar{display:flex;align-items:center;justify-content:space-between;padding:14px 20px;background:#111;border-bottom:1px solid #1e1e1e;position:sticky;top:0;z-index:100}
+body{background:#0a0a0a;color:#fff;font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;min-height:100vh;line-height:1.4}
+a{color:#60a5fa;text-decoration:none}
+a:hover{text-decoration:underline}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;color:#aaa;background:#1a1a1a;padding:1px 5px;border-radius:3px}
+
+/* ─── Top bar ─── */
+.topbar{display:flex;align-items:center;justify-content:space-between;padding:14px 24px;background:#111;border-bottom:1px solid #1e1e1e;position:sticky;top:0;z-index:100}
 .logo{font-size:17px;font-weight:800;letter-spacing:2px}
 .logo span{color:#ff3b3b}
-.top-right{display:flex;align-items:center;gap:14px;font-size:13px}
-.wr{background:#1a1a1a;border:1px solid #2a2a2a;padding:4px 12px;border-radius:20px}
-.wr b{color:#f59e0b}
-.dot{width:8px;height:8px;border-radius:50%;background:#22c55e;display:inline-block;margin-right:5px}
-.dot.warn{background:#f59e0b}
-#clock{color:#555;font-size:12px}
-.tabs{display:flex;background:#111;border-bottom:1px solid #1e1e1e;padding:0 16px;overflow-x:auto}
-.tab{padding:12px 18px;font-size:13px;font-weight:600;color:#555;cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap;transition:all .2s}
-.tab.active{color:#fff;border-bottom-color:#ff3b3b}
-.tab:hover{color:#ccc}
-.main{padding:16px 20px;max-width:1100px;margin:0 auto}
-.sec-label{font-size:10px;font-weight:700;letter-spacing:2px;color:#444;text-transform:uppercase;margin-bottom:14px}
-.panel{display:none}.panel.active{display:block}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;margin-bottom:28px}
-.card{background:#111;border:1px solid #1e1e1e;border-radius:12px;padding:16px}
-.card.buy{border-left:3px solid #22c55e}
-.card.sell{border-left:3px solid #ff3b3b}
-.card-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px}
-.sym{font-size:22px;font-weight:800}
-.badge{font-size:10px;font-weight:700;padding:2px 7px;border-radius:4px;background:#1e1e1e;color:#555;margin-left:6px;vertical-align:middle}
-.badge.stock{background:#0d1f0d;color:#22c55e}
-.pill{font-size:12px;font-weight:800;padding:5px 12px;border-radius:20px;letter-spacing:.5px}
-.pill.buy{background:#071a0d;color:#22c55e;border:1px solid #22c55e33}
-.pill.sell{background:#1a0707;color:#ff3b3b;border:1px solid #ff3b3b33}
-.action{font-size:14px;color:#bbb;line-height:1.7;margin-bottom:12px}
-.action b{color:#fff}
-.levels{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:10px}
+.top-right{display:flex;align-items:center;gap:14px;font-size:13px;color:#888}
+.mkt-badge{font-size:11px;font-weight:700;letter-spacing:.5px;padding:4px 10px;border-radius:20px;background:#1a1a1a;border:1px solid #2a2a2a}
+.mkt-badge.open{background:#071a0d;border-color:#14532d;color:#86efac}
+.mkt-badge.after{background:#1a1206;border-color:#7c5912;color:#fbbf24}
+.mkt-badge.closed{background:#1a0707;border-color:#5b1a1a;color:#fca5a5}
+
+/* ─── Main container ─── */
+.main{max-width:1180px;margin:0 auto;padding:24px 24px 40px}
+section.block{margin-bottom:32px}
+.sec-label{font-size:10px;font-weight:700;letter-spacing:2px;color:#666;text-transform:uppercase;margin-bottom:12px}
+
+/* ─── Ghost Score gauge ─── */
+.ghost-score-wrap{background:#111;border:1px solid #1e1e1e;border-radius:20px;padding:20px 24px;margin-bottom:18px;display:grid;grid-template-columns:auto 1fr;gap:24px;align-items:center}
+@media (max-width:640px){.ghost-score-wrap{grid-template-columns:1fr}}
+.gs-gauge-box{position:relative;width:240px;height:140px}
+.gs-gauge{width:240px;height:140px;display:block}
+.gs-center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;padding-bottom:6px;pointer-events:none}
+.gs-score{font-size:46px;font-weight:800;line-height:1;letter-spacing:-1px;color:#fff}
+.gs-signal{font-size:12px;font-weight:800;letter-spacing:2px;margin-top:6px;padding:3px 10px;border-radius:14px;background:#1a1a1a;color:#888;text-transform:uppercase}
+.gs-signal.strong-buy{background:#0a2a14;color:#4ade80}
+.gs-signal.buy{background:#14361f;color:#86efac}
+.gs-signal.hold{background:#1a1a06;color:#facc15}
+.gs-signal.sell{background:#2a1a0d;color:#fb923c}
+.gs-signal.strong-sell{background:#2a0d0d;color:#ef4444}
+.gs-side{display:flex;flex-direction:column;gap:8px;min-width:0}
+.gs-side-head{font-size:11px;font-weight:700;letter-spacing:2px;color:#666;text-transform:uppercase}
+.gs-regime{font-size:10px;font-weight:700;letter-spacing:1px;padding:2px 8px;border-radius:10px;background:#1a1a1a;color:#888;margin-left:6px}
+.gs-regime.up{background:#0a2a14;color:#4ade80}
+.gs-regime.down{background:#2a0d0d;color:#ef4444}
+.gs-regime.flat{background:#1a1a06;color:#facc15}
+.gs-side-sub{font-size:12px;color:#666;line-height:1.5}
+.gs-bars{display:flex;flex-direction:column;gap:5px;margin-top:6px}
+.gs-bar-row{display:grid;grid-template-columns:90px 1fr 60px;align-items:center;gap:8px;font-size:11px}
+.gs-bar-lbl{color:#888;font-weight:600}
+.gs-bar-track{height:6px;background:#1a1a1a;border-radius:3px;overflow:hidden}
+.gs-bar-fg{height:100%;border-radius:3px}
+.gs-bar-fg.lvl-h{background:#22c55e}
+.gs-bar-fg.lvl-m{background:#facc15}
+.gs-bar-fg.lvl-l{background:#fb923c}
+.gs-bar-fg.lvl-n{background:#444}
+.gs-bar-val{color:#aaa;font-weight:700;text-align:right;font-variant-numeric:tabular-nums}
+.gs-meta{font-size:10px;color:#444;margin-top:4px}
+
+/* ─── Hero banner ─── */
+.hero{background:linear-gradient(180deg,#111 0%,#0d0d0d 100%);border:1px solid #1e1e1e;border-radius:20px;padding:32px 28px;margin-bottom:24px}
+.hero-row{display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:18px}
+.hero-left{flex:1;min-width:280px}
+.hero-ticker{font-size:13px;color:#666;font-weight:700;letter-spacing:1.5px;margin-bottom:6px}
+.hero-price{font-size:64px;font-weight:800;line-height:1;letter-spacing:-1.5px}
+.hero-change{font-size:18px;font-weight:700;margin-top:10px}
+.hero-change.pos{color:#22c55e}
+.hero-change.neg{color:#ff3b3b}
+.hero-change.flat{color:#888}
+.hero-ah{font-size:13px;color:#888;margin-top:8px;line-height:1.6}
+.hero-ah b{color:#bbb}
+.hero-right{display:flex;flex-direction:column;align-items:flex-end;gap:10px}
+.hero-refresh{background:#1a1a1a;border:1px solid #2a2a2a;color:#888;font-size:12px;font-weight:600;padding:8px 14px;border-radius:8px;cursor:pointer}
+.hero-refresh:hover{background:#222;color:#ccc}
+.hero-ts{font-size:11px;color:#444}
+
+/* ─── Performance strip ─── */
+.perf{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:24px}
+.perf-card{background:#111;border:1px solid #1e1e1e;border-radius:12px;padding:14px 16px}
+.perf-card.big{grid-column:span 2;background:linear-gradient(135deg,#0d1f0d 0%,#0a1a0a 100%);border-color:#1f3f1f}
+.perf-lbl{font-size:10px;color:#666;font-weight:700;letter-spacing:1px;text-transform:uppercase;margin-bottom:6px}
+.perf-val{font-size:24px;font-weight:800;line-height:1}
+.perf-val.big{font-size:34px}
+.perf-val.pos{color:#22c55e}
+.perf-val.neg{color:#ff3b3b}
+.perf-sub{font-size:11px;color:#666;margin-top:6px}
+.perf-mini{display:flex;gap:3px;margin-top:8px;align-items:center;font-size:10px;color:#666}
+.perf-mini-bar{flex:1;height:6px;background:#1a1a1a;border-radius:3px;overflow:hidden;display:flex}
+.perf-mini-seg{height:100%}
+.perf-mini-seg.good{background:#22c55e}
+.perf-mini-seg.mid{background:#f59e0b}
+.perf-mini-seg.bad{background:#ff3b3b}
+.perf-mini-seg.none{background:#2a2a2a}
+
+/* ─── Charts ─── */
+.chart-wrap{background:#111;border:1px solid #1e1e1e;border-radius:14px;padding:18px}
+.chart-toggles{display:flex;gap:6px;margin-bottom:14px}
+.chart-toggle{background:#1a1a1a;border:1px solid #2a2a2a;color:#888;font-size:11px;font-weight:700;letter-spacing:.5px;padding:6px 14px;border-radius:6px;cursor:pointer}
+.chart-toggle.active{background:#ff3b3b;border-color:#ff3b3b;color:#fff}
+.chart-toggle:not(.active):hover{color:#ccc}
+.chart-canvas-wrap{position:relative;height:280px}
+.chart-canvas-wrap.tall{height:340px}
+/* PR #24 (items 11, 12): short-interest tile + catalyst timeline */
+.short-tile{background:linear-gradient(135deg,#1a0707 0%,#0d0d0d 100%);border:1px solid #5b1a1a;border-radius:14px;padding:20px 24px;display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:18px;align-items:center}
+.short-tile .st-block{display:flex;flex-direction:column;gap:4px}
+.short-tile .st-label{font-size:10px;color:#888;font-weight:700;letter-spacing:1.5px;text-transform:uppercase}
+.short-tile .st-val{font-size:22px;font-weight:800;color:#fff}
+.short-tile .st-val.high{color:#fb923c}
+.short-tile .st-val.medium{color:#facc15}
+.short-tile .st-val.low{color:#86efac}
+.short-tile .st-sub{font-size:11px;color:#888}
+.catalyst-timeline{background:#111;border:1px solid #1e1e1e;border-radius:14px;padding:18px}
+.cat-row{display:grid;grid-template-columns:120px 110px 1fr;gap:14px;padding:10px 6px;border-bottom:1px solid #1a1a1a;font-size:13px;align-items:start}
+.cat-row:last-child{border:none}
+.cat-when{font-size:11px;color:#888;font-weight:600;font-variant-numeric:tabular-nums}
+.cat-kind{font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase;padding:2px 8px;border-radius:4px;justify-self:start;height:fit-content}
+.cat-kind.news{background:#1a1a1a;color:#888}
+.cat-kind.earnings{background:#1a1206;color:#fbbf24}
+.cat-kind.press{background:#0a1a1f;color:#7dd3fc}
+.cat-kind.rating{background:#0a1f0d;color:#86efac}
+.cat-kind.opex{background:#1a0f1f;color:#c4b5fd}
+.cat-body{color:#ddd;line-height:1.5}
+.cat-body a{color:#60a5fa;text-decoration:none}
+.cat-body a:hover{text-decoration:underline}
+.chart-legend{display:flex;gap:18px;margin-top:14px;font-size:11px;color:#888;flex-wrap:wrap}
+.chart-legend .leg{display:flex;align-items:center;gap:6px}
+.chart-legend .leg-swatch{width:14px;height:3px;border-radius:2px;background:#22c55e}
+.chart-legend .leg-swatch.band-up{background:rgba(34,197,94,0.35)}
+.chart-legend .leg-swatch.band-dn{background:rgba(255,59,59,0.35)}
+.chart-legend .leg-swatch.dot-win{background:#22c55e;width:8px;height:8px;border-radius:50%}
+.chart-legend .leg-swatch.dot-loss{background:#ff3b3b;width:8px;height:8px;border-radius:50%}
+.chart-legend .leg-swatch.dot-open{background:#60a5fa;width:8px;height:8px;border-radius:50%}
+.zone-pill{display:inline-flex;align-items:center;gap:8px;padding:8px 14px;border-radius:10px;font-size:13px;font-weight:700}
+.zone-pill.buy{background:#071a0d;border:1px solid #14532d;color:#86efac}
+.zone-pill.sell{background:#1a0707;border:1px solid #7f1d1d;color:#fca5a5}
+.zone-pill .zp-lbl{font-size:10px;letter-spacing:1.5px;text-transform:uppercase;opacity:.7}
+.zone-pill .zp-val{font-size:15px}
+.signal-banner{background:linear-gradient(90deg,#1a1206 0%,#0d0d0d 100%);border:1px solid #5b4112;color:#fbbf24;padding:10px 16px;border-radius:10px;margin-bottom:14px;font-size:13px;font-weight:600;display:flex;align-items:center;gap:10px}
+.signal-banner.divergence{background:linear-gradient(90deg,#0a1a1f 0%,#0d0d0d 100%);border-color:#1e4965;color:#7dd3fc}
+.decay-line{font-size:11px;color:#666;margin-top:4px}
+.decay-line b{color:#aaa}
+
+/* ─── Stats grid (Yahoo style) ─── */
+.stats-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;background:#111;border:1px solid #1e1e1e;border-radius:14px;padding:18px 8px}
+.stats-col{display:flex;flex-direction:column}
+.stat-row{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border-bottom:1px solid #1a1a1a}
+.stat-row:last-child{border:none}
+.stat-key{font-size:12px;color:#888;font-weight:500}
+.stat-val{font-size:13px;color:#fff;font-weight:700}
+@media (max-width:640px){
+  .stats-grid{grid-template-columns:1fr}
+  .stats-col:first-child .stat-row:last-child{border-bottom:1px solid #1a1a1a}
+}
+
+/* ─── Earnings panel ─── */
+.earn-row{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media (max-width:820px){.earn-row{grid-template-columns:1fr}}
+.earn-card{background:#111;border:1px solid #1e1e1e;border-radius:14px;padding:18px}
+.earn-card h4{font-size:12px;font-weight:700;color:#888;letter-spacing:1px;text-transform:uppercase;margin-bottom:14px}
+
+/* ─── Analyst panel ─── */
+.analyst-card{background:#111;border:1px solid #1e1e1e;border-radius:14px;padding:18px;margin-bottom:14px}
+.analyst-card h4{font-size:12px;font-weight:700;color:#888;letter-spacing:1px;text-transform:uppercase;margin-bottom:14px}
+.target-track{position:relative;height:64px;margin:30px 16px 18px}
+.target-line{position:absolute;left:0;right:0;top:32px;height:3px;background:linear-gradient(90deg,#ff3b3b 0%,#f59e0b 50%,#22c55e 100%);border-radius:2px}
+.target-marker{position:absolute;top:24px;width:2px;height:18px;background:#fff;transform:translateX(-50%)}
+.target-label{position:absolute;top:-10px;font-size:10px;color:#888;font-weight:700;letter-spacing:.5px;text-transform:uppercase;transform:translateX(-50%);white-space:nowrap}
+.target-label .lv{display:block;color:#fff;font-size:13px;margin-top:2px}
+.target-pin{position:absolute;top:44px;font-size:11px;color:#fff;font-weight:700;transform:translateX(-50%);white-space:nowrap}
+.target-pin.cur{color:#60a5fa}
+.target-pin.cur::before{content:'▲';display:block;color:#60a5fa;font-size:12px;margin-bottom:2px}
+.rec-bar{height:34px;border-radius:8px;overflow:hidden;display:flex;background:#1a1a1a}
+.rec-seg{height:100%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#000;min-width:0}
+.rec-seg.strong-buy{background:#16a34a}
+.rec-seg.buy{background:#4ade80}
+.rec-seg.hold{background:#facc15}
+.rec-seg.underperform{background:#fb923c}
+.rec-seg.sell{background:#ef4444;color:#fff}
+.rec-legend{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin-top:14px;font-size:11px;color:#888}
+.rec-legend .ll{display:flex;align-items:center;gap:6px}
+.rec-legend .ll-dot{width:10px;height:10px;border-radius:2px}
+.latest-rating{display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:center;background:#0d0d0d;border:1px solid #1a1a1a;border-radius:10px;padding:12px 14px;margin-top:14px;font-size:13px}
+.latest-rating .lr-firm{font-weight:700;color:#fff}
+.latest-rating .lr-meta{color:#888;font-size:11px}
+.latest-rating .lr-action{font-weight:700;font-size:12px;padding:4px 10px;border-radius:6px;background:#1a1a1a}
+
+/* ─── News feed ─── */
+.news-tabs{display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap}
+.news-tab{background:#1a1a1a;border:1px solid #2a2a2a;color:#888;font-size:11px;font-weight:700;letter-spacing:.5px;padding:6px 12px;border-radius:6px;cursor:pointer}
+.news-tab.active{background:#ff3b3b;border-color:#ff3b3b;color:#fff}
+.news-tab:not(.active):hover{color:#ccc}
+.news-list{display:flex;flex-direction:column;gap:8px}
+.news-item{background:#111;border:1px solid #1e1e1e;border-radius:10px;padding:14px 16px;transition:border-color .15s}
+.news-item:hover{border-color:#2a2a2a}
+.news-hl{font-size:14px;color:#ddd;line-height:1.4;font-weight:500;margin-bottom:6px}
+.news-hl a{color:#ddd}
+.news-meta{font-size:11px;color:#666;display:flex;gap:10px;flex-wrap:wrap}
+.news-cat{font-weight:700;letter-spacing:.5px;text-transform:uppercase;padding:1px 6px;border-radius:3px;background:#1a1a1a;color:#888;font-size:10px}
+.news-cat.earnings{background:#1a1206;color:#fbbf24}
+.news-cat.press{background:#0a1a1f;color:#7dd3fc}
+.news-cat.news{background:#1a1a1a;color:#888}
+.sent-b{color:#22c55e;font-weight:700;font-size:11px}
+.sent-s{color:#ff3b3b;font-weight:700;font-size:11px}
+.sent-n{color:#666;font-weight:700;font-size:11px}
+
+/* ─── Play card (today's WOLF play) ─── */
+.play-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:12px}
+.play-card{background:#111;border:1px solid #1e1e1e;border-radius:14px;padding:18px}
+.play-card.buy{border-left:3px solid #22c55e}
+.play-card.sell{border-left:3px solid #ff3b3b}
+.play-head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px}
+.play-sym{font-size:22px;font-weight:800}
+.play-pill{font-size:12px;font-weight:800;padding:5px 12px;border-radius:20px;letter-spacing:.5px}
+.play-pill.buy{background:#071a0d;color:#22c55e;border:1px solid #22c55e33}
+.play-pill.sell{background:#1a0707;color:#ff3b3b;border:1px solid #ff3b3b33}
+.play-action{font-size:14px;color:#bbb;line-height:1.7;margin-bottom:12px}
+.play-action b{color:#fff}
+.play-levels{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:10px}
 .lv{background:#0d0d0d;border-radius:8px;padding:8px;text-align:center}
 .lv-label{font-size:9px;color:#444;font-weight:700;letter-spacing:.5px;margin-bottom:3px}
 .lv-val{font-size:13px;font-weight:700}
-.lv.e .lv-val{color:#777}
+.lv.e .lv-val{color:#888}
 .lv.t .lv-val{color:#22c55e}
 .lv.s .lv-val{color:#ff3b3b}
 .conf-bar{height:3px;background:#1a1a1a;border-radius:3px;overflow:hidden;margin-bottom:4px}
 .conf-fill{height:100%;border-radius:3px}
 .conf-fill.h{background:#22c55e}
 .conf-fill.m{background:#f59e0b}
-.conf-fill.l{background:#555}
-.conf-meta{display:flex;justify-content:space-between;font-size:11px;color:#444}
-.ttl{font-size:11px;color:#444;margin-top:6px}
-.empty{text-align:center;padding:50px 20px}
-.empty .ico{font-size:36px;margin-bottom:10px}
-.empty p{font-size:14px;color:#444;line-height:1.6}
-.info-box{background:#111;border:1px solid #1e1e1e;border-radius:10px;padding:20px;color:#555;font-size:14px;line-height:1.7;margin-bottom:14px}
-.info-box b{color:#888}
-.results-tbl{width:100%;border-collapse:collapse}
-.results-tbl th{font-size:10px;font-weight:700;letter-spacing:1px;color:#444;padding:8px 12px;border-bottom:1px solid #1e1e1e;text-align:left}
-.results-tbl td{padding:11px 12px;border-bottom:1px solid #111;font-size:14px}
-.results-tbl tr:last-child td{border:none}
-.win-txt{color:#22c55e;font-weight:800;font-size:12px}
-.loss-txt{color:#ff3b3b;font-weight:800;font-size:12px}
-.pos{color:#22c55e;font-weight:700}
-.neg{color:#ff3b3b;font-weight:700}
-.news-item{background:#111;border:1px solid #1e1e1e;border-radius:10px;padding:14px;margin-bottom:8px}
-.news-hl{font-size:14px;color:#ccc;line-height:1.4}
-.news-meta{font-size:11px;color:#444;margin-top:5px}
-.sent-b{color:#22c55e;font-weight:700;font-size:11px}
-.sent-s{color:#ff3b3b;font-weight:700;font-size:11px}
-.sent-n{color:#555;font-weight:700;font-size:11px}
-.port-form{background:#111;border:1px solid #1e1e1e;border-radius:12px;padding:20px;margin-bottom:20px}
-.port-form h3{font-size:12px;font-weight:700;color:#555;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:14px}
-.form-row{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;margin-bottom:12px;align-items:end}
-.form-row label{font-size:10px;color:#555;font-weight:700;letter-spacing:.5px;display:block;margin-bottom:4px}
+.conf-fill.l{background:#666}
+.conf-meta{display:flex;justify-content:space-between;font-size:11px;color:#666}
+.ttl{font-size:11px;color:#666;margin-top:6px}
+.empty{text-align:center;padding:40px 20px;color:#555;font-size:13px;line-height:1.6}
+.empty .ico{font-size:32px;margin-bottom:10px;opacity:.6}
+.info-box{background:#111;border:1px solid #1e1e1e;border-radius:12px;padding:18px;color:#888;font-size:13px;line-height:1.7}
+.info-box b{color:#ccc}
+
+/* ─── Portfolio ─── */
+.port-form{background:#111;border:1px solid #1e1e1e;border-radius:14px;padding:18px;margin-bottom:14px}
+.port-form h3{font-size:11px;font-weight:700;color:#888;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:14px}
+.form-row{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;margin-bottom:10px;align-items:end}
+.form-row label{font-size:10px;color:#666;font-weight:700;letter-spacing:.5px;display:block;margin-bottom:4px}
 .form-row input,.form-row select{width:100%;background:#0a0a0a;border:1px solid #2a2a2a;color:#fff;padding:9px 10px;border-radius:8px;font-size:14px}
 .btn-add{background:#ff3b3b;color:#fff;border:none;padding:10px 18px;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;width:100%}
 .btn-add:hover{background:#e03333}
-.port-totals{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px}
+.port-totals{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px}
 .ptot{background:#111;border:1px solid #1e1e1e;border-radius:10px;padding:14px;text-align:center}
-.ptot-label{font-size:10px;color:#444;letter-spacing:.5px;margin-bottom:4px}
-.ptot-val{font-size:20px;font-weight:800}
-.pcard{background:#111;border:1px solid #1e1e1e;border-radius:12px;padding:16px;margin-bottom:10px}
+.ptot-lbl{font-size:10px;color:#666;letter-spacing:.5px;margin-bottom:4px}
+.ptot-val{font-size:18px;font-weight:800}
+.pos{color:#22c55e;font-weight:700}
+.neg{color:#ff3b3b;font-weight:700}
+.pcard{background:#111;border:1px solid #1e1e1e;border-radius:12px;padding:14px;margin-bottom:10px}
 .pcard-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px}
-.psym{font-size:20px;font-weight:800}
-.ptype{font-size:10px;color:#555;font-weight:700;letter-spacing:1px;margin-left:6px}
-.pnums{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px}
+.psym{font-size:18px;font-weight:800}
+.ptype{font-size:10px;color:#666;font-weight:700;letter-spacing:1px;margin-left:6px}
+.pnums{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:8px}
 .pnum{text-align:center;background:#0d0d0d;border-radius:8px;padding:8px}
-.pnum-label{font-size:9px;color:#444;letter-spacing:.3px;margin-bottom:3px}
+.pnum-lbl{font-size:9px;color:#666;letter-spacing:.3px;margin-bottom:3px}
 .pnum-val{font-size:13px;font-weight:700}
 .ghost-adv{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-.gadv-label{font-size:11px;color:#444}
-.gadv-val{font-size:13px;font-weight:800;padding:5px 14px;border-radius:20px}
+.gadv-lbl{font-size:11px;color:#666}
+.gadv-val{font-size:12px;font-weight:800;padding:4px 12px;border-radius:20px}
 .gadv-buy{background:#071a0d;color:#22c55e}
 .gadv-sell{background:#1a0707;color:#ff3b3b}
-.gadv-hold{background:#1a1a1a;color:#666}
-.btn-del{background:none;border:1px solid #2a2a2a;color:#555;padding:4px 10px;border-radius:6px;font-size:11px;cursor:pointer}
+.gadv-neutral{background:#1a1a1a;color:#666}
+.btn-del{background:none;border:1px solid #2a2a2a;color:#666;padding:4px 10px;border-radius:6px;font-size:11px;cursor:pointer}
 .btn-del:hover{border-color:#ff3b3b;color:#ff3b3b}
 .perr{color:#ff3b3b;font-size:13px;margin-top:8px;min-height:18px}
-.footer{background:#111;border-top:1px solid #1e1e1e;padding:10px 20px;display:flex;gap:20px;font-size:11px;color:#3a3a3a;flex-wrap:wrap}
-.footer b{color:#555}
-.truth-wrap{background:#0d0d0d;border-bottom:1px solid #252525}
-.truth-toggle{width:100%;text-align:left;background:#111;border:none;border-bottom:1px solid #1e1e1e;color:#888;font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;padding:10px 20px;cursor:pointer;display:flex;align-items:center;justify-content:space-between}
+
+/* ─── Truth Mode (kept from PR #6) ─── */
+.truth-wrap{background:#0a0a0a;margin-top:16px}
+.truth-toggle{width:100%;text-align:left;background:#111;border:1px solid #1e1e1e;border-radius:12px;color:#888;font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;padding:14px 18px;cursor:pointer;display:flex;align-items:center;justify-content:space-between}
 .truth-toggle:hover{color:#ccc}
 .truth-toggle .chev{color:#ff3b3b;font-size:14px}
-.truth-panel{padding:14px 20px 18px;max-width:1100px;margin:0 auto}
+.truth-panel{padding-top:14px}
 .truth-panel.collapsed{display:none}
-.regime-bar{border-radius:10px;padding:12px 16px;margin-bottom:14px;font-size:13px;line-height:1.5}
-.regime-bar.ok{background:#071a0d;border:1px solid #14532d;color:#86efac}
-.regime-bar.block{background:#1a0a0a;border:1px solid #7f1d1d;color:#fca5a5}
+.activity-strip{display:flex;gap:18px;flex-wrap:wrap;background:#0d0d0d;border:1px solid #1e1e1e;border-radius:10px;padding:10px 16px;margin-bottom:14px;font-size:12px;color:#888}
+.activity-strip b{color:#fff;font-weight:700}
+.activity-strip .w{color:#22c55e;font-weight:700}
+.activity-strip .l{color:#ff3b3b;font-weight:700}
+.activity-strip .e{color:#f59e0b;font-weight:700}
 .truth-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin-bottom:14px}
 .truth-card{background:#111;border:1px solid #1e1e1e;border-radius:12px;padding:14px 16px}
-.truth-card h4{font-size:10px;font-weight:700;letter-spacing:1.5px;color:#555;text-transform:uppercase;margin-bottom:10px}
+.truth-card h4{font-size:10px;font-weight:700;letter-spacing:1.5px;color:#666;text-transform:uppercase;margin-bottom:10px}
 .truth-big{font-size:26px;font-weight:800;color:#fff;margin-bottom:4px}
 .truth-big.v32{color:#4ade80}
 .truth-big.legacy{color:#f59e0b}
-.truth-note{font-size:11px;color:#555;line-height:1.55}
+.truth-big.pass{color:#4ade80}
+.truth-big.warn{color:#f59e0b}
+.truth-big.fail{color:#ff3b3b}
+.truth-note{font-size:11px;color:#666;line-height:1.55}
 .truth-kv{font-size:12px;color:#888;margin-top:8px;line-height:1.5}
 .truth-kv b{color:#aaa}
+.conf-tbl{width:100%;border-collapse:collapse;font-size:12px}
+.conf-tbl th{font-size:9px;letter-spacing:1px;color:#666;padding:6px 8px;border-bottom:1px solid #252525;text-align:left;text-transform:uppercase}
+.conf-tbl td{padding:8px;border-bottom:1px solid #1a1a1a;color:#ccc;vertical-align:middle}
+.conf-tbl tr:last-child td{border:none}
+.conf-tbl .bucket-lbl{font-weight:700;color:#fff}
+.conf-bar-track{height:8px;background:#1a1a1a;border-radius:4px;overflow:hidden;min-width:80px}
+.conf-bar-bar{height:100%;border-radius:4px}
+.conf-bar-bar.good{background:#22c55e}
+.conf-bar-bar.mid{background:#f59e0b}
+.conf-bar-bar.bad{background:#ff3b3b}
+.conf-bar-bar.none{background:#333}
 .models-tbl{width:100%;border-collapse:collapse;font-size:12px}
-.models-tbl th{text-align:left;font-size:9px;letter-spacing:1px;color:#555;padding:8px 10px;border-bottom:1px solid #252525}
+.models-tbl th{text-align:left;font-size:9px;letter-spacing:1px;color:#666;padding:8px 10px;border-bottom:1px solid #252525}
 .models-tbl td{padding:10px;border-bottom:1px solid #1a1a1a;color:#ccc}
 .models-tbl tr:last-child td{border:none}
-.wr-sub{font-size:10px;color:#555;margin-top:4px;line-height:1.3;max-width:200px}
+
+/* ─── Footer ─── */
+.footer{background:#111;border-top:1px solid #1e1e1e;padding:12px 24px;display:flex;gap:20px;font-size:11px;color:#444;flex-wrap:wrap;margin-top:40px}
+.footer b{color:#666}
+
+/* ─── Design polish v2 (additive overrides — rounded cards, depth, KPI type) ─── */
+body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) fixed,#0a0a0a}
+.card,.perf-card,.chart-wrap,.stats-grid,.ghost-score-wrap,.hero,.short-tile,.port-form{
+  border-radius:16px;border-color:#23232e;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.03), 0 8px 24px rgba(0,0,0,.35);
+  transition:transform .15s ease, border-color .15s ease, box-shadow .15s ease}
+.card:hover,.perf-card:hover,.chart-wrap:hover,.short-tile:hover{
+  border-color:#34344a;transform:translateY(-1px);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.04), 0 12px 30px rgba(0,0,0,.45)}
+.perf-val,.gs-score{letter-spacing:-.6px}
+.perf-lbl,.sec-label,.gs-side-head{color:#7c7c90}
+.sec-label{position:relative;padding-left:12px}
+.sec-label::before{content:"";position:absolute;left:0;top:1px;bottom:1px;width:3px;border-radius:2px;
+  background:linear-gradient(180deg,#8b5cf6,#6d28d9)}
+/* KPI delta chips + outcome donut (design v2) */
+.perf-delta{font-size:11px;font-weight:700;letter-spacing:0;margin-left:7px;vertical-align:middle}
+.perf-delta.up{color:#22c55e}
+.perf-delta.down{color:#ff3b3b}
+.perf-delta.flat{color:#666}
+.donut-wrap{display:flex;align-items:center;gap:28px;flex-wrap:wrap}
+.donut-box{position:relative;width:180px;height:180px;flex:0 0 auto}
+.donut-center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none}
+.donut-total{font-size:30px;font-weight:800;letter-spacing:-.6px}
+.donut-total-lbl{font-size:11px;color:#888}
+/* Section consistency (roadmap #2d): frame the bare list sections so they match
+   the carded sections' depth/radius. */
+#sh-list, .pj-list{background:#0d0d0d;border:1px solid #23232e;border-radius:16px;padding:6px 12px;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.03)}
+#sh-list .tbl, .pj-list .empty{margin:6px 0}
+/* Live auto-refresh indicator (roadmap #3c) */
+.auto-status{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:700;letter-spacing:.5px;color:#86efac;background:#0a2a14;border:1px solid #14532d;border-radius:14px;padding:4px 10px;margin-right:8px;white-space:nowrap;vertical-align:middle}
+.auto-status.paused{color:#facc15;background:#1a1a06;border-color:#5b4112}
+.auto-dot{width:7px;height:7px;border-radius:50%;background:#22c55e;animation:autopulse 2s ease-in-out infinite}
+.auto-status.paused .auto-dot{background:#facc15;animation:none}
+@keyframes autopulse{0%,100%{opacity:1}50%{opacity:.35}}
 </style>
 </head>
 <body>
+
 <div class="topbar">
   <div class="logo">&#128123; GHOST <span>PROTOCOL</span></div>
   <div class="top-right">
-    <div class="wr"><div>Win rate: <b id="wr">&#8212;</b></div><div class="wr-sub" id="wr-sub"></div></div>
-    <div><span class="dot" id="sdot"></span><span id="stxt" style="font-size:13px;color:#888">Loading...</span></div>
-    <div id="clock"></div>
-  </div>
-</div>
-
-<div class="tabs">
-  <div class="tab active" id="tab-crypto" onclick="show('crypto')">&#129689; CRYPTO PLAYS</div>
-  <div class="tab" id="tab-stocks" onclick="show('stocks')">&#128200; STOCK PLAYS</div>
-  <div class="tab" id="tab-portfolio" onclick="show('portfolio')">&#128188; MY PORTFOLIO</div>
-  <div class="tab" id="tab-results" onclick="show('results')">&#128202; RESULTS</div>
-  <div class="tab" id="tab-news" onclick="show('news')">&#128240; NEWS</div>
-</div>
-
-<div class="truth-wrap">
-  <button type="button" class="truth-toggle" id="truth-toggle" aria-expanded="true">
-    <span>Truth mode · metrics that match the engine</span>
-    <span class="chev" id="truth-chev">&#9660;</span>
-  </button>
-  <div class="truth-panel" id="truth-body">
-    <div id="regime-slot"></div>
-    <div class="truth-grid">
-      <div class="truth-card">
-        <h4>Post&#8211;v3.2 window (decision metric)</h4>
-        <div class="truth-big v32" id="t-v32-wr">&#8212;</div>
-        <div class="truth-note"><b>Issued in window</b> — WIN/LOSS for all directions where <code>predicted_at</code> is on or after the cutover (when models were trained). This is the fair score for the <i>current</i> engine. <b>Recent Results</b> sorts by exit/expiry, so you can see closes for <i>older</i> picks that do not count here. EXPIRED excluded. API: <code>post_v32</code>.</div>
-        <div class="truth-kv" id="t-v32-kv"></div>
-      </div>
-      <div class="truth-card">
-        <h4>Legacy / all&#8211;time (context only)</h4>
-        <div class="truth-big legacy" id="t-leg-wr">&#8212;</div>
-        <div class="truth-note">Includes older engines and migrated rows. Do not use alone to judge v3.2.</div>
-        <div class="truth-kv" id="t-leg-kv"></div>
-      </div>
-      <div class="truth-card">
-        <h4>System freshness</h4>
-        <div class="truth-big" id="t-fresh">&#8212;</div>
-        <div class="truth-note">Minutes since the newest <code>predicted_at</code> (a new pick row). Resolving old picks does not refresh this. For engine liveness, compare <code>/health</code> <code>prediction_cycle_freshness_min</code> (last full scan) — picks can be zero while the cycle is fresh.</div>
-        <div class="truth-kv" id="t-sys-kv"></div>
-      </div>
-    </div>
-    <div class="truth-card" style="margin-bottom:0">
-      <h4>Model lineage (loaded symbols)</h4>
-      <div id="t-models-slot"><p class="truth-note">Loading&#8230;</p></div>
-    </div>
+    <span class="mkt-badge" id="mkt-badge">—</span>
+    <span id="clock"></span>
   </div>
 </div>
 
 <div class="main">
-  <div class="panel active" id="panel-crypto">
-    <div class="sec-label">Today's Crypto Plays</div>
-    <div class="grid" id="cgrid"><div class="empty"><div class="ico">&#9203;</div><p>Loading plays...</p></div></div>
-  </div>
-  <div class="panel" id="panel-stocks">
-    <div class="sec-label">Today's Stock Plays</div>
-    <div id="sgrid"><div class="empty"><div class="ico">&#9203;</div><p>Loading...</p></div></div>
-  </div>
-  <div class="panel" id="panel-portfolio">
+
+  <!-- ─── Ghost Score gauge ─── -->
+  <section class="ghost-score-wrap" id="ghost-score-wrap">
+    <div class="gs-gauge-box">
+      <svg class="gs-gauge" viewBox="0 0 200 120" preserveAspectRatio="xMidYMid meet">
+        <path d="M 20 100 A 80 80 0 0 1 180 100" fill="none" stroke="#1a1a1a" stroke-width="14" stroke-linecap="round"/>
+        <g class="gs-ticks" stroke="#2a2a2a" stroke-width="2">
+          <line x1="20" y1="100" x2="20" y2="92"/>
+          <line x1="55" y1="35" x2="60" y2="40"/>
+          <line x1="100" y1="20" x2="100" y2="28"/>
+          <line x1="145" y1="35" x2="140" y2="40"/>
+          <line x1="180" y1="100" x2="180" y2="92"/>
+        </g>
+        <path id="gs-gauge-fg" d="M 20 100 A 80 80 0 0 1 20 100" fill="none" stroke="#666" stroke-width="14" stroke-linecap="round"/>
+      </svg>
+      <div class="gs-center">
+        <div class="gs-score" id="gs-score">&#8212;</div>
+        <div class="gs-signal" id="gs-signal">Loading&#8230;</div>
+      </div>
+    </div>
+    <div class="gs-side">
+      <div class="gs-side-head">Ghost Score <span class="gs-regime" id="gs-regime"></span></div>
+      <div class="gs-side-sub" id="gs-side-sub">A composite read of WOLF &mdash; model + volume + sector + momentum + freshness.</div>
+      <div class="gs-bars" id="gs-bars"></div>
+      <div class="gs-meta" id="gs-meta"></div>
+    </div>
+  </section>
+
+  <!-- ─── Hero banner ─── -->
+  <section class="hero">
+    <div class="hero-row">
+      <div class="hero-left">
+        <div class="hero-ticker">NYSE: WOLF · WOLFSPEED</div>
+        <div class="hero-price" id="hero-price">—</div>
+        <div class="hero-change" id="hero-change">—</div>
+        <div class="hero-ah" id="hero-ah"></div>
+      </div>
+      <div class="hero-right">
+        <span class="auto-status" id="auto-status" title="Cockpit auto-refreshes; pauses when the tab is hidden"><span class="auto-dot"></span>Auto</span>
+        <button class="hero-refresh" onclick="load()" title="Refresh now">&#x21BB; Refresh</button>
+        <div class="hero-ts" id="hero-ts"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── Ghost performance strip ─── -->
+  <section class="perf" id="perf-strip">
+    <div class="perf-card big">
+      <div class="perf-lbl">Win Rate · v3.2</div>
+      <div class="perf-val big pos" id="perf-wr">—</div>
+      <div class="perf-sub" id="perf-wr-sub">Loading…</div>
+    </div>
+    <div class="perf-card">
+      <div class="perf-lbl">Current Streak</div>
+      <div class="perf-val" id="perf-streak">—</div>
+      <div class="perf-sub" id="perf-streak-sub"></div>
+    </div>
+    <div class="perf-card">
+      <div class="perf-lbl">Open Picks</div>
+      <div class="perf-val" id="perf-open">—</div>
+      <div class="perf-sub" id="perf-open-sub"></div>
+    </div>
+    <div class="perf-card">
+      <div class="perf-lbl">This Week</div>
+      <div class="perf-val" id="perf-week">—</div>
+      <div class="perf-sub" id="perf-week-sub"></div>
+    </div>
+    <div class="perf-card">
+      <div class="perf-lbl">Calibration</div>
+      <div class="perf-mini">
+        <div class="perf-mini-bar" id="perf-cal-bar"></div>
+      </div>
+      <div class="perf-sub" id="perf-cal-sub">—</div>
+    </div>
+  </section>
+
+  <!-- ─── Today's WOLF play ─── -->
+  <section class="block">
+    <div class="sec-label">Today&#39;s WOLF Play</div>
+    <div id="sgrid"><div class="empty"><div class="ico">&#9203;</div>Loading plays…</div></div>
+  </section>
+
+  <!-- ─── Prediction vs Reality chart ─── -->
+  <section class="block">
+    <div class="sec-label">Prediction vs Reality</div>
+    <div class="chart-wrap">
+      <div class="chart-toggles">
+        <button class="chart-toggle active" data-range="1d" onclick="setChartRange('1d')">1D</button>
+        <button class="chart-toggle" data-range="1w" onclick="setChartRange('1w')">1W</button>
+        <button class="chart-toggle" data-range="1m" onclick="setChartRange('1m')">1M</button>
+      </div>
+      <div class="chart-canvas-wrap tall">
+        <canvas id="pred-chart"></canvas>
+      </div>
+      <div id="zone-callouts" style="display:flex;gap:10px;margin-top:10px;flex-wrap:wrap"></div>
+      <div class="chart-legend">
+        <span class="leg"><span class="leg-swatch"></span>WOLF live</span>
+        <span class="leg"><span class="leg-swatch band-up"></span>Predicted band (BUY)</span>
+        <span class="leg"><span class="leg-swatch band-dn"></span>Predicted band (SELL)</span>
+        <span class="leg"><span class="leg-swatch dot-open"></span>Open pick</span>
+        <span class="leg"><span class="leg-swatch dot-win"></span>WIN</span>
+        <span class="leg"><span class="leg-swatch dot-loss"></span>LOSS</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── Realized equity curve (if you followed every pick) ─── -->
+  <section class="block" id="equity-section" style="display:none">
+    <div class="sec-label">If You Followed Every Pick</div>
+    <div class="chart-wrap">
+      <div id="equity-summary" class="kv" style="margin-bottom:12px;color:#888"></div>
+      <div class="chart-canvas-wrap"><canvas id="equity-chart"></canvas></div>
+      <div class="chart-legend">
+        <span class="leg"><span class="leg-swatch"></span>Equity (sequential compounding, $1k start)</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── Pick-outcome donut (design v2) ─── -->
+  <section class="block" id="outcome-section" style="display:none">
+    <div class="sec-label">Pick Outcomes</div>
+    <div class="chart-wrap donut-wrap">
+      <div class="donut-box">
+        <canvas id="outcome-donut"></canvas>
+        <div class="donut-center">
+          <div class="donut-total" id="outcome-total">0</div>
+          <div class="donut-total-lbl">resolved</div>
+        </div>
+      </div>
+      <div id="outcome-legend" class="chart-legend" style="flex-direction:column;gap:8px"></div>
+    </div>
+  </section>
+
+  <!-- ─── Short interest / squeeze tile (PR #24 item 11) ─── -->
+  <section class="block" id="short-section" style="display:none">
+    <div class="sec-label">Short Interest &middot; Squeeze Context</div>
+    <div id="short-tile" class="short-tile"></div>
+  </section>
+
+  <!-- ─── "Why is WOLF moving?" catalyst timeline (PR #24 item 12) ─── -->
+  <section class="block" id="catalyst-section" style="display:none">
+    <div class="sec-label">Why WOLF Is Moving &middot; Catalyst Timeline</div>
+    <div id="catalyst-timeline" class="catalyst-timeline"></div>
+  </section>
+
+  <!-- ─── Key stats ─── -->
+  <section class="block" id="stats-section">
+    <div class="sec-label">Key Stats</div>
+    <div id="signal-banners"></div>
+    <div class="stats-grid" id="stats-grid">
+      <div class="stats-col" id="stats-col-l"></div>
+      <div class="stats-col" id="stats-col-r"></div>
+    </div>
+  </section>
+
+  <!-- ─── Earnings ─── -->
+  <section class="block" id="earnings-section" style="display:none">
+    <div class="sec-label">Earnings &amp; Revenue</div>
+    <div class="earn-row">
+      <div class="earn-card">
+        <h4>EPS — Estimate vs Actual</h4>
+        <div class="chart-canvas-wrap"><canvas id="eps-chart"></canvas></div>
+      </div>
+      <div class="earn-card">
+        <h4>Revenue &amp; Net Income (quarterly)</h4>
+        <div class="chart-canvas-wrap"><canvas id="rev-chart"></canvas></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── Analyst insights ─── -->
+  <section class="block" id="analyst-section">
+    <div class="sec-label">Analyst Insights</div>
+    <div class="analyst-card">
+      <h4>Price Targets</h4>
+      <div class="target-track" id="target-track"></div>
+      <div id="target-summary" class="truth-note" style="text-align:center;margin-top:8px"></div>
+    </div>
+    <div class="analyst-card">
+      <h4>Recommendation Distribution</h4>
+      <div class="rec-bar" id="rec-bar"></div>
+      <div class="rec-legend" id="rec-legend"></div>
+      <div id="latest-rating-wrap"></div>
+    </div>
+  </section>
+
+  <!-- ─── News feed ─── -->
+  <section class="block">
+    <div class="sec-label">News &amp; Analysis</div>
+    <div class="news-tabs" id="news-tabs">
+      <button class="news-tab active" data-cat="all" onclick="setNewsCat('all')">All</button>
+      <button class="news-tab" data-cat="news" onclick="setNewsCat('news')">News</button>
+      <button class="news-tab" data-cat="earnings" onclick="setNewsCat('earnings')">Earnings</button>
+      <button class="news-tab" data-cat="press" onclick="setNewsCat('press')">Press</button>
+    </div>
+    <div class="news-list" id="news-list"><div class="empty"><div class="ico">&#9203;</div>Loading news…</div></div>
+  </section>
+
+  <!-- ─── Portfolio ─── -->
+  <section class="block">
     <div class="sec-label">My Portfolio</div>
-    <div class="port-form">
+    <button class="btn-add" id="add-pos-toggle" onclick="toggleAddPos()" style="margin-bottom:12px">+ Add a Position</button>
+    <div class="port-form" id="port-form" style="display:none">
       <h3>Add a Position</h3>
       <div class="form-row">
-        <div><label>SYMBOL</label><input id="p-sym" placeholder="BTC, AAPL..."></div>
-        <div><label>TYPE</label><select id="p-type"><option value="crypto">Crypto</option><option value="stock">Stock</option></select></div>
-        <div><label>QUANTITY</label><input id="p-qty" type="number" placeholder="0.5"></div>
-        <div><label>PRICE PAID ($)</label><input id="p-bp" type="number" step="0.000001" placeholder="65000"></div>
+        <div><label>SYMBOL</label><input id="p-sym" placeholder="WOLF" value="WOLF"></div>
+        <div><label>QUANTITY</label><input id="p-qty" type="number" placeholder="100"></div>
+        <div><label>PRICE PAID ($)</label><input id="p-bp" type="number" step="0.000001" placeholder="3.50"></div>
         <div><label>DATE</label><input id="p-date" type="date"></div>
         <div><label>&nbsp;</label><button class="btn-add" onclick="addPos()">+ ADD</button></div>
       </div>
       <div class="perr" id="perr"></div>
     </div>
     <div id="ptotals"></div>
-    <div id="ppositions"><div class="empty"><div class="ico">&#128188;</div><p>No positions yet.<br>Add your first above.</p></div></div>
-  </div>
-  <div class="panel" id="panel-results">
-    <div class="sec-label">Recent Results</div>
-    <div id="results-wrap"><div class="empty"><div class="ico">&#9203;</div><p>Loading...</p></div></div>
-  </div>
-  <div class="panel" id="panel-news">
-    <div class="sec-label">Market News</div>
-    <div id="news-wrap"><div class="empty"><div class="ico">&#9203;</div><p>Loading...</p></div></div>
-  </div>
+    <div id="ppositions"><div class="empty"><div class="ico">&#128188;</div>No positions yet. Add your first above.</div></div>
+    <div id="gp-section"></div>
+  </section>
+
+  <!-- ─── Pick Journal (blueprint module 7 — the credibility ledger) ─── -->
+  <section class="block" id="pick-journal-section">
+    <div class="sec-label">Pick Journal &middot; the credibility ledger</div>
+    <div id="pj-verdict" style="margin-bottom:12px"></div>
+    <div id="pj-metrics" style="margin-bottom:12px"></div>
+    <div class="pj-list" id="pj-list"><div class="empty"><div class="ico">&#9203;</div>Loading pick journal…</div></div>
+    <div id="pj-more-wrap" style="text-align:center;margin-top:10px;display:none">
+      <button class="btn-add" id="pj-more" onclick="loadMorePickJournal()">Load older picks</button>
+    </div>
+  </section>
+
+  <!-- ─── Signal History (roadmap #4c — every engine evaluation) ─── -->
+  <section class="block" id="signal-history-section">
+    <div class="sec-label">Signal History &middot; every scan</div>
+    <div id="sh-summary" class="kv" style="margin-bottom:10px;color:#888"></div>
+    <div id="sh-list"><div class="empty"><div class="ico">&#9203;</div>Loading signal history…</div></div>
+  </section>
+
+  <!-- ─── Performance Attribution (roadmap #4b — what separates winners) ─── -->
+  <section class="block" id="attribution-section">
+    <div class="sec-label">Performance Attribution &middot; winners vs losers</div>
+    <div id="attr-summary" class="kv" style="margin-bottom:10px;color:#888"></div>
+    <div id="attr-features"><div class="empty"><div class="ico">&#9203;</div>Loading attribution…</div></div>
+    <div id="attr-regime" style="margin-top:12px"></div>
+    <div id="attr-components" style="margin-top:12px"></div>
+  </section>
+
+  <!-- ─── Truth mode (PR #6 panels, collapsible) ─── -->
+  <section class="truth-wrap">
+    <button type="button" class="truth-toggle" id="truth-toggle" aria-expanded="true">
+      <span>Truth Mode &middot; engine metrics</span>
+      <span class="chev" id="truth-chev">&#9660;</span>
+    </button>
+    <div class="truth-panel" id="truth-body">
+      <div class="activity-strip" id="activity-strip"></div>
+      <div class="truth-grid">
+        <div class="truth-card">
+          <h4>Post&#8211;v3.2 window (decision metric)</h4>
+          <div class="truth-big v32" id="t-v32-wr">&#8212;</div>
+          <div class="truth-note"><b>Issued in window</b> — WIN/LOSS for picks where <code>predicted_at</code> is on or after the cutover (when models were trained). The fair score for the <i>current</i> engine. API: <code>post_v32</code>.</div>
+          <div class="truth-kv" id="t-v32-kv"></div>
+        </div>
+        <div class="truth-card">
+          <h4>System freshness</h4>
+          <div class="truth-big" id="t-fresh">&#8212;</div>
+          <div class="truth-kv" id="t-sys-kv"></div>
+        </div>
+      </div>
+      <p class="truth-note" style="text-align:center;margin-top:10px;font-size:11px">
+        Operator controls (training, calibration, audit, coverage, model lineage, Telegram alerts) moved to <a href="/admin" style="color:#fbbf24">/admin</a> &mdash; secured login.
+      </p>
+    </div>
+  </section>
+
 </div>
 
 <div class="footer">
-  <span>Ghost Protocol v2</span>
+  <span>Ghost Protocol v2 &middot; WOLF command center</span>
   <span>Open: <b id="f-open">&#8212;</b></span>
-  <span>Resolved: <b id="f-total">&#8212;</b></span>
-  <span style="margin-left:auto;color:#222">Truth mode &amp; picks refresh every 60s</span>
+  <span style="margin-left:auto;color:#333">Refresh: 60s · Price feed: Alpaca → Polygon → yfinance → Stooq</span>
 </div>
 
 <script>
-function show(id) {
-  document.querySelectorAll('.panel').forEach(function(p) { p.classList.remove('active'); });
-  document.querySelectorAll('.tab').forEach(function(t) { t.classList.remove('active'); });
-  document.getElementById('panel-' + id).classList.add('active');
-  document.getElementById('tab-' + id).classList.add('active');
-  if (id === 'portfolio') { loadPortfolio(); }
+/* ═══════════════════════════════════════════════════════════════
+ * Cockpit JS — WOLF command center
+ * Each render* function is a pure (input → DOM mutation). The
+ * single async load() is the orchestrator; it fetches everything
+ * in parallel and dispatches to renderers.
+ * ═══════════════════════════════════════════════════════════════ */
+
+const _charts = {};                              // Chart.js instance cache
+// Vertical gradient fill for area charts (audit design v2) — color at top
+// fading to transparent at the bottom, the signature analytics-dashboard look.
+function _areaGradient(ctx, hex){
+  try{
+    var h = (ctx.canvas && ctx.canvas.height) ? ctx.canvas.height : 280;
+    var g = ctx.createLinearGradient(0, 0, 0, h);
+    g.addColorStop(0, hex + '66');   // ~40% at top
+    g.addColorStop(1, hex + '00');   // transparent at bottom
+    return g;
+  }catch(e){ return hex + '22'; }
+}
+// KPI deltas (design v2): real period-over-period chips only — no fabrication.
+function _wrDelta(trades){
+  var resolved = (trades || []).filter(function(t){ return t.outcome === 'WIN' || t.outcome === 'LOSS'; });
+  if(resolved.length < 20) return null;   // need two full windows to compare
+  function wr(arr){ if(!arr.length) return null; var w = arr.filter(function(t){ return t.outcome === 'WIN'; }).length; return w / arr.length * 100; }
+  var recent = wr(resolved.slice(0, 10)), prior = wr(resolved.slice(10, 20));   // trades newest-first
+  if(recent == null || prior == null) return null;
+  return Math.round(recent - prior);
+}
+function _deltaChip(d, unit){
+  if(d == null) return '';
+  var cls = d > 0 ? 'up' : d < 0 ? 'down' : 'flat';
+  var arrow = d > 0 ? '▲' : d < 0 ? '▼' : '–';
+  return ' <span class="perf-delta ' + cls + '">' + arrow + ' ' + (d > 0 ? '+' : '') + d + (unit || '') + '</span>';
+}
+function renderOutcomeDonut(recent){
+  var sec = document.getElementById('outcome-section');
+  var canvas = document.getElementById('outcome-donut');
+  if(!sec || !canvas) return;
+  var trades = (recent && recent.trades) || [];
+  var w = 0, l = 0, e = 0;
+  trades.forEach(function(t){ if(t.outcome === 'WIN') w++; else if(t.outcome === 'LOSS') l++; else if(t.outcome === 'EXPIRED') e++; });
+  var total = w + l + e;
+  if(total === 0){ sec.style.display = 'none'; return; }
+  sec.style.display = '';
+  document.getElementById('outcome-total').textContent = total;
+  var ctx = canvas.getContext('2d');
+  if(_charts.outcome) _charts.outcome.destroy();
+  _charts.outcome = new Chart(ctx, {
+    type: 'doughnut',
+    data: { labels: ['Win', 'Loss', 'Expired'], datasets: [{ data: [w, l, e],
+      backgroundColor: ['#22c55e', '#ff3b3b', '#6b7280'], borderColor: '#0a0a0a', borderWidth: 3, hoverOffset: 4 }] },
+    options: { responsive: true, maintainAspectRatio: false, cutout: '70%',
+      plugins: { legend: { display: false },
+        tooltip: { callbacks: { label: function(c){ return c.label + ': ' + c.parsed + ' (' + Math.round(c.parsed / total * 100) + '%)'; } } } } }
+  });
+  var leg = document.getElementById('outcome-legend');
+  leg.innerHTML = [['Win', w, '#22c55e'], ['Loss', l, '#ff3b3b'], ['Expired', e, '#6b7280']].map(function(x){
+    return '<span class="leg"><span class="leg-swatch" style="background:' + x[2] + ';width:10px;height:10px;border-radius:50%"></span>'
+      + x[0] + ' · ' + x[1] + ' (' + Math.round(x[1] / total * 100) + '%)</span>';
+  }).join('');
+}
+let _chartRange = '1d';
+let _newsCat = 'all';
+
+/* ─── Helpers ─── */
+function escHtml(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/'/g,'&#39;').replace(/"/g,'&quot;')}
+function fmtMoney(v,places){if(v==null||isNaN(v))return '—';var n=Number(v);if(Math.abs(n)>=1e9)return '$'+(n/1e9).toFixed(2)+'B';if(Math.abs(n)>=1e6)return '$'+(n/1e6).toFixed(2)+'M';if(Math.abs(n)>=1e3)return '$'+(n/1e3).toFixed(2)+'K';return '$'+n.toFixed(places==null?2:places)}
+function fmtPrice(v){if(v==null||isNaN(v))return '—';var n=Number(v);if(n>=100)return '$'+n.toFixed(2);if(n>=1)return '$'+n.toFixed(3);return '$'+n.toFixed(6)}
+function fmtPct(v,places){if(v==null||isNaN(v))return '—';var n=Number(v);return(n>=0?'+':'')+n.toFixed(places==null?2:places)+'%'}
+function fmtInt(v){if(v==null||isNaN(v))return '—';return Number(v).toLocaleString('en-US')}
+function fmtVol(v){if(v==null||isNaN(v))return '—';var n=Number(v);if(n>=1e9)return (n/1e9).toFixed(2)+'B';if(n>=1e6)return (n/1e6).toFixed(2)+'M';if(n>=1e3)return (n/1e3).toFixed(2)+'K';return n.toLocaleString('en-US')}
+function fmtTsIso(ts){if(ts==null||ts===0)return '—';var s=Number(ts);if(s>1e12)s=Math.floor(s/1000);var d=new Date(s*1000);if(isNaN(d.getTime()))return '—';return d.toISOString().replace('T',' ').slice(0,19)+' UTC'}
+function fmtDateShort(ts){if(ts==null||ts===0)return '—';var s=Number(ts);if(s>1e12)s=Math.floor(s/1000);var d=new Date(s*1000);if(isNaN(d.getTime()))return '—';return d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}
+function fmtTimeAgo(ts){if(!ts)return '';var s=Math.floor(Date.now()/1000)-Number(ts);if(s<60)return 'just now';if(s<3600)return Math.floor(s/60)+'m ago';if(s<86400)return Math.floor(s/3600)+'h ago';return Math.floor(s/86400)+'d ago'}
+function timeLeft(ts){var s=(ts||0)-(Date.now()/1000);if(s<=0)return 'Expired';var h=Math.floor(s/3600);if(h>=24)return Math.floor(h/24)+'d left';return h+'h left'}
+
+/* ─── Ghost Score gauge ─── */
+// SVG arc helper: returns the path "d" for an arc from 0% to pct%
+// across the semi-circle defined in the gauge SVG (center 100,100, r 80).
+function gsArcPath(pct){
+  pct = Math.max(0, Math.min(100, Number(pct) || 0));
+  // Sweep angle: 0% = 180° (left), 100% = 360° (right). Total sweep = 180°.
+  var angleDeg = 180 + pct * 1.8;
+  var rad = angleDeg * Math.PI / 180;
+  var cx = 100, cy = 100, r = 80;
+  var x = cx + r * Math.cos(rad);
+  var y = cy + r * Math.sin(rad);
+  // largeArcFlag is 0 because we never exceed 180°.
+  return 'M 20 100 A ' + r + ' ' + r + ' 0 0 1 ' + x.toFixed(2) + ' ' + y.toFixed(2);
 }
 
-function fmt(v) {
-  if (v === null || v === undefined) return '&mdash;';
-  var n = parseFloat(v);
-  if (isNaN(n)) return '&mdash;';
-  if (n >= 10000) return '$' + n.toLocaleString('en-US', {maximumFractionDigits: 0});
-  if (n >= 100) return '$' + n.toFixed(2);
-  if (n >= 1) return '$' + n.toFixed(3);
-  return '$' + n.toFixed(6);
+function gsScoreColor(score){
+  if(score >= 80) return '#22c55e';   // strong buy — bright green
+  if(score >= 60) return '#86efac';   // buy — lime
+  if(score >= 40) return '#facc15';   // hold — yellow
+  if(score >= 20) return '#fb923c';   // sell — orange
+  return '#ef4444';                   // strong sell — red
 }
 
-function timeLeft(ts) {
-  var s = (ts || 0) - (Date.now() / 1000);
-  if (s <= 0) return 'Expired';
-  var h = Math.floor(s / 3600);
-  if (h >= 24) return Math.floor(h / 24) + 'd left';
-  return h + 'h left';
+function gsSignalClass(sig){
+  return ({STRONG_BUY:'strong-buy', BUY:'buy', HOLD:'hold', SELL:'sell', STRONG_SELL:'strong-sell'})[sig] || '';
 }
 
-function makeCard(p) {
-  var buy = p.direction === 'UP' || p.direction === 'BUY';
-  var dc = buy ? 'buy' : 'sell';
-  var pct = Math.round(p.confidence * 100);
+function gsBarLevel(value, weight){
+  if(weight <= 0) return 'lvl-n';
+  var pct = value / weight;
+  if(pct >= 0.75) return 'lvl-h';
+  if(pct >= 0.45) return 'lvl-m';
+  if(pct >= 0.2)  return 'lvl-l';
+  return 'lvl-n';
+}
+
+/* ─── Freshness gate (PR #23) ─── */
+// Single source of truth for "are we in WATCHING mode?". Returns
+// {watching: bool, days: int} so renderers can show consistent copy.
+// Threshold: 7 days since the newest pick row in DB.
+function _computeWatching(health, gs){
+  // Single source of truth for the "days since last signal" count. Audit v2 #5:
+  // the gauge showed "signal Nd ago" from the ghost-score's predicted_at while
+  // the WATCHING copy used health.predictions_freshness_min — two timers that
+  // disagreed (57d vs 40d). Prefer the ghost-score predicted_at so every
+  // renderer shows the SAME number; fall back to health only when absent.
+  var predTs = (gs && gs.inputs) ? gs.inputs.predicted_at : null;
+  var days;
+  if(predTs){
+    days = Math.floor((Date.now() / 1000 - Number(predTs)) / 86400);
+  } else if(health && health.predictions_freshness_min != null){
+    days = Math.floor(Number(health.predictions_freshness_min) / (60 * 24));
+  } else {
+    return {watching: false, days: 0};
+  }
+  return {watching: days >= 7, days: days};
+}
+
+function renderGhostScore(gs, watching){
+  var fg = document.getElementById('gs-gauge-fg');
+  var scoreEl = document.getElementById('gs-score');
+  var sigEl = document.getElementById('gs-signal');
+  var barsEl = document.getElementById('gs-bars');
+  var metaEl = document.getElementById('gs-meta');
+  var subEl = document.getElementById('gs-side-sub');
+  var regimeEl = document.getElementById('gs-regime');
+
+  if(!gs || gs.ok === false){
+    fg.setAttribute('d', gsArcPath(0));
+    fg.setAttribute('stroke', '#444');
+    scoreEl.textContent = '—';
+    sigEl.textContent = 'unavailable';
+    sigEl.className = 'gs-signal';
+    barsEl.innerHTML = '';
+    if(regimeEl){ regimeEl.textContent = ''; regimeEl.className = 'gs-regime'; }
+    metaEl.textContent = gs && gs.error ? 'Score feed: ' + gs.error : 'Score feed unavailable';
+    return;
+  }
+
+  // Rule-based market-regime tag (audit §3).
+  if(regimeEl){
+    var rg = gs.regime;
+    if(rg && rg.label && rg.label !== 'Unknown'){
+      var lab = String(rg.label);
+      var cls = lab.indexOf('Up') >= 0 ? 'up' : (lab.indexOf('Down') >= 0 ? 'down' : 'flat');
+      var dl = (rg.delta_pct != null) ? ' ' + (rg.delta_pct >= 0 ? '+' : '') + rg.delta_pct + '%' : '';
+      regimeEl.textContent = lab + dl;
+      regimeEl.className = 'gs-regime ' + cls;
+      regimeEl.title = 'Market regime · score modifier ×' + (rg.modifier != null ? rg.modifier : 1);
+    } else {
+      regimeEl.textContent = '';
+      regimeEl.className = 'gs-regime';
+    }
+  }
+
+  var score = Number(gs.score) || 0;
+  var color = gsScoreColor(score);
+  // PR #23: in WATCHING mode (no signal cleared the floor in 7+ days),
+  // the gauge label MUST say WATCHING — not the computed signal — to
+  // match the hero/play story. Score number stays but signal text overrides.
+  if(watching && watching.watching){
+    fg.setAttribute('d', gsArcPath(score));
+    fg.setAttribute('stroke', '#666');
+    scoreEl.textContent = Math.round(score);
+    scoreEl.style.color = '#888';
+    sigEl.textContent = 'WATCHING';
+    sigEl.className = 'gs-signal hold';
+  } else {
+    fg.setAttribute('d', gsArcPath(score));
+    fg.setAttribute('stroke', color);
+    scoreEl.textContent = Math.round(score);
+    scoreEl.style.color = color;
+    sigEl.textContent = (gs.signal || 'HOLD').replace('_', ' ');
+    sigEl.className = 'gs-signal ' + gsSignalClass(gs.signal);
+  }
+
+  var components = gs.components || {};
+  var weights = gs.weights || {model_confidence:40, volume_signal:20, sector_alignment:15, price_momentum:15, freshness:10};
+  var rows = [
+    ['Model',     components.model     || 0, weights.model_confidence],
+    ['Volume',    components.volume    || 0, weights.volume_signal],
+    ['Sector',    components.sector    || 0, weights.sector_alignment],
+    ['Momentum',  components.momentum  || 0, weights.price_momentum],
+    ['Freshness', components.freshness || 0, weights.freshness],
+  ];
+  barsEl.innerHTML = rows.map(function(r){
+    var w = r[2];
+    var pct = w > 0 ? Math.max(2, Math.min(100, r[1] / w * 100)) : 0;
+    var lvl = gsBarLevel(r[1], w);
+    return '<div class="gs-bar-row">'
+      + '<div class="gs-bar-lbl">' + r[0] + '</div>'
+      + '<div class="gs-bar-track"><div class="gs-bar-fg ' + lvl + '" style="width:' + pct + '%"></div></div>'
+      + '<div class="gs-bar-val">' + (Number(r[1]).toFixed(1)) + ' / ' + w + '</div>'
+      + '</div>';
+  }).join('');
+
+  var inputs = gs.inputs || {};
+  var parts = [];
+  if(inputs.model_direction && inputs.model_confidence != null){
+    parts.push('Latest pick ' + escHtml(inputs.model_direction) + ' @ ' + Math.round(inputs.model_confidence * 100) + '%');
+  }
+  if(inputs.volume_ratio != null){
+    parts.push(inputs.volume_ratio.toFixed(2) + 'x volume');
+  }
+  if(inputs.sma_5d != null && inputs.current_price != null){
+    var delta = (inputs.current_price - inputs.sma_5d) / inputs.sma_5d * 100;
+    parts.push('Price ' + (delta >= 0 ? '+' : '') + delta.toFixed(2) + '% vs 5d SMA');
+  }
+  if(inputs.predicted_at){
+    parts.push('signal ' + fmtTimeAgo(inputs.predicted_at));
+  }
+  if(gs.regime && gs.regime.modifier != null && gs.regime.modifier !== 1 && gs.raw_score != null){
+    parts.push('regime &times;' + gs.regime.modifier + ' (raw ' + gs.raw_score + ')');
+  }
+  // Audit v2 #8: when WATCHING, disambiguate the score from the firing gate —
+  // the gauge number is the composite Ghost Score, NOT a fireable signal; what
+  // gates a trade is the confidence floor, which no pick has cleared.
+  if(watching && watching.watching){
+    var _flr = (gs.confidence_floor != null) ? (Math.round(gs.confidence_floor * 100) + '%') : 'the confidence';
+    parts.unshift('composite score · no pick ≥ ' + _flr + ' floor in ' + watching.days + 'd');
+  }
+  metaEl.innerHTML = parts.length ? parts.join(' · ') : 'No input data';
+  if(subEl){
+    subEl.textContent = 'Updated ' + (gs.updated_at ? fmtTimeAgo(gs.updated_at) : 'just now')
+      + ' · weights: model 40 · volume 20 · sector 15 · momentum 15 · freshness 10';
+  }
+}
+
+/* ─── Hero & market status ─── */
+function renderHero(price, watching){
+  var pe = document.getElementById('hero-price');
+  var ce = document.getElementById('hero-change');
+  var ae = document.getElementById('hero-ah');
+  var te = document.getElementById('hero-ts');
+  var mb = document.getElementById('mkt-badge');
+
+  if(!price || price.ok === false || price.price == null){
+    pe.textContent = '—';
+    ce.textContent = price && price.error ? 'Price feed: ' + price.error : 'Price feed unavailable';
+    ce.className = 'hero-change flat';
+    ae.innerHTML = '';
+    te.textContent = '';
+    mb.textContent = '—';
+    mb.className = 'mkt-badge';
+    return;
+  }
+  pe.textContent = '$' + Number(price.price).toFixed(2);
+  if(price.change != null && price.change_pct != null){
+    var sign = price.change >= 0;
+    ce.className = 'hero-change ' + (sign ? 'pos' : 'neg');
+    ce.textContent = (sign ? '+' : '') + '$' + Math.abs(price.change).toFixed(2)
+      + ' (' + (sign ? '+' : '') + price.change_pct.toFixed(2) + '%) today';
+  } else {
+    ce.className = 'hero-change flat';
+    ce.textContent = '';
+  }
+  if(price.after_hours != null){
+    var ah = price.after_hours;
+    var ahc = price.after_hours_change;
+    var ahPct = (ahc != null && price.price > 0) ? (ahc / price.price * 100) : null;
+    var ahSign = ahc != null && ahc >= 0;
+    ae.innerHTML = '<b>After hours</b> $' + ah.toFixed(2)
+      + (ahc != null ? ' <span class="' + (ahSign ? 'pos' : 'neg') + '">'
+          + (ahSign ? '+' : '') + ahc.toFixed(2)
+          + (ahPct != null ? ' (' + (ahSign ? '+' : '') + ahPct.toFixed(2) + '%)' : '')
+          + '</span>' : '');
+  } else {
+    ae.innerHTML = '';
+  }
+  te.textContent = 'Last update ' + fmtTimeAgo(price.ts);
+  var st = (price.market_status || '').toLowerCase();
+  mb.textContent = price.market_status || '—';
+  mb.className = 'mkt-badge ' + (st.indexOf('open') >= 0 ? 'open'
+                              : st.indexOf('after') >= 0 || st.indexOf('pre') >= 0 ? 'after'
+                              : 'closed');
+  // PR #23: hero subtitle reflects WATCHING when no signal has fired
+  // for 7+ days. Replaces any prior bullish/bearish framing.
+  if(watching && watching.watching){
+    ce.className = 'hero-change flat';
+    ce.innerHTML = '<span style="color:#888">WATCHING &mdash; no signal cleared the confidence floor in '
+      + watching.days + ' day' + (watching.days === 1 ? '' : 's') + '</span>';
+  }
+}
+
+/* ─── Performance strip ─── */
+function computeStreak(trades){
+  if(!trades || !trades.length) return {streak:0, dir:''};
+  var s = 0, dir = '';
+  for(var i = 0; i < trades.length; i++){
+    var o = trades[i].outcome;
+    if(o !== 'WIN' && o !== 'LOSS') continue;
+    if(!dir){ dir = o; s = 1; continue; }
+    if(o === dir) s++; else break;
+  }
+  return {streak:s, dir:dir};
+}
+
+function renderPerf(stats, conf, recent){
+  var pv = stats && stats.post_v32 || {};
+  var pres = stats && stats.post_v32_resolved || {};
+  var v32t = pv.total || 0;
+  var v32rt = pres.total || 0;
+  var wrEl = document.getElementById('perf-wr');
+  var wrSub = document.getElementById('perf-wr-sub');
+  if(v32t > 0){
+    wrEl.textContent = pv.win_rate_pct + '%';
+    wrEl.className = 'perf-val big ' + (pv.win_rate_pct >= 55 ? 'pos' : pv.win_rate_pct >= 45 ? '' : 'neg');
+    wrSub.textContent = pv.wins + 'W / ' + pv.losses + 'L issued · since ' + fmtDateShort(pv.start_ts);
+  } else if(v32rt > 0){
+    wrEl.textContent = pres.win_rate_pct + '%';
+    wrEl.className = 'perf-val big ' + (pres.win_rate_pct >= 55 ? 'pos' : '');
+    wrSub.textContent = 'Closes only · ' + pres.wins + 'W / ' + pres.losses + 'L';
+  } else {
+    wrEl.textContent = '—';
+    wrEl.className = 'perf-val big';
+    wrSub.textContent = 'No resolved picks since cutover';
+  }
+
+  // Streak
+  var trades = (recent && recent.trades) || [];
+  var st = computeStreak(trades);
+  var streakEl = document.getElementById('perf-streak');
+  var streakSub = document.getElementById('perf-streak-sub');
+  if(st.streak){
+    streakEl.textContent = st.streak + (st.dir === 'WIN' ? 'W' : 'L');
+    streakEl.className = 'perf-val ' + (st.dir === 'WIN' ? 'pos' : 'neg');
+    streakSub.textContent = st.dir === 'WIN' ? 'on a roll' : 'cooling off';
+  } else {
+    streakEl.textContent = '—';
+    streakEl.className = 'perf-val';
+    streakSub.textContent = 'no resolved trades';
+  }
+
+  // Open picks
+  var openEl = document.getElementById('perf-open');
+  var openSub = document.getElementById('perf-open-sub');
+  openEl.textContent = stats && stats.open_positions != null ? stats.open_positions : '—';
+  openEl.className = 'perf-val';
+  openSub.textContent = 'awaiting resolution';
+
+  // Week
+  var weekEl = document.getElementById('perf-week');
+  var weekSub = document.getElementById('perf-week-sub');
+  var oneWeek = Math.floor(Date.now() / 1000) - 7 * 86400;
+  var wW = 0, wL = 0;
+  trades.forEach(function(t){
+    if(!t.resolved_at || t.resolved_at < oneWeek) return;
+    if(t.outcome === 'WIN') wW++;
+    else if(t.outcome === 'LOSS') wL++;
+  });
+  weekEl.innerHTML = '<span class="pos">' + wW + 'W</span> / <span class="neg">' + wL + 'L</span>';
+  weekEl.className = 'perf-val';
+  var weekTot = wW + wL;
+  weekSub.textContent = weekTot > 0 ? Math.round(wW / weekTot * 100) + '% win' : 'last 7 days';
+
+  // KPI deltas (design v2): only where a real period-over-period comparison exists.
+  var wrD = _wrDelta(trades);
+  if(wrD != null && wrEl.textContent.indexOf('%') >= 0){
+    wrEl.innerHTML = wrEl.textContent + _deltaChip(wrD, 'pp');
+  }
+  var twoWeek = Math.floor(Date.now() / 1000) - 14 * 86400;
+  var lwW = 0;
+  trades.forEach(function(t){
+    if(t.resolved_at && t.resolved_at >= twoWeek && t.resolved_at < oneWeek && t.outcome === 'WIN') lwW++;
+  });
+  weekEl.innerHTML = weekEl.innerHTML + _deltaChip(wW - lwW, 'W');
+
+  // Calibration mini-bar
+  var calBar = document.getElementById('perf-cal-bar');
+  var calSub = document.getElementById('perf-cal-sub');
+  calBar.innerHTML = '';
+  if(!conf || !conf.buckets || !conf.buckets.length){
+    calSub.textContent = 'no calibration data';
+    return;
+  }
+  var totalN = conf.buckets.reduce(function(s,b){return s + (b.total||0)}, 0);
+  if(totalN === 0){
+    calSub.textContent = 'no resolved picks yet';
+    return;
+  }
+  conf.buckets.forEach(function(b){
+    var pct = totalN > 0 ? (b.total / totalN * 100) : 0;
+    if(pct === 0) return;
+    var wr = b.win_rate_pct || 0;
+    var cls = wr >= 70 ? 'good' : wr >= 55 ? 'mid' : 'bad';
+    var seg = document.createElement('div');
+    seg.className = 'perf-mini-seg ' + cls;
+    seg.style.width = pct + '%';
+    seg.title = b.label + ': ' + b.wins + 'W/' + b.losses + 'L (' + wr + '%)';
+    calBar.appendChild(seg);
+  });
+  var top = conf.buckets.slice().sort(function(a,b){return (b.total||0)-(a.total||0)})[0];
+  calSub.textContent = top ? 'Mode: ' + top.label + ' bucket' : '';
+}
+
+/* ─── Today's play ─── */
+function renderPlay(picks, watching){
+  var sg = document.getElementById('sgrid');
+  var active = (picks && picks.active) || [];
+  var stocks = active.filter(function(p){return p.asset_type === 'stock' && (p.symbol||'').toUpperCase() === 'WOLF'});
+  // PR #23: WATCHING mode suppresses any BUY/SELL card from rendering —
+  // even if an old open pick is still in the DB, we don't surface it as
+  // actionable when the engine hasn't fired a fresh signal in 7+ days.
+  if(watching && watching.watching){
+    sg.innerHTML = '<div class="info-box"><b>WATCHING &mdash; no signal cleared the confidence floor in '
+      + watching.days + ' day' + (watching.days === 1 ? '' : 's') + '.</b><br><br>'
+      + 'Ghost is scanning every cycle but the engine has not produced a high-confidence pick. '
+      + 'When a new signal clears the floor, it will appear here.</div>';
+    return;
+  }
+  if(!stocks.length){
+    var now = new Date();
+    var et = new Date(now.toLocaleString('en-US',{timeZone:'America/New_York'}));
+    var hh = et.getHours(), mn = et.getMinutes(), day = et.getDay();
+    var mopen = day >= 1 && day <= 5 && (hh > 9 || (hh === 9 && mn >= 30)) && hh < 16;
+    sg.innerHTML = '<div class="info-box"><b>No WOLF play right now.</b><br><br>'
+      + (mopen ? 'Market is open but Ghost has no signal above the confidence floor.'
+              : 'US market is <b>closed</b>. Hours: Mon–Fri 9:30 AM – 4:00 PM ET.')
+      + '<br><br>Next prediction cycle runs every 30 min during market hours.</div>';
+    return;
+  }
+  var top = stocks.sort(function(a,b){return b.confidence - a.confidence})[0];
+  var buy = top.direction === 'UP' || top.direction === 'BUY';
+  var pct = Math.round(top.confidence * 100);
   var cc = pct >= 85 ? 'h' : pct >= 70 ? 'm' : 'l';
   var sl = pct >= 85 ? 'Strong signal' : pct >= 70 ? 'Good signal' : 'Moderate signal';
-  var isStock = p.asset_type === 'stock';
-  var sym = escHtml(p.symbol || '');
-  var html = '<div class="card ' + dc + '">';
-  html += '<div class="card-header">';
-  html += '<div><span class="sym">' + sym + '</span>';
-  html += '<span class="badge' + (isStock ? ' stock' : '') + '">' + (isStock ? 'STOCK' : 'CRYPTO') + '</span></div>';
-  html += '<span class="pill ' + dc + '">' + (buy ? 'BUY' : 'SELL') + '</span>';
-  html += '</div>';
-  html += '<div class="action">';
-  html += '<b>' + (buy ? 'Get in at' : 'Short at') + '</b> ' + fmt(p.entry_price) + '<br>';
-  html += '<b>' + (buy ? 'Take profit at' : 'Cover at') + '</b> ' + fmt(p.target_price) + '<br>';
-  html += '<b>Bail if it hits</b> ' + fmt(p.stop_price);
-  html += '</div>';
-  html += '<div class="levels">';
-  html += '<div class="lv e"><div class="lv-label">ENTER</div><div class="lv-val">' + fmt(p.entry_price) + '</div></div>';
-  html += '<div class="lv t"><div class="lv-label">TARGET &#10003;</div><div class="lv-val">' + fmt(p.target_price) + '</div></div>';
-  html += '<div class="lv s"><div class="lv-label">STOP &#10007;</div><div class="lv-val">' + fmt(p.stop_price) + '</div></div>';
-  html += '</div>';
-  html += '<div class="conf-bar"><div class="conf-fill ' + cc + '" style="width:' + pct + '%"></div></div>';
-  html += '<div class="conf-meta"><span>' + sl + '</span><span>' + pct + '% confident</span></div>';
-  html += '<div class="ttl">&#9201; ' + timeLeft(p.expires_at) + '</div>';
-  html += '</div>';
-  return html;
+  // Confidence-decay timer: half-life model — confidence decays from initial
+  // to ~50% by expires_at. Gives the user urgency to act on fresh signals.
+  var decay = computeDecay(top.confidence, top.predicted_at, top.expires_at);
+  sg.innerHTML = '<div class="play-grid"><div class="play-card ' + (buy ? 'buy' : 'sell') + '">'
+    + '<div class="play-head"><span class="play-sym">WOLF</span>'
+    + '<span class="play-pill ' + (buy ? 'buy' : 'sell') + '">' + (buy ? 'BUY' : 'SELL') + '</span></div>'
+    + '<div class="play-action"><b>' + (buy ? 'Get in at' : 'Short at') + '</b> ' + fmtPrice(top.entry_price)
+    + '<br><b>' + (buy ? 'Take profit at' : 'Cover at') + '</b> ' + fmtPrice(top.target_price)
+    + '<br><b>Bail if it hits</b> ' + fmtPrice(top.stop_price) + '</div>'
+    + '<div class="play-levels">'
+    + '<div class="lv e"><div class="lv-label">ENTER</div><div class="lv-val">' + fmtPrice(top.entry_price) + '</div></div>'
+    + '<div class="lv t"><div class="lv-label">TARGET</div><div class="lv-val">' + fmtPrice(top.target_price) + '</div></div>'
+    + '<div class="lv s"><div class="lv-label">STOP</div><div class="lv-val">' + fmtPrice(top.stop_price) + '</div></div>'
+    + '</div>'
+    + '<div class="conf-bar"><div class="conf-fill ' + cc + '" style="width:' + (decay.now*100) + '%"></div></div>'
+    + '<div class="conf-meta"><span>' + sl + '</span><span>' + Math.round(decay.now*100) + '% confident</span></div>'
+    + '<div class="decay-line">&#9203; ' + timeLeft(top.expires_at)
+    + (decay.atExpiry != null ? ' &middot; decays to <b>' + Math.round(decay.atExpiry*100) + '%</b> by expiry' : '')
+    + '</div>'
+    + '</div></div>';
 }
 
-function escHtml(s) {
-  return String(s == null ? '' : s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/'/g, '&#39;')
-    .replace(/"/g, '&quot;');
-}
-
-function fmtTsIso(ts) {
-  if (ts == null || ts === 0) return '\u2014';
-  var sec = Number(ts);
-  if (sec > 1e12) sec = Math.floor(sec / 1000);
-  var d = new Date(sec * 1000);
-  if (isNaN(d.getTime())) return '\u2014';
-  return d.toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
-}
-
-function renderModelTable(v3) {
-  if (!v3 || !v3.trained) {
-    return '<p class="truth-note">' + escHtml(v3 && v3.reason ? v3.reason : 'No v3 models loaded.') + '</p>';
+function computeDecay(initialConf, predictedAt, expiresAt){
+  // Linear decay from initialConf at predicted_at to initialConf * 0.5 at expires_at.
+  // Returns {now, atExpiry} as 0..1 floats. Defensive against missing inputs.
+  var init = Number(initialConf);
+  if(!isFinite(init) || init <= 0) return {now: init || 0, atExpiry: null};
+  if(!predictedAt || !expiresAt || expiresAt <= predictedAt){
+    return {now: init, atExpiry: null};
   }
-  var syms = v3.symbols || {};
-  var keys = Object.keys(syms).sort();
-  if (!keys.length) return '<p class="truth-note">No symbol rows.</p>';
-  var h = '<table class="models-tbl"><thead><tr><th>Symbol</th><th>Engine</th><th>Label</th><th>Hold bars</th><th>Acc</th><th>WF mean</th><th>Edge</th><th>N</th></tr></thead><tbody>';
-  keys.forEach(function(k) {
-    var m = syms[k];
-    h += '<tr><td><b>' + escHtml(k) + '</b></td>';
-    h += '<td>' + escHtml(m.engine != null ? m.engine : '\u2014') + '</td>';
-    h += '<td>' + escHtml(m.label_type || '\u2014') + '</td>';
-    h += '<td>' + (m.label_hold_bars != null ? m.label_hold_bars : '\u2014') + '</td>';
-    h += '<td>' + (m.accuracy != null ? m.accuracy : '\u2014') + '%</td>';
-    h += '<td>' + (m.wf_acc_mean != null ? m.wf_acc_mean : '\u2014') + '%</td>';
-    h += '<td>' + (m.edge != null ? m.edge : '\u2014') + '%</td>';
-    h += '<td>' + (m.n_samples != null ? m.n_samples : 0) + '</td></tr>';
+  var nowSec = Date.now() / 1000;
+  var total = expiresAt - predictedAt;
+  var elapsed = Math.max(0, Math.min(total, nowSec - predictedAt));
+  var nowDecayed = init * (1 - 0.5 * (elapsed / total));
+  var atExpiry = init * 0.5;
+  return {now: nowDecayed, atExpiry: atExpiry};
+}
+
+/* ─── Prediction vs Reality chart ─── */
+function renderPredictionChart(history, predictions){
+  var canvas = document.getElementById('pred-chart');
+  var ctx = canvas.getContext('2d');
+  var points = (history && history.points) || [];
+  var preds = (predictions && predictions.predictions) || [];
+
+  if(_charts.pred){ _charts.pred.destroy(); _charts.pred = null; }
+
+  // PR #24 (item 8): explicit empty-state when no data. Previous behaviour
+  // rendered empty axes with a 5-item legend, which looks broken.
+  var emptyOverlay = document.getElementById('pred-empty-overlay');
+  if(!emptyOverlay){
+    emptyOverlay = document.createElement('div');
+    emptyOverlay.id = 'pred-empty-overlay';
+    emptyOverlay.style.cssText = 'position:absolute;inset:0;display:none;align-items:center;justify-content:center;text-align:center;color:#666;font-size:13px;line-height:1.6;pointer-events:none';
+    if(canvas.parentNode) canvas.parentNode.appendChild(emptyOverlay);
+  }
+  if(!points.length && !preds.length){
+    canvas.style.display = 'none';
+    emptyOverlay.style.display = 'flex';
+    emptyOverlay.innerHTML = '<div style="max-width:340px;padding:24px">'
+      + '<div style="font-size:40px;opacity:.5;margin-bottom:10px">&#128202;</div>'
+      + '<b style="color:#cbd5e1;font-size:15px">No predictions in this window</b>'
+      + '<div style="color:#6b7280;font-size:12px;margin-top:8px;line-height:1.7">'
+      + 'No WOLF picks were issued in the selected range. The engine scans on a market-aware '
+      + 'cadence and fires only when a signal clears the floor.</div>'
+      + '<div style="margin-top:14px;font-size:11px;color:#8b5cf6;font-weight:700;letter-spacing:.5px">'
+      + 'TRY A WIDER RANGE ABOVE &middot; OR WAIT FOR THE NEXT SCAN</div></div>';
+    var z = document.getElementById('zone-callouts');
+    if(z) z.innerHTML = '';
+    return;
+  }
+  canvas.style.display = '';
+  emptyOverlay.style.display = 'none';
+
+  if(!points.length){
+    _charts.pred = new Chart(ctx, {
+      type:'line',
+      data:{labels:[],datasets:[{label:'WOLF',data:[],borderColor:'#22c55e'}]},
+      options:{plugins:{legend:{display:false}}, responsive:true, maintainAspectRatio:false,
+        scales:{x:{ticks:{color:'#444'},grid:{color:'#1a1a1a'}},
+                y:{ticks:{color:'#444'},grid:{color:'#1a1a1a'}}}}
+    });
+    return;
+  }
+
+  var t0 = points[0].ts;
+  var tN = points[points.length - 1].ts;
+  var live = points.map(function(p){return {x:p.ts*1000, y:p.price}});
+
+  // Build bands (one dataset per prediction inside the window)
+  var bandDatasets = [];
+  var dotDatasets = {win:[], loss:[], open:[], expired:[]};
+  preds.forEach(function(p){
+    if(p.predicted_at == null || p.expires_at == null) return;
+    if(p.target_price == null || p.stop_price == null) return;
+    if(p.expires_at < t0 || p.predicted_at > tN) return;
+    var buy = p.direction === 'UP' || p.direction === 'BUY';
+    var hi = Math.max(p.target_price, p.stop_price);
+    var lo = Math.min(p.target_price, p.stop_price);
+    var color = buy ? 'rgba(34,197,94,0.30)' : 'rgba(255,59,59,0.30)';
+    if(p.outcome === 'WIN'){ color = 'rgba(34,197,94,0.45)'; }
+    else if(p.outcome === 'LOSS'){ color = 'rgba(255,59,59,0.40)'; }
+    else if(p.outcome === 'EXPIRED'){ color = 'rgba(120,120,120,0.20)'; }
+    var x0 = Math.max(t0, p.predicted_at) * 1000;
+    var x1 = Math.min(tN, p.expires_at) * 1000;
+    bandDatasets.push({
+      type:'line',
+      data:[{x:x0,y:hi},{x:x1,y:hi}],
+      borderColor:'rgba(0,0,0,0)',
+      backgroundColor:color,
+      fill:'+1',
+      pointRadius:0, tension:0
+    });
+    bandDatasets.push({
+      type:'line',
+      data:[{x:x0,y:lo},{x:x1,y:lo}],
+      borderColor:'rgba(0,0,0,0)',
+      backgroundColor:'rgba(0,0,0,0)',
+      fill:false,
+      pointRadius:0, tension:0
+    });
+    var dot = {x:p.predicted_at*1000, y:p.entry_price || (hi+lo)/2};
+    if(p.outcome === 'WIN') dotDatasets.win.push(dot);
+    else if(p.outcome === 'LOSS') dotDatasets.loss.push(dot);
+    else if(p.outcome === 'EXPIRED') dotDatasets.expired.push(dot);
+    else dotDatasets.open.push(dot);
   });
-  h += '</tbody></table>';
-  return h;
-}
 
-function renderTruth(stats, health, regime, v3, dir) {
-  var pv = stats.post_v32 || {};
-  var pr = stats.post_v32_resolved || {};
-  var v32t = pv.total || 0;
-  var v32rt = pr.total || 0;
-  var v32wr = pv.win_rate_pct != null ? pv.win_rate_pct : 0;
-  var v32rwr = pr.win_rate_pct != null ? pr.win_rate_pct : 0;
-  document.getElementById('t-v32-wr').textContent = v32t > 0 ? v32wr + '%' : (v32rt > 0 ? v32rwr + '%' : '\u2014');
-  document.getElementById('t-v32-kv').innerHTML =
-    '<b>Issued after cutover</b> ' + (pv.wins || 0) + 'W / ' + (pv.losses || 0) + 'L / ' + v32t
-    + (v32t > 0 ? ' \u00b7 ' + v32wr + '%' : '') + '<br>'
-    + '<b>Closed after cutover</b> ' + (pr.wins || 0) + 'W / ' + (pr.losses || 0) + 'L / ' + v32rt
-    + (v32rt > 0 ? ' \u00b7 ' + v32rwr + '%' : '')
-    + ' <span style="color:#666">(<code>resolved_at</code> \u2265 cutover; can include picks issued earlier)</span><br>'
-    + '<b>Window start</b> ' + fmtTsIso(pv.start_ts);
-
-  var buyDir = dir && dir.by_direction && dir.by_direction.BUY;
-  var legPct = buyDir && buyDir.win_rate_pct != null ? buyDir.win_rate_pct : (stats.win_rate_pct || 0);
-  document.getElementById('t-leg-wr').textContent = legPct + '%';
-  if (buyDir) {
-    document.getElementById('t-leg-kv').innerHTML =
-      '<b>BUY cohort</b> ' + buyDir.wins + 'W / ' + buyDir.losses + 'L / ' + buyDir.total
-      + ' resolved (includes EXPIRED in denominator per <code>/api/stats/direction</code>)';
-  } else {
-    document.getElementById('t-leg-kv').innerHTML =
-      '<b>All outcomes</b> ' + (stats.wins || 0) + 'W / ' + (stats.losses || 0) + 'L / ' + (stats.total || 0);
-  }
-
-  var fresh = health.predictions_freshness_min;
-  document.getElementById('t-fresh').textContent = fresh != null ? fresh + ' min' : '\u2014';
-  var feeds = health.price_feeds && health.price_feeds.summary ? health.price_feeds.summary : '\u2014';
-  var cf = health.confidence_floor;
-  var cfStr = cf != null ? (Math.round(cf * 1000) / 10).toFixed(1) : '\u2014';
-  document.getElementById('t-sys-kv').innerHTML =
-    '<b>Alert confidence floor</b> ' + cfStr + '%<br>'
-    + '<b>Price feeds</b> ' + escHtml(feeds) + '<br>'
-    + '<b>Open picks</b> ' + (health.open_picks != null ? health.open_picks : '\u2014')
-    + (health.dedup_blocked ? ' <span style="color:#f59e0b">(dedup cap)</span>' : '');
-
-  var rs = document.getElementById('regime-slot');
-  if (regime && regime.ok !== false) {
-    if (regime.block_crypto_buys) {
-      rs.innerHTML = '<div class="regime-bar block"><b>Regime gate</b> \u2014 Crypto BUYs blocked. '
-        + escHtml(regime.reason || '') + ' (BTC 24h: '
-        + (regime.btc_24h_pct != null ? regime.btc_24h_pct : '\u2014') + '%)</div>';
-    } else {
-      rs.innerHTML = '<div class="regime-bar ok"><b>Regime</b> \u2014 Crypto BUYs allowed. BTC 24h \u2248 '
-        + (regime.btc_24h_pct != null ? regime.btc_24h_pct : '\u2014') + '%</div>';
+  // BUY / SELL zone horizontal lines from the most recent OPEN WOLF pick.
+  // These are the actionable levels the user cares about — drawn prominently.
+  var nowSec = Math.floor(Date.now() / 1000);
+  var openPick = preds.find(function(p){
+    return p.outcome == null && p.expires_at && p.expires_at > nowSec
+        && p.buy_target != null && p.sell_target != null;
+  });
+  var zoneDatasets = [];
+  var calloutsEl = document.getElementById('zone-callouts');
+  if(openPick){
+    zoneDatasets.push({
+      type:'line',
+      data:[{x:t0*1000,y:openPick.buy_target},{x:tN*1000,y:openPick.buy_target}],
+      borderColor:'#22c55e', borderWidth:2, borderDash:[6,4],
+      pointRadius:0, fill:false, tension:0, label:'BUY @ $'+openPick.buy_target.toFixed(2),
+    });
+    zoneDatasets.push({
+      type:'line',
+      data:[{x:t0*1000,y:openPick.sell_target},{x:tN*1000,y:openPick.sell_target}],
+      borderColor:'#ff3b3b', borderWidth:2, borderDash:[6,4],
+      pointRadius:0, fill:false, tension:0, label:'SELL @ $'+openPick.sell_target.toFixed(2),
+    });
+    if(calloutsEl){
+      var buyDir = openPick.direction === 'UP' || openPick.direction === 'BUY';
+      var buyLbl = buyDir ? 'Buy at' : 'Cover at';
+      var sellLbl = buyDir ? 'Sell at' : 'Short at';
+      calloutsEl.innerHTML =
+        '<div class="zone-pill buy"><span class="zp-lbl">'+buyLbl+'</span>'
+        + '<span class="zp-val">$'+openPick.buy_target.toFixed(2)+'</span></div>'
+        + '<div class="zone-pill sell"><span class="zp-lbl">'+sellLbl+'</span>'
+        + '<span class="zp-val">$'+openPick.sell_target.toFixed(2)+'</span></div>'
+        + '<div style="font-size:11px;color:#666;align-self:center;margin-left:6px">'
+        + Math.round((openPick.confidence||0)*100)+'% confident'
+        + (openPick.expires_at ? ' · '+timeLeft(openPick.expires_at) : '')
+        + '</div>';
     }
-  } else {
-    rs.innerHTML = '<div class="regime-bar ok" style="border-color:#333;color:#666"><b>Regime</b> \u2014 unavailable'
-      + (regime && regime.error ? ' (' + escHtml(regime.error) + ')' : '') + '</div>';
+  } else if(calloutsEl){
+    calloutsEl.innerHTML = '';
   }
 
-  document.getElementById('t-models-slot').innerHTML = renderModelTable(v3);
+  var datasets = bandDatasets.concat(zoneDatasets);
+  datasets.push({
+    label:'WOLF',
+    type:'line', data:live,
+    borderColor:'#22c55e', backgroundColor:'rgba(34,197,94,0.05)',
+    borderWidth:2, pointRadius:0, tension:0.18, fill:false
+  });
+  if(dotDatasets.win.length) datasets.push({type:'scatter',data:dotDatasets.win,backgroundColor:'#22c55e',pointRadius:5,pointHoverRadius:7,label:'WIN'});
+  if(dotDatasets.loss.length) datasets.push({type:'scatter',data:dotDatasets.loss,backgroundColor:'#ff3b3b',pointRadius:5,pointHoverRadius:7,label:'LOSS'});
+  if(dotDatasets.open.length) datasets.push({type:'scatter',data:dotDatasets.open,backgroundColor:'#60a5fa',pointRadius:5,pointHoverRadius:7,label:'OPEN'});
+  if(dotDatasets.expired.length) datasets.push({type:'scatter',data:dotDatasets.expired,backgroundColor:'#888',pointRadius:4,pointHoverRadius:6,label:'EXPIRED'});
+
+  _charts.pred = new Chart(ctx, {
+    type:'line',
+    data:{datasets:datasets},
+    options:{
+      responsive:true, maintainAspectRatio:false,
+      animation:false,
+      plugins:{legend:{display:false},
+               tooltip:{mode:'nearest', intersect:false,
+                        callbacks:{label:function(c){return c.dataset.label?c.dataset.label+': $'+(c.parsed.y||0).toFixed(3):'$'+(c.parsed.y||0).toFixed(3)}}}},
+      scales:{
+        x:{type:'linear', ticks:{color:'#666',font:{size:10},
+             callback:function(v){var d=new Date(v); return _chartRange==='1d' ? d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'}) : d.toLocaleDateString('en-US',{month:'short',day:'numeric'})}},
+           grid:{color:'#1a1a1a'}},
+        y:{ticks:{color:'#666',font:{size:10}, callback:function(v){return '$'+v.toFixed(2)}},
+           grid:{color:'#1a1a1a'}}
+      }
+    }
+  });
 }
 
-(function initTruthToggle() {
-  var btn = document.getElementById('truth-toggle');
-  var body = document.getElementById('truth-body');
-  var chev = document.getElementById('truth-chev');
-  if (!btn || !body || !chev) return;
-  btn.addEventListener('click', function() {
-    var collapsed = body.classList.toggle('collapsed');
-    btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
-    chev.innerHTML = collapsed ? '&#9654;' : '&#9660;';
+function setChartRange(r){
+  _chartRange = r;
+  document.querySelectorAll('.chart-toggle').forEach(function(b){
+    b.classList.toggle('active', b.dataset.range === r);
   });
-})();
+  reloadChartOnly();
+}
 
-async function loadPortfolio() {
-  var data = await fetch('/api/portfolio').then(function(r) { return r.json(); }).catch(function() { return {positions: []}; });
+async function reloadChartOnly(){
+  try{
+    var hist = await fetch('/api/wolf/price-history?range=' + encodeURIComponent(_chartRange))
+      .then(function(r){return r.json()}).catch(function(){return {ok:false,points:[]}});
+    var preds = await fetch('/api/wolf/predictions')
+      .then(function(r){return r.json()}).catch(function(){return {ok:false,predictions:[]}});
+    renderPredictionChart(hist, preds);
+  }catch(e){console.error(e)}
+}
+
+/* ─── Key stats grid ─── */
+function renderStats(s){
+  var section = document.getElementById('stats-section');
+  var left = document.getElementById('stats-col-l');
+  var right = document.getElementById('stats-col-r');
+  var banners = document.getElementById('signal-banners');
+  banners.innerHTML = '';
+  // Hide the whole panel when the stats feed is unavailable, so the cockpit
+  // looks intentional rather than showing a broken "Stats unavailable" panel.
+  if(!s || s.ok === false){
+    if(section) section.style.display = 'none';
+    return;
+  }
+  if(section) section.style.display = '';
+  var earningsDisplay = s.earnings_date ? fmtDateShort(s.earnings_date) : (s.earnings_date_str || '—');
+  var weekRange = (s.week52_low != null && s.week52_high != null)
+    ? fmtPrice(s.week52_low) + ' – ' + fmtPrice(s.week52_high) : '—';
+  // Volume ratio display — bold + warning color if anomaly flagged
+  var volRatioCell = '—';
+  if(s.volume_ratio != null){
+    volRatioCell = s.volume_alert
+      ? '<span style="color:#fbbf24;font-weight:800">' + s.volume_ratio.toFixed(2) + 'x avg</span>'
+      : s.volume_ratio.toFixed(2) + 'x avg';
+  }
+  // Sector cell — short summary
+  var sectorCell = '—';
+  var sc = s.sector_correlation;
+  if(sc && sc.peers && sc.peers.length){
+    var ups = sc.peers.filter(function(p){return p.change_pct != null && p.change_pct > 0}).length;
+    var dns = sc.peers.filter(function(p){return p.change_pct != null && p.change_pct < 0}).length;
+    sectorCell = ups + ' up / ' + dns + ' down · '
+      + sc.peers.map(function(p){return escHtml(p.symbol) + ' ' + (p.change_pct != null ? (p.change_pct >= 0 ? '+' : '') + p.change_pct.toFixed(1) + '%' : '—')}).join(' · ');
+  }
+  var rowsL = [
+    ['Open', fmtPrice(s.open)],
+    ['Day High', fmtPrice(s.high)],
+    ['Day Low', fmtPrice(s.low)],
+    ['Volume', fmtVol(s.volume)],
+    ['Avg Volume', fmtVol(s.avg_volume)],
+    ['Volume Ratio', volRatioCell],
+  ];
+  var rowsR = [
+    ['Market Cap', s.market_cap != null ? fmtMoney(s.market_cap, 2) : '—'],
+    ['P/E Ratio', s.pe_ratio != null ? Number(s.pe_ratio).toFixed(2) : '—'],
+    ['EPS (TTM)', s.eps != null ? '$' + Number(s.eps).toFixed(2) : '—'],
+    ['52-Week Range', weekRange],
+    ['Next Earnings', earningsDisplay],
+    ['SiC Peers', sectorCell],
+  ];
+  left.innerHTML = rowsL.map(function(r){return '<div class="stat-row"><span class="stat-key">'+r[0]+'</span><span class="stat-val">'+r[1]+'</span></div>'}).join('');
+  right.innerHTML = rowsR.map(function(r){return '<div class="stat-row"><span class="stat-key">'+r[0]+'</span><span class="stat-val">'+r[1]+'</span></div>'}).join('');
+
+  // Active signal banners — surface prominently above the grid
+  var html = '';
+  if(s.volume_alert && s.volume_ratio != null){
+    html += '<div class="signal-banner">Volume Alert &middot; <b>'
+      + s.volume_ratio.toFixed(2) + 'x</b> average — institutional activity often precedes large moves</div>';
+  }
+  if(sc && sc.signal === 'wolf_lagging_up'){
+    html += '<div class="signal-banner divergence">Sector Divergence &middot; SiC peers up but WOLF flat — catch-up possible</div>';
+  } else if(sc && sc.signal === 'wolf_holding_down'){
+    html += '<div class="signal-banner divergence">Sector Divergence &middot; SiC peers down but WOLF holding — relative strength</div>';
+  }
+  banners.innerHTML = html;
+}
+
+/* ─── Earnings & revenue charts ─── */
+function renderEarnings(e){
+  var section = document.getElementById('earnings-section');
+  var epsCtx = document.getElementById('eps-chart').getContext('2d');
+  var revCtx = document.getElementById('rev-chart').getContext('2d');
+  if(_charts.eps){ _charts.eps.destroy(); }
+  if(_charts.rev){ _charts.rev.destroy(); }
+  var quarters = (e && e.quarters) || [];
+  // PR #23: hide the entire section when there's no data — empty titled
+  // cards are worse than no cards. Section is display:none by default in
+  // HTML; only shown when we actually have quarters to render.
+  var hasAnyData = quarters.some(function(q){
+    return q.estimate_eps != null || q.actual_eps != null
+        || q.revenue != null || q.earnings != null;
+  });
+  if(!quarters.length || !hasAnyData){
+    if(section) section.style.display = 'none';
+    return;
+  }
+  if(section) section.style.display = '';
+  epsCtx.canvas.style.opacity = 1;
+  revCtx.canvas.style.opacity = 1;
+  var labels = quarters.map(function(q){return q.quarter || ''});
+  var estimates = quarters.map(function(q){return q.estimate_eps});
+  var actuals = quarters.map(function(q){return q.actual_eps});
+  var revenues = quarters.map(function(q){return q.revenue});
+  var earningsVals = quarters.map(function(q){return q.earnings});
+
+  _charts.eps = new Chart(epsCtx, {
+    type:'bar',
+    data:{labels:labels, datasets:[
+      {label:'Estimate', data:estimates, backgroundColor:'#3a3550', borderRadius:6, maxBarThickness:26},
+      {label:'Actual', data:actuals, backgroundColor:quarters.map(function(q){return q.beat ? '#22c55e' : '#ff3b3b'}), borderRadius:6, maxBarThickness:26},
+    ]},
+    options:{responsive:true, maintainAspectRatio:false, animation:false,
+      plugins:{legend:{labels:{color:'#888',font:{size:11}}}, tooltip:{callbacks:{label:function(c){return c.dataset.label+': $'+Number(c.parsed.y||0).toFixed(2)}}}},
+      scales:{x:{ticks:{color:'#666',font:{size:10}}, grid:{display:false}},
+              y:{ticks:{color:'#666',font:{size:10},callback:function(v){return '$'+v.toFixed(2)}}, grid:{color:'#1a1a1a'}}}}
+  });
+
+  _charts.rev = new Chart(revCtx, {
+    type:'bar',
+    data:{labels:labels, datasets:[
+      {label:'Revenue', data:revenues, backgroundColor:'#8b5cf6', borderRadius:6, maxBarThickness:26},
+      {label:'Net Income', data:earningsVals, backgroundColor:'#c4b5fd', borderRadius:6, maxBarThickness:26},
+    ]},
+    options:{responsive:true, maintainAspectRatio:false, animation:false,
+      plugins:{legend:{labels:{color:'#888',font:{size:11}}}, tooltip:{callbacks:{label:function(c){return c.dataset.label+': '+fmtMoney(c.parsed.y,2)}}}},
+      scales:{x:{ticks:{color:'#666',font:{size:10}}, grid:{display:false}},
+              y:{ticks:{color:'#666',font:{size:10},callback:function(v){return fmtMoney(v,0)}}, grid:{color:'#1a1a1a'}}}}
+  });
+}
+
+/* ─── Analyst insights ─── */
+function renderAnalyst(a){
+  var section = document.getElementById('analyst-section');
+  var track = document.getElementById('target-track');
+  var summary = document.getElementById('target-summary');
+  var bar = document.getElementById('rec-bar');
+  var legend = document.getElementById('rec-legend');
+  var latestWrap = document.getElementById('latest-rating-wrap');
+
+  // Hide the whole panel when the analyst feed is unavailable.
+  if(!a || a.ok === false){
+    if(section) section.style.display = 'none';
+    return;
+  }
+  if(section) section.style.display = '';
+
+  var lo = a.price_target_low, avg = a.price_target_avg, hi = a.price_target_high, cur = a.current_price;
+  if(lo != null && hi != null && hi > lo){
+    var range = hi - lo;
+    function pct(v){ return Math.max(0, Math.min(100, ((v - lo) / range) * 100)); }
+    var html = '<div class="target-line"></div>';
+    html += '<div class="target-marker" style="left:0%"></div>';
+    html += '<div class="target-marker" style="left:100%"></div>';
+    html += '<div class="target-label" style="left:0%">Low<span class="lv">$'+lo.toFixed(2)+'</span></div>';
+    if(avg != null){
+      var ap = pct(avg);
+      html += '<div class="target-marker" style="left:'+ap+'%"></div>';
+      html += '<div class="target-label" style="left:'+ap+'%">Avg<span class="lv">$'+avg.toFixed(2)+'</span></div>';
+    }
+    html += '<div class="target-label" style="left:100%">High<span class="lv">$'+hi.toFixed(2)+'</span></div>';
+    if(cur != null){
+      var cp = pct(cur);
+      html += '<div class="target-pin cur" style="left:'+Math.max(0,Math.min(100,cp))+'%">Current $'+cur.toFixed(2)+'</div>';
+    }
+    track.innerHTML = html;
+    summary.textContent = (a.analyst_count != null ? a.analyst_count + ' analysts · ' : '')
+      + (avg != null && cur != null ? 'Avg target is ' + (avg > cur ? (((avg-cur)/cur*100).toFixed(1)+'% above') : (((cur-avg)/cur*100).toFixed(1)+'% below')) + ' current price' : '');
+  } else {
+    track.innerHTML = '';
+    summary.textContent = 'No analyst price targets available';
+  }
+
+  var rec = a.recommendations || {};
+  var total = (rec.strong_buy||0) + (rec.buy||0) + (rec.hold||0) + (rec.underperform||0) + (rec.sell||0);
+  if(total === 0){
+    bar.innerHTML = '<div style="flex:1;text-align:center;line-height:34px;color:#666;font-size:11px">No recommendations</div>';
+    legend.innerHTML = '';
+  } else {
+    var segs = [
+      ['strong-buy','Strong Buy', rec.strong_buy || 0],
+      ['buy','Buy', rec.buy || 0],
+      ['hold','Hold', rec.hold || 0],
+      ['underperform','Underperform', rec.underperform || 0],
+      ['sell','Sell', rec.sell || 0],
+    ];
+    bar.innerHTML = segs.map(function(s){
+      var w = s[2] / total * 100;
+      if(w === 0) return '';
+      return '<div class="rec-seg ' + s[0] + '" style="width:' + w + '%" title="' + s[1] + ': ' + s[2] + '">'
+        + (w >= 8 ? s[2] : '') + '</div>';
+    }).join('');
+    legend.innerHTML = segs.map(function(s){
+      var w = s[2] / total * 100;
+      return '<div class="ll"><div class="ll-dot" style="background:' + segColor(s[0]) + '"></div>'
+        + s[1] + ' · <b style="color:#ccc">' + s[2] + '</b> (' + w.toFixed(0) + '%)</div>';
+    }).join('');
+  }
+
+  if(a.latest_rating && (a.latest_rating.analyst || a.latest_rating.rating)){
+    var lr = a.latest_rating;
+    latestWrap.innerHTML = '<div class="latest-rating">'
+      + '<div><span class="lr-firm">' + escHtml(lr.analyst || 'Analyst') + '</span>'
+      + '<div class="lr-meta">' + (lr.date ? fmtDateShort(lr.date) : 'recent') + (lr.from_rating ? ' · from ' + escHtml(lr.from_rating) : '') + '</div></div>'
+      + '<div></div>'
+      + '<div class="lr-action">' + escHtml(lr.rating || lr.action || '—') + '</div>'
+      + '</div>';
+  } else {
+    latestWrap.innerHTML = '';
+  }
+}
+
+function segColor(k){
+  return {'strong-buy':'#16a34a','buy':'#4ade80','hold':'#facc15','underperform':'#fb923c','sell':'#ef4444'}[k]||'#666';
+}
+
+/* ─── News feed ─── */
+function setNewsCat(c){
+  _newsCat = c;
+  document.querySelectorAll('.news-tab').forEach(function(t){
+    t.classList.toggle('active', t.dataset.cat === c);
+  });
+  reloadNewsOnly();
+}
+
+async function reloadNewsOnly(){
+  var nw = document.getElementById('news-list');
+  nw.innerHTML = '<div class="empty"><div class="ico">&#9203;</div>Loading…</div>';
+  var resp = await fetch('/api/wolf/news?category=' + encodeURIComponent(_newsCat))
+    .then(function(r){return r.json()}).catch(function(){return {ok:false,articles:[]}});
+  renderNews(resp);
+}
+
+function renderNews(n){
+  var nw = document.getElementById('news-list');
+  var articles = (n && n.articles) || [];
+  if(!articles.length){
+    nw.innerHTML = '<div class="info-box">No articles in this category.' + ((n&&n.error)?' <span style="color:#666">('+escHtml(n.error)+')</span>':'') + '</div>';
+    return;
+  }
+  nw.innerHTML = articles.slice(0, 20).map(function(a){
+    var s = a.sentiment || 0;
+    var stBadge = s > 0.2 ? '<span class="sent-b">&#8593; BULLISH</span>'
+      : s < -0.2 ? '<span class="sent-s">&#8595; BEARISH</span>'
+      : '<span class="sent-n">&#8594; NEUTRAL</span>';
+    var titleHtml = a.url
+      ? '<a href="' + escHtml(a.url) + '" target="_blank" rel="noopener">' + escHtml(a.title || '') + '</a>'
+      : escHtml(a.title || '');
+    return '<div class="news-item">'
+      + '<div class="news-hl">' + titleHtml + '</div>'
+      + '<div class="news-meta">'
+      + '<span class="news-cat ' + (a.category || 'news') + '">' + (a.category || 'news') + '</span>'
+      + '<span>' + escHtml(a.source || 'News') + '</span>'
+      + (a.published_at ? '<span>' + fmtTimeAgo(a.published_at) + '</span>' : '')
+      + stBadge
+      + '</div></div>';
+  }).join('');
+}
+
+/* ─── Realized equity curve — "if you followed every pick" (audit) ─── */
+async function loadEquityChart(){
+  var sec = document.getElementById('equity-section');
+  var sumEl = document.getElementById('equity-summary');
+  var canvas = document.getElementById('equity-chart');
+  if(!sec || !canvas) return;
+  try{
+    var g = await fetch('/api/wolf/pnl').then(function(r){return r.json()});
+    if(!g || g.ok === false || !g.curve || !g.curve.length){ sec.style.display = 'none'; return; }
+    sec.style.display = '';
+    var labels = g.curve.map(function(p, i){
+      if(p.ts){ var t = Number(p.ts); if(t > 1e12) t = Math.floor(t/1000); var d = new Date(t*1000); if(!isNaN(d.getTime())) return (d.getMonth()+1)+'/'+d.getDate(); }
+      return String(i+1);
+    });
+    var data = g.curve.map(function(p){ return p.equity; });
+    var pos = (g.realized_pnl_usd || 0) >= 0;
+    var pf = (g.profit_factor == null) ? '—' : g.profit_factor;
+    var wr = (g.win_rate != null) ? (g.win_rate*100).toFixed(0)+'%' : '—';
+    sumEl.innerHTML = '<b class="'+(pos?'pos':'neg')+'">'+(pos?'+':'-')+'$'+Math.abs(g.realized_pnl_usd).toFixed(2)+'</b>'
+      + ' realized · <span class="'+(pos?'pos':'neg')+'">'+((g.total_return_pct>=0?'+':'')+g.total_return_pct)+'%</span>'
+      + ' · '+g.count+' trades · win '+wr+' · PF '+pf+' · maxDD -'+g.max_drawdown_pct+'%';
+    var ctx = canvas.getContext('2d');
+    if(_charts.equity) _charts.equity.destroy();
+    var line = pos ? '#22c55e' : '#ff3b3b';
+    // Roadmap #2c: tighten the Y axis around the real range so a near-flat curve
+    // with a small dip is legible (instead of a flat line pinned to $1000).
+    var dmin = Math.min.apply(null, data), dmax = Math.max.apply(null, data);
+    var pad = Math.max((dmax - dmin) * 0.2, dmax * 0.003, 1);
+    _charts.equity = new Chart(ctx, {
+      type: 'line',
+      data: { labels: labels, datasets: [{ data: data, borderColor: line,
+        backgroundColor: _areaGradient(ctx, line), borderWidth: 2, fill: true, pointRadius: 0, tension: 0.25 }] },
+      options: { responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false },
+          tooltip: { callbacks: { label: function(c){ return '$' + Number(c.parsed.y).toFixed(2); } } } },
+        scales: { x: { ticks: { color: '#666', maxTicksLimit: 8 }, grid: { display: false } },
+          y: { suggestedMin: dmin - pad, suggestedMax: dmax + pad,
+               ticks: { color: '#666', callback: function(v){ return '$' + Number(v).toFixed(0); } }, grid: { color: '#1a1a1a' } } } }
+    });
+  }catch(e){ sec.style.display = 'none'; }
+}
+
+/* ─── Short interest / squeeze context (audit free-API wiring) ─── */
+async function loadShortInterest(){
+  var sec = document.getElementById('short-section');
+  var tile = document.getElementById('short-tile');
+  if(!sec || !tile) return;
+  try{
+    var g = await fetch('/api/wolf/short-interest').then(function(r){return r.json()});
+    if(!g || g.ok === false || !g.available){ sec.style.display = 'none'; return; }
+    sec.style.display = '';
+    var riskCls = (g.squeeze_risk === 'extreme' || g.squeeze_risk === 'high') ? 'high'
+      : (g.squeeze_risk === 'medium' ? 'medium' : 'low');
+    function block(label, val, sub, cls){
+      return '<div class="st-block"><div class="st-label">' + escHtml(label) + '</div>'
+        + '<div class="st-val' + (cls ? ' ' + cls : '') + '">' + escHtml(val) + '</div>'
+        + (sub ? '<div class="st-sub">' + escHtml(sub) + '</div>' : '') + '</div>';
+    }
+    var trendSub = '';
+    if(g.trend && g.trend.direction){
+      trendSub = g.trend.direction + (g.trend.pct != null ? ' ' + (g.trend.pct >= 0 ? '+' : '') + g.trend.pct + '%' : '');
+    }
+    tile.innerHTML = [
+      block('Short Float', g.short_float_pct != null ? g.short_float_pct + '%' : '—'),
+      block('Days to Cover', g.days_to_cover != null ? g.days_to_cover : '—'),
+      block('Shares Short', g.shares_short != null ? Number(g.shares_short).toLocaleString('en-US') : '—', trendSub),
+      block('Squeeze Risk', String(g.squeeze_risk || '—').toUpperCase(), '', riskCls),
+    ].join('');
+  }catch(e){ sec.style.display = 'none'; }
+}
+
+/* ─── Portfolio (kept from prior cockpit) ─── */
+async function loadPortfolio(){
+  var data = await fetch('/api/portfolio').then(function(r){return r.json()}).catch(function(){return {positions:[]}});
   var ps = data.positions || [];
   var tw = document.getElementById('ptotals');
   var pw = document.getElementById('ppositions');
-  if (ps.length === 0) {
+  var gp = document.getElementById('gp-section');
+  if(ps.length === 0){
     tw.innerHTML = '';
-    pw.innerHTML = '<div class="empty"><div class="ico">&#128188;</div><p>No positions yet.<br>Add your first above.</p></div>';
+    pw.innerHTML = '<div class="empty"><div class="ico">&#128188;</div>No positions yet. Add your first above.</div>';
+    gp.innerHTML = '';
     return;
   }
   var tc = data.total_cost || 0;
   var tv = data.total_value;
   var tgl = data.total_gain_loss;
   tw.innerHTML = '<div class="port-totals">'
-    + '<div class="ptot"><div class="ptot-label">TOTAL INVESTED</div><div class="ptot-val">$' + tc.toLocaleString('en-US', {maximumFractionDigits: 2}) + '</div></div>'
-    + '<div class="ptot"><div class="ptot-label">CURRENT VALUE</div><div class="ptot-val">' + (tv != null ? '$' + tv.toLocaleString('en-US', {maximumFractionDigits: 2}) : '&mdash;') + '</div></div>'
-    + '<div class="ptot"><div class="ptot-label">TOTAL GAIN/LOSS</div><div class="ptot-val ' + (tgl >= 0 ? 'pos' : 'neg') + '">'
-    + (tgl !== null ? (tgl >= 0 ? '+$' : '-$') + Math.abs(tgl).toLocaleString('en-US', {maximumFractionDigits: 2}) : '&mdash;') + '</div></div>'
+    + '<div class="ptot"><div class="ptot-lbl">TOTAL INVESTED</div><div class="ptot-val">$'+tc.toLocaleString('en-US',{maximumFractionDigits:2})+'</div></div>'
+    + '<div class="ptot"><div class="ptot-lbl">CURRENT VALUE</div><div class="ptot-val">'+(tv!=null?'$'+tv.toLocaleString('en-US',{maximumFractionDigits:2}):'—')+'</div></div>'
+    + '<div class="ptot"><div class="ptot-lbl">TOTAL G/L</div><div class="ptot-val '+(tgl>=0?'pos':'neg')+'">'
+    + (tgl!=null?(tgl>=0?'+$':'-$')+Math.abs(tgl).toLocaleString('en-US',{maximumFractionDigits:2}):'—')+'</div></div>'
     + '</div>';
-  pw.innerHTML = ps.map(function(p) {
+  pw.innerHTML = ps.map(function(p){
     var gl = p.gain_loss_pct;
     var glD = p.gain_loss;
-    var glc = gl === null ? '' : (gl >= 0 ? 'pos' : 'neg');
-    var glStr = gl === null ? '&mdash;' : (gl >= 0 ? '+' : '') + gl.toFixed(2) + '%';
-    var glDStr = glD === null ? '&mdash;' : (glD >= 0 ? '+$' : '-$') + Math.abs(glD).toFixed(2);
+    var glc = gl == null ? '' : (gl >= 0 ? 'pos' : 'neg');
+    var glStr = gl == null ? '—' : (gl >= 0 ? '+' : '') + gl.toFixed(2) + '%';
+    var glDStr = glD == null ? '—' : (glD >= 0 ? '+$' : '-$') + Math.abs(glD).toFixed(2);
     var adv = '<span class="gadv-val gadv-neutral">Not watching</span>';
-    if (p.ghost_signal) {
+    if(p.ghost_signal){
       var b = p.ghost_signal.direction === 'UP' || p.ghost_signal.direction === 'BUY';
-      adv = '<span class="gadv-val ' + (b ? 'gadv-buy' : 'gadv-sell') + '">' + (b ? '&#128077; BUY MORE' : '&#128078; CONSIDER SELL') + '</span>';
+      adv = '<span class="gadv-val ' + (b?'gadv-buy':'gadv-sell') + '">' + (b?'BUY MORE':'CONSIDER SELL') + '</span>';
     }
-    var safeSymbol = escHtml(p.symbol || '');
-    var safeAssetType = escHtml((p.asset_type || '').toUpperCase());
-    var safeId = Number(p.id);
-    if (!isFinite(safeId) || safeId < 0) safeId = 0;
-    var h = '<div class="pcard">';
-    h += '<div class="pcard-top">';
-    h += '<div><span class="psym">' + safeSymbol + '</span><span class="ptype">' + safeAssetType + '</span></div>';
-    h += '<div class="ghost-adv"><span class="gadv-label">GHOST SAYS</span>' + adv;
-    h += '<button class="btn-del" onclick="delPos(' + safeId + ')">&#10005; Remove</button></div>';
-    h += '</div>';
-    h += '<div class="pnums">';
-    h += '<div class="pnum"><div class="pnum-label">YOU PAID</div><div class="pnum-val">' + fmt(p.buy_price) + '</div></div>';
-    h += '<div class="pnum"><div class="pnum-label">NOW</div><div class="pnum-val">' + (p.live_price != null ? fmt(p.live_price) : '&mdash;') + '</div></div>';
-    h += '<div class="pnum"><div class="pnum-label">YOUR VALUE</div><div class="pnum-val">' + (p.current_value != null ? '$' + p.current_value.toLocaleString('en-US', {maximumFractionDigits: 2}) : '&mdash;') + '</div></div>';
-    h += '<div class="pnum"><div class="pnum-label">GAIN/LOSS</div><div class="pnum-val ' + glc + '">' + glDStr + ' (' + glStr + ')</div></div>';
-    h += '</div></div>';
-    return h;
+    var safeId = Number(p.id); if(!isFinite(safeId)||safeId<0) safeId=0;
+    return '<div class="pcard">'
+      + '<div class="pcard-top"><div><span class="psym">'+escHtml(p.symbol||'')+'</span><span class="ptype">STOCK</span></div>'
+      + '<div class="ghost-adv"><span class="gadv-lbl">GHOST</span>'+adv
+      + '<button class="btn-del" onclick="delPos('+safeId+')">&#10005;</button></div></div>'
+      + '<div class="pnums">'
+      + '<div class="pnum"><div class="pnum-lbl">PAID</div><div class="pnum-val">'+fmtPrice(p.buy_price)+'</div></div>'
+      + '<div class="pnum"><div class="pnum-lbl">NOW</div><div class="pnum-val">'+(p.live_price!=null?fmtPrice(p.live_price):'—')+'</div></div>'
+      + '<div class="pnum"><div class="pnum-lbl">VALUE</div><div class="pnum-val">'+(p.current_value!=null?'$'+p.current_value.toLocaleString('en-US',{maximumFractionDigits:2}):'—')+'</div></div>'
+      + '<div class="pnum"><div class="pnum-lbl">G/L</div><div class="pnum-val '+glc+'">'+glDStr+' ('+glStr+')</div></div>'
+      + '</div></div>';
   }).join('');
+
+  // Ghost predictions on holdings (inlined from former monkey-patch)
+  try{
+    var pd = await fetch('/api/picks').then(function(r){return r.json()});
+    var mySyms = ps.map(function(p){return (p.symbol||'').toUpperCase()});
+    var matched = (pd.active||[]).filter(function(p){return mySyms.indexOf((p.symbol||'').toUpperCase()) >= 0});
+    if(!matched.length){
+      gp.innerHTML = '<div class="sec-label" style="margin-top:24px">Ghost Predictions on Your Holdings</div>'
+        + '<div class="info-box">No active Ghost predictions on your holdings.</div>';
+      return;
+    }
+    gp.innerHTML = '<div class="sec-label" style="margin-top:24px">Ghost Predictions on Your Holdings</div>'
+      + matched.map(function(p){
+        var conf = Math.round((p.confidence||0)*100);
+        var ep = p.entry_price||0;
+        var tp = p.target_price||0;
+        var hrs = p.expires_at ? Math.max(0,Math.round((p.expires_at-Date.now()/1000)/3600)) : '?';
+        var dir = (p.direction==='UP'||p.direction==='BUY') ? 'BUY' : 'SELL';
+        var pct = ep>0 ? ((tp-ep)/ep*100).toFixed(1) : '?';
+        return '<div class="pcard"><div class="pcard-top">'
+          + '<div><span class="psym">'+escHtml(p.symbol||'')+'</span>'
+          + '<span class="play-pill '+(dir==='BUY'?'buy':'sell')+'" style="margin-left:8px;font-size:11px;padding:3px 8px">'+dir+'</span></div>'
+          + '<div>'+conf+'% confident · '+hrs+'h left</div></div>'
+          + '<div class="pnums">'
+          + '<div class="pnum"><div class="pnum-lbl">ENTRY</div><div class="pnum-val">'+fmtPrice(ep)+'</div></div>'
+          + '<div class="pnum"><div class="pnum-lbl">TARGET</div><div class="pnum-val pos">+'+pct+'%</div></div>'
+          + '<div class="pnum"><div class="pnum-lbl">STOP</div><div class="pnum-val">'+fmtPrice(p.stop_price)+'</div></div>'
+          + '<div class="pnum"><div class="pnum-lbl">CONFIDENCE</div><div class="pnum-val">'+conf+'%</div></div>'
+          + '</div></div>';
+      }).join('');
+  }catch(e){ gp.innerHTML = ''; }
 }
 
-async function addPos() {
+function toggleAddPos(){
+  var f = document.getElementById('port-form');
+  var b = document.getElementById('add-pos-toggle');
+  if(!f) return;
+  var open = f.style.display !== 'none';
+  f.style.display = open ? 'none' : '';
+  if(b) b.textContent = open ? '+ Add a Position' : '− Hide';
+  if(!open){ var s = document.getElementById('p-sym'); if(s) s.focus(); }
+}
+
+async function addPos(){
   var sym = document.getElementById('p-sym').value.trim().toUpperCase();
-  var type = document.getElementById('p-type').value;
   var qty = parseFloat(document.getElementById('p-qty').value || 0);
   var bp = parseFloat(document.getElementById('p-bp').value || 0);
   var date = document.getElementById('p-date').value;
   var err = document.getElementById('perr');
-  if (!sym || qty <= 0 || bp <= 0) { err.textContent = 'Fill in symbol, quantity and price paid.'; return; }
-  err.textContent = 'Adding...';
-  var r = await fetch('/api/portfolio', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({symbol: sym, asset_type: type, quantity: qty, buy_price: bp, buy_date: date})
-  }).then(function(r) { return r.json(); }).catch(function() { return {ok: false, error: 'Network error'}; });
-  if (r.ok) {
+  if(!sym || qty <= 0 || bp <= 0){ err.textContent = 'Fill in symbol, quantity and price paid.'; return; }
+  err.textContent = 'Adding…';
+  var r = await fetch('/api/portfolio',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({symbol:sym,asset_type:'stock',quantity:qty,buy_price:bp,buy_date:date})})
+    .then(function(r){return r.json()}).catch(function(){return {ok:false,error:'Network error'}});
+  if(r.ok){
     err.textContent = '';
-    document.getElementById('p-sym').value = '';
+    document.getElementById('p-sym').value = 'WOLF';
     document.getElementById('p-qty').value = '';
     document.getElementById('p-bp').value = '';
+    var f = document.getElementById('port-form'); if(f) f.style.display = 'none';
+    var b = document.getElementById('add-pos-toggle'); if(b) b.textContent = '+ Add a Position';
     loadPortfolio();
   } else {
     err.textContent = r.error || 'Failed';
   }
 }
 
-async function delPos(id) {
-  if (!confirm('Remove this position?')) return;
+async function delPos(id){
+  if(!confirm('Remove this position?')) return;
   var err = document.getElementById('perr');
-  if (err) err.textContent = 'Removing...';
-  var resp = await fetch('/api/portfolio/' + id, {method: 'DELETE'}).catch(function() { return null; });
-  if (!resp || !resp.ok) {
-    if (err) err.textContent = 'Remove failed. Try again.';
-    return;
-  }
-  var body = await resp.json().catch(function() { return {}; });
-  if (body && body.ok === false) {
-    if (err) err.textContent = body.error || 'Remove failed.';
-    return;
-  }
-  if (err) err.textContent = '';
+  if(err) err.textContent = 'Removing…';
+  var resp = await fetch('/api/portfolio/'+id,{method:'DELETE'}).catch(function(){return null});
+  if(!resp || !resp.ok){ if(err) err.textContent = 'Remove failed. Try again.'; return; }
+  var body = await resp.json().catch(function(){return {}});
+  if(body && body.ok === false){ if(err) err.textContent = body.error || 'Remove failed.'; return; }
+  if(err) err.textContent = '';
   loadPortfolio();
 }
 
-async function load() {
-  try {
-    var ctx = await fetch('/api/cockpit/context').then(function(r) { return r.json(); }).catch(function() { return {ok: false}; });
-    var h, stats, dir, regime, v3;
-    if (ctx && ctx.ok === true && ctx.health && ctx.stats) {
-      h = ctx.health;
-      stats = ctx.stats;
-      dir = ctx.direction || {};
-      regime = ctx.regime || {ok: false};
-      v3 = ctx.v3 || {trained: false};
-    } else {
-      h = await fetch('/health').then(function(r) { return r.json(); });
-      stats = await fetch('/api/stats').then(function(r) { return r.json(); });
-      dir = await fetch('/api/stats/direction').then(function(r) { return r.json(); }).catch(function() { return {}; });
-      regime = await fetch('/api/regime').then(function(r) { return r.json(); }).catch(function() { return {ok: false, error: 'fetch failed'}; });
-      v3 = await fetch('/api/v3/status').then(function(r) { return r.json(); }).catch(function() { return {trained: false, reason: 'v3 status fetch failed'}; });
-    }
-    var pr = await Promise.all([
-      fetch('/api/picks').then(function(r) { return r.json(); }),
-      fetch('/api/v2/recent').then(function(r) { return r.json(); }).catch(function() { return {trades: []}; }),
-      fetch('/api/news').then(function(r) { return r.json(); }).catch(function() { return {articles: []}; })
-    ]);
-    var picks = pr[0];
-    var recent = pr[1];
-    var news = pr[2];
+/* ─── Truth Mode renderers (PR #6) ─── */
+function renderActivity(activity){
+  var el = document.getElementById('activity-strip');
+  if(!el) return;
+  if(!activity){ el.innerHTML = '<span>Activity unavailable</span>'; return; }
+  var wo = activity.weekly_outcomes || {};
+  var wW = wo.WIN || 0, wL = wo.LOSS || 0, wE = wo.EXPIRED || 0;
+  el.innerHTML =
+    '<span>Open picks: <b>' + (activity.open_predictions != null ? activity.open_predictions : '—') + '</b></span>'
+    + '<span>Resolved (24h): <b>' + (activity.resolved_24h != null ? activity.resolved_24h : '—') + '</b></span>'
+    + '<span>This week: <span class="w">' + wW + 'W</span> / <span class="l">' + wL + 'L</span>'
+    + (wE ? ' / <span class="e">' + wE + 'E</span>' : '') + '</span>';
+}
 
-    var buyWr = dir.by_direction && dir.by_direction.BUY ? dir.by_direction.BUY.win_rate_pct : (stats.win_rate_pct || 0);
-    var pv = stats.post_v32 || {};
-    var pr = stats.post_v32_resolved || {};
-    var v32t = pv.total || 0;
-    var v32rt = pr.total || 0;
-    var v32wr = pv.win_rate_pct != null ? pv.win_rate_pct : 0;
-    var v32rwr = pr.win_rate_pct != null ? pr.win_rate_pct : 0;
-    var wrEl = document.getElementById('wr');
-    var wrSub = document.getElementById('wr-sub');
-    if (v32t > 0) {
-      wrEl.textContent = v32wr + '% \u00b7 v3.2 (issued)';
-      wrSub.textContent = 'Legacy BUY cohort: ' + buyWr + '%';
-    } else if (v32rt > 0) {
-      wrEl.textContent = v32rwr + '% \u00b7 closed since cutover';
-      wrSub.textContent = 'No WIN/LOSS yet for picks issued after ' + fmtTsIso(pv.start_ts) + ' \u00b7 legacy BUY ' + buyWr + '%';
-    } else {
-      wrEl.textContent = buyWr + '% BUY';
-      wrSub.textContent = pv.start_ts ? ('v3.2: no issued- or closed-in-window WIN/LOSS yet \u00b7 since ' + fmtTsIso(pv.start_ts)) : '';
-    }
-    document.getElementById('f-open').textContent = stats.open_positions || 0;
-    document.getElementById('f-total').textContent = stats.total || 0;
 
-    var scan = (stats && stats.scan_symbols) ? stats.scan_symbols : {crypto: [], stocks: []};
-    var stockWatchedLine = (scan.stocks && scan.stocks.length)
-      ? ('Stocks watched: ' + scan.stocks.map(function(s) { return escHtml(s); }).join(', '))
-      : 'Stock scan list is empty (configure <code>STOCK_SYMBOLS</code> on the server).';
+function renderTruth(stats, health, v3, dir){
+  var pv = stats.post_v32 || {};
+  var pres = stats.post_v32_resolved || {};
+  var v32t = pv.total || 0;
+  var v32rt = pres.total || 0;
+  var v32wr = pv.win_rate_pct != null ? pv.win_rate_pct : 0;
+  var v32rwr = pres.win_rate_pct != null ? pres.win_rate_pct : 0;
+  document.getElementById('t-v32-wr').textContent = v32t > 0 ? v32wr + '%' : (v32rt > 0 ? v32rwr + '%' : '—');
+  document.getElementById('t-v32-kv').innerHTML =
+    '<b>Issued after cutover</b> ' + (pv.wins||0) + 'W / ' + (pv.losses||0) + 'L / ' + v32t + (v32t>0?' · '+v32wr+'%':'') + '<br>'
+    + '<b>Closed after cutover</b> ' + (pres.wins||0) + 'W / ' + (pres.losses||0) + 'L / ' + v32rt + (v32rt>0?' · '+v32rwr+'%':'') + '<br>'
+    + '<b>Window start</b> ' + fmtTsIso(pv.start_ts);
 
-    var active = picks.active || [];
-    var crypto = active.filter(function(p) { return p.asset_type !== 'stock'; });
-    var stocks = active.filter(function(p) { return p.asset_type === 'stock'; });
+  // PR #24 (item 13): single-line, investor-honest freshness summary.
+  // Replaces the previous 5-row kv block that mixed pick/cycle minutes,
+  // confidence floor, and price feed status. The big number stays as a
+  // single human-readable headline; the kv shows two lines max.
+  var pickFreshMin = health.predictions_freshness_min;
+  var cycleFreshMin = health.prediction_cycle_freshness_min;
+  var pickDays = pickFreshMin != null ? Math.floor(pickFreshMin / (60*24)) : null;
+  var bigText;
+  if(pickFreshMin == null){
+    bigText = '—';
+  } else if(pickDays >= 1){
+    bigText = pickDays + ' day' + (pickDays === 1 ? '' : 's');
+  } else {
+    bigText = pickFreshMin + ' min';
+  }
+  document.getElementById('t-fresh').textContent = bigText;
+  var feeds = health.price_feeds && health.price_feeds.summary ? health.price_feeds.summary : '—';
+  document.getElementById('t-sys-kv').innerHTML =
+    '<b>Engine scanned</b> ' + (cycleFreshMin != null ? cycleFreshMin + ' min ago' : 'unknown')
+    + ' &middot; <b>last signal</b> '
+    + (pickFreshMin == null ? 'never' :
+       pickDays >= 1 ? pickDays + ' day' + (pickDays === 1 ? '' : 's') + ' ago' :
+       pickFreshMin + ' min ago')
+    + '<br>'
+    + '<b>Price feeds</b> ' + escHtml(feeds);
+}
 
-    var seen = {};
-    crypto.forEach(function(p) {
-      if (!seen[p.symbol] || p.confidence > seen[p.symbol].confidence) seen[p.symbol] = p;
+/* ─── Short interest tile (PR #24 item 11) ─── */
+function renderShortInterest(ctx, wstats){
+  var section = document.getElementById('short-section');
+  var tile = document.getElementById('short-tile');
+  if(!section || !tile) return;
+  // PR #25 (item 5): pull short data from /api/wolf/context first (Finviz
+  // scrape via wolf_context.py), fall back to /api/wolf/stats which now
+  // exposes yfinance.info shortPercentOfFloat + shortRatio. Either source
+  // populates the tile so a Finviz outage doesn't blank it.
+  var sf = null, dtc = null;
+  if(ctx && ctx.ok !== false && ctx.short_data){
+    sf = ctx.short_data.short_float;
+    dtc = ctx.short_data.days_to_cover;
+  }
+  if(sf == null && wstats && wstats.ok !== false){
+    if(wstats.short_float != null) sf = wstats.short_float;
+  }
+  if(dtc == null && wstats && wstats.ok !== false){
+    if(wstats.short_days_to_cover != null) dtc = wstats.short_days_to_cover;
+  }
+  if(sf == null && dtc == null){
+    section.style.display = 'none';
+    return;
+  }
+  // Squeeze risk band: short_float ≥ 25% AND days_to_cover ≥ 5 → HIGH
+  // short_float ≥ 15% OR days_to_cover ≥ 3 → MEDIUM
+  // else LOW
+  var risk = 'low';
+  if(sf != null && sf >= 0.25 && dtc != null && dtc >= 5) risk = 'high';
+  else if((sf != null && sf >= 0.15) || (dtc != null && dtc >= 3)) risk = 'medium';
+  var sfPct = sf != null ? (sf * 100).toFixed(2) + '%' : '—';
+  var dtcStr = dtc != null ? dtc.toFixed(2) + ' days' : '—';
+  // Estimate share count if we know float — leave blank otherwise. Many
+  // tickers don't expose float in WolfShortData; tile shows what's available.
+  tile.innerHTML =
+    '<div class="st-block"><div class="st-label">Short Float</div>'
+    +   '<div class="st-val">' + sfPct + '</div>'
+    +   '<div class="st-sub">of public float</div></div>'
+    + '<div class="st-block"><div class="st-label">Days to Cover</div>'
+    +   '<div class="st-val">' + dtcStr + '</div>'
+    +   '<div class="st-sub">at avg daily volume</div></div>'
+    + '<div class="st-block"><div class="st-label">Squeeze Risk</div>'
+    +   '<div class="st-val ' + risk + '">' + risk.toUpperCase() + '</div>'
+    +   '<div class="st-sub">' + (risk === 'high' ? 'High short interest + tight cover days'
+                                : risk === 'medium' ? 'Elevated short pressure'
+                                : 'Below squeeze thresholds') + '</div></div>';
+  section.style.display = '';
+}
+
+/* ─── Catalyst timeline (PR #24 item 12) ─── */
+function renderCatalysts(ctx, analyst, news){
+  var section = document.getElementById('catalyst-section');
+  var slot = document.getElementById('catalyst-timeline');
+  if(!section || !slot) return;
+  var events = [];
+  // 1. Earnings: next earnings date from WolfContext (Finviz-scraped)
+  // PR #26: only add an earnings row when we have a REAL date — skip
+  // "Unknown" / "N/A" / "-" placeholders that rendered as "Next earnings:
+  // Unknown" noise.
+  var _ed = ctx && ctx.ok !== false && ctx.earnings ? (ctx.earnings.date_str || '') : '';
+  var _edClean = String(_ed).trim();
+  if(_edClean && !/^(unknown|n\/a|-|none|null)$/i.test(_edClean)){
+    var em = ctx.earnings;
+    events.push({
+      sort: Date.now() / 1000 + 86400 * 365,  // future earnings sorted last
+      kind: 'earnings',
+      when: _edClean,
+      body: '<b>Next earnings</b> ' + escHtml(_edClean)
+        + (em.is_earnings_week ? ' <span style="color:#fbbf24">(within 5 trading days)</span>' : ''),
     });
-    var dc = Object.values(seen).sort(function(a, b) { return b.confidence - a.confidence; });
+  }
+  // 2. Latest analyst rating
+  if(analyst && analyst.latest_rating && (analyst.latest_rating.analyst || analyst.latest_rating.rating)){
+    var lr = analyst.latest_rating;
+    events.push({
+      sort: lr.date || 0,
+      kind: 'rating',
+      when: lr.date ? fmtDateShort(lr.date) : 'recent',
+      body: '<b>' + escHtml(lr.analyst || 'Analyst') + '</b> '
+        + escHtml(lr.action || lr.rating || 'rating') + ' &rarr; ' + escHtml(lr.rating || '—')
+        + (lr.from_rating ? ' <span style="color:#888">(was ' + escHtml(lr.from_rating) + ')</span>' : ''),
+    });
+  }
+  // 3. Recent WOLF news (top 5)
+  var articles = (news && news.articles) || [];
+  articles.slice(0, 5).forEach(function(a){
+    events.push({
+      sort: a.published_at || 0,
+      kind: a.category === 'earnings' ? 'earnings' : a.category === 'press' ? 'press' : 'news',
+      when: a.published_at ? fmtTimeAgo(a.published_at) : '—',
+      body: (a.url
+        ? '<a href="' + escHtml(a.url) + '" target="_blank" rel="noopener">' + escHtml(a.title || '') + '</a>'
+        : escHtml(a.title || ''))
+        + ' <span style="color:#666">&middot; ' + escHtml(a.source || 'News') + '</span>',
+    });
+  });
 
-    var sdot = document.getElementById('sdot');
-    var stxt = document.getElementById('stxt');
-    var totalActive = picks.active ? picks.active.length : 0;
-    if (totalActive > 0) { sdot.className = 'dot'; stxt.textContent = totalActive + ' active plays today'; }
-    else { sdot.className = 'dot warn'; stxt.textContent = 'No plays yet'; }
-
-    document.getElementById('cgrid').innerHTML = dc.length > 0
-      ? dc.map(makeCard).join('')
-      : '<div class="empty"><div class="ico">&#128235;</div><p>No crypto plays today.<br>Check back at 8 AM CT.</p></div>';
-
-    var sg = document.getElementById('sgrid');
-    if (stocks.length > 0) {
-      var seenS = {};
-      stocks.forEach(function(p) { if (!seenS[p.symbol] || p.confidence > seenS[p.symbol].confidence) seenS[p.symbol] = p; });
-      sg.innerHTML = '<div class="grid">' + Object.values(seenS).sort(function(a, b) { return b.confidence - a.confidence; }).map(makeCard).join('') + '</div>';
-    } else {
-      var now = new Date();
-      var et = new Date(now.toLocaleString('en-US', {timeZone: 'America/New_York'}));
-      var hh = et.getHours(), mn = et.getMinutes(), day = et.getDay();
-      var mopen = day >= 1 && day <= 5 && (hh > 9 || (hh === 9 && mn >= 30)) && hh < 16;
-      sg.innerHTML = '<div class="info-box"><b>No stock plays right now.</b><br><br>'
-        + (mopen ? 'Market is open but Ghost has no stock signals above threshold right now.'
-          : 'US stock market is <b>closed</b>. Hours: Mon&ndash;Fri 9:30 AM &ndash; 4:00 PM ET.')
-        + '<br><br>' + stockWatchedLine + '</div>';
+  // 4. Computed market-structure catalysts — exact date math, no external
+  //    feed and no fabricated dates: monthly options expiration (3rd Friday)
+  //    and quarterly quad-witching (3rd Friday of Mar/Jun/Sep/Dec).
+  (function(){
+    function thirdFriday(y, m){               // m may exceed 11; Date.UTC normalizes
+      var first = new Date(Date.UTC(y, m, 1));
+      var firstFri = 1 + ((5 - first.getUTCDay() + 7) % 7);
+      return new Date(Date.UTC(y, m, firstFri + 14));
     }
-
-    var trades = recent.trades || [];
-    var rw = document.getElementById('results-wrap');
-    if (trades.length === 0) {
-      rw.innerHTML = '<div class="empty"><div class="ico">&#128235;</div><p>No resolved trades yet.<br>Results appear after Ghost\'s 48-hour window closes.</p></div>';
-    } else {
-      var tbl = '<table class="results-tbl"><thead><tr><th>SYMBOL</th><th>DIRECTION</th><th>RESULT</th><th>ENTERED</th><th>EXITED</th><th>P&amp;L</th></tr></thead><tbody>';
-      trades.slice(0, 25).forEach(function(t) {
-        var w = t.outcome === 'WIN';
-        var pnl = parseFloat(t.pnl_pct || 0);
-        var d = (t.direction === 'UP' || t.direction === 'BUY') ? 'BUY' : 'SELL';
-        tbl += '<tr><td><b>' + escHtml(t.symbol || '') + '</b></td>';
-        tbl += '<td><span class="pill ' + d.toLowerCase() + '" style="font-size:11px;padding:3px 8px">' + d + '</span></td>';
-        var exp = t.outcome === 'EXPIRED'; var outCls = w ? 'win-txt' : exp ? '' : 'loss-txt'; var outSty = exp ? 'style="color:#666;font-weight:700;font-size:12px"' : ''; var outLbl = w ? '&#9989; WIN' : exp ? '&#9203; EXPIRED' : '&#10060; LOSS'; tbl += '<td><span class="' + outCls + '" ' + outSty + '>' + outLbl + '</span></td>';
-        tbl += '<td>' + fmt(t.entry_price) + '</td>';
-        tbl += '<td>' + (t.exit_price ? fmt(t.exit_price) : '&mdash;') + '</td>';
-        tbl += '<td class="' + (pnl >= 0 ? 'pos' : 'neg') + '">' + (pnl >= 0 ? '+' : '') + pnl.toFixed(1) + '%</td></tr>';
+    var now = new Date();
+    var added = 0;
+    for(var i = 0; i < 5 && added < 3; i++){
+      var dt = thirdFriday(now.getUTCFullYear(), now.getUTCMonth() + i);
+      if(dt.getTime() < now.getTime() - 86400000) continue;   // skip already-passed
+      var quad = [2, 5, 8, 11].indexOf(dt.getUTCMonth()) >= 0; // Mar Jun Sep Dec
+      events.push({
+        sort: dt.getTime() / 1000,
+        kind: 'opex',
+        when: dt.toLocaleDateString('en-US', {month: 'short', day: 'numeric'}),
+        body: '<b>' + (quad ? 'Quarterly options expiration (quad witching)' : 'Monthly options expiration')
+          + '</b> <span style="color:#888">&middot; elevated volume &amp; pinning risk</span>',
       });
-      tbl += '</tbody></table>';
-      rw.innerHTML = tbl;
+      added++;
     }
+  })();
 
-    var articles = news.articles || [];
-    var nw = document.getElementById('news-wrap');
-    if (articles.length === 0) {
-      nw.innerHTML = '<div class="info-box">News refreshes every 30 minutes.</div>';
+  if(!events.length){
+    section.style.display = 'none';
+    return;
+  }
+  events.sort(function(a, b){ return (b.sort || 0) - (a.sort || 0); });
+  slot.innerHTML = events.map(function(ev){
+    return '<div class="cat-row">'
+      + '<div class="cat-when">' + escHtml(ev.when) + '</div>'
+      + '<div class="cat-kind ' + ev.kind + '">' + ev.kind + '</div>'
+      + '<div class="cat-body">' + ev.body + '</div>'
+      + '</div>';
+  }).join('');
+  section.style.display = '';
+}
+
+
+(function initTruthToggle(){
+  var btn = document.getElementById('truth-toggle');
+  var body = document.getElementById('truth-body');
+  var chev = document.getElementById('truth-chev');
+  if(!btn||!body||!chev) return;
+  btn.addEventListener('click', function(){
+    var collapsed = body.classList.toggle('collapsed');
+    btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    chev.innerHTML = collapsed ? '&#9654;' : '&#9660;';
+  });
+})();
+
+/* ─── Orchestrator ─── */
+async function load(){
+  try{
+    var ctx = await fetch('/api/cockpit/context').then(function(r){return r.json()}).catch(function(){return {ok:false}});
+    var h, stats, dir, v3, activity;
+    if(ctx && ctx.ok === true && ctx.health && ctx.stats){
+      h = ctx.health; stats = ctx.stats; dir = ctx.direction||{}; v3 = ctx.v3||{trained:false}; activity = ctx.activity||null;
     } else {
-      nw.innerHTML = articles.slice(0, 10).map(function(a) {
-        var s = a.sentiment || 0;
-        var st = s > 0.2 ? '<span class="sent-b">&#8593; BULLISH</span>'
-          : s < -0.2 ? '<span class="sent-s">&#8595; BEARISH</span>'
-          : '<span class="sent-n">&#8594; NEUTRAL</span>';
-        return '<div class="news-item"><div class="news-hl">' + escHtml(a.title || '') + '</div>'
-          + '<div class="news-meta">' + st + ' &middot; ' + escHtml(a.source || 'News') + '</div></div>';
-      }).join('');
+      h = await fetch('/health').then(function(r){return r.json()});
+      stats = await fetch('/api/stats').then(function(r){return r.json()});
+      dir = await fetch('/api/stats/direction').then(function(r){return r.json()}).catch(function(){return {}});
+      v3 = await fetch('/api/v3/status').then(function(r){return r.json()}).catch(function(){return {trained:false}});
+      activity = null;
     }
+    var batch = await Promise.all([
+      fetch('/api/wolf/price').then(function(r){return r.json()}).catch(function(){return {ok:false}}),
+      fetch('/api/wolf/price-history?range=' + encodeURIComponent(_chartRange)).then(function(r){return r.json()}).catch(function(){return {ok:false,points:[]}}),
+      fetch('/api/wolf/predictions').then(function(r){return r.json()}).catch(function(){return {ok:false,predictions:[]}}),
+      fetch('/api/wolf/stats').then(function(r){return r.json()}).catch(function(){return {ok:false}}),
+      fetch('/api/wolf/earnings').then(function(r){return r.json()}).catch(function(){return {ok:false,quarters:[]}}),
+      fetch('/api/wolf/analyst').then(function(r){return r.json()}).catch(function(){return {ok:false}}),
+      fetch('/api/wolf/news?category=' + encodeURIComponent(_newsCat)).then(function(r){return r.json()}).catch(function(){return {ok:false,articles:[]}}),
+      fetch('/api/picks').then(function(r){return r.json()}),
+      fetch('/api/v2/recent').then(function(r){return r.json()}).catch(function(){return {trades:[]}}),
+      fetch('/api/stats/confidence-buckets').then(function(r){return r.json()}).catch(function(){return {ok:false}}),
+      fetch('/api/wolf/ghost-score').then(function(r){return r.json()}).catch(function(){return {ok:false}}),
+      fetch('/api/wolf/context').then(function(r){return r.json()}).catch(function(){return {ok:false}}),
+    ]);
+    var price=batch[0], history=batch[1], predictions=batch[2], wstats=batch[3], earnings=batch[4],
+        analyst=batch[5], news=batch[6], picks=batch[7], recent=batch[8],
+        conf=batch[9], ghostScore=batch[10], wolfCtx=batch[11];
 
-    renderTruth(stats, h, regime, v3, dir);
-  } catch(e) {
+    // PR #23: compute a single freshness gate once, then ALL renderers
+    // (hero, today's play, ghost score) consult it so the cockpit tells
+    // ONE consistent story. If pick freshness > 7 days, we're WATCHING
+    // — no signal has cleared the alert floor in a long time.
+    var watching = _computeWatching(h, ghostScore);
+
+    renderGhostScore(ghostScore, watching);
+    renderHero(price, watching);
+    renderPerf(stats, conf, recent);
+    renderOutcomeDonut(recent);
+    renderPlay(picks, watching);
+    renderPredictionChart(history, predictions);
+    renderStats(wstats);
+    renderEarnings(earnings);
+    renderAnalyst(analyst);
+    renderNews(news);
+    renderShortInterest(wolfCtx, wstats);
+    renderCatalysts(wolfCtx, analyst, news);
+    renderTruth(stats, h, v3, dir);
+    renderActivity(activity);
+
+    document.getElementById('f-open').textContent = stats.open_positions || 0;
+    window._lastLoad = Date.now();   // roadmap #3c: mark a successful refresh
+    _renderAutoStatus();
+  } catch(e){
     console.error(e);
-    var st = document.getElementById('stxt');
-    if (st) st.textContent = 'Load error — refresh';
-    var sdot = document.getElementById('sdot');
-    if (sdot) sdot.className = 'dot warn';
+    var ce = document.getElementById('hero-change');
+    if(ce){ ce.textContent = 'Load error — refresh'; ce.className = 'hero-change neg'; }
   }
 }
 
-setInterval(function() {
+/* ─── Auto-refresh status + visibility-aware polling (roadmap #3c) ─── */
+function _renderAutoStatus(){
+  var el = document.getElementById('auto-status');
+  if(!el) return;
+  if(document.hidden){
+    el.className = 'auto-status paused';
+    el.innerHTML = '<span class="auto-dot"></span>Paused';
+    return;
+  }
+  var ago = window._lastLoad ? Math.floor((Date.now() - window._lastLoad) / 1000) : null;
+  var when = ago == null ? 'live' : ago < 5 ? 'just now' : ago < 60 ? ago + 's ago' : Math.floor(ago / 60) + 'm ago';
+  el.className = 'auto-status';
+  el.innerHTML = '<span class="auto-dot"></span>Auto · ' + when;
+}
+setInterval(_renderAutoStatus, 1000);
+// Pause polling when the tab is hidden; refresh immediately on return so the
+// investor never sees stale data and we don't poll a backgrounded tab.
+document.addEventListener('visibilitychange', function(){
+  _renderAutoStatus();
+  if(!document.hidden) load();
+});
+
+// ─── Pick Journal (blueprint module 7) ───
+var _pjOffset = 0;
+var _pjLimit = 25;
+
+function _pjPct(v){ return (v === null || v === undefined) ? '—' : (v >= 0 ? '+' : '') + v.toFixed(2) + '%'; }
+function _pjDate(ts){ if(!ts) return '—'; return new Date(ts*1000).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'2-digit'}); }
+
+function _renderPjVerdict(m, v){
+  var f = (v && v.falsification) || {};
+  var st = f.status || 'insufficient_samples';
+  var color = '#8b96a8', label = 'GATHERING EVIDENCE', msg = '';
+  if(st === 'ABANDON_80_CLAIM'){ color = '#ff4d4f'; label = 'KILL CONDITION TRIGGERED';
+    msg = 'Win rate below ' + Math.round(f.threshold.win_rate_floor*100) + '% with the 95% CI excluding 80%. Per the pre-registered falsification gate, the 80% claim is abandoned — reposition as a lower-confidence directional aid.'; }
+  else if(st === 'on_track'){ color = '#1ec77d'; label = 'ON TRACK';
+    msg = 'Win rate at or above the ' + Math.round(f.threshold.win_rate_floor*100) + '% floor across ' + f.samples + ' resolved high-conviction picks.'; }
+  else if(st === 'watch'){ color = '#f5a623'; label = 'WATCH';
+    msg = 'Win rate below the ' + Math.round(f.threshold.win_rate_floor*100) + '% floor, but the 95% CI still admits 80% — not yet falsified. ' + f.samples + ' resolved picks.'; }
+  else { var need = (f.threshold ? f.threshold.min_samples : 30); var have = (f.samples||0);
+    msg = 'Need ' + need + ' resolved high-conviction picks before the 80% claim can be honestly judged. Have ' + have + '. Silence until then is the design, not a bug.'; }
+  return '<div style="border-left:4px solid ' + color + ';background:rgba(255,255,255,.03);padding:10px 14px;border-radius:6px">' +
+    '<div style="font-weight:700;letter-spacing:.04em;color:' + color + ';font-size:12px">' + label + '</div>' +
+    '<div class="truth-note" style="margin-top:4px">' + msg + '</div></div>';
+}
+
+function _renderPjMetrics(m){
+  if(!m) return '';
+  function cell(lbl, val){ return '<div style="flex:1;min-width:90px"><div style="font-size:10px;color:#8b96a8;letter-spacing:.05em">' + lbl + '</div><div style="font-size:15px;font-weight:700;margin-top:2px">' + val + '</div></div>'; }
+  var wr = (m.win_rate === null || m.win_rate === undefined) ? '—' : (m.win_rate*100).toFixed(1) + '%';
+  var ci = m.win_rate_ci95 ? ' <span style="font-size:10px;color:#8b96a8">[' + (m.win_rate_ci95[0]*100).toFixed(0) + '–' + (m.win_rate_ci95[1]*100).toFixed(0) + ']</span>' : '';
+  var br = (m.brier === null || m.brier === undefined) ? '—' : m.brier.toFixed(3);
+  var ex = _pjPct(m.expectancy_pct);
+  return '<div style="display:flex;flex-wrap:wrap;gap:14px;background:rgba(255,255,255,.02);padding:12px 14px;border-radius:6px">' +
+    cell('RESOLVED', m.resolved + ' <span style="font-size:10px;color:#8b96a8">(' + m.wins + 'W/' + m.losses + 'L/' + m.expired + 'E)</span>') +
+    cell('WIN RATE', wr + ci) +
+    cell('EXPECTANCY', ex) +
+    cell('BRIER', br) + '</div>';
+}
+
+function _outcomeBadge(o){
+  var map = {WIN:['#1ec77d','WIN'], LOSS:['#ff4d4f','LOSS'], EXPIRED:['#8b96a8','EXP']};
+  if(!o) return '<span style="color:#f5a623;font-weight:600">OPEN</span>';
+  var x = map[o] || ['#8b96a8', o];
+  return '<span style="color:' + x[0] + ';font-weight:700">' + x[1] + '</span>';
+}
+
+function _renderPjList(picks, append){
+  var el = document.getElementById('pj-list');
+  if(!picks || !picks.length){ if(!append) el.innerHTML = '<div class="empty"><div class="ico">&#128221;</div>No picks logged yet in the v3.2 era.</div>'; return; }
+  var rows = picks.map(function(p){
+    var regime = (p.scores && p.scores.regime && p.scores.regime.label) ? p.scores.regime.label : '—';
+    var upProb = (p.scores && p.scores.specialists && p.scores.specialists.daily_swing) ? p.scores.specialists.daily_swing.up_prob : null;
+    var conf = (p.confidence === null || p.confidence === undefined) ? '—' : (p.confidence*100).toFixed(0) + '%';
+    return '<div style="display:flex;align-items:center;gap:10px;padding:8px 6px;border-bottom:1px solid rgba(255,255,255,.05);font-size:12px">' +
+      '<div style="width:62px;color:#8b96a8">' + _pjDate(p.predicted_at) + '</div>' +
+      '<div style="width:42px;font-weight:700">' + (p.direction||'—') + '</div>' +
+      '<div style="width:46px" title="confidence at issuance">' + conf + '</div>' +
+      '<div style="flex:1;color:#8b96a8" title="regime + model P(up) at issuance">' + regime + (upProb!==null ? ' &middot; p=' + upProb.toFixed(2) : '') + '</div>' +
+      '<div style="width:64px;text-align:right">' + _pjPct(p.pnl_pct) + '</div>' +
+      '<div style="width:46px;text-align:right">' + _outcomeBadge(p.outcome) + '</div></div>';
+  }).join('');
+  if(append) el.insertAdjacentHTML('beforeend', rows); else el.innerHTML = rows;
+}
+
+async function loadPickJournal(reset){
+  if(reset){ _pjOffset = 0; }
+  var data = await fetch('/api/wolf/pick-journal?limit=' + _pjLimit + '&offset=' + _pjOffset)
+    .then(function(r){return r.json()}).catch(function(){return {ok:false}});
+  if(!data || data.ok !== true){ return; }
+  if(_pjOffset === 0){
+    document.getElementById('pj-verdict').innerHTML = _renderPjVerdict(data.metrics, data.verdict);
+    document.getElementById('pj-metrics').innerHTML = _renderPjMetrics(data.metrics);
+  }
+  _renderPjList(data.picks, _pjOffset > 0);
+  var moreWrap = document.getElementById('pj-more-wrap');
+  moreWrap.style.display = (data.total > _pjOffset + (data.returned||0)) ? 'block' : 'none';
+}
+
+function loadMorePickJournal(){ _pjOffset += _pjLimit; loadPickJournal(false); }
+
+/* ─── Signal History (roadmap #4c) — every engine evaluation from gate-history ─── */
+/* ─── Performance Attribution (roadmap #4b) — /api/wolf/attribution ─── */
+function _attrDelta(d){
+  if(d == null) return '—';
+  var cls = d > 0 ? 'pos' : d < 0 ? 'neg' : '';
+  return '<span class="' + cls + '">' + (d > 0 ? '+' : '') + d + '</span>';
+}
+async function loadAttribution(){
+  var sumEl = document.getElementById('attr-summary');
+  var featEl = document.getElementById('attr-features');
+  var regEl = document.getElementById('attr-regime');
+  var compEl = document.getElementById('attr-components');
+  if(!featEl) return;
+  try{
+    var g = await fetch('/api/wolf/attribution').then(function(r){return r.json()});
+    if(!g || g.ok === false){ featEl.innerHTML = '<div class="empty">Attribution unavailable.</div>'; return; }
+    var fa = g.feature_attribution || {};
+    var feats = fa.features || [];
+    if(!(fa.wins || fa.losses)){
+      featEl.innerHTML = '<div class="empty"><div class="ico">&#128202;</div>No resolved picks yet — attribution builds as picks close.</div>';
+      regEl.innerHTML = ''; compEl.innerHTML = ''; return;
+    }
+    if(sumEl) sumEl.innerHTML = 'Comparing <b class="pos">' + fa.wins + ' wins</b> vs <b class="neg">' + fa.losses + ' losses</b> across the journaled signal vector.';
+    var frows = feats.map(function(f){
+      return '<tr><td><b>' + escHtml(f.feature) + '</b></td>'
+        + '<td><span class="pos">' + (f.win_avg == null ? '—' : f.win_avg) + '</span></td>'
+        + '<td><span class="neg">' + (f.loss_avg == null ? '—' : f.loss_avg) + '</span></td>'
+        + '<td>' + _attrDelta(f.delta) + '</td></tr>';
+    }).join('');
+    featEl.innerHTML = '<table class="tbl"><thead><tr><th>Signal</th><th>Win avg</th><th>Loss avg</th><th>Δ (win−loss)</th></tr></thead><tbody>' + frows + '</tbody></table>';
+    var reg = fa.by_regime || [];
+    regEl.innerHTML = reg.length
+      ? '<div class="sec-label" style="margin:4px 0 8px">Win rate by regime</div><table class="tbl"><tbody>'
+        + reg.map(function(r){ return '<tr><td><b>' + escHtml(r.regime) + '</b></td><td>' + r.wins + 'W / ' + r.losses + 'L</td><td>' + (r.win_rate_pct == null ? '—' : r.win_rate_pct + '%') + '</td></tr>'; }).join('')
+        + '</tbody></table>'
+      : '';
+    var ca = g.component_attribution || {};
+    if(ca.available){
+      var crows = (ca.components || []).map(function(c){
+        return '<tr><td><b>' + escHtml(c.component) + '</b></td>'
+          + '<td><span class="pos">' + (c.win_avg == null ? '—' : c.win_avg) + '</span></td>'
+          + '<td><span class="neg">' + (c.loss_avg == null ? '—' : c.loss_avg) + '</span></td>'
+          + '<td>' + _attrDelta(c.delta) + '</td></tr>';
+      }).join('');
+      compEl.innerHTML = '<div class="sec-label" style="margin:4px 0 8px">Ghost-score components (win vs loss)</div>'
+        + '<table class="tbl"><thead><tr><th>Component</th><th>Win avg</th><th>Loss avg</th><th>Δ</th></tr></thead><tbody>' + crows + '</tbody></table>';
+    } else {
+      compEl.innerHTML = '<div class="kv" style="color:#666">Ghost-score component attribution accrues as new picks (which journal a component snapshot) resolve.</div>';
+    }
+  }catch(e){ featEl.innerHTML = '<div class="empty">Attribution error.</div>'; }
+}
+
+async function loadSignalHistory(){
+  var sumEl = document.getElementById('sh-summary');
+  var listEl = document.getElementById('sh-list');
+  if(!listEl) return;
+  try{
+    var g = await fetch('/api/wolf/gate-history?limit=50').then(function(r){return r.json()});
+    if(!g || g.ok === false){ listEl.innerHTML = '<div class="empty">Signal history unavailable.</div>'; return; }
+    var hist = g.history || [];
+    if(!hist.length){ listEl.innerHTML = '<div class="empty"><div class="ico">&#9203;</div>No scans recorded yet — the recorder logs one row per cycle.</div>'; return; }
+    var cn = g.closest_near_miss;
+    sumEl.innerHTML = '<b>' + (g.fired_count || 0) + '</b> of <b>' + g.count + '</b> recent scans crossed the floor'
+      + (cn && cn.up_prob != null ? ' &middot; closest: p=' + cn.up_prob + (cn.prob_gap != null ? ' (' + (cn.prob_gap >= 0 ? '+' : '') + cn.prob_gap + ')' : '') : '');
+    function near(nm){
+      if(!nm || nm.up_prob == null) return '—';
+      var s = 'p=' + nm.up_prob + (nm.min_win_proba != null ? '/' + nm.min_win_proba : '');
+      if(nm.prob_gap != null) s += ' <span class="' + (nm.prob_gap >= 0 ? 'pos' : 'neg') + '">' + (nm.prob_gap >= 0 ? '+' : '') + nm.prob_gap + '</span>';
+      return s;
+    }
+    var rows = hist.map(function(h){
+      var crossed = h.would_fire
+        ? '<span class="pos">&#10003; crossed</span>'
+        : (h.paused ? '<span class="neg">&#9209; paused</span>' : '<span style="color:#888">&#x23F3; no</span>');
+      return '<tr>'
+        + '<td>' + fmtTimeAgo(h.ts) + '</td>'
+        + '<td>' + crossed + '</td>'
+        + '<td>cand ' + (h.candidates || 0) + ' / saved ' + (h.saved || 0) + '</td>'
+        + '<td>' + (h.top_skip ? '<code>' + escHtml(h.top_skip) + '</code>' : '—') + '</td>'
+        + '<td>' + near(h.near_miss) + '</td>'
+        + '</tr>';
+    }).join('');
+    listEl.innerHTML = '<table class="tbl"><thead><tr><th>When</th><th>Floor</th><th>Cand/Saved</th><th>Binding gate</th><th>How close</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  }catch(e){ listEl.innerHTML = '<div class="empty">Signal history error.</div>'; }
+}
+
+setInterval(function(){
   var d = new Date();
-  document.getElementById('clock').textContent = d.toLocaleTimeString('en-US', {hour: '2-digit', minute: '2-digit', timeZone: 'America/Chicago'}) + ' CT';
+  document.getElementById('clock').textContent = d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit',timeZone:'America/Chicago'}) + ' CT';
 }, 1000);
 
 load();
-setInterval(load, 60000);
+loadPortfolio();
+loadEquityChart();
+loadShortInterest();
+loadPickJournal(true);
+loadSignalHistory();
+loadAttribution();
+// Visibility-aware polling (roadmap #3c): skip refreshes while the tab is
+// hidden (a load() fires on return via visibilitychange), so we don't hammer
+// the API in backgrounded tabs.
+setInterval(function(){ if(!document.hidden) load(); }, 60000);
+setInterval(function(){ if(!document.hidden) loadEquityChart(); }, 120000);
+setInterval(function(){ if(!document.hidden) loadShortInterest(); }, 300000);
+setInterval(function(){ if(!document.hidden) loadPickJournal(true); }, 120000);
+setInterval(function(){ if(!document.hidden) loadSignalHistory(); }, 120000);
+setInterval(function(){ if(!document.hidden) loadAttribution(); }, 300000);
+_renderAutoStatus();
 </script>
-
-<script>
-// Ghost Predictions on YOUR holdings only — runs after page load
-(function patchPortfolioWithPredictions() {
-  var origLoad = window.loadPortfolio;
-  if (typeof origLoad !== 'function') return;
-  window.loadPortfolio = async function() {
-    await origLoad();
-    var panel = document.getElementById('panel-portfolio');
-    if (!panel) return;
-    var el = document.getElementById('gp-section');
-    if (!el) {
-      el = document.createElement('div');
-      el.id = 'gp-section';
-      el.style.cssText = 'margin-top:28px;';
-      panel.appendChild(el);
-    }
-    try {
-      var pf = await fetch('/api/portfolio').then(function(r){return r.json();});
-      var pd = await fetch('/api/picks').then(function(r){return r.json();});
-      var mySyms = (pf.positions||[]).map(function(p){return p.symbol.toUpperCase();});
-      var matched = (pd.active||[]).filter(function(p){
-        return mySyms.indexOf(p.symbol.toUpperCase()) >= 0;
-      });
-      var hdr = '<div style="font-size:10px;letter-spacing:2px;color:#555;text-transform:uppercase;margin-bottom:10px;">Ghost Predictions on Your Holdings</div>';
-      if (!mySyms.length) { el.innerHTML=''; return; }
-      if (!matched.length) {
-        el.innerHTML = hdr + '<div style="color:#444;font-size:13px;padding:8px 0;">No active Ghost predictions on your holdings.</div>';
-        return;
-      }
-      var rows = matched.map(function(p) {
-        var conf = Math.round((p.confidence||0)*100);
-        var ep = p.entry_price||0;
-        var tp = p.target_price||0;
-        var pct = ep>0 ? ((tp-ep)/ep*100).toFixed(1) : '?';
-        var hrs = p.expires_at ? Math.max(0,Math.round((p.expires_at-Date.now()/1000)/3600)) : '?';
-        var epStr = ep>=1 ? '$'+ep.toFixed(2) : '$'+ep.toFixed(4);
-        var cc = conf>=80?'#4ade80':conf>=70?'#facc15':'#f87171';
-        var dir = (p.direction==='UP'||p.direction==='BUY') ? 'BUY' : 'SELL';
-        var dc = dir==='BUY'?'#4ade80':'#f87171';
-        var db = dir==='BUY'?'#0d2a0d':'#2a0d0d';
-        var safeSym = escHtml(p.symbol || '');
-        return '<div style="background:#1a1a1a;border:1px solid #2a2a2a;border-radius:8px;padding:14px 18px;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;gap:12px;">'
-          +'<div style="min-width:90px"><span style="font-weight:700;font-size:15px;color:#fff;">'+safeSym+'</span>'
-          +'<span style="background:'+db+';color:'+dc+';border-radius:4px;padding:2px 7px;font-size:11px;font-weight:700;margin-left:8px;">'+dir+'</span></div>'
-          +'<div style="text-align:center"><div style="font-size:10px;color:#666;text-transform:uppercase;letter-spacing:1px">Entry</div><div style="color:#fff;font-size:13px">'+epStr+'</div></div>'
-          +'<div style="text-align:center"><div style="font-size:10px;color:#666;text-transform:uppercase;letter-spacing:1px">Target</div><div style="color:#4ade80;font-size:13px">+'+pct+'%</div></div>'
-          +'<div style="text-align:center"><div style="font-size:10px;color:#666;text-transform:uppercase;letter-spacing:1px">Confidence</div><div style="color:'+cc+';font-size:13px">'+conf+'%</div></div>'
-          +'<div style="text-align:right"><div style="font-size:10px;color:#666;text-transform:uppercase;letter-spacing:1px">Expires</div><div style="color:#888;font-size:13px">'+hrs+'h left</div></div>'
-          +'</div>';
-      }).join('');
-      el.innerHTML = hdr + rows;
-    } catch(e) { el.innerHTML=''; }
-  };
-})();
-</script>
-
-<script>
-(function(){
-  // Store actual trade data from API
-  var _tradeData = [];
-  
-  // Intercept v2/recent to capture real outcomes
-  var _orig = window.fetch;
-  window.fetch = function(url, opts) {
-    var p = _orig.apply(this, arguments);
-    if (typeof url === 'string' && url.indexOf('v2/recent') !== -1) {
-      return p.then(function(r) {
-        var r2 = r.clone();
-        r2.json().then(function(d){ _tradeData = d.trades || []; }).catch(function(){});
-        return r;
-      });
-    }
-    return p;
-  };
-
-  // After any DOM mutation in results panel, fix outcome badges
-  var _observer = new MutationObserver(function() {
-    if (!_tradeData.length) return;
-    // Find all rows in results panel
-    var panel = document.getElementById('tab-results');
-    if (!panel) return;
-    var rows = panel.querySelectorAll('tr[data-id], div[data-id], tr, .result-row');
-    rows.forEach(function(row, i) {
-      var trade = _tradeData[i];
-      if (!trade) return;
-      if (trade.outcome !== 'EXPIRED') return;
-      // Find any badge-like element in this row showing LOSS
-      row.querySelectorAll('span,td,div').forEach(function(el) {
-        var txt = el.textContent.trim();
-        if (el.children.length === 0 && txt.indexOf('LOSS') !== -1) {
-          el.textContent = '⏳ EXPIRED';
-          el.style.cssText = 'color:#888;background:rgba(128,128,128,0.12);border:1px solid #555;padding:2px 6px;border-radius:4px;font-size:11px';
-        }
-      });
-    });
-  });
-
-  // Start observing once DOM ready
-  document.addEventListener('DOMContentLoaded', function() {
-    var panel = document.getElementById('tab-results');
-    if (panel) _observer.observe(panel, {childList:true, subtree:true});
-  });
-  // Also patch immediately in case already loaded
-  var panel = document.getElementById('tab-results');
-  if (panel) _observer.observe(panel, {childList:true, subtree:true});
-})();
-</script></body>
+</body>
 </html>

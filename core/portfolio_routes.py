@@ -7,11 +7,23 @@ import time
 
 portfolio_router = APIRouter()
 
+# Synthetic/test rows that must never reach the investor portfolio view. e2e
+# roundtrips create ZZE2E<ts>; ZZ/TEST/GHOST are manual probes. Real tickers
+# never match these. Filtered at the API layer (defense-in-depth) so a stale DB
+# row can't pollute totals even if the boot purge hasn't run.
+_GHOST_SYMBOL_PATTERNS = ("ZZE2E", "STOCK GHOST", "GHOST", "ZZ", "TEST")
+
+
+def _is_ghost_symbol(sym) -> bool:
+    up = str(sym or "").strip().upper()
+    return any(up.startswith(p) or up == p for p in _GHOST_SYMBOL_PATTERNS)
+
+
 _CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS user_portfolio (
     id SERIAL PRIMARY KEY,
     symbol TEXT NOT NULL,
-    asset_type TEXT DEFAULT 'crypto',
+    asset_type TEXT DEFAULT 'stock',
     quantity FLOAT NOT NULL,
     buy_price FLOAT NOT NULL,
     buy_date TEXT DEFAULT '',
@@ -31,6 +43,8 @@ def get_portfolio():
     positions = []
     for r in rows:
         sym, atype, qty, bp = r[1], r[2], float(r[3]), float(r[4])
+        if _is_ghost_symbol(sym):
+            continue  # never surface synthetic/test rows or count them in totals
         cost = round(qty * bp, 2)
         live = None
         manual_p = r[7] if len(r) > 7 else None  # manual_price column (index 7)
@@ -67,7 +81,7 @@ def get_portfolio():
 async def add_portfolio(request: Request):
     d = await request.json()
     sym = str(d.get("symbol","")).upper().strip()
-    atype = str(d.get("asset_type","crypto"))
+    atype = str(d.get("asset_type","stock"))
     qty = float(d.get("quantity",0))
     bp = float(d.get("buy_price",0))
     if not sym or qty <= 0 or bp <= 0:
@@ -110,12 +124,21 @@ def root():
     return RedirectResponse(url="/cockpit")
 
 @portfolio_router.get("/api/v2/recent")
-def v2_recent():
+def v2_recent(symbol: str = "WOLF"):
+    """Recent resolved trades. Security (audit): defaults to WOLF-only so the
+    public investor view never leaks the full multi-symbol history. Pass
+    ?symbol=ALL for the unfiltered cross-symbol listing (internal use)."""
+    _all = str(symbol).strip().upper() in ("ALL", "*", "")
     with db_conn() as conn:
         cur = conn.cursor()
-        cur.execute("""SELECT id,symbol,direction,confidence,entry_price,exit_price,pnl_pct,outcome,predicted_at,expires_at,asset_type
-            FROM predictions WHERE outcome IS NOT NULL AND predicted_at IS NOT NULL
-            ORDER BY expires_at DESC NULLS LAST LIMIT 50""")
+        if _all:
+            cur.execute("""SELECT id,symbol,direction,confidence,entry_price,exit_price,pnl_pct,outcome,predicted_at,expires_at,asset_type
+                FROM predictions WHERE outcome IS NOT NULL AND predicted_at IS NOT NULL
+                ORDER BY expires_at DESC NULLS LAST LIMIT 50""")
+        else:
+            cur.execute("""SELECT id,symbol,direction,confidence,entry_price,exit_price,pnl_pct,outcome,predicted_at,expires_at,asset_type
+                FROM predictions WHERE outcome IS NOT NULL AND predicted_at IS NOT NULL AND symbol=%s
+                ORDER BY expires_at DESC NULLS LAST LIMIT 50""", (symbol.strip().upper(),))
         rows = cur.fetchall()
     trades=[]; wins=losses=0
     for r in rows:
@@ -136,7 +159,7 @@ def stats_by_direction():
         return compute_stats_by_direction(conn.cursor())
 
 
-@portfolio_router.post("/api/admin/expire-picks")
+@portfolio_router.post("/api/admin/expire-picks", include_in_schema=False)
 def force_expire_picks(x_cron_secret: str = Header(default="")):
     """Force-expire all open picks so fresh ones can be generated."""
     import os, time as _time
@@ -165,7 +188,7 @@ def auto_refresh_portfolio_prices():
         updated = 0
         for pid, symbol, asset_type in positions:
             if (asset_type or "stock").lower() != "stock":
-                continue  # only refresh stocks — crypto prices come from live feeds
+                continue  # WOLF-only: only refresh stocks; ignore non-stock rows
             try:
                 from core.prices import get_stock_price
                 latest = get_stock_price(symbol)

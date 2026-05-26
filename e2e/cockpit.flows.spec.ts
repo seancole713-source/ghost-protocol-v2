@@ -8,14 +8,13 @@ test.describe("Cockpit flows", () => {
 
     await page.goto("/cockpit", { waitUntil: "domcontentloaded" });
     await expect(page.locator("#cgrid")).not.toContainText("Loading plays", { timeout: 25_000 });
-    expect(await page.locator("#panel-crypto").evaluate((el) => el.classList.contains("active"))).toBeTruthy();
+    expect(await page.locator("#panel-stocks").evaluate((el) => el.classList.contains("active"))).toBeTruthy();
 
-    const tabs: Array<"stocks" | "portfolio" | "results" | "news" | "crypto"> = [
+    const tabs: Array<"stocks" | "portfolio" | "results" | "news"> = [
       "stocks",
       "portfolio",
       "results",
       "news",
-      "crypto",
     ];
     for (const id of tabs) {
       await page.locator(`#tab-${id}`).click();
@@ -39,7 +38,7 @@ test.describe("Cockpit flows", () => {
 
     await page.reload({ waitUntil: "domcontentloaded" });
     await expect(page.locator(".logo")).toContainText("GHOST PROTOCOL");
-    await expect(page.locator("#panel-crypto")).toHaveClass(/active/);
+    await expect(page.locator("#panel-stocks")).toHaveClass(/active/);
 
     expect(consoleErrors, `console errors: ${consoleErrors.join(" | ")}`).toHaveLength(0);
     expect(pageErrors, `pageerror: ${pageErrors.join(" | ")}`).toHaveLength(0);

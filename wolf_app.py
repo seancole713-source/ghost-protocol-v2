@@ -1,8 +1,8 @@
-import os, sys, time, logging, threading
+import os, sys, time, logging, threading, hmac, secrets as _secrets
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.responses import JSONResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from core.db import db_conn, init_db
 
@@ -12,10 +12,72 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 LOGGER = logging.getLogger("ghost")
+
+# PR #15 cache-bust banner. Logged once at module import. If this line is
+# missing from Railway logs after a deploy, the container is stale (the
+# Procfile boot echo is the shell-level twin of this check).
+LOGGER.info(
+    "[wolf_app] BOOT_BANNER PR34_CACHEBUST "
+    "DEPLOY_VERSION=%s GIT_SHA=%s DEPLOY_ID=%s",
+    os.getenv("DEPLOY_VERSION", "unset"),
+    os.getenv("RAILWAY_GIT_COMMIT_SHA", "unset"),
+    os.getenv("RAILWAY_DEPLOYMENT_ID", "unset"),
+)
+
 CRON_SECRET = os.getenv("CRON_SECRET", "")
+
+
+def _cron_ok(provided: str, strict: bool = False) -> bool:
+    """Constant-time check for x-cron-secret header.
+
+    strict=False (default): if no CRON_SECRET is configured, allow (dev mode).
+    strict=True: if no CRON_SECRET is configured, REJECT. Use on endpoints
+                 that must never be exposed without explicit auth, even in dev.
+    """
+    secret = os.environ.get("CRON_SECRET", "")
+    if not secret:
+        return not strict
+    return hmac.compare_digest((provided or "").encode("utf-8"),
+                               secret.encode("utf-8"))
+
+# Semantic app version. Bumped to 2.1.0 for the audit batch: kill conditions +
+# enforcement, full pick journal, realized P&L, security hardening, regime tag,
+# Telegram cards, admin lineage/audit, rate limiting, short-interest wiring.
+APP_VERSION = "2.1.0"
+
 _COVERAGE_RETRAIN_RUNNING = False
 _RETRAIN_JOB_LOCK = threading.Lock()
 _APP_BOOT_TS = time.time()
+
+
+def _record_admin_action(action: str, detail: str = "") -> None:
+    """Append an operator action to a rolling audit log in ghost_state (last 100).
+    Best-effort: never raises into the calling endpoint. Audit trail for
+    destructive/admin mutations (purges, training, engine resume, etc.)."""
+    try:
+        import json as _j
+        entry = {"ts": int(time.time()), "action": str(action)[:60], "detail": str(detail)[:200]}
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            cur.execute("SELECT val FROM ghost_state WHERE key='admin_audit_log'")
+            row = cur.fetchone()
+            log = []
+            if row and row[0]:
+                try:
+                    log = _j.loads(row[0])
+                except Exception:
+                    log = []
+            if not isinstance(log, list):
+                log = []
+            log.append(entry)
+            log = log[-100:]
+            cur.execute(
+                "INSERT INTO ghost_state(key,val) VALUES('admin_audit_log', %s) "
+                "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val", (_j.dumps(log),))
+    except Exception as _e:
+        LOGGER.warning("admin audit log write failed: " + str(_e)[:80])
+
 
 _COCKPIT_DB_CACHE = {"t": 0.0, "stats": None, "direction": None, "v3": None, "activity": None}
 
@@ -171,8 +233,10 @@ def _compute_get_stats(cur):
         v32r_wins = v32r_rows.get("WIN", 0)
         v32r_losses = v32r_rows.get("LOSS", 0)
         v32r_total = v32r_wins + v32r_losses
-    scan_crypto = [s.strip().upper() for s in os.getenv("CRYPTO_SYMBOLS", "").split(",") if s.strip()]
-    scan_stocks = [s.strip().upper() for s in os.getenv("STOCK_SYMBOLS", "").split(",") if s.strip()]
+    scan_stocks = [s.strip().upper() for s in os.getenv("STOCK_SYMBOLS", "WOLF").split(",") if s.strip()] or ["WOLF"]
+    # WOLF-only hardening (PR #8): refuse to surface non-WOLF symbols in the
+    # scan list even if the Railway env var is stale. WOLF is always included.
+    scan_stocks = [s for s in scan_stocks if s == "WOLF"] or ["WOLF"]
     return {
         "ok": True,
         "wins": wins,
@@ -194,7 +258,7 @@ def _compute_get_stats(cur):
             "total": v32r_total,
             "win_rate_pct": round(v32r_wins / v32r_total * 100, 1) if v32r_total else 0.0,
         },
-        "scan_symbols": {"crypto": scan_crypto, "stocks": scan_stocks},
+        "scan_symbols": {"stocks": scan_stocks},
     }
 
 
@@ -299,11 +363,314 @@ def _expire_open_picks_without_v3_model():
         return 0
 
 
+# ── Telegram card assembly (feat/telegram-cards) ─────────────────────────
+
+def _daily_min_conf() -> float:
+    """High-conviction threshold below which the daily card goes to SILENCE."""
+    try:
+        return float(os.getenv("TELEGRAM_DAILY_MIN_CONF", "0.85"))
+    except Exception:
+        return 0.85
+
+
+def _wolf_track_record() -> dict:
+    """All-time W/L, win rate, last-5 (newest first), and current streak for
+    WOLF v3.2-era resolved picks."""
+    out = {"wins": 0, "losses": 0, "win_rate_pct": 0, "last5": [], "streak": "--"}
+    try:
+        with db_conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                "SELECT outcome FROM predictions WHERE symbol='WOLF' AND id >= %s "
+                "AND outcome IN ('WIN','LOSS') ORDER BY resolved_at DESC NULLS LAST, id DESC",
+                (_V32_ERA_MIN_ID,))
+            outs = [r[0] for r in cur.fetchall()]
+        wins = outs.count("WIN")
+        losses = outs.count("LOSS")
+        tot = wins + losses
+        out["wins"], out["losses"] = wins, losses
+        out["win_rate_pct"] = round(wins / tot * 100, 1) if tot else 0
+        out["last5"] = ["W" if o == "WIN" else "L" for o in outs[:5]]
+        if outs:
+            first = outs[0]
+            n = 0
+            for o in outs:
+                if o == first:
+                    n += 1
+                else:
+                    break
+            out["streak"] = str(n) + ("W" if first == "WIN" else "L")
+    except Exception:
+        pass
+    return out
+
+
+def _wolf_week_rate_bounds():
+    """(highest, lowest) confidence pct among WOLF picks predicted in last 7d."""
+    try:
+        with db_conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                "SELECT MAX(confidence), MIN(confidence) FROM predictions "
+                "WHERE symbol='WOLF' AND predicted_at >= %s",
+                (int(time.time()) - 7 * 86400,))
+            r = cur.fetchone()
+        if r and r[0] is not None:
+            return int(round(float(r[0]) * 100)), int(round(float(r[1]) * 100))
+    except Exception:
+        pass
+    return None, None
+
+
+def _wolf_retrain_in_days():
+    """Days until the WOLF model goes stale (14d window from trained_at)."""
+    try:
+        with db_conn() as c:
+            cur = c.cursor()
+            cur.execute("SELECT value FROM ghost_v3_model WHERE key='meta_WOLF'")
+            r = cur.fetchone()
+        if r and r[0]:
+            ta = json.loads(r[0]).get("trained_at")
+            if ta:
+                return max(0, int(round(14 - (time.time() - float(ta)) / 86400)))
+    except Exception:
+        pass
+    return None
+
+
+def _build_daily_card_data(pick: dict) -> dict:
+    """Assemble the daily-card payload from a saved pick + DB-derived context."""
+    import datetime as _dt, pytz as _tz
+    from core.telegram_cards import conviction_from_confidence, compute_news_influence
+    tz = _tz.timezone(os.getenv("GHOST_TZ", "America/Chicago"))
+    conf = float(pick.get("confidence") or 0)
+    entry = float(pick.get("entry_price") or 0)
+    target = float(pick.get("target_price") or 0)
+    stop = float(pick.get("stop_price") or 0)
+    direction = pick.get("direction", "UP")
+    exp_move = ((target - entry) / entry * 100) if entry else 0.0
+    feats = pick.get("features") or {}
+    conf_raw = feats.get("confidence_raw", conf)
+    news = compute_news_influence(conf, conf_raw)
+    if news["influence_pct"] > 0:
+        news["summary"] = _wolf_news_summary()
+    hi, lo = _wolf_week_rate_bounds()
+    conf_pct = int(round(conf * 100))
+    return {
+        "date": _dt.datetime.now(tz).strftime("%A %b %d, %Y"),
+        "model_version": "v3.2",
+        "direction": direction,
+        "confidence": conf,
+        "conviction": conviction_from_confidence(conf),
+        "current_price": entry,
+        "buy_point": entry,
+        "sell_target": target,
+        "stop_loss": stop,
+        "expected_move_pct": round(exp_move, 1),
+        "news": news,
+        "rates": {"today_pct": conf_pct,
+                  "week_high_pct": hi if hi is not None else conf_pct,
+                  "week_low_pct": lo if lo is not None else conf_pct},
+        "track_record": _wolf_track_record(),
+    }
+
+
+def _wolf_news_summary():
+    """Best-effort 1-line catalyst headline for the news-influence section.
+    Returns None on any failure (formatter then shows just the influence split)."""
+    try:
+        from core.wolf_context import _get_catalyst_news_score
+        _score, headlines = _get_catalyst_news_score("UP")
+        if headlines:
+            return str(headlines[0])[:160]
+    except Exception:
+        pass
+    return None
+
+
+def _build_silence_card_data(diag: dict) -> dict:
+    """Assemble the SILENCE card from the cycle diagnostics + a Ghost Score."""
+    reason = "No qualifying signal — gates not cleared"
+    try:
+        floor = diag.get("confidence_floor")
+        label = diag.get("top_reason_label") or diag.get("top_reason_code")
+        if label:
+            reason = str(label)
+        if floor:
+            reason += " (floor " + str(int(round(float(floor) * 100))) + "%)"
+    except Exception:
+        pass
+    score = "--"
+    try:
+        from api.wolf_endpoints import _cache_get
+        cached = _cache_get("ghost-score", 86400)
+        if cached and cached.get("score") is not None:
+            score = int(round(float(cached["score"])))
+    except Exception:
+        pass
+    return {"ghost_score": score, "reason": reason}
+
+
+def _build_daily_summary():
+    """Aggregate the day's engine activity (roadmap #3b): scans + candidates +
+    saves from the per-cycle gate history, today's resolutions, and the engine
+    pause state. Pure of scheduling — callable any time."""
+    import datetime as _dt, pytz as _tz, json as _j
+    tz = _tz.timezone(os.getenv("GHOST_TZ", "America/Chicago"))
+    now_ct = _dt.datetime.now(tz)
+    day_start = int(now_ct.replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+    s = {"date": now_ct.strftime("%Y-%m-%d"), "ts": int(time.time()),
+         "scans": 0, "candidates": 0, "saved": 0, "would_fire_cycles": 0,
+         "resolved": {"wins": 0, "losses": 0, "pnl_pct": 0.0}, "engine_paused": False}
+    try:
+        with db_conn() as c:
+            cur = c.cursor()
+            cur.execute("SELECT val FROM ghost_state WHERE key='gate_outcome_history'")
+            row = cur.fetchone()
+            hist = []
+            if row and row[0]:
+                try:
+                    hist = _j.loads(row[0])
+                except Exception:
+                    hist = []
+            for h in hist if isinstance(hist, list) else []:
+                if (h.get("ts") or 0) >= day_start:
+                    s["scans"] += 1
+                    s["candidates"] += h.get("candidates", 0) or 0
+                    s["saved"] += h.get("saved", 0) or 0
+                    if h.get("would_fire"):
+                        s["would_fire_cycles"] += 1
+            cur.execute(
+                "SELECT outcome, pnl_pct FROM predictions WHERE symbol='WOLF' "
+                "AND resolved_at >= %s AND outcome IN ('WIN','LOSS')", (day_start,))
+            for o, p in cur.fetchall():
+                if o == "WIN":
+                    s["resolved"]["wins"] += 1
+                elif o == "LOSS":
+                    s["resolved"]["losses"] += 1
+                s["resolved"]["pnl_pct"] += float(p or 0)
+            s["resolved"]["pnl_pct"] = round(s["resolved"]["pnl_pct"], 3)
+    except Exception as e:
+        LOGGER.warning("daily summary build failed: " + str(e)[:80])
+    try:
+        from core.prediction import engine_pause_state
+        s["engine_paused"] = bool(engine_pause_state().get("paused"))
+    except Exception:
+        pass
+    return s
+
+
+def _daily_summary_job():
+    """Store one daily summary per CT day at DAILY_SUMMARY_HOUR (default 16, after
+    close). Registered hourly with an ISO-date dedup so it fires once/day across
+    restarts. Appends to ghost_state.daily_summary_history (last 30)."""
+    import datetime, pytz, json as _j
+    if os.getenv("DAILY_SUMMARY_ENABLED", "1").strip().lower() not in ("1", "true", "yes", "on"):
+        return
+    ct = pytz.timezone(os.getenv("GHOST_TZ", "America/Chicago"))
+    now_ct = datetime.datetime.now(ct)
+    try:
+        want_hour = int(os.getenv("DAILY_SUMMARY_HOUR", "16"))
+    except Exception:
+        want_hour = 16
+    if now_ct.hour != want_hour:
+        return
+    date_str = now_ct.strftime("%Y-%m-%d")
+    try:
+        with db_conn() as c:
+            cur = c.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            cur.execute("SELECT val FROM ghost_state WHERE key='last_daily_summary_date'")
+            row = cur.fetchone()
+            if row and row[0] == date_str:
+                return  # already stored today
+    except Exception:
+        pass
+    summary = _build_daily_summary()
+    try:
+        with db_conn() as c:
+            cur = c.cursor()
+            cur.execute("SELECT val FROM ghost_state WHERE key='daily_summary_history'")
+            row = cur.fetchone()
+            hist = []
+            if row and row[0]:
+                try:
+                    hist = _j.loads(row[0])
+                except Exception:
+                    hist = []
+            if not isinstance(hist, list):
+                hist = []
+            hist.append(summary)
+            hist = hist[-30:]
+            cur.execute("INSERT INTO ghost_state(key,val) VALUES('daily_summary_history',%s) "
+                        "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val", (_j.dumps(hist),))
+            cur.execute("INSERT INTO ghost_state(key,val) VALUES('last_daily_summary_date',%s) "
+                        "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val", (date_str,))
+        LOGGER.info("Daily summary stored %s: scans=%d saved=%d", date_str, summary["scans"], summary["saved"])
+    except Exception as e:
+        LOGGER.error("daily summary store failed: " + str(e)[:100])
+
+
+def _market_scan_gap_s(now_ct):
+    """Required seconds between scans (roadmap #3a): shorter during US market
+    hours (8:30-15:00 CT, Mon-Fri), longer off-hours. Returns (gap_s, is_market)."""
+    try:
+        market_min = int(os.getenv("SCAN_INTERVAL_MARKET_MIN", "30"))
+        off_min = int(os.getenv("SCAN_INTERVAL_OFFHOURS_MIN", "60"))
+    except Exception:
+        market_min, off_min = 30, 60
+    hm = now_ct.hour * 60 + now_ct.minute
+    is_market = (now_ct.weekday() < 5) and (8 * 60 + 30) <= hm < (15 * 60)
+    return (market_min if is_market else off_min) * 60, is_market
+
+
+def _market_scan_job():
+    """Run the prediction cycle on a market-aware cadence (roadmap #3a).
+
+    Registered at the short (market) interval; self-gates via ghost_state so it
+    actually scans every SCAN_INTERVAL_MARKET_MIN during market hours and only
+    every SCAN_INTERVAL_OFFHOURS_MIN otherwise. This is the scan loop the engine
+    lacked — previously it only ran once/day with the morning card. Saving is
+    deduped inside run_prediction_cycle (one open WOLF pick at a time), and any
+    pick that fires is pushed through the alert sweep (Telegram + email/SMS)."""
+    if os.getenv("MARKET_SCAN_ENABLED", "1").strip().lower() not in ("1", "true", "yes", "on"):
+        return
+    import datetime as _dt, pytz as _tz
+    from core.prediction import run_prediction_cycle
+    now = int(time.time())
+    now_ct = _dt.datetime.now(_tz.timezone("America/Chicago"))
+    gap, is_market = _market_scan_gap_s(now_ct)
+    try:
+        with db_conn() as c:
+            cur = c.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            cur.execute("SELECT val FROM ghost_state WHERE key='last_market_scan_ts'")
+            row = cur.fetchone()
+            last = int(row[0]) if row and row[0] else 0
+        if now - last < gap - 30:   # 30s slack for scheduler tick jitter
+            return
+    except Exception as _ge:
+        LOGGER.warning("market scan gate failed: " + str(_ge)[:80])
+    try:
+        picks = run_prediction_cycle()
+        with db_conn() as c:
+            c.cursor().execute(
+                "INSERT INTO ghost_state(key,val) VALUES('last_market_scan_ts',%s) "
+                "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val", (str(now),))
+        LOGGER.info("Market scan: %d pick(s) saved (market_hours=%s)", len(picks or []), is_market)
+        # Notify on any freshly-fired pick (Telegram + email/SMS), deduped internally.
+        try:
+            wolf_signal_alert_check(x_cron_secret=os.getenv("CRON_SECRET", ""))
+        except Exception:
+            pass
+    except Exception as e:
+        LOGGER.error("Market scan failed: " + str(e)[:120])
+
+
 def _morning_card_job():
     """Run prediction cycle and send morning Telegram card."""
     import datetime as _dt, pytz as _pytz, time as _t2
     from core.prediction import run_prediction_cycle
-    from core.telegram import send_morning_card
     from core.db import db_conn
     _cycle_diag = {}
     # Dedup: Telegram morning card only once per CT day — but always run prediction cycle
@@ -324,31 +691,6 @@ def _morning_card_job():
     except Exception as _de:
         LOGGER.warning("Dedup check failed: "+str(_de)[:60])
     picks, _cycle_diag = run_prediction_cycle(with_diag=True)
-    # Get week stats
-    try:
-        with db_conn() as conn:
-            cur = conn.cursor()
-            cutoff = int(time.time()) - 7*86400
-            cur.execute(
-                "SELECT outcome, pnl_pct FROM predictions WHERE resolved_at > %s AND outcome IN ('WIN','LOSS') AND direction='UP'",
-                (cutoff,)
-            )
-            rows = cur.fetchall()
-            wins = sum(1 for r in rows if r[0] == "WIN")
-            losses = len(rows) - wins
-            # $100 per trade simulation
-            # Correct P&L: $100 per trade simulation using pnl_pct
-            pnl = sum((100 * (r[1] or 0) / 100) for r in rows)  # dollar gain per $100 bet
-            # Scope to v2 predictions only (predicted_at is set, not NULL)
-            cur.execute("SELECT outcome FROM predictions WHERE outcome IN ('WIN','LOSS') AND predicted_at IS NOT NULL ORDER BY id DESC LIMIT 2000")
-            all_rows = cur.fetchall()
-            # Only count WIN/LOSS — exclude EXPIRED from denominator
-            resolved = [r for r in all_rows if r[0] in ("WIN","LOSS")]
-            all_wins = sum(1 for r in resolved if r[0] == "WIN")
-            alltime_wr = round(all_wins/len(resolved)*100,1) if resolved else 0
-    except:
-        wins, losses, pnl, alltime_wr = 0, 0, 0.0, 0
-    week_stats = {"wins": wins, "losses": losses, "pnl_usd": pnl, "alltime_wr": alltime_wr}
     # Record card fire time for startup self-healing check
     try:
         import datetime as _dt2, pytz as _pytz2
@@ -369,127 +711,164 @@ def _morning_card_job():
     if _skip_telegram:
         LOGGER.info("Morning card: Telegram skipped (same CT day); cycle returned %s saved picks", len(picks or []))
         return picks
-    if picks:
-        send_morning_card(picks, week_stats)
+    # Overhauled cards (feat/telegram-cards): a high-conviction pick gets the
+    # full daily card; otherwise the SILENCE card. The once-per-CT-day dedup
+    # above (last_morning_card_date) prevents duplicate sends on restart/self-heal.
+    min_conf = _daily_min_conf()
+    top = max(picks, key=lambda p: float(p.get("confidence") or 0)) if picks else None
+    if top and float(top.get("confidence") or 0) >= min_conf:
+        try:
+            from core.telegram import send_daily_card
+            send_daily_card(_build_daily_card_data(top))
+            LOGGER.info("Daily card sent: %s %s @ %.0f%%", top.get("symbol"),
+                        top.get("direction"), float(top.get("confidence") or 0) * 100)
+        except Exception as _ce:
+            LOGGER.error("Daily card send failed: " + str(_ce)[:120])
     else:
         try:
-            with db_conn() as _oc:
-                _cur2 = _oc.cursor()
-                _cur2.execute(
-                    "SELECT symbol,direction,confidence,entry_price,target_price,stop_price,expires_at FROM predictions WHERE outcome IS NULL AND expires_at > %s ORDER BY confidence DESC LIMIT 10",
-                    (int(time.time()),)
-                )
-                _open = [{"symbol":r[0],"direction":r[1],"confidence":r[2],"entry_price":r[3],"target_price":r[4],"stop_price":r[5],"expires_at":r[6],"pos_size_pct":2.0} for r in _cur2.fetchall()]
-            if _open:
-                # Only send OPEN POSITIONS if picks have changed since last send
-                import hashlib as _hl
-                _pick_hash = _hl.md5(','.join(sorted(p['symbol'] for p in _open)).encode()).hexdigest()[:8]
-                _hash_key = "last_open_pos_hash"
-                try:
-                    with db_conn() as _hc:
-                        _hcur = _hc.cursor()
-                        _hcur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
-                        _hcur.execute("SELECT val FROM ghost_state WHERE key=%s", (_hash_key,))
-                        _hrow = _hcur.fetchone()
-                        _last_hash = _hrow[0] if _hrow else ""
-                    if _pick_hash != _last_hash:
-                        send_morning_card(_open, week_stats, is_update=True)
-                        with db_conn() as _hc2:
-                            _hc2.cursor().execute("INSERT INTO ghost_state(key,val) VALUES(%s,%s) ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val", (_hash_key, _pick_hash))
-                except Exception:
-                    send_morning_card(_open, week_stats, is_update=True)
-            else:
-                # Rate-limit: only send "no picks" message once per 4 hours
-                import time as _rt
-                _last_key = "last_no_picks_sent"
-                _now = int(_rt.time())
-                try:
-                    with db_conn() as _rc:
-                        _npcur = _rc.cursor()
-                        _npcur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
-                        _npcur.execute("SELECT val FROM ghost_state WHERE key=%s", (_last_key,))
-                        _last_row = _npcur.fetchone()
-                        _last_sent = int(_last_row[0]) if _last_row else 0
-                    if _now - _last_sent > 14400:  # 4 hours
-                        from core.telegram import _send
-                        _cd = _cycle_diag if isinstance(_cycle_diag, dict) else {}
-                        _top = (_cd.get("top_reason_label") or "unknown").strip()
-                        _sum = (_cd.get("skip_summary") or "").strip()
-                        _reg = (_cd.get("regime") or "").strip()
-                        _btc = _cd.get("regime_btc_24h_pct")
-                        _cf = _cd.get("confidence_floor")
-                        _sc = _cd.get("symbols_scanned")
-                        _cand = _cd.get("candidates")
-                        _saved = _cd.get("saved")
-                        _dd = _cd.get("dedup_blocked")
-                        _detail = (
-                            f"scanned={_sc}, candidates={_cand}, saved={_saved}, dedup={_dd}. "
-                            f"Top: {_top}"
-                            + (f". Counts: {_sum}" if _sum else "")
-                            + (f". Regime: {_reg}" if _reg else "")
-                            + (
-                                f" (BTC 24h {float(_btc):+.1f}%)"
-                                if isinstance(_btc, (int, float))
-                                else ""
-                            )
-                            + (
-                                f". Conf floor {float(_cf)*100:.1f}%"
-                                if isinstance(_cf, (int, float))
-                                else ""
-                            )
-                        )
-                        _send(
-                            "Ghost Protocol v2 — No new picks inserted today.\n"
-                            "Reason: " + _detail
-                        )
-                        with db_conn() as _rc2:
-                            _rc2.cursor().execute("INSERT INTO ghost_state(key,val) VALUES(%s,%s) ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val", (_last_key, str(_now)))
-                except Exception: pass
-        except Exception as _oe:
-            LOGGER.warning("Open positions update failed: " + str(_oe))
+            from core.telegram import send_silence_card
+            send_silence_card(_build_silence_card_data(_cycle_diag if isinstance(_cycle_diag, dict) else {}))
+            LOGGER.info("Silence card sent (no pick >= %.0f%%)", min_conf * 100)
+        except Exception as _se:
+            LOGGER.error("Silence card send failed: " + str(_se)[:120])
     return picks
 
-def _weekly_summary_job():
-    """Fire weekly summary on Fridays at 4 PM CT (22:00 UTC). Skips other days."""
-    import datetime, pytz
-    ct = pytz.timezone("America/Chicago")
-    now_ct = datetime.datetime.now(ct)
-    # Only fire Friday (weekday=4) between 4:00-4:59 PM CT
-    if not (now_ct.weekday() == 4 and now_ct.hour == 16):
-        return  # Not Friday 4 PM CT, skip silently
-    from core.telegram import send_weekly_summary
+_WEEKDAY_INDEX = {"monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+                  "friday": 4, "saturday": 5, "sunday": 6}
+
+
+def _build_weekly_card_data() -> dict:
+    """Assemble the overhauled weekly-summary payload: followed-pick P&L over the
+    week (via core.pnl), all-time record, retrain countdown, top/weakest pick by
+    confidence, and how many of the week's picks were news-driven."""
+    import datetime as _dt, pytz as _tz
+    tz = _tz.timezone(os.getenv("GHOST_TZ", "America/Chicago"))
+    now = int(time.time())
+    cutoff = now - 7 * 86400
+
+    pnl_trades = []
+    wk_wins = wk_losses = 0
+    prows = []
     try:
-        with db_conn() as conn:
-            cur = conn.cursor()
-            cutoff = int(time.time()) - 7*86400
-            cur.execute("SELECT outcome, pnl_pct FROM predictions WHERE predicted_at > %s AND outcome IN ('WIN','LOSS')", (cutoff,))
-            rows = cur.fetchall()
-        wins = sum(1 for r in rows if r[0] == "WIN")
-        losses = len(rows) - wins
-        pnl = sum((r[1] or 0) / 100 * 100 for r in rows)
-        send_weekly_summary({"wins": wins, "losses": losses, "pnl": round(pnl, 2)})
-        LOGGER.info("Weekly summary sent: " + str(wins) + "W/" + str(losses) + "L")
+        with db_conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                "SELECT resolved_at,outcome,pnl_pct,entry_price,exit_price FROM predictions "
+                "WHERE symbol='WOLF' AND resolved_at >= %s AND outcome IN ('WIN','LOSS') ORDER BY resolved_at ASC",
+                (cutoff,))
+            for r in cur.fetchall():
+                if r[1] == "WIN":
+                    wk_wins += 1
+                elif r[1] == "LOSS":
+                    wk_losses += 1
+                if r[2] is not None:
+                    pnl_trades.append({"resolved_at": r[0], "outcome": r[1],
+                                       "pnl_pct": float(r[2]), "entry_price": r[3], "exit_price": r[4]})
+            cur.execute(
+                "SELECT predicted_at,confidence,features FROM predictions "
+                "WHERE symbol='WOLF' AND predicted_at >= %s ORDER BY confidence DESC",
+                (cutoff,))
+            prows = cur.fetchall()
+    except Exception:
+        pass
+
+    from core.pnl import realized_pnl
+    pnl = realized_pnl(pnl_trades)
+
+    def _day(ts):
+        try:
+            return _dt.datetime.fromtimestamp(float(ts), tz=_tz.utc).astimezone(tz).strftime("%A")
+        except Exception:
+            return "--"
+
+    top = weak = {}
+    news_driven = 0
+    total_week = len(prows)
+    if prows:
+        hi, lo = prows[0], prows[-1]
+        top = {"day": _day(hi[0]), "confidence_pct": int(round(float(hi[1]) * 100))}
+        weak = {"day": _day(lo[0]), "confidence_pct": int(round(float(lo[1]) * 100))}
+        for pr in prows:
+            try:
+                f = pr[2]
+                if isinstance(f, str):
+                    f = json.loads(f)
+                if isinstance(f, dict):
+                    cr = f.get("confidence_raw")
+                    if cr is not None and abs(float(pr[1]) - float(cr)) > 1e-9:
+                        news_driven += 1
+            except Exception:
+                pass
+
+    tr = _wolf_track_record()
+    wk_tot = wk_wins + wk_losses
+    start = _dt.datetime.now(tz) - _dt.timedelta(days=6)
+    week_range = start.strftime("%b %d") + " - " + _dt.datetime.now(tz).strftime("%b %d")
+    retrain = _wolf_retrain_in_days()
+    return {
+        "week_range": week_range,
+        "followed": {"wins": wk_wins, "losses": wk_losses,
+                     "win_rate_pct": round(wk_wins / wk_tot * 100, 1) if wk_tot else 0,
+                     "pnl_usd": pnl["realized_pnl_usd"]},
+        "alltime": {"win_rate_pct": tr["win_rate_pct"], "wins": tr["wins"], "losses": tr["losses"]},
+        "retrain_in_days": retrain if retrain is not None else "--",
+        "top_pick": top,
+        "weakest_pick": weak,
+        "news_driven": {"count": news_driven, "total": total_week},
+    }
+
+
+def _weekly_summary_job():
+    """Fire the weekly summary once on the configured day/hour CT (default Sunday
+    6 PM). Registered hourly; an ISO-week dedup in ghost_state guarantees a single
+    send per week even across restarts."""
+    import datetime, pytz
+    ct = pytz.timezone(os.getenv("GHOST_TZ", "America/Chicago"))
+    now_ct = datetime.datetime.now(ct)
+    want_day = _WEEKDAY_INDEX.get(os.getenv("TELEGRAM_WEEKLY_DAY", "sunday").strip().lower(), 6)
+    try:
+        want_hour = int(os.getenv("TELEGRAM_WEEKLY_HOUR", "18"))
+    except Exception:
+        want_hour = 18
+    if not (now_ct.weekday() == want_day and now_ct.hour == want_hour):
+        return  # not the configured slot
+
+    iso = now_ct.isocalendar()
+    week_tag = str(iso[0]) + "-W" + str(iso[1])
+    try:
+        with db_conn() as c:
+            cur = c.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            cur.execute("SELECT val FROM ghost_state WHERE key='last_weekly_summary_week'")
+            row = cur.fetchone()
+            if row and row[0] == week_tag:
+                return  # already sent this ISO week
+    except Exception:
+        pass
+
+    from core.telegram import send_weekly_card
+    try:
+        send_weekly_card(_build_weekly_card_data())
+        with db_conn() as c:
+            c.cursor().execute(
+                "INSERT INTO ghost_state(key,val) VALUES('last_weekly_summary_week',%s) "
+                "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val", (week_tag,))
+        LOGGER.info("Weekly summary sent (%s)", week_tag)
     except Exception as e:
         LOGGER.error("Weekly summary failed: " + str(e))
 
 
 def _build_train_symbol_list():
-    """Training symbol universe = env symbols + portfolio holdings."""
-    from core.prediction import CRYPTO_SYMBOLS, STOCK_SYMBOLS
-    syms = [(s.strip().upper(), "crypto") for s in CRYPTO_SYMBOLS if s.strip()] + [
-        (s.strip().upper(), "stock") for s in STOCK_SYMBOLS if s.strip()
-    ]
+    """Training symbol universe = WOLF + portfolio holdings (WOLF-only mode)."""
+    from core.prediction import STOCK_SYMBOLS
+    syms = [(s.strip().upper(), "stock") for s in STOCK_SYMBOLS if s.strip()]
     try:
         with db_conn() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT DISTINCT symbol, asset_type FROM user_portfolio")
-            for sym, at in cur.fetchall():
-                k = (str(sym or "").strip().upper(), (at or "stock").strip().lower())
-                if not k[0]:
-                    continue
-                if k[1] != "crypto":
-                    k = (k[0], "stock")
-                if k not in syms:
+            cur.execute("SELECT DISTINCT symbol FROM user_portfolio")
+            for (sym,) in cur.fetchall():
+                k = (str(sym or "").strip().upper(), "stock")
+                if k[0] and k not in syms:
                     syms.append(k)
     except Exception as e:
         LOGGER.warning("Coverage symbol build failed: %s", str(e)[:80])
@@ -634,14 +1013,42 @@ async def lifespan(app: FastAPI):
     except Exception as _bpe:
         LOGGER.warning("Boot purge failed: "+str(_bpe)[:60])
 
-    # Self-healing: if app restarts between 8AM-noon CT and last card was >8h ago, fire now
-    # Prevents silent card misses when Railway restarts during cron window
+    # PR #26: auto-purge ghost/test rows from user_portfolio on every boot.
+    # The /admin "Purge Ghost Portfolio" button (PR #23) was never run —
+    # the ZZE2E* probe-ticker rows persisted. Self-healing: deletes rows
+    # matching the ghost patterns on each startup so they can't pollute
+    # the investor portfolio totals. Legit WOLF (and any deliberately-added
+    # non-ghost symbol) is untouched.
+    try:
+        with db_conn() as _pc:
+            _pcur = _pc.cursor()
+            _pcur.execute("SELECT id, symbol FROM user_portfolio")
+            _prows = _pcur.fetchall()
+            _purged_ids = []
+            for _rid, _sym in _prows:
+                _up = str(_sym or "").strip().upper()
+                if any(_up.startswith(p) or _up == p for p in _GHOST_PORTFOLIO_PATTERNS):
+                    _pcur.execute("DELETE FROM user_portfolio WHERE id=%s", (int(_rid),))
+                    _purged_ids.append(_rid)
+            if _purged_ids:
+                LOGGER.info("Boot portfolio purge: removed %s ghost rows %s",
+                            len(_purged_ids), _purged_ids[:10])
+    except Exception as _ppe:
+        LOGGER.warning("Boot portfolio purge failed: " + str(_ppe)[:80])
+
+    # Self-healing: if app restarts within the morning card window (TELEGRAM_DAILY_HOUR
+    # .. +4h CT) and last card was >8h ago, fire now. Prevents silent card misses
+    # when Railway restarts during the cron window.
     try:
         import datetime as _sdt, pytz as _stz
         _ct = _stz.timezone("America/Chicago")
         _now_ct = _sdt.datetime.now(_ct)
         _hour_ct = _now_ct.hour
-        if 8 <= _hour_ct < 12:  # morning window
+        try:
+            _daily_hour = int(os.getenv("TELEGRAM_DAILY_HOUR", "8"))
+        except Exception:
+            _daily_hour = 8
+        if _daily_hour <= _hour_ct < _daily_hour + 4:  # morning window
             with db_conn() as _sc:
                 _scur = _sc.cursor()
                 _scur.execute("SELECT val FROM ghost_state WHERE key='last_morning_card_ts'")
@@ -659,12 +1066,21 @@ async def lifespan(app: FastAPI):
     from core.prediction import reconcile_outcomes
     from core.news import run_news_cycle
     scheduler.register("morning_card", _morning_card_job, interval_s=86400)
+    # Market-hours scan loop (roadmap #3a): tick at the market interval; the job
+    # self-gates to SCAN_INTERVAL_MARKET_MIN / SCAN_INTERVAL_OFFHOURS_MIN.
+    try:
+        _scan_tick = max(300, int(os.getenv("SCAN_INTERVAL_MARKET_MIN", "30")) * 60)
+    except Exception:
+        _scan_tick = 1800
+    scheduler.register("market_scan", _market_scan_job, interval_s=_scan_tick)
     # Watchdog: real-time hit alerts every 5 minutes
     from core.watchdog import run_watchdog
     scheduler.register("watchdog", run_watchdog, interval_s=300)
     # Weekly summary: every Friday at 4 PM CT = 22:00 UTC = 79200s from midnight
     # Approximated as 7-day interval - fires on first Friday after deploy
-    scheduler.register("weekly_summary", _weekly_summary_job, interval_s=604800)
+    scheduler.register("weekly_summary", _weekly_summary_job, interval_s=3600)
+    # Daily summary (roadmap #3b): hourly tick, fires once/day at DAILY_SUMMARY_HOUR.
+    scheduler.register("daily_summary", _daily_summary_job, interval_s=3600)
     scheduler.register("reconcile", reconcile_outcomes, interval_s=900)
     # T19: Auto-refresh portfolio stock prices every 15 min
     from core.portfolio_routes import auto_refresh_portfolio_prices
@@ -713,10 +1129,8 @@ async def lifespan(app: FastAPI):
                     )
             except Exception as _wse2:
                 LOGGER.warning("Weekly retrain state write failed: %s", str(_wse2)[:80])
-            from core.prediction import CRYPTO_SYMBOLS, STOCK_SYMBOLS
-            syms = [(s.strip(), "crypto") for s in CRYPTO_SYMBOLS if s.strip()] + [
-                (s.strip(), "stock") for s in STOCK_SYMBOLS if s.strip()
-            ]
+            from core.prediction import STOCK_SYMBOLS
+            syms = [(s.strip(), "stock") for s in STOCK_SYMBOLS if s.strip()]
             trained, failed = 0, len(syms)
             try:
                 # train_and_validate expects one list of (symbol, asset_type), not per-symbol calls
@@ -754,24 +1168,19 @@ async def lifespan(app: FastAPI):
                     return
                 _lock_acquired = True
                 LOGGER.info("No v3.2 TP/SL model found — training on startup...")
-                crypto = [(s.strip(),"crypto") for s in os.getenv("CRYPTO_SYMBOLS","").split(",") if s.strip()]
-                stocks = [(s.strip(),"stock") for s in os.getenv("STOCK_SYMBOLS","").split(",") if s.strip()]
+                stocks = [(s.strip(),"stock") for s in os.getenv("STOCK_SYMBOLS","WOLF").split(",") if s.strip()] or [("WOLF","stock")]
                 try:
                     from core.db import db_conn as _dbc
                     with _dbc() as _c:
                         _curp = _c.cursor()
-                        _curp.execute("SELECT DISTINCT symbol, asset_type FROM user_portfolio")
-                        for sym, at in _curp.fetchall():
-                            _entry = (sym.strip().upper(), (at or "stock").strip().lower())
-                            if _entry[1] == "crypto":
-                                if _entry not in crypto:
-                                    crypto.append(_entry)
-                            else:
-                                if _entry not in stocks:
-                                    stocks.append((_entry[0], "stock"))
+                        _curp.execute("SELECT DISTINCT symbol FROM user_portfolio")
+                        for (sym,) in _curp.fetchall():
+                            _entry = (str(sym or "").strip().upper(), "stock")
+                            if _entry[0] and _entry not in stocks:
+                                stocks.append(_entry)
                 except Exception:
                     pass
-                m, acc, passed = train_and_validate(crypto + stocks)
+                m, acc, passed = train_and_validate(stocks)
                 LOGGER.info(f"Startup training: acc={round(acc*100,1)}% passed={passed}")
                 try:
                     purged = _auto_purge_bad_models()
@@ -802,8 +1211,139 @@ async def lifespan(app: FastAPI):
     yield
     scheduler.stop()
 
-APP = FastAPI(title="Ghost Protocol v2", version="2.0.0", lifespan=lifespan)
+# Security (audit): /docs (Swagger UI), /redoc, and the OpenAPI schema are
+# disabled unless DOCS_ENABLED is explicitly truthy. When the schema IS exposed,
+# every /api/admin/* route sets include_in_schema=False so destructive endpoints
+# never appear in openapi.json or "Try it out".
+_DOCS_ENABLED = os.getenv("DOCS_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
+APP = FastAPI(
+    title="Ghost Protocol v2", version=APP_VERSION, lifespan=lifespan,
+    docs_url="/docs" if _DOCS_ENABLED else None,
+    redoc_url="/redoc" if _DOCS_ENABLED else None,
+    openapi_url="/openapi.json" if _DOCS_ENABLED else None,
+)
 APP.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+
+# ── Public-endpoint rate limiting (audit) ────────────────────────────────
+# In-process per-IP sliding window (60s). The app runs single-instance on
+# Railway, so process-local state is sufficient. Admin/cron routes have their
+# own auth and are exempt; /api/health is exempt for uptime monitors.
+import collections as _collections
+
+_RL_LOCK = threading.Lock()
+_RL_HITS = _collections.defaultdict(_collections.deque)  # ip -> deque[ts]
+_RL_EXEMPT_PREFIXES = ("/api/admin", "/api/cron", "/api/v3/train")
+_RL_EXEMPT_PATHS = ("/api/health",)
+
+
+def _rate_limit_cfg():
+    enabled = os.getenv("RATE_LIMIT_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
+    try:
+        rpm = max(1, int(os.getenv("RATE_LIMIT_RPM", "120")))
+    except Exception:
+        rpm = 120
+    return enabled, rpm
+
+
+def _client_ip(request: Request) -> str:
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+@APP.middleware("http")
+async def _rate_limit_mw(request: Request, call_next):
+    enabled, rpm = _rate_limit_cfg()
+    path = request.url.path
+    if (enabled and request.method != "OPTIONS" and path.startswith("/api/")
+            and not path.startswith(_RL_EXEMPT_PREFIXES) and path not in _RL_EXEMPT_PATHS):
+        ip = _client_ip(request)
+        now = time.time()
+        with _RL_LOCK:
+            dq = _RL_HITS[ip]
+            cutoff = now - 60
+            while dq and dq[0] < cutoff:
+                dq.popleft()
+            if len(dq) >= rpm:
+                retry = int(60 - (now - dq[0])) + 1
+                return JSONResponse(
+                    {"ok": False, "error": "rate_limited", "retry_after_s": retry},
+                    status_code=429, headers={"Retry-After": str(retry)})
+            dq.append(now)
+            # Bound memory: drop emptied buckets when the table grows large.
+            if len(_RL_HITS) > 4096:
+                for _k in [k for k, v in list(_RL_HITS.items()) if not v]:
+                    _RL_HITS.pop(_k, None)
+    return await call_next(request)
+
+
+# ── Security headers + CSP (audit v2 #6/#7) ──────────────────────────────
+# CSP allows the cockpit's CDN (Chart.js from jsdelivr) and the inline
+# <style>/<script>/onclick the pages rely on ('unsafe-inline'); frame-ancestors
+# 'none' + X-Frame-Options DENY block clickjacking. HSTS only on HTTPS.
+_CSP = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; "
+    "connect-src 'self'; "
+    "base-uri 'self'; "
+    "frame-ancestors 'none'"
+)
+
+
+@APP.middleware("http")
+async def _security_headers_mw(request: Request, call_next):
+    resp = await call_next(request)
+    resp.headers.setdefault("Content-Security-Policy", _CSP)
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("X-Frame-Options", "DENY")
+    resp.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    resp.headers.setdefault("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+    resp.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return resp
+
+
+# ── Static/SEO + version routes (audit v2 #1/#2/#3/#9) ───────────────────
+_BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://ghost-protocol-v2-production.up.railway.app").rstrip("/")
+
+
+@APP.get("/robots.txt", include_in_schema=False)
+def robots_txt():
+    body = ("User-agent: *\n"
+            "Allow: /\n"
+            "Allow: /cockpit\n"
+            "Disallow: /admin\n"
+            "Disallow: /api/\n"
+            "Sitemap: " + _BASE_URL + "/sitemap.xml\n")
+    return Response(content=body, media_type="text/plain")
+
+
+@APP.get("/sitemap.xml", include_in_schema=False)
+def sitemap_xml():
+    urls = ["/", "/cockpit"]
+    items = "".join("<url><loc>" + _BASE_URL + u + "</loc></url>" for u in urls)
+    body = ('<?xml version="1.0" encoding="UTF-8"?>'
+            '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+            + items + "</urlset>")
+    return Response(content=body, media_type="application/xml")
+
+
+@APP.get("/version")
+def version_public():
+    """Public deploy-metadata endpoint (audit v2 #1). Same payload as
+    /api/_version — app version + Railway git/deploy IDs for one-curl checks."""
+    return deploy_version()
+
+
+@APP.get("/api/v1/ghost-score")
+async def v1_ghost_score():
+    """Stable /api/v1 alias for the WOLF Ghost Score (audit v2 #9)."""
+    from api.wolf_endpoints import get_ghost_score
+    return await get_ghost_score()
+
 
 # Mount portfolio router — WOLF position tracking, price refresh, ghost predictions
 from core.portfolio_routes import portfolio_router
@@ -820,9 +1360,18 @@ except Exception as _we:
 
 
 
-@APP.get("/api/diagnostics")
-async def diagnostics():
-    """Full logic correctness check — catches bugs /health misses."""
+@APP.get("/api/diagnostics", include_in_schema=False)
+async def diagnostics(request: Request = None):
+    """Full logic correctness check — catches bugs /health misses.
+
+    Security (audit): leaks scheduler intervals, Telegram gate hashes, model
+    internals and health-check details, so it is gated behind the same admin
+    cookie as /admin. Returns 404 (not 403) when unauthenticated so the endpoint
+    is undiscoverable. FastAPI always injects `request` for HTTP calls; trusted
+    internal callers invoke diagnostics() with no request and bypass the gate.
+    """
+    if request is not None and not _admin_token_valid(request.cookies.get(_ADMIN_COOKIE, "")):
+        raise HTTPException(status_code=404)
     import time as _t, json as _j2, datetime as _dt, pytz as _tz
     _now = int(_t.time())
     _passed = []
@@ -852,10 +1401,10 @@ async def diagnostics():
         _ws = _sched._tasks.get("weekly_summary")
         if not _ws:
             _score -= _fail("scheduler.weekly_summary", "not registered")
-        elif _ws.interval_s != 604800:
-            _score -= _fail("scheduler.weekly_summary", f"interval={_ws.interval_s}s want 604800 — will spam")
+        elif _ws.interval_s != 3600:
+            _score -= _fail("scheduler.weekly_summary", f"interval={_ws.interval_s}s want 3600 — hourly check + ISO-week dedup")
         else:
-            _ok("scheduler.weekly_summary", f"1x at {_ws.interval_s}s")
+            _ok("scheduler.weekly_summary", f"hourly check at {_ws.interval_s}s (week-deduped)")
 
         # Check for duplicate weekly_summary registrations
         _ws_count = sum(1 for k in _sched._tasks if k == "weekly_summary")
@@ -1116,7 +1665,6 @@ def _auto_purge_bad_models():
             reg = cur.fetchone()
             if not reg or not reg[0]:
                 return 0
-            cur.execute("DELETE FROM ghost_models WHERE symbol='ARB'")
             cur.execute("SELECT id, symbol, metadata FROM ghost_models")
             rows = cur.fetchall()
             purged = 0
@@ -1131,10 +1679,19 @@ def _auto_purge_bad_models():
         return purged
     except Exception: return 0
 
-@APP.post("/api/admin/delete-model")
-async def delete_model(x_cron_secret: str = Header(None)):
-    """Delete models below accuracy threshold. Purges bad models so they stop generating picks."""
-    if x_cron_secret != CRON_SECRET:
+@APP.post("/api/admin/delete-model", include_in_schema=False)
+async def delete_model(x_cron_secret: str = Header(None), non_wolf_only: bool = False):
+    """Delete v3 models from ghost_v3_model.
+
+    Default mode: delete models with accuracy < V3_MIN_HOLDOUT_ACC (cleanup
+    of weak models below the deploy gate).
+
+    non_wolf_only=true mode: delete every model whose symbol is not WOLF,
+    regardless of accuracy. Use to clean up stale rows from the pre-WOLF
+    crypto / multi-stock era that v3_status already filters out at read
+    time (per PR #7 WOLF-only hardening) but still occupy DB rows.
+    """
+    if not _cron_ok(x_cron_secret, strict=True):
         raise HTTPException(status_code=403, detail="Forbidden")
     import json as _j
     from core.db import db_conn
@@ -1144,14 +1701,18 @@ async def delete_model(x_cron_secret: str = Header(None)):
     try:
         with db_conn() as conn:
             cur = conn.cursor()
-            # Always delete ARB (43 bars, never trains)
-            cur.execute("DELETE FROM ghost_v3_model WHERE key IN ('model_ARB','meta_ARB')")
-            deleted.append("ARB")
-            # Delete all models below accuracy floor
             cur.execute("SELECT key, value FROM ghost_v3_model WHERE key LIKE 'meta_%'")
             rows = cur.fetchall()
             for key, val in rows:
                 sym = key.replace("meta_", "")
+                if non_wolf_only:
+                    if str(sym).upper() == "WOLF":
+                        kept.append(f"{sym}(WOLF)")
+                        continue
+                    cur.execute("DELETE FROM ghost_v3_model WHERE key IN (%s, %s)",
+                               (f"model_{sym}", f"meta_{sym}"))
+                    deleted.append(f"{sym}(non-WOLF)")
+                    continue
                 try:
                     meta = _j.loads(val)
                     acc = meta.get("accuracy", 0)
@@ -1161,17 +1722,114 @@ async def delete_model(x_cron_secret: str = Header(None)):
                         deleted.append(f"{sym}(acc={round(acc*100,1)}%)")
                     else:
                         kept.append(f"{sym}(acc={round(acc*100,1)}%)")
-                except Exception: pass
-        return {"ok": True, "deleted": deleted, "kept": kept}
+                except Exception:
+                    pass
+        return {"ok": True, "mode": "non_wolf_only" if non_wolf_only else "low_accuracy",
+                "deleted": deleted, "kept": kept}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
 
 
-@APP.post("/api/admin/fix-stock-expiry")
+_GHOST_PORTFOLIO_PATTERNS = ("ZZE2E", "STOCK GHOST", "GHOST", "ZZ", "TEST")
+
+
+@APP.post("/api/admin/purge-ghost-portfolio", include_in_schema=False)
+async def purge_ghost_portfolio(x_cron_secret: str = Header(None), dry_run: bool = False):
+    """Hard-delete ghost / test rows from user_portfolio.
+
+    Targets symbols matching one of _GHOST_PORTFOLIO_PATTERNS (case-
+    insensitive prefix or exact match). Common pollutants:
+      - 'ZZE2E*' — yfinance probe tickers (PR #13/14 left visible by mistake)
+      - 'STOCK GHOST', 'GHOST*' — test rows
+      - 'ZZ*', 'TEST*' — manual test entries
+
+    dry_run=true: report what would be deleted without deleting.
+    """
+    if not _cron_ok(x_cron_secret, strict=True):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    deleted = []
+    would_delete = []
+    kept_count = 0
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT id, symbol FROM user_portfolio")
+            rows = cur.fetchall()
+            for rid, sym in rows:
+                up = (str(sym or "").strip().upper())
+                hit = any(up.startswith(p) or up == p for p in _GHOST_PORTFOLIO_PATTERNS)
+                if not hit:
+                    kept_count += 1
+                    continue
+                if dry_run:
+                    would_delete.append({"id": int(rid), "symbol": sym})
+                else:
+                    cur.execute("DELETE FROM user_portfolio WHERE id=%s", (int(rid),))
+                    deleted.append({"id": int(rid), "symbol": sym})
+        if not dry_run:
+            _record_admin_action("purge_ghost_portfolio", f"deleted={len(deleted)}")
+        return {
+            "ok": True,
+            "dry_run": dry_run,
+            "patterns": list(_GHOST_PORTFOLIO_PATTERNS),
+            "deleted": deleted,
+            "would_delete": would_delete,
+            "kept": kept_count,
+        }
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
+# Synthetic/test symbols that pollute the predictions ledger (e2e roundtrips
+# create ZZE2E<ts> rows; ZZ/TEST/GHOST are manual probes). Real tickers never
+# match these prefixes. user_portfolio is already self-healed on boot; this
+# covers the predictions table, which feeds stats and the pick journal.
+_TEST_PREDICTION_PATTERNS = ("ZZE2E%", "ZZ%", "TEST%", "GHOST%", "STOCK GHOST%")
+
+
+@APP.post("/api/admin/purge-test-predictions", include_in_schema=False)
+async def purge_test_predictions(x_cron_secret: str = Header(None), dry_run: bool = True):
+    """Hard-delete synthetic/test rows from the predictions table (audit).
+
+    Targets symbols matching _TEST_PREDICTION_PATTERNS — chiefly the 'ZZE2E*'
+    probe tickers the e2e roundtrip leaves behind. dry_run defaults to TRUE: it
+    reports the per-symbol counts that WOULD be deleted so the operator can
+    confirm before running with dry_run=false. Destructive and irreversible.
+    """
+    if not _cron_ok(x_cron_secret, strict=True):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    patterns = list(_TEST_PREDICTION_PATTERNS)
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT symbol, COUNT(*) FROM predictions WHERE symbol ILIKE ANY(%s) GROUP BY symbol",
+                (patterns,))
+            matched = [{"symbol": s, "count": int(c)} for s, c in cur.fetchall()]
+            total = sum(m["count"] for m in matched)
+            deleted = 0
+            if not dry_run and total:
+                cur.execute("DELETE FROM predictions WHERE symbol ILIKE ANY(%s)", (patterns,))
+                deleted = cur.rowcount
+        if not dry_run:
+            _record_admin_action("purge_test_predictions", f"deleted={deleted} matched={total}")
+        return {
+            "ok": True,
+            "dry_run": dry_run,
+            "patterns": patterns,
+            "matched": matched,
+            "total_matched": total,
+            "deleted": deleted,
+        }
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
+@APP.post("/api/admin/fix-stock-expiry", include_in_schema=False)
 async def fix_stock_expiry(x_cron_secret: str = Header(None)):
     """Fix stock picks that were created before the weekend-expiry fix and expire before market open."""
-    if x_cron_secret != CRON_SECRET:
+    if not _cron_ok(x_cron_secret, strict=True):
         raise HTTPException(status_code=403, detail="Forbidden")
     import time as _ft, datetime as _fdt, pytz as _ftz
     from core.db import db_conn
@@ -1205,7 +1863,7 @@ async def fix_stock_expiry(x_cron_secret: str = Header(None)):
 @APP.post("/api/dedup-picks", include_in_schema=False)
 def dedup_picks(x_cron_secret: str = Header(None)):
     """Expire duplicate open picks per symbol (keep highest confidence). Requires CRON_SECRET header."""
-    if x_cron_secret != CRON_SECRET:
+    if not _cron_ok(x_cron_secret, strict=True):
         raise HTTPException(status_code=403, detail="Forbidden")
     now = int(time.time())
     try:
@@ -1234,7 +1892,6 @@ def dedup_picks(x_cron_secret: str = Header(None)):
         return {"ok": False, "error": str(e)}
 
 
-@APP.get("/health")
 def health():
     import os, time as _t
     from core.prices import check_feeds
@@ -1251,7 +1908,7 @@ def health():
         issues.append("DB failed: " + str(e)[:60])
 
     # 2. Price feeds
-    feeds = {"coingecko": False, "coinbase": False, "binance": False, "polygon": False, "summary": "0/4 feeds responding"}
+    feeds = {"alpaca_stock": False, "yfinance": False, "summary": "0/2 feeds responding"}
     try:
         feeds = check_feeds()
         feeds_ok = sum(1 for k,v in feeds.items() if k != "summary" and v)
@@ -1313,7 +1970,7 @@ def health():
             cur = conn.cursor()
             cur.execute("SELECT COUNT(*) FROM predictions WHERE outcome IS NULL AND expires_at > %s", (_t.time(),))
             open_picks = cur.fetchone()[0]
-        total_syms = len([s for s in os.getenv("CRYPTO_SYMBOLS","").split(",") if s.strip()]) +                      len([s for s in os.getenv("STOCK_SYMBOLS","").split(",") if s.strip()])
+        total_syms = len([s for s in os.getenv("STOCK_SYMBOLS","WOLF").split(",") if s.strip()]) or 1
         if open_picks >= total_syms > 0:
             dedup_blocked = True
             warnings.append("Dedup blocking all " + str(total_syms) + " symbols")
@@ -1360,9 +2017,31 @@ def health():
         "price_feeds": feeds, "tasks": tasks, "issues": issues, "warnings": warnings,
     }
 
+def _health_public():
+    """Slim public health (audit v2 #10): liveness only — no internals
+    (telegram config, confidence floor, dedup, freshness, tasks, price feeds).
+    Full detail moved to the cookie-gated /admin/health."""
+    full = health()
+    return {"status": full.get("status"), "score": full.get("score"), "ts": int(time.time())}
+
+
+@APP.get("/health")
+def health_public_route():
+    return _health_public()
+
+
 @APP.get("/api/health")
 def api_health():
-    """Alias for health endpoint used by external monitors."""
+    """Public liveness probe for external monitors — slimmed (no internals)."""
+    return _health_public()
+
+
+@APP.get("/admin/health", include_in_schema=False)
+def admin_health(request: Request):
+    """Full health detail, cookie-gated like /api/diagnostics — 404 when
+    unauthenticated so internals are not publicly discoverable (audit v2 #10)."""
+    if not _admin_token_valid(request.cookies.get(_ADMIN_COOKIE, "")):
+        raise HTTPException(status_code=404)
     return health()
 
 
@@ -1374,7 +2053,7 @@ def health_audit(x_cron_secret: str = Header(default=""), auto_fix: bool = True)
     Returns structured PASS/FAIL records for each check:
     status, location, evidence, impact, auto_fix, fix_result.
     """
-    if CRON_SECRET and x_cron_secret != CRON_SECRET:
+    if not _cron_ok(x_cron_secret):
         raise HTTPException(status_code=403)
 
     import asyncio as _asyncio
@@ -1500,17 +2179,8 @@ def health_audit_history(limit: int = 20):
 
 @APP.get("/api/regime", include_in_schema=False)
 def api_regime():
-    try:
-        from core.prediction import _check_regime
-        return {"ok": True, **_check_regime()}
-    except Exception as e:
-        return {
-            "ok": False,
-            "error": str(e)[:120],
-            "block_crypto_buys": False,
-            "reason": "",
-            "btc_24h_pct": 0.0,
-        }
+    """WOLF-only mode: regime gate is a no-op. Endpoint retained for back-compat."""
+    return {"ok": True, "block_crypto_buys": False, "reduce_size": False, "reason": "", "btc_24h_pct": 0.0}
 
 
 @APP.get("/api/objective")
@@ -1569,18 +2239,30 @@ def _norm_pred(r):
     }
 
 @APP.get("/api/picks")
-def get_picks():
+def get_picks(symbol: str = "WOLF", asset_type: str = None):
+    """Recent picks. WOLF-only by default (this is a WOLF product) so it no
+    longer leaks legacy crypto rows like UNI (audit v2 bonus). ?symbol=ALL
+    restores the full cross-symbol list; ?asset_type=stock filters by type."""
     try:
+        clauses, params = [], []
+        if str(symbol).strip().upper() not in ("ALL", "*", ""):
+            clauses.append("symbol = %s")
+            params.append(symbol.strip().upper())
+        if asset_type:
+            clauses.append("asset_type = %s")
+            params.append(asset_type.strip().lower())
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
         with db_conn() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT * FROM predictions ORDER BY id DESC LIMIT 50")
+            cur.execute("SELECT * FROM predictions" + where + " ORDER BY id DESC LIMIT 50", tuple(params))
             cols = [d[0] for d in cur.description]
             rows = [_norm_pred(dict(zip(cols, r))) for r in cur.fetchall()]
         active = [r for r in rows if r["outcome"] is None]
         resolved = [r for r in rows if r["outcome"] is not None]
         wins = sum(1 for r in resolved if r["outcome"] == "WIN")
         total = len(resolved)
-        return {"ok": True, "active": active, "recent": resolved[:20],
+        return {"ok": True, "symbol": symbol, "asset_type": asset_type,
+                "active": active, "recent": resolved[:20],
                 "accuracy_pct": round(wins/total*100,1) if total else 0,
                 "wins": wins, "losses": total-wins, "total": total}
     except Exception as e:
@@ -1605,11 +2287,28 @@ def get_history(limit: int = 200):
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
+def _is_wolf_relevant(a: dict) -> bool:
+    """True only if the article TEXT mentions WOLF/Wolfspeed/SiC. The Finnhub
+    company-news feed tags every article ['WOLF'] including market-roundup
+    pieces about other tickers, so the tag is unreliable — trust the text."""
+    title = a.get("title") or a.get("headline") or ""
+    body = a.get("summary") or a.get("description") or ""
+    blob = (title + " " + body).upper()
+    words = set(blob.replace(",", " ").replace(".", " ").replace(":", " ")
+                .replace(";", " ").replace("(", " ").replace(")", " ").split())
+    return ("WOLFSPEED" in blob or "WOLF" in words or "SIC" in words
+            or "SILICON CARBIDE" in blob)
+
+
 @APP.get("/api/news")
 def get_news():
+    """WOLF-relevant news only (audit v2 #4). The raw feed leaked off-topic
+    market-roundup articles (Zoom, Ross Stores, …); now filtered to the WOLF
+    text match used by /api/wolf/news."""
     try:
         from core.news import get_recent_articles
-        articles = get_recent_articles(20)
+        raw = get_recent_articles(50) or []
+        articles = [a for a in raw if _is_wolf_relevant(a)][:20]
         return {"ok": True, "articles": articles, "count": len(articles)}
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
@@ -1617,7 +2316,7 @@ def get_news():
 @APP.post("/api/run-predictions")
 def trigger_predictions(x_cron_secret: str = Header(default="")):
     """Run prediction cycle only. Does NOT send Telegram (use /api/morning-card for that)."""
-    if CRON_SECRET and x_cron_secret != CRON_SECRET:
+    if not _cron_ok(x_cron_secret):
         raise HTTPException(status_code=403)
     from core.prediction import run_prediction_cycle
     picks = run_prediction_cycle()
@@ -1626,18 +2325,699 @@ def trigger_predictions(x_cron_secret: str = Header(default="")):
 @APP.post("/api/morning-card")
 def trigger_morning_card(x_cron_secret: str = Header(default="")):
     """Run prediction cycle AND send Telegram card. Use for cron-job.org trigger."""
-    if CRON_SECRET and x_cron_secret != CRON_SECRET:
+    if not _cron_ok(x_cron_secret):
         raise HTTPException(status_code=403)
     picks = _morning_card_job()
     return {"ok": True, "picks_generated": len(picks)}
 
 @APP.post("/api/reconcile")
 def trigger_reconcile(x_cron_secret: str = Header(default="")):
-    if CRON_SECRET and x_cron_secret != CRON_SECRET:
+    if not _cron_ok(x_cron_secret):
         raise HTTPException(status_code=403)
     from core.prediction import reconcile_outcomes
     count = reconcile_outcomes()
     return {"ok": True, "resolved": count}
+
+@APP.post("/api/wolf/signal-alert/check")
+def wolf_signal_alert_check(x_cron_secret: str = Header(default="")):
+    """Scan recent WOLF picks for unalerted high-confidence signals; fire Telegram.
+
+    Throttling:
+      - Confidence floor: 0.80 (only high-conviction signals alert)
+      - Per-pick dedup: each prediction id only alerts once (wolf_signal_alerts table)
+      - Daily cap: max 2 alerts per UTC day
+
+    Designed to be called from a cron after /api/run-predictions or
+    /api/morning-card. Safe to call repeatedly — dedup prevents duplicates.
+    """
+    if not _cron_ok(x_cron_secret):
+        raise HTTPException(status_code=403)
+
+    conf_floor = float(os.getenv("WOLF_ALERT_CONFIDENCE_FLOOR", "0.80"))
+    daily_cap = int(os.getenv("WOLF_ALERT_DAILY_CAP", "2"))
+    day_start = int(time.time()) - (int(time.time()) % 86400)
+
+    sent: list[dict] = []
+    errors: list[str] = []
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS wolf_signal_alerts (
+                    prediction_id BIGINT PRIMARY KEY,
+                    sent_at BIGINT NOT NULL,
+                    direction TEXT,
+                    entry_price DOUBLE PRECISION,
+                    target_price DOUBLE PRECISION,
+                    confidence DOUBLE PRECISION
+                )
+                """
+            )
+            cur.execute(
+                "SELECT COUNT(*) FROM wolf_signal_alerts WHERE sent_at >= %s",
+                (day_start,),
+            )
+            sent_today = int(cur.fetchone()[0] or 0)
+            remaining = max(0, daily_cap - sent_today)
+            if remaining <= 0:
+                return {"ok": True, "sent": [], "skipped_reason": "daily cap reached",
+                        "sent_today": sent_today, "daily_cap": daily_cap}
+
+            cur.execute(
+                """
+                SELECT p.id, p.direction, p.confidence, p.entry_price, p.target_price,
+                       p.stop_price, p.expires_at, p.predicted_at
+                FROM predictions p
+                LEFT JOIN wolf_signal_alerts a ON a.prediction_id = p.id
+                WHERE p.symbol = 'WOLF'
+                  AND p.outcome IS NULL
+                  AND p.confidence >= %s
+                  AND p.predicted_at >= %s
+                  AND a.prediction_id IS NULL
+                ORDER BY p.confidence DESC, p.predicted_at DESC
+                LIMIT %s
+                """,
+                (conf_floor, day_start, remaining),
+            )
+            candidates = cur.fetchall()
+
+            from core.telegram import _send
+            for row in candidates:
+                pid, direction, conf, entry, target, stop, expires, predicted = row
+                buy_dir = direction in ("UP", "BUY")
+                head = "BUY SIGNAL" if buy_dir else "SELL SIGNAL"
+                entry_label = "Buy at" if buy_dir else "Short at"
+                target_label = "Target" if buy_dir else "Cover at"
+                hrs = max(0, int(((expires or 0) - time.time()) // 3600)) if expires else None
+                body = (
+                    f"\U0001F43A {head}: WOLF\n"
+                    f"{entry_label} ${float(entry):.2f}\n"
+                    f"{target_label} ${float(target):.2f}\n"
+                    f"Stop ${float(stop):.2f}\n"
+                    f"Confidence: {round(float(conf) * 100, 1)}%"
+                    + (f"\nWindow: ~{hrs}h" if hrs is not None else "")
+                )
+                try:
+                    _send(body)
+                except Exception as _se:
+                    errors.append(f"id={pid} telegram: {str(_se)[:80]}")
+                    continue
+                # Out-of-band fire alert (roadmap #1d) — email/SMS, env-gated,
+                # best-effort. Same dedup as Telegram (one row per prediction id).
+                try:
+                    from core.notify import notify_pick_fired
+                    notify_pick_fired("Ghost Protocol — WOLF " + head, body)
+                except Exception as _ne:
+                    errors.append(f"id={pid} notify: {str(_ne)[:60]}")
+                cur.execute(
+                    "INSERT INTO wolf_signal_alerts(prediction_id, sent_at, direction, "
+                    "entry_price, target_price, confidence) VALUES (%s,%s,%s,%s,%s,%s) "
+                    "ON CONFLICT (prediction_id) DO NOTHING",
+                    (int(pid), int(time.time()), direction, float(entry) if entry else None,
+                     float(target) if target else None, float(conf) if conf else None),
+                )
+                sent.append({
+                    "prediction_id": int(pid), "direction": direction,
+                    "entry_price": float(entry) if entry else None,
+                    "target_price": float(target) if target else None,
+                    "confidence": float(conf) if conf else None,
+                })
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200], "sent": sent, "errors": errors}, status_code=500)
+
+    return {"ok": True, "sent": sent, "sent_today": sent_today + len(sent),
+            "daily_cap": daily_cap, "errors": errors}
+
+
+@APP.post("/api/cron/signal-check")
+def cron_signal_check(x_cron_secret: str = Header(default="")):
+    """Cron-triggered Telegram signal-alert sweep.
+
+    Thin wrapper around wolf_signal_alert_check that also records the
+    cron invocation in ghost_state for ops visibility. Wire this to your
+    Railway cron schedule (cron-job.org / Railway scheduled jobs) alongside
+    the existing prediction cycle — typical cadence: every 5-15 minutes
+    during market hours. Throttling and dedup live inside the underlying
+    check, so calling more frequently than needed is safe.
+    """
+    if not _cron_ok(x_cron_secret):
+        raise HTTPException(status_code=403)
+    ran_at = int(time.time())
+    alert_result = wolf_signal_alert_check(x_cron_secret=x_cron_secret)
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            cur.execute(
+                "INSERT INTO ghost_state(key,val) VALUES('last_signal_cron_ts',%s) "
+                "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
+                (str(ran_at),),
+            )
+            sent_count = len(alert_result.get("sent", [])) if isinstance(alert_result, dict) else 0
+            cur.execute(
+                "INSERT INTO ghost_state(key,val) VALUES('last_signal_cron_sent',%s) "
+                "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
+                (str(sent_count),),
+            )
+    except Exception as _e:
+        LOGGER.warning("cron_signal_check state write failed: " + str(_e)[:120])
+    return {"ok": True, "cron": "signal-check", "ran_at": ran_at, "alert_result": alert_result}
+
+
+@APP.get("/api/diag/data-sources")
+def diag_data_sources(x_cron_secret: str = Header(default=""), symbol: str = "WOLF", period: str = "1y"):
+    """Probe each OHLCV data source independently and report results.
+
+    Lets you see in-browser exactly which sources return bars and which
+    fail, without grep'ing training logs. Mirrors the chain order in
+    core/signal_engine._fetch_ohlcv (Alpaca SIP → IEX → Polygon → yfinance
+    → Stooq).
+
+    Each entry includes: ok, bar count, first/last timestamp on success,
+    error string on failure, and request latency in ms.
+    """
+    if not _cron_ok(x_cron_secret):
+        raise HTTPException(status_code=403)
+
+    try:
+        from core.signal_engine import (
+            _try_polygon_ohlcv,
+            _try_yfinance_ohlcv,
+            _try_stooq_ohlcv,
+        )
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": "import failed: " + str(e)[:200]}, status_code=500)
+
+    results = []
+
+    def _probe(name, fn):
+        t0 = time.time()
+        try:
+            rows = fn()
+            elapsed_ms = int((time.time() - t0) * 1000)
+            if rows:
+                results.append({
+                    "source": name,
+                    "ok": True,
+                    "bars": len(rows),
+                    "first_ts": rows[0].get("ts"),
+                    "last_ts": rows[-1].get("ts"),
+                    "elapsed_ms": elapsed_ms,
+                })
+            else:
+                results.append({
+                    "source": name,
+                    "ok": False,
+                    "bars": 0,
+                    "error": "returned no data (see Railway logs for per-branch detail)",
+                    "elapsed_ms": elapsed_ms,
+                })
+        except Exception as exc:
+            elapsed_ms = int((time.time() - t0) * 1000)
+            results.append({
+                "source": name,
+                "ok": False,
+                "bars": 0,
+                "error": str(exc)[:300],
+                "elapsed_ms": elapsed_ms,
+            })
+
+    _probe("polygon", lambda: _try_polygon_ohlcv(symbol, period))
+    _probe("yfinance", lambda: _try_yfinance_ohlcv(symbol, period))
+    _probe("stooq", lambda: _try_stooq_ohlcv(symbol, period))
+
+    working = [r["source"] for r in results if r["ok"]]
+    broken = [r["source"] for r in results if not r["ok"]]
+    return {
+        "ok": True,
+        "symbol": symbol,
+        "period": period,
+        "results": results,
+        "summary": {"working": working, "broken": broken, "total_working": len(working)},
+        "note": "Alpaca SIP/IEX are nested inside _fetch_ohlcv and not directly probed; check Railway logs for those.",
+    }
+
+
+@APP.get("/api/telegram/status")
+def telegram_status():
+    """Telegram delivery visibility for the cockpit.
+
+    Public read (matches /api/v3/status convention). Returns:
+      - configured: whether Telegram env vars are set
+      - last_cron_ts / last_cron_sent: from ghost_state (PR #8 signal-alert)
+      - recent_alerts: last 5 rows from wolf_signal_alerts table
+    """
+    out = {
+        "ok": True,
+        "configured": bool(os.getenv("TELEGRAM_BOT_TOKEN") and os.getenv("TELEGRAM_CHAT_ID")),
+        "last_cron_ts": None,
+        "last_cron_sent": None,
+        "recent_alerts": [],
+    }
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            cur.execute("SELECT val FROM ghost_state WHERE key='last_signal_cron_ts'")
+            row = cur.fetchone()
+            if row and row[0]:
+                try:
+                    out["last_cron_ts"] = int(row[0])
+                except Exception:
+                    pass
+            cur.execute("SELECT val FROM ghost_state WHERE key='last_signal_cron_sent'")
+            row = cur.fetchone()
+            if row and row[0]:
+                try:
+                    out["last_cron_sent"] = int(row[0])
+                except Exception:
+                    pass
+            # wolf_signal_alerts table is created lazily by signal-alert/check;
+            # tolerate it not existing yet on fresh deploys.
+            try:
+                cur.execute(
+                    "SELECT prediction_id, sent_at, direction, entry_price, target_price, confidence "
+                    "FROM wolf_signal_alerts ORDER BY sent_at DESC LIMIT 5"
+                )
+                for r in cur.fetchall():
+                    out["recent_alerts"].append({
+                        "prediction_id": int(r[0]),
+                        "sent_at": int(r[1]) if r[1] else None,
+                        "direction": r[2],
+                        "entry_price": float(r[3]) if r[3] is not None else None,
+                        "target_price": float(r[4]) if r[4] is not None else None,
+                        "confidence": float(r[5]) if r[5] is not None else None,
+                    })
+            except Exception:
+                pass
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+    return out
+
+
+@APP.get("/api/wolf/gate-status")
+def wolf_gate_status():
+    """Live diagnostic of the prediction gating chain (PR #27).
+
+    Surfaces, for the /admin monitor:
+      - active objective mode + effective thresholds (target_wr,
+        min_samples, bootstrap_min_conf, lookback_days) and whether
+        the gate is enforced / auto-mode is on
+      - the MIN_ALERT_CONFIDENCE floor
+      - WOLF's resolved-pick stats (bootstrap vs established phase)
+      - a LIVE model prediction for WOLF with per-gate pass/fail so the
+        operator can see exactly where each cycle lands relative to the
+        gates after the aggressive-mode env change.
+
+    Read-only; runs the model once per call (~1-2s). No auth (same
+    convention as /api/v3/status); the /admin page that consumes it is
+    behind Basic Auth.
+    """
+    out = {"ok": True}
+    try:
+        from core import prediction as _pred
+        cfg = _pred._objective_effective_config()
+        enforced = _pred._objective_enforced()
+        floor = _pred.CONFIDENCE_FLOOR
+        out["objective"] = {
+            "enforced": enforced,
+            "auto_mode_enabled": _pred._objective_auto_enabled(),
+            "mode": cfg.get("mode"),
+            "target_wr": cfg.get("target_wr"),
+            "min_samples": cfg.get("min_samples"),
+            "bootstrap_min_conf": cfg.get("bootstrap_min_conf"),
+            "lookback_days": cfg.get("lookback_days"),
+        }
+        out["confidence_floor"] = floor
+
+        # WOLF resolved-pick stats → bootstrap vs established phase
+        try:
+            stats = _pred._objective_symbol_stats("WOLF", "UP")
+            total = int(stats.get("combined_total", 0))
+            out["symbol_stats"] = {
+                "combined_total": total,
+                "combined_wins": stats.get("combined_wins"),
+                "combined_wr": stats.get("combined_wr"),
+                "phase": "established" if total >= int(cfg["min_samples"]) else "bootstrap",
+            }
+        except Exception as e:
+            out["symbol_stats"] = {"error": str(e)[:120]}
+
+        # Live model prediction + per-gate analysis. Pass a scores dict so we can
+        # surface up_prob and the binding threshold even on cycles that don't fire.
+        try:
+            from core.signal_engine import predict_live_ex
+            _scores = {}
+            signal, reason = predict_live_ex("WOLF", "stock", scores=_scores)
+            lp = {"reason": reason}
+
+            phase = (out.get("symbol_stats") or {}).get("phase")
+            boot_conf = float(cfg.get("bootstrap_min_conf"))
+            # Binding confidence requirement: in the bootstrap phase the objective
+            # gate needs conf >= bootstrap_min_conf; the floor needs conf >= floor.
+            binding_conf = max(float(floor), boot_conf) if phase == "bootstrap" else float(floor)
+            up_prob = _scores.get("up_prob")
+            mm = _scores.get("model_meta") or {}
+            acc = mm.get("accuracy")
+            min_p = mm.get("min_win_proba")
+            lp["up_prob"] = up_prob
+            lp["regime"] = _scores.get("regime")
+            lp["binding_confidence_threshold"] = round(binding_conf, 3)
+            lp["bootstrap_min_conf"] = round(boot_conf, 3)
+            # up_prob needed to clear the binding threshold, inverting
+            # conf = clamp(accuracy + (up_prob - min_p) * 4, 0.75, 0.95):
+            if acc is not None and min_p is not None:
+                needed = min_p + (binding_conf - acc) / 4.0
+                needed = max(needed, min_p)   # must also exceed min_p to emit UP
+                lp["up_prob_needed_to_fire"] = round(needed, 4)
+                if up_prob is not None:
+                    lp["up_prob_gap"] = round(up_prob - needed, 4)
+
+            if signal:
+                direction, conf = signal
+                conf = float(conf)
+                passes_floor = conf >= float(floor)
+                obj_ok, obj_skip = True, None
+                if enforced:
+                    obj_ok, obj_skip, _ = _pred._objective_gate("WOLF", direction, conf)
+                sell_blocked = (direction == "DOWN")
+                lp.update({
+                    "direction": direction,
+                    "confidence": round(conf, 3),
+                    "model_emitted": True,
+                    "passes_confidence_floor": passes_floor,
+                    "passes_objective_gate": bool(obj_ok),
+                    "objective_skip_reason": obj_skip,
+                    "sell_blocked": sell_blocked,
+                    "would_alert": bool(passes_floor and obj_ok and not sell_blocked),
+                })
+            else:
+                lp.update({
+                    "direction": None, "confidence": None, "model_emitted": False,
+                    "would_alert": False,
+                })
+            out["live_prediction"] = lp
+        except Exception as e:
+            out["live_prediction"] = {"error": str(e)[:160]}
+        return out
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
+@APP.get("/api/wolf/gate-history")
+def wolf_gate_history(limit: int = 50):
+    """Rolling per-cycle gate-outcome history (PR #29).
+
+    Each prediction cycle records {ts, scanned, candidates, saved,
+    dedup_blocked, would_fire, top_skip, skip_counts} to
+    ghost_state.gate_outcome_history (last 50 cycles). This lets the
+    operator review whether any recent cycle cleared the gates — and
+    which gate was binding when none did — without watching the live
+    monitor. Newest first. Read-only.
+    """
+    try:
+        import json as _j
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            cur.execute("SELECT val FROM ghost_state WHERE key='gate_outcome_history'")
+            row = cur.fetchone()
+        hist = []
+        if row and row[0]:
+            try:
+                hist = _j.loads(row[0])
+            except Exception:
+                hist = []
+        if not isinstance(hist, list):
+            hist = []
+        lim = max(1, min(200, int(limit)))
+        recent = list(reversed(hist))[:lim]   # newest first
+        fired = sum(1 for h in recent if h.get("would_fire"))
+        # Aggregate which gate was binding across the window
+        binding = {}
+        closest = None   # best (highest up_prob) near-miss across the window
+        for h in recent:
+            ts_skip = h.get("top_skip")
+            if ts_skip:
+                binding[ts_skip] = binding.get(ts_skip, 0) + 1
+            nm = h.get("near_miss")
+            if nm and nm.get("up_prob") is not None:
+                if closest is None or nm["up_prob"] > closest.get("up_prob", -1):
+                    closest = dict(nm, ts=h.get("ts"))
+        return {
+            "ok": True,
+            "count": len(recent),
+            "fired_count": fired,
+            "binding_gates": binding,
+            "closest_near_miss": closest,
+            "history": recent,
+        }
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
+# v3.2 era marker — predictions with id >= this are Ghost's high-conviction
+# v3.2-engine picks. Used across the codebase (core.stats_direction, core.prediction)
+# to exclude ~223k legacy v1 rows from credibility stats.
+_V32_ERA_MIN_ID = 223438
+
+
+def _coerce_json(v):
+    """psycopg2 may hand back JSONB as dict already, or as text. Normalise to obj."""
+    if v is None:
+        return {}
+    if isinstance(v, (dict, list)):
+        return v
+    try:
+        import json as _j
+        return _j.loads(v)
+    except Exception:
+        return {}
+
+
+@APP.get("/api/wolf/pick-journal")
+def wolf_pick_journal(limit: int = 50, offset: int = 0, symbol: str = "WOLF"):
+    """Pick journal — the credibility ledger (blueprint module 7).
+
+    Every historical v3.2-era pick with full audit trail: confidence, the
+    specialist score vector + regime-at-issuance (predictions.scores), entry/
+    target/stop, resolution, exit, P&L. Plus aggregate honesty metrics computed
+    over ALL resolved picks (not just the page): win rate with a 95% Wilson CI,
+    expectancy, Brier score, and the pre-registered falsification verdict
+    (core.prediction.FALSIFICATION_THRESHOLD, blueprint §10). Paginated, newest
+    first. Public, read-only — this is the auditable record the 80% claim rests on.
+    """
+    import math as _m
+    from core.prediction import FALSIFICATION_THRESHOLD
+    try:
+        lim = max(1, min(200, int(limit)))
+        off = max(0, int(offset))
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT COUNT(*) FROM predictions WHERE symbol=%s AND id >= %s",
+                (symbol, _V32_ERA_MIN_ID))
+            total = cur.fetchone()[0]
+            cur.execute(
+                "SELECT id,symbol,direction,confidence,entry_price,target_price,stop_price,"
+                "predicted_at,expires_at,resolved_at,outcome,exit_price,pnl_pct,features,scores "
+                "FROM predictions WHERE symbol=%s AND id >= %s "
+                "ORDER BY predicted_at DESC NULLS LAST, id DESC LIMIT %s OFFSET %s",
+                (symbol, _V32_ERA_MIN_ID, lim, off))
+            rows = cur.fetchall()
+            cur.execute(
+                "SELECT confidence,outcome,pnl_pct FROM predictions "
+                "WHERE symbol=%s AND id >= %s AND outcome IS NOT NULL",
+                (symbol, _V32_ERA_MIN_ID))
+            resolved = cur.fetchall()
+
+        picks = []
+        for r in rows:
+            (pid, sym, direction, conf, entry, target, stop, pred_at, exp_at,
+             res_at, outcome, exit_p, pnl, feats, scrs) = r
+            _sc = _coerce_json(scrs)
+            # Flatten the indicator vector at issuance (audit §4) for direct display.
+            _fv = (_sc.get("features") if isinstance(_sc, dict) else None) or {}
+            _rg = (_sc.get("regime") if isinstance(_sc, dict) else None) or {}
+            indicators = None
+            if _fv:
+                indicators = {
+                    "rsi": _fv.get("rsi"), "macd_hist": _fv.get("macd_hist"),
+                    "pct_b": _fv.get("pct_b"), "atr_pct": _fv.get("atr_pct"),
+                    "volume_ratio": _fv.get("volume_ratio"), "mom_4h": _fv.get("mom_4h"),
+                    "adx": _fv.get("adx"), "regime": _rg.get("label"),
+                }
+            picks.append({
+                "id": pid, "symbol": sym, "direction": direction,
+                "confidence": float(conf) if conf is not None else None,
+                "entry_price": entry, "target_price": target, "stop_price": stop,
+                "predicted_at": pred_at, "expires_at": exp_at, "resolved_at": res_at,
+                "outcome": outcome, "exit_price": exit_p,
+                "pnl_pct": float(pnl) if pnl is not None else None,
+                "features": _coerce_json(feats), "scores": _sc,
+                "indicators": indicators,
+            })
+
+        n = len(resolved)
+        wins = sum(1 for c, o, p in resolved if o == "WIN")
+        losses = sum(1 for c, o, p in resolved if o == "LOSS")
+        expired = sum(1 for c, o, p in resolved if o == "EXPIRED")
+        win_rate = (wins / n) if n else None
+        pnls = [float(p) for c, o, p in resolved if p is not None]
+        expectancy_pct = (sum(pnls) / len(pnls)) if pnls else None
+        win_pnls = [float(p) for c, o, p in resolved if o == "WIN" and p is not None]
+        loss_pnls = [float(p) for c, o, p in resolved if o in ("LOSS", "EXPIRED") and p is not None]
+        avg_win_pct = (sum(win_pnls) / len(win_pnls)) if win_pnls else None
+        avg_loss_pct = (sum(loss_pnls) / len(loss_pnls)) if loss_pnls else None
+        # Brier: p = stated confidence (P(win)); y = 1 if WIN else 0. Lower is better.
+        brier_terms = [(float(c) - (1.0 if o == "WIN" else 0.0)) ** 2
+                       for c, o, p in resolved if c is not None]
+        brier = (sum(brier_terms) / len(brier_terms)) if brier_terms else None
+        # 95% Wilson score interval on win rate (robust at small N, never leaves [0,1])
+        ci_low = ci_high = None
+        if n:
+            z = 1.96
+            phat = wins / n
+            denom = 1.0 + z * z / n
+            center = (phat + z * z / (2 * n)) / denom
+            margin = (z * _m.sqrt(phat * (1 - phat) / n + z * z / (4 * n * n))) / denom
+            ci_low = max(0.0, center - margin)
+            ci_high = min(1.0, center + margin)
+
+        ft = FALSIFICATION_THRESHOLD
+        falsified = False
+        fal_status = "insufficient_samples"
+        if n >= ft["min_samples"]:
+            ci_excludes_north_star = (ci_high is not None and ci_high < ft["north_star"])
+            if win_rate is not None and win_rate < ft["win_rate_floor"] and ci_excludes_north_star:
+                falsified = True
+                fal_status = "ABANDON_80_CLAIM"
+            elif win_rate is not None and win_rate >= ft["win_rate_floor"]:
+                fal_status = "on_track"
+            else:
+                fal_status = "watch"   # below floor but CI still admits 80% — not yet falsified
+
+        return {
+            "ok": True,
+            "symbol": symbol,
+            "total": total,
+            "limit": lim,
+            "offset": off,
+            "returned": len(picks),
+            "picks": picks,
+            "metrics": {
+                "resolved": n, "wins": wins, "losses": losses, "expired": expired,
+                "win_rate": round(win_rate, 4) if win_rate is not None else None,
+                "win_rate_ci95": [round(ci_low, 4), round(ci_high, 4)] if ci_low is not None else None,
+                "expectancy_pct": round(expectancy_pct, 4) if expectancy_pct is not None else None,
+                "avg_win_pct": round(avg_win_pct, 4) if avg_win_pct is not None else None,
+                "avg_loss_pct": round(avg_loss_pct, 4) if avg_loss_pct is not None else None,
+                "brier": round(brier, 4) if brier is not None else None,
+            },
+            "verdict": {
+                "falsification": {
+                    "status": fal_status,
+                    "falsified": falsified,
+                    "threshold": ft,
+                    "samples": n,
+                    "win_rate": round(win_rate, 4) if win_rate is not None else None,
+                    "ci95_high": round(ci_high, 4) if ci_high is not None else None,
+                },
+            },
+        }
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
+@APP.get("/api/wolf/daily-summary")
+def wolf_daily_summary(limit: int = 30):
+    """Stored daily engine summaries (roadmap #3b): per-day scans, candidates,
+    saves, would-fire cycles, resolutions and engine-pause state. Newest first.
+    Public, read-only."""
+    try:
+        import json as _j
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            cur.execute("SELECT val FROM ghost_state WHERE key='daily_summary_history'")
+            row = cur.fetchone()
+        hist = []
+        if row and row[0]:
+            try:
+                hist = _j.loads(row[0])
+            except Exception:
+                hist = []
+        if not isinstance(hist, list):
+            hist = []
+        lim = max(1, min(90, int(limit)))
+        recent = list(reversed(hist))[:lim]
+        return {"ok": True, "count": len(recent), "days": recent, "today": _build_daily_summary()}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
+@APP.get("/api/wolf/pnl")
+def wolf_pnl(symbol: str = "WOLF"):
+    """Realized-P&L tracker (audit §5). Turns the per-pick entry/exit ledger into
+    an aggregate: sequential-compounding equity curve plus profit factor, max
+    drawdown, expectancy and dollar P&L. Resolved v3.2-era picks only, oldest
+    first. Public, read-only. Bankroll/stake via GHOST_PNL_BANKROLL /
+    GHOST_PNL_STAKE_FRACTION env."""
+    try:
+        from core.pnl import realized_pnl
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT resolved_at,symbol,outcome,pnl_pct,entry_price,exit_price "
+                "FROM predictions WHERE symbol=%s AND id >= %s AND outcome IS NOT NULL "
+                "AND pnl_pct IS NOT NULL ORDER BY resolved_at ASC NULLS LAST, id ASC",
+                (symbol, _V32_ERA_MIN_ID))
+            rows = cur.fetchall()
+        trades = [{
+            "resolved_at": r[0], "symbol": r[1], "outcome": r[2],
+            "pnl_pct": float(r[3]) if r[3] is not None else None,
+            "entry_price": float(r[4]) if r[4] is not None else None,
+            "exit_price": float(r[5]) if r[5] is not None else None,
+        } for r in rows]
+        out = realized_pnl(trades)
+        out["symbol"] = symbol
+        return out
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
+@APP.get("/api/wolf/kill-status")
+def wolf_kill_status():
+    """Live kill-condition dashboard (audit §2). Evaluates the env-tunable
+    safety thresholds (win rate / Brier / consecutive losses / expectancy) over
+    the rolling resolved-pick history and returns per-condition current-vs-
+    threshold with a green/red/insufficient flag. Read-only — does not enforce.
+    """
+    try:
+        from core.prediction import evaluate_kill_conditions, engine_pause_state
+        out = evaluate_kill_conditions()
+        if isinstance(out, dict):
+            out["engine_pause"] = engine_pause_state()
+        return out
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
+@APP.post("/api/admin/resume-engine", include_in_schema=False)
+def admin_resume_engine(x_cron_secret: str = Header(default="")):
+    """Clear a kill-condition pause and resume firing (audit §2 enforcement).
+    Manual recovery for pause/degrade/halt trips that do not auto-resume."""
+    if not _cron_ok(x_cron_secret, strict=True):
+        raise HTTPException(status_code=403)
+    try:
+        from core.prediction import resume_engine
+        out = resume_engine()
+        _record_admin_action("resume_engine", "kill-condition pause cleared")
+        return out
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
 
 @APP.post("/api/test-alert")
 def test_alert():
@@ -1649,11 +3029,10 @@ def test_alert():
 @APP.post("/api/retrain")
 def retrain(x_cron_secret: str = Header(default="")):
     """Train XGBoost on ghost_prediction_outcomes. Inline - no import needed."""
-    if CRON_SECRET and x_cron_secret != CRON_SECRET:
+    if not _cron_ok(x_cron_secret):
         raise HTTPException(status_code=403)
     try:
         import xgboost as xgb, numpy as np, json as _json, time as _time
-        CRYPTO = {'BTC','ETH','SOL','XRP','ADA','DOT','LINK','AVAX','MATIC','LTC','ATOM','UNI','TRX','BCH','CHZ','TURBO','ZEC','RNDR'}
         with db_conn() as conn:
             cur = conn.cursor()
             cur.execute("""
@@ -1685,7 +3064,7 @@ def retrain(x_cron_secret: str = Header(default="")):
             if ts:
                 dt = _dt.datetime.fromtimestamp(float(ts))
                 h, dow = dt.hour, dt.weekday()
-            X.append([float(conf), 1.0 if direction=="UP" else 0.0, 1.0 if sym in CRYPTO else 0.0,
+            X.append([float(conf), 1.0 if direction=="UP" else 0.0, 0.0,
                        float(pct), 0.03, float(pct)/0.03 if pct else 1.0,
                        float(wr), float(sc), float(min(entry,10000))/10000,
                        float(h)/24, float(dow)/7])
@@ -1710,15 +3089,16 @@ def retrain(x_cron_secret: str = Header(default="")):
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 @APP.get("/api/price/{symbol}")
-def get_price_endpoint(symbol: str, asset_type: str = "crypto"):
+def get_price_endpoint(symbol: str, asset_type: str = "stock"):
+    """WOLF-only mode: asset_type is ignored, always returns stock price."""
     from core.prices import get_price
-    price = get_price(symbol, asset_type)
+    price = get_price(symbol)
     return {"ok": price is not None, "symbol": symbol, "price": price}
 
 @APP.post("/api/migrate-outcomes")
 def migrate_outcomes(x_cron_secret: str = Header(default="")):
     """INSERT from ghost_prediction_outcomes (13k rows) into predictions."""
-    if CRON_SECRET and x_cron_secret != CRON_SECRET:
+    if not _cron_ok(x_cron_secret):
         raise HTTPException(status_code=403)
     try:
         with db_conn() as conn:
@@ -1741,7 +3121,7 @@ def migrate_outcomes(x_cron_secret: str = Header(default="")):
                     CASE WHEN gpo.hit_direction = 1 THEN 'WIN' ELSE 'LOSS' END,
                     gpo.price_at_resolution,
                     gpo.realized_move_pct,
-                    CASE WHEN gpo.symbol = ANY(ARRAY['BTC','ETH','SOL','XRP','ADA','DOT','LINK','AVAX','MATIC','LTC','ATOM','UNI','TRX','BCH','CHZ','TURBO','ZEC','RNDR']) THEN 'crypto' ELSE 'stock' END
+                    'stock'
                 FROM ghost_prediction_outcomes gpo
                 WHERE gpo.hit_direction IS NOT NULL
                 AND gpo.price_at_prediction IS NOT NULL
@@ -1857,6 +3237,63 @@ def get_stats_v32():
     except Exception as e:
         return {"ok": False, "error": str(e)[:80]}
 
+@APP.get("/api/stats/confidence-buckets")
+def get_stats_confidence_buckets():
+    """Realized WIN/LOSS per confidence bucket since the v3.2 cutover.
+
+    Public read-only — same convention as /api/stats and /api/stats/v32.
+    Diagnostic for confidence calibration: if a high bucket wins at chance
+    rate, confidence carries no signal and the engine needs recalibration.
+    """
+    buckets_spec = [
+        ("<60", 0.00, 0.60),
+        ("60-70", 0.60, 0.70),
+        ("70-80", 0.70, 0.80),
+        ("80-90", 0.80, 0.90),
+        ("90+", 0.90, 1.01),
+    ]
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            v32_start_ts = _v32_stats_start_ts(cur)
+            out = []
+            for label, lo, hi in buckets_spec:
+                if v32_start_ts > 0:
+                    cur.execute(
+                        "SELECT outcome, COUNT(*) FROM predictions "
+                        "WHERE outcome IN ('WIN','LOSS') "
+                        "AND predicted_at IS NOT NULL AND predicted_at >= %s "
+                        "AND confidence >= %s AND confidence < %s "
+                        "GROUP BY outcome",
+                        (v32_start_ts, lo, hi),
+                    )
+                else:
+                    cur.execute(
+                        "SELECT outcome, COUNT(*) FROM predictions "
+                        "WHERE outcome IN ('WIN','LOSS') "
+                        "AND predicted_at IS NOT NULL "
+                        "AND confidence >= %s AND confidence < %s "
+                        "GROUP BY outcome",
+                        (lo, hi),
+                    )
+                rows = {r[0]: r[1] for r in cur.fetchall()}
+                w = rows.get("WIN", 0)
+                l = rows.get("LOSS", 0)
+                tot = w + l
+                out.append({
+                    "label": label,
+                    "min": lo,
+                    "max": hi,
+                    "wins": w,
+                    "losses": l,
+                    "total": tot,
+                    "win_rate_pct": round(w / tot * 100, 1) if tot else 0.0,
+                })
+        return {"ok": True, "start_ts": v32_start_ts, "buckets": out}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
 @APP.get("/api/stats")
 def get_stats():
     """Overall accuracy stats across all sources."""
@@ -1921,16 +3358,23 @@ def symbol_accuracy():
 
 @APP.post("/api/clean-garbage")
 def clean_garbage(x_cron_secret: str = Header(default="")):
-    """Delete broken predictions from the $0.50 entry price bug."""
-    if CRON_SECRET and x_cron_secret != CRON_SECRET:
+    """Delete broken predictions with absurd entry/target combos.
+
+    Filter: entry_price > 50 AND target_price < 1 (impossible legitimate trade).
+    """
+    if not _cron_ok(x_cron_secret):
         raise HTTPException(status_code=403)
     with db_conn() as conn:
         cur = conn.cursor()
         # Count first
-        cur.execute("SELECT COUNT(*) FROM predictions WHERE entry_price BETWEEN 0.49 AND 0.51 AND predicted_at IS NOT NULL")
+        # Filter rationale: legitimate predictions have target within ~20% of entry.
+        # Only impossible/garbage rows have entry > $50 with target < $1 (order-of-magnitude mismatch).
+        cur.execute("SELECT COUNT(*) FROM predictions WHERE entry_price > 50 AND target_price < 1 AND predicted_at IS NOT NULL")
         garbage_count = cur.fetchone()[0]
-        # Delete predictions where entry_price was $0.50 (the placeholder confidence value)
-        cur.execute("DELETE FROM predictions WHERE entry_price BETWEEN 0.49 AND 0.51 AND predicted_at IS NOT NULL")
+        # Delete predictions with impossible entry/target combo
+        # Filter rationale: legitimate predictions have target within ~20% of entry.
+        # Only impossible/garbage rows have entry > $50 with target < $1 (order-of-magnitude mismatch).
+        cur.execute("DELETE FROM predictions WHERE entry_price > 50 AND target_price < 1 AND predicted_at IS NOT NULL")
         deleted = cur.rowcount
         # Recount clean predictions
         cur.execute("SELECT outcome, COUNT(*) FROM predictions WHERE outcome IN ('WIN','LOSS') AND predicted_at IS NOT NULL GROUP BY outcome")
@@ -1940,7 +3384,7 @@ def clean_garbage(x_cron_secret: str = Header(default="")):
 @APP.post("/api/watchdog")
 def run_watchdog(x_cron_secret: str = Header(default="")):
     """Check open picks vs live prices. Send Telegram alert if target or stop hit."""
-    if CRON_SECRET and x_cron_secret != CRON_SECRET:
+    if not _cron_ok(x_cron_secret):
         raise HTTPException(status_code=403)
     from core.prediction import reconcile_outcomes
     from core.telegram import send_position_alert
@@ -2057,7 +3501,7 @@ def debug_signal(symbol: str):
     import os
     from core.prices import get_price
     from core.prediction import _get_symbol_signal, _check_regime, CONFIDENCE_FLOOR, EDGE_THRESHOLD, INVERSE_THRESHOLD, MIN_SAMPLES
-    price = get_price(symbol, "crypto")
+    price = get_price(symbol)
     regime = _check_regime()
     signal_error = None
     try:
@@ -2128,6 +3572,122 @@ def cockpit():
     with open(_path, encoding="utf-8") as _f:
         return HTMLResponse(_f.read())
 
+
+# ────────────────────────────────────────────────────────────────
+# /admin — cookie-login operator console (PR #28)
+# ────────────────────────────────────────────────────────────────
+# Replaced HTTP Basic Auth (PR #23) which rendered blank on production —
+# browsers/edge proxies mishandle the 401 Basic challenge. Cookie login is
+# a plain HTML form → no browser auth dialog, no proxy quirks. The cookie
+# is an HMAC-signed {expiry}.{sig} token so it can't be forged client-side.
+_ADMIN_COOKIE = "gp_admin"
+_ADMIN_TTL_S = 28800  # 8 hours
+
+
+def _admin_mint_token(ttl_s: int = _ADMIN_TTL_S) -> str:
+    secret = os.environ.get("CRON_SECRET", "")
+    exp = str(int(time.time()) + ttl_s)
+    sig = hmac.new(secret.encode("utf-8"), exp.encode("utf-8"), "sha256").hexdigest()
+    return exp + "." + sig
+
+
+def _admin_token_valid(token: str) -> bool:
+    """True if the cookie token is a non-expired, correctly-signed value.
+
+    Dev mode (no CRON_SECRET) always returns True — mirrors _cron_ok
+    strict=False semantics.
+    """
+    secret = os.environ.get("CRON_SECRET", "")
+    if not secret:
+        return True
+    if not token or "." not in token:
+        return False
+    try:
+        exp_str, sig = token.rsplit(".", 1)
+        if int(exp_str) < int(time.time()):
+            return False
+        expected = hmac.new(secret.encode("utf-8"), exp_str.encode("utf-8"), "sha256").hexdigest()
+        return hmac.compare_digest(sig, expected)
+    except Exception:
+        return False
+
+
+_ADMIN_LOGIN_HTML = """<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Ghost Protocol — Admin Login</title>
+<style>*{margin:0;padding:0;box-sizing:border-box}body{background:#0a0a0a;color:#fff;
+font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;min-height:100vh;
+display:flex;align-items:center;justify-content:center}
+.box{background:#111;border:1px solid #1e1e1e;border-radius:14px;padding:32px;width:340px;max-width:90vw}
+.logo{font-size:16px;font-weight:800;letter-spacing:2px;margin-bottom:6px}.logo span{color:#ff3b3b}
+.sub{font-size:12px;color:#666;margin-bottom:20px}
+input{width:100%;background:#0a0a0a;border:1px solid #2a2a2a;color:#fff;padding:11px 12px;
+border-radius:8px;font-size:14px;font-family:ui-monospace,Menlo,monospace;margin-bottom:12px}
+button{width:100%;background:#ff3b3b;color:#fff;border:none;padding:11px;border-radius:8px;
+font-size:13px;font-weight:700;letter-spacing:.5px;cursor:pointer}button:hover{background:#e03333}
+.err{color:#ff3b3b;font-size:12px;min-height:16px;margin-top:10px}</style></head><body>
+<div class="box"><div class="logo">&#128123; GHOST <span>ADMIN</span></div>
+<div class="sub">Enter the cron secret to access the operator console.</div>
+<input type="password" id="secret" placeholder="CRON_SECRET" autocomplete="off" autofocus
+onkeydown="if(event.key==='Enter')doLogin()">
+<button onclick="doLogin()">Sign in</button><div class="err" id="err"></div></div>
+<script>
+async function doLogin(){
+  var s=document.getElementById('secret').value||'';
+  var e=document.getElementById('err');e.textContent='Signing in...';
+  try{
+    var r=await fetch('/admin/login',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({secret:s})});
+    if(r.ok){location.reload();}
+    else{e.textContent='Wrong secret. Try again.';}
+  }catch(_){e.textContent='Network error.';}
+}
+</script></body></html>"""
+
+
+@APP.get("/admin", include_in_schema=False)
+def admin_page(request: Request):
+    """Serve admin.html when the cookie is valid; else the login page."""
+    token = request.cookies.get(_ADMIN_COOKIE, "")
+    if not _admin_token_valid(token):
+        return HTMLResponse(_ADMIN_LOGIN_HTML)
+    import os as _os
+    _path = _os.path.join(_os.path.dirname(__file__), "admin.html")
+    with open(_path, encoding="utf-8") as _f:
+        return HTMLResponse(_f.read())
+
+
+@APP.post("/admin/login", include_in_schema=False)
+async def admin_login(request: Request):
+    """Validate the posted secret against CRON_SECRET; set the signed cookie.
+
+    JSON body {"secret": "..."} (no python-multipart dependency). On success
+    sets an HttpOnly, SameSite=Lax cookie valid for 8h and returns {ok:true}.
+    """
+    expected = os.environ.get("CRON_SECRET", "")
+    provided = ""
+    try:
+        body = await request.json()
+        provided = str(body.get("secret", "") or "")
+    except Exception:
+        provided = ""
+    if expected and not hmac.compare_digest(provided.encode("utf-8"), expected.encode("utf-8")):
+        return JSONResponse({"ok": False, "error": "invalid secret"}, status_code=401)
+    resp = JSONResponse({"ok": True})
+    resp.set_cookie(
+        _ADMIN_COOKIE, _admin_mint_token(),
+        max_age=_ADMIN_TTL_S, httponly=True, samesite="lax",
+        secure=os.getenv("ADMIN_COOKIE_SECURE", "1").strip() in ("1", "true", "yes", "on"),
+    )
+    return resp
+
+
+@APP.post("/admin/logout", include_in_schema=False)
+def admin_logout():
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(_ADMIN_COOKIE)
+    return resp
+
+
 if os.path.exists("static"):
     APP.mount("/static", StaticFiles(directory="static"), name="static")
 
@@ -2135,11 +3695,203 @@ if os.path.exists("static"):
 # GHOST v3 ENDPOINTS — Backtested signal engine
 # ════════════════════════════════════════════════════════════
 
+def _v3_system_health(model_status: dict) -> dict:
+    """Aggregate, DB-cheap system health (audit). Composes engine heartbeat,
+    kill-condition + pause state, model coverage, recent activity and realized
+    P&L into one snapshot with a healthy/degraded/critical roll-up. Every block
+    is independently guarded so a single failure degrades gracefully rather than
+    500-ing the status endpoint."""
+    now = int(time.time())
+    issues = []
+
+    db_ok = True
+    try:
+        with db_conn() as c:
+            c.cursor().execute("SELECT 1")
+    except Exception:
+        db_ok = False
+        issues.append("db_unreachable")
+
+    cycle = {"ts": None, "saved": None, "scanned": None, "age_min": None}
+    try:
+        with db_conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                "SELECT key,val FROM ghost_state WHERE key IN "
+                "('last_prediction_cycle_ts','last_prediction_cycle_saved','last_prediction_cycle_scanned')")
+            kv = {k: v for k, v in cur.fetchall()}
+        if kv.get("last_prediction_cycle_ts"):
+            cycle["ts"] = int(kv["last_prediction_cycle_ts"])
+            cycle["age_min"] = int((now - cycle["ts"]) / 60)
+        if kv.get("last_prediction_cycle_saved") is not None:
+            cycle["saved"] = int(kv["last_prediction_cycle_saved"])
+        if kv.get("last_prediction_cycle_scanned") is not None:
+            cycle["scanned"] = int(kv["last_prediction_cycle_scanned"])
+    except Exception:
+        pass
+
+    pause = {"paused": False}
+    try:
+        from core.prediction import engine_pause_state
+        pause = engine_pause_state()
+    except Exception:
+        pass
+    if pause.get("paused"):
+        issues.append("engine_paused")
+
+    kill = {"enabled": None, "any_triggered": None, "resolved_available": None}
+    try:
+        from core.prediction import evaluate_kill_conditions
+        ev = evaluate_kill_conditions()
+        kill = {"enabled": ev.get("enabled"), "any_triggered": ev.get("any_triggered"),
+                "resolved_available": ev.get("resolved_available")}
+        if ev.get("any_triggered"):
+            issues.append("kill_condition_triggered")
+    except Exception:
+        pass
+
+    trained = bool(model_status.get("trained"))
+    if not trained:
+        issues.append("no_model")
+    min_models = max(1, int(os.getenv("MODEL_COVERAGE_MIN_MODELS", "3")))
+    loaded = int(model_status.get("models", 0)) if trained else 0
+    if loaded < min_models:
+        issues.append("coverage_below_floor")
+
+    activity = {"open": None, "resolved_24h": None}
+    pnl = None
+    try:
+        with db_conn() as c:
+            cur = c.cursor()
+            cur.execute("SELECT COUNT(*) FROM predictions WHERE symbol='WOLF' AND outcome IS NULL AND expires_at > %s", (now,))
+            activity["open"] = int(cur.fetchone()[0])
+            cur.execute("SELECT COUNT(*) FROM predictions WHERE symbol='WOLF' AND resolved_at >= %s", (now - 86400,))
+            activity["resolved_24h"] = int(cur.fetchone()[0])
+            cur.execute(
+                "SELECT resolved_at,symbol,outcome,pnl_pct,entry_price,exit_price FROM predictions "
+                "WHERE symbol='WOLF' AND id >= %s AND outcome IS NOT NULL AND pnl_pct IS NOT NULL "
+                "ORDER BY resolved_at ASC NULLS LAST, id ASC", (_V32_ERA_MIN_ID,))
+            rows = cur.fetchall()
+        from core.pnl import realized_pnl
+        trades = [{"resolved_at": r[0], "symbol": r[1], "outcome": r[2],
+                   "pnl_pct": float(r[3]) if r[3] is not None else None,
+                   "entry_price": r[4], "exit_price": r[5]} for r in rows]
+        full = realized_pnl(trades)
+        pnl = {k: full[k] for k in ("count", "wins", "losses", "win_rate",
+                                    "realized_pnl_usd", "total_return_pct",
+                                    "profit_factor", "max_drawdown_pct")}
+    except Exception:
+        pass
+
+    if not db_ok or not trained:
+        status = "critical"
+    elif issues:
+        status = "degraded"
+    else:
+        status = "healthy"
+
+    return {
+        "status": status,
+        "issues": issues,
+        "db_ok": db_ok,
+        "engine": {
+            "last_cycle": cycle,
+            "paused": bool(pause.get("paused")),
+            "pause_reason": pause.get("reason"),
+            "pause_auto_resume_at": pause.get("auto_resume_at"),
+        },
+        "kill": kill,
+        "coverage": {"loaded_models": loaded, "min_models_floor": min_models,
+                     "below_floor": loaded < min_models},
+        "activity": activity,
+        "pnl": pnl,
+        "checked_at": now,
+    }
+
+
 @APP.get("/api/v3/status")
 def v3_status():
-    """Model status — accuracy, edge over random, top features."""
+    """Full system-health snapshot (audit), built on the v3 model status.
+
+    Preserves the model-status contract (trained / models / symbols / accuracy)
+    that /admin and health_audit consume, and adds a `system` block: engine
+    heartbeat, kill-condition + pause state, coverage, recent activity, realized
+    P&L, and a healthy/degraded/critical roll-up.
+
+    WOLF-only hardening (PR #8): even if ghost_v3_model has stale rows for
+    other symbols (e.g. BCH/SOL/UNI from the pre-WOLF crypto era), this
+    endpoint never exposes them. Filtering at the wrapper keeps the source
+    function reusable for one-off diagnostics that may need full coverage.
+    """
     from core.signal_engine import get_model_status
-    return get_model_status()
+    st = get_model_status() or {}
+    syms = st.get("symbols") or {}
+    if syms:
+        wolf_only = {k: v for k, v in syms.items() if str(k).upper() == "WOLF"}
+        st["symbols"] = wolf_only
+        if st.get("trained"):
+            st["models"] = len(wolf_only)
+            if not wolf_only:
+                st["trained"] = False
+                st["reason"] = "No WOLF model trained — run /api/v3/train"
+    st["system"] = _v3_system_health(st)
+    return st
+
+
+@APP.get("/api/v3/lineage")
+def v3_lineage(limit: int = 50):
+    """Model lineage (audit) — rolling history of training runs (accuracy/edge/
+    pass per symbol) so /admin can show how the model evolved across retrains.
+    Newest first. Public, read-only."""
+    try:
+        import json as _j
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            cur.execute("SELECT val FROM ghost_state WHERE key='model_lineage'")
+            row = cur.fetchone()
+        hist = []
+        if row and row[0]:
+            try:
+                hist = _j.loads(row[0])
+            except Exception:
+                hist = []
+        if not isinstance(hist, list):
+            hist = []
+        lim = max(1, min(200, int(limit)))
+        recent = list(reversed(hist))[:lim]
+        return {"ok": True, "count": len(recent), "runs": recent}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
+@APP.get("/api/admin/audit-log", include_in_schema=False)
+def admin_audit_log(request: Request, limit: int = 100):
+    """Operator action audit log (audit) — purges, training, engine resume, etc.
+    Gated behind the admin cookie like /api/diagnostics; 404 when unauthenticated
+    so it is undiscoverable. Newest first."""
+    if not _admin_token_valid(request.cookies.get(_ADMIN_COOKIE, "")):
+        raise HTTPException(status_code=404)
+    try:
+        import json as _j
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            cur.execute("SELECT val FROM ghost_state WHERE key='admin_audit_log'")
+            row = cur.fetchone()
+        log = []
+        if row and row[0]:
+            try:
+                log = _j.loads(row[0])
+            except Exception:
+                log = []
+        if not isinstance(log, list):
+            log = []
+        lim = max(1, min(200, int(limit)))
+        recent = list(reversed(log))[:lim]
+        return {"ok": True, "count": len(recent), "actions": recent}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
 
 
 @APP.get("/api/coverage")
@@ -2234,17 +3986,8 @@ def cockpit_context():
     """Single fetch for /cockpit: health, stats, direction, regime, v3, activity summary."""
     try:
         stats, direction, v3, activity = _cockpit_cached_db_payload()
-        try:
-            from core.prediction import _check_regime
-            regime = {"ok": True, **_check_regime()}
-        except Exception as _re:
-            regime = {
-                "ok": False,
-                "error": str(_re)[:120],
-                "block_crypto_buys": False,
-                "reason": "",
-                "btc_24h_pct": 0.0,
-            }
+        # WOLF-only mode: regime gate is a no-op.
+        regime = {"ok": True, "block_crypto_buys": False, "reduce_size": False, "reason": "", "btc_24h_pct": 0.0}
         return {
             "ok": True,
             "health": health(),
@@ -2259,35 +4002,97 @@ def cockpit_context():
 
 
 @APP.post("/api/v3/train")
-def v3_train(x_cron_secret: str = Header(default="")):
+def _v3_train_collect_symbols() -> list:
+    """Collect symbols for v3 training, filtered to WOLF only.
+
+    WOLF-only hardening (matches the pattern in _compute_get_stats and
+    v3_status): even if STOCK_SYMBOLS env is dirty with non-WOLF rows
+    (e.g. TSLA/META/AMZN/T) or user_portfolio has stale non-WOLF
+    positions, training only ever runs on WOLF. Without this filter,
+    the user observed 0/13 symbols passing because all 12 non-WOLF
+    symbols also lacked Alpaca data, wasting compute and noise-logging.
     """
-    Train v3 XGBoost model on 6mo historical data.
+    stocks = [(s.strip(), "stock") for s in os.getenv("STOCK_SYMBOLS", "WOLF").split(",") if s.strip()] or [("WOLF", "stock")]
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT DISTINCT symbol FROM user_portfolio")
+            for (sym,) in cur.fetchall():
+                entry = (str(sym or "").strip().upper(), "stock")
+                if entry[0] and entry not in stocks:
+                    stocks.append(entry)
+    except Exception:
+        pass
+    return [s for s in stocks if s[0].upper() == "WOLF"] or [("WOLF", "stock")]
+
+
+def _record_v3_train_state(**fields) -> None:
+    """Write v3_train phase markers into ghost_state for /api/v3/train/last.
+
+    Fields are keyed as last_v3_train_<name>; each call upserts only the
+    provided fields so partial updates work across the train phases.
+    """
+    if not fields:
+        return
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            for name, value in fields.items():
+                cur.execute(
+                    "INSERT INTO ghost_state(key,val) VALUES(%s,%s) "
+                    "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
+                    (f"last_v3_train_{name}", "" if value is None else str(value)),
+                )
+    except Exception as _e:
+        LOGGER.warning("v3_train state write failed: " + str(_e)[:120])
+
+
+def v3_train(x_cron_secret: str = Header(default=""), force: bool = False):
+    """
+    Train v3 XGBoost model on 1yr historical data (WOLF-only).
     Takes 2-5 minutes. Runs in background, returns immediately.
-    Model only deployed if accuracy > 52% on holdout.
+    Model only deployed if accuracy > 52% on holdout (and the rest of
+    the v3.2 quality gates pass: walk-forward, edge, min wins).
+
+    `force` is currently a no-op safety flag — v3_train has no cooldown
+    or lock of its own, so manual invocations always run regardless.
+    It's reserved for future use if a guard is ever added and signals
+    operator intent to bypass any such guard. The scheduler-driven
+    _weekly_retrain has its own 7-day cooldown which is unrelated.
+
+    PR #14 diag: emits PR14_DIAG markers at endpoint entry, background-
+    thread start, and post-train_and_validate so a missing link reveals
+    exactly where the chain breaks in Railway logs.
+
+    PR #18: also records per-phase state into ghost_state so the
+    /api/v3/train/last endpoint can report the actual outcome of the
+    most recent invocation (passed/failed + accuracy + error message).
+    The cockpit's "Refresh Status" button reads this.
     """
-    import os
-    if x_cron_secret != os.getenv("CRON_SECRET",""):
+    LOGGER.info(f"[v3_train] PR14_DIAG ENDPOINT_INVOKED force={force}")
+    if not _cron_ok(x_cron_secret):
         return JSONResponse({"ok":False,"error":"Forbidden"}, status_code=403)
+    started_at = int(time.time())
+    _record_v3_train_state(
+        ts=started_at, state="started", force=str(force).lower(),
+        accuracy="", passed="", error="", models_before="", models_after="",
+    )
     import threading
     def _train():
         try:
-            from core.signal_engine import train_and_validate
-            import os
-            crypto = [(s.strip(), "crypto") for s in os.getenv("CRYPTO_SYMBOLS","").split(",") if s.strip()]
-            stocks = [(s.strip(), "stock") for s in os.getenv("STOCK_SYMBOLS","").split(",") if s.strip()]
-            # Also include portfolio symbols
+            LOGGER.info("[v3_train] PR14_DIAG BG_THREAD_STARTED importing train_and_validate")
+            from core.signal_engine import train_and_validate, get_model_status
+            stocks = _v3_train_collect_symbols()
             try:
-                from core.db import db_conn
-                with db_conn() as conn:
-                    cur = conn.cursor()
-                    cur.execute("SELECT DISTINCT symbol, asset_type FROM user_portfolio")
-                    for sym, at in cur.fetchall():
-                        entry = (sym.strip(), (at or "stock").strip())
-                        if entry not in crypto and entry not in stocks:
-                            stocks.append(entry)
-            except Exception: pass
-            model, accuracy, passed = train_and_validate(crypto + stocks)
-            LOGGER.info(f"v3 training complete: accuracy={round(accuracy*100,1)}% passed={passed}")
+                models_before = int((get_model_status() or {}).get("models", 0))
+            except Exception:
+                models_before = 0
+            _record_v3_train_state(state="running", stocks=str(stocks), models_before=models_before)
+            LOGGER.info(f"[v3_train] PR14_DIAG calling train_and_validate(stocks={stocks})")
+            model, accuracy, passed = train_and_validate(stocks)
+            LOGGER.info(f"[v3_train] PR14_DIAG train_and_validate returned passed={passed} acc={accuracy}")
+            LOGGER.info(f"v3 training complete: accuracy={round((accuracy or 0)*100,1)}% passed={passed}")
             _bump_cockpit_db_cache()
             try:
                 purged = _auto_purge_bad_models()
@@ -2295,19 +4100,216 @@ def v3_train(x_cron_secret: str = Header(default="")):
                 LOGGER.info(f"Post-train purge: legacy={purged} v3={pv}")
             except Exception as _pe:
                 LOGGER.warning("Auto-purge after train failed: "+str(_pe)[:60])
+            try:
+                models_after = int((get_model_status() or {}).get("models", 0))
+            except Exception:
+                models_after = 0
+            _record_v3_train_state(
+                state="passed" if passed else "failed",
+                accuracy=f"{(accuracy or 0):.4f}",
+                passed=str(bool(passed)).lower(),
+                models_after=models_after,
+                finished_at=int(time.time()),
+                error="",
+            )
         except Exception as e:
             LOGGER.error("v3 training failed: " + str(e))
+            _record_v3_train_state(
+                state="exception",
+                error=str(e)[:300],
+                finished_at=int(time.time()),
+            )
     threading.Thread(target=_train, daemon=True).start()
-    return {"ok": True, "message": "Training started in background. Check /api/v3/status in 3-5 minutes."}
+    # PR #19: response now includes _pr_version so the operator can verify
+    # from a single curl whether the deployed code is fresh or stale. If the
+    # response is missing this field, Railway is serving a pre-PR-#19 version.
+    return {"ok": True, "message": "Training started in background. Check /api/v3/train/last in 3-5 minutes.",
+            "force": force, "started_at": started_at, "_pr_version": 19}
+
+
+# PR #19 deploy-version constant. Bump on every "did Railway pick up
+# the new code?" PR so /api/_version reveals the truth in one curl.
+_RUNNING_PR_VERSION = 50
+
+
+@APP.get("/api/_version")
+def deploy_version():
+    """Return the running code version + Railway-injected git/deploy IDs.
+
+    Lets the operator verify from a single curl whether the deployed
+    container is running the expected commit. No auth required —
+    nothing sensitive in the response.
+    """
+    return {
+        "ok": True,
+        "app_version": APP_VERSION,
+        "_pr_version": _RUNNING_PR_VERSION,
+        "git_sha": os.getenv("RAILWAY_GIT_COMMIT_SHA", "unset"),
+        "deploy_id": os.getenv("RAILWAY_DEPLOYMENT_ID", "unset"),
+        "deploy_version_env": os.getenv("DEPLOY_VERSION", "unset"),
+        "ts": int(time.time()),
+        "endpoints_present": {
+            "v3_train_force_param": True,    # PR #18
+            "v3_train_last": True,            # PR #18
+            "v3_train_sync": True,            # PR #19
+            "diag_data_sources": True,        # PR #17
+            "wolf_signal_alert_check": True,  # PR #8
+        },
+    }
+
+
+@APP.post("/api/v3/train/sync")
+def v3_train_sync(x_cron_secret: str = Header(default=""), force: bool = False):
+    """Synchronous v3 training — runs train_and_validate in the request
+    thread and returns the actual outcome directly.
+
+    Use this when the async /api/v3/train silently fails to produce a
+    model and you can't tell why. The HTTP request blocks for the full
+    training duration (typically 60-300s) but the response payload
+    contains the definitive result: passed bool, accuracy, error string.
+
+    Caveats:
+      - HTTP client must allow long-running requests (Hoppscotch ok,
+        browsers may timeout at 30s-2min depending on platform)
+      - Holds a worker thread for the duration — don't call repeatedly
+      - Still records the same ghost_state phase markers as the async
+        endpoint, so /api/v3/train/last reflects this run too
+    """
+    LOGGER.info(f"[v3_train_sync] PR19_DIAG ENDPOINT_INVOKED force={force}")
+    if not _cron_ok(x_cron_secret):
+        return JSONResponse({"ok": False, "error": "Forbidden"}, status_code=403)
+    started_at = int(time.time())
+    _record_v3_train_state(
+        ts=started_at, state="started", force=str(force).lower(),
+        accuracy="", passed="", error="", models_before="", models_after="",
+    )
+    try:
+        from core.signal_engine import train_and_validate, get_model_status
+        stocks = _v3_train_collect_symbols()
+        try:
+            models_before = int((get_model_status() or {}).get("models", 0))
+        except Exception:
+            models_before = 0
+        _record_v3_train_state(state="running", stocks=str(stocks), models_before=models_before)
+        LOGGER.info(f"[v3_train_sync] PR19_DIAG calling train_and_validate(stocks={stocks})")
+        model, accuracy, passed = train_and_validate(stocks)
+        LOGGER.info(f"[v3_train_sync] PR19_DIAG train_and_validate returned passed={passed} acc={accuracy}")
+        _bump_cockpit_db_cache()
+        try:
+            purged = _auto_purge_bad_models()
+            pv = _purge_v3_stale_or_weak()
+            LOGGER.info(f"Post-train purge (sync): legacy={purged} v3={pv}")
+        except Exception as _pe:
+            LOGGER.warning("Auto-purge after sync train failed: " + str(_pe)[:60])
+        try:
+            models_after = int((get_model_status() or {}).get("models", 0))
+        except Exception:
+            models_after = 0
+        finished_at = int(time.time())
+        # PR #20: surface per-symbol gate-fail detail in the response so
+        # the operator doesn't have to grep Railway logs for RETRAIN lines.
+        # train_and_validate persists this to ghost_state.last_train_details.
+        train_details = None
+        try:
+            import json as _json
+            with db_conn() as _dc:
+                _dcur = _dc.cursor()
+                _dcur.execute("SELECT val FROM ghost_state WHERE key='last_train_details'")
+                _drow = _dcur.fetchone()
+                if _drow and _drow[0]:
+                    train_details = _json.loads(_drow[0])
+        except Exception as _de:
+            LOGGER.warning("train detail read failed: " + str(_de)[:120])
+
+        result = {
+            "ok": True,
+            "_pr_version": _RUNNING_PR_VERSION,
+            "passed": bool(passed),
+            "accuracy": round((accuracy or 0) * 100, 2),
+            "stocks": stocks,
+            "models_before": models_before,
+            "models_after": models_after,
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "duration_s": finished_at - started_at,
+            "train_details": train_details,
+        }
+        _record_v3_train_state(
+            state="passed" if passed else "failed",
+            accuracy=f"{(accuracy or 0):.4f}",
+            passed=str(bool(passed)).lower(),
+            models_after=models_after,
+            finished_at=finished_at,
+            error="",
+        )
+        return result
+    except Exception as e:
+        finished_at = int(time.time())
+        err_str = str(e)[:300]
+        LOGGER.error("v3_train_sync failed: " + err_str)
+        _record_v3_train_state(
+            state="exception",
+            error=err_str,
+            finished_at=finished_at,
+        )
+        return JSONResponse({
+            "ok": False,
+            "_pr_version": _RUNNING_PR_VERSION,
+            "error": err_str,
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "duration_s": finished_at - started_at,
+        }, status_code=500)
+
+
+@APP.get("/api/v3/train/last")
+def v3_train_last():
+    """Return the most recent v3_train invocation result from ghost_state.
+
+    Public read-only — same convention as /api/v3/status. Returns a flat
+    dict of the last_v3_train_* fields so the cockpit can render a
+    "Last training result" panel without needing the cron secret.
+    """
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            cur.execute(
+                "SELECT key, val FROM ghost_state WHERE key LIKE 'last_v3_train_%'"
+            )
+            rows = cur.fetchall()
+        out = {}
+        for key, val in rows:
+            short = key.replace("last_v3_train_", "", 1)
+            out[short] = val
+        # Coerce numeric fields when present
+        for num_key in ("ts", "finished_at", "models_before", "models_after"):
+            if num_key in out and out[num_key]:
+                try:
+                    out[num_key] = int(out[num_key])
+                except Exception:
+                    pass
+        if "accuracy" in out and out["accuracy"]:
+            try:
+                out["accuracy"] = float(out["accuracy"])
+            except Exception:
+                pass
+        if "passed" in out:
+            out["passed"] = out["passed"].lower() == "true"
+        if "force" in out:
+            out["force"] = out["force"].lower() == "true"
+        return {"ok": True, "last": out or None}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
 
 @APP.post("/api/v3/backtest")
-def v3_backtest(x_cron_secret: str = Header(default=""), symbol: str = "LTC", asset_type: str = "crypto"):
+def v3_backtest(x_cron_secret: str = Header(default=""), symbol: str = "WOLF", asset_type: str = "stock"):
     """
     Historical samples for v3 training: TP/SL WIN before stop within N daily bars
     (same rules as live reconcile / core.vol_targets).
     """
-    import os
-    if x_cron_secret != os.getenv("CRON_SECRET",""):
+    if not _cron_ok(x_cron_secret):
         return JSONResponse({"ok":False,"error":"Forbidden"}, status_code=403)
     try:
         from core.signal_engine import backtest_symbol, V3_LABEL_HOLD_BARS, LABEL_TYPE

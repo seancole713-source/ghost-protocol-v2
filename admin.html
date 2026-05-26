@@ -1,0 +1,822 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ghost Protocol — Admin</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0a0a0a;color:#fff;font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;line-height:1.5}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;color:#aaa;background:#1a1a1a;padding:1px 5px;border-radius:3px}
+.topbar{background:#1a0707;border-bottom:2px solid #5b1a1a;padding:14px 24px;display:flex;justify-content:space-between;align-items:center}
+.logo{font-size:16px;font-weight:800;letter-spacing:2px;color:#fff}
+.logo span{color:#ff3b3b}
+.badge-admin{font-size:11px;font-weight:700;letter-spacing:1.5px;padding:4px 10px;border-radius:20px;background:#ff3b3b;color:#fff}
+.main{max-width:1100px;margin:0 auto;padding:24px 24px 60px}
+.note{background:#1a1206;border:1px solid #5b4112;color:#fbbf24;padding:12px 16px;border-radius:10px;margin-bottom:20px;font-size:13px;line-height:1.6}
+.note b{color:#fff}
+.sec-label{font-size:10px;font-weight:700;letter-spacing:2px;color:#666;text-transform:uppercase;margin:24px 0 12px}
+.card{background:#111;border:1px solid #1e1e1e;border-radius:12px;padding:18px;margin-bottom:14px}
+.card h3{font-size:13px;font-weight:700;color:#ccc;margin-bottom:8px;letter-spacing:.5px}
+.card .desc{font-size:12px;color:#666;line-height:1.5;margin-bottom:12px}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+input[type=password],input[type=text]{flex:1;min-width:200px;background:#0a0a0a;border:1px solid #2a2a2a;color:#fff;padding:8px 12px;border-radius:6px;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+button{background:#ff3b3b;color:#fff;border:none;padding:8px 14px;border-radius:6px;font-size:12px;font-weight:700;letter-spacing:.5px;cursor:pointer;white-space:nowrap}
+button:hover{background:#e03333}
+button.secondary{background:#1a1a1a;border:1px solid #2a2a2a;color:#888}
+button.secondary:hover{background:#222;color:#ccc}
+button:disabled{opacity:.5;cursor:not-allowed}
+.result{font-size:12px;color:#888;margin-top:10px;min-height:18px}
+.ok{color:#22c55e;font-weight:700}
+.warn{color:#f59e0b;font-weight:700}
+.fail{color:#ff3b3b;font-weight:700}
+.tbl{width:100%;border-collapse:collapse;font-size:12px;margin-top:10px}
+.tbl th{text-align:left;font-size:9px;letter-spacing:1px;color:#666;padding:6px 8px;border-bottom:1px solid #252525;text-transform:uppercase}
+.tbl td{padding:8px;border-bottom:1px solid #1a1a1a;color:#ccc}
+.tbl tr:last-child td{border:none}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media (max-width:640px){.grid{grid-template-columns:1fr}}
+.big{font-size:24px;font-weight:800;margin-bottom:4px}
+.big.pass{color:#4ade80}.big.warn{color:#facc15}.big.fail{color:#ef4444}
+.kv{font-size:11px;color:#888;line-height:1.7;margin-top:8px}
+.kv b{color:#aaa}
+
+/* ─── Design polish v2 (additive overrides — rounded cards, depth, type) ─── */
+body{background:radial-gradient(1100px 520px at 50% -8%,#1a0f14 0%,#0a0a0a 58%) fixed,#0a0a0a}
+.card{border-radius:16px;border-color:#23232e;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.03), 0 8px 24px rgba(0,0,0,.35);
+  transition:transform .15s ease, border-color .15s ease, box-shadow .15s ease}
+.card:hover{border-color:#34344a;transform:translateY(-1px);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.04), 0 12px 30px rgba(0,0,0,.45)}
+.big{letter-spacing:-.6px}
+.sec-label{position:relative;padding-left:12px}
+.sec-label::before{content:"";position:absolute;left:0;top:2px;bottom:2px;width:3px;border-radius:2px;
+  background:linear-gradient(180deg,#8b5cf6,#6d28d9)}
+.tbl th{color:#7c7c90}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="logo">&#128123; GHOST <span>ADMIN</span></div>
+  <span class="badge-admin">PR23 OPERATOR CONSOLE</span>
+</div>
+
+<div class="main">
+
+<div class="note" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+  <span><b>Operator-only view.</b> Cookie-authenticated (signed in with <code>CRON_SECRET</code>).
+  Investor cockpit at <a href="/cockpit" style="color:#fbbf24">/cockpit</a> &mdash; no admin
+  controls there. Mutating actions below still require the cron secret in the
+  <code>x-cron-secret</code> field.</span>
+  <button class="secondary" style="white-space:nowrap" onclick="adminLogout()">Sign out</button>
+</div>
+
+<!-- ─── Training controls ─── -->
+<div class="sec-label">Training</div>
+<div class="card">
+  <h3>v3 Model Controls</h3>
+  <div class="desc">Synchronous training takes 1-5 min and returns the actual outcome inline. Async <b>Train Now</b> returns immediately; use <b>Refresh Status</b> after 3-5 min.</div>
+  <div class="row">
+    <input type="password" id="train-secret" placeholder="x-cron-secret" autocomplete="off" spellcheck="false">
+    <button onclick="trainNow()">Train Now</button>
+    <button class="secondary" onclick="trainSync()" title="Blocks 1-5 min, returns actual result">Train (sync)</button>
+    <button class="secondary" onclick="refreshStatus()">Refresh Status</button>
+    <button class="secondary" onclick="testDataSources()">Test Data Sources</button>
+    <button class="secondary" onclick="checkVersion()">Check Version</button>
+  </div>
+  <div id="train-result" class="result"></div>
+  <div id="data-sources-result" style="margin-top:8px"></div>
+</div>
+
+<!-- ─── Telegram cron trigger (PR #24 item 15) ─── -->
+<div class="sec-label">Telegram Alerts</div>
+<div class="card">
+  <h3>Fire Signal-Alert Cron</h3>
+  <div class="desc">Manually fire <code>POST /api/cron/signal-check</code>. Records <code>ghost_state.last_signal_cron_*</code>, scans unalerted WOLF picks &ge; 0.80 confidence, sends Telegram per pick (capped at <code>WOLF_ALERT_DAILY_CAP</code>, default 2/day). Once-only kick to flip "Last cron run: never" status.</div>
+  <div class="row">
+    <button class="secondary" onclick="fireSignalCron()">Fire Signal-Alert Cron Now</button>
+  </div>
+  <div id="cron-result" class="result"></div>
+</div>
+
+<!-- ─── Maintenance / purges ─── -->
+<div class="sec-label">Maintenance</div>
+<div class="card">
+  <h3>Database Cleanups</h3>
+  <div class="desc">Hard-deletes stale rows. Both confirm before firing.</div>
+  <div class="row">
+    <button class="secondary" onclick="purgeNonWolf()">Purge Non-WOLF Models</button>
+    <button class="secondary" onclick="purgeGhostPortfolio(false)">Purge Ghost Portfolio</button>
+    <button class="secondary" onclick="purgeGhostPortfolio(true)">Dry-Run Ghost Portfolio</button>
+  </div>
+  <div class="row" style="margin-top:8px">
+    <button class="secondary" onclick="purgeTestPredictions(true)">Dry-Run Test Predictions</button>
+    <button class="secondary" onclick="purgeTestPredictions(false)">Purge Test Predictions</button>
+  </div>
+  <div id="purge-result" class="result"></div>
+</div>
+
+<!-- ─── Objective gate monitor (PR #27) ─── -->
+<div class="sec-label">Objective Gate Monitor</div>
+<div class="card">
+  <h3>Where Each Cycle Lands vs the Gates</h3>
+  <div class="desc">Live view of the prediction gating chain: active objective mode + thresholds, the alert confidence floor, WOLF's resolved-pick phase, and a fresh model prediction with per-gate pass/fail. Refreshes every 60s; <b>Refresh Now</b> forces a re-poll (runs the model, ~1-2s).</div>
+  <div class="row">
+    <button class="secondary" onclick="loadGateStatus()">Refresh Now</button>
+  </div>
+  <div id="gate-status" style="margin-top:10px"><div class="kv">Loading&#8230;</div></div>
+</div>
+
+<div class="card">
+  <h3>Per-Cycle Gate History</h3>
+  <div class="desc">Last 50 prediction cycles — did any clear the gates (<b>would_fire</b>), and which gate was binding when none did. Recorded automatically each cycle; no need to watch live. Newest first.</div>
+  <div class="row"><button class="secondary" onclick="loadGateHistory()">Refresh</button></div>
+  <div id="gate-history" style="margin-top:10px"><div class="kv">Loading&#8230;</div></div>
+</div>
+
+<div class="card">
+  <h3>Realized P&amp;L</h3>
+  <div class="desc">Aggregate of the per-pick entry/exit ledger: sequential-compounding equity curve, profit factor, max drawdown, expectancy. Resolved v3.2-era picks only. Bankroll/stake via <code>GHOST_PNL_BANKROLL</code> / <code>GHOST_PNL_STAKE_FRACTION</code>.</div>
+  <div class="row"><button class="secondary" onclick="loadPnl()">Refresh</button></div>
+  <div id="pnl" style="margin-top:10px"><div class="kv">Loading&#8230;</div></div>
+</div>
+
+<div class="card">
+  <h3>Kill Conditions</h3>
+  <div class="desc">Env-tunable safety thresholds evaluated over the rolling resolved-pick history. Each shows current value vs threshold with a red/green flag. Inert (<b>insufficient</b>) until enough picks accumulate — silence by design, not a false alarm. Read-only here; enforcement is separate.</div>
+  <div class="row"><button class="secondary" onclick="loadKillStatus()">Refresh</button></div>
+  <div id="kill-status" style="margin-top:10px"><div class="kv">Loading&#8230;</div></div>
+</div>
+
+<!-- ─── Engine quality ─── -->
+<div class="sec-label">Engine Quality</div>
+<div class="grid">
+  <div class="card">
+    <h3>Last Health Audit</h3>
+    <div class="big" id="t-audit-status">&#8212;</div>
+    <div class="kv" id="t-audit-kv"></div>
+  </div>
+  <div class="card">
+    <h3>Model Coverage</h3>
+    <div class="big" id="t-cov-loaded">&#8212;</div>
+    <div class="kv" id="t-cov-kv"></div>
+  </div>
+  <div class="card">
+    <h3>Telegram Alerts</h3>
+    <div class="big" id="t-tg-status">&#8212;</div>
+    <div class="kv" id="t-tg-kv"></div>
+  </div>
+  <div class="card">
+    <h3>Confidence Calibration (post v3.2)</h3>
+    <div class="desc">Win rate by confidence band. If 80-90 wins at the same rate as 60-70, the score has no information.</div>
+    <div id="t-conf-slot"><p class="kv">Loading&#8230;</p></div>
+  </div>
+</div>
+
+<div class="card">
+  <h3>Model Lineage (loaded symbols)</h3>
+  <div id="t-models-slot"><p class="kv">Loading&#8230;</p></div>
+</div>
+
+<div class="card">
+  <h3>Model Training Lineage</h3>
+  <div class="desc">History of training runs (accuracy / edge / pass) across retrains. Newest first.</div>
+  <div class="row"><button class="secondary" onclick="loadLineage()">Refresh</button></div>
+  <div id="lineage-history" style="margin-top:10px"><div class="kv">Loading&#8230;</div></div>
+</div>
+
+<div class="card">
+  <h3>Admin Action Log</h3>
+  <div class="desc">Operator actions (purges, training, engine resume). Cookie-gated audit trail. Newest first.</div>
+  <div class="row"><button class="secondary" onclick="loadAuditLog()">Refresh</button></div>
+  <div id="audit-log" style="margin-top:10px"><div class="kv">Loading&#8230;</div></div>
+</div>
+
+</div>
+
+<script>
+function escHtml(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/'/g,'&#39;').replace(/"/g,'&quot;')}
+function fmtTsIso(ts){if(ts==null||ts===0)return '—';var s=Number(ts);if(s>1e12)s=Math.floor(s/1000);var d=new Date(s*1000);if(isNaN(d.getTime()))return '—';return d.toISOString().replace('T',' ').slice(0,19)+' UTC'}
+function fmtTimeAgo(ts){if(!ts)return '';var s=Math.floor(Date.now()/1000)-Number(ts);if(s<60)return 'just now';if(s<3600)return Math.floor(s/60)+'m ago';if(s<86400)return Math.floor(s/3600)+'h ago';return Math.floor(s/86400)+'d ago'}
+
+function getSecret(){var el=document.getElementById('train-secret');return el && el.value ? el.value : ''}
+function setBtns(disabled){document.querySelectorAll('button').forEach(function(b){b.disabled=disabled})}
+
+async function trainNow(){
+  var r=document.getElementById('train-result');
+  r.innerHTML='<span class="warn">&#x21BB; Triggering background training (force=true)...</span>';
+  setBtns(true);
+  try{
+    var resp=await fetch('/api/v3/train?force=true',{method:'POST',headers:{'x-cron-secret':getSecret(),'Content-Type':'application/json'}});
+    var b={};try{b=await resp.json()}catch(_){}
+    if(resp.status===403){r.innerHTML='<span class="fail">&#10007;</span> 403 (cron secret wrong)';return}
+    if(resp.ok&&b.ok){r.innerHTML='<span class="ok">&#10003;</span> '+escHtml(b.message||'started')+' — click Refresh Status in 3-5 min'}
+    else r.innerHTML='<span class="fail">&#10007;</span> '+escHtml((b&&b.error)||('HTTP '+resp.status));
+  }catch(e){r.innerHTML='<span class="fail">&#10007;</span> '+escHtml(String(e))}
+  finally{setBtns(false)}
+}
+
+async function trainSync(){
+  var r=document.getElementById('train-result');
+  if(!confirm('Sync training blocks the HTTP request for 1-5 min. Do not close this tab. Continue?'))return;
+  r.innerHTML='<span class="warn">&#x21BB; Running sync train (1-5 min)...</span>';
+  setBtns(true);
+  try{
+    var resp=await fetch('/api/v3/train/sync?force=true',{method:'POST',headers:{'x-cron-secret':getSecret(),'Content-Type':'application/json'}});
+    var b={};try{b=await resp.json()}catch(_){}
+    if(resp.status===403){r.innerHTML='<span class="fail">&#10007;</span> 403 (cron secret wrong)';return}
+    if(b.ok){
+      var icon=b.passed?'<span class="ok">&#10003;</span>':'<span class="warn">&#x23F3;</span>';
+      var pct=b.accuracy!=null?b.accuracy.toFixed(2)+'%':'—';
+      r.innerHTML=icon+' <b>passed='+b.passed+'</b> · acc='+pct+' · models '+b.models_before+'&rarr;'+b.models_after+' · '+(b.duration_s||0)+'s'+renderTrainDetails(b.train_details);
+    }else{
+      r.innerHTML='<span class="fail">&#10007;</span> '+escHtml((b&&b.error)||'sync train failed');
+    }
+  }catch(e){r.innerHTML='<span class="fail">&#10007;</span> '+escHtml(String(e))}
+  finally{setBtns(false)}
+}
+
+function renderTrainDetails(td){
+  if(!td||!td.symbols||!td.symbols.length)return '';
+  var html='<div style="margin-top:10px"><div class="kv"><b>Per-symbol detail</b></div>';
+  td.symbols.forEach(function(s){
+    var cls=s.passed?'ok':'fail';
+    var icon=s.passed?'&#10003;':'&#10007;';
+    html+='<div style="font-size:12px;line-height:1.7;margin-top:6px">'
+      +'<span class="'+cls+'">'+icon+'</span> <b>'+escHtml(s.symbol)+'</b> · passed='+s.passed
+      +(s.fail_reason?' · fail: <span class="fail">'+escHtml(s.fail_reason)+'</span>':'')
+      +'</div>';
+    if(s.stage==='trained'){
+      var rows=[
+        ['n_samples',s.n_samples,s.thresholds&&s.thresholds.min_train_rows],
+        ['tp_sl_wins',s.wins_ct,s.thresholds&&s.thresholds.min_tp_sl_wins],
+        ['holdout_acc',(s.holdout_acc!=null?(s.holdout_acc*100).toFixed(1)+'%':'—'),(s.thresholds&&s.thresholds.min_holdout_acc!=null?(s.thresholds.min_holdout_acc*100).toFixed(1)+'%':'—')],
+        ['edge',(s.edge!=null?(s.edge*100).toFixed(1)+'%':'—'),(s.thresholds&&s.thresholds.min_edge!=null?(s.thresholds.min_edge*100).toFixed(1)+'%':'—')],
+        ['wf_folds',s.wf_fold_count,s.thresholds&&s.thresholds.min_wf_folds],
+        ['wf_acc_mean',(s.wf_acc_mean!=null?(s.wf_acc_mean*100).toFixed(1)+'%':'—'),(s.thresholds&&s.thresholds.min_wf_acc_mean!=null?(s.thresholds.min_wf_acc_mean*100).toFixed(1)+'%':'—')],
+      ];
+      html+='<table class="tbl" style="margin-left:14px"><tr>'+rows.map(function(m){
+        return '<td style="color:#888">'+m[0]+'</td><td style="color:#fff"><b>'+escHtml(String(m[1]))+'</b></td><td style="color:#666">need&ge; '+escHtml(String(m[2]))+'</td>';
+      }).join('</tr><tr>')+'</tr></table>';
+    }
+  });
+  html+='</div>';
+  return html;
+}
+
+async function refreshStatus(){
+  var r=document.getElementById('train-result');
+  r.innerHTML='<span class="warn">&#x21BB; Checking /api/v3/status + /api/v3/train/last...</span>';
+  try{
+    var pair=await Promise.all([
+      fetch('/api/v3/status').then(function(x){return x.json()}),
+      fetch('/api/v3/train/last').then(function(x){return x.json()}).catch(function(){return {ok:false}}),
+    ]);
+    var v3=pair[0],lastResp=pair[1],last=lastResp&&lastResp.last?lastResp.last:null;
+    var headline;
+    if(v3&&v3.trained){
+      var n=v3.models!=null?v3.models:Object.keys(v3.symbols||{}).length;
+      headline='<span class="ok">&#10003;</span> Trained · '+n+' model(s) loaded';
+    }else headline='<span class="warn">&#x23F3;</span> '+escHtml((v3&&v3.reason)||'Not trained yet');
+    var detail='';
+    if(last&&last.state){
+      var bits=['<span class="'+(last.state==='passed'?'ok':last.state==='failed'?'fail':last.state==='exception'?'fail':'warn')+'">state='+escHtml(last.state)+'</span>'];
+      if(last.passed!=null)bits.push('passed='+(last.passed?'true':'false'));
+      if(last.accuracy!=null)bits.push('acc='+(Number(last.accuracy)*100).toFixed(1)+'%');
+      if(last.error)bits.push('error='+escHtml(String(last.error).slice(0,200)));
+      if(last.models_before!=null&&last.models_after!=null)bits.push('models '+last.models_before+'&rarr;'+last.models_after);
+      if(last.ts)bits.push('started '+fmtTimeAgo(last.ts));
+      detail='<div class="kv" style="margin-top:6px"><b>Last train</b> · '+bits.join(' · ')+'</div>';
+    }
+    var sysLine='';
+    var sys=v3&&v3.system;
+    if(sys){
+      var sc=sys.status==='healthy'?'ok':(sys.status==='critical'?'fail':'warn');
+      var sb=['<span class="'+sc+'">'+escHtml(sys.status||'?')+'</span>'];
+      if(sys.issues&&sys.issues.length)sb.push('issues: '+sys.issues.map(escHtml).join(', '));
+      if(sys.engine&&sys.engine.last_cycle&&sys.engine.last_cycle.age_min!=null)sb.push('last cycle '+sys.engine.last_cycle.age_min+'m ago');
+      if(sys.pnl&&sys.pnl.realized_pnl_usd!=null)sb.push('P&L $'+sys.pnl.realized_pnl_usd);
+      sysLine='<div class="kv" style="margin-top:6px"><b>System</b> · '+sb.join(' · ')+'</div>';
+    }
+    r.innerHTML=headline+detail+sysLine;
+    document.getElementById('t-models-slot').innerHTML=renderModelTable(v3);
+  }catch(e){r.innerHTML='<span class="fail">&#10007;</span> '+escHtml(String(e))}
+}
+
+async function testDataSources(){
+  var r=document.getElementById('data-sources-result');
+  r.innerHTML='<div class="kv"><span class="warn">&#x21BB; Probing data sources...</span></div>';
+  setBtns(true);
+  try{
+    var resp=await fetch('/api/diag/data-sources?symbol=WOLF&period=1y',{headers:{'x-cron-secret':getSecret()}});
+    var b={};try{b=await resp.json()}catch(_){}
+    if(resp.status===403){r.innerHTML='<div class="kv"><span class="fail">&#10007;</span> 403 (cron secret wrong)</div>';return}
+    if(!b||b.ok===false){r.innerHTML='<div class="kv"><span class="fail">&#10007;</span> '+escHtml((b&&b.error)||('HTTP '+resp.status))+'</div>';return}
+    var rows=b.results||[];
+    var working=(b.summary&&b.summary.working)||[];
+    var html='<table class="tbl"><thead><tr><th>Source</th><th>OK?</th><th>Bars</th><th>Latency</th><th>Detail</th></tr></thead><tbody>';
+    rows.forEach(function(rw){
+      var cls=rw.ok?'ok':'fail',icon=rw.ok?'&#10003;':'&#10007;';
+      var detail=rw.ok?('first='+(rw.first_ts||'—')+' last='+(rw.last_ts||'—')):escHtml(rw.error||'—');
+      html+='<tr><td><b>'+escHtml(rw.source)+'</b></td><td><span class="'+cls+'">'+icon+'</span></td><td>'+(rw.bars||0)+'</td><td>'+(rw.elapsed_ms!=null?rw.elapsed_ms+'ms':'—')+'</td><td style="font-size:11px">'+detail+'</td></tr>';
+    });
+    html+='</tbody></table>';
+    var summary=working.length?('<span class="ok">&#10003;</span> '+working.length+' working: '+working.join(', ')):'<span class="fail">&#10007;</span> all probed sources broken';
+    r.innerHTML='<div class="kv" style="margin-bottom:6px">'+summary+'</div>'+html;
+  }catch(e){r.innerHTML='<div class="kv"><span class="fail">&#10007;</span> '+escHtml(String(e))+'</div>'}
+  finally{setBtns(false)}
+}
+
+async function checkVersion(){
+  var r=document.getElementById('train-result');
+  r.innerHTML='<span class="warn">&#x21BB; Checking /api/_version...</span>';
+  try{
+    var v=await fetch('/api/_version').then(function(x){return x.json()});
+    var rows=[
+      ['_pr_version',v._pr_version!=null?('PR #'+v._pr_version):'<span class="fail">missing</span>'],
+      ['git_sha',escHtml(v.git_sha||'—')],
+      ['deploy_id',escHtml(v.deploy_id||'—')],
+      ['deploy_version_env',escHtml(v.deploy_version_env||'unset')],
+    ];
+    r.innerHTML='<div class="kv">'+rows.map(function(rr){return '<div><b>'+rr[0]+'</b>: '+rr[1]+'</div>'}).join('')+'</div>';
+  }catch(e){r.innerHTML='<span class="fail">&#10007;</span> '+escHtml(String(e))}
+}
+
+async function purgeNonWolf(){
+  var r=document.getElementById('purge-result');
+  if(!confirm('Delete EVERY ghost_v3_model row whose symbol is not WOLF? Permanent. Continue?'))return;
+  r.innerHTML='<span class="warn">&#x21BB; Purging non-WOLF models...</span>';
+  setBtns(true);
+  try{
+    var resp=await fetch('/api/admin/delete-model?non_wolf_only=true',{method:'POST',headers:{'x-cron-secret':getSecret(),'Content-Type':'application/json'}});
+    var b={};try{b=await resp.json()}catch(_){}
+    if(resp.status===403){r.innerHTML='<span class="fail">&#10007;</span> 403 (cron secret wrong)';return}
+    if(b.ok){
+      var d=b.deleted||[],k=b.kept||[];
+      var icon=d.length?'<span class="ok">&#10003;</span>':'<span class="warn">&#x21BB;</span>';
+      r.innerHTML=icon+' Purged <b>'+d.length+'</b> non-WOLF model(s) · kept <b>'+k.length+'</b>'
+        +(d.length?'<div class="kv" style="margin-top:6px">Deleted: '+escHtml(d.join(', '))+'</div>':'')
+        +(k.length?'<div class="kv">Kept: '+escHtml(k.join(', '))+'</div>':'');
+    }else r.innerHTML='<span class="fail">&#10007;</span> '+escHtml((b&&b.error)||('HTTP '+resp.status));
+  }catch(e){r.innerHTML='<span class="fail">&#10007;</span> '+escHtml(String(e))}
+  finally{setBtns(false)}
+}
+
+async function fireSignalCron(){
+  var r=document.getElementById('cron-result');
+  if(!confirm('Fire the signal-alert cron now? Sends Telegram for any unalerted WOLF picks above the confidence floor (respects daily cap).'))return;
+  r.innerHTML='<span class="warn">&#x21BB; Firing /api/cron/signal-check...</span>';
+  setBtns(true);
+  try{
+    var resp=await fetch('/api/cron/signal-check',{method:'POST',headers:{'x-cron-secret':getSecret(),'Content-Type':'application/json'}});
+    var b={};try{b=await resp.json()}catch(_){}
+    if(resp.status===403){r.innerHTML='<span class="fail">&#10007;</span> 403 (cron secret wrong)';return}
+    if(b.ok){
+      var alertResult=b.alert_result||{};
+      var sentList=alertResult.sent||[];
+      var skipped=alertResult.skipped_reason;
+      var icon=sentList.length?'<span class="ok">&#10003;</span>':skipped?'<span class="warn">&#x21BB;</span>':'<span class="warn">&#x23F3;</span>';
+      r.innerHTML=icon+' Cron ran at '+fmtTsIso(b.ran_at)
+        +(sentList.length?' · sent <b>'+sentList.length+'</b> alert(s)':' · 0 alerts sent')
+        +(skipped?' <span style="color:#888">('+escHtml(skipped)+')</span>':'')
+        +(sentList.length?'<div class="kv" style="margin-top:6px">'+sentList.map(function(s){return '#'+s.prediction_id+' '+escHtml(s.direction)+' @ $'+(s.entry_price!=null?s.entry_price.toFixed(2):'—')+' · conf='+(s.confidence!=null?Math.round(s.confidence*100)+'%':'—')}).join('<br>')+'</div>':'');
+    }else{
+      r.innerHTML='<span class="fail">&#10007;</span> '+escHtml((b&&b.error)||('HTTP '+resp.status));
+    }
+  }catch(e){r.innerHTML='<span class="fail">&#10007;</span> '+escHtml(String(e))}
+  finally{setBtns(false)}
+}
+
+async function purgeGhostPortfolio(dry){
+  var r=document.getElementById('purge-result');
+  if(!dry && !confirm('Delete ZZE2E* / STOCK GHOST / TEST* / ZZ* rows from user_portfolio? Permanent. Continue?'))return;
+  r.innerHTML='<span class="warn">&#x21BB; '+(dry?'Dry-running':'Purging')+' ghost portfolio rows...</span>';
+  setBtns(true);
+  try{
+    var resp=await fetch('/api/admin/purge-ghost-portfolio?dry_run='+(dry?'true':'false'),{method:'POST',headers:{'x-cron-secret':getSecret(),'Content-Type':'application/json'}});
+    var b={};try{b=await resp.json()}catch(_){}
+    if(resp.status===403){r.innerHTML='<span class="fail">&#10007;</span> 403 (cron secret wrong)';return}
+    if(b.ok){
+      var d=b.deleted||[],w=b.would_delete||[],kept=b.kept;
+      var which=dry?w:d;
+      var icon=which.length?'<span class="ok">&#10003;</span>':'<span class="warn">&#x21BB;</span>';
+      var verb=dry?'Would delete':'Deleted';
+      r.innerHTML=icon+' '+verb+' <b>'+which.length+'</b> ghost row(s) · kept <b>'+kept+'</b> real positions'
+        +(which.length?'<div class="kv" style="margin-top:6px">'+which.map(function(x){return '#'+x.id+' '+escHtml(x.symbol)}).join(', ')+'</div>':'');
+    }else r.innerHTML='<span class="fail">&#10007;</span> '+escHtml((b&&b.error)||('HTTP '+resp.status));
+  }catch(e){r.innerHTML='<span class="fail">&#10007;</span> '+escHtml(String(e))}
+  finally{setBtns(false)}
+}
+
+async function purgeTestPredictions(dry){
+  var r=document.getElementById('purge-result');
+  if(!dry && !confirm('Delete ZZE2E* / ZZ* / TEST* / GHOST* rows from the predictions table? Permanent. Continue?'))return;
+  r.innerHTML='<span class="warn">&#x21BB; '+(dry?'Dry-running':'Purging')+' test predictions...</span>';
+  setBtns(true);
+  try{
+    var resp=await fetch('/api/admin/purge-test-predictions?dry_run='+(dry?'true':'false'),{method:'POST',headers:{'x-cron-secret':getSecret(),'Content-Type':'application/json'}});
+    var b={};try{b=await resp.json()}catch(_){}
+    if(resp.status===403){r.innerHTML='<span class="fail">&#10007;</span> 403 (cron secret wrong)';return}
+    if(b.ok){
+      var matched=b.matched||[];
+      var icon=b.total_matched?'<span class="ok">&#10003;</span>':'<span class="warn">&#x21BB;</span>';
+      var verb=dry?'Would delete':'Deleted';
+      var n=dry?b.total_matched:b.deleted;
+      r.innerHTML=icon+' '+verb+' <b>'+(n||0)+'</b> test prediction row(s)'
+        +(matched.length?'<div class="kv" style="margin-top:6px">'+matched.map(function(x){return escHtml(x.symbol)+' &times;'+x.count}).join(', ')+'</div>':'');
+    }else r.innerHTML='<span class="fail">&#10007;</span> '+escHtml((b&&b.error)||('HTTP '+resp.status));
+  }catch(e){r.innerHTML='<span class="fail">&#10007;</span> '+escHtml(String(e))}
+  finally{setBtns(false)}
+}
+
+function renderModelTable(v3){
+  if(!v3||!v3.trained)return '<p class="kv">'+escHtml(v3&&v3.reason?v3.reason:'No v3 models loaded.')+'</p>';
+  var syms=v3.symbols||{},keys=Object.keys(syms).sort();
+  if(!keys.length)return '<p class="kv">No symbol rows.</p>';
+  var h='<table class="tbl"><thead><tr><th>Symbol</th><th>Engine</th><th>Label</th><th>Acc</th><th>WF mean</th><th>WF min</th><th>Edge</th><th>N</th></tr></thead><tbody>';
+  keys.forEach(function(k){
+    var m=syms[k];
+    h+='<tr><td><b>'+escHtml(k)+'</b></td><td>'+escHtml(m.engine!=null?m.engine:'—')+'</td>'
+      +'<td>'+escHtml(m.label_type||'—')+'</td>'
+      +'<td>'+(m.accuracy!=null?m.accuracy:'—')+'%</td>'
+      +'<td>'+(m.wf_acc_mean!=null?m.wf_acc_mean:'—')+'%</td>'
+      +'<td>'+(m.wf_acc_min!=null?m.wf_acc_min:'—')+'%</td>'
+      +'<td>'+(m.edge!=null?m.edge:'—')+'%</td>'
+      +'<td>'+(m.n_samples!=null?m.n_samples:0)+'</td></tr>';
+  });
+  h+='</tbody></table>';
+  return h;
+}
+
+async function loadEngineQuality(){
+  try{
+    var batch=await Promise.all([
+      fetch('/api/health/audit/history?limit=1').then(function(r){return r.json()}).catch(function(){return {ok:false,runs:[]}}),
+      fetch('/api/coverage').then(function(r){return r.json()}).catch(function(){return {ok:false}}),
+      fetch('/api/telegram/status').then(function(r){return r.json()}).catch(function(){return {ok:false}}),
+      fetch('/api/stats/confidence-buckets').then(function(r){return r.json()}).catch(function(){return {ok:false}}),
+      fetch('/api/v3/status').then(function(r){return r.json()}).catch(function(){return {trained:false}}),
+    ]);
+    renderAudit(batch[0]);
+    renderCoverage(batch[1]);
+    renderTelegram(batch[2]);
+    renderConfidence(batch[3]);
+    document.getElementById('t-models-slot').innerHTML=renderModelTable(batch[4]);
+  }catch(e){console.error(e)}
+}
+
+function renderAudit(audit){
+  var b=document.getElementById('t-audit-status'),k=document.getElementById('t-audit-kv');
+  var runs=audit&&audit.runs?audit.runs:[];
+  if(!runs.length){b.textContent='—';b.className='big';k.innerHTML='<b>No audit runs yet</b>';return}
+  var r=runs[0],st=(r.status||'').toUpperCase();
+  b.textContent=st||'—';b.className='big '+(st==='PASS'?'pass':st==='WARN'?'warn':'fail');
+  k.innerHTML='<b>Coverage</b> '+(r.coverage_pct!=null?r.coverage_pct.toFixed(1)+'%':'—')+'<br>'
+    +'<b>Unresolved</b> '+(r.unresolved_count!=null?r.unresolved_count:'—')+' · <b>Resolved</b> '+(r.resolved_count!=null?r.resolved_count:'—')+'<br>'
+    +'<b>Ran</b> '+fmtTsIso(r.run_ts);
+}
+
+function renderCoverage(cov){
+  var b=document.getElementById('t-cov-loaded'),k=document.getElementById('t-cov-kv');
+  if(!cov||cov.ok===false){b.textContent='—';b.className='big';k.innerHTML='<b>Coverage unavailable</b>';return}
+  var c=cov.coverage||{},m=cov.maintenance||{},loaded=c.loaded_models!=null?c.loaded_models:0,floor=c.min_models_floor!=null?c.min_models_floor:0,below=!!c.below_floor;
+  b.textContent=loaded+' / '+floor;b.className='big '+(below?'warn':'pass');
+  var cdMin=m.cooldown_remaining_s!=null?Math.ceil(m.cooldown_remaining_s/60):null;
+  k.innerHTML='<b>Auto-retrain</b> '+(m.enabled?'enabled':'disabled')+(m.running?' <span style="color:#f59e0b">(running)</span>':'')+'<br>'
+    +'<b>Last retrain</b> '+(m.last_retrain_ts?fmtTsIso(m.last_retrain_ts):'never')+'<br>'
+    +'<b>Cooldown</b> '+(cdMin!=null&&cdMin>0?cdMin+' min left':'clear');
+}
+
+function renderTelegram(tg){
+  var b=document.getElementById('t-tg-status'),k=document.getElementById('t-tg-kv');
+  if(!tg||tg.ok===false){b.textContent='—';b.className='big';k.innerHTML='<b>Telegram status unavailable</b>';return}
+  var configured=!!tg.configured,nRecent=(tg.recent_alerts||[]).length;
+  b.textContent=configured?(nRecent+' sent'):'unconfigured';
+  b.className='big '+(!configured?'warn':nRecent>0?'pass':'warn');
+  var lines=['<b>Bot configured</b> '+(configured?'yes':'<span class="warn">no &mdash; set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID</span>')];
+  lines.push('<b>Last cron run</b> '+(tg.last_cron_ts?fmtTsIso(tg.last_cron_ts):'never'));
+  lines.push('<b>Last cron sent</b> '+(tg.last_cron_sent!=null?tg.last_cron_sent+' alert(s)':'—'));
+  if(nRecent>0){
+    var alerts=tg.recent_alerts.map(function(a){
+      var dir=a.direction||'—',conf=a.confidence!=null?Math.round(a.confidence*100)+'%':'—';
+      return '<div style="font-size:11px;color:#888;margin-top:3px"><b>#'+a.prediction_id+'</b> '+escHtml(dir)+' @ $'+(a.entry_price!=null?a.entry_price.toFixed(2):'—')+' &rarr; $'+(a.target_price!=null?a.target_price.toFixed(2):'—')+' · conf='+conf+' · '+(a.sent_at?fmtTimeAgo(a.sent_at):'—')+'</div>';
+    }).join('');
+    lines.push('<div style="margin-top:6px"><b>Recent alerts</b>'+alerts+'</div>');
+  }
+  k.innerHTML=lines.join('<br>');
+}
+
+function renderConfidence(conf){
+  var slot=document.getElementById('t-conf-slot');
+  if(!conf||conf.ok===false){slot.innerHTML='<p class="kv">Confidence calibration unavailable.</p>';return}
+  var buckets=conf.buckets||[];
+  if(!buckets.length||!buckets.some(function(b){return (b.total||0)>0})){
+    slot.innerHTML='<p class="kv">No resolved picks in window yet'+(conf.start_ts?' since '+fmtTsIso(conf.start_ts):'')+'.</p>';return;
+  }
+  var h='<table class="tbl"><thead><tr><th>Bucket</th><th>N</th><th>W / L</th><th>Win rate</th></tr></thead><tbody>';
+  buckets.forEach(function(b){
+    var tot=b.total||0,wr=b.win_rate_pct!=null?b.win_rate_pct:0;
+    h+='<tr><td><b>'+escHtml(b.label)+'</b></td><td>'+tot+'</td><td>'+(b.wins||0)+' / '+(b.losses||0)+'</td><td>'+(tot===0?'—':wr+'%')+'</td></tr>';
+  });
+  h+='</tbody></table>';
+  slot.innerHTML=h;
+}
+
+/* ─── Objective gate monitor (PR #27) ─── */
+async function loadGateStatus(){
+  var el = document.getElementById('gate-status');
+  if(!el) return;
+  el.innerHTML = '<div class="kv"><span class="warn">&#x21BB; Polling /api/wolf/gate-status (runs model)...</span></div>';
+  try{
+    var g = await fetch('/api/wolf/gate-status').then(function(r){return r.json()});
+    if(!g || g.ok === false){
+      el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml((g&&g.error)||'unavailable') + '</div>';
+      return;
+    }
+    var o = g.objective || {};
+    var ss = g.symbol_stats || {};
+    var lp = g.live_prediction || {};
+    var floor = g.confidence_floor;
+
+    // Objective config block
+    var html = '<table class="tbl"><tbody>';
+    html += '<tr><td>Objective mode</td><td><b>' + escHtml(o.mode || '—') + '</b>'
+      + (o.enforced ? '' : ' <span class="warn">(NOT enforced)</span>')
+      + (o.auto_mode_enabled ? ' <span class="warn">(auto-mode ON — env override may not stick!)</span>' : '') + '</td></tr>';
+    html += '<tr><td>Target win-rate</td><td>' + (o.target_wr != null ? (o.target_wr*100).toFixed(0)+'%' : '—') + '</td></tr>';
+    html += '<tr><td>Min samples</td><td>' + (o.min_samples != null ? o.min_samples : '—') + '</td></tr>';
+    html += '<tr><td>Bootstrap min conf</td><td>' + (o.bootstrap_min_conf != null ? (o.bootstrap_min_conf*100).toFixed(0)+'%' : '—') + '</td></tr>';
+    html += '<tr><td>Alert confidence floor</td><td>' + (floor != null ? (floor*100).toFixed(0)+'%' : '—') + '</td></tr>';
+    html += '<tr><td>WOLF resolved picks</td><td>' + (ss.combined_total != null ? ss.combined_total : '—')
+      + ' &middot; WR ' + (ss.combined_wr != null ? (ss.combined_wr*100).toFixed(1)+'%' : '—')
+      + ' &middot; <b>' + escHtml(ss.phase || '—') + '</b> phase</td></tr>';
+    html += '</tbody></table>';
+
+    // up_prob readout — shows where the model landed vs the binding threshold,
+    // whether or not the pick fired (the "how close did it come" view).
+    var probHtml = '';
+    if(lp.up_prob != null){
+      probHtml += '<table class="tbl"><tbody>';
+      probHtml += '<tr><td>Model up_prob</td><td><b>' + lp.up_prob.toFixed(4) + '</b>'
+        + (lp.regime && lp.regime.label ? ' &middot; regime <b>' + escHtml(lp.regime.label) + '</b>' : '') + '</td></tr>';
+      if(lp.up_prob_needed_to_fire != null){
+        probHtml += '<tr><td>up_prob needed to fire</td><td>' + lp.up_prob_needed_to_fire.toFixed(4)
+          + ' <span style="color:#8b96a8">(binding conf '
+          + (lp.binding_confidence_threshold != null ? (lp.binding_confidence_threshold*100).toFixed(0)+'%' : '—') + ')</span></td></tr>';
+        var gap = lp.up_prob_gap;
+        if(gap != null){
+          var gapCls = gap >= 0 ? 'ok' : 'fail';
+          probHtml += '<tr><td>Gap to clear</td><td><span class="' + gapCls + '"><b>'
+            + (gap >= 0 ? '+' : '') + gap.toFixed(4) + '</b></span> '
+            + (gap >= 0 ? '(cleared)' : '(short)') + '</td></tr>';
+        }
+      }
+      probHtml += '</tbody></table>';
+    } else if(lp.reason){
+      probHtml += '<div class="kv"><span style="color:#8b96a8">up_prob not computed — a gate fired before the model ran (<code>'
+        + escHtml(lp.reason) + '</code>)</span></div>';
+    }
+
+    // Live prediction + gate analysis
+    html += '<div class="kv" style="margin-top:10px"><b>Latest model prediction (WOLF)</b></div>';
+    if(lp.error){
+      html += '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml(lp.error) + '</div>';
+    } else if(!lp.model_emitted){
+      html += '<div class="kv"><span class="warn">&#x23F3;</span> Model emitted NO signal &middot; reason: <code>'
+        + escHtml(lp.reason || 'none') + '</code></div>';
+      html += probHtml;
+    } else {
+      var wa = lp.would_alert;
+      var icon = wa ? '<span class="ok">&#10003;</span>' : '<span class="warn">&#x23F3;</span>';
+      html += '<table class="tbl"><tbody>';
+      html += '<tr><td>Direction</td><td><b>' + escHtml(lp.direction) + '</b></td></tr>';
+      html += '<tr><td>Confidence</td><td><b>' + (lp.confidence*100).toFixed(1) + '%</b></td></tr>';
+      html += '<tr><td>Passes confidence floor</td><td>' + gateBadge(lp.passes_confidence_floor) + '</td></tr>';
+      html += '<tr><td>Passes objective gate</td><td>' + gateBadge(lp.passes_objective_gate)
+        + (lp.objective_skip_reason ? ' <code>'+escHtml(lp.objective_skip_reason)+'</code>' : '') + '</td></tr>';
+      html += '<tr><td><b>WOULD ALERT</b></td><td>' + icon + ' <b>' + (wa ? 'YES' : 'NO') + '</b></td></tr>';
+      html += '</tbody></table>';
+      html += probHtml;
+    }
+    el.innerHTML = html;
+  }catch(e){
+    el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml(String(e)) + '</div>';
+  }
+}
+
+function gateBadge(pass){
+  return pass ? '<span class="ok">&#10003; pass</span>' : '<span class="fail">&#10007; fail</span>';
+}
+
+/* ─── Per-cycle gate history (PR #29) ─── */
+async function loadGateHistory(){
+  var el = document.getElementById('gate-history');
+  if(!el) return;
+  el.innerHTML = '<div class="kv"><span class="warn">&#x21BB; Loading...</span></div>';
+  try{
+    var g = await fetch('/api/wolf/gate-history?limit=50').then(function(r){return r.json()});
+    if(!g || g.ok === false){
+      el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml((g&&g.error)||'unavailable') + '</div>';
+      return;
+    }
+    var hist = g.history || [];
+    if(!hist.length){
+      el.innerHTML = '<div class="kv">No cycles recorded yet. The recorder writes one entry per prediction cycle (every ~30 min during market hours).</div>';
+      return;
+    }
+    var bindingStr = Object.keys(g.binding_gates || {}).map(function(k){
+      return escHtml(k) + ' &times;' + g.binding_gates[k];
+    }).join(' &middot; ') || '—';
+    // "How close" formatter: best up_prob vs its threshold, with the gap.
+    function fmtNear(nm){
+      if(!nm || nm.up_prob === null || nm.up_prob === undefined) return '—';
+      var s = (nm.symbol ? escHtml(nm.symbol)+' ' : '') + 'p=' + nm.up_prob;
+      if(nm.min_win_proba !== null && nm.min_win_proba !== undefined){
+        s += '<span style="color:#8b96a8">/' + nm.min_win_proba + '</span>';
+      }
+      if(nm.prob_gap !== null && nm.prob_gap !== undefined){
+        var cls = nm.prob_gap >= 0 ? 'ok' : 'warn';
+        s += ' <span class="' + cls + '">' + (nm.prob_gap >= 0 ? '+' : '') + nm.prob_gap + '</span>';
+      }
+      if(nm.conf_gap !== null && nm.conf_gap !== undefined){
+        s += ' <span style="color:#8b96a8" title="confidence vs floor">conf ' + (nm.conf_gap>=0?'+':'') + nm.conf_gap + '</span>';
+      }
+      return s;
+    }
+    var cn = g.closest_near_miss;
+    var closestStr = cn ? (' &middot; closest: ' + fmtNear(cn)) : '';
+    var summary = '<div class="kv" style="margin-bottom:8px">'
+      + '<b>' + g.fired_count + '</b> of <b>' + g.count + '</b> recent cycles cleared all gates'
+      + ' &middot; binding gates: ' + bindingStr + closestStr + '</div>';
+    var rows = hist.map(function(h){
+      var fired = h.would_fire;
+      var icon = fired ? '<span class="ok">&#10003; would fire</span>' : '<span class="warn">&#x23F3; no</span>';
+      if(h.paused) icon = '<span class="fail">&#9209; paused</span>';
+      return '<tr>'
+        + '<td>' + fmtTimeAgo(h.ts) + '</td>'
+        + '<td>' + icon + '</td>'
+        + '<td>cand ' + (h.candidates||0) + ' / saved ' + (h.saved||0)
+          + (h.dedup_blocked ? ' / dedup ' + h.dedup_blocked : '') + '</td>'
+        + '<td>' + (h.top_skip ? '<code>'+escHtml(h.top_skip)+'</code>' : '—') + '</td>'
+        + '<td>' + fmtNear(h.near_miss) + '</td>'
+        + '</tr>';
+    }).join('');
+    el.innerHTML = summary
+      + '<table class="tbl"><thead><tr><th>When</th><th>Outcome</th><th>Candidates/Saved</th><th>Binding gate</th><th>How close</th></tr></thead><tbody>'
+      + rows + '</tbody></table>';
+  }catch(e){
+    el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml(String(e)) + '</div>';
+  }
+}
+
+/* ─── Realized P&L (audit §5) ─── */
+async function loadPnl(){
+  var el = document.getElementById('pnl');
+  if(!el) return;
+  el.innerHTML = '<div class="kv"><span class="warn">&#x21BB; Loading...</span></div>';
+  try{
+    var g = await fetch('/api/wolf/pnl').then(function(r){return r.json()});
+    if(!g || g.ok === false){
+      el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml((g&&g.error)||'unavailable') + '</div>';
+      return;
+    }
+    if(!g.count){
+      el.innerHTML = '<div class="kv">No resolved trades yet — P&amp;L populates as picks resolve.</div>';
+      return;
+    }
+    function money(v){ return (v>=0?'+$':'-$') + Math.abs(v).toFixed(2); }
+    function pct(v){ return (v>=0?'+':'') + (v===null||v===undefined?'—':v) + '%'; }
+    var pnlCls = g.realized_pnl_usd >= 0 ? 'ok' : 'fail';
+    var pf = (g.profit_factor === null) ? '—' : (g.profit_factor === 'Infinity' || g.profit_factor === Infinity ? '∞' : g.profit_factor);
+    el.innerHTML = '<div class="kv" style="margin-bottom:8px">'
+        + '<b class="' + pnlCls + '">' + money(g.realized_pnl_usd) + '</b> realized '
+        + '(<span class="' + pnlCls + '">' + pct(g.total_return_pct) + '</span> on $' + g.bankroll + ', stake ' + (g.stake_fraction*100) + '%)'
+        + ' &middot; equity <b>$' + g.final_equity + '</b></div>'
+      + '<table class="tbl"><tbody>'
+      + '<tr><td>Trades</td><td><b>' + g.count + '</b> (' + g.wins + 'W / ' + g.losses + 'L / ' + g.expired + 'X)</td></tr>'
+      + '<tr><td>Win rate</td><td>' + (g.win_rate===null?'—':(g.win_rate*100).toFixed(1)+'%') + '</td></tr>'
+      + '<tr><td>Expectancy / trade</td><td>' + pct(g.expectancy_pct) + '</td></tr>'
+      + '<tr><td>Avg win / loss</td><td><span class="ok">' + pct(g.avg_win_pct) + '</span> / <span class="fail">' + pct(g.avg_loss_pct) + '</span></td></tr>'
+      + '<tr><td>Profit factor</td><td>' + pf + '</td></tr>'
+      + '<tr><td>Max drawdown</td><td><span class="fail">-' + g.max_drawdown_pct + '%</span></td></tr>'
+      + '<tr><td>Best / worst</td><td><span class="ok">' + pct(g.best_trade_pct) + '</span> / <span class="fail">' + pct(g.worst_trade_pct) + '</span></td></tr>'
+      + '</tbody></table>';
+  }catch(e){
+    el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml(String(e)) + '</div>';
+  }
+}
+
+/* ─── Kill conditions (audit §2) ─── */
+async function resumeEngine(){
+  if(!confirm('Clear the kill-condition pause and resume firing?')) return;
+  try{
+    var r = await fetch('/api/admin/resume-engine',{method:'POST',headers:{'x-cron-secret':getSecret(),'Content-Type':'application/json'}});
+    if(r.status === 403){ alert('Resume failed: bad or missing x-cron-secret'); return; }
+    await r.json().catch(function(){return {};});
+  }catch(e){ alert('Resume failed: ' + e); }
+  loadKillStatus();
+}
+
+async function loadKillStatus(){
+  var el = document.getElementById('kill-status');
+  if(!el) return;
+  el.innerHTML = '<div class="kv"><span class="warn">&#x21BB; Loading...</span></div>';
+  try{
+    var g = await fetch('/api/wolf/kill-status').then(function(r){return r.json()});
+    if(!g || g.ok === false){
+      el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml((g&&g.error)||'unavailable') + '</div>';
+      return;
+    }
+    var head = '<div class="kv" style="margin-bottom:8px">'
+      + (g.enabled ? '<span class="ok">&#10003; enabled</span>' : '<span class="warn">disabled (KILL_SWITCH_ENABLED=0)</span>')
+      + ' &middot; ' + (g.any_triggered ? '<span class="fail"><b>&#9888; condition triggered</b></span>' : '<span class="ok">all clear</span>')
+      + ' &middot; ' + g.resolved_available + ' resolved picks available</div>';
+    // Enforcement banner: if the engine is paused, show why + a Resume control.
+    var ep = g.engine_pause || {};
+    if(ep.paused){
+      var ar = ep.auto_resume_at ? (' &middot; auto-resume ' + new Date(ep.auto_resume_at*1000).toLocaleString()) : ' &middot; manual resume required';
+      head += '<div class="kv" style="border-left:4px solid #ff4d4f;background:rgba(255,77,79,.08);padding:8px 12px;border-radius:6px;margin-bottom:8px">'
+        + '<span class="fail"><b>&#9209; ENGINE PAUSED</b></span> &middot; ' + escHtml(ep.reason || '') + ar
+        + '<br><button class="secondary" style="margin-top:6px" onclick="resumeEngine()">Resume engine</button></div>';
+    }
+    function badge(s){
+      if(s === 'red')   return '<span class="fail">&#10007; TRIPPED</span>';
+      if(s === 'green') return '<span class="ok">&#10003; ok</span>';
+      return '<span class="warn">&#8230; insufficient</span>';
+    }
+    var rows = (g.conditions || []).map(function(c){
+      var cur = (c.current === null || c.current === undefined) ? '—' : c.current;
+      return '<tr><td><b>' + escHtml(c.name) + '</b><br><span style="color:#8b96a8;font-size:11px">' + escHtml(c.action) + '</span></td>'
+        + '<td>' + cur + ' <span style="color:#8b96a8">' + escHtml(c.comparator) + ' ' + c.threshold + '</span></td>'
+        + '<td>' + c.samples + '/' + c.window + '</td>'
+        + '<td>' + badge(c.status) + '</td></tr>';
+    }).join('');
+    el.innerHTML = head
+      + '<table class="tbl"><thead><tr><th>Condition</th><th>Current vs threshold</th><th>Samples/window</th><th>Status</th></tr></thead><tbody>'
+      + rows + '</tbody></table>';
+  }catch(e){
+    el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml(String(e)) + '</div>';
+  }
+}
+
+async function adminLogout(){
+  try{ await fetch('/admin/logout', {method:'POST'}); }catch(_){}
+  location.reload();
+}
+
+async function loadLineage(){
+  var el=document.getElementById('lineage-history');
+  if(!el)return;
+  el.innerHTML='<div class="kv"><span class="warn">&#x21BB; Loading...</span></div>';
+  try{
+    var g=await fetch('/api/v3/lineage?limit=30').then(function(r){return r.json()});
+    if(!g||g.ok===false){el.innerHTML='<div class="kv"><span class="fail">&#10007;</span> '+escHtml((g&&g.error)||'unavailable')+'</div>';return}
+    var runs=g.runs||[];
+    if(!runs.length){el.innerHTML='<div class="kv">No training runs recorded yet.</div>';return}
+    var rows=runs.map(function(run){
+      var syms=(run.symbols||[]).map(function(s){
+        var acc=s.accuracy!=null?(Number(s.accuracy)*(s.accuracy<=1?100:1)).toFixed(1)+'%':'—';
+        var pass=s.passed?'<span class="ok">pass</span>':'<span class="fail">fail</span>';
+        return escHtml(s.symbol||'?')+' '+acc+' '+pass;
+      }).join(', ');
+      return '<tr><td>'+fmtTimeAgo(run.ts)+'</td><td>'+(syms||'—')+'</td></tr>';
+    }).join('');
+    el.innerHTML='<table class="tbl"><thead><tr><th>When</th><th>Symbols (acc · pass)</th></tr></thead><tbody>'+rows+'</tbody></table>';
+  }catch(e){el.innerHTML='<div class="kv"><span class="fail">&#10007;</span> '+escHtml(String(e))+'</div>'}
+}
+
+async function loadAuditLog(){
+  var el=document.getElementById('audit-log');
+  if(!el)return;
+  el.innerHTML='<div class="kv"><span class="warn">&#x21BB; Loading...</span></div>';
+  try{
+    var resp=await fetch('/api/admin/audit-log?limit=50');
+    if(resp.status===404){el.innerHTML='<div class="kv"><span class="warn">Sign in (admin cookie) to view the action log.</span></div>';return}
+    var g=await resp.json();
+    if(!g||g.ok===false){el.innerHTML='<div class="kv"><span class="fail">&#10007;</span> '+escHtml((g&&g.error)||'unavailable')+'</div>';return}
+    var acts=g.actions||[];
+    if(!acts.length){el.innerHTML='<div class="kv">No admin actions recorded yet.</div>';return}
+    var rows=acts.map(function(a){
+      return '<tr><td>'+fmtTimeAgo(a.ts)+'</td><td><code>'+escHtml(a.action)+'</code></td><td>'+escHtml(a.detail||'')+'</td></tr>';
+    }).join('');
+    el.innerHTML='<table class="tbl"><thead><tr><th>When</th><th>Action</th><th>Detail</th></tr></thead><tbody>'+rows+'</tbody></table>';
+  }catch(e){el.innerHTML='<div class="kv"><span class="fail">&#10007;</span> '+escHtml(String(e))+'</div>'}
+}
+
+loadEngineQuality();
+loadGateStatus();
+loadGateHistory();
+loadKillStatus();
+loadPnl();
+loadLineage();
+loadAuditLog();
+setInterval(loadPnl, 120000);
+setInterval(loadGateHistory, 120000);
+setInterval(loadEngineQuality, 60000);
+setInterval(loadGateStatus, 60000);
+setInterval(loadKillStatus, 120000);
+</script>
+
+</body>
+</html>

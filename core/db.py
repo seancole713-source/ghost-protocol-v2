@@ -48,7 +48,8 @@ def _ensure_tables():
                 outcome VARCHAR(10),
                 exit_price FLOAT,
                 pnl_pct FLOAT,
-                asset_type VARCHAR(10) DEFAULT 'crypto'
+                asset_type VARCHAR(10) DEFAULT 'stock',
+                scores JSONB
             )
         """)
         cur.execute("""
@@ -99,6 +100,7 @@ def _migrate_schema():
         "ALTER TABLE predictions ALTER COLUMN method DROP NOT NULL",
         "ALTER TABLE predictions ALTER COLUMN horizon_h DROP NOT NULL",
         "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS features JSONB",
+        "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS scores JSONB",
     ]
     with db_conn() as conn:
         cur = conn.cursor()

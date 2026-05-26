@@ -17,10 +17,37 @@ from core.vol_targets import base_vol_pct, stop_pct_from_vol
 
 LOGGER = logging.getLogger("ghost.signal_v3")
 
+# PR #14 deploy-marker — if this line isn't in Railway logs at app startup,
+# the deployment did NOT pick up code at or after PR #14. The marker also
+# helps disambiguate cached vs fresh Python module loads after redeploy.
+LOGGER.info("[signal_engine] MODULE_LOADED PR17_DIAG ohlcv_chain=sip|iex|polygon|yfinance|stooq")
+
 LABEL_TYPE = "tp_sl_daily"
-# Daily bars only: approximate 48h crypto hold with this many forward bars (24h each).
+# Daily bars only: approximate 48h stock hold with this many forward bars (24h each).
 V3_LABEL_HOLD_BARS = max(1, int(os.getenv("V3_LABEL_HOLD_BARS", "3")))
-MIN_TRAIN_ROWS = 80
+
+
+# Training thresholds. All read from env at call time so tests can
+# monkeypatch.setenv and so ops can ratchet defaults from Railway without
+# a code change. Defaults were lowered (post-restructure WOLF only has
+# ~250 trading days of SIP data, so the prior pre-bankruptcy defaults
+# locked out training entirely).
+def _min_train_rows() -> int:
+    """Min labeled samples required to attempt training (was 80)."""
+    return max(1, int(os.getenv("MIN_TRAIN_ROWS", "20")))
+
+
+def _min_backtest_bars() -> int:
+    """Min OHLCV rows from the feed before backtest_symbol bothers to label (was 100)."""
+    return max(1, int(os.getenv("MIN_BACKTEST_BARS", "50")))
+
+
+def _backtest_window() -> int:
+    """Trailing-history window each labeled sample sees (was hardcoded 220).
+    Smaller window = more labeled samples from limited data but noisier features."""
+    return max(20, int(os.getenv("V3_BACKTEST_WINDOW", "120")))
+
+
 MODEL_DB_KEY = "ghost_v3_model_pkl"
 FEATURES_DB_KEY = "ghost_v3_features_json"
 
@@ -56,7 +83,7 @@ def _v3_wf_acc_min_slack() -> float:
 def _v3_wf_acc_min_overrides() -> dict:
     """
     Optional per-symbol absolute floor overrides for wf_acc_min.
-    Env format: V3_WF_ACC_MIN_OVERRIDES="UNI=0.51,BCH=0.55"
+    Env format: V3_WF_ACC_MIN_OVERRIDES="WOLF=0.55"
     """
     raw = (os.getenv("V3_WF_ACC_MIN_OVERRIDES", "") or "").strip()
     out = {}
@@ -77,24 +104,74 @@ def _v3_wf_acc_min_overrides() -> dict:
     return out
 
 
+def _v3_wf_min_train_floor() -> int:
+    """Absolute minimum training-window size for walk-forward folds.
+
+    Was hardcoded to 120, which produced ZERO folds on WOLF's
+    post-restructure dataset (127 samples → 120 train + 20 test
+    overshoots n). Env-tunable so small-dataset tickers can run WF;
+    larger defaults can be set back on production once WOLF accumulates
+    more history.
+    """
+    return max(20, int(os.getenv("V3_WF_MIN_TRAIN", "60")))
+
+
+def _v3_wf_min_train_frac() -> float:
+    """Floor as fraction of total samples (was 0.50)."""
+    try:
+        return float(os.getenv("V3_WF_MIN_TRAIN_FRAC", "0.40"))
+    except Exception:
+        return 0.40
+
+
+def _v3_wf_test_size_floor() -> int:
+    """Absolute minimum per-fold test-window size (was hardcoded to 20)."""
+    return max(5, int(os.getenv("V3_WF_TEST_SIZE", "15")))
+
+
+def _v3_wf_test_size_frac() -> float:
+    """Test-window size as fraction of total samples (was 0.10, unchanged)."""
+    try:
+        return float(os.getenv("V3_WF_TEST_FRAC", "0.10"))
+    except Exception:
+        return 0.10
+
+
 def _walk_forward_scores(X, y):
     """
     Rolling walk-forward validation over time-ordered samples.
     Returns dict with fold_count / mean and minimum fold scores.
+
+    PR #21: train-window and test-window floors are env-tunable so the
+    function actually produces folds for small datasets. WOLF's 127
+    post-restructure samples couldn't generate folds with the prior
+    hardcoded floors (120 / 20).
+
+    Example fold layout for n=127 with defaults (60 / 15):
+      fold 1: train=X[:60],  test=X[60:75]
+      fold 2: train=X[:75],  test=X[75:90]
+      fold 3: train=X[:90],  test=X[90:105]
+      fold 4: train=X[:105], test=X[105:120]
     """
     from xgboost import XGBClassifier
     from sklearn.metrics import accuracy_score
 
     n = len(X)
-    min_train = max(120, int(n * 0.50))
-    test_size = max(20, int(n * 0.10))
+    min_train_floor = _v3_wf_min_train_floor()
+    min_train_frac = _v3_wf_min_train_frac()
+    test_size_floor = _v3_wf_test_size_floor()
+    test_size_frac = _v3_wf_test_size_frac()
+    min_train = max(min_train_floor, int(n * min_train_frac))
+    test_size = max(test_size_floor, int(n * test_size_frac))
     step = test_size
     folds = []
     start = min_train
     while start + test_size <= n:
         X_train, y_train = X[:start], y[:start]
         X_test, y_test = X[start : start + test_size], y[start : start + test_size]
-        if len(X_train) < 60 or len(X_test) < 20:
+        # Inner safety check: skip degenerate folds. Tied to the env-tunable
+        # floors so the inner & outer constraints stay coherent.
+        if len(X_train) < min_train_floor or len(X_test) < test_size_floor:
             start += step
             continue
         pos_ct = int(np.sum(y_train))
@@ -278,9 +355,33 @@ def _calculate_features(df):
         hod, dow = 12, 0
 
     cur = float(closes[-1])
+    n = len(closes)
     ema20 = _ema(closes, 20)
-    ema50 = _ema(closes, 50) if len(closes) >= 50 else cur
-    ema200 = _ema(closes, 200) if len(closes) >= 200 else cur
+    # Young-ticker EMA fallback. With too little history for the longer EMAs,
+    # fall back to the longest EMA that IS valid (NOT `cur`). The old `else cur`
+    # made above_emaX = (cur>cur) = 0 and ema_trend_bullish = 0 *permanently*,
+    # which kept the BUY-only regime gate in WATCHING for new tickers like
+    # post-Ch.11 WOLF (~168 trading days < 200). Applied inside _calculate_features
+    # so train and serve stay consistent (no skew).
+    ema50 = _ema(closes, 50) if n >= 50 else ema20
+    ema200 = _ema(closes, 200) if n >= 200 else ema50
+    # Long-trend flags degrade gracefully:
+    #   n >= 200 -> full 20>50>200 stack
+    #   50 <= n < 200 -> valid 20>50 stack (ema200 is a fallback, so the strict
+    #                    ema50>ema200 self-comparison would wrongly read 0)
+    #   20 <= n < 50 -> price-vs-ema20 (only ema20 is a true EMA)
+    #   n < 20 -> neutral (1): not enough history to judge; don't block BUYs
+    if n < 20:
+        above_ema200_flag = 1
+        ema_trend_bullish = 1
+    else:
+        above_ema200_flag = 1 if cur > ema200 else 0
+        if n >= 200:
+            ema_trend_bullish = 1 if (ema20 > ema50 and ema50 > ema200) else 0
+        elif n >= 50:
+            ema_trend_bullish = 1 if (cur > ema20 and ema20 > ema50) else 0
+        else:
+            ema_trend_bullish = 1 if cur > ema20 else 0
     adx = _adx(highs, lows, closes)
     atr = _atr(highs, lows, closes)
     obv_slope = _obv_slope(closes, volumes)
@@ -307,8 +408,8 @@ def _calculate_features(df):
         'is_weekend': 1 if dow >= 5 else 0,
         'above_ema20': 1 if cur > ema20 else 0,
         'above_ema50': 1 if cur > ema50 else 0,
-        'above_ema200': 1 if cur > ema200 else 0,
-        'ema_trend_bullish': 1 if (ema20 > ema50 and ema50 > ema200) else 0,
+        'above_ema200': above_ema200_flag,
+        'ema_trend_bullish': ema_trend_bullish,
         'ema20_vs_ema50': float((ema20 - ema50) / ema50) if ema50 > 0 else 0.0,
         'adx': adx,
         'adx_trending': 1 if adx > 20 else 0,
@@ -334,49 +435,310 @@ FEATURE_COLS = [
     'stoch_k','stoch_d','stoch_oversold','stoch_overbought',
 ]
 
-def _fetch_ohlcv(symbol, asset_type, period='2y', interval='1d'):
+def _fetch_ohlcv(symbol, asset_type, period='1y', interval='1d'):
+    """Fetch daily OHLCV bars from Alpaca.
+
+    PR #14 diag: emits "_fetch_ohlcv ENTERED" at the top so we can confirm
+    in Railway logs whether the function is being called at all. If you see
+    "PR14_DIAG MODULE_LOADED" but not "_fetch_ohlcv ENTERED" during training,
+    something upstream is short-circuiting before reaching this function.
+
+    Feed selection: tries SIP first (consolidated tape, the only feed that
+    carries post-restructuring WOLF shares since 2025-09-29), falls back to
+    IEX if SIP returns no rows or the account isn't entitled to SIP.
+
+    Default lookback is 1 year. WOLF emerged from Chapter 11 with new shares
+    trading from 2025-09-29, so >1y of data doesn't exist for the new ticker;
+    fetching 2y would waste a round-trip and could confuse downstream logic.
+    """
+    LOGGER.info(f"[_fetch_ohlcv] PR14_DIAG ENTERED symbol={symbol} asset_type={asset_type} period={period}")
     import os, requests as _req
     from datetime import datetime, timedelta, timezone
-    key = os.getenv("ALPACA_KEY_ID",""); secret = os.getenv("ALPACA_SECRET_KEY","")
-    if not key or not secret: return None
+    key = os.getenv("ALPACA_KEY_ID", "")
+    secret = os.getenv("ALPACA_SECRET_KEY", "")
+    if not key or not secret:
+        return None
     headers = {"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret}
-    end_dt = datetime.now(timezone.utc); start_dt = end_dt - timedelta(days=730)
+    days_map = {'3m': 90, '6m': 180, '1y': 365, '2y': 730}
+    lookback_days = days_map.get(period, 365)
+    end_dt = datetime.now(timezone.utc)
+    start_dt = end_dt - timedelta(days=lookback_days)
     start_str = start_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
     end_str = end_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
-    try:
-        if asset_type == 'crypto':
-            import urllib.parse
-            ticker = symbol.upper() + '/USD'
-            ticker_enc = urllib.parse.quote(ticker, safe='')
-            url = (f"https://data.alpaca.markets/v1beta3/crypto/us/bars"
-                   f"?symbols={ticker_enc}&timeframe=1Day&limit=1000"
-                   f"&start={start_str}&end={end_str}")
-            r = _req.get(url, headers=headers, timeout=30)
-            if r.status_code != 200: return None
-            bars = r.json().get('bars', {}).get(ticker, [])
-        else:
+
+    def _try_feed(feed):
+        try:
             url = (f"https://data.alpaca.markets/v2/stocks/{symbol.upper()}/bars"
-                   f"?timeframe=1Day&limit=1000&feed=iex"
+                   f"?timeframe=1Day&limit=1000&feed={feed}"
                    f"&start={start_str}&end={end_str}")
             r = _req.get(url, headers=headers, timeout=30)
-            if r.status_code != 200: return None
+            if r.status_code != 200:
+                LOGGER.info(f"Alpaca feed={feed} {symbol}: HTTP {r.status_code}")
+                return None
             bars = r.json().get('bars', [])
-        rows = [{'ts': b.get('t',''), 'open': float(b.get('o',0)),
-                 'high': float(b.get('h',0)), 'low': float(b.get('l',0)),
-                 'close': float(b.get('c',0)), 'volume': float(b.get('v',0))}
-                for b in bars if b.get('c',0) > 0]
-        LOGGER.info(f"Alpaca daily {symbol}: {len(rows)} bars")
-        return rows if rows else None
+            rows = [{'ts': b.get('t', ''), 'open': float(b.get('o', 0)),
+                     'high': float(b.get('h', 0)), 'low': float(b.get('l', 0)),
+                     'close': float(b.get('c', 0)), 'volume': float(b.get('v', 0))}
+                    for b in bars if b.get('c', 0) > 0]
+            return rows if rows else None
+        except Exception as e:
+            LOGGER.warning(f"Alpaca feed={feed} {symbol}: {e}")
+            return None
+
+    rows = _try_feed('sip')
+    feed_used = 'sip'
+    if not rows:
+        LOGGER.info(f"Alpaca SIP returned nothing for {symbol}, trying IEX fallback")
+        rows = _try_feed('iex')
+        feed_used = 'iex'
+    if not rows:
+        # Polygon third tier — paid feed, used by scripts/wolf_backtest.py
+        # for the same reason: covers post-restructure WOLF where Alpaca's
+        # tiers don't. Requires POLYGON_API_KEY env; the helper logs at every
+        # branch (missing key, HTTP error, non-OK status, empty results,
+        # parse failure, or success) so ops can tell exactly what happened.
+        LOGGER.info(f"Alpaca IEX returned nothing for {symbol}, trying Polygon fallback")
+        rows = _try_polygon_ohlcv(symbol, period)
+        feed_used = 'polygon'
+    if not rows:
+        # yfinance fourth tier — no API key, broad coverage. Post-restructure
+        # WOLF can trip Yahoo's 'delisted' code path on long periods, so
+        # _try_yfinance_ohlcv tries progressively shorter periods + explicit
+        # date ranges before giving up.
+        LOGGER.info(f"Polygon returned nothing for {symbol}, trying yfinance fallback")
+        rows = _try_yfinance_ohlcv(symbol, period)
+        feed_used = 'yfinance'
+    if not rows:
+        # Stooq fifth tier — last-resort fallback. Free CSV endpoint, no API
+        # key, no rate-limit issues, and a completely different data aggregator
+        # from Alpaca/Polygon/Yahoo so it tends to work when the others don't
+        # (e.g. for post-restructure tickers that Yahoo flags as delisted).
+        LOGGER.info(f"yfinance returned nothing for {symbol}, trying Stooq fallback")
+        rows = _try_stooq_ohlcv(symbol, period)
+        feed_used = 'stooq'
+    if rows:
+        LOGGER.info(f"Daily {symbol}: {len(rows)} bars (feed={feed_used}, lookback={lookback_days}d)")
+        return rows
+    return None
+
+
+def _try_stooq_ohlcv(symbol, period):
+    """Fetch daily OHLCV from stooq.com — fifth-tier fallback.
+
+    Stooq serves a CSV directly with no API key. The URL pattern is:
+      https://stooq.com/q/d/l/?s={symbol}.us&i=d
+
+    Columns: Date,Open,High,Low,Close,Volume
+
+    Every code path emits an INFO log (same pattern as PR #13 Polygon path)
+    so ops can tell exactly what happened: HTTP error, empty body, parse
+    failure, no rows in window, or success.
+    """
+    import requests as _req
+    import csv as _csv
+    import io as _io
+    from datetime import datetime, timedelta, timezone
+
+    days_map = {'3m': 90, '6m': 180, '1y': 365, '2y': 730}
+    lookback_days = days_map.get(period, 365)
+    cutoff_date = datetime.now(timezone.utc).date() - timedelta(days=lookback_days)
+    LOGGER.info(f"Stooq {symbol}: requesting CSV cutoff>={cutoff_date} (lookback={lookback_days}d)")
+    try:
+        url = f"https://stooq.com/q/d/l/?s={symbol.lower()}.us&i=d"
+        r = _req.get(url, timeout=30, headers={"User-Agent": "Mozilla/5.0 (ghost-protocol)"})
+        if r.status_code != 200:
+            LOGGER.info(f"Stooq {symbol}: HTTP {r.status_code}")
+            return None
+        text = (r.text or "").strip()
+        if not text or "No data" in text or len(text) < 30:
+            LOGGER.info(f"Stooq {symbol}: empty/no-data response (len={len(text)})")
+            return None
+        reader = _csv.DictReader(_io.StringIO(text))
+        rows = []
+        skipped_pre_cutoff = 0
+        for row in reader:
+            try:
+                date_str = row.get("Date") or ""
+                close = float(row.get("Close", 0) or 0)
+                if close <= 0:
+                    continue
+                row_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+                if row_date < cutoff_date:
+                    skipped_pre_cutoff += 1
+                    continue
+                rows.append({
+                    "ts": row_date.strftime("%Y-%m-%dT00:00:00Z"),
+                    "open": float(row.get("Open", 0) or 0),
+                    "high": float(row.get("High", 0) or 0),
+                    "low": float(row.get("Low", 0) or 0),
+                    "close": close,
+                    "volume": float(row.get("Volume", 0) or 0),
+                })
+            except Exception:
+                continue
+        if not rows:
+            LOGGER.info(f"Stooq {symbol}: parsed 0 rows in window (skipped {skipped_pre_cutoff} pre-cutoff)")
+            return None
+        LOGGER.info(f"Stooq {symbol}: parsed {len(rows)} bars in window (skipped {skipped_pre_cutoff} pre-cutoff)")
+        return rows
     except Exception as e:
-        LOGGER.warning(f"Alpaca fetch failed {symbol}: {e}"); return None
+        LOGGER.warning(f"Stooq {symbol}: {e}")
+        return None
+
+
+def _try_polygon_ohlcv(symbol, period):
+    """Fetch daily OHLCV from Polygon REST. Same shape as Alpaca path.
+
+    Requires POLYGON_API_KEY env. Endpoint:
+      /v2/aggs/ticker/{SYM}/range/1/day/{from}/{to}?adjusted=true
+
+    Every code path emits an INFO log so ops can tell exactly what happened
+    (missing key, HTTP error, status != OK, no results, or success).
+    """
+    import os, requests as _req
+    from datetime import datetime, timedelta, timezone
+    api_key = os.getenv("POLYGON_API_KEY", "")
+    if not api_key:
+        LOGGER.info(f"Polygon {symbol}: POLYGON_API_KEY not set on this deployment, skipping")
+        return None
+    days_map = {'3m': 90, '6m': 180, '1y': 365, '2y': 730}
+    lookback_days = days_map.get(period, 365)
+    end_date = datetime.now(timezone.utc).date()
+    start_date = end_date - timedelta(days=lookback_days + 30)  # +30 for weekend/holiday buffer
+    LOGGER.info(f"Polygon {symbol}: requesting bars {start_date}..{end_date} (lookback={lookback_days}d)")
+    try:
+        url = (
+            f"https://api.polygon.io/v2/aggs/ticker/{symbol.upper()}/range/1/day/"
+            f"{start_date.isoformat()}/{end_date.isoformat()}"
+            f"?adjusted=true&sort=asc&limit=5000&apiKey={api_key}"
+        )
+        r = _req.get(url, timeout=30)
+        if r.status_code != 200:
+            LOGGER.info(f"Polygon {symbol}: HTTP {r.status_code} body={r.text[:200]!r}")
+            return None
+        data = r.json()
+        status = data.get("status")
+        if status not in ("OK", "DELAYED"):
+            LOGGER.info(f"Polygon {symbol}: status={status} body={str(data)[:200]!r}")
+            return None
+        results = data.get("results") or []
+        if not results:
+            LOGGER.info(f"Polygon {symbol}: status=OK but results=[] (no bars in range)")
+            return None
+        rows = []
+        for bar in results:
+            try:
+                close = float(bar.get("c", 0))
+                if close <= 0:
+                    continue
+                ts = datetime.fromtimestamp(bar["t"] / 1000, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+                rows.append({
+                    "ts": ts,
+                    "open": float(bar.get("o", 0)),
+                    "high": float(bar.get("h", 0)),
+                    "low": float(bar.get("l", 0)),
+                    "close": close,
+                    "volume": float(bar.get("v", 0)),
+                })
+            except Exception:
+                continue
+        if not rows:
+            LOGGER.info(f"Polygon {symbol}: {len(results)} raw bars returned but all failed parsing")
+            return None
+        LOGGER.info(f"Polygon {symbol}: parsed {len(rows)} bars from response")
+        return rows
+    except Exception as e:
+        LOGGER.warning(f"Polygon {symbol}: {e}")
+        return None
+
+
+def _try_yfinance_ohlcv(symbol, period):
+    """yfinance fallback with multi-strategy retry.
+
+    For post-restructure tickers (Sept 2025 WOLF re-listing), Yahoo's symbol
+    resolver flags the long-period request as 'delisted' even though the new
+    shares are actively trading. Progressively shorter periods can succeed
+    because they cover only the post-restructure data window.
+
+    Strategy order:
+      1. Requested period (e.g. '1y')
+      2. '6mo' (skipped if primary was already shorter)
+      3. '3mo' (skipped if primary was already shorter)
+      4. Explicit start/end via tk.history(start=..., end=...) — ~240 days
+         back, covers post-restructure WOLF era only
+
+    Returns the standard row shape {ts, open, high, low, close, volume}
+    or None if all strategies fail.
+    """
+    import datetime as _dt
+    yf_period_primary = {'3m': '3mo', '6m': '6mo', '1y': '1y', '2y': '2y'}.get(period, '1y')
+    period_candidates = [yf_period_primary]
+    if yf_period_primary not in ('6mo', '3mo'):
+        period_candidates.append('6mo')
+    if yf_period_primary != '3mo':
+        period_candidates.append('3mo')
+    try:
+        import yfinance as yf
+        tk = yf.Ticker(symbol)
+        for p in period_candidates:
+            rows = _yf_rows_from_history(tk, period=p)
+            if rows:
+                LOGGER.info(f"yfinance {symbol}: {len(rows)} bars (period={p})")
+                return rows
+        end = _dt.datetime.now(_dt.timezone.utc)
+        start = end - _dt.timedelta(days=240)
+        rows = _yf_rows_from_history(tk, start=start, end=end)
+        if rows:
+            LOGGER.info(f"yfinance {symbol}: {len(rows)} bars (start={start.date()})")
+            return rows
+        return None
+    except Exception as e:
+        LOGGER.warning(f"yfinance fallback {symbol}: {e}")
+        return None
+
+
+def _yf_rows_from_history(tk, period=None, start=None, end=None):
+    """Run tk.history() with either a period or start/end pair; normalise
+    empty DataFrame / exception to None, and the OHLCV DataFrame to the
+    standard row shape consumed by backtest_symbol.
+    """
+    try:
+        if period is not None:
+            h = tk.history(period=period, interval='1d')
+        else:
+            h = tk.history(start=start, end=end, interval='1d')
+        if h is None or getattr(h, "empty", False):
+            return None
+        rows = []
+        for ix, row in h.iterrows():
+            try:
+                close = float(row["Close"])
+                if close <= 0:
+                    continue
+                ts = ix.strftime('%Y-%m-%dT%H:%M:%SZ') if hasattr(ix, 'strftime') else str(ix)
+                rows.append({
+                    'ts': ts,
+                    'open': float(row["Open"]),
+                    'high': float(row["High"]),
+                    'low': float(row["Low"]),
+                    'close': close,
+                    'volume': float(row.get("Volume", 0) or 0),
+                })
+            except Exception:
+                continue
+        return rows if rows else None
+    except Exception:
+        return None
+
 
 def backtest_symbol(symbol, asset_type):
     rows = _fetch_ohlcv(symbol, asset_type)
-    if not rows or len(rows) < 100:
+    min_bars = _min_backtest_bars()
+    if not rows or len(rows) < min_bars:
         return []
     vol_pct = base_vol_pct(symbol, asset_type)
     labeled = []
-    window = 220
+    window = _backtest_window()
     margin = V3_LABEL_HOLD_BARS + 1
     for i in range(window, len(rows) - margin):
         hist = rows[max(0, i - window) : i + 1]
@@ -396,10 +758,49 @@ def build_training_data(symbols_and_types):
     all_rows = []
     for symbol, asset_type in symbols_and_types:
         all_rows.extend(backtest_symbol(symbol, asset_type))
-    if len(all_rows) < MIN_TRAIN_ROWS: return None, None, []
+    if len(all_rows) < _min_train_rows(): return None, None, []
     X = np.array([[r['features'].get(c, 0.0) for c in FEATURE_COLS] for r in all_rows])
     y = np.array([r['label'] for r in all_rows])
     return X, y, FEATURE_COLS
+
+def _persist_train_details(details_list) -> None:
+    """Persist per-symbol training diagnostics to ghost_state.last_train_details.
+
+    Lets the v3_train_sync endpoint surface gate-fail reasons in its response
+    instead of forcing the operator to grep Railway logs for RETRAIN lines.
+    """
+    try:
+        from core.db import db_conn
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            cur.execute(
+                "INSERT INTO ghost_state(key,val) VALUES('last_train_details', %s) "
+                "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
+                (json.dumps({"ts": int(time.time()), "symbols": details_list}),),
+            )
+            # Model lineage (audit): append this run to a rolling history (last 50)
+            # so /admin can show how accuracy/edge evolved across retrains.
+            cur.execute("SELECT val FROM ghost_state WHERE key='model_lineage'")
+            _row = cur.fetchone()
+            _hist = []
+            if _row and _row[0]:
+                try:
+                    _hist = json.loads(_row[0])
+                except Exception:
+                    _hist = []
+            if not isinstance(_hist, list):
+                _hist = []
+            _hist.append({"ts": int(time.time()), "symbols": details_list})
+            _hist = _hist[-50:]
+            cur.execute(
+                "INSERT INTO ghost_state(key,val) VALUES('model_lineage', %s) "
+                "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
+                (json.dumps(_hist),),
+            )
+    except Exception as _e:
+        LOGGER.warning("train details persist failed: " + str(_e)[:120])
+
 
 def train_and_validate(symbols_and_types):
     try:
@@ -410,15 +811,24 @@ def train_and_validate(symbols_and_types):
     except ImportError as e:
         LOGGER.error("Missing dep: "+str(e)); return None, 0.0, False
     total_passed = 0
+    details: list = []
     for symbol, asset_type in symbols_and_types:
+        symbol_detail = {"symbol": symbol, "asset_type": asset_type}
         try:
             rows = backtest_symbol(symbol, asset_type)
             n_samples = len(rows) if rows else 0
-            if not rows or n_samples < 80:
+            min_rows = _min_train_rows()
+            if not rows or n_samples < min_rows:
+                fail_msg = f"n_samples<{min_rows} ({n_samples})"
                 LOGGER.info(
                     f"RETRAIN [{symbol}]: acc=NA edge=NA wf_folds=NA wf_acc_mean=NA wf_edge_mean=NA wf_acc_min=NA "
-                    f"| FAIL: n_samples<{MIN_TRAIN_ROWS} ({n_samples})"
+                    f"| FAIL: {fail_msg}"
                 )
+                symbol_detail.update({
+                    "passed": False, "fail_reason": fail_msg,
+                    "n_samples": n_samples, "stage": "pre_train",
+                })
+                details.append(symbol_detail)
                 continue
             X = np.array([[r["features"].get(c, 0.0) for c in FEATURE_COLS] for r in rows])
             y = np.array([r["label"] for r in rows])
@@ -451,7 +861,7 @@ def train_and_validate(symbols_and_types):
             symbol_overrides = _v3_wf_acc_min_overrides()
             symbol_wf_acc_min = symbol_overrides.get(symbol.upper(), min_wf_acc_min)
             gate_checks = [
-                ("n_samples", n_samples >= MIN_TRAIN_ROWS, f"n_samples<{MIN_TRAIN_ROWS} ({n_samples})"),
+                ("n_samples", n_samples >= min_rows, f"n_samples<{min_rows} ({n_samples})"),
                 ("tp_sl_wins", wins_ct >= min_wins, f"tp_sl_wins<{min_wins} ({wins_ct})"),
                 ("holdout_acc", accuracy >= min_acc, f"holdout_acc < {min_acc*100:.1f}% ({accuracy*100:.1f}%)"),
                 ("edge", edge >= min_edge, f"edge < {min_edge*100:.1f}% ({edge*100:.1f}%)"),
@@ -468,6 +878,32 @@ def train_and_validate(symbols_and_types):
                 f"wf_edge_mean={wf['edge_mean']*100:.1f}% wf_acc_min={wf['acc_min']*100:.1f}% "
                 f"| {'PASS' if passes else 'FAIL: ' + fail_reason}"
             )
+            symbol_detail.update({
+                "passed": bool(passes),
+                "fail_reason": fail_reason,
+                "stage": "trained",
+                "n_samples": n_samples,
+                "wins_ct": wins_ct,
+                "natural_rate": round(natural_rate, 4),
+                "holdout_acc": round(accuracy, 4),
+                "edge": round(edge, 4),
+                "wf_fold_count": int(wf["fold_count"]),
+                "wf_acc_mean": round(wf["acc_mean"], 4),
+                "wf_acc_min": round(wf["acc_min"], 4),
+                "wf_edge_mean": round(wf["edge_mean"], 4),
+                "wf_edge_min": round(wf["edge_min"], 4),
+                "gates": [{"name": n, "passed": bool(p), "msg": m} for n, p, m in gate_checks],
+                "thresholds": {
+                    "min_train_rows": min_rows,
+                    "min_tp_sl_wins": min_wins,
+                    "min_holdout_acc": min_acc,
+                    "min_edge": min_edge,
+                    "min_wf_folds": min_wf_folds,
+                    "min_wf_acc_mean": min_wf_acc,
+                    "min_wf_acc_min": symbol_wf_acc_min,
+                },
+            })
+            details.append(symbol_detail)
             if passes:
                 model_bytes = base64.b64encode(pickle.dumps(model)).decode('ascii')
                 meta = json.dumps({
@@ -496,7 +932,13 @@ def train_and_validate(symbols_and_types):
                 total_passed += 1
         except Exception as e:
             LOGGER.warning(f"Training failed {symbol}: {e}")
+            symbol_detail.update({
+                "passed": False, "fail_reason": "exception: " + str(e)[:200],
+                "stage": "exception",
+            })
+            details.append(symbol_detail)
     LOGGER.info(f"v3.2 training: {total_passed}/{len(symbols_and_types)} passed")
+    _persist_train_details(details)
     return None, total_passed / max(len(symbols_and_types), 1), total_passed > 0
 
 def load_model(symbol=None):
@@ -522,10 +964,15 @@ def load_model(symbol=None):
     except Exception as e:
         LOGGER.warning(f"load_model {symbol}: {e}"); return None, None, None
 
-def predict_live_ex(symbol, asset_type):
+def predict_live_ex(symbol, asset_type, scores=None):
     """
     Like predict_live but returns (signal_tuple_or_None, reason_code_or_None).
     reason_code is for diagnostics/metrics only.
+
+    If a mutable `scores` dict is passed, it is populated on the success path
+    with the specialist score vector + regime-at-issuance (blueprint §4: the
+    pick journal must capture the full score vector, not just the outcome).
+    Callers that omit it are unaffected.
     """
     model, feature_cols, meta = load_model(symbol)
     if model is None:
@@ -543,6 +990,36 @@ def predict_live_ex(symbol, asset_type):
     ema_trend_bullish = features.get('ema_trend_bullish', 1)
     rsi = features.get('rsi', 50)
     stoch_k = features.get('stoch_k', 50)
+
+    # Coarse regime label from the gate indicators — placeholder until the HMM
+    # specialist (blueprint §3). Captured even when a gate later blocks the pick,
+    # so the operator can see the regime at issuance on every cycle.
+    if ema_trend_bullish == 1 and adx_trending == 1 and above_ema200 == 1:
+        regime_label = "Trend-up"
+    elif ema_trend_bullish == 0 and above_ema200 == 0:
+        regime_label = "Trend-down"
+    elif adx_trending == 0:
+        regime_label = "Chop"
+    else:
+        regime_label = "Neutral"
+    if scores is not None:
+        scores["schema"] = 1
+        scores["regime"] = {
+            "label": regime_label,
+            "above_ema200": int(above_ema200),
+            "adx": round(float(adx_val), 2),
+            "adx_trending": int(adx_trending),
+            "ema_trend_bullish": int(ema_trend_bullish),
+            "rsi": round(float(rsi), 2),
+            "stoch_k": round(float(stoch_k), 2),
+        }
+        # Full indicator vector at issuance (audit §4 pick journal): RSI, MACD,
+        # Bollinger, ATR, volume, momentum, EMA/ADX/OBV/stochastic. Captured even
+        # when a gate later blocks the pick, so every cycle is journaled.
+        scores["features"] = {
+            k: (round(float(v), 6) if isinstance(v, (int, float)) else v)
+            for k, v in features.items()
+        }
 
     # Gate 1: below EMA200 + choppy = high-probability loss setup
     if above_ema200 == 0 and adx_trending == 0:
@@ -565,6 +1042,29 @@ def predict_live_ex(symbol, asset_type):
     wf_acc_mean = float(meta.get("wf_acc_mean", meta.get("accuracy", 0)))
     wf_edge_mean = float(meta.get("wf_edge_mean", meta.get("edge", 0)))
     wf_fold_count = int(meta.get("wf_fold_count", 0))
+    accuracy = meta.get('accuracy', min_acc)
+
+    # Capture the model score vector NOW — before the meta gates and the prob_low
+    # return — so /api/wolf/gate-status can show where up_prob landed relative to
+    # the gates even on cycles that do not fire.
+    if scores is not None:
+        fires = up_prob > min_p
+        scores["up_prob"] = round(up_prob, 4)
+        scores["specialists"] = {
+            "daily_swing": {"model": "xgboost_v3", "up_prob": round(up_prob, 4),
+                            "vote": "UP" if fires else "none"},
+        }
+        scores["specialist_count"] = 1
+        scores["specialist_agree_up"] = 1 if fires else 0
+        scores["model_meta"] = {
+            "accuracy": round(float(accuracy), 4),
+            "edge": round(float(edge), 4),
+            "wf_acc_mean": round(wf_acc_mean, 4),
+            "wf_edge_mean": round(wf_edge_mean, 4),
+            "wf_fold_count": wf_fold_count,
+            "min_win_proba": round(float(min_p), 4),
+        }
+
     if edge < min_edge:
         return None, "meta_gate"
     if meta.get('accuracy', 0) < min_acc:
@@ -573,8 +1073,6 @@ def predict_live_ex(symbol, asset_type):
         return None, "meta_gate"
 
     # Confidence = holdout TP/SL WIN rate + strength above min win-probability
-    accuracy = meta.get('accuracy', min_acc)
-
     if up_prob > min_p:
         signal_strength = (up_prob - min_p) * 4.0
         conf = round(min(0.95, max(0.75, accuracy + signal_strength)), 3)

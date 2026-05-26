@@ -1,11 +1,10 @@
 """
-core/prediction.py - Ghost v2 prediction engine.
+core/prediction.py - Ghost v2 prediction engine (WOLF-only mode).
 Signal source: v3 XGBoost trained on TP/SL outcomes (see core.signal_engine v3.2).
 Rules:
   - 30+ resolved picks AND win_rate > 55%: predict dominant direction
   - 30+ resolved picks AND win_rate < 45%: predict inverse
   - Less than 30 picks: momentum-based (price vs 7-day average)
-  - Regime gate: BTC down 5%+ blocks crypto BUYs
   - SELL signals blocked: 1.9% win rate across 211 trades
   - Confidence floor 0.80 by default (MIN_ALERT_CONFIDENCE)
   - Features logged on every prediction for future ML training
@@ -16,25 +15,277 @@ from typing import Optional, List, Dict, Any, Tuple
 from core.db import db_conn
 from core.vol_targets import base_vol_pct, stop_pct_from_vol
 try:
-    from core.prices import get_price, get_crypto_price
+    from core.prices import get_price
 except ImportError:
-    def get_price(s, t): return None
-    def get_crypto_price(s): return None
+    def get_price(s, t=None): return None
 
 LOGGER = logging.getLogger("ghost.prediction")
 
 CONFIDENCE_FLOOR = float(os.getenv("MIN_ALERT_CONFIDENCE", "0.80"))  # raised: filter weak signals
 DAILY_CAP        = int(os.getenv("DAILY_ALERT_CAP", "10"))
-CRYPTO_HOLD_H    = int(os.getenv("CRYPTO_HOLD_HOURS", "48"))
 TARGET_PCT       = float(os.getenv("TARGET_PCT", "0.06"))
 STOP_PCT         = float(os.getenv("STOP_PCT", "0.03"))
 MIN_SAMPLES      = int(os.getenv("MIN_SAMPLES", "10"))
 EDGE_THRESHOLD   = 0.55
 INVERSE_THRESHOLD = 0.40
-BTC_THRESHOLD    = float(os.getenv("BTC_TREND_THRESHOLD", "-5.0"))
 
-CRYPTO_SYMBOLS = [s for s in os.getenv("CRYPTO_SYMBOLS", "").split(",") if s.strip()]  # WOLF-only: no crypto
-STOCK_SYMBOLS = [s for s in os.getenv("STOCK_SYMBOLS", "WOLF").split(",") if s.strip()]  # WOLF-only
+# Kill condition — honesty-layer falsification gate (blueprint §10).
+# Pre-registered BEFORE the data so the stop is a decision, not a rationalization:
+# once we have >= min_samples resolved high-conviction picks, if the win rate is
+# below win_rate_floor AND the 95% CI upper bound is below north_star (i.e. the CI
+# excludes 80%), the 80% claim is falsified — abandon it and reposition the system
+# as a lower-confidence directional aid rather than moving the goalposts.
+# Surfaced via GET /api/wolf/pick-journal -> verdict.falsification.
+FALSIFICATION_THRESHOLD: Dict[str, float] = {
+    "min_samples": 30,      # N: resolved high-conviction picks required before judging
+    "win_rate_floor": 0.70, # below this realized win rate ...
+    "north_star": 0.80,     # ... and 95% CI upper-bound below this => abandon the 80% claim
+    "ci_level": 0.95,
+}
+
+# WOLF-only mode — these legacy names retained for back-compat with any importer.
+CRYPTO_SYMBOLS: List[str] = []
+STOCK_SYMBOLS: List[str] = ["WOLF"]
+
+
+# Kill conditions — env-tunable safety thresholds (audit §2). Each evaluates over
+# a rolling window of resolved high-conviction picks and maps to a degrade action.
+# All thresholds are env vars (read at call time so ops can retune without deploy).
+# This module only EVALUATES; enforcement (pause/degrade/Telegram) is wired separately.
+#   win_rate  < floor   over N  -> auto_pause          (KILL_WINRATE_FLOOR / _WINDOW)
+#   brier     > ceiling over N  -> degrade_watching    (KILL_BRIER_CEILING / _WINDOW)
+#   consecutive losses  >= K    -> cooldown            (KILL_CONSEC_LOSSES)
+#   expectancy (mean pnl%) < 0  over N -> halt_manual_review (KILL_EXPECTANCY_WINDOW)
+def _kill_cfg() -> Dict[str, Any]:
+    g = os.getenv
+    return {
+        "enabled": g("KILL_SWITCH_ENABLED", "1") not in ("0", "false", "False", ""),
+        "winrate_floor": float(g("KILL_WINRATE_FLOOR", "0.70")),
+        "winrate_window": max(1, int(g("KILL_WINRATE_WINDOW", "30"))),
+        "brier_ceiling": float(g("KILL_BRIER_CEILING", "0.35")),
+        "brier_window": max(1, int(g("KILL_BRIER_WINDOW", "30"))),
+        "consec_losses": max(1, int(g("KILL_CONSEC_LOSSES", "3"))),
+        "expectancy_window": max(1, int(g("KILL_EXPECTANCY_WINDOW", "20"))),
+        "cooldown_minutes": max(1, int(g("KILL_COOLDOWN_MINUTES", "1440"))),
+    }
+
+
+def evaluate_kill_conditions() -> Dict[str, Any]:
+    """Read-only evaluation of the kill conditions over the rolling resolved-pick
+    history (WOLF, v3.2 era). Returns per-condition status with current value vs
+    threshold and a green/red/insufficient flag. Does NOT enforce. During the
+    cold start (few resolved picks) every gated condition reads 'insufficient'
+    and never trips — silence-by-design, not a false alarm."""
+    cfg = _kill_cfg()
+    need = max(cfg["winrate_window"], cfg["brier_window"],
+               cfg["expectancy_window"], cfg["consec_losses"])
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT confidence, outcome, pnl_pct FROM predictions "
+                "WHERE symbol='WOLF' AND id >= 223438 AND outcome IS NOT NULL "
+                "ORDER BY resolved_at DESC NULLS LAST, id DESC LIMIT %s",
+                (need,))
+            rows = cur.fetchall()   # newest first
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:160]}
+
+    def _status(triggered: bool, enough: bool) -> str:
+        if not enough:
+            return "insufficient"
+        return "red" if triggered else "green"
+
+    conds = []
+
+    # 1. Win rate over rolling window -> auto_pause
+    wr_rows = rows[: cfg["winrate_window"]]
+    wr_n = len(wr_rows)
+    wr_wins = sum(1 for _c, o, _p in wr_rows if o == "WIN")
+    wr = (wr_wins / wr_n) if wr_n else None
+    wr_enough = wr_n >= cfg["winrate_window"]
+    wr_trig = bool(wr_enough and wr is not None and wr < cfg["winrate_floor"])
+    conds.append({
+        "name": "win_rate", "action": "auto_pause", "window": cfg["winrate_window"],
+        "samples": wr_n, "current": round(wr, 4) if wr is not None else None,
+        "threshold": cfg["winrate_floor"], "comparator": "<",
+        "triggered": wr_trig, "status": _status(wr_trig, wr_enough),
+    })
+
+    # 2. Brier score over rolling window -> degrade_watching
+    br_terms = [(float(c) - (1.0 if o == "WIN" else 0.0)) ** 2
+                for c, o, _p in rows[: cfg["brier_window"]] if c is not None]
+    br_n = len(br_terms)
+    brier = (sum(br_terms) / br_n) if br_n else None
+    br_enough = br_n >= cfg["brier_window"]
+    br_trig = bool(br_enough and brier is not None and brier > cfg["brier_ceiling"])
+    conds.append({
+        "name": "brier", "action": "degrade_watching", "window": cfg["brier_window"],
+        "samples": br_n, "current": round(brier, 4) if brier is not None else None,
+        "threshold": cfg["brier_ceiling"], "comparator": ">",
+        "triggered": br_trig, "status": _status(br_trig, br_enough),
+    })
+
+    # 3. Consecutive losses (most recent K resolved all LOSS) -> cooldown
+    streak = 0
+    for _c, o, _p in rows:
+        if o == "LOSS":
+            streak += 1
+        else:
+            break
+    cl_trig = streak >= cfg["consec_losses"]
+    conds.append({
+        "name": "consecutive_losses", "action": "cooldown", "window": cfg["consec_losses"],
+        "samples": len(rows), "current": streak, "threshold": cfg["consec_losses"],
+        "comparator": ">=", "triggered": bool(cl_trig),
+        "status": "red" if cl_trig else "green",
+    })
+
+    # 4. Expectancy (mean realized pnl%) over rolling window -> halt_manual_review
+    ex_pnls = [float(p) for _c, _o, p in rows[: cfg["expectancy_window"]] if p is not None]
+    ex_n = len(ex_pnls)
+    expectancy = (sum(ex_pnls) / ex_n) if ex_n else None
+    ex_enough = ex_n >= cfg["expectancy_window"]
+    ex_trig = bool(ex_enough and expectancy is not None and expectancy < 0)
+    conds.append({
+        "name": "expectancy", "action": "halt_manual_review", "window": cfg["expectancy_window"],
+        "samples": ex_n, "current": round(expectancy, 4) if expectancy is not None else None,
+        "threshold": 0.0, "comparator": "<",
+        "triggered": ex_trig, "status": _status(ex_trig, ex_enough),
+    })
+
+    return {
+        "ok": True,
+        "enabled": cfg["enabled"],
+        "any_triggered": any(c["triggered"] for c in conds),
+        "resolved_available": len(rows),
+        "conditions": conds,
+    }
+
+
+_ENGINE_PAUSE_KEYS = (
+    "engine_paused", "engine_pause_reason", "engine_pause_ts",
+    "engine_pause_auto_resume_at", "engine_pause_alerted",
+)
+
+
+def _clear_engine_pause():
+    try:
+        with db_conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                "DELETE FROM ghost_state WHERE key IN ("
+                + ",".join(["%s"] * len(_ENGINE_PAUSE_KEYS)) + ")",
+                _ENGINE_PAUSE_KEYS,
+            )
+    except Exception as e:
+        LOGGER.warning("clear engine pause failed: " + str(e)[:80])
+
+
+def engine_pause_state() -> Dict[str, Any]:
+    """Current kill-condition pause state. A cooldown-only pause auto-resumes
+    once its window elapses; harder trips require manual resume."""
+    try:
+        with db_conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                "SELECT key,val FROM ghost_state WHERE key IN ("
+                + ",".join(["%s"] * len(_ENGINE_PAUSE_KEYS)) + ")",
+                _ENGINE_PAUSE_KEYS,
+            )
+            st = {k: v for k, v in cur.fetchall()}
+    except Exception:
+        return {"paused": False}
+    if st.get("engine_paused") != "1":
+        return {"paused": False}
+    auto = st.get("engine_pause_auto_resume_at")
+    if auto:
+        try:
+            if int(time.time()) >= int(auto):
+                _clear_engine_pause()
+                return {"paused": False, "auto_resumed": True}
+        except Exception:
+            pass
+    return {
+        "paused": True,
+        "reason": st.get("engine_pause_reason") or "",
+        "since": int(st["engine_pause_ts"]) if st.get("engine_pause_ts") else None,
+        "auto_resume_at": int(auto) if auto else None,
+    }
+
+
+def resume_engine() -> Dict[str, Any]:
+    """Manual resume — clears any kill-condition pause."""
+    _clear_engine_pause()
+    LOGGER.warning("ENGINE RESUMED (manual): kill-condition pause cleared")
+    return {"ok": True, "resumed": True}
+
+
+def enforce_kill_conditions() -> Dict[str, Any]:
+    """Evaluate the kill conditions and, if any tripped (and the switch is
+    enabled), pause the engine + fire a one-time Telegram alert. Returns the
+    resulting pause state. Cooldown-only trips auto-resume after
+    KILL_COOLDOWN_MINUTES; harder trips (pause/degrade/halt) need manual resume.
+    Inert during cold start: with too few resolved picks nothing trips."""
+    cfg = _kill_cfg()
+    if not cfg["enabled"]:
+        return {"paused": False, "enabled": False}
+    ev = evaluate_kill_conditions()
+    if not ev.get("ok"):
+        return engine_pause_state()
+    tripped = [c for c in ev["conditions"] if c["triggered"]]
+    if not tripped:
+        return engine_pause_state()
+
+    actions = sorted({c["action"] for c in tripped})
+    reason = "; ".join(c["name"] + "->" + c["action"] for c in tripped)
+    cooldown_only = actions == ["cooldown"]
+    now = int(time.time())
+    auto_resume_at = (now + cfg["cooldown_minutes"] * 60) if cooldown_only else None
+    prev = engine_pause_state()
+
+    try:
+        with db_conn() as c:
+            cur = c.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            pairs = [("engine_paused", "1"), ("engine_pause_reason", reason),
+                     ("engine_pause_ts", str(now))]
+            for k, v in pairs:
+                cur.execute(
+                    "INSERT INTO ghost_state(key,val) VALUES(%s,%s) "
+                    "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val", (k, v))
+            if auto_resume_at:
+                cur.execute(
+                    "INSERT INTO ghost_state(key,val) VALUES('engine_pause_auto_resume_at',%s) "
+                    "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val", (str(auto_resume_at),))
+            else:
+                cur.execute("DELETE FROM ghost_state WHERE key='engine_pause_auto_resume_at'")
+    except Exception as e:
+        LOGGER.error("engine pause write failed: " + str(e)[:80])
+
+    # One-time Telegram alert per new trip reason.
+    if not prev.get("paused") or prev.get("reason") != reason:
+        LOGGER.warning("KILL CONDITION TRIPPED — engine paused: %s", reason)
+        try:
+            from core.telegram import send_health_alert
+            msg = ("KILL CONDITION TRIPPED — engine paused: " + reason
+                   + (" (auto-resume in " + str(cfg["cooldown_minutes"]) + "m)"
+                      if auto_resume_at else " (manual resume required)"))
+            send_health_alert(msg)
+        except Exception as e:
+            LOGGER.error("kill alert failed: " + str(e)[:80])
+        try:
+            with db_conn() as c2:
+                cur2 = c2.cursor()
+                cur2.execute(
+                    "INSERT INTO ghost_state(key,val) VALUES('engine_pause_alerted',%s) "
+                    "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val", (str(now),))
+        except Exception:
+            pass
+
+    return {"paused": True, "reason": reason, "since": now,
+            "auto_resume_at": auto_resume_at, "actions": actions}
+
 
 def _is_market_hours():
     """Returns True if US market is open (9:30 AM - 4:00 PM CT, Mon-Fri)."""
@@ -55,7 +306,7 @@ def _is_premarket():
     pre_open = now.replace(hour=4, minute=0, second=0, microsecond=0)
     mkt_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
     return pre_open <= now < mkt_open
-EXCLUDE = set(os.getenv("EXCLUDE_SYMBOLS","HOOD,COIN,CHZ,ADA,AVAX,SAND,FLOW,HBAR,ALGO").split(","))
+EXCLUDE = set(s for s in os.getenv("EXCLUDE_SYMBOLS","").split(",") if s.strip())
 _OBJECTIVE_RUNTIME_MODE_CACHE: Dict[str, Any] = {"mode": None, "ts": 0.0}
 
 
@@ -394,28 +645,8 @@ def objective_autotune_mode() -> Dict[str, Any]:
 
 
 def _check_regime():
-    """Block crypto BUYs when BTC down significantly. Returns regime dict including btc_24h_pct."""
-    gates = {"block_crypto_buys": False, "reduce_size": False, "reason": "", "btc_24h_pct": 0.0}
-    try:
-        btc = get_crypto_price("BTC")
-        if btc:
-            with db_conn() as conn:
-                cur = conn.cursor()
-                cutoff = int(time.time()) - 86400
-                cur.execute(
-                    "SELECT entry_price FROM predictions WHERE symbol='BTC' AND (predicted_at > %s OR run_at > %s) AND entry_price > 0 ORDER BY id ASC LIMIT 1",
-                    (cutoff, cutoff))
-                row = cur.fetchone()
-                if row and row[0] and row[0] > 0:
-                    pct = (btc - row[0]) / row[0] * 100
-                    gates["btc_24h_pct"] = round(pct, 2)
-                    if pct <= BTC_THRESHOLD or pct <= -2.0:
-                        gates["block_crypto_buys"] = True
-                        gates["reason"] = "BTC " + str(round(pct,1)) + "% (24h)"
-                        LOGGER.info("REGIME: blocking crypto BUYs, BTC " + str(round(pct,1)) + "%")
-    except Exception as e:
-        LOGGER.warning("regime check failed: " + str(e))
-    return gates
+    """WOLF-only mode: regime gate is a no-op. Returns benign defaults for back-compat."""
+    return {"block_crypto_buys": False, "reduce_size": False, "reason": "", "btc_24h_pct": 0.0}
 
 
 def _get_sentiment(symbol):
@@ -435,7 +666,7 @@ def _get_symbol_signal(symbol, current_price):
     # Try v3 model first
     try:
         from core.signal_engine import predict_live_ex
-        _atype = "crypto" if symbol not in ["AAPL","NVDA","TSLA","MSFT","META","AMZN","PLTR","AMD","T","XPO","NET","WOLF"] else "stock"
+        _atype = "stock"  # WOLF-only mode
         result, _reason = predict_live_ex(symbol, _atype)
         if result is not None:
             LOGGER.info("v3 signal for " + symbol + ": " + str(result[0]) + " " + str(round(result[1]*100,1)) + "%")
@@ -543,7 +774,10 @@ def _legacy_signal(symbol, current_price):
             return ("DOWN", round(min(down_win_rate, _conf_cap), 3))
         elif win_rate < INVERSE_THRESHOLD:
             inv_dir = "DOWN" if dominant_dir == "UP" else "UP"
-            inv_conf = min(round(1.0 - win_rate, 3), 0.65)
+            # Confidence scales with distance from 50/50.
+            # WR=0.40 (barely inverse) → 0.20; WR=0.10 (strong inverse) → 0.80.
+            # Capped at 0.65 because inverse signals are second-class evidence.
+            inv_conf = round(min(abs(win_rate - 0.5) * 2.0, 0.65), 3)
             return (inv_dir, inv_conf)
         else:
             return None  # No edge (45-55% zone)
@@ -567,10 +801,13 @@ def _legacy_signal(symbol, current_price):
         return None
 
 
-def _predict_symbol_ex(symbol, asset_type, regime):
+def _predict_symbol_ex(symbol, asset_type, regime, scores_out=None):
     """
     Like predict_symbol but returns (pick_or_None, skip_code_or_None).
     skip_code is for morning-card diagnostics only (not an API contract).
+    If `scores_out` (a dict) is passed, the model score vector — up_prob,
+    min_win_proba, and (on a confidence-floor miss) confidence vs floor — is
+    written into it so callers can log how close a silent cycle came to firing.
     """
     sym = symbol.strip()
     if sym in EXCLUDE or not sym:
@@ -587,10 +824,10 @@ def _predict_symbol_ex(symbol, asset_type, regime):
             LOGGER.warning("Prev-close fallback failed " + symbol + ": " + str(_pe))
     if not price or price <= 0:
         return None, "no_price"
+    score_vector = scores_out if scores_out is not None else {}
     try:
         from core.signal_engine import predict_live_ex
-        _atype = "crypto" if sym not in ["AAPL","NVDA","TSLA","MSFT","META","AMZN","PLTR","AMD","T","XPO","NET","WOLF"] else "stock"
-        signal, v3_reason = predict_live_ex(symbol, _atype)
+        signal, v3_reason = predict_live_ex(symbol, "stock", scores=score_vector)
     except Exception as _pe:
         LOGGER.warning("v3 engine error for " + symbol + ": " + str(_pe))
         return None, "v3_engine_error"
@@ -611,16 +848,14 @@ def _predict_symbol_ex(symbol, asset_type, regime):
 
     _floor = regime.get('confidence_floor_override', CONFIDENCE_FLOOR) if isinstance(regime, dict) else CONFIDENCE_FLOOR
     if confidence < _floor:
+        score_vector["confidence"] = float(confidence)
+        score_vector["confidence_floor"] = float(_floor)
         return None, "below_confidence_floor"
 
     # SELL signals blocked: 1.9% win rate across 211 trades (data as of 2026-03-25)
     if direction == "DOWN":
         LOGGER.info("SELL blocked: " + symbol + " — DOWN signals 1.9% wr historically")
         return None, "sell_blocked"
-
-    if regime["block_crypto_buys"] and asset_type == "crypto" and direction == "UP":
-        LOGGER.info("REGIME blocked " + symbol + " UP")
-        return None, "regime_blocked_crypto_buy"
 
     objective_ok, objective_skip, objective_meta = _objective_gate(sym, direction, float(confidence))
     if not objective_ok:
@@ -637,21 +872,14 @@ def _predict_symbol_ex(symbol, asset_type, regime):
 
     now = int(time.time())
     # Stocks: skip weekends — expire at next trading day close, not 48 calendar hours
-    if asset_type == "stock":
-        import datetime as _dt, pytz as _tz
-        _ct = _tz.timezone("America/Chicago")
-        _now_dt = _dt.datetime.now(_ct)
-        # Add 48 trading hours = skip to next weekday if needed
-        _exp = _now_dt + _dt.timedelta(hours=48)
-        # If expiry lands on Saturday, push to Monday
-        if _exp.weekday() == 5: _exp += _dt.timedelta(days=2)
-        # If expiry lands on Sunday, push to Monday
-        elif _exp.weekday() == 6: _exp += _dt.timedelta(days=1)
-        # Set to 4 PM CT (market close) on that day
-        _exp = _exp.replace(hour=16, minute=0, second=0, microsecond=0)
-        hold = int(_exp.timestamp()) - now
-    else:
-        hold = CRYPTO_HOLD_H * 3600
+    import datetime as _dt, pytz as _tz
+    _ct = _tz.timezone("America/Chicago")
+    _now_dt = _dt.datetime.now(_ct)
+    _exp = _now_dt + _dt.timedelta(hours=48)
+    if _exp.weekday() == 5: _exp += _dt.timedelta(days=2)
+    elif _exp.weekday() == 6: _exp += _dt.timedelta(days=1)
+    _exp = _exp.replace(hour=16, minute=0, second=0, microsecond=0)
+    hold = int(_exp.timestamp()) - now
     # Dynamic targets based on real observed volatility per symbol (see core.vol_targets)
     _vol_pct = base_vol_pct(symbol, asset_type)
     # Also try DB — if 3+ real stop-loss hits, use those
@@ -703,7 +931,6 @@ def _predict_symbol_ex(symbol, asset_type, regime):
     # Build feature vector — stored in DB for future ML training
     now_dt = datetime.now(timezone.utc)
     features = {
-        "btc_24h_pct":      regime.get("btc_24h_pct", 0.0),
         "hour_of_day":      now_dt.hour,
         "day_of_week":      now_dt.weekday(),
         "symbol_win_rate":  round(confidence_raw, 3),
@@ -717,6 +944,15 @@ def _predict_symbol_ex(symbol, asset_type, regime):
     elif confidence >= 0.80: pos_pct = 3.0
     elif confidence >= 0.75: pos_pct = 2.0
     else:                    pos_pct = 1.0
+    # Journal a ghost-score component snapshot (roadmap #4b/B) so true component
+    # attribution accrues going forward. Best-effort — never blocks a pick.
+    try:
+        from core.attribution import ghost_components
+        if isinstance(score_vector, dict):
+            score_vector["ghost_components"] = ghost_components(
+                confidence, direction, score_vector.get("features"), now, now)
+    except Exception:
+        pass
     return {
         "symbol":       symbol,
         "direction":    direction,
@@ -728,6 +964,7 @@ def _predict_symbol_ex(symbol, asset_type, regime):
         "expires_at":   now + hold,
         "asset_type":   asset_type,
         "features":     features,
+        "scores":       score_vector,
         "pos_size_pct": pos_pct,
         "objective_expected_wr": objective_meta.get("combined_wr"),
         "objective_samples": objective_meta.get("combined_total"),
@@ -739,30 +976,69 @@ def predict_symbol(symbol, asset_type, regime):
     return pick
 
 
+def _circuit_breaker_floor():
+    """T23 circuit breaker (roadmap #1c). After a streak of consecutive UP losses,
+    raise the confidence floor. Now env-tunable AND recency-guarded: a STALE loss
+    streak no longer suppresses firing forever. The old hard-coded version could
+    deadlock the engine at 0.90 — if it stopped firing, the last-N resolved never
+    refreshed, so the breaker stayed latched indefinitely.
+
+    Env: CB_LOSS_STREAK(5), CB_FLOOR_DELTA(0.10), CB_FLOOR_CAP(0.92),
+         CB_RECENCY_DAYS(14, 0 disables the recency guard).
+    Returns (floor, active, detail)."""
+    base = CONFIDENCE_FLOOR
+    try:
+        streak_n = max(1, int(os.getenv("CB_LOSS_STREAK", "5")))
+        delta = float(os.getenv("CB_FLOOR_DELTA", "0.10"))
+        cap = float(os.getenv("CB_FLOOR_CAP", "0.92"))
+        recency_days = max(0, int(os.getenv("CB_RECENCY_DAYS", "14")))
+    except Exception:
+        streak_n, delta, cap, recency_days = 5, 0.10, 0.92, 14
+    try:
+        with db_conn() as _cb:
+            _cc = _cb.cursor()
+            _cc.execute(
+                "SELECT outcome, resolved_at FROM predictions WHERE outcome IN ('WIN','LOSS') "
+                "AND direction='UP' AND id >= 223438 ORDER BY resolved_at DESC LIMIT %s",
+                (streak_n,))
+            rows = _cc.fetchall()
+        if len(rows) == streak_n and all(r[0] == 'LOSS' for r in rows):
+            newest = int(rows[0][1] or 0)
+            if recency_days > 0 and newest and (int(time.time()) - newest) > recency_days * 86400:
+                LOGGER.info("T23 breaker: %d-loss streak but stale (>%dd) — floor not raised",
+                            streak_n, recency_days)
+                return base, False, "stale_streak"
+            floor = min(cap, base + delta)
+            LOGGER.warning("T23 CIRCUIT BREAKER: %d consecutive losses — floor -> %.3f", streak_n, floor)
+            return floor, True, str(streak_n) + "_loss_streak"
+    except Exception as e:
+        LOGGER.warning("circuit breaker check failed: " + str(e)[:80])
+    return base, False, "clear"
+
+
 def run_prediction_cycle(with_diag: bool = False):
     """Run predictions. Returns list of saved picks. Does NOT send Telegram.
 
     If with_diag=True, returns (saved_picks, diag_dict) for Telegram copy.
     """
-    # T23: Circuit breaker — if last 5 resolved picks are all losses, raise confidence floor
-    _cb_floor = CONFIDENCE_FLOOR
+    # T23 circuit breaker (roadmap #1c): env-tunable + recency-guarded (no deadlock).
+    _cb_floor, _cb_active, _cb_detail = _circuit_breaker_floor()
+    # Kill-condition enforcement (audit §2): pause/alert if a safety threshold
+    # tripped. Scanning + gate recording still run while paused so the operator
+    # sees where cycles land; only firing (saving picks) is suppressed.
+    _pause = {"paused": False}
     try:
-        with db_conn() as _cb:
-            _cc = _cb.cursor()
-            _cc.execute(
-                "SELECT outcome FROM predictions WHERE outcome IN ('WIN','LOSS') AND direction='UP' AND id >= 223438 ORDER BY resolved_at DESC LIMIT 5"
-            )
-            _last5 = [r[0] for r in _cc.fetchall()]
-            if len(_last5) == 5 and all(o == 'LOSS' for o in _last5):
-                _cb_floor = min(0.92, CONFIDENCE_FLOOR + 0.10)
-                LOGGER.warning("T23 CIRCUIT BREAKER: 5 consecutive losses — raising floor to " + str(_cb_floor))
-    except Exception: pass
+        _pause = enforce_kill_conditions()
+    except Exception as _ke:
+        LOGGER.error("Kill enforcement failed: " + str(_ke)[:80])
+    engine_paused = bool(_pause.get("paused"))
+
     auto_mode_state = objective_autotune_mode()
     regime = _check_regime()
     regime['confidence_floor_override'] = _cb_floor
-    symbols = ([(s.strip(),"crypto") for s in CRYPTO_SYMBOLS if s.strip()] +
-               # T07: skip stocks pre-market — features degrade before open, confidence drops below floor
-               ([(s.strip(),"stock") for s in STOCK_SYMBOLS if s.strip()] if (_is_market_hours() or not _is_premarket()) else []))
+    # WOLF-only: only stocks; skip pre-market (T07: features degrade before open).
+    symbols = ([(s.strip(),"stock") for s in STOCK_SYMBOLS if s.strip()]
+               if (_is_market_hours() or not _is_premarket()) else [])
     # AUTO-INCLUDE portfolio holdings — if you own it, Ghost watches it
     try:
         with db_conn() as _pc:
@@ -778,15 +1054,32 @@ def run_prediction_cycle(with_diag: bool = False):
         LOGGER.warning("Could not load portfolio symbols: " + str(_pe))
     skip_counts = {}
     all_picks = []
+    closest = None   # silence logging (audit §3): track the highest-up_prob candidate
     for symbol, asset_type in symbols:
-        pick, skip = _predict_symbol_ex(symbol, asset_type, regime)
+        _sv = {}
+        pick, skip = _predict_symbol_ex(symbol, asset_type, regime, scores_out=_sv)
         if pick:
             all_picks.append(pick)
         elif skip:
             skip_counts[skip] = skip_counts.get(skip, 0) + 1
+        _up = _sv.get("up_prob")
+        if _up is not None and (closest is None or _up > closest["up_prob"]):
+            closest = {
+                "symbol": symbol,
+                "up_prob": _up,
+                "min_win_proba": (_sv.get("model_meta") or {}).get("min_win_proba"),
+                "confidence": _sv.get("confidence"),
+                "confidence_floor": _sv.get("confidence_floor"),
+                "skip": skip,
+            }
 
     all_picks.sort(key=lambda x: x["confidence"], reverse=True)
     top = all_picks[:DAILY_CAP]
+    if engine_paused:
+        LOGGER.warning(
+            "ENGINE PAUSED (kill condition) — suppressing %d candidate(s): %s",
+            len(top), _pause.get("reason"))
+        top = []   # scan + record continue; firing suppressed
     saved = []
     dedup_blocked = 0
     # Pre-fetch open symbols once (separate conn avoids cursor state corruption mid-loop)
@@ -807,11 +1100,11 @@ def run_prediction_cycle(with_diag: bool = False):
                     dedup_blocked += 1
                     continue
                 cur.execute(
-                    "INSERT INTO predictions (symbol,direction,confidence,entry_price,target_price,stop_price,run_at,predicted_at,expires_at,asset_type,features) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+                    "INSERT INTO predictions (symbol,direction,confidence,entry_price,target_price,stop_price,run_at,predicted_at,expires_at,asset_type,features,scores) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
                     (pick["symbol"], pick["direction"], pick["confidence"], pick["entry_price"],
                      pick["target_price"], pick["stop_price"], pick["predicted_at"],
                      pick["predicted_at"], pick["expires_at"], pick["asset_type"],
-                     json.dumps(pick.get("features", {})))
+                     json.dumps(pick.get("features", {})), json.dumps(pick.get("scores", {})))
                 )
                 pred_id = cur.fetchone()[0]
                 pick["id"] = pred_id
@@ -838,12 +1131,65 @@ def run_prediction_cycle(with_diag: bool = False):
             )
     except Exception as _he:
         LOGGER.warning("Cycle heartbeat write failed: " + str(_he)[:80])
+
+    # PR #29: per-cycle gate-outcome recorder. Rolling history (last 50
+    # cycles) in ghost_state so ops can review "did any cycle clear the
+    # gates today, and which gate was binding?" without watching the live
+    # /admin monitor. `would_fire` = a candidate cleared ALL gates (it may
+    # still have been dedup-blocked from saving).
+    try:
+        import json as _gj
+        _top_skip = max(skip_counts.items(), key=lambda kv: kv[1])[0] if skip_counts else None
+        # Silence logging (audit §3): on a quiet cycle, how close did the best
+        # candidate come? prob_gap = up_prob - min_win_proba (>=0 cleared the
+        # prob gate); conf_gap = confidence - floor (only set on a floor miss).
+        _near_miss = None
+        if closest:
+            _near_miss = dict(closest)
+            if _near_miss.get("up_prob") is not None and _near_miss.get("min_win_proba") is not None:
+                _near_miss["prob_gap"] = round(_near_miss["up_prob"] - _near_miss["min_win_proba"], 4)
+            if _near_miss.get("confidence") is not None and _near_miss.get("confidence_floor") is not None:
+                _near_miss["conf_gap"] = round(_near_miss["confidence"] - _near_miss["confidence_floor"], 4)
+        _entry = {
+            "ts": int(time.time()),
+            "scanned": len(symbols),
+            "candidates": len(all_picks),
+            "saved": len(saved),
+            "dedup_blocked": dedup_blocked,
+            "would_fire": len(all_picks) > 0,
+            "top_skip": _top_skip,
+            "skip_counts": dict(skip_counts),
+            "paused": engine_paused,
+            "near_miss": _near_miss,
+        }
+        with db_conn() as _gc:
+            _gcur = _gc.cursor()
+            _gcur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            _gcur.execute("SELECT val FROM ghost_state WHERE key='gate_outcome_history'")
+            _grow = _gcur.fetchone()
+            _hist = []
+            if _grow and _grow[0]:
+                try:
+                    _hist = _gj.loads(_grow[0])
+                except Exception:
+                    _hist = []
+            if not isinstance(_hist, list):
+                _hist = []
+            _hist.append(_entry)
+            _hist = _hist[-50:]
+            _gcur.execute(
+                "INSERT INTO ghost_state(key,val) VALUES('gate_outcome_history', %s) "
+                "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
+                (_gj.dumps(_hist),),
+            )
+    except Exception as _ge:
+        LOGGER.warning("Gate-outcome record failed: " + str(_ge)[:80])
+
     if not with_diag:
         return saved
     # --- diagnostics for Telegram "no picks" accuracy ---
     _prio = [
         "dedup_blocked",
-        "regime_blocked_crypto_buy",
         "below_confidence_floor",
         "objective_gate",
         "objective_bootstrap_conf",
@@ -860,7 +1206,6 @@ def run_prediction_cycle(with_diag: bool = False):
     ]
     _labels = {
         "dedup_blocked": "dedup (open pick already exists)",
-        "regime_blocked_crypto_buy": "regime blocked crypto BUY",
         "below_confidence_floor": "below confidence floor",
         "objective_gate": "objective gate (symbol WR below target)",
         "objective_bootstrap_conf": "objective bootstrap (confidence below bootstrap minimum)",
@@ -894,8 +1239,8 @@ def run_prediction_cycle(with_diag: bool = False):
         "dedup_blocked": dedup_blocked,
         "skip_counts": dict(sorted(skip_counts.items(), key=lambda kv: (-kv[1], kv[0]))),
         "regime": regime.get("reason") or "",
-        "regime_btc_24h_pct": regime.get("btc_24h_pct"),
         "confidence_floor": regime.get("confidence_floor_override", CONFIDENCE_FLOOR),
+        "circuit_breaker": {"active": _cb_active, "detail": _cb_detail, "floor": _cb_floor},
         "objective_mode": _objective_mode(),
         "objective_mode_auto": auto_mode_state,
         "top_reason_code": top_reason,
@@ -1104,7 +1449,7 @@ def reconcile_outcomes():
         open_preds = cur.fetchall()
     for pred_id, symbol, direction, entry, target, stop, expires_at, asset_type in open_preds:
         if None in (entry, target, stop): continue
-        price = get_price(symbol, asset_type or "crypto")
+        price = get_price(symbol)
         if not price: continue
         outcome = None
         if direction == "UP":
