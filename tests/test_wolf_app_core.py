@@ -3506,6 +3506,45 @@ def test_notify_pick_fired_dispatches_both(monkeypatch):
     assert _n.notify_pick_fired("s", "b") == {"email": True, "sms": True}
 
 
+def test_wf_fold_bounds_purges_label_horizon():
+    """Default purged layout leaves a hold_bars gap between train and test."""
+    import core.signal_engine as _se
+    bounds = _se._wf_fold_bounds(
+        n=127, min_train=60, test_size=15, step=15, purge=3,
+        min_train_floor=60, test_size_floor=15,
+    )
+    assert bounds == [(60, 63, 78), (75, 78, 93), (90, 93, 108), (105, 108, 123)]
+    # every fold: train ends purge bars before its test block, no overlap
+    for train_end, test_start, _test_end in bounds:
+        assert test_start - train_end == 3
+        assert train_end >= 60
+
+
+def test_wf_fold_bounds_purge_zero_is_contiguous():
+    """purge=0 reproduces the old contiguous walk-forward (train_end==test_start)."""
+    import core.signal_engine as _se
+    bounds = _se._wf_fold_bounds(
+        n=127, min_train=60, test_size=15, step=15, purge=0,
+        min_train_floor=60, test_size_floor=15,
+    )
+    assert bounds[0] == (60, 60, 75)
+    for train_end, test_start, _ in bounds:
+        assert train_end == test_start
+
+
+def test_wf_fold_bounds_respects_floors_and_fits_n():
+    """Folds never exceed n and never train below the floor."""
+    import core.signal_engine as _se
+    bounds = _se._wf_fold_bounds(
+        n=80, min_train=60, test_size=15, step=15, purge=3,
+        min_train_floor=60, test_size_floor=15,
+    )
+    # n=80: start=63 -> test[63:78] ok (train_end 60); next start=78 -> 78+15>80 stop
+    assert bounds == [(60, 63, 78)]
+    for _train_end, _test_start, test_end in bounds:
+        assert test_end <= 80
+
+
 def _fit_tiny_model():
     """A cheap fitted binary classifier for calibration tests (no XGBoost)."""
     pytest.importorskip("sklearn")  # ML deps are prod-only; skip where absent

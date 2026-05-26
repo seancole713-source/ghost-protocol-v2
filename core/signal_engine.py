@@ -159,6 +159,38 @@ def _v3_calibration_method() -> str:
     return (os.getenv("V3_CALIBRATION_METHOD", "auto") or "auto").strip().lower()
 
 
+def _v3_wf_purge() -> int:
+    """Bars to purge between each walk-forward train block and its test block.
+
+    The triple-barrier label looks ahead V3_LABEL_HOLD_BARS bars, so the last
+    few training samples before a test block carry outcomes that resolve inside
+    the test period — naive walk-forward leaks that future into training. Purging
+    hold_bars samples at the boundary removes the overlap (López de Prado purged
+    CV). Defaults to the label horizon; set V3_WF_PURGE=0 to disable.
+    """
+    return max(0, int(os.getenv("V3_WF_PURGE", str(V3_LABEL_HOLD_BARS))))
+
+
+def _wf_fold_bounds(n, min_train, test_size, step, purge,
+                    min_train_floor, test_size_floor):
+    """Index bounds for purged, expanding-window walk-forward folds.
+
+    Returns a list of (train_end, test_start, test_end). The train block is
+    X[:train_end] with train_end = test_start - purge, leaving a purge-bar gap
+    so look-ahead labels can't leak across the boundary. Pure/index-only so it
+    is unit-testable without xgboost/sklearn installed.
+    """
+    bounds = []
+    start = min_train + purge          # so the first train block still ~min_train
+    while start + test_size <= n:
+        train_end = start - purge
+        test_start, test_end = start, start + test_size
+        if train_end >= min_train_floor and (test_end - test_start) >= test_size_floor:
+            bounds.append((train_end, test_start, test_end))
+        start += step
+    return bounds
+
+
 def _walk_forward_scores(X, y):
     """
     Rolling walk-forward validation over time-ordered samples.
@@ -169,11 +201,15 @@ def _walk_forward_scores(X, y):
     post-restructure samples couldn't generate folds with the prior
     hardcoded floors (120 / 20).
 
-    Example fold layout for n=127 with defaults (60 / 15):
-      fold 1: train=X[:60],  test=X[60:75]
-      fold 2: train=X[:75],  test=X[75:90]
-      fold 3: train=X[:90],  test=X[90:105]
-      fold 4: train=X[:105], test=X[105:120]
+    W4: a purge gap of V3_WF_PURGE bars (default = label horizon) sits between
+    each train block and its test block so look-ahead labels can't leak across
+    the boundary (purged walk-forward).
+
+    Example fold layout for n=127 with defaults (60 / 15, purge=3):
+      fold 1: train=X[:60],  test=X[63:78]
+      fold 2: train=X[:75],  test=X[78:93]
+      fold 3: train=X[:90],  test=X[93:108]
+      fold 4: train=X[:105], test=X[108:123]
     """
     from xgboost import XGBClassifier
     from sklearn.metrics import accuracy_score
@@ -186,20 +222,16 @@ def _walk_forward_scores(X, y):
     min_train = max(min_train_floor, int(n * min_train_frac))
     test_size = max(test_size_floor, int(n * test_size_frac))
     step = test_size
+    purge = _v3_wf_purge()
+    bounds = _wf_fold_bounds(n, min_train, test_size, step, purge,
+                             min_train_floor, test_size_floor)
     folds = []
-    start = min_train
-    while start + test_size <= n:
-        X_train, y_train = X[:start], y[:start]
-        X_test, y_test = X[start : start + test_size], y[start : start + test_size]
-        # Inner safety check: skip degenerate folds. Tied to the env-tunable
-        # floors so the inner & outer constraints stay coherent.
-        if len(X_train) < min_train_floor or len(X_test) < test_size_floor:
-            start += step
-            continue
+    for train_end, test_start, test_end in bounds:
+        X_train, y_train = X[:train_end], y[:train_end]
+        X_test, y_test = X[test_start:test_end], y[test_start:test_end]
         pos_ct = int(np.sum(y_train))
         neg_ct = int(len(y_train) - pos_ct)
         if pos_ct <= 0:
-            start += step
             continue
         natural_rate = float(np.mean(y_test))
         model = XGBClassifier(
@@ -216,7 +248,6 @@ def _walk_forward_scores(X, y):
         model.fit(X_train, y_train)
         acc = float(accuracy_score(y_test, model.predict(X_test)))
         folds.append({"acc": acc, "nat": natural_rate, "edge": acc - natural_rate})
-        start += step
 
     if not folds:
         return {"fold_count": 0, "acc_mean": 0.0, "acc_min": 0.0, "edge_mean": 0.0, "edge_min": 0.0}
