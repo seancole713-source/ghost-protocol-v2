@@ -283,20 +283,26 @@ def _cockpit_activity_on_cursor(cur):
     }
 
 
-def _has_any_v3_model():
-    """True when at least one v3.2 TP/SL model exists (label_type=tp_sl_daily on meta_*)."""
-    import json as _j
+def _has_loadable_v3_model() -> bool:
+    """True only if at least one configured symbol has a model that actually
+    LOADS — passing load_model's label_type / feature_schema / age guards — not
+    merely a row present in ghost_v3_model.
+
+    A stored-but-rejected model (e.g. after a feature_schema bump from a
+    model-shape change) must still trigger the startup retrain; otherwise the
+    engine sits dormant with no usable model until someone retrains by hand.
+    This closes the gap between "a row exists" and "a model is serveable" that
+    left the engine down after the W1 feature_schema guard shipped (the old
+    rows kept label_type=tp_sl_daily, so the prior existence check thought a
+    model was present while load_model rejected every one).
+    """
     try:
-        with db_conn() as conn:
-            cur = conn.cursor()
-            cur.execute("SELECT value FROM ghost_v3_model WHERE key ~ '^meta_'")
-            for (val,) in cur.fetchall():
-                try:
-                    m = _j.loads(val)
-                    if m.get("label_type") == "tp_sl_daily":
-                        return True
-                except Exception:
-                    continue
+        from core.signal_engine import load_model
+        syms = [s.strip().upper() for s in os.getenv("STOCK_SYMBOLS", "WOLF").split(",") if s.strip()] or ["WOLF"]
+        for s in syms:
+            model, _cols, _meta = load_model(s)
+            if model is not None:
+                return True
         return False
     except Exception:
         return False
@@ -1162,7 +1168,7 @@ async def lifespan(app: FastAPI):
         try:
             from core.signal_engine import train_and_validate
             import os
-            if not _has_any_v3_model():
+            if not _has_loadable_v3_model():
                 if not _RETRAIN_JOB_LOCK.acquire(blocking=False):
                     LOGGER.info("Startup training skipped: retrain lock busy")
                     return

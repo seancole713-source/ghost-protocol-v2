@@ -3789,3 +3789,27 @@ def test_maybe_calibrate_too_few_points_falls_back(monkeypatch):
     assert info["calibrated"] is False
     assert info["skip_reason"] == "insufficient_calib_data"
     assert final is sentinel
+
+
+def test_has_loadable_v3_model_requires_actual_load(monkeypatch):
+    """Startup retrain must gate on a model that LOADS, not a mere row.
+    Regression for the feature_schema-guard dormancy: old rows kept
+    label_type=tp_sl_daily (so the row existed) but load_model rejected them."""
+    import wolf_app
+    import core.signal_engine as _se
+    monkeypatch.setenv("STOCK_SYMBOLS", "WOLF")
+    # rows may exist, but load_model rejects (schema/label/age) -> NOT loadable -> retrain
+    monkeypatch.setattr(_se, "load_model", lambda s: (None, None, None))
+    assert wolf_app._has_loadable_v3_model() is False
+    # a model that actually loads -> loadable -> skip retrain
+    monkeypatch.setattr(_se, "load_model", lambda s: (object(), ["rsi"], {"feature_schema": "macd_pct_v1+sec0"}))
+    assert wolf_app._has_loadable_v3_model() is True
+
+
+def test_has_loadable_v3_model_any_symbol_counts(monkeypatch):
+    import wolf_app
+    import core.signal_engine as _se
+    monkeypatch.setenv("STOCK_SYMBOLS", "WOLF,ON")
+    monkeypatch.setattr(_se, "load_model",
+                        lambda s: (object(), ["rsi"], {}) if s == "ON" else (None, None, None))
+    assert wolf_app._has_loadable_v3_model() is True
