@@ -336,10 +336,17 @@ def _wf_fold_bounds(n, min_train, test_size, step, purge,
     return bounds
 
 
-def _walk_forward_scores(X, y):
+def _walk_forward_scores(X, y, X_peer=None, y_peer=None, wolf_weight=1.0):
     """
     Rolling walk-forward validation over time-ordered samples.
     Returns dict with fold_count / mean and minimum fold scores.
+
+    W1: when peer samples (X_peer/y_peer) are supplied, each fold pools them
+    into its TRAINING set (up-weighting the target via wolf_weight) while the
+    TEST window stays target-only. This makes the walk-forward validate the
+    same peer-pooled model that actually ships, and gives each thin target fold
+    far more training data — instead of validating a WOLF-only model the engine
+    never deploys. With X_peer=None it behaves exactly as the WOLF-only version.
 
     PR #21: train-window and test-window floors are env-tunable so the
     function actually produces folds for small datasets. WOLF's 127
@@ -370,10 +377,18 @@ def _walk_forward_scores(X, y):
     purge = _v3_wf_purge()
     bounds = _wf_fold_bounds(n, min_train, test_size, step, purge,
                              min_train_floor, test_size_floor)
+    has_peers = X_peer is not None and len(X_peer) > 0
     folds = []
     for train_end, test_start, test_end in bounds:
         X_train, y_train = X[:train_end], y[:train_end]
         X_test, y_test = X[test_start:test_end], y[test_start:test_end]
+        sample_weight = None
+        if has_peers:
+            sample_weight = np.concatenate([
+                np.full(train_end, float(wolf_weight)), np.ones(len(X_peer))
+            ])
+            X_train = np.vstack([X_train, X_peer])
+            y_train = np.concatenate([y_train, y_peer])
         pos_ct = int(np.sum(y_train))
         neg_ct = int(len(y_train) - pos_ct)
         if pos_ct <= 0:
@@ -390,7 +405,7 @@ def _walk_forward_scores(X, y):
             eval_metric="logloss",
             random_state=42,
         )
-        model.fit(X_train, y_train)
+        model.fit(X_train, y_train, sample_weight=sample_weight)
         acc = float(accuracy_score(y_test, model.predict(X_test)))
         folds.append({"acc": acc, "nat": natural_rate, "edge": acc - natural_rate})
 
@@ -1255,7 +1270,15 @@ def train_and_validate(symbols_and_types):
             model.fit(X_fit, y_fit, sample_weight=sample_weight)
             accuracy = float(accuracy_score(y_test, model.predict(X_test)))
             edge = accuracy - natural_rate
-            wf = _walk_forward_scores(X, y)
+            # W1: feed the same peer pool into the walk-forward folds, so the
+            # gate validates the deployed pooled model rather than a WOLF-only
+            # one the engine never serves (and each thin fold trains on more).
+            if peer_rows:
+                X_peer_wf = np.array([[r["features"].get(c, 0.0) for c in active_cols] for r in peer_rows])
+                y_peer_wf = np.array([r["label"] for r in peer_rows])
+                wf = _walk_forward_scores(X, y, X_peer_wf, y_peer_wf, _v3_wolf_sample_weight())
+            else:
+                wf = _walk_forward_scores(X, y)
             min_wf_acc = _v3_min_wf_acc_mean()
             min_wf_folds = _v3_min_wf_folds()
             # Allow modest fold variance while keeping strict mean WF quality.
