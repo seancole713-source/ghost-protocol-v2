@@ -326,7 +326,12 @@ def _objective_mode_defaults(mode: str) -> Dict[str, float]:
         return {
             "target_wr": 0.62,
             "min_samples": 8.0,
-            "bootstrap_min_conf": 0.78,
+            # Cold-start firing bar, lowered 0.78 -> 0.75 by operator decision so
+            # the engine can bootstrap its first fires once recovered + calibrated
+            # (up_prob ~0.58 mapping to conf 0.75). Only gates while in bootstrap
+            # (total < min_samples); after that the win-rate gate takes over.
+            # Overridable per-deploy via OBJECTIVE_BOOTSTRAP_MIN_CONF.
+            "bootstrap_min_conf": 0.75,
             "lookback_days": 120.0,
         }
     if mode == "balanced":
