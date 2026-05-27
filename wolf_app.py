@@ -1173,7 +1173,11 @@ async def lifespan(app: FastAPI):
                     LOGGER.info("Startup training skipped: retrain lock busy")
                     return
                 _lock_acquired = True
-                LOGGER.info("No v3.2 TP/SL model found — training on startup...")
+                LOGGER.info("No loadable v3.2 TP/SL model found — training on startup...")
+                _record_v3_train_state(
+                    ts=int(time.time()), state="started", force="startup",
+                    accuracy="", passed="", error="", models_before="", models_after="",
+                )
                 stocks = [(s.strip(),"stock") for s in os.getenv("STOCK_SYMBOLS","WOLF").split(",") if s.strip()] or [("WOLF","stock")]
                 try:
                     from core.db import db_conn as _dbc
@@ -1186,8 +1190,14 @@ async def lifespan(app: FastAPI):
                                 stocks.append(_entry)
                 except Exception:
                     pass
+                _record_v3_train_state(state="running", stocks=str(stocks))
                 m, acc, passed = train_and_validate(stocks)
-                LOGGER.info(f"Startup training: acc={round(acc*100,1)}% passed={passed}")
+                LOGGER.info(f"Startup training: acc={round((acc or 0)*100,1)}% passed={passed}")
+                _record_v3_train_state(
+                    state="passed" if passed else "failed",
+                    accuracy=f"{(acc or 0):.4f}", passed=str(bool(passed)).lower(),
+                    finished_at=int(time.time()), error="",
+                )
                 try:
                     purged = _auto_purge_bad_models()
                     pv = _purge_v3_stale_or_weak()
@@ -1205,6 +1215,12 @@ async def lifespan(app: FastAPI):
                     pass
         except Exception as _te:
             LOGGER.warning("Startup training failed: " + str(_te))
+            try:
+                _record_v3_train_state(
+                    state="exception", error=str(_te)[:300], finished_at=int(time.time()),
+                )
+            except Exception:
+                pass
         finally:
             if _lock_acquired:
                 try:

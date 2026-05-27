@@ -1663,7 +1663,7 @@ def _install_fake_xgboost(monkeypatch):
 
     class _StubModel:
         def __init__(self, **k): pass
-        def fit(self, X, y): return self
+        def fit(self, X, y, sample_weight=None): return self   # mirror real XGB API
         def predict(self, X):
             return np.zeros(len(X))
 
@@ -1718,6 +1718,44 @@ def test_walk_forward_respects_env_min_train_override(monkeypatch):
     y = np.array([0, 1] * 63 + [0])
     out = _se._walk_forward_scores(X, y)
     assert out["fold_count"] == 0
+
+
+def test_walk_forward_pools_peers_into_training_only(monkeypatch):
+    """W1: peers expand each fold's TRAINING set (with a matching sample_weight
+    vector); the test window stays target-only. Verifies the gate validates the
+    deployed pooled model, not a WOLF-only one."""
+    import core.signal_engine as _se
+    import numpy as np
+    import sys, types
+    for k in ("V3_WF_MIN_TRAIN", "V3_WF_TEST_SIZE", "V3_WF_MIN_TRAIN_FRAC", "V3_WF_TEST_FRAC"):
+        monkeypatch.delenv(k, raising=False)
+
+    seen = []
+
+    class _Capture:
+        def __init__(self, **k): pass
+        def fit(self, X, y, sample_weight=None):
+            seen.append((len(X), None if sample_weight is None else len(sample_weight)))
+            return self
+        def predict(self, X):
+            return np.zeros(len(X))
+
+    fake_xgb = types.ModuleType("xgboost"); fake_xgb.XGBClassifier = _Capture
+    monkeypatch.setitem(sys.modules, "xgboost", fake_xgb)
+    fake_sklearn = types.ModuleType("sklearn"); fake_metrics = types.ModuleType("sklearn.metrics")
+    fake_metrics.accuracy_score = lambda a, b: 0.6
+    fake_sklearn.metrics = fake_metrics
+    monkeypatch.setitem(sys.modules, "sklearn", fake_sklearn)
+    monkeypatch.setitem(sys.modules, "sklearn.metrics", fake_metrics)
+
+    X = np.zeros((127, 3)); y = np.array([0, 1] * 63 + [0])
+    X_peer = np.ones((40, 3)); y_peer = np.array([0, 1] * 20)
+    out = _se._walk_forward_scores(X, y, X_peer, y_peer, 3.0)
+    assert out["fold_count"] >= 3
+    assert seen, "model.fit was never called"
+    for n_train, n_sw in seen:
+        assert n_sw == n_train          # one weight per training row
+        assert n_train >= 60 + 40       # WOLF prefix (>=min_train) + 40 pooled peers
 
 
 # ── PR #22: ops polish (purge non-WOLF / telegram status / freshness) ───
