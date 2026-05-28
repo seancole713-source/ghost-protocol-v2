@@ -10,7 +10,34 @@ pnl_pct. With the default stake_fraction=1.0 (WOLF holds one position at a time,
 deduped) equity simply compounds by (1 + pnl_pct/100) per trade.
 """
 import os
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Sequence, Tuple
+
+
+def resolution_exit(
+    outcome: str,
+    direction: str,
+    entry: float,
+    target: float,
+    stop: float,
+    market_price: float,
+) -> Tuple[float, float]:
+    """Exit fill and pnl_pct for a resolved pick.
+
+    WIN/LOSS use limit fills at target/stop (not the overshooting bar close).
+    EXPIRED uses the live market price at resolution time.
+    """
+    if outcome == "WIN":
+        exit_price = target
+    elif outcome == "LOSS":
+        exit_price = stop
+    else:
+        exit_price = market_price
+
+    if direction == "UP":
+        pnl_pct = (exit_price - entry) / entry * 100.0
+    else:
+        pnl_pct = (entry - exit_price) / entry * 100.0
+    return exit_price, round(pnl_pct, 3)
 
 
 def _bankroll() -> float:

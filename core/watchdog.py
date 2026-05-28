@@ -35,17 +35,18 @@ def run_watchdog():
                 if price <= target: hit = "WIN"
                 elif price >= stop: hit = "LOSS"
             if not hit: continue
-            pnl = (price-entry)/entry*100 if direction=="UP" else (entry-price)/entry*100
+            from core.pnl import resolution_exit
+            exit_price, pnl = resolution_exit(hit, direction, entry, target, stop, price)
             with db_conn() as conn:
                 cur = conn.cursor()
                 cur.execute(
                     "UPDATE predictions SET outcome=%s,exit_price=%s,pnl_pct=%s,resolved_at=%s WHERE id=%s AND outcome IS NULL",
-                    (hit, price, round(pnl,3), int(time.time()), pred_id))
+                    (hit, exit_price, pnl, int(time.time()), pred_id))
                 updated = cur.rowcount
             if not updated: continue  # Already resolved by reconciler
             try:
                 from core.telegram import send_position_alert
-                send_position_alert(symbol, direction, hit, entry, price, round(pnl, 2), conf or 0)
+                send_position_alert(symbol, direction, hit, entry, exit_price, pnl, conf or 0)
                 alerted += 1
                 LOGGER.info("WATCHDOG HIT: "+symbol+" "+direction+" "+hit+" "+str(round(pnl,2))+"%")
             except Exception as e:

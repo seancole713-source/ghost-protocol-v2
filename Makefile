@@ -1,7 +1,7 @@
 PYTHON ?= python3
 PYTEST ?= $(PYTHON) -m pytest
 
-.PHONY: test test-integration test-all test-compile test-e2e verify-live verify-health-audit check-error-signatures release-gates
+.PHONY: test test-integration test-all test-compile test-e2e verify-live verify-health-audit check-error-signatures prelaunch-smoke release-gates
 
 test:
 	$(PYTEST) -q -m "not integration"
@@ -30,6 +30,9 @@ verify-health-audit:
 
 check-error-signatures:
 	$(PYTHON) scripts/check_error_signatures.py
+
+prelaunch-smoke:
+	$(PYTHON) scripts/prelaunch_smoke.py
 
 release-gates: verify-live verify-health-audit check-error-signatures
 	bash scripts/go-no-go.sh

@@ -1465,12 +1465,13 @@ def reconcile_outcomes():
             elif price >= stop: outcome = "LOSS"
         if not outcome and expires_at and now > expires_at: outcome = "EXPIRED"
         if outcome:
-            pnl = (price-entry)/entry*100 if direction=="UP" else (entry-price)/entry*100
+            from core.pnl import resolution_exit
+            exit_price, pnl = resolution_exit(outcome, direction, entry, target, stop, price)
             with db_conn() as conn:
                 cur = conn.cursor()
                 cur.execute(
                     "UPDATE predictions SET outcome=%s,exit_price=%s,pnl_pct=%s,resolved_at=%s WHERE id=%s",
-                    (outcome, price, round(pnl,3), now, pred_id))
+                    (outcome, exit_price, pnl, now, pred_id))
             resolved += 1
             LOGGER.info("Resolved " + symbol + " " + direction + ": " + outcome + " " + str(round(pnl,2)) + "%")
             # Watchdog: fire Telegram alert immediately when pick resolves
@@ -1478,7 +1479,7 @@ def reconcile_outcomes():
                 try:
                     from core.telegram import send_position_alert
                     usd_out = round(100 * (1 + pnl/100), 2)
-                    send_position_alert(symbol, direction, outcome, entry, price, pnl, usd_out)
+                    send_position_alert(symbol, direction, outcome, entry, exit_price, pnl, usd_out)
                 except Exception as te:
                     LOGGER.error("Watchdog alert failed: " + str(te))
     return resolved
