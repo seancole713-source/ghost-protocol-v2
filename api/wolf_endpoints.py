@@ -1315,13 +1315,24 @@ def ghost_score_payload_sync(*, cache_ttl_s: float = 60, use_cache: bool = True)
     except Exception as e:
         errors.append("latest_pick: " + str(e)[:80])
 
-    # 2. Volume ratio + current price (yfinance fast_info)
+    # 2. Volume + current price (yfinance fast_info). Resilient to per-field
+    # misses like the upstream "currentTradingPeriod" quirk (same yfinance leak
+    # PR #23 scrubbed in /stats): fast_info and .info live in independent try
+    # blocks so a missing field in one payload doesn't drop the rest. A clean
+    # tag goes into errors instead of the raw yfinance internal string. Price
+    # falls back to core.prices.get_price (Alpaca first, yfinance second) so a
+    # single yfinance hiccup doesn't blank current_price either.
+    last_vol = None
+    avg_vol = None
     try:
         import yfinance as yf
         tk = yf.Ticker(WOLF_SYMBOL)
-        fi = tk.fast_info
-        current_price = _safe_float(getattr(fi, "last_price", None) or getattr(fi, "lastPrice", None))
-        last_vol = _safe_int(getattr(fi, "last_volume", None) or getattr(fi, "lastVolume", None))
+        try:
+            fi = tk.fast_info
+            current_price = _safe_float(getattr(fi, "last_price", None) or getattr(fi, "lastPrice", None))
+            last_vol = _safe_int(getattr(fi, "last_volume", None) or getattr(fi, "lastVolume", None))
+        except Exception:
+            errors.append("yf_fast_info_unavailable")
         try:
             info = tk.info or {}
             avg_vol = _safe_int(info.get("averageVolume") or info.get("averageDailyVolume10Day"))
@@ -1331,11 +1342,18 @@ def ghost_score_payload_sync(*, cache_ttl_s: float = 60, use_cache: bool = True)
                 short_pct = round(_sf * 100, 2)
             short_dtc = _safe_float(info.get("shortRatio"))
         except Exception:
-            avg_vol = None
+            pass    # avg_vol stays None
         if last_vol and avg_vol and avg_vol > 0:
             volume_ratio = round(last_vol / avg_vol, 2)
     except Exception as e:
-        errors.append("volume: " + str(e)[:80])
+        errors.append("volume_block: " + str(e)[:80])
+
+    if current_price is None:
+        try:
+            from core.prices import get_price
+            current_price = _safe_float(get_price(WOLF_SYMBOL, "stock"))
+        except Exception as _pe:
+            errors.append("price_fallback: " + str(_pe)[:80])
 
     # 3. Sector correlation (reuse existing helper)
     try:
