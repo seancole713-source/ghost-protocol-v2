@@ -1949,49 +1949,59 @@ function renderCatalysts(ctx, analyst, news){
   });
 })();
 
-/* ─── Orchestrator ─── */
-async function load(){
+/* ─── Orchestrator (staged: hero first, below-fold lazy) ─── */
+function _fetchJson(url, fallback){
+  return fetch(url).then(function(r){ return r.json(); }).catch(function(){ return fallback; });
+}
+
+async function _loadCoreContext(){
+  var ctx = await _fetchJson('/api/cockpit/context', {ok:false});
+  if(ctx && ctx.ok === true && ctx.health && ctx.stats){
+    return {
+      h: ctx.health,
+      stats: ctx.stats,
+      dir: ctx.direction || {},
+      v3: ctx.v3 || {trained:false},
+      activity: ctx.activity || null,
+    };
+  }
+  var h = await _fetchJson('/health');
+  var stats = await _fetchJson('/api/stats');
+  var dir = await _fetchJson('/api/stats/direction', {});
+  var v3 = await _fetchJson('/api/v3/status', {trained:false});
+  return {h: h, stats: stats, dir: dir, v3: v3, activity: null};
+}
+
+function _deferBelowFold(fn){
+  if(typeof requestIdleCallback === 'function'){
+    requestIdleCallback(function(){ fn(); }, {timeout: 2500});
+  } else {
+    setTimeout(fn, 0);
+  }
+}
+
+var _secondaryLoadGen = 0;
+
+async function loadCockpitSecondary(ctxPack, watching){
+  var gen = ++_secondaryLoadGen;
   try{
-    var ctx = await fetch('/api/cockpit/context').then(function(r){return r.json()}).catch(function(){return {ok:false}});
-    var h, stats, dir, v3, activity;
-    if(ctx && ctx.ok === true && ctx.health && ctx.stats){
-      h = ctx.health; stats = ctx.stats; dir = ctx.direction||{}; v3 = ctx.v3||{trained:false}; activity = ctx.activity||null;
-    } else {
-      h = await fetch('/health').then(function(r){return r.json()});
-      stats = await fetch('/api/stats').then(function(r){return r.json()});
-      dir = await fetch('/api/stats/direction').then(function(r){return r.json()}).catch(function(){return {}});
-      v3 = await fetch('/api/v3/status').then(function(r){return r.json()}).catch(function(){return {trained:false}});
-      activity = null;
-    }
+    var h = ctxPack.h, stats = ctxPack.stats, dir = ctxPack.dir, v3 = ctxPack.v3, activity = ctxPack.activity;
     var batch = await Promise.all([
-      fetch('/api/wolf/price').then(function(r){return r.json()}).catch(function(){return {ok:false}}),
-      fetch('/api/wolf/price-history?range=' + encodeURIComponent(_chartRange)).then(function(r){return r.json()}).catch(function(){return {ok:false,points:[]}}),
-      fetch('/api/wolf/predictions').then(function(r){return r.json()}).catch(function(){return {ok:false,predictions:[]}}),
-      fetch('/api/wolf/stats').then(function(r){return r.json()}).catch(function(){return {ok:false}}),
-      fetch('/api/wolf/earnings').then(function(r){return r.json()}).catch(function(){return {ok:false,quarters:[]}}),
-      fetch('/api/wolf/analyst').then(function(r){return r.json()}).catch(function(){return {ok:false}}),
-      fetch('/api/wolf/news?category=' + encodeURIComponent(_newsCat)).then(function(r){return r.json()}).catch(function(){return {ok:false,articles:[]}}),
-      fetch('/api/picks').then(function(r){return r.json()}),
-      fetch('/api/v2/recent').then(function(r){return r.json()}).catch(function(){return {trades:[]}}),
-      fetch('/api/stats/confidence-buckets').then(function(r){return r.json()}).catch(function(){return {ok:false}}),
-      fetch('/api/wolf/ghost-score').then(function(r){return r.json()}).catch(function(){return {ok:false}}),
-      fetch('/api/wolf/context').then(function(r){return r.json()}).catch(function(){return {ok:false}}),
+      _fetchJson('/api/wolf/price-history?range=' + encodeURIComponent(_chartRange), {ok:false, points:[]}),
+      _fetchJson('/api/wolf/predictions', {ok:false, predictions:[]}),
+      _fetchJson('/api/wolf/stats', {ok:false}),
+      _fetchJson('/api/wolf/earnings', {ok:false, quarters:[]}),
+      _fetchJson('/api/wolf/analyst', {ok:false}),
+      _fetchJson('/api/wolf/news?category=' + encodeURIComponent(_newsCat), {ok:false, articles:[]}),
+      _fetchJson('/api/v2/recent', {trades:[]}),
+      _fetchJson('/api/stats/confidence-buckets', {ok:false}),
+      _fetchJson('/api/wolf/context', {ok:false}),
     ]);
-    var price=batch[0], history=batch[1], predictions=batch[2], wstats=batch[3], earnings=batch[4],
-        analyst=batch[5], news=batch[6], picks=batch[7], recent=batch[8],
-        conf=batch[9], ghostScore=batch[10], wolfCtx=batch[11];
-
-    // PR #23: compute a single freshness gate once, then ALL renderers
-    // (hero, today's play, ghost score) consult it so the cockpit tells
-    // ONE consistent story. If pick freshness > 7 days, we're WATCHING
-    // — no signal has cleared the alert floor in a long time.
-    var watching = _computeWatching(h, ghostScore);
-
-    renderGhostScore(ghostScore, watching);
-    renderHero(price, watching);
+    if(gen !== _secondaryLoadGen) return;
+    var history = batch[0], predictions = batch[1], wstats = batch[2], earnings = batch[3],
+        analyst = batch[4], news = batch[5], recent = batch[6], conf = batch[7], wolfCtx = batch[8];
     renderPerf(stats, conf, recent);
     renderOutcomeDonut(recent);
-    renderPlay(picks, watching);
     renderPredictionChart(history, predictions);
     renderStats(wstats);
     renderEarnings(earnings);
@@ -2001,10 +2011,34 @@ async function load(){
     renderCatalysts(wolfCtx, analyst, news);
     renderTruth(stats, h, v3, dir);
     renderActivity(activity);
-
     document.getElementById('f-open').textContent = stats.open_positions || 0;
-    window._lastLoad = Date.now();   // roadmap #3c: mark a successful refresh
+  }catch(e){
+    console.error(e);
+  }
+}
+
+async function load(){
+  try{
+    var ctxP = _loadCoreContext();
+    var coreP = Promise.all([
+      _fetchJson('/api/wolf/ghost-score', {ok:false}),
+      _fetchJson('/api/wolf/price', {ok:false}),
+      _fetchJson('/api/picks'),
+    ]);
+    var ctxPack = await ctxP;
+    var core = await coreP;
+    var h = ctxPack.h, stats = ctxPack.stats;
+    var ghostScore = core[0], price = core[1], picks = core[2];
+    var watching = _computeWatching(h, ghostScore);
+
+    renderGhostScore(ghostScore, watching);
+    renderHero(price, watching);
+    renderPlay(picks, watching);
+    document.getElementById('f-open').textContent = stats.open_positions || 0;
+    window._lastLoad = Date.now();
     _renderAutoStatus();
+
+    void loadCockpitSecondary(ctxPack, watching);
   } catch(e){
     console.error(e);
     var ce = document.getElementById('hero-change');
@@ -2205,12 +2239,14 @@ setInterval(function(){
 }, 1000);
 
 load();
-loadPortfolio();
-loadEquityChart();
-loadShortInterest();
-loadPickJournal(true);
-loadSignalHistory();
-loadAttribution();
+_deferBelowFold(function(){
+  loadPortfolio();
+  loadEquityChart();
+  loadShortInterest();
+  loadPickJournal(true);
+  loadSignalHistory();
+  loadAttribution();
+});
 // Visibility-aware polling (roadmap #3c): skip refreshes while the tab is
 // hidden (a load() fires on return via visibilitychange), so we don't hammer
 // the API in backgrounded tabs.
