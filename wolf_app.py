@@ -508,10 +508,10 @@ def _build_silence_card_data(diag: dict) -> dict:
         pass
     score = "--"
     try:
-        from api.wolf_endpoints import _cache_get
-        cached = _cache_get("ghost-score", 86400)
-        if cached and cached.get("score") is not None:
-            score = int(round(float(cached["score"])))
+        from api.wolf_endpoints import ghost_score_payload_sync
+        gs = ghost_score_payload_sync(use_cache=False)
+        if gs.get("ok") and gs.get("score") is not None:
+            score = int(round(float(gs["score"])))
     except Exception:
         pass
     return {"ghost_score": score, "reason": reason}

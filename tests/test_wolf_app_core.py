@@ -3182,6 +3182,28 @@ def test_format_silence_card():
     assert "Next scan: Tomorrow 8 AM CT" in out
 
 
+def test_build_silence_card_data_fetches_ghost_score(monkeypatch):
+    monkeypatch.setattr(
+        "api.wolf_endpoints.ghost_score_payload_sync",
+        lambda **kw: {"ok": True, "score": 65.0},
+    )
+    out = wolf_app._build_silence_card_data({
+        "top_reason_label": "v3 model prob below BUY floor",
+        "confidence_floor": 0.75,
+    })
+    assert out["ghost_score"] == 65
+    assert "floor 75%" in out["reason"]
+
+
+def test_build_silence_card_data_score_fallback_on_error(monkeypatch):
+    def _boom(**kw):
+        raise RuntimeError("score unavailable")
+
+    monkeypatch.setattr("api.wolf_endpoints.ghost_score_payload_sync", _boom)
+    out = wolf_app._build_silence_card_data({"top_reason_label": "v3 model prob below BUY floor"})
+    assert out["ghost_score"] == "--"
+
+
 # ── feat/admin-lineage-audit: model lineage + admin action log ──────────
 
 def test_record_admin_action_appends_and_caps(monkeypatch):

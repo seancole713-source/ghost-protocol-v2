@@ -1273,19 +1273,12 @@ def compute_ghost_score(latest_pick, volume_ratio, sector, current_price, sma_5d
     }
 
 
-@router.get("/ghost-score")
-async def get_ghost_score():
-    """Composite 0-100 score reflecting overall WOLF bullishness.
-
-    Cached for 60s. All inputs are real data: latest pick from the
-    predictions table, volume ratio from yfinance, sector correlation
-    from the SiC peers helper, and 5-day SMA from the price history.
-
-    Frontend renders this as a gauge at the top of the cockpit.
-    """
-    cached = _cache_get("ghost-score", 60)
-    if cached:
-        return JSONResponse(content=cached)
+def ghost_score_payload_sync(*, cache_ttl_s: float = 60, use_cache: bool = True) -> Dict[str, Any]:
+    """Build the ghost-score payload synchronously for HTTP and internal callers."""
+    if use_cache:
+        cached = _cache_get("ghost-score", cache_ttl_s)
+        if cached:
+            return cached
 
     latest_pick = None
     volume_ratio = None
@@ -1418,4 +1411,17 @@ async def get_ghost_score():
         "errors": errors if errors else None,
     })
     _cache_set("ghost-score", payload)
-    return JSONResponse(content=payload)
+    return payload
+
+
+@router.get("/ghost-score")
+async def get_ghost_score():
+    """Composite 0-100 score reflecting overall WOLF bullishness.
+
+    Cached for 60s. All inputs are real data: latest pick from the
+    predictions table, volume ratio from yfinance, sector correlation
+    from the SiC peers helper, and 5-day SMA from the price history.
+
+    Frontend renders this as a gauge at the top of the cockpit.
+    """
+    return JSONResponse(content=ghost_score_payload_sync())
