@@ -21,6 +21,9 @@ except ImportError:
 
 LOGGER = logging.getLogger("ghost.prediction")
 
+# Serialize prediction saves across concurrent cycles (market scan + cron overlap).
+_PREDICTION_SAVE_LOCK_ID = 8723491
+
 CONFIDENCE_FLOOR = float(os.getenv("MIN_ALERT_CONFIDENCE", "0.80"))  # raised: filter weak signals
 DAILY_CAP        = int(os.getenv("DAILY_ALERT_CAP", "10"))
 TARGET_PCT       = float(os.getenv("TARGET_PCT", "0.06"))
@@ -1021,6 +1024,16 @@ def _circuit_breaker_floor():
     return base, False, "clear"
 
 
+def _symbol_has_open_pick(cur, symbol: str, now_ts: int = None) -> bool:
+    """True if symbol already has an unresolved, unexpired pick."""
+    now_ts = int(time.time()) if now_ts is None else now_ts
+    cur.execute(
+        "SELECT 1 FROM predictions WHERE symbol=%s AND outcome IS NULL AND expires_at > %s LIMIT 1",
+        (symbol, now_ts),
+    )
+    return cur.fetchone() is not None
+
+
 def run_prediction_cycle(with_diag: bool = False):
     """Run predictions. Returns list of saved picks. Does NOT send Telegram.
 
@@ -1087,21 +1100,17 @@ def run_prediction_cycle(with_diag: bool = False):
         top = []   # scan + record continue; firing suppressed
     saved = []
     dedup_blocked = 0
-    # Pre-fetch open symbols once (separate conn avoids cursor state corruption mid-loop)
-    _open = set()
-    try:
-        with db_conn() as _c:
-            _x = _c.cursor()
-            _x.execute("SELECT DISTINCT symbol FROM predictions WHERE outcome IS NULL AND expires_at > %s", (int(time.time()),))
-            _open = {r[0] for r in _x.fetchall()}
-    except Exception as _e:
-        LOGGER.warning("dedup prefetch failed: " + str(_e))
+    now_ts = int(time.time())
     with db_conn() as conn:
         cur = conn.cursor()
+        # One writer at a time — prevents duplicate open picks when market scan,
+        # morning card, and /api/run-predictions overlap in the same second.
+        cur.execute("SELECT pg_advisory_xact_lock(%s)", (_PREDICTION_SAVE_LOCK_ID,))
         for pick in top:
             try:
-                if pick["symbol"] in _open:
-                    LOGGER.info("DEDUP: skipping " + pick["symbol"])
+                sym = pick["symbol"]
+                if _symbol_has_open_pick(cur, sym, now_ts):
+                    LOGGER.info("DEDUP: skipping " + sym)
                     dedup_blocked += 1
                     continue
                 cur.execute(
@@ -1115,8 +1124,13 @@ def run_prediction_cycle(with_diag: bool = False):
                 pick["id"] = pred_id
                 saved.append(pick)
             except Exception as e:
+                import psycopg2
+                if isinstance(e, psycopg2.errors.UniqueViolation):
+                    LOGGER.info("DEDUP: unique index blocked " + pick["symbol"])
+                    dedup_blocked += 1
+                    continue
                 LOGGER.error("INSERT " + pick["symbol"] + ": " + str(e))
-                conn.rollback()
+                raise
     LOGGER.info("Cycle: " + str(len(saved)) + "/" + str(len(all_picks)) + " picks | regime: " + (regime["reason"] or "OK"))
     # Persist cycle heartbeat even when zero picks are saved.
     try:

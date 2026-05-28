@@ -101,6 +101,21 @@ def _migrate_schema():
         "ALTER TABLE predictions ALTER COLUMN horizon_h DROP NOT NULL",
         "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS features JSONB",
         "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS scores JSONB",
+        # Expire duplicate open picks (keep highest confidence) before unique index.
+        """
+        UPDATE predictions p SET outcome='EXPIRED', resolved_at=EXTRACT(EPOCH FROM NOW())::BIGINT
+        FROM (
+            SELECT id, ROW_NUMBER() OVER (
+                PARTITION BY symbol ORDER BY confidence DESC, predicted_at DESC, id DESC
+            ) AS rn
+            FROM predictions WHERE outcome IS NULL
+        ) d
+        WHERE p.id = d.id AND d.rn > 1
+        """,
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_predictions_one_open_symbol
+        ON predictions (symbol) WHERE outcome IS NULL
+        """,
     ]
     with db_conn() as conn:
         cur = conn.cursor()
