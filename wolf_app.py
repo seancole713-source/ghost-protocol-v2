@@ -3436,14 +3436,16 @@ def run_watchdog(x_cron_secret: str = Header(default="")):
                 if price <= target: hit = "WIN"
                 elif price >= stop: hit = "LOSS"
             if hit:
-                pnl = (price-entry)/entry*100 if direction=="UP" else (entry-price)/entry*100
+                from core.pnl import resolution_exit
+                exit_price, pnl = resolution_exit(hit, direction, entry, target, stop, price)
                 with db_conn() as conn:
                     cur = conn.cursor()
                     cur.execute(
                         "UPDATE predictions SET outcome=%s,exit_price=%s,pnl_pct=%s,resolved_at=%s WHERE id=%s",
-                        (hit, price, round(pnl,3), int(time.time()), pred_id))
+                        (hit, exit_price, pnl, int(time.time()), pred_id))
                 try:
-                    send_position_alert(symbol, direction, hit, entry, price, round(pnl, 2), conf or 0)
+                    usd_out = round(100 * (1 + pnl / 100), 2)
+                    send_position_alert(symbol, direction, hit, entry, exit_price, pnl, usd_out)
                 except Exception as e:
                     LOGGER.error("watchdog alert " + symbol + ": " + str(e))
                 alerted.append({"symbol":symbol,"outcome":hit,"pnl":round(pnl,2)})

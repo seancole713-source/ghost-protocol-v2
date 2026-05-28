@@ -46,7 +46,8 @@ def run_watchdog():
             if not updated: continue  # Already resolved by reconciler
             try:
                 from core.telegram import send_position_alert
-                send_position_alert(symbol, direction, hit, entry, exit_price, pnl, conf or 0)
+                usd_out = round(100 * (1 + pnl / 100), 2)
+                send_position_alert(symbol, direction, hit, entry, exit_price, pnl, usd_out)
                 alerted += 1
                 LOGGER.info("WATCHDOG HIT: "+symbol+" "+direction+" "+hit+" "+str(round(pnl,2))+"%")
             except Exception as e:
