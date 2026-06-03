@@ -53,6 +53,12 @@ def format_daily_card(d: Dict[str, Any]) -> str:
     conf = float(d.get("confidence") or 0)
     conf_pct = int(round(conf * 100))
     conviction = d.get("conviction") or conviction_from_confidence(conf)
+    action = d.get("pick_action") or conviction_from_confidence(conf)
+    if conf >= 0.90:
+        action = d.get("pick_action") or "SUPER BUY"
+    elif conf >= 0.75:
+        action = d.get("pick_action") or "BUY NOW"
+    sizing = d.get("position_sizing") or {}
 
     news = d.get("news") or {}
     infl = int(news.get("influence_pct", 0) or 0)
@@ -69,6 +75,8 @@ def format_daily_card(d: Dict[str, Any]) -> str:
         "Date: " + str(d.get("date", "")),
         "Model Version: " + str(d.get("model_version", "v3.2")),
         "",
+        "<b>ACTION:</b> " + str(action),
+        "",
         "<b>PREDICTION:</b>",
         "Direction: " + str(direction),
         "Confidence: " + str(conf_pct) + "%",
@@ -80,6 +88,20 @@ def format_daily_card(d: Dict[str, Any]) -> str:
         "Sell Target: " + _fmt_price(d.get("sell_target")),
         "Stop Loss: " + _fmt_price(d.get("stop_loss")),
         "Expected Move: " + _signed_pct(d.get("expected_move_pct")),
+        "",
+        "<b>1% RISK SIZING:</b>",
+    ]
+    if sizing.get("ok"):
+        lines += [
+            "Account: $" + format(float(sizing.get("account_size_usd", 0)), ",.0f")
+            + " | Max loss if stop hits: $" + format(float(sizing.get("max_loss_usd", 0)), ",.2f"),
+            "Suggested: " + str(sizing.get("suggested_shares", "--")) + " shares (~$"
+            + format(float(sizing.get("suggested_notional_usd", 0)), ",.0f") + ")",
+            "Stop distance: " + str(sizing.get("stop_distance_pct", "--")) + "%",
+        ]
+    else:
+        lines.append("Set GHOST_ACCOUNT_SIZE for share suggestions.")
+    lines += [
         "",
         "<b>NEWS INFLUENCE:</b>",
     ]
@@ -139,11 +161,17 @@ def format_weekly_summary(d: Dict[str, Any]) -> str:
 
 
 def format_silence_card(d: Dict[str, Any]) -> str:
+    score = d.get("ghost_score", "--")
+    bias = d.get("bias_label") or "composite bias"
+    trade_action = d.get("trade_action") or "NO TRADE"
+    trade_note = d.get("trade_note") or "No official pick — gates not cleared."
     lines = [
         "<b>GHOST PROTOCOL | WOLF</b>",
         "Status: SILENCE — No high-conviction signal today",
-        "Ghost Score: " + str(d.get("ghost_score", "--")) + "/100",
+        "Ghost Score: " + str(score) + "/100 (" + str(bias) + ")",
+        "Trade action: " + str(trade_action),
         "Reason: " + str(d.get("reason", "No qualifying signal")),
+        trade_note,
         "Next scan: Tomorrow 8 AM CT",
     ]
     return NL.join(lines)

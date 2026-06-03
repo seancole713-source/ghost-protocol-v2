@@ -828,9 +828,9 @@ function renderGhostScore(gs, watching){
 
   var score = Number(gs.score) || 0;
   var color = gsScoreColor(score);
-  // PR #23: in WATCHING mode (no signal cleared the floor in 7+ days),
-  // the gauge label MUST say WATCHING — not the computed signal — to
-  // match the hero/play story. Score number stays but signal text overrides.
+  var tradeAction = (gs.trade_action || '').replace(/_/g, ' ');
+  var biasLabel = gs.bias_label || '';
+  // Prefer explicit trade action over composite signal label when not in WATCHING staleness mode.
   if(watching && watching.watching){
     fg.setAttribute('d', gsArcPath(score));
     fg.setAttribute('stroke', '#666');
@@ -838,6 +838,14 @@ function renderGhostScore(gs, watching){
     scoreEl.style.color = '#888';
     sigEl.textContent = 'WATCHING';
     sigEl.className = 'gs-signal hold';
+  } else if(tradeAction){
+    fg.setAttribute('d', gsArcPath(score));
+    fg.setAttribute('stroke', color);
+    scoreEl.textContent = Math.round(score);
+    scoreEl.style.color = color;
+    sigEl.textContent = tradeAction;
+    var taUp = tradeAction.indexOf('SUPER BUY') >= 0 || tradeAction === 'BUY NOW';
+    sigEl.className = 'gs-signal ' + (taUp ? (tradeAction.indexOf('SUPER') >= 0 ? 'strong-buy' : 'buy') : 'hold');
   } else {
     fg.setAttribute('d', gsArcPath(score));
     fg.setAttribute('stroke', color);
@@ -892,10 +900,18 @@ function renderGhostScore(gs, watching){
     var _flr = (gs.confidence_floor != null) ? (Math.round(gs.confidence_floor * 100) + '%') : 'the confidence';
     parts.unshift('composite score · no pick ≥ ' + _flr + ' floor in ' + watching.days + 'd');
   }
+  if(gs.trade_note){
+    parts.unshift(gs.trade_note);
+  }
   metaEl.innerHTML = parts.length ? parts.join(' · ') : 'No input data';
   if(subEl){
-    subEl.textContent = 'Updated ' + (gs.updated_at ? fmtTimeAgo(gs.updated_at) : 'just now')
-      + ' · weights: model 40 · volume 20 · sector 15 · momentum 15 · freshness 10';
+    var subParts = [];
+    if(biasLabel){
+      subParts.push(biasLabel.charAt(0).toUpperCase() + biasLabel.slice(1));
+    }
+    subParts.push('Updated ' + (gs.updated_at ? fmtTimeAgo(gs.updated_at) : 'just now')
+      + ' · weights: model 40 · volume 20 · sector 15 · momentum 15 · freshness 10');
+    subEl.textContent = subParts.join(' · ');
   }
 }
 

@@ -1098,6 +1098,17 @@ def run_prediction_cycle(with_diag: bool = False):
             "ENGINE PAUSED (kill condition) — suppressing %d candidate(s): %s",
             len(top), _pause.get("reason"))
         top = []   # scan + record continue; firing suppressed
+    try:
+        from core.risk_discipline import combined_trading_block, refresh_daily_loss_lock
+        refresh_daily_loss_lock(notify=False)
+        _rb = combined_trading_block()
+        if _rb.get("blocked") and top:
+            LOGGER.warning(
+                "RISK DISCIPLINE — suppressing %d candidate(s): %s",
+                len(top), "; ".join(_rb.get("reasons") or []))
+            top = []
+    except Exception as _rde:
+        LOGGER.warning("risk discipline gate failed: %s", str(_rde)[:80])
     saved = []
     dedup_blocked = 0
     now_ts = int(time.time())
@@ -1496,4 +1507,10 @@ def reconcile_outcomes():
                     send_position_alert(symbol, direction, outcome, entry, exit_price, pnl, usd_out)
                 except Exception as te:
                     LOGGER.error("Watchdog alert failed: " + str(te))
+    if resolved:
+        try:
+            from core.risk_discipline import run_risk_discipline_cycle
+            run_risk_discipline_cycle(notify=True)
+        except Exception as _re:
+            LOGGER.warning("risk discipline post-resolve failed: %s", str(_re)[:80])
     return resolved

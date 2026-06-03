@@ -63,8 +63,18 @@ def send_morning_card(picks, week_stats=None, is_update=False):
             parts.append("   Run away at: " + _fmt(stop))
             parts.append("   Done by:     " + exp_str)
             parts.append("   $100 in -- $" + str(usd_out) + " out")
-            pos = p.get("pos_size_pct", 2.0)
-            parts.append("   Risk: " + str(pos) + "% of your capital (e.g. $" + str(round(pos/100*1000,0)) + " of $1K)")
+            try:
+                from core.risk_discipline import position_sizing_plan
+                sz = position_sizing_plan(entry, stop, confidence=p.get("confidence"))
+                if sz.get("ok"):
+                    parts.append(
+                        "   Size (1% risk): " + str(sz["suggested_shares"]) + " sh (~$"
+                        + str(int(sz["suggested_notional_usd"])) + ") · max loss $"
+                        + str(round(sz["max_loss_usd"], 0))
+                    )
+            except Exception:
+                pos = p.get("pos_size_pct", 2.0)
+                parts.append("   Risk: " + str(pos) + "% of your capital (e.g. $" + str(round(pos/100*1000,0)) + " of $1K)")
     if week_stats:
         w = week_stats.get("wins", 0)
         l = week_stats.get("losses", 0)
@@ -156,6 +166,10 @@ def send_weekly_card(data):
 
 def send_health_alert(issue):
     return _send(NL.join(["<b>GHOST HEALTH ALERT</b>", issue]))
+
+
+def send_risk_discipline_alert(title, body):
+    return _send(NL.join(["<b>GHOST RISK — " + str(title) + "</b>", str(body)]))
 
 def send_test():
     return _send("Ghost Protocol v2 -- Telegram connected OK")

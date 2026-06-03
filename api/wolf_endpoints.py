@@ -1428,8 +1428,69 @@ def ghost_score_payload_sync(*, cache_ttl_s: float = 60, use_cache: bool = True)
         },
         "errors": errors if errors else None,
     })
+    open_pick = None
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT id, confidence, direction
+                FROM predictions
+                WHERE symbol = %s AND outcome IS NULL AND expires_at > %s
+                ORDER BY id DESC LIMIT 1
+                """,
+                (WOLF_SYMBOL, now_ts),
+            )
+            row = cur.fetchone()
+            if row:
+                open_pick = {"id": int(row[0]), "confidence": float(row[1]), "direction": row[2]}
+    except Exception:
+        pass
+    try:
+        from core.prediction import engine_pause_state
+        from core.risk_discipline import (
+            bias_label_from_score,
+            combined_trading_block,
+            is_daily_loss_locked,
+            trade_action_from_context,
+        )
+
+        pause = engine_pause_state()
+        action = trade_action_from_context(
+            has_official_pick=bool(open_pick),
+            pick_confidence=(open_pick or {}).get("confidence"),
+            ghost_score=scored["score"],
+            gates_blocked=not bool(open_pick),
+            engine_paused=bool(pause.get("paused")),
+            daily_locked=is_daily_loss_locked(),
+        )
+        payload["bias_label"] = bias_label_from_score(scored["score"])
+        payload["signal_note"] = (
+            "Ghost Score = composite bias only. Trade only on SUPER BUY / BUY NOW picks."
+        )
+        payload.update(action)
+        payload["risk_discipline"] = combined_trading_block()
+        payload["open_pick_id"] = (open_pick or {}).get("id")
+    except Exception as e:
+        payload["risk_discipline_error"] = str(e)[:120]
     _cache_set("ghost-score", payload)
     return payload
+
+
+@router.get("/risk-discipline")
+async def get_risk_discipline():
+    from core.risk_discipline import combined_trading_block, position_sizing_plan, risk_settings
+
+    block = combined_trading_block()
+    return JSONResponse(content={"ok": True, "settings": risk_settings(), **block})
+
+
+@router.get("/risk-discipline/sizing")
+async def get_risk_sizing(entry: float, stop: float, confidence: float = 0.75):
+    from core.risk_discipline import position_sizing_plan
+
+    plan = position_sizing_plan(entry, stop, confidence=confidence)
+    return JSONResponse(content={"ok": True, **plan})
 
 
 @router.get("/ghost-score")

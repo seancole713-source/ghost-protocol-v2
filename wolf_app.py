@@ -462,12 +462,24 @@ def _build_daily_card_data(pick: dict) -> dict:
         news["summary"] = _wolf_news_summary()
     hi, lo = _wolf_week_rate_bounds()
     conf_pct = int(round(conf * 100))
+    gs_score = None
+    try:
+        from api.wolf_endpoints import ghost_score_payload_sync
+        _gs = ghost_score_payload_sync(use_cache=True)
+        if _gs.get("ok"):
+            gs_score = float(_gs.get("score") or 0)
+    except Exception:
+        pass
+    from core.risk_discipline import position_sizing_plan, pick_action_tier
+    sizing = position_sizing_plan(entry, stop, confidence=conf)
     return {
         "date": _dt.datetime.now(tz).strftime("%A %b %d, %Y"),
         "model_version": "v3.2",
         "direction": direction,
         "confidence": conf,
         "conviction": conviction_from_confidence(conf),
+        "pick_action": pick_action_tier(conf, gs_score),
+        "position_sizing": sizing,
         "current_price": entry,
         "buy_point": entry,
         "sell_target": target,
@@ -507,14 +519,40 @@ def _build_silence_card_data(diag: dict) -> dict:
     except Exception:
         pass
     score = "--"
+    gs_score_f = None
     try:
         from api.wolf_endpoints import ghost_score_payload_sync
         gs = ghost_score_payload_sync(use_cache=False)
         if gs.get("ok") and gs.get("score") is not None:
-            score = int(round(float(gs["score"])))
+            gs_score_f = float(gs["score"])
+            score = int(round(gs_score_f))
     except Exception:
         pass
-    return {"ghost_score": score, "reason": reason}
+    from core.risk_discipline import (
+        bias_label_from_score,
+        combined_trading_block,
+        is_daily_loss_locked,
+        trade_action_from_context,
+    )
+    from core.prediction import engine_pause_state
+    pause = engine_pause_state()
+    action_ctx = trade_action_from_context(
+        has_official_pick=False,
+        ghost_score=gs_score_f,
+        gates_blocked=True,
+        engine_paused=bool(pause.get("paused")),
+        daily_locked=is_daily_loss_locked(),
+    )
+    out = {
+        "ghost_score": score,
+        "bias_label": bias_label_from_score(float(gs_score_f or 50)),
+        "reason": reason,
+        **action_ctx,
+    }
+    block = combined_trading_block()
+    if block.get("blocked") and block.get("reasons"):
+        out["risk_block"] = "; ".join(block["reasons"])
+    return out
 
 
 def _build_daily_summary():
@@ -1091,6 +1129,15 @@ async def lifespan(app: FastAPI):
     # T19: Auto-refresh portfolio stock prices every 15 min
     from core.portfolio_routes import auto_refresh_portfolio_prices
     scheduler.register("portfolio_price_refresh", auto_refresh_portfolio_prices, interval_s=900)
+    from core.risk_discipline import run_risk_discipline_cycle
+
+    def _risk_discipline_job():
+        try:
+            run_risk_discipline_cycle(notify=True)
+        except Exception as _e:
+            LOGGER.warning("risk discipline job failed: %s", str(_e)[:80])
+
+    scheduler.register("risk_discipline", _risk_discipline_job, interval_s=300)
     scheduler.register("news", run_news_cycle, interval_s=1800)
     # Coverage maintenance: if too few loadable v3 models, run rate-limited retrain.
     scheduler.register(
