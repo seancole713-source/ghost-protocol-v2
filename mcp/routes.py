@@ -1,39 +1,86 @@
-"""FastAPI routes for Ghost MCP (Phase 1, read-only)."""
+"""FastAPI routes for Ghost MCP — Streamable HTTP + token-in-path (Phase 1.5)."""
 from __future__ import annotations
 
 import json
-from typing import Any, Dict
+from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
 from mcp.ghost_server import invoke_tool, list_tools
+from mcp.jsonrpc import process_jsonrpc_body
 from mcp.security import require_mcp_auth
 
-router = APIRouter(prefix="/mcp", tags=["mcp"])
+router = APIRouter(tags=["mcp"])
 
 
-@router.get("")
-async def mcp_info(request: Request):
-    """Discovery — requires auth."""
-    require_mcp_auth(request)
+async def _read_json_body(request: Request) -> Any:
+    try:
+        return await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+
+async def _handle_streamable_post(request: Request, path_token: Optional[str]) -> Response:
+    require_mcp_auth(request, path_token=path_token)
+    body = await _read_json_body(request)
+    payload, new_session = process_jsonrpc_body(body)
+
+    # Notification-only (e.g. notifications/initialized) → 202 Accepted
+    if payload is None:
+        resp = Response(status_code=202, content="")
+        if new_session:
+            resp.headers["Mcp-Session-Id"] = new_session
+        return resp
+
+    resp = JSONResponse(content=payload)
+    if new_session:
+        resp.headers["Mcp-Session-Id"] = new_session
+    return resp
+
+
+@router.post("/mcp")
+async def mcp_post_root(request: Request):
+    return await _handle_streamable_post(request, path_token=None)
+
+
+@router.post("/mcp/{path_token}")
+async def mcp_post_token(path_token: str, request: Request):
+    return await _handle_streamable_post(request, path_token=path_token)
+
+
+@router.get("/mcp")
+async def mcp_get_root(request: Request):
+    require_mcp_auth(request, path_token=None)
     return {
         "ok": True,
         "service": "ghost-protocol-mcp",
-        "phase": 1,
-        "transport": "http-jsonrpc-and-rest",
-        "tools_path": "/mcp/tools/{name}",
-        "jsonrpc_path": "/mcp",
+        "phase": "1.5",
+        "transport": "streamable-http",
+        "jsonrpc_post": "/mcp",
     }
 
 
-@router.get("/tools")
+@router.get("/mcp/{path_token}")
+async def mcp_get_token(path_token: str, request: Request):
+    require_mcp_auth(request, path_token=path_token)
+    return {
+        "ok": True,
+        "service": "ghost-protocol-mcp",
+        "phase": "1.5",
+        "transport": "streamable-http",
+        "jsonrpc_post": f"/mcp/{path_token}",
+    }
+
+
+# Legacy REST tool routes (header auth or /mcp/{token} prefix via separate mount — header/path on POST only)
+@router.get("/mcp/tools")
 async def mcp_tools_list(request: Request):
     require_mcp_auth(request)
     return {"ok": True, "tools": list_tools()}
 
 
-@router.get("/tools/{tool_name}")
+@router.get("/mcp/tools/{tool_name}")
 async def mcp_tool_call(tool_name: str, request: Request):
     require_mcp_auth(request)
     try:
@@ -47,55 +94,3 @@ async def mcp_tool_call(tool_name: str, request: Request):
         except Exception:
             payload = {"ok": False, "error": "non-json response"}
     return JSONResponse(content=payload)
-
-
-@router.post("")
-async def mcp_jsonrpc(request: Request):
-    """Minimal MCP JSON-RPC: tools/list and tools/call only."""
-    require_mcp_auth(request)
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON body")
-    if not isinstance(body, dict):
-        raise HTTPException(status_code=400, detail="JSON object required")
-
-    req_id = body.get("id")
-    method = body.get("method")
-    params = body.get("params") if isinstance(body.get("params"), dict) else {}
-
-    def _resp(result: Any) -> Dict[str, Any]:
-        out: Dict[str, Any] = {"jsonrpc": "2.0", "id": req_id, "result": result}
-        return out
-
-    def _err(code: int, message: str) -> Dict[str, Any]:
-        return {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
-
-    if method == "tools/list":
-        return _resp({"tools": list_tools()})
-
-    if method == "tools/call":
-        name = params.get("name")
-        if not name or not isinstance(name, str):
-            return JSONResponse(content=_err(-32602, "params.name required"))
-        try:
-            content = invoke_tool(name)
-            if isinstance(content, JSONResponse):
-                content = json.loads(content.body.decode())
-            text = json.dumps(content, default=str)
-        except KeyError:
-            return JSONResponse(content=_err(-32602, f"Unknown tool: {name}"))
-        except Exception as exc:
-            return JSONResponse(content=_err(-32000, str(exc)[:200]))
-        return _resp({"content": [{"type": "text", "text": text}]})
-
-    if method == "initialize":
-        return _resp(
-            {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {"tools": {}},
-                "serverInfo": {"name": "ghost-protocol-mcp", "version": "1.0.0"},
-            }
-        )
-
-    return JSONResponse(content=_err(-32601, f"Method not found: {method}"))

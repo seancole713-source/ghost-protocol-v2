@@ -42,6 +42,13 @@ def verify_mcp_token(provided: str) -> bool:
     return hmac.compare_digest(got, expected)
 
 
+def verify_mcp_path_token(path_token: str | None) -> bool:
+    """Verify URL path segment against GHOST_MCP_TOKEN (token-in-path for claude.ai)."""
+    if not path_token:
+        return False
+    return verify_mcp_token(path_token.strip())
+
+
 def require_https(request: Request) -> None:
     """Reject non-TLS requests (Railway public traffic uses X-Forwarded-Proto)."""
     if os.getenv("GHOST_TEST_MODE", "0").strip().lower() in ("1", "true", "yes", "on"):
@@ -51,8 +58,31 @@ def require_https(request: Request) -> None:
         raise HTTPException(status_code=403, detail="HTTPS required")
 
 
-def require_mcp_auth(request: Request) -> None:
-    """TLS + token required before any sensitive read."""
+def require_mcp_auth(request: Request, *, path_token: str | None = None) -> None:
+    """TLS + MCP token via header OR path segment (either passes)."""
     require_https(request)
-    if not verify_mcp_token(extract_mcp_token(request)):
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    header_ok = verify_mcp_token(extract_mcp_token(request))
+    path_ok = verify_mcp_path_token(path_token)
+    if header_ok or path_ok:
+        return
+    raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+def _admin_session_valid(request: Request) -> bool:
+    try:
+        import wolf_app
+
+        token = request.cookies.get(wolf_app._ADMIN_COOKIE, "")
+        return wolf_app._admin_token_valid(token)
+    except Exception:
+        return False
+
+
+def require_portfolio_auth(request: Request) -> None:
+    """Portfolio: MCP token (header) OR valid /admin session cookie; anonymous → 401."""
+    require_https(request)
+    if verify_mcp_token(extract_mcp_token(request)):
+        return
+    if _admin_session_valid(request):
+        return
+    raise HTTPException(status_code=401, detail="Unauthorized")

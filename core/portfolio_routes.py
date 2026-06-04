@@ -80,8 +80,8 @@ def build_portfolio_payload() -> dict:
 
 @portfolio_router.get("/api/portfolio")
 def get_portfolio(request: Request):
-    from mcp.security import require_mcp_auth
-    require_mcp_auth(request)
+    from mcp.security import require_portfolio_auth
+    require_portfolio_auth(request)
     return build_portfolio_payload()
 
 @portfolio_router.post("/api/portfolio")

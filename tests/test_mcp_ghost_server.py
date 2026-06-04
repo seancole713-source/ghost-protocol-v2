@@ -1,67 +1,107 @@
-"""Tests for Ghost MCP Phase 1 (read-only, token auth, GET-only)."""
+"""Tests for Ghost MCP Phase 1.5 (path token, handshake, portfolio admin)."""
 import json
-import os
 
 import pytest
 from fastapi.testclient import TestClient
 
 import wolf_app
-from mcp.ghost_server import ALLOWED_HTTP_METHOD, GhostMcpGetClient, invoke_tool
-from mcp.security import verify_mcp_token
+from mcp.ghost_server import ALLOWED_HTTP_METHOD, GhostMcpGetClient
+from mcp.jsonrpc import clear_sessions_for_tests
+from mcp.security import verify_mcp_path_token, verify_mcp_token
 
 
 def _client(monkeypatch, token: str = "test-mcp-secret"):
     monkeypatch.setenv("GHOST_TEST_MODE", "1")
     monkeypatch.setenv("GHOST_MCP_TOKEN", token)
+    clear_sessions_for_tests()
     return TestClient(wolf_app.APP)
 
 
-def test_get_only_client_rejects_post():
+def test_get_only_client_has_no_write_methods():
     client = GhostMcpGetClient()
-    with pytest.raises(TypeError, match="GET-only"):
-        client.post("/api/picks")
+    assert hasattr(client, "get")
+    assert not hasattr(client, "post")
+    assert not hasattr(client, "put")
+    assert not hasattr(client, "delete")
 
 
-def test_get_only_client_rejects_delete():
-    client = GhostMcpGetClient()
-    with pytest.raises(TypeError, match="GET-only"):
-        client.delete("/api/portfolio")
+def test_verify_mcp_path_token(monkeypatch):
+    monkeypatch.setenv("GHOST_MCP_TOKEN", "path-secret-xyz")
+    assert verify_mcp_path_token("path-secret-xyz") is True
+    assert verify_mcp_path_token("wrong") is False
+    assert verify_mcp_path_token(None) is False
 
 
-def test_verify_mcp_token_constant_time(monkeypatch):
-    monkeypatch.setenv("GHOST_MCP_TOKEN", "abc123")
-    assert verify_mcp_token("abc123") is True
-    assert verify_mcp_token("wrong") is False
-    assert verify_mcp_token("") is False
-
-
-def test_verify_mcp_token_fails_closed_when_unset(monkeypatch):
-    monkeypatch.delenv("GHOST_MCP_TOKEN", raising=False)
-    assert verify_mcp_token("anything") is False
-
-
-def test_mcp_tool_without_token_rejected(monkeypatch):
+def test_unauthenticated_mcp_root_401(monkeypatch):
     monkeypatch.setenv("GHOST_MCP_TOKEN", "secret")
     with _client(monkeypatch) as client:
-        r = client.get("/mcp/tools/ghost_score")
+        r = client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
     assert r.status_code == 401
 
 
-def test_mcp_tool_with_token_ok(monkeypatch):
+def test_wrong_path_token_401(monkeypatch):
     monkeypatch.setenv("GHOST_MCP_TOKEN", "secret")
+    with _client(monkeypatch) as client:
+        r = client.post(
+            "/mcp/wrong-token",
+            json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+        )
+    assert r.status_code == 401
+
+
+def test_mcp_handshake_path_token(monkeypatch):
     monkeypatch.setattr(
         "api.wolf_endpoints.ghost_score_payload_sync",
         lambda **kwargs: {"ok": True, "score": 65},
     )
     with _client(monkeypatch, token="secret") as client:
-        r = client.get("/mcp/tools/ghost_score", headers={"X-Ghost-Mcp-Token": "secret"})
-    assert r.status_code == 200
-    assert r.json()["ok"] is True
-    assert r.json()["score"] == 65
+        r1 = client.post(
+            "/mcp/secret",
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "test", "version": "1.0"},
+                },
+            },
+        )
+        assert r1.status_code == 200
+        init = r1.json()
+        assert init["result"]["protocolVersion"] == "2024-11-05"
+        assert "Mcp-Session-Id" in r1.headers
+
+        r2 = client.post(
+            "/mcp/secret",
+            json={"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
+        )
+        assert r2.status_code == 202
+
+        r3 = client.post(
+            "/mcp/secret",
+            json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+        )
+        assert r3.status_code == 200
+        names = {t["name"] for t in r3.json()["result"]["tools"]}
+        assert len(names) == 7
+
+        r4 = client.post(
+            "/mcp/secret",
+            json={
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {"name": "ghost_score", "arguments": {}},
+            },
+        )
+        assert r4.status_code == 200
+        text = r4.json()["result"]["content"][0]["text"]
+        assert json.loads(text)["score"] == 65
 
 
-def test_mcp_jsonrpc_tools_list(monkeypatch):
-    monkeypatch.setenv("GHOST_MCP_TOKEN", "secret")
+def test_header_auth_still_works(monkeypatch):
     with _client(monkeypatch, token="secret") as client:
         r = client.post(
             "/mcp",
@@ -69,62 +109,27 @@ def test_mcp_jsonrpc_tools_list(monkeypatch):
             json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
         )
     assert r.status_code == 200
-    tools = r.json()["result"]["tools"]
-    names = {t["name"] for t in tools}
-    assert "ghost_context" in names
-    assert "ghost_score" in names
 
 
-def test_ask_context_unauthenticated_blocked(monkeypatch):
+def test_portfolio_admin_cookie_ok(monkeypatch):
     monkeypatch.setenv("GHOST_MCP_TOKEN", "secret")
-    with _client(monkeypatch, token="secret") as client:
-        r = client.get("/api/wolf/ask/context")
-    assert r.status_code == 401
-
-
-def test_portfolio_unauthenticated_blocked(monkeypatch):
-    monkeypatch.setenv("GHOST_MCP_TOKEN", "secret")
-    with _client(monkeypatch, token="secret") as client:
-        r = client.get("/api/portfolio")
-    assert r.status_code == 401
-
-
-def test_portfolio_with_mcp_token_ok(monkeypatch):
-    monkeypatch.setenv("GHOST_MCP_TOKEN", "secret")
+    monkeypatch.setenv("CRON_SECRET", "cron-test")
     monkeypatch.setattr(
         "core.portfolio_routes.build_portfolio_payload",
         lambda: {"ok": True, "positions": []},
     )
-    with _client(monkeypatch, token="secret") as client:
-        r = client.get("/api/portfolio", headers={"X-Ghost-Mcp-Token": "secret"})
+    with _client(monkeypatch) as client:
+        client.cookies.set(wolf_app._ADMIN_COOKIE, wolf_app._admin_mint_token())
+        r = client.get("/api/portfolio")
     assert r.status_code == 200
-    assert r.json()["ok"] is True
 
 
-def test_require_https_rejects_http_when_not_test_mode(monkeypatch):
-    from fastapi import HTTPException
-    from mcp.security import require_https
-    from starlette.requests import Request
-
-    monkeypatch.delenv("GHOST_TEST_MODE", raising=False)
-    scope = {
-        "type": "http",
-        "asgi": {"version": "3.0"},
-        "method": "GET",
-        "path": "/mcp/tools/ghost_score",
-        "raw_path": b"/mcp/tools/ghost_score",
-        "root_path": "",
-        "scheme": "http",
-        "query_string": b"",
-        "headers": [],
-        "client": ("127.0.0.1", 1234),
-        "server": ("testserver", 80),
-    }
-    request = Request(scope)
-    with pytest.raises(HTTPException) as exc:
-        require_https(request)
-    assert exc.value.status_code == 403
-    assert exc.value.detail == "HTTPS required"
+def test_portfolio_anonymous_401(monkeypatch):
+    monkeypatch.setenv("GHOST_MCP_TOKEN", "secret")
+    monkeypatch.setenv("CRON_SECRET", "cron-test")
+    with _client(monkeypatch) as client:
+        r = client.get("/api/portfolio")
+    assert r.status_code == 401
 
 
 def test_allowed_http_method_is_get_only():

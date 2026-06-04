@@ -1,7 +1,7 @@
 """Read-only Ghost MCP tools.
 
-The HTTP client layer is structurally GET-only: only ``GhostMcpGetClient.get``
-is public; ``_request`` raises on any verb other than GET.
+The HTTP client layer is structurally GET-only: ``GhostMcpGetClient`` exposes
+only ``get()``; there are no post/put/delete methods.
 """
 from __future__ import annotations
 
@@ -27,16 +27,6 @@ class GhostMcpGetClient:
 
     def get(self, path: str) -> Any:
         return self._request(ALLOWED_HTTP_METHOD, path)
-
-    def post(self, path: str, **_kwargs: Any) -> Any:
-        """Explicitly blocked — MCP Phase 1 is read-only."""
-        return self._request("POST", path)
-
-    def put(self, path: str, **_kwargs: Any) -> Any:
-        return self._request("PUT", path)
-
-    def delete(self, path: str, **_kwargs: Any) -> Any:
-        return self._request("DELETE", path)
 
     def _request(self, method: str, path: str) -> Any:
         if method != ALLOWED_HTTP_METHOD:
