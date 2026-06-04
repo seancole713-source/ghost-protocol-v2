@@ -347,6 +347,24 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
 .auto-dot{width:7px;height:7px;border-radius:50%;background:#22c55e;animation:autopulse 2s ease-in-out infinite}
 .auto-status.paused .auto-dot{background:#facc15;animation:none}
 @keyframes autopulse{0%,100%{opacity:1}50%{opacity:.35}}
+
+/* ─── Ghost Ask chat ─── */
+.ask-wrap{background:#111;border:1px solid #23232e;border-radius:16px;padding:16px 18px;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.03), 0 8px 24px rgba(0,0,0,.35)}
+.ask-hint{font-size:12px;color:#888;line-height:1.5;margin-bottom:12px}
+.ask-log{max-height:320px;overflow-y:auto;display:flex;flex-direction:column;gap:10px;margin-bottom:12px;padding-right:4px}
+.ask-msg{max-width:92%;padding:10px 14px;border-radius:12px;font-size:13px;line-height:1.55;white-space:pre-wrap;word-break:break-word}
+.ask-msg.user{align-self:flex-end;background:#1a1530;border:1px solid #3b2f6b;color:#e9e5ff}
+.ask-msg.ghost{align-self:flex-start;background:#0d0d0d;border:1px solid #252525;color:#ccc}
+.ask-msg.err{align-self:stretch;background:#1a0707;border:1px solid #4a1515;color:#ff8a8a}
+.ask-form{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap}
+.ask-form textarea{flex:1;min-width:200px;min-height:44px;max-height:120px;resize:vertical;
+  background:#0a0a0a;border:1px solid #2a2a2a;border-radius:10px;color:#eee;padding:10px 12px;font-size:13px;font-family:inherit}
+.ask-form textarea:focus{outline:none;border-color:#6d28d9}
+.ask-send{background:linear-gradient(135deg,#7c3aed,#5b21b6);border:none;color:#fff;font-weight:700;
+  font-size:12px;letter-spacing:.5px;padding:11px 18px;border-radius:10px;cursor:pointer;white-space:nowrap}
+.ask-send:disabled{opacity:.45;cursor:not-allowed}
+.ask-meta{font-size:10px;color:#555;margin-top:8px}
 </style>
 </head>
 <body>
@@ -433,6 +451,20 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
         <div class="perf-mini-bar" id="perf-cal-bar"></div>
       </div>
       <div class="perf-sub" id="perf-cal-sub">—</div>
+    </div>
+  </section>
+
+  <!-- ─── Ghost Ask (Claude + live state) ─── -->
+  <section class="block" id="ask-ghost-section">
+    <div class="sec-label">Ask Ghost</div>
+    <div class="ask-wrap">
+      <div class="ask-hint">Ask about cooldown, SILENCE, your portfolio, or WOLF gates. Answers use live Ghost state — not financial advice.</div>
+      <div class="ask-log" id="ask-log"></div>
+      <div class="ask-form">
+        <textarea id="ask-input" rows="2" placeholder="Why is Ghost silent today? Should I add to WOLF?" maxlength="2000"></textarea>
+        <button type="button" class="ask-send" id="ask-send" onclick="submitGhostAsk()">Ask</button>
+      </div>
+      <div class="ask-meta" id="ask-meta"></div>
     </div>
   </section>
 
@@ -1773,6 +1805,62 @@ async function delPos(id){
   if(err) err.textContent = '';
   loadPortfolio();
 }
+
+var _askHistory = [];
+function _appendAskMsg(role, text){
+  var log = document.getElementById('ask-log');
+  if(!log) return;
+  var el = document.createElement('div');
+  el.className = 'ask-msg ' + role;
+  el.textContent = text;
+  log.appendChild(el);
+  log.scrollTop = log.scrollHeight;
+}
+async function submitGhostAsk(){
+  var input = document.getElementById('ask-input');
+  var btn = document.getElementById('ask-send');
+  var meta = document.getElementById('ask-meta');
+  if(!input || !btn) return;
+  var q = (input.value || '').trim();
+  if(!q) return;
+  btn.disabled = true;
+  _appendAskMsg('user', q);
+  input.value = '';
+  if(meta) meta.textContent = 'Thinking…';
+  try {
+    var r = await fetch('/api/wolf/ask', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({question: q, history: _askHistory})
+    });
+    var data = await r.json().catch(function(){ return {ok:false, error:'Invalid response'}; });
+    if(data.ok && data.answer){
+      _appendAskMsg('ghost', data.answer);
+      _askHistory.push({role:'user', content:q});
+      _askHistory.push({role:'assistant', content:data.answer});
+      if(_askHistory.length > 12) _askHistory = _askHistory.slice(-12);
+      var cs = data.context_summary || {};
+      if(meta) meta.textContent = (cs.trade_action ? 'Trade: '+cs.trade_action+' · ' : '') + 'Grounded in live Ghost state';
+    } else {
+      _appendAskMsg('err', data.error || 'Ask failed');
+      if(meta) meta.textContent = '';
+    }
+  } catch(e){
+    _appendAskMsg('err', 'Network error — try again');
+    if(meta) meta.textContent = '';
+  }
+  btn.disabled = false;
+  input.focus();
+}
+document.addEventListener('DOMContentLoaded', function(){
+  var askInput = document.getElementById('ask-input');
+  if(askInput){
+    askInput.addEventListener('keydown', function(ev){
+      if(ev.key === 'Enter' && !ev.shiftKey){ ev.preventDefault(); submitGhostAsk(); }
+    });
+  }
+});
+
 
 /* ─── Truth Mode renderers (PR #6) ─── */
 function renderActivity(activity){

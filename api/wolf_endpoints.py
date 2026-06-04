@@ -28,7 +28,7 @@ import logging
 from dataclasses import asdict
 from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 LOGGER = logging.getLogger("ghost.wolf_endpoints")
@@ -1475,6 +1475,36 @@ def ghost_score_payload_sync(*, cache_ttl_s: float = 60, use_cache: bool = True)
         payload["risk_discipline_error"] = str(e)[:120]
     _cache_set("ghost-score", payload)
     return payload
+
+
+@router.post("/ask")
+async def post_ghost_ask(request: Request):
+    """Ask Claude about live Ghost state (portfolio, SILENCE, cooldown, WOLF gates).
+
+    Body: {"question": "...", "history": [{"role":"user"|"assistant","content":"..."}]}
+    Requires ANTHROPIC_API_KEY on the server. Rate-limited per CT day.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    question = str(body.get("question") or "").strip()
+    history = body.get("history")
+    if history is not None and not isinstance(history, list):
+        history = None
+    from core.ghost_ask import ask_ghost
+    result = ask_ghost(question, history=history)
+    status = 200 if result.get("ok") else 400
+    return JSONResponse(content=result, status_code=status)
+
+
+@router.get("/ask/context")
+async def get_ghost_ask_context():
+    """Debug: return the JSON bundle sent to Claude (no API call)."""
+    from core.ghost_ask import build_ask_context
+    return JSONResponse(content={"ok": True, "context": build_ask_context()})
 
 
 @router.get("/risk-discipline")
