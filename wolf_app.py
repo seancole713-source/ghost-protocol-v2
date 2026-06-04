@@ -1430,9 +1430,16 @@ except Exception as _we:
 try:
     from mcp.routes import router as mcp_router
     APP.include_router(mcp_router)
-    LOGGER.info("[INIT] Ghost MCP Phase 1.5 routes loaded at /mcp")
+    LOGGER.info("[INIT] Ghost MCP Phase 1.6 routes loaded at /mcp")
 except Exception as _mcp:
     LOGGER.warning(f"[INIT] MCP routes unavailable: {_mcp}")
+
+try:
+    from mcp.oauth_routes import router as oauth_router
+    APP.include_router(oauth_router)
+    LOGGER.info("[INIT] Ghost MCP OAuth discovery loaded")
+except Exception as _oauth:
+    LOGGER.warning(f"[INIT] MCP OAuth routes unavailable: {_oauth}")
 
 
 

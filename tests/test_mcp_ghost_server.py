@@ -1,4 +1,4 @@
-"""Tests for Ghost MCP Phase 1.5 (path token, handshake, portfolio admin)."""
+"""Tests for Ghost MCP Phase 1.6 (OAuth lazy auth, path token, portfolio admin)."""
 import json
 
 import pytest
@@ -32,11 +32,83 @@ def test_verify_mcp_path_token(monkeypatch):
     assert verify_mcp_path_token(None) is False
 
 
-def test_unauthenticated_mcp_root_401(monkeypatch):
+def test_unauthenticated_mcp_root_initialize_ok(monkeypatch):
     monkeypatch.setenv("GHOST_MCP_TOKEN", "secret")
+    monkeypatch.setenv("CRON_SECRET", "cron-test")
     with _client(monkeypatch) as client:
-        r = client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+        r = client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "test", "version": "1.0"},
+                },
+            },
+        )
+    assert r.status_code == 200
+    assert r.json()["result"]["protocolVersion"] == "2024-11-05"
+
+
+def test_unauthenticated_tools_call_401_with_www_authenticate(monkeypatch):
+    monkeypatch.setenv("GHOST_MCP_TOKEN", "secret")
+    monkeypatch.setenv("CRON_SECRET", "cron-test")
+    with _client(monkeypatch) as client:
+        r = client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "ghost_score", "arguments": {}},
+            },
+        )
     assert r.status_code == 401
+    assert "WWW-Authenticate" in r.headers
+    assert "oauth-protected-resource" in r.headers["WWW-Authenticate"]
+
+
+def test_oauth_discovery_endpoints(monkeypatch):
+    monkeypatch.setenv("CRON_SECRET", "cron-test")
+    with _client(monkeypatch) as client:
+        prm = client.get("/.well-known/oauth-protected-resource/mcp")
+        assert prm.status_code == 200
+        assert prm.json()["resource"].endswith("/mcp")
+        assert prm.json()["authorization_servers"]
+
+        asm = client.get("/.well-known/oauth-authorization-server")
+        assert asm.status_code == 200
+        assert asm.json()["authorization_endpoint"].endswith("/oauth/authorize")
+        assert asm.json()["client_id_metadata_document_supported"] is True
+
+
+def test_oauth_bearer_tools_call(monkeypatch):
+    monkeypatch.setenv("CRON_SECRET", "cron-test")
+    monkeypatch.setenv("GHOST_PUBLIC_URL", "https://ghost.test")
+    monkeypatch.setattr(
+        "api.wolf_endpoints.ghost_score_payload_sync",
+        lambda **kwargs: {"ok": True, "score": 42},
+    )
+    from mcp.oauth_server import issue_access_token
+
+    token = issue_access_token("https://ghost.test")
+    with _client(monkeypatch) as client:
+        r = client.post(
+            "/mcp",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "ghost_score", "arguments": {}},
+            },
+        )
+    assert r.status_code == 200
+    text = r.json()["result"]["content"][0]["text"]
+    assert json.loads(text)["score"] == 42
 
 
 def test_wrong_path_token_401(monkeypatch):
