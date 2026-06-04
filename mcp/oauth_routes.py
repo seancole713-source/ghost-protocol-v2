@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import secrets
 import urllib.parse
-from typing import Optional
+from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Form, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from mcp.oauth_server import (
@@ -21,11 +21,29 @@ from mcp.oauth_server import (
     refresh_token_valid,
     store_auth_code,
     store_refresh_token,
-    verify_access_token,
     _pkce_valid,
 )
 
 router = APIRouter(tags=["oauth"])
+
+
+async def _form_params(request: Request) -> Dict[str, str]:
+    """Parse application/x-www-form-urlencoded without python-multipart."""
+    raw = await request.body()
+    if not raw:
+        return {}
+    ctype = (request.headers.get("content-type") or "").lower()
+    if "application/json" in ctype:
+        try:
+            import json
+
+            data = json.loads(raw.decode("utf-8"))
+            if isinstance(data, dict):
+                return {str(k): str(v) for k, v in data.items() if v is not None}
+        except Exception:
+            return {}
+    text = raw.decode("utf-8", errors="replace")
+    return dict(urllib.parse.parse_qsl(text, keep_blank_values=True))
 
 
 @router.get("/.well-known/oauth-protected-resource")
@@ -89,12 +107,12 @@ display:flex;align-items:center;justify-content:center;min-height:100vh}}
 .box{{background:#111;border:1px solid #1e1e1e;border-radius:14px;padding:32px;width:380px;max-width:92vw}}
 h1{{font-size:18px;margin-bottom:8px}}p{{color:#888;font-size:13px;line-height:1.5;margin-bottom:16px}}
 input{{width:100%;background:#0a0a0a;border:1px solid #2a2a2a;color:#fff;padding:11px 12px;
-border-radius:8px;font-size:14px;margin-bottom:12px}}
+border-radius:8px;font-size:14px;margin-bottom:12px;box-sizing:border-box}}
 button{{width:100%;background:#7c3aed;color:#fff;border:none;padding:11px;border-radius:8px;
 font-weight:700;cursor:pointer}}.err{{color:#ff3b3b;font-size:12px;min-height:16px}}</style></head>
 <body><div class="box"><h1>Authorize Ghost MCP</h1>
 <p><b>{client_host}</b> is requesting read-only access to Ghost Protocol state via MCP.</p>
-<form method="post" action="/oauth/authorize">
+<form method="post" action="/oauth/authorize" enctype="application/x-www-form-urlencoded">
 <input type="hidden" name="oauth_query" value="{q}">
 <input type="password" name="secret" placeholder="Operator secret (CRON_SECRET)" autocomplete="off" autofocus>
 <button type="submit">Allow access</button>
@@ -103,19 +121,21 @@ font-weight:700;cursor:pointer}}.err{{color:#ff3b3b;font-size:12px;min-height:16
 
 
 @router.post("/oauth/authorize")
-async def oauth_authorize_post(
-    request: Request,
-    oauth_query: str = Form(...),
-    secret: str = Form(""),
-):
+async def oauth_authorize_post(request: Request):
+    params = await _form_params(request)
+    secret = params.get("secret", "")
+    oauth_query = params.get("oauth_query", "")
+    if not oauth_query:
+        raise HTTPException(status_code=400, detail="oauth_query required")
     if not operator_secret_ok(secret):
         raise HTTPException(status_code=401, detail="Invalid operator secret")
-    params = dict(urllib.parse.parse_qsl(oauth_query, keep_blank_values=True))
-    client_id = params.get("client_id", "")
-    redirect_uri = params.get("redirect_uri", "")
-    scope = params.get("scope", "")
-    state = params.get("state", "")
-    code_challenge = params.get("code_challenge", "")
+
+    parsed = dict(urllib.parse.parse_qsl(oauth_query, keep_blank_values=True))
+    client_id = parsed.get("client_id", "")
+    redirect_uri = parsed.get("redirect_uri", "")
+    scope = parsed.get("scope", "")
+    state = parsed.get("state", "")
+    code_challenge = parsed.get("code_challenge", "")
 
     cimd = fetch_cimd_client(client_id)
     if not cimd or not redirect_uri_allowed(redirect_uri, cimd.get("redirect_uris") or []):
@@ -135,20 +155,16 @@ async def oauth_authorize_post(
 
 
 @router.post("/oauth/token")
-async def oauth_token(
-    request: Request,
-    grant_type: str = Form(...),
-    code: Optional[str] = Form(None),
-    redirect_uri: Optional[str] = Form(None),
-    client_id: Optional[str] = Form(None),
-    code_verifier: Optional[str] = Form(None),
-    refresh_token: Optional[str] = Form(None),
-):
+async def oauth_token(request: Request):
     base = public_base_url(request)
     if not oauth_configured():
         raise HTTPException(status_code=503, detail="OAuth not configured")
 
+    params = await _form_params(request)
+    grant_type = params.get("grant_type", "")
+
     if grant_type == "refresh_token":
+        refresh_token = params.get("refresh_token", "")
         if not refresh_token or not refresh_token_valid(refresh_token):
             raise HTTPException(status_code=400, detail="invalid refresh_token")
         try:
@@ -165,14 +181,19 @@ async def oauth_token(
     if grant_type != "authorization_code":
         raise HTTPException(status_code=400, detail="unsupported grant_type")
 
-    stored = pop_auth_code(code or "")
+    code = params.get("code", "")
+    client_id = params.get("client_id", "")
+    redirect_uri = params.get("redirect_uri", "")
+    code_verifier = params.get("code_verifier", "")
+
+    stored = pop_auth_code(code)
     if not stored:
         raise HTTPException(status_code=400, detail="invalid code")
     if client_id and stored.get("client_id") != client_id:
         raise HTTPException(status_code=400, detail="client_id mismatch")
     if redirect_uri and stored.get("redirect_uri") != redirect_uri:
         raise HTTPException(status_code=400, detail="redirect_uri mismatch")
-    if not _pkce_valid(code_verifier or "", stored.get("code_challenge") or ""):
+    if not _pkce_valid(code_verifier, stored.get("code_challenge") or ""):
         raise HTTPException(status_code=400, detail="invalid code_verifier")
 
     try:

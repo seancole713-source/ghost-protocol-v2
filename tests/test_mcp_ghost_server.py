@@ -85,6 +85,44 @@ def test_oauth_discovery_endpoints(monkeypatch):
         assert asm.json()["client_id_metadata_document_supported"] is True
 
 
+def test_oauth_token_form_body(monkeypatch):
+    monkeypatch.setenv("CRON_SECRET", "cron-test")
+    monkeypatch.setenv("GHOST_PUBLIC_URL", "https://ghost.test")
+    from mcp.oauth_server import verify_access_token, _b64url
+    import hashlib
+
+    verifier = "test-verifier-12345"
+    challenge = _b64url(hashlib.sha256(verifier.encode()).digest())
+    monkeypatch.setattr(
+        "mcp.oauth_routes.pop_auth_code",
+        lambda code: {
+            "client_id": "https://claude.ai/client",
+            "redirect_uri": "http://127.0.0.1/cb",
+            "code_challenge": challenge,
+            "scope": "ghost:read",
+            "exp": 9999999999,
+        }
+        if code == "code-abc"
+        else None,
+    )
+    monkeypatch.setattr("mcp.oauth_routes.store_refresh_token", lambda _t: None)
+    with _client(monkeypatch) as client:
+        r = client.post(
+            "/oauth/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": "code-abc",
+                "redirect_uri": "http://127.0.0.1/cb",
+                "client_id": "https://claude.ai/client",
+                "code_verifier": verifier,
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+    assert r.status_code == 200
+    assert r.json()["token_type"] == "Bearer"
+    assert verify_access_token(r.json()["access_token"], "https://ghost.test")
+
+
 def test_oauth_bearer_tools_call(monkeypatch):
     monkeypatch.setenv("CRON_SECRET", "cron-test")
     monkeypatch.setenv("GHOST_PUBLIC_URL", "https://ghost.test")
