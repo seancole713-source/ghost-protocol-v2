@@ -13,6 +13,7 @@ from mcp.security import verify_mcp_path_token, verify_mcp_token
 def _client(monkeypatch, token: str = "test-mcp-secret"):
     monkeypatch.setenv("GHOST_TEST_MODE", "1")
     monkeypatch.setenv("GHOST_MCP_TOKEN", token)
+    monkeypatch.setenv("GHOST_OAUTH_SECRET", "oauth-test-secret")
     clear_sessions_for_tests()
     return TestClient(wolf_app.APP)
 
@@ -34,7 +35,6 @@ def test_verify_mcp_path_token(monkeypatch):
 
 def test_unauthenticated_mcp_root_initialize_ok(monkeypatch):
     monkeypatch.setenv("GHOST_MCP_TOKEN", "secret")
-    monkeypatch.setenv("CRON_SECRET", "cron-test")
     with _client(monkeypatch) as client:
         r = client.post(
             "/mcp",
@@ -55,7 +55,6 @@ def test_unauthenticated_mcp_root_initialize_ok(monkeypatch):
 
 def test_unauthenticated_tools_call_401_with_www_authenticate(monkeypatch):
     monkeypatch.setenv("GHOST_MCP_TOKEN", "secret")
-    monkeypatch.setenv("CRON_SECRET", "cron-test")
     with _client(monkeypatch) as client:
         r = client.post(
             "/mcp",
@@ -72,7 +71,6 @@ def test_unauthenticated_tools_call_401_with_www_authenticate(monkeypatch):
 
 
 def test_oauth_discovery_endpoints(monkeypatch):
-    monkeypatch.setenv("CRON_SECRET", "cron-test")
     with _client(monkeypatch) as client:
         prm = client.get("/.well-known/oauth-protected-resource/mcp")
         assert prm.status_code == 200
@@ -86,7 +84,6 @@ def test_oauth_discovery_endpoints(monkeypatch):
 
 
 def test_oauth_token_form_body(monkeypatch):
-    monkeypatch.setenv("CRON_SECRET", "cron-test")
     monkeypatch.setenv("GHOST_PUBLIC_URL", "https://ghost.test")
     from mcp.oauth_server import verify_access_token, _b64url
     import hashlib
@@ -124,8 +121,8 @@ def test_oauth_token_form_body(monkeypatch):
 
 
 def test_oauth_bearer_tools_call(monkeypatch):
-    monkeypatch.setenv("CRON_SECRET", "cron-test")
     monkeypatch.setenv("GHOST_PUBLIC_URL", "https://ghost.test")
+    monkeypatch.setenv("GHOST_OAUTH_SECRET", "oauth-test-secret")
     monkeypatch.setattr(
         "api.wolf_endpoints.ghost_score_payload_sync",
         lambda **kwargs: {"ok": True, "score": 42},
@@ -147,6 +144,22 @@ def test_oauth_bearer_tools_call(monkeypatch):
     assert r.status_code == 200
     text = r.json()["result"]["content"][0]["text"]
     assert json.loads(text)["score"] == 42
+
+
+def test_operator_secret_does_not_accept_cron_secret(monkeypatch):
+    monkeypatch.setenv("CRON_SECRET", "cron-test")
+    monkeypatch.delenv("GHOST_OAUTH_SECRET", raising=False)
+    from mcp.oauth_server import operator_secret_ok
+
+    assert operator_secret_ok("cron-test") is False
+
+
+def test_operator_secret_accepts_oauth_secret(monkeypatch):
+    monkeypatch.setenv("GHOST_OAUTH_SECRET", "oauth-only")
+    from mcp.oauth_server import operator_secret_ok
+
+    assert operator_secret_ok("oauth-only") is True
+    assert operator_secret_ok("wrong") is False
 
 
 def test_wrong_path_token_401(monkeypatch):

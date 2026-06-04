@@ -64,8 +64,7 @@ def authorization_server_metadata(base: str) -> Dict[str, Any]:
 def _signing_key() -> bytes:
     secret = (
         os.getenv("GHOST_OAUTH_SIGNING_KEY", "").strip()
-        or os.getenv("CRON_SECRET", "").strip()
-        or os.getenv("GHOST_MCP_TOKEN", "").strip()
+        or os.getenv("GHOST_OAUTH_SECRET", "").strip()
     )
     if not secret:
         return b""
@@ -263,12 +262,11 @@ def refresh_token_valid(token: str) -> bool:
 
 
 def operator_secret_ok(provided: str) -> bool:
-    """Single-user approval: CRON_SECRET or GHOST_MCP_TOKEN."""
-    for env_key in ("CRON_SECRET", "GHOST_MCP_TOKEN"):
-        expected = os.getenv(env_key, "").strip()
-        if expected and hmac.compare_digest((provided or "").encode(), expected.encode()):
-            return True
-    return False
+    """Connector approval — GHOST_OAUTH_SECRET only (not CRON_SECRET / MCP token)."""
+    expected = os.getenv("GHOST_OAUTH_SECRET", "").strip()
+    if not expected:
+        return False
+    return hmac.compare_digest((provided or "").encode(), expected.encode())
 
 
 def oauth_configured() -> bool:

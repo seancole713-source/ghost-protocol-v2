@@ -114,7 +114,7 @@ font-weight:700;cursor:pointer}}.err{{color:#ff3b3b;font-size:12px;min-height:16
 <p><b>{client_host}</b> is requesting read-only access to Ghost Protocol state via MCP.</p>
 <form method="post" action="/oauth/authorize" enctype="application/x-www-form-urlencoded">
 <input type="hidden" name="oauth_query" value="{q}">
-<input type="password" name="secret" placeholder="Operator secret (CRON_SECRET)" autocomplete="off" autofocus>
+<input type="password" name="secret" placeholder="Connector secret (GHOST_OAUTH_SECRET)" autocomplete="off" autofocus>
 <button type="submit">Allow access</button>
 <div class="err"></div></form></div></body></html>"""
     return HTMLResponse(html)
