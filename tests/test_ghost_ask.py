@@ -106,13 +106,17 @@ def test_ask_success_mock_claude(monkeypatch):
     assert body["context_summary"]["trade_action"] == "NO TRADE"
 
 
-def test_ask_context_route(monkeypatch):
+def test_ask_context_route_requires_mcp_token(monkeypatch):
+    monkeypatch.setenv("GHOST_MCP_TOKEN", "secret")
     monkeypatch.setattr(
         "core.ghost_ask.build_ask_context",
         lambda: {"ts": 1, "product_note": "WOLF-only"},
     )
     with _client(monkeypatch) as client:
         r = client.get("/api/wolf/ask/context")
+    assert r.status_code == 401
+    with _client(monkeypatch) as client:
+        r = client.get("/api/wolf/ask/context", headers={"X-Ghost-Mcp-Token": "secret"})
     assert r.status_code == 200
     data = r.json()
     assert data["ok"] is True

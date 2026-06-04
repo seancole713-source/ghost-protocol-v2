@@ -1427,6 +1427,13 @@ try:
 except Exception as _we:
     LOGGER.warning(f"[INIT] wolf_endpoints unavailable: {_we}")
 
+try:
+    from mcp.routes import router as mcp_router
+    APP.include_router(mcp_router)
+    LOGGER.info("[INIT] Ghost MCP Phase 1 routes loaded at /mcp")
+except Exception as _mcp:
+    LOGGER.warning(f"[INIT] MCP routes unavailable: {_mcp}")
+
 
 
 @APP.get("/api/diagnostics", include_in_schema=False)

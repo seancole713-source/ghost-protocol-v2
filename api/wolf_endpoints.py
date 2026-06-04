@@ -1501,8 +1501,10 @@ async def post_ghost_ask(request: Request):
 
 
 @router.get("/ask/context")
-async def get_ghost_ask_context():
-    """Debug: return the JSON bundle sent to Claude (no API call)."""
+async def get_ghost_ask_context(request: Request):
+    """Debug: return the JSON bundle sent to Claude (no API call). GHOST_MCP_TOKEN required."""
+    from mcp.security import require_mcp_auth
+    require_mcp_auth(request)
     from core.ghost_ask import build_ask_context
     return JSONResponse(content={"ok": True, "context": build_ask_context()})
 

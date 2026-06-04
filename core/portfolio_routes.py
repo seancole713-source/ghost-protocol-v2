@@ -33,8 +33,8 @@ CREATE TABLE IF NOT EXISTS user_portfolio (
 )
 """
 
-@portfolio_router.get("/api/portfolio")
-def get_portfolio():
+def build_portfolio_payload() -> dict:
+    """Portfolio JSON (shared by HTTP route and MCP ghost_portfolio tool)."""
     with db_conn() as conn:
         cur = conn.cursor()
         cur.execute(_CREATE_TABLE); conn.commit()
@@ -76,6 +76,13 @@ def get_portfolio():
     return {"ok":True,"positions":positions,"total_cost":round(tc,2),
         "total_value":round(tv,2) if tv else None,
         "total_gain_loss":round(tv-tc,2) if tv else None}
+
+
+@portfolio_router.get("/api/portfolio")
+def get_portfolio(request: Request):
+    from mcp.security import require_mcp_auth
+    require_mcp_auth(request)
+    return build_portfolio_payload()
 
 @portfolio_router.post("/api/portfolio")
 async def add_portfolio(request: Request):
