@@ -46,9 +46,11 @@ FALSIFICATION_THRESHOLD: Dict[str, float] = {
     "ci_level": 0.95,
 }
 
-# WOLF-only mode — these legacy names retained for back-compat with any importer.
+# Symbol universe defaults to WOLF, but can be expanded via STOCK_SYMBOLS.
 CRYPTO_SYMBOLS: List[str] = []
-STOCK_SYMBOLS: List[str] = ["WOLF"]
+STOCK_SYMBOLS: List[str] = [
+    s.strip().upper() for s in os.getenv("STOCK_SYMBOLS", "WOLF").split(",") if s.strip()
+] or ["WOLF"]
 
 
 # Kill conditions — env-tunable safety thresholds (audit §2). Each evaluates over

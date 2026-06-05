@@ -4089,16 +4089,12 @@ def cockpit_context():
 
 
 def _v3_train_collect_symbols() -> list:
-    """Collect symbols for v3 training, filtered to WOLF only.
+    """Collect symbols for v3 training from env + user portfolio.
 
-    WOLF-only hardening (matches the pattern in _compute_get_stats and
-    v3_status): even if STOCK_SYMBOLS env is dirty with non-WOLF rows
-    (e.g. TSLA/META/AMZN/T) or user_portfolio has stale non-WOLF
-    positions, training only ever runs on WOLF. Without this filter,
-    the user observed 0/13 symbols passing because all 12 non-WOLF
-    symbols also lacked Alpaca data, wasting compute and noise-logging.
+    Includes configured `STOCK_SYMBOLS` and live portfolio holdings so Ghost
+    can train models for the watchlist the operator actually tracks.
     """
-    stocks = [(s.strip(), "stock") for s in os.getenv("STOCK_SYMBOLS", "WOLF").split(",") if s.strip()] or [("WOLF", "stock")]
+    stocks = [(s.strip().upper(), "stock") for s in os.getenv("STOCK_SYMBOLS", "WOLF").split(",") if s.strip()] or [("WOLF", "stock")]
     try:
         with db_conn() as conn:
             cur = conn.cursor()
@@ -4109,7 +4105,18 @@ def _v3_train_collect_symbols() -> list:
                     stocks.append(entry)
     except Exception:
         pass
-    return [s for s in stocks if s[0].upper() == "WOLF"] or [("WOLF", "stock")]
+    seen = set()
+    deduped = []
+    for sym, atype in stocks:
+        entry = ((sym or "").strip().upper(), (atype or "stock").strip().lower())
+        if not entry[0]:
+            continue
+        if entry[0] in {"GHOST", "TEST"} or entry[0].startswith("ZZ"):
+            continue
+        if entry not in seen:
+            seen.add(entry)
+            deduped.append(entry)
+    return deduped or [("WOLF", "stock")]
 
 
 def _record_v3_train_state(**fields) -> None:
@@ -4137,7 +4144,7 @@ def _record_v3_train_state(**fields) -> None:
 @APP.post("/api/v3/train")
 def v3_train(x_cron_secret: str = Header(default=""), force: bool = False):
     """
-    Train v3 XGBoost model on 1yr historical data (WOLF-only).
+    Train v3 XGBoost model on 1yr historical data (watchlist-aware).
     Takes 2-5 minutes. Runs in background, returns immediately.
     Model only deployed if accuracy > 52% on holdout (and the rest of
     the v3.2 quality gates pass: walk-forward, edge, min wins).

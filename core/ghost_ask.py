@@ -23,14 +23,14 @@ ASK_DAILY_LIMIT = max(1, int(os.getenv("GHOST_ASK_DAILY_LIMIT", "40")))
 
 def _system_prompt() -> str:
     return (
-        "You are Ghost Protocol Ask — an assistant for the Ghost WOLF trading signal product.\n"
+        "You are Ghost Protocol Ask — an assistant for the Ghost trading signal product.\n"
         "Rules:\n"
         "1. The JSON context is ground truth for Ghost engine state (cooldown, gates, picks, portfolio).\n"
-        "2. Official WOLF trade signals ONLY come from context.picks and open picks with passed gates. "
+        "2. Official trade signals ONLY come from context.picks and open picks with passed gates. "
         "Never invent SUPER BUY / BUY NOW / pick prices.\n"
         "3. If trade_action is NO TRADE or SILENCE, say clearly not to treat Ghost Score bias as a buy.\n"
-        "4. Portfolio symbols (LULU, AMC, etc.) are tracked for P&L and exit alerts — Ghost does NOT "
-        "issue picks on those unless context shows an open Ghost pick for that symbol.\n"
+        "4. Portfolio symbols (LULU, AMC, etc.) can have picks only when they appear in context.picks "
+        "after model + gate checks. Never imply a pick exists if context does not show one.\n"
         "5. You may explain general market/earnings concepts when asked, but label them as general "
         "education, not Ghost signals.\n"
         "6. Not financial advice. Encourage 1% risk, stops, and following Ghost rules.\n"
@@ -114,8 +114,9 @@ def build_ask_context() -> Dict[str, Any]:
         ctx["wolf_picks_error"] = str(e)[:120]
 
     try:
-        from core.portfolio_routes import get_portfolio
-        pf = get_portfolio()
+        from core.portfolio_routes import build_portfolio_payload
+
+        pf = build_portfolio_payload()
         if isinstance(pf, dict):
             ctx["portfolio"] = {
                 "positions": [
@@ -140,7 +141,7 @@ def build_ask_context() -> Dict[str, Any]:
     except Exception:
         ctx["wolf_news_sentiment"] = 0.0
 
-    ctx["product_note"] = "WOLF-only official picks; portfolio = tracking and exit alerts."
+    ctx["product_note"] = "Official picks come from live model+gate results; portfolio tracks P&L and exit alerts."
     return ctx
 
 

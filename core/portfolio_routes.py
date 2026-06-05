@@ -1,5 +1,7 @@
 """core/portfolio_routes.py - Personal portfolio tracker."""
-from fastapi import APIRouter, Request, Header
+import os
+
+from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from core.db import db_conn
 from core.stats_direction import compute_stats_by_direction
@@ -124,6 +126,106 @@ def del_portfolio(position_id: int):
         cur.execute("DELETE FROM user_portfolio WHERE id=%s",(position_id,))
         conn.commit()
     return {"ok":True}
+
+
+def rebuild_cashapp_watchlist(*, live_prices: dict) -> dict:
+    """Replace portfolio watchlist with one row per Cash App symbol.
+
+    Uses live price as cost for ~$1 tracking rows (avoids false exit alerts from
+    back-calculating buy_price off full Cash App dollar P&L). WOLF and AMC keep
+    explicit sizing from Cash App screenshots.
+    """
+    from core.risk_discipline import _ghost_state_set
+
+    specs = [
+        # symbol, qty, buy_price — None qty/buy means ~$1 notional at live
+        ("WOLF", 13.48, None),  # buy from +$344.78 G/L
+        ("AMC", 440.490437, 4.65),
+        ("SPCE", None, None),
+        ("YMM", None, None),
+        ("AI", None, None),
+        ("FLNC", None, None),
+        ("OPTU", None, None),
+        ("OPK", None, None),
+        ("ODD", None, None),
+        ("NOK", None, None),
+        ("SABR", None, None),
+        ("TME", None, None),
+        ("CLNE", None, None),
+        ("IQ", None, None),
+        ("LULU", None, None),
+    ]
+    wolf_gl = 344.78
+    inserted = []
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(_CREATE_TABLE)
+        cur.execute("DELETE FROM user_portfolio")
+        conn.commit()
+        for sym, qty, buy in specs:
+            live = float(live_prices.get(sym) or 0)
+            if live <= 0:
+                continue
+            if sym == "WOLF" and qty:
+                bp = live - (wolf_gl / qty)
+                if bp <= 0:
+                    bp = live * 0.5
+            elif qty and buy:
+                bp = float(buy)
+            else:
+                qty = 1.0 / live
+                bp = live
+            cur.execute(
+                "INSERT INTO user_portfolio (symbol,asset_type,quantity,buy_price,buy_date,notes) "
+                "VALUES (%s,%s,%s,%s,%s,%s) RETURNING id",
+                (sym, "stock", round(float(qty), 6), round(float(bp), 4), "2026-06-04", "Cash App watchlist"),
+            )
+            inserted.append({"id": cur.fetchone()[0], "symbol": sym, "quantity": qty, "buy_price": bp})
+        conn.commit()
+    import json
+    from datetime import datetime
+    import pytz
+
+    tz = pytz.timezone(os.getenv("GHOST_TZ", "America/Chicago"))
+    today = datetime.now(tz).strftime("%Y-%m-%d")
+    _ghost_state_set("portfolio_exit_alerted", json.dumps({"_date": today}))
+    return {"ok": True, "count": len(inserted), "positions": inserted}
+
+
+@portfolio_router.post("/api/admin/rebuild-cashapp-watchlist", include_in_schema=False)
+async def admin_rebuild_cashapp_watchlist(x_cron_secret: str = Header(default="")):
+    import json
+    import urllib.request
+
+    import wolf_app
+
+    if not wolf_app._cron_ok(x_cron_secret, strict=True):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    UA = {"User-Agent": "Mozilla/5.0"}
+    symbols = [
+        "WOLF", "AMC", "SPCE", "YMM", "AI", "FLNC", "OPTU",
+        "OPK", "ODD", "NOK", "SABR", "TME", "CLNE", "IQ", "LULU",
+    ]
+    prices = {}
+    for sym in symbols:
+        if sym == "WOLF":
+            try:
+                from api.wolf_endpoints import wolf_price_payload_sync
+
+                prices[sym] = float(wolf_price_payload_sync().get("price") or 0)
+            except Exception:
+                pass
+        if not prices.get(sym):
+            try:
+                url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=1d&range=1d"
+                req = urllib.request.Request(url, headers=UA)
+                with urllib.request.urlopen(req, timeout=15) as r:
+                    d = json.loads(r.read())
+                meta = d["chart"]["result"][0]["meta"]
+                prices[sym] = float(meta.get("regularMarketPrice") or meta.get("previousClose") or 0)
+            except Exception:
+                prices[sym] = 0
+    return rebuild_cashapp_watchlist(live_prices=prices)
 
 @portfolio_router.get("/")
 def root():

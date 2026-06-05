@@ -967,23 +967,33 @@ def test_try_yfinance_ohlcv_returns_none_when_yfinance_empty(monkeypatch):
     assert out is None
 
 
-# ── v3_train WOLF-only filter (defense in depth like PR #7) ──────────────
+# ── v3_train watchlist collection ──────────────────────────────────────────
 
-def test_v3_train_collect_symbols_filters_to_wolf_only(monkeypatch):
-    """Even with dirty STOCK_SYMBOLS env AND non-WOLF portfolio entries,
-    training only ever runs on WOLF. Matches the WOLF-only hardening from
-    PR #7 (scan_symbols and v3_status)."""
+def test_v3_train_collect_symbols_includes_env_and_portfolio(monkeypatch):
+    """Training symbols include configured stocks plus portfolio holdings."""
     monkeypatch.setenv("STOCK_SYMBOLS", "TSLA,META,WOLF,AMZN,T")
-    # user_portfolio has 7 non-WOLF positions and 0 WOLF — should still resolve to WOLF only
     portfolio_rows = [("NVDA",), ("AAPL",), ("GOOG",), ("MSFT",), ("AMD",), ("INTC",), ("CRM",)]
     cur = QueueCursor(fetchall_values=[portfolio_rows])
     _patch_db_conn_with_cursor(monkeypatch, cur)
     out = wolf_app._v3_train_collect_symbols()
-    assert out == [("WOLF", "stock")]
+    assert out == [
+        ("TSLA", "stock"),
+        ("META", "stock"),
+        ("WOLF", "stock"),
+        ("AMZN", "stock"),
+        ("T", "stock"),
+        ("NVDA", "stock"),
+        ("AAPL", "stock"),
+        ("GOOG", "stock"),
+        ("MSFT", "stock"),
+        ("AMD", "stock"),
+        ("INTC", "stock"),
+        ("CRM", "stock"),
+    ]
 
 
 def test_v3_train_collect_symbols_falls_back_to_wolf_when_all_empty(monkeypatch):
-    """Empty env + DB error → still returns [(WOLF, stock)] as final safety net."""
+    """Empty env + DB error still returns WOLF as final safety net."""
     monkeypatch.setenv("STOCK_SYMBOLS", "")
 
     class _BrokenCtx:
@@ -3373,7 +3383,7 @@ def test_get_portfolio_filters_ghost_rows(monkeypatch):
     monkeypatch.setattr(pr, "db_conn", lambda: _Ctx())
     monkeypatch.setattr("core.prices.get_price", lambda s, a=None: 4.00)
 
-    out = pr.get_portfolio()
+    out = pr.build_portfolio_payload()
     syms = [p["symbol"] for p in out["positions"]]
     assert syms == ["WOLF"]                       # ghost/test rows excluded
     # totals only reflect the real WOLF position (100 * 3.50 = 350), not $3k+
