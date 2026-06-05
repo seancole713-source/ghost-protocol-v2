@@ -88,6 +88,8 @@ def get_portfolio(request: Request):
 
 @portfolio_router.post("/api/portfolio")
 async def add_portfolio(request: Request):
+    from mcp.security import require_portfolio_auth
+    require_portfolio_auth(request)
     d = await request.json()
     sym = str(d.get("symbol","")).upper().strip()
     atype = str(d.get("asset_type","stock"))
@@ -120,7 +122,9 @@ def set_manual_price(position_id: int, data: dict):
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 @portfolio_router.delete("/api/portfolio/{position_id}")
-def del_portfolio(position_id: int):
+def del_portfolio(position_id: int, request: Request):
+    from mcp.security import require_portfolio_auth
+    require_portfolio_auth(request)
     with db_conn() as conn:
         cur = conn.cursor()
         cur.execute("DELETE FROM user_portfolio WHERE id=%s",(position_id,))

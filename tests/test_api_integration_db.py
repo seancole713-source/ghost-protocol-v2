@@ -21,6 +21,7 @@ def integration_db(monkeypatch):
     test_dsn = os.getenv("TEST_DATABASE_URL")
     monkeypatch.setenv("DATABASE_URL", test_dsn)
     monkeypatch.setenv("GHOST_TEST_MODE", "1")
+    monkeypatch.setenv("GHOST_MCP_TOKEN", "itest-token")
 
     # Reset any stale pool before initializing against explicit test DB.
     try:
@@ -103,18 +104,19 @@ def test_integration_portfolio_crud_flow(integration_db):
     }
 
     with TestClient(wolf_app.APP) as client:
-        created = client.post("/api/portfolio", json=payload)
+        headers = {"X-Ghost-Mcp-Token": "itest-token"}
+        created = client.post("/api/portfolio", json=payload, headers=headers)
         assert created.status_code == 200
         created_body = created.json()
         assert created_body["ok"] is True
         pos_id = created_body["id"]
 
-        listed = client.get("/api/portfolio")
+        listed = client.get("/api/portfolio", headers=headers)
         assert listed.status_code == 200
         listed_body = listed.json()
         assert any(p["id"] == pos_id and p["symbol"] == symbol for p in listed_body["positions"])
 
-        deleted = client.delete(f"/api/portfolio/{pos_id}")
+        deleted = client.delete(f"/api/portfolio/{pos_id}", headers=headers)
         assert deleted.status_code == 200
         assert deleted.json()["ok"] is True
 

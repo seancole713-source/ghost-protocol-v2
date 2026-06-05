@@ -273,15 +273,15 @@ def test_confidence_buckets_computes_per_bucket_winrate(monkeypatch):
 # PR #8 — WOLF command center
 # ════════════════════════════════════════════════════════════════════════
 
-def test_scan_symbols_drops_non_wolf_even_if_env_dirty(monkeypatch):
-    """PR #8 hardening: STOCK_SYMBOLS=TSLA,META,WOLF,AMZN must reduce to ['WOLF']."""
+def test_scan_symbols_reflects_configured_stocks(monkeypatch):
+    """scan_symbols should expose configured STOCK_SYMBOLS for cockpit visibility."""
     monkeypatch.setenv("STOCK_SYMBOLS", "TSLA,META,WOLF,AMZN,T")
     monkeypatch.setenv("V3_STATS_START_TS", "0")
     monkeypatch.delenv("V3_STATS_START_TS", raising=False)
     monkeypatch.setattr(wolf_app, "_v32_stats_start_ts", lambda cur: 0)
     cur = QueueCursor(fetchall_values=[[]], fetchone_values=[(0,)])
     payload = wolf_app._compute_get_stats(cur)
-    assert payload["scan_symbols"]["stocks"] == ["WOLF"]
+    assert payload["scan_symbols"]["stocks"] == ["TSLA", "META", "WOLF", "AMZN", "T"]
 
 
 def test_scan_symbols_falls_back_to_wolf_when_env_empty(monkeypatch):
@@ -292,8 +292,8 @@ def test_scan_symbols_falls_back_to_wolf_when_env_empty(monkeypatch):
     assert payload["scan_symbols"]["stocks"] == ["WOLF"]
 
 
-def test_v3_status_strips_non_wolf_models(monkeypatch):
-    """PR #8 hardening: stale BCH/SOL/UNI rows in ghost_v3_model must not surface."""
+def test_v3_status_keeps_full_model_set(monkeypatch):
+    """v3 status should expose all trained symbols, not only WOLF."""
     import core.signal_engine as _se
     fake = {
         "trained": True,
@@ -308,17 +308,17 @@ def test_v3_status_strips_non_wolf_models(monkeypatch):
     monkeypatch.setattr(_se, "get_model_status", lambda: fake)
     out = wolf_app.v3_status()
     assert out["trained"] is True
-    assert out["models"] == 1
-    assert list(out["symbols"].keys()) == ["WOLF"]
+    assert out["models"] == 4
+    assert set(out["symbols"].keys()) == {"WOLF", "BCH", "SOL", "UNI"}
 
 
-def test_v3_status_flips_to_untrained_when_no_wolf_model(monkeypatch):
+def test_v3_status_reports_missing_expected_models(monkeypatch):
     import core.signal_engine as _se
     fake = {"trained": True, "models": 1, "symbols": {"BCH": {"engine": "v3.0"}}}
     monkeypatch.setattr(_se, "get_model_status", lambda: fake)
     out = wolf_app.v3_status()
-    assert out["trained"] is False
-    assert "WOLF" in str(out.get("reason", ""))
+    assert out["trained"] is True
+    assert "WOLF" in out.get("watchlist_missing_models", [])
 
 
 def test_v3_status_system_health_block_healthy(monkeypatch):

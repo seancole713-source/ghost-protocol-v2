@@ -255,5 +255,24 @@ def test_portfolio_anonymous_401(monkeypatch):
     assert r.status_code == 401
 
 
+def test_portfolio_write_requires_auth(monkeypatch):
+    monkeypatch.setenv("GHOST_MCP_TOKEN", "secret")
+    monkeypatch.setenv("CRON_SECRET", "cron-test")
+    with _client(monkeypatch) as client:
+        r = client.post(
+            "/api/portfolio",
+            json={"symbol": "AAPL", "asset_type": "stock", "quantity": 1, "buy_price": 1.0},
+        )
+    assert r.status_code == 401
+
+
+def test_portfolio_delete_requires_auth(monkeypatch):
+    monkeypatch.setenv("GHOST_MCP_TOKEN", "secret")
+    monkeypatch.setenv("CRON_SECRET", "cron-test")
+    with _client(monkeypatch) as client:
+        r = client.delete("/api/portfolio/123")
+    assert r.status_code == 401
+
+
 def test_allowed_http_method_is_get_only():
     assert ALLOWED_HTTP_METHOD == "GET"

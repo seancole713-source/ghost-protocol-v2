@@ -234,9 +234,6 @@ def _compute_get_stats(cur):
         v32r_losses = v32r_rows.get("LOSS", 0)
         v32r_total = v32r_wins + v32r_losses
     scan_stocks = [s.strip().upper() for s in os.getenv("STOCK_SYMBOLS", "WOLF").split(",") if s.strip()] or ["WOLF"]
-    # WOLF-only hardening (PR #8): refuse to surface non-WOLF symbols in the
-    # scan list even if the Railway env var is stale. WOLF is always included.
-    scan_stocks = [s for s in scan_stocks if s == "WOLF"] or ["WOLF"]
     return {
         "ok": True,
         "wins": wins,
@@ -3905,23 +3902,23 @@ def v3_status():
     heartbeat, kill-condition + pause state, coverage, recent activity, realized
     P&L, and a healthy/degraded/critical roll-up.
 
-    WOLF-only hardening (PR #8): even if ghost_v3_model has stale rows for
-    other symbols (e.g. BCH/SOL/UNI from the pre-WOLF crypto era), this
-    endpoint never exposes them. Filtering at the wrapper keeps the source
-    function reusable for one-off diagnostics that may need full coverage.
+    Exposes full model coverage and includes watchlist coverage telemetry so
+    operators can see which configured symbols are still missing a trained model.
     """
     from core.signal_engine import get_model_status
     st = get_model_status() or {}
     syms = st.get("symbols") or {}
-    if syms:
-        wolf_only = {k: v for k, v in syms.items() if str(k).upper() == "WOLF"}
-        st["symbols"] = wolf_only
-        if st.get("trained"):
-            st["models"] = len(wolf_only)
-            if not wolf_only:
-                st["trained"] = False
-                st["reason"] = "No WOLF model trained — run /api/v3/train"
+    st["symbols"] = {str(k).upper(): v for k, v in syms.items()}
+    st["models"] = len(st["symbols"])
+    expected = sorted({sym for sym, _atype in _v3_train_collect_symbols()})
+    available = set(st["symbols"].keys())
+    st["watchlist_expected_symbols"] = expected
+    st["watchlist_missing_models"] = [sym for sym in expected if sym not in available]
     st["system"] = _v3_system_health(st)
+    if isinstance(st.get("system"), dict):
+        coverage = st["system"].setdefault("coverage", {})
+        coverage["expected_symbols"] = expected
+        coverage["missing_models"] = st["watchlist_missing_models"]
     return st
 
 
