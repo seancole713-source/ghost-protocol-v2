@@ -110,7 +110,7 @@ def test_ask_context_route_requires_mcp_token(monkeypatch):
     monkeypatch.setenv("GHOST_MCP_TOKEN", "secret")
     monkeypatch.setattr(
         "core.ghost_ask.build_ask_context",
-        lambda: {"ts": 1, "product_note": "WOLF-only"},
+        lambda: {"ts": 1, "product_note": "Official picks come from live model+gate results; portfolio tracks P&L and exit alerts."},
     )
     with _client(monkeypatch) as client:
         r = client.get("/api/wolf/ask/context")
@@ -120,7 +120,7 @@ def test_ask_context_route_requires_mcp_token(monkeypatch):
     assert r.status_code == 200
     data = r.json()
     assert data["ok"] is True
-    assert data["context"]["product_note"] == "WOLF-only"
+    assert data["context"]["product_note"] == "Official picks come from live model+gate results; portfolio tracks P&L and exit alerts."
 
 
 def test_daily_limit_blocks(monkeypatch):

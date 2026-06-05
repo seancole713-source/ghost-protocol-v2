@@ -229,7 +229,13 @@ def _patch_db_conn_with_cursor(monkeypatch, cur):
         def __exit__(self, exc_type, exc, tb):
             return False
 
-    monkeypatch.setattr(wolf_app, "db_conn", lambda: _DbCtx())
+    ctx_factory = lambda: _DbCtx()
+    monkeypatch.setattr(wolf_app, "db_conn", ctx_factory)
+    try:
+        import core.db as _cdb
+        monkeypatch.setattr(_cdb, "db_conn", ctx_factory)
+    except Exception:
+        pass
 
 
 def test_confidence_buckets_empty_db_returns_zeroed_shape(monkeypatch):
@@ -2953,7 +2959,10 @@ def _kill_db(rows, monkeypatch):
 
     class _Cur:
         def execute(self, sql, params=None):
-            self._limit = params[0] if params else len(rows)
+            self._limit = len(rows)
+            if params:
+                # (symbols, limit) for watchlist-aware kill query
+                self._limit = params[1] if len(params) > 1 else params[0]
         def fetchall(self):
             return rows[: getattr(self, "_limit", len(rows))]
 
@@ -2979,8 +2988,8 @@ def test_kill_conditions_inert_during_cold_start(monkeypatch):
     assert by["win_rate"]["status"] == "insufficient"
     assert by["brier"]["status"] == "insufficient"
     assert by["expectancy"]["status"] == "insufficient"
-    # consecutive_losses isn't sample-gated: most recent is a WIN -> green
-    assert by["consecutive_losses"]["status"] == "green"
+    # consecutive_losses also sample-gated during cold start
+    assert by["consecutive_losses"]["status"] == "insufficient"
 
 
 def test_kill_conditions_trip_on_low_winrate_and_consec_losses(monkeypatch):
@@ -3086,6 +3095,7 @@ def test_enforce_cooldown_only_sets_autoresume(monkeypatch):
     import core.prediction as _pred, core.telegram as _tel
     monkeypatch.setattr(_tel, "send_health_alert", lambda *a, **k: None)
     monkeypatch.setenv("KILL_CONSEC_LOSSES", "3")
+    monkeypatch.setenv("KILL_MIN_SAMPLES", "3")
     monkeypatch.setenv("KILL_COOLDOWN_MINUTES", "60")
     state = {}
     rows = [(0.85, "LOSS", -3.0)] * 3   # consec trips; windows of 30/20 insufficient
@@ -3098,6 +3108,19 @@ def test_enforce_cooldown_only_sets_autoresume(monkeypatch):
     # force the auto-resume time into the past -> next read auto-resumes
     state["engine_pause_auto_resume_at"] = str(int(time.time()) - 1)
     assert _pred.engine_pause_state()["paused"] is False
+
+
+def test_enforce_clears_pause_when_conditions_clear(monkeypatch):
+    """When kill conditions no longer trip, enforcement auto-resumes the engine."""
+    import core.prediction as _pred, core.telegram as _tel
+    monkeypatch.setattr(_tel, "send_health_alert", lambda *a, **k: None)
+    state = {"engine_paused": "1", "engine_pause_reason": "consecutive_losses->cooldown"}
+    rows = [(0.85, "WIN", 2.0)] * 5
+    _enforcement_db(rows, state, monkeypatch)
+    res = _pred.enforce_kill_conditions()
+    assert res.get("paused") is False
+    assert res.get("cleared") is True
+    assert "engine_paused" not in state
 
 
 def test_enforce_inert_when_disabled(monkeypatch):

@@ -306,12 +306,17 @@ def _has_loadable_v3_model() -> bool:
 
 
 def _purge_v3_stale_or_weak():
-    """Remove v3 models below V3_MIN_HOLDOUT_ACC or pre-v3.2 label schema."""
+    """Remove v3 models below V3_MIN_HOLDOUT_ACC, pre-v3.2 label schema, or off-watchlist."""
     import json as _j
     floor = float(os.getenv("V3_MIN_HOLDOUT_ACC", "0.55"))
     wf_floor = float(os.getenv("V3_MIN_WF_ACC_MEAN", "0.60"))
     min_edge = float(os.getenv("V3_MIN_EDGE", "0.05"))
     min_wf_folds = max(2, int(os.getenv("V3_MIN_WF_FOLDS", "3")))
+    try:
+        from config.symbols import watchlist_symbols
+        allowed = watchlist_symbols(include_portfolio=True)
+    except Exception:
+        allowed = None
     purged = 0
     try:
         with db_conn() as conn:
@@ -321,12 +326,13 @@ def _purge_v3_stale_or_weak():
                 sym = key.replace("meta_", "")
                 try:
                     meta = _j.loads(val)
+                    off_watchlist = allowed is not None and sym.upper() not in allowed
                     weak = float(meta.get("accuracy", 0)) < floor or float(meta.get("edge", 0)) < min_edge
                     wf_folds = int(meta.get("wf_fold_count", 0))
                     wf_acc = float(meta.get("wf_acc_mean", meta.get("accuracy", 0)))
                     wf_edge = float(meta.get("wf_edge_mean", meta.get("edge", 0)))
                     wf_weak = wf_folds < min_wf_folds or wf_acc < wf_floor or wf_edge < min_edge
-                    if meta.get("label_type") != "tp_sl_daily" or weak or wf_weak:
+                    if off_watchlist or meta.get("label_type") != "tp_sl_daily" or weak or wf_weak:
                         cur.execute(
                             "DELETE FROM ghost_v3_model WHERE key IN (%s,%s)",
                             (f"model_{sym}", f"meta_{sym}"),
@@ -900,20 +906,20 @@ def _weekly_summary_job():
 
 
 def _build_train_symbol_list():
-    """Training symbol universe = WOLF + portfolio holdings (WOLF-only mode)."""
-    from core.prediction import STOCK_SYMBOLS
-    syms = [(s.strip().upper(), "stock") for s in STOCK_SYMBOLS if s.strip()]
+    """Training symbol universe from STOCK_SYMBOLS + portfolio holdings."""
+    from config.symbols import watchlist_symbol_pairs
+    return watchlist_symbol_pairs(include_portfolio=True)
+
+
+def _watchlist_missing_symbol_pairs() -> list:
+    """Watchlist symbols that currently lack a loadable v3 model."""
     try:
-        with db_conn() as conn:
-            cur = conn.cursor()
-            cur.execute("SELECT DISTINCT symbol FROM user_portfolio")
-            for (sym,) in cur.fetchall():
-                k = (str(sym or "").strip().upper(), "stock")
-                if k[0] and k not in syms:
-                    syms.append(k)
-    except Exception as e:
-        LOGGER.warning("Coverage symbol build failed: %s", str(e)[:80])
-    return syms
+        from core.signal_engine import get_model_status
+        expected = _build_train_symbol_list()
+        loaded = set((get_model_status() or {}).get("symbols", {}).keys())
+        return [(sym, atype) for sym, atype in expected if sym not in loaded]
+    except Exception:
+        return []
 
 
 def _coverage_maintenance_job():
@@ -966,11 +972,12 @@ def _coverage_maintenance_job():
         from core.signal_engine import get_model_status, train_and_validate
         st = get_model_status() or {}
         loaded = int(st.get("models", 0)) if st.get("trained") else 0
-        if loaded >= min_models:
-            LOGGER.info("Coverage maintenance: loaded models %s >= floor %s", loaded, min_models)
+        missing = _watchlist_missing_symbol_pairs()
+        if loaded >= min_models and not missing:
+            LOGGER.info("Coverage maintenance: loaded models %s >= floor %s, watchlist complete", loaded, min_models)
             return
 
-        syms = _build_train_symbol_list()
+        syms = missing if missing else _build_train_symbol_list()
         if not syms:
             LOGGER.warning("Coverage maintenance: empty symbol universe, skip retrain")
             return
@@ -981,8 +988,8 @@ def _coverage_maintenance_job():
         _lock_acquired = True
         _COVERAGE_RETRAIN_RUNNING = True
         LOGGER.warning(
-            "Coverage maintenance: loaded models %s below floor %s, retraining %s symbols",
-            loaded, min_models, len(syms)
+            "Coverage maintenance: loaded=%s floor=%s missing=%s — retraining %s symbols",
+            loaded, min_models, len(missing), len(syms)
         )
         _, acc_ratio, _ok = train_and_validate(syms)
         trained = int(round(acc_ratio * len(syms))) if syms else 0
@@ -1180,7 +1187,7 @@ async def lifespan(app: FastAPI):
             except Exception as _wse2:
                 LOGGER.warning("Weekly retrain state write failed: %s", str(_wse2)[:80])
             from core.prediction import STOCK_SYMBOLS
-            syms = [(s.strip(), "stock") for s in STOCK_SYMBOLS if s.strip()]
+            syms = _v3_train_collect_symbols()
             trained, failed = 0, len(syms)
             try:
                 # train_and_validate expects one list of (symbol, asset_type), not per-symbol calls
@@ -1222,18 +1229,7 @@ async def lifespan(app: FastAPI):
                     ts=int(time.time()), state="started", force="startup",
                     accuracy="", passed="", error="", models_before="", models_after="",
                 )
-                stocks = [(s.strip(),"stock") for s in os.getenv("STOCK_SYMBOLS","WOLF").split(",") if s.strip()] or [("WOLF","stock")]
-                try:
-                    from core.db import db_conn as _dbc
-                    with _dbc() as _c:
-                        _curp = _c.cursor()
-                        _curp.execute("SELECT DISTINCT symbol FROM user_portfolio")
-                        for (sym,) in _curp.fetchall():
-                            _entry = (str(sym or "").strip().upper(), "stock")
-                            if _entry[0] and _entry not in stocks:
-                                stocks.append(_entry)
-                except Exception:
-                    pass
+                stocks = _v3_train_collect_symbols()
                 _record_v3_train_state(state="running", stocks=str(stocks))
                 m, acc, passed = train_and_validate(stocks)
                 LOGGER.info(f"Startup training: acc={round((acc or 0)*100,1)}% passed={passed}")
@@ -1257,6 +1253,35 @@ async def lifespan(app: FastAPI):
                         LOGGER.info(f"Startup cleanup: legacy={purged} v3={pv}")
                 except Exception:
                     pass
+                missing = _watchlist_missing_symbol_pairs()
+                if missing and _RETRAIN_JOB_LOCK.acquire(blocking=False):
+                    _lock_acquired = True
+                    LOGGER.warning(
+                        "Startup coverage gap: %s watchlist symbols missing models — training",
+                        len(missing),
+                    )
+                    _record_v3_train_state(
+                        ts=int(time.time()), state="started", force="startup_missing",
+                        accuracy="", passed="", error="", models_before="", models_after="",
+                    )
+                    _record_v3_train_state(state="running", stocks=str(missing))
+                    m, acc, passed = train_and_validate(missing)
+                    LOGGER.info(
+                        "Startup missing-model training: acc=%s%% passed=%s symbols=%s",
+                        round((acc or 0) * 100, 1), passed, len(missing),
+                    )
+                    _record_v3_train_state(
+                        state="passed" if passed else "failed",
+                        accuracy=f"{(acc or 0):.4f}", passed=str(bool(passed)).lower(),
+                        finished_at=int(time.time()), error="",
+                    )
+                    try:
+                        purged = _auto_purge_bad_models()
+                        pv = _purge_v3_stale_or_weak()
+                        if purged or pv:
+                            LOGGER.info(f"Post-startup-missing purge: legacy={purged} v3={pv}")
+                    except Exception:
+                        pass
         except Exception as _te:
             LOGGER.warning("Startup training failed: " + str(_te))
             try:
@@ -3839,22 +3864,36 @@ def _v3_system_health(model_status: dict) -> dict:
         issues.append("no_model")
     min_models = max(1, int(os.getenv("MODEL_COVERAGE_MIN_MODELS", "3")))
     loaded = int(model_status.get("models", 0)) if trained else 0
+    expected = sorted({sym for sym, _atype in _v3_train_collect_symbols()})
+    missing_models = [sym for sym in expected if sym not in (model_status.get("symbols") or {})]
+    if missing_models:
+        issues.append("watchlist_models_missing")
     if loaded < min_models:
         issues.append("coverage_below_floor")
 
+    watchlist_syms = expected or ["WOLF"]
     activity = {"open": None, "resolved_24h": None}
     pnl = None
     try:
         with db_conn() as c:
             cur = c.cursor()
-            cur.execute("SELECT COUNT(*) FROM predictions WHERE symbol='WOLF' AND outcome IS NULL AND expires_at > %s", (now,))
+            cur.execute(
+                "SELECT COUNT(*) FROM predictions WHERE symbol = ANY(%s) "
+                "AND outcome IS NULL AND expires_at > %s",
+                (watchlist_syms, now),
+            )
             activity["open"] = int(cur.fetchone()[0])
-            cur.execute("SELECT COUNT(*) FROM predictions WHERE symbol='WOLF' AND resolved_at >= %s", (now - 86400,))
+            cur.execute(
+                "SELECT COUNT(*) FROM predictions WHERE symbol = ANY(%s) AND resolved_at >= %s",
+                (watchlist_syms, now - 86400),
+            )
             activity["resolved_24h"] = int(cur.fetchone()[0])
             cur.execute(
                 "SELECT resolved_at,symbol,outcome,pnl_pct,entry_price,exit_price FROM predictions "
-                "WHERE symbol='WOLF' AND id >= %s AND outcome IS NOT NULL AND pnl_pct IS NOT NULL "
-                "ORDER BY resolved_at ASC NULLS LAST, id ASC", (_V32_ERA_MIN_ID,))
+                "WHERE symbol = ANY(%s) AND id >= %s AND outcome IS NOT NULL AND pnl_pct IS NOT NULL "
+                "ORDER BY resolved_at ASC NULLS LAST, id ASC",
+                (watchlist_syms, _V32_ERA_MIN_ID),
+            )
             rows = cur.fetchall()
         from core.pnl import realized_pnl
         trades = [{"resolved_at": r[0], "symbol": r[1], "outcome": r[2],
@@ -3885,8 +3924,13 @@ def _v3_system_health(model_status: dict) -> dict:
             "pause_auto_resume_at": pause.get("auto_resume_at"),
         },
         "kill": kill,
-        "coverage": {"loaded_models": loaded, "min_models_floor": min_models,
-                     "below_floor": loaded < min_models},
+        "coverage": {
+            "loaded_models": loaded,
+            "min_models_floor": min_models,
+            "below_floor": loaded < min_models,
+            "expected_symbols": expected,
+            "missing_models": missing_models,
+        },
         "activity": activity,
         "pnl": pnl,
         "checked_at": now,
@@ -4086,34 +4130,9 @@ def cockpit_context():
 
 
 def _v3_train_collect_symbols() -> list:
-    """Collect symbols for v3 training from env + user portfolio.
-
-    Includes configured `STOCK_SYMBOLS` and live portfolio holdings so Ghost
-    can train models for the watchlist the operator actually tracks.
-    """
-    stocks = [(s.strip().upper(), "stock") for s in os.getenv("STOCK_SYMBOLS", "WOLF").split(",") if s.strip()] or [("WOLF", "stock")]
-    try:
-        with db_conn() as conn:
-            cur = conn.cursor()
-            cur.execute("SELECT DISTINCT symbol FROM user_portfolio")
-            for (sym,) in cur.fetchall():
-                entry = (str(sym or "").strip().upper(), "stock")
-                if entry[0] and entry not in stocks:
-                    stocks.append(entry)
-    except Exception:
-        pass
-    seen = set()
-    deduped = []
-    for sym, atype in stocks:
-        entry = ((sym or "").strip().upper(), (atype or "stock").strip().lower())
-        if not entry[0]:
-            continue
-        if entry[0] in {"GHOST", "TEST"} or entry[0].startswith("ZZ"):
-            continue
-        if entry not in seen:
-            seen.add(entry)
-            deduped.append(entry)
-    return deduped or [("WOLF", "stock")]
+    """Collect symbols for v3 training from env + user portfolio."""
+    from config.symbols import watchlist_symbol_pairs
+    return watchlist_symbol_pairs(include_portfolio=True)
 
 
 def _record_v3_train_state(**fields) -> None:

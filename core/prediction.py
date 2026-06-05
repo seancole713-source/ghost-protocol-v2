@@ -1,5 +1,5 @@
 """
-core/prediction.py - Ghost v2 prediction engine (WOLF-only mode).
+core/prediction.py - Ghost v2 prediction engine (multi-symbol watchlist).
 Signal source: v3 XGBoost trained on TP/SL outcomes (see core.signal_engine v3.2).
 Rules:
   - 30+ resolved picks AND win_rate > 55%: predict dominant direction
@@ -72,26 +72,36 @@ def _kill_cfg() -> Dict[str, Any]:
         "consec_losses": max(1, int(g("KILL_CONSEC_LOSSES", "3"))),
         "expectancy_window": max(1, int(g("KILL_EXPECTANCY_WINDOW", "20"))),
         "cooldown_minutes": max(1, int(g("KILL_COOLDOWN_MINUTES", "1440"))),
+        "min_samples": max(1, int(g("KILL_MIN_SAMPLES", "10"))),
     }
+
+
+def _kill_symbol_universe() -> List[str]:
+    """Symbols included in kill-condition rollups (watchlist + portfolio)."""
+    try:
+        from config.symbols import watchlist_symbols
+        return sorted(watchlist_symbols(include_portfolio=True))
+    except Exception:
+        return list(STOCK_SYMBOLS) or ["WOLF"]
 
 
 def evaluate_kill_conditions() -> Dict[str, Any]:
     """Read-only evaluation of the kill conditions over the rolling resolved-pick
-    history (WOLF, v3.2 era). Returns per-condition status with current value vs
-    threshold and a green/red/insufficient flag. Does NOT enforce. During the
-    cold start (few resolved picks) every gated condition reads 'insufficient'
-    and never trips — silence-by-design, not a false alarm."""
+    history (v3.2 era, watchlist symbols). Returns per-condition status with current
+    value vs threshold and a green/red/insufficient flag. Does NOT enforce. During
+    cold start every gated condition reads 'insufficient' and never trips."""
     cfg = _kill_cfg()
     need = max(cfg["winrate_window"], cfg["brier_window"],
-               cfg["expectancy_window"], cfg["consec_losses"])
+               cfg["expectancy_window"], cfg["consec_losses"], cfg["min_samples"])
+    symbols = _kill_symbol_universe()
     try:
         with db_conn() as conn:
             cur = conn.cursor()
             cur.execute(
                 "SELECT confidence, outcome, pnl_pct FROM predictions "
-                "WHERE symbol='WOLF' AND id >= 223438 AND outcome IS NOT NULL "
+                "WHERE symbol = ANY(%s) AND id >= 223438 AND outcome IS NOT NULL "
                 "ORDER BY resolved_at DESC NULLS LAST, id DESC LIMIT %s",
-                (need,))
+                (symbols, need))
             rows = cur.fetchall()   # newest first
     except Exception as e:
         return {"ok": False, "error": str(e)[:160]}
@@ -138,12 +148,13 @@ def evaluate_kill_conditions() -> Dict[str, Any]:
             streak += 1
         else:
             break
-    cl_trig = streak >= cfg["consec_losses"]
+    cl_enough = len(rows) >= max(cfg["consec_losses"], cfg["min_samples"])
+    cl_trig = bool(cl_enough and streak >= cfg["consec_losses"])
     conds.append({
         "name": "consecutive_losses", "action": "cooldown", "window": cfg["consec_losses"],
         "samples": len(rows), "current": streak, "threshold": cfg["consec_losses"],
-        "comparator": ">=", "triggered": bool(cl_trig),
-        "status": "red" if cl_trig else "green",
+        "comparator": ">=", "triggered": cl_trig,
+        "status": _status(cl_trig, cl_enough),
     })
 
     # 4. Expectancy (mean realized pnl%) over rolling window -> halt_manual_review
@@ -240,7 +251,12 @@ def enforce_kill_conditions() -> Dict[str, Any]:
         return engine_pause_state()
     tripped = [c for c in ev["conditions"] if c["triggered"]]
     if not tripped:
-        return engine_pause_state()
+        prev = engine_pause_state()
+        if prev.get("paused"):
+            _clear_engine_pause()
+            LOGGER.info("Kill conditions cleared — engine auto-resumed")
+            return {"paused": False, "cleared": True}
+        return {"paused": False}
 
     actions = sorted({c["action"] for c in tripped})
     reason = "; ".join(c["name"] + "->" + c["action"] for c in tripped)

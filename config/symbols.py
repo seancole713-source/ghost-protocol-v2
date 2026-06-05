@@ -1,12 +1,19 @@
 """
 V3 validated strategies and symbol lists.
 
-WOLF-ONLY MODE (Phase 0 pivot — May 21, 2026)
-Ghost Protocol is now a single-stock intelligence system for Wolfspeed (WOLF).
-All crypto and non-WOLF stocks have been archived.
+Ghost watches a configurable stock watchlist (STOCK_SYMBOLS + portfolio holdings).
+WOLF remains the default anchor symbol when nothing else is configured.
 """
+from __future__ import annotations
+
+import os
 from dataclasses import dataclass
-from typing import Optional, Dict, FrozenSet, Tuple
+from typing import List, Optional, Dict, FrozenSet, Tuple, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    pass
+
+_WATCHLIST_SKIP = frozenset({"GHOST", "TEST"})
 
 # Direction override constant — retained for legacy compatibility; no active strategy
 # currently uses it.
@@ -61,18 +68,51 @@ DEFAULT_EDGE_SYMBOLS = "WOLF"
 _RESOLVED_EDGE_SET: Optional[FrozenSet[str]] = None
 
 
-def get_edge_set() -> FrozenSet[str]:
-    """
-    Return the resolved edge symbol set.
+def _env_stock_symbols() -> List[str]:
+    raw = os.getenv("STOCK_SYMBOLS", os.getenv("EDGE_SYMBOLS", "WOLF"))
+    syms = [s.strip().upper() for s in (raw or "WOLF").split(",") if s.strip()]
+    return syms or ["WOLF"]
 
-    WOLF-ONLY MODE: Always returns {"WOLF"}.
-    The env var EDGE_SYMBOLS is intentionally ignored to prevent stale
-    Railway env vars from re-introducing archived symbols.
-    """
+
+def watchlist_symbol_pairs(include_portfolio: bool = True) -> List[Tuple[str, str]]:
+    """Configured watchlist as (symbol, asset_type) pairs — env + optional portfolio."""
+    stocks: List[Tuple[str, str]] = [(sym, "stock") for sym in _env_stock_symbols()]
+    if include_portfolio:
+        try:
+            from core.db import db_conn
+            with db_conn() as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT DISTINCT symbol FROM user_portfolio")
+                for (sym,) in cur.fetchall():
+                    entry = (str(sym or "").strip().upper(), "stock")
+                    if entry[0] and entry not in stocks:
+                        stocks.append(entry)
+        except Exception:
+            pass
+    seen = set()
+    deduped: List[Tuple[str, str]] = []
+    for sym, atype in stocks:
+        sym = (sym or "").strip().upper()
+        atype = (atype or "stock").strip().lower()
+        if not sym or sym in _WATCHLIST_SKIP or sym.startswith("ZZ"):
+            continue
+        entry = (sym, atype)
+        if entry not in seen:
+            seen.add(entry)
+            deduped.append(entry)
+    return deduped or [("WOLF", "stock")]
+
+
+def watchlist_symbols(include_portfolio: bool = True) -> FrozenSet[str]:
+    return frozenset(sym for sym, _atype in watchlist_symbol_pairs(include_portfolio))
+
+
+def get_edge_set() -> FrozenSet[str]:
+    """Return the resolved edge symbol set from STOCK_SYMBOLS (fallback WOLF)."""
     global _RESOLVED_EDGE_SET
     if _RESOLVED_EDGE_SET is not None:
         return _RESOLVED_EDGE_SET
-    _RESOLVED_EDGE_SET = frozenset(["WOLF"])
+    _RESOLVED_EDGE_SET = watchlist_symbols(include_portfolio=False)
     return _RESOLVED_EDGE_SET
 
 
