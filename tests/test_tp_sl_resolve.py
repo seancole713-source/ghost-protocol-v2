@@ -63,6 +63,12 @@ def test_holdout_slices_do_not_overlap():
     assert calib_end == int(127 * 0.85)
 
 
+def test_holdout_acc_override_env(monkeypatch):
+    import core.signal_engine as _se
+    monkeypatch.setenv("V3_HOLDOUT_ACC_OVERRIDES", "TLRY=0.47")
+    assert _se._v3_holdout_acc_overrides() == {"TLRY": 0.47}
+
+
 def test_feature_asof_on_live_features(monkeypatch):
     import core.signal_engine as _se
     import numpy as _np

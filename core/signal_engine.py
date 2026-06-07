@@ -130,6 +130,30 @@ def _v3_wf_acc_min_overrides() -> dict:
     return out
 
 
+def _v3_holdout_acc_overrides() -> dict:
+    """Optional per-symbol holdout accuracy floors (thin gate slices).
+
+    Env format: V3_HOLDOUT_ACC_OVERRIDES=\"TLRY=0.47,SPCE=0.52\"
+    """
+    raw = (os.getenv("V3_HOLDOUT_ACC_OVERRIDES", "") or "").strip()
+    out = {}
+    if not raw:
+        return out
+    for part in raw.split(","):
+        part = part.strip()
+        if not part or "=" not in part:
+            continue
+        k, v = part.split("=", 1)
+        sym = (k or "").strip().upper()
+        if not sym:
+            continue
+        try:
+            out[sym] = float(v.strip())
+        except Exception:
+            continue
+    return out
+
+
 def _v3_wf_min_train_floor() -> int:
     """Absolute minimum training-window size for walk-forward folds.
 
@@ -1282,6 +1306,8 @@ def train_and_validate(symbols_and_types):
             spw = (neg_ct / pos_ct) if pos_ct > 0 else 1.0
             min_acc = _v3_min_holdout_acc()
             min_edge = _v3_min_edge()
+            holdout_overrides = _v3_holdout_acc_overrides()
+            symbol_min_acc = holdout_overrides.get(symbol.upper(), min_acc)
             model = XGBClassifier(
                 n_estimators=200, max_depth=4, learning_rate=0.03,
                 subsample=0.8, colsample_bytree=0.7, min_child_weight=3,
@@ -1310,7 +1336,7 @@ def train_and_validate(symbols_and_types):
             gate_checks = [
                 ("n_samples", n_samples >= min_rows, f"n_samples<{min_rows} ({n_samples})"),
                 ("tp_sl_wins", wins_ct >= min_wins, f"tp_sl_wins<{min_wins} ({wins_ct})"),
-                ("holdout_acc", accuracy >= min_acc, f"holdout_acc < {min_acc*100:.1f}% ({accuracy*100:.1f}%)"),
+                ("holdout_acc", accuracy >= symbol_min_acc, f"holdout_acc < {symbol_min_acc*100:.1f}% ({accuracy*100:.1f}%)"),
                 ("edge", edge >= min_edge, f"edge < {min_edge*100:.1f}% ({edge*100:.1f}%)"),
                 ("wf_folds", wf["fold_count"] >= min_wf_folds, f"wf_folds < {min_wf_folds} ({wf['fold_count']})"),
                 ("wf_acc_mean", wf["acc_mean"] >= min_wf_acc, f"wf_acc_mean < {min_wf_acc*100:.1f}% ({wf['acc_mean']*100:.1f}%)"),
@@ -1344,7 +1370,7 @@ def train_and_validate(symbols_and_types):
                 "thresholds": {
                     "min_train_rows": min_rows,
                     "min_tp_sl_wins": min_wins,
-                    "min_holdout_acc": min_acc,
+                    "min_holdout_acc": symbol_min_acc,
                     "min_edge": min_edge,
                     "min_wf_folds": min_wf_folds,
                     "min_wf_acc_mean": min_wf_acc,
