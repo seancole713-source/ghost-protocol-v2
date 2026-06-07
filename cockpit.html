@@ -654,50 +654,6 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
     </div>
   </section>
 
-  <!-- ─── Ghost Ask (Claude + live state) ─── -->
-  <section class="block" id="ask-ghost-section">
-    <div class="sec-label">Ask Ghost</div>
-    <div class="ask-wrap">
-      <div class="ask-hint">Ask about cooldown, SILENCE, your portfolio, or WOLF gates. Answers use live Ghost state — not financial advice.</div>
-      <div class="ask-log" id="ask-log"></div>
-      <div class="ask-form">
-        <textarea id="ask-input" rows="2" placeholder="Why is Ghost silent today? Should I add to WOLF?" maxlength="2000"></textarea>
-        <button type="button" class="ask-send" id="ask-send" onclick="submitGhostAsk()">Ask</button>
-      </div>
-      <div class="ask-meta" id="ask-meta"></div>
-    </div>
-  </section>
-
-  <!-- ─── Today's WOLF play ─── -->
-  <section class="block">
-    <div class="sec-label">Today&#39;s WOLF Play</div>
-    <div id="sgrid"><div class="empty"><div class="ico">&#9203;</div>Loading plays…</div></div>
-  </section>
-
-  <!-- ─── Prediction vs Reality chart ─── -->
-  <section class="block">
-    <div class="sec-label">Prediction vs Reality</div>
-    <div class="chart-wrap">
-      <div class="chart-toggles">
-        <button class="chart-toggle active" data-range="1d" onclick="setChartRange('1d')">1D</button>
-        <button class="chart-toggle" data-range="1w" onclick="setChartRange('1w')">1W</button>
-        <button class="chart-toggle" data-range="1m" onclick="setChartRange('1m')">1M</button>
-      </div>
-      <div class="chart-canvas-wrap tall">
-        <canvas id="pred-chart"></canvas>
-      </div>
-      <div id="zone-callouts" style="display:flex;gap:10px;margin-top:10px;flex-wrap:wrap"></div>
-      <div class="chart-legend">
-        <span class="leg"><span class="leg-swatch"></span>WOLF live</span>
-        <span class="leg"><span class="leg-swatch band-up"></span>Predicted band (BUY)</span>
-        <span class="leg"><span class="leg-swatch band-dn"></span>Predicted band (SELL)</span>
-        <span class="leg"><span class="leg-swatch dot-open"></span>Open pick</span>
-        <span class="leg"><span class="leg-swatch dot-win"></span>WIN</span>
-        <span class="leg"><span class="leg-swatch dot-loss"></span>LOSS</span>
-      </div>
-    </div>
-  </section>
-
   <!-- ─── Daily forecast scorecard (full watchlist) ─── -->
   <section class="block" id="daily-forecast-section">
     <div class="sec-label">Forecast vs Reality &middot; Open / Peak / Close</div>
@@ -859,6 +815,50 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
     <div id="ptotals"></div>
     <div id="ppositions"><div class="empty"><div class="ico">&#128188;</div>No positions yet. Add your first above.</div></div>
     <div id="gp-section"></div>
+  </section>
+
+  <!-- ─── Ghost Ask (Claude + live state) ─── -->
+  <section class="block" id="ask-ghost-section">
+    <div class="sec-label">Ask Ghost</div>
+    <div class="ask-wrap">
+      <div class="ask-hint">Ask about cooldown, SILENCE, your portfolio, or WOLF gates. Answers use live Ghost state — not financial advice.</div>
+      <div class="ask-log" id="ask-log"></div>
+      <div class="ask-form">
+        <textarea id="ask-input" rows="2" placeholder="Why is Ghost silent today? Should I add to WOLF?" maxlength="2000"></textarea>
+        <button type="button" class="ask-send" id="ask-send" onclick="submitGhostAsk()">Ask</button>
+      </div>
+      <div class="ask-meta" id="ask-meta"></div>
+    </div>
+  </section>
+
+  <!-- ─── Today's WOLF play ─── -->
+  <section class="block">
+    <div class="sec-label">Today&#39;s WOLF Play</div>
+    <div id="sgrid"><div class="empty"><div class="ico">&#9203;</div>Loading plays…</div></div>
+  </section>
+
+  <!-- ─── Prediction vs Reality chart ─── -->
+  <section class="block">
+    <div class="sec-label">Prediction vs Reality</div>
+    <div class="chart-wrap">
+      <div class="chart-toggles">
+        <button class="chart-toggle active" data-range="1d" onclick="setChartRange('1d')">1D</button>
+        <button class="chart-toggle" data-range="1w" onclick="setChartRange('1w')">1W</button>
+        <button class="chart-toggle" data-range="1m" onclick="setChartRange('1m')">1M</button>
+      </div>
+      <div class="chart-canvas-wrap tall">
+        <canvas id="pred-chart"></canvas>
+      </div>
+      <div id="zone-callouts" style="display:flex;gap:10px;margin-top:10px;flex-wrap:wrap"></div>
+      <div class="chart-legend">
+        <span class="leg"><span class="leg-swatch"></span>WOLF live</span>
+        <span class="leg"><span class="leg-swatch band-up"></span>Predicted band (BUY)</span>
+        <span class="leg"><span class="leg-swatch band-dn"></span>Predicted band (SELL)</span>
+        <span class="leg"><span class="leg-swatch dot-open"></span>Open pick</span>
+        <span class="leg"><span class="leg-swatch dot-win"></span>WIN</span>
+        <span class="leg"><span class="leg-swatch dot-loss"></span>LOSS</span>
+      </div>
+    </div>
   </section>
 
   <!-- ─── Pick Journal (blueprint module 7 — the credibility ledger) ─── -->
