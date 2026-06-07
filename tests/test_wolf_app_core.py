@@ -2201,7 +2201,7 @@ def test_news_filter_drops_articles_without_wolf_mention(monkeypatch):
         {"title": "Stocks to watch: Ross Stores, Advance Auto Parts", "symbols": ["WOLF", "NVDA"]},
     ]
     import core.news as _news
-    monkeypatch.setattr(_news, "get_recent_articles", lambda n: fake_articles)
+    monkeypatch.setattr(_news, "get_recent_articles", lambda n, symbol=None: fake_articles)
     import sys, types
     fake_yf = types.ModuleType("yfinance")
 
@@ -2235,7 +2235,7 @@ def test_news_filter_replaces_finnhub_stock_source_label(monkeypatch):
         {"title": "WOLFSPEED inks deal", "symbols": [], "source": "finnhub_stock"},
     ]
     import core.news as _news
-    monkeypatch.setattr(_news, "get_recent_articles", lambda n: fake_articles)
+    monkeypatch.setattr(_news, "get_recent_articles", lambda n, symbol=None: fake_articles)
     import sys, types
     fake_yf = types.ModuleType("yfinance")
 
@@ -2320,7 +2320,7 @@ def test_news_yfinance_augmentation_applies_wolf_filter(monkeypatch):
     import api.wolf_endpoints as we
     we._CACHE.clear()
     import core.news as _news
-    monkeypatch.setattr(_news, "get_recent_articles", lambda n: [])
+    monkeypatch.setattr(_news, "get_recent_articles", lambda n, symbol=None: [])
 
     yf_items = [
         {"title": "Zoom hits new highs", "publisher": "Reuters", "link": "https://reuters.com/zoom"},
@@ -2361,7 +2361,7 @@ def test_news_source_label_uses_publisher_not_generic_news(monkeypatch):
     import api.wolf_endpoints as we
     we._CACHE.clear()
     import core.news as _news
-    monkeypatch.setattr(_news, "get_recent_articles", lambda n: [])
+    monkeypatch.setattr(_news, "get_recent_articles", lambda n, symbol=None: [])
     import sys, types
     fake_yf = types.ModuleType("yfinance")
 
@@ -2393,7 +2393,7 @@ def test_news_source_falls_back_to_hostname_when_only_finnhub_label(monkeypatch)
     import api.wolf_endpoints as we
     we._CACHE.clear()
     import core.news as _news
-    monkeypatch.setattr(_news, "get_recent_articles", lambda n: [
+    monkeypatch.setattr(_news, "get_recent_articles", lambda n, symbol=None: [
         {"title": "WOLFSPEED announces deal", "source": "finnhub_stock",
          "url": "https://www.reuters.com/article/wolf-deal", "symbols": []},
     ])
@@ -3437,7 +3437,7 @@ def test_get_news_filters_offtopic(monkeypatch):
         {"title": "Zoom Video tops estimates", "summary": "video"},
         {"title": "Ross Stores Q1 results", "summary": "retail"},
     ]
-    monkeypatch.setattr(_news, "get_recent_articles", lambda n=20: arts)
+    monkeypatch.setattr(_news, "get_recent_articles", lambda n=20, symbol=None: arts)
     out = wolf_app.get_news()
     assert out["ok"] is True
     assert [a["title"] for a in out["articles"]] == ["Wolfspeed expands SiC capacity"]

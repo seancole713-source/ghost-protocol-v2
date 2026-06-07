@@ -852,25 +852,26 @@ _PRESS_KEYWORDS = ("press release", "announces", "announce", "appoints", "launch
 
 
 @router.get("/news")
-async def get_wolf_news(category: str = "all"):
-    """WOLF-relevant news, optionally filtered by category.
+async def get_wolf_news(category: str = "all", symbol: str = ""):
+    """News feed — WOLF cockpit default, or per-symbol when ?symbol=ABCL.
 
-    Categories: all | news | earnings | press
+    Categories: all | news | earnings | press | research
     """
-    cached_key = "news:" + (category or "all").lower()
+    sym = (symbol or "").strip().upper()
+    cached_key = "news:" + (category or "all").lower() + ":" + (sym or "WOLF")
     cached = _cache_get(cached_key, 300)
     if cached:
         return JSONResponse(content=cached)
 
     cat = (category or "all").lower()
-    if cat not in ("all", "news", "earnings", "press"):
+    if cat not in ("all", "news", "earnings", "press", "research"):
         cat = "all"
 
     articles_out: List[Dict[str, Any]] = []
     err = None
     try:
         from core.news import get_recent_articles
-        raw = get_recent_articles(50) or []
+        raw = get_recent_articles(50, symbol=sym or None) or []
     except Exception as e:
         raw = []
         err = str(e)[:200]
@@ -879,27 +880,25 @@ async def get_wolf_news(category: str = "all"):
         try:
             title = a.get("title") or a.get("headline") or ""
             syms = [str(s).upper() for s in (a.get("symbols") or [])]
-            # PR #26: REQUIRE a textual WOLF mention. The previous symbols-tag
-            # shortcut (WOLF in syms) was the leak source — core/news fetches
-            # Finnhub *company-news for WOLF* and tags EVERY returned article
-            # with ["WOLF"], including market-roundup pieces that are actually
-            # about IBM / Zoom / Ross Stores / Ralph Lauren. The tag is
-            # therefore unreliable; only trust the article TEXT.
-            title_upper = title.upper()
-            body_text = (a.get("summary") or a.get("description") or "")
-            blob_upper = (title + " " + body_text).upper()
-            blob_words = set(blob_upper.replace(",", " ").replace(".", " ")
-                             .replace(":", " ").replace(";", " ")
-                             .replace("(", " ").replace(")", " ").split())
-            wolf_match = (
-                ("WOLFSPEED" in blob_upper)
-                or (WOLF_SYMBOL in blob_words)
-                or ("SIC" in blob_words)
-                or ("SILICON CARBIDE" in blob_upper)
-            )
-            if not wolf_match:
+            if not syms and a.get("symbol"):
+                syms = [str(a.get("symbol")).upper()]
+            if sym and sym not in syms:
                 continue
-            article_cat = _categorize(title)
+            if not sym:
+                body_text = (a.get("summary") or a.get("description") or "")
+                blob_upper = (title + " " + body_text).upper()
+                blob_words = set(blob_upper.replace(",", " ").replace(".", " ")
+                                 .replace(":", " ").replace(";", " ")
+                                 .replace("(", " ").replace(")", " ").split())
+                wolf_match = (
+                    ("WOLFSPEED" in blob_upper)
+                    or (WOLF_SYMBOL in blob_words)
+                    or ("SIC" in blob_words)
+                    or ("SILICON CARBIDE" in blob_upper)
+                )
+                if not wolf_match:
+                    continue
+            article_cat = a.get("category") or _categorize(title)
             if cat != "all" and article_cat != cat:
                 continue
             # PR #25: aggressively extract real publisher name — articles can
@@ -938,52 +937,46 @@ async def get_wolf_news(category: str = "all"):
         except Exception:
             continue
 
-    # Augment with yfinance news. PR #25: this used to bypass the WOLF
-    # filter entirely — Yahoo's news endpoint returns related-ticker noise
-    # (Zoom / IBM / Ross Stores / Ralph Lauren) tagged to a target ticker,
-    # which leaked straight into the investor feed. Now: same word-boundary
-    # check the main loop uses, applied to title + (yfinance summary if any).
-    try:
-        import yfinance as yf
-        tk = yf.Ticker(WOLF_SYMBOL)
-        for item in (tk.news or [])[:15]:
-            try:
-                title = item.get("title") or ""
-                summary = item.get("summary") or ""
-                if not title:
+    # Augment with yfinance news (WOLF cockpit default only).
+    if not sym:
+        try:
+            import yfinance as yf
+            tk = yf.Ticker(WOLF_SYMBOL)
+            for item in (tk.news or [])[:15]:
+                try:
+                    title = item.get("title") or ""
+                    summary = item.get("summary") or ""
+                    if not title:
+                        continue
+                    blob_upper = (title + " " + summary).upper()
+                    blob_words = set(blob_upper.replace(",", " ").replace(".", " ")
+                                     .replace(":", " ").replace(";", " ")
+                                     .replace("(", " ").replace(")", " ").split())
+                    wolf_match = (
+                        "WOLFSPEED" in blob_upper
+                        or WOLF_SYMBOL in blob_words
+                        or "SIC" in blob_words
+                        or "SILICON CARBIDE" in blob_upper
+                    )
+                    if not wolf_match:
+                        continue
+                    article_cat = _categorize(title)
+                    if cat != "all" and article_cat != cat:
+                        continue
+                    publisher = item.get("publisher") or "Yahoo Finance"
+                    articles_out.append({
+                        "title": title,
+                        "source": publisher,
+                        "url": item.get("link") or "",
+                        "published_at": _safe_int(item.get("providerPublishTime")),
+                        "category": article_cat,
+                        "sentiment": None,
+                        "symbols": [WOLF_SYMBOL],
+                    })
+                except Exception:
                     continue
-                blob_upper = (title + " " + summary).upper()
-                blob_words = set(blob_upper.replace(",", " ").replace(".", " ")
-                                 .replace(":", " ").replace(";", " ")
-                                 .replace("(", " ").replace(")", " ").split())
-                wolf_match = (
-                    "WOLFSPEED" in blob_upper
-                    or WOLF_SYMBOL in blob_words
-                    or "SIC" in blob_words            # silicon carbide ticker tag
-                    or "SILICON CARBIDE" in blob_upper
-                )
-                if not wolf_match:
-                    continue
-                article_cat = _categorize(title)
-                if cat != "all" and article_cat != cat:
-                    continue
-                # PR #25: use yfinance's `publisher` field as the real source
-                # (e.g. "Seeking Alpha", "Benzinga", "Business Wire"); fall back
-                # to "Yahoo Finance" not the generic "News" placeholder.
-                publisher = item.get("publisher") or "Yahoo Finance"
-                articles_out.append({
-                    "title": title,
-                    "source": publisher,
-                    "url": item.get("link") or "",
-                    "published_at": _safe_int(item.get("providerPublishTime")),
-                    "category": article_cat,
-                    "sentiment": None,
-                    "symbols": [WOLF_SYMBOL],
-                })
-            except Exception:
-                continue
-    except Exception:
-        pass
+        except Exception:
+            pass
 
     # Dedup by title (case-insensitive), keep first
     seen_titles = set()

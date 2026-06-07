@@ -92,6 +92,20 @@ body{background:radial-gradient(1100px 520px at 50% -8%,#1a0f14 0%,#0a0a0a 58%) 
   <div id="data-sources-result" style="margin-top:8px"></div>
 </div>
 
+<!-- ─── News import ─── -->
+<div class="sec-label">News Feed</div>
+<div class="card">
+  <h3>Import News JSON</h3>
+  <div class="desc">Paste a JSON file matching <code>data/news_import.example.json</code> or fetch the schema from <code>/api/admin/news/import-format</code>. Symbols must be on the 44-stock watchlist. Ghost also auto-pulls Finnhub every 30 min (8 symbols per cycle).</div>
+  <div class="row">
+    <input type="file" id="news-file" accept=".json,application/json">
+    <button class="secondary" onclick="showNewsFormat()">Show Format</button>
+    <button onclick="importNewsJson()">Import News</button>
+  </div>
+  <textarea id="news-json" rows="8" style="width:100%;margin-top:10px;background:#0a0a0a;border:1px solid #2a2a2a;color:#ccc;border-radius:8px;padding:10px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px" placeholder='{"version":1,"articles":[{"symbol":"ABCL","title":"..."}]}'></textarea>
+  <div id="news-import-result" class="result"></div>
+</div>
+
 <!-- ─── Telegram cron trigger (PR #24 item 15) ─── -->
 <div class="sec-label">Telegram Alerts</div>
 <div class="card">
@@ -362,6 +376,51 @@ async function loadDeployMeta(){
     var v=await fetch('/api/_version').then(function(x){return x.json()});
     renderDeployMeta(v);
   }catch(e){}
+}
+
+async function showNewsFormat(){
+  var r=document.getElementById('news-import-result');
+  try{
+    var fmt=await fetch('/api/admin/news/import-format').then(function(x){return x.json()});
+    document.getElementById('news-json').value=JSON.stringify(fmt.example,null,2);
+    r.innerHTML='<span class="ok">&#10003;</span> Example JSON loaded into the editor — edit and click Import News.';
+  }catch(e){
+    r.innerHTML='<span class="fail">&#10007;</span> '+escHtml(String(e));
+  }
+}
+
+document.getElementById('news-file').addEventListener('change',function(ev){
+  var f=ev.target.files&&ev.target.files[0];
+  if(!f)return;
+  var reader=new FileReader();
+  reader.onload=function(){
+    document.getElementById('news-json').value=reader.result;
+  };
+  reader.readAsText(f);
+});
+
+async function importNewsJson(){
+  var r=document.getElementById('news-import-result');
+  var raw=document.getElementById('news-json').value.trim();
+  if(!raw){r.innerHTML='<span class="fail">&#10007;</span> Paste or upload JSON first.';return;}
+  var body;
+  try{body=JSON.parse(raw);}catch(e){r.innerHTML='<span class="fail">&#10007;</span> Invalid JSON: '+escHtml(String(e));return;}
+  r.innerHTML='<span class="warn">&#x21BB; Importing...</span>';
+  try{
+    var resp=await fetch('/api/admin/news/import',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-cron-secret':getSecret()},
+      body:JSON.stringify(body)
+    });
+    var out={};try{out=await resp.json()}catch(_){}
+    if(resp.status===403){r.innerHTML='<span class="fail">&#10007;</span> 403 — cron secret wrong';return;}
+    if(out.ok){
+      r.innerHTML='<span class="ok">&#10003;</span> Imported <b>'+(out.inserted||0)+'</b> · updated <b>'+(out.updated||0)+'</b> · skipped <b>'+(out.skipped||0)+'</b>'
+        +(out.errors&&out.errors.length?'<div class="kv" style="margin-top:6px">'+escHtml(out.errors.join(' · '))+'</div>':'');
+    }else{
+      r.innerHTML='<span class="fail">&#10007;</span> '+escHtml((out&&out.error)||('HTTP '+resp.status));
+    }
+  }catch(e){r.innerHTML='<span class="fail">&#10007;</span> '+escHtml(String(e));}
 }
 
 async function purgeNonWolf(){

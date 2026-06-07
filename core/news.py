@@ -1,12 +1,12 @@
 """
 core/news.py - News brain with Claude-powered sentiment scoring.
-WOLF-ONLY MODE: Finnhub only, WOLF only.
-Fetches Finnhub company-news for WOLF every 30 min.
-Scores headlines via Claude Haiku batch call, stores per-symbol sentiment score.
-prediction.py reads get_symbol_sentiment() to adjust confidence - no new Telegram alerts.
+
+Fetches Finnhub company-news for watchlist symbols (rotating batch each cycle).
+Manual imports land in ghost_news_articles via core/news_store.py.
+Scores headlines via Claude Haiku (or keyword fallback); prediction reads get_symbol_sentiment().
 """
 import os, time, logging, json, requests
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 LOGGER = logging.getLogger("ghost.news")
 FINNHUB_KEY = os.getenv("FINNHUB_API_KEY", "")
@@ -187,38 +187,36 @@ def _fetch_finnhub_stock(symbol: str) -> List[Dict]:
 def run_news_cycle() -> List[Dict]:
     """
     Main cycle called every 30 min by scheduler.
-    1. Fetch headlines from Finnhub for WOLF
-    2. Score sentiment with Claude (or keyword fallback)
-    3. Store scores in _symbol_sentiment - prediction.py reads these
-    No Telegram alerts sent here.
+    1. Fetch Finnhub headlines for a watchlist batch (NEWS_SYMBOLS_PER_CYCLE, default 8)
+    2. Persist to ghost_news_articles + score per-symbol sentiment
+    3. prediction.py reads get_symbol_sentiment()
     """
-    global _cached_articles, _symbol_sentiment
+    global _cached_articles
 
-    articles = []
-    for sym in ["WOLF"]:
-        articles.extend(_fetch_finnhub_stock(sym))
+    from core.news_store import (
+        list_articles,
+        refresh_symbol_sentiments,
+        upsert_fetched_articles,
+        watchlist_batch_for_cycle,
+    )
 
-    if not articles:
-        LOGGER.info("News cycle: no new articles")
-        return _cached_articles
+    batch, _next_off = watchlist_batch_for_cycle()
+    fetched: List[Dict] = []
+    for sym in batch:
+        fetched.extend(_fetch_finnhub_stock(sym))
 
-    # Score sentiment - Claude if available, else keyword fallback
-    if ANTHROPIC_KEY:
-        scores = _score_with_claude(articles)
-        if scores:
-            # Decay old scores toward neutral before updating
-            for sym in list(_symbol_sentiment):
-                _symbol_sentiment[sym] = round(_symbol_sentiment[sym] * 0.7, 3)
-            _symbol_sentiment.update(scores)
-        else:
-            _symbol_sentiment.update(_fallback_scores(articles))
-    else:
-        _symbol_sentiment.update(_fallback_scores(articles))
-        LOGGER.info("No ANTHROPIC_API_KEY set - using keyword fallback")
+    stored = upsert_fetched_articles(fetched, origin="finnhub")
+    scores = refresh_symbol_sentiments()
+    _cached_articles = list_articles(limit=50)
 
-    _cached_articles = articles
-    LOGGER.info(f"News cycle: {len(articles)} articles, {len(_symbol_sentiment)} symbols scored")
-    return articles
+    LOGGER.info(
+        "News cycle: batch=%s fetched=%s stored=%s symbols_scored=%s",
+        ",".join(batch),
+        len(fetched),
+        stored,
+        len(scores),
+    )
+    return _cached_articles
 
 
 # Alias for prediction.py compatibility
@@ -256,9 +254,21 @@ def get_cached_articles(limit=None) -> List[Dict]:
         return []
 
 
-def get_recent_articles(limit: int = 20) -> List[Dict]:
-    """Alias for get_cached_articles - returns cached news, never blocks."""
-    return get_cached_articles(limit=limit)
+def get_recent_articles(limit: int = 20, symbol: Optional[str] = None) -> List[Dict]:
+    """Recent headlines from DB (import + auto-fetch), with in-memory fallback."""
+    try:
+        from core.news_store import list_articles
+
+        rows = list_articles(symbol=symbol, limit=limit)
+        if rows:
+            return rows
+    except Exception as e:
+        LOGGER.debug("get_recent_articles db read failed: %s", str(e)[:80])
+    cached = get_cached_articles(limit=limit)
+    if symbol:
+        sym = symbol.strip().upper()
+        cached = [a for a in cached if sym in [s.upper() for s in (a.get("symbols") or [])]]
+    return cached
 
 def get_sentiment_for_symbol(symbol: str) -> float:
     """Return cached sentiment score for a symbol. Alias for get_symbol_sentiment."""

@@ -1050,6 +1050,11 @@ async def lifespan(app: FastAPI):
         yield
         return
     init_db()
+    try:
+        from core.news_store import ensure_news_tables
+        ensure_news_tables()
+    except Exception as _nte:
+        LOGGER.warning("News tables init failed: " + str(_nte)[:80])
     # Purge weak / legacy-schema models on startup
     try:
         purged = _auto_purge_bad_models()
@@ -3992,6 +3997,34 @@ def v3_lineage(limit: int = 50):
         return {"ok": True, "count": len(recent), "runs": recent}
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
+@APP.get("/api/admin/news/import-format", include_in_schema=False)
+def news_import_format():
+    """JSON schema/help for manual news imports."""
+    from core.news_store import import_format_doc
+    return import_format_doc()
+
+
+@APP.post("/api/admin/news/import", include_in_schema=False)
+async def news_import(request: Request, x_cron_secret: str = Header(default="")):
+    """Import watchlist news articles from JSON (paste or file upload)."""
+    if not _cron_ok(x_cron_secret, strict=True):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "Invalid JSON body"}, status_code=400)
+    try:
+        from core.news_store import import_articles_payload
+        out = import_articles_payload(body, watchlist_only=True)
+        _record_admin_action(
+            "news_import",
+            f"inserted={out.get('inserted')} updated={out.get('updated')} skipped={out.get('skipped')}",
+        )
+        return out
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=400)
 
 
 @APP.get("/api/admin/audit-log", include_in_schema=False)

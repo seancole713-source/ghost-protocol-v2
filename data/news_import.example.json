@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "articles": [
+    {
+      "symbol": "ABCL",
+      "title": "AbCellera reports Q1 2026 results",
+      "summary": "Revenue ~$8M, net loss $43.2M; ABCL635 Phase 2 readout expected Q3 2026.",
+      "url": "https://example.com/abcl-q1-2026",
+      "published_at": 1746921600,
+      "source": "manual_research",
+      "category": "earnings",
+      "sentiment": -0.15
+    },
+    {
+      "symbol": "ARCT",
+      "title": "Arcturus Q1 revenue falls as CSL partnership write-down weighs",
+      "summary": "Q1 revenue $2.1M vs $29.4M YoY; cash $213M; Phase 2 readouts pending.",
+      "published_at": 1746576000,
+      "source": "manual_research",
+      "category": "research",
+      "sentiment": -0.35
+    }
+  ]
+}
