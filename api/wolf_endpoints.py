@@ -334,6 +334,21 @@ async def get_daily_forecast_scorecard(symbol: str = WOLF_SYMBOL, days: int = 14
     return JSONResponse(content=payload)
 
 
+@router.get("/watchlist-forecast-universe")
+async def get_watchlist_forecast_universe():
+    """Full watchlist with per-symbol model coverage (trained vs needs-train)."""
+    cached = _cache_get("watchlist-universe", 120)
+    if cached:
+        return JSONResponse(content=cached)
+    try:
+        from core.daily_forecast_scorecard import build_watchlist_universe
+        payload = build_watchlist_universe()
+    except Exception as e:
+        payload = _err(str(e), watchlist=[], symbols=[])
+    _cache_set("watchlist-universe", payload)
+    return JSONResponse(content=payload)
+
+
 @router.get("/watchlist-forecast-scorecards")
 async def get_watchlist_forecast_scorecards(days: int = 14):
     """Summary scorecards for all watchlist symbols with loadable v3 models."""

@@ -29,9 +29,16 @@ def test_score_forecast_perfect_match():
 
 
 def test_score_forecast_partial_error():
-    pred = {"open": 10.0, "high": 11.0, "low": 9.0}
-    actual = {"open": 10.0, "high": 12.0, "low": 9.0}
+    pred = {"open": 10.0, "high": 11.0, "low": 9.0, "close": 10.5}
+    actual = {"open": 10.0, "high": 12.0, "low": 9.0, "close": 11.0}
     sc = score_forecast_vs_actual(pred, actual)
-    assert sc["high_pct"] is not None
-    assert sc["high_pct"] < 100.0
-    assert sc["open_pct"] == 100.0
+    assert sc["peak_rate"] is not None
+    assert sc["peak_rate"] < 100.0
+    assert sc["open_rate"] == 100.0
+    assert sc["close_rate"] is not None
+
+
+def test_forecast_includes_close():
+    out = forecast_ohlc_from_prob(100.0, 0.72, "WOLF", "stock")
+    assert "close" in out
+    assert out["close"] > out["open"]

@@ -366,27 +366,70 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
 .ask-send:disabled{opacity:.45;cursor:not-allowed}
 .ask-meta{font-size:10px;color:#555;margin-top:8px}
 
-/* Daily forecast scorecard — actual (left/red) vs predicted (right/green) */
-.df-panel{margin-top:8px}
-.df-toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:14px}
-.df-toolbar select{background:#0a0a0a;border:1px solid #2a2a2a;color:#eee;border-radius:8px;padding:8px 12px;font-size:12px}
-.df-summary{font-size:12px;color:#888;line-height:1.6;margin-bottom:14px}
-.df-split{display:grid;grid-template-columns:1fr 1fr;gap:14px}
-@media(max-width:860px){.df-split{grid-template-columns:1fr}}
-.df-pane{background:#0d0d0d;border:1px solid #23232e;border-radius:14px;padding:12px;min-height:220px}
-.df-pane-h{font-size:11px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;margin-bottom:8px}
-.df-pane-h.actual{color:#ff6b6b}
-.df-pane-h.predicted{color:#22c55e}
-.df-canvas-wrap{height:200px;position:relative}
-.df-table-wrap{margin-top:16px;overflow-x:auto}
-.df-table{width:100%;border-collapse:collapse;font-size:12px}
-.df-table th,.df-table td{padding:8px 10px;border-bottom:1px solid #1f1f1f;text-align:left;vertical-align:top}
-.df-table th{color:#666;font-size:10px;text-transform:uppercase;letter-spacing:.4px}
-.df-num{font-variant-numeric:tabular-nums}
-.df-score-ok{color:#22c55e;font-weight:700}
-.df-score-mid{color:#facc15;font-weight:700}
-.df-score-bad{color:#ff6b6b;font-weight:700}
-.df-live-tag{font-size:10px;color:#60a5fa;font-weight:700;margin-left:6px}
+/* Daily forecast scorecard — premium split panel */
+.df-premium{
+  background:linear-gradient(145deg,#0c0c12 0%,#08080b 50%,#0a0f0a 100%);
+  border:1px solid rgba(124,58,237,.25);
+  border-radius:20px;padding:20px 22px 24px;
+  box-shadow:0 24px 60px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.04);
+}
+.df-head{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:12px;margin-bottom:16px}
+.df-head-title{font-size:13px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#e2e8f0}
+.df-head-sub{font-size:11px;color:#64748b;margin-top:4px;max-width:520px;line-height:1.5}
+.df-coverage{
+  display:flex;flex-wrap:wrap;gap:10px;margin-bottom:16px;padding:12px 14px;border-radius:14px;
+  background:rgba(15,23,42,.6);border:1px solid rgba(148,163,184,.12);
+}
+.df-cov-stat{flex:1;min-width:100px}
+.df-cov-stat b{display:block;font-size:22px;font-weight:800;letter-spacing:-.5px;color:#f8fafc}
+.df-cov-stat span{font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:.5px}
+.df-cov-note{flex:2;min-width:200px;font-size:11px;color:#94a3b8;line-height:1.55;padding-top:4px}
+.df-chips{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:18px;max-height:120px;overflow-y:auto;padding-right:4px}
+.df-chip{
+  border:none;cursor:pointer;padding:7px 12px;border-radius:999px;font-size:11px;font-weight:700;
+  letter-spacing:.4px;transition:all .15s ease;background:#111827;color:#94a3b8;
+  border:1px solid #1f2937;
+}
+.df-chip:hover{border-color:#4c1d95;color:#e9d5ff}
+.df-chip.active{background:linear-gradient(135deg,#5b21b6,#7c3aed);color:#fff;border-color:#a78bfa;box-shadow:0 0 20px rgba(124,58,237,.35)}
+.df-chip.missing{opacity:.72;border-style:dashed}
+.df-chip.missing.active{background:linear-gradient(135deg,#78350f,#92400e);border-color:#fbbf24;color:#fef3c7}
+.df-summary{font-size:12px;color:#94a3b8;line-height:1.65;margin-bottom:16px;padding:10px 14px;border-radius:12px;background:rgba(0,0,0,.25)}
+.df-split{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:900px){.df-split{grid-template-columns:1fr}}
+.df-pane{
+  background:linear-gradient(180deg,rgba(255,255,255,.03) 0%,rgba(0,0,0,.2) 100%);
+  border:1px solid rgba(255,255,255,.06);border-radius:16px;padding:14px 16px 12px;min-height:240px;
+  position:relative;overflow:hidden;
+}
+.df-pane::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;border-radius:16px 16px 0 0}
+.df-pane.actual::before{background:linear-gradient(90deg,#ef4444,#f97316)}
+.df-pane.predicted::before{background:linear-gradient(90deg,#22c55e,#4ade80)}
+.df-pane-h{font-size:10px;font-weight:800;letter-spacing:.7px;text-transform:uppercase;margin-bottom:10px;display:flex;align-items:center;gap:8px}
+.df-pane-h.actual{color:#fca5a5}
+.df-pane-h.predicted{color:#86efac}
+.df-pane-tag{font-size:9px;padding:2px 7px;border-radius:999px;background:rgba(255,255,255,.06);color:#64748b;font-weight:600}
+.df-canvas-wrap{height:210px;position:relative}
+.df-table-wrap{margin-top:18px;overflow-x:auto;border-radius:14px;border:1px solid rgba(255,255,255,.06);background:rgba(0,0,0,.35)}
+.df-table{width:100%;border-collapse:collapse;font-size:11px}
+.df-table th,.df-table td{padding:12px 14px;border-bottom:1px solid rgba(255,255,255,.05);text-align:left;vertical-align:middle}
+.df-table th{color:#64748b;font-size:9px;text-transform:uppercase;letter-spacing:.55px;font-weight:700;background:rgba(255,255,255,.02)}
+.df-table tr:last-child td{border-bottom:none}
+.df-table tr:hover td{background:rgba(124,58,237,.04)}
+.df-num{font-variant-numeric:tabular-nums;white-space:nowrap}
+.df-price-col{line-height:1.7}
+.df-price-lbl{font-size:9px;color:#64748b;text-transform:uppercase;letter-spacing:.3px;margin-right:6px}
+.df-rate-pill{display:inline-block;min-width:44px;text-align:center;padding:4px 8px;border-radius:8px;font-weight:800;font-size:11px}
+.df-rate-ok{background:rgba(34,197,94,.15);color:#4ade80}
+.df-rate-mid{background:rgba(250,204,21,.12);color:#facc15}
+.df-rate-bad{background:rgba(239,68,68,.12);color:#f87171}
+.df-rate-na{color:#475569}
+.df-score-ok{color:#22c55e;font-weight:800}
+.df-score-mid{color:#facc15;font-weight:800}
+.df-score-bad{color:#ff6b6b;font-weight:800}
+.df-live-tag{font-size:9px;color:#38bdf8;font-weight:800;margin-left:8px;padding:2px 8px;border-radius:999px;background:rgba(56,189,248,.12);border:1px solid rgba(56,189,248,.25)}
+.df-empty-state{text-align:center;padding:48px 24px;color:#64748b;font-size:13px;line-height:1.7}
+.df-empty-state b{color:#cbd5e1;display:block;margin-bottom:8px;font-size:15px}
 </style>
 </head>
 <body>
@@ -520,23 +563,26 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
     </div>
   </section>
 
-  <!-- ─── Daily forecast scorecard (per watchlist symbol) ─── -->
+  <!-- ─── Daily forecast scorecard (full watchlist) ─── -->
   <section class="block" id="daily-forecast-section">
-    <div class="sec-label">Daily Forecast vs Reality &middot; 24h ahead O/H/L</div>
-    <div class="chart-wrap df-panel">
-      <div class="df-toolbar">
-        <label style="font-size:11px;color:#888;font-weight:700">SYMBOL</label>
-        <select id="df-symbol" onchange="loadDailyForecastScorecard()"></select>
-        <span id="df-meta" style="font-size:11px;color:#666;margin-left:auto">Forecast issued prior close &rarr; next session</span>
+    <div class="sec-label">Forecast vs Reality &middot; Open / Peak / Close</div>
+    <div class="df-premium">
+      <div class="df-head">
+        <div>
+          <div class="df-head-title">24-hour ahead session forecast</div>
+          <div class="df-head-sub">Ghost predicts next session open, peak (high), and closing prices at the prior close. Scores show open rate, peak rate, and close rate (% closeness).</div>
+        </div>
       </div>
-      <div id="df-summary" class="df-summary">Loading forecast scorecard…</div>
+      <div id="df-coverage" class="df-coverage"></div>
+      <div id="df-chips" class="df-chips"></div>
+      <div id="df-summary" class="df-summary">Loading watchlist…</div>
       <div class="df-split">
-        <div class="df-pane">
-          <div class="df-pane-h actual">Actual (what happened)</div>
+        <div class="df-pane actual">
+          <div class="df-pane-h actual">Actual <span class="df-pane-tag">what happened</span></div>
           <div class="df-canvas-wrap"><canvas id="df-actual-chart"></canvas></div>
         </div>
-        <div class="df-pane">
-          <div class="df-pane-h predicted">Ghost prediction (24h ahead)</div>
+        <div class="df-pane predicted">
+          <div class="df-pane-h predicted">Ghost prediction <span class="df-pane-tag">issued prior close</span></div>
           <div class="df-canvas-wrap"><canvas id="df-pred-chart"></canvas></div>
         </div>
       </div>
@@ -1656,7 +1702,16 @@ function renderNews(n){
   }).join('');
 }
 
-/* ─── Daily forecast scorecard — actual (red) vs Ghost prediction (green) ─── */
+/* ─── Daily forecast scorecard — premium panel ─── */
+var _dfActiveSymbol = 'WOLF';
+var _dfUniverse = null;
+
+function _dfRatePill(pct){
+  if(pct == null || isNaN(pct)) return '<span class="df-rate-pill df-rate-na">—</span>';
+  var cls = _dfScoreClass(pct).replace('df-score-', 'df-rate-');
+  return '<span class="df-rate-pill '+cls+'">' + pct + '%</span>';
+}
+
 function _dfScoreClass(pct){
   if(pct == null) return '';
   if(pct >= 85) return 'df-score-ok';
@@ -1669,16 +1724,23 @@ function _dfFmtPrice(v){
   return '$' + Number(v).toFixed(v >= 100 ? 2 : 3);
 }
 
+function _dfPriceBlock(obj, color){
+  if(!obj) return '—';
+  return '<div class="df-price-col" style="color:'+color+'">'
+    + '<div><span class="df-price-lbl">Open</span>' + _dfFmtPrice(obj.open) + '</div>'
+    + '<div><span class="df-price-lbl">Peak</span>' + _dfFmtPrice(obj.high) + '</div>'
+    + '<div><span class="df-price-lbl">Close</span>' + _dfFmtPrice(obj.close) + '</div>'
+    + '</div>';
+}
+
 function _dfChartOptions(color){
   return {
-    responsive: true,
-    maintainAspectRatio: false,
-    animation: false,
-    plugins: { legend: { display: false },
+    responsive: true, maintainAspectRatio: false, animation: false,
+    plugins: { legend: { display: true, labels: { color: '#64748b', boxWidth: 10, font: { size: 9 } } },
       tooltip: { callbacks: { label: function(c){ return c.dataset.label + ': ' + _dfFmtPrice(c.parsed.y); } } } },
     scales: {
-      x: { ticks: { color: '#666', font: { size: 9 }, maxRotation: 45, minRotation: 0 }, grid: { color: '#1a1a1a' } },
-      y: { ticks: { color: '#666', font: { size: 9 }, callback: function(v){ return '$'+Number(v).toFixed(2); } }, grid: { color: '#1a1a1a' } }
+      x: { ticks: { color: '#64748b', font: { size: 9 }, maxRotation: 45 }, grid: { color: 'rgba(255,255,255,.04)' } },
+      y: { ticks: { color: '#64748b', font: { size: 9 }, callback: function(v){ return '$'+Number(v).toFixed(2); } }, grid: { color: 'rgba(255,255,255,.04)' } }
     }
   };
 }
@@ -1695,90 +1757,128 @@ function _renderDfLineChart(canvasId, days){
     return;
   }
   var labels = resolved.map(function(d){ return d.target_date; });
-  var ds;
-  if(canvasId === 'df-pred-chart'){
-    ds = [
-      { label: 'Pred Open', data: resolved.map(function(d){ return d.predicted.open; }), borderColor: '#22c55e', borderWidth: 2, pointRadius: 2, tension: 0.2, fill: false },
-      { label: 'Pred High', data: resolved.map(function(d){ return d.predicted.high; }), borderColor: '#4ade80', borderDash: [4,3], borderWidth: 1.5, pointRadius: 1, tension: 0.2, fill: false },
-      { label: 'Pred Low', data: resolved.map(function(d){ return d.predicted.low; }), borderColor: '#15803d', borderDash: [2,2], borderWidth: 1.5, pointRadius: 1, tension: 0.2, fill: false }
-    ];
-    _charts[key] = new Chart(ctx, { type: 'line', data: { labels: labels, datasets: ds }, options: _dfChartOptions('#22c55e') });
-  } else {
-    ds = [
-      { label: 'Actual Open', data: resolved.map(function(d){ return d.actual.open; }), borderColor: '#ff3b3b', borderWidth: 2, pointRadius: 2, tension: 0.2, fill: false },
-      { label: 'Actual High', data: resolved.map(function(d){ return d.actual.high; }), borderColor: '#f87171', borderDash: [4,3], borderWidth: 1.5, pointRadius: 1, tension: 0.2, fill: false },
-      { label: 'Actual Low', data: resolved.map(function(d){ return d.actual.low; }), borderColor: '#991b1b', borderDash: [2,2], borderWidth: 1.5, pointRadius: 1, tension: 0.2, fill: false }
-    ];
-    _charts[key] = new Chart(ctx, { type: 'line', data: { labels: labels, datasets: ds }, options: _dfChartOptions('#ff3b3b') });
-  }
+  var isPred = canvasId === 'df-pred-chart';
+  var cOpen = isPred ? '#22c55e' : '#ef4444';
+  var cPeak = isPred ? '#4ade80' : '#f87171';
+  var cClose = isPred ? '#86efac' : '#fb923c';
+  var src = isPred ? 'predicted' : 'actual';
+  var ds = [
+    { label: 'Open', data: resolved.map(function(d){ return d[src].open; }), borderColor: cOpen, borderWidth: 2, pointRadius: 2, tension: 0.25, fill: false },
+    { label: 'Peak', data: resolved.map(function(d){ return d[src].high; }), borderColor: cPeak, borderDash: [5,4], borderWidth: 1.5, pointRadius: 2, tension: 0.25, fill: false },
+    { label: 'Close', data: resolved.map(function(d){ return d[src].close; }), borderColor: cClose, borderDash: [2,3], borderWidth: 2, pointRadius: 2, tension: 0.25, fill: false }
+  ];
+  _charts[key] = new Chart(ctx, { type: 'line', data: { labels: labels, datasets: ds }, options: _dfChartOptions(cOpen) });
 }
 
 function _renderDfTable(days){
   var wrap = document.getElementById('df-table-wrap');
   if(!wrap) return;
-  if(!days || !days.length){ wrap.innerHTML = ''; return; }
+  if(!days || !days.length){
+    wrap.innerHTML = '<div class="df-empty-state"><b>No forecast rows yet</b>Train a v3 model for this symbol via /admin, then refresh.</div>';
+    return;
+  }
   var rows = days.slice().reverse().map(function(d){
     var pred = d.predicted || {};
     var act = d.actual;
-    var sc = d.score;
+    var sc = d.score || {};
     var live = !d.resolved ? '<span class="df-live-tag">LIVE</span>' : '';
-    var scoreCell = '—';
-    if(sc && sc.overall_pct != null){
-      scoreCell = '<span class="' + _dfScoreClass(sc.overall_pct) + '">' + sc.overall_pct + '%</span>'
-        + (sc.direction_ok ? ' <span style="color:#22c55e">dir ✓</span>' : ' <span style="color:#ff6b6b">dir ✗</span>');
+    var meta = '<div style="font-size:10px;color:#64748b;margin-top:4px">forecast ' + escHtml(d.forecast_date || '') + '</div>';
+    if(pred.up_prob != null){
+      meta += '<div style="font-size:10px;color:#475569">p=' + pred.up_prob + ' · ' + escHtml(pred.bias || '') + '</div>';
     }
     return '<tr>'
-      + '<td><b>' + escHtml(d.target_date || '—') + '</b>' + live + '<div style="color:#555;font-size:10px">forecast ' + escHtml(d.forecast_date || '') + '</div></td>'
-      + '<td class="df-num" style="color:#22c55e">' + _dfFmtPrice(pred.open) + '<br>' + _dfFmtPrice(pred.high) + '<br>' + _dfFmtPrice(pred.low)
-        + '<div style="font-size:10px;color:#666">p=' + (pred.up_prob != null ? pred.up_prob : '—') + ' · ' + escHtml(pred.bias || '') + '</div></td>'
-      + '<td class="df-num" style="color:#ff6b6b">' + (act ? (_dfFmtPrice(act.open) + '<br>' + _dfFmtPrice(act.high) + '<br>' + _dfFmtPrice(act.low)) : '—') + '</td>'
-      + '<td>' + scoreCell + '</td>'
+      + '<td><b style="color:#e2e8f0">' + escHtml(d.target_date || '—') + '</b>' + live + meta + '</td>'
+      + '<td class="df-num">' + _dfPriceBlock(pred, '#86efac') + '</td>'
+      + '<td class="df-num">' + (act ? _dfPriceBlock(act, '#fca5a5') : '—') + '</td>'
+      + '<td>' + _dfRatePill(sc.open_rate != null ? sc.open_rate : sc.open_pct) + '</td>'
+      + '<td>' + _dfRatePill(sc.peak_rate != null ? sc.peak_rate : sc.peak_pct) + '</td>'
+      + '<td>' + _dfRatePill(sc.close_rate != null ? sc.close_rate : sc.close_pct) + '</td>'
+      + '<td>' + (sc.overall_pct != null
+        ? '<span class="' + _dfScoreClass(sc.overall_pct) + '">' + sc.overall_pct + '%</span>'
+          + (sc.direction_ok ? ' <span style="color:#4ade80;font-size:10px">dir ✓</span>' : ' <span style="color:#f87171;font-size:10px">dir ✗</span>')
+        : '—') + '</td>'
       + '</tr>';
   }).join('');
   wrap.innerHTML = '<table class="df-table"><thead><tr>'
-    + '<th>Session</th><th>Ghost predicted O / H / L</th><th>Actual O / H / L</th><th>How close?</th>'
+    + '<th>Session</th><th>Ghost predicted</th><th>Actual</th>'
+    + '<th>Open rate</th><th>Peak rate</th><th>Close rate</th><th>Overall</th>'
     + '</tr></thead><tbody>' + rows + '</tbody></table>';
 }
 
+function _renderDfCoverage(universe){
+  var el = document.getElementById('df-coverage');
+  if(!el || !universe) return;
+  var trained = universe.trained_count || 0;
+  var total = universe.watchlist_count || 0;
+  var missing = (universe.missing_symbols || []).slice(0, 8);
+  var missNote = missing.length
+    ? 'Missing models: ' + missing.join(', ') + ((universe.missing_symbols || []).length > 8 ? ' +' + ((universe.missing_symbols || []).length - 8) + ' more' : '') + '. Ghost watches all ' + total + ' — forecasts need a trained v3 model per symbol (/admin → Train Now).'
+    : 'All watchlist symbols have trained models.';
+  el.innerHTML = '<div class="df-cov-stat"><b>' + trained + '/' + total + '</b><span>symbols with forecasts</span></div>'
+    + '<div class="df-cov-stat"><b>' + (total - trained) + '</b><span>awaiting model train</span></div>'
+    + '<div class="df-cov-note">' + escHtml(missNote) + '</div>';
+}
+
+function _renderDfChips(universe){
+  var el = document.getElementById('df-chips');
+  if(!el || !universe) return;
+  var list = universe.watchlist || [];
+  el.innerHTML = list.map(function(entry){
+    var sym = entry.symbol;
+    var active = sym === _dfActiveSymbol ? ' active' : '';
+    var miss = entry.has_model ? '' : ' missing';
+    var tag = entry.has_model ? '' : ' · train';
+    return '<button type="button" class="df-chip' + active + miss + '" data-sym="' + escHtml(sym) + '" onclick="selectDfSymbol(\'' + sym.replace(/'/g, '') + '\')">' + escHtml(sym) + tag + '</button>';
+  }).join('');
+}
+
+function selectDfSymbol(sym){
+  _dfActiveSymbol = sym || 'WOLF';
+  if(_dfUniverse) _renderDfChips(_dfUniverse);
+  loadDailyForecastScorecard();
+}
+
 async function _populateDfSymbols(){
-  var sel = document.getElementById('df-symbol');
-  if(!sel) return;
   try{
-    var wl = await _fetchJson('/api/wolf/watchlist-forecast-scorecards?days=7', {symbols: [], cards: []});
-    var syms = wl.symbols && wl.symbols.length ? wl.symbols : ['WOLF'];
-    var prev = sel.value;
-    sel.innerHTML = syms.map(function(s){ return '<option value="'+escHtml(s)+'">'+escHtml(s)+'</option>'; }).join('');
-    if(prev && syms.indexOf(prev) >= 0) sel.value = prev;
+    _dfUniverse = await _fetchJson('/api/wolf/watchlist-forecast-universe', {watchlist: [], symbols: ['WOLF']});
+    _renderDfCoverage(_dfUniverse);
+    if(!_dfUniverse.symbols || !_dfUniverse.symbols.length) _dfUniverse.symbols = ['WOLF'];
+    if(_dfUniverse.symbols.indexOf(_dfActiveSymbol) < 0) _dfActiveSymbol = _dfUniverse.symbols[0];
+    _renderDfChips(_dfUniverse);
   }catch(e){
-    sel.innerHTML = '<option value="WOLF">WOLF</option>';
+    _dfUniverse = {symbols: ['WOLF'], watchlist: [{symbol: 'WOLF', has_model: true}], trained_count: 1, watchlist_count: 1};
+    _renderDfCoverage(_dfUniverse);
+    _renderDfChips(_dfUniverse);
   }
 }
 
 async function loadDailyForecastScorecard(){
   var sumEl = document.getElementById('df-summary');
-  var sel = document.getElementById('df-symbol');
-  if(!sumEl || !sel) return;
-  var sym = sel.value || 'WOLF';
+  var wrap = document.getElementById('df-table-wrap');
+  if(!sumEl) return;
+  var sym = _dfActiveSymbol || 'WOLF';
   try{
     await ensureChartJs();
     var g = await _fetchJson('/api/wolf/daily-forecast-scorecard?symbol=' + encodeURIComponent(sym) + '&days=14', {ok:false});
     if(!g || g.ok === false){
-      sumEl.innerHTML = 'Forecast scorecard unavailable for <b>' + escHtml(sym) + '</b>.';
+      sumEl.innerHTML = 'Forecast unavailable for <b style="color:#e2e8f0">' + escHtml(sym) + '</b>.';
       return;
     }
     if(!g.has_model){
-      sumEl.innerHTML = '<b>' + escHtml(sym) + '</b> has no trained v3 model yet — train via /admin before forecasts appear.';
+      sumEl.innerHTML = '<b style="color:#fbbf24">' + escHtml(sym) + '</b> is on your watchlist but has <b>no trained v3 model yet</b>. '
+        + 'Ghost can track it for portfolio/P&amp;L, but daily forecasts require training — use <a href="/admin" style="color:#a78bfa">/admin → Train Now</a>. '
+        + 'Currently only <b>' + ((_dfUniverse && _dfUniverse.trained_count) || 0) + '</b> of <b>' + ((_dfUniverse && _dfUniverse.watchlist_count) || 0) + '</b> symbols have models.';
       _renderDfLineChart('df-actual-chart', []);
       _renderDfLineChart('df-pred-chart', []);
-      _renderDfTable([]);
+      if(wrap) wrap.innerHTML = '<div class="df-empty-state"><b>' + escHtml(sym) + ' — model required</b>Train this symbol in /admin to unlock open, peak, and close forecasts.</div>';
       return;
     }
     var sm = g.summary || {};
-    sumEl.innerHTML = '<b>' + escHtml(sym) + '</b> · '
+    sumEl.innerHTML = '<span style="color:#e2e8f0;font-weight:800">' + escHtml(sym) + '</span> · '
       + (sm.scored_days || 0) + ' scored sessions'
-      + (sm.avg_overall_pct != null ? ' · avg closeness <b class="' + _dfScoreClass(sm.avg_overall_pct) + '">' + sm.avg_overall_pct + '%</b>' : '')
-      + (sm.direction_hit_rate_pct != null ? ' · direction hit ' + sm.direction_hit_rate_pct + '%' : '')
-      + ' · <span style="color:#666">Each row = forecast at prior close for next session open/high/low</span>';
+      + (sm.avg_overall_pct != null ? ' · avg <span class="' + _dfScoreClass(sm.avg_overall_pct) + '">' + sm.avg_overall_pct + '%</span> closeness' : '')
+      + (sm.direction_hit_rate_pct != null ? ' · direction ' + sm.direction_hit_rate_pct + '%' : '')
+      + (sm.model_accuracy_holdout_pct != null ? ' · holdout ' + sm.model_accuracy_holdout_pct + '%' : '');
     var days = g.days || [];
     _renderDfLineChart('df-actual-chart', days);
     _renderDfLineChart('df-pred-chart', days);

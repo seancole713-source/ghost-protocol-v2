@@ -43,16 +43,19 @@ def forecast_ohlc_from_prob(prior_close: float, up_prob: float, symbol: str, ass
         pred_open = pc * (1.0 + _OVERNIGHT_GAP)
         pred_high = pc * (1.0 + vol)
         pred_low = pc * (1.0 - stop)
+        pred_close = pc * (1.0 + vol * 0.55)
         bias = "UP"
     else:
         pred_open = pc * (1.0 - _OVERNIGHT_GAP)
         pred_high = pc * (1.0 + stop)
         pred_low = pc * (1.0 - vol)
+        pred_close = pc * (1.0 - vol * 0.55)
         bias = "DOWN"
     return {
         "open": round(pred_open, 4),
         "high": round(pred_high, 4),
         "low": round(pred_low, 4),
+        "close": round(pred_close, 4),
         "bias": bias,
         "up_prob": round(float(up_prob), 4),
     }
@@ -60,15 +63,21 @@ def forecast_ohlc_from_prob(prior_close: float, up_prob: float, symbol: str, ass
 
 def score_forecast_vs_actual(predicted: Dict[str, float], actual: Dict[str, float]) -> Dict[str, Any]:
     open_pct = _pct_accuracy(predicted.get("open"), actual.get("open"))
-    high_pct = _pct_accuracy(predicted.get("high"), actual.get("high"))
+    peak_pct = _pct_accuracy(predicted.get("high"), actual.get("high"))
+    close_pct = _pct_accuracy(predicted.get("close"), actual.get("close"))
     low_pct = _pct_accuracy(predicted.get("low"), actual.get("low"))
-    parts = [p for p in (open_pct, high_pct, low_pct) if p is not None]
+    parts = [p for p in (open_pct, peak_pct, close_pct) if p is not None]
     overall = round(sum(parts) / len(parts), 2) if parts else None
-    pred_up = float(predicted.get("high", 0)) >= float(predicted.get("open", 0))
-    act_up = float(actual.get("high", 0)) >= float(actual.get("open", 0))
+    pred_up = float(predicted.get("close", predicted.get("high", 0))) >= float(predicted.get("open", 0))
+    act_up = float(actual.get("close", actual.get("high", 0))) >= float(actual.get("open", 0))
     return {
         "open_pct": open_pct,
-        "high_pct": high_pct,
+        "open_rate": open_pct,
+        "peak_pct": peak_pct,
+        "peak_rate": peak_pct,
+        "close_pct": close_pct,
+        "close_rate": close_pct,
+        "high_pct": peak_pct,
         "low_pct": low_pct,
         "overall_pct": overall,
         "direction_ok": pred_up == act_up,
@@ -188,31 +197,62 @@ def build_daily_scorecard(symbol: str, days: int = 14, asset_type: str = "stock"
     }
 
 
-def build_watchlist_scorecards(days: int = 14) -> Dict[str, Any]:
-    """Scorecards for every watchlist symbol that has a loadable model."""
+def build_watchlist_universe() -> Dict[str, Any]:
+    """Full configured watchlist with model coverage flags (all symbols, not just trained)."""
     from config.symbols import watchlist_symbol_pairs
     from core.signal_engine import get_model_status
 
     st = get_model_status() or {}
     loaded = set((st.get("symbols") or {}).keys())
     pairs = watchlist_symbol_pairs(include_portfolio=True)
-    symbols = [sym for sym, _ in pairs if sym in loaded]
-    if not symbols:
-        symbols = ["WOLF"]
+    all_syms = [sym for sym, _ in pairs] or ["WOLF"]
+    entries = [{"symbol": sym, "has_model": sym in loaded} for sym in all_syms]
+    trained = [e["symbol"] for e in entries if e["has_model"]]
+    missing = [e["symbol"] for e in entries if not e["has_model"]]
+    return {
+        "ok": True,
+        "watchlist": entries,
+        "symbols": all_syms,
+        "trained_symbols": trained,
+        "missing_symbols": missing,
+        "trained_count": len(trained),
+        "watchlist_count": len(all_syms),
+    }
+
+
+def build_watchlist_scorecards(days: int = 14) -> Dict[str, Any]:
+    """Summary scorecards for the full watchlist; detailed rows only where a model exists."""
+    universe = build_watchlist_universe()
+    all_syms = universe.get("symbols") or ["WOLF"]
+    loaded = set(universe.get("trained_symbols") or [])
 
     cards = []
-    for sym in symbols:
+    for sym in all_syms:
+        if sym not in loaded:
+            cards.append({
+                "symbol": sym,
+                "has_model": False,
+                "reason": "no_v3_model",
+                "summary": {},
+                "latest": None,
+            })
+            continue
         card = build_daily_scorecard(sym, days=days)
         cards.append({
             "symbol": sym,
             "has_model": card.get("has_model"),
+            "reason": card.get("reason"),
             "summary": card.get("summary") or {},
             "latest": (card.get("days") or [])[-1] if card.get("days") else None,
         })
 
     return {
         "ok": True,
-        "symbols": symbols,
+        "symbols": all_syms,
+        "trained_symbols": universe.get("trained_symbols"),
+        "missing_symbols": universe.get("missing_symbols"),
+        "trained_count": universe.get("trained_count"),
+        "watchlist_count": universe.get("watchlist_count"),
         "cards": cards,
         "days_requested": days,
     }
