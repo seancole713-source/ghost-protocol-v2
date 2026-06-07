@@ -461,10 +461,14 @@ def _walk_forward_scores(X, y, X_peer=None, y_peer=None, wolf_weight=1.0):
     min_train_frac = _v3_wf_min_train_frac()
     test_size_floor = _v3_wf_test_size_floor()
     test_size_frac = _v3_wf_test_size_frac()
+    purge = _v3_wf_purge()
+    # Thin tickers (e.g. recent IPOs) cannot satisfy default WF floors — scale down.
+    if n < min_train_floor + test_size_floor + purge + 5:
+        min_train_floor = max(20, int(n * 0.45))
+        test_size_floor = max(5, min(test_size_floor, int(n * 0.18)))
     min_train = max(min_train_floor, int(n * min_train_frac))
     test_size = max(test_size_floor, int(n * test_size_frac))
     step = test_size
-    purge = _v3_wf_purge()
     bounds = _wf_fold_bounds(n, min_train, test_size, step, purge,
                              min_train_floor, test_size_floor)
     has_peers = X_peer is not None and len(X_peer) > 0
