@@ -381,7 +381,25 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
 .df-head{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:12px;margin-bottom:16px}
 .df-head-title{font-size:13px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#e2e8f0}
 .df-head-sub{font-size:11px;color:#64748b;margin-top:4px;max-width:520px;line-height:1.5}
-.df-tools{display:flex;align-items:center;gap:8px}
+.df-tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.df-view-group{
+  display:inline-flex;border:1px solid #334155;border-radius:999px;overflow:hidden;background:#0b1220;
+}
+.df-view-group button{
+  border:none;background:transparent;color:#64748b;
+  font-size:10px;font-weight:800;letter-spacing:.5px;text-transform:uppercase;
+  padding:7px 12px;cursor:pointer;transition:all .15s ease;
+}
+.df-view-group button:hover{color:#cbd5e1}
+.df-view-group button.active{
+  background:linear-gradient(135deg,#1e293b,#334155);color:#f1f5f9;
+  box-shadow:inset 0 0 0 1px rgba(148,163,184,.2);
+}
+.df-bar-wrap{display:none}
+.df-bar-wrap .df-pane::before{background:linear-gradient(90deg,#3b82f6,#8b5cf6,#f59e0b)}
+.df-bar-legend{font-size:10px;color:#64748b;margin-top:8px;display:flex;flex-wrap:wrap;gap:12px}
+.df-bar-legend span{display:inline-flex;align-items:center;gap:5px}
+.df-bar-swatch{width:10px;height:10px;border-radius:3px;display:inline-block}
 .df-toggle{
   border:1px solid #334155;background:#0b1220;color:#93c5fd;
   font-size:10px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;
@@ -595,7 +613,14 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
           <div class="df-head-sub">Ghost predicts next session open, peak (high), and closing prices at the prior close. Scores show open rate, peak rate, and close rate (% closeness).</div>
         </div>
         <div class="df-tools">
-          <button type="button" id="df-overlay-toggle" class="df-toggle" onclick="toggleDfOverlay()">Overlay compare</button>
+          <div class="df-view-group" role="group" aria-label="Chart style">
+            <button type="button" id="df-mode-line" class="active" onclick="setDfChartMode('line')">Line</button>
+            <button type="button" id="df-mode-bar" onclick="setDfChartMode('bar')">Bar analytics</button>
+          </div>
+          <div class="df-view-group" role="group" aria-label="Compare layout">
+            <button type="button" id="df-compare-split" class="active" onclick="setDfCompareMode('split')">Side by side</button>
+            <button type="button" id="df-compare-overlay" onclick="setDfCompareMode('overlay')">Overlay compare</button>
+          </div>
         </div>
       </div>
       <div id="df-coverage" class="df-coverage"></div>
@@ -604,18 +629,25 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
       <div class="df-split" id="df-split">
         <div class="df-pane actual">
           <div class="df-pane-h actual">Actual <span class="df-pane-tag">what happened</span></div>
-          <div class="df-canvas-wrap"><canvas id="df-actual-chart"></canvas></div>
+          <div class="df-canvas-wrap df-line-wrap"><canvas id="df-actual-chart"></canvas></div>
+          <div class="df-canvas-wrap df-bar-wrap" id="df-actual-bar-wrap"><canvas id="df-actual-bar-chart"></canvas></div>
         </div>
         <div class="df-pane predicted">
           <div class="df-pane-h predicted">Ghost prediction <span class="df-pane-tag">issued prior close</span></div>
-          <div class="df-canvas-wrap"><canvas id="df-pred-chart"></canvas></div>
+          <div class="df-canvas-wrap df-line-wrap"><canvas id="df-pred-chart"></canvas></div>
+          <div class="df-canvas-wrap df-bar-wrap" id="df-pred-bar-wrap"><canvas id="df-pred-bar-chart"></canvas></div>
         </div>
       </div>
       <div id="df-overlay-wrap" class="df-overlay-wrap">
         <div class="df-overlay-pane">
           <div class="df-pane-h" style="color:#cbd5e1">Overlay comparison <span class="df-pane-tag">actual vs predicted</span></div>
-          <div class="df-overlay-note">Solid lines are actual. Dashed lines are Ghost predictions.</div>
-          <div class="df-canvas-wrap"><canvas id="df-overlay-chart"></canvas></div>
+          <div class="df-overlay-note" id="df-overlay-note">Solid lines are actual. Dashed lines are Ghost predictions.</div>
+          <div class="df-canvas-wrap df-line-wrap"><canvas id="df-overlay-chart"></canvas></div>
+          <div class="df-canvas-wrap df-bar-wrap" id="df-overlay-bar-wrap"><canvas id="df-overlay-bar-chart"></canvas></div>
+          <div class="df-bar-legend" id="df-overlay-bar-legend" style="display:none">
+            <span><i class="df-bar-swatch" style="background:#ef4444"></i>Actual open / peak / close</span>
+            <span><i class="df-bar-swatch" style="background:#22c55e;opacity:.85"></i>Predicted open / peak / close</span>
+          </div>
         </div>
       </div>
       <div id="df-table-wrap" class="df-table-wrap"></div>
@@ -1737,8 +1769,36 @@ function renderNews(n){
 /* ─── Daily forecast scorecard — premium panel ─── */
 var _dfActiveSymbol = 'WOLF';
 var _dfUniverse = null;
-var _dfOverlayOn = false;
+var _dfChartMode = 'line';      // 'line' | 'bar'
+var _dfCompareMode = 'split';   // 'split' | 'overlay'
 var _dfLastDays = [];
+
+function _dfResolvedDays(days){
+  return (days || []).filter(function(d){ return d.resolved && d.actual && d.predicted; });
+}
+
+function _dfBarColors(isPred){
+  if(isPred) return { open: 'rgba(34,197,94,.85)', peak: 'rgba(74,222,128,.75)', close: 'rgba(134,239,172,.65)' };
+  return { open: 'rgba(239,68,68,.85)', peak: 'rgba(248,113,113,.75)', close: 'rgba(251,146,60,.65)' };
+}
+
+function _dfChartOptions(color, isBar){
+  var base = {
+    responsive: true, maintainAspectRatio: false, animation: false,
+    plugins: { legend: { display: true, labels: { color: '#64748b', boxWidth: 10, font: { size: 9 } } },
+      tooltip: { callbacks: { label: function(c){ return c.dataset.label + ': ' + _dfFmtPrice(c.parsed.y); } } } },
+    scales: {
+      x: { ticks: { color: '#64748b', font: { size: 9 }, maxRotation: 45 }, grid: { color: 'rgba(255,255,255,.04)' } },
+      y: { ticks: { color: '#64748b', font: { size: 9 }, callback: function(v){ return '$'+Number(v).toFixed(2); } }, grid: { color: 'rgba(255,255,255,.04)' } }
+    }
+  };
+  if(isBar){
+    base.scales.x.stacked = false;
+    base.scales.y.stacked = false;
+    base.plugins.legend.position = 'bottom';
+  }
+  return base;
+}
 
 function _dfRatePill(pct){
   if(pct == null || isNaN(pct)) return '<span class="df-rate-pill df-rate-na">—</span>';
@@ -1767,16 +1827,8 @@ function _dfPriceBlock(obj, color){
     + '</div>';
 }
 
-function _dfChartOptions(color){
-  return {
-    responsive: true, maintainAspectRatio: false, animation: false,
-    plugins: { legend: { display: true, labels: { color: '#64748b', boxWidth: 10, font: { size: 9 } } },
-      tooltip: { callbacks: { label: function(c){ return c.dataset.label + ': ' + _dfFmtPrice(c.parsed.y); } } } },
-    scales: {
-      x: { ticks: { color: '#64748b', font: { size: 9 }, maxRotation: 45 }, grid: { color: 'rgba(255,255,255,.04)' } },
-      y: { ticks: { color: '#64748b', font: { size: 9 }, callback: function(v){ return '$'+Number(v).toFixed(2); } }, grid: { color: 'rgba(255,255,255,.04)' } }
-    }
-  };
+function _destroyChart(key){
+  if(_charts[key]){ _charts[key].destroy(); _charts[key] = null; }
 }
 
 function _renderDfLineChart(canvasId, days){
@@ -1784,14 +1836,14 @@ function _renderDfLineChart(canvasId, days){
   if(!canvas) return;
   var ctx = canvas.getContext('2d');
   var key = canvasId;
-  if(_charts[key]){ _charts[key].destroy(); _charts[key] = null; }
-  var resolved = (days || []).filter(function(d){ return d.resolved && d.actual && d.predicted; });
+  _destroyChart(key);
+  var resolved = _dfResolvedDays(days);
   if(!resolved.length){
-    _charts[key] = new Chart(ctx, { type: 'line', data: { labels: [], datasets: [] }, options: _dfChartOptions('#666') });
+    _charts[key] = new Chart(ctx, { type: 'line', data: { labels: [], datasets: [] }, options: _dfChartOptions('#666', false) });
     return;
   }
   var labels = resolved.map(function(d){ return d.target_date; });
-  var isPred = canvasId === 'df-pred-chart';
+  var isPred = canvasId.indexOf('pred') >= 0;
   var cOpen = isPred ? '#22c55e' : '#ef4444';
   var cPeak = isPred ? '#4ade80' : '#f87171';
   var cClose = isPred ? '#86efac' : '#fb923c';
@@ -1801,7 +1853,30 @@ function _renderDfLineChart(canvasId, days){
     { label: 'Peak', data: resolved.map(function(d){ return d[src].high; }), borderColor: cPeak, borderDash: [5,4], borderWidth: 1.5, pointRadius: 2, tension: 0.25, fill: false },
     { label: 'Close', data: resolved.map(function(d){ return d[src].close; }), borderColor: cClose, borderDash: [2,3], borderWidth: 2, pointRadius: 2, tension: 0.25, fill: false }
   ];
-  _charts[key] = new Chart(ctx, { type: 'line', data: { labels: labels, datasets: ds }, options: _dfChartOptions(cOpen) });
+  _charts[key] = new Chart(ctx, { type: 'line', data: { labels: labels, datasets: ds }, options: _dfChartOptions(cOpen, false) });
+}
+
+function _renderDfBarChart(canvasId, days){
+  var canvas = document.getElementById(canvasId);
+  if(!canvas) return;
+  var ctx = canvas.getContext('2d');
+  var key = canvasId;
+  _destroyChart(key);
+  var resolved = _dfResolvedDays(days);
+  if(!resolved.length){
+    _charts[key] = new Chart(ctx, { type: 'bar', data: { labels: [], datasets: [] }, options: _dfChartOptions('#666', true) });
+    return;
+  }
+  var labels = resolved.map(function(d){ return d.target_date; });
+  var isPred = canvasId.indexOf('pred') >= 0;
+  var cols = _dfBarColors(isPred);
+  var src = isPred ? 'predicted' : 'actual';
+  var ds = [
+    { label: 'Open', data: resolved.map(function(d){ return d[src].open; }), backgroundColor: cols.open, borderRadius: 4, borderSkipped: false, maxBarThickness: 28 },
+    { label: 'Peak', data: resolved.map(function(d){ return d[src].high; }), backgroundColor: cols.peak, borderRadius: 4, borderSkipped: false, maxBarThickness: 28 },
+    { label: 'Close', data: resolved.map(function(d){ return d[src].close; }), backgroundColor: cols.close, borderRadius: 4, borderSkipped: false, maxBarThickness: 28 }
+  ];
+  _charts[key] = new Chart(ctx, { type: 'bar', data: { labels: labels, datasets: ds }, options: _dfChartOptions(cols.open, true) });
 }
 
 function _renderDfOverlayChart(days){
@@ -1809,10 +1884,10 @@ function _renderDfOverlayChart(days){
   if(!canvas) return;
   var ctx = canvas.getContext('2d');
   var key = 'df-overlay-chart';
-  if(_charts[key]){ _charts[key].destroy(); _charts[key] = null; }
-  var resolved = (days || []).filter(function(d){ return d.resolved && d.actual && d.predicted; });
+  _destroyChart(key);
+  var resolved = _dfResolvedDays(days);
   if(!resolved.length){
-    _charts[key] = new Chart(ctx, { type: 'line', data: { labels: [], datasets: [] }, options: _dfChartOptions('#666') });
+    _charts[key] = new Chart(ctx, { type: 'line', data: { labels: [], datasets: [] }, options: _dfChartOptions('#666', false) });
     return;
   }
   var labels = resolved.map(function(d){ return d.target_date; });
@@ -1824,27 +1899,84 @@ function _renderDfOverlayChart(days){
     { label: 'Pred Peak', data: resolved.map(function(d){ return d.predicted.high; }), borderColor: '#4ade80', borderDash: [7,4], borderWidth: 1.8, pointRadius: 2, tension: 0.25, fill: false },
     { label: 'Pred Close', data: resolved.map(function(d){ return d.predicted.close; }), borderColor: '#86efac', borderDash: [7,4], borderWidth: 2, pointRadius: 2, tension: 0.25, fill: false }
   ];
-  _charts[key] = new Chart(ctx, { type: 'line', data: { labels: labels, datasets: ds }, options: _dfChartOptions('#22c55e') });
+  _charts[key] = new Chart(ctx, { type: 'line', data: { labels: labels, datasets: ds }, options: _dfChartOptions('#22c55e', false) });
+}
+
+function _renderDfOverlayBarChart(days){
+  var canvas = document.getElementById('df-overlay-bar-chart');
+  if(!canvas) return;
+  var ctx = canvas.getContext('2d');
+  var key = 'df-overlay-bar-chart';
+  _destroyChart(key);
+  var resolved = _dfResolvedDays(days);
+  if(!resolved.length){
+    _charts[key] = new Chart(ctx, { type: 'bar', data: { labels: [], datasets: [] }, options: _dfChartOptions('#666', true) });
+    return;
+  }
+  var labels = resolved.map(function(d){ return d.target_date; });
+  var act = _dfBarColors(false);
+  var pred = _dfBarColors(true);
+  var ds = [
+    { label: 'Actual Open', data: resolved.map(function(d){ return d.actual.open; }), backgroundColor: act.open, borderRadius: 3, maxBarThickness: 14 },
+    { label: 'Actual Peak', data: resolved.map(function(d){ return d.actual.high; }), backgroundColor: act.peak, borderRadius: 3, maxBarThickness: 14 },
+    { label: 'Actual Close', data: resolved.map(function(d){ return d.actual.close; }), backgroundColor: act.close, borderRadius: 3, maxBarThickness: 14 },
+    { label: 'Pred Open', data: resolved.map(function(d){ return d.predicted.open; }), backgroundColor: pred.open, borderRadius: 3, maxBarThickness: 14 },
+    { label: 'Pred Peak', data: resolved.map(function(d){ return d.predicted.high; }), backgroundColor: pred.peak, borderRadius: 3, maxBarThickness: 14 },
+    { label: 'Pred Close', data: resolved.map(function(d){ return d.predicted.close; }), backgroundColor: pred.close, borderRadius: 3, maxBarThickness: 14 }
+  ];
+  _charts[key] = new Chart(ctx, { type: 'bar', data: { labels: labels, datasets: ds }, options: _dfChartOptions('#22c55e', true) });
+}
+
+function _renderDfCharts(days){
+  _renderDfLineChart('df-actual-chart', days);
+  _renderDfLineChart('df-pred-chart', days);
+  _renderDfBarChart('df-actual-bar-chart', days);
+  _renderDfBarChart('df-pred-bar-chart', days);
+  _renderDfOverlayChart(days);
+  _renderDfOverlayBarChart(days);
 }
 
 function _applyDfViewMode(){
   var split = document.getElementById('df-split');
   var overlay = document.getElementById('df-overlay-wrap');
-  var btn = document.getElementById('df-overlay-toggle');
-  if(split) split.style.display = _dfOverlayOn ? 'none' : 'grid';
-  if(overlay) overlay.style.display = _dfOverlayOn ? 'block' : 'none';
-  if(btn){
-    btn.classList.toggle('active', _dfOverlayOn);
-    btn.textContent = _dfOverlayOn ? 'Split view' : 'Overlay compare';
+  var isOverlay = _dfCompareMode === 'overlay';
+  var isBar = _dfChartMode === 'bar';
+  if(split) split.style.display = isOverlay ? 'none' : 'grid';
+  if(overlay) overlay.style.display = isOverlay ? 'block' : 'none';
+  document.querySelectorAll('#df-split .df-line-wrap').forEach(function(el){ el.style.display = isBar ? 'none' : 'block'; });
+  document.querySelectorAll('#df-split .df-bar-wrap').forEach(function(el){ el.style.display = isBar ? 'block' : 'none'; });
+  var oLine = document.querySelector('#df-overlay-wrap .df-line-wrap');
+  var oBar = document.getElementById('df-overlay-bar-wrap');
+  var oNote = document.getElementById('df-overlay-note');
+  var oLeg = document.getElementById('df-overlay-bar-legend');
+  if(oLine) oLine.style.display = isBar ? 'none' : 'block';
+  if(oBar) oBar.style.display = isBar ? 'block' : 'none';
+  if(oNote){
+    oNote.textContent = isBar
+      ? 'Grouped bars per session — warm tones are actual, green tones are Ghost predictions (open / peak / close).'
+      : 'Solid lines are actual. Dashed lines are Ghost predictions.';
   }
+  if(oLeg) oLeg.style.display = (isOverlay && isBar) ? 'flex' : 'none';
+  ['df-mode-line','df-mode-bar'].forEach(function(id){
+    var b = document.getElementById(id);
+    if(b) b.classList.toggle('active', (id === 'df-mode-line' && !isBar) || (id === 'df-mode-bar' && isBar));
+  });
+  ['df-compare-split','df-compare-overlay'].forEach(function(id){
+    var b = document.getElementById(id);
+    if(b) b.classList.toggle('active', (id === 'df-compare-split' && !isOverlay) || (id === 'df-compare-overlay' && isOverlay));
+  });
 }
 
-function toggleDfOverlay(){
-  _dfOverlayOn = !_dfOverlayOn;
+function setDfChartMode(mode){
+  _dfChartMode = mode === 'bar' ? 'bar' : 'line';
   _applyDfViewMode();
-  if(_dfOverlayOn){
-    _renderDfOverlayChart(_dfLastDays || []);
-  }
+  _renderDfCharts(_dfLastDays || []);
+}
+
+function setDfCompareMode(mode){
+  _dfCompareMode = mode === 'overlay' ? 'overlay' : 'split';
+  _applyDfViewMode();
+  _renderDfCharts(_dfLastDays || []);
 }
 
 function _renderDfTable(days){
@@ -1945,10 +2077,8 @@ async function loadDailyForecastScorecard(){
       sumEl.innerHTML = '<b style="color:#fbbf24">' + escHtml(sym) + '</b> is on your watchlist but has <b>no trained v3 model yet</b>. '
         + 'Ghost can track it for portfolio/P&amp;L, but daily forecasts require training — use <a href="/admin" style="color:#a78bfa">/admin → Train Now</a>. '
         + 'Currently only <b>' + ((_dfUniverse && _dfUniverse.trained_count) || 0) + '</b> of <b>' + ((_dfUniverse && _dfUniverse.watchlist_count) || 0) + '</b> symbols have models.';
-      _renderDfLineChart('df-actual-chart', []);
-      _renderDfLineChart('df-pred-chart', []);
-      _dfLastDays = [];
-      _renderDfOverlayChart([]);
+      _renderDfCharts([]);
+      _applyDfViewMode();
       if(wrap) wrap.innerHTML = '<div class="df-empty-state"><b>' + escHtml(sym) + ' — model required</b>Train this symbol in /admin to unlock open, peak, and close forecasts.</div>';
       return;
     }
@@ -1960,9 +2090,8 @@ async function loadDailyForecastScorecard(){
       + (sm.model_accuracy_holdout_pct != null ? ' · holdout ' + sm.model_accuracy_holdout_pct + '%' : '');
     var days = g.days || [];
     _dfLastDays = days;
-    _renderDfLineChart('df-actual-chart', days);
-    _renderDfLineChart('df-pred-chart', days);
-    _renderDfOverlayChart(days);
+    _applyDfViewMode();
+    _renderDfCharts(days);
     _renderDfTable(days);
   }catch(e){
     sumEl.innerHTML = 'Forecast scorecard error.';
