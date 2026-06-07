@@ -393,63 +393,42 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
 .dp-head{display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:16px}
 .dp-title{font-size:18px;font-weight:800;letter-spacing:-.3px;color:#f8fafc;margin-bottom:8px}
 .dp-sub{font-size:11px;color:#64748b;line-height:1.5;max-width:520px}
-.tp-chips{margin-top:4px;display:flex;flex-wrap:wrap;gap:6px}
-.dp-overall{
-  display:flex;flex-wrap:wrap;align-items:baseline;gap:10px 16px;
-  padding:14px 16px;margin-bottom:16px;border-radius:12px;
-  background:rgba(15,23,42,.55);border:1px solid rgba(148,163,184,.12);
-}
-.dp-overall-lbl{font-size:10px;font-weight:800;letter-spacing:1.5px;text-transform:uppercase;color:#64748b}
-.dp-overall-val{font-size:28px;font-weight:800;letter-spacing:-.5px;color:#4ade80}
-.dp-overall-val.pending{color:#64748b;font-size:16px}
-.dp-overall-val.pos{color:#4ade80}
-.dp-overall-val.mid{color:#fbbf24}
-.dp-overall-val.low{color:#f87171}
-.dp-overall-sub{font-size:11px;color:#64748b;flex:1;min-width:180px}
-.dp-table-wrap{overflow-x:auto;margin-bottom:18px}
+.dp-table-wrap{overflow-x:auto;margin-bottom:8px}
 .dp-table{width:100%;border-collapse:collapse;font-size:13px;min-width:640px}
 .dp-table thead th{
   text-align:left;font-size:10px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;
-  color:#64748b;padding:0 12px 12px 0;border-bottom:1px solid rgba(255,255,255,.06);
+  color:#64748b;padding:0 12px 14px 0;border-bottom:1px solid rgba(255,255,255,.08);
 }
 .dp-table thead th.num{text-align:right;padding-right:0;padding-left:12px}
 .dp-table tbody td{
-  padding:14px 12px 14px 0;border-bottom:1px solid rgba(255,255,255,.04);vertical-align:middle;
+  padding:18px 12px 18px 0;border-bottom:1px solid rgba(255,255,255,.06);vertical-align:middle;
 }
 .dp-table tbody td.num{text-align:right;font-variant-numeric:tabular-nums;padding-right:0;padding-left:12px}
 .dp-table tbody tr:last-child td{border-bottom:none}
-.dp-table tbody tr.forecast td{background:rgba(34,197,94,.04)}
-.dp-sym{font-weight:800;color:#f8fafc;font-size:14px}
+.dp-table tbody tr.dp-predict td{background:rgba(34,197,94,.06)}
+.dp-table tbody tr.dp-predict .dp-sym{font-size:18px;font-weight:800;color:#ecfdf5}
+.dp-table tbody tr.dp-predict .dp-period{font-size:13px;color:#86efac}
+.dp-table tbody tr.dp-predict .dp-price{
+  font-size:clamp(22px,3.5vw,32px);font-weight:800;color:#4ade80;letter-spacing:-.5px;
+}
+.dp-table tbody tr.dp-market td{background:rgba(255,255,255,.02)}
+.dp-table tbody tr.dp-market .dp-sym{font-size:14px;font-weight:700;color:#cbd5e1}
+.dp-table tbody tr.dp-market .dp-period{font-size:12px;color:#64748b}
+.dp-table tbody tr.dp-market .dp-price{font-size:clamp(18px,2.8vw,24px);font-weight:700;color:#f1f5f9}
+.dp-row-tag{
+  display:block;font-size:9px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase;margin-bottom:4px;
+}
+.dp-row-tag.predict{color:#86efac}
+.dp-row-tag.market{color:#94a3b8}
+.dp-sym{font-weight:800;color:#f8fafc}
 .dp-period{font-size:12px;color:#64748b;white-space:nowrap}
-.dp-price{font-weight:700;color:#f1f5f9}
-.dp-score{font-size:12px;font-weight:800;white-space:nowrap}
+.dp-price{font-weight:700;font-variant-numeric:tabular-nums}
+.dp-score{font-size:13px;font-weight:800;white-space:nowrap}
 .dp-score.pos{color:#4ade80}
-.dp-score.mid{color:#fbbf24}
-.dp-score.neg{color:#f87171}
-.dp-score.pending{color:#64748b;font-weight:600;font-style:italic}
-.dp-score.muted{color:#475569}
-.dp-section-lbl{
-  font-size:10px;font-weight:800;letter-spacing:1.5px;text-transform:uppercase;color:#64748b;
-  margin:4px 0 10px;padding-left:12px;position:relative;
-}
-.dp-section-lbl::before{content:"";position:absolute;left:0;top:1px;bottom:1px;width:3px;border-radius:2px;background:#334155}
-.dp-live{
-  display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;
-  padding:14px 16px;border-radius:12px;background:#0b0b0f;border:1px solid #23232e;
-}
-.dp-live-item .lbl{display:block;font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:#64748b;margin-bottom:6px}
-.dp-live-item .val{font-size:22px;font-weight:800;color:#f8fafc;font-variant-numeric:tabular-nums}
-.dp-live-item .val.pos{color:#4ade80}
-.dp-live-item .val.neg{color:#f87171}
+.dp-score.pending{color:#64748b;font-weight:600;font-style:italic;font-size:12px}
+.dp-empty{font-size:13px;color:#888;padding:20px 8px;text-align:center}
 .tp-meta{font-size:10px;color:#555;text-align:center;margin-top:12px}
-.dp-next-note{
-  font-size:12px;color:#86efac;background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.22);
-  border-radius:10px;padding:10px 14px;margin-bottom:12px;line-height:1.55;
-}
-.dp-next-badge{
-  display:inline-block;font-size:9px;font-weight:800;letter-spacing:1px;text-transform:uppercase;
-  color:#052e16;background:#86efac;border-radius:6px;padding:2px 6px;margin-right:6px;vertical-align:middle;
-}
+.tp-chips{margin-top:4px;display:flex;flex-wrap:wrap;gap:6px}
 
 /* legacy tp-* kept for chip hooks only */
 
@@ -641,34 +620,21 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
     </div>
   </section>
 
-  <!-- ─── Daily Prediction Panel (24h ahead · table layout) ─── -->
+  <!-- ─── Daily Prediction Panel (next 24h + live market · 2 rows) ─── -->
   <section class="block" id="today-prediction-section">
     <div class="sec-label">Daily Prediction Panel</div>
     <div class="dp-panel">
       <div class="dp-head">
         <div>
-          <div class="dp-title">Daily Prediction Detail</div>
-          <div class="dp-sub">Ghost forecasts the next session open, peak, and closing prices at the prior close. Ghost scores itself after the bell — overall rating locks at 4:33 PM CT.</div>
+          <div class="dp-title">Next 24 hours</div>
+          <div class="dp-sub">Row 1 — Ghost prediction (green). Row 2 — what the market actually did (open, peak, close). Score locks at 4:33 PM CT.</div>
           <div class="tp-chips" id="tp-chips"></div>
         </div>
       </div>
-      <div id="dp-overall" class="dp-overall">
-        <span class="dp-overall-lbl">Overall score</span>
-        <span class="dp-overall-val pending" id="dp-overall-val">—</span>
-        <span class="dp-overall-sub" id="dp-overall-sub">Loading…</span>
-      </div>
-      <div id="dp-next-note" class="dp-next-note" style="display:none"></div>
       <div class="dp-table-wrap" id="dp-table-wrap">
         <div class="dp-empty">Loading daily prediction…</div>
       </div>
-      <div class="dp-section-lbl">Live market</div>
-      <div id="dp-live" class="dp-live">
-        <div class="dp-live-item"><span class="lbl">Last price</span><span class="val" id="dp-live-price">—</span></div>
-        <div class="dp-live-item"><span class="lbl">Day change</span><span class="val" id="dp-live-chg">—</span></div>
-        <div class="dp-live-item"><span class="lbl">Prior close</span><span class="val" id="dp-live-prev">—</span></div>
-        <div class="dp-live-item"><span class="lbl">Updated</span><span class="val" id="dp-live-ts" style="font-size:14px">—</span></div>
-      </div>
-      <div class="tp-meta" id="tp-meta">Scores refresh daily at 4:33 PM CT after the close.</div>
+      <div class="tp-meta" id="tp-meta">Live market row updates with the last completed session · prediction row is always the next session.</div>
     </div>
   </section>
 
@@ -2191,161 +2157,62 @@ function _dpFormatDate(iso){
   }catch(e){ return iso; }
 }
 
-function _dpPeriod(day, isNext){
+function _dpPeriodNext(day){
   if(!day) return '—';
-  var a = day.forecast_date || '';
-  var b = day.target_date || 'next session';
-  var bFmt = _dpFormatDate(b);
-  if(!a) return escHtml(String(bFmt));
-  var arrow = escHtml(a) + ' <span style="color:#475569">→</span> <b style="color:#e2e8f0">' + escHtml(String(bFmt)) + '</b>';
-  if(isNext) return '<span class="dp-next-badge">NEXT</span>' + arrow;
-  return arrow;
+  var b = day.target_date || '';
+  return '<b style="color:#86efac">' + escHtml(_dpFormatDate(b)) + '</b>';
 }
 
-function _dpNextNote(sym, next){
-  var el = document.getElementById('dp-next-note');
-  if(!el) return;
-  if(!next || !next.predicted){
-    el.style.display = 'none';
-    el.innerHTML = '';
-    return;
-  }
-  var target = next.target_date || '';
-  var p = next.predicted;
-  el.style.display = 'block';
-  el.innerHTML = '<b>Next session forecast for ' + escHtml(sym) + '</b> · '
-    + _dpFormatDate(target)
-    + ' · Open ' + _fmtUsd(p.open) + ' · Peak ' + _fmtUsd(p.high) + ' · Close ' + _fmtUsd(p.close)
-    + '<div style="color:#64748b;margin-top:4px;font-size:11px">Issued at ' + _dpFormatDate(next.forecast_date) + ' close'
-    + '. Weekends skip to the next trading day — there is no Sat/Sun session.</div>';
+function _dpPeriodMarket(day){
+  if(!day) return '—';
+  return escHtml(_dpFormatDate(day.target_date || day.forecast_date || 'last session'));
 }
 
 function _dpScorePill(score, pending){
   if(pending) return '<span class="dp-score pending">pending</span>';
-  if(score == null || isNaN(Number(score))) return '<span class="dp-score muted">baseline</span>';
-  var n = Number(score);
-  var cls = n >= 70 ? 'pos' : n >= 50 ? 'mid' : 'neg';
-  return '<span class="dp-score ' + cls + '">↑ ' + n.toFixed(1) + '%</span>';
+  if(score == null || isNaN(Number(score))) return '<span class="dp-score pending">—</span>';
+  return '<span class="dp-score pos">↑ ' + Number(score).toFixed(1) + '%</span>';
 }
 
-function _dpOverallClass(score){
-  if(score == null || isNaN(Number(score))) return 'pending';
-  var n = Number(score);
-  if(n >= 70) return 'pos';
-  if(n >= 50) return 'mid';
-  return 'low';
-}
+function _renderDpTwoRows(sym, next, lastResolved){
+  if(!next || !next.predicted){
+    return '<div class="dp-empty">No next-session forecast for <b>' + escHtml(sym) + '</b> yet.</div>';
+  }
+  var p = next.predicted;
+  var predictRow = '<tr class="dp-predict">'
+    + '<td><span class="dp-row-tag predict">Predict</span><span class="dp-sym">' + escHtml(sym) + '</span></td>'
+    + '<td class="dp-period">' + _dpPeriodNext(next) + '</td>'
+    + '<td class="num dp-price">' + _fmtUsd(p.open) + '</td>'
+    + '<td class="num dp-price">' + _fmtUsd(p.high) + '</td>'
+    + '<td class="num dp-price">' + _fmtUsd(p.close) + '</td>'
+    + '<td class="num">' + _dpScorePill(null, true) + '</td>'
+    + '</tr>';
 
-function _renderDpTable(sym, days, next, resolvedRecent){
-  var rows = [];
-  if(next && next.predicted){
-    var p = next.predicted;
-    rows.push(
-      '<tr class="forecast">'
-      + '<td><span class="dp-sym">' + escHtml(sym) + '</span></td>'
-      + '<td class="dp-period">' + _dpPeriod(next, true) + '</td>'
-      + '<td class="num dp-price">' + _fmtUsd(p.open) + '</td>'
-      + '<td class="num dp-price">' + _fmtUsd(p.high) + '</td>'
-      + '<td class="num dp-price">' + _fmtUsd(p.close) + '</td>'
-      + '<td class="num">' + _dpScorePill(null, true) + '</td>'
-      + '</tr>'
-    );
+  var marketRow;
+  if(lastResolved && lastResolved.actual){
+    var a = lastResolved.actual;
+    var sc = (lastResolved.score || {}).overall_pct;
+    marketRow = '<tr class="dp-market">'
+      + '<td><span class="dp-row-tag market">Market</span><span class="dp-sym">' + escHtml(sym) + '</span></td>'
+      + '<td class="dp-period">' + _dpPeriodMarket(lastResolved) + '</td>'
+      + '<td class="num dp-price">' + _fmtUsd(a.open) + '</td>'
+      + '<td class="num dp-price">' + _fmtUsd(a.high) + '</td>'
+      + '<td class="num dp-price">' + _fmtUsd(a.close) + '</td>'
+      + '<td class="num">' + _dpScorePill(sc, false) + '</td>'
+      + '</tr>';
+  } else {
+    marketRow = '<tr class="dp-market">'
+      + '<td><span class="dp-row-tag market">Market</span><span class="dp-sym">' + escHtml(sym) + '</span></td>'
+      + '<td class="dp-period">—</td>'
+      + '<td class="num dp-price">—</td><td class="num dp-price">—</td><td class="num dp-price">—</td>'
+      + '<td class="num"><span class="dp-score pending">awaiting close</span></td>'
+      + '</tr>';
   }
-  (resolvedRecent || []).slice().reverse().forEach(function(day){
-    if(!day || !day.predicted) return;
-    var pr = day.predicted;
-    var sc = day.score || {};
-    var overall = sc.overall_pct;
-    rows.push(
-      '<tr>'
-      + '<td><span class="dp-sym">' + escHtml(sym) + '</span></td>'
-      + '<td class="dp-period">' + _dpPeriod(day, false) + '</td>'
-      + '<td class="num dp-price">' + _fmtUsd(pr.open) + '</td>'
-      + '<td class="num dp-price">' + _fmtUsd(pr.high) + '</td>'
-      + '<td class="num dp-price">' + _fmtUsd(pr.close) + '</td>'
-      + '<td class="num">' + _dpScorePill(overall, false) + '</td>'
-      + '</tr>'
-    );
-  });
-  if(!rows.length){
-    return '<div class="dp-empty">No forecast rows for <b>' + escHtml(sym) + '</b> yet.</div>';
-  }
+
   return '<table class="dp-table"><thead><tr>'
     + '<th>Symbol</th><th>Date</th>'
     + '<th class="num">Open</th><th class="num">Peak</th><th class="num">Close</th><th class="num">Ghost score</th>'
-    + '</tr></thead><tbody>' + rows.join('') + '</tbody></table>';
-}
-
-function _renderDpOverall(lastResolved, sym){
-  var valEl = document.getElementById('dp-overall-val');
-  var subEl = document.getElementById('dp-overall-sub');
-  if(!valEl || !subEl) return;
-  if(!lastResolved || !lastResolved.score || lastResolved.score.overall_pct == null){
-    valEl.textContent = 'pending';
-    valEl.className = 'dp-overall-val pending';
-    subEl.textContent = 'Ghost rates itself after the session closes · locks at 4:33 PM CT for ' + (sym || 'symbol') + '.';
-    return;
-  }
-  var overall = Number(lastResolved.score.overall_pct);
-  valEl.textContent = '↑ ' + overall.toFixed(1) + '%';
-  valEl.className = 'dp-overall-val ' + _dpOverallClass(overall);
-  var openR = lastResolved.score.open_rate != null ? lastResolved.score.open_rate.toFixed(1) + '% open' : '';
-  var peakR = lastResolved.score.peak_rate != null ? lastResolved.score.peak_rate.toFixed(1) + '% peak' : '';
-  var closeR = lastResolved.score.close_rate != null ? lastResolved.score.close_rate.toFixed(1) + '% close' : '';
-  var parts = [openR, peakR, closeR].filter(Boolean);
-  subEl.textContent = 'Self-rating for ' + (lastResolved.target_date || 'last session')
-    + (parts.length ? ' · ' + parts.join(' · ') : '')
-    + (lastResolved.score.direction_ok ? ' · direction ✓' : ' · direction ✗');
-}
-
-async function _renderDpLive(sym, priorClose){
-  var priceEl = document.getElementById('dp-live-price');
-  var chgEl = document.getElementById('dp-live-chg');
-  var prevEl = document.getElementById('dp-live-prev');
-  var tsEl = document.getElementById('dp-live-ts');
-  if(!priceEl) return;
-  try{
-    var px = await _fetchJson('/api/price/' + encodeURIComponent(sym), {ok:false, price:null});
-    var spot = (px && px.ok && px.price != null) ? Number(px.price) : null;
-    if(spot != null){
-      priceEl.textContent = _fmtUsd(spot);
-    } else {
-      priceEl.textContent = '—';
-    }
-    var prev = priorClose != null ? Number(priorClose) : null;
-    var chgPct = null;
-    if(sym === 'WOLF'){
-      var wp = await _fetchJson('/api/wolf/price', {ok:false});
-      if(wp && wp.ok){
-        if(wp.price != null && spot == null){
-          spot = Number(wp.price);
-          priceEl.textContent = _fmtUsd(spot);
-        }
-        if(wp.previous_close != null) prev = Number(wp.previous_close);
-        chgPct = wp.change_pct;
-        if(tsEl && wp.ts) tsEl.textContent = fmtTimeAgo(wp.ts);
-      }
-    }
-    if(prev != null && prev > 0){
-      prevEl.textContent = _fmtUsd(prev);
-      if(chgPct == null && spot != null){
-        chgPct = ((spot - prev) / prev) * 100;
-      }
-    } else {
-      prevEl.textContent = '—';
-    }
-    if(chgPct != null){
-      var n = Number(chgPct);
-      chgEl.textContent = (n >= 0 ? '+' : '') + n.toFixed(2) + '%';
-      chgEl.className = 'val ' + (n >= 0 ? 'pos' : 'neg');
-    } else {
-      chgEl.textContent = '—';
-      chgEl.className = 'val';
-    }
-    if(tsEl && tsEl.textContent === '—') tsEl.textContent = 'just now';
-  }catch(e){
-    priceEl.textContent = '—';
-  }
+    + '</tr></thead><tbody>' + predictRow + marketRow + '</tbody></table>';
 }
 
 function _chicagoNowParts(){
@@ -2382,29 +2249,19 @@ async function loadTodayPredictionPanel(is433Refresh){
       return;
     }
     if(!g.has_model){
-      tableWrap.innerHTML = '<div class="dp-empty"><span style="color:#fbbf24">' + escHtml(sym) + '</span> needs a trained v3 model. Train in <a href="/admin" style="color:#a78bfa">/admin</a>. '
-        + 'Trained now: ' + escHtml(((_dfUniverse && _dfUniverse.trained_symbols) || ['WOLF']).join(', ')) + '.</div>';
-      _dpNextNote(sym, null);
-      _renderDpOverall(null, sym);
-      await _renderDpLive(sym, null);
+      tableWrap.innerHTML = '<div class="dp-empty"><span style="color:#fbbf24">' + escHtml(sym) + '</span> needs a trained v3 model. Train in <a href="/admin" style="color:#a78bfa">/admin</a>.</div>';
       return;
     }
     var split = _splitForecastDays(g.days || []);
     var next = split.nextForecast;
-    var resolved = (g.days || []).filter(function(d){ return d.resolved && d.score; });
     var last = split.lastResolved;
-    var recentResolved = resolved.slice(-5);
-    tableWrap.innerHTML = _renderDpTable(sym, g.days, next, recentResolved);
-    _dpNextNote(sym, next);
-    _renderDpOverall(last, sym);
-    var priorClose = (last && last.actual && last.actual.close) ? last.actual.close : null;
-    await _renderDpLive(sym, priorClose);
+    tableWrap.innerHTML = _renderDpTwoRows(sym, next, last);
     var p = _chicagoNowParts();
     var stamp = (p.hour || '00') + ':' + (p.minute || '00') + ' CT';
     if(metaEl){
       metaEl.textContent = is433Refresh
-        ? 'Overall score updated at 4:33 PM CT · ' + stamp
-        : 'Next self-rating at 4:33 PM CT · now ' + stamp;
+        ? 'Updated at 4:33 PM CT · ' + stamp
+        : 'Predict row = next session · Market row = last completed session · ' + stamp;
     }
   }catch(e){
     tableWrap.innerHTML = '<div class="dp-empty">Daily prediction panel error.</div>';
