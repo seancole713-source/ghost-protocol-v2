@@ -38,6 +38,13 @@ def test_score_forecast_partial_error():
     assert sc["close_rate"] is not None
 
 
+def test_next_trading_date_skips_weekend():
+    from core.daily_forecast_scorecard import next_trading_date_after
+
+    assert next_trading_date_after("2026-06-05") == "2026-06-08"  # Fri -> Mon
+    assert next_trading_date_after("2026-06-04") == "2026-06-05"  # Thu -> Fri
+
+
 def test_forecast_includes_close():
     out = forecast_ohlc_from_prob(100.0, 0.72, "WOLF", "stock")
     assert "close" in out

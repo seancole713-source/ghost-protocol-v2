@@ -6,7 +6,7 @@ day's open / high / low, compared to realized OHLC once the session completes.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from core.vol_targets import base_vol_pct, stop_pct_from_vol
@@ -24,6 +24,18 @@ def _parse_bar_date(ts: str) -> str:
     if "T" in s:
         return s.split("T")[0]
     return s[:10]
+
+
+def next_trading_date_after(from_date_str: str) -> str:
+    """First US equity session strictly after ``from_date_str`` (YYYY-MM-DD)."""
+    try:
+        d = date.fromisoformat(str(from_date_str)[:10])
+    except ValueError:
+        d = datetime.now(timezone.utc).date()
+    d += timedelta(days=1)
+    while d.weekday() >= 5:
+        d += timedelta(days=1)
+    return d.isoformat()
 
 
 def _pct_accuracy(predicted: float, actual: float) -> Optional[float]:
@@ -168,13 +180,16 @@ def build_daily_scorecard(symbol: str, days: int = 14, asset_type: str = "stock"
         live_prob = _up_prob_at_bar(rows, len(rows) - 1, model, feature_cols)
         if live_prob is not None:
             live_pred = forecast_ohlc_from_prob(last_close, live_prob, sym, asset_type)
+            issued = _parse_bar_date(str(last.get("ts", "")))
+            target = next_trading_date_after(issued) if issued else "next session"
             out_days.append({
-                "forecast_date": _parse_bar_date(str(last.get("ts", ""))),
-                "target_date": "next session",
+                "forecast_date": issued,
+                "target_date": target,
                 "predicted": live_pred,
                 "actual": None,
                 "score": None,
                 "resolved": False,
+                "is_next_session": True,
             })
 
     scored = [d for d in out_days if d.get("resolved") and d.get("score")]
@@ -187,6 +202,8 @@ def build_daily_scorecard(symbol: str, days: int = 14, asset_type: str = "stock"
         "model_accuracy_holdout_pct": round(float(meta.get("accuracy", 0)) * 100, 1) if meta else None,
     }
 
+    live_row = next((d for d in reversed(out_days) if not d.get("resolved")), None)
+
     return {
         "ok": True,
         "symbol": sym,
@@ -194,6 +211,7 @@ def build_daily_scorecard(symbol: str, days: int = 14, asset_type: str = "stock"
         "days": out_days,
         "summary": summary,
         "generated_at": int(datetime.now(timezone.utc).timestamp()),
+        "next_session_forecast": live_row,
     }
 
 

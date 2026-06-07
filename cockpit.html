@@ -442,7 +442,14 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
 .dp-live-item .val.pos{color:#4ade80}
 .dp-live-item .val.neg{color:#f87171}
 .tp-meta{font-size:10px;color:#555;text-align:center;margin-top:12px}
-.dp-empty{font-size:13px;color:#888;padding:20px 8px;text-align:center}
+.dp-next-note{
+  font-size:12px;color:#86efac;background:rgba(34,197,94,.08);border:1px solid rgba(34,197,94,.22);
+  border-radius:10px;padding:10px 14px;margin-bottom:12px;line-height:1.55;
+}
+.dp-next-badge{
+  display:inline-block;font-size:9px;font-weight:800;letter-spacing:1px;text-transform:uppercase;
+  color:#052e16;background:#86efac;border-radius:6px;padding:2px 6px;margin-right:6px;vertical-align:middle;
+}
 
 /* legacy tp-* kept for chip hooks only */
 
@@ -650,6 +657,7 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
         <span class="dp-overall-val pending" id="dp-overall-val">—</span>
         <span class="dp-overall-sub" id="dp-overall-sub">Loading…</span>
       </div>
+      <div id="dp-next-note" class="dp-next-note" style="display:none"></div>
       <div class="dp-table-wrap" id="dp-table-wrap">
         <div class="dp-empty">Loading daily prediction…</div>
       </div>
@@ -2174,12 +2182,42 @@ function _splitForecastDays(days){
   };
 }
 
-function _dpPeriod(day){
+function _dpFormatDate(iso){
+  if(!iso || iso === 'next session') return iso || '—';
+  try{
+    var d = new Date(iso + 'T12:00:00');
+    if(isNaN(d.getTime())) return iso;
+    return d.toLocaleDateString('en-US', {weekday:'short', month:'short', day:'numeric', year:'numeric'});
+  }catch(e){ return iso; }
+}
+
+function _dpPeriod(day, isNext){
   if(!day) return '—';
   var a = day.forecast_date || '';
   var b = day.target_date || 'next session';
-  if(!a) return escHtml(String(b));
-  return escHtml(a) + ' <span style="color:#475569">→</span> ' + escHtml(String(b));
+  var bFmt = _dpFormatDate(b);
+  if(!a) return escHtml(String(bFmt));
+  var arrow = escHtml(a) + ' <span style="color:#475569">→</span> <b style="color:#e2e8f0">' + escHtml(String(bFmt)) + '</b>';
+  if(isNext) return '<span class="dp-next-badge">NEXT</span>' + arrow;
+  return arrow;
+}
+
+function _dpNextNote(sym, next){
+  var el = document.getElementById('dp-next-note');
+  if(!el) return;
+  if(!next || !next.predicted){
+    el.style.display = 'none';
+    el.innerHTML = '';
+    return;
+  }
+  var target = next.target_date || '';
+  var p = next.predicted;
+  el.style.display = 'block';
+  el.innerHTML = '<b>Next session forecast for ' + escHtml(sym) + '</b> · '
+    + _dpFormatDate(target)
+    + ' · Open ' + _fmtUsd(p.open) + ' · Peak ' + _fmtUsd(p.high) + ' · Close ' + _fmtUsd(p.close)
+    + '<div style="color:#64748b;margin-top:4px;font-size:11px">Issued at ' + _dpFormatDate(next.forecast_date) + ' close'
+    + '. Weekends skip to the next trading day — there is no Sat/Sun session.</div>';
 }
 
 function _dpScorePill(score, pending){
@@ -2205,7 +2243,7 @@ function _renderDpTable(sym, days, next, resolvedRecent){
     rows.push(
       '<tr class="forecast">'
       + '<td><span class="dp-sym">' + escHtml(sym) + '</span></td>'
-      + '<td class="dp-period">' + _dpPeriod(next) + '</td>'
+      + '<td class="dp-period">' + _dpPeriod(next, true) + '</td>'
       + '<td class="num dp-price">' + _fmtUsd(p.open) + '</td>'
       + '<td class="num dp-price">' + _fmtUsd(p.high) + '</td>'
       + '<td class="num dp-price">' + _fmtUsd(p.close) + '</td>'
@@ -2221,7 +2259,7 @@ function _renderDpTable(sym, days, next, resolvedRecent){
     rows.push(
       '<tr>'
       + '<td><span class="dp-sym">' + escHtml(sym) + '</span></td>'
-      + '<td class="dp-period">' + _dpPeriod(day) + '</td>'
+      + '<td class="dp-period">' + _dpPeriod(day, false) + '</td>'
       + '<td class="num dp-price">' + _fmtUsd(pr.open) + '</td>'
       + '<td class="num dp-price">' + _fmtUsd(pr.high) + '</td>'
       + '<td class="num dp-price">' + _fmtUsd(pr.close) + '</td>'
@@ -2344,7 +2382,9 @@ async function loadTodayPredictionPanel(is433Refresh){
       return;
     }
     if(!g.has_model){
-      tableWrap.innerHTML = '<div class="dp-empty"><span style="color:#fbbf24">' + escHtml(sym) + '</span> needs a trained v3 model. Train in <a href="/admin" style="color:#a78bfa">/admin</a>.</div>';
+      tableWrap.innerHTML = '<div class="dp-empty"><span style="color:#fbbf24">' + escHtml(sym) + '</span> needs a trained v3 model. Train in <a href="/admin" style="color:#a78bfa">/admin</a>. '
+        + 'Trained now: ' + escHtml(((_dfUniverse && _dfUniverse.trained_symbols) || ['WOLF']).join(', ')) + '.</div>';
+      _dpNextNote(sym, null);
       _renderDpOverall(null, sym);
       await _renderDpLive(sym, null);
       return;
@@ -2355,6 +2395,7 @@ async function loadTodayPredictionPanel(is433Refresh){
     var last = split.lastResolved;
     var recentResolved = resolved.slice(-5);
     tableWrap.innerHTML = _renderDpTable(sym, g.days, next, recentResolved);
+    _dpNextNote(sym, next);
     _renderDpOverall(last, sym);
     var priorClose = (last && last.actual && last.actual.close) ? last.actual.close : null;
     await _renderDpLive(sym, priorClose);
