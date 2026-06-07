@@ -4524,6 +4524,16 @@ def v3_train_last():
             out["passed"] = out["passed"].lower() == "true"
         if "force" in out:
             out["force"] = out["force"].lower() == "true"
+        try:
+            import json as _json
+            with db_conn() as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT val FROM ghost_state WHERE key='last_train_details'")
+                row = cur.fetchone()
+            if row and row[0]:
+                out["train_details"] = _json.loads(row[0])
+        except Exception:
+            pass
         return {"ok": True, "last": out or None}
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)

@@ -48,6 +48,46 @@ def _backtest_window() -> int:
     return max(20, int(os.getenv("V3_BACKTEST_WINDOW", "120")))
 
 
+def _effective_backtest_window(n_bars: int) -> int:
+    """Shrink the feature window when history is thin so labeling still produces rows."""
+    margin = V3_LABEL_HOLD_BARS + 1
+    min_rows = _min_train_rows()
+    cap = max(20, int(n_bars) - margin - min_rows)
+    return min(_backtest_window(), cap)
+
+
+def _v3_ohlcv_period() -> str:
+    """Default OHLCV lookback for training backtests (2y gives more labeled samples)."""
+    return (os.getenv("V3_OHLCV_PERIOD", "2y") or "2y").strip()
+
+
+def _v3_ohlcv_fetch_retries() -> int:
+    return max(1, int(os.getenv("V3_OHLCV_FETCH_RETRIES", "3")))
+
+
+def _v3_train_symbol_delay_sec() -> float:
+    """Pause between symbols during batch train to avoid Alpaca rate-limit empty responses."""
+    return max(0.0, float(os.getenv("V3_TRAIN_SYMBOL_DELAY_SEC", "0.35")))
+
+
+def _v3_watchlist_peer_pool_enabled() -> bool:
+    return (os.getenv("V3_WATCHLIST_PEER_POOL", "on") or "on").strip().lower() not in (
+        "0", "off", "false", "no",
+    )
+
+
+def _v3_watchlist_peer_pool_max() -> int:
+    return max(0, int(os.getenv("V3_WATCHLIST_PEER_POOL_MAX", "12")))
+
+
+_OHLCV_CACHE: dict = {}
+
+
+def clear_ohlcv_cache() -> None:
+    """Drop in-memory OHLCV cache (call at start of each batch train)."""
+    global _OHLCV_CACHE
+    _OHLCV_CACHE = {}
+
 MODEL_DB_KEY = "ghost_v3_model_pkl"
 FEATURES_DB_KEY = "ghost_v3_features_json"
 
@@ -755,7 +795,7 @@ def _fetch_sector_series(period='1y'):
         return []
 
 
-def _fetch_ohlcv(symbol, asset_type, period='1y', interval='1d'):
+def _fetch_ohlcv_once(symbol, asset_type, period='1y', interval='1d'):
     """Fetch daily OHLCV bars from Alpaca.
 
     PR #14 diag: emits "_fetch_ohlcv ENTERED" at the top so we can confirm
@@ -839,6 +879,29 @@ def _fetch_ohlcv(symbol, asset_type, period='1y', interval='1d'):
     if rows:
         LOGGER.info(f"Daily {symbol}: {len(rows)} bars (feed={feed_used}, lookback={lookback_days}d)")
         return rows
+    return None
+
+
+def _fetch_ohlcv(symbol, asset_type, period=None, interval='1d'):
+    """Fetch daily OHLCV with in-run cache + retries on empty responses."""
+    period = period or _v3_ohlcv_period()
+    sym = (symbol or "").upper()
+    atype = (asset_type or "stock").strip().lower()
+    cache_key = (sym, atype, period)
+    if cache_key in _OHLCV_CACHE:
+        return _OHLCV_CACHE[cache_key]
+    retries = _v3_ohlcv_fetch_retries()
+    for attempt in range(retries):
+        rows = _fetch_ohlcv_once(symbol, asset_type, period, interval)
+        if rows:
+            _OHLCV_CACHE[cache_key] = rows
+            return rows
+        if attempt + 1 < retries:
+            delay = 0.5 * (2 ** attempt)
+            LOGGER.info(
+                f"_fetch_ohlcv {sym}: empty on attempt {attempt + 1}/{retries}, retry in {delay:.1f}s"
+            )
+            time.sleep(delay)
     return None
 
 
@@ -1058,7 +1121,7 @@ def backtest_symbol(symbol, asset_type):
         return []
     vol_pct = base_vol_pct(symbol, asset_type)
     labeled = []
-    window = _backtest_window()
+    window = _effective_backtest_window(len(rows))
     margin = V3_LABEL_HOLD_BARS + 1
     # W3: align a sector series to these bars once, then read it point-in-time
     # per bar below. Only computed when the feature is enabled.
@@ -1230,6 +1293,21 @@ def _collect_peer_rows(target_symbol):
     """
     target = (target_symbol or "").upper()
     peers = [p for p in _v3_peer_symbols() if p != target]
+    if _v3_watchlist_peer_pool_enabled():
+        try:
+            from config.symbols import watchlist_symbol_pairs
+            cap = _v3_watchlist_peer_pool_max()
+            added = 0
+            for sym, _atype in watchlist_symbol_pairs(include_portfolio=False):
+                sym = (sym or "").upper()
+                if not sym or sym == target or sym in peers:
+                    continue
+                peers.append(sym)
+                added += 1
+                if cap and added >= cap:
+                    break
+        except Exception as e:
+            LOGGER.info(f"pool: watchlist peers skipped ({str(e)[:80]})")
     pooled, used = [], []
     min_rows = _min_train_rows()
     for p in peers:
@@ -1256,12 +1334,19 @@ def train_and_validate(symbols_and_types):
         LOGGER.error("Missing dep: "+str(e)); return None, 0.0, False
     total_passed = 0
     details: list = []
-    for symbol, asset_type in symbols_and_types:
+    clear_ohlcv_cache()
+    symbol_delay = _v3_train_symbol_delay_sec()
+    for idx, (symbol, asset_type) in enumerate(symbols_and_types):
         symbol_detail = {"symbol": symbol, "asset_type": asset_type}
         try:
             rows = backtest_symbol(symbol, asset_type)
             n_samples = len(rows) if rows else 0
             min_rows = _min_train_rows()
+            if not rows or n_samples < min_rows:
+                LOGGER.info(f"RETRAIN [{symbol}]: first pass n={n_samples}, retrying after backoff")
+                time.sleep(2.0)
+                rows = backtest_symbol(symbol, asset_type)
+                n_samples = len(rows) if rows else 0
             if not rows or n_samples < min_rows:
                 fail_msg = f"n_samples<{min_rows} ({n_samples})"
                 LOGGER.info(
@@ -1431,6 +1516,8 @@ def train_and_validate(symbols_and_types):
                 "stage": "exception",
             })
             details.append(symbol_detail)
+        if symbol_delay > 0 and idx + 1 < len(symbols_and_types):
+            time.sleep(symbol_delay)
     LOGGER.info(f"v3.2 training: {total_passed}/{len(symbols_and_types)} passed")
     _persist_train_details(details)
     return None, total_passed / max(len(symbols_and_types), 1), total_passed > 0

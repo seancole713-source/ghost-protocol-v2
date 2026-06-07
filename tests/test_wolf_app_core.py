@@ -852,6 +852,40 @@ def test_fetch_ohlcv_period_plumbed_into_start_date(monkeypatch):
     assert 728 <= two_y <= 732, f"2y should be ~730 days, got {two_y}"
 
 
+def test_fetch_ohlcv_retries_after_empty_response(monkeypatch):
+    """Transient empty Alpaca responses should retry before giving up."""
+    import core.signal_engine as _se
+    monkeypatch.setenv("ALPACA_KEY_ID", "k")
+    monkeypatch.setenv("ALPACA_SECRET_KEY", "s")
+    monkeypatch.setenv("V3_OHLCV_FETCH_RETRIES", "2")
+    _se.clear_ohlcv_cache()
+    calls = {"n": 0}
+    bars = [{"t": "2026-01-02T00:00:00Z", "o": 1, "h": 1, "l": 1, "c": 1, "v": 1}]
+
+    def fake_get(url, headers=None, timeout=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _MockBarsResponse(200, [])
+        if "feed=sip" in url:
+            return _MockBarsResponse(200, bars)
+        return _MockBarsResponse(200, [])
+
+    monkeypatch.setattr("requests.get", fake_get)
+    monkeypatch.setattr(_se.time, "sleep", lambda _s: None)
+    rows = _se._fetch_ohlcv("WOLF", "stock", period="1y")
+    assert rows is not None
+    assert len(rows) == 1
+    assert calls["n"] >= 2
+
+
+def test_effective_backtest_window_shrinks_for_thin_history(monkeypatch):
+    import core.signal_engine as _se
+    monkeypatch.delenv("V3_BACKTEST_WINDOW", raising=False)
+    monkeypatch.delenv("MIN_TRAIN_ROWS", raising=False)
+    assert _se._effective_backtest_window(130) == 106
+    assert _se._effective_backtest_window(500) == 120
+
+
 # ── Training thresholds — env tunables ──────────────────────────────────
 
 def test_min_train_rows_default_and_env_override(monkeypatch):
