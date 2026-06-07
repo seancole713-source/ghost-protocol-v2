@@ -81,6 +81,8 @@ def test_api_cockpit_context_route_success(monkeypatch):
     assert body["stats"]["total"] == 10
     assert body["v3"]["models"] == 3
     assert body["activity"]["open_predictions"] == 1
+    assert body["deploy"]["git_sha_short"]
+    assert body["deploy"]["_pr_version"] == wolf_app._RUNNING_PR_VERSION
 
 
 def test_api_cockpit_context_route_error(monkeypatch):

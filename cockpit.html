@@ -344,6 +344,11 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
 /* Live auto-refresh indicator (roadmap #3c) */
 .auto-status{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:700;letter-spacing:.5px;color:#86efac;background:#0a2a14;border:1px solid #14532d;border-radius:14px;padding:4px 10px;margin-right:8px;white-space:nowrap;vertical-align:middle}
 .auto-status.paused{color:#facc15;background:#1a1a06;border-color:#5b4112}
+.deploy-badge{font-size:10px;font-weight:700;letter-spacing:.4px;color:#94a3b8;background:#111827;border:1px solid #334155;border-radius:999px;padding:3px 9px;margin-right:8px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.deploy-badge.unset{color:#64748b;border-color:#475569}
+.engine-badge{display:inline-block;font-size:10px;font-weight:700;letter-spacing:.3px;border-radius:999px;padding:3px 10px;margin-top:8px}
+.engine-badge.live{color:#86efac;background:#0a2a14;border:1px solid #14532d}
+.engine-badge.paused{color:#facc15;background:#1a1a06;border:1px solid #5b4112}
 .auto-dot{width:7px;height:7px;border-radius:50%;background:#22c55e;animation:autopulse 2s ease-in-out infinite}
 .auto-status.paused .auto-dot{background:#facc15;animation:none}
 @keyframes autopulse{0%,100%{opacity:1}50%{opacity:.35}}
@@ -437,6 +442,7 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
 <div class="topbar">
   <div class="logo">&#128123; GHOST <span>PROTOCOL</span></div>
   <div class="top-right">
+    <span class="deploy-badge" id="deploy-badge" title="Running deploy">deploy …</span>
     <span class="mkt-badge" id="mkt-badge">—</span>
     <span id="clock"></span>
   </div>
@@ -479,6 +485,7 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
         <div class="hero-price" id="hero-price">—</div>
         <div class="hero-change" id="hero-change">—</div>
         <div class="hero-ah" id="hero-ah"></div>
+        <div id="engine-badge" class="engine-badge live" style="display:none"></div>
       </div>
       <div class="hero-right">
         <span class="auto-status" id="auto-status" title="Cockpit auto-refreshes; pauses when the tab is hidden"><span class="auto-dot"></span>Auto</span>
@@ -2361,13 +2368,49 @@ async function _loadCoreContext(){
       dir: ctx.direction || {},
       v3: ctx.v3 || {trained:false},
       activity: ctx.activity || null,
+      deploy: ctx.deploy || null,
     };
   }
   var h = await _fetchJson('/health');
   var stats = await _fetchJson('/api/stats');
   var dir = await _fetchJson('/api/stats/direction', {});
   var v3 = await _fetchJson('/api/v3/status', {trained:false});
-  return {h: h, stats: stats, dir: dir, v3: v3, activity: null};
+  return {h: h, stats: stats, dir: dir, v3: v3, activity: null, deploy: null};
+}
+
+function _renderDeployBadge(deploy){
+  var el = document.getElementById('deploy-badge');
+  if(!el) return;
+  if(!deploy || !deploy.git_sha || deploy.git_sha === 'unset'){
+    el.className = 'deploy-badge unset';
+    el.textContent = 'deploy unset';
+    el.title = 'Set RAILWAY_GIT_COMMIT_SHA on deploy · check /version';
+    return;
+  }
+  el.className = 'deploy-badge';
+  var short = deploy.git_sha_short || deploy.git_sha.slice(0, 7);
+  el.textContent = 'deploy ' + short;
+  el.title = 'git ' + deploy.git_sha
+    + (deploy.deploy_id && deploy.deploy_id !== 'unset' ? '\ndeploy ' + deploy.deploy_id : '')
+    + (deploy.app_version ? '\nv' + deploy.app_version : '');
+}
+
+function _renderEngineBadge(v3){
+  var el = document.getElementById('engine-badge');
+  if(!el) return;
+  var eng = v3 && v3.system && v3.system.engine;
+  if(!eng){ el.style.display = 'none'; return; }
+  el.style.display = 'inline-block';
+  window._liveEngineState = eng;
+  if(eng.paused){
+    el.className = 'engine-badge paused';
+    el.textContent = 'Engine paused now · ' + (eng.pause_reason || 'cooldown');
+  } else {
+    el.className = 'engine-badge live';
+    var lc = eng.last_cycle || {};
+    el.textContent = 'Engine live now · ' + (lc.scanned || 0) + ' symbols scanned · '
+      + (lc.saved != null ? lc.saved : 0) + ' saved';
+  }
 }
 
 function _deferBelowFold(fn){
@@ -2430,6 +2473,8 @@ async function load(){
     var ghostScore = core[0], price = core[1], picks = core[2];
     var watching = _computeWatching(h, ghostScore);
 
+    _renderDeployBadge(ctxPack.deploy);
+    _renderEngineBadge(ctxPack.v3);
     renderGhostScore(ghostScore, watching);
     renderHero(price, watching);
     renderPlay(picks, watching);
@@ -2608,8 +2653,15 @@ async function loadSignalHistory(){
     var hist = g.history || [];
     if(!hist.length){ listEl.innerHTML = '<div class="empty"><div class="ico">&#9203;</div>No scans recorded yet — the recorder logs one row per cycle.</div>'; return; }
     var cn = g.closest_near_miss;
+    var liveEng = window._liveEngineState;
+    var liveNote = liveEng
+      ? (liveEng.paused
+        ? ' <span class="neg">Current engine: paused (' + escHtml(liveEng.pause_reason || 'cooldown') + ').</span>'
+        : ' <span class="pos">Current engine: live.</span> History rows marked “was paused” are past cycles only.')
+      : '';
     sumEl.innerHTML = '<b>' + (g.fired_count || 0) + '</b> of <b>' + g.count + '</b> recent scans crossed the floor'
-      + (cn && cn.up_prob != null ? ' &middot; closest: p=' + cn.up_prob + (cn.prob_gap != null ? ' (' + (cn.prob_gap >= 0 ? '+' : '') + cn.prob_gap + ')' : '') : '');
+      + (cn && cn.up_prob != null ? ' &middot; closest: p=' + cn.up_prob + (cn.prob_gap != null ? ' (' + (cn.prob_gap >= 0 ? '+' : '') + cn.prob_gap + ')' : '') : '')
+      + liveNote;
     function near(nm){
       if(!nm || nm.up_prob == null) return '—';
       var s = 'p=' + nm.up_prob + (nm.min_win_proba != null ? '/' + nm.min_win_proba : '');
@@ -2620,7 +2672,7 @@ async function loadSignalHistory(){
       var bind = h.binding_skip || h.top_skip;
       var crossed = h.would_fire
         ? '<span class="pos">&#10003; crossed</span>'
-        : (h.paused ? '<span class="neg">&#9209; paused</span>' : '<span style="color:#888">&#x23F3; no</span>');
+        : (h.paused ? '<span class="neg" title="That cycle only — not current engine state">&#9209; was paused</span>' : '<span style="color:#888">&#x23F3; no</span>');
       var gateCell = bind ? '<code>' + escHtml(bind) + '</code>' : '—';
       if(h.paused && h.pause_reason){
         gateCell += '<div style="font-size:10px;color:#888;margin-top:2px">' + escHtml(h.pause_reason) + '</div>';
@@ -2636,7 +2688,7 @@ async function loadSignalHistory(){
         + '<td>' + near(h.near_miss) + '</td>'
         + '</tr>';
     }).join('');
-    listEl.innerHTML = '<table class="tbl"><thead><tr><th>When</th><th>Floor</th><th>Cand/Saved</th><th>Binding gate</th><th>How close</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    listEl.innerHTML = '<table class="tbl"><thead><tr><th>When</th><th>Outcome</th><th>Cand/Saved</th><th>Binding gate</th><th>How close</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }catch(e){ listEl.innerHTML = '<div class="empty">Signal history error.</div>'; }
 }
 

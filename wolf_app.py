@@ -4125,6 +4125,7 @@ def cockpit_context():
             "regime": regime,
             "v3": v3,
             "activity": activity,
+            "deploy": _deploy_meta(),
         }
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)[:120]}, status_code=500)
@@ -4243,6 +4244,20 @@ def v3_train(x_cron_secret: str = Header(default=""), force: bool = False):
 _RUNNING_PR_VERSION = 50
 
 
+def _deploy_meta() -> dict:
+    """Railway-injected deploy metadata for cockpit/admin verification."""
+    sha = os.getenv("RAILWAY_GIT_COMMIT_SHA", "unset")
+    short = sha[:7] if sha and sha != "unset" else "unset"
+    return {
+        "git_sha": sha,
+        "git_sha_short": short,
+        "deploy_id": os.getenv("RAILWAY_DEPLOYMENT_ID", "unset"),
+        "deploy_version_env": os.getenv("DEPLOY_VERSION", "unset"),
+        "app_version": APP_VERSION,
+        "_pr_version": _RUNNING_PR_VERSION,
+    }
+
+
 @APP.get("/api/_version")
 def deploy_version():
     """Return the running code version + Railway-injected git/deploy IDs.
@@ -4253,11 +4268,6 @@ def deploy_version():
     """
     return {
         "ok": True,
-        "app_version": APP_VERSION,
-        "_pr_version": _RUNNING_PR_VERSION,
-        "git_sha": os.getenv("RAILWAY_GIT_COMMIT_SHA", "unset"),
-        "deploy_id": os.getenv("RAILWAY_DEPLOYMENT_ID", "unset"),
-        "deploy_version_env": os.getenv("DEPLOY_VERSION", "unset"),
         "ts": int(time.time()),
         "endpoints_present": {
             "v3_train_force_param": True,    # PR #18
@@ -4266,6 +4276,7 @@ def deploy_version():
             "diag_data_sources": True,        # PR #17
             "wolf_signal_alert_check": True,  # PR #8
         },
+        **_deploy_meta(),
     }
 
 

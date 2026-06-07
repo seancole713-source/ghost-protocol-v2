@@ -59,7 +59,10 @@ body{background:radial-gradient(1100px 520px at 50% -8%,#1a0f14 0%,#0a0a0a 58%) 
 
 <div class="topbar">
   <div class="logo">&#128123; GHOST <span>ADMIN</span></div>
-  <span class="badge-admin">PR23 OPERATOR CONSOLE</span>
+  <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+    <span id="admin-deploy" class="kv" style="margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;color:#888">deploy …</span>
+    <span class="badge-admin">PR23 OPERATOR CONSOLE</span>
+  </div>
 </div>
 
 <div class="main">
@@ -333,6 +336,7 @@ async function checkVersion(){
   r.innerHTML='<span class="warn">&#x21BB; Checking /api/_version...</span>';
   try{
     var v=await fetch('/api/_version').then(function(x){return x.json()});
+    renderDeployMeta(v);
     var rows=[
       ['_pr_version',v._pr_version!=null?('PR #'+v._pr_version):'<span class="fail">missing</span>'],
       ['git_sha',escHtml(v.git_sha||'—')],
@@ -341,6 +345,23 @@ async function checkVersion(){
     ];
     r.innerHTML='<div class="kv">'+rows.map(function(rr){return '<div><b>'+rr[0]+'</b>: '+rr[1]+'</div>'}).join('')+'</div>';
   }catch(e){r.innerHTML='<span class="fail">&#10007;</span> '+escHtml(String(e))}
+}
+
+function renderDeployMeta(v){
+  var el=document.getElementById('admin-deploy');
+  if(!el||!v)return;
+  var short=(v.git_sha_short||(v.git_sha&&v.git_sha!=='unset'?v.git_sha.slice(0,7):'unset'));
+  el.innerHTML='deploy <b style="color:#cbd5e1">'+escHtml(short)+'</b>'
+    +(v.deploy_id&&v.deploy_id!=='unset'?' · '+escHtml(String(v.deploy_id).slice(0,8))+'…':'')
+    +' · <a href="/version" style="color:#fbbf24" target="_blank" rel="noopener">/version</a>';
+  el.title='git '+String(v.git_sha||'unset')+'\ndeploy '+String(v.deploy_id||'unset');
+}
+
+async function loadDeployMeta(){
+  try{
+    var v=await fetch('/api/_version').then(function(x){return x.json()});
+    renderDeployMeta(v);
+  }catch(e){}
 }
 
 async function purgeNonWolf(){
@@ -805,6 +826,7 @@ async function loadAuditLog(){
 }
 
 loadEngineQuality();
+loadDeployMeta();
 loadGateStatus();
 loadGateHistory();
 loadKillStatus();
