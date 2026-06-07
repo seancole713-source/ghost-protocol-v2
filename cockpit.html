@@ -2279,9 +2279,12 @@ async function loadTodayPredictionPanel(is433Refresh){
     var p = _chicagoNowParts();
     var stamp = (p.hour || '00') + ':' + (p.minute || '00') + ' CT';
     if(metaEl){
+      var staleNote = g.data_stale
+        ? ' · Last trade ' + (g.last_bar_date || '—') + ' (' + (g.last_bar_age_days != null ? g.last_bar_age_days + 'd ago' : 'stale') + ')'
+        : '';
       metaEl.textContent = is433Refresh
-        ? 'Updated at 4:33 PM CT · ' + stamp
-        : 'Predict row = next session · Market row = last completed session · ' + stamp;
+        ? 'Updated at 4:33 PM CT · ' + stamp + staleNote
+        : 'Predict row = next session · Market row = last completed session · ' + stamp + staleNote;
     }
   }catch(e){
     tableWrap.innerHTML = '<div class="dp-empty">Daily prediction panel error.</div>';
@@ -2348,12 +2351,24 @@ async function loadDailyForecastScorecard(){
       if(wrap) wrap.innerHTML = '<div class="df-empty-state"><b>' + escHtml(sym) + ' — model required</b>Train this symbol in /admin to unlock open, peak, and close forecasts.</div>';
       return;
     }
+    if(g.reason === 'insufficient_bars'){
+      sumEl.innerHTML = '<b style="color:#fbbf24">' + escHtml(sym) + '</b> has a model but price history is too thin for forecasts'
+        + (g.bar_count != null ? ' (' + g.bar_count + ' bars)' : '') + '.';
+      _renderDfCharts([]);
+      _applyDfViewMode();
+      if(wrap) wrap.innerHTML = '<div class="df-empty-state"><b>' + escHtml(sym) + ' — insufficient history</b>Not enough OHLCV bars to score daily open/peak/close.</div>';
+      return;
+    }
     var sm = g.summary || {};
+    var staleTag = g.data_stale
+      ? ' · <span style="color:#fbbf24">last trade ' + escHtml(g.last_bar_date || '—') + '</span>'
+      : '';
     sumEl.innerHTML = '<span style="color:#e2e8f0;font-weight:800">' + escHtml(sym) + '</span> · '
       + (sm.scored_days || 0) + ' scored sessions'
       + (sm.avg_overall_pct != null ? ' · avg <span class="' + _dfScoreClass(sm.avg_overall_pct) + '">' + sm.avg_overall_pct + '%</span> closeness' : '')
       + (sm.direction_hit_rate_pct != null ? ' · direction ' + sm.direction_hit_rate_pct + '%' : '')
-      + (sm.model_accuracy_holdout_pct != null ? ' · holdout ' + sm.model_accuracy_holdout_pct + '%' : '');
+      + (sm.model_accuracy_holdout_pct != null ? ' · holdout ' + sm.model_accuracy_holdout_pct + '%' : '')
+      + staleTag;
     var days = g.days || [];
     _dfLastDays = days;
     _applyDfViewMode();

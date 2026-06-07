@@ -45,6 +45,38 @@ def test_next_trading_date_skips_weekend():
     assert next_trading_date_after("2026-06-04") == "2026-06-05"  # Thu -> Fri
 
 
+def test_scorecard_fetch_falls_back_to_longer_period(monkeypatch):
+    from core import daily_forecast_scorecard as dfs
+
+    calls = []
+
+    def fake_fetch(symbol, asset_type, period="2y"):
+        calls.append(period)
+        if period == "3mo":
+            return [{"ts": "2026-01-01T00:00:00Z", "close": 1.0}] * 10
+        if period in ("2y", "1y"):
+            return [{"ts": f"2025-05-{i:02d}T00:00:00Z", "open": 1, "high": 2, "low": 0.5, "close": 1.5}
+                    for i in range(1, 40)]
+        return None
+
+    monkeypatch.setattr("core.signal_engine._fetch_ohlcv", fake_fetch)
+    monkeypatch.setenv("V3_SCORECARD_OHLCV_PERIOD", "3mo")
+    rows, period = dfs._fetch_scorecard_rows("RDFN", "stock")
+    assert rows is not None
+    assert len(rows) >= 30
+    assert period in ("2y", "1y")
+    assert "3mo" in calls
+
+
+def test_last_bar_age_days():
+    from core.daily_forecast_scorecard import _last_bar_age_days
+
+    rows = [{"ts": "2025-06-01T00:00:00Z", "close": 1.0}]
+    age = _last_bar_age_days(rows)
+    assert age is not None
+    assert age > 30
+
+
 def test_forecast_includes_close():
     out = forecast_ohlc_from_prob(100.0, 0.72, "WOLF", "stock")
     assert "close" in out

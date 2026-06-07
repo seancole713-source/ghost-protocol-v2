@@ -6,8 +6,9 @@ day's open / high / low, compared to realized OHLC once the session completes.
 from __future__ import annotations
 
 import logging
+import os
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from core.vol_targets import base_vol_pct, stop_pct_from_vol
 
@@ -110,9 +111,57 @@ def _up_prob_at_bar(rows: List[dict], bar_idx: int, model, feature_cols: List[st
     return float(proba[1])
 
 
+def _scorecard_min_bars() -> int:
+    return max(30, int(os.getenv("V3_SCORECARD_MIN_BARS", "30")))
+
+
+def _scorecard_ohlcv_periods() -> List[str]:
+    """Periods to try, longest first — delisted names need history beyond 3mo."""
+    out: List[str] = []
+    primary = (os.getenv("V3_SCORECARD_OHLCV_PERIOD", "") or "").strip()
+    if primary:
+        out.append(primary)
+    try:
+        from core.signal_engine import _v3_ohlcv_period
+        default = _v3_ohlcv_period()
+    except Exception:
+        default = "2y"
+    for p in (default, "2y", "1y", "6m", "3mo"):
+        if p and p not in out:
+            out.append(p)
+    return out or ["2y"]
+
+
+def _fetch_scorecard_rows(symbol: str, asset_type: str) -> Tuple[Optional[List[dict]], Optional[str]]:
+    from core.signal_engine import _fetch_ohlcv
+
+    min_bars = _scorecard_min_bars()
+    last_rows = None
+    last_period = None
+    for period in _scorecard_ohlcv_periods():
+        rows = _fetch_ohlcv(symbol, asset_type, period=period)
+        last_rows, last_period = rows, period
+        if rows and len(rows) >= min_bars:
+            return rows, period
+    return last_rows, last_period
+
+
+def _last_bar_age_days(rows: List[dict]) -> Optional[int]:
+    if not rows:
+        return None
+    last_ts = _parse_bar_date(str(rows[-1].get("ts", "")))
+    if not last_ts:
+        return None
+    try:
+        last_d = date.fromisoformat(last_ts)
+    except ValueError:
+        return None
+    return (datetime.now(timezone.utc).date() - last_d).days
+
+
 def build_daily_scorecard(symbol: str, days: int = 14, asset_type: str = "stock") -> Dict[str, Any]:
     """Build forecast-vs-actual rows for the last `days` completed sessions (+ live next)."""
-    from core.signal_engine import _fetch_ohlcv, load_model, _active_feature_cols
+    from core.signal_engine import load_model, _active_feature_cols
 
     sym = (symbol or "WOLF").strip().upper()
     days = max(3, min(int(days or 14), 60))
@@ -127,16 +176,22 @@ def build_daily_scorecard(symbol: str, days: int = 14, asset_type: str = "stock"
             "summary": {},
         }
 
-    rows = _fetch_ohlcv(sym, asset_type, period="3mo")
-    if not rows or len(rows) < 35:
+    rows, period_used = _fetch_scorecard_rows(sym, asset_type)
+    min_bars = _scorecard_min_bars()
+    if not rows or len(rows) < min_bars:
         return {
             "ok": True,
             "symbol": sym,
             "has_model": True,
             "reason": "insufficient_bars",
+            "ohlcv_period": period_used,
+            "bar_count": len(rows) if rows else 0,
             "days": [],
             "summary": {},
         }
+
+    last_bar_age_days = _last_bar_age_days(rows)
+    data_stale = last_bar_age_days is not None and last_bar_age_days > 10
 
     # Completed sessions only for scoring; last bar may be in-progress.
     completed_end = len(rows) - 1
@@ -212,6 +267,11 @@ def build_daily_scorecard(symbol: str, days: int = 14, asset_type: str = "stock"
         "summary": summary,
         "generated_at": int(datetime.now(timezone.utc).timestamp()),
         "next_session_forecast": live_row,
+        "ohlcv_period": period_used,
+        "bar_count": len(rows),
+        "last_bar_date": _parse_bar_date(str(rows[-1].get("ts", ""))) if rows else None,
+        "last_bar_age_days": last_bar_age_days,
+        "data_stale": data_stale,
     }
 
 
