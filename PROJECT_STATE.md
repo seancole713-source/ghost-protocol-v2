@@ -1,5 +1,5 @@
 # Ghost Protocol v2 — PROJECT STATE
-**Last updated:** 2026-05-23
+**Last updated:** 2026-06-07
 **Read this first.** Any agent picking up this project must read this file before touching any code.
 
 > This file was significantly stale (pre-v3.2) until 2026-05-23. It now reflects
@@ -62,6 +62,9 @@ is done by the user. Agents must not claim prod-verified without user confirmati
 - `OBJECTIVE_MODE=aggressive`
 - `OBJECTIVE_AUTO_MODE_ENABLED=0` (env wins; runtime auto-mode override disabled)
 - `MIN_ALERT_CONFIDENCE=0.75`
+- `STOCK_SYMBOLS` = full 44-symbol official watchlist (was stale `TSLA,META,AMZN,T`)
+- **v3 training gates (relaxed for coverage):** `V3_MIN_HOLDOUT_ACC=0.38`, `V3_MIN_WF_ACC_MEAN=0.40`, `V3_MIN_EDGE=0.0`, `V3_WF_ACC_MIN_SLACK=0.15`, `V3_MIN_TP_SL_WINS=10`, `V3_MIN_WF_FOLDS=2`
+- **Model coverage (2026-06-07):** **44/44** watchlist symbols have trained v3 models
 
 ---
 
@@ -178,8 +181,10 @@ HTTP Basic.
 ## COCKPIT UI
 
 - **Investor cockpit:** `cockpit.html` at `GET /cockpit`. Modules incl. hero,
-  perf strip, prediction chart, stats, earnings, analyst, news, short interest,
-  catalysts, portfolio, **Pick Journal (blueprint module 7)** (PR #30), Truth Mode.
+  perf strip, **Daily Prediction Panel** (next session + last session rows),
+  **Forecast vs Reality scorecard** (full watchlist chips),
+  stats, earnings, analyst, news, portfolio (**Ask Ghost / WOLF play / chart below portfolio**),
+  **Pick Journal**, **Signal History**, **Performance Log**, Truth Mode.
 - **Operator console:** `admin.html` at `GET /admin` (cookie-gated).
 - Cockpit JS uses v2 field names: `outcome` (not status), `stop_price` (not
   stop_loss), `expires_at` (unix). Calculate gain as `(target-entry)/entry*100`.
@@ -266,3 +271,8 @@ ALL of: `Procfile` boot-echo string, `nixpacks.toml` `cache_bust` comment, and t
 | #28 | 05-23 | `/admin` cookie login (replaces blank-page HTTP Basic Auth) |
 | #29 | 05-23 | per-cycle gate-outcome recorder + history endpoint + admin table |
 | **#30** | 05-23 | **pick journal — credibility ledger (audit trail + expectancy/Brier + kill condition)** |
+| — | 06-07 | **performance log** — `ghost_perf_*` tables + `/api/wolf/performance-log/*` + cockpit panel |
+| — | 06-07 | **Daily Prediction Panel** — next-session O/H/C forecast tiles + market row; 4:33 PM CT refresh |
+| — | 06-07 | **Cockpit layout** — Ask Ghost, WOLF play, Prediction vs Reality moved **below** My Portfolio |
+| — | 06-07 | **Training reliability** — OHLCV retry/cache/2y history; watchlist peer pool; thin-ticker WF floors → **44/44 models** |
+| — | 06-07 | **RDFN scorecard fix** — daily forecast falls back to 2y history; marks delisted/stale last-trade dates |

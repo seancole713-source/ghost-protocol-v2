@@ -17,7 +17,7 @@ session logs are preserved at the bottom as accountability history.
 """
 
 # ============================================================
-# LIVE SYSTEM — LAST VERIFIED 2026-05-23 (v3.2 engine + pick journal)
+# LIVE SYSTEM — LAST VERIFIED 2026-06-07 (44/44 models, daily forecast panel)
 # ============================================================
 
 PRODUCTION_URL = "https://ghost-protocol-v2-production.up.railway.app"
@@ -60,6 +60,12 @@ LIVE_ENV = {
     "OBJECTIVE_MODE": "aggressive",
     "OBJECTIVE_AUTO_MODE_ENABLED": "0",  # env wins; runtime auto-override disabled
     "MIN_ALERT_CONFIDENCE": "0.75",
+    "STOCK_SYMBOLS": "44-symbol official watchlist (fixed 2026-06-07)",
+    "MODEL_COVERAGE": "44/44 trained (2026-06-07)",
+    "V3_MIN_HOLDOUT_ACC": "0.38",
+    "V3_MIN_WF_ACC_MEAN": "0.40",
+    "V3_MIN_EDGE": "0.0",
+    "V3_WF_ACC_MIN_SLACK": "0.15",
 }
 
 # ============================================================
@@ -242,6 +248,34 @@ FAILURES = """
 # ============================================================
 
 SESSION_LOG = """
+--- 2026-06-07 | Full watchlist coverage + daily forecast panel + training reliability ---
+Context: operator wanted all 44 watchlist symbols trained, cockpit panel reorder, and
+daily prediction UI. Root training failure was batch OHLCV fetch returning empty under
+Alpaca rate limits (14 symbols showed n_samples=0 despite 126+ samples on retry).
+
+Shipped (commits c088b05 .. 8ba8143):
+  - Backend performance log (ghost_perf_cycles/symbol_evals/events) + cockpit panel
+  - Daily Prediction Panel (next session predict row + last session market row)
+  - Cockpit: Ask Ghost, WOLF play, Prediction vs Reality moved below My Portfolio
+  - Training: OHLCV retry/cache/2y default, inter-symbol delay, watchlist peer pool,
+    adaptive WF floors for thin tickers (STUB), relaxed Railway gates
+  - Fixed Railway STOCK_SYMBOLS (was TSLA,META,AMZN,T -> official 44 list)
+  - RDFN daily forecast: scorecard no longer hardcodes 3mo; uses 2y fallback + stale flag
+    (RDFN delisted ~2025-06-30 after Rocket acquisition)
+
+Prod verified 2026-06-07 (user/agent):
+  - /api/v3/status: models 44/44, watchlist_missing_models []
+  - /api/_version git_sha_short 8ba8143
+  - /api/wolf/daily-forecast-scorecard?symbol=RDFN: 16 days, data_stale=true,
+    last_bar_date 2025-06-30
+  - Use POST /api/v3/train?force=true (async) for full retrains; /api/v3/train/sync
+    502s on Railway proxy timeout
+
+Open / deferred:
+  - News manual import: already live at /admin; wait on bulk use — Finnhub auto-cycle OK
+  - Relaxed V3 gates trade quality for coverage on edge-case symbols; monitor pick journal
+  - RDFN and other delisted names: forecasts show stale last-trade data only
+
 --- 2026-05-23 | v3.2 era: engine trained -> investor cleanup -> admin -> ledger ---
 Context: continued the WOLF rebuild from a dead prediction engine (no trained v3
 model) through to a live, audit-ready credibility ledger. PRs #9-#30.
