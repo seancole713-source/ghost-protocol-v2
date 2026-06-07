@@ -1,6 +1,8 @@
 """Shared volatility targets for UP trades — must match live TP/SL in prediction.py.
 
-WOLF-only mode: VOL_MAP retains a single WOLF entry. Anything else uses default.
+Training labels (_simulate_up_tp_sl) and live reconcile (core.tp_sl_resolve) both
+derive target/stop from base_vol_pct + stop_pct_from_vol. Do not override live vol
+from DB without also changing the label generator.
 """
 from __future__ import annotations
 

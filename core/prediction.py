@@ -958,29 +958,11 @@ def _predict_symbol_ex(symbol, asset_type, regime, scores_out=None):
         return None, objective_skip
 
     now = int(time.time())
-    # Stocks: skip weekends — expire at next trading day close, not 48 calendar hours
-    import datetime as _dt, pytz as _tz
-    _ct = _tz.timezone("America/Chicago")
-    _now_dt = _dt.datetime.now(_ct)
-    _exp = _now_dt + _dt.timedelta(hours=48)
-    if _exp.weekday() == 5: _exp += _dt.timedelta(days=2)
-    elif _exp.weekday() == 6: _exp += _dt.timedelta(days=1)
-    _exp = _exp.replace(hour=16, minute=0, second=0, microsecond=0)
-    hold = int(_exp.timestamp()) - now
-    # Dynamic targets based on real observed volatility per symbol (see core.vol_targets)
+    # Align live hold with v3.2 training labels (N daily forward bars, not 48 calendar hours).
+    from core.tp_sl_resolve import expires_at_nth_trading_close, label_hold_bars
+    hold = expires_at_nth_trading_close(now, label_hold_bars()) - now
+    # Dynamic targets — same base_vol_pct as training labels (core.vol_targets).
     _vol_pct = base_vol_pct(symbol, asset_type)
-    # Also try DB — if 3+ real stop-loss hits, use those
-    try:
-        with db_conn() as _vc:
-            _vcur = _vc.cursor()
-            _vcur.execute(
-                "SELECT ABS(pnl_pct) FROM predictions WHERE symbol=%s AND outcome='LOSS' AND pnl_pct IS NOT NULL AND id >= 223438 ORDER BY resolved_at DESC LIMIT 10",
-                (symbol,))
-            _moves = [abs(r[0]) for r in _vcur.fetchall() if r[0] and r[0] > 0.5]
-            if len(_moves) >= 3:
-                avg_move = sum(_moves) / len(_moves)
-                _vol_pct = max(0.015, min(0.05, avg_move / 100 * 1.3))
-    except Exception: pass
     _stop_pct = stop_pct_from_vol(_vol_pct)  # ~1.5:1 reward:risk vs target move
     target = price * (1 + _vol_pct) if direction == "UP" else price * (1 - _vol_pct)
     stop   = price * (1 - _stop_pct) if direction == "UP" else price * (1 + _stop_pct)
@@ -1017,6 +999,11 @@ def _predict_symbol_ex(symbol, asset_type, regime, scores_out=None):
 
     # Build feature vector — stored in DB for future ML training
     now_dt = datetime.now(timezone.utc)
+    from core.feature_schema import FEATURE_ASOF_KEY, feature_asof_unix
+    v3_feats = score_vector.get("features") if isinstance(score_vector, dict) else {}
+    feature_asof = None
+    if isinstance(v3_feats, dict):
+        feature_asof = v3_feats.get(FEATURE_ASOF_KEY)
     features = {
         "hour_of_day":      now_dt.hour,
         "day_of_week":      now_dt.weekday(),
@@ -1024,6 +1011,7 @@ def _predict_symbol_ex(symbol, asset_type, regime, scores_out=None):
         "confidence_raw":   round(confidence_raw, 3),
         "sentiment_score":  round(sentiment_score, 3),
         "price_4h_pct":     price_4h_pct,
+        FEATURE_ASOF_KEY:   int(feature_asof if feature_asof is not None else feature_asof_unix(now)),
     }
 
     if confidence >= 0.90:   pos_pct = 5.0
@@ -1200,6 +1188,17 @@ def run_prediction_cycle(with_diag: bool = False):
                 )
                 pred_id = cur.fetchone()[0]
                 pick["id"] = pred_id
+                try:
+                    from core.feature_schema import FEATURE_ASOF_KEY, persist_feature_snapshot
+                    persist_feature_snapshot(
+                        cur,
+                        symbol=sym,
+                        feature_asof_ts=int(pick.get("features", {}).get(FEATURE_ASOF_KEY, now_ts)),
+                        payload={"scores": pick.get("scores"), "features": pick.get("features")},
+                        prediction_id=pred_id,
+                    )
+                except Exception as _fse:
+                    LOGGER.debug("feature snapshot persist skipped: %s", str(_fse)[:80])
                 saved.append(pick)
             except Exception as e:
                 import psycopg2
@@ -1501,45 +1500,62 @@ def get_objective_daily_report(days: int = 14) -> Dict[str, Any]:
 
 
 def reconcile_outcomes():
-    """Check open v2 predictions against live prices. Mark WIN/LOSS/EXPIRED."""
+    """Check open v2 predictions. Bar-path TP/SL first (v3.2 label parity), snapshot fallback."""
+    from core.tp_sl_resolve import label_hold_bars, resolve_open_prediction
+
     resolved = 0
     now = int(time.time())
+    hold_bars = label_hold_bars()
     with db_conn() as conn:
         cur = conn.cursor()
         cur.execute(
-            "SELECT id,symbol,direction,entry_price,target_price,stop_price,expires_at,asset_type FROM predictions WHERE outcome IS NULL AND predicted_at IS NOT NULL AND entry_price IS NOT NULL AND entry_price > 0 AND target_price IS NOT NULL AND stop_price IS NOT NULL"
+            "SELECT id,symbol,direction,entry_price,target_price,stop_price,expires_at,predicted_at,asset_type "
+            "FROM predictions WHERE outcome IS NULL AND predicted_at IS NOT NULL "
+            "AND entry_price IS NOT NULL AND entry_price > 0 "
+            "AND target_price IS NOT NULL AND stop_price IS NOT NULL"
         )
         open_preds = cur.fetchall()
-    for pred_id, symbol, direction, entry, target, stop, expires_at, asset_type in open_preds:
-        if None in (entry, target, stop): continue
+    for pred_id, symbol, direction, entry, target, stop, expires_at, predicted_at, asset_type in open_preds:
+        if None in (entry, target, stop):
+            continue
+        daily_bars = None
+        try:
+            from core.signal_engine import _fetch_ohlcv
+            daily_bars = _fetch_ohlcv(symbol, asset_type or "stock", period="3m")
+        except Exception as _fe:
+            LOGGER.debug("reconcile bar fetch %s: %s", symbol, str(_fe)[:80])
         price = get_price(symbol)
-        if not price: continue
-        outcome = None
-        if direction == "UP":
-            if price >= target: outcome = "WIN"
-            elif price <= stop: outcome = "LOSS"
-        else:
-            if price <= target: outcome = "WIN"
-            elif price >= stop: outcome = "LOSS"
-        if not outcome and expires_at and now > expires_at: outcome = "EXPIRED"
-        if outcome:
-            from core.pnl import resolution_exit
-            exit_price, pnl = resolution_exit(outcome, direction, entry, target, stop, price)
-            with db_conn() as conn:
-                cur = conn.cursor()
-                cur.execute(
-                    "UPDATE predictions SET outcome=%s,exit_price=%s,pnl_pct=%s,resolved_at=%s WHERE id=%s",
-                    (outcome, exit_price, pnl, now, pred_id))
-            resolved += 1
-            LOGGER.info("Resolved " + symbol + " " + direction + ": " + outcome + " " + str(round(pnl,2)) + "%")
-            # Watchdog: fire Telegram alert immediately when pick resolves
-            if outcome in ("WIN", "LOSS"):
-                try:
-                    from core.telegram import send_position_alert
-                    usd_out = round(100 * (1 + pnl/100), 2)
-                    send_position_alert(symbol, direction, outcome, entry, exit_price, pnl, usd_out)
-                except Exception as te:
-                    LOGGER.error("Watchdog alert failed: " + str(te))
+        outcome = resolve_open_prediction(
+            direction=direction,
+            target=float(target),
+            stop=float(stop),
+            predicted_at=int(predicted_at or 0),
+            hold_bars=hold_bars,
+            daily_bars=daily_bars,
+            snapshot_price=float(price) if price else None,
+            now=now,
+            expires_at=int(expires_at) if expires_at else None,
+        )
+        if not outcome:
+            continue
+        from core.pnl import resolution_exit
+        exit_price, pnl = resolution_exit(
+            outcome, direction, entry, target, stop, price if price else entry)
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE predictions SET outcome=%s,exit_price=%s,pnl_pct=%s,resolved_at=%s WHERE id=%s",
+                (outcome, exit_price, pnl, now, pred_id))
+        resolved += 1
+        LOGGER.info("Resolved " + symbol + " " + direction + ": " + outcome + " " + str(round(pnl,2)) + "%")
+        # Watchdog: fire Telegram alert immediately when pick resolves
+        if outcome in ("WIN", "LOSS"):
+            try:
+                from core.telegram import send_position_alert
+                usd_out = round(100 * (1 + pnl/100), 2)
+                send_position_alert(symbol, direction, outcome, entry, exit_price, pnl, usd_out)
+            except Exception as te:
+                LOGGER.error("Watchdog alert failed: " + str(te))
     if resolved:
         try:
             from core.risk_discipline import run_risk_discipline_cycle

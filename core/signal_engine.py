@@ -80,6 +80,32 @@ def _v3_wf_acc_min_slack() -> float:
     return float(os.getenv("V3_WF_ACC_MIN_SLACK", "0.05"))
 
 
+def _v3_split_train_frac() -> float:
+    return float(os.getenv("V3_SPLIT_TRAIN", "0.70"))
+
+
+def _v3_split_calib_frac() -> float:
+    return float(os.getenv("V3_SPLIT_CALIB", "0.15"))
+
+
+def _v3_holdout_slices(n: int) -> tuple:
+    """Time-ordered train | calib | gate index bounds (calib and gate never overlap).
+
+    Default 70/15/15. Calibration fits on the middle slice; promotion gates use
+    only the final slice so holdout accuracy is not reused for Platt/isotonic.
+    """
+    n = int(n)
+    if n < 3:
+        return 1, max(1, n - 1)
+    train_end = max(1, int(n * _v3_split_train_frac()))
+    calib_end = max(train_end + 1, int(n * (_v3_split_train_frac() + _v3_split_calib_frac())))
+    if calib_end >= n:
+        calib_end = n - 1
+    if calib_end <= train_end:
+        calib_end = min(n - 1, train_end + 1)
+    return train_end, calib_end
+
+
 def _v3_wf_acc_min_overrides() -> dict:
     """
     Optional per-symbol absolute floor overrides for wf_acc_min.
@@ -427,24 +453,17 @@ def _simulate_up_tp_sl(rows: list, entry_idx: int, hold_bars: int, vol_pct: floa
     Conservative same-bar rule: if both stop and target are touched, count LOSS.
     Returns WIN | LOSS | EXPIRED (mirrors live reconcile when expiry ends without hit).
     """
+    from core.tp_sl_resolve import resolve_tp_sl_bar_path
+
     entry = float(rows[entry_idx]["close"])
     if entry <= 0:
         return "EXPIRED"
     target = entry * (1 + vol_pct)
     stop = entry * (1 - stop_pct_from_vol(vol_pct))
     last = min(len(rows) - 1, entry_idx + hold_bars)
-    for j in range(entry_idx + 1, last + 1):
-        lo = float(rows[j]["low"])
-        hi = float(rows[j]["high"])
-        hit_stop = lo <= stop
-        hit_tgt = hi >= target
-        if hit_stop and hit_tgt:
-            return "LOSS"
-        if hit_stop:
-            return "LOSS"
-        if hit_tgt:
-            return "WIN"
-    return "EXPIRED"
+    forward = rows[entry_idx + 1 : last + 1]
+    outcome = resolve_tp_sl_bar_path(forward, target, stop, "UP", max_bars=hold_bars)
+    return outcome if outcome else "EXPIRED"
 
 def _rsi(closes, period=14):
     if len(closes) < period + 1: return 50.0
@@ -1025,6 +1044,8 @@ def backtest_symbol(symbol, asset_type):
     for i in range(window, len(rows) - margin):
         hist = rows[max(0, i - window) : i + 1]
         features = _calculate_features(hist)
+        from core.feature_schema import attach_feature_asof
+        attach_feature_asof(features, rows[i].get("ts"))
         features["symbol"] = symbol
         features["asset_type"] = asset_type
         if sector_on:
@@ -1234,14 +1255,14 @@ def train_and_validate(symbols_and_types):
             y = np.array([r["label"] for r in rows])
             wins_ct = int(np.sum(y))
             min_wins = _v3_min_tp_sl_wins()
-            split = int(len(X) * 0.8)
-            X_train, X_test = X[:split], X[split:]
-            y_train, y_test = y[:split], y[split:]
-            natural_rate = float(np.mean(y_test))
+            train_end, calib_end = _v3_holdout_slices(len(X))
+            X_train, y_train = X[:train_end], y[:train_end]
+            X_calib, y_calib = X[train_end:calib_end], y[train_end:calib_end]
+            X_gate, y_gate = X[calib_end:], y[calib_end:]
+            natural_rate = float(np.mean(y_gate)) if len(y_gate) else 0.0
             # W1: pool peer/sector samples into the FIT set to break the
-            # small-data wall. The holdout (X_test), walk-forward, and
-            # calibration all stay WOLF-only below, so every quality gate still
-            # judges the model on WOLF's own out-of-sample data.
+            # small-data wall. Calib + gate slices stay target-only; calib fits
+            # Platt/isotonic, gate drives holdout accuracy / edge promotion.
             peer_rows, peers_used = ([], [])
             if _v3_pool_training_enabled():
                 peer_rows, peers_used = _collect_peer_rows(symbol)
@@ -1268,7 +1289,7 @@ def train_and_validate(symbols_and_types):
                 eval_metric='logloss', random_state=42
             )
             model.fit(X_fit, y_fit, sample_weight=sample_weight)
-            accuracy = float(accuracy_score(y_test, model.predict(X_test)))
+            accuracy = float(accuracy_score(y_gate, model.predict(X_gate))) if len(y_gate) else 0.0
             edge = accuracy - natural_rate
             # W1: feed the same peer pool into the walk-forward folds, so the
             # gate validates the deployed pooled model rather than a WOLF-only
@@ -1333,10 +1354,15 @@ def train_and_validate(symbols_and_types):
             if passes:
                 if _v3_ensemble_enabled():
                     final_model, calib_info = _build_ensemble(
-                        model, X_fit, y_fit, sample_weight, X_test, y_test)
+                        model, X_fit, y_fit, sample_weight, X_calib, y_calib)
                 else:
-                    final_model, calib_info = _maybe_calibrate(model, X_test, y_test)
+                    final_model, calib_info = _maybe_calibrate(model, X_calib, y_calib)
                 symbol_detail["calibration"] = calib_info
+                symbol_detail["holdout_slices"] = {
+                    "train_n": int(len(X_train)),
+                    "calib_n": int(len(X_calib)),
+                    "gate_n": int(len(X_gate)),
+                }
             details.append(symbol_detail)
             if passes:
                 model_bytes = base64.b64encode(pickle.dumps(final_model)).decode('ascii')
@@ -1429,6 +1455,8 @@ def predict_live_ex(symbol, asset_type, scores=None):
         return None, "intraday_data"
 
     features = _calculate_features(rows)
+    from core.feature_schema import attach_feature_asof
+    attach_feature_asof(features, rows[-1].get("ts") if rows else None)
 
     # W3: same point-in-time sector relative strength as training, for the
     # current (last) bar. Only when enabled, matching the persisted feature set.
@@ -1529,10 +1557,11 @@ def predict_live_ex(symbol, asset_type, scores=None):
     if wf_fold_count > 0 and (wf_acc_mean < min_wf_acc or wf_edge_mean < min_edge):
         return None, "meta_gate"
 
-    # Confidence = holdout TP/SL WIN rate + strength above min win-probability
+    # Phase 2: confidence = calibrated P(win); Brier/journal treat this as the stated probability.
     if up_prob > min_p:
-        signal_strength = (up_prob - min_p) * 4.0
-        conf = round(min(0.95, max(0.75, accuracy + signal_strength)), 3)
+        conf = round(min(0.98, max(0.0, up_prob)), 3)
+        if scores is not None:
+            scores["confidence"] = conf
         return ("UP", conf), None
     # DOWN signals disabled — 1.5% WR on 274 trades, not viable
     # Ghost is BUY-only system

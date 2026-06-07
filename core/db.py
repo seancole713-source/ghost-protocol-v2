@@ -101,6 +101,21 @@ def _migrate_schema():
         "ALTER TABLE predictions ALTER COLUMN horizon_h DROP NOT NULL",
         "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS features JSONB",
         "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS scores JSONB",
+        # Phase 3 gate: point-in-time feature snapshots (12-col ingestion prep).
+        """
+        CREATE TABLE IF NOT EXISTS ghost_feature_snapshots (
+            id SERIAL PRIMARY KEY,
+            symbol TEXT NOT NULL,
+            feature_asof_ts BIGINT NOT NULL,
+            source TEXT NOT NULL DEFAULT 'v3_live',
+            payload JSONB,
+            created_at BIGINT NOT NULL
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_feature_snapshots_symbol_asof
+        ON ghost_feature_snapshots (symbol, feature_asof_ts DESC)
+        """,
         # Expire duplicate open picks (keep highest confidence) before unique index.
         """
         UPDATE predictions p SET outcome='EXPIRED', resolved_at=EXTRACT(EPOCH FROM NOW())::BIGINT
