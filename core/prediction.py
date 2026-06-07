@@ -52,6 +52,67 @@ STOCK_SYMBOLS: List[str] = [
     s.strip().upper() for s in os.getenv("STOCK_SYMBOLS", "WOLF").split(",") if s.strip()
 ] or ["WOLF"]
 
+# Priority order for binding-gate resolution. Higher items win over raw skip_counts
+# tallies — e.g. 17× no_v3_model (untrained watchlist symbols) must not mask
+# v3_prob_low on WOLF when the model actually ran and emitted up_prob.
+_SKIP_PRIORITY: List[str] = [
+    "dedup_blocked",
+    "below_confidence_floor",
+    "objective_gate",
+    "objective_bootstrap_conf",
+    "v3_regime_gate",
+    "v3_meta_gate",
+    "v3_prob_low",
+    "v3_intraday_data",
+    "v3_engine_error",
+    "v3_no_signal",
+    "no_v3_model",
+    "no_price",
+    "sell_blocked",
+    "excluded",
+]
+
+_SKIP_LABELS: Dict[str, str] = {
+    "dedup_blocked": "dedup (open pick already exists)",
+    "below_confidence_floor": "below confidence floor",
+    "objective_gate": "objective gate (symbol WR below target)",
+    "objective_bootstrap_conf": "objective bootstrap (confidence below bootstrap minimum)",
+    "v3_regime_gate": "v3 live regime gate blocked BUY",
+    "v3_meta_gate": "v3 model metadata failed live thresholds",
+    "v3_prob_low": "v3 model prob below BUY floor",
+    "v3_intraday_data": "v3 intraday bars missing/short",
+    "v3_engine_error": "v3 engine error",
+    "v3_no_signal": "v3 returned no signal (other)",
+    "no_v3_model": "no v3 model trained for symbol (coverage gap — not WOLF unload)",
+    "no_price": "missing price",
+    "sell_blocked": "SELL/DOWN blocked",
+    "excluded": "symbol excluded",
+}
+
+
+def resolve_binding_skip(
+    skip_counts: Dict[str, int],
+    *,
+    dedup_blocked: int = 0,
+    near_miss: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
+    """Pick the semantically binding skip for this cycle.
+
+    When the best near-miss symbol ran the model (up_prob present), its per-symbol
+    skip wins over bulk no_v3_model counts from untrained watchlist tickers.
+    Otherwise fall back to priority order (same as Telegram diagnostics).
+    """
+    if dedup_blocked > 0:
+        return "dedup_blocked"
+    if near_miss and near_miss.get("up_prob") is not None and near_miss.get("skip"):
+        return str(near_miss["skip"])
+    for code in _SKIP_PRIORITY:
+        if skip_counts.get(code):
+            return code
+    if skip_counts:
+        return max(skip_counts.items(), key=lambda kv: kv[1])[0]
+    return None
+
 
 # Kill conditions — env-tunable safety thresholds (audit §2). Each evaluates over
 # a rolling window of resolved high-conviction picks and maps to a degrade action.
@@ -1187,7 +1248,10 @@ def run_prediction_cycle(with_diag: bool = False):
     # still have been dedup-blocked from saving).
     try:
         import json as _gj
-        _top_skip = max(skip_counts.items(), key=lambda kv: kv[1])[0] if skip_counts else None
+        _binding = resolve_binding_skip(
+            skip_counts, dedup_blocked=dedup_blocked, near_miss=closest,
+        )
+        _top_skip = _binding
         # Silence logging (audit §3): on a quiet cycle, how close did the best
         # candidate come? prob_gap = up_prob - min_win_proba (>=0 cleared the
         # prob gate); conf_gap = confidence - floor (only set on a floor miss).
@@ -1206,8 +1270,10 @@ def run_prediction_cycle(with_diag: bool = False):
             "dedup_blocked": dedup_blocked,
             "would_fire": len(all_picks) > 0,
             "top_skip": _top_skip,
+            "binding_skip": _binding,
             "skip_counts": dict(skip_counts),
             "paused": engine_paused,
+            "pause_reason": _pause.get("reason") if engine_paused else None,
             "near_miss": _near_miss,
         }
         with db_conn() as _gc:
@@ -1236,50 +1302,11 @@ def run_prediction_cycle(with_diag: bool = False):
     if not with_diag:
         return saved
     # --- diagnostics for Telegram "no picks" accuracy ---
-    _prio = [
-        "dedup_blocked",
-        "below_confidence_floor",
-        "objective_gate",
-        "objective_bootstrap_conf",
-        "v3_regime_gate",
-        "v3_meta_gate",
-        "v3_prob_low",
-        "v3_intraday_data",
-        "v3_engine_error",
-        "v3_no_signal",
-        "no_v3_model",
-        "no_price",
-        "sell_blocked",
-        "excluded",
-    ]
-    _labels = {
-        "dedup_blocked": "dedup (open pick already exists)",
-        "below_confidence_floor": "below confidence floor",
-        "objective_gate": "objective gate (symbol WR below target)",
-        "objective_bootstrap_conf": "objective bootstrap (confidence below bootstrap minimum)",
-        "v3_regime_gate": "v3 live regime gate blocked BUY",
-        "v3_meta_gate": "v3 model metadata failed live thresholds",
-        "v3_prob_low": "v3 model prob below BUY floor",
-        "v3_intraday_data": "v3 intraday bars missing/short",
-        "v3_engine_error": "v3 engine error",
-        "v3_no_signal": "v3 returned no signal (other)",
-        "no_v3_model": "no v3 model in DB / unloadable",
-        "no_price": "missing price",
-        "sell_blocked": "SELL/DOWN blocked",
-        "excluded": "symbol excluded",
-    }
-    top_reason = None
-    if dedup_blocked > 0:
-        top_reason = "dedup_blocked"
-    else:
-        for k in _prio:
-            if k == "dedup_blocked":
-                continue
-            if skip_counts.get(k):
-                top_reason = k
-                break
-        if top_reason is None and skip_counts:
-            top_reason = max(skip_counts.items(), key=lambda kv: kv[1])[0]
+    _prio = _SKIP_PRIORITY
+    _labels = _SKIP_LABELS
+    top_reason = resolve_binding_skip(
+        skip_counts, dedup_blocked=dedup_blocked, near_miss=closest,
+    )
     diag = {
         "symbols_scanned": len(symbols),
         "candidates": len(all_picks),

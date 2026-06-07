@@ -365,6 +365,28 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
   font-size:12px;letter-spacing:.5px;padding:11px 18px;border-radius:10px;cursor:pointer;white-space:nowrap}
 .ask-send:disabled{opacity:.45;cursor:not-allowed}
 .ask-meta{font-size:10px;color:#555;margin-top:8px}
+
+/* Daily forecast scorecard — actual (left/red) vs predicted (right/green) */
+.df-panel{margin-top:8px}
+.df-toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:14px}
+.df-toolbar select{background:#0a0a0a;border:1px solid #2a2a2a;color:#eee;border-radius:8px;padding:8px 12px;font-size:12px}
+.df-summary{font-size:12px;color:#888;line-height:1.6;margin-bottom:14px}
+.df-split{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media(max-width:860px){.df-split{grid-template-columns:1fr}}
+.df-pane{background:#0d0d0d;border:1px solid #23232e;border-radius:14px;padding:12px;min-height:220px}
+.df-pane-h{font-size:11px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;margin-bottom:8px}
+.df-pane-h.actual{color:#ff6b6b}
+.df-pane-h.predicted{color:#22c55e}
+.df-canvas-wrap{height:200px;position:relative}
+.df-table-wrap{margin-top:16px;overflow-x:auto}
+.df-table{width:100%;border-collapse:collapse;font-size:12px}
+.df-table th,.df-table td{padding:8px 10px;border-bottom:1px solid #1f1f1f;text-align:left;vertical-align:top}
+.df-table th{color:#666;font-size:10px;text-transform:uppercase;letter-spacing:.4px}
+.df-num{font-variant-numeric:tabular-nums}
+.df-score-ok{color:#22c55e;font-weight:700}
+.df-score-mid{color:#facc15;font-weight:700}
+.df-score-bad{color:#ff6b6b;font-weight:700}
+.df-live-tag{font-size:10px;color:#60a5fa;font-weight:700;margin-left:6px}
 </style>
 </head>
 <body>
@@ -495,6 +517,30 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
         <span class="leg"><span class="leg-swatch dot-win"></span>WIN</span>
         <span class="leg"><span class="leg-swatch dot-loss"></span>LOSS</span>
       </div>
+    </div>
+  </section>
+
+  <!-- ─── Daily forecast scorecard (per watchlist symbol) ─── -->
+  <section class="block" id="daily-forecast-section">
+    <div class="sec-label">Daily Forecast vs Reality &middot; 24h ahead O/H/L</div>
+    <div class="chart-wrap df-panel">
+      <div class="df-toolbar">
+        <label style="font-size:11px;color:#888;font-weight:700">SYMBOL</label>
+        <select id="df-symbol" onchange="loadDailyForecastScorecard()"></select>
+        <span id="df-meta" style="font-size:11px;color:#666;margin-left:auto">Forecast issued prior close &rarr; next session</span>
+      </div>
+      <div id="df-summary" class="df-summary">Loading forecast scorecard…</div>
+      <div class="df-split">
+        <div class="df-pane">
+          <div class="df-pane-h actual">Actual (what happened)</div>
+          <div class="df-canvas-wrap"><canvas id="df-actual-chart"></canvas></div>
+        </div>
+        <div class="df-pane">
+          <div class="df-pane-h predicted">Ghost prediction (24h ahead)</div>
+          <div class="df-canvas-wrap"><canvas id="df-pred-chart"></canvas></div>
+        </div>
+      </div>
+      <div id="df-table-wrap" class="df-table-wrap"></div>
     </div>
   </section>
 
@@ -1610,6 +1656,139 @@ function renderNews(n){
   }).join('');
 }
 
+/* ─── Daily forecast scorecard — actual (red) vs Ghost prediction (green) ─── */
+function _dfScoreClass(pct){
+  if(pct == null) return '';
+  if(pct >= 85) return 'df-score-ok';
+  if(pct >= 65) return 'df-score-mid';
+  return 'df-score-bad';
+}
+
+function _dfFmtPrice(v){
+  if(v == null || isNaN(v)) return '—';
+  return '$' + Number(v).toFixed(v >= 100 ? 2 : 3);
+}
+
+function _dfChartOptions(color){
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: false,
+    plugins: { legend: { display: false },
+      tooltip: { callbacks: { label: function(c){ return c.dataset.label + ': ' + _dfFmtPrice(c.parsed.y); } } } },
+    scales: {
+      x: { ticks: { color: '#666', font: { size: 9 }, maxRotation: 45, minRotation: 0 }, grid: { color: '#1a1a1a' } },
+      y: { ticks: { color: '#666', font: { size: 9 }, callback: function(v){ return '$'+Number(v).toFixed(2); } }, grid: { color: '#1a1a1a' } }
+    }
+  };
+}
+
+function _renderDfLineChart(canvasId, days){
+  var canvas = document.getElementById(canvasId);
+  if(!canvas) return;
+  var ctx = canvas.getContext('2d');
+  var key = canvasId;
+  if(_charts[key]){ _charts[key].destroy(); _charts[key] = null; }
+  var resolved = (days || []).filter(function(d){ return d.resolved && d.actual && d.predicted; });
+  if(!resolved.length){
+    _charts[key] = new Chart(ctx, { type: 'line', data: { labels: [], datasets: [] }, options: _dfChartOptions('#666') });
+    return;
+  }
+  var labels = resolved.map(function(d){ return d.target_date; });
+  var ds;
+  if(canvasId === 'df-pred-chart'){
+    ds = [
+      { label: 'Pred Open', data: resolved.map(function(d){ return d.predicted.open; }), borderColor: '#22c55e', borderWidth: 2, pointRadius: 2, tension: 0.2, fill: false },
+      { label: 'Pred High', data: resolved.map(function(d){ return d.predicted.high; }), borderColor: '#4ade80', borderDash: [4,3], borderWidth: 1.5, pointRadius: 1, tension: 0.2, fill: false },
+      { label: 'Pred Low', data: resolved.map(function(d){ return d.predicted.low; }), borderColor: '#15803d', borderDash: [2,2], borderWidth: 1.5, pointRadius: 1, tension: 0.2, fill: false }
+    ];
+    _charts[key] = new Chart(ctx, { type: 'line', data: { labels: labels, datasets: ds }, options: _dfChartOptions('#22c55e') });
+  } else {
+    ds = [
+      { label: 'Actual Open', data: resolved.map(function(d){ return d.actual.open; }), borderColor: '#ff3b3b', borderWidth: 2, pointRadius: 2, tension: 0.2, fill: false },
+      { label: 'Actual High', data: resolved.map(function(d){ return d.actual.high; }), borderColor: '#f87171', borderDash: [4,3], borderWidth: 1.5, pointRadius: 1, tension: 0.2, fill: false },
+      { label: 'Actual Low', data: resolved.map(function(d){ return d.actual.low; }), borderColor: '#991b1b', borderDash: [2,2], borderWidth: 1.5, pointRadius: 1, tension: 0.2, fill: false }
+    ];
+    _charts[key] = new Chart(ctx, { type: 'line', data: { labels: labels, datasets: ds }, options: _dfChartOptions('#ff3b3b') });
+  }
+}
+
+function _renderDfTable(days){
+  var wrap = document.getElementById('df-table-wrap');
+  if(!wrap) return;
+  if(!days || !days.length){ wrap.innerHTML = ''; return; }
+  var rows = days.slice().reverse().map(function(d){
+    var pred = d.predicted || {};
+    var act = d.actual;
+    var sc = d.score;
+    var live = !d.resolved ? '<span class="df-live-tag">LIVE</span>' : '';
+    var scoreCell = '—';
+    if(sc && sc.overall_pct != null){
+      scoreCell = '<span class="' + _dfScoreClass(sc.overall_pct) + '">' + sc.overall_pct + '%</span>'
+        + (sc.direction_ok ? ' <span style="color:#22c55e">dir ✓</span>' : ' <span style="color:#ff6b6b">dir ✗</span>');
+    }
+    return '<tr>'
+      + '<td><b>' + escHtml(d.target_date || '—') + '</b>' + live + '<div style="color:#555;font-size:10px">forecast ' + escHtml(d.forecast_date || '') + '</div></td>'
+      + '<td class="df-num" style="color:#22c55e">' + _dfFmtPrice(pred.open) + '<br>' + _dfFmtPrice(pred.high) + '<br>' + _dfFmtPrice(pred.low)
+        + '<div style="font-size:10px;color:#666">p=' + (pred.up_prob != null ? pred.up_prob : '—') + ' · ' + escHtml(pred.bias || '') + '</div></td>'
+      + '<td class="df-num" style="color:#ff6b6b">' + (act ? (_dfFmtPrice(act.open) + '<br>' + _dfFmtPrice(act.high) + '<br>' + _dfFmtPrice(act.low)) : '—') + '</td>'
+      + '<td>' + scoreCell + '</td>'
+      + '</tr>';
+  }).join('');
+  wrap.innerHTML = '<table class="df-table"><thead><tr>'
+    + '<th>Session</th><th>Ghost predicted O / H / L</th><th>Actual O / H / L</th><th>How close?</th>'
+    + '</tr></thead><tbody>' + rows + '</tbody></table>';
+}
+
+async function _populateDfSymbols(){
+  var sel = document.getElementById('df-symbol');
+  if(!sel) return;
+  try{
+    var wl = await _fetchJson('/api/wolf/watchlist-forecast-scorecards?days=7', {symbols: [], cards: []});
+    var syms = wl.symbols && wl.symbols.length ? wl.symbols : ['WOLF'];
+    var prev = sel.value;
+    sel.innerHTML = syms.map(function(s){ return '<option value="'+escHtml(s)+'">'+escHtml(s)+'</option>'; }).join('');
+    if(prev && syms.indexOf(prev) >= 0) sel.value = prev;
+  }catch(e){
+    sel.innerHTML = '<option value="WOLF">WOLF</option>';
+  }
+}
+
+async function loadDailyForecastScorecard(){
+  var sumEl = document.getElementById('df-summary');
+  var sel = document.getElementById('df-symbol');
+  if(!sumEl || !sel) return;
+  var sym = sel.value || 'WOLF';
+  try{
+    await ensureChartJs();
+    var g = await _fetchJson('/api/wolf/daily-forecast-scorecard?symbol=' + encodeURIComponent(sym) + '&days=14', {ok:false});
+    if(!g || g.ok === false){
+      sumEl.innerHTML = 'Forecast scorecard unavailable for <b>' + escHtml(sym) + '</b>.';
+      return;
+    }
+    if(!g.has_model){
+      sumEl.innerHTML = '<b>' + escHtml(sym) + '</b> has no trained v3 model yet — train via /admin before forecasts appear.';
+      _renderDfLineChart('df-actual-chart', []);
+      _renderDfLineChart('df-pred-chart', []);
+      _renderDfTable([]);
+      return;
+    }
+    var sm = g.summary || {};
+    sumEl.innerHTML = '<b>' + escHtml(sym) + '</b> · '
+      + (sm.scored_days || 0) + ' scored sessions'
+      + (sm.avg_overall_pct != null ? ' · avg closeness <b class="' + _dfScoreClass(sm.avg_overall_pct) + '">' + sm.avg_overall_pct + '%</b>' : '')
+      + (sm.direction_hit_rate_pct != null ? ' · direction hit ' + sm.direction_hit_rate_pct + '%' : '')
+      + ' · <span style="color:#666">Each row = forecast at prior close for next session open/high/low</span>';
+    var days = g.days || [];
+    _renderDfLineChart('df-actual-chart', days);
+    _renderDfLineChart('df-pred-chart', days);
+    _renderDfTable(days);
+  }catch(e){
+    sumEl.innerHTML = 'Forecast scorecard error.';
+    console.error(e);
+  }
+}
+
 /* ─── Realized equity curve — "if you followed every pick" (audit) ─── */
 async function loadEquityChart(){
   var sec = document.getElementById('equity-section');
@@ -2338,14 +2517,22 @@ async function loadSignalHistory(){
       return s;
     }
     var rows = hist.map(function(h){
+      var bind = h.binding_skip || h.top_skip;
       var crossed = h.would_fire
         ? '<span class="pos">&#10003; crossed</span>'
         : (h.paused ? '<span class="neg">&#9209; paused</span>' : '<span style="color:#888">&#x23F3; no</span>');
+      var gateCell = bind ? '<code>' + escHtml(bind) + '</code>' : '—';
+      if(h.paused && h.pause_reason){
+        gateCell += '<div style="font-size:10px;color:#888;margin-top:2px">' + escHtml(h.pause_reason) + '</div>';
+      }
+      if(h.skip_counts && h.skip_counts.no_v3_model && bind !== 'no_v3_model'){
+        gateCell += '<div style="font-size:10px;color:#555">+' + h.skip_counts.no_v3_model + ' untrained symbols</div>';
+      }
       return '<tr>'
         + '<td>' + fmtTimeAgo(h.ts) + '</td>'
         + '<td>' + crossed + '</td>'
         + '<td>cand ' + (h.candidates || 0) + ' / saved ' + (h.saved || 0) + '</td>'
-        + '<td>' + (h.top_skip ? '<code>' + escHtml(h.top_skip) + '</code>' : '—') + '</td>'
+        + '<td>' + gateCell + '</td>'
         + '<td>' + near(h.near_miss) + '</td>'
         + '</tr>';
     }).join('');
@@ -2366,6 +2553,7 @@ _deferBelowFold(function(){
   loadPickJournal(true);
   loadSignalHistory();
   loadAttribution();
+  _populateDfSymbols().then(loadDailyForecastScorecard);
 });
 // Visibility-aware polling (roadmap #3c): skip refreshes while the tab is
 // hidden (a load() fires on return via visibilitychange), so we don't hammer
@@ -2376,6 +2564,7 @@ setInterval(function(){ if(!document.hidden) loadShortInterest(); }, 300000);
 setInterval(function(){ if(!document.hidden) loadPickJournal(true); }, 120000);
 setInterval(function(){ if(!document.hidden) loadSignalHistory(); }, 120000);
 setInterval(function(){ if(!document.hidden) loadAttribution(); }, 300000);
+setInterval(function(){ if(!document.hidden) loadDailyForecastScorecard(); }, 600000);
 _renderAutoStatus();
 </script>
 </body>

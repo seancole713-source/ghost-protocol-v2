@@ -314,6 +314,44 @@ async def get_wolf_predictions(days: int = 30, limit: int = 100):
 
 
 # ────────────────────────────────────────────────────────────────
+# /api/wolf/daily-forecast-scorecard — next-day OHLC forecast vs actual
+# ────────────────────────────────────────────────────────────────
+@router.get("/daily-forecast-scorecard")
+async def get_daily_forecast_scorecard(symbol: str = WOLF_SYMBOL, days: int = 14):
+    """Per-symbol daily forecast scorecard: prior-close model → next-day O/H/L vs actual."""
+    sym = (symbol or WOLF_SYMBOL).strip().upper()
+    cache_key = f"daily-forecast:{sym}:{days}"
+    cached = _cache_get(cache_key, 300)
+    if cached:
+        return JSONResponse(content=cached)
+    try:
+        from core.daily_forecast_scorecard import build_daily_scorecard
+        payload = build_daily_scorecard(sym, days=days)
+    except Exception as e:
+        LOGGER.warning("daily-forecast-scorecard %s: %s", sym, str(e)[:120])
+        payload = _err(str(e), symbol=sym, has_model=False, days=[], summary={})
+    _cache_set(cache_key, payload)
+    return JSONResponse(content=payload)
+
+
+@router.get("/watchlist-forecast-scorecards")
+async def get_watchlist_forecast_scorecards(days: int = 14):
+    """Summary scorecards for all watchlist symbols with loadable v3 models."""
+    cache_key = f"watchlist-forecast:{days}"
+    cached = _cache_get(cache_key, 300)
+    if cached:
+        return JSONResponse(content=cached)
+    try:
+        from core.daily_forecast_scorecard import build_watchlist_scorecards
+        payload = build_watchlist_scorecards(days=days)
+    except Exception as e:
+        LOGGER.warning("watchlist-forecast-scorecards: %s", str(e)[:120])
+        payload = _err(str(e), cards=[], symbols=[])
+    _cache_set(cache_key, payload)
+    return JSONResponse(content=payload)
+
+
+# ────────────────────────────────────────────────────────────────
 # /api/wolf/stats — Yahoo Finance key stats grid
 # ────────────────────────────────────────────────────────────────
 @router.get("/stats")

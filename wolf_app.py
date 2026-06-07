@@ -2865,7 +2865,7 @@ def wolf_gate_history(limit: int = 50):
         binding = {}
         closest = None   # best (highest up_prob) near-miss across the window
         for h in recent:
-            ts_skip = h.get("top_skip")
+            ts_skip = h.get("binding_skip") or h.get("top_skip")
             if ts_skip:
                 binding[ts_skip] = binding.get(ts_skip, 0) + 1
             nm = h.get("near_miss")

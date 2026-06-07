@@ -31,10 +31,14 @@ def _system_prompt() -> str:
         "3. If trade_action is NO TRADE or SILENCE, say clearly not to treat Ghost Score bias as a buy.\n"
         "4. Portfolio symbols (LULU, AMC, etc.) can have picks only when they appear in context.picks "
         "after model + gate checks. Never imply a pick exists if context does not show one.\n"
-        "5. You may explain general market/earnings concepts when asked, but label them as general "
+        "5. Engine pause (context.engine_pause) is separate from model gates. "
+        "no_v3_model on untrained watchlist symbols is a coverage gap — NOT 'WOLF model missing'. "
+        "When context.live_gate or near_miss shows up_prob, the v3 model IS loaded; prob_low means "
+        "probability below the BUY floor (working as designed).\n"
+        "6. You may explain general market/earnings concepts when asked, but label them as general "
         "education, not Ghost signals.\n"
-        "6. Not financial advice. Encourage 1% risk, stops, and following Ghost rules.\n"
-        "7. Be concise (under 250 words unless user asks for detail). Use plain language.\n"
+        "7. Not financial advice. Encourage 1% risk, stops, and following Ghost rules.\n"
+        "8. Be concise (under 250 words unless user asks for detail). Use plain language.\n"
     )
 
 
@@ -112,6 +116,61 @@ def build_ask_context() -> Dict[str, Any]:
             ]
     except Exception as e:
         ctx["wolf_picks_error"] = str(e)[:120]
+
+    try:
+        import json as _j
+        from core.db import db_conn as _dbc
+        with _dbc() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT val FROM ghost_state WHERE key='gate_outcome_history'")
+            row = cur.fetchone()
+        hist = []
+        if row and row[0]:
+            try:
+                hist = _j.loads(row[0])
+            except Exception:
+                hist = []
+        latest = hist[-1] if isinstance(hist, list) and hist else {}
+        ctx["latest_scan"] = {
+            "binding_skip": latest.get("binding_skip") or latest.get("top_skip"),
+            "skip_counts": latest.get("skip_counts"),
+            "paused": latest.get("paused"),
+            "pause_reason": latest.get("pause_reason"),
+            "near_miss": latest.get("near_miss"),
+        }
+    except Exception as e:
+        ctx["latest_scan_error"] = str(e)[:120]
+
+    try:
+        from core.signal_engine import predict_live_ex
+        from core import prediction as _pred
+        _scores: Dict[str, Any] = {}
+        _sig, _reason = predict_live_ex("WOLF", "stock", scores=_scores)
+        cfg = _pred._objective_effective_config()
+        floor = float(_pred.CONFIDENCE_FLOOR)
+        stats = _pred._objective_symbol_stats("WOLF", "UP")
+        phase = "established" if int(stats.get("combined_total", 0)) >= int(cfg["min_samples"]) else "bootstrap"
+        boot_conf = float(cfg.get("bootstrap_min_conf", floor))
+        binding_conf = max(floor, boot_conf) if phase == "bootstrap" else floor
+        up_prob = _scores.get("up_prob")
+        mm = _scores.get("model_meta") or {}
+        acc, min_p = mm.get("accuracy"), mm.get("min_win_proba")
+        needed = None
+        gap = None
+        if acc is not None and min_p is not None:
+            needed = max(min_p + (binding_conf - float(acc)) / 4.0, float(min_p))
+            if up_prob is not None:
+                gap = round(float(up_prob) - needed, 4)
+        ctx["live_gate"] = {
+            "model_emitted": _sig is not None,
+            "reason": _reason,
+            "up_prob": up_prob,
+            "up_prob_needed_to_fire": round(needed, 4) if needed is not None else None,
+            "up_prob_gap": gap,
+            "regime": (_scores.get("regime") or {}).get("label"),
+        }
+    except Exception as e:
+        ctx["live_gate_error"] = str(e)[:120]
 
     try:
         from core.portfolio_routes import build_portfolio_payload
