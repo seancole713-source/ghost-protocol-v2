@@ -387,34 +387,45 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
 .dp-panel{
   background:linear-gradient(160deg,#0c0c10 0%,#070708 100%);
   border:1px solid rgba(255,255,255,.08);
-  border-radius:16px;padding:22px 24px 20px;
+  border-radius:16px;padding:22px 20px 20px;
   box-shadow:0 20px 50px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.04);
+  overflow:visible;
 }
 .dp-head{display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:16px}
 .dp-title{font-size:18px;font-weight:800;letter-spacing:-.3px;color:#f8fafc;margin-bottom:8px}
 .dp-sub{font-size:11px;color:#64748b;line-height:1.5;max-width:520px}
-.dp-table-wrap{overflow-x:auto;margin-bottom:8px}
-.dp-table{width:100%;border-collapse:collapse;font-size:13px;min-width:640px}
-.dp-table thead th{
-  text-align:left;font-size:10px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;
-  color:#64748b;padding:0 12px 14px 0;border-bottom:1px solid rgba(255,255,255,.08);
+.dp-table-wrap{overflow-x:auto;margin-bottom:8px;-webkit-overflow-scrolling:touch;padding:0 2px 4px 0}
+.dp-grid{
+  display:grid;
+  grid-template-columns:minmax(72px,11%) minmax(88px,17%) repeat(3,minmax(64px,1fr)) minmax(62px,13%);
+  column-gap:10px;row-gap:0;width:100%;box-sizing:border-box;
 }
-.dp-table thead th.num{text-align:right;padding-right:0;padding-left:12px}
-.dp-table tbody td{
-  padding:18px 12px 18px 0;border-bottom:1px solid rgba(255,255,255,.06);vertical-align:middle;
+@media(max-width:720px){
+  .dp-grid{grid-template-columns:minmax(64px,12%) minmax(76px,16%) repeat(3,minmax(52px,1fr)) minmax(54px,14%);column-gap:6px}
+  .dp-grid .dp-predict .dp-price{font-size:clamp(15px,4.2vw,22px)!important}
+  .dp-grid .dp-market .dp-price{font-size:clamp(14px,3.6vw,18px)!important}
 }
-.dp-table tbody td.num{text-align:right;font-variant-numeric:tabular-nums;padding-right:0;padding-left:12px}
-.dp-table tbody tr:last-child td{border-bottom:none}
-.dp-table tbody tr.dp-predict td{background:rgba(34,197,94,.06)}
-.dp-table tbody tr.dp-predict .dp-sym{font-size:18px;font-weight:800;color:#ecfdf5}
-.dp-table tbody tr.dp-predict .dp-period{font-size:13px;color:#86efac}
-.dp-table tbody tr.dp-predict .dp-price{
-  font-size:clamp(22px,3.5vw,32px);font-weight:800;color:#4ade80;letter-spacing:-.5px;
+.dp-hc{
+  font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:#64748b;
+  padding:0 4px 12px 0;border-bottom:1px solid rgba(255,255,255,.08);min-width:0;
 }
-.dp-table tbody tr.dp-market td{background:rgba(255,255,255,.02)}
-.dp-table tbody tr.dp-market .dp-sym{font-size:14px;font-weight:700;color:#cbd5e1}
-.dp-table tbody tr.dp-market .dp-period{font-size:12px;color:#64748b}
-.dp-table tbody tr.dp-market .dp-price{font-size:clamp(18px,2.8vw,24px);font-weight:700;color:#f1f5f9}
+.dp-hc.num{text-align:right;padding-right:10px}
+.dp-cell{
+  padding:16px 4px 16px 0;border-bottom:1px solid rgba(255,255,255,.06);
+  min-width:0;overflow:visible;
+}
+.dp-cell.num{text-align:right;padding-right:10px}
+.dp-cell.sym{min-width:0}
+.dp-grid .dp-row-predict .dp-cell{background:rgba(34,197,94,.06)}
+.dp-grid .dp-row-market .dp-cell{background:rgba(255,255,255,.02)}
+.dp-grid .dp-predict .dp-sym{font-size:17px;font-weight:800;color:#ecfdf5;line-height:1.2}
+.dp-grid .dp-predict .dp-period{font-size:12px;color:#86efac;line-height:1.35;word-break:break-word}
+.dp-grid .dp-predict .dp-price{
+  font-size:clamp(18px,2.6vw,28px);font-weight:800;color:#4ade80;letter-spacing:-.4px;
+}
+.dp-grid .dp-market .dp-sym{font-size:14px;font-weight:700;color:#cbd5e1;line-height:1.2}
+.dp-grid .dp-market .dp-period{font-size:11px;color:#64748b;line-height:1.35;word-break:break-word}
+.dp-grid .dp-market .dp-price{font-size:clamp(16px,2.2vw,22px);font-weight:700;color:#f1f5f9}
 .dp-row-tag{
   display:block;font-size:9px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase;margin-bottom:4px;
 }
@@ -2153,7 +2164,7 @@ function _dpFormatDate(iso){
   try{
     var d = new Date(iso + 'T12:00:00');
     if(isNaN(d.getTime())) return iso;
-    return d.toLocaleDateString('en-US', {weekday:'short', month:'short', day:'numeric', year:'numeric'});
+    return d.toLocaleDateString('en-US', {weekday:'short', month:'short', day:'numeric'});
   }catch(e){ return iso; }
 }
 
@@ -2179,40 +2190,44 @@ function _renderDpTwoRows(sym, next, lastResolved){
     return '<div class="dp-empty">No next-session forecast for <b>' + escHtml(sym) + '</b> yet.</div>';
   }
   var p = next.predicted;
-  var predictRow = '<tr class="dp-predict">'
-    + '<td><span class="dp-row-tag predict">Predict</span><span class="dp-sym">' + escHtml(sym) + '</span></td>'
-    + '<td class="dp-period">' + _dpPeriodNext(next) + '</td>'
-    + '<td class="num dp-price">' + _fmtUsd(p.open) + '</td>'
-    + '<td class="num dp-price">' + _fmtUsd(p.high) + '</td>'
-    + '<td class="num dp-price">' + _fmtUsd(p.close) + '</td>'
-    + '<td class="num">' + _dpScorePill(null, true) + '</td>'
-    + '</tr>';
+  var head = ''
+    + '<div class="dp-hc sym">Symbol</div>'
+    + '<div class="dp-hc">Date</div>'
+    + '<div class="dp-hc num">Open</div>'
+    + '<div class="dp-hc num">Peak</div>'
+    + '<div class="dp-hc num">Close</div>'
+    + '<div class="dp-hc num">Score</div>';
 
-  var marketRow;
+  var predictCells = ''
+    + '<div class="dp-cell sym dp-predict"><span class="dp-row-tag predict">Predict</span><span class="dp-sym">' + escHtml(sym) + '</span></div>'
+    + '<div class="dp-cell dp-period dp-predict">' + _dpPeriodNext(next) + '</div>'
+    + '<div class="dp-cell num dp-price dp-predict">' + _fmtUsd(p.open) + '</div>'
+    + '<div class="dp-cell num dp-price dp-predict">' + _fmtUsd(p.high) + '</div>'
+    + '<div class="dp-cell num dp-price dp-predict">' + _fmtUsd(p.close) + '</div>'
+    + '<div class="dp-cell num dp-predict">' + _dpScorePill(null, true) + '</div>';
+
+  var marketCells;
   if(lastResolved && lastResolved.actual){
     var a = lastResolved.actual;
     var sc = (lastResolved.score || {}).overall_pct;
-    marketRow = '<tr class="dp-market">'
-      + '<td><span class="dp-row-tag market">Market</span><span class="dp-sym">' + escHtml(sym) + '</span></td>'
-      + '<td class="dp-period">' + _dpPeriodMarket(lastResolved) + '</td>'
-      + '<td class="num dp-price">' + _fmtUsd(a.open) + '</td>'
-      + '<td class="num dp-price">' + _fmtUsd(a.high) + '</td>'
-      + '<td class="num dp-price">' + _fmtUsd(a.close) + '</td>'
-      + '<td class="num">' + _dpScorePill(sc, false) + '</td>'
-      + '</tr>';
+    marketCells = ''
+      + '<div class="dp-cell sym dp-market"><span class="dp-row-tag market">Market</span><span class="dp-sym">' + escHtml(sym) + '</span></div>'
+      + '<div class="dp-cell dp-period dp-market">' + _dpPeriodMarket(lastResolved) + '</div>'
+      + '<div class="dp-cell num dp-price dp-market">' + _fmtUsd(a.open) + '</div>'
+      + '<div class="dp-cell num dp-price dp-market">' + _fmtUsd(a.high) + '</div>'
+      + '<div class="dp-cell num dp-price dp-market">' + _fmtUsd(a.close) + '</div>'
+      + '<div class="dp-cell num dp-market">' + _dpScorePill(sc, false) + '</div>';
   } else {
-    marketRow = '<tr class="dp-market">'
-      + '<td><span class="dp-row-tag market">Market</span><span class="dp-sym">' + escHtml(sym) + '</span></td>'
-      + '<td class="dp-period">—</td>'
-      + '<td class="num dp-price">—</td><td class="num dp-price">—</td><td class="num dp-price">—</td>'
-      + '<td class="num"><span class="dp-score pending">awaiting close</span></td>'
-      + '</tr>';
+    marketCells = ''
+      + '<div class="dp-cell sym dp-market"><span class="dp-row-tag market">Market</span><span class="dp-sym">' + escHtml(sym) + '</span></div>'
+      + '<div class="dp-cell dp-period dp-market">—</div>'
+      + '<div class="dp-cell num dp-price dp-market">—</div>'
+      + '<div class="dp-cell num dp-price dp-market">—</div>'
+      + '<div class="dp-cell num dp-price dp-market">—</div>'
+      + '<div class="dp-cell num dp-market"><span class="dp-score pending">awaiting</span></div>';
   }
 
-  return '<table class="dp-table"><thead><tr>'
-    + '<th>Symbol</th><th>Date</th>'
-    + '<th class="num">Open</th><th class="num">Peak</th><th class="num">Close</th><th class="num">Ghost score</th>'
-    + '</tr></thead><tbody>' + predictRow + marketRow + '</tbody></table>';
+  return '<div class="dp-grid">' + head + predictCells + marketCells + '</div>';
 }
 
 function _chicagoNowParts(){
