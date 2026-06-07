@@ -383,6 +383,40 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
 .ask-send:disabled{opacity:.45;cursor:not-allowed}
 .ask-meta{font-size:10px;color:#555;margin-top:8px}
 
+/* Today's Prediction — digital price panel (24h ahead, no charts) */
+.tp-panel{
+  background:linear-gradient(160deg,#0a0a10 0%,#060608 100%);
+  border:1px solid rgba(34,197,94,.22);
+  border-radius:20px;padding:20px 22px 22px;
+  box-shadow:0 20px 50px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.04);
+}
+.tp-head{display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:18px}
+.tp-head-title{font-size:12px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:#86efac}
+.tp-head-sub{font-size:11px;color:#64748b;margin-top:5px;line-height:1.5;max-width:480px}
+.tp-chips{margin-top:10px;display:flex;flex-wrap:wrap;gap:6px}
+.tp-tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:6px}
+@media(max-width:640px){.tp-tiles{grid-template-columns:1fr}}
+.tp-tile{
+  background:#0d0d12;border:1px solid #252530;border-radius:16px;padding:18px 16px 16px;text-align:center;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.03);
+}
+.tp-tile.forecast{border-color:rgba(134,239,172,.35);background:linear-gradient(180deg,#0a120d 0%,#0d0d12 100%)}
+.tp-tile.actual{border-color:#2a2a35;background:#0b0b0f}
+.tp-lbl{font-size:10px;font-weight:800;letter-spacing:2px;text-transform:uppercase;color:#666;margin-bottom:10px}
+.tp-tile.forecast .tp-lbl{color:#86efac}
+.tp-val{font-size:clamp(28px,5vw,42px);font-weight:800;letter-spacing:-1px;color:#f8fafc;font-variant-numeric:tabular-nums}
+.tp-tile.forecast .tp-val{color:#ecfdf5;text-shadow:0 0 24px rgba(134,239,172,.15)}
+.tp-tile.actual .tp-val{font-size:clamp(24px,4vw,34px);color:#cbd5e1}
+.tp-section-lbl{font-size:9px;font-weight:700;letter-spacing:2px;color:#555;text-transform:uppercase;margin:20px 0 10px;padding-left:12px;position:relative}
+.tp-section-lbl::before{content:"";position:absolute;left:0;top:1px;bottom:1px;width:3px;border-radius:2px;background:#334155}
+.tp-section-lbl.forecast::before{background:#22c55e}
+.tp-did-body{
+  font-size:15px;line-height:1.65;color:#94a3b8;background:#0b0b0f;border:1px solid #23232e;
+  border-radius:14px;padding:14px 16px;margin-bottom:10px;
+}
+.tp-meta{font-size:10px;color:#555;text-align:center;margin-top:8px}
+.tp-empty{font-size:13px;color:#888;text-align:center;padding:24px 12px}
+
 /* Daily forecast scorecard — premium split panel */
 .df-premium{
   background:linear-gradient(145deg,#0c0c12 0%,#08080b 50%,#0a0f0a 100%);
@@ -568,6 +602,36 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
         <div class="perf-mini-bar" id="perf-cal-bar"></div>
       </div>
       <div class="perf-sub" id="perf-cal-sub">—</div>
+    </div>
+  </section>
+
+  <!-- ─── Today's Prediction · 24h ahead (digital price panel) ─── -->
+  <section class="block" id="today-prediction-section">
+    <div class="sec-label">Today&#39;s Prediction &middot; 24 hours ahead</div>
+    <div class="tp-panel">
+      <div class="tp-head">
+        <div>
+          <div class="tp-head-title">Ghost next-session prices</div>
+          <div class="tp-head-sub">Issued at the prior close — open, peak (high), and closing targets for the upcoming session only. Dollar amounts, no charts.</div>
+          <div class="tp-chips" id="tp-chips"></div>
+        </div>
+        <div id="tp-target-date" style="font-size:11px;color:#64748b;text-align:right;min-width:120px">—</div>
+      </div>
+      <div class="tp-section-lbl forecast">Ghost predicts</div>
+      <div class="tp-tiles" id="tp-forecast-tiles">
+        <div class="tp-tile forecast"><div class="tp-lbl">Open</div><div class="tp-val" id="tp-pred-open">—</div></div>
+        <div class="tp-tile forecast"><div class="tp-lbl">Peak</div><div class="tp-val" id="tp-pred-peak">—</div></div>
+        <div class="tp-tile forecast"><div class="tp-lbl">Closing</div><div class="tp-val" id="tp-pred-close">—</div></div>
+      </div>
+      <div class="tp-section-lbl">Market was</div>
+      <div class="tp-tiles" id="tp-actual-tiles">
+        <div class="tp-tile actual"><div class="tp-lbl">Open</div><div class="tp-val" id="tp-act-open">—</div></div>
+        <div class="tp-tile actual"><div class="tp-lbl">Peak</div><div class="tp-val" id="tp-act-peak">—</div></div>
+        <div class="tp-tile actual"><div class="tp-lbl">Closing</div><div class="tp-val" id="tp-act-close">—</div></div>
+      </div>
+      <div class="tp-section-lbl">What the market did</div>
+      <div id="tp-did-text" class="tp-did-body">Loading last session…</div>
+      <div class="tp-meta" id="tp-meta">Market actuals refresh daily at 4:33 PM CT after the close.</div>
     </div>
   </section>
 
@@ -1799,6 +1863,7 @@ function renderNews(n){
 
 /* ─── Daily forecast scorecard — premium panel ─── */
 var _dfActiveSymbol = 'WOLF';
+var _todayPred433Key = '';
 var _dfUniverse = null;
 var _dfChartMode = 'line';      // 'line' | 'bar'
 var _dfCompareMode = 'split';   // 'split' | 'overlay'
@@ -2059,22 +2124,151 @@ function _renderDfCoverage(universe){
     + '<div class="df-cov-note">' + escHtml(missNote) + '</div>';
 }
 
+function _fmtUsd(v){
+  if(v == null || v === '' || isNaN(Number(v)) || Number(v) <= 0) return '—';
+  return '$' + Number(v).toFixed(2);
+}
+
+function _signedUsdDelta(predicted, actual){
+  if(predicted == null || actual == null || isNaN(Number(predicted)) || isNaN(Number(actual))) return '';
+  var d = Number(actual) - Number(predicted);
+  if(Math.abs(d) < 0.005) return 'on target';
+  return (d > 0 ? '+' : '') + '$' + d.toFixed(2) + ' vs Ghost';
+}
+
+function _splitForecastDays(days){
+  var resolved = (days || []).filter(function(d){ return d.resolved; });
+  var live = (days || []).filter(function(d){ return !d.resolved; });
+  return {
+    lastResolved: resolved.length ? resolved[resolved.length - 1] : null,
+    nextForecast: live.length ? live[live.length - 1] : null,
+  };
+}
+
+function _renderTodayPredMarketDid(day, sym){
+  if(!day || !day.actual){
+    return 'No completed session to compare yet. After the close, Ghost scores how the market traded vs this forecast.';
+  }
+  var a = day.actual;
+  var p = day.predicted || {};
+  var openMove = Number(a.close) - Number(a.open);
+  if(isNaN(openMove)) return 'Session data incomplete.';
+  var dir = openMove >= 0 ? 'up' : 'down';
+  var sess = day.target_date || 'last session';
+  var parts = [
+    '<b>' + escHtml(sym) + '</b> on ' + escHtml(sess) + ' closed <span class="' + (openMove >= 0 ? 'pos' : 'neg') + '">'
+      + dir + ' ' + _fmtUsd(Math.abs(openMove)) + '</span> from open to close.',
+  ];
+  if(p.open && a.open) parts.push('Open: Ghost ' + _fmtUsd(p.open) + ' · market ' + _fmtUsd(a.open) + ' (' + _signedUsdDelta(p.open, a.open) + ').');
+  if(p.high && a.high) parts.push('Peak: Ghost ' + _fmtUsd(p.high) + ' · market ' + _fmtUsd(a.high) + ' (' + _signedUsdDelta(p.high, a.high) + ').');
+  if(p.close && a.close) parts.push('Close: Ghost ' + _fmtUsd(p.close) + ' · market ' + _fmtUsd(a.close) + ' (' + _signedUsdDelta(p.close, a.close) + ').');
+  return parts.join(' ');
+}
+
+function _chicagoNowParts(){
+  var fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Chicago',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  });
+  var map = {};
+  fmt.formatToParts(new Date()).forEach(function(p){ if(p.type !== 'literal') map[p.type] = p.value; });
+  return map;
+}
+
+function _maybeTodayPred433Refresh(){
+  var p = _chicagoNowParts();
+  var dayKey = (p.year || '') + '-' + (p.month || '') + '-' + (p.day || '');
+  var hour = parseInt(p.hour || '0', 10);
+  var minute = parseInt(p.minute || '0', 10);
+  if(hour === 16 && minute === 33 && dayKey !== _todayPred433Key){
+    _todayPred433Key = dayKey;
+    loadTodayPredictionPanel(true);
+  }
+}
+
+async function loadTodayPredictionPanel(is433Refresh){
+  var sym = _dfActiveSymbol || 'WOLF';
+  var predOpen = document.getElementById('tp-pred-open');
+  var predPeak = document.getElementById('tp-pred-peak');
+  var predClose = document.getElementById('tp-pred-close');
+  var actOpen = document.getElementById('tp-act-open');
+  var actPeak = document.getElementById('tp-act-peak');
+  var actClose = document.getElementById('tp-act-close');
+  var didEl = document.getElementById('tp-did-text');
+  var metaEl = document.getElementById('tp-meta');
+  var dateEl = document.getElementById('tp-target-date');
+  if(!predOpen) return;
+  try{
+    var g = await _fetchJson('/api/wolf/daily-forecast-scorecard?symbol=' + encodeURIComponent(sym) + '&days=14', {ok:false});
+    if(!g || g.ok === false){
+      didEl.innerHTML = 'Forecast unavailable.';
+      return;
+    }
+    if(!g.has_model){
+      predOpen.textContent = predPeak.textContent = predClose.textContent = '—';
+      actOpen.textContent = actPeak.textContent = actClose.textContent = '—';
+      didEl.innerHTML = '<span style="color:#fbbf24">' + escHtml(sym) + '</span> needs a trained v3 model before Ghost can publish next-session prices. Train in <a href="/admin" style="color:#a78bfa">/admin</a>.';
+      if(dateEl) dateEl.textContent = 'No model';
+      return;
+    }
+    var split = _splitForecastDays(g.days || []);
+    var next = split.nextForecast;
+    var last = split.lastResolved;
+    if(next && next.predicted){
+      var np = next.predicted;
+      predOpen.textContent = _fmtUsd(np.open);
+      predPeak.textContent = _fmtUsd(np.high);
+      predClose.textContent = _fmtUsd(np.close);
+      if(dateEl){
+        dateEl.innerHTML = 'For <b style="color:#e2e8f0">' + escHtml(next.target_date || 'next session') + '</b>'
+          + (np.bias ? '<br><span style="color:#86efac">' + escHtml(np.bias) + ' bias</span>' : '');
+      }
+    } else {
+      predOpen.textContent = predPeak.textContent = predClose.textContent = '—';
+      if(dateEl) dateEl.textContent = 'Awaiting bars';
+    }
+    if(last && last.actual){
+      var la = last.actual;
+      actOpen.textContent = _fmtUsd(la.open);
+      actPeak.textContent = _fmtUsd(la.high);
+      actClose.textContent = _fmtUsd(la.close);
+    } else {
+      actOpen.textContent = actPeak.textContent = actClose.textContent = '—';
+    }
+    didEl.innerHTML = _renderTodayPredMarketDid(last, sym);
+    var p = _chicagoNowParts();
+    var stamp = (p.hour || '00') + ':' + (p.minute || '00') + ' CT';
+    metaEl.textContent = is433Refresh
+      ? 'Updated at 4:33 PM CT · ' + stamp + ' · next refresh tomorrow after close.'
+      : 'Market actuals lock in at 4:33 PM CT daily · now ' + stamp;
+  }catch(e){
+    if(didEl) didEl.textContent = 'Today\'s prediction panel error.';
+  }
+}
+
 function _renderDfChips(universe){
-  var el = document.getElementById('df-chips');
-  if(!el || !universe) return;
-  var list = universe.watchlist || [];
-  el.innerHTML = list.map(function(entry){
-    var sym = entry.symbol;
-    var active = sym === _dfActiveSymbol ? ' active' : '';
-    var miss = entry.has_model ? '' : ' missing';
-    var tag = entry.has_model ? '' : ' · train';
-    return '<button type="button" class="df-chip' + active + miss + '" data-sym="' + escHtml(sym) + '" onclick="selectDfSymbol(\'' + sym.replace(/'/g, '') + '\')">' + escHtml(sym) + tag + '</button>';
-  }).join('');
+  var chipHtml = '';
+  if(universe){
+    var list = universe.watchlist || [];
+    chipHtml = list.map(function(entry){
+      var sym = entry.symbol;
+      var active = sym === _dfActiveSymbol ? ' active' : '';
+      var miss = entry.has_model ? '' : ' missing';
+      var tag = entry.has_model ? '' : ' · train';
+      return '<button type="button" class="df-chip' + active + miss + '" data-sym="' + escHtml(sym) + '" onclick="selectDfSymbol(\'' + sym.replace(/'/g, '') + '\')">' + escHtml(sym) + tag + '</button>';
+    }).join('');
+  }
+  ['df-chips', 'tp-chips'].forEach(function(id){
+    var el = document.getElementById(id);
+    if(el) el.innerHTML = chipHtml;
+  });
 }
 
 function selectDfSymbol(sym){
   _dfActiveSymbol = sym || 'WOLF';
   if(_dfUniverse) _renderDfChips(_dfUniverse);
+  loadTodayPredictionPanel(false);
   loadDailyForecastScorecard();
 }
 
@@ -2712,6 +2906,8 @@ async function load(){
     // Keep signal-history + performance-log in sync with engine state on each load.
     loadSignalHistory();
     loadPerformanceLog();
+    loadTodayPredictionPanel(false);
+    _maybeTodayPred433Refresh();
     renderGhostScore(ghostScore, watching);
     renderHero(price, watching);
     renderPlay(picks, watching);
@@ -3119,7 +3315,10 @@ _deferBelowFold(function(){
   loadSignalHistory();
   loadPerformanceLog();
   loadAttribution();
-  _populateDfSymbols().then(loadDailyForecastScorecard);
+  _populateDfSymbols().then(function(){
+    loadTodayPredictionPanel(false);
+    loadDailyForecastScorecard();
+  });
 });
 // Visibility-aware polling (roadmap #3c): skip refreshes while the tab is
 // hidden (a load() fires on return via visibilitychange), so we don't hammer
@@ -3130,6 +3329,7 @@ setInterval(function(){ if(!document.hidden) loadShortInterest(); }, 300000);
 setInterval(function(){ if(!document.hidden) loadPickJournal(true); }, 120000);
 setInterval(function(){ if(!document.hidden) loadSignalHistory(); }, 120000);
 setInterval(function(){ if(!document.hidden) loadPerformanceLog(); }, 120000);
+setInterval(function(){ if(!document.hidden){ _maybeTodayPred433Refresh(); loadTodayPredictionPanel(false); } }, 60000);
 setInterval(function(){ if(!document.hidden) loadAttribution(); }, 300000);
 setInterval(function(){ if(!document.hidden) loadDailyForecastScorecard(); }, 600000);
 _renderAutoStatus();
