@@ -57,7 +57,16 @@ def run_watchdog():
                     "UPDATE predictions SET outcome=%s,exit_price=%s,pnl_pct=%s,resolved_at=%s WHERE id=%s AND outcome IS NULL",
                     (hit, exit_price, pnl, now, pred_id))
                 updated = cur.rowcount
-            if not updated: continue  # Already resolved by reconciler
+            if not updated:
+                continue  # Already resolved by reconciler
+            try:
+                from core.performance_log import record_pick_resolution
+                record_pick_resolution(
+                    pred_id, symbol, hit,
+                    exit_price=exit_price, pnl_pct=pnl, source="watchdog",
+                )
+            except Exception:
+                pass
             try:
                 from core.telegram import send_position_alert
                 usd_out = round(100 * (1 + pnl / 100), 2)

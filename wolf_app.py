@@ -3043,6 +3043,77 @@ def wolf_pick_journal(limit: int = 50, offset: int = 0, symbol: str = "WOLF"):
         return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
 
 
+@APP.get("/api/wolf/performance-log/cycles")
+def wolf_perf_log_cycles(limit: int = 50, offset: int = 0, since: int = 0):
+    """Paginated prediction-cycle log (full detail in /cycles/{id}). Newest first."""
+    try:
+        from core.performance_log import fetch_cycles
+        since_ts = int(since) if since else None
+        out = fetch_cycles(limit=limit, offset=offset, since_ts=since_ts)
+        return {"ok": True, **out}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
+@APP.get("/api/wolf/performance-log/cycles/{cycle_id}")
+def wolf_perf_log_cycle_detail(cycle_id: int, symbol_limit: int = 200):
+    """One cycle with per-symbol gate evaluations and full JSON context."""
+    try:
+        from core.performance_log import fetch_cycle_detail
+        detail = fetch_cycle_detail(cycle_id, symbol_limit=symbol_limit)
+        if not detail:
+            return JSONResponse({"ok": False, "error": "cycle_not_found"}, status_code=404)
+        return {"ok": True, "cycle": detail}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
+@APP.get("/api/wolf/performance-log/symbols/{symbol}")
+def wolf_perf_log_symbol(symbol: str, limit: int = 100, since: int = 0):
+    """Per-symbol evaluation history across cycles (skip codes, up_prob, confidence)."""
+    try:
+        from core.performance_log import fetch_symbol_eval_history
+        since_ts = int(since) if since else None
+        out = fetch_symbol_eval_history(symbol, limit=limit, since_ts=since_ts)
+        return {"ok": True, **out}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
+@APP.get("/api/wolf/performance-log/events")
+def wolf_perf_log_events(
+    limit: int = 100,
+    offset: int = 0,
+    event_type: str = "",
+    prediction_id: int = 0,
+    since: int = 0,
+):
+    """Pick lifecycle events: pick_saved, pick_resolved, pick_expired, cycle_complete."""
+    try:
+        from core.performance_log import fetch_events
+        out = fetch_events(
+            limit=limit,
+            offset=offset,
+            event_type=event_type or None,
+            prediction_id=prediction_id or None,
+            since_ts=int(since) if since else None,
+        )
+        return {"ok": True, **out}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
+@APP.get("/api/wolf/performance-log/progress")
+def wolf_perf_log_progress(days: int = 7):
+    """Track prediction progress: open picks, recent resolves, cycle rollups."""
+    try:
+        from core.performance_log import fetch_progress_summary
+        out = fetch_progress_summary(days=days)
+        return {"ok": True, **out}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
 @APP.get("/api/wolf/daily-summary")
 def wolf_daily_summary(limit: int = 30):
     """Stored daily engine summaries (roadmap #3b): per-day scans, candidates,

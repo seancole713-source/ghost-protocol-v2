@@ -141,4 +141,11 @@ def _migrate_schema():
             except Exception as e:
                 LOGGER.warning("Migration: " + str(e)[:80])
                 conn.rollback()
+    try:
+        from core.performance_log import ensure_perf_tables
+        with db_conn() as conn:
+            cur = conn.cursor()
+            ensure_perf_tables(cur)
+    except Exception as e:
+        LOGGER.warning("Perf log tables: " + str(e)[:80])
     LOGGER.info("Schema migration complete")

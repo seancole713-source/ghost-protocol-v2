@@ -1106,6 +1106,7 @@ def run_prediction_cycle(with_diag: bool = False):
 
     If with_diag=True, returns (saved_picks, diag_dict) for Telegram copy.
     """
+    _cycle_started = time.time()
     # T23 circuit breaker (roadmap #1c): env-tunable + recency-guarded (no deadlock).
     _cb_floor, _cb_active, _cb_detail = _circuit_breaker_floor()
     # Kill-condition enforcement (audit §2): pause/alert if a safety threshold
@@ -1128,6 +1129,8 @@ def run_prediction_cycle(with_diag: bool = False):
     skip_counts = {}
     all_picks = []
     closest = None   # silence logging (audit §3): track the highest-up_prob candidate
+    symbol_evals = []
+    _eval_ts = int(time.time())
     for symbol, asset_type in symbols:
         _sv = {}
         pick, skip = _predict_symbol_ex(symbol, asset_type, regime, scores_out=_sv)
@@ -1135,6 +1138,11 @@ def run_prediction_cycle(with_diag: bool = False):
             all_picks.append(pick)
         elif skip:
             skip_counts[skip] = skip_counts.get(skip, 0) + 1
+        try:
+            from core.performance_log import symbol_eval_from_scan
+            symbol_evals.append(symbol_eval_from_scan(symbol, pick, skip, _sv, _eval_ts))
+        except Exception:
+            pass
         _up = _sv.get("up_prob")
         if _up is not None and (closest is None or _up > closest["up_prob"]):
             closest = {
@@ -1148,19 +1156,27 @@ def run_prediction_cycle(with_diag: bool = False):
 
     all_picks.sort(key=lambda x: x["confidence"], reverse=True)
     top = all_picks[:DAILY_CAP]
+    _suppress_reason = None
+    _suppressed = 0
+    _risk_block = None
     if engine_paused:
         LOGGER.warning(
             "ENGINE PAUSED (kill condition) — suppressing %d candidate(s): %s",
             len(top), _pause.get("reason"))
+        _suppressed = len(top)
+        _suppress_reason = "engine_paused"
         top = []   # scan + record continue; firing suppressed
     try:
         from core.risk_discipline import combined_trading_block, refresh_daily_loss_lock
         refresh_daily_loss_lock(notify=False)
         _rb = combined_trading_block()
+        _risk_block = _rb if isinstance(_rb, dict) else None
         if _rb.get("blocked") and top:
             LOGGER.warning(
                 "RISK DISCIPLINE — suppressing %d candidate(s): %s",
                 len(top), "; ".join(_rb.get("reasons") or []))
+            _suppressed = len(top)
+            _suppress_reason = "risk_discipline"
             top = []
     except Exception as _rde:
         LOGGER.warning("risk discipline gate failed: %s", str(_rde)[:80])
@@ -1200,6 +1216,10 @@ def run_prediction_cycle(with_diag: bool = False):
                 except Exception as _fse:
                     LOGGER.debug("feature snapshot persist skipped: %s", str(_fse)[:80])
                 saved.append(pick)
+                for _ev in symbol_evals:
+                    if _ev.get("symbol") == sym:
+                        _ev["saved"] = True
+                        _ev["prediction_id"] = pred_id
             except Exception as e:
                 import psycopg2
                 if isinstance(e, psycopg2.errors.UniqueViolation):
@@ -1209,6 +1229,7 @@ def run_prediction_cycle(with_diag: bool = False):
                 LOGGER.error("INSERT " + pick["symbol"] + ": " + str(e))
                 raise
     LOGGER.info("Cycle: " + str(len(saved)) + "/" + str(len(all_picks)) + " picks | regime: " + (regime["reason"] or "OK"))
+    _saved_ids = [p["id"] for p in saved if p.get("id")]
     # Persist cycle heartbeat even when zero picks are saved.
     try:
         with db_conn() as _hc:
@@ -1285,6 +1306,53 @@ def run_prediction_cycle(with_diag: bool = False):
             )
     except Exception as _ge:
         LOGGER.warning("Gate-outcome record failed: " + str(_ge)[:80])
+
+    # Full-detail performance log (Postgres — retained ~90d by default).
+    try:
+        from core.performance_log import log_prediction_cycle
+        _binding = resolve_binding_skip(
+            skip_counts, dedup_blocked=dedup_blocked, near_miss=closest,
+        )
+        _near_miss_log = None
+        if closest:
+            _near_miss_log = dict(closest)
+            if _near_miss_log.get("up_prob") is not None and _near_miss_log.get("min_win_proba") is not None:
+                _near_miss_log["prob_gap"] = round(
+                    _near_miss_log["up_prob"] - _near_miss_log["min_win_proba"], 4)
+            if _near_miss_log.get("confidence") is not None and _near_miss_log.get("confidence_floor") is not None:
+                _near_miss_log["conf_gap"] = round(
+                    _near_miss_log["confidence"] - _near_miss_log["confidence_floor"], 4)
+        with db_conn() as _plc:
+            _plcur = _plc.cursor()
+            log_prediction_cycle(
+                _plcur,
+                cycle_ts=int(time.time()),
+                duration_ms=int((time.time() - _cycle_started) * 1000),
+                scanned=len(symbols),
+                candidates=len(all_picks),
+                saved=len(saved),
+                dedup_blocked=dedup_blocked,
+                would_fire=len(all_picks) > 0,
+                binding_skip=_binding,
+                paused=engine_paused,
+                pause_reason=_pause.get("reason") if engine_paused else None,
+                suppressed=_suppressed,
+                suppress_reason=_suppress_reason,
+                skip_counts=dict(skip_counts),
+                near_miss=_near_miss_log,
+                regime=dict(regime) if isinstance(regime, dict) else {},
+                circuit_breaker={
+                    "active": _cb_active,
+                    "detail": _cb_detail,
+                    "floor": _cb_floor,
+                },
+                objective_mode=dict(auto_mode_state) if isinstance(auto_mode_state, dict) else {},
+                risk_block=_risk_block,
+                saved_prediction_ids=_saved_ids,
+                symbol_evals=symbol_evals,
+            )
+    except Exception as _ple:
+        LOGGER.warning("Performance log write failed: " + str(_ple)[:120])
 
     if not with_diag:
         return saved
@@ -1547,6 +1615,14 @@ def reconcile_outcomes():
                 "UPDATE predictions SET outcome=%s,exit_price=%s,pnl_pct=%s,resolved_at=%s WHERE id=%s",
                 (outcome, exit_price, pnl, now, pred_id))
         resolved += 1
+        try:
+            from core.performance_log import record_pick_resolution
+            record_pick_resolution(
+                pred_id, symbol, outcome,
+                exit_price=exit_price, pnl_pct=pnl, source="reconcile",
+            )
+        except Exception:
+            pass
         LOGGER.info("Resolved " + symbol + " " + direction + ": " + outcome + " " + str(round(pnl,2)) + "%")
         # Watchdog: fire Telegram alert immediately when pick resolves
         if outcome in ("WIN", "LOSS"):
