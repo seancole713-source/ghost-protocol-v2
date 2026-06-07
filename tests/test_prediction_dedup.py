@@ -84,6 +84,8 @@ def test_run_prediction_cycle_blocks_second_open_pick(monkeypatch):
         "scores": {},
     }
 
+    monkeypatch.setenv("STOCK_SYMBOLS", "WOLF")
+    monkeypatch.setattr(pred, "STOCK_SYMBOLS", ["WOLF"])
     monkeypatch.setattr(pred, "enforce_kill_conditions", lambda: {"paused": False})
     monkeypatch.setattr(pred, "objective_autotune_mode", lambda: "normal")
     monkeypatch.setattr(pred, "_check_regime", lambda: {"reason": "", "confidence_floor_override": 0.75})

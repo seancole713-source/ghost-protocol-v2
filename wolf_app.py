@@ -1,4 +1,5 @@
 import os, sys, time, logging, threading, hmac, secrets as _secrets
+import config.symbols  # noqa: F401 — pin official watchlist before engine imports
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Header, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware

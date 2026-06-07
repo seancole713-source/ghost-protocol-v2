@@ -46,11 +46,11 @@ FALSIFICATION_THRESHOLD: Dict[str, float] = {
     "ci_level": 0.95,
 }
 
-# Symbol universe defaults to WOLF, but can be expanded via STOCK_SYMBOLS.
+# Symbol universe — official watchlist (config/symbols.py); env override in tests only.
+from config.symbols import _env_stock_symbols
+
 CRYPTO_SYMBOLS: List[str] = []
-STOCK_SYMBOLS: List[str] = [
-    s.strip().upper() for s in os.getenv("STOCK_SYMBOLS", "WOLF").split(",") if s.strip()
-] or ["WOLF"]
+STOCK_SYMBOLS: List[str] = _env_stock_symbols() or ["WOLF"]
 
 # Priority order for binding-gate resolution. Higher items win over raw skip_counts
 # tallies — e.g. 17× no_v3_model (untrained watchlist symbols) must not mask
@@ -1134,21 +1134,9 @@ def run_prediction_cycle(with_diag: bool = False):
     regime = _check_regime()
     regime['confidence_floor_override'] = _cb_floor
     # WOLF-only: only stocks; skip pre-market (T07: features degrade before open).
-    symbols = ([(s.strip(),"stock") for s in STOCK_SYMBOLS if s.strip()]
+    # Scan configured watchlist only (no portfolio expansion).
+    symbols = ([(s.strip(), "stock") for s in STOCK_SYMBOLS if s.strip()]
                if (_is_market_hours() or not _is_premarket()) else [])
-    # AUTO-INCLUDE portfolio holdings — if you own it, Ghost watches it
-    try:
-        with db_conn() as _pc:
-            _cur = _pc.cursor()
-            _cur.execute("SELECT DISTINCT symbol, asset_type FROM user_portfolio")
-            for _sym, _at in _cur.fetchall():
-                _sym = _sym.strip().upper()
-                _at = (_at or "stock").strip()
-                if not any(s == _sym for s, _ in symbols):
-                    symbols.append((_sym, _at))
-                    LOGGER.info("Portfolio symbol added to scan: " + _sym)
-    except Exception as _pe:
-        LOGGER.warning("Could not load portfolio symbols: " + str(_pe))
     skip_counts = {}
     all_picks = []
     closest = None   # silence logging (audit §3): track the highest-up_prob candidate

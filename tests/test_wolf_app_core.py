@@ -331,6 +331,8 @@ def test_v3_status_system_health_block_healthy(monkeypatch):
     """The system block rolls up engine/kill/coverage/activity/pnl into a
     healthy snapshot when every signal is nominal."""
     import core.signal_engine as _se, core.prediction as _pred
+    monkeypatch.setenv("STOCK_SYMBOLS", "WOLF")
+    monkeypatch.setattr(_pred, "STOCK_SYMBOLS", ["WOLF"])
     monkeypatch.setattr(_se, "get_model_status",
                         lambda: {"trained": True, "models": 3, "symbols": {"WOLF": {"accuracy": 70.0}}})
     monkeypatch.setattr(_pred, "engine_pause_state", lambda: {"paused": False})
@@ -975,10 +977,10 @@ def test_try_yfinance_ohlcv_returns_none_when_yfinance_empty(monkeypatch):
 
 # ── v3_train watchlist collection ──────────────────────────────────────────
 
-def test_v3_train_collect_symbols_includes_env_and_portfolio(monkeypatch):
-    """Training symbols include configured stocks plus portfolio holdings."""
+def test_v3_train_collect_symbols_uses_env_watchlist_only(monkeypatch):
+    """Training symbols match configured STOCK_SYMBOLS (portfolio does not expand watchlist)."""
     monkeypatch.setenv("STOCK_SYMBOLS", "TSLA,META,WOLF,AMZN,T")
-    portfolio_rows = [("NVDA",), ("AAPL",), ("GOOG",), ("MSFT",), ("AMD",), ("INTC",), ("CRM",)]
+    portfolio_rows = [("NVDA",), ("AAPL",)]
     cur = QueueCursor(fetchall_values=[portfolio_rows])
     _patch_db_conn_with_cursor(monkeypatch, cur)
     out = wolf_app._v3_train_collect_symbols()
@@ -988,18 +990,11 @@ def test_v3_train_collect_symbols_includes_env_and_portfolio(monkeypatch):
         ("WOLF", "stock"),
         ("AMZN", "stock"),
         ("T", "stock"),
-        ("NVDA", "stock"),
-        ("AAPL", "stock"),
-        ("GOOG", "stock"),
-        ("MSFT", "stock"),
-        ("AMD", "stock"),
-        ("INTC", "stock"),
-        ("CRM", "stock"),
     ]
 
 
-def test_v3_train_collect_symbols_falls_back_to_wolf_when_all_empty(monkeypatch):
-    """Empty env + DB error still returns WOLF as final safety net."""
+def test_v3_train_collect_symbols_falls_back_to_official_when_empty(monkeypatch):
+    """Empty env uses the code-defined official watchlist."""
     monkeypatch.setenv("STOCK_SYMBOLS", "")
 
     class _BrokenCtx:
@@ -1011,7 +1006,8 @@ def test_v3_train_collect_symbols_falls_back_to_wolf_when_all_empty(monkeypatch)
 
     monkeypatch.setattr(wolf_app, "db_conn", lambda: _BrokenCtx())
     out = wolf_app._v3_train_collect_symbols()
-    assert out == [("WOLF", "stock")]
+    from config.symbols import OFFICIAL_WATCHLIST
+    assert out == [(sym, "stock") for sym in OFFICIAL_WATCHLIST]
 
 
 # ── Polygon fallback (PR fix/wolf-training-polygon-fallback) ─────────────

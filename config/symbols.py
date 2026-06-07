@@ -1,8 +1,8 @@
 """
 V3 validated strategies and symbol lists.
 
-Ghost watches a configurable stock watchlist (STOCK_SYMBOLS + portfolio holdings).
-WOLF remains the default anchor symbol when nothing else is configured.
+Ghost watches the official stock watchlist (OFFICIAL_WATCHLIST / STOCK_SYMBOLS).
+WOLF remains the default anchor when the list resolves empty.
 """
 from __future__ import annotations
 
@@ -14,6 +14,17 @@ if TYPE_CHECKING:
     pass
 
 _WATCHLIST_SKIP = frozenset({"GHOST", "TEST"})
+
+# Official live watchlist — Ghost scans and forecasts these symbols only.
+# Sourced from investor watchlist (mobile app screenshots, Jun 2026).
+OFFICIAL_WATCHLIST: Tuple[str, ...] = (
+    "ABCL", "AI", "AMC", "ARCT", "ARDT", "BB", "BILL", "BMBL", "CLNE", "CVNA",
+    "DJT", "DUOL", "FLNC", "GME", "HIMS", "HOOD", "IQ", "ITRI", "LCID", "LU",
+    "LULU", "NOK", "ODD", "OPK", "OPTU", "PFE", "PLTK", "PLUG", "RDFN", "RIG",
+    "RIOT", "SABR", "SAP", "SNAP", "SOUN", "SPCE", "STUB", "TAL", "TGTX", "TLRY",
+    "TME", "WOLF", "XPO", "YMM",
+)
+OFFICIAL_WATCHLIST_CSV = ",".join(OFFICIAL_WATCHLIST)
 
 # Direction override constant — retained for legacy compatibility; no active strategy
 # currently uses it.
@@ -62,33 +73,38 @@ V3_WHITELIST_STOCKS: FrozenSet[str] = frozenset(['WOLF'])
 # DEFAULT EDGE SYMBOLS
 # Single source of truth for the EDGE_SYMBOLS env var fallback.
 # =============================================================================
-DEFAULT_EDGE_SYMBOLS = "WOLF"
+DEFAULT_EDGE_SYMBOLS = OFFICIAL_WATCHLIST_CSV
 
 # Cached resolved edge set (computed once, used everywhere)
 _RESOLVED_EDGE_SET: Optional[FrozenSet[str]] = None
 
 
+def _env_watchlist_override_allowed() -> bool:
+    return os.getenv("GHOST_ALLOW_ENV_WATCHLIST", "").strip().lower() in ("1", "true", "yes")
+
+
+def apply_official_watchlist_env() -> None:
+    """Pin STOCK_SYMBOLS to the code-defined watchlist (prod default)."""
+    if _env_watchlist_override_allowed():
+        return
+    os.environ["STOCK_SYMBOLS"] = OFFICIAL_WATCHLIST_CSV
+    global _RESOLVED_EDGE_SET
+    _RESOLVED_EDGE_SET = None
+
+
 def _env_stock_symbols() -> List[str]:
-    raw = os.getenv("STOCK_SYMBOLS", os.getenv("EDGE_SYMBOLS", "WOLF"))
-    syms = [s.strip().upper() for s in (raw or "WOLF").split(",") if s.strip()]
-    return syms or ["WOLF"]
+    raw = os.getenv("STOCK_SYMBOLS", os.getenv("EDGE_SYMBOLS", "")).strip()
+    if raw:
+        syms = [s.strip().upper() for s in raw.split(",") if s.strip()]
+        if syms:
+            return syms
+    return list(OFFICIAL_WATCHLIST)
 
 
 def watchlist_symbol_pairs(include_portfolio: bool = True) -> List[Tuple[str, str]]:
-    """Configured watchlist as (symbol, asset_type) pairs — env + optional portfolio."""
+    """Configured watchlist as (symbol, asset_type) pairs — official list only."""
+    del include_portfolio  # portfolio rows do not expand scan/predict universe
     stocks: List[Tuple[str, str]] = [(sym, "stock") for sym in _env_stock_symbols()]
-    if include_portfolio:
-        try:
-            from core.db import db_conn
-            with db_conn() as conn:
-                cur = conn.cursor()
-                cur.execute("SELECT DISTINCT symbol FROM user_portfolio")
-                for (sym,) in cur.fetchall():
-                    entry = (str(sym or "").strip().upper(), "stock")
-                    if entry[0] and entry not in stocks:
-                        stocks.append(entry)
-        except Exception:
-            pass
     seen = set()
     deduped: List[Tuple[str, str]] = []
     for sym, atype in stocks:
@@ -162,3 +178,6 @@ def v3_strategies_as_dicts() -> Dict[str, dict]:
             d['asset_type'] = vs.asset_type
         result[sym] = d
     return result
+
+
+apply_official_watchlist_env()
