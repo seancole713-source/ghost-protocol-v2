@@ -381,6 +381,14 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
 .df-head{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:12px;margin-bottom:16px}
 .df-head-title{font-size:13px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#e2e8f0}
 .df-head-sub{font-size:11px;color:#64748b;margin-top:4px;max-width:520px;line-height:1.5}
+.df-tools{display:flex;align-items:center;gap:8px}
+.df-toggle{
+  border:1px solid #334155;background:#0b1220;color:#93c5fd;
+  font-size:10px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;
+  border-radius:999px;padding:7px 12px;cursor:pointer;transition:all .15s ease;
+}
+.df-toggle:hover{border-color:#60a5fa;color:#dbeafe}
+.df-toggle.active{background:linear-gradient(135deg,#1d4ed8,#2563eb);border-color:#93c5fd;color:#fff;box-shadow:0 0 18px rgba(37,99,235,.35)}
 .df-coverage{
   display:flex;flex-wrap:wrap;gap:10px;margin-bottom:16px;padding:12px 14px;border-radius:14px;
   background:rgba(15,23,42,.6);border:1px solid rgba(148,163,184,.12);
@@ -415,6 +423,13 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
 .df-pane-h.predicted{color:#86efac}
 .df-pane-tag{font-size:9px;padding:2px 7px;border-radius:999px;background:rgba(255,255,255,.06);color:#64748b;font-weight:600}
 .df-canvas-wrap{height:210px;position:relative}
+.df-overlay-wrap{display:none;margin-top:10px}
+.df-overlay-pane{
+  background:linear-gradient(180deg,rgba(255,255,255,.03) 0%,rgba(0,0,0,.2) 100%);
+  border:1px solid rgba(255,255,255,.06);border-radius:16px;padding:14px 16px 12px;min-height:240px;position:relative;overflow:hidden;
+}
+.df-overlay-pane::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;border-radius:16px 16px 0 0;background:linear-gradient(90deg,#ef4444,#22c55e)}
+.df-overlay-note{font-size:10px;color:#64748b;margin-bottom:10px}
 .df-table-wrap{margin-top:18px;overflow-x:auto;border-radius:14px;border:1px solid rgba(255,255,255,.06);background:rgba(0,0,0,.35)}
 .df-table{width:100%;border-collapse:collapse;font-size:11px}
 .df-table th,.df-table td{padding:12px 14px;border-bottom:1px solid rgba(255,255,255,.05);text-align:left;vertical-align:middle}
@@ -579,11 +594,14 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
           <div class="df-head-title">24-hour ahead session forecast</div>
           <div class="df-head-sub">Ghost predicts next session open, peak (high), and closing prices at the prior close. Scores show open rate, peak rate, and close rate (% closeness).</div>
         </div>
+        <div class="df-tools">
+          <button type="button" id="df-overlay-toggle" class="df-toggle" onclick="toggleDfOverlay()">Overlay compare</button>
+        </div>
       </div>
       <div id="df-coverage" class="df-coverage"></div>
       <div id="df-chips" class="df-chips"></div>
       <div id="df-summary" class="df-summary">Loading watchlist…</div>
-      <div class="df-split">
+      <div class="df-split" id="df-split">
         <div class="df-pane actual">
           <div class="df-pane-h actual">Actual <span class="df-pane-tag">what happened</span></div>
           <div class="df-canvas-wrap"><canvas id="df-actual-chart"></canvas></div>
@@ -591,6 +609,13 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
         <div class="df-pane predicted">
           <div class="df-pane-h predicted">Ghost prediction <span class="df-pane-tag">issued prior close</span></div>
           <div class="df-canvas-wrap"><canvas id="df-pred-chart"></canvas></div>
+        </div>
+      </div>
+      <div id="df-overlay-wrap" class="df-overlay-wrap">
+        <div class="df-overlay-pane">
+          <div class="df-pane-h" style="color:#cbd5e1">Overlay comparison <span class="df-pane-tag">actual vs predicted</span></div>
+          <div class="df-overlay-note">Solid lines are actual. Dashed lines are Ghost predictions.</div>
+          <div class="df-canvas-wrap"><canvas id="df-overlay-chart"></canvas></div>
         </div>
       </div>
       <div id="df-table-wrap" class="df-table-wrap"></div>
@@ -1712,6 +1737,8 @@ function renderNews(n){
 /* ─── Daily forecast scorecard — premium panel ─── */
 var _dfActiveSymbol = 'WOLF';
 var _dfUniverse = null;
+var _dfOverlayOn = false;
+var _dfLastDays = [];
 
 function _dfRatePill(pct){
   if(pct == null || isNaN(pct)) return '<span class="df-rate-pill df-rate-na">—</span>';
@@ -1775,6 +1802,49 @@ function _renderDfLineChart(canvasId, days){
     { label: 'Close', data: resolved.map(function(d){ return d[src].close; }), borderColor: cClose, borderDash: [2,3], borderWidth: 2, pointRadius: 2, tension: 0.25, fill: false }
   ];
   _charts[key] = new Chart(ctx, { type: 'line', data: { labels: labels, datasets: ds }, options: _dfChartOptions(cOpen) });
+}
+
+function _renderDfOverlayChart(days){
+  var canvas = document.getElementById('df-overlay-chart');
+  if(!canvas) return;
+  var ctx = canvas.getContext('2d');
+  var key = 'df-overlay-chart';
+  if(_charts[key]){ _charts[key].destroy(); _charts[key] = null; }
+  var resolved = (days || []).filter(function(d){ return d.resolved && d.actual && d.predicted; });
+  if(!resolved.length){
+    _charts[key] = new Chart(ctx, { type: 'line', data: { labels: [], datasets: [] }, options: _dfChartOptions('#666') });
+    return;
+  }
+  var labels = resolved.map(function(d){ return d.target_date; });
+  var ds = [
+    { label: 'Actual Open', data: resolved.map(function(d){ return d.actual.open; }), borderColor: '#ef4444', borderWidth: 2, pointRadius: 2, tension: 0.25, fill: false },
+    { label: 'Actual Peak', data: resolved.map(function(d){ return d.actual.high; }), borderColor: '#f87171', borderWidth: 1.8, pointRadius: 2, tension: 0.25, fill: false },
+    { label: 'Actual Close', data: resolved.map(function(d){ return d.actual.close; }), borderColor: '#fb923c', borderWidth: 2, pointRadius: 2, tension: 0.25, fill: false },
+    { label: 'Pred Open', data: resolved.map(function(d){ return d.predicted.open; }), borderColor: '#22c55e', borderDash: [7,4], borderWidth: 2, pointRadius: 2, tension: 0.25, fill: false },
+    { label: 'Pred Peak', data: resolved.map(function(d){ return d.predicted.high; }), borderColor: '#4ade80', borderDash: [7,4], borderWidth: 1.8, pointRadius: 2, tension: 0.25, fill: false },
+    { label: 'Pred Close', data: resolved.map(function(d){ return d.predicted.close; }), borderColor: '#86efac', borderDash: [7,4], borderWidth: 2, pointRadius: 2, tension: 0.25, fill: false }
+  ];
+  _charts[key] = new Chart(ctx, { type: 'line', data: { labels: labels, datasets: ds }, options: _dfChartOptions('#22c55e') });
+}
+
+function _applyDfViewMode(){
+  var split = document.getElementById('df-split');
+  var overlay = document.getElementById('df-overlay-wrap');
+  var btn = document.getElementById('df-overlay-toggle');
+  if(split) split.style.display = _dfOverlayOn ? 'none' : 'grid';
+  if(overlay) overlay.style.display = _dfOverlayOn ? 'block' : 'none';
+  if(btn){
+    btn.classList.toggle('active', _dfOverlayOn);
+    btn.textContent = _dfOverlayOn ? 'Split view' : 'Overlay compare';
+  }
+}
+
+function toggleDfOverlay(){
+  _dfOverlayOn = !_dfOverlayOn;
+  _applyDfViewMode();
+  if(_dfOverlayOn){
+    _renderDfOverlayChart(_dfLastDays || []);
+  }
 }
 
 function _renderDfTable(days){
@@ -1877,6 +1947,8 @@ async function loadDailyForecastScorecard(){
         + 'Currently only <b>' + ((_dfUniverse && _dfUniverse.trained_count) || 0) + '</b> of <b>' + ((_dfUniverse && _dfUniverse.watchlist_count) || 0) + '</b> symbols have models.';
       _renderDfLineChart('df-actual-chart', []);
       _renderDfLineChart('df-pred-chart', []);
+      _dfLastDays = [];
+      _renderDfOverlayChart([]);
       if(wrap) wrap.innerHTML = '<div class="df-empty-state"><b>' + escHtml(sym) + ' — model required</b>Train this symbol in /admin to unlock open, peak, and close forecasts.</div>';
       return;
     }
@@ -1887,8 +1959,10 @@ async function loadDailyForecastScorecard(){
       + (sm.direction_hit_rate_pct != null ? ' · direction ' + sm.direction_hit_rate_pct + '%' : '')
       + (sm.model_accuracy_holdout_pct != null ? ' · holdout ' + sm.model_accuracy_holdout_pct + '%' : '');
     var days = g.days || [];
+    _dfLastDays = days;
     _renderDfLineChart('df-actual-chart', days);
     _renderDfLineChart('df-pred-chart', days);
+    _renderDfOverlayChart(days);
     _renderDfTable(days);
   }catch(e){
     sumEl.innerHTML = 'Forecast scorecard error.';
@@ -2475,6 +2549,8 @@ async function load(){
 
     _renderDeployBadge(ctxPack.deploy);
     _renderEngineBadge(ctxPack.v3);
+    // Keep signal-history summary in sync with current engine state on each load.
+    loadSignalHistory();
     renderGhostScore(ghostScore, watching);
     renderHero(price, watching);
     renderPlay(picks, watching);
@@ -2654,6 +2730,15 @@ async function loadSignalHistory(){
     if(!hist.length){ listEl.innerHTML = '<div class="empty"><div class="ico">&#9203;</div>No scans recorded yet — the recorder logs one row per cycle.</div>'; return; }
     var cn = g.closest_near_miss;
     var liveEng = window._liveEngineState;
+    // If signal history renders before the first hero/context load completes,
+    // pull engine state directly so the summary always shows current state.
+    if(!liveEng){
+      try{
+        var v3 = await _fetchJson('/api/v3/status', {system:{engine:null}});
+        liveEng = v3 && v3.system ? v3.system.engine : null;
+        if(liveEng) window._liveEngineState = liveEng;
+      }catch(_e){}
+    }
     var liveNote = liveEng
       ? (liveEng.paused
         ? ' <span class="neg">Current engine: paused (' + escHtml(liveEng.pause_reason || 'cooldown') + ').</span>'
@@ -2699,6 +2784,7 @@ setInterval(function(){
 
 load();
 _deferBelowFold(function(){
+  _applyDfViewMode();
   loadPortfolio();
   loadEquityChart();
   loadShortInterest();
