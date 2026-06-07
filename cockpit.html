@@ -338,9 +338,21 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
 .donut-total-lbl{font-size:11px;color:#888}
 /* Section consistency (roadmap #2d): frame the bare list sections so they match
    the carded sections' depth/radius. */
-#sh-list, .pj-list{background:#0d0d0d;border:1px solid #23232e;border-radius:16px;padding:6px 12px;
+#sh-list, .pj-list, #pl-open, #pl-resolved, #pl-cycles, #pl-cycle-detail{background:#0d0d0d;border:1px solid #23232e;border-radius:16px;padding:6px 12px;
   box-shadow:inset 0 1px 0 rgba(255,255,255,.03)}
-#sh-list .tbl, .pj-list .empty{margin:6px 0}
+#sh-list .tbl, .pj-list .empty, #pl-open .tbl, #pl-resolved .tbl, #pl-cycles .tbl{margin:6px 0}
+.pl-kpi{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:14px}
+.pl-kpi .k{background:#111;border:1px solid #252530;border-radius:12px;padding:12px 14px}
+.pl-kpi .k .v{font-size:22px;font-weight:800;letter-spacing:-.4px;margin-top:4px}
+.pl-kpi .k .l{font-size:10px;font-weight:700;letter-spacing:1px;color:#666;text-transform:uppercase}
+.pl-pills{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.pl-pill{font-size:11px;font-weight:700;letter-spacing:.4px;padding:5px 12px;border-radius:999px;border:1px solid #333;background:#111;color:#888;cursor:pointer}
+.pl-pill.active{background:#1a1530;border-color:#6d28d9;color:#e9e5ff}
+.pl-cycle-row{cursor:pointer}
+.pl-cycle-row:hover td{background:rgba(124,58,237,.06)}
+#pl-cycle-detail{display:none;margin-top:12px}
+#pl-cycle-detail.open{display:block}
+.pl-detail-head{font-size:11px;color:#888;margin:8px 4px 10px}
 /* Live auto-refresh indicator (roadmap #3c) */
 .auto-status{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:700;letter-spacing:.5px;color:#86efac;background:#0a2a14;border:1px solid #14532d;border-radius:14px;padding:4px 10px;margin-right:8px;white-space:nowrap;vertical-align:middle}
 .auto-status.paused{color:#facc15;background:#1a1a06;border-color:#5b4112}
@@ -782,6 +794,25 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
     <div class="sec-label">Signal History &middot; every scan</div>
     <div id="sh-summary" class="kv" style="margin-bottom:10px;color:#888"></div>
     <div id="sh-list"><div class="empty"><div class="ico">&#9203;</div>Loading signal history…</div></div>
+  </section>
+
+  <!-- ─── Performance Log (backend — full cycle + pick progress) ─── -->
+  <section class="block" id="performance-log-section">
+    <div class="sec-label">Performance Log &middot; prediction progress</div>
+    <div class="pl-pills" id="pl-days-pills">
+      <button type="button" class="pl-pill active" data-days="7" onclick="setPerfLogDays(7)">7 days</button>
+      <button type="button" class="pl-pill" data-days="14" onclick="setPerfLogDays(14)">14 days</button>
+      <button type="button" class="pl-pill" data-days="30" onclick="setPerfLogDays(30)">30 days</button>
+    </div>
+    <div id="pl-summary" class="pl-kpi"></div>
+    <div id="pl-meta" class="kv" style="margin-bottom:10px;color:#888"></div>
+    <div class="sec-label" style="margin:16px 0 8px;font-size:9px">Open picks</div>
+    <div id="pl-open"><div class="empty"><div class="ico">&#9203;</div>Loading…</div></div>
+    <div class="sec-label" style="margin:16px 0 8px;font-size:9px">Recently resolved</div>
+    <div id="pl-resolved"><div class="empty"><div class="ico">&#9203;</div>Loading…</div></div>
+    <div class="sec-label" style="margin:16px 0 8px;font-size:9px">Scan cycles <span style="color:#555;font-weight:400">· click row for per-symbol detail</span></div>
+    <div id="pl-cycles"><div class="empty"><div class="ico">&#9203;</div>Loading cycles…</div></div>
+    <div id="pl-cycle-detail"></div>
   </section>
 
   <!-- ─── Performance Attribution (roadmap #4b — what separates winners) ─── -->
@@ -2678,8 +2709,9 @@ async function load(){
 
     _renderDeployBadge(ctxPack.deploy);
     _renderEngineBadge(ctxPack.v3);
-    // Keep signal-history summary in sync with current engine state on each load.
+    // Keep signal-history + performance-log in sync with engine state on each load.
     loadSignalHistory();
+    loadPerformanceLog();
     renderGhostScore(ghostScore, watching);
     renderHero(price, watching);
     renderPlay(picks, watching);
@@ -2848,6 +2880,172 @@ async function loadAttribution(){
   }catch(e){ featEl.innerHTML = '<div class="empty">Attribution error.</div>'; }
 }
 
+var _plDays = 7;
+var _plSelectedCycle = null;
+
+function setPerfLogDays(d){
+  _plDays = d;
+  document.querySelectorAll('#pl-days-pills .pl-pill').forEach(function(b){
+    b.classList.toggle('active', Number(b.getAttribute('data-days')) === d);
+  });
+  loadPerformanceLog();
+}
+
+function _plConf(v){
+  if(v == null) return '—';
+  return (Number(v) * 100).toFixed(0) + '%';
+}
+
+function _plNearMiss(nm){
+  if(!nm || nm.up_prob == null) return '—';
+  var s = 'p=' + nm.up_prob;
+  if(nm.min_win_proba != null) s += '/' + nm.min_win_proba;
+  if(nm.prob_gap != null){
+    s += ' <span class="' + (nm.prob_gap >= 0 ? 'pos' : 'neg') + '">' + (nm.prob_gap >= 0 ? '+' : '') + nm.prob_gap + '</span>';
+  }
+  if(nm.symbol) s = escHtml(nm.symbol) + ' ' + s;
+  return s;
+}
+
+function _renderPlSummary(data){
+  var cyc = data.cycles || {};
+  var wr = data.recent_win_rate;
+  var wrPct = wr == null ? '—' : (wr * 100).toFixed(1) + '%';
+  var bind = cyc.binding_gates || {};
+  var bindTxt = Object.keys(bind).slice(0, 3).map(function(k){ return k + ' (' + bind[k] + ')'; }).join(', ') || '—';
+  return ''
+    + '<div class="k"><div class="l">Open picks</div><div class="v">' + (data.open_count || 0) + '</div></div>'
+    + '<div class="k"><div class="l">Win rate (' + data.days + 'd)</div><div class="v">' + wrPct + '</div></div>'
+    + '<div class="k"><div class="l">Scan cycles</div><div class="v">' + (cyc.count || 0) + '</div></div>'
+    + '<div class="k"><div class="l">Picks saved</div><div class="v">' + (cyc.picks_saved || 0) + '</div></div>'
+    + '<div class="k"><div class="l">Would-fire cycles</div><div class="v">' + (cyc.would_fire_cycles || 0) + '</div></div>'
+    + '<div class="k"><div class="l">Avg scan ms</div><div class="v">' + (cyc.avg_duration_ms ? Math.round(cyc.avg_duration_ms) : '—') + '</div></div>'
+    + '<div class="k" style="grid-column:1/-1"><div class="l">Top binding gates</div><div class="v" style="font-size:13px;font-weight:600;color:#aaa">' + escHtml(bindTxt) + '</div></div>';
+}
+
+async function loadPerfCycleDetail(cycleId){
+  var detailEl = document.getElementById('pl-cycle-detail');
+  if(!detailEl) return;
+  if(_plSelectedCycle === cycleId){
+    _plSelectedCycle = null;
+    detailEl.classList.remove('open');
+    detailEl.innerHTML = '';
+    return;
+  }
+  _plSelectedCycle = cycleId;
+  detailEl.classList.add('open');
+  detailEl.innerHTML = '<div class="empty"><div class="ico">&#9203;</div>Loading cycle #' + cycleId + '…</div>';
+  try{
+    var g = await fetch('/api/wolf/performance-log/cycles/' + cycleId + '?symbol_limit=80')
+      .then(function(r){ return r.json(); });
+    if(!g || g.ok !== true || !g.cycle){
+      detailEl.innerHTML = '<div class="empty">Cycle detail unavailable.</div>';
+      return;
+    }
+    var c = g.cycle;
+    var evals = c.symbol_evals || [];
+    var head = '<div class="pl-detail-head">Cycle #' + c.id + ' &middot; ' + fmtTimeAgo(c.cycle_ts)
+      + ' &middot; scanned ' + c.scanned + ' &middot; saved ' + c.saved
+      + (c.suppressed ? ' &middot; suppressed ' + c.suppressed + (c.suppress_reason ? ' (' + escHtml(c.suppress_reason) + ')' : '') : '')
+      + (c.paused ? ' &middot; <span class="neg">paused</span>' : '')
+      + '</div>';
+    if(!evals.length){
+      detailEl.innerHTML = head + '<div class="empty">No symbol evaluations recorded.</div>';
+      return;
+    }
+    var rows = evals.map(function(e){
+      var status = e.saved
+        ? '<span class="pos">saved #' + (e.prediction_id || '?') + '</span>'
+        : (e.fired ? '<span class="pos">fired</span>' : (e.skip_code ? '<code>' + escHtml(e.skip_code) + '</code>' : '—'));
+      return '<tr>'
+        + '<td><b>' + escHtml(e.symbol) + '</b></td>'
+        + '<td>' + status + '</td>'
+        + '<td>' + (e.up_prob == null ? '—' : e.up_prob.toFixed(3)) + '</td>'
+        + '<td>' + _plConf(e.confidence) + '</td>'
+        + '<td>' + escHtml(e.regime_label || '—') + '</td>'
+        + '<td>' + (e.direction || '—') + '</td>'
+        + '</tr>';
+    }).join('');
+    detailEl.innerHTML = head
+      + '<table class="tbl"><thead><tr><th>Symbol</th><th>Gate</th><th>P(up)</th><th>Conf</th><th>Regime</th><th>Dir</th></tr></thead><tbody>'
+      + rows + '</tbody></table>'
+      + '<div style="text-align:center;margin:8px 0 4px"><button class="btn-add" type="button" onclick="loadPerfCycleDetail(' + cycleId + ')">Close detail</button></div>';
+  }catch(e){
+    detailEl.innerHTML = '<div class="empty">Cycle detail error.</div>';
+  }
+}
+
+async function loadPerformanceLog(){
+  var sumEl = document.getElementById('pl-summary');
+  var metaEl = document.getElementById('pl-meta');
+  var openEl = document.getElementById('pl-open');
+  var resEl = document.getElementById('pl-resolved');
+  var cycEl = document.getElementById('pl-cycles');
+  if(!sumEl || !openEl) return;
+  try{
+    var prog = await fetch('/api/wolf/performance-log/progress?days=' + _plDays)
+      .then(function(r){ return r.json(); });
+    if(!prog || prog.ok !== true){
+      sumEl.innerHTML = '';
+      metaEl.innerHTML = 'Performance log unavailable.';
+      openEl.innerHTML = resEl.innerHTML = cycEl.innerHTML = '<div class="empty">Unavailable.</div>';
+      return;
+    }
+    sumEl.innerHTML = _renderPlSummary(prog);
+    var ev = prog.events_by_type || {};
+    var evTxt = Object.keys(ev).map(function(k){ return k + ': ' + ev[k]; }).join(' · ') || 'no events yet';
+    metaEl.innerHTML = (prog.enabled === false ? '<span class="neg">Logging disabled (GHOST_PERF_LOG=off).</span> ' : '')
+      + 'Retention ~' + (prog.retention_days || 90) + 'd &middot; ' + evTxt;
+    var open = prog.open_picks || [];
+    if(!open.length){
+      openEl.innerHTML = '<div class="empty"><div class="ico">&#128202;</div>No open picks right now.</div>';
+    } else {
+      openEl.innerHTML = '<table class="tbl"><thead><tr><th>Symbol</th><th>Dir</th><th>Conf</th><th>Entry</th><th>Expires</th></tr></thead><tbody>'
+        + open.map(function(p){
+          return '<tr><td><b>' + escHtml(p.symbol) + '</b></td><td>' + escHtml(p.direction) + '</td>'
+            + '<td>' + _plConf(p.confidence) + '</td><td>' + (p.entry_price != null ? '$' + Number(p.entry_price).toFixed(2) : '—') + '</td>'
+            + '<td>' + fmtTimeAgo(p.expires_at) + '</td></tr>';
+        }).join('') + '</tbody></table>';
+    }
+    var resolved = prog.recent_resolved || [];
+    if(!resolved.length){
+      resEl.innerHTML = '<div class="empty"><div class="ico">&#128202;</div>No resolves in the last ' + _plDays + ' days.</div>';
+    } else {
+      resEl.innerHTML = '<table class="tbl"><thead><tr><th>Symbol</th><th>When</th><th>Conf</th><th>P&amp;L</th><th>Result</th></tr></thead><tbody>'
+        + resolved.slice(0, 25).map(function(p){
+          return '<tr><td><b>' + escHtml(p.symbol) + '</b></td><td>' + fmtTimeAgo(p.resolved_at || p.predicted_at) + '</td>'
+            + '<td>' + _plConf(p.confidence) + '</td><td>' + _pjPct(p.pnl_pct) + '</td>'
+            + '<td>' + _outcomeBadge(p.outcome) + '</td></tr>';
+        }).join('') + '</tbody></table>';
+    }
+    var cycData = await fetch('/api/wolf/performance-log/cycles?limit=25&since=' + (prog.since_ts || 0))
+      .then(function(r){ return r.json(); }).catch(function(){ return {ok:false}; });
+    var cycles = (cycData && cycData.ok && cycData.cycles) ? cycData.cycles : [];
+    if(!cycles.length){
+      cycEl.innerHTML = '<div class="empty"><div class="ico">&#9203;</div>No scan cycles in window — data accrues after deploy.</div>';
+    } else {
+      cycEl.innerHTML = '<table class="tbl"><thead><tr><th>When</th><th>Scanned</th><th>Cand/Saved</th><th>Binding</th><th>Near miss</th></tr></thead><tbody>'
+        + cycles.map(function(c){
+          return '<tr class="pl-cycle-row" onclick="loadPerfCycleDetail(' + c.id + ')">'
+            + '<td>' + fmtTimeAgo(c.cycle_ts) + '</td>'
+            + '<td>' + (c.scanned || 0) + '</td>'
+            + '<td>' + (c.candidates || 0) + ' / ' + (c.saved || 0)
+            + (c.dedup_blocked ? ' <span style="color:#666">(dedup ' + c.dedup_blocked + ')</span>' : '') + '</td>'
+            + '<td>' + (c.binding_skip ? '<code>' + escHtml(c.binding_skip) + '</code>' : '—')
+            + (c.paused ? '<div style="font-size:10px;color:#888">' + escHtml(c.pause_reason || 'paused') + '</div>' : '') + '</td>'
+            + '<td>' + _plNearMiss(c.near_miss) + '</td></tr>';
+        }).join('') + '</tbody></table>';
+    }
+    if(_plSelectedCycle){
+      var still = cycles.some(function(c){ return c.id === _plSelectedCycle; });
+      if(!still){ _plSelectedCycle = null; document.getElementById('pl-cycle-detail').classList.remove('open'); }
+    }
+  }catch(e){
+    sumEl.innerHTML = '';
+    openEl.innerHTML = '<div class="empty">Performance log error.</div>';
+  }
+}
+
 async function loadSignalHistory(){
   var sumEl = document.getElementById('sh-summary');
   var listEl = document.getElementById('sh-list');
@@ -2919,6 +3117,7 @@ _deferBelowFold(function(){
   loadShortInterest();
   loadPickJournal(true);
   loadSignalHistory();
+  loadPerformanceLog();
   loadAttribution();
   _populateDfSymbols().then(loadDailyForecastScorecard);
 });
@@ -2930,6 +3129,7 @@ setInterval(function(){ if(!document.hidden) loadEquityChart(); }, 120000);
 setInterval(function(){ if(!document.hidden) loadShortInterest(); }, 300000);
 setInterval(function(){ if(!document.hidden) loadPickJournal(true); }, 120000);
 setInterval(function(){ if(!document.hidden) loadSignalHistory(); }, 120000);
+setInterval(function(){ if(!document.hidden) loadPerformanceLog(); }, 120000);
 setInterval(function(){ if(!document.hidden) loadAttribution(); }, 300000);
 setInterval(function(){ if(!document.hidden) loadDailyForecastScorecard(); }, 600000);
 _renderAutoStatus();
