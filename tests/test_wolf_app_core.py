@@ -6,6 +6,14 @@ import pytest
 import wolf_app
 
 
+@pytest.fixture(autouse=True)
+def _clear_ohlcv_cache_between_tests():
+    import core.signal_engine as _se
+    _se.clear_ohlcv_cache()
+    yield
+    _se.clear_ohlcv_cache()
+
+
 class QueueCursor:
     def __init__(self, fetchall_values=None, fetchone_values=None):
         self.fetchall_values = list(fetchall_values or [])
@@ -977,7 +985,7 @@ def test_fetch_ohlcv_falls_back_to_yfinance_when_both_alpaca_feeds_empty(monkeyp
     assert rows[0]["close"] == 61.0
     # Both Alpaca feeds attempted before yfinance kicked in
     assert len(alpaca_calls) == 2 and "feed=sip" in alpaca_calls[0] and "feed=iex" in alpaca_calls[1]
-    assert yfinance_called_with == {"symbol": "WOLF", "period": "1y"}
+    assert yfinance_called_with == {"symbol": "WOLF", "period": "2y"}
 
 
 def test_try_yfinance_ohlcv_returns_none_when_yfinance_empty(monkeypatch):
@@ -1760,8 +1768,9 @@ def test_walk_forward_respects_env_min_train_override(monkeypatch):
     import numpy as np
     monkeypatch.setenv("V3_WF_MIN_TRAIN", "200")
     _install_fake_xgboost(monkeypatch)
-    X = np.zeros((127, 3))
-    y = np.array([0, 1] * 63 + [0])
+    n = 223
+    X = np.zeros((n, 3))
+    y = np.array([0, 1] * (n // 2) + [0] * (n - n // 2))
     out = _se._walk_forward_scores(X, y)
     assert out["fold_count"] == 0
 
