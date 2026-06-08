@@ -24,7 +24,7 @@ def resolution_exit(
     """Exit fill and pnl_pct for a resolved pick.
 
     WIN/LOSS use limit fills at target/stop (not the overshooting bar close).
-    EXPIRED uses the live market price at resolution time.
+    EXPIRED and WITHDRAWN use the live market price at resolution time.
     """
     if outcome == "WIN":
         exit_price = target

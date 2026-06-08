@@ -339,7 +339,9 @@ def record_pick_resolution(
     try:
         from core.db import db_conn
 
-        event_type = "pick_expired" if outcome == "EXPIRED" else "pick_resolved"
+        event_type = "pick_withdrawn" if outcome == "WITHDRAWN" else (
+            "pick_expired" if outcome == "EXPIRED" else "pick_resolved"
+        )
         with db_conn() as conn:
             cur = conn.cursor()
             log_prediction_event(

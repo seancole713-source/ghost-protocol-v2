@@ -277,3 +277,4 @@ ALL of: `Procfile` boot-echo string, `nixpacks.toml` `cache_bust` comment, and t
 | — | 06-07 | **Training reliability** — OHLCV retry/cache/2y history; watchlist peer pool; thin-ticker WF floors → **44/44 models** |
 | — | 06-07 | **RDFN scorecard fix** — daily forecast falls back to 2y history; marks delisted/stale last-trade dates |
 | — | 06-07 | **Pre-market scans** — `GHOST_PREMARKET_SCAN=1` (default): watchlist scans 4:00–9:30 AM CT, extended-session gap overlay, +3% confidence floor bump |
+| — | 06-07 | **Open pick review** — `GHOST_OPEN_PICK_REVIEW=1`: withdraw (`WITHDRAWN`) when model flips; supersede on level/confidence shift; Telegram notify |

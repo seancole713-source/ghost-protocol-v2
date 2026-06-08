@@ -1061,7 +1061,7 @@ function renderOutcomeDonut(recent){
   if(!sec || !canvas) return;
   var trades = (recent && recent.trades) || [];
   var w = 0, l = 0, e = 0;
-  trades.forEach(function(t){ if(t.outcome === 'WIN') w++; else if(t.outcome === 'LOSS') l++; else if(t.outcome === 'EXPIRED') e++; });
+  trades.forEach(function(t){ if(t.outcome === 'WIN') w++; else if(t.outcome === 'LOSS') l++; else if(t.outcome === 'EXPIRED' || t.outcome === 'WITHDRAWN') e++; });
   var total = w + l + e;
   if(total === 0){ sec.style.display = 'none'; return; }
   sec.style.display = '';
@@ -1480,7 +1480,7 @@ function renderPlay(picks, watching){
           : 'US market is <b>closed</b>. Regular hours: Mon–Fri 9:30 AM – 4:00 PM ET.';
     sg.innerHTML = '<div class="info-box"><b>No WOLF play right now.</b><br><br>'
       + sessMsg
-      + '<br><br>Next prediction cycle runs every 30 min during market and pre-market hours.</div>';
+      + '<br><br>Ghost re-scans every ~30 min and <b>withdraws</b> open picks if the model changes mind. Next cycle runs every 30 min during market and pre-market hours.</div>';
     return;
   }
   var top = stocks.sort(function(a,b){return b.confidence - a.confidence})[0];
@@ -1590,7 +1590,7 @@ function renderPredictionChart(history, predictions){
     var color = buy ? 'rgba(34,197,94,0.30)' : 'rgba(255,59,59,0.30)';
     if(p.outcome === 'WIN'){ color = 'rgba(34,197,94,0.45)'; }
     else if(p.outcome === 'LOSS'){ color = 'rgba(255,59,59,0.40)'; }
-    else if(p.outcome === 'EXPIRED'){ color = 'rgba(120,120,120,0.20)'; }
+    else if(p.outcome === 'EXPIRED' || p.outcome === 'WITHDRAWN'){ color = p.outcome === 'WITHDRAWN' ? 'rgba(255,180,60,0.25)' : 'rgba(120,120,120,0.20)'; }
     var x0 = Math.max(t0, p.predicted_at) * 1000;
     var x1 = Math.min(tN, p.expires_at) * 1000;
     bandDatasets.push({
@@ -1612,7 +1612,7 @@ function renderPredictionChart(history, predictions){
     var dot = {x:p.predicted_at*1000, y:p.entry_price || (hi+lo)/2};
     if(p.outcome === 'WIN') dotDatasets.win.push(dot);
     else if(p.outcome === 'LOSS') dotDatasets.loss.push(dot);
-    else if(p.outcome === 'EXPIRED') dotDatasets.expired.push(dot);
+    else if(p.outcome === 'EXPIRED' || p.outcome === 'WITHDRAWN') dotDatasets.expired.push(dot);
     else dotDatasets.open.push(dot);
   });
 
@@ -1666,7 +1666,7 @@ function renderPredictionChart(history, predictions){
   if(dotDatasets.win.length) datasets.push({type:'scatter',data:dotDatasets.win,backgroundColor:'#22c55e',pointRadius:5,pointHoverRadius:7,label:'WIN'});
   if(dotDatasets.loss.length) datasets.push({type:'scatter',data:dotDatasets.loss,backgroundColor:'#ff3b3b',pointRadius:5,pointHoverRadius:7,label:'LOSS'});
   if(dotDatasets.open.length) datasets.push({type:'scatter',data:dotDatasets.open,backgroundColor:'#60a5fa',pointRadius:5,pointHoverRadius:7,label:'OPEN'});
-  if(dotDatasets.expired.length) datasets.push({type:'scatter',data:dotDatasets.expired,backgroundColor:'#888',pointRadius:4,pointHoverRadius:6,label:'EXPIRED'});
+  if(dotDatasets.expired.length) datasets.push({type:'scatter',data:dotDatasets.expired,backgroundColor:'#888',pointRadius:4,pointHoverRadius:6,label:'EXP/WDR'});
 
   _charts.pred = new Chart(ctx, {
     type:'line',
@@ -3108,7 +3108,7 @@ function _renderPjMetrics(m){
 }
 
 function _outcomeBadge(o){
-  var map = {WIN:['#1ec77d','WIN'], LOSS:['#ff4d4f','LOSS'], EXPIRED:['#8b96a8','EXP']};
+  var map = {WIN:['#1ec77d','WIN'], LOSS:['#ff4d4f','LOSS'], EXPIRED:['#8b96a8','EXP'], WITHDRAWN:['#ffb84d','WDR']};
   if(!o) return '<span style="color:#f5a623;font-weight:600">OPEN</span>';
   var x = map[o] || ['#8b96a8', o];
   return '<span style="color:' + x[0] + ';font-weight:700">' + x[1] + '</span>';

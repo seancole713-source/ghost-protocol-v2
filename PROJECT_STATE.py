@@ -248,6 +248,18 @@ FAILURES = """
 # ============================================================
 
 SESSION_LOG = """
+--- 2026-06-07 | Open pick review (change mind mid-trade) ---
+Context: operator wanted Ghost always tracking — withdraw or refresh when live scans
+no longer support an open pick (not locked until expiry).
+
+Shipped:
+  - core/pick_review.py — review_open_picks each cycle before save
+  - Outcome WITHDRAWN (mark-to-market P&L, not WIN/LOSS)
+  - Withdraw on: regime gate, prob_low, meta gate, confidence floor, supersede on
+    entry move (GHOST_SUPERSEDE_ENTRY_PCT) or confidence shift (GHOST_SUPERSEDE_CONF_DELTA)
+  - GHOST_WITHDRAW_MIN_AGE_MIN=15 grace after fire; GHOST_WITHDRAW_NOTIFY=1 Telegram
+  - Ghost Ask + cockpit WITHDRAWN styling
+
 --- 2026-06-07 | Pre-market watchlist scans ---
 Context: operator asked Ghost to include pre-market (previously scans skipped 4:00-9:30 AM CT).
 

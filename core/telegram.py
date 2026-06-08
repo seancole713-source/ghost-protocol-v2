@@ -85,6 +85,18 @@ def send_morning_card(picks, week_stats=None, is_update=False):
         parts.append("All-time: " + str(week_stats.get("alltime_wr", 0)) + "% accuracy")
     return _send(NL.join(parts))
 
+def send_pick_withdrawn(symbol, reason, entry, exit_price, pnl_pct):
+    """Alert when Ghost withdraws an open pick mid-trade."""
+    sign = "+" if float(pnl_pct or 0) >= 0 else ""
+    parts = [
+        "<b>Ghost withdrew " + str(symbol) + " pick</b>",
+        "Reason: " + str(reason).replace("_", " "),
+        "Was: " + _fmt(float(entry or 0)) + " → now " + _fmt(float(exit_price or 0)),
+        "Mark: " + sign + str(round(float(pnl_pct or 0), 2)) + "% (not a WIN/LOSS — signal withdrawn)",
+        "Ghost keeps scanning; a fresh pick may appear if gates clear again.",
+    ]
+    return _send(NL.join(parts))
+
 def send_position_alert(symbol, direction, outcome, entry, exit_price, pnl_pct, usd_out):
     label = "TARGET HIT" if outcome == "WIN" else "STOPPED OUT"
     sign = "+" if pnl_pct >= 0 else ""

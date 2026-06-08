@@ -1209,12 +1209,20 @@ def run_prediction_cycle(with_diag: bool = False):
         LOGGER.warning("risk discipline gate failed: %s", str(_rde)[:80])
     saved = []
     dedup_blocked = 0
+    withdrawn_picks: List[Dict[str, Any]] = []
     now_ts = int(time.time())
     with db_conn() as conn:
         cur = conn.cursor()
         # One writer at a time — prevents duplicate open picks when market scan,
         # morning card, and /api/run-predictions overlap in the same second.
         cur.execute("SELECT pg_advisory_xact_lock(%s)", (_PREDICTION_SAVE_LOCK_ID,))
+        if not engine_paused:
+            try:
+                from core.pick_review import open_pick_review_enabled, notify_withdrawals, review_open_picks
+                if open_pick_review_enabled():
+                    withdrawn_picks = review_open_picks(cur, symbol_evals, all_picks, now_ts)
+            except Exception as _wre:
+                LOGGER.warning("Open pick review failed: %s", str(_wre)[:100])
         for pick in top:
             try:
                 sym = pick["symbol"]
@@ -1255,7 +1263,16 @@ def run_prediction_cycle(with_diag: bool = False):
                     continue
                 LOGGER.error("INSERT " + pick["symbol"] + ": " + str(e))
                 raise
-    LOGGER.info("Cycle: " + str(len(saved)) + "/" + str(len(all_picks)) + " picks | regime: " + (regime["reason"] or "OK"))
+    if withdrawn_picks:
+        try:
+            from core.pick_review import notify_withdrawals
+            notify_withdrawals(withdrawn_picks)
+        except Exception:
+            pass
+    LOGGER.info(
+        "Cycle: %d/%d picks saved | %d withdrawn | regime: %s",
+        len(saved), len(all_picks), len(withdrawn_picks), regime.get("reason") or "OK",
+    )
     _saved_ids = [p["id"] for p in saved if p.get("id")]
     # Persist cycle heartbeat even when zero picks are saved.
     try:
@@ -1303,6 +1320,7 @@ def run_prediction_cycle(with_diag: bool = False):
             "candidates": len(all_picks),
             "saved": len(saved),
             "dedup_blocked": dedup_blocked,
+            "withdrawn": len(withdrawn_picks),
             "would_fire": len(all_picks) > 0,
             "top_skip": _top_skip,
             "binding_skip": _binding,
@@ -1394,6 +1412,7 @@ def run_prediction_cycle(with_diag: bool = False):
         "candidates": len(all_picks),
         "saved": len(saved),
         "dedup_blocked": dedup_blocked,
+        "withdrawn": len(withdrawn_picks),
         "skip_counts": dict(sorted(skip_counts.items(), key=lambda kv: (-kv[1], kv[0]))),
         "regime": regime.get("reason") or "",
         "confidence_floor": regime.get("confidence_floor_override", CONFIDENCE_FLOOR),

@@ -43,6 +43,11 @@ def _system_prompt() -> str:
         "Ghost scans the watchlist before the 9:30 ET open using extended-hours quotes "
         "(gap vs prior close). Pre-market fires require a higher confidence floor; "
         "open-buffer rules still apply after the bell.\n"
+        "10. When open_pick_review_enabled is true, Ghost re-scans open picks every cycle. "
+        "If the model no longer supports the trade (regime gate, prob below floor, etc.), "
+        "the pick is withdrawn (outcome WITHDRAWN) — not a WIN/LOSS. A new pick may follow "
+        "in the same or a later cycle. Explain withdrawals using context.latest_scan or "
+        "recent resolves; do not treat a withdrawn pick as still actionable.\n"
     )
 
 
@@ -52,9 +57,11 @@ def build_ask_context() -> Dict[str, Any]:
     try:
         from api.wolf_endpoints import _market_status
         from core.prediction import _premarket_scan_enabled, _is_premarket
+        from core.pick_review import open_pick_review_enabled
         ctx["market_session"] = _market_status()
         ctx["premarket_scan_enabled"] = _premarket_scan_enabled()
         ctx["is_premarket"] = _is_premarket()
+        ctx["open_pick_review_enabled"] = open_pick_review_enabled()
     except Exception as e:
         ctx["market_session_error"] = str(e)[:120]
     try:
