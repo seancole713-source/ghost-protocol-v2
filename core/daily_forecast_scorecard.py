@@ -10,7 +10,7 @@ import os
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from core.vol_targets import base_vol_pct, stop_pct_from_vol
+from core.vol_targets import base_vol_pct, forecast_band_vol_pct, stop_pct_from_vol
 
 LOGGER = logging.getLogger("ghost.daily_forecast")
 
@@ -46,13 +46,24 @@ def _pct_accuracy(predicted: float, actual: float) -> Optional[float]:
     return round(max(0.0, 100.0 - err_pct), 2)
 
 
-def forecast_ohlc_from_prob(prior_close: float, up_prob: float, symbol: str, asset_type: str = "stock") -> Dict[str, Any]:
+def forecast_ohlc_from_prob(
+    prior_close: float,
+    up_prob: float,
+    symbol: str,
+    asset_type: str = "stock",
+    *,
+    band_vol: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """Derive next-day open/high/low band from prior close and model up_prob.
 
     Telemetry only — trade direction for picks uses classifier up_prob via
     predict_live_ex, not the sign of these level bands.
+
+    When ``band_vol`` is supplied (from forecast_band_vol_pct), high/low use
+    realized-range-aware width for meme/high-ATR names; pick TP/SL unchanged.
     """
-    vol = base_vol_pct(symbol, asset_type)
+    vol_info = band_vol or {"vol_pct": base_vol_pct(symbol, asset_type), "source": "base"}
+    vol = float(vol_info.get("vol_pct") or base_vol_pct(symbol, asset_type))
     stop = stop_pct_from_vol(vol)
     bullish = float(up_prob) >= 0.5
     pc = float(prior_close)
@@ -75,6 +86,9 @@ def forecast_ohlc_from_prob(prior_close: float, up_prob: float, symbol: str, ass
         "close": round(pred_close, 4),
         "bias": bias,
         "up_prob": round(float(up_prob), 4),
+        "band_vol_pct": round(vol, 4),
+        "band_vol_source": vol_info.get("source"),
+        "band_realized_range_pct": vol_info.get("realized_range_pct"),
     }
 
 
@@ -276,7 +290,8 @@ def build_daily_scorecard(symbol: str, days: int = 14, asset_type: str = "stock"
         up_prob = _up_prob_at_bar(rows, i - 1, model, feature_cols, invert_cols)
         if up_prob is None:
             continue
-        predicted = forecast_ohlc_from_prob(prior_close, up_prob, sym, asset_type)
+        band_vol = forecast_band_vol_pct(sym, asset_type, rows, end_idx=i - 1)
+        predicted = forecast_ohlc_from_prob(prior_close, up_prob, sym, asset_type, band_vol=band_vol)
         actual = {
             "open": round(float(target.get("open") or 0), 4),
             "high": round(float(target.get("high") or 0), 4),
@@ -303,7 +318,8 @@ def build_daily_scorecard(symbol: str, days: int = 14, asset_type: str = "stock"
     if last_close > 0:
         live_prob = _up_prob_at_bar(rows, len(rows) - 1, model, feature_cols, invert_cols)
         if live_prob is not None:
-            live_pred = forecast_ohlc_from_prob(last_close, live_prob, sym, asset_type)
+            band_vol = forecast_band_vol_pct(sym, asset_type, rows)
+            live_pred = forecast_ohlc_from_prob(last_close, live_prob, sym, asset_type, band_vol=band_vol)
             issued = _parse_bar_date(str(last.get("ts", "")))
             target = next_trading_date_after(issued) if issued else "next session"
             out_days.append({
@@ -321,6 +337,7 @@ def build_daily_scorecard(symbol: str, days: int = 14, asset_type: str = "stock"
     dir_hits = sum(1 for d in scored if d["score"].get("direction_ok"))
     dir_pct = round(dir_hits / len(scored) * 100, 1) if scored else None
     level_avg = round(sum(overall_vals) / len(overall_vals), 2) if overall_vals else None
+    live_band = forecast_band_vol_pct(sym, asset_type, rows) if rows else None
     summary = {
         "scored_days": len(scored),
         "avg_overall_pct": level_avg,
@@ -331,6 +348,9 @@ def build_daily_scorecard(symbol: str, days: int = 14, asset_type: str = "stock"
         "model_accuracy_holdout_pct": round(float(meta.get("accuracy", 0)) * 100, 1) if meta else None,
         "calibrated": bool(meta.get("calibrated")) if meta else None,
         "calibration_brier": meta.get("gate_brier") if meta else None,
+        "forecast_band_vol_pct": live_band.get("vol_pct") if live_band else None,
+        "forecast_band_vol_source": live_band.get("source") if live_band else None,
+        "forecast_realized_range_pct": live_band.get("realized_range_pct") if live_band else None,
     }
 
     live_row = next((d for d in reversed(out_days) if not d.get("resolved")), None)

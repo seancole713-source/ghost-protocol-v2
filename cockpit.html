@@ -2504,6 +2504,7 @@ async function loadDailyForecastScorecard(){
       + '</span>'
       + (sm.model_accuracy_holdout_pct != null ? ' · holdout classifier ' + sm.model_accuracy_holdout_pct + '%' : '')
       + (sm.calibration_brier != null ? ' · <span title="Model gate-slice Brier at last retrain — not live pick journal">holdout Brier ' + sm.calibration_brier + '</span>' : '')
+      + (sm.forecast_band_vol_pct != null ? ' · <span title="Scorecard OHLC band width from recent range (not pick TP/SL)">band ±' + (sm.forecast_band_vol_pct * 100).toFixed(1) + '%</span>' : '')
       + staleTag;
     var days = g.days || [];
     _dfLastDays = days;
@@ -3341,7 +3342,7 @@ function _renderDpQuality(summary){
   el.innerHTML = ''
     + '<div class="dp-q-box level"><div class="dp-q-lbl">Level bands (telemetry)</div>'
     + '<div class="dp-q-val ' + levelCls + '">' + (level != null ? level + '% avg closeness' : '—') + '</div>'
-    + '<div class="dp-q-note">Anchors to prior close ± vol — not intraday path prediction.</div></div>'
+    + '<div class="dp-q-note">Band width from recent daily range when vol &gt; base (Phase 4) — not pick TP/SL.</div></div>'
     + '<div class="dp-q-box trade"><div class="dp-q-lbl">Trade direction (signal)</div>'
     + '<div class="dp-q-val ' + dirCls + '">' + (dir != null ? dir + '% hit rate' : '—') + '</div>'
     + '<div class="dp-q-note">Up/down call quality — what gates picks. Coin flip = 50%.</div></div>';
