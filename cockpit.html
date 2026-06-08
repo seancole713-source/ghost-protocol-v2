@@ -713,7 +713,7 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
       <div class="perf-sub" id="perf-week-sub"></div>
     </div>
     <div class="perf-card">
-      <div class="perf-lbl">Calibration</div>
+      <div class="perf-lbl" title="Realized win rate by confidence band on fired picks — not model holdout Brier">Pick journal · buckets</div>
       <div class="perf-mini">
         <div class="perf-mini-bar" id="perf-cal-bar"></div>
       </div>
@@ -949,7 +949,7 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
 
   <!-- ─── Pick Journal (blueprint module 7 — the credibility ledger) ─── -->
   <section class="block" id="pick-journal-section">
-    <div class="sec-label">Pick Journal &middot; the credibility ledger</div>
+    <div class="sec-label">Pick Journal &middot; live fired picks (not model holdout calibration)</div>
     <div id="pj-verdict" style="margin-bottom:12px"></div>
     <div id="pj-metrics" style="margin-bottom:12px"></div>
     <div class="pj-list" id="pj-list"><div class="empty"><div class="ico">&#9203;</div>Loading pick journal…</div></div>
@@ -1453,7 +1453,7 @@ function renderPerf(stats, conf, recent){
   var calSub = document.getElementById('perf-cal-sub');
   calBar.innerHTML = '';
   if(!conf || !conf.buckets || !conf.buckets.length){
-    calSub.textContent = 'no calibration data';
+    calSub.textContent = 'no pick-journal bucket data';
     return;
   }
   var totalN = conf.buckets.reduce(function(s,b){return s + (b.total||0)}, 0);
@@ -1473,7 +1473,7 @@ function renderPerf(stats, conf, recent){
     calBar.appendChild(seg);
   });
   var top = conf.buckets.slice().sort(function(a,b){return (b.total||0)-(a.total||0)})[0];
-  calSub.textContent = top ? 'Mode: ' + top.label + ' bucket' : '';
+  calSub.textContent = top ? 'Live picks · mode: ' + top.label + ' bucket' : '';
 }
 
 /* ─── Today's play ─── */
@@ -2503,6 +2503,7 @@ async function loadDailyForecastScorecard(){
       + (sm.direction_hit_rate_pct != null ? '<span class="' + (sm.direction_hit_rate_pct >= 55 ? 'pos' : (sm.direction_hit_rate_pct < 50 ? 'neg' : '')) + '">' + sm.direction_hit_rate_pct + '%</span>' : '—')
       + '</span>'
       + (sm.model_accuracy_holdout_pct != null ? ' · holdout classifier ' + sm.model_accuracy_holdout_pct + '%' : '')
+      + (sm.calibration_brier != null ? ' · <span title="Model gate-slice Brier at last retrain — not live pick journal">holdout Brier ' + sm.calibration_brier + '</span>' : '')
       + staleTag;
     var days = g.days || [];
     _dfLastDays = days;
@@ -3178,7 +3179,7 @@ function _renderPjMetrics(m){
     cell('RESOLVED', m.resolved + ' <span style="font-size:10px;color:#8b96a8">(' + m.wins + 'W/' + m.losses + 'L/' + m.expired + 'E)</span>') +
     cell('WIN RATE', wr + ci) +
     cell('EXPECTANCY', ex) +
-    cell('BRIER', br) + '</div>';
+    cell('BRIER (live picks)', br) + '</div>';
 }
 
 function _outcomeBadge(o){
