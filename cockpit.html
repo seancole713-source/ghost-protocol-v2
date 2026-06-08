@@ -3034,7 +3034,13 @@ function _renderEngineBadge(v3){
   } else {
     el.className = 'engine-badge live';
     var lc = eng.last_cycle || {};
-    el.textContent = 'Engine live now · ' + (lc.scanned || 0) + ' symbols scanned · '
+    var loaded = v3 && v3.models != null ? v3.models : Object.keys((v3 && v3.symbols) || {}).length;
+    var gp = v3 && v3.last_train_gate_passed;
+    var gat = v3 && v3.last_train_gate_attempted;
+    var modelNote = loaded + ' loaded';
+    if(gp != null && gat != null) modelNote += ' · ' + gp + ' gate-passed';
+    el.textContent = 'Engine live now · ' + modelNote + ' · '
+      + (lc.scanned || 0) + ' scanned · '
       + (lc.saved != null ? lc.saved : 0) + ' saved';
   }
 }

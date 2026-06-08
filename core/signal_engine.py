@@ -24,6 +24,11 @@ LOGGER = logging.getLogger("ghost.signal_v3")
 LOGGER.info("[signal_engine] MODULE_LOADED PR17_DIAG ohlcv_chain=sip|iex|polygon|yfinance|stooq")
 
 LABEL_TYPE = "tp_sl_daily"
+# Phase 5: calendar forward bars + shared resolve path (see core.tp_sl_resolve.LABEL_SCHEMA).
+def _v3_label_schema() -> str:
+    from core.tp_sl_resolve import LABEL_SCHEMA
+    return LABEL_SCHEMA
+
 # Daily bars only: approximate 48h stock hold with this many forward bars (24h each).
 V3_LABEL_HOLD_BARS = max(1, int(os.getenv("V3_LABEL_HOLD_BARS", "3")))
 
@@ -523,22 +528,9 @@ def _walk_forward_scores(X, y, X_peer=None, y_peer=None, wolf_weight=1.0):
 
 
 def _simulate_up_tp_sl(rows: list, entry_idx: int, hold_bars: int, vol_pct: float) -> str:
-    """
-    Path simulation on daily OHLC: UP trade from rows[entry_idx] close.
-    Conservative same-bar rule: if both stop and target are touched, count LOSS.
-    Returns WIN | LOSS | EXPIRED (mirrors live reconcile when expiry ends without hit).
-    """
-    from core.tp_sl_resolve import resolve_tp_sl_bar_path
-
-    entry = float(rows[entry_idx]["close"])
-    if entry <= 0:
-        return "EXPIRED"
-    target = entry * (1 + vol_pct)
-    stop = entry * (1 - stop_pct_from_vol(vol_pct))
-    last = min(len(rows) - 1, entry_idx + hold_bars)
-    forward = rows[entry_idx + 1 : last + 1]
-    outcome = resolve_tp_sl_bar_path(forward, target, stop, "UP", max_bars=hold_bars)
-    return outcome if outcome else "EXPIRED"
+    """Path simulation on daily OHLC — delegates to shared tp_sl_resolve (Phase 5)."""
+    from core.tp_sl_resolve import simulate_tp_sl_label
+    return simulate_tp_sl_label(rows, entry_idx, hold_bars, vol_pct, "UP")
 
 def _rsi(closes, period=14):
     if len(closes) < period + 1: return 50.0
@@ -1616,6 +1608,7 @@ def train_and_validate(symbols_and_types):
                     "trained_at": time.time(), "n_samples": len(rows),
                     "engine_version": "v3.2_tp_sl_daily",
                     "label_type": LABEL_TYPE,
+                    "label_schema": _v3_label_schema(),
                     "feature_schema": _v3_feature_schema(),
                     "label_hold_bars": V3_LABEL_HOLD_BARS,
                     "calibrated": calib_info["calibrated"],
@@ -1677,6 +1670,12 @@ def load_model(symbol=None):
             meta = json.loads(mrow[0])
             if meta.get("label_type") != LABEL_TYPE:
                 LOGGER.info("load_model %s: wrong label_type (retrain for v3.2 TP/SL)", symbol)
+                return None, None, None
+            if meta.get("label_schema") != _v3_label_schema():
+                LOGGER.info(
+                    "load_model %s: label_schema changed (%s != %s) — retrain needed",
+                    symbol, meta.get("label_schema"), _v3_label_schema(),
+                )
                 return None, None, None
             if meta.get("feature_schema") != _v3_feature_schema():
                 LOGGER.info("load_model %s: feature_schema changed (%s != %s) — retrain needed",
@@ -1882,8 +1881,38 @@ def get_model_status():
                     "n_samples": m.get("n_samples",0),
                     "engine": m.get("engine_version","v3.0"),
                     "label_type": m.get("label_type", ""),
+                    "label_schema": m.get("label_schema", ""),
                     "label_hold_bars": m.get("label_hold_bars", V3_LABEL_HOLD_BARS),
                 }
-            return {"trained": True, "models": len(symbols), "symbols": symbols}
+            out = {"trained": True, "models": len(symbols), "symbols": symbols}
+            gate = get_last_train_gate_summary()
+            if gate:
+                out["last_train_gate"] = gate
+            return out
     except Exception as e:
         return {"trained": False, "reason": str(e)}
+
+
+def get_last_train_gate_summary() -> Dict[str, Any]:
+    """Counts from ghost_state.last_train_details — loaded models may exceed gate-passed."""
+    try:
+        from core.db import db_conn
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT val FROM ghost_state WHERE key='last_train_details'")
+            row = cur.fetchone()
+        if not row or not row[0]:
+            return {}
+        payload = json.loads(row[0])
+        symbols = payload.get("symbols") or []
+        if not isinstance(symbols, list):
+            return {}
+        attempted = len(symbols)
+        passed = sum(1 for s in symbols if isinstance(s, dict) and s.get("passed"))
+        return {
+            "gate_passed": int(passed),
+            "gate_attempted": int(attempted),
+            "ts": payload.get("ts"),
+        }
+    except Exception:
+        return {}

@@ -294,7 +294,10 @@ async function refreshStatus(){
     var headline;
     if(v3&&v3.trained){
       var n=v3.models!=null?v3.models:Object.keys(v3.symbols||{}).length;
-      headline='<span class="ok">&#10003;</span> Trained · '+n+' model(s) loaded';
+      var gp=v3.last_train_gate_passed,gat=v3.last_train_gate_attempted;
+      headline='<span class="ok">&#10003;</span> Trained · '+n+' loaded';
+      if(gp!=null&&gat!=null)headline+=' · '+gp+' gate-passed (last train, '+gat+' attempted)';
+      else headline+=' model(s)';
     }else headline='<span class="warn">&#x23F3;</span> '+escHtml((v3&&v3.reason)||'Not trained yet');
     var detail='';
     if(last&&last.state){

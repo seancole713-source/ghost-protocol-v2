@@ -1,7 +1,8 @@
 """Shared volatility targets for UP trades — must match live TP/SL in prediction.py.
 
 Training labels (_simulate_up_tp_sl) and live reconcile (core.tp_sl_resolve) both
-derive target/stop from base_vol_pct + stop_pct_from_vol. Do not override live vol
+derive target/stop from base_vol_pct + stop_pct_from_vol and use calendar
+forward bars after entry (Phase 5: tp_sl_fwd_v1). Do not override live vol
 from DB without also changing the label generator.
 
 Phase 4: forecast_band_vol_pct widens scorecard OHLC bands from recent realized

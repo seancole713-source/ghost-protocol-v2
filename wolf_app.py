@@ -4069,6 +4069,10 @@ def v3_status():
     available = set(st["symbols"].keys())
     st["watchlist_expected_symbols"] = expected
     st["watchlist_missing_models"] = [sym for sym in expected if sym not in available]
+    gate = st.get("last_train_gate") or {}
+    if gate:
+        st["last_train_gate_passed"] = gate.get("gate_passed")
+        st["last_train_gate_attempted"] = gate.get("gate_attempted")
     st["system"] = _v3_system_health(st)
     if isinstance(st.get("system"), dict):
         coverage = st["system"].setdefault("coverage", {})
