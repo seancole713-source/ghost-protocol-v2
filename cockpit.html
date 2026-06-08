@@ -409,7 +409,19 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
 .dp-q-lbl{font-size:9px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;color:#64748b;margin-bottom:4px}
 .dp-q-val{font-size:15px;font-weight:800;color:#e2e8f0}
 .dp-q-note{color:#64748b;font-size:10px;margin-top:3px}
-.dp-table-wrap{overflow:visible;margin-bottom:8px}
+.dp-table-wrap{overflow-x:auto;margin-bottom:8px}
+.dp-ohlc-table{width:100%;border-collapse:collapse;font-size:12px}
+.dp-ohlc-table th,.dp-ohlc-table td{padding:12px 10px;border-bottom:1px solid rgba(255,255,255,.06);text-align:left;vertical-align:middle}
+.dp-ohlc-table th{color:#64748b;font-size:9px;text-transform:uppercase;letter-spacing:.55px;font-weight:700;background:rgba(255,255,255,.02)}
+.dp-ohlc-table tr:last-child td{border-bottom:none}
+.dp-ohlc-table .dp-num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.dp-ohlc-table tr.dp-predict td{color:#86efac}
+.dp-ohlc-table tr.dp-market td{color:#e2e8f0}
+.dp-ohlc-table tr.dp-live td{color:#7dd3fc}
+.dp-row-kind{font-size:9px;font-weight:800;letter-spacing:1px;text-transform:uppercase;display:block;margin-bottom:2px}
+.dp-row-kind.predict{color:#86efac}
+.dp-row-kind.market{color:#94a3b8}
+.dp-row-kind.live{color:#7dd3fc}
 .dp-rows{display:flex;flex-direction:column;gap:12px;width:100%}
 .dp-card{
   border-radius:14px;padding:14px 16px;border:1px solid rgba(255,255,255,.07);
@@ -728,7 +740,7 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
       <div class="dp-head">
         <div>
           <div class="dp-title">Next 24 hours</div>
-          <div class="dp-sub">Row 1 — <b>Today live</b> (blue, ~1 min). Row 2 — <b>Next session</b> forecast (green). Row 3 — <b>Last full session</b> scored (gray). Dates use US/Eastern trading calendar.</div>
+          <div class="dp-sub">Row 1 — <b>Ghost prediction</b> (green). Row 2 — <b>what the market actually did</b> (open, peak, low, close). Score locks at 4:33 PM CT.</div>
           <div class="tp-chips" id="tp-chips"></div>
         </div>
       </div>
@@ -736,18 +748,18 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
       <div class="dp-table-wrap" id="dp-table-wrap">
         <div class="dp-empty">Loading daily prediction…</div>
       </div>
-      <div class="tp-meta" id="tp-meta">Live row = spot + today O/H/L · Market row = last completed daily session · Predict = next session.</div>
+      <div class="tp-meta" id="tp-meta">Predict row = next session · Market row = last completed session · All symbols show open / peak / low / close.</div>
     </div>
   </section>
 
   <!-- ─── Daily forecast scorecard (full watchlist) ─── -->
   <section class="block" id="daily-forecast-section">
-    <div class="sec-label">Forecast vs Reality &middot; Open / Peak / Close</div>
+    <div class="sec-label">Forecast vs Reality &middot; Open / Peak / Low / Close</div>
     <div class="df-premium">
       <div class="df-head">
         <div>
           <div class="df-head-title">24-hour ahead session forecast</div>
-          <div class="df-head-sub">Level-band forecasts (open/peak/close) vs trade direction are separate metrics — high closeness does not mean tradable edge.</div>
+          <div class="df-head-sub">Level-band forecasts (open / peak / low / close) vs trade direction are separate metrics — high closeness does not mean tradable edge.</div>
         </div>
         <div class="df-tools">
           <div class="df-view-group" role="group" aria-label="Chart style">
@@ -782,8 +794,8 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
           <div class="df-canvas-wrap df-line-wrap"><canvas id="df-overlay-chart"></canvas></div>
           <div class="df-canvas-wrap df-bar-wrap" id="df-overlay-bar-wrap"><canvas id="df-overlay-bar-chart"></canvas></div>
           <div class="df-bar-legend" id="df-overlay-bar-legend" style="display:none">
-            <span><i class="df-bar-swatch" style="background:#ef4444"></i>Actual open / peak / close</span>
-            <span><i class="df-bar-swatch" style="background:#22c55e;opacity:.85"></i>Predicted open / peak / close</span>
+            <span><i class="df-bar-swatch" style="background:#ef4444"></i>Actual open / peak / low / close</span>
+            <span><i class="df-bar-swatch" style="background:#22c55e;opacity:.85"></i>Predicted open / peak / low / close</span>
           </div>
         </div>
       </div>
@@ -1994,8 +2006,8 @@ function _dfResolvedDays(days){
 }
 
 function _dfBarColors(isPred){
-  if(isPred) return { open: 'rgba(34,197,94,.85)', peak: 'rgba(74,222,128,.75)', close: 'rgba(134,239,172,.65)' };
-  return { open: 'rgba(239,68,68,.85)', peak: 'rgba(248,113,113,.75)', close: 'rgba(251,146,60,.65)' };
+  if(isPred) return { open: 'rgba(34,197,94,.85)', peak: 'rgba(74,222,128,.75)', low: 'rgba(45,212,191,.7)', close: 'rgba(134,239,172,.65)' };
+  return { open: 'rgba(239,68,68,.85)', peak: 'rgba(248,113,113,.75)', low: 'rgba(251,191,36,.7)', close: 'rgba(251,146,60,.65)' };
 }
 
 function _dfChartOptions(color, isBar){
@@ -2039,6 +2051,7 @@ function _dfPriceBlock(obj, color){
   return '<div class="df-price-col" style="color:'+color+'">'
     + '<div><span class="df-price-lbl">Open</span>' + _dfFmtPrice(obj.open) + '</div>'
     + '<div><span class="df-price-lbl">Peak</span>' + _dfFmtPrice(obj.high) + '</div>'
+    + '<div><span class="df-price-lbl">Low</span>' + _dfFmtPrice(obj.low) + '</div>'
     + '<div><span class="df-price-lbl">Close</span>' + _dfFmtPrice(obj.close) + '</div>'
     + '</div>';
 }
@@ -2062,11 +2075,13 @@ function _renderDfLineChart(canvasId, days){
   var isPred = canvasId.indexOf('pred') >= 0;
   var cOpen = isPred ? '#22c55e' : '#ef4444';
   var cPeak = isPred ? '#4ade80' : '#f87171';
+  var cLow = isPred ? '#2dd4bf' : '#fbbf24';
   var cClose = isPred ? '#86efac' : '#fb923c';
   var src = isPred ? 'predicted' : 'actual';
   var ds = [
     { label: 'Open', data: resolved.map(function(d){ return d[src].open; }), borderColor: cOpen, borderWidth: 2, pointRadius: 2, tension: 0.25, fill: false },
     { label: 'Peak', data: resolved.map(function(d){ return d[src].high; }), borderColor: cPeak, borderDash: [5,4], borderWidth: 1.5, pointRadius: 2, tension: 0.25, fill: false },
+    { label: 'Low', data: resolved.map(function(d){ return d[src].low; }), borderColor: cLow, borderDash: [3,3], borderWidth: 1.5, pointRadius: 2, tension: 0.25, fill: false },
     { label: 'Close', data: resolved.map(function(d){ return d[src].close; }), borderColor: cClose, borderDash: [2,3], borderWidth: 2, pointRadius: 2, tension: 0.25, fill: false }
   ];
   _charts[key] = new Chart(ctx, { type: 'line', data: { labels: labels, datasets: ds }, options: _dfChartOptions(cOpen, false) });
@@ -2090,6 +2105,7 @@ function _renderDfBarChart(canvasId, days){
   var ds = [
     { label: 'Open', data: resolved.map(function(d){ return d[src].open; }), backgroundColor: cols.open, borderRadius: 4, borderSkipped: false, maxBarThickness: 28 },
     { label: 'Peak', data: resolved.map(function(d){ return d[src].high; }), backgroundColor: cols.peak, borderRadius: 4, borderSkipped: false, maxBarThickness: 28 },
+    { label: 'Low', data: resolved.map(function(d){ return d[src].low; }), backgroundColor: cols.low, borderRadius: 4, borderSkipped: false, maxBarThickness: 28 },
     { label: 'Close', data: resolved.map(function(d){ return d[src].close; }), backgroundColor: cols.close, borderRadius: 4, borderSkipped: false, maxBarThickness: 28 }
   ];
   _charts[key] = new Chart(ctx, { type: 'bar', data: { labels: labels, datasets: ds }, options: _dfChartOptions(cols.open, true) });
@@ -2110,9 +2126,11 @@ function _renderDfOverlayChart(days){
   var ds = [
     { label: 'Actual Open', data: resolved.map(function(d){ return d.actual.open; }), borderColor: '#ef4444', borderWidth: 2, pointRadius: 2, tension: 0.25, fill: false },
     { label: 'Actual Peak', data: resolved.map(function(d){ return d.actual.high; }), borderColor: '#f87171', borderWidth: 1.8, pointRadius: 2, tension: 0.25, fill: false },
+    { label: 'Actual Low', data: resolved.map(function(d){ return d.actual.low; }), borderColor: '#fbbf24', borderWidth: 1.8, pointRadius: 2, tension: 0.25, fill: false },
     { label: 'Actual Close', data: resolved.map(function(d){ return d.actual.close; }), borderColor: '#fb923c', borderWidth: 2, pointRadius: 2, tension: 0.25, fill: false },
     { label: 'Pred Open', data: resolved.map(function(d){ return d.predicted.open; }), borderColor: '#22c55e', borderDash: [7,4], borderWidth: 2, pointRadius: 2, tension: 0.25, fill: false },
     { label: 'Pred Peak', data: resolved.map(function(d){ return d.predicted.high; }), borderColor: '#4ade80', borderDash: [7,4], borderWidth: 1.8, pointRadius: 2, tension: 0.25, fill: false },
+    { label: 'Pred Low', data: resolved.map(function(d){ return d.predicted.low; }), borderColor: '#2dd4bf', borderDash: [7,4], borderWidth: 1.8, pointRadius: 2, tension: 0.25, fill: false },
     { label: 'Pred Close', data: resolved.map(function(d){ return d.predicted.close; }), borderColor: '#86efac', borderDash: [7,4], borderWidth: 2, pointRadius: 2, tension: 0.25, fill: false }
   ];
   _charts[key] = new Chart(ctx, { type: 'line', data: { labels: labels, datasets: ds }, options: _dfChartOptions('#22c55e', false) });
@@ -2135,9 +2153,11 @@ function _renderDfOverlayBarChart(days){
   var ds = [
     { label: 'Actual Open', data: resolved.map(function(d){ return d.actual.open; }), backgroundColor: act.open, borderRadius: 3, maxBarThickness: 14 },
     { label: 'Actual Peak', data: resolved.map(function(d){ return d.actual.high; }), backgroundColor: act.peak, borderRadius: 3, maxBarThickness: 14 },
+    { label: 'Actual Low', data: resolved.map(function(d){ return d.actual.low; }), backgroundColor: act.low, borderRadius: 3, maxBarThickness: 14 },
     { label: 'Actual Close', data: resolved.map(function(d){ return d.actual.close; }), backgroundColor: act.close, borderRadius: 3, maxBarThickness: 14 },
     { label: 'Pred Open', data: resolved.map(function(d){ return d.predicted.open; }), backgroundColor: pred.open, borderRadius: 3, maxBarThickness: 14 },
     { label: 'Pred Peak', data: resolved.map(function(d){ return d.predicted.high; }), backgroundColor: pred.peak, borderRadius: 3, maxBarThickness: 14 },
+    { label: 'Pred Low', data: resolved.map(function(d){ return d.predicted.low; }), backgroundColor: pred.low, borderRadius: 3, maxBarThickness: 14 },
     { label: 'Pred Close', data: resolved.map(function(d){ return d.predicted.close; }), backgroundColor: pred.close, borderRadius: 3, maxBarThickness: 14 }
   ];
   _charts[key] = new Chart(ctx, { type: 'bar', data: { labels: labels, datasets: ds }, options: _dfChartOptions('#22c55e', true) });
@@ -2169,7 +2189,7 @@ function _applyDfViewMode(){
   if(oBar) oBar.style.display = isBar ? 'block' : 'none';
   if(oNote){
     oNote.textContent = isBar
-      ? 'Grouped bars per session — warm tones are actual, green tones are Ghost predictions (open / peak / close).'
+      ? 'Grouped bars per session — warm tones are actual, green tones are Ghost predictions (open / peak / low / close).'
       : 'Solid lines are actual. Dashed lines are Ghost predictions.';
   }
   if(oLeg) oLeg.style.display = (isOverlay && isBar) ? 'flex' : 'none';
@@ -2217,6 +2237,7 @@ function _renderDfTable(days){
       + '<td class="df-num" data-label="Actual">' + (act ? _dfPriceBlock(act, '#fca5a5') : '—') + '</td>'
       + '<td data-label="Open rate">' + _dfRatePill(sc.open_rate != null ? sc.open_rate : sc.open_pct) + '</td>'
       + '<td data-label="Peak rate">' + _dfRatePill(sc.peak_rate != null ? sc.peak_rate : sc.peak_pct) + '</td>'
+      + '<td data-label="Low rate">' + _dfRatePill(sc.low_rate != null ? sc.low_rate : sc.low_pct) + '</td>'
       + '<td data-label="Close rate">' + _dfRatePill(sc.close_rate != null ? sc.close_rate : sc.close_pct) + '</td>'
       + '<td data-label="Overall">' + (sc.overall_pct != null
         ? '<span class="' + _dfScoreClass(sc.overall_pct) + '">' + sc.overall_pct + '%</span>'
@@ -2226,7 +2247,7 @@ function _renderDfTable(days){
   }).join('');
   wrap.innerHTML = '<table class="df-table"><thead><tr>'
     + '<th>Session</th><th>Ghost predicted</th><th>Actual</th>'
-    + '<th>Open rate</th><th>Peak rate</th><th>Close rate</th><th>Overall</th>'
+    + '<th>Open rate</th><th>Peak rate</th><th>Low rate</th><th>Close rate</th><th>Overall</th>'
     + '</tr></thead><tbody>' + rows + '</tbody></table>';
 }
 
@@ -2302,25 +2323,41 @@ function _dpMetric(label, valHtml, valClass){
     + '<span class="dp-m-val' + (valClass ? ' ' + valClass : '') + '">' + valHtml + '</span></div>';
 }
 
-function _dpCard(kind, sym, dateHtml, open, high, close, scoreHtml){
-  var isPredict = kind === 'predict';
-  var isLive = kind === 'live';
-  var tag = isLive ? 'Live now' : (isPredict ? 'Predict' : 'Market');
-  var tagCls = isLive ? 'live' : (isPredict ? 'predict' : 'market');
-  var priceClass = isPredict ? 'green' : (isLive ? 'live-price' : 'market-price');
-  var closeLbl = isLive ? 'Last' : 'Close';
-  return '<div class="dp-card dp-' + kind + '">'
-    + '<div class="dp-card-top">'
-    + '<span class="dp-row-tag ' + tagCls + '">' + tag + '</span>'
-    + '<span class="dp-sym">' + escHtml(sym) + '</span>'
-    + '<span class="dp-date">' + dateHtml + '</span>'
-    + '</div>'
-    + '<div class="dp-metrics">'
-    + _dpMetric('Open', _fmtUsd(open), priceClass)
-    + _dpMetric('Peak', _fmtUsd(high), priceClass)
-    + _dpMetric(closeLbl, _fmtUsd(close), priceClass)
-    + _dpMetric('Score', scoreHtml, '')
-    + '</div></div>';
+function _dpOhlcRow(kind, sym, dateHtml, open, peak, low, close, scoreHtml){
+  return '<tr class="dp-' + kind + '">'
+    + '<td><span class="dp-row-kind ' + kind + '">' + (kind === 'predict' ? 'Predict' : (kind === 'live' ? 'Live' : 'Market')) + '</span>'
+    + '<b>' + escHtml(sym) + '</b></td>'
+    + '<td>' + dateHtml + '</td>'
+    + '<td class="dp-num">' + _fmtUsd(open) + '</td>'
+    + '<td class="dp-num">' + _fmtUsd(peak) + '</td>'
+    + '<td class="dp-num">' + _fmtUsd(low) + '</td>'
+    + '<td class="dp-num">' + _fmtUsd(close) + '</td>'
+    + '<td class="dp-num">' + scoreHtml + '</td>'
+    + '</tr>';
+}
+
+function _renderDpThreeRows(sym, next, lastResolved, live){
+  var head = '<table class="dp-ohlc-table"><thead><tr>'
+    + '<th>Symbol</th><th>Date</th><th>Open</th><th>Peak</th><th>Low</th><th>Close</th><th>Score</th>'
+    + '</tr></thead><tbody>';
+  var rows = [];
+  if(live && live.price != null){
+    rows.push(_dpOhlcRow('live', sym, _dpLiveDate(live), live.today_open, live.today_high, live.today_low, live.price, _dpLiveScore(live)));
+  }
+  if(!next || !next.predicted){
+    rows.push('<tr><td colspan="7" class="dp-empty">No next-session forecast for <b>' + escHtml(sym) + '</b> yet.</td></tr>');
+  } else {
+    var p = next.predicted;
+    rows.push(_dpOhlcRow('predict', sym, _dpPeriodNext(next), p.open, p.high, p.low, p.close, _dpScorePill(null, true)));
+  }
+  if(lastResolved && lastResolved.actual){
+    var a = lastResolved.actual;
+    var sc = (lastResolved.score || {}).overall_pct;
+    rows.push(_dpOhlcRow('market', sym, _dpPeriodMarket(lastResolved), a.open, a.high, a.low, a.close, _dpScorePill(sc, false)));
+  } else {
+    rows.push(_dpOhlcRow('market', sym, '—', null, null, null, null, '<span class="dp-score pending">awaiting</span>'));
+  }
+  return head + rows.join('') + '</tbody></table>';
 }
 
 function _dpLiveScore(live){
@@ -2338,31 +2375,6 @@ function _dpLiveDate(live){
   var sess = live.session_label || live.session || '';
   return '<span style="color:#64748b;font-size:11px">Today</span> · <b style="color:#7dd3fc">' + escHtml(d) + '</b>'
     + (sess && sess !== 'Closed' ? ' · ' + escHtml(sess) : '');
-}
-
-function _renderDpThreeRows(sym, next, lastResolved, live){
-  var cards = [];
-  if(live && live.price != null){
-    cards.push(_dpCard('live', sym, _dpLiveDate(live), live.today_open, live.today_high, live.price,
-      _dpLiveScore(live)));
-  } else {
-    cards.push(_dpCard('live', sym, _dpLiveDate(live || {}), null, null, null,
-      '<span class="dp-score pending">feed unavailable</span>'));
-  }
-  if(!next || !next.predicted){
-    cards.push('<div class="dp-empty">No next-session forecast for <b>' + escHtml(sym) + '</b> yet.</div>');
-  } else {
-    var p = next.predicted;
-    cards.push(_dpCard('predict', sym, _dpPeriodNext(next), p.open, p.high, p.close, _dpScorePill(null, true)));
-  }
-    if(lastResolved && lastResolved.actual){
-    var a = lastResolved.actual;
-    var sc = (lastResolved.score || {}).overall_pct;
-    cards.push(_dpCard('market', sym, _dpPeriodMarket(lastResolved), a.open, a.high, a.close, _dpScorePill(sc, false)));
-  } else {
-    cards.push(_dpCard('market', sym, '—', null, null, null, '<span class="dp-score pending">awaiting</span>'));
-  }
-  return '<div class="dp-rows">' + cards.join('') + '</div>';
 }
 
 function _chicagoNowParts(){
@@ -2503,7 +2515,7 @@ async function loadDailyForecastScorecard(){
         + (g.bar_count != null ? ' (' + g.bar_count + ' bars)' : '') + '.';
       _renderDfCharts([]);
       _applyDfViewMode();
-      if(wrap) wrap.innerHTML = '<div class="df-empty-state"><b>' + escHtml(sym) + ' — insufficient history</b>Not enough OHLCV bars to score daily open/peak/close.</div>';
+      if(wrap) wrap.innerHTML = '<div class="df-empty-state"><b>' + escHtml(sym) + ' — insufficient history</b>Not enough OHLCV bars to score daily open/peak/low/close.</div>';
       return;
     }
     var sm = g.summary || {};

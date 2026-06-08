@@ -97,7 +97,7 @@ def score_forecast_vs_actual(predicted: Dict[str, float], actual: Dict[str, floa
     peak_pct = _pct_accuracy(predicted.get("high"), actual.get("high"))
     close_pct = _pct_accuracy(predicted.get("close"), actual.get("close"))
     low_pct = _pct_accuracy(predicted.get("low"), actual.get("low"))
-    parts = [p for p in (open_pct, peak_pct, close_pct) if p is not None]
+    parts = [p for p in (open_pct, peak_pct, low_pct, close_pct) if p is not None]
     overall = round(sum(parts) / len(parts), 2) if parts else None
     act_up = float(actual.get("close", actual.get("high", 0))) >= float(actual.get("open", 0))
     up_prob = predicted.get("up_prob")
@@ -116,6 +116,7 @@ def score_forecast_vs_actual(predicted: Dict[str, float], actual: Dict[str, floa
         "close_rate": close_pct,
         "high_pct": peak_pct,
         "low_pct": low_pct,
+        "low_rate": low_pct,
         "overall_pct": overall,
         "direction_ok": pred_up == act_up,
         "direction_source": direction_source,

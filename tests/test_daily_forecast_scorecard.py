@@ -49,6 +49,7 @@ def test_score_forecast_partial_error():
     assert sc["peak_rate"] is not None
     assert sc["peak_rate"] < 100.0
     assert sc["open_rate"] == 100.0
+    assert sc["low_rate"] == 100.0
     assert sc["close_rate"] is not None
 
 
