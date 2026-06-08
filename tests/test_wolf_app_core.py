@@ -3728,11 +3728,11 @@ def test_feature_schema_tracks_pool_and_sector_flags(monkeypatch):
     import core.signal_engine as _se
     monkeypatch.setenv("V3_SECTOR_FEATURE", "off")
     monkeypatch.setenv("V3_POOL_TRAINING", "on")
-    assert _se._v3_feature_schema() == "macd_pct_v1+sec0"
+    assert _se._v3_feature_schema() == "macd_pct_v1+sec0+fa1"
     monkeypatch.setenv("V3_POOL_TRAINING", "off")
-    assert _se._v3_feature_schema() == "macd_raw_v0+sec0"
+    assert _se._v3_feature_schema() == "macd_raw_v0+sec0+fa1"
     monkeypatch.setenv("V3_SECTOR_FEATURE", "on")
-    assert _se._v3_feature_schema() == "macd_raw_v0+sec1"
+    assert _se._v3_feature_schema() == "macd_raw_v0+sec1+fa1"
 
 
 def test_active_feature_cols_appends_sector_only_when_on(monkeypatch):

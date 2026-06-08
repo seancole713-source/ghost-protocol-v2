@@ -392,7 +392,13 @@ def _v3_feature_schema() -> str:
     """
     macd = "macd_pct_v1" if _v3_pool_training_enabled() else "macd_raw_v0"
     sector = "sec1" if _v3_sector_feature_enabled() else "sec0"
-    return f"{macd}+{sector}"
+    audit = "fa1" if _v3_feature_audit_enabled() else "fa0"
+    return f"{macd}+{sector}+{audit}"
+
+
+def _v3_feature_audit_enabled() -> bool:
+    from core.feature_audit import _v3_feature_audit_enabled as _enabled
+    return _enabled()
 
 
 def _v3_wf_purge() -> int:
@@ -1337,22 +1343,30 @@ def _build_ensemble(xgb_model, X_fit, y_fit, sample_weight, X_calib, y_calib):
         return final_model, info
 
 
-def _assemble_pooled_training(X_train, y_train, peer_rows, feature_cols, wolf_weight):
+def _assemble_pooled_training(
+    X_train, y_train, peer_rows, feature_cols, wolf_weight, target_train_rows=None,
+):
     """Stack the target's training slice with peer samples for pooled fitting (W1).
 
-    Returns (X_pooled, y_pooled, sample_weight). Target (WOLF) rows keep
-    wolf_weight so the model specializes to WOLF; peer rows get weight 1.0 so
-    they broaden the fit without dominating it. Pure/numpy so it's unit-testable
-    without xgboost/sklearn installed.
+    Returns (X_pooled, y_pooled, sample_weight). Target rows keep wolf_weight;
+    peer rows get regime-aware weights (Phase 3) so mismatched vol/momentum/%B
+    peers contribute less. Pure/numpy so it's unit-testable without xgboost.
     """
+    from core.feature_audit import peer_regime_weight, regime_profile
+
     wolf_sw = np.full(len(X_train), float(wolf_weight))
     if not peer_rows:
         return X_train, y_train, wolf_sw
+    profile = regime_profile(target_train_rows or []) if target_train_rows else {}
     Xp = np.array([[r["features"].get(c, 0.0) for c in feature_cols] for r in peer_rows])
     yp = np.array([r["label"] for r in peer_rows])
+    peer_sw = np.array([
+        peer_regime_weight(profile, r.get("features") or {})
+        for r in peer_rows
+    ], dtype=float)
     X_pooled = np.vstack([X_train, Xp])
     y_pooled = np.concatenate([y_train, yp])
-    sample_weight = np.concatenate([wolf_sw, np.ones(len(Xp))])
+    sample_weight = np.concatenate([wolf_sw, peer_sw])
     return X_pooled, y_pooled, sample_weight
 
 
@@ -1433,10 +1447,31 @@ def train_and_validate(symbols_and_types):
                 details.append(symbol_detail)
                 continue
             active_cols = _active_feature_cols()
+            wins_ct = int(np.sum([r["label"] for r in rows]))
+            min_wins = _v3_min_tp_sl_wins()
+            train_end, calib_end = _v3_holdout_slices(len(rows))
+            feature_audit: List[Dict[str, Any]] = []
+            invert_cols: set = set()
+            if _v3_feature_audit_enabled() and (len(rows) - calib_end) >= 10:
+                from core.feature_audit import (
+                    apply_inversions_to_features,
+                    audit_gate_features,
+                    select_inverted_features,
+                )
+                gate_preview = rows[calib_end:]
+                X_gate_preview = np.array([
+                    [r["features"].get(c, 0.0) for c in active_cols] for r in gate_preview
+                ])
+                y_gate_preview = np.array([r["label"] for r in gate_preview])
+                feature_audit = audit_gate_features(
+                    X_gate_preview, y_gate_preview, active_cols,
+                )
+                invert_cols = select_inverted_features(feature_audit)
+                if invert_cols:
+                    for r in rows:
+                        apply_inversions_to_features(r["features"], invert_cols)
             X = np.array([[r["features"].get(c, 0.0) for c in active_cols] for r in rows])
             y = np.array([r["label"] for r in rows])
-            wins_ct = int(np.sum(y))
-            min_wins = _v3_min_tp_sl_wins()
             train_end, calib_end = _v3_holdout_slices(len(X))
             X_train, y_train = X[:train_end], y[:train_end]
             X_calib, y_calib = X[train_end:calib_end], y[train_end:calib_end]
@@ -1449,7 +1484,8 @@ def train_and_validate(symbols_and_types):
             if _v3_pool_training_enabled():
                 peer_rows, peers_used = _collect_peer_rows(symbol)
             X_fit, y_fit, sample_weight = _assemble_pooled_training(
-                X_train, y_train, peer_rows, active_cols, _v3_wolf_sample_weight()
+                X_train, y_train, peer_rows, active_cols, _v3_wolf_sample_weight(),
+                target_train_rows=rows[:train_end],
             )
             pool_info = {
                 "enabled": _v3_pool_training_enabled(),
@@ -1482,10 +1518,15 @@ def train_and_validate(symbols_and_types):
             accuracy = float(holdout["holdout_acc"])
             edge = float(holdout["edge"])
             natural_rate = float(holdout["natural_rate"])
+            from core.feature_audit import reliability_bins_monotonic
+            reliability_mono = reliability_bins_monotonic(
+                holdout.get("reliability_bins") or [],
+            )
             calib_info.update({
                 "gate_brier": holdout.get("gate_brier"),
                 "reliability_bins": holdout.get("reliability_bins") or [],
                 "gate_n": holdout.get("gate_n", 0),
+                "reliability_monotonic": reliability_mono,
             })
             # W1: feed the same peer pool into the walk-forward folds, so the
             # gate validates the deployed pooled model rather than a WOLF-only
@@ -1552,6 +1593,9 @@ def train_and_validate(symbols_and_types):
                 "wf_edge_mean": round(wf["edge_mean"], 4),
                 "wf_edge_min": round(wf["edge_min"], 4),
                 "pool": pool_info,
+                "feature_audit": feature_audit,
+                "feature_inversions": sorted(invert_cols),
+                "reliability_monotonic": reliability_mono,
                 "gates": [{"name": n, "passed": bool(p), "msg": m} for n, p, m in gate_checks],
                 "thresholds": {
                     "min_train_rows": min_rows,
@@ -1588,6 +1632,9 @@ def train_and_validate(symbols_and_types):
                     "wf_acc_min": wf["acc_min"],
                     "wf_edge_mean": wf["edge_mean"],
                     "wf_edge_min": wf["edge_min"],
+                    "feature_audit": feature_audit,
+                    "feature_inversions": sorted(invert_cols),
+                    "reliability_monotonic": reliability_mono,
                 })
                 with db_conn() as conn:
                     cur = conn.cursor()
@@ -1737,6 +1784,13 @@ def predict_live_ex(symbol, asset_type, scores=None):
     if ema_trend_bullish == 0 and rsi > 40 and stoch_k > 30:
         LOGGER.info(f"REGIME GATE [{symbol}]: bearish EMA stack, RSI={rsi:.1f} not oversold — skip")
         return None, "regime_gate"
+
+    invert_cols = meta.get("feature_inversions") or []
+    if invert_cols:
+        from core.feature_audit import apply_inversions_to_features
+        apply_inversions_to_features(features, invert_cols)
+        if scores is not None and isinstance(scores.get("features"), dict):
+            apply_inversions_to_features(scores["features"], invert_cols)
 
     X = np.array([[features.get(c, 0.0) for c in feature_cols]])
     proba = model.predict_proba(X)[0]

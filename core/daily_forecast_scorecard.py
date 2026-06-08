@@ -108,8 +108,15 @@ def score_forecast_vs_actual(predicted: Dict[str, float], actual: Dict[str, floa
     }
 
 
-def _up_prob_at_bar(rows: List[dict], bar_idx: int, model, feature_cols: List[str]) -> Optional[float]:
+def _up_prob_at_bar(
+    rows: List[dict],
+    bar_idx: int,
+    model,
+    feature_cols: List[str],
+    invert_cols: Optional[List[str]] = None,
+) -> Optional[float]:
     from core.signal_engine import _calculate_features, _backtest_window
+    from core.feature_audit import apply_inversions_to_features
     import numpy as np
 
     window = _backtest_window()
@@ -117,6 +124,8 @@ def _up_prob_at_bar(rows: List[dict], bar_idx: int, model, feature_cols: List[st
     if len(hist) < 30:
         return None
     features = _calculate_features(hist)
+    if invert_cols:
+        apply_inversions_to_features(features, invert_cols)
     X = np.array([[features.get(c, 0.0) for c in feature_cols]])
     proba = model.predict_proba(X)[0]
     return float(proba[1])
@@ -221,6 +230,7 @@ def build_daily_scorecard(symbol: str, days: int = 14, asset_type: str = "stock"
     sym = (symbol or "WOLF").strip().upper()
     days = max(3, min(int(days or 14), 60))
     model, feature_cols, meta = load_model(sym)
+    invert_cols = (meta or {}).get("feature_inversions") or []
     if model is None or not feature_cols:
         return {
             "ok": True,
@@ -263,7 +273,7 @@ def build_daily_scorecard(symbol: str, days: int = 14, asset_type: str = "stock"
         prior_close = float(prior.get("close") or 0)
         if prior_close <= 0:
             continue
-        up_prob = _up_prob_at_bar(rows, i - 1, model, feature_cols)
+        up_prob = _up_prob_at_bar(rows, i - 1, model, feature_cols, invert_cols)
         if up_prob is None:
             continue
         predicted = forecast_ohlc_from_prob(prior_close, up_prob, sym, asset_type)
@@ -291,7 +301,7 @@ def build_daily_scorecard(symbol: str, days: int = 14, asset_type: str = "stock"
     last = rows[-1]
     last_close = float(last.get("close") or 0)
     if last_close > 0:
-        live_prob = _up_prob_at_bar(rows, len(rows) - 1, model, feature_cols)
+        live_prob = _up_prob_at_bar(rows, len(rows) - 1, model, feature_cols, invert_cols)
         if live_prob is not None:
             live_pred = forecast_ohlc_from_prob(last_close, live_prob, sym, asset_type)
             issued = _parse_bar_date(str(last.get("ts", "")))
