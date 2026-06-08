@@ -394,52 +394,45 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
 .dp-head{display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:16px}
 .dp-title{font-size:18px;font-weight:800;letter-spacing:-.3px;color:#f8fafc;margin-bottom:8px}
 .dp-sub{font-size:11px;color:#64748b;line-height:1.5;max-width:520px}
-.dp-table-wrap{overflow-x:auto;margin-bottom:8px;-webkit-overflow-scrolling:touch;padding:0 2px 4px 0}
-.dp-grid{
-  display:grid;
-  grid-template-columns:minmax(68px,10%) minmax(76px,14%) repeat(3,minmax(72px,1.2fr)) minmax(58px,12%);
-  column-gap:8px;row-gap:0;width:100%;box-sizing:border-box;
+.dp-table-wrap{overflow:visible;margin-bottom:8px}
+.dp-rows{display:flex;flex-direction:column;gap:12px;width:100%}
+.dp-card{
+  border-radius:14px;padding:14px 16px;border:1px solid rgba(255,255,255,.07);
+  min-width:0;
 }
-@media(max-width:720px){
-  .dp-grid{grid-template-columns:minmax(60px,11%) minmax(68px,13%) repeat(3,minmax(58px,1fr)) minmax(52px,12%);column-gap:5px}
+.dp-card.dp-predict{background:rgba(34,197,94,.06);border-color:rgba(34,197,94,.14)}
+.dp-card.dp-market{background:rgba(255,255,255,.02)}
+.dp-card-top{
+  display:flex;flex-wrap:wrap;align-items:baseline;gap:8px 10px;margin-bottom:14px;
+  padding-bottom:12px;border-bottom:1px solid rgba(255,255,255,.06);
 }
-.dp-hc{
-  font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:#64748b;
-  padding:0 4px 12px 0;border-bottom:1px solid rgba(255,255,255,.08);min-width:0;
+.dp-date{font-size:13px;font-weight:600;color:#86efac;line-height:1.3;min-width:0;word-break:break-word}
+.dp-card.dp-market .dp-date{color:#94a3b8;font-size:12px;font-weight:500}
+.dp-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px 10px}
+.dp-metric{min-width:0}
+.dp-m-lbl{
+  display:block;font-size:9px;font-weight:700;letter-spacing:1px;text-transform:uppercase;
+  color:#64748b;margin-bottom:5px;
 }
-.dp-hc.num{text-align:right;padding-right:12px}
-.dp-cell{
-  padding:18px 4px 18px 0;border-bottom:1px solid rgba(255,255,255,.06);
-  min-width:0;overflow:visible;
+.dp-m-val{
+  display:block;font-variant-numeric:tabular-nums;line-height:1.15;
+  word-break:break-word;overflow-wrap:anywhere;
 }
-.dp-cell.num{text-align:right;padding-right:12px}
-.dp-cell.sym{min-width:0}
-/* dp-predict / dp-market live on the same node as dp-cell (not nested) */
-.dp-grid .dp-cell.sym.dp-predict{background:rgba(34,197,94,.06)}
-.dp-grid .dp-cell.sym.dp-market{background:rgba(255,255,255,.02)}
-.dp-grid .dp-cell.dp-period.dp-predict{background:rgba(34,197,94,.06);font-size:13px;color:#86efac;line-height:1.35;word-break:break-word}
-.dp-grid .dp-cell.dp-period.dp-market{background:rgba(255,255,255,.02);font-size:11px;color:#64748b;line-height:1.35;word-break:break-word}
-.dp-grid .dp-cell.sym.dp-predict .dp-sym{font-size:18px;font-weight:800;color:#ecfdf5;line-height:1.2}
-.dp-grid .dp-cell.sym.dp-market .dp-sym{font-size:14px;font-weight:700;color:#cbd5e1;line-height:1.2}
-.dp-grid .dp-cell.dp-price.dp-predict{
-  background:rgba(34,197,94,.06);
-  font-size:clamp(26px,4.8vw,40px);font-weight:800;color:#4ade80!important;letter-spacing:-.6px;
-  line-height:1.1;text-shadow:0 0 28px rgba(74,222,128,.18);
+.dp-m-val.green{
+  font-size:clamp(22px,6.5vw,38px);font-weight:800;color:#4ade80!important;
+  letter-spacing:-.45px;text-shadow:0 0 24px rgba(74,222,128,.15);
 }
-.dp-grid .dp-cell.dp-price.dp-market{
-  background:rgba(255,255,255,.02);
-  font-size:clamp(17px,2.4vw,24px);font-weight:700;color:#e2e8f0!important;letter-spacing:-.3px;
+.dp-m-val.market-price{
+  font-size:clamp(17px,4.8vw,26px);font-weight:700;color:#e2e8f0!important;letter-spacing:-.25px;
 }
-.dp-grid .dp-cell.num.dp-predict:not(.dp-price){background:rgba(34,197,94,.06)}
-.dp-grid .dp-cell.num.dp-market:not(.dp-price){background:rgba(255,255,255,.02)}
 .dp-row-tag{
-  display:block;font-size:9px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase;margin-bottom:4px;
+  display:inline-block;font-size:9px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase;
 }
 .dp-row-tag.predict{color:#86efac}
 .dp-row-tag.market{color:#94a3b8}
-.dp-sym{font-weight:800;color:#f8fafc}
-.dp-price{font-weight:700;font-variant-numeric:tabular-nums}
-.dp-score{font-size:13px;font-weight:800;white-space:nowrap}
+.dp-sym{font-weight:800;color:#f8fafc;font-size:17px;line-height:1.2}
+.dp-card.dp-market .dp-sym{font-size:15px;color:#cbd5e1}
+.dp-score{font-size:13px;font-weight:800;white-space:normal}
 .dp-score.pos{color:#4ade80}
 .dp-score.pending{color:#64748b;font-weight:600;font-style:italic;font-size:12px}
 .dp-empty{font-size:13px;color:#888;padding:20px 8px;text-align:center}
@@ -570,13 +563,9 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
   .dp-panel,.df-premium{padding:14px 12px 16px;border-radius:14px}
   .dp-title{font-size:16px}
   .dp-sub{font-size:10px;line-height:1.45}
-  .dp-table-wrap{margin-left:-2px;margin-right:-2px;padding-bottom:6px}
-  .dp-grid{min-width:520px;column-gap:6px}
-  .dp-grid .dp-cell{padding:10px 2px 10px 0}
-  .dp-grid .dp-cell.dp-price.dp-predict{font-size:22px;letter-spacing:-.35px;line-height:1.15}
-  .dp-grid .dp-cell.dp-price.dp-market{font-size:16px}
-  .dp-grid .dp-cell.sym.dp-predict .dp-sym{font-size:15px}
-  .dp-hc.num,.dp-cell.num{padding-right:6px}
+  .dp-metrics{grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 12px}
+  .dp-card{padding:12px 14px}
+  .dp-sym{font-size:16px}
   .df-chips{max-height:none;padding-bottom:4px}
   .df-chip{font-size:10px;padding:6px 10px}
   .df-head-title{font-size:11px}
@@ -2265,49 +2254,44 @@ function _dpScorePill(score, pending){
   return '<span class="dp-score pos">↑ ' + Number(score).toFixed(1) + '%</span>';
 }
 
+function _dpMetric(label, valHtml, valClass){
+  return '<div class="dp-metric"><span class="dp-m-lbl">' + label + '</span>'
+    + '<span class="dp-m-val' + (valClass ? ' ' + valClass : '') + '">' + valHtml + '</span></div>';
+}
+
+function _dpCard(kind, sym, dateHtml, open, high, close, scoreHtml){
+  var isPredict = kind === 'predict';
+  var tag = isPredict ? 'Predict' : 'Market';
+  var priceClass = isPredict ? 'green' : 'market-price';
+  return '<div class="dp-card dp-' + kind + '">'
+    + '<div class="dp-card-top">'
+    + '<span class="dp-row-tag ' + (isPredict ? 'predict' : 'market') + '">' + tag + '</span>'
+    + '<span class="dp-sym">' + escHtml(sym) + '</span>'
+    + '<span class="dp-date">' + dateHtml + '</span>'
+    + '</div>'
+    + '<div class="dp-metrics">'
+    + _dpMetric('Open', _fmtUsd(open), priceClass)
+    + _dpMetric('Peak', _fmtUsd(high), priceClass)
+    + _dpMetric('Close', _fmtUsd(close), priceClass)
+    + _dpMetric('Score', scoreHtml, '')
+    + '</div></div>';
+}
+
 function _renderDpTwoRows(sym, next, lastResolved){
   if(!next || !next.predicted){
     return '<div class="dp-empty">No next-session forecast for <b>' + escHtml(sym) + '</b> yet.</div>';
   }
   var p = next.predicted;
-  var head = ''
-    + '<div class="dp-hc sym">Symbol</div>'
-    + '<div class="dp-hc">Date</div>'
-    + '<div class="dp-hc num">Open</div>'
-    + '<div class="dp-hc num">Peak</div>'
-    + '<div class="dp-hc num">Close</div>'
-    + '<div class="dp-hc num">Score</div>';
-
-  var predictCells = ''
-    + '<div class="dp-cell sym dp-predict"><span class="dp-row-tag predict">Predict</span><span class="dp-sym">' + escHtml(sym) + '</span></div>'
-    + '<div class="dp-cell dp-period dp-predict">' + _dpPeriodNext(next) + '</div>'
-    + '<div class="dp-cell num dp-price dp-predict">' + _fmtUsd(p.open) + '</div>'
-    + '<div class="dp-cell num dp-price dp-predict">' + _fmtUsd(p.high) + '</div>'
-    + '<div class="dp-cell num dp-price dp-predict">' + _fmtUsd(p.close) + '</div>'
-    + '<div class="dp-cell num dp-predict">' + _dpScorePill(null, true) + '</div>';
-
-  var marketCells;
+  var predictCard = _dpCard('predict', sym, _dpPeriodNext(next), p.open, p.high, p.close, _dpScorePill(null, true));
+  var marketCard;
   if(lastResolved && lastResolved.actual){
     var a = lastResolved.actual;
     var sc = (lastResolved.score || {}).overall_pct;
-    marketCells = ''
-      + '<div class="dp-cell sym dp-market"><span class="dp-row-tag market">Market</span><span class="dp-sym">' + escHtml(sym) + '</span></div>'
-      + '<div class="dp-cell dp-period dp-market">' + _dpPeriodMarket(lastResolved) + '</div>'
-      + '<div class="dp-cell num dp-price dp-market">' + _fmtUsd(a.open) + '</div>'
-      + '<div class="dp-cell num dp-price dp-market">' + _fmtUsd(a.high) + '</div>'
-      + '<div class="dp-cell num dp-price dp-market">' + _fmtUsd(a.close) + '</div>'
-      + '<div class="dp-cell num dp-market">' + _dpScorePill(sc, false) + '</div>';
+    marketCard = _dpCard('market', sym, _dpPeriodMarket(lastResolved), a.open, a.high, a.close, _dpScorePill(sc, false));
   } else {
-    marketCells = ''
-      + '<div class="dp-cell sym dp-market"><span class="dp-row-tag market">Market</span><span class="dp-sym">' + escHtml(sym) + '</span></div>'
-      + '<div class="dp-cell dp-period dp-market">—</div>'
-      + '<div class="dp-cell num dp-price dp-market">—</div>'
-      + '<div class="dp-cell num dp-price dp-market">—</div>'
-      + '<div class="dp-cell num dp-price dp-market">—</div>'
-      + '<div class="dp-cell num dp-market"><span class="dp-score pending">awaiting</span></div>';
+    marketCard = _dpCard('market', sym, '—', null, null, null, '<span class="dp-score pending">awaiting</span>');
   }
-
-  return '<div class="dp-grid">' + head + predictCells + marketCells + '</div>';
+  return '<div class="dp-rows">' + predictCard + marketCard + '</div>';
 }
 
 function _chicagoNowParts(){
