@@ -248,6 +248,18 @@ FAILURES = """
 # ============================================================
 
 SESSION_LOG = """
+--- 2026-06-07 | Pre-market watchlist scans ---
+Context: operator asked Ghost to include pre-market (previously scans skipped 4:00-9:30 AM CT).
+
+Shipped:
+  - GHOST_PREMARKET_SCAN=1 (default): run_prediction_cycle scans full watchlist pre-open
+  - Market scan cadence: 30m interval during pre-market when enabled
+  - core/prices.get_extended_session: prior close, session price, gap_pct
+  - predict_live_ex: overlays extended-hours price on last daily bar; scores.extended_session
+  - GHOST_PREMARKET_FLOOR_BUMP=0.03 extra confidence required pre-open
+  - Ghost Ask + cockpit copy updated for pre/after-hours sessions
+  - tests/test_premarket_scan.py
+
 --- 2026-06-07 | Full watchlist coverage + daily forecast panel + training reliability ---
 Context: operator wanted all 44 watchlist symbols trained, cockpit panel reorder, and
 daily prediction UI. Root training failure was batch OHLCV fetch returning empty under

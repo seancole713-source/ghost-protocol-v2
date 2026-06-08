@@ -3,7 +3,7 @@ core/prices.py - Stock price fetcher (WOLF-only mode).
 Primary: Alpaca real-time trades. Fallback: yfinance (fast_info + history).
 """
 import os, time, logging, requests
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Any
 
 LOGGER = logging.getLogger("ghost.prices")
 POLYGON_KEY = os.getenv("POLYGON_API_KEY", "")
@@ -78,6 +78,73 @@ def get_stock_price(symbol):
 def get_price(symbol, asset_type=None):
     """WOLF-only mode: always returns stock price. asset_type kept for backward compat, ignored."""
     return get_stock_price(symbol)
+
+
+def get_extended_session(symbol: str) -> Dict[str, Any]:
+    """Extended-hours context: prior close, live quote, gap %, and session label.
+
+    Used during pre-market scans so Ghost can price gaps without waiting for RTH.
+    """
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        return {}
+    live = get_stock_price(sym)
+    prev_close = None
+    pre_market = None
+    post_market = None
+    try:
+        import yfinance as yf
+        fi = yf.Ticker(sym).fast_info
+        prev_close = getattr(fi, "previous_close", None) or getattr(fi, "previousClose", None)
+        pre_market = getattr(fi, "pre_market_price", None) or getattr(fi, "preMarketPrice", None)
+        post_market = getattr(fi, "post_market_price", None) or getattr(fi, "postMarketPrice", None)
+    except Exception:
+        pass
+    try:
+        if prev_close is not None:
+            prev_close = float(prev_close)
+    except Exception:
+        prev_close = None
+    session = "closed"
+    session_price = live
+    try:
+        import datetime as _dt
+        try:
+            from zoneinfo import ZoneInfo
+            now_et = _dt.datetime.now(ZoneInfo("America/New_York"))
+        except Exception:
+            now_et = _dt.datetime.utcnow() - _dt.timedelta(hours=5)
+        if now_et.weekday() < 5:
+            hm = now_et.hour * 60 + now_et.minute
+            if 9 * 60 + 30 <= hm < 16 * 60:
+                session = "rth"
+            elif 4 * 60 <= hm < 9 * 60 + 30:
+                session = "premarket"
+                if pre_market and float(pre_market) > 0:
+                    session_price = float(pre_market)
+            elif 16 * 60 <= hm < 20 * 60:
+                session = "afterhours"
+                if post_market and float(post_market) > 0:
+                    session_price = float(post_market)
+    except Exception:
+        pass
+    gap_pct = None
+    gap_abs = None
+    if prev_close and prev_close > 0 and session_price and float(session_price) > 0:
+        gap_abs = round(float(session_price) - prev_close, 4)
+        gap_pct = round(gap_abs / prev_close * 100, 3)
+    return {
+        "symbol": sym,
+        "session": session,
+        "live_price": round(float(live), 4) if live else None,
+        "session_price": round(float(session_price), 4) if session_price else None,
+        "previous_close": round(prev_close, 4) if prev_close else None,
+        "gap_abs": gap_abs,
+        "gap_pct": gap_pct,
+        "pre_market_price": round(float(pre_market), 4) if pre_market else None,
+        "post_market_price": round(float(post_market), 4) if post_market else None,
+        "ts": int(time.time()),
+    }
 
 
 def get_vix():

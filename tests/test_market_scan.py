@@ -30,7 +30,10 @@ def test_scan_gap_market_hours_vs_offhours(monkeypatch):
     # Saturday 10:00 CT — weekend
     gap, is_market = wolf_app._market_scan_gap_s(_ct((5, 10, 0)))
     assert is_market is False and gap == 60 * 60
-    # Monday 08:00 CT — pre-market (before 8:30)
+    # Monday 08:00 CT — pre-market uses market cadence when GHOST_PREMARKET_SCAN=1 (default)
+    gap, is_market = wolf_app._market_scan_gap_s(_ct((0, 8, 0)))
+    assert is_market is True and gap == 30 * 60
+    monkeypatch.setenv("GHOST_PREMARKET_SCAN", "0")
     _, is_market = wolf_app._market_scan_gap_s(_ct((0, 8, 0)))
     assert is_market is False
 

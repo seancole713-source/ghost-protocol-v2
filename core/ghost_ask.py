@@ -39,12 +39,24 @@ def _system_prompt() -> str:
         "education, not Ghost signals.\n"
         "7. Not financial advice. Encourage 1% risk, stops, and following Ghost rules.\n"
         "8. Be concise (under 250 words unless user asks for detail). Use plain language.\n"
+        "9. When context.market_session is Pre-Market and premarket_scan_enabled is true, "
+        "Ghost scans the watchlist before the 9:30 ET open using extended-hours quotes "
+        "(gap vs prior close). Pre-market fires require a higher confidence floor; "
+        "open-buffer rules still apply after the bell.\n"
     )
 
 
 def build_ask_context() -> Dict[str, Any]:
     """Snapshot live Ghost state for Claude (sync, no HTTP loopback)."""
     ctx: Dict[str, Any] = {"ts": int(time.time())}
+    try:
+        from api.wolf_endpoints import _market_status
+        from core.prediction import _premarket_scan_enabled, _is_premarket
+        ctx["market_session"] = _market_status()
+        ctx["premarket_scan_enabled"] = _premarket_scan_enabled()
+        ctx["is_premarket"] = _is_premarket()
+    except Exception as e:
+        ctx["market_session_error"] = str(e)[:120]
     try:
         from core.prediction import engine_pause_state
         ctx["engine_pause"] = engine_pause_state()

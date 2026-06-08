@@ -1467,11 +1467,20 @@ function renderPlay(picks, watching){
     var now = new Date();
     var et = new Date(now.toLocaleString('en-US',{timeZone:'America/New_York'}));
     var hh = et.getHours(), mn = et.getMinutes(), day = et.getDay();
-    var mopen = day >= 1 && day <= 5 && (hh > 9 || (hh === 9 && mn >= 30)) && hh < 16;
+    var hm = hh * 60 + mn;
+    var mopen = day >= 1 && day <= 5 && hm >= (9 * 60 + 30) && hm < (16 * 60);
+    var preMkt = day >= 1 && day <= 5 && hm >= (4 * 60) && hm < (9 * 60 + 30);
+    var ah = day >= 1 && day <= 5 && hm >= (16 * 60) && hm < (20 * 60);
+    var sessMsg = mopen
+      ? 'Market is open but Ghost has no signal above the confidence floor.'
+      : preMkt
+        ? 'US market is in <b>pre-market</b> (4:00 AM – 9:30 AM ET). Ghost scans extended-hours quotes and gap vs prior close every 30 min.'
+        : ah
+          ? 'US market is in <b>after-hours</b> (4:00 – 8:00 PM ET). Ghost still scans on the off-hours cadence.'
+          : 'US market is <b>closed</b>. Regular hours: Mon–Fri 9:30 AM – 4:00 PM ET.';
     sg.innerHTML = '<div class="info-box"><b>No WOLF play right now.</b><br><br>'
-      + (mopen ? 'Market is open but Ghost has no signal above the confidence floor.'
-              : 'US market is <b>closed</b>. Hours: Mon–Fri 9:30 AM – 4:00 PM ET.')
-      + '<br><br>Next prediction cycle runs every 30 min during market hours.</div>';
+      + sessMsg
+      + '<br><br>Next prediction cycle runs every 30 min during market and pre-market hours.</div>';
     return;
   }
   var top = stocks.sort(function(a,b){return b.confidence - a.confidence})[0];

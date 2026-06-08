@@ -1571,6 +1571,25 @@ def predict_live_ex(symbol, asset_type, scores=None):
     if not rows or len(rows) < 30:
         return None, "intraday_data"
 
+    premarket_ctx = None
+    try:
+        from core.prediction import _is_premarket, _premarket_scan_enabled
+        if _is_premarket() and _premarket_scan_enabled():
+            from core.prices import get_extended_session
+            premarket_ctx = get_extended_session(symbol)
+            sp = premarket_ctx.get("session_price") or premarket_ctx.get("live_price")
+            if sp and float(sp) > 0 and rows:
+                # Overlay extended-hours price on the last daily bar so momentum
+                # features reflect the gap without retraining on intraday bars.
+                last = dict(rows[-1])
+                px = float(sp)
+                last["close"] = px
+                last["high"] = max(float(last.get("high") or px), px)
+                last["low"] = min(float(last.get("low") or px), px)
+                rows = rows[:-1] + [last]
+    except Exception as _pm_e:
+        LOGGER.debug("premarket overlay skipped %s: %s", symbol, str(_pm_e)[:80])
+
     features = _calculate_features(rows)
     from core.feature_schema import attach_feature_asof
     attach_feature_asof(features, rows[-1].get("ts") if rows else None)
@@ -1603,6 +1622,8 @@ def predict_live_ex(symbol, asset_type, scores=None):
         regime_label = "Neutral"
     if scores is not None:
         scores["schema"] = 1
+        if premarket_ctx:
+            scores["extended_session"] = premarket_ctx
         scores["regime"] = {
             "label": regime_label,
             "above_ema200": int(above_ema200),

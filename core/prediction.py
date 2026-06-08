@@ -388,6 +388,29 @@ def _is_premarket():
     pre_open = now.replace(hour=4, minute=0, second=0, microsecond=0)
     mkt_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
     return pre_open <= now < mkt_open
+
+
+def _premarket_scan_enabled() -> bool:
+    """When True, watchlist scans run during US pre-market (4:00–9:30 AM CT)."""
+    return os.getenv("GHOST_PREMARKET_SCAN", "1").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _premarket_floor_bump() -> float:
+    """Extra confidence required for pre-market fires (noisier tape)."""
+    raw = os.getenv("GHOST_PREMARKET_FLOOR_BUMP", "0.03")
+    try:
+        return max(0.0, min(0.15, float(raw)))
+    except Exception:
+        return 0.03
+
+
+def _watchlist_scan_enabled() -> bool:
+    """True when run_prediction_cycle should scan the configured watchlist."""
+    if _is_premarket():
+        return _premarket_scan_enabled()
+    return True
+
+
 EXCLUDE = set(s for s in os.getenv("EXCLUDE_SYMBOLS","").split(",") if s.strip())
 _OBJECTIVE_RUNTIME_MODE_CACHE: Dict[str, Any] = {"mode": None, "ts": 0.0}
 
@@ -934,6 +957,9 @@ def _predict_symbol_ex(symbol, asset_type, regime, scores_out=None):
     direction, confidence = signal
 
     _floor = regime.get('confidence_floor_override', CONFIDENCE_FLOOR) if isinstance(regime, dict) else CONFIDENCE_FLOOR
+    if _is_premarket() and _premarket_scan_enabled():
+        _floor = min(0.98, _floor + _premarket_floor_bump())
+        score_vector["premarket_floor_bump"] = _premarket_floor_bump()
     if confidence < _floor:
         score_vector["confidence"] = float(confidence)
         score_vector["confidence_floor"] = float(_floor)
@@ -1122,10 +1148,11 @@ def run_prediction_cycle(with_diag: bool = False):
     auto_mode_state = objective_autotune_mode()
     regime = _check_regime()
     regime['confidence_floor_override'] = _cb_floor
-    # WOLF-only: only stocks; skip pre-market (T07: features degrade before open).
-    # Scan configured watchlist only (no portfolio expansion).
+    # Scan configured watchlist only (no portfolio expansion). Pre-market scans are
+    # opt-out via GHOST_PREMARKET_SCAN=0; extended-session price is overlaid in
+    # predict_live_ex so daily-trained features stay valid before the cash open.
     symbols = ([(s.strip(), "stock") for s in STOCK_SYMBOLS if s.strip()]
-               if (_is_market_hours() or not _is_premarket()) else [])
+               if _watchlist_scan_enabled() else [])
     skip_counts = {}
     all_picks = []
     closest = None   # silence logging (audit §3): track the highest-up_prob candidate
