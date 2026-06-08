@@ -47,7 +47,11 @@ def _pct_accuracy(predicted: float, actual: float) -> Optional[float]:
 
 
 def forecast_ohlc_from_prob(prior_close: float, up_prob: float, symbol: str, asset_type: str = "stock") -> Dict[str, Any]:
-    """Derive next-day open/high/low band from prior close and model up_prob."""
+    """Derive next-day open/high/low band from prior close and model up_prob.
+
+    Telemetry only — trade direction for picks uses classifier up_prob via
+    predict_live_ex, not the sign of these level bands.
+    """
     vol = base_vol_pct(symbol, asset_type)
     stop = stop_pct_from_vol(vol)
     bullish = float(up_prob) >= 0.5
@@ -81,8 +85,14 @@ def score_forecast_vs_actual(predicted: Dict[str, float], actual: Dict[str, floa
     low_pct = _pct_accuracy(predicted.get("low"), actual.get("low"))
     parts = [p for p in (open_pct, peak_pct, close_pct) if p is not None]
     overall = round(sum(parts) / len(parts), 2) if parts else None
-    pred_up = float(predicted.get("close", predicted.get("high", 0))) >= float(predicted.get("open", 0))
     act_up = float(actual.get("close", actual.get("high", 0))) >= float(actual.get("open", 0))
+    up_prob = predicted.get("up_prob")
+    if up_prob is not None:
+        pred_up = float(up_prob) >= 0.5
+        direction_source = "classifier_up_prob"
+    else:
+        pred_up = float(predicted.get("close", predicted.get("high", 0))) >= float(predicted.get("open", 0))
+        direction_source = "ohlc_band_legacy"
     return {
         "open_pct": open_pct,
         "open_rate": open_pct,
@@ -94,6 +104,7 @@ def score_forecast_vs_actual(predicted: Dict[str, float], actual: Dict[str, floa
         "low_pct": low_pct,
         "overall_pct": overall,
         "direction_ok": pred_up == act_up,
+        "direction_source": direction_source,
     }
 
 
@@ -298,11 +309,18 @@ def build_daily_scorecard(symbol: str, days: int = 14, asset_type: str = "stock"
     scored = [d for d in out_days if d.get("resolved") and d.get("score")]
     overall_vals = [d["score"]["overall_pct"] for d in scored if d["score"].get("overall_pct") is not None]
     dir_hits = sum(1 for d in scored if d["score"].get("direction_ok"))
+    dir_pct = round(dir_hits / len(scored) * 100, 1) if scored else None
+    level_avg = round(sum(overall_vals) / len(overall_vals), 2) if overall_vals else None
     summary = {
         "scored_days": len(scored),
-        "avg_overall_pct": round(sum(overall_vals) / len(overall_vals), 2) if overall_vals else None,
-        "direction_hit_rate_pct": round(dir_hits / len(scored) * 100, 1) if scored else None,
+        "avg_overall_pct": level_avg,
+        "level_closeness_avg_pct": level_avg,
+        "direction_hit_rate_pct": dir_pct,
+        "trade_direction_hit_rate_pct": dir_pct,
+        "direction_metric": "classifier_up_prob",
         "model_accuracy_holdout_pct": round(float(meta.get("accuracy", 0)) * 100, 1) if meta else None,
+        "calibrated": bool(meta.get("calibrated")) if meta else None,
+        "calibration_brier": meta.get("gate_brier") if meta else None,
     }
 
     live_row = next((d for d in reversed(out_days) if not d.get("resolved")), None)

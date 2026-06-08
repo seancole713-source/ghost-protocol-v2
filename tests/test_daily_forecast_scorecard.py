@@ -21,11 +21,25 @@ def test_forecast_ohlc_bearish():
 
 
 def test_score_forecast_perfect_match():
-    pred = {"open": 10.0, "high": 11.0, "low": 9.5}
-    actual = {"open": 10.0, "high": 11.0, "low": 9.5}
+    pred = {"open": 10.0, "high": 11.0, "low": 9.5, "close": 10.5, "up_prob": 0.72}
+    actual = {"open": 10.0, "high": 11.0, "low": 9.5, "close": 10.5}
     sc = score_forecast_vs_actual(pred, actual)
     assert sc["overall_pct"] == 100.0
     assert sc["direction_ok"] is True
+    assert sc["direction_source"] == "classifier_up_prob"
+
+
+def test_score_direction_uses_up_prob_not_ohlc_band():
+    """Classifier says UP (0.72) even when band geometry looks DOWN."""
+    pred = {"open": 10.2, "high": 10.3, "low": 9.0, "close": 9.8, "up_prob": 0.72}
+    actual = {"open": 10.0, "high": 11.0, "low": 9.5, "close": 10.8}
+    sc = score_forecast_vs_actual(pred, actual)
+    assert sc["direction_ok"] is True
+    assert sc["direction_source"] == "classifier_up_prob"
+
+    pred_down = dict(pred, up_prob=0.30)
+    sc2 = score_forecast_vs_actual(pred_down, actual)
+    assert sc2["direction_ok"] is False
 
 
 def test_score_forecast_partial_error():

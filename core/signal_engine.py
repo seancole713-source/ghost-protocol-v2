@@ -13,6 +13,7 @@ within N daily bars (see V3_LABEL_HOLD_BARS), same TP/SL math as core.vol_target
 """
 import os, time, logging, json
 import numpy as np
+from typing import Any, Dict, List
 from core.vol_targets import base_vol_pct, stop_pct_from_vol
 
 LOGGER = logging.getLogger("ghost.signal_v3")
@@ -1199,6 +1200,74 @@ def _persist_train_details(details_list) -> None:
         LOGGER.warning("train details persist failed: " + str(_e)[:120])
 
 
+def _v3_max_calibration_brier() -> float:
+    """Max acceptable Brier on the final holdout (gate) slice after calibration."""
+    try:
+        return float(os.getenv("V3_MAX_CALIBRATION_BRIER", "0.24"))
+    except Exception:
+        return 0.24
+
+
+def _reliability_bins(y_true, y_prob, n_bins: int = 5) -> List[Dict[str, Any]]:
+    """Reliability diagram bins: predicted prob bucket vs realized win rate."""
+    y_true = np.asarray(y_true, dtype=float)
+    y_prob = np.asarray(y_prob, dtype=float)
+    if len(y_true) == 0:
+        return []
+    n_bins = max(2, min(int(n_bins), 10))
+    bins: List[Dict[str, Any]] = []
+    for i in range(n_bins):
+        lo = i / n_bins
+        hi = (i + 1) / n_bins
+        if i == n_bins - 1:
+            mask = (y_prob >= lo) & (y_prob <= hi)
+        else:
+            mask = (y_prob >= lo) & (y_prob < hi)
+        cnt = int(np.sum(mask))
+        if cnt == 0:
+            continue
+        bins.append({
+            "bin_lo": round(lo, 3),
+            "bin_hi": round(hi, 3),
+            "n": cnt,
+            "mean_pred": round(float(np.mean(y_prob[mask])), 4),
+            "observed_rate": round(float(np.mean(y_true[mask])), 4),
+        })
+    return bins
+
+
+def _evaluate_calibration_holdout(model, X_gate, y_gate) -> Dict[str, Any]:
+    """Evaluate the deployed (calibrated) model on the untouched gate slice."""
+    from sklearn.metrics import accuracy_score, brier_score_loss
+
+    y_gate = np.asarray(y_gate)
+    if len(y_gate) == 0:
+        return {
+            "holdout_acc": 0.0,
+            "edge": 0.0,
+            "natural_rate": 0.0,
+            "gate_brier": None,
+            "reliability_bins": [],
+            "gate_n": 0,
+        }
+    proba = model.predict_proba(X_gate)[:, 1]
+    natural_rate = float(np.mean(y_gate))
+    preds = (proba >= 0.5).astype(int)
+    holdout_acc = float(accuracy_score(y_gate, preds))
+    edge = holdout_acc - natural_rate
+    gate_brier = None
+    if np.unique(y_gate).size >= 2:
+        gate_brier = round(float(brier_score_loss(y_gate, proba)), 4)
+    return {
+        "holdout_acc": holdout_acc,
+        "edge": edge,
+        "natural_rate": natural_rate,
+        "gate_brier": gate_brier,
+        "reliability_bins": _reliability_bins(y_gate, proba),
+        "gate_n": int(len(y_gate)),
+    }
+
+
 def _maybe_calibrate(model, X_calib, y_calib):
     """Wrap a fitted base model with prefit probability calibration.
 
@@ -1404,8 +1473,20 @@ def train_and_validate(symbols_and_types):
                 eval_metric='logloss', random_state=42
             )
             model.fit(X_fit, y_fit, sample_weight=sample_weight)
-            accuracy = float(accuracy_score(y_gate, model.predict(X_gate))) if len(y_gate) else 0.0
-            edge = accuracy - natural_rate
+            if _v3_ensemble_enabled():
+                final_model, calib_info = _build_ensemble(
+                    model, X_fit, y_fit, sample_weight, X_calib, y_calib)
+            else:
+                final_model, calib_info = _maybe_calibrate(model, X_calib, y_calib)
+            holdout = _evaluate_calibration_holdout(final_model, X_gate, y_gate)
+            accuracy = float(holdout["holdout_acc"])
+            edge = float(holdout["edge"])
+            natural_rate = float(holdout["natural_rate"])
+            calib_info.update({
+                "gate_brier": holdout.get("gate_brier"),
+                "reliability_bins": holdout.get("reliability_bins") or [],
+                "gate_n": holdout.get("gate_n", 0),
+            })
             # W1: feed the same peer pool into the walk-forward folds, so the
             # gate validates the deployed pooled model rather than a WOLF-only
             # one the engine never serves (and each thin fold trains on more).
@@ -1422,6 +1503,7 @@ def train_and_validate(symbols_and_types):
             min_wf_acc_min = (min_wf_acc - wf_slack)
             symbol_overrides = _v3_wf_acc_min_overrides()
             symbol_wf_acc_min = symbol_overrides.get(symbol.upper(), min_wf_acc_min)
+            max_brier = _v3_max_calibration_brier()
             gate_checks = [
                 ("n_samples", n_samples >= min_rows, f"n_samples<{min_rows} ({n_samples})"),
                 ("tp_sl_wins", wins_ct >= min_wins, f"tp_sl_wins<{min_wins} ({wins_ct})"),
@@ -1432,11 +1514,20 @@ def train_and_validate(symbols_and_types):
                 ("wf_edge_mean", wf["edge_mean"] >= min_edge, f"wf_edge_mean < {min_edge*100:.1f}% ({wf['edge_mean']*100:.1f}%)"),
                 ("wf_acc_min", wf["acc_min"] >= symbol_wf_acc_min, f"wf_acc_min < {symbol_wf_acc_min*100:.1f}% ({wf['acc_min']*100:.1f}%)"),
             ]
+            if calib_info.get("calibrated") and int(holdout.get("gate_n") or 0) >= 10:
+                brier = calib_info.get("gate_brier")
+                brier_ok = brier is not None and float(brier) < max_brier
+                gate_checks.append((
+                    "calibration_brier",
+                    brier_ok,
+                    f"gate_brier {brier} >= {max_brier}" if not brier_ok else f"gate_brier {brier} < {max_brier}",
+                ))
             fail_reason = next((msg for _, ok, msg in gate_checks if not ok), None)
             passes = fail_reason is None
             LOGGER.info(
                 f"RETRAIN [{symbol}]: acc={accuracy*100:.1f}% edge={edge*100:.1f}% "
-                f"wf_folds={wf['fold_count']} wf_acc_mean={wf['acc_mean']*100:.1f}% "
+                f"brier={calib_info.get('gate_brier')} wf_folds={wf['fold_count']} "
+                f"wf_acc_mean={wf['acc_mean']*100:.1f}% "
                 f"wf_edge_mean={wf['edge_mean']*100:.1f}% wf_acc_min={wf['acc_min']*100:.1f}% "
                 f"| {'PASS' if passes else 'FAIL: ' + fail_reason}"
             )
@@ -1449,6 +1540,12 @@ def train_and_validate(symbols_and_types):
                 "natural_rate": round(natural_rate, 4),
                 "holdout_acc": round(accuracy, 4),
                 "edge": round(edge, 4),
+                "calibration": calib_info,
+                "holdout_slices": {
+                    "train_n": int(len(X_train)),
+                    "calib_n": int(len(X_calib)),
+                    "gate_n": int(len(X_gate)),
+                },
                 "wf_fold_count": int(wf["fold_count"]),
                 "wf_acc_mean": round(wf["acc_mean"], 4),
                 "wf_acc_min": round(wf["acc_min"], 4),
@@ -1466,18 +1563,6 @@ def train_and_validate(symbols_and_types):
                     "min_wf_acc_min": symbol_wf_acc_min,
                 },
             })
-            if passes:
-                if _v3_ensemble_enabled():
-                    final_model, calib_info = _build_ensemble(
-                        model, X_fit, y_fit, sample_weight, X_calib, y_calib)
-                else:
-                    final_model, calib_info = _maybe_calibrate(model, X_calib, y_calib)
-                symbol_detail["calibration"] = calib_info
-                symbol_detail["holdout_slices"] = {
-                    "train_n": int(len(X_train)),
-                    "calib_n": int(len(X_calib)),
-                    "gate_n": int(len(X_gate)),
-                }
             details.append(symbol_detail)
             if passes:
                 model_bytes = base64.b64encode(pickle.dumps(final_model)).decode('ascii')
@@ -1491,6 +1576,8 @@ def train_and_validate(symbols_and_types):
                     "label_hold_bars": V3_LABEL_HOLD_BARS,
                     "calibrated": calib_info["calibrated"],
                     "calibration_method": calib_info.get("method"),
+                    "gate_brier": calib_info.get("gate_brier"),
+                    "reliability_bins": calib_info.get("reliability_bins") or [],
                     "ensemble": bool(calib_info.get("ensemble", False)),
                     "ensemble_members": calib_info.get("members"),
                     "pool_enabled": pool_info["enabled"],
@@ -1685,8 +1772,11 @@ def predict_live_ex(symbol, asset_type, scores=None):
             "min_win_proba": round(float(min_p), 4),
             "calibrated": bool(meta.get("calibrated", False)),
             "calibration_method": meta.get("calibration_method"),
+            "gate_brier": meta.get("gate_brier"),
             "ensemble": bool(meta.get("ensemble", False)),
         }
+        scores["direction_source"] = "classifier_up_prob"
+        scores["trade_signal_source"] = "classifier_up_prob"
 
     if edge < min_edge:
         return None, "meta_gate"
