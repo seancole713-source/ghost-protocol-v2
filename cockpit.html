@@ -2355,7 +2355,7 @@ function _renderDpThreeRows(sym, next, lastResolved, live){
     var p = next.predicted;
     cards.push(_dpCard('predict', sym, _dpPeriodNext(next), p.open, p.high, p.close, _dpScorePill(null, true)));
   }
-  if(lastResolved && lastResolved.actual){
+    if(lastResolved && lastResolved.actual){
     var a = lastResolved.actual;
     var sc = (lastResolved.score || {}).overall_pct;
     cards.push(_dpCard('market', sym, _dpPeriodMarket(lastResolved), a.open, a.high, a.close, _dpScorePill(sc, false)));
@@ -3012,6 +3012,11 @@ function _renderDeployBadge(deploy){
   el.title = 'git ' + deploy.git_sha
     + (deploy.deploy_id && deploy.deploy_id !== 'unset' ? '\ndeploy ' + deploy.deploy_id : '')
     + (deploy.app_version ? '\nv' + deploy.app_version : '');
+  var metaBuild = document.querySelector('meta[name="ghost-build"]');
+  if(metaBuild && metaBuild.getAttribute('content') && metaBuild.getAttribute('content') !== short){
+    el.className = 'deploy-badge unset';
+    el.title = 'Cached page build ' + metaBuild.getAttribute('content') + ' · live ' + short + '\nHard refresh (Cmd+Shift+R)';
+  }
 }
 
 function _renderEngineBadge(v3){
@@ -3082,17 +3087,19 @@ async function load(){
   try{
     var ctxP = _loadCoreContext();
     var coreP = Promise.all([
+      _fetchJson('/api/_version', {ok:false}),
       _fetchJson('/api/wolf/ghost-score', {ok:false}),
       _fetchJson('/api/wolf/price', {ok:false}),
       _fetchJson('/api/picks'),
     ]);
     var ctxPack = await ctxP;
     var core = await coreP;
+    var deployMeta = core[0];
     var h = ctxPack.h, stats = ctxPack.stats;
-    var ghostScore = core[0], price = core[1], picks = core[2];
+    var ghostScore = core[1], price = core[2], picks = core[3];
     var watching = _computeWatching(h, ghostScore);
 
-    _renderDeployBadge(ctxPack.deploy);
+    _renderDeployBadge((deployMeta && deployMeta.git_sha) ? deployMeta : ctxPack.deploy);
     _renderEngineBadge(ctxPack.v3);
     // Keep signal-history + performance-log in sync with engine state on each load.
     loadSignalHistory();
@@ -3283,13 +3290,16 @@ function _plConf(v){
   return (Number(v) * 100).toFixed(0) + '%';
 }
 
-function _formatNearMiss(nm){
+function _formatNearMiss(nm, bootstrapDefault){
   if(!nm || nm.up_prob == null) return '—';
   var skip = nm.skip || '';
   var sym = nm.symbol ? escHtml(nm.symbol) + ' ' : '';
-  if(skip === 'objective_bootstrap_conf' && nm.confidence != null && nm.bootstrap_min_conf != null){
-    var bgap = nm.bootstrap_gap != null ? nm.bootstrap_gap : (Number(nm.confidence) - Number(nm.bootstrap_min_conf));
-    var s = sym + 'conf=' + Number(nm.confidence).toFixed(4) + '/' + Number(nm.bootstrap_min_conf).toFixed(2);
+  var bootDefault = bootstrapDefault != null ? bootstrapDefault : 0.75;
+  if(skip === 'objective_bootstrap_conf'){
+    var conf = nm.confidence != null ? Number(nm.confidence) : Number(nm.up_prob);
+    var boot = nm.bootstrap_min_conf != null ? Number(nm.bootstrap_min_conf) : bootDefault;
+    var bgap = nm.bootstrap_gap != null ? nm.bootstrap_gap : (conf - boot);
+    var s = sym + 'conf=' + conf.toFixed(4) + '/' + boot.toFixed(2);
     s += ' <span class="' + (bgap >= 0 ? 'pos' : 'neg') + '">' + (bgap >= 0 ? '+' : '') + bgap.toFixed(4) + '</span>';
     s += ' <span style="color:#64748b;font-size:10px">bootstrap min</span>';
     if(nm.up_prob != null && nm.min_win_proba != null){

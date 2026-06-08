@@ -109,6 +109,19 @@ def enrich_near_miss(near_miss: Optional[Dict[str, Any]]) -> Optional[Dict[str, 
     return nm
 
 
+def backfill_near_miss_for_display(near_miss: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Fill missing bootstrap fields on historical gate rows recorded before f02a1e2."""
+    if not near_miss:
+        return None
+    nm = dict(near_miss)
+    if nm.get("skip") == "objective_bootstrap_conf":
+        if nm.get("bootstrap_min_conf") is None:
+            nm["bootstrap_min_conf"] = float(_objective_effective_config().get("bootstrap_min_conf", 0.75))
+        if nm.get("confidence") is None and nm.get("up_prob") is not None:
+            nm["confidence"] = float(nm["up_prob"])
+    return enrich_near_miss(nm)
+
+
 def resolve_binding_skip(
     skip_counts: Dict[str, int],
     *,

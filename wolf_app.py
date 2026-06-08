@@ -2879,11 +2879,14 @@ def wolf_gate_history(limit: int = 50):
         # Aggregate which gate was binding across the window
         binding = {}
         closest = None   # best (highest up_prob) near-miss across the window
+        from core.prediction import backfill_near_miss_for_display
         for h in recent:
             ts_skip = h.get("binding_skip") or h.get("top_skip")
             if ts_skip:
                 binding[ts_skip] = binding.get(ts_skip, 0) + 1
-            nm = h.get("near_miss")
+            nm = backfill_near_miss_for_display(h.get("near_miss"))
+            if nm:
+                h["near_miss"] = nm
             if nm and nm.get("up_prob") is not None:
                 if closest is None or nm["up_prob"] > closest.get("up_prob", -1):
                     closest = dict(nm, ts=h.get("ts"))
@@ -3760,12 +3763,37 @@ def debug_signal(symbol: str):
         }
     }
 
+_HTML_NO_CACHE = {
+    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+    "Pragma": "no-cache",
+}
+
+
+def _serve_html_page(filename: str) -> HTMLResponse:
+    """Serve a repo HTML page with build stamp + no-cache headers (avoid stale cockpit)."""
+    import os as _os
+    _path = _os.path.join(_os.path.dirname(__file__), filename)
+    with open(_path, encoding="utf-8") as _f:
+        html = _f.read()
+    meta = _deploy_meta()
+    short = meta.get("git_sha_short") or "dev"
+    stamp = f'<meta name="ghost-build" content="{short}">'
+    if 'name="ghost-build"' not in html:
+        html = html.replace("<head>", "<head>\n  " + stamp, 1)
+    else:
+        import re as _re
+        html = _re.sub(
+            r'<meta name="ghost-build" content="[^"]*">',
+            stamp,
+            html,
+            count=1,
+        )
+    return HTMLResponse(html, headers=_HTML_NO_CACHE)
+
+
 @APP.get("/cockpit", include_in_schema=False)
 def cockpit():
-    import os as _os
-    _path = _os.path.join(_os.path.dirname(__file__), "cockpit.html")
-    with open(_path, encoding="utf-8") as _f:
-        return HTMLResponse(_f.read())
+    return _serve_html_page("cockpit.html")
 
 
 # ────────────────────────────────────────────────────────────────
@@ -3844,11 +3872,8 @@ def admin_page(request: Request):
     """Serve admin.html when the cookie is valid; else the login page."""
     token = request.cookies.get(_ADMIN_COOKIE, "")
     if not _admin_token_valid(token):
-        return HTMLResponse(_ADMIN_LOGIN_HTML)
-    import os as _os
-    _path = _os.path.join(_os.path.dirname(__file__), "admin.html")
-    with open(_path, encoding="utf-8") as _f:
-        return HTMLResponse(_f.read())
+        return HTMLResponse(_ADMIN_LOGIN_HTML, headers=_HTML_NO_CACHE)
+    return _serve_html_page("admin.html")
 
 
 @APP.post("/admin/login", include_in_schema=False)

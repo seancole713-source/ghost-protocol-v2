@@ -15,6 +15,22 @@ def test_enrich_near_miss_bootstrap_gap():
     assert nm["bootstrap_gap"] == -0.0517
 
 
+def test_backfill_near_miss_for_display_legacy_row(monkeypatch):
+    from core.prediction import backfill_near_miss_for_display
+
+    monkeypatch.setenv("OBJECTIVE_MODE", "aggressive")
+    nm = backfill_near_miss_for_display({
+        "symbol": "BB",
+        "up_prob": 0.6983,
+        "min_win_proba": 0.55,
+        "confidence": 0.698,
+        "skip": "objective_bootstrap_conf",
+        "prob_gap": 0.1483,
+    })
+    assert nm["bootstrap_min_conf"] >= 0.75
+    assert nm["bootstrap_gap"] < 0
+
+
 def test_binding_prefers_near_miss_over_bulk_no_model():
     """17 untrained symbols must not mask WOLF prob_low when model ran."""
     skip_counts = {"no_v3_model": 17, "v3_prob_low": 1}
