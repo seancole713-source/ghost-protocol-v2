@@ -1,5 +1,18 @@
 """Tests for binding-gate resolution (no_v3_model vs v3_prob_low)."""
-from core.prediction import resolve_binding_skip
+from core.prediction import enrich_near_miss, resolve_binding_skip
+
+
+def test_enrich_near_miss_bootstrap_gap():
+    nm = enrich_near_miss({
+        "symbol": "BB",
+        "up_prob": 0.6983,
+        "min_win_proba": 0.55,
+        "confidence": 0.6983,
+        "bootstrap_min_conf": 0.75,
+        "skip": "objective_bootstrap_conf",
+    })
+    assert nm["prob_gap"] == 0.1483
+    assert nm["bootstrap_gap"] == -0.0517
 
 
 def test_binding_prefers_near_miss_over_bulk_no_model():

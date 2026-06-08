@@ -28,6 +28,13 @@ section.block{margin-bottom:32px}
 
 /* ─── Ghost Score gauge ─── */
 .ghost-score-wrap{background:#111;border:1px solid #1e1e1e;border-radius:20px;padding:20px 24px;margin-bottom:18px;display:grid;grid-template-columns:auto 1fr;gap:24px;align-items:center;min-height:168px}
+.ghost-score-wrap.watching{border-color:#2a2a2a;background:#0d0d0d}
+.ghost-score-wrap.watching .gs-gauge-box{opacity:.42;filter:grayscale(.35)}
+.ghost-score-wrap.watching .gs-score{color:#64748b!important;font-size:38px}
+.ghost-score-wrap.watching .gs-signal{background:#1a1a1a;color:#64748b;border:1px solid #2a2a2a}
+.ghost-score-wrap.watching .gs-bar-fg{opacity:.45}
+.ghost-score-wrap.watching .gs-side-head{color:#555}
+.ghost-score-wrap.watching .gs-side-head::after{content:' · bias only — no trade cleared gates';color:#64748b;font-weight:600;letter-spacing:.5px;text-transform:none;margin-left:4px}
 @media (max-width:640px){.ghost-score-wrap{grid-template-columns:1fr}}
 .gs-gauge-box{position:relative;width:240px;height:140px}
 .gs-gauge{width:240px;height:140px;display:block}
@@ -394,6 +401,14 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
 .dp-head{display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:16px}
 .dp-title{font-size:18px;font-weight:800;letter-spacing:-.3px;color:#f8fafc;margin-bottom:8px}
 .dp-sub{font-size:11px;color:#64748b;line-height:1.5;max-width:520px}
+.dp-quality{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px}
+@media (max-width:640px){.dp-quality{grid-template-columns:1fr}}
+.dp-q-box{border-radius:12px;padding:10px 12px;border:1px solid rgba(255,255,255,.06);background:rgba(0,0,0,.22);font-size:11px;line-height:1.45}
+.dp-q-box.level{border-color:rgba(56,189,248,.15)}
+.dp-q-box.trade{border-color:rgba(251,146,60,.18)}
+.dp-q-lbl{font-size:9px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;color:#64748b;margin-bottom:4px}
+.dp-q-val{font-size:15px;font-weight:800;color:#e2e8f0}
+.dp-q-note{color:#64748b;font-size:10px;margin-top:3px}
 .dp-table-wrap{overflow:visible;margin-bottom:8px}
 .dp-rows{display:flex;flex-direction:column;gap:12px;width:100%}
 .dp-card{
@@ -713,10 +728,11 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
       <div class="dp-head">
         <div>
           <div class="dp-title">Next 24 hours</div>
-          <div class="dp-sub">Row 1 — <b>Live now</b> (blue, ~1 min). Row 2 — Ghost next-session prediction (green). Row 3 — last completed session vs forecast (score locks 4:33 PM CT).</div>
+          <div class="dp-sub">Row 1 — <b>Today live</b> (blue, ~1 min). Row 2 — <b>Next session</b> forecast (green). Row 3 — <b>Last full session</b> scored (gray). Dates use US/Eastern trading calendar.</div>
           <div class="tp-chips" id="tp-chips"></div>
         </div>
       </div>
+      <div class="dp-quality" id="dp-quality" style="display:none"></div>
       <div class="dp-table-wrap" id="dp-table-wrap">
         <div class="dp-empty">Loading daily prediction…</div>
       </div>
@@ -731,7 +747,7 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
       <div class="df-head">
         <div>
           <div class="df-head-title">24-hour ahead session forecast</div>
-          <div class="df-head-sub">Ghost predicts next session open, peak (high), and closing prices at the prior close. Scores show open rate, peak rate, and close rate (% closeness).</div>
+          <div class="df-head-sub">Level-band forecasts (open/peak/close) vs trade direction are separate metrics — high closeness does not mean tradable edge.</div>
         </div>
         <div class="df-tools">
           <div class="df-view-group" role="group" aria-label="Chart style">
@@ -1162,6 +1178,7 @@ function _computeWatching(health, gs){
 }
 
 function renderGhostScore(gs, watching){
+  var wrap = document.getElementById('ghost-score-wrap');
   var fg = document.getElementById('gs-gauge-fg');
   var scoreEl = document.getElementById('gs-score');
   var sigEl = document.getElementById('gs-signal');
@@ -1171,6 +1188,7 @@ function renderGhostScore(gs, watching){
   var regimeEl = document.getElementById('gs-regime');
 
   if(!gs || gs.ok === false){
+    if(wrap) wrap.classList.remove('watching');
     fg.setAttribute('d', gsArcPath(0));
     fg.setAttribute('stroke', '#444');
     scoreEl.textContent = '—';
@@ -1204,13 +1222,16 @@ function renderGhostScore(gs, watching){
   var biasLabel = gs.bias_label || '';
   // Prefer explicit trade action over composite signal label when not in WATCHING staleness mode.
   if(watching && watching.watching){
+    if(wrap) wrap.classList.add('watching');
     fg.setAttribute('d', gsArcPath(score));
-    fg.setAttribute('stroke', '#666');
+    fg.setAttribute('stroke', '#555');
     scoreEl.textContent = Math.round(score);
-    scoreEl.style.color = '#888';
+    scoreEl.style.color = '';
     sigEl.textContent = 'WATCHING';
     sigEl.className = 'gs-signal hold';
-  } else if(tradeAction){
+  } else {
+    if(wrap) wrap.classList.remove('watching');
+    if(tradeAction){
     fg.setAttribute('d', gsArcPath(score));
     fg.setAttribute('stroke', color);
     scoreEl.textContent = Math.round(score);
@@ -1218,13 +1239,14 @@ function renderGhostScore(gs, watching){
     sigEl.textContent = tradeAction;
     var taUp = tradeAction.indexOf('SUPER BUY') >= 0 || tradeAction === 'BUY NOW';
     sigEl.className = 'gs-signal ' + (taUp ? (tradeAction.indexOf('SUPER') >= 0 ? 'strong-buy' : 'buy') : 'hold');
-  } else {
+    } else {
     fg.setAttribute('d', gsArcPath(score));
     fg.setAttribute('stroke', color);
     scoreEl.textContent = Math.round(score);
     scoreEl.style.color = color;
     sigEl.textContent = (gs.signal || 'HOLD').replace('_', ' ');
     sigEl.className = 'gs-signal ' + gsSignalClass(gs.signal);
+    }
   }
 
   var components = gs.components || {};
@@ -2246,21 +2268,27 @@ function _splitForecastDays(days){
 function _dpFormatDate(iso){
   if(!iso || iso === 'next session') return iso || '—';
   try{
-    var d = new Date(iso + 'T12:00:00');
-    if(isNaN(d.getTime())) return iso;
-    return d.toLocaleDateString('en-US', {weekday:'short', month:'short', day:'numeric'});
-  }catch(e){ return iso; }
+    var parts = String(iso).slice(0, 10).split('-');
+    if(parts.length === 3){
+      var d = new Date(Date.UTC(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]), 12, 0, 0));
+      if(!isNaN(d.getTime())){
+        return d.toLocaleDateString('en-US', {weekday:'short', month:'short', day:'numeric', timeZone:'UTC'});
+      }
+    }
+  }catch(e){}
+  return iso;
 }
 
 function _dpPeriodNext(day){
   if(!day) return '—';
   var b = day.target_date || '';
-  return '<b style="color:#86efac">' + escHtml(_dpFormatDate(b)) + '</b>';
+  return '<span style="color:#64748b;font-size:11px">Next session</span> · <b style="color:#86efac">' + escHtml(_dpFormatDate(b)) + '</b>';
 }
 
 function _dpPeriodMarket(day){
   if(!day) return '—';
-  return escHtml(_dpFormatDate(day.target_date || day.forecast_date || 'last session'));
+  var b = day.target_date || day.forecast_date || 'last session';
+  return '<span style="color:#64748b;font-size:11px">Last full session</span> · ' + escHtml(_dpFormatDate(b));
 }
 
 function _dpScorePill(score, pending){
@@ -2308,8 +2336,8 @@ function _dpLiveDate(live){
   if(!live) return '—';
   var d = live.market_date ? _dpFormatDate(live.market_date) : 'Today';
   var sess = live.session_label || live.session || '';
-  if(sess && sess !== 'Closed') return '<b style="color:#7dd3fc">' + escHtml(d) + '</b> · ' + escHtml(sess);
-  return '<b style="color:#7dd3fc">' + escHtml(d) + '</b>';
+  return '<span style="color:#64748b;font-size:11px">Today</span> · <b style="color:#7dd3fc">' + escHtml(d) + '</b>'
+    + (sess && sess !== 'Closed' ? ' · ' + escHtml(sess) : '');
 }
 
 function _renderDpThreeRows(sym, next, lastResolved, live){
@@ -2376,7 +2404,8 @@ async function loadTodayPredictionPanel(is433Refresh){
     }
     var split = _splitForecastDays(g.days || []);
     var next = split.nextForecast;
-    var last = split.lastResolved;
+    var last = g.last_completed_session || split.lastResolved;
+    _renderDpQuality(g.summary || {});
     tableWrap.innerHTML = _renderDpThreeRows(sym, next, last, g.live_now || null);
     var p = _chicagoNowParts();
     var stamp = (p.hour || '00') + ':' + (p.minute || '00') + ' CT';
@@ -2386,7 +2415,7 @@ async function loadTodayPredictionPanel(is433Refresh){
         : '';
       metaEl.textContent = is433Refresh
         ? 'Updated at 4:33 PM CT · ' + stamp + staleNote
-        : 'Live ~1m · Predict = next session · Market = last completed · ' + stamp + staleNote;
+        : 'Today live ~1m · Next session = tomorrow forecast · Last full session = prior close day · ' + stamp + staleNote;
     }
   }catch(e){
     tableWrap.innerHTML = '<div class="dp-empty">Daily prediction panel error.</div>';
@@ -2466,10 +2495,14 @@ async function loadDailyForecastScorecard(){
       ? ' · <span style="color:#fbbf24">last trade ' + escHtml(g.last_bar_date || '—') + '</span>'
       : '';
     sumEl.innerHTML = '<span style="color:#e2e8f0;font-weight:800">' + escHtml(sym) + '</span> · '
-      + (sm.scored_days || 0) + ' scored sessions'
-      + (sm.avg_overall_pct != null ? ' · avg <span class="' + _dfScoreClass(sm.avg_overall_pct) + '">' + sm.avg_overall_pct + '%</span> closeness' : '')
-      + (sm.direction_hit_rate_pct != null ? ' · direction ' + sm.direction_hit_rate_pct + '%' : '')
-      + (sm.model_accuracy_holdout_pct != null ? ' · holdout ' + sm.model_accuracy_holdout_pct + '%' : '')
+      + (sm.scored_days || 0) + ' scored sessions · '
+      + '<span title="Level-band closeness — not tradable edge">Level bands '
+      + (sm.avg_overall_pct != null ? '<span class="' + _dfScoreClass(sm.avg_overall_pct) + '">' + sm.avg_overall_pct + '%</span>' : '—')
+      + '</span> · '
+      + '<span title="Direction hit rate — what pick gates care about">Trade direction '
+      + (sm.direction_hit_rate_pct != null ? '<span class="' + (sm.direction_hit_rate_pct >= 55 ? 'pos' : (sm.direction_hit_rate_pct < 50 ? 'neg' : '')) + '">' + sm.direction_hit_rate_pct + '%</span>' : '—')
+      + '</span>'
+      + (sm.model_accuracy_holdout_pct != null ? ' · holdout classifier ' + sm.model_accuracy_holdout_pct + '%' : '')
       + staleTag;
     var days = g.days || [];
     _dfLastDays = days;
@@ -3250,15 +3283,57 @@ function _plConf(v){
   return (Number(v) * 100).toFixed(0) + '%';
 }
 
-function _plNearMiss(nm){
+function _formatNearMiss(nm){
   if(!nm || nm.up_prob == null) return '—';
-  var s = 'p=' + nm.up_prob;
-  if(nm.min_win_proba != null) s += '/' + nm.min_win_proba;
-  if(nm.prob_gap != null){
-    s += ' <span class="' + (nm.prob_gap >= 0 ? 'pos' : 'neg') + '">' + (nm.prob_gap >= 0 ? '+' : '') + nm.prob_gap + '</span>';
+  var skip = nm.skip || '';
+  var sym = nm.symbol ? escHtml(nm.symbol) + ' ' : '';
+  if(skip === 'objective_bootstrap_conf' && nm.confidence != null && nm.bootstrap_min_conf != null){
+    var bgap = nm.bootstrap_gap != null ? nm.bootstrap_gap : (Number(nm.confidence) - Number(nm.bootstrap_min_conf));
+    var s = sym + 'conf=' + Number(nm.confidence).toFixed(4) + '/' + Number(nm.bootstrap_min_conf).toFixed(2);
+    s += ' <span class="' + (bgap >= 0 ? 'pos' : 'neg') + '">' + (bgap >= 0 ? '+' : '') + bgap.toFixed(4) + '</span>';
+    s += ' <span style="color:#64748b;font-size:10px">bootstrap min</span>';
+    if(nm.up_prob != null && nm.min_win_proba != null){
+      s += '<div style="font-size:10px;color:#555;margin-top:2px">prob gate cleared: p=' + nm.up_prob + '/' + nm.min_win_proba + '</div>';
+    }
+    return s;
   }
-  if(nm.symbol) s = escHtml(nm.symbol) + ' ' + s;
-  return s;
+  if(skip === 'below_confidence_floor' && nm.confidence != null && nm.confidence_floor != null){
+    var cg = nm.conf_gap != null ? nm.conf_gap : (Number(nm.confidence) - Number(nm.confidence_floor));
+    var s2 = sym + 'conf=' + Number(nm.confidence).toFixed(4) + '/' + Number(nm.confidence_floor).toFixed(2);
+    s2 += ' <span class="' + (cg >= 0 ? 'pos' : 'neg') + '">' + (cg >= 0 ? '+' : '') + cg.toFixed(4) + '</span>';
+    return s2;
+  }
+  var s3 = sym + 'p=' + nm.up_prob;
+  if(nm.min_win_proba != null) s3 += '/' + nm.min_win_proba;
+  if(nm.prob_gap != null){
+    s3 += ' <span class="' + (nm.prob_gap >= 0 ? 'pos' : 'neg') + '">' + (nm.prob_gap >= 0 ? '+' : '') + nm.prob_gap + '</span>';
+  }
+  return s3;
+}
+
+function _plNearMiss(nm){
+  return _formatNearMiss(nm);
+}
+
+function _renderDpQuality(summary){
+  var el = document.getElementById('dp-quality');
+  if(!el || !summary) return;
+  var level = summary.avg_overall_pct;
+  var dir = summary.direction_hit_rate_pct;
+  if(level == null && dir == null){
+    el.style.display = 'none';
+    return;
+  }
+  el.style.display = 'grid';
+  var levelCls = level != null && level >= 80 ? 'pos' : '';
+  var dirCls = dir != null && dir >= 55 ? 'pos' : (dir != null && dir < 50 ? 'neg' : '');
+  el.innerHTML = ''
+    + '<div class="dp-q-box level"><div class="dp-q-lbl">Level bands (telemetry)</div>'
+    + '<div class="dp-q-val ' + levelCls + '">' + (level != null ? level + '% avg closeness' : '—') + '</div>'
+    + '<div class="dp-q-note">Anchors to prior close ± vol — not intraday path prediction.</div></div>'
+    + '<div class="dp-q-box trade"><div class="dp-q-lbl">Trade direction (signal)</div>'
+    + '<div class="dp-q-val ' + dirCls + '">' + (dir != null ? dir + '% hit rate' : '—') + '</div>'
+    + '<div class="dp-q-note">Up/down call quality — what gates picks. Coin flip = 50%.</div></div>';
 }
 
 function _renderPlSummary(data){
@@ -3425,15 +3500,10 @@ async function loadSignalHistory(){
         ? ' <span class="neg">Current engine: paused (' + escHtml(liveEng.pause_reason || 'cooldown') + ').</span>'
         : ' <span class="pos">Current engine: live.</span> History rows marked “was paused” are past cycles only.')
       : '';
-    sumEl.innerHTML = '<b>' + (g.fired_count || 0) + '</b> of <b>' + g.count + '</b> recent scans crossed the floor'
-      + (cn && cn.up_prob != null ? ' &middot; closest: p=' + cn.up_prob + (cn.prob_gap != null ? ' (' + (cn.prob_gap >= 0 ? '+' : '') + cn.prob_gap + ')' : '') : '')
+    sumEl.innerHTML = '<b>' + (g.fired_count || 0) + '</b> of <b>' + g.count + '</b> recent scans cleared all gates'
+      + (cn && cn.up_prob != null ? ' &middot; closest: ' + _formatNearMiss(cn).replace(/<\/?div[^>]*>/g, ' ') : '')
       + liveNote;
-    function near(nm){
-      if(!nm || nm.up_prob == null) return '—';
-      var s = 'p=' + nm.up_prob + (nm.min_win_proba != null ? '/' + nm.min_win_proba : '');
-      if(nm.prob_gap != null) s += ' <span class="' + (nm.prob_gap >= 0 ? 'pos' : 'neg') + '">' + (nm.prob_gap >= 0 ? '+' : '') + nm.prob_gap + '</span>';
-      return s;
-    }
+    function near(nm){ return _formatNearMiss(nm); }
     var rows = hist.map(function(h){
       var bind = h.binding_skip || h.top_skip;
       var crossed = h.would_fire

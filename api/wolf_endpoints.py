@@ -321,7 +321,7 @@ async def get_daily_forecast_scorecard(symbol: str = WOLF_SYMBOL, days: int = 14
     """Per-symbol daily forecast scorecard: prior-close model → next-day O/H/L vs actual."""
     sym = (symbol or WOLF_SYMBOL).strip().upper()
     cache_key = f"daily-forecast:{sym}:{days}"
-    cached = _cache_get(cache_key, 45)
+    cached = _cache_get(cache_key, 30)
     if cached:
         return JSONResponse(content=cached)
     try:

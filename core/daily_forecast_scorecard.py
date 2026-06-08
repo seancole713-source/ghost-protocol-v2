@@ -148,72 +148,46 @@ def _fetch_scorecard_rows(symbol: str, asset_type: str) -> Tuple[Optional[List[d
 
 def live_now_quote(symbol: str, asset_type: str = "stock") -> Dict[str, Any]:
     """Intraday live quote + today's O/H/L for the Daily Prediction panel."""
-    import time as _time
+    from core.prices import get_intraday_session
 
     sym = (symbol or "WOLF").strip().upper()
-    from core.prices import get_extended_session, get_stock_price
+    out = get_intraday_session(sym)
+    if out:
+        return out
+    return {"symbol": sym, "as_of_ts": int(time.time()), "session": "closed", "session_label": "Closed"}
 
-    sess = get_extended_session(sym) or {}
-    price = sess.get("session_price") or sess.get("live_price")
-    if not price:
-        price = get_stock_price(sym, asset_type)
 
-    today_open = today_high = today_low = None
-    market_date = None
-    try:
-        import yfinance as yf
-
-        h = yf.Ticker(sym).history(period="1d", interval="5m")
-        if h is not None and not h.empty:
-            today_open = round(float(h["Open"].iloc[0]), 4)
-            today_high = round(float(h["High"].max()), 4)
-            today_low = round(float(h["Low"].min()), 4)
-            last_bar = round(float(h["Close"].iloc[-1]), 4)
-            if not price:
-                price = last_bar
-            elif abs(float(price) - last_bar) / max(last_bar, 0.01) > 0.02:
-                # Prefer freshest bar close when spot feed is stale.
-                price = last_bar
-    except Exception as exc:
-        LOGGER.debug("live_now intraday %s: %s", sym, str(exc)[:80])
-
+def _et_trading_date():
     try:
         from zoneinfo import ZoneInfo
-
-        market_date = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+        return datetime.now(ZoneInfo("America/New_York")).date()
     except Exception:
-        market_date = datetime.now(timezone.utc).date().isoformat()
+        return datetime.now(timezone.utc).date()
 
-    prev = sess.get("previous_close")
-    price_f = round(float(price), 4) if price else None
-    chg_abs = chg_pct = None
-    if price_f and prev and float(prev) > 0:
-        chg_abs = round(price_f - float(prev), 4)
-        chg_pct = round(chg_abs / float(prev) * 100, 3)
 
-    session = sess.get("session") or "closed"
-    session_label = {
-        "premarket": "Pre-market",
-        "rth": "Market open",
-        "afterhours": "After hours",
-        "closed": "Closed",
-    }.get(session, session)
-
-    return {
-        "symbol": sym,
-        "as_of_ts": int(_time.time()),
-        "session": session,
-        "session_label": session_label,
-        "market_date": market_date,
-        "price": price_f,
-        "previous_close": prev,
-        "change_abs": chg_abs,
-        "change_pct": chg_pct,
-        "today_open": today_open,
-        "today_high": today_high,
-        "today_low": today_low,
-        "gap_pct": sess.get("gap_pct"),
-    }
+def _daily_bar_in_progress(rows: List[dict]) -> bool:
+    """True when the latest daily bar is today's ET session still trading."""
+    if not rows:
+        return False
+    last_d = _parse_bar_date(str(rows[-1].get("ts", "")))
+    if not last_d:
+        return False
+    try:
+        bar_d = date.fromisoformat(last_d)
+    except ValueError:
+        return False
+    today = _et_trading_date()
+    if bar_d != today:
+        return False
+    try:
+        from zoneinfo import ZoneInfo
+        now_et = datetime.now(ZoneInfo("America/New_York"))
+    except Exception:
+        return False
+    if now_et.weekday() >= 5:
+        return False
+    hm = now_et.hour * 60 + now_et.minute
+    return hm < 20 * 60  # before 8 PM ET end of extended
 
 
 def _last_bar_age_days(rows: List[dict]) -> Optional[int]:
@@ -264,8 +238,11 @@ def build_daily_scorecard(symbol: str, days: int = 14, asset_type: str = "stock"
     last_bar_age_days = _last_bar_age_days(rows)
     data_stale = last_bar_age_days is not None and last_bar_age_days > 10
 
-    # Completed sessions only for scoring; last bar may be in-progress.
+    # Completed sessions only for scoring; exclude today's in-progress daily bar.
     completed_end = len(rows) - 1
+    today_in_progress = _daily_bar_in_progress(rows)
+    if today_in_progress and completed_end > 0:
+        completed_end = len(rows) - 2
     start_idx = max(1, completed_end - days)
     out_days: List[Dict[str, Any]] = []
 
@@ -329,6 +306,7 @@ def build_daily_scorecard(symbol: str, days: int = 14, asset_type: str = "stock"
     }
 
     live_row = next((d for d in reversed(out_days) if not d.get("resolved")), None)
+    last_completed = next((d for d in reversed(out_days) if d.get("resolved")), None)
 
     return {
         "ok": True,
@@ -338,6 +316,8 @@ def build_daily_scorecard(symbol: str, days: int = 14, asset_type: str = "stock"
         "summary": summary,
         "generated_at": int(datetime.now(timezone.utc).timestamp()),
         "next_session_forecast": live_row,
+        "last_completed_session": last_completed,
+        "today_in_progress": today_in_progress,
         "live_now": live_now_quote(sym, asset_type),
         "ohlcv_period": period_used,
         "bar_count": len(rows),

@@ -90,6 +90,25 @@ _SKIP_LABELS: Dict[str, str] = {
 }
 
 
+def enrich_near_miss(near_miss: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Add prob/conf/bootstrap gaps so UI can show the gate that actually blocked."""
+    if not near_miss:
+        return None
+    nm = dict(near_miss)
+    up = nm.get("up_prob")
+    min_p = nm.get("min_win_proba")
+    if up is not None and min_p is not None:
+        nm["prob_gap"] = round(float(up) - float(min_p), 4)
+    conf = nm.get("confidence")
+    floor = nm.get("confidence_floor")
+    if conf is not None and floor is not None:
+        nm["conf_gap"] = round(float(conf) - float(floor), 4)
+    boot = nm.get("bootstrap_min_conf")
+    if conf is not None and boot is not None:
+        nm["bootstrap_gap"] = round(float(conf) - float(boot), 4)
+    return nm
+
+
 def resolve_binding_skip(
     skip_counts: Dict[str, int],
     *,
@@ -1158,6 +1177,7 @@ def run_prediction_cycle(with_diag: bool = False):
     closest = None   # silence logging (audit §3): track the highest-up_prob candidate
     symbol_evals = []
     _eval_ts = int(time.time())
+    _obj_cfg = _objective_effective_config()
     for symbol, asset_type in symbols:
         _sv = {}
         pick, skip = _predict_symbol_ex(symbol, asset_type, regime, scores_out=_sv)
@@ -1178,6 +1198,8 @@ def run_prediction_cycle(with_diag: bool = False):
                 "min_win_proba": (_sv.get("model_meta") or {}).get("min_win_proba"),
                 "confidence": _sv.get("confidence"),
                 "confidence_floor": _sv.get("confidence_floor"),
+                "bootstrap_min_conf": float(_obj_cfg.get("bootstrap_min_conf", 0.75)),
+                "objective_mode": auto_mode_state.get("mode") if isinstance(auto_mode_state, dict) else None,
                 "skip": skip,
             }
 
@@ -1307,13 +1329,7 @@ def run_prediction_cycle(with_diag: bool = False):
         # Silence logging (audit §3): on a quiet cycle, how close did the best
         # candidate come? prob_gap = up_prob - min_win_proba (>=0 cleared the
         # prob gate); conf_gap = confidence - floor (only set on a floor miss).
-        _near_miss = None
-        if closest:
-            _near_miss = dict(closest)
-            if _near_miss.get("up_prob") is not None and _near_miss.get("min_win_proba") is not None:
-                _near_miss["prob_gap"] = round(_near_miss["up_prob"] - _near_miss["min_win_proba"], 4)
-            if _near_miss.get("confidence") is not None and _near_miss.get("confidence_floor") is not None:
-                _near_miss["conf_gap"] = round(_near_miss["confidence"] - _near_miss["confidence_floor"], 4)
+        _near_miss = enrich_near_miss(closest)
         _entry = {
             "ts": int(time.time()),
             "scanned": len(symbols),
@@ -1358,15 +1374,7 @@ def run_prediction_cycle(with_diag: bool = False):
         _binding = resolve_binding_skip(
             skip_counts, dedup_blocked=dedup_blocked, near_miss=closest,
         )
-        _near_miss_log = None
-        if closest:
-            _near_miss_log = dict(closest)
-            if _near_miss_log.get("up_prob") is not None and _near_miss_log.get("min_win_proba") is not None:
-                _near_miss_log["prob_gap"] = round(
-                    _near_miss_log["up_prob"] - _near_miss_log["min_win_proba"], 4)
-            if _near_miss_log.get("confidence") is not None and _near_miss_log.get("confidence_floor") is not None:
-                _near_miss_log["conf_gap"] = round(
-                    _near_miss_log["confidence"] - _near_miss_log["confidence_floor"], 4)
+        _near_miss_log = enrich_near_miss(closest)
         with db_conn() as _plc:
             _plcur = _plc.cursor()
             log_prediction_cycle(

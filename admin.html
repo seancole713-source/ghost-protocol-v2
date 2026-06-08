@@ -711,6 +711,17 @@ async function loadGateHistory(){
     // "How close" formatter: best up_prob vs its threshold, with the gap.
     function fmtNear(nm){
       if(!nm || nm.up_prob === null || nm.up_prob === undefined) return '—';
+      var skip = nm.skip || '';
+      if(skip === 'objective_bootstrap_conf' && nm.confidence != null && nm.bootstrap_min_conf != null){
+        var bgap = nm.bootstrap_gap != null ? nm.bootstrap_gap : (Number(nm.confidence) - Number(nm.bootstrap_min_conf));
+        var sb = (nm.symbol ? escHtml(nm.symbol)+' ' : '') + 'conf=' + Number(nm.confidence).toFixed(4) + '/' + Number(nm.bootstrap_min_conf).toFixed(2);
+        sb += ' <span class="' + (bgap >= 0 ? 'ok' : 'warn') + '">' + (bgap >= 0 ? '+' : '') + bgap.toFixed(4) + '</span>';
+        sb += ' <span style="color:#8b96a8;font-size:10px">bootstrap min</span>';
+        if(nm.up_prob != null && nm.min_win_proba != null){
+          sb += '<div style="font-size:10px;color:#555">prob cleared: p=' + nm.up_prob + '/' + nm.min_win_proba + '</div>';
+        }
+        return sb;
+      }
       var s = (nm.symbol ? escHtml(nm.symbol)+' ' : '') + 'p=' + nm.up_prob;
       if(nm.min_win_proba !== null && nm.min_win_proba !== undefined){
         s += '<span style="color:#8b96a8">/' + nm.min_win_proba + '</span>';
@@ -721,6 +732,9 @@ async function loadGateHistory(){
       }
       if(nm.conf_gap !== null && nm.conf_gap !== undefined){
         s += ' <span style="color:#8b96a8" title="confidence vs floor">conf ' + (nm.conf_gap>=0?'+':'') + nm.conf_gap + '</span>';
+      }
+      if(nm.bootstrap_gap !== null && nm.bootstrap_gap !== undefined){
+        s += ' <span style="color:#8b96a8" title="confidence vs bootstrap min">boot ' + (nm.bootstrap_gap>=0?'+':'') + nm.bootstrap_gap + '</span>';
       }
       return s;
     }

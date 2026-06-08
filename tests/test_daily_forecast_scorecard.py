@@ -81,23 +81,26 @@ def test_live_now_quote_shape(monkeypatch):
     from core.daily_forecast_scorecard import live_now_quote
 
     monkeypatch.setattr(
-        "core.prices.get_extended_session",
-        lambda s: {"session": "rth", "session_price": 4.39, "previous_close": 4.36},
-    )
-    monkeypatch.setattr("core.prices.get_stock_price", lambda s, t=None: 4.39)
-
-    class _EmptyHist:
-        empty = True
-
-    monkeypatch.setattr(
-        "yfinance.Ticker",
-        lambda s: type("T", (), {"history": lambda *a, **k: _EmptyHist()})(),
+        "core.prices.get_intraday_session",
+        lambda s: {
+            "symbol": "SPCE",
+            "session": "rth",
+            "session_label": "Market open",
+            "market_date": "2026-06-08",
+            "price": 4.39,
+            "previous_close": 4.36,
+            "change_pct": 0.688,
+            "today_open": 4.55,
+            "today_high": 4.56,
+            "today_low": 4.13,
+            "feed": "alpaca_sip",
+        },
     )
     out = live_now_quote("SPCE")
     assert out["symbol"] == "SPCE"
     assert out["price"] == 4.39
+    assert out["today_open"] == 4.55
     assert out["change_pct"] is not None
-    assert out["session"] == "rth"
 
 
 def test_forecast_includes_close():
