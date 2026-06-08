@@ -545,6 +545,81 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
 .df-live-tag{font-size:9px;color:#38bdf8;font-weight:800;margin-left:8px;padding:2px 8px;border-radius:999px;background:rgba(56,189,248,.12);border:1px solid rgba(56,189,248,.25)}
 .df-empty-state{text-align:center;padding:48px 24px;color:#64748b;font-size:13px;line-height:1.7}
 .df-empty-state b{color:#cbd5e1;display:block;margin-bottom:8px;font-size:15px}
+
+/* ─── Shared data tables (signal history, performance log, pick journal) ─── */
+.tbl{width:100%;border-collapse:collapse;font-size:12px;margin:6px 0}
+.tbl th{text-align:left;font-size:9px;letter-spacing:1px;color:#7c7c90;padding:8px 10px;border-bottom:1px solid #252525;text-transform:uppercase;white-space:nowrap}
+.tbl td{padding:10px;border-bottom:1px solid #1a1a1a;color:#ccc;vertical-align:top}
+.tbl tr:last-child td{border-bottom:none}
+.tbl code{font-size:10px;word-break:break-word;white-space:normal;display:inline-block;max-width:100%}
+#sh-list,#pl-open,#pl-resolved,#pl-cycles,#pl-cycle-detail,.pj-list{overflow-x:auto;-webkit-overflow-scrolling:touch}
+
+/* ─── Mobile layout (phones) ─── */
+@media (max-width:640px){
+  .main{padding:14px 12px 28px}
+  section.block{margin-bottom:22px}
+  .topbar{padding:10px 12px;flex-wrap:wrap;gap:8px}
+  .logo{font-size:14px;letter-spacing:1px}
+  .top-right{flex-wrap:wrap;gap:6px;font-size:11px;width:100%;justify-content:flex-end}
+  .deploy-badge{max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:9px;padding:2px 7px;margin-right:0}
+  .mkt-badge{font-size:10px;padding:3px 8px}
+  .hero{padding:16px}
+  .hero-price{font-size:clamp(28px,9vw,42px)}
+  .perf{grid-template-columns:1fr 1fr;gap:8px}
+  .perf-card.big{grid-column:1/-1}
+  .dp-panel,.df-premium{padding:14px 12px 16px;border-radius:14px}
+  .dp-title{font-size:16px}
+  .dp-sub{font-size:10px;line-height:1.45}
+  .dp-table-wrap{margin-left:-2px;margin-right:-2px;padding-bottom:6px}
+  .dp-grid{min-width:520px;column-gap:6px}
+  .dp-grid .dp-cell{padding:10px 2px 10px 0}
+  .dp-grid .dp-cell.dp-price.dp-predict{font-size:22px;letter-spacing:-.35px;line-height:1.15}
+  .dp-grid .dp-cell.dp-price.dp-market{font-size:16px}
+  .dp-grid .dp-cell.sym.dp-predict .dp-sym{font-size:15px}
+  .dp-hc.num,.dp-cell.num{padding-right:6px}
+  .df-chips{max-height:none;padding-bottom:4px}
+  .df-chip{font-size:10px;padding:6px 10px}
+  .df-head-title{font-size:11px}
+  .df-tools{width:100%}
+  .df-view-group button{padding:6px 10px;font-size:9px}
+  .df-table-wrap{margin-left:-2px;margin-right:-2px}
+  /* Forecast scorecard table → stacked cards */
+  .df-table thead{display:none}
+  .df-table,.df-table tbody,.df-table tr,.df-table td{display:block;width:100%}
+  .df-table tr{
+    margin-bottom:10px;padding:12px 14px;border:1px solid rgba(255,255,255,.08);
+    border-radius:12px;background:rgba(255,255,255,.02)
+  }
+  .df-table td{
+    padding:7px 0;border:none;display:flex;align-items:flex-start;justify-content:space-between;gap:12px
+  }
+  .df-table td::before{
+    content:attr(data-label);flex:0 0 38%;font-size:9px;font-weight:700;letter-spacing:.4px;
+    text-transform:uppercase;color:#64748b;text-align:left;padding-top:2px
+  }
+  .df-table td.df-num{text-align:right;justify-content:space-between}
+  .df-price-col{text-align:right;line-height:1.5}
+  /* Signal history + perf log tables → stacked cards */
+  #sh-list .tbl thead,#pl-open .tbl thead,#pl-resolved .tbl thead,#pl-cycles .tbl thead,.pj-list .tbl thead{display:none}
+  #sh-list .tbl,#sh-list .tbl tbody,#pl-open .tbl,#pl-resolved .tbl,#pl-cycles .tbl,.pj-list .tbl{display:block;width:100%}
+  #sh-list .tbl tr,#pl-open .tbl tr,#pl-resolved .tbl tr,#pl-cycles .tbl tr,.pj-list .tbl tr{
+    display:block;margin-bottom:8px;padding:12px 14px;border:1px solid rgba(255,255,255,.08);
+    border-radius:12px;background:rgba(255,255,255,.02)
+  }
+  #sh-list .tbl td,#pl-open .tbl td,#pl-resolved .tbl td,#pl-cycles .tbl td,.pj-list .tbl td{
+    display:flex;align-items:flex-start;justify-content:space-between;gap:10px;
+    padding:6px 0;border:none;text-align:right
+  }
+  #sh-list .tbl td::before,#pl-open .tbl td::before,#pl-resolved .tbl td::before,#pl-cycles .tbl td::before,.pj-list .tbl td::before{
+    content:attr(data-label);flex:0 0 42%;font-size:9px;font-weight:700;letter-spacing:.35px;
+    text-transform:uppercase;color:#64748b;text-align:left;padding-top:2px
+  }
+  #sh-list .tbl td:first-child{text-align:left;flex-direction:column;align-items:flex-start}
+  #sh-list .tbl td:first-child::before{margin-bottom:2px}
+  .chart-wrap{padding:12px}
+  .chart-canvas-wrap.tall{height:220px}
+  .footer{padding:12px;gap:10px}
+}
 </style>
 </head>
 <body>
@@ -2111,13 +2186,13 @@ function _renderDfTable(days){
       meta += '<div style="font-size:10px;color:#475569">p=' + pred.up_prob + ' · ' + escHtml(pred.bias || '') + '</div>';
     }
     return '<tr>'
-      + '<td><b style="color:#e2e8f0">' + escHtml(d.target_date || '—') + '</b>' + live + meta + '</td>'
-      + '<td class="df-num">' + _dfPriceBlock(pred, '#86efac') + '</td>'
-      + '<td class="df-num">' + (act ? _dfPriceBlock(act, '#fca5a5') : '—') + '</td>'
-      + '<td>' + _dfRatePill(sc.open_rate != null ? sc.open_rate : sc.open_pct) + '</td>'
-      + '<td>' + _dfRatePill(sc.peak_rate != null ? sc.peak_rate : sc.peak_pct) + '</td>'
-      + '<td>' + _dfRatePill(sc.close_rate != null ? sc.close_rate : sc.close_pct) + '</td>'
-      + '<td>' + (sc.overall_pct != null
+      + '<td data-label="Session"><b style="color:#e2e8f0">' + escHtml(d.target_date || '—') + '</b>' + live + meta + '</td>'
+      + '<td class="df-num" data-label="Ghost predicted">' + _dfPriceBlock(pred, '#86efac') + '</td>'
+      + '<td class="df-num" data-label="Actual">' + (act ? _dfPriceBlock(act, '#fca5a5') : '—') + '</td>'
+      + '<td data-label="Open rate">' + _dfRatePill(sc.open_rate != null ? sc.open_rate : sc.open_pct) + '</td>'
+      + '<td data-label="Peak rate">' + _dfRatePill(sc.peak_rate != null ? sc.peak_rate : sc.peak_pct) + '</td>'
+      + '<td data-label="Close rate">' + _dfRatePill(sc.close_rate != null ? sc.close_rate : sc.close_pct) + '</td>'
+      + '<td data-label="Overall">' + (sc.overall_pct != null
         ? '<span class="' + _dfScoreClass(sc.overall_pct) + '">' + sc.overall_pct + '%</span>'
           + (sc.direction_ok ? ' <span style="color:#4ade80;font-size:10px">dir ✓</span>' : ' <span style="color:#f87171;font-size:10px">dir ✗</span>')
         : '—') + '</td>'
@@ -3254,9 +3329,9 @@ async function loadPerformanceLog(){
     } else {
       openEl.innerHTML = '<table class="tbl"><thead><tr><th>Symbol</th><th>Dir</th><th>Conf</th><th>Entry</th><th>Expires</th></tr></thead><tbody>'
         + open.map(function(p){
-          return '<tr><td><b>' + escHtml(p.symbol) + '</b></td><td>' + escHtml(p.direction) + '</td>'
-            + '<td>' + _plConf(p.confidence) + '</td><td>' + (p.entry_price != null ? '$' + Number(p.entry_price).toFixed(2) : '—') + '</td>'
-            + '<td>' + fmtTimeAgo(p.expires_at) + '</td></tr>';
+          return '<tr><td data-label="Symbol"><b>' + escHtml(p.symbol) + '</b></td><td data-label="Direction">' + escHtml(p.direction) + '</td>'
+            + '<td data-label="Confidence">' + _plConf(p.confidence) + '</td><td data-label="Entry">' + (p.entry_price != null ? '$' + Number(p.entry_price).toFixed(2) : '—') + '</td>'
+            + '<td data-label="Expires">' + fmtTimeAgo(p.expires_at) + '</td></tr>';
         }).join('') + '</tbody></table>';
     }
     var resolved = prog.recent_resolved || [];
@@ -3265,9 +3340,9 @@ async function loadPerformanceLog(){
     } else {
       resEl.innerHTML = '<table class="tbl"><thead><tr><th>Symbol</th><th>When</th><th>Conf</th><th>P&amp;L</th><th>Result</th></tr></thead><tbody>'
         + resolved.slice(0, 25).map(function(p){
-          return '<tr><td><b>' + escHtml(p.symbol) + '</b></td><td>' + fmtTimeAgo(p.resolved_at || p.predicted_at) + '</td>'
-            + '<td>' + _plConf(p.confidence) + '</td><td>' + _pjPct(p.pnl_pct) + '</td>'
-            + '<td>' + _outcomeBadge(p.outcome) + '</td></tr>';
+          return '<tr><td data-label="Symbol"><b>' + escHtml(p.symbol) + '</b></td><td data-label="When">' + fmtTimeAgo(p.resolved_at || p.predicted_at) + '</td>'
+            + '<td data-label="Confidence">' + _plConf(p.confidence) + '</td><td data-label="P&amp;L">' + _pjPct(p.pnl_pct) + '</td>'
+            + '<td data-label="Result">' + _outcomeBadge(p.outcome) + '</td></tr>';
         }).join('') + '</tbody></table>';
     }
     var cycData = await fetch('/api/wolf/performance-log/cycles?limit=25&since=' + (prog.since_ts || 0))
@@ -3279,13 +3354,13 @@ async function loadPerformanceLog(){
       cycEl.innerHTML = '<table class="tbl"><thead><tr><th>When</th><th>Scanned</th><th>Cand/Saved</th><th>Binding</th><th>Near miss</th></tr></thead><tbody>'
         + cycles.map(function(c){
           return '<tr class="pl-cycle-row" onclick="loadPerfCycleDetail(' + c.id + ')">'
-            + '<td>' + fmtTimeAgo(c.cycle_ts) + '</td>'
-            + '<td>' + (c.scanned || 0) + '</td>'
-            + '<td>' + (c.candidates || 0) + ' / ' + (c.saved || 0)
+            + '<td data-label="When">' + fmtTimeAgo(c.cycle_ts) + '</td>'
+            + '<td data-label="Scanned">' + (c.scanned || 0) + '</td>'
+            + '<td data-label="Candidates">' + (c.candidates || 0) + ' / ' + (c.saved || 0)
             + (c.dedup_blocked ? ' <span style="color:#666">(dedup ' + c.dedup_blocked + ')</span>' : '') + '</td>'
-            + '<td>' + (c.binding_skip ? '<code>' + escHtml(c.binding_skip) + '</code>' : '—')
+            + '<td data-label="Binding">' + (c.binding_skip ? '<code>' + escHtml(c.binding_skip) + '</code>' : '—')
             + (c.paused ? '<div style="font-size:10px;color:#888">' + escHtml(c.pause_reason || 'paused') + '</div>' : '') + '</td>'
-            + '<td>' + _plNearMiss(c.near_miss) + '</td></tr>';
+            + '<td data-label="Near miss">' + _plNearMiss(c.near_miss) + '</td></tr>';
         }).join('') + '</tbody></table>';
     }
     if(_plSelectedCycle){
@@ -3345,11 +3420,11 @@ async function loadSignalHistory(){
         gateCell += '<div style="font-size:10px;color:#555">+' + h.skip_counts.no_v3_model + ' untrained symbols</div>';
       }
       return '<tr>'
-        + '<td>' + fmtTimeAgo(h.ts) + '</td>'
-        + '<td>' + crossed + '</td>'
-        + '<td>cand ' + (h.candidates || 0) + ' / saved ' + (h.saved || 0) + '</td>'
-        + '<td>' + gateCell + '</td>'
-        + '<td>' + near(h.near_miss) + '</td>'
+        + '<td data-label="When">' + fmtTimeAgo(h.ts) + '</td>'
+        + '<td data-label="Outcome">' + crossed + '</td>'
+        + '<td data-label="Candidates">' + 'cand ' + (h.candidates || 0) + ' / saved ' + (h.saved || 0) + '</td>'
+        + '<td data-label="Binding gate">' + gateCell + '</td>'
+        + '<td data-label="How close">' + near(h.near_miss) + '</td>'
         + '</tr>';
     }).join('');
     listEl.innerHTML = '<table class="tbl"><thead><tr><th>When</th><th>Outcome</th><th>Cand/Saved</th><th>Binding gate</th><th>How close</th></tr></thead><tbody>' + rows + '</tbody></table>';
