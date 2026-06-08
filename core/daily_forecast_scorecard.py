@@ -18,13 +18,279 @@ _OVERNIGHT_GAP = 0.001
 
 
 def _parse_bar_date(ts: str) -> str:
-    """Normalize bar timestamp to YYYY-MM-DD."""
+    """Normalize bar timestamp to YYYY-MM-DD in US/Eastern (session date)."""
     if not ts:
         return ""
     s = str(ts).strip()
+    try:
+        from zoneinfo import ZoneInfo
+
+        if "T" in s:
+            dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(ZoneInfo("America/New_York")).date().isoformat()
+    except Exception:
+        pass
     if "T" in s:
         return s.split("T")[0]
     return s[:10]
+
+
+def _previous_trading_day(d: date) -> date:
+    cur = d - timedelta(days=1)
+    while cur.weekday() >= 5:
+        cur -= timedelta(days=1)
+    return cur
+
+
+def _next_trading_day(d: date) -> date:
+    cur = d + timedelta(days=1)
+    while cur.weekday() >= 5:
+        cur += timedelta(days=1)
+    return cur
+
+
+def panel_session_dates(now_et: Optional[datetime] = None) -> Dict[str, Any]:
+    """Canonical ET calendar dates for the Daily Prediction panel rows."""
+    try:
+        from zoneinfo import ZoneInfo
+
+        tz = ZoneInfo("America/New_York")
+    except Exception:
+        tz = timezone.utc
+    now = now_et or datetime.now(tz)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=tz)
+    else:
+        now = now.astimezone(tz)
+    today = now.date()
+    hm = now.hour * 60 + now.minute
+    rth_open = 9 * 60 + 30
+    rth_close = 16 * 60
+
+    if today.weekday() >= 5:
+        last_completed = _previous_trading_day(today)
+        next_session = _next_trading_day(today)
+        return {
+            "live_date": last_completed.isoformat(),
+            "live_label": "last session",
+            "predict_date": next_session.isoformat(),
+            "market_date": last_completed.isoformat(),
+        }
+    if hm >= rth_close:
+        last_completed = today
+        next_session = _next_trading_day(today)
+        return {
+            "live_date": today.isoformat(),
+            "live_label": "today",
+            "predict_date": next_session.isoformat(),
+            "market_date": last_completed.isoformat(),
+        }
+    if hm >= rth_open:
+        last_completed = _previous_trading_day(today)
+        next_session = _next_trading_day(today)
+        return {
+            "live_date": today.isoformat(),
+            "live_label": "today",
+            "predict_date": next_session.isoformat(),
+            "market_date": last_completed.isoformat(),
+        }
+    # Pre-market weekday: forecast targets today's open; last full session = prior day.
+    last_completed = _previous_trading_day(today)
+    return {
+        "live_date": today.isoformat(),
+        "live_label": "premarket",
+        "predict_date": today.isoformat(),
+        "market_date": last_completed.isoformat(),
+    }
+
+
+def _bar_for_date(rows: List[dict], target: str) -> Optional[dict]:
+    want = str(target)[:10]
+    for bar in reversed(rows or []):
+        if _parse_bar_date(str(bar.get("ts", ""))) == want:
+            return bar
+    return None
+
+
+def _bar_index_for_date(rows: List[dict], target: str) -> Optional[int]:
+    want = str(target)[:10]
+    for i, bar in enumerate(rows or []):
+        if _parse_bar_date(str(bar.get("ts", ""))) == want:
+            return i
+    return None
+
+
+def _actual_from_bar(bar: Optional[dict]) -> Optional[Dict[str, float]]:
+    if not bar:
+        return None
+    o = float(bar.get("open") or 0)
+    h = float(bar.get("high") or 0)
+    l = float(bar.get("low") or 0)
+    c = float(bar.get("close") or 0)
+    if o <= 0:
+        return None
+    return {
+        "open": round(o, 4),
+        "high": round(h, 4),
+        "low": round(l, 4),
+        "close": round(c, 4),
+    }
+
+
+def _actual_from_live(live: Dict[str, Any]) -> Optional[Dict[str, float]]:
+    o = live.get("today_open")
+    h = live.get("today_high")
+    l = live.get("today_low")
+    c = live.get("price")
+    if o is None or float(o) <= 0:
+        return None
+    return {
+        "open": round(float(o), 4),
+        "high": round(float(h or o), 4),
+        "low": round(float(l or o), 4),
+        "close": round(float(c or o), 4),
+    }
+
+
+def build_prediction_panel(
+    symbol: str,
+    rows: List[dict],
+    out_days: List[Dict[str, Any]],
+    model,
+    feature_cols: List[str],
+    invert_cols: List[str],
+    asset_type: str,
+    live_intraday: Optional[Dict[str, Any]] = None,
+    *,
+    now_et: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Align Live / Predict / Market rows to the ET trading calendar."""
+    sym = (symbol or "WOLF").strip().upper()
+    dates = panel_session_dates(now_et)
+    predict_date = dates["predict_date"]
+    market_date = dates["market_date"]
+    live_date = dates["live_date"]
+
+    market_bar = _bar_for_date(rows, market_date)
+    market_actual = _actual_from_bar(market_bar)
+    if market_actual is None and live_intraday and live_date == market_date:
+        market_actual = _actual_from_live(live_intraday)
+
+    prior_date = _previous_trading_day(date.fromisoformat(predict_date[:10]))
+    prior_idx = _bar_index_for_date(rows, prior_date.isoformat())
+    prior_bar = rows[prior_idx] if prior_idx is not None else None
+    if prior_bar is None:
+        for bar in reversed(rows or []):
+            bd = _parse_bar_date(str(bar.get("ts", "")))
+            if bd and bd < predict_date[:10]:
+                prior_bar = bar
+                prior_idx = _bar_index_for_date(rows, bd)
+                break
+
+    predicted = None
+    if prior_bar is not None and prior_idx is not None:
+        prior_close = float(prior_bar.get("close") or 0)
+        if prior_close > 0:
+            up_prob = _up_prob_at_bar(rows, prior_idx, model, feature_cols, invert_cols)
+            if up_prob is not None:
+                band_vol = forecast_band_vol_pct(sym, asset_type, rows, end_idx=prior_idx)
+                predicted = forecast_ohlc_from_prob(
+                    prior_close, up_prob, sym, asset_type, band_vol=band_vol,
+                )
+
+    market_score = None
+    market_forecast = None
+    scored = next(
+        (d for d in reversed(out_days or []) if d.get("resolved") and d.get("target_date") == market_date),
+        None,
+    )
+    if scored and scored.get("predicted"):
+        market_forecast = scored["predicted"]
+        market_score = scored.get("score")
+    else:
+        issue_date = _previous_trading_day(date.fromisoformat(market_date[:10]))
+        issue_idx = _bar_index_for_date(rows, issue_date.isoformat())
+        if issue_idx is not None:
+            issue_close = float(rows[issue_idx].get("close") or 0)
+            if issue_close > 0:
+                up_prob = _up_prob_at_bar(rows, issue_idx, model, feature_cols, invert_cols)
+                if up_prob is not None:
+                    band_vol = forecast_band_vol_pct(sym, asset_type, rows, end_idx=issue_idx)
+                    market_forecast = forecast_ohlc_from_prob(
+                        issue_close, up_prob, sym, asset_type, band_vol=band_vol,
+                    )
+        if market_forecast and market_actual:
+            market_score = score_forecast_vs_actual(market_forecast, market_actual)
+
+    live = dict(live_intraday or {})
+    live["panel_date"] = live_date
+    live["panel_label"] = dates["live_label"]
+    live["market_date"] = live_date
+
+    if dates["live_label"] in ("last session", "premarket") and market_date == live_date:
+        if market_actual:
+            live["today_open"] = market_actual["open"]
+            live["today_high"] = market_actual["high"]
+            live["today_low"] = market_actual["low"]
+            if live.get("price") is None:
+                live["price"] = market_actual["close"]
+    elif dates["live_label"] == "last session" and market_actual:
+        live["today_open"] = market_actual["open"]
+        live["today_high"] = market_actual["high"]
+        live["today_low"] = market_actual["low"]
+        if live.get("price") is None:
+            live["price"] = market_actual["close"]
+
+    return {
+        "predict_date": predict_date,
+        "market_date": market_date,
+        "live_date": live_date,
+        "predict": {
+            "target_date": predict_date,
+            "forecast_date": prior_date.isoformat(),
+            "predicted": predicted,
+            "resolved": False,
+        },
+        "market": {
+            "target_date": market_date,
+            "actual": market_actual,
+            "score": market_score,
+            "resolved": bool(market_actual),
+        },
+        "live": live,
+    }
+
+
+def refresh_scorecard_live_panel(payload: Dict[str, Any], asset_type: str = "stock") -> Dict[str, Any]:
+    """Recompute live quote + aligned panel rows (never serve stale calendar dates)."""
+    if not payload.get("has_model"):
+        payload["live_now"] = live_now_quote(payload.get("symbol") or "WOLF", asset_type)
+        return payload
+    from core.signal_engine import load_model
+
+    sym = (payload.get("symbol") or "WOLF").strip().upper()
+    model, feature_cols, meta = load_model(sym)
+    invert_cols = (meta or {}).get("feature_inversions") or []
+    if model is None or not feature_cols:
+        payload["live_now"] = live_now_quote(sym, asset_type)
+        return payload
+    rows, _ = _fetch_scorecard_rows(sym, asset_type)
+    live_quote = live_now_quote(sym, asset_type)
+    payload["live_now"] = live_quote
+    if rows:
+        payload["panel"] = build_prediction_panel(
+            sym,
+            rows,
+            payload.get("days") or [],
+            model,
+            feature_cols,
+            invert_cols,
+            asset_type,
+            live_quote,
+        )
+    return payload
 
 
 def next_trading_date_after(from_date_str: str) -> str:
@@ -222,7 +488,7 @@ def _daily_bar_in_progress(rows: List[dict]) -> bool:
     if now_et.weekday() >= 5:
         return False
     hm = now_et.hour * 60 + now_et.minute
-    return hm < 20 * 60  # before 8 PM ET end of extended
+    return hm < 16 * 60  # after 4:00 PM ET cash close → score today's session
 
 
 def _last_bar_age_days(rows: List[dict]) -> Optional[int]:
@@ -371,6 +637,10 @@ def build_daily_scorecard(symbol: str, days: int = 14, asset_type: str = "stock"
 
     live_row = next((d for d in reversed(out_days) if not d.get("resolved")), None)
     last_completed = next((d for d in reversed(out_days) if d.get("resolved")), None)
+    live_quote = live_now_quote(sym, asset_type)
+    panel = build_prediction_panel(
+        sym, rows, out_days, model, feature_cols, invert_cols, asset_type, live_quote,
+    )
 
     return {
         "ok": True,
@@ -381,8 +651,9 @@ def build_daily_scorecard(symbol: str, days: int = 14, asset_type: str = "stock"
         "generated_at": int(datetime.now(timezone.utc).timestamp()),
         "next_session_forecast": live_row,
         "last_completed_session": last_completed,
+        "panel": panel,
         "today_in_progress": today_in_progress,
-        "live_now": live_now_quote(sym, asset_type),
+        "live_now": live_quote,
         "ohlcv_period": period_used,
         "bar_count": len(rows),
         "last_bar_date": _parse_bar_date(str(rows[-1].get("ts", ""))) if rows else None,

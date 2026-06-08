@@ -92,6 +92,30 @@ def test_last_bar_age_days():
     assert age > 30
 
 
+def test_daily_bar_in_progress_until_4pm_et(monkeypatch):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from core.daily_forecast_scorecard import _daily_bar_in_progress
+
+    rows = [{"ts": "2026-06-08T00:00:00Z", "close": 1.0}]
+
+    class FakeDT:
+        @staticmethod
+        def now(tz=None):
+            return datetime(2026, 6, 8, 15, 30, tzinfo=ZoneInfo("America/New_York"))
+
+    monkeypatch.setattr("core.daily_forecast_scorecard.datetime", FakeDT)
+    assert _daily_bar_in_progress(rows) is True
+
+    class FakeDTAfter:
+        @staticmethod
+        def now(tz=None):
+            return datetime(2026, 6, 8, 16, 5, tzinfo=ZoneInfo("America/New_York"))
+
+    monkeypatch.setattr("core.daily_forecast_scorecard.datetime", FakeDTAfter)
+    assert _daily_bar_in_progress(rows) is False
+
+
 def test_live_now_quote_shape(monkeypatch):
     from core.daily_forecast_scorecard import live_now_quote
 
@@ -122,3 +146,66 @@ def test_forecast_includes_close():
     out = forecast_ohlc_from_prob(100.0, 0.72, "WOLF", "stock")
     assert "close" in out
     assert out["close"] > out["open"]
+
+
+def test_parse_bar_date_uses_et_session():
+    from core.daily_forecast_scorecard import _parse_bar_date
+
+    # Alpaca daily bar for Mon Jun 8 RTH often stamped early UTC; still Mon ET.
+    assert _parse_bar_date("2026-06-08T04:00:00Z") == "2026-06-08"
+    assert _parse_bar_date("2026-06-09T00:00:00Z") == "2026-06-08"
+
+
+def test_panel_session_dates_weekend():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from core.daily_forecast_scorecard import panel_session_dates
+
+    sun = datetime(2026, 6, 7, 12, 0, tzinfo=ZoneInfo("America/New_York"))
+    d = panel_session_dates(sun)
+    assert d["predict_date"] == "2026-06-08"
+    assert d["market_date"] == "2026-06-05"
+    assert d["live_date"] == "2026-06-05"
+    assert d["live_label"] == "last session"
+
+
+def test_build_prediction_panel_aligns_weekend(monkeypatch):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from core.daily_forecast_scorecard import build_prediction_panel
+
+    rows = [
+        {"ts": "2026-06-04T04:00:00Z", "open": 4.0, "high": 4.1, "low": 3.9, "close": 4.05},
+        {"ts": "2026-06-05T04:00:00Z", "open": 4.55, "high": 4.56, "low": 4.13, "close": 4.39},
+    ]
+
+    class FakeModel:
+        def predict_proba(self, X):
+            return [[0.4, 0.6]]
+
+    monkeypatch.setattr(
+        "core.daily_forecast_scorecard._up_prob_at_bar",
+        lambda *a, **k: 0.65,
+    )
+    monkeypatch.setattr(
+        "core.daily_forecast_scorecard.forecast_band_vol_pct",
+        lambda *a, **k: {"vol_pct": 0.05, "source": "test"},
+    )
+
+    sun = datetime(2026, 6, 7, 12, 0, tzinfo=ZoneInfo("America/New_York"))
+    panel = build_prediction_panel(
+        "SPCE",
+        rows,
+        [],
+        FakeModel(),
+        ["f1"],
+        [],
+        "stock",
+        {"price": 4.39, "today_open": 4.55, "today_high": 4.56, "today_low": 4.13},
+        now_et=sun,
+    )
+    assert panel["predict"]["target_date"] == "2026-06-08"
+    assert panel["market"]["target_date"] == "2026-06-05"
+    assert panel["market"]["actual"]["low"] == 4.13
+    assert panel["live"]["panel_date"] == "2026-06-05"
+

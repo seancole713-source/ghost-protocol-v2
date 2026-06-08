@@ -740,7 +740,7 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
       <div class="dp-head">
         <div>
           <div class="dp-title">Next 24 hours</div>
-          <div class="dp-sub">Row 1 — <b>Ghost prediction</b> (green). Row 2 — <b>what the market actually did</b> (open, peak, low, close). Score locks at 4:33 PM CT.</div>
+          <div class="dp-sub">Row 1 — <b>Ghost prediction</b> (green). Row 2 — <b>what the market actually did</b> (open, peak, low, close). Score locks at 4:00 PM ET market close.</div>
           <div class="tp-chips" id="tp-chips"></div>
         </div>
       </div>
@@ -1995,7 +1995,7 @@ function renderNews(n){
 
 /* ─── Daily forecast scorecard — premium panel ─── */
 var _dfActiveSymbol = 'WOLF';
-var _todayPred433Key = '';
+var _todayPredCloseKey = '';
 var _dfUniverse = null;
 var _dfChartMode = 'line';      // 'line' | 'bar'
 var _dfCompareMode = 'split';   // 'split' | 'overlay'
@@ -2302,13 +2302,13 @@ function _dpFormatDate(iso){
 
 function _dpPeriodNext(day){
   if(!day) return '—';
-  var b = day.target_date || '';
+  var b = day.target_date || day.predict_date || '';
   return '<span style="color:#64748b;font-size:11px">Next session</span> · <b style="color:#86efac">' + escHtml(_dpFormatDate(b)) + '</b>';
 }
 
 function _dpPeriodMarket(day){
   if(!day) return '—';
-  var b = day.target_date || day.forecast_date || 'last session';
+  var b = day.target_date || day.market_date || day.forecast_date || 'last session';
   return '<span style="color:#64748b;font-size:11px">Last full session</span> · ' + escHtml(_dpFormatDate(b));
 }
 
@@ -2336,11 +2336,16 @@ function _dpOhlcRow(kind, sym, dateHtml, open, peak, low, close, scoreHtml){
     + '</tr>';
 }
 
-function _renderDpThreeRows(sym, next, lastResolved, live){
+function _renderDpThreeRows(sym, panel, next, lastResolved, live){
   var head = '<table class="dp-ohlc-table"><thead><tr>'
     + '<th>Symbol</th><th>Date</th><th>Open</th><th>Peak</th><th>Low</th><th>Close</th><th>Score</th>'
     + '</tr></thead><tbody>';
   var rows = [];
+  if(panel){
+    live = panel.live || live;
+    next = panel.predict || next;
+    lastResolved = panel.market || lastResolved;
+  }
   if(live && live.price != null){
     rows.push(_dpOhlcRow('live', sym, _dpLiveDate(live), live.today_open, live.today_high, live.today_low, live.price, _dpLiveScore(live)));
   }
@@ -2355,7 +2360,7 @@ function _renderDpThreeRows(sym, next, lastResolved, live){
     var sc = (lastResolved.score || {}).overall_pct;
     rows.push(_dpOhlcRow('market', sym, _dpPeriodMarket(lastResolved), a.open, a.high, a.low, a.close, _dpScorePill(sc, false)));
   } else {
-    rows.push(_dpOhlcRow('market', sym, '—', null, null, null, null, '<span class="dp-score pending">awaiting</span>'));
+    rows.push(_dpOhlcRow('market', sym, lastResolved ? _dpPeriodMarket(lastResolved) : '—', null, null, null, null, '<span class="dp-score pending">awaiting</span>'));
   }
   return head + rows.join('') + '</tbody></table>';
 }
@@ -2371,10 +2376,24 @@ function _dpLiveScore(live){
 
 function _dpLiveDate(live){
   if(!live) return '—';
-  var d = live.market_date ? _dpFormatDate(live.market_date) : 'Today';
+  var label = live.panel_label || 'today';
+  var labelText = label === 'last session' ? 'Last session' : (label === 'premarket' ? 'Pre-market' : 'Today');
+  var d = live.panel_date || live.market_date;
+  var dText = d ? _dpFormatDate(d) : '—';
   var sess = live.session_label || live.session || '';
-  return '<span style="color:#64748b;font-size:11px">Today</span> · <b style="color:#7dd3fc">' + escHtml(d) + '</b>'
-    + (sess && sess !== 'Closed' ? ' · ' + escHtml(sess) : '');
+  return '<span style="color:#64748b;font-size:11px">' + escHtml(labelText) + '</span> · <b style="color:#7dd3fc">' + escHtml(dText) + '</b>'
+    + (sess && sess !== 'Closed' && label === 'today' ? ' · ' + escHtml(sess) : '');
+}
+
+function _etNowParts(){
+  var fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  });
+  var map = {};
+  fmt.formatToParts(new Date()).forEach(function(p){ if(p.type !== 'literal') map[p.type] = p.value; });
+  return map;
 }
 
 function _chicagoNowParts(){
@@ -2388,13 +2407,14 @@ function _chicagoNowParts(){
   return map;
 }
 
-function _maybeTodayPred433Refresh(){
-  var p = _chicagoNowParts();
+function _maybeTodayPredMarketCloseRefresh(){
+  var p = _etNowParts();
   var dayKey = (p.year || '') + '-' + (p.month || '') + '-' + (p.day || '');
   var hour = parseInt(p.hour || '0', 10);
-  var minute = parseInt(p.minute || '0', 10);
-  if(hour === 16 && minute === 33 && dayKey !== _todayPred433Key){
-    _todayPred433Key = dayKey;
+  var dow = new Date().toLocaleString('en-US', { timeZone: 'America/New_York', weekday: 'short' });
+  if(dow === 'Sat' || dow === 'Sun') return;
+  if(hour >= 16 && dayKey !== _todayPredCloseKey){
+    _todayPredCloseKey = dayKey;
     loadTodayPredictionPanel(true);
   }
 }
@@ -2415,7 +2435,7 @@ function _dpModelMessage(g, sym){
   return '<span style="color:#fbbf24">' + escHtml(sym) + '</span> needs a trained v3 model. Train in <a href="/admin" style="color:#a78bfa">/admin</a>.';
 }
 
-async function loadTodayPredictionPanel(is433Refresh){
+async function loadTodayPredictionPanel(isCloseRefresh){
   var sym = _dfActiveSymbol || 'WOLF';
   var tableWrap = document.getElementById('dp-table-wrap');
   var metaEl = document.getElementById('tp-meta');
@@ -2435,16 +2455,16 @@ async function loadTodayPredictionPanel(is433Refresh){
     var next = split.nextForecast;
     var last = g.last_completed_session || split.lastResolved;
     _renderDpQuality(g.summary || {});
-    tableWrap.innerHTML = _renderDpThreeRows(sym, next, last, g.live_now || null);
-    var p = _chicagoNowParts();
-    var stamp = (p.hour || '00') + ':' + (p.minute || '00') + ' CT';
+    tableWrap.innerHTML = _renderDpThreeRows(sym, g.panel || null, next, last, g.live_now || null);
+    var p = _etNowParts();
+    var stamp = (p.hour || '00') + ':' + (p.minute || '00') + ' ET';
     if(metaEl){
       var staleNote = g.data_stale
         ? ' · Last trade ' + (g.last_bar_date || '—') + ' (' + (g.last_bar_age_days != null ? g.last_bar_age_days + 'd ago' : 'stale') + ')'
         : '';
-      metaEl.textContent = is433Refresh
-        ? 'Updated at 4:33 PM CT · ' + stamp + staleNote
-        : 'Today live ~1m · Next session = tomorrow forecast · Last full session = prior close day · ' + stamp + staleNote;
+      metaEl.textContent = isCloseRefresh
+        ? 'Updated at market close (4:00 PM ET) · ' + stamp + staleNote
+        : 'Live row every 15m · last trade fresh each load · Next = tomorrow forecast · Last = prior session · ' + stamp + staleNote;
     }
   }catch(e){
     tableWrap.innerHTML = '<div class="dp-empty">Daily prediction panel error.</div>';
@@ -3141,7 +3161,7 @@ async function load(){
     loadSignalHistory();
     loadPerformanceLog();
     loadTodayPredictionPanel(false);
-    _maybeTodayPred433Refresh();
+    _maybeTodayPredMarketCloseRefresh();
     renderGhostScore(ghostScore, watching);
     renderHero(price, watching);
     renderPlay(picks, watching);
@@ -3608,9 +3628,9 @@ setInterval(function(){ if(!document.hidden) loadShortInterest(); }, 300000);
 setInterval(function(){ if(!document.hidden) loadPickJournal(true); }, 120000);
 setInterval(function(){ if(!document.hidden) loadSignalHistory(); }, 120000);
 setInterval(function(){ if(!document.hidden) loadPerformanceLog(); }, 120000);
-setInterval(function(){ if(!document.hidden){ _maybeTodayPred433Refresh(); loadTodayPredictionPanel(false); } }, 60000);
+setInterval(function(){ if(!document.hidden){ _maybeTodayPredMarketCloseRefresh(); loadTodayPredictionPanel(false); } }, 900000);
 setInterval(function(){ if(!document.hidden) loadAttribution(); }, 300000);
-setInterval(function(){ if(!document.hidden) loadDailyForecastScorecard(); }, 600000);
+setInterval(function(){ if(!document.hidden) loadDailyForecastScorecard(); }, 900000);
 _renderAutoStatus();
 </script>
 </body>

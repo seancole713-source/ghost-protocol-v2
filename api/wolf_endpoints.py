@@ -22,6 +22,7 @@ Caching is in-process with per-endpoint TTLs. Process restart clears cache.
 
 from __future__ import annotations
 
+import os
 import time
 import math
 import logging
@@ -321,16 +322,22 @@ async def get_daily_forecast_scorecard(symbol: str = WOLF_SYMBOL, days: int = 14
     """Per-symbol daily forecast scorecard: prior-close model → next-day O/H/L vs actual."""
     sym = (symbol or WOLF_SYMBOL).strip().upper()
     cache_key = f"daily-forecast:{sym}:{days}"
-    cached = _cache_get(cache_key, 30)
-    if cached:
-        return JSONResponse(content=cached)
+    cache_ttl = float(os.getenv("SCORECARD_CACHE_TTL_S", "900"))  # 15m historical; live always fresh
+    cached = _cache_get(cache_key, cache_ttl)
     try:
-        from core.daily_forecast_scorecard import build_daily_scorecard
-        payload = build_daily_scorecard(sym, days=days)
+        from core.daily_forecast_scorecard import build_daily_scorecard, refresh_scorecard_live_panel
+        if cached:
+            payload = dict(cached)
+        else:
+            payload = build_daily_scorecard(sym, days=days)
+            skip = ("live_now", "live_as_of_ts", "panel")
+            to_cache = {k: v for k, v in payload.items() if k not in skip}
+            _cache_set(cache_key, to_cache)
+        refresh_scorecard_live_panel(payload)
+        payload["live_as_of_ts"] = int(time.time())
     except Exception as e:
         LOGGER.warning("daily-forecast-scorecard %s: %s", sym, str(e)[:120])
         payload = _err(str(e), symbol=sym, has_model=False, days=[], summary={})
-    _cache_set(cache_key, payload)
     return JSONResponse(content=payload)
 
 

@@ -3,13 +3,19 @@ core/prices.py - Stock price fetcher (WOLF-only mode).
 Primary: Alpaca real-time trades. Fallback: yfinance (fast_info + history).
 """
 import os, time, logging, requests
-from typing import Dict, Tuple, Any
+from typing import Dict, Tuple, Any, Optional
 
 LOGGER = logging.getLogger("ghost.prices")
 POLYGON_KEY = os.getenv("POLYGON_API_KEY", "")
 TIMEOUT = float(os.getenv("PRICE_PROVIDER_TIMEOUT_S", "8.0"))
 STOCK_CACHE_TTL = int(os.getenv("STOCK_PRICE_TTL_S", "60"))  # refresh every 60s during market hours
+INTRADAY_QUOTE_TTL_S = int(os.getenv("INTRADAY_QUOTE_TTL_S", "900"))  # RTH O/H/L bars; trade overlay on cache hit
 _mem_cache: Dict[str, Tuple[float, float]] = {}
+_intraday_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+
+# US equity regular hours (America/New_York)
+_RTH_OPEN_MIN = 9 * 60 + 30
+_RTH_CLOSE_MIN = 16 * 60
 
 
 def _cache_get(symbol):
@@ -147,17 +153,76 @@ def get_extended_session(symbol: str) -> Dict[str, Any]:
     }
 
 
-def get_intraday_session(symbol: str) -> Dict[str, Any]:
-    """Today's extended-session O/H/L + last trade via Alpaca (fallback yfinance).
+def _bar_et_minutes(bar: Dict[str, Any], et) -> Optional[int]:
+    """Minutes since midnight ET for an Alpaca bar timestamp (UTC ISO)."""
+    import datetime as _dt
 
-    Used by the Daily Prediction live row — must track the consolidated tape, not
-    stale daily-bar closes.
+    raw = bar.get("t")
+    if not raw:
+        return None
+    try:
+        s = str(raw).replace("Z", "+00:00")
+        ts = _dt.datetime.fromisoformat(s)
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=_dt.timezone.utc)
+        if et:
+            ts = ts.astimezone(et)
+        return ts.hour * 60 + ts.minute
+    except Exception:
+        return None
+
+
+def _ohlc_from_bars(
+    bars: list,
+    et,
+    *,
+    start_min: Optional[int] = None,
+    end_min: Optional[int] = None,
+) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+    """Aggregate open/high/low from 5Min bars, optionally filtered to an ET window."""
+    filtered = []
+    for bar in bars or []:
+        mins = _bar_et_minutes(bar, et)
+        if mins is None:
+            continue
+        if start_min is not None and mins < start_min:
+            continue
+        if end_min is not None and mins >= end_min:
+            continue
+        filtered.append(bar)
+    if not filtered:
+        return None, None, None
+    opens = [float(b["o"]) for b in filtered if b.get("o")]
+    highs = [float(b["h"]) for b in filtered if b.get("h")]
+    lows = [float(b["l"]) for b in filtered if b.get("l")]
+    if not opens or not highs or not lows:
+        return None, None, None
+    return round(opens[0], 4), round(max(highs), 4), round(min(lows), 4)
+
+
+def get_intraday_session(symbol: str) -> Dict[str, Any]:
+    """Today's O/H/L + last trade via Alpaca (fallback yfinance).
+
+    RTH open/high/low use 9:30–16:00 ET bars so the live row matches Google Finance
+    during and after the cash session. Latest trade always wins for ``price``.
     """
     import datetime as _dt
 
     sym = (symbol or "").strip().upper()
     if not sym:
         return {}
+
+    cached = _intraday_cache.get(sym)
+    if cached and (time.time() - cached[0]) < INTRADAY_QUOTE_TTL_S:
+        out = dict(cached[1])
+        trade = _alpaca(sym)
+        if trade:
+            out["price"] = round(float(trade), 4)
+            if out.get("previous_close") and out["previous_close"] > 0:
+                out["change_abs"] = round(out["price"] - out["previous_close"], 4)
+                out["change_pct"] = round(out["change_abs"] / out["previous_close"] * 100, 3)
+        out["as_of_ts"] = int(time.time())
+        return out
 
     try:
         from zoneinfo import ZoneInfo
@@ -174,9 +239,9 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
         session, session_label = "closed", "Closed"
     elif hm < 4 * 60:
         session, session_label = "closed", "Closed"
-    elif hm < 9 * 60 + 30:
+    elif hm < _RTH_OPEN_MIN:
         session, session_label = "premarket", "Pre-market"
-    elif hm < 16 * 60:
+    elif hm < _RTH_CLOSE_MIN:
         session, session_label = "rth", "Market open"
     elif hm < 20 * 60:
         session, session_label = "afterhours", "After hours"
@@ -184,6 +249,7 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
         session, session_label = "closed", "Closed"
 
     today_open = today_high = today_low = last_price = prev_close = None
+    rth_open = rth_high = rth_low = None
     feed = None
 
     key = os.getenv("ALPACA_KEY_ID", "")
@@ -200,6 +266,7 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
                 day_start = _dt.datetime.utcnow().replace(hour=9, minute=0, second=0, microsecond=0)
             start_str = day_start.strftime("%Y-%m-%dT%H:%M:%SZ")
             end_str = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            bars = []
             for feed_name in ("sip", "iex"):
                 url = (
                     f"https://data.alpaca.markets/v2/stocks/{sym}/bars"
@@ -211,21 +278,18 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
                 bars = r.json().get("bars") or []
                 if not bars:
                     continue
-                opens = [float(b["o"]) for b in bars if b.get("o")]
-                highs = [float(b["h"]) for b in bars if b.get("h")]
-                lows = [float(b["l"]) for b in bars if b.get("l")]
-                closes = [float(b["c"]) for b in bars if b.get("c")]
-                if opens:
-                    today_open = round(opens[0], 4)
-                if highs:
-                    today_high = round(max(highs), 4)
-                if lows:
-                    today_low = round(min(lows), 4)
-                if closes:
-                    last_price = round(closes[-1], 4)
                 feed = f"alpaca_{feed_name}"
                 break
-            # Prior session close from last two daily bars
+            if bars:
+                ext_open, ext_high, ext_low = _ohlc_from_bars(bars, et)
+                rth_open, rth_high, rth_low = _ohlc_from_bars(
+                    bars, et, start_min=_RTH_OPEN_MIN, end_min=_RTH_CLOSE_MIN,
+                )
+                use_rth = session in ("rth", "afterhours") or hm >= _RTH_CLOSE_MIN
+                if use_rth and rth_open is not None:
+                    today_open, today_high, today_low = rth_open, rth_high, rth_low
+                else:
+                    today_open, today_high, today_low = ext_open, ext_high, ext_low
             d_end = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             d_start = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
             for feed_name in ("sip", "iex"):
@@ -246,17 +310,17 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
         except Exception as exc:
             LOGGER.debug("intraday alpaca %s: %s", sym, str(exc)[:80])
 
-    if last_price is None:
-        last_price = _alpaca(sym)
-        if last_price:
-            last_price = round(float(last_price), 4)
-            feed = feed or "alpaca_trade"
+    trade = _alpaca(sym)
+    if trade:
+        last_price = round(float(trade), 4)
+        feed = feed or "alpaca_trade"
 
     if today_open is None or today_high is None:
         try:
             import yfinance as yf
             h = yf.Ticker(sym).history(period="1d", interval="5m")
             if h is not None and not h.empty:
+                # yfinance 5m during RTH — filter roughly to session hours
                 today_open = round(float(h["Open"].iloc[0]), 4)
                 today_high = round(float(h["High"].max()), 4)
                 today_low = round(float(h["Low"].min()), 4)
@@ -277,7 +341,7 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
         chg_abs = round(last_price - prev_close, 4)
         chg_pct = round(chg_abs / prev_close * 100, 3)
 
-    return {
+    out = {
         "symbol": sym,
         "as_of_ts": int(time.time()),
         "session": session,
@@ -290,8 +354,13 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
         "today_open": today_open,
         "today_high": today_high,
         "today_low": today_low,
+        "rth_open": rth_open,
+        "rth_high": rth_high,
+        "rth_low": rth_low,
         "feed": feed,
     }
+    _intraday_cache[sym] = (time.time(), out)
+    return dict(out)
 
 
 def get_vix():
