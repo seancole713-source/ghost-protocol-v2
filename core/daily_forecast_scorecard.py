@@ -246,11 +246,26 @@ def build_daily_scorecard(symbol: str, days: int = 14, asset_type: str = "stock"
     model, feature_cols, meta = load_model(sym)
     invert_cols = (meta or {}).get("feature_inversions") or []
     if model is None or not feature_cols:
+        reject = None
+        try:
+            from core.db import db_conn
+            with db_conn() as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT value FROM ghost_v3_model WHERE key=%s", (f"meta_{sym}",))
+                row = cur.fetchone()
+            if row and row[0]:
+                import json as _json
+                from core.signal_engine import model_serve_guard
+                reject = model_serve_guard(_json.loads(row[0]))
+        except Exception:
+            reject = None
+        reason = "serve_reject" if reject else "no_v3_model"
         return {
             "ok": True,
             "symbol": sym,
             "has_model": False,
-            "reason": "no_v3_model",
+            "reason": reason,
+            "serve_reject": reject,
             "days": [],
             "summary": {},
             "live_now": live_now_quote(sym, asset_type),
@@ -382,9 +397,17 @@ def build_watchlist_universe() -> Dict[str, Any]:
 
     st = get_model_status() or {}
     loaded = set((st.get("symbols") or {}).keys())
+    stored = set((st.get("stored_symbols") or st.get("symbols") or {}).keys())
     pairs = watchlist_symbol_pairs(include_portfolio=True)
     all_syms = [sym for sym, _ in pairs] or ["WOLF"]
-    entries = [{"symbol": sym, "has_model": sym in loaded} for sym in all_syms]
+    entries = []
+    for sym in all_syms:
+        entry = {"symbol": sym, "has_model": sym in loaded}
+        if sym in stored and sym not in loaded:
+            reject = ((st.get("stored_symbols") or {}).get(sym) or {}).get("serve_reject")
+            if reject:
+                entry["serve_reject"] = reject
+        entries.append(entry)
     trained = [e["symbol"] for e in entries if e["has_model"]]
     missing = [e["symbol"] for e in entries if not e["has_model"]]
     return {

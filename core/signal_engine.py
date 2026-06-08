@@ -13,7 +13,7 @@ within N daily bars (see V3_LABEL_HOLD_BARS), same TP/SL math as core.vol_target
 """
 import os, time, logging, json
 import numpy as np
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from core.vol_targets import base_vol_pct, stop_pct_from_vol
 
 LOGGER = logging.getLogger("ghost.signal_v3")
@@ -1653,6 +1653,22 @@ def train_and_validate(symbols_and_types):
     _persist_train_details(details)
     return None, total_passed / max(len(symbols_and_types), 1), total_passed > 0
 
+
+def model_serve_guard(meta: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Return a reject code if meta fails load_model guards; None if serveable."""
+    if not meta or not isinstance(meta, dict):
+        return "missing_meta"
+    if meta.get("label_type") != LABEL_TYPE:
+        return "label_type_mismatch"
+    if meta.get("label_schema") != _v3_label_schema():
+        return "label_schema_stale"
+    if meta.get("feature_schema") != _v3_feature_schema():
+        return "feature_schema_stale"
+    if time.time() - meta.get("trained_at", 0) > 14 * 86400:
+        return "model_expired"
+    return None
+
+
 def load_model(symbol=None):
     if not symbol: return None, None, None
     try:
@@ -1668,20 +1684,10 @@ def load_model(symbol=None):
             mrow = cur.fetchone()
             if not mrow: return None, None, None
             meta = json.loads(mrow[0])
-            if meta.get("label_type") != LABEL_TYPE:
-                LOGGER.info("load_model %s: wrong label_type (retrain for v3.2 TP/SL)", symbol)
+            reject = model_serve_guard(meta)
+            if reject:
+                LOGGER.info("load_model %s: rejected (%s)", symbol, reject)
                 return None, None, None
-            if meta.get("label_schema") != _v3_label_schema():
-                LOGGER.info(
-                    "load_model %s: label_schema changed (%s != %s) — retrain needed",
-                    symbol, meta.get("label_schema"), _v3_label_schema(),
-                )
-                return None, None, None
-            if meta.get("feature_schema") != _v3_feature_schema():
-                LOGGER.info("load_model %s: feature_schema changed (%s != %s) — retrain needed",
-                            symbol, meta.get("feature_schema"), _v3_feature_schema())
-                return None, None, None
-            if time.time() - meta.get('trained_at', 0) > 14 * 86400: return None, None, None
             return model, meta.get('feature_cols', FEATURE_COLS), meta
     except Exception as e:
         LOGGER.warning(f"load_model {symbol}: {e}"); return None, None, None
@@ -1866,10 +1872,18 @@ def get_model_status():
             cur.execute("SELECT key, value FROM ghost_v3_model WHERE key LIKE 'meta_%' ORDER BY key")
             rows = cur.fetchall()
             if not rows: return {"trained": False, "reason": "No models — run /api/v3/train"}
+            model_keys = set()
+            cur.execute("SELECT key FROM ghost_v3_model WHERE key LIKE 'model_%'")
+            for (k,) in cur.fetchall():
+                model_keys.add(k.replace("model_", ""))
             symbols = {}
+            stored = {}
             for key, val in rows:
                 sym = key.replace('meta_',''); m = json.loads(val)
-                symbols[sym] = {
+                reject = model_serve_guard(m)
+                if sym not in model_keys:
+                    reject = reject or "missing_pickle"
+                summary = {
                     "accuracy": round(m.get("accuracy",0)*100,1),
                     "natural_rate": round(m.get("natural_rate",0)*100,1),
                     "edge": round(m.get("edge",0)*100,1),
@@ -1883,8 +1897,23 @@ def get_model_status():
                     "label_type": m.get("label_type", ""),
                     "label_schema": m.get("label_schema", ""),
                     "label_hold_bars": m.get("label_hold_bars", V3_LABEL_HOLD_BARS),
+                    "feature_schema": m.get("feature_schema", ""),
+                    "serveable": reject is None,
                 }
-            out = {"trained": True, "models": len(symbols), "symbols": symbols}
+                if reject:
+                    summary["serve_reject"] = reject
+                stored[sym] = summary
+                if reject is None:
+                    symbols[sym] = summary
+            out = {
+                "trained": bool(symbols),
+                "models": len(symbols),
+                "models_stored": len(stored),
+                "symbols": symbols,
+                "stored_symbols": stored,
+            }
+            if not symbols:
+                out["reason"] = "No serveable models — retrain in /admin"
             gate = get_last_train_gate_summary()
             if gate:
                 out["last_train_gate"] = gate

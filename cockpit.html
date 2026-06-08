@@ -2387,6 +2387,22 @@ function _maybeTodayPred433Refresh(){
   }
 }
 
+function _dpModelMessage(g, sym){
+  sym = sym || _dfActiveSymbol || 'WOLF';
+  if(g && g.has_model) return '';
+  if(g && g.reason === 'serve_reject'){
+    var r = g.serve_reject || 'stale';
+    var detail = r === 'feature_schema_stale' ? 'feature schema drift'
+      : r === 'label_schema_stale' ? 'label schema (retrain after Phase 5)'
+      : r === 'model_expired' ? 'model older than 14 days'
+      : r === 'label_type_mismatch' ? 'pre-v3.2 label type'
+      : r;
+    return '<span style="color:#fbbf24">' + escHtml(sym) + '</span> has a stored model but it is not serveable (<b>' + escHtml(detail) + '</b>). '
+      + 'Last retrain likely failed its gate — run <a href="/admin" style="color:#a78bfa">/admin → Train Now</a> after deploy.';
+  }
+  return '<span style="color:#fbbf24">' + escHtml(sym) + '</span> needs a trained v3 model. Train in <a href="/admin" style="color:#a78bfa">/admin</a>.';
+}
+
 async function loadTodayPredictionPanel(is433Refresh){
   var sym = _dfActiveSymbol || 'WOLF';
   var tableWrap = document.getElementById('dp-table-wrap');
@@ -2399,7 +2415,8 @@ async function loadTodayPredictionPanel(is433Refresh){
       return;
     }
     if(!g.has_model){
-      tableWrap.innerHTML = '<div class="dp-empty"><span style="color:#fbbf24">' + escHtml(sym) + '</span> needs a trained v3 model. Train in <a href="/admin" style="color:#a78bfa">/admin</a>.</div>';
+      _renderDpQuality(null);
+      tableWrap.innerHTML = '<div class="dp-empty">' + _dpModelMessage(g, sym) + '</div>';
       return;
     }
     var split = _splitForecastDays(g.days || []);
@@ -2430,7 +2447,7 @@ function _renderDfChips(universe){
       var sym = entry.symbol;
       var active = sym === _dfActiveSymbol ? ' active' : '';
       var miss = entry.has_model ? '' : ' missing';
-      var tag = entry.has_model ? '' : ' · train';
+      var tag = entry.has_model ? '' : (entry.serve_reject ? ' · stale' : ' · train');
       return '<button type="button" class="df-chip' + active + miss + '" data-sym="' + escHtml(sym) + '" onclick="selectDfSymbol(\'' + sym.replace(/'/g, '') + '\')">' + escHtml(sym) + tag + '</button>';
     }).join('');
   }
@@ -2474,12 +2491,11 @@ async function loadDailyForecastScorecard(){
       return;
     }
     if(!g.has_model){
-      sumEl.innerHTML = '<b style="color:#fbbf24">' + escHtml(sym) + '</b> is on your watchlist but has <b>no trained v3 model yet</b>. '
-        + 'Ghost can track it for portfolio/P&amp;L, but daily forecasts require training — use <a href="/admin" style="color:#a78bfa">/admin → Train Now</a>. '
-        + 'Currently only <b>' + ((_dfUniverse && _dfUniverse.trained_count) || 0) + '</b> of <b>' + ((_dfUniverse && _dfUniverse.watchlist_count) || 0) + '</b> symbols have models.';
+      sumEl.innerHTML = _dpModelMessage(g, sym);
+      _renderDpQuality(null);
       _renderDfCharts([]);
       _applyDfViewMode();
-      if(wrap) wrap.innerHTML = '<div class="df-empty-state"><b>' + escHtml(sym) + ' — model required</b>Train this symbol in /admin to unlock open, peak, and close forecasts.</div>';
+      if(wrap) wrap.innerHTML = '<div class="df-empty-state"><b>' + escHtml(sym) + ' — model required</b>' + _dpModelMessage(g, sym) + '</div>';
       return;
     }
     if(g.reason === 'insufficient_bars'){
@@ -3335,7 +3351,12 @@ function _plNearMiss(nm){
 
 function _renderDpQuality(summary){
   var el = document.getElementById('dp-quality');
-  if(!el || !summary) return;
+  if(!el) return;
+  if(!summary){
+    el.style.display = 'none';
+    el.innerHTML = '';
+    return;
+  }
   var level = summary.avg_overall_pct;
   var dir = summary.direction_hit_rate_pct;
   if(level == null && dir == null){
