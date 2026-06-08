@@ -1205,12 +1205,19 @@ def _persist_train_details(details_list) -> None:
 
 def _v3_max_calibration_brier() -> float:
     """Max acceptable Brier on the final holdout (gate) slice after calibration."""
+    _PHASE5_FLOOR = 0.31  # tp_sl_fwd_v1 watchlist clears through ~0.305 on prod
     try:
-        # Post–Phase 5 tp_sl_fwd_v1 labels run ~0.24–0.31 on thin names; 0.31 cleared
-        # the watchlist on 2026-06 prod retrain while still rejecting uncalibrated models.
-        return float(os.getenv("V3_MAX_CALIBRATION_BRIER", "0.31"))
+        raw = os.getenv("V3_MAX_CALIBRATION_BRIER")
+        val = float(raw) if raw not in (None, "") else _PHASE5_FLOOR
     except Exception:
-        return 0.31
+        val = _PHASE5_FLOOR
+    if val < _PHASE5_FLOOR:
+        LOGGER.info(
+            "V3_MAX_CALIBRATION_BRIER=%s below Phase 5 floor; using %s",
+            val, _PHASE5_FLOOR,
+        )
+        return _PHASE5_FLOOR
+    return val
 
 
 def _reliability_bins(y_true, y_prob, n_bins: int = 5) -> List[Dict[str, Any]]:

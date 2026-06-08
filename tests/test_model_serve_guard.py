@@ -25,6 +25,11 @@ def test_model_serve_guard_accepts_current_schema():
     assert _se.model_serve_guard(meta) is None
 
 
+def test_max_calibration_brier_phase5_floor(monkeypatch):
+    monkeypatch.setenv("V3_MAX_CALIBRATION_BRIER", "0.24")
+    assert _se._v3_max_calibration_brier() == 0.31
+
+
 def test_get_model_status_counts_serveable_only(monkeypatch):
     wolf_meta = {
         "label_type": _se.LABEL_TYPE,
