@@ -2254,14 +2254,16 @@ function _renderDfTable(days){
 function _renderDfCoverage(universe){
   var el = document.getElementById('df-coverage');
   if(!el || !universe) return;
-  var trained = universe.trained_count || 0;
+  var trained = universe.trained_count || universe.serveable_count || 0;
   var total = universe.watchlist_count || 0;
-  var missing = (universe.missing_symbols || []).slice(0, 8);
-  var missNote = missing.length
-    ? 'Missing models: ' + missing.join(', ') + ((universe.missing_symbols || []).length > 8 ? ' +' + ((universe.missing_symbols || []).length - 8) + ' more' : '') + '. Ghost watches all ' + total + ' — forecasts need a trained v3 model per symbol (/admin → Train Now).'
-    : 'All watchlist symbols have trained models.';
-  el.innerHTML = '<div class="df-cov-stat"><b>' + trained + '/' + total + '</b><span>symbols with forecasts</span></div>'
-    + '<div class="df-cov-stat"><b>' + (total - trained) + '</b><span>awaiting model train</span></div>'
+  var stale = universe.stale_count || 0;
+  var missNote = stale > 0
+    ? trained + ' serveable · ' + stale + ' stale (old schema or failed retrain gate). Run /admin → Train Now to refresh.'
+    : (trained >= total
+      ? 'All watchlist symbols have serveable models.'
+      : 'Ghost watches all ' + total + ' — forecasts need a trained v3 model per symbol (/admin → Train Now).');
+  el.innerHTML = '<div class="df-cov-stat"><b>' + trained + '/' + total + '</b><span>serveable forecasts</span></div>'
+    + '<div class="df-cov-stat"><b>' + stale + '</b><span>stale (retrain needed)</span></div>'
     + '<div class="df-cov-note">' + escHtml(missNote) + '</div>';
 }
 
@@ -2377,7 +2379,10 @@ function _dpLiveScore(live){
 function _dpLiveDate(live){
   if(!live) return '—';
   var label = live.panel_label || 'today';
-  var labelText = label === 'last session' ? 'Last session' : (label === 'premarket' ? 'Pre-market' : 'Today');
+  var labelText = label === 'last session' ? 'Last session'
+    : label === 'premarket' ? 'Pre-market'
+    : label === 'after hours' ? 'After hours'
+    : 'Today';
   var d = live.panel_date || live.market_date;
   var dText = d ? _dpFormatDate(d) : '—';
   var sess = live.session_label || live.session || '';
@@ -2429,8 +2434,9 @@ function _dpModelMessage(g, sym){
       : r === 'model_expired' ? 'model older than 14 days'
       : r === 'label_type_mismatch' ? 'pre-v3.2 label type'
       : r;
-    return '<span style="color:#fbbf24">' + escHtml(sym) + '</span> has a stored model but it is not serveable (<b>' + escHtml(detail) + '</b>). '
-      + 'Last retrain likely failed its gate — run <a href="/admin" style="color:#a78bfa">/admin → Train Now</a> after deploy.';
+    var fail = g.last_train_fail ? ' Last retrain: <b>' + escHtml(g.last_train_fail) + '</b>.' : '';
+    return '<span style="color:#fbbf24">' + escHtml(sym) + '</span> has a stored model but it is not serveable (<b>' + escHtml(detail) + '</b>).'
+      + fail + ' Run <a href="/admin" style="color:#a78bfa">/admin → Train Now</a> after deploy.';
   }
   return '<span style="color:#fbbf24">' + escHtml(sym) + '</span> needs a trained v3 model. Train in <a href="/admin" style="color:#a78bfa">/admin</a>.';
 }
@@ -2478,9 +2484,10 @@ function _renderDfChips(universe){
     chipHtml = list.map(function(entry){
       var sym = entry.symbol;
       var active = sym === _dfActiveSymbol ? ' active' : '';
-      var miss = entry.has_model ? '' : ' missing';
-      var tag = entry.has_model ? '' : (entry.serve_reject ? ' · stale' : ' · train');
-      return '<button type="button" class="df-chip' + active + miss + '" data-sym="' + escHtml(sym) + '" onclick="selectDfSymbol(\'' + sym.replace(/'/g, '') + '\')">' + escHtml(sym) + tag + '</button>';
+      var miss = entry.serveable ? '' : ' missing';
+      var tag = entry.serveable ? '' : (entry.serve_reject ? ' · stale' : ' · train');
+      var tip = entry.last_train_fail ? ' title="' + escHtml(entry.last_train_fail) + '"' : '';
+      return '<button type="button" class="df-chip' + active + miss + '" data-sym="' + escHtml(sym) + '"' + tip + ' onclick="selectDfSymbol(\'' + sym.replace(/'/g, '') + '\')">' + escHtml(sym) + tag + '</button>';
     }).join('');
   }
   ['df-chips', 'tp-chips'].forEach(function(id){

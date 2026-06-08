@@ -209,3 +209,33 @@ def test_build_prediction_panel_aligns_weekend(monkeypatch):
     assert panel["market"]["actual"]["low"] == 4.13
     assert panel["live"]["panel_date"] == "2026-06-05"
 
+
+def test_market_uses_rth_close_after_hours(monkeypatch):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from core.daily_forecast_scorecard import build_prediction_panel
+
+    rows = [
+        {"ts": "2026-06-08T04:00:00Z", "open": 4.55, "high": 4.56, "low": 4.13, "close": 4.40},
+    ]
+    monkeypatch.setattr("core.daily_forecast_scorecard._up_prob_at_bar", lambda *a, **k: 0.65)
+    monkeypatch.setattr(
+        "core.daily_forecast_scorecard.forecast_band_vol_pct",
+        lambda *a, **k: {"vol_pct": 0.05, "source": "test"},
+    )
+    mon_eh = datetime(2026, 6, 8, 17, 30, tzinfo=ZoneInfo("America/New_York"))
+    live = {
+        "price": 4.165,
+        "today_open": 4.545,
+        "today_high": 4.545,
+        "today_low": 4.135,
+        "rth_close": 4.40,
+        "session": "afterhours",
+    }
+    panel = build_prediction_panel(
+        "SPCE", rows, [], object(), ["f1"], [], "stock", live, now_et=mon_eh,
+    )
+    assert panel["market"]["actual"]["close"] == 4.40
+    assert panel["live"]["price"] == 4.165
+    assert panel["live"]["panel_label"] == "after hours"
+

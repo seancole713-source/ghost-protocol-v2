@@ -200,6 +200,30 @@ def _ohlc_from_bars(
     return round(opens[0], 4), round(max(highs), 4), round(min(lows), 4)
 
 
+def _rth_close_from_bars(
+    bars: list,
+    et,
+    *,
+    start_min: Optional[int] = None,
+    end_min: Optional[int] = None,
+) -> Optional[float]:
+    """Last RTH 5Min bar close (~4:00 PM ET cash close)."""
+    filtered = []
+    for bar in bars or []:
+        mins = _bar_et_minutes(bar, et)
+        if mins is None:
+            continue
+        if start_min is not None and mins < start_min:
+            continue
+        if end_min is not None and mins >= end_min:
+            continue
+        if bar.get("c"):
+            filtered.append(bar)
+    if not filtered:
+        return None
+    return round(float(filtered[-1]["c"]), 4)
+
+
 def get_intraday_session(symbol: str) -> Dict[str, Any]:
     """Today's O/H/L + last trade via Alpaca (fallback yfinance).
 
@@ -249,7 +273,7 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
         session, session_label = "closed", "Closed"
 
     today_open = today_high = today_low = last_price = prev_close = None
-    rth_open = rth_high = rth_low = None
+    rth_open = rth_high = rth_low = rth_close = None
     feed = None
 
     key = os.getenv("ALPACA_KEY_ID", "")
@@ -283,6 +307,9 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
             if bars:
                 ext_open, ext_high, ext_low = _ohlc_from_bars(bars, et)
                 rth_open, rth_high, rth_low = _ohlc_from_bars(
+                    bars, et, start_min=_RTH_OPEN_MIN, end_min=_RTH_CLOSE_MIN,
+                )
+                rth_close = _rth_close_from_bars(
                     bars, et, start_min=_RTH_OPEN_MIN, end_min=_RTH_CLOSE_MIN,
                 )
                 use_rth = session in ("rth", "afterhours") or hm >= _RTH_CLOSE_MIN
@@ -357,6 +384,7 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
         "rth_open": rth_open,
         "rth_high": rth_high,
         "rth_low": rth_low,
+        "rth_close": rth_close,
         "feed": feed,
     }
     _intraday_cache[sym] = (time.time(), out)

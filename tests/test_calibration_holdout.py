@@ -39,5 +39,6 @@ def test_evaluate_calibration_holdout_computes_brier(monkeypatch):
     out = _evaluate_calibration_holdout(calibrated, Xg, yg)
     assert out["gate_n"] == len(yg)
     assert out["gate_brier"] is not None
-    assert out["gate_brier"] < 0.24
+    from core import signal_engine as _se
+    assert out["gate_brier"] < _se._v3_max_calibration_brier()
     assert out["reliability_bins"]

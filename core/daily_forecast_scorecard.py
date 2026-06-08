@@ -139,11 +139,14 @@ def _actual_from_bar(bar: Optional[dict]) -> Optional[Dict[str, float]]:
     }
 
 
-def _actual_from_live(live: Dict[str, Any]) -> Optional[Dict[str, float]]:
+def _actual_from_live(live: Dict[str, Any], *, use_rth_close: bool = False) -> Optional[Dict[str, float]]:
     o = live.get("today_open")
     h = live.get("today_high")
     l = live.get("today_low")
-    c = live.get("price")
+    if use_rth_close:
+        c = live.get("rth_close") or live.get("price")
+    else:
+        c = live.get("price")
     if o is None or float(o) <= 0:
         return None
     return {
@@ -152,6 +155,14 @@ def _actual_from_live(live: Dict[str, Any]) -> Optional[Dict[str, float]]:
         "low": round(float(l or o), 4),
         "close": round(float(c or o), 4),
     }
+
+
+def _after_rth_close(now_et: Optional[datetime], live_intraday: Optional[Dict[str, Any]]) -> bool:
+    if live_intraday and live_intraday.get("session") == "afterhours":
+        return True
+    if now_et is None:
+        return False
+    return now_et.hour * 60 + now_et.minute >= 16 * 60
 
 
 def build_prediction_panel(
@@ -172,11 +183,20 @@ def build_prediction_panel(
     predict_date = dates["predict_date"]
     market_date = dates["market_date"]
     live_date = dates["live_date"]
+    try:
+        from zoneinfo import ZoneInfo
+        now = now_et or datetime.now(ZoneInfo("America/New_York"))
+    except Exception:
+        now = now_et
+    after_close = _after_rth_close(now, live_intraday)
 
-    market_bar = _bar_for_date(rows, market_date)
-    market_actual = _actual_from_bar(market_bar)
+    market_actual = None
+    if after_close and live_intraday and live_date == market_date:
+        market_actual = _actual_from_live(live_intraday, use_rth_close=True)
+    if market_actual is None:
+        market_actual = _actual_from_bar(_bar_for_date(rows, market_date))
     if market_actual is None and live_intraday and live_date == market_date:
-        market_actual = _actual_from_live(live_intraday)
+        market_actual = _actual_from_live(live_intraday, use_rth_close=after_close)
 
     prior_date = _previous_trading_day(date.fromisoformat(predict_date[:10]))
     prior_idx = _bar_index_for_date(rows, prior_date.isoformat())
@@ -226,7 +246,10 @@ def build_prediction_panel(
 
     live = dict(live_intraday or {})
     live["panel_date"] = live_date
-    live["panel_label"] = dates["live_label"]
+    if after_close and live.get("session") == "afterhours":
+        live["panel_label"] = "after hours"
+    else:
+        live["panel_label"] = dates["live_label"]
     live["market_date"] = live_date
 
     if dates["live_label"] in ("last session", "premarket") and market_date == live_date:
@@ -527,12 +550,20 @@ def build_daily_scorecard(symbol: str, days: int = 14, asset_type: str = "stock"
         except Exception:
             reject = None
         reason = "serve_reject" if reject else "no_v3_model"
+        last_fail = None
+        if reject:
+            try:
+                from core.signal_engine import get_last_train_fail_for_symbol
+                last_fail = get_last_train_fail_for_symbol(sym)
+            except Exception:
+                last_fail = None
         return {
             "ok": True,
             "symbol": sym,
             "has_model": False,
             "reason": reason,
             "serve_reject": reject,
+            "last_train_fail": last_fail,
             "days": [],
             "summary": {},
             "live_now": live_now_quote(sym, asset_type),
@@ -670,15 +701,25 @@ def build_watchlist_universe() -> Dict[str, Any]:
     st = get_model_status() or {}
     loaded = set((st.get("symbols") or {}).keys())
     stored = set((st.get("stored_symbols") or st.get("symbols") or {}).keys())
+    try:
+        from core.signal_engine import get_last_train_fail_for_symbol
+    except Exception:
+        get_last_train_fail_for_symbol = None  # type: ignore
     pairs = watchlist_symbol_pairs(include_portfolio=True)
     all_syms = [sym for sym, _ in pairs] or ["WOLF"]
     entries = []
+    stale_count = 0
     for sym in all_syms:
-        entry = {"symbol": sym, "has_model": sym in loaded}
+        entry = {"symbol": sym, "has_model": sym in loaded, "serveable": sym in loaded}
         if sym in stored and sym not in loaded:
             reject = ((st.get("stored_symbols") or {}).get(sym) or {}).get("serve_reject")
             if reject:
                 entry["serve_reject"] = reject
+                stale_count += 1
+                if get_last_train_fail_for_symbol:
+                    fail = get_last_train_fail_for_symbol(sym)
+                    if fail:
+                        entry["last_train_fail"] = fail
         entries.append(entry)
     trained = [e["symbol"] for e in entries if e["has_model"]]
     missing = [e["symbol"] for e in entries if not e["has_model"]]
@@ -688,6 +729,8 @@ def build_watchlist_universe() -> Dict[str, Any]:
         "symbols": all_syms,
         "trained_symbols": trained,
         "missing_symbols": missing,
+        "serveable_count": len(trained),
+        "stale_count": stale_count,
         "trained_count": len(trained),
         "watchlist_count": len(all_syms),
     }
