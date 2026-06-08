@@ -77,6 +77,29 @@ def test_last_bar_age_days():
     assert age > 30
 
 
+def test_live_now_quote_shape(monkeypatch):
+    from core.daily_forecast_scorecard import live_now_quote
+
+    monkeypatch.setattr(
+        "core.prices.get_extended_session",
+        lambda s: {"session": "rth", "session_price": 4.39, "previous_close": 4.36},
+    )
+    monkeypatch.setattr("core.prices.get_stock_price", lambda s, t=None: 4.39)
+
+    class _EmptyHist:
+        empty = True
+
+    monkeypatch.setattr(
+        "yfinance.Ticker",
+        lambda s: type("T", (), {"history": lambda *a, **k: _EmptyHist()})(),
+    )
+    out = live_now_quote("SPCE")
+    assert out["symbol"] == "SPCE"
+    assert out["price"] == 4.39
+    assert out["change_pct"] is not None
+    assert out["session"] == "rth"
+
+
 def test_forecast_includes_close():
     out = forecast_ohlc_from_prob(100.0, 0.72, "WOLF", "stock")
     assert "close" in out

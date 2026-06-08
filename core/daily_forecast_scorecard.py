@@ -146,6 +146,76 @@ def _fetch_scorecard_rows(symbol: str, asset_type: str) -> Tuple[Optional[List[d
     return last_rows, last_period
 
 
+def live_now_quote(symbol: str, asset_type: str = "stock") -> Dict[str, Any]:
+    """Intraday live quote + today's O/H/L for the Daily Prediction panel."""
+    import time as _time
+
+    sym = (symbol or "WOLF").strip().upper()
+    from core.prices import get_extended_session, get_stock_price
+
+    sess = get_extended_session(sym) or {}
+    price = sess.get("session_price") or sess.get("live_price")
+    if not price:
+        price = get_stock_price(sym, asset_type)
+
+    today_open = today_high = today_low = None
+    market_date = None
+    try:
+        import yfinance as yf
+
+        h = yf.Ticker(sym).history(period="1d", interval="5m")
+        if h is not None and not h.empty:
+            today_open = round(float(h["Open"].iloc[0]), 4)
+            today_high = round(float(h["High"].max()), 4)
+            today_low = round(float(h["Low"].min()), 4)
+            last_bar = round(float(h["Close"].iloc[-1]), 4)
+            if not price:
+                price = last_bar
+            elif abs(float(price) - last_bar) / max(last_bar, 0.01) > 0.02:
+                # Prefer freshest bar close when spot feed is stale.
+                price = last_bar
+    except Exception as exc:
+        LOGGER.debug("live_now intraday %s: %s", sym, str(exc)[:80])
+
+    try:
+        from zoneinfo import ZoneInfo
+
+        market_date = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+    except Exception:
+        market_date = datetime.now(timezone.utc).date().isoformat()
+
+    prev = sess.get("previous_close")
+    price_f = round(float(price), 4) if price else None
+    chg_abs = chg_pct = None
+    if price_f and prev and float(prev) > 0:
+        chg_abs = round(price_f - float(prev), 4)
+        chg_pct = round(chg_abs / float(prev) * 100, 3)
+
+    session = sess.get("session") or "closed"
+    session_label = {
+        "premarket": "Pre-market",
+        "rth": "Market open",
+        "afterhours": "After hours",
+        "closed": "Closed",
+    }.get(session, session)
+
+    return {
+        "symbol": sym,
+        "as_of_ts": int(_time.time()),
+        "session": session,
+        "session_label": session_label,
+        "market_date": market_date,
+        "price": price_f,
+        "previous_close": prev,
+        "change_abs": chg_abs,
+        "change_pct": chg_pct,
+        "today_open": today_open,
+        "today_high": today_high,
+        "today_low": today_low,
+        "gap_pct": sess.get("gap_pct"),
+    }
+
+
 def _last_bar_age_days(rows: List[dict]) -> Optional[int]:
     if not rows:
         return None
@@ -174,6 +244,7 @@ def build_daily_scorecard(symbol: str, days: int = 14, asset_type: str = "stock"
             "reason": "no_v3_model",
             "days": [],
             "summary": {},
+            "live_now": live_now_quote(sym, asset_type),
         }
 
     rows, period_used = _fetch_scorecard_rows(sym, asset_type)
@@ -267,6 +338,7 @@ def build_daily_scorecard(symbol: str, days: int = 14, asset_type: str = "stock"
         "summary": summary,
         "generated_at": int(datetime.now(timezone.utc).timestamp()),
         "next_session_forecast": live_row,
+        "live_now": live_now_quote(sym, asset_type),
         "ohlcv_period": period_used,
         "bar_count": len(rows),
         "last_bar_date": _parse_bar_date(str(rows[-1].get("ts", ""))) if rows else None,
