@@ -17,6 +17,7 @@ TOOL_TO_PATH: Mapping[str, str] = {
     "ghost_stats_v32": "/api/stats/v32",
     "ghost_portfolio": "/api/portfolio",
     "ghost_picks": "/api/picks",
+    "ghost_symbol_universe": "/api/admin/symbol-universe",
 }
 
 ALLOWED_GET_PATHS: FrozenSet[str] = frozenset(TOOL_TO_PATH.values())
@@ -83,6 +84,12 @@ def _handler_ghost_picks() -> Dict[str, Any]:
     return wolf_app.get_picks()
 
 
+def _handler_ghost_symbol_universe() -> Dict[str, Any]:
+    import wolf_app
+
+    return wolf_app._build_symbol_universe_payload()
+
+
 _PATH_HANDLERS: Mapping[str, Callable[[], Any]] = {
     "/api/wolf/ask/context": _handler_ghost_context,
     "/api/wolf/ghost-score": _handler_ghost_score,
@@ -91,6 +98,7 @@ _PATH_HANDLERS: Mapping[str, Callable[[], Any]] = {
     "/api/stats/v32": _handler_ghost_stats_v32,
     "/api/portfolio": _handler_ghost_portfolio,
     "/api/picks": _handler_ghost_picks,
+    "/api/admin/symbol-universe": _handler_ghost_symbol_universe,
 }
 
 _CLIENT = GhostMcpGetClient()

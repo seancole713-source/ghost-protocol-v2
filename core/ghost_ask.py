@@ -219,7 +219,32 @@ def build_ask_context() -> Dict[str, Any]:
     except Exception:
         ctx["wolf_news_sentiment"] = 0.0
 
-    ctx["product_note"] = "Official picks come from live model+gate results; portfolio tracks P&L and exit alerts."
+    try:
+        from config.symbols import OFFICIAL_WATCHLIST, watchlist_symbol_pairs
+        from core.signal_engine import get_model_status
+
+        scan_syms = [sym for sym, _atype in watchlist_symbol_pairs(include_portfolio=False)]
+        model_st = get_model_status() or {}
+        near = ((ctx.get("latest_scan") or {}).get("near_miss") or {})
+        ctx["watchlist"] = {
+            "official_count": len(OFFICIAL_WATCHLIST),
+            "scan_count": len(scan_syms),
+            "scan_symbols_sample": scan_syms[:8],
+            "models_stored": len(model_st.get("stored_symbols") or {}),
+            "models_serveable": len(model_st.get("symbols") or {}),
+            "latest_near_miss_symbol": near.get("symbol"),
+            "note": (
+                "Scan loop uses STOCK_SYMBOLS (code watchlist). Portfolio is separate. "
+                "Picks in predictions only appear after gates pass per symbol."
+            ),
+        }
+    except Exception as e:
+        ctx["watchlist_error"] = str(e)[:120]
+
+    ctx["product_note"] = (
+        "Official picks come from live model+gate results; portfolio tracks P&L and exit alerts. "
+        "Use ghost_symbol_universe (MCP) or /api/admin/symbol-universe for the full layer map."
+    )
     return ctx
 
 
