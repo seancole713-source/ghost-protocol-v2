@@ -723,14 +723,17 @@ def build_watchlist_universe() -> Dict[str, Any]:
         entries.append(entry)
     trained = [e["symbol"] for e in entries if e["has_model"]]
     missing = [e["symbol"] for e in entries if not e["has_model"]]
+    no_model = [sym for sym in missing if sym not in stored]
     return {
         "ok": True,
         "watchlist": entries,
         "symbols": all_syms,
         "trained_symbols": trained,
         "missing_symbols": missing,
+        "no_model_symbols": no_model,
         "serveable_count": len(trained),
         "stale_count": stale_count,
+        "needs_train_count": len(missing),
         "trained_count": len(trained),
         "watchlist_count": len(all_syms),
     }

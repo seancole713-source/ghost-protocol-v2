@@ -2256,14 +2256,19 @@ function _renderDfCoverage(universe){
   if(!el || !universe) return;
   var trained = universe.trained_count || universe.serveable_count || 0;
   var total = universe.watchlist_count || 0;
-  var stale = universe.stale_count || 0;
-  var missNote = stale > 0
-    ? trained + ' serveable · ' + stale + ' stale (old schema or failed retrain gate). Run /admin → Train Now to refresh.'
-    : (trained >= total
-      ? 'All watchlist symbols have serveable models.'
-      : 'Ghost watches all ' + total + ' — forecasts need a trained v3 model per symbol (/admin → Train Now).');
+  var needsTrain = universe.needs_train_count != null
+    ? universe.needs_train_count
+    : Math.max(0, total - trained);
+  var staleStored = universe.stale_count || 0;
+  var noModel = (universe.no_model_symbols || []).length;
+  var missNote = needsTrain > 0
+    ? trained + ' serveable · ' + needsTrain + ' need training'
+      + (staleStored && noModel ? ' (' + staleStored + ' stale, ' + noModel + ' no model yet)' : '')
+      + (staleStored && !noModel ? ' (retrain failed gate or old schema)' : '')
+      + (!staleStored && noModel ? ' (' + (universe.no_model_symbols || []).join(', ') + ' — run /admin → Train Now)' : '')
+    : 'All watchlist symbols have serveable models.';
   el.innerHTML = '<div class="df-cov-stat"><b>' + trained + '/' + total + '</b><span>serveable forecasts</span></div>'
-    + '<div class="df-cov-stat"><b>' + stale + '</b><span>stale (retrain needed)</span></div>'
+    + '<div class="df-cov-stat"><b>' + needsTrain + '</b><span>needs train</span></div>'
     + '<div class="df-cov-note">' + escHtml(missNote) + '</div>';
 }
 
