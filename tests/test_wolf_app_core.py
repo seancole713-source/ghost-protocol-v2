@@ -3560,6 +3560,80 @@ def test_get_news_filters_offtopic(monkeypatch):
     assert out["count"] == 1
 
 
+def test_build_symbol_universe_payload_layers(monkeypatch):
+    monkeypatch.setenv("STOCK_SYMBOLS", "WOLF,NOK")
+
+    class _Cur:
+        last = ""
+
+        def execute(self, sql, params=None):
+            self.last = sql
+
+        def fetchall(self):
+            if "user_portfolio" in self.last:
+                return [("AMC", 440.0, 4.65, "Cash App watchlist"), ("WOLF", 13.0, 33.0, "")]
+            if "ghost_v3_model" in self.last and "meta_%" in self.last:
+                return [("meta_WOLF", 1000), ("meta_NOK", 2000)]
+            if "outcome IS NULL" in self.last:
+                return [("WOLF", 1)]
+            if "GROUP BY symbol, outcome" in self.last:
+                return [("WOLF", "WIN", 2), ("WOLF", "LOSS", 7)]
+            return []
+
+    class _Conn:
+        def cursor(self):
+            return _Cur()
+
+    class _Ctx:
+        def __enter__(self):
+            return _Conn()
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(wolf_app, "db_conn", lambda: _Ctx())
+    monkeypatch.setattr(
+        "core.signal_engine.get_model_status",
+        lambda: {
+            "trained": True,
+            "models": 1,
+            "symbols": {"WOLF": {"serveable": True}},
+            "stored_symbols": {
+                "WOLF": {"serveable": True},
+                "NOK": {"serveable": False, "serve_reject": "gate_brier"},
+            },
+        },
+    )
+
+    out = wolf_app._build_symbol_universe_payload()
+    assert out["ok"] is True
+    assert out["official_watchlist"]["count"] == 44
+    assert out["portfolio"]["count"] == 2
+    assert set(out["portfolio"]["symbols"]) == {"AMC", "WOLF"}
+    assert out["models"]["stored_count"] == 2
+    assert out["models"]["serveable_count"] == 1
+    assert out["picks"]["symbols_with_fired_picks"] == ["WOLF"]
+    assert out["picks"]["by_symbol"]["WOLF"]["wins"] == 2
+    assert out["picks"]["by_symbol"]["WOLF"]["open"] == 1
+    assert "NOK" in out["models"]["official_not_serveable"]
+    assert out["summary"]["prediction_engine_scan_count"] == 2
+
+
+def test_admin_symbol_universe_requires_auth(monkeypatch):
+    from fastapi import HTTPException
+    from starlette.requests import Request
+
+    monkeypatch.setattr(wolf_app, "_cron_ok", lambda secret, strict=False: False)
+    monkeypatch.setattr(wolf_app, "_admin_token_valid", lambda token: False)
+    scope = {"type": "http", "method": "GET", "path": "/", "headers": []}
+    req = Request(scope)
+    try:
+        wolf_app.admin_symbol_universe(req, x_cron_secret="")
+        assert False, "expected 404"
+    except HTTPException as exc:
+        assert exc.status_code == 404
+
+
 def test_get_picks_defaults_to_wolf_and_honors_asset_type(monkeypatch):
     captured = []
 

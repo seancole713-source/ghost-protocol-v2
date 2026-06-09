@@ -200,6 +200,162 @@ def _v32_stats_start_ts(cur):
 from core.prediction_filters import CRYPTO_JUNK_WHERE, REAL_TRADE_WHERE, picks_where as _picks_where
 
 
+def _build_symbol_universe_payload() -> dict:
+    """Consolidated symbol layers: code watchlist, env scan set, portfolio, models, picks."""
+    from config.symbols import OFFICIAL_WATCHLIST, watchlist_symbol_pairs
+
+    now_ts = int(time.time())
+    official = list(OFFICIAL_WATCHLIST)
+    official_set = set(official)
+    env_syms = [s.strip().upper() for s in os.getenv("STOCK_SYMBOLS", "").split(",") if s.strip()]
+    scan_syms = [sym for sym, _atype in watchlist_symbol_pairs(include_portfolio=False)]
+
+    portfolio_rows = []
+    picks_tally = {}
+    open_by_sym = {}
+    models_db = []
+
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT symbol, quantity, buy_price, notes FROM user_portfolio ORDER BY symbol"
+        )
+        portfolio_rows = [
+            {
+                "symbol": str(r[0]).upper(),
+                "quantity": float(r[1]),
+                "buy_price": float(r[2]),
+                "notes": r[3] or "",
+            }
+            for r in cur.fetchall()
+        ]
+        cur.execute(
+            "SELECT key, updated_at FROM ghost_v3_model WHERE key LIKE 'meta_%' ORDER BY key"
+        )
+        models_db = [
+            {"symbol": str(k).replace("meta_", "").upper(), "updated_at": ts}
+            for k, ts in cur.fetchall()
+        ]
+        cur.execute(
+            "SELECT symbol, outcome, COUNT(*) FROM predictions WHERE "
+            + REAL_TRADE_WHERE
+            + " GROUP BY symbol, outcome ORDER BY symbol, outcome"
+        )
+        for sym, outcome, cnt in cur.fetchall():
+            sym_u = str(sym).upper()
+            bucket = picks_tally.setdefault(
+                sym_u,
+                {"total": 0, "wins": 0, "losses": 0, "expired": 0, "other": 0},
+            )
+            n = int(cnt)
+            bucket["total"] += n
+            if outcome == "WIN":
+                bucket["wins"] = n
+            elif outcome == "LOSS":
+                bucket["losses"] = n
+            elif outcome == "EXPIRED":
+                bucket["expired"] = n
+            else:
+                bucket["other"] = bucket.get("other", 0) + n
+        cur.execute(
+            "SELECT symbol, COUNT(*) FROM predictions WHERE outcome IS NULL AND "
+            + REAL_TRADE_WHERE
+            + " GROUP BY symbol ORDER BY symbol"
+        )
+        open_by_sym = {str(r[0]).upper(): int(r[1]) for r in cur.fetchall()}
+
+    portfolio_syms = sorted({p["symbol"] for p in portfolio_rows})
+    portfolio_set = set(portfolio_syms)
+
+    try:
+        from core.signal_engine import get_model_status
+        model_st = get_model_status() or {}
+    except Exception as e:
+        model_st = {"trained": False, "reason": str(e)[:120]}
+
+    stored = model_st.get("stored_symbols") or {}
+    serveable = model_st.get("symbols") or {}
+    stored_syms = sorted(stored.keys())
+    serveable_syms = sorted(serveable.keys())
+
+    picks_enriched = {}
+    for sym, stats in picks_tally.items():
+        wins = int(stats.get("wins") or 0)
+        losses = int(stats.get("losses") or 0)
+        resolved = wins + losses
+        picks_enriched[sym] = {
+            **stats,
+            "open": open_by_sym.get(sym, 0),
+            "resolved": resolved,
+            "win_rate_pct": round(wins / resolved * 100, 1) if resolved else None,
+        }
+    for sym, n in open_by_sym.items():
+        if sym not in picks_enriched:
+            picks_enriched[sym] = {
+                "total": n, "wins": 0, "losses": 0, "expired": 0, "other": 0,
+                "open": n, "resolved": 0, "win_rate_pct": None,
+            }
+
+    fired_syms = sorted(picks_enriched.keys())
+
+    return {
+        "ok": True,
+        "checked_at": now_ts,
+        "official_watchlist": {
+            "count": len(official),
+            "symbols": official,
+            "source": "config/symbols.py OFFICIAL_WATCHLIST (no DB watchlist table)",
+        },
+        "stock_symbols_env": {
+            "count": len(env_syms),
+            "symbols": env_syms,
+            "matches_official": env_syms == official,
+            "scan_universe_count": len(scan_syms),
+            "scan_universe_symbols": scan_syms,
+        },
+        "portfolio": {
+            "count": len(portfolio_syms),
+            "symbols": portfolio_syms,
+            "positions": portfolio_rows,
+            "in_official_watchlist": sorted(portfolio_set & official_set),
+            "not_in_official_watchlist": sorted(portfolio_set - official_set),
+            "source": "user_portfolio table (manual / Cash App imports)",
+        },
+        "models": {
+            "stored_count": len(stored_syms),
+            "serveable_count": len(serveable_syms),
+            "stored_symbols": stored_syms,
+            "serveable_symbols": serveable_syms,
+            "stored_rows": models_db,
+            "by_symbol": stored,
+            "official_missing_model": sorted(official_set - set(stored_syms)),
+            "official_not_serveable": sorted(
+                sym for sym in official_set if sym in stored and sym not in serveable
+            ),
+        },
+        "picks": {
+            "by_symbol": picks_enriched,
+            "symbols_with_fired_picks": fired_syms,
+            "official_without_picks": sorted(official_set - set(fired_syms)),
+            "filter": REAL_TRADE_WHERE,
+            "source": "predictions table (engine-fired picks only)",
+        },
+        "summary": {
+            "official_watchlist": len(official),
+            "portfolio_symbols": len(portfolio_syms),
+            "models_stored": len(stored_syms),
+            "models_serveable": len(serveable_syms),
+            "symbols_with_fired_picks": len(fired_syms),
+            "prediction_engine_scan_count": len(scan_syms),
+        },
+        "notes": [
+            "Portfolio rows do not expand the scan universe — see watchlist_symbol_pairs().",
+            "Scan loop uses STOCK_SYMBOLS; picks appear only after gates pass and INSERT.",
+            "WOLF-only picks history does not mean predict_live_ex is WOLF-hardcoded.",
+        ],
+    }
+
+
 def _compute_get_stats(cur):
     """Payload for GET /api/stats using an existing cursor."""
     cur.execute(
@@ -4237,6 +4393,22 @@ async def news_import(request: Request, x_cron_secret: str = Header(default=""))
         return out
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=400)
+
+
+@APP.get("/api/admin/symbol-universe", include_in_schema=False)
+def admin_symbol_universe(request: Request, x_cron_secret: str = Header(default="")):
+    """Operator map of symbol layers: code watchlist vs portfolio vs models vs picks.
+
+    Read-only. Gated by admin cookie or X-Cron-Secret (404 when unauthenticated).
+    """
+    if not _cron_ok(x_cron_secret) and not _admin_token_valid(
+        request.cookies.get(_ADMIN_COOKIE, "")
+    ):
+        raise HTTPException(status_code=404)
+    try:
+        return _build_symbol_universe_payload()
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
 
 
 @APP.get("/api/admin/audit-log", include_in_schema=False)
