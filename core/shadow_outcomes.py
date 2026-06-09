@@ -156,10 +156,14 @@ def seed_shadow_rows(days_back: int = 3) -> int:
         hold = label_hold_bars()
         now = int(time.time())
         inserted = 0
-        for ev in pick_daily_first(evals):
+        # Drop evals without a resolvable entry first (rows logged before the
+        # scan price was captured) so they can't shadow out priced ones as the
+        # "earliest of the day".
+        priced = [ev for ev in evals if _eval_entry_price(ev) is not None]
+        for ev in pick_daily_first(priced):
             entry = _eval_entry_price(ev)
             if entry is None:
-                continue  # pre-deploy evals have no scan price; skip
+                continue
             sym = str(ev["symbol"]).upper()
             if ev.get("fired") and ev.get("target_price") and ev.get("stop_price"):
                 target, stop = float(ev["target_price"]), float(ev["stop_price"])

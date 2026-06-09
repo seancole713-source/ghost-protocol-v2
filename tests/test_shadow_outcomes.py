@@ -25,6 +25,19 @@ def test_pick_daily_first_keeps_earliest_per_symbol_day():
     assert by_sym["FLNC"]["eval_ts"] == base + 100
 
 
+def test_seed_filters_unpriced_before_grouping():
+    """An earlier same-day eval without a price must not block a priced one."""
+    base = 1781000000
+    evals = [
+        {"symbol": "STUB", "eval_ts": base, "scores": {}},               # unpriced
+        {"symbol": "STUB", "eval_ts": base + 3600, "scores": {"price": 9.5}},
+    ]
+    priced = [ev for ev in evals if _eval_entry_price(ev) is not None]
+    out = pick_daily_first(priced)
+    assert len(out) == 1
+    assert out[0]["eval_ts"] == base + 3600
+
+
 def test_pick_daily_first_separate_days_kept():
     evals = [
         {"symbol": "STUB", "eval_ts": 1781000000},
