@@ -136,3 +136,44 @@ def test_silence_card_no_leaderboard_when_empty():
 
     out = format_silence_card({"ghost_score": 46, "reason": "x"})
     assert "Closest candidates" not in out
+
+
+def test_regime_blocked_eval_still_scores_up_prob(monkeypatch):
+    """Full-44 shadow coverage: a regime-gated symbol must still journal
+    up_prob (model scored before the gate is enforced), and the firing
+    behavior must be unchanged (None, 'regime_gate')."""
+    import time as _t
+
+    import numpy as _np
+
+    import core.signal_engine as _se
+
+    rows = []
+    for i in range(220):
+        px = 100.0 + i * 0.4
+        rows.append({"ts": "2026-05-20T%02d:00:00Z" % (i % 24),
+                     "open": px - 0.2, "high": px + 0.5, "low": px - 0.5,
+                     "close": px, "volume": 1000 + i * 5})
+    monkeypatch.setattr(_se, "_fetch_ohlcv",
+                        lambda s, a, period="5d", interval="1h": rows)
+
+    class _M:
+        def predict_proba(self, X):
+            return _np.array([[0.4, 0.6]])
+
+    meta = {"edge": 0.3, "accuracy": 0.66, "wf_acc_mean": 0.64,
+            "wf_edge_mean": 0.2, "wf_fold_count": 4, "trained_at": _t.time()}
+    monkeypatch.setattr(_se, "load_model", lambda s: (_M(), _se.FEATURE_COLS, meta))
+    # Uptrend clears gates 1-2; force the SMA5 gate to block.
+    monkeypatch.setattr(_se, "_block_up_below_sma5",
+                        lambda s, a, px: (True, px * 1.1, px))
+    for k, v in {"V3_MIN_WIN_PROBA": "0.55", "V3_MIN_EDGE": "0.0",
+                 "V3_MIN_HOLDOUT_ACC": "0.0", "V3_MIN_WF_ACC_MEAN": "0.0"}.items():
+        monkeypatch.setenv(k, v)
+
+    scores = {}
+    sig, reason = _se.predict_live_ex("WOLF", "stock", scores=scores)
+    assert sig is None
+    assert reason == "regime_gate"
+    assert scores.get("up_prob") == 0.6
+    assert scores.get("model_meta", {}).get("min_win_proba") == 0.55

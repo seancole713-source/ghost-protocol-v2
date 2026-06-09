@@ -1826,27 +1826,35 @@ def predict_live_ex(symbol, asset_type, scores=None):
             for k, v in features.items()
         }
 
+    # Regime gates — decided here but ENFORCED after model scoring, so every
+    # scan eval carries up_prob (shadow scoring + gate diagnostics score all 44
+    # symbols, not just the ones that clear regime). Firing behavior unchanged:
+    # a regime block still returns before any signal is emitted.
+    regime_block = False
     # Gate 1: below EMA200 + choppy = high-probability loss setup
     if above_ema200 == 0 and adx_trending == 0:
         LOGGER.info(f"REGIME GATE [{symbol}]: below EMA200 + ADX={adx_val:.1f}<20 — skip BUY")
-        return None, "regime_gate"
+        regime_block = True
 
     # Gate 2: full bearish alignment, not oversold
-    if ema_trend_bullish == 0 and rsi > 40 and stoch_k > 30:
+    if not regime_block and ema_trend_bullish == 0 and rsi > 40 and stoch_k > 30:
         LOGGER.info(f"REGIME GATE [{symbol}]: bearish EMA stack, RSI={rsi:.1f} not oversold — skip")
-        return None, "regime_gate"
+        regime_block = True
 
-    cur_px = float(rows[-1].get("close") or 0)
-    blocked_sma, sma_5d, cur_px = _block_up_below_sma5(symbol, asset_type, cur_px)
-    if scores is not None and isinstance(scores.get("regime"), dict):
-        if sma_5d is not None:
-            scores["regime"]["sma_5d"] = round(float(sma_5d), 4)
-            scores["regime"]["price_vs_sma5_pct"] = round((cur_px - sma_5d) / sma_5d * 100, 2)
-    if blocked_sma:
-        LOGGER.info(
-            f"REGIME GATE [{symbol}]: price {cur_px:.2f} below 5d SMA {sma_5d:.2f} — skip BUY"
-        )
-        return None, "regime_gate"
+    # Gate 3: price below 5-day SMA. Only checked when gates 1-2 passed (the
+    # SMA fetch costs a daily-bars call; preserves the original early-out cost).
+    if not regime_block:
+        cur_px = float(rows[-1].get("close") or 0)
+        blocked_sma, sma_5d, cur_px = _block_up_below_sma5(symbol, asset_type, cur_px)
+        if scores is not None and isinstance(scores.get("regime"), dict):
+            if sma_5d is not None:
+                scores["regime"]["sma_5d"] = round(float(sma_5d), 4)
+                scores["regime"]["price_vs_sma5_pct"] = round((cur_px - sma_5d) / sma_5d * 100, 2)
+        if blocked_sma:
+            LOGGER.info(
+                f"REGIME GATE [{symbol}]: price {cur_px:.2f} below 5d SMA {sma_5d:.2f} — skip BUY"
+            )
+            regime_block = True
 
     invert_cols = meta.get("feature_inversions") or []
     if invert_cols:
@@ -1894,6 +1902,11 @@ def predict_live_ex(symbol, asset_type, scores=None):
         }
         scores["direction_source"] = "classifier_up_prob"
         scores["trade_signal_source"] = "classifier_up_prob"
+
+    # Regime block enforced here — after the score capture above, so the eval
+    # journal and shadow scoring see up_prob even on regime-blocked cycles.
+    if regime_block:
+        return None, "regime_gate"
 
     if edge < min_edge:
         return None, "meta_gate"
