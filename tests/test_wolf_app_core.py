@@ -3284,7 +3284,9 @@ def test_format_silence_card():
     assert "Status: SILENCE — No high-conviction signal today" in out
     assert "Ghost Score: 72/100" in out
     assert "Insufficient edge — model confidence 72%" in out
-    assert "Next scan: Tomorrow 8 AM CT" in out
+    assert "Next scan:" in out
+    assert "8 AM CT" in out
+    assert "Tomorrow" not in out
 
 
 def test_build_silence_card_data_fetches_ghost_score(monkeypatch):

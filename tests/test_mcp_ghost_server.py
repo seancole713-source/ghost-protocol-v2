@@ -208,7 +208,8 @@ def test_mcp_handshake_path_token(monkeypatch):
         )
         assert r3.status_code == 200
         names = {t["name"] for t in r3.json()["result"]["tools"]}
-        assert len(names) == 8
+        assert len(names) == 9
+        assert "ghost_shadow_stats" in names
 
         r4 = client.post(
             "/mcp/secret",

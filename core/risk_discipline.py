@@ -404,11 +404,19 @@ def check_portfolio_exit_alerts(*, notify: bool = True) -> List[Dict[str, Any]]:
     if alerted.get("_date") != today:
         alerted = {"_date": today}
     hits = []
+    # Match portfolio API: one row per symbol (largest lot) so Cash App dupes
+    # do not spam identical AMC alerts.
+    by_symbol: Dict[str, Dict[str, Any]] = {}
     for pos in _portfolio_positions():
+        sym = str(pos["symbol"]).upper()
+        prev = by_symbol.get(sym)
+        if prev is None or float(pos["quantity"]) > float(prev["quantity"]):
+            by_symbol[sym] = pos
+    for pos in by_symbol.values():
         glp = pos.get("gain_loss_pct")
         if glp is None or glp > threshold:
             continue
-        key = str(pos["id"])
+        key = str(pos["symbol"]).upper()
         if alerted.get(key):
             continue
         hits.append(pos)

@@ -7,6 +7,7 @@ scheduler jobs; this module only turns those facts into the message text.
 
 Output uses Telegram HTML parse_mode (<b> for headers), matching core.telegram._send.
 """
+import os
 from typing import Any, Dict, List, Optional
 
 NL = chr(10)
@@ -160,11 +161,72 @@ def format_weekly_summary(d: Dict[str, Any]) -> str:
     return NL.join(lines)
 
 
+def next_scan_note() -> str:
+    """Human-readable scan cadence — market loop runs all day; 8 AM is the daily card only."""
+    try:
+        import datetime as _dt
+        import pytz as _tz
+
+        tz = _tz.timezone(os.getenv("GHOST_TZ", "America/Chicago"))
+        now = _dt.datetime.now(tz)
+        market_min = max(5, int(os.getenv("SCAN_INTERVAL_MARKET_MIN", "30")))
+        off_min = max(5, int(os.getenv("SCAN_INTERVAL_OFFHOURS_MIN", "60")))
+    except Exception:
+        return "Engine scans on a schedule · daily Telegram card 8 AM CT"
+    hm = now.hour * 60 + now.minute
+    is_weekday = now.weekday() < 5
+    is_rth = is_weekday and (8 * 60 + 30) <= hm < (15 * 60)
+    is_premarket = False
+    if is_weekday and (4 * 60) <= hm < (9 * 60 + 30):
+        try:
+            from core.prediction import _premarket_scan_enabled
+
+            is_premarket = _premarket_scan_enabled()
+        except Exception:
+            is_premarket = False
+    if is_rth or is_premarket:
+        return f"Engine scans every ~{market_min} min (market hours) · daily card 8 AM CT"
+    return f"Engine scans every ~{off_min} min off-hours · daily card 8 AM CT"
+
+
+_SKIP_SHORT = {
+    "v3_prob_low": "prob below floor",
+    "v3_regime_gate": "regime blocked",
+    "v3_meta_gate": "model meta gate",
+    "objective_bootstrap_conf": "conf below bootstrap",
+    "objective_wr_low": "win rate below target",
+    "below_confidence_floor": "conf below floor",
+    "sell_blocked": "SELL blocked",
+}
+
+
+def format_candidate_lines(candidates: List[Dict[str, Any]]) -> List[str]:
+    """Ranked near-fire leaderboard lines for the silence card."""
+    lines: List[str] = []
+    for i, c in enumerate(candidates or [], 1):
+        prob = c.get("up_prob")
+        if prob is None:
+            continue
+        sym = str(c.get("symbol") or "?")
+        part = f"{i}. {sym} {float(prob) * 100:.1f}%"
+        need = c.get("min_win_proba")
+        if need is not None:
+            part += f" (needs {float(need) * 100:.0f}%)"
+        if c.get("fired"):
+            part += " — FIRED"
+        else:
+            skip = c.get("skip_code")
+            part += " — " + _SKIP_SHORT.get(skip, skip or "gated")
+        lines.append(part)
+    return lines
+
+
 def format_silence_card(d: Dict[str, Any]) -> str:
     score = d.get("ghost_score", "--")
     bias = d.get("bias_label") or "composite bias"
     trade_action = d.get("trade_action") or "NO TRADE"
     trade_note = d.get("trade_note") or "No official pick — gates not cleared."
+    next_scan = d.get("next_scan_note") or next_scan_note()
     lines = [
         "<b>GHOST PROTOCOL | WOLF</b>",
         "Status: SILENCE — No high-conviction signal today",
@@ -172,6 +234,9 @@ def format_silence_card(d: Dict[str, Any]) -> str:
         "Trade action: " + str(trade_action),
         "Reason: " + str(d.get("reason", "No qualifying signal")),
         trade_note,
-        "Next scan: Tomorrow 8 AM CT",
     ]
+    cand_lines = format_candidate_lines(d.get("top_candidates") or [])
+    if cand_lines:
+        lines += ["", "<b>Closest candidates today:</b>"] + cand_lines
+    lines.append("Next scan: " + str(next_scan))
     return NL.join(lines)

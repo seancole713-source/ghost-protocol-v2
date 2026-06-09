@@ -967,6 +967,9 @@ def _predict_symbol_ex(symbol, asset_type, regime, scores_out=None):
     if not price or price <= 0:
         return None, "no_price"
     score_vector = scores_out if scores_out is not None else {}
+    # Scan price at evaluation — shadow scoring uses it as the virtual entry
+    # for silenced evals (core.shadow_outcomes).
+    score_vector["price"] = round(float(price), 6)
     try:
         from core.signal_engine import predict_live_ex
         signal, v3_reason = predict_live_ex(symbol, "stock", scores=score_vector)

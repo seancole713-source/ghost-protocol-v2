@@ -709,10 +709,14 @@ def _build_silence_card_data(diag: dict) -> dict:
         engine_paused=bool(pause.get("paused")),
         daily_locked=is_daily_loss_locked(),
     )
+    from core.telegram_cards import next_scan_note
+
     out = {
         "ghost_score": score,
         "bias_label": bias_label_from_score(float(gs_score_f or 50)),
         "reason": reason,
+        "next_scan_note": next_scan_note(),
+        "top_candidates": _top_scan_candidates(),
         **action_ctx,
     }
     block = combined_trading_block()
@@ -907,6 +911,15 @@ def _morning_card_job():
                 LOGGER.info(
                     "Morning card already sent today (" + _today_ct + ") — will run prediction cycle, skip duplicate Telegram"
                 )
+            elif not _skip_telegram:
+                # Claim today's Telegram slot before the cycle so overlapping cron +
+                # startup self-heal cannot both send SILENCE cards.
+                _cur_d.execute(
+                    "INSERT INTO ghost_state(key,val) VALUES('last_morning_card_date',%s) "
+                    "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
+                    (_today_ct,),
+                )
+                _dc2.commit()
     except Exception as _de:
         LOGGER.warning("Dedup check failed: "+str(_de)[:60])
     picks, _cycle_diag = run_prediction_cycle(with_diag=True)
@@ -1320,6 +1333,17 @@ async def lifespan(app: FastAPI):
 
     scheduler.register("risk_discipline", _risk_discipline_job, interval_s=300)
     scheduler.register("news", run_news_cycle, interval_s=1800)
+    # Shadow scoring: resolve every silenced model eval as a virtual pick so
+    # per-symbol live hit rates accrue without firing (core.shadow_outcomes).
+    from core.shadow_outcomes import run_shadow_cycle as _shadow_cycle
+
+    def _shadow_outcomes_job():
+        try:
+            _shadow_cycle()
+        except Exception as _e:
+            LOGGER.warning("shadow outcomes job failed: %s", str(_e)[:80])
+
+    scheduler.register("shadow_outcomes", _shadow_outcomes_job, interval_s=3600)
     # Coverage maintenance: if too few loadable v3 models, run rate-limited retrain.
     scheduler.register(
         "coverage_maintenance",
@@ -3094,6 +3118,49 @@ def wolf_gate_history(limit: int = 50):
         }
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
+@APP.get("/api/shadow-stats")
+def shadow_stats_endpoint(days: int = 30):
+    """Per-symbol virtual hit-rate scoreboard (shadow scoring). Read-only.
+
+    Every scanned symbol's daily model evaluation is resolved against real
+    prices with the live TP/SL bar-path rules — gates ignored — so the
+    operator can see which models have live edge before they ever fire.
+    """
+    try:
+        from core.shadow_outcomes import shadow_stats
+        return shadow_stats(days=days)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
+def _top_scan_candidates(limit: int = 5) -> list:
+    """Ranked up_prob leaderboard from the most recent scan cycle's evals."""
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT symbol, up_prob, skip_code, min_win_proba, fired "
+                "FROM ghost_perf_symbol_evals "
+                "WHERE cycle_id = (SELECT MAX(id) FROM ghost_perf_cycles) "
+                "AND up_prob IS NOT NULL ORDER BY up_prob DESC LIMIT %s",
+                (max(1, min(10, int(limit))),),
+            )
+            rows = cur.fetchall()
+        return [
+            {
+                "symbol": r[0],
+                "up_prob": float(r[1]),
+                "skip_code": r[2],
+                "min_win_proba": float(r[3]) if r[3] is not None else None,
+                "fired": bool(r[4]),
+            }
+            for r in rows
+        ]
+    except Exception as e:
+        LOGGER.debug("top candidates failed: %s", str(e)[:80])
+        return []
 
 
 # v3.2 era marker — predictions with id >= this are Ghost's high-conviction
