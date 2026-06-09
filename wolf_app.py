@@ -307,12 +307,15 @@ def _has_loadable_v3_model() -> bool:
 
 
 def _purge_v3_stale_or_weak():
-    """Remove v3 models below V3_MIN_HOLDOUT_ACC, pre-v3.2 label schema, or off-watchlist."""
+    """Remove off-watchlist and pre-v3.2 models only.
+
+    Do not second-guess train gates on accuracy/edge/wf — that deleted symbols
+    like NOK immediately after a successful retrain (train passes at 38% holdout,
+    purge required 55%).
+    """
     import json as _j
-    floor = float(os.getenv("V3_MIN_HOLDOUT_ACC", "0.55"))
-    wf_floor = float(os.getenv("V3_MIN_WF_ACC_MEAN", "0.60"))
-    min_edge = float(os.getenv("V3_MIN_EDGE", "0.05"))
-    min_wf_folds = max(2, int(os.getenv("V3_MIN_WF_FOLDS", "3")))
+    from core.signal_engine import model_serve_guard
+
     try:
         from config.symbols import watchlist_symbols
         allowed = watchlist_symbols(include_portfolio=True)
@@ -327,13 +330,11 @@ def _purge_v3_stale_or_weak():
                 sym = key.replace("meta_", "")
                 try:
                     meta = _j.loads(val)
+                    if model_serve_guard(meta) is None:
+                        continue
                     off_watchlist = allowed is not None and sym.upper() not in allowed
-                    weak = float(meta.get("accuracy", 0)) < floor or float(meta.get("edge", 0)) < min_edge
-                    wf_folds = int(meta.get("wf_fold_count", 0))
-                    wf_acc = float(meta.get("wf_acc_mean", meta.get("accuracy", 0)))
-                    wf_edge = float(meta.get("wf_edge_mean", meta.get("edge", 0)))
-                    wf_weak = wf_folds < min_wf_folds or wf_acc < wf_floor or wf_edge < min_edge
-                    if off_watchlist or meta.get("label_type") != "tp_sl_daily" or weak or wf_weak:
+                    legacy = meta.get("label_type") != "tp_sl_daily"
+                    if off_watchlist or legacy:
                         cur.execute(
                             "DELETE FROM ghost_v3_model WHERE key IN (%s,%s)",
                             (f"model_{sym}", f"meta_{sym}"),

@@ -3945,3 +3945,50 @@ def test_has_loadable_v3_model_any_symbol_counts(monkeypatch):
     monkeypatch.setattr(_se, "load_model",
                         lambda s: (object(), ["rsi"], {}) if s == "ON" else (None, None, None))
     assert wolf_app._has_loadable_v3_model() is True
+
+
+def test_purge_v3_keeps_serveable_models(monkeypatch):
+    """Regression: NOK passed train gates then was deleted by post-train purge."""
+    import wolf_app
+    import core.signal_engine as _se
+
+    nok_meta = {
+        "label_type": _se.LABEL_TYPE,
+        "label_schema": _se._v3_label_schema(),
+        "feature_schema": _se._v3_feature_schema(),
+        "trained_at": int(time.time()),
+        "accuracy": 0.47,
+        "edge": 0.0,
+        "wf_acc_mean": 0.44,
+        "wf_edge_mean": -0.03,
+        "wf_fold_count": 6,
+    }
+    deleted = []
+
+    class FakeCursor:
+        def execute(self, sql, params=None):
+            if "DELETE" in sql:
+                deleted.append(params)
+
+        def fetchall(self):
+            return [("meta_NOK", json.dumps(nok_meta))]
+
+    class FakeConn:
+        def cursor(self):
+            return FakeCursor()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            pass
+
+    monkeypatch.setattr(wolf_app, "db_conn", lambda: FakeConn())
+    monkeypatch.setattr(
+        "config.symbols.watchlist_symbols",
+        lambda include_portfolio=True: ["NOK"],
+    )
+    purged = wolf_app._purge_v3_stale_or_weak()
+    assert purged == 0
+    assert deleted == []
+
