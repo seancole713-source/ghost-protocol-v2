@@ -3,6 +3,8 @@ import os
 import time
 from typing import Any, Dict, List
 
+from core.prediction_filters import REAL_TRADE_WHERE
+
 
 def _finding(
     status: str,
@@ -143,7 +145,10 @@ def run_health_audit(
             cur.execute("SELECT 1")
             cur.fetchone()
             cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
-            cur.execute("SELECT outcome, COUNT(*) FROM predictions WHERE outcome IN ('WIN','LOSS') GROUP BY outcome")
+            cur.execute(
+                "SELECT outcome, COUNT(*) FROM predictions WHERE outcome IN ('WIN','LOSS') "
+                "AND " + REAL_TRADE_WHERE + " GROUP BY outcome"
+            )
             rows = {r[0]: int(r[1]) for r in cur.fetchall()}
         db_latency_ms = _safe_perf(db_query_start)
         findings.append(

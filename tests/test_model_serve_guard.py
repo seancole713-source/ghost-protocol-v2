@@ -30,6 +30,36 @@ def test_max_calibration_brier_phase5_floor(monkeypatch):
     assert _se._v3_max_calibration_brier() == 0.31
 
 
+def test_sma5_from_daily_bars_uses_last_five_closes():
+    rows = [{"close": float(i)} for i in (10, 11, 12, 13, 14, 15, 16)]
+    assert _se._sma5_from_daily_bars(rows) == (14 + 15 + 16 + 13 + 12) / 5
+
+
+def test_block_up_below_sma5_blocks_when_price_under_sma(monkeypatch):
+    monkeypatch.setenv("V3_BLOCK_UP_BELOW_SMA5", "1")
+    monkeypatch.setattr(
+        _se,
+        "_fetch_ohlcv",
+        lambda symbol, asset_type, period=None, interval="1d": [
+            {"close": 100.0},
+            {"close": 100.0},
+            {"close": 100.0},
+            {"close": 100.0},
+            {"close": 100.0},
+        ],
+    )
+    blocked, sma, cur = _se._block_up_below_sma5("WOLF", "stock", 95.0)
+    assert blocked is True
+    assert sma == 100.0
+    assert cur == 95.0
+
+
+def test_block_up_below_sma5_can_disable(monkeypatch):
+    monkeypatch.setenv("V3_BLOCK_UP_BELOW_SMA5", "0")
+    blocked, _, _ = _se._block_up_below_sma5("WOLF", "stock", 1.0)
+    assert blocked is False
+
+
 def test_get_model_status_counts_serveable_only(monkeypatch):
     wolf_meta = {
         "label_type": _se.LABEL_TYPE,

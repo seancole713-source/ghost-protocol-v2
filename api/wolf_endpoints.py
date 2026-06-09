@@ -1430,6 +1430,16 @@ def ghost_score_payload_sync(*, cache_ttl_s: float = 60, use_cache: bool = True)
     except Exception as e:
         errors.append("momentum: " + str(e)[:80])
 
+    if sma_5d is None:
+        try:
+            from core.signal_engine import _fetch_ohlcv, _sma5_from_daily_bars
+            daily = _fetch_ohlcv(WOLF_SYMBOL, "stock", period="1mo", interval="1d")
+            sma_val = _sma5_from_daily_bars(daily)
+            if sma_val is not None:
+                sma_5d = round(float(sma_val), 4)
+        except Exception as e:
+            errors.append("sma_fallback: " + str(e)[:80])
+
     # Engine activity (last scan cycle) for freshness — "is the engine alive",
     # not "did it fire". Recorded by run_prediction_cycle every cycle.
     last_scan_ts = None

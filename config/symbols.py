@@ -46,7 +46,7 @@ class ValidatedStrategy:
 
 
 # =============================================================================
-# V3 VALIDATED STRATEGIES — WOLF only
+# V3 VALIDATED STRATEGIES — per-symbol metadata (WOLF seeded first; peers inherit defaults at train)
 # =============================================================================
 V3_VALIDATED_STRATEGIES: Dict[str, ValidatedStrategy] = {
     'WOLF': ValidatedStrategy(
@@ -64,9 +64,9 @@ V3_VALIDATED_STRATEGIES: Dict[str, ValidatedStrategy] = {
 
 
 # =============================================================================
-# WHITELIST STOCKS — WOLF-only
+# WHITELIST STOCKS — official watchlist (all symbols Ghost may fire picks on)
 # =============================================================================
-V3_WHITELIST_STOCKS: FrozenSet[str] = frozenset(['WOLF'])
+V3_WHITELIST_STOCKS: FrozenSet[str] = frozenset(OFFICIAL_WATCHLIST)
 
 
 # =============================================================================
@@ -147,8 +147,8 @@ def is_v3_validated(symbol: str) -> bool:
 
 
 def is_blacklisted(symbol: str) -> bool:
-    """Always False — WOLF-only mode has no blacklist."""
-    return False
+    """True when symbol is outside the official watchlist."""
+    return symbol.upper() not in V3_WHITELIST_STOCKS
 
 
 def get_strategy(symbol: str) -> Optional[ValidatedStrategy]:

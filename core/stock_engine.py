@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 
 # Pattern tracking for accuracy measurement
 from core.pattern_tracker import record_pattern_detection
+from config.symbols import OFFICIAL_WATCHLIST
 
 # Internal imports - lazy loaded to avoid circular imports
 _wolf_app_loaded = False
@@ -142,8 +143,8 @@ class StockConfig:
 # Default configuration
 STOCK_CONFIG = StockConfig()
 
-# Stock whitelist (WOLF-only mode)
-STOCK_WHITELIST = {"WOLF"}
+# Official watchlist — Ghost scans, trains, forecasts, and fires picks on these symbols.
+STOCK_WHITELIST = frozenset(OFFICIAL_WATCHLIST)
 
 
 @dataclass

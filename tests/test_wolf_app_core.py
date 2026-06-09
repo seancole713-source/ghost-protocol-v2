@@ -163,11 +163,7 @@ def test_health_audit_endpoint_returns_wrapped_report(monkeypatch):
 
 
 def test_clean_garbage_sql_filter_targets_impossible_combos(monkeypatch):
-    """Regression test: /api/clean-garbage must filter on the absurd
-    entry/target combo (entry > 50, target < 1), NOT the legacy buggy
-    range (entry BETWEEN 0.49 AND 0.51) that would delete legitimate
-    sub-$1 picks. Locks in the post-PR#3.0 SQL string.
-    """
+    """Regression: /api/clean-garbage deletes absurd combos and crypto junk."""
     executed = []
 
     class _Cur:
@@ -194,20 +190,56 @@ def test_clean_garbage_sql_filter_targets_impossible_combos(monkeypatch):
             return False
 
     monkeypatch.setattr(wolf_app, "db_conn", lambda: _DbCtx())
-    monkeypatch.setattr(wolf_app, "CRON_SECRET", "")  # dev mode allows non-strict guard
+    monkeypatch.setattr(wolf_app, "CRON_SECRET", "")
 
     out = wolf_app.clean_garbage(x_cron_secret="")
 
     assert out["ok"] is True
-    select_and_delete = [s for s in executed if "entry_price" in s and ("SELECT" in s or "DELETE" in s)]
-    assert len(select_and_delete) == 2, f"expected 2 entry_price queries, got: {select_and_delete}"
-    for sql in select_and_delete:
-        # Correct filter — predictions with impossible entry/target combinations
-        assert "entry_price > 50" in sql
-        assert "target_price < 1" in sql
-        # Regression: must NOT contain the legacy buggy range filter
-        assert "BETWEEN 0.49 AND 0.51" not in sql
-        assert "0.50" not in sql
+    absurd = [s for s in executed if "entry_price > 50" in s and "target_price < 1" in s]
+    assert len(absurd) == 2
+    junk = [s for s in executed if wolf_app.CRYPTO_JUNK_WHERE in s]
+    assert len(junk) == 2
+    assert out["crypto_junk_deleted"] == 0
+
+
+def test_purge_crypto_junk_dry_run(monkeypatch):
+    import asyncio
+    executed = []
+
+    class _Cur:
+        rowcount = 11
+
+        def execute(self, sql, params=None):
+            executed.append(sql)
+
+        def fetchone(self):
+            return (11,)
+
+        def fetchall(self):
+            if any("GROUP BY" in s for s in executed):
+                return [("crypto", 8), ("stock", 3)]
+            return []
+
+    class _Conn:
+        def cursor(self):
+            return _Cur()
+
+    class _DbCtx:
+        def __enter__(self):
+            return _Conn()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(wolf_app, "db_conn", lambda: _DbCtx())
+    monkeypatch.setattr(wolf_app, "_cron_ok", lambda secret, strict=False: True)
+
+    out = asyncio.run(wolf_app.purge_crypto_junk(x_cron_secret="secret", dry_run=True))
+    assert out["ok"] is True
+    assert out["dry_run"] is True
+    assert out["total_matched"] == 11
+    assert out["deleted"] == 0
+    assert not any("DELETE" in s for s in executed)
 
 
 def test_cron_ok_rejects_wrong_secret_when_env_set(monkeypatch):
@@ -2713,6 +2745,7 @@ def test_predict_ex_captures_near_miss_on_floor_skip(monkeypatch):
             scores["model_meta"] = {"min_win_proba": 0.55}
         return (("UP", 0.62), None)   # below a 0.80 floor
     monkeypatch.setattr(_se, "predict_live_ex", _ple)
+    monkeypatch.setattr(_pred, "_is_premarket", lambda: False)
 
     sv = {}
     pick, skip = _pred._predict_symbol_ex("WOLF", "stock",
@@ -3452,6 +3485,46 @@ def test_get_portfolio_filters_ghost_rows(monkeypatch):
     assert out["total_cost"] == 350.0
 
 
+def test_get_portfolio_dedupes_duplicate_symbol_lots(monkeypatch):
+    import core.portfolio_routes as pr
+    rows = [
+        (1, "AMC", "stock", 10.0, 4.65, "", "Cash App watchlist", None),
+        (2, "AMC", "stock", 440.0, 4.65, "", "Cash App watchlist duplicate", None),
+    ]
+
+    class _Cur:
+        def execute(self, sql, params=None):
+            self.last = sql
+
+        def fetchall(self):
+            return rows if "user_portfolio" in getattr(self, "last", "") else []
+
+        def fetchone(self):
+            return None
+
+    class _Conn:
+        def cursor(self):
+            return _Cur()
+
+        def commit(self):
+            pass
+
+    class _Ctx:
+        def __enter__(self):
+            return _Conn()
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(pr, "db_conn", lambda: _Ctx())
+    monkeypatch.setattr("core.prices.get_price", lambda s, a=None: 1.81)
+
+    out = pr.build_portfolio_payload()
+    assert len(out["positions"]) == 1
+    assert out["positions"][0]["symbol"] == "AMC"
+    assert out["positions"][0]["quantity"] == 440.0
+
+
 def test_is_ghost_symbol():
     from core.portfolio_routes import _is_ghost_symbol
     assert _is_ghost_symbol("ZZE2E1779572554878") is True
@@ -3488,14 +3561,14 @@ def test_get_news_filters_offtopic(monkeypatch):
 
 
 def test_get_picks_defaults_to_wolf_and_honors_asset_type(monkeypatch):
-    captured = {}
+    captured = []
 
     class _Cur:
-        description = [("id",), ("symbol",), ("outcome",)]
+        description = [("id",), ("symbol",), ("outcome",), ("entry_price",)]
         def execute(self, sql, params=None):
-            captured["sql"] = sql
-            captured["params"] = params
-        def fetchall(self): return []
+            captured.append((sql, params))
+        def fetchall(self):
+            return []
 
     class _Conn:
         def cursor(self): return _Cur()
@@ -3506,15 +3579,59 @@ def test_get_picks_defaults_to_wolf_and_honors_asset_type(monkeypatch):
 
     monkeypatch.setattr(wolf_app, "db_conn", lambda: _Ctx())
 
-    out = wolf_app.get_picks()                       # default => WOLF-only
+    out = wolf_app.get_picks()                       # default => ALL watchlist
     assert out["ok"] is True
-    assert "symbol = %s" in captured["sql"]
-    assert captured["params"] == ("WOLF",)
+    assert out["symbol"] == "ALL"
+    assert not any("symbol = %s" in sql for sql, _ in captured)
 
-    wolf_app.get_picks(symbol="ALL", asset_type="stock")   # ALL bypasses symbol, asset_type honored
-    assert "symbol = %s" not in captured["sql"]
-    assert "asset_type = %s" in captured["sql"]
-    assert captured["params"] == ("stock",)
+    captured.clear()
+    wolf_app.get_picks(symbol="ALL", asset_type="stock", limit=100, offset=20)
+    assert not any("symbol = %s" in sql for sql, _ in captured)
+    assert any("asset_type = %s" in sql for sql, _ in captured)
+    assert captured[0][1] == ("stock",)
+    page_sql = [p for sql, p in captured if "LIMIT %s OFFSET %s" in sql][0]
+    assert page_sql[-2:] == (100, 20)
+
+
+def test_get_picks_excludes_junk_from_accuracy(monkeypatch):
+    class _Cur:
+        description = [("id",), ("symbol",), ("outcome",), ("entry_price",)]
+        def execute(self, sql, params=None):
+            self._sql = sql
+        def fetchall(self):
+            if "GROUP BY outcome" in self._sql:
+                return [("WIN", 2), ("LOSS", 7)]
+            return []
+    class _Conn:
+        def cursor(self): return _Cur()
+    class _Ctx:
+        def __enter__(self): return _Conn()
+        def __exit__(self, *a): return False
+    monkeypatch.setattr(wolf_app, "db_conn", lambda: _Ctx())
+
+    out = wolf_app.get_picks()
+    assert out["wins"] == 2
+    assert out["losses"] == 7
+    assert out["total"] == 9
+    assert out["accuracy_pct"] == round(2 / 9 * 100, 1)
+
+
+def test_real_trade_where_used_in_compute_get_stats(monkeypatch):
+    monkeypatch.setenv("V3_STATS_START_TS", "1775347200")
+    monkeypatch.setenv("STOCK_SYMBOLS", "WOLF")
+    cur = QueueCursor(
+        fetchall_values=[
+            [("WIN", 10), ("LOSS", 5)],
+            [("WIN", 2), ("LOSS", 1)],
+            [("WIN", 1), ("LOSS", 2)],
+        ],
+        fetchone_values=[(3,)],
+    )
+    wolf_app._compute_get_stats(cur)
+    for sql, _ in cur.executed:
+        if "FROM predictions" in sql:
+            from core.prediction_filters import REAL_TRADE_WHERE
+            assert REAL_TRADE_WHERE in sql
 
 
 # ── fix/ema-fallback: _calculate_features trend flags for young tickers ──

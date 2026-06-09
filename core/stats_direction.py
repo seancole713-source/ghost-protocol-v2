@@ -1,5 +1,7 @@
 """Shared direction breakdown for /api/stats/direction and /api/cockpit/context."""
 
+from core.prediction_filters import REAL_TRADE_WHERE
+
 
 def compute_stats_by_direction(cur):
     """Run direction breakdown using an existing DB cursor."""
@@ -11,6 +13,9 @@ def compute_stats_by_direction(cur):
                ROUND(AVG(CASE WHEN pnl_pct IS NOT NULL THEN pnl_pct ELSE 0 END)::numeric,2) as avg_pnl
         FROM predictions
         WHERE outcome IN ('WIN','LOSS','STOP','EXPIRED') AND id >= 223438
+          AND """
+        + REAL_TRADE_WHERE
+        + """
         GROUP BY direction
         """
     )

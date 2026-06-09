@@ -748,7 +748,7 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
       <div class="dp-table-wrap" id="dp-table-wrap">
         <div class="dp-empty">Loading daily prediction…</div>
       </div>
-      <div class="tp-meta" id="tp-meta">Predict row = next session · Market row = last completed session · All symbols show open / peak / low / close.</div>
+      <div class="tp-meta" id="tp-meta">Predict row = next session · Market row = last completed session · Live row Close column = last trade.</div>
     </div>
   </section>
 
@@ -1492,7 +1492,9 @@ function renderPerf(stats, conf, recent){
 function renderPlay(picks, watching){
   var sg = document.getElementById('sgrid');
   var active = (picks && picks.active) || [];
-  var stocks = active.filter(function(p){return p.asset_type === 'stock' && (p.symbol||'').toUpperCase() === 'WOLF'});
+  var stocks = active.filter(function(p){
+    return (p.asset_type === 'stock' || !p.asset_type) && (p.entry_price || 0) > 0;
+  });
   // PR #23: WATCHING mode suppresses any BUY/SELL card from rendering —
   // even if an old open pick is still in the DB, we don't surface it as
   // actionable when the engine hasn't fired a fresh signal in 7+ days.
@@ -1518,36 +1520,37 @@ function renderPlay(picks, watching){
         : ah
           ? 'US market is in <b>after-hours</b> (4:00 – 8:00 PM ET). Ghost still scans on the off-hours cadence.'
           : 'US market is <b>closed</b>. Regular hours: Mon–Fri 9:30 AM – 4:00 PM ET.';
-    sg.innerHTML = '<div class="info-box"><b>No WOLF play right now.</b><br><br>'
+    sg.innerHTML = '<div class="info-box"><b>No active plays right now.</b><br><br>'
       + sessMsg
       + '<br><br>Ghost re-scans every ~30 min and <b>withdraws</b> open picks if the model changes mind. Next cycle runs every 30 min during market and pre-market hours.</div>';
     return;
   }
-  var top = stocks.sort(function(a,b){return b.confidence - a.confidence})[0];
-  var buy = top.direction === 'UP' || top.direction === 'BUY';
-  var pct = Math.round(top.confidence * 100);
-  var cc = pct >= 85 ? 'h' : pct >= 70 ? 'm' : 'l';
-  var sl = pct >= 85 ? 'Strong signal' : pct >= 70 ? 'Good signal' : 'Moderate signal';
-  // Confidence-decay timer: half-life model — confidence decays from initial
-  // to ~50% by expires_at. Gives the user urgency to act on fresh signals.
-  var decay = computeDecay(top.confidence, top.predicted_at, top.expires_at);
-  sg.innerHTML = '<div class="play-grid"><div class="play-card ' + (buy ? 'buy' : 'sell') + '">'
-    + '<div class="play-head"><span class="play-sym">WOLF</span>'
-    + '<span class="play-pill ' + (buy ? 'buy' : 'sell') + '">' + (buy ? 'BUY' : 'SELL') + '</span></div>'
-    + '<div class="play-action"><b>' + (buy ? 'Get in at' : 'Short at') + '</b> ' + fmtPrice(top.entry_price)
-    + '<br><b>' + (buy ? 'Take profit at' : 'Cover at') + '</b> ' + fmtPrice(top.target_price)
-    + '<br><b>Bail if it hits</b> ' + fmtPrice(top.stop_price) + '</div>'
-    + '<div class="play-levels">'
-    + '<div class="lv e"><div class="lv-label">ENTER</div><div class="lv-val">' + fmtPrice(top.entry_price) + '</div></div>'
-    + '<div class="lv t"><div class="lv-label">TARGET</div><div class="lv-val">' + fmtPrice(top.target_price) + '</div></div>'
-    + '<div class="lv s"><div class="lv-label">STOP</div><div class="lv-val">' + fmtPrice(top.stop_price) + '</div></div>'
-    + '</div>'
-    + '<div class="conf-bar"><div class="conf-fill ' + cc + '" style="width:' + (decay.now*100) + '%"></div></div>'
-    + '<div class="conf-meta"><span>' + sl + '</span><span>' + Math.round(decay.now*100) + '% confident</span></div>'
-    + '<div class="decay-line">&#9203; ' + timeLeft(top.expires_at)
-    + (decay.atExpiry != null ? ' &middot; decays to <b>' + Math.round(decay.atExpiry*100) + '%</b> by expiry' : '')
-    + '</div>'
-    + '</div></div>';
+  function playCard(top){
+    var buy = top.direction === 'UP' || top.direction === 'BUY';
+    var sym = (top.symbol || '—').toUpperCase();
+    var pct = Math.round(top.confidence * 100);
+    var cc = pct >= 85 ? 'h' : pct >= 70 ? 'm' : 'l';
+    var sl = pct >= 85 ? 'Strong signal' : pct >= 70 ? 'Good signal' : 'Moderate signal';
+    var decay = computeDecay(top.confidence, top.predicted_at, top.expires_at);
+    return '<div class="play-card ' + (buy ? 'buy' : 'sell') + '">'
+      + '<div class="play-head"><span class="play-sym">' + escHtml(sym) + '</span>'
+      + '<span class="play-pill ' + (buy ? 'buy' : 'sell') + '">' + (buy ? 'BUY' : 'SELL') + '</span></div>'
+      + '<div class="play-action"><b>' + (buy ? 'Get in at' : 'Short at') + '</b> ' + fmtPrice(top.entry_price)
+      + '<br><b>' + (buy ? 'Take profit at' : 'Cover at') + '</b> ' + fmtPrice(top.target_price)
+      + '<br><b>Bail if it hits</b> ' + fmtPrice(top.stop_price) + '</div>'
+      + '<div class="play-levels">'
+      + '<div class="lv e"><div class="lv-label">ENTER</div><div class="lv-val">' + fmtPrice(top.entry_price) + '</div></div>'
+      + '<div class="lv t"><div class="lv-label">TARGET</div><div class="lv-val">' + fmtPrice(top.target_price) + '</div></div>'
+      + '<div class="lv s"><div class="lv-label">STOP</div><div class="lv-val">' + fmtPrice(top.stop_price) + '</div></div>'
+      + '</div>'
+      + '<div class="conf-bar"><div class="conf-fill ' + cc + '" style="width:' + (decay.now*100) + '%"></div></div>'
+      + '<div class="conf-meta"><span>' + sl + '</span><span>' + Math.round(decay.now*100) + '% confident</span></div>'
+      + '<div class="decay-line">&#9203; ' + timeLeft(top.expires_at)
+      + (decay.atExpiry != null ? ' &middot; decays to <b>' + Math.round(decay.atExpiry*100) + '%</b> by expiry' : '')
+      + '</div></div>';
+  }
+  stocks.sort(function(a,b){return b.confidence - a.confidence});
+  sg.innerHTML = '<div class="play-grid">' + stocks.map(playCard).join('') + '</div>';
 }
 
 function computeDecay(initialConf, predictedAt, expiresAt){
@@ -2345,7 +2348,7 @@ function _dpOhlcRow(kind, sym, dateHtml, open, peak, low, close, scoreHtml){
 
 function _renderDpThreeRows(sym, panel, next, lastResolved, live){
   var head = '<table class="dp-ohlc-table"><thead><tr>'
-    + '<th>Symbol</th><th>Date</th><th>Open</th><th>Peak</th><th>Low</th><th>Close</th><th>Score</th>'
+    + '<th>Symbol</th><th>Date</th><th>Open</th><th>Peak</th><th>Low</th><th>Close / Last</th><th>Score</th>'
     + '</tr></thead><tbody>';
   var rows = [];
   if(panel){

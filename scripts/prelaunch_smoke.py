@@ -63,20 +63,22 @@ def check_admin_gating() -> None:
             _fail(path, f"expected 404 without cookie, got {r.status_code}")
 
 
-def check_picks_wolf_only() -> None:
+def check_picks_real_stock_trades() -> None:
     r = _get("/api/picks")
     if r.status_code != 200:
         _fail("/api/picks", f"HTTP {r.status_code}")
     body = r.json()
     if body.get("ok") is not True:
         _fail("/api/picks", "ok=false")
-    if body.get("symbol") != "WOLF":
-        _fail("/api/picks", f"symbol={body.get('symbol')!r}, expected WOLF")
+    if body.get("symbol") != "ALL":
+        _fail("/api/picks", f"symbol={body.get('symbol')!r}, expected ALL")
     for key in ("active", "recent"):
         items = body.get(key) or []
         for pick in items:
-            if pick.get("symbol") not in (None, "WOLF"):
-                _fail("/api/picks", f"non-WOLF pick in {key}: {pick.get('symbol')}")
+            if pick.get("asset_type") not in (None, "stock"):
+                _fail("/api/picks", f"non-stock pick in {key}: {pick.get('asset_type')}")
+            if not (pick.get("entry_price") or 0) > 0:
+                _fail("/api/picks", f"zero-entry pick in {key}: id={pick.get('id')}")
 
 
 def check_ghost_score() -> None:
@@ -113,7 +115,7 @@ CHECKS: List[Check] = [
     ("health parity (/health vs /api/health)", check_health_parity),
     ("public pages (/cockpit, /admin)", check_public_pages),
     ("admin gating (404 without cookie)", check_admin_gating),
-    ("picks WOLF-only", check_picks_wolf_only),
+    ("picks all watchlist", check_picks_real_stock_trades),
     ("ghost score payload", check_ghost_score),
     ("Chart.js CDN reachable", check_chartjs_cdn_reachable),
 ]

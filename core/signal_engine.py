@@ -890,6 +890,36 @@ def _fetch_ohlcv_once(symbol, asset_type, period='1y', interval='1d'):
     return None
 
 
+def _sma5_from_daily_bars(daily_rows):
+    """Mean close over the last up-to-5 daily bars."""
+    if not daily_rows:
+        return None
+    closes = []
+    for row in daily_rows:
+        try:
+            val = float(row.get("close"))
+        except (TypeError, ValueError):
+            continue
+        if val > 0:
+            closes.append(val)
+    tail = closes[-5:] if len(closes) >= 5 else closes
+    return (sum(tail) / len(tail)) if tail else None
+
+
+def _block_up_below_sma5(symbol, asset_type, current_price):
+    """Return (blocked, sma_5d, current_price) for counter-trend UP gate."""
+    if os.getenv("V3_BLOCK_UP_BELOW_SMA5", "1").strip().lower() in ("0", "false", "no", "off"):
+        return False, None, float(current_price or 0)
+    cur = float(current_price or 0)
+    if cur <= 0:
+        return False, None, cur
+    daily = _fetch_ohlcv(symbol, asset_type, period="1mo", interval="1d")
+    sma = _sma5_from_daily_bars(daily)
+    if sma is None or sma <= 0:
+        return False, sma, cur
+    return cur < sma, sma, cur
+
+
 def _fetch_ohlcv(symbol, asset_type, period=None, interval='1d'):
     """Fetch daily OHLCV with in-run cache + retries on empty responses."""
     period = period or _v3_ohlcv_period()
@@ -1804,6 +1834,18 @@ def predict_live_ex(symbol, asset_type, scores=None):
     # Gate 2: full bearish alignment, not oversold
     if ema_trend_bullish == 0 and rsi > 40 and stoch_k > 30:
         LOGGER.info(f"REGIME GATE [{symbol}]: bearish EMA stack, RSI={rsi:.1f} not oversold — skip")
+        return None, "regime_gate"
+
+    cur_px = float(rows[-1].get("close") or 0)
+    blocked_sma, sma_5d, cur_px = _block_up_below_sma5(symbol, asset_type, cur_px)
+    if scores is not None and isinstance(scores.get("regime"), dict):
+        if sma_5d is not None:
+            scores["regime"]["sma_5d"] = round(float(sma_5d), 4)
+            scores["regime"]["price_vs_sma5_pct"] = round((cur_px - sma_5d) / sma_5d * 100, 2)
+    if blocked_sma:
+        LOGGER.info(
+            f"REGIME GATE [{symbol}]: price {cur_px:.2f} below 5d SMA {sma_5d:.2f} — skip BUY"
+        )
         return None, "regime_gate"
 
     invert_cols = meta.get("feature_inversions") or []

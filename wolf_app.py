@@ -197,17 +197,22 @@ def _v32_stats_start_ts(cur):
     return final_ts
 
 
+from core.prediction_filters import CRYPTO_JUNK_WHERE, REAL_TRADE_WHERE, picks_where as _picks_where
+
+
 def _compute_get_stats(cur):
     """Payload for GET /api/stats using an existing cursor."""
     cur.execute(
         "SELECT outcome, COUNT(*) FROM predictions WHERE outcome IN ('WIN','LOSS') "
-        "AND predicted_at IS NOT NULL GROUP BY outcome"
+        "AND predicted_at IS NOT NULL AND " + REAL_TRADE_WHERE + " GROUP BY outcome"
     )
     rows = {r[0]: r[1] for r in cur.fetchall()}
     wins = rows.get("WIN", 0)
     losses = rows.get("LOSS", 0)
     total = wins + losses
-    cur.execute("SELECT COUNT(*) FROM predictions WHERE outcome IS NULL AND entry_price IS NOT NULL")
+    cur.execute(
+        "SELECT COUNT(*) FROM predictions WHERE outcome IS NULL AND " + REAL_TRADE_WHERE
+    )
     open_count = cur.fetchone()[0]
     v32_start_ts = _v32_stats_start_ts(cur)
     v32_wins = v32_losses = v32_total = 0
@@ -216,7 +221,7 @@ def _compute_get_stats(cur):
         cur.execute(
             "SELECT outcome, COUNT(*) FROM predictions "
             "WHERE outcome IN ('WIN','LOSS') AND predicted_at IS NOT NULL AND predicted_at >= %s "
-            "GROUP BY outcome",
+            "AND " + REAL_TRADE_WHERE + " GROUP BY outcome",
             (v32_start_ts,),
         )
         v32_rows = {r[0]: r[1] for r in cur.fetchall()}
@@ -227,7 +232,7 @@ def _compute_get_stats(cur):
         cur.execute(
             "SELECT outcome, COUNT(*) FROM predictions "
             "WHERE outcome IN ('WIN','LOSS') AND resolved_at IS NOT NULL AND resolved_at >= %s "
-            "GROUP BY outcome",
+            "AND " + REAL_TRADE_WHERE + " GROUP BY outcome",
             (v32_start_ts,),
         )
         v32r_rows = {r[0]: r[1] for r in cur.fetchall()}
@@ -1591,10 +1596,14 @@ async def diagnostics(request: Request = None):
             _cur.execute("""SELECT outcome, COUNT(*) FROM predictions
                             WHERE outcome IN ('WIN','LOSS','EXPIRED')
                             AND predicted_at > %s
+                            AND """ + REAL_TRADE_WHERE + """
                             GROUP BY outcome""", (_7d,))
             _7d_rows = {r[0]: r[1] for r in _cur.fetchall()}
-            # All-time win rate
-            _cur.execute("SELECT outcome, COUNT(*) FROM predictions WHERE outcome IN ('WIN','LOSS') GROUP BY outcome")
+            # All-time win rate (real stock trades only)
+            _cur.execute(
+                "SELECT outcome, COUNT(*) FROM predictions WHERE outcome IN ('WIN','LOSS') "
+                "AND " + REAL_TRADE_WHERE + " GROUP BY outcome"
+            )
             _at_rows = {r[0]: r[1] for r in _cur.fetchall()}
 
         _7w = _7d_rows.get("WIN", 0)
@@ -2360,41 +2369,69 @@ def _norm_pred(r):
     }
 
 @APP.get("/api/picks")
-def get_picks(symbol: str = "WOLF", asset_type: str = None):
-    """Recent picks. WOLF-only by default (this is a WOLF product) so it no
-    longer leaks legacy crypto rows like UNI (audit v2 bonus). ?symbol=ALL
-    restores the full cross-symbol list; ?asset_type=stock filters by type."""
+def get_picks(symbol: str = "ALL", asset_type: str = None, limit: int = 50, offset: int = 0):
+    """Recent picks with pagination. Defaults to ALL watchlist symbols.
+    ?symbol=WOLF filters to one ticker; ?asset_type= filters by type.
+    ?limit=&offset= page resolved picks newest-first (default limit 50, max 200).
+    Rows with entry_price=0 or non-stock asset_type are excluded (crypto-era junk)."""
     try:
-        clauses, params = [], []
-        if str(symbol).strip().upper() not in ("ALL", "*", ""):
-            clauses.append("symbol = %s")
-            params.append(symbol.strip().upper())
-        if asset_type:
-            clauses.append("asset_type = %s")
-            params.append(asset_type.strip().lower())
-        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        lim = max(1, min(200, int(limit)))
+        off = max(0, int(offset))
+        clauses, params = _picks_where(symbol, asset_type)
+        where = " WHERE " + " AND ".join(clauses)
         with db_conn() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT * FROM predictions" + where + " ORDER BY id DESC LIMIT 50", tuple(params))
+            cur.execute(
+                "SELECT * FROM predictions" + where + " AND outcome IS NULL "
+                "ORDER BY predicted_at DESC NULLS LAST, id DESC",
+                tuple(params),
+            )
             cols = [d[0] for d in cur.description]
-            rows = [_norm_pred(dict(zip(cols, r))) for r in cur.fetchall()]
-        active = [r for r in rows if r["outcome"] is None]
-        resolved = [r for r in rows if r["outcome"] is not None]
-        wins = sum(1 for r in resolved if r["outcome"] == "WIN")
-        total = len(resolved)
-        return {"ok": True, "symbol": symbol, "asset_type": asset_type,
-                "active": active, "recent": resolved[:20],
-                "accuracy_pct": round(wins/total*100,1) if total else 0,
-                "wins": wins, "losses": total-wins, "total": total}
+            active = [_norm_pred(dict(zip(cols, r))) for r in cur.fetchall()]
+            cur.execute(
+                "SELECT outcome, COUNT(*) FROM predictions" + where
+                + " AND outcome IN ('WIN','LOSS') GROUP BY outcome",
+                tuple(params),
+            )
+            tally = {r[0]: r[1] for r in cur.fetchall()}
+            wins = tally.get("WIN", 0)
+            losses = tally.get("LOSS", 0)
+            total = wins + losses
+            cur.execute(
+                "SELECT * FROM predictions" + where + " AND outcome IS NOT NULL "
+                "ORDER BY predicted_at DESC NULLS LAST, id DESC LIMIT %s OFFSET %s",
+                tuple(params) + (lim, off),
+            )
+            cols = [d[0] for d in cur.description]
+            resolved = [_norm_pred(dict(zip(cols, r))) for r in cur.fetchall()]
+        return {
+            "ok": True,
+            "symbol": symbol,
+            "asset_type": asset_type,
+            "limit": lim,
+            "offset": off,
+            "active": active,
+            "recent": resolved,
+            "has_more": off + len(resolved) < total,
+            "accuracy_pct": round(wins / total * 100, 1) if total else 0,
+            "wins": wins,
+            "losses": losses,
+            "total": total,
+        }
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 @APP.get("/api/history")
 def get_history(limit: int = 200):
     try:
+        lim = max(1, min(500, int(limit)))
         with db_conn() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT * FROM predictions ORDER BY id DESC LIMIT %s", (limit,))
+            cur.execute(
+                "SELECT * FROM predictions WHERE " + REAL_TRADE_WHERE
+                + " ORDER BY predicted_at DESC NULLS LAST, id DESC LIMIT %s",
+                (lim,),
+            )
             cols = [d[0] for d in cur.description]
             rows = [_norm_pred(dict(zip(cols, r))) for r in cur.fetchall()]
         resolved = [r for r in rows if r["outcome"] is not None]
@@ -2909,6 +2946,14 @@ def wolf_gate_history(limit: int = 50):
 _V32_ERA_MIN_ID = 223438
 
 
+def _pick_journal_scope(symbol: str):
+    """Return (sql_prefix, params, label) for pick-journal symbol filter."""
+    sym = str(symbol or "ALL").strip().upper()
+    if sym in ("ALL", "*", ""):
+        return "", (), "ALL"
+    return "symbol = %s AND ", (sym,), sym
+
+
 def _coerce_json(v):
     """psycopg2 may hand back JSONB as dict already, or as text. Normalise to obj."""
     if v is None:
@@ -2923,12 +2968,13 @@ def _coerce_json(v):
 
 
 @APP.get("/api/wolf/pick-journal")
-def wolf_pick_journal(limit: int = 50, offset: int = 0, symbol: str = "WOLF"):
+def wolf_pick_journal(limit: int = 50, offset: int = 0, symbol: str = "ALL"):
     """Pick journal — the credibility ledger (blueprint module 7).
 
     Every historical v3.2-era pick with full audit trail: confidence, the
     specialist score vector + regime-at-issuance (predictions.scores), entry/
-    target/stop, resolution, exit, P&L. Plus aggregate honesty metrics computed
+    target/stop, resolution, exit, P&L. Defaults to ALL watchlist symbols;
+    pass ?symbol=WOLF for one ticker. Plus aggregate honesty metrics computed
     over ALL resolved picks (not just the page): win rate with a 95% Wilson CI,
     expectancy, Brier score, and the pre-registered falsification verdict
     (core.prediction.FALSIFICATION_THRESHOLD, blueprint §10). Paginated, newest
@@ -2939,23 +2985,29 @@ def wolf_pick_journal(limit: int = 50, offset: int = 0, symbol: str = "WOLF"):
     try:
         lim = max(1, min(200, int(limit)))
         off = max(0, int(offset))
+        scope_sql, scope_params, sym_label = _pick_journal_scope(symbol)
+        base_where = scope_sql + "id >= %s AND " + REAL_TRADE_WHERE
+        base_params = scope_params + (_V32_ERA_MIN_ID,)
         with db_conn() as conn:
             cur = conn.cursor()
             cur.execute(
-                "SELECT COUNT(*) FROM predictions WHERE symbol=%s AND id >= %s",
-                (symbol, _V32_ERA_MIN_ID))
+                "SELECT COUNT(*) FROM predictions WHERE " + base_where,
+                base_params,
+            )
             total = cur.fetchone()[0]
             cur.execute(
                 "SELECT id,symbol,direction,confidence,entry_price,target_price,stop_price,"
                 "predicted_at,expires_at,resolved_at,outcome,exit_price,pnl_pct,features,scores "
-                "FROM predictions WHERE symbol=%s AND id >= %s "
+                "FROM predictions WHERE " + base_where + " "
                 "ORDER BY predicted_at DESC NULLS LAST, id DESC LIMIT %s OFFSET %s",
-                (symbol, _V32_ERA_MIN_ID, lim, off))
+                base_params + (lim, off),
+            )
             rows = cur.fetchall()
             cur.execute(
-                "SELECT confidence,outcome,pnl_pct FROM predictions "
-                "WHERE symbol=%s AND id >= %s AND outcome IS NOT NULL",
-                (symbol, _V32_ERA_MIN_ID))
+                "SELECT confidence,outcome,pnl_pct FROM predictions WHERE "
+                + scope_sql + "id >= %s AND outcome IS NOT NULL AND " + REAL_TRADE_WHERE,
+                base_params,
+            )
             resolved = cur.fetchall()
 
         picks = []
@@ -3026,7 +3078,7 @@ def wolf_pick_journal(limit: int = 50, offset: int = 0, symbol: str = "WOLF"):
 
         return {
             "ok": True,
-            "symbol": symbol,
+            "symbol": sym_label,
             "total": total,
             "limit": lim,
             "offset": off,
@@ -3553,30 +3605,80 @@ def symbol_accuracy():
     edges = [s for s in symbols if s["win_rate"] > 55]
     return {"ok": True, "total_symbols": len(symbols), "symbols_with_edge": len(edges), "data": symbols}
 
+@APP.post("/api/admin/purge-crypto-junk", include_in_schema=False)
+async def purge_crypto_junk(x_cron_secret: str = Header(None), dry_run: bool = True):
+    """Hard-delete crypto-era / zero-entry prediction rows (not real stock trades).
+
+    Targets rows where asset_type != stock or entry_price <= 0 — the legacy crypto
+    phase left EXPIRED picks with $0 entry/target/stop that pollute lifetime stats.
+    dry_run defaults TRUE; pass dry_run=false to delete.
+    """
+    if not _cron_ok(x_cron_secret, strict=True):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT COALESCE(asset_type, 'stock'), COUNT(*) FROM predictions "
+                "WHERE " + CRYPTO_JUNK_WHERE + " GROUP BY 1 ORDER BY 2 DESC"
+            )
+            by_type = [{"asset_type": r[0], "count": int(r[1])} for r in cur.fetchall()]
+            cur.execute("SELECT COUNT(*) FROM predictions WHERE " + CRYPTO_JUNK_WHERE)
+            total = int(cur.fetchone()[0])
+            deleted = 0
+            if not dry_run and total:
+                cur.execute("DELETE FROM predictions WHERE " + CRYPTO_JUNK_WHERE)
+                deleted = cur.rowcount
+        if not dry_run:
+            _record_admin_action("purge_crypto_junk", f"deleted={deleted} matched={total}")
+            _bump_cockpit_db_cache()
+        return {
+            "ok": True,
+            "dry_run": dry_run,
+            "filter": CRYPTO_JUNK_WHERE,
+            "by_asset_type": by_type,
+            "total_matched": total,
+            "deleted": deleted,
+        }
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
 @APP.post("/api/clean-garbage")
 def clean_garbage(x_cron_secret: str = Header(default="")):
-    """Delete broken predictions with absurd entry/target combos.
-
-    Filter: entry_price > 50 AND target_price < 1 (impossible legitimate trade).
-    """
+    """Delete broken predictions: absurd entry/target combos and crypto-era junk."""
     if not _cron_ok(x_cron_secret):
         raise HTTPException(status_code=403)
     with db_conn() as conn:
         cur = conn.cursor()
-        # Count first
-        # Filter rationale: legitimate predictions have target within ~20% of entry.
-        # Only impossible/garbage rows have entry > $50 with target < $1 (order-of-magnitude mismatch).
-        cur.execute("SELECT COUNT(*) FROM predictions WHERE entry_price > 50 AND target_price < 1 AND predicted_at IS NOT NULL")
-        garbage_count = cur.fetchone()[0]
-        # Delete predictions with impossible entry/target combo
-        # Filter rationale: legitimate predictions have target within ~20% of entry.
-        # Only impossible/garbage rows have entry > $50 with target < $1 (order-of-magnitude mismatch).
-        cur.execute("DELETE FROM predictions WHERE entry_price > 50 AND target_price < 1 AND predicted_at IS NOT NULL")
-        deleted = cur.rowcount
-        # Recount clean predictions
-        cur.execute("SELECT outcome, COUNT(*) FROM predictions WHERE outcome IN ('WIN','LOSS') AND predicted_at IS NOT NULL GROUP BY outcome")
+        cur.execute(
+            "SELECT COUNT(*) FROM predictions WHERE entry_price > 50 AND target_price < 1 "
+            "AND predicted_at IS NOT NULL"
+        )
+        absurd_count = cur.fetchone()[0]
+        cur.execute(
+            "DELETE FROM predictions WHERE entry_price > 50 AND target_price < 1 "
+            "AND predicted_at IS NOT NULL"
+        )
+        absurd_deleted = cur.rowcount
+        cur.execute("SELECT COUNT(*) FROM predictions WHERE " + CRYPTO_JUNK_WHERE)
+        junk_count = cur.fetchone()[0]
+        cur.execute("DELETE FROM predictions WHERE " + CRYPTO_JUNK_WHERE)
+        junk_deleted = cur.rowcount
+        cur.execute(
+            "SELECT outcome, COUNT(*) FROM predictions WHERE outcome IN ('WIN','LOSS') "
+            "AND predicted_at IS NOT NULL AND " + REAL_TRADE_WHERE + " GROUP BY outcome"
+        )
         counts = {r[0]: r[1] for r in cur.fetchall()}
-    return {"ok": True, "deleted": deleted, "remaining": counts}
+    return {
+        "ok": True,
+        "absurd_deleted": absurd_deleted,
+        "absurd_matched": absurd_count,
+        "crypto_junk_deleted": junk_deleted,
+        "crypto_junk_matched": junk_count,
+        "deleted": absurd_deleted + junk_deleted,
+        "remaining": counts,
+    }
 
 @APP.post("/api/watchdog")
 def run_watchdog(x_cron_secret: str = Header(default="")):

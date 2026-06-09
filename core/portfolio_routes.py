@@ -5,6 +5,7 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from core.db import db_conn
 from core.stats_direction import compute_stats_by_direction
+from core.prediction_filters import REAL_TRADE_WHERE
 import time
 
 portfolio_router = APIRouter()
@@ -73,6 +74,14 @@ def build_portfolio_payload() -> dict:
             "cost_basis":cost,"live_price":round(live,6) if live else None,
             "current_value":val,"gain_loss":gl,"gain_loss_pct":glp,
             "buy_date":r[5],"notes":r[6],"ghost_signal":sig})
+    # Cash App imports sometimes duplicate the same symbol — keep the largest lot.
+    deduped = {}
+    for p in positions:
+        sym = p["symbol"]
+        prev = deduped.get(sym)
+        if prev is None or p["quantity"] > prev["quantity"]:
+            deduped[sym] = p
+    positions = list(deduped.values())
     tc = sum(p["cost_basis"] for p in positions)
     tv = sum(p["current_value"] for p in positions if p["current_value"])
     return {"ok":True,"positions":positions,"total_cost":round(tc,2),
@@ -247,10 +256,16 @@ def v2_recent(symbol: str = "WOLF"):
         if _all:
             cur.execute("""SELECT id,symbol,direction,confidence,entry_price,exit_price,pnl_pct,outcome,predicted_at,expires_at,asset_type
                 FROM predictions WHERE outcome IS NOT NULL AND predicted_at IS NOT NULL
+                  AND """
+                + REAL_TRADE_WHERE
+                + """
                 ORDER BY expires_at DESC NULLS LAST LIMIT 50""")
         else:
             cur.execute("""SELECT id,symbol,direction,confidence,entry_price,exit_price,pnl_pct,outcome,predicted_at,expires_at,asset_type
                 FROM predictions WHERE outcome IS NOT NULL AND predicted_at IS NOT NULL AND symbol=%s
+                  AND """
+                + REAL_TRADE_WHERE
+                + """
                 ORDER BY expires_at DESC NULLS LAST LIMIT 50""", (symbol.strip().upper(),))
         rows = cur.fetchall()
     trades=[]; wins=losses=0
