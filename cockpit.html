@@ -776,7 +776,7 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
       <div class="dp-head">
         <div>
           <div class="dp-title">Next 24 hours</div>
-          <div class="dp-sub">Row 1 — <b>Ghost prediction</b> (green). Row 2 — <b>what the market actually did</b> (open, peak, low, close). Score locks at 4:00 PM ET market close.</div>
+          <div class="dp-sub">Row 1 — <b>Ghost prediction</b> (green). Row 2 — <b>what the market actually did</b> (open, peak, low, close). Score locks at 3:00 PM CT market close.</div>
           <div class="tp-chips" id="tp-chips"></div>
         </div>
       </div>
@@ -1543,19 +1543,19 @@ function renderPlay(picks, watching){
   }
   if(!stocks.length){
     var now = new Date();
-    var et = new Date(now.toLocaleString('en-US',{timeZone:'America/New_York'}));
-    var hh = et.getHours(), mn = et.getMinutes(), day = et.getDay();
+    var ct = new Date(now.toLocaleString('en-US',{timeZone:'America/Chicago'}));
+    var hh = ct.getHours(), mn = ct.getMinutes(), day = ct.getDay();
     var hm = hh * 60 + mn;
-    var mopen = day >= 1 && day <= 5 && hm >= (9 * 60 + 30) && hm < (16 * 60);
-    var preMkt = day >= 1 && day <= 5 && hm >= (4 * 60) && hm < (9 * 60 + 30);
-    var ah = day >= 1 && day <= 5 && hm >= (16 * 60) && hm < (20 * 60);
+    var mopen = day >= 1 && day <= 5 && hm >= (8 * 60 + 30) && hm < (15 * 60);
+    var preMkt = day >= 1 && day <= 5 && hm >= (3 * 60) && hm < (8 * 60 + 30);
+    var ah = day >= 1 && day <= 5 && hm >= (15 * 60) && hm < (19 * 60);
     var sessMsg = mopen
       ? 'Market is open but Ghost has no signal above the confidence floor.'
       : preMkt
-        ? 'US market is in <b>pre-market</b> (4:00 AM – 9:30 AM ET). Ghost scans extended-hours quotes and gap vs prior close every 30 min.'
+        ? 'US market is in <b>pre-market</b> (3:00 AM – 8:30 AM CT). Ghost scans extended-hours quotes and gap vs prior close every 30 min.'
         : ah
-          ? 'US market is in <b>after-hours</b> (4:00 – 8:00 PM ET). Ghost still scans on the off-hours cadence.'
-          : 'US market is <b>closed</b>. Regular hours: Mon–Fri 9:30 AM – 4:00 PM ET.';
+          ? 'US market is in <b>after-hours</b> (3:00 – 7:00 PM CT). Ghost still scans on the off-hours cadence.'
+          : 'US market is <b>closed</b>. Regular hours: Mon–Fri 8:30 AM – 3:00 PM CT.';
     sg.innerHTML = '<div class="info-box"><b>No active plays right now.</b><br><br>'
       + sessMsg
       + '<br><br>Ghost re-scans every ~30 min and <b>withdraws</b> open picks if the model changes mind. Next cycle runs every 30 min during market and pre-market hours.</div>';
@@ -2437,18 +2437,7 @@ function _dpLiveDate(live){
     + (sess && sess !== 'Closed' && label === 'today' ? ' · ' + escHtml(sess) : '');
 }
 
-function _etNowParts(){
-  var fmt = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/New_York',
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', hour12: false,
-  });
-  var map = {};
-  fmt.formatToParts(new Date()).forEach(function(p){ if(p.type !== 'literal') map[p.type] = p.value; });
-  return map;
-}
-
-function _chicagoNowParts(){
+function _ctNowParts(){
   var fmt = new Intl.DateTimeFormat('en-US', {
     timeZone: 'America/Chicago',
     year: 'numeric', month: '2-digit', day: '2-digit',
@@ -2459,13 +2448,18 @@ function _chicagoNowParts(){
   return map;
 }
 
+function _chicagoNowParts(){
+  return _ctNowParts();
+}
+
 function _maybeTodayPredMarketCloseRefresh(){
-  var p = _etNowParts();
+  var p = _ctNowParts();
   var dayKey = (p.year || '') + '-' + (p.month || '') + '-' + (p.day || '');
   var hour = parseInt(p.hour || '0', 10);
-  var dow = new Date().toLocaleString('en-US', { timeZone: 'America/New_York', weekday: 'short' });
+  var minute = parseInt(p.minute || '0', 10);
+  var dow = new Date().toLocaleString('en-US', { timeZone: 'America/Chicago', weekday: 'short' });
   if(dow === 'Sat' || dow === 'Sun') return;
-  if(hour >= 16 && dayKey !== _todayPredCloseKey){
+  if((hour > 15 || (hour === 15 && minute >= 0)) && dayKey !== _todayPredCloseKey){
     _todayPredCloseKey = dayKey;
     loadTodayPredictionPanel(true);
   }
@@ -2509,14 +2503,14 @@ async function loadTodayPredictionPanel(isCloseRefresh){
     var last = g.last_completed_session || split.lastResolved;
     _renderDpQuality(g.summary || {});
     tableWrap.innerHTML = _renderDpThreeRows(sym, g.panel || null, next, last, g.live_now || null);
-    var p = _etNowParts();
-    var stamp = (p.hour || '00') + ':' + (p.minute || '00') + ' ET';
+    var p = _ctNowParts();
+    var stamp = (p.hour || '00') + ':' + (p.minute || '00') + ' CT';
     if(metaEl){
       var staleNote = g.data_stale
         ? ' · Last trade ' + (g.last_bar_date || '—') + ' (' + (g.last_bar_age_days != null ? g.last_bar_age_days + 'd ago' : 'stale') + ')'
         : '';
       metaEl.textContent = isCloseRefresh
-        ? 'Updated at market close (4:00 PM ET) · ' + stamp + staleNote
+        ? 'Updated at market close (3:00 PM CT) · ' + stamp + staleNote
         : 'Live row every 15m · last trade fresh each load · Next = tomorrow forecast · Last = prior session · ' + stamp + staleNote;
     }
   }catch(e){
@@ -2566,11 +2560,11 @@ function _renderSqueezePicks(data){
   var picks = (data && data.picks) ? data.picks.slice() : [];
   picks.sort(function(a, b){ return (b.confidence_pct || 0) - (a.confidence_pct || 0); });
   var sess = (data && data.market_session) ? data.market_session : '—';
-  var nowEt = (data && data.now_et) ? data.now_et : '';
+  var nowCt = (data && (data.now_ct || data.now_et)) ? (data.now_ct || data.now_et) : '';
   var scanTs = data && data.last_scan_ts ? new Date(data.last_scan_ts * 1000) : null;
-  var scanStr = scanTs ? scanTs.toLocaleTimeString('en-US', {hour:'numeric', minute:'2-digit', timeZone:'America/New_York'}) + ' ET' : '—';
+  var scanStr = scanTs ? scanTs.toLocaleTimeString('en-US', {hour:'numeric', minute:'2-digit', timeZone:'America/Chicago'}) + ' CT' : '—';
   if(meta){
-    meta.innerHTML = (nowEt ? escHtml(nowEt) + ' · ' : '')
+    meta.innerHTML = (nowCt ? escHtml(nowCt) + ' · ' : '')
       + escHtml(sess)
       + ' · scan ' + escHtml(scanStr)
       + (data && data.fetch_ok != null ? ' · ' + data.fetch_ok + '/44 ok' : '');
@@ -2580,9 +2574,9 @@ function _renderSqueezePicks(data){
     var afterHours = !!(data && data.is_after_hours);
     var watching = !!(data && (data.is_rth || data.is_premarket || data.is_extended_hours));
     var msg = overnight
-      ? 'Overnight — squeeze radar sleeps until premarket (4:00 AM ET).'
+      ? 'Overnight — squeeze radar sleeps until premarket (3:00 AM CT).'
       : afterHours
-        ? 'After hours — cash session ended at <b>4:00 PM ET</b> (3:00 PM Central). Radar still scans until 8:00 PM ET for late squeezes.'
+        ? 'After hours — cash session ended at <b>3:00 PM CT</b>. Radar still scans until 7:00 PM CT for late squeezes.'
         : watching
           ? 'Ghost is watching all 44 symbols. You\'ll get Telegram + this panel when RVOL + move thresholds hit.'
           : 'Waiting for next scan cycle…';

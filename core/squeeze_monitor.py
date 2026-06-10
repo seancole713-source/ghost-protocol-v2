@@ -32,9 +32,14 @@ FORMING_VOL_MULT = float(os.getenv("SQUEEZE_FORMING_VOL_MULT", "2.0"))
 TP_PCT_ACTIVE = float(os.getenv("SQUEEZE_TP_PCT_ACTIVE", "4.0"))
 TP_PCT_FORMING = float(os.getenv("SQUEEZE_TP_PCT_FORMING", "2.5"))
 
-_RTH_OPEN_MIN = 9 * 60 + 30
-_RTH_CLOSE_MIN = 16 * 60
-_RTH_MINUTES = _RTH_CLOSE_MIN - _RTH_OPEN_MIN
+from core.market_hours import (
+    PREMARKET_START_MIN,
+    RTH_CLOSE_MIN,
+    RTH_MINUTES,
+    RTH_OPEN_MIN,
+    SESSION_TZ,
+    session_hm,
+)
 _TIMEOUT = float(os.getenv("PRICE_PROVIDER_TIMEOUT_S", "8.0"))
 
 COOLDOWN_SEC = int(os.getenv("SQUEEZE_ALERT_COOLDOWN", "7200"))
@@ -51,24 +56,22 @@ _ALERT_HISTORY_MAX = 30
 
 def rth_elapsed_fraction(now: Optional[datetime] = None) -> float:
     """Fraction of regular session elapsed (0..1), minimum 1/390 for RVOL."""
-    from core.market_hours import session_hm
-
-    now_et, hm = session_hm(now)
-    if now_et.weekday() >= 5:
+    now_ct, hm = session_hm(now)
+    if now_ct.weekday() >= 5:
         return 1.0
-    if hm < _RTH_OPEN_MIN:
-        return max(1.0 / _RTH_MINUTES, (hm - 4 * 60) / (6.5 * 60))
-    if hm >= _RTH_CLOSE_MIN:
+    if hm < RTH_OPEN_MIN:
+        return max(1.0 / RTH_MINUTES, (hm - PREMARKET_START_MIN) / RTH_MINUTES)
+    if hm >= RTH_CLOSE_MIN:
         return 1.0
-    elapsed = hm - _RTH_OPEN_MIN
-    return max(elapsed / _RTH_MINUTES, 1.0 / _RTH_MINUTES)
+    elapsed = hm - RTH_OPEN_MIN
+    return max(elapsed / RTH_MINUTES, 1.0 / RTH_MINUTES)
 
 
 def compute_rvol(session_volume: float, avg_daily_volume: float, elapsed_frac: float) -> float:
     """Time-adjusted relative volume: vol so far / expected vol by this point in session."""
     if avg_daily_volume <= 0 or session_volume <= 0:
         return 0.0
-    expected = avg_daily_volume * max(elapsed_frac, 1.0 / _RTH_MINUTES)
+    expected = avg_daily_volume * max(elapsed_frac, 1.0 / RTH_MINUTES)
     return session_volume / expected if expected > 0 else 0.0
 
 
@@ -409,11 +412,16 @@ def _fetch_volumes(symbol: str) -> Tuple[Optional[float], Optional[float]]:
             try:
                 from zoneinfo import ZoneInfo
 
-                et = ZoneInfo("America/New_York")
+                ct = ZoneInfo(SESSION_TZ)
             except Exception:
-                et = None
-            if et:
-                day_start = datetime.now(et).replace(hour=4, minute=0, second=0, microsecond=0)
+                ct = None
+            if ct:
+                day_start = datetime.now(ct).replace(
+                    hour=PREMARKET_START_MIN // 60,
+                    minute=PREMARKET_START_MIN % 60,
+                    second=0,
+                    microsecond=0,
+                )
                 day_start = day_start.astimezone(timezone.utc)
             else:
                 day_start = now_utc.replace(hour=9, minute=0, second=0, microsecond=0)

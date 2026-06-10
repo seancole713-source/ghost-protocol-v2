@@ -10,6 +10,7 @@ import os
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+from core.market_hours import RTH_CLOSE_MIN, RTH_OPEN_MIN, SESSION_TZ
 from core.vol_targets import base_vol_pct, forecast_band_vol_pct, stop_pct_from_vol
 
 LOGGER = logging.getLogger("ghost.daily_forecast")
@@ -18,7 +19,11 @@ _OVERNIGHT_GAP = 0.001
 
 
 def _parse_bar_date(ts: str) -> str:
-    """Normalize bar timestamp to YYYY-MM-DD in US/Eastern (session date)."""
+    """Normalize bar timestamp to YYYY-MM-DD in US/Eastern (exchange session date).
+
+    Daily OHLC bars from Alpaca/yfinance are calendar-keyed in Eastern even when
+    Ghost's operational clock runs in Central — avoids off-by-one at 04:00 UTC.
+    """
     if not ts:
         return ""
     s = str(ts).strip()
@@ -51,23 +56,21 @@ def _next_trading_day(d: date) -> date:
     return cur
 
 
-def panel_session_dates(now_et: Optional[datetime] = None) -> Dict[str, Any]:
-    """Canonical ET calendar dates for the Daily Prediction panel rows."""
+def panel_session_dates(now_ct: Optional[datetime] = None) -> Dict[str, Any]:
+    """Canonical Central calendar dates for the Daily Prediction panel rows."""
     try:
         from zoneinfo import ZoneInfo
 
-        tz = ZoneInfo("America/New_York")
+        tz = ZoneInfo(SESSION_TZ)
     except Exception:
         tz = timezone.utc
-    now = now_et or datetime.now(tz)
+    now = now_ct or datetime.now(tz)
     if now.tzinfo is None:
         now = now.replace(tzinfo=tz)
     else:
         now = now.astimezone(tz)
     today = now.date()
     hm = now.hour * 60 + now.minute
-    rth_open = 9 * 60 + 30
-    rth_close = 16 * 60
 
     if today.weekday() >= 5:
         last_completed = _previous_trading_day(today)
@@ -78,7 +81,7 @@ def panel_session_dates(now_et: Optional[datetime] = None) -> Dict[str, Any]:
             "predict_date": next_session.isoformat(),
             "market_date": last_completed.isoformat(),
         }
-    if hm >= rth_close:
+    if hm >= RTH_CLOSE_MIN:
         last_completed = today
         next_session = _next_trading_day(today)
         return {
@@ -87,7 +90,7 @@ def panel_session_dates(now_et: Optional[datetime] = None) -> Dict[str, Any]:
             "predict_date": next_session.isoformat(),
             "market_date": last_completed.isoformat(),
         }
-    if hm >= rth_open:
+    if hm >= RTH_OPEN_MIN:
         last_completed = _previous_trading_day(today)
         next_session = _next_trading_day(today)
         return {
@@ -157,12 +160,18 @@ def _actual_from_live(live: Dict[str, Any], *, use_rth_close: bool = False) -> O
     }
 
 
-def _after_rth_close(now_et: Optional[datetime], live_intraday: Optional[Dict[str, Any]]) -> bool:
+def _after_rth_close(now_ct: Optional[datetime], live_intraday: Optional[Dict[str, Any]]) -> bool:
     if live_intraday and live_intraday.get("session") == "afterhours":
         return True
-    if now_et is None:
+    if now_ct is None:
         return False
-    return now_et.hour * 60 + now_et.minute >= 16 * 60
+    try:
+        from zoneinfo import ZoneInfo
+
+        n = now_ct.astimezone(ZoneInfo(SESSION_TZ)) if now_ct.tzinfo else now_ct
+    except Exception:
+        n = now_ct
+    return n.hour * 60 + n.minute >= RTH_CLOSE_MIN
 
 
 def build_prediction_panel(
@@ -175,19 +184,21 @@ def build_prediction_panel(
     asset_type: str,
     live_intraday: Optional[Dict[str, Any]] = None,
     *,
+    now_ct: Optional[datetime] = None,
     now_et: Optional[datetime] = None,
 ) -> Dict[str, Any]:
-    """Align Live / Predict / Market rows to the ET trading calendar."""
+    """Align Live / Predict / Market rows to the Central trading calendar."""
+    now_ct = now_ct or now_et
     sym = (symbol or "WOLF").strip().upper()
-    dates = panel_session_dates(now_et)
+    dates = panel_session_dates(now_ct)
     predict_date = dates["predict_date"]
     market_date = dates["market_date"]
     live_date = dates["live_date"]
     try:
         from zoneinfo import ZoneInfo
-        now = now_et or datetime.now(ZoneInfo("America/New_York"))
+        now = now_ct or datetime.now(ZoneInfo(SESSION_TZ))
     except Exception:
-        now = now_et
+        now = now_ct
     after_close = _after_rth_close(now, live_intraday)
 
     market_actual = None
@@ -495,16 +506,16 @@ def live_now_quote(symbol: str, asset_type: str = "stock") -> Dict[str, Any]:
     return {"symbol": sym, "as_of_ts": int(time.time()), "session": "closed", "session_label": "Closed"}
 
 
-def _et_trading_date():
+def _ct_trading_date():
     try:
         from zoneinfo import ZoneInfo
-        return datetime.now(ZoneInfo("America/New_York")).date()
+        return datetime.now(ZoneInfo(SESSION_TZ)).date()
     except Exception:
         return datetime.now(timezone.utc).date()
 
 
 def _daily_bar_in_progress(rows: List[dict]) -> bool:
-    """True when the latest daily bar is today's ET session still trading."""
+    """True when the latest daily bar is today's Central session still trading."""
     if not rows:
         return False
     last_d = _parse_bar_date(str(rows[-1].get("ts", "")))
@@ -514,18 +525,18 @@ def _daily_bar_in_progress(rows: List[dict]) -> bool:
         bar_d = date.fromisoformat(last_d)
     except ValueError:
         return False
-    today = _et_trading_date()
+    today = _ct_trading_date()
     if bar_d != today:
         return False
     try:
         from zoneinfo import ZoneInfo
-        now_et = datetime.now(ZoneInfo("America/New_York"))
+        now_ct = datetime.now(ZoneInfo(SESSION_TZ))
     except Exception:
         return False
-    if now_et.weekday() >= 5:
+    if now_ct.weekday() >= 5:
         return False
-    hm = now_et.hour * 60 + now_et.minute
-    return hm < 16 * 60  # after 4:00 PM ET cash close → score today's session
+    hm = now_ct.hour * 60 + now_ct.minute
+    return hm < RTH_CLOSE_MIN
 
 
 def _last_bar_age_days(rows: List[dict]) -> Optional[int]:

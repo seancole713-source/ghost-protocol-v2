@@ -92,7 +92,7 @@ def test_last_bar_age_days():
     assert age > 30
 
 
-def test_daily_bar_in_progress_until_4pm_et(monkeypatch):
+def test_daily_bar_in_progress_until_3pm_ct(monkeypatch):
     from datetime import datetime
     from zoneinfo import ZoneInfo
     from core.daily_forecast_scorecard import _daily_bar_in_progress
@@ -102,7 +102,7 @@ def test_daily_bar_in_progress_until_4pm_et(monkeypatch):
     class FakeDT:
         @staticmethod
         def now(tz=None):
-            return datetime(2026, 6, 8, 15, 30, tzinfo=ZoneInfo("America/New_York"))
+            return datetime(2026, 6, 8, 14, 30, tzinfo=ZoneInfo("America/Chicago"))
 
     monkeypatch.setattr("core.daily_forecast_scorecard.datetime", FakeDT)
     assert _daily_bar_in_progress(rows) is True
@@ -110,7 +110,7 @@ def test_daily_bar_in_progress_until_4pm_et(monkeypatch):
     class FakeDTAfter:
         @staticmethod
         def now(tz=None):
-            return datetime(2026, 6, 8, 16, 5, tzinfo=ZoneInfo("America/New_York"))
+            return datetime(2026, 6, 8, 15, 5, tzinfo=ZoneInfo("America/Chicago"))
 
     monkeypatch.setattr("core.daily_forecast_scorecard.datetime", FakeDTAfter)
     assert _daily_bar_in_progress(rows) is False

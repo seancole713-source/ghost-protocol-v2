@@ -13,9 +13,18 @@ INTRADAY_QUOTE_TTL_S = int(os.getenv("INTRADAY_QUOTE_TTL_S", "900"))  # RTH O/H/
 _mem_cache: Dict[str, Tuple[float, float]] = {}
 _intraday_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 
-# US equity regular hours (America/New_York)
-_RTH_OPEN_MIN = 9 * 60 + 30
-_RTH_CLOSE_MIN = 16 * 60
+# US equity regular hours — Central Time (see core.market_hours)
+from core.market_hours import (
+    AFTERHOURS_END_MIN,
+    PREMARKET_START_MIN,
+    RTH_CLOSE_MIN,
+    RTH_OPEN_MIN,
+    SESSION_TZ,
+    is_us_after_hours,
+    is_us_premarket,
+    is_us_rth,
+    _now_ct,
+)
 
 
 def _cache_get(symbol):
@@ -114,21 +123,15 @@ def get_extended_session(symbol: str) -> Dict[str, Any]:
     session = "closed"
     session_price = live
     try:
-        import datetime as _dt
-        try:
-            from zoneinfo import ZoneInfo
-            now_et = _dt.datetime.now(ZoneInfo("America/New_York"))
-        except Exception:
-            now_et = _dt.datetime.utcnow() - _dt.timedelta(hours=5)
-        if now_et.weekday() < 5:
-            hm = now_et.hour * 60 + now_et.minute
-            if 9 * 60 + 30 <= hm < 16 * 60:
+        now_ct = _now_ct()
+        if now_ct.weekday() < 5:
+            if is_us_rth(now_ct):
                 session = "rth"
-            elif 4 * 60 <= hm < 9 * 60 + 30:
+            elif is_us_premarket(now_ct):
                 session = "premarket"
                 if pre_market and float(pre_market) > 0:
                     session_price = float(pre_market)
-            elif 16 * 60 <= hm < 20 * 60:
+            elif is_us_after_hours(now_ct):
                 session = "afterhours"
                 if post_market and float(post_market) > 0:
                     session_price = float(post_market)
@@ -153,8 +156,8 @@ def get_extended_session(symbol: str) -> Dict[str, Any]:
     }
 
 
-def _bar_et_minutes(bar: Dict[str, Any], et) -> Optional[int]:
-    """Minutes since midnight ET for an Alpaca bar timestamp (UTC ISO)."""
+def _bar_et_minutes(bar: Dict[str, Any], tz) -> Optional[int]:
+    """Minutes since midnight Central for an Alpaca bar timestamp (UTC ISO)."""
     import datetime as _dt
 
     raw = bar.get("t")
@@ -165,8 +168,8 @@ def _bar_et_minutes(bar: Dict[str, Any], et) -> Optional[int]:
         ts = _dt.datetime.fromisoformat(s)
         if ts.tzinfo is None:
             ts = ts.replace(tzinfo=_dt.timezone.utc)
-        if et:
-            ts = ts.astimezone(et)
+        if tz:
+            ts = ts.astimezone(tz)
         return ts.hour * 60 + ts.minute
     except Exception:
         return None
@@ -174,15 +177,15 @@ def _bar_et_minutes(bar: Dict[str, Any], et) -> Optional[int]:
 
 def _ohlc_from_bars(
     bars: list,
-    et,
+    tz,
     *,
     start_min: Optional[int] = None,
     end_min: Optional[int] = None,
 ) -> Tuple[Optional[float], Optional[float], Optional[float]]:
-    """Aggregate open/high/low from 5Min bars, optionally filtered to an ET window."""
+    """Aggregate open/high/low from 5Min bars, optionally filtered to a Central-time window."""
     filtered = []
     for bar in bars or []:
-        mins = _bar_et_minutes(bar, et)
+        mins = _bar_et_minutes(bar, tz)
         if mins is None:
             continue
         if start_min is not None and mins < start_min:
@@ -202,15 +205,15 @@ def _ohlc_from_bars(
 
 def _rth_close_from_bars(
     bars: list,
-    et,
+    tz,
     *,
     start_min: Optional[int] = None,
     end_min: Optional[int] = None,
 ) -> Optional[float]:
-    """Last RTH 5Min bar close (~4:00 PM ET cash close)."""
+    """Last RTH 5Min bar close (~3:00 PM CT cash close)."""
     filtered = []
     for bar in bars or []:
-        mins = _bar_et_minutes(bar, et)
+        mins = _bar_et_minutes(bar, tz)
         if mins is None:
             continue
         if start_min is not None and mins < start_min:
@@ -224,8 +227,8 @@ def _rth_close_from_bars(
     return round(float(filtered[-1]["c"]), 4)
 
 
-def _parse_bar_session_date(bar: dict, et) -> Optional[str]:
-    """Bar timestamp as YYYY-MM-DD in America/New_York."""
+def _parse_bar_session_date(bar: dict, tz) -> Optional[str]:
+    """Bar timestamp as YYYY-MM-DD in America/Chicago."""
     import datetime as _dt
 
     s = bar.get("t") or bar.get("timestamp") or ""
@@ -235,8 +238,8 @@ def _parse_bar_session_date(bar: dict, et) -> Optional[str]:
         ts = _dt.datetime.fromisoformat(str(s).replace("Z", "+00:00"))
         if ts.tzinfo is None:
             ts = ts.replace(tzinfo=_dt.timezone.utc)
-        if et:
-            ts = ts.astimezone(et)
+        if tz:
+            ts = ts.astimezone(tz)
         return ts.date().isoformat()
     except Exception:
         return str(s)[:10] if len(str(s)) >= 10 else None
@@ -246,7 +249,7 @@ def _today_ohlc_from_alpaca_daily(
     sym: str,
     headers: dict,
     session_date,
-    et,
+    tz,
 ) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float]]:
     """Fallback: today's cash-session O/H/L from 1Day bar when 5Min bars are empty."""
     import datetime as _dt
@@ -264,7 +267,7 @@ def _today_ohlc_from_alpaca_daily(
             if r.status_code != 200:
                 continue
             for bar in reversed(r.json().get("bars") or []):
-                if _parse_bar_session_date(bar, et) != want:
+                if _parse_bar_session_date(bar, tz) != want:
                     continue
                 o = float(bar.get("o") or 0)
                 h = float(bar.get("h") or 0)
@@ -280,7 +283,7 @@ def _today_ohlc_from_alpaca_daily(
 def get_intraday_session(symbol: str) -> Dict[str, Any]:
     """Today's O/H/L + last trade via Alpaca (fallback yfinance).
 
-    RTH open/high/low use 9:30–16:00 ET bars so the live row matches Google Finance
+    RTH open/high/low use 8:30–15:00 CT bars so the live row matches Google Finance
     during and after the cash session. Latest trade always wins for ``price``.
     """
     import datetime as _dt
@@ -305,24 +308,24 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
 
     try:
         from zoneinfo import ZoneInfo
-        et = ZoneInfo("America/New_York")
+        ct = ZoneInfo(SESSION_TZ)
     except Exception:
-        et = None
+        ct = None
 
-    now_et = _dt.datetime.now(et) if et else _dt.datetime.utcnow() - _dt.timedelta(hours=5)
-    session_date = now_et.date()
+    now_ct = _dt.datetime.now(ct) if ct else _dt.datetime.utcnow() - _dt.timedelta(hours=6)
+    session_date = now_ct.date()
     market_date = session_date.isoformat()
 
-    hm = now_et.hour * 60 + now_et.minute
-    if now_et.weekday() >= 5:
+    hm = now_ct.hour * 60 + now_ct.minute
+    if now_ct.weekday() >= 5:
         session, session_label = "closed", "Closed"
-    elif hm < 4 * 60:
+    elif hm < PREMARKET_START_MIN:
         session, session_label = "closed", "Closed"
-    elif hm < _RTH_OPEN_MIN:
+    elif hm < RTH_OPEN_MIN:
         session, session_label = "premarket", "Pre-market"
-    elif hm < _RTH_CLOSE_MIN:
+    elif hm < RTH_CLOSE_MIN:
         session, session_label = "rth", "Market open"
-    elif hm < 20 * 60:
+    elif hm < AFTERHOURS_END_MIN:
         session, session_label = "afterhours", "After hours"
     else:
         session, session_label = "closed", "Closed"
@@ -337,12 +340,13 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
 
     if headers:
         try:
-            if et:
+            if ct:
                 day_start = _dt.datetime(
-                    session_date.year, session_date.month, session_date.day, 4, 0, tzinfo=et
+                    session_date.year, session_date.month, session_date.day,
+                    PREMARKET_START_MIN // 60, PREMARKET_START_MIN % 60, tzinfo=ct,
                 ).astimezone(_dt.timezone.utc)
             else:
-                day_start = _dt.datetime.utcnow().replace(hour=9, minute=0, second=0, microsecond=0)
+                day_start = _dt.datetime.utcnow().replace(hour=8, minute=0, second=0, microsecond=0)
             start_str = day_start.strftime("%Y-%m-%dT%H:%M:%SZ")
             end_str = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             bars = []
@@ -360,14 +364,14 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
                 feed = f"alpaca_{feed_name}"
                 break
             if bars:
-                ext_open, ext_high, ext_low = _ohlc_from_bars(bars, et)
+                ext_open, ext_high, ext_low = _ohlc_from_bars(bars, ct)
                 rth_open, rth_high, rth_low = _ohlc_from_bars(
-                    bars, et, start_min=_RTH_OPEN_MIN, end_min=_RTH_CLOSE_MIN,
+                    bars, ct, start_min=RTH_OPEN_MIN, end_min=RTH_CLOSE_MIN,
                 )
                 rth_close = _rth_close_from_bars(
-                    bars, et, start_min=_RTH_OPEN_MIN, end_min=_RTH_CLOSE_MIN,
+                    bars, ct, start_min=RTH_OPEN_MIN, end_min=RTH_CLOSE_MIN,
                 )
-                use_rth = session in ("rth", "afterhours") or hm >= _RTH_CLOSE_MIN
+                use_rth = session in ("rth", "afterhours") or hm >= RTH_CLOSE_MIN
                 if use_rth and rth_open is not None:
                     today_open, today_high, today_low = rth_open, rth_high, rth_low
                 else:
@@ -393,7 +397,7 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
             LOGGER.debug("intraday alpaca %s: %s", sym, str(exc)[:80])
 
     if (today_open is None or today_high is None) and headers:
-        d_o, d_h, d_l, d_c = _today_ohlc_from_alpaca_daily(sym, headers, session_date, et)
+        d_o, d_h, d_l, d_c = _today_ohlc_from_alpaca_daily(sym, headers, session_date, ct)
         if d_o is not None:
             today_open, today_high, today_low = d_o, d_h, d_l
             if rth_open is None:

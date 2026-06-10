@@ -46,13 +46,6 @@ LOGGER = logging.getLogger("ghost.stock_engine")
 # TIMEZONE + PRE-MARKET DETECTION
 # ============================================================================
 
-try:
-    from zoneinfo import ZoneInfo
-except ImportError:
-    from pytz import timezone as ZoneInfo
-
-_ET = ZoneInfo("America/New_York")
-
 # Pre-market staleness: how old stock data can be before it's "stale".
 # Default 18h covers the overnight gap (yesterday 3 PM CT close → today 8 AM CT card).
 # On weekends this covers Fri close → Mon 8 AM (≈65h), but the engine already
@@ -61,21 +54,10 @@ STOCK_DATA_STALENESS_H = float(os.getenv("STOCK_DATA_STALENESS_H", "18"))
 
 
 def _is_premarket() -> bool:
-    """
-    True when the US stock market has NOT yet opened today.
+    """True when the US stock market has NOT yet opened today (Central clock)."""
+    from core.market_hours import is_us_premarket
 
-    Pre-market = weekday AND current ET time < 9:30 AM ET.
-    Returns False on weekends (no card fires on weekends anyway).
-
-    At 8 AM CT = 9 AM ET this returns True, which is exactly when the
-    daily TOP 10 card fires. The market opens at 9:30 AM ET (8:30 AM CT),
-    so yesterday's close is the freshest data available.
-    """
-    now_et = datetime.now(_ET)
-    if now_et.weekday() >= 5:  # Sat/Sun
-        return False
-    time_decimal = now_et.hour + now_et.minute / 60.0
-    return time_decimal < 9.5  # Before 9:30 AM ET
+    return is_us_premarket()
 
 # ============================================================================
 # STOCK ENGINE CONFIGURATION

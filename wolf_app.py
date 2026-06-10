@@ -3153,6 +3153,7 @@ def squeeze_status_endpoint():
             is_us_premarket,
             is_us_rth,
             market_session_label,
+            now_ct_iso,
             now_et_iso,
         )
         from core.squeeze_monitor import get_squeeze_status
@@ -3162,6 +3163,7 @@ def squeeze_status_endpoint():
             "ok": True,
             "enabled": os.getenv("SQUEEZE_MONITOR_ENABLED", "1") == "1",
             "market_session": market_session_label(),
+            "now_ct": now_ct_iso(),
             "now_et": now_et_iso(),
             "is_rth": is_us_rth(),
             "is_premarket": is_us_premarket(),
@@ -3184,6 +3186,7 @@ def squeeze_picks_endpoint():
             is_us_premarket,
             is_us_rth,
             market_session_label,
+            now_ct_iso,
             now_et_iso,
         )
         from core.squeeze_monitor import get_squeeze_picks
@@ -3193,6 +3196,7 @@ def squeeze_picks_endpoint():
             "ok": True,
             "enabled": os.getenv("SQUEEZE_MONITOR_ENABLED", "1") == "1",
             "market_session": market_session_label(),
+            "now_ct": now_ct_iso(),
             "now_et": now_et_iso(),
             "is_rth": is_us_rth(),
             "is_premarket": is_us_premarket(),

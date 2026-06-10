@@ -40,15 +40,15 @@ def test_scan_gap_boundaries(monkeypatch):
         from zoneinfo import ZoneInfo
         import datetime as dt
 
-        t_open = dt.datetime(2026, 6, 10, 9, 30, tzinfo=ZoneInfo("America/New_York"))
-        t_before_close = dt.datetime(2026, 6, 10, 15, 59, tzinfo=ZoneInfo("America/New_York"))
-        t_at_close = dt.datetime(2026, 6, 10, 16, 0, tzinfo=ZoneInfo("America/New_York"))
+        t_open = dt.datetime(2026, 6, 10, 8, 30, tzinfo=ZoneInfo("America/Chicago"))
+        t_before_close = dt.datetime(2026, 6, 10, 14, 59, tzinfo=ZoneInfo("America/Chicago"))
+        t_at_close = dt.datetime(2026, 6, 10, 15, 0, tzinfo=ZoneInfo("America/Chicago"))
     except Exception:
         import datetime as dt
 
-        t_open = dt.datetime(2026, 6, 10, 9, 30)
-        t_before_close = dt.datetime(2026, 6, 10, 15, 59)
-        t_at_close = dt.datetime(2026, 6, 10, 16, 0)
+        t_open = dt.datetime(2026, 6, 10, 8, 30)
+        t_before_close = dt.datetime(2026, 6, 10, 14, 59)
+        t_at_close = dt.datetime(2026, 6, 10, 15, 0)
 
     assert wolf_app._market_scan_gap_s(t_open)[1] is True
     assert wolf_app._market_scan_gap_s(t_before_close)[1] is True

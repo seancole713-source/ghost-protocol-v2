@@ -44,10 +44,10 @@ def test_rth_elapsed_fraction_midday_near_half():
     from datetime import datetime
     from zoneinfo import ZoneInfo
 
-    et = ZoneInfo("America/New_York")
-    # Wed Jun 10 2026 12:00 ET
-    noon = datetime(2026, 6, 10, 12, 0, tzinfo=et)
-    frac = rth_elapsed_fraction(noon)
+    ct = ZoneInfo("America/Chicago")
+    # Wed Jun 10 2026 11:00 AM CT (~38% through RTH)
+    mid = datetime(2026, 6, 10, 11, 0, tzinfo=ct)
+    frac = rth_elapsed_fraction(mid)
     assert 0.35 < frac < 0.45
 
 
