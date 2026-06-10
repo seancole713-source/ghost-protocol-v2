@@ -933,3 +933,12 @@ async def _on_startup():
     except Exception as wolf_mon_err:
         LOGGER.warning(f"[GHOST STARTUP] WOLF monitor start failed: {wolf_mon_err}")
 
+    # ── Watchlist squeeze radar (all 44 — intraday RVOL, not v3 picks) ───
+    try:
+        from core.squeeze_monitor import start_squeeze_monitor
+        loop = asyncio.get_running_loop()
+        loop.create_task(start_squeeze_monitor())
+        LOGGER.info("[GHOST STARTUP] 🎯 Watchlist squeeze monitor started")
+    except Exception as sq_err:
+        LOGGER.warning(f"[GHOST STARTUP] Squeeze monitor start failed: {sq_err}")
+
