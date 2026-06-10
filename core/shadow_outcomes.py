@@ -418,6 +418,18 @@ def shadow_stats(days: int = 30) -> Dict[str, Any]:
         ]
     out = aggregate_shadow_stats(rows)
     diag = shadow_diagnostics()
+    try:
+        import json as _j
+        from core.db import db_conn
+
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT val FROM ghost_state WHERE key='last_shadow_cycle'")
+            row = cur.fetchone()
+        if row and row[0]:
+            diag["last_cycle"] = _j.loads(row[0])
+    except Exception:
+        pass
     out.update({
         "ok": True,
         "days": days,
@@ -448,4 +460,19 @@ def run_shadow_cycle() -> Dict[str, int]:
     except Exception as e:
         LOGGER.warning("shadow resolve failed: %s", str(e)[:100])
         resolved = 0
-    return {"seeded": seeded, "resolved": resolved}
+    result = {"seeded": seeded, "resolved": resolved}
+    try:
+        import json as _j
+        from core.db import db_conn
+
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            cur.execute(
+                "INSERT INTO ghost_state(key,val) VALUES('last_shadow_cycle', %s) "
+                "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
+                (_j.dumps({**result, "ts": int(time.time())}),),
+            )
+    except Exception:
+        pass
+    return result

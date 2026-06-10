@@ -297,23 +297,10 @@ def is_daily_loss_locked() -> bool:
 
 def in_open_buffer_window() -> Tuple[bool, str]:
     """Optional: no new fires in first N minutes after US cash open (9:30 ET)."""
-    buf = risk_settings()["open_buffer_min"]
-    if buf <= 0:
-        return False, ""
-    try:
-        import pytz
+    from core.market_hours import in_open_buffer_window_et
 
-        et = pytz.timezone("US/Eastern")
-        now = datetime.now(et)
-        if now.weekday() >= 5:
-            return False, ""
-        open_min = 9 * 60 + 30
-        now_min = now.hour * 60 + now.minute
-        if open_min <= now_min < open_min + buf:
-            return True, f"open buffer ({buf}m after 9:30 ET)"
-    except Exception:
-        pass
-    return False, ""
+    buf = risk_settings()["open_buffer_min"]
+    return in_open_buffer_window_et(buf)
 
 
 def combined_trading_block() -> Dict[str, Any]:

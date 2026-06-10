@@ -55,12 +55,12 @@ def build_ask_context() -> Dict[str, Any]:
     """Snapshot live Ghost state for Claude (sync, no HTTP loopback)."""
     ctx: Dict[str, Any] = {"ts": int(time.time())}
     try:
-        from api.wolf_endpoints import _market_status
-        from core.prediction import _premarket_scan_enabled, _is_premarket
+        from core.market_hours import is_us_premarket, market_session_label
+        from core.prediction import _premarket_scan_enabled
         from core.pick_review import open_pick_review_enabled
-        ctx["market_session"] = _market_status()
+        ctx["market_session"] = market_session_label()
         ctx["premarket_scan_enabled"] = _premarket_scan_enabled()
-        ctx["is_premarket"] = _is_premarket()
+        ctx["is_premarket"] = is_us_premarket()
         ctx["open_pick_review_enabled"] = open_pick_review_enabled()
     except Exception as e:
         ctx["market_session_error"] = str(e)[:120]
@@ -79,7 +79,7 @@ def build_ask_context() -> Dict[str, Any]:
 
     try:
         from api.wolf_endpoints import ghost_score_payload_sync
-        gs = ghost_score_payload_sync(use_cache=True)
+        gs = ghost_score_payload_sync(use_cache=False)
         ctx["ghost_score"] = {
             k: gs.get(k)
             for k in (

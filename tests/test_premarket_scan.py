@@ -32,11 +32,15 @@ def test_premarket_scan_gap_uses_market_interval(monkeypatch):
     monkeypatch.delenv("SCAN_INTERVAL_MARKET_MIN", raising=False)
     monkeypatch.delenv("SCAN_INTERVAL_OFFHOURS_MIN", raising=False)
     monkeypatch.delenv("GHOST_PREMARKET_SCAN", raising=False)
-    gap, is_market = wolf_app._market_scan_gap_s(_ct((0, 8, 0)))
+    monkeypatch.setattr("core.market_hours.is_us_premarket", lambda now=None: True)
+    monkeypatch.setattr("core.market_hours.is_us_rth", lambda now=None: False)
+    gap, is_market = wolf_app._market_scan_gap_s(None)
     assert is_market is True and gap == 30 * 60
 
 
 def test_premarket_scan_gap_respects_opt_out(monkeypatch):
     monkeypatch.setenv("GHOST_PREMARKET_SCAN", "0")
-    _, is_market = wolf_app._market_scan_gap_s(_ct((0, 8, 0)))
+    monkeypatch.setattr("core.market_hours.is_us_premarket", lambda now=None: True)
+    monkeypatch.setattr("core.market_hours.is_us_rth", lambda now=None: False)
+    _, is_market = wolf_app._market_scan_gap_s(None)
     assert is_market is False

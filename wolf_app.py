@@ -825,25 +825,18 @@ def _daily_summary_job():
         LOGGER.error("daily summary store failed: " + str(e)[:100])
 
 
-def _market_scan_gap_s(now_ct):
-    """Required seconds between scans (roadmap #3a): shorter during US market
-    hours (8:30-15:00 CT, Mon-Fri) and pre-market when enabled (4:00-9:30 CT),
-    longer off-hours. Returns (gap_s, is_market)."""
+def _market_scan_gap_s(now_et=None):
+    """Required seconds between scans: shorter during US RTH + pre-market (ET)."""
     try:
         market_min = int(os.getenv("SCAN_INTERVAL_MARKET_MIN", "30"))
         off_min = int(os.getenv("SCAN_INTERVAL_OFFHOURS_MIN", "60"))
     except Exception:
         market_min, off_min = 30, 60
-    hm = now_ct.hour * 60 + now_ct.minute
-    is_rth = (now_ct.weekday() < 5) and (8 * 60 + 30) <= hm < (15 * 60)
-    is_premarket = False
-    if now_ct.weekday() < 5 and (4 * 60) <= hm < (9 * 60 + 30):
-        try:
-            from core.prediction import _premarket_scan_enabled
-            is_premarket = _premarket_scan_enabled()
-        except Exception:
-            is_premarket = False
-    is_market = is_rth or is_premarket
+    from core.market_hours import is_us_premarket, is_us_rth
+    from core.prediction import _premarket_scan_enabled
+
+    is_premarket = is_us_premarket(now_et) and _premarket_scan_enabled()
+    is_market = is_us_rth(now_et) or is_premarket
     return (market_min if is_market else off_min) * 60, is_market
 
 

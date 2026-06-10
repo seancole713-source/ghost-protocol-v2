@@ -175,16 +175,10 @@ def next_scan_note() -> str:
         return "Engine scans on a schedule · daily Telegram card 8 AM CT"
     hm = now.hour * 60 + now.minute
     is_weekday = now.weekday() < 5
-    is_rth = is_weekday and (8 * 60 + 30) <= hm < (15 * 60)
-    is_premarket = False
-    if is_weekday and (4 * 60) <= hm < (9 * 60 + 30):
-        try:
-            from core.prediction import _premarket_scan_enabled
+    from core.market_hours import is_us_premarket, is_us_rth
+    from core.prediction import _premarket_scan_enabled
 
-            is_premarket = _premarket_scan_enabled()
-        except Exception:
-            is_premarket = False
-    if is_rth or is_premarket:
+    if is_us_rth() or (is_us_premarket() and _premarket_scan_enabled()):
         return f"Engine scans every ~{market_min} min (market hours) · daily card 8 AM CT"
     return f"Engine scans every ~{off_min} min off-hours · daily card 8 AM CT"
 

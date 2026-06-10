@@ -74,23 +74,8 @@ def _err(msg: str, **extra) -> dict:
 # Market status helper (US equities: Mon-Fri 9:30-16:00 ET)
 # ────────────────────────────────────────────────────────────────
 def _market_status() -> str:
-    import datetime as _dt
-    try:
-        from zoneinfo import ZoneInfo
-        now_et = _dt.datetime.now(ZoneInfo("America/New_York"))
-    except Exception:
-        # Fallback: assume UTC-5 (EST), close enough for status badge
-        now_et = _dt.datetime.utcnow() - _dt.timedelta(hours=5)
-    if now_et.weekday() >= 5:
-        return "Market Closed"
-    hm = now_et.hour * 60 + now_et.minute
-    if 9 * 60 + 30 <= hm < 16 * 60:
-        return "Market Open"
-    if 16 * 60 <= hm < 20 * 60:
-        return "After Hours"
-    if 4 * 60 <= hm < 9 * 60 + 30:
-        return "Pre-Market"
-    return "Market Closed"
+    from core.market_hours import market_session_label
+    return market_session_label()
 
 
 # ────────────────────────────────────────────────────────────────

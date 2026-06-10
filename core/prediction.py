@@ -402,24 +402,15 @@ def enforce_kill_conditions() -> Dict[str, Any]:
 
 
 def _is_market_hours():
-    """Returns True if US market is open (9:30 AM - 4:00 PM CT, Mon-Fri)."""
-    import datetime as _dt, pytz as _tz
-    ct = _tz.timezone("America/Chicago")
-    now = _dt.datetime.now(ct)
-    if now.weekday() >= 5: return False  # weekend
-    mkt_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
-    mkt_close = now.replace(hour=16, minute=0, second=0, microsecond=0)
-    return mkt_open <= now <= mkt_close
+    """Returns True if US market is open (9:30 AM - 4:00 PM ET, Mon-Fri)."""
+    from core.market_hours import is_us_rth
+    return is_us_rth()
+
 
 def _is_premarket():
-    """Returns True if pre-market (4 AM - 9:30 AM CT, Mon-Fri)."""
-    import datetime as _dt, pytz as _tz
-    ct = _tz.timezone("America/Chicago")
-    now = _dt.datetime.now(ct)
-    if now.weekday() >= 5: return False
-    pre_open = now.replace(hour=4, minute=0, second=0, microsecond=0)
-    mkt_open = now.replace(hour=9, minute=30, second=0, microsecond=0)
-    return pre_open <= now < mkt_open
+    """Returns True if pre-market (4:00 AM - 9:30 AM ET, Mon-Fri)."""
+    from core.market_hours import is_us_premarket
+    return is_us_premarket()
 
 
 def _premarket_scan_enabled() -> bool:
@@ -1208,6 +1199,7 @@ def run_prediction_cycle(with_diag: bool = False):
             pass
         _up = _sv.get("up_prob")
         if _up is not None and (closest is None or _up > closest["up_prob"]):
+            _reg = _sv.get("regime") if isinstance(_sv.get("regime"), dict) else {}
             closest = {
                 "symbol": symbol,
                 "up_prob": _up,
@@ -1217,6 +1209,9 @@ def run_prediction_cycle(with_diag: bool = False):
                 "bootstrap_min_conf": float(_obj_cfg.get("bootstrap_min_conf", 0.75)),
                 "objective_mode": auto_mode_state.get("mode") if isinstance(auto_mode_state, dict) else None,
                 "skip": skip,
+                "regime_label": _reg.get("label"),
+                "price_vs_sma5_pct": _reg.get("price_vs_sma5_pct"),
+                "regime_block": skip in ("v3_regime_gate", "regime_gate"),
             }
 
     all_picks.sort(key=lambda x: x["confidence"], reverse=True)
@@ -1708,4 +1703,9 @@ def reconcile_outcomes():
             run_risk_discipline_cycle(notify=True)
         except Exception as _re:
             LOGGER.warning("risk discipline post-resolve failed: %s", str(_re)[:80])
+    try:
+        from core.shadow_outcomes import run_shadow_cycle
+        run_shadow_cycle()
+    except Exception as _se:
+        LOGGER.warning("shadow cycle after reconcile failed: %s", str(_se)[:80])
     return resolved
