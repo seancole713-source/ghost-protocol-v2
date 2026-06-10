@@ -180,6 +180,13 @@ async def start_squeeze_monitor() -> None:
             await _run_watchlist_scan()
         except Exception as exc:
             LOGGER.error("[SqueezeMonitor] scan failed: %s", exc, exc_info=False)
+            global _last_scan_report
+            _last_scan_report = {
+                "ok": False,
+                "ts": int(time.time()),
+                "status": "error",
+                "error": str(exc)[:200],
+            }
         await asyncio.sleep(CHECK_INTERVAL_SEC)
 
 
@@ -208,8 +215,12 @@ async def _run_watchlist_scan() -> None:
         "alerts_sent": 0,
         "duration_ms": 0,
         "elapsed_frac": round(elapsed, 4),
+        "status": "running",
     }
+    global _last_scan_report
+    _last_scan_report = dict(report)
 
+    fetch_timeout = float(os.getenv("SQUEEZE_FETCH_TIMEOUT_S", "12"))
     with ThreadPoolExecutor(max_workers=int(os.getenv("SQUEEZE_FETCH_WORKERS", "8"))) as pool:
         tasks = {
             sym: loop.run_in_executor(pool, _sync_fetch_metrics, sym) for sym in symbols
@@ -217,7 +228,10 @@ async def _run_watchlist_scan() -> None:
         metrics_map: Dict[str, Optional[Dict[str, Any]]] = {}
         for sym, task in tasks.items():
             try:
-                metrics_map[sym] = await task
+                metrics_map[sym] = await asyncio.wait_for(task, timeout=fetch_timeout)
+            except asyncio.TimeoutError:
+                LOGGER.warning("[SqueezeMonitor] fetch timeout %s (%.0fs)", sym, fetch_timeout)
+                metrics_map[sym] = None
             except Exception as exc:
                 LOGGER.debug("[SqueezeMonitor] fetch %s: %s", sym, exc)
                 metrics_map[sym] = None
@@ -257,7 +271,7 @@ async def _run_watchlist_scan() -> None:
                 report["alerts_sent"] += 1
 
     report["duration_ms"] = int((time.time() - t0) * 1000)
-    global _last_scan_report
+    report["status"] = "complete"
     _last_scan_report = report
     LOGGER.info(
         "[SqueezeMonitor] scan ok=%s fail=%s candidates=%s ms=%s",

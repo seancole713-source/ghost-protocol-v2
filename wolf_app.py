@@ -1407,6 +1407,21 @@ async def lifespan(app: FastAPI):
                     pass
     scheduler.register("weekly_retrain", _weekly_retrain, interval_s=604800)
     scheduler.start()
+    # Intraday monitors (must run in lifespan — engines/startup._on_startup is not invoked).
+    import asyncio as _aio
+    _bg_loop = _aio.get_running_loop()
+    try:
+        from core.wolf_monitor import start_wolf_monitor
+        _bg_loop.create_task(start_wolf_monitor())
+        LOGGER.info("[GHOST STARTUP] WOLF autonomous monitor started")
+    except Exception as _wme:
+        LOGGER.warning("WOLF monitor start failed: %s", str(_wme)[:80])
+    try:
+        from core.squeeze_monitor import start_squeeze_monitor
+        _bg_loop.create_task(start_squeeze_monitor())
+        LOGGER.info("[GHOST STARTUP] Watchlist squeeze monitor started (44 symbols)")
+    except Exception as _sqe:
+        LOGGER.warning("Squeeze monitor start failed: %s", str(_sqe)[:80])
     # Ghost v3: auto-train on startup if no model in DB
     def _startup_train():
         _lock_acquired = False
@@ -3143,7 +3158,7 @@ def squeeze_status_endpoint():
             "is_rth": is_us_rth(),
             "is_premarket": is_us_premarket(),
             "scan_interval_sec": int(os.getenv("SQUEEZE_MONITOR_INTERVAL", "60")),
-            **st,
+            "last_scan": st,
         }
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
