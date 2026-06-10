@@ -734,7 +734,7 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
         <div class="sq-meta" id="sq-meta">Loading…</div>
       </div>
       <div id="sq-table-wrap"><div class="sq-empty">Scanning watchlist for squeeze signals…</div></div>
-      <div class="sq-foot" id="sq-foot">Radar scan every 60s during market hours · alerts via Telegram when thresholds hit</div>
+      <div class="sq-foot" id="sq-foot">Radar scan every 60s during extended hours (3 AM – 7 PM CT) · alerts via Telegram when thresholds hit</div>
     </div>
   </section>
 
@@ -2571,16 +2571,34 @@ function _renderSqueezePicks(data){
   }
   if(!picks.length){
     var overnight = sess === 'Market Closed';
-    var afterHours = !!(data && data.is_after_hours);
     var watching = !!(data && (data.is_rth || data.is_premarket || data.is_extended_hours));
+    var leaders = (data && data.leaders) ? data.leaders.slice() : [];
+    var fetchLine = (data && data.fetch_ok != null)
+      ? ' Priced <b>' + data.fetch_ok + '/44</b> on last scan.'
+      : '';
     var msg = overnight
-      ? 'Overnight — squeeze radar sleeps until premarket (3:00 AM CT).'
-      : afterHours
-        ? 'After hours — cash session ended at <b>3:00 PM CT</b>. Radar still scans until 7:00 PM CT for late squeezes.'
-        : watching
-          ? 'Ghost is watching all 44 symbols. You\'ll get Telegram + this panel when RVOL + move thresholds hit.'
-          : 'Waiting for next scan cycle…';
-    wrap.innerHTML = '<div class="sq-empty"><b>No squeeze picks right now</b><br>' + msg + '</div>';
+      ? 'Overnight — radar sleeps until premarket (3:00 AM CT).'
+      : watching
+        ? 'Radar is <b>live</b> — watching all 44 symbols.' + fetchLine
+          + ' Telegram + this panel fire when RVOL + move thresholds hit'
+          + (data && data.is_after_hours ? ' (after-hours until 7:00 PM CT).' : '.')
+        : 'Waiting for next scan cycle…';
+    if(leaders.length){
+      var lrows = leaders.map(function(p){
+        return '<tr><td><span class="sq-sym">' + escHtml(p.symbol) + '</span></td>'
+          + '<td class="sq-num">' + _fmtUsd(p.price) + '</td>'
+          + '<td class="sq-num">+' + (p.peak_move_pct != null ? Number(p.peak_move_pct).toFixed(1) : '—') + '%</td>'
+          + '<td class="sq-conf">' + (p.rvol != null ? Number(p.rvol).toFixed(1) + '×' : '—') + '</td>'
+          + '<td style="color:#64748b;font-size:11px">below alert floor</td></tr>';
+      }).join('');
+      wrap.innerHTML = '<div class="sq-empty" style="padding-bottom:12px"><b>No squeeze alerts yet</b><br>' + msg + '</div>'
+        + '<div style="font-size:10px;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:8px 0 6px">Top movers · watchlist</div>'
+        + '<table class="sq-table"><thead><tr>'
+        + '<th>Stock</th><th>Last</th><th>Peak</th><th>RVOL</th><th>Status</th>'
+        + '</tr></thead><tbody>' + lrows + '</tbody></table>';
+    } else {
+      wrap.innerHTML = '<div class="sq-empty"><b>No squeeze alerts yet</b><br>' + msg + '</div>';
+    }
     if(foot) foot.textContent = 'Panel refresh every 3 min · backend scan every 60s · ' + (data && data.enabled === false ? 'radar disabled' : 'radar enabled');
     return;
   }

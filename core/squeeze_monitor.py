@@ -211,6 +211,7 @@ def get_squeeze_picks() -> Dict[str, Any]:
         "fetch_ok": st.get("fetch_ok"),
         "fetch_fail": st.get("fetch_fail"),
         "duration_ms": st.get("duration_ms"),
+        "leaders": list(st.get("leaders") or []),
     }
 
 
@@ -298,6 +299,14 @@ async def _run_watchlist_scan() -> None:
         peak_pct = metrics["peak_move_pct"]
         current_pct = metrics["current_move_pct"]
 
+        report.setdefault("leaders", []).append({
+            "symbol": symbol,
+            "peak_move_pct": round(peak_pct, 2),
+            "current_move_pct": round(current_pct, 2),
+            "rvol": round(rvol, 2),
+            "price": round(float(metrics["price"]), 2),
+        })
+
         kind = evaluate_squeeze_signal(peak_pct, current_pct, rvol, short_risk=None)
         short_ctx: Dict[str, Any] = {}
         if not kind and prefilter_candidate(peak_pct, current_pct, rvol):
@@ -317,6 +326,9 @@ async def _run_watchlist_scan() -> None:
                 del _alert_history[_ALERT_HISTORY_MAX:]
 
     report["picks"] = list(report["candidates"])
+    leaders = report.get("leaders") or []
+    leaders.sort(key=lambda x: (x.get("peak_move_pct") or 0, x.get("rvol") or 0), reverse=True)
+    report["leaders"] = leaders[:8]
 
     report["duration_ms"] = int((time.time() - t0) * 1000)
     report["status"] = "complete"
@@ -359,6 +371,15 @@ def _short_context(symbol: str) -> Dict[str, Any]:
     return out
 
 
+def _yf_fallback_enabled() -> bool:
+    """Avoid hammering Yahoo during 44-symbol parallel scans (429 kills SPCE/WOLF)."""
+    if os.getenv("ALPACA_KEY_ID", "") and os.getenv("SQUEEZE_YF_FALLBACK", "0").strip().lower() not in (
+        "1", "true", "yes", "on",
+    ):
+        return False
+    return os.getenv("SQUEEZE_YF_FALLBACK", "1").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _sync_fetch_metrics(symbol: str) -> Optional[Dict[str, Any]]:
     """Price/OHLCV via core.prices session helper + Alpaca/yfinance volume."""
     sym = (symbol or "").upper().strip()
@@ -373,14 +394,14 @@ def _sync_fetch_metrics(symbol: str) -> Optional[Dict[str, Any]]:
         last_px = sess.get("price")
         session_high = sess.get("today_high") or sess.get("rth_high") or last_px
         if not prev_close or not last_px or float(prev_close) <= 0:
-            return _yf_fetch_metrics(sym)
+            return _yf_fetch_metrics(sym) if _yf_fallback_enabled() else None
         prev_close = float(prev_close)
         last_px = float(last_px)
         session_high = float(session_high or last_px)
 
         avg_vol, session_vol = _fetch_volumes(sym)
         if not avg_vol or avg_vol <= 0:
-            return _yf_fetch_metrics(sym)
+            return _yf_fetch_metrics(sym) if _yf_fallback_enabled() else None
         if not session_vol or session_vol <= 0:
             session_vol = avg_vol * 0.5
 
@@ -395,7 +416,7 @@ def _sync_fetch_metrics(symbol: str) -> Optional[Dict[str, Any]]:
         }
     except Exception as exc:
         LOGGER.debug("[SqueezeMonitor] metrics %s: %s", sym, exc)
-        return _yf_fetch_metrics(sym)
+        return _yf_fetch_metrics(sym) if _yf_fallback_enabled() else None
 
 
 def _fetch_volumes(symbol: str) -> Tuple[Optional[float], Optional[float]]:
@@ -458,6 +479,9 @@ def _fetch_volumes(symbol: str) -> Tuple[Optional[float], Optional[float]]:
                 return avg_vol, session_vol
         except Exception as exc:
             LOGGER.debug("[SqueezeMonitor] alpaca vol %s: %s", sym, exc)
+
+    if not _yf_fallback_enabled():
+        return None, None
 
     try:
         import yfinance as yf
