@@ -3147,7 +3147,14 @@ def shadow_stats_endpoint(days: int = 30):
 def squeeze_status_endpoint():
     """Last watchlist squeeze-radar scan snapshot (44 symbols, RVOL + candidates)."""
     try:
-        from core.market_hours import is_us_premarket, is_us_rth, market_session_label
+        from core.market_hours import (
+            is_us_after_hours,
+            is_us_extended_hours,
+            is_us_premarket,
+            is_us_rth,
+            market_session_label,
+            now_et_iso,
+        )
         from core.squeeze_monitor import get_squeeze_status
 
         st = get_squeeze_status()
@@ -3155,8 +3162,11 @@ def squeeze_status_endpoint():
             "ok": True,
             "enabled": os.getenv("SQUEEZE_MONITOR_ENABLED", "1") == "1",
             "market_session": market_session_label(),
+            "now_et": now_et_iso(),
             "is_rth": is_us_rth(),
             "is_premarket": is_us_premarket(),
+            "is_after_hours": is_us_after_hours(),
+            "is_extended_hours": is_us_extended_hours(),
             "scan_interval_sec": int(os.getenv("SQUEEZE_MONITOR_INTERVAL", "60")),
             "last_scan": st,
         }
@@ -3168,7 +3178,14 @@ def squeeze_status_endpoint():
 def squeeze_picks_endpoint():
     """Live short-squeeze picks — same fields as Telegram alerts (buy/sell/confidence)."""
     try:
-        from core.market_hours import is_us_premarket, is_us_rth, market_session_label
+        from core.market_hours import (
+            is_us_after_hours,
+            is_us_extended_hours,
+            is_us_premarket,
+            is_us_rth,
+            market_session_label,
+            now_et_iso,
+        )
         from core.squeeze_monitor import get_squeeze_picks
 
         board = get_squeeze_picks()
@@ -3176,8 +3193,11 @@ def squeeze_picks_endpoint():
             "ok": True,
             "enabled": os.getenv("SQUEEZE_MONITOR_ENABLED", "1") == "1",
             "market_session": market_session_label(),
+            "now_et": now_et_iso(),
             "is_rth": is_us_rth(),
             "is_premarket": is_us_premarket(),
+            "is_after_hours": is_us_after_hours(),
+            "is_extended_hours": is_us_extended_hours(),
             "scan_interval_sec": int(os.getenv("SQUEEZE_MONITOR_INTERVAL", "60")),
             "panel_refresh_sec": int(os.getenv("SQUEEZE_PANEL_REFRESH_SEC", "180")),
             **board,

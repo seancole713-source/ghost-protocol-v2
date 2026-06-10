@@ -60,6 +60,23 @@ def market_session_label(now: _dt.datetime | None = None) -> str:
     return "Market Closed"
 
 
+def is_us_extended_hours(now: _dt.datetime | None = None) -> bool:
+    """Mon–Fri premarket + RTH + after-hours (4:00 AM – 8:00 PM ET)."""
+    now, hm = session_hm(now)
+    if now.weekday() >= 5:
+        return False
+    return (4 * 60) <= hm < (20 * 60)
+
+
+def now_et_iso(now: _dt.datetime | None = None) -> str:
+    """Current ET wall clock for UI, e.g. '4:22 PM ET'."""
+    n = now or _now_et()
+    try:
+        return n.strftime("%-I:%M %p ET")
+    except Exception:
+        return n.strftime("%I:%M %p ET").lstrip("0")
+
+
 def in_open_buffer_window_et(open_buffer_min: int) -> Tuple[bool, str]:
     """True during the first N minutes after 9:30 ET cash open."""
     if open_buffer_min <= 0:

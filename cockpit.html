@@ -2566,18 +2566,27 @@ function _renderSqueezePicks(data){
   var picks = (data && data.picks) ? data.picks.slice() : [];
   picks.sort(function(a, b){ return (b.confidence_pct || 0) - (a.confidence_pct || 0); });
   var sess = (data && data.market_session) ? data.market_session : '—';
+  var nowEt = (data && data.now_et) ? data.now_et : '';
   var scanTs = data && data.last_scan_ts ? new Date(data.last_scan_ts * 1000) : null;
   var scanStr = scanTs ? scanTs.toLocaleTimeString('en-US', {hour:'numeric', minute:'2-digit', timeZone:'America/New_York'}) + ' ET' : '—';
   if(meta){
-    meta.innerHTML = escHtml(sess)
+    meta.innerHTML = (nowEt ? escHtml(nowEt) + ' · ' : '')
+      + escHtml(sess)
       + ' · scan ' + escHtml(scanStr)
       + (data && data.fetch_ok != null ? ' · ' + data.fetch_ok + '/44 ok' : '');
   }
   if(!picks.length){
-    var idle = !(data && (data.is_rth || data.is_premarket));
-    wrap.innerHTML = '<div class="sq-empty"><b>No squeeze picks right now</b><br>'
-      + (idle ? 'Market closed — radar resumes at 9:30 AM ET.' : 'Ghost is watching all 44 symbols. You\'ll get Telegram + this panel when RVOL + move thresholds hit.')
-      + '</div>';
+    var overnight = sess === 'Market Closed';
+    var afterHours = !!(data && data.is_after_hours);
+    var watching = !!(data && (data.is_rth || data.is_premarket || data.is_extended_hours));
+    var msg = overnight
+      ? 'Overnight — squeeze radar sleeps until premarket (4:00 AM ET).'
+      : afterHours
+        ? 'After hours — cash session ended at <b>4:00 PM ET</b> (3:00 PM Central). Radar still scans until 8:00 PM ET for late squeezes.'
+        : watching
+          ? 'Ghost is watching all 44 symbols. You\'ll get Telegram + this panel when RVOL + move thresholds hit.'
+          : 'Waiting for next scan cycle…';
+    wrap.innerHTML = '<div class="sq-empty"><b>No squeeze picks right now</b><br>' + msg + '</div>';
     if(foot) foot.textContent = 'Panel refresh every 3 min · backend scan every 60s · ' + (data && data.enabled === false ? 'radar disabled' : 'radar enabled');
     return;
   }

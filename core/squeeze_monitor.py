@@ -242,9 +242,9 @@ async def start_squeeze_monitor() -> None:
 async def _run_watchlist_scan() -> None:
     from concurrent.futures import ThreadPoolExecutor
 
-    from core.market_hours import is_us_premarket, is_us_rth
+    from core.market_hours import is_us_extended_hours, is_us_premarket, is_us_rth
 
-    if not (is_us_rth() or is_us_premarket()):
+    if not is_us_extended_hours():
         return
 
     from config.symbols import get_edge_set
@@ -256,7 +256,7 @@ async def _run_watchlist_scan() -> None:
     report: Dict[str, Any] = {
         "ok": True,
         "ts": int(time.time()),
-        "session": "rth" if is_us_rth() else "premarket",
+        "session": "rth" if is_us_rth() else ("premarket" if is_us_premarket() else "extended"),
         "symbols": len(symbols),
         "fetch_ok": 0,
         "fetch_fail": 0,
