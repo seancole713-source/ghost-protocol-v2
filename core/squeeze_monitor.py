@@ -300,8 +300,15 @@ async def _run_watchlist_scan() -> None:
         peak_pct = metrics["peak_move_pct"]
         current_pct = metrics["current_move_pct"]
 
+        buy, sell = squeeze_trade_levels(
+            float(metrics["price"]),
+            float(metrics.get("session_high") or metrics["price"]),
+            "squeeze_forming",
+        )
         report.setdefault("leaders", []).append({
             "symbol": symbol,
+            "buy": buy,
+            "sell": sell,
             "peak_move_pct": round(peak_pct, 2),
             "current_move_pct": round(current_pct, 2),
             "rvol": round(rvol, 2),

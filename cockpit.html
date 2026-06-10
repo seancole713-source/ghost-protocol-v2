@@ -729,7 +729,7 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
       <div class="sq-head">
         <div>
           <div class="sq-title">Live squeeze picks</div>
-          <div class="sq-sub">Same as Telegram alerts — symbol, buy, sell, confidence. Scans all <b>44</b> watchlist symbols; panel refreshes every <b>3 min</b>.</div>
+          <div class="sq-sub">Same as Telegram — <b>Buy</b>, <b>Sell</b>, RVOL, peak %. Scans all <b>44</b> symbols; panel refreshes every <b>3 min</b>.</div>
         </div>
         <div class="sq-meta" id="sq-meta">Loading…</div>
       </div>
@@ -2580,24 +2580,45 @@ function _renderSqueezePicks(data){
       ? 'Overnight — radar sleeps until premarket (3:00 AM CT).'
       : watching
         ? 'Radar is <b>live</b> — watching all 44 symbols.' + fetchLine
-          + ' Telegram + this panel fire when RVOL + move thresholds hit'
-          + (data && data.is_after_hours ? ' (after-hours until 7:00 PM CT).' : '.')
+          + ' Table below shows <b>buy now</b> / <b>sell now</b> (same levels as Telegram).'
+          + (data && data.is_after_hours
+            ? ' Cash market closed at <b>3:00 PM CT</b> — extended-hours quotes only until 7:00 PM CT.'
+            : '.')
         : 'Waiting for next scan cycle…';
+    var sessionAlerts = (data && data.alert_history) ? data.alert_history.slice() : [];
     if(leaders.length){
       var lrows = leaders.map(function(p){
+        var buy = p.buy != null ? p.buy : p.price;
+        var sell = p.sell != null ? p.sell : p.price;
         return '<tr><td><span class="sq-sym">' + escHtml(p.symbol) + '</span></td>'
-          + '<td class="sq-num">' + _fmtUsd(p.price) + '</td>'
+          + '<td class="sq-num">' + _fmtUsd(buy) + '</td>'
+          + '<td class="sq-num">' + _fmtUsd(sell) + '</td>'
           + '<td class="sq-num">+' + (p.peak_move_pct != null ? Number(p.peak_move_pct).toFixed(1) : '—') + '%</td>'
-          + '<td class="sq-conf">' + (p.rvol != null ? Number(p.rvol).toFixed(1) + '×' : '—') + '</td>'
-          + '<td style="color:#64748b;font-size:11px">below alert floor</td></tr>';
+          + '<td class="sq-conf">' + (p.rvol != null ? Number(p.rvol).toFixed(1) + '×' : '—') + '</td></tr>';
       }).join('');
-      wrap.innerHTML = '<div class="sq-empty" style="padding-bottom:12px"><b>No squeeze alerts yet</b><br>' + msg + '</div>'
-        + '<div style="font-size:10px;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:8px 0 6px">Top movers · watchlist</div>'
+      var alertBlock = '';
+      if(sessionAlerts.length){
+        alertBlock = '<div style="font-size:10px;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:16px 0 6px">Telegram alerts this session</div>'
+          + '<table class="sq-table"><thead><tr>'
+          + '<th>Stock</th><th>Buy</th><th>Sell</th><th>Conf</th><th>Peak</th>'
+          + '</tr></thead><tbody>'
+          + sessionAlerts.map(function(p){
+            return '<tr class="sq-forming"><td><span class="sq-sym">' + escHtml(p.symbol) + '</span></td>'
+              + '<td class="sq-num">' + _fmtUsd(p.buy) + '</td>'
+              + '<td class="sq-num">' + _fmtUsd(p.sell) + '</td>'
+              + '<td class="sq-conf">' + (p.confidence_pct != null ? p.confidence_pct + '%' : '—') + '</td>'
+              + '<td class="sq-num">+' + (p.peak_move_pct != null ? Number(p.peak_move_pct).toFixed(1) : '—') + '%</td></tr>';
+          }).join('')
+          + '</tbody></table>';
+      }
+      wrap.innerHTML = '<div class="sq-empty" style="padding-bottom:12px"><b>No new squeeze alerts this scan</b><br>' + msg + '</div>'
+        + alertBlock
+        + '<div style="font-size:10px;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:16px 0 6px">Top movers · buy / sell now</div>'
         + '<table class="sq-table"><thead><tr>'
-        + '<th>Stock</th><th>Last</th><th>Peak</th><th>RVOL</th><th>Status</th>'
+        + '<th>Stock</th><th>Buy</th><th>Sell</th><th>Peak</th><th>RVOL</th>'
         + '</tr></thead><tbody>' + lrows + '</tbody></table>';
     } else {
-      wrap.innerHTML = '<div class="sq-empty"><b>No squeeze alerts yet</b><br>' + msg + '</div>';
+      wrap.innerHTML = '<div class="sq-empty"><b>No new squeeze alerts this scan</b><br>' + msg + '</div>';
     }
     if(foot) foot.textContent = 'Panel refresh every 3 min · backend scan every 60s · ' + (data && data.enabled === false ? 'radar disabled' : 'radar enabled');
     return;
@@ -2615,7 +2636,7 @@ function _renderSqueezePicks(data){
       + '</tr>';
   }).join('');
   wrap.innerHTML = '<table class="sq-table"><thead><tr>'
-    + '<th>Stock</th><th>Buy</th><th>Sell</th><th>Confidence</th><th>Context</th>'
+    + '<th>Stock</th><th>Buy</th><th>Sell</th><th>Confidence</th><th>Peak · RVOL</th>'
     + '</tr></thead><tbody>' + rows + '</tbody></table>';
   if(foot){
     var alerts = (data.alert_history && data.alert_history.length) ? data.alert_history.length + ' Telegram alert(s) today' : 'No Telegram alerts this session yet';
