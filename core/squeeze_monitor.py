@@ -380,6 +380,43 @@ def _yf_fallback_enabled() -> bool:
     return os.getenv("SQUEEZE_YF_FALLBACK", "1").strip().lower() in ("1", "true", "yes", "on")
 
 
+def _alpaca_headers() -> Optional[dict]:
+    key = os.getenv("ALPACA_KEY_ID", "")
+    secret = os.getenv("ALPACA_SECRET_KEY", "")
+    if not key or not secret:
+        return None
+    return {"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret}
+
+
+def _alpaca_prev_close(symbol: str) -> Optional[float]:
+    """Prior session close from Alpaca 1Day bars (no Yahoo)."""
+    headers = _alpaca_headers()
+    if not headers:
+        return None
+    sym = symbol.upper()
+    try:
+        import requests
+
+        end = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        start = (datetime.now(timezone.utc) - timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        for feed in ("sip", "iex"):
+            url = (
+                f"https://data.alpaca.markets/v2/stocks/{sym}/bars"
+                f"?timeframe=1Day&start={start}&end={end}&limit=5&feed={feed}"
+            )
+            r = requests.get(url, headers=headers, timeout=_TIMEOUT)
+            if r.status_code != 200:
+                continue
+            dbars = r.json().get("bars") or []
+            if len(dbars) >= 2:
+                return round(float(dbars[-2].get("c", 0)), 4)
+            if len(dbars) == 1:
+                return round(float(dbars[0].get("o", 0)), 4)
+    except Exception as exc:
+        LOGGER.debug("[SqueezeMonitor] alpaca prev_close %s: %s", sym, exc)
+    return None
+
+
 def _sync_fetch_metrics(symbol: str) -> Optional[Dict[str, Any]]:
     """Price/OHLCV via core.prices session helper + Alpaca/yfinance volume."""
     sym = (symbol or "").upper().strip()
@@ -393,7 +430,11 @@ def _sync_fetch_metrics(symbol: str) -> Optional[Dict[str, Any]]:
         prev_close = sess.get("previous_close")
         last_px = sess.get("price")
         session_high = sess.get("today_high") or sess.get("rth_high") or last_px
-        if not prev_close or not last_px or float(prev_close) <= 0:
+        if not last_px or float(last_px) <= 0:
+            return _yf_fetch_metrics(sym) if _yf_fallback_enabled() else None
+        if not prev_close or float(prev_close) <= 0:
+            prev_close = _alpaca_prev_close(sym)
+        if not prev_close or float(prev_close) <= 0:
             return _yf_fetch_metrics(sym) if _yf_fallback_enabled() else None
         prev_close = float(prev_close)
         last_px = float(last_px)
@@ -422,13 +463,11 @@ def _sync_fetch_metrics(symbol: str) -> Optional[Dict[str, Any]]:
 def _fetch_volumes(symbol: str) -> Tuple[Optional[float], Optional[float]]:
     """Return (avg_daily_volume, session_volume_so_far)."""
     sym = symbol.upper()
-    key = os.getenv("ALPACA_KEY_ID", "")
-    secret = os.getenv("ALPACA_SECRET_KEY", "")
-    if key and secret:
+    headers = _alpaca_headers()
+    if headers:
         try:
             import requests
 
-            headers = {"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret}
             now_utc = datetime.now(timezone.utc)
             try:
                 from zoneinfo import ZoneInfo
@@ -477,6 +516,8 @@ def _fetch_volumes(symbol: str) -> Tuple[Optional[float], Optional[float]]:
                     break
             if avg_vol and session_vol:
                 return avg_vol, session_vol
+            if avg_vol:
+                return avg_vol, avg_vol * 0.4
         except Exception as exc:
             LOGGER.debug("[SqueezeMonitor] alpaca vol %s: %s", sym, exc)
 

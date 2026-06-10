@@ -2,7 +2,7 @@
 # which forces Railway/Nixpacks to invalidate the build-layer cache and
 # rebuild the container image. Increment the version below if Railway
 # starts serving stale containers again.
-# cache_bust = "pr52-squeeze-leaders"
+# cache_bust = "pr53-alpaca-prev-close"
 [phases.setup]
 aptPkgs = ["libpq-dev", "gcc", "python3-dev"]
 
