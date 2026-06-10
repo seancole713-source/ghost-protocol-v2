@@ -312,116 +312,116 @@ def _short_context(symbol: str) -> Dict[str, Any]:
 
 
 def _sync_fetch_metrics(symbol: str) -> Optional[Dict[str, Any]]:
-    """Alpaca 5Min + daily bars; yfinance fallback for volume."""
+    """Price/OHLCV via core.prices session helper + Alpaca/yfinance volume."""
     sym = (symbol or "").upper().strip()
     if not sym:
         return None
 
-    key = os.getenv("ALPACA_KEY_ID", "")
-    secret = os.getenv("ALPACA_SECRET_KEY", "")
-    if not key or not secret:
-        return _yf_fetch_metrics(sym)
-
     try:
-        import requests
+        from core.prices import get_intraday_session
 
-        headers = {"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret}
-        now_utc = datetime.now(timezone.utc)
-        try:
-            from zoneinfo import ZoneInfo
-
-            et = ZoneInfo("America/New_York")
-        except Exception:
-            et = None
-        if et:
-            day_start = datetime.now(et).replace(hour=4, minute=0, second=0, microsecond=0)
-            day_start = day_start.astimezone(timezone.utc)
-        else:
-            day_start = now_utc.replace(hour=9, minute=0, second=0, microsecond=0)
-        start_str = day_start.strftime("%Y-%m-%dT%H:%M:%SZ")
-        end_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-        bars: List[dict] = []
-        for feed in ("sip", "iex"):
-            url = (
-                f"https://data.alpaca.markets/v2/stocks/{sym}/bars"
-                f"?timeframe=5Min&start={start_str}&end={end_str}&limit=10000&feed={feed}"
-            )
-            r = requests.get(url, headers=headers, timeout=_TIMEOUT)
-            if r.status_code != 200:
-                continue
-            bars = r.json().get("bars") or []
-            if bars:
-                break
-
-        prev_close = None
-        avg_vol = None
-        d_start = (now_utc - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        d_end = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
-        for feed in ("sip", "iex"):
-            url = (
-                f"https://data.alpaca.markets/v2/stocks/{sym}/bars"
-                f"?timeframe=1Day&start={d_start}&end={d_end}&limit=25&feed={feed}"
-            )
-            r = requests.get(url, headers=headers, timeout=_TIMEOUT)
-            if r.status_code != 200:
-                continue
-            dbars = r.json().get("bars") or []
-            if len(dbars) >= 2:
-                prev_close = float(dbars[-2].get("c", 0))
-            vols = [float(b.get("v", 0)) for b in dbars[-20:] if b.get("v")]
-            if vols:
-                avg_vol = sum(vols) / len(vols)
-            if prev_close and avg_vol:
-                break
-
-        if not bars or not prev_close or not avg_vol:
+        sess = get_intraday_session(sym)
+        prev_close = sess.get("previous_close")
+        last_px = sess.get("price")
+        session_high = sess.get("today_high") or sess.get("rth_high") or last_px
+        if not prev_close or not last_px or float(prev_close) <= 0:
             return _yf_fetch_metrics(sym)
+        prev_close = float(prev_close)
+        last_px = float(last_px)
+        session_high = float(session_high or last_px)
 
-        from core.market_hours import is_us_rth
-        from core.prices import _bar_et_minutes, _ohlc_from_bars
-
-        use_rth = is_us_rth() and et is not None
-        if use_rth:
-            _, rth_high, _ = _ohlc_from_bars(
-                bars, et, start_min=_RTH_OPEN_MIN, end_min=_RTH_CLOSE_MIN,
-            )
-            session_high = rth_high if rth_high else max(float(b.get("h", 0)) for b in bars)
-            session_vol = sum(
-                float(b.get("v", 0))
-                for b in bars
-                if b.get("v")
-                and (m := _bar_et_minutes(b, et)) is not None
-                and _RTH_OPEN_MIN <= m < _RTH_CLOSE_MIN
-            )
-            rth_closes = [
-                float(b["c"])
-                for b in bars
-                if b.get("c")
-                and (m := _bar_et_minutes(b, et)) is not None
-                and _RTH_OPEN_MIN <= m < _RTH_CLOSE_MIN
-            ]
-            last_px = rth_closes[-1] if rth_closes else float(bars[-1].get("c", 0))
-        else:
-            session_vol = sum(float(b.get("v", 0)) for b in bars if b.get("v"))
-            highs = [float(b.get("h", 0)) for b in bars if b.get("h")]
-            last_px = float(bars[-1].get("c", 0)) if bars else 0.0
-            session_high = max(highs) if highs else last_px
-        if prev_close <= 0:
-            return None
+        avg_vol, session_vol = _fetch_volumes(sym)
+        if not avg_vol or avg_vol <= 0:
+            return _yf_fetch_metrics(sym)
+        if not session_vol or session_vol <= 0:
+            session_vol = avg_vol * 0.5
 
         return {
             "price": last_px,
             "prior_close": prev_close,
             "session_high": session_high,
-            "session_volume": session_vol,
-            "avg_daily_volume": avg_vol,
+            "session_volume": float(session_vol),
+            "avg_daily_volume": float(avg_vol),
             "peak_move_pct": (session_high - prev_close) / prev_close * 100,
             "current_move_pct": (last_px - prev_close) / prev_close * 100,
         }
     except Exception as exc:
-        LOGGER.debug("[SqueezeMonitor] alpaca %s: %s", sym, exc)
+        LOGGER.debug("[SqueezeMonitor] metrics %s: %s", sym, exc)
         return _yf_fetch_metrics(sym)
+
+
+def _fetch_volumes(symbol: str) -> Tuple[Optional[float], Optional[float]]:
+    """Return (avg_daily_volume, session_volume_so_far)."""
+    sym = symbol.upper()
+    key = os.getenv("ALPACA_KEY_ID", "")
+    secret = os.getenv("ALPACA_SECRET_KEY", "")
+    if key and secret:
+        try:
+            import requests
+
+            headers = {"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret}
+            now_utc = datetime.now(timezone.utc)
+            try:
+                from zoneinfo import ZoneInfo
+
+                et = ZoneInfo("America/New_York")
+            except Exception:
+                et = None
+            if et:
+                day_start = datetime.now(et).replace(hour=4, minute=0, second=0, microsecond=0)
+                day_start = day_start.astimezone(timezone.utc)
+            else:
+                day_start = now_utc.replace(hour=9, minute=0, second=0, microsecond=0)
+            start_str = day_start.strftime("%Y-%m-%dT%H:%M:%SZ")
+            end_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+            avg_vol = session_vol = None
+            for feed in ("sip", "iex"):
+                url = (
+                    f"https://data.alpaca.markets/v2/stocks/{sym}/bars"
+                    f"?timeframe=1Day&start={(now_utc - timedelta(days=30)).strftime('%Y-%m-%dT%H:%M:%SZ')}"
+                    f"&end={end_str}&limit=25&feed={feed}"
+                )
+                r = requests.get(url, headers=headers, timeout=_TIMEOUT)
+                if r.status_code != 200:
+                    continue
+                dbars = r.json().get("bars") or []
+                vols = [float(b.get("v", 0)) for b in dbars[-20:] if b.get("v")]
+                if vols:
+                    avg_vol = sum(vols) / len(vols)
+                    break
+            for feed in ("sip", "iex"):
+                url = (
+                    f"https://data.alpaca.markets/v2/stocks/{sym}/bars"
+                    f"?timeframe=5Min&start={start_str}&end={end_str}&limit=10000&feed={feed}"
+                )
+                r = requests.get(url, headers=headers, timeout=_TIMEOUT)
+                if r.status_code != 200:
+                    continue
+                bars = r.json().get("bars") or []
+                if bars:
+                    session_vol = sum(float(b.get("v", 0)) for b in bars if b.get("v"))
+                    break
+            if avg_vol and session_vol:
+                return avg_vol, session_vol
+        except Exception as exc:
+            LOGGER.debug("[SqueezeMonitor] alpaca vol %s: %s", sym, exc)
+
+    try:
+        import yfinance as yf
+
+        t = yf.Ticker(sym)
+        hist = t.history(period="30d", interval="1d")
+        intraday = t.history(period="1d", interval="5m")
+        if hist is None or hist.empty:
+            return None, None
+        avg_vol = float(hist["Volume"].iloc[-20:].mean())
+        if intraday is not None and not intraday.empty:
+            session_vol = float(intraday["Volume"].sum())
+        else:
+            session_vol = float(hist["Volume"].iloc[-1])
+        return avg_vol, session_vol
+    except Exception:
+        return None, None
 
 
 def _yf_fetch_metrics(symbol: str) -> Optional[Dict[str, Any]]:
