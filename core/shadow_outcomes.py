@@ -258,6 +258,8 @@ def resolve_shadow_rows(max_symbols: int = 60) -> int:
             resolved += 1
     if resolved:
         LOGGER.info("Shadow resolve: %d virtual picks resolved", resolved)
+    elif pending:
+        LOGGER.debug("Shadow resolve: 0/%d pending — hold window still open or path undecided", len(pending))
     return resolved
 
 
@@ -340,9 +342,65 @@ def aggregate_shadow_stats(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def shadow_diagnostics() -> Dict[str, Any]:
+    """Ops payload: explain pending vs resolved (hold window timing)."""
+    from core.db import db_conn
+    from core.tp_sl_resolve import label_hold_bars
+
+    hold = label_hold_bars()
+    now = int(time.time())
+    out: Dict[str, Any] = {
+        "hold_bars": hold,
+        "now_ts": now,
+        "pending": 0,
+        "resolved_total": 0,
+    }
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            ensure_shadow_table(cur)
+            cur.execute("SELECT COUNT(*) FROM ghost_shadow_outcomes WHERE outcome IS NULL")
+            out["pending"] = int(cur.fetchone()[0] or 0)
+            cur.execute("SELECT COUNT(*) FROM ghost_shadow_outcomes WHERE outcome IS NOT NULL")
+            out["resolved_total"] = int(cur.fetchone()[0] or 0)
+            cur.execute(
+                "SELECT MIN(eval_ts), MAX(eval_ts), MIN(expires_at), MIN(trade_date), MAX(trade_date) "
+                "FROM ghost_shadow_outcomes WHERE outcome IS NULL"
+            )
+            row = cur.fetchone()
+            if row and row[0]:
+                out["oldest_pending_eval_ts"] = int(row[0])
+                out["newest_pending_eval_ts"] = int(row[1])
+                out["earliest_expires_at"] = int(row[2]) if row[2] else None
+                out["pending_trade_dates"] = {"oldest": row[3], "newest": row[4]}
+    except Exception as e:
+        out["error"] = str(e)[:120]
+        return out
+
+    exp = out.get("earliest_expires_at")
+    if out["pending"] and exp:
+        if now >= exp:
+            out["resolution_status"] = "due — pending rows past expiry; resolver should close on next hourly job"
+        else:
+            out["resolution_status"] = "waiting — hold window open; first batch closes after earliest expires_at"
+        try:
+            import pytz
+
+            tz = pytz.timezone(os.getenv("GHOST_TZ", "America/Chicago"))
+            out["earliest_expires_at_ct"] = datetime.fromtimestamp(exp, tz).strftime("%Y-%m-%d %H:%M %Z")
+        except Exception:
+            pass
+    elif out["pending"]:
+        out["resolution_status"] = "waiting — no expiry metadata on pending rows"
+    else:
+        out["resolution_status"] = "idle — no pending virtual picks"
+    return out
+
+
 def shadow_stats(days: int = 30) -> Dict[str, Any]:
     """Scoreboard payload for /api/shadow-stats and the MCP tool."""
     from core.db import db_conn
+    from core.tp_sl_resolve import label_hold_bars
 
     days = max(1, min(365, int(days)))
     cutoff = int(time.time()) - days * 86400
@@ -359,16 +417,18 @@ def shadow_stats(days: int = 30) -> Dict[str, Any]:
             for r in cur.fetchall()
         ]
     out = aggregate_shadow_stats(rows)
+    diag = shadow_diagnostics()
     out.update({
         "ok": True,
         "days": days,
         "prob_floor": PROB_FLOOR,
         "enabled": shadow_enabled(),
+        "diagnostics": diag,
         "note": (
             "Virtual picks: every scanned symbol's daily model evaluation resolved "
             "with live TP/SL bar-path rules — gates ignored. 'fireable' bucket = "
-            "up_prob >= prob floor (what the engine would have fired without "
-            "regime/confidence gates)."
+            "up_prob >= prob floor. Pending rows stay open until TP/SL hit or "
+            f"{label_hold_bars()}-bar hold expires (same as live picks)."
         ),
     })
     return out

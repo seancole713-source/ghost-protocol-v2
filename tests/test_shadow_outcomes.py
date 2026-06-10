@@ -138,6 +138,62 @@ def test_silence_card_no_leaderboard_when_empty():
     assert "Closest candidates" not in out
 
 
+def test_resolve_shadow_rows_writes_outcome(monkeypatch):
+    """Resolver closes a virtual pick once the hold window + bar path decide."""
+    import datetime as _dt
+
+    from core import shadow_outcomes as so
+
+    entry_ts = int(_dt.datetime(2026, 5, 20, 15, 0, tzinfo=_dt.timezone.utc).timestamp())
+    expires = int(_dt.datetime(2026, 5, 28, 21, 0, tzinfo=_dt.timezone.utc).timestamp())
+    pending_row = (1, "STUB", entry_ts, 10.0, 10.2, 9.87, expires)
+    updates = []
+
+    class _Cur:
+        def __init__(self):
+            self.last_sql = ""
+
+        def execute(self, sql, params=None):
+            self.last_sql = sql
+            if "UPDATE ghost_shadow_outcomes" in sql:
+                updates.append(params)
+
+        def fetchall(self):
+            if "outcome IS NULL" in self.last_sql:
+                return [pending_row]
+            return []
+
+    class _Conn:
+        def cursor(self):
+            return _Cur()
+
+    class _Ctx:
+        def __enter__(self):
+            return _Conn()
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr("core.db.db_conn", lambda: _Ctx())
+    monkeypatch.setattr(so, "ensure_shadow_table", lambda cur: None)
+
+    import core.signal_engine as _se
+
+    monkeypatch.setattr(
+        _se,
+        "_fetch_ohlcv",
+        lambda sym, atype, period="3m": [
+            {"ts": "2026-05-21", "high": 10.05, "low": 9.95, "close": 10.0},
+            {"ts": "2026-05-22", "high": 10.05, "low": 9.95, "close": 10.0},
+            {"ts": "2026-05-23", "high": 10.05, "low": 9.95, "close": 10.0},
+        ],
+    )
+    n = so.resolve_shadow_rows(max_symbols=5)
+    assert n == 1
+    assert updates
+    assert updates[0][0] in ("WIN", "LOSS", "EXPIRED")
+
+
 def test_regime_blocked_eval_still_scores_up_prob(monkeypatch):
     """Full-44 shadow coverage: a regime-gated symbol must still journal
     up_prob (model scored before the gate is enforced), and the firing

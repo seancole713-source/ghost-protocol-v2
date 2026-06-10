@@ -3135,6 +3135,24 @@ def shadow_stats_endpoint(days: int = 30):
         return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
 
 
+@APP.post("/api/admin/shadow-cycle", include_in_schema=False)
+def admin_shadow_cycle(request: Request, x_cron_secret: str = Header(default=""), dry_run: bool = False):
+    """Run shadow seed + resolve now (ops). Gated by cron secret or admin cookie."""
+    if not _cron_ok(x_cron_secret) and not _admin_token_valid(
+        request.cookies.get(_ADMIN_COOKIE, "")
+    ):
+        raise HTTPException(status_code=404)
+    if dry_run:
+        from core.shadow_outcomes import shadow_diagnostics, shadow_stats
+        return {"ok": True, "dry_run": True, "stats": shadow_stats(), "diagnostics": shadow_diagnostics()}
+    try:
+        from core.shadow_outcomes import run_shadow_cycle, shadow_diagnostics, shadow_stats
+        result = run_shadow_cycle()
+        return {"ok": True, **result, "stats": shadow_stats(), "diagnostics": shadow_diagnostics()}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
 def _top_scan_candidates(limit: int = 5) -> list:
     """Ranked up_prob leaderboard from the most recent scan cycle's evals."""
     try:
