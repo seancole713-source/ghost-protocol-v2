@@ -2,7 +2,7 @@
 # which forces Railway/Nixpacks to invalidate the build-layer cache and
 # rebuild the container image. Increment the version below if Railway
 # starts serving stale containers again.
-# cache_bust = "pr34"
+# cache_bust = "pr51-ct"
 [phases.setup]
 aptPkgs = ["libpq-dev", "gcc", "python3-dev"]
 
