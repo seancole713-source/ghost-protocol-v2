@@ -45,6 +45,8 @@ _last_scan_report: Dict[str, Any] = {
     "ok": False,
     "message": "No scan completed yet",
 }
+_alert_history: List[Dict[str, Any]] = []
+_ALERT_HISTORY_MAX = 30
 
 
 def rth_elapsed_fraction(now: Optional[datetime] = None) -> float:
@@ -162,6 +164,53 @@ def format_squeeze_alert(
     )
 
 
+def candidate_to_pick(
+    symbol: str,
+    kind: str,
+    metrics: Dict[str, Any],
+    rvol: float,
+    short_ctx: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Telegram-aligned pick row for cockpit + API."""
+    buy, sell = squeeze_trade_levels(metrics["price"], metrics["session_high"], kind)
+    conf = squeeze_confidence(
+        metrics["peak_move_pct"],
+        rvol,
+        short_risk=short_ctx.get("squeeze_risk"),
+        kind=kind,
+    )
+    return {
+        "symbol": symbol.upper(),
+        "kind": kind,
+        "buy": buy,
+        "sell": sell,
+        "confidence_pct": conf,
+        "price": round(float(metrics["price"]), 2),
+        "peak_move_pct": round(float(metrics["peak_move_pct"]), 2),
+        "current_move_pct": round(float(metrics["current_move_pct"]), 2),
+        "rvol": round(float(rvol), 2),
+        "short_risk": short_ctx.get("squeeze_risk"),
+        "message": format_squeeze_alert(symbol, kind, metrics, rvol, short_ctx),
+    }
+
+
+def get_squeeze_picks() -> Dict[str, Any]:
+    """Active squeeze picks from the latest scan + recent Telegram alerts."""
+    st = dict(_last_scan_report)
+    picks = list(st.get("picks") or st.get("candidates") or [])
+    return {
+        "ok": bool(st.get("ok")),
+        "picks": picks,
+        "pick_count": len(picks),
+        "alert_history": list(_alert_history),
+        "last_scan_ts": st.get("ts"),
+        "last_scan_status": st.get("status"),
+        "fetch_ok": st.get("fetch_ok"),
+        "fetch_fail": st.get("fetch_fail"),
+        "duration_ms": st.get("duration_ms"),
+    }
+
+
 async def start_squeeze_monitor() -> None:
     enabled = os.getenv("SQUEEZE_MONITOR_ENABLED", "1") == "1"
     if not enabled:
@@ -257,18 +306,14 @@ async def _run_watchlist_scan() -> None:
             short_ctx = _short_context(symbol)
 
         if kind:
-            cand = {
-                "symbol": symbol,
-                "kind": kind,
-                "peak_move_pct": round(peak_pct, 2),
-                "current_move_pct": round(current_pct, 2),
-                "rvol": round(rvol, 2),
-                "price": metrics["price"],
-                "short_risk": short_ctx.get("squeeze_risk"),
-            }
-            report["candidates"].append(cand)
+            pick = candidate_to_pick(symbol, kind, metrics, rvol, short_ctx)
+            report["candidates"].append(pick)
             if _maybe_alert(symbol, kind, metrics, rvol, short_ctx):
                 report["alerts_sent"] += 1
+                _alert_history.insert(0, {**pick, "alerted_at": int(time.time())})
+                del _alert_history[_ALERT_HISTORY_MAX:]
+
+    report["picks"] = list(report["candidates"])
 
     report["duration_ms"] = int((time.time() - t0) * 1000)
     report["status"] = "complete"

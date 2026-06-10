@@ -463,6 +463,26 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
 .dp-row-tag.market{color:#94a3b8}
 .dp-row-tag.live{color:#7dd3fc}
 .dp-m-val.live-price{color:#38bdf8;font-weight:700}
+
+/* Squeeze radar panel — Telegram-aligned picks */
+.sq-panel{background:#0a0a0a;border:1px solid #1f1f1f;border-radius:12px;padding:16px 18px;margin-bottom:8px}
+.sq-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:12px;flex-wrap:wrap}
+.sq-title{font-size:15px;font-weight:800;color:#f8fafc;letter-spacing:.3px}
+.sq-sub{font-size:11px;color:#64748b;margin-top:4px;line-height:1.45}
+.sq-meta{font-size:10px;color:#475569;text-align:right;white-space:nowrap}
+.sq-table{width:100%;border-collapse:collapse;font-size:12px}
+.sq-table th{text-align:left;color:#64748b;font-size:9px;font-weight:700;letter-spacing:1px;text-transform:uppercase;padding:8px 10px;border-bottom:1px solid #1a1a1a}
+.sq-table td{padding:10px;border-bottom:1px solid #111;color:#e2e8f0}
+.sq-table tr.sq-active td{background:rgba(251,146,60,.06)}
+.sq-table tr.sq-forming td{background:rgba(250,204,21,.04)}
+.sq-sym{font-weight:800;color:#fb923c;letter-spacing:.5px}
+.sq-num{font-variant-numeric:tabular-nums;font-weight:700}
+.sq-conf{font-weight:800;color:#86efac}
+.sq-kind{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.8px;padding:2px 7px;border-radius:999px}
+.sq-kind.active{color:#fb923c;background:rgba(251,146,60,.12);border:1px solid rgba(251,146,60,.25)}
+.sq-kind.forming{color:#facc15;background:rgba(250,204,21,.1);border:1px solid rgba(250,204,21,.2)}
+.sq-empty{padding:28px 12px;text-align:center;color:#64748b;font-size:12px;line-height:1.5}
+.sq-foot{font-size:10px;color:#475569;margin-top:10px}
 .dp-sym{font-weight:800;color:#f8fafc;font-size:17px;line-height:1.2}
 .dp-card.dp-market .dp-sym{font-size:15px;color:#cbd5e1}
 .dp-score{font-size:13px;font-weight:800;white-space:normal}
@@ -699,6 +719,22 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
         <button class="hero-refresh" onclick="load()" title="Refresh now">&#x21BB; Refresh</button>
         <div class="hero-ts" id="hero-ts"></div>
       </div>
+    </div>
+  </section>
+
+  <!-- ─── Squeeze radar picks (44-symbol · Telegram-aligned) ─── -->
+  <section class="block" id="squeeze-picks-section">
+    <div class="sec-label">Squeeze Radar &middot; Ghost Short-Squeeze Picks</div>
+    <div class="sq-panel">
+      <div class="sq-head">
+        <div>
+          <div class="sq-title">Live squeeze picks</div>
+          <div class="sq-sub">Same as Telegram alerts — symbol, buy, sell, confidence. Scans all <b>44</b> watchlist symbols; panel refreshes every <b>3 min</b>.</div>
+        </div>
+        <div class="sq-meta" id="sq-meta">Loading…</div>
+      </div>
+      <div id="sq-table-wrap"><div class="sq-empty">Scanning watchlist for squeeze signals…</div></div>
+      <div class="sq-foot" id="sq-foot">Radar scan every 60s during market hours · alerts via Telegram when thresholds hit</div>
     </div>
   </section>
 
@@ -2514,6 +2550,69 @@ function selectDfSymbol(sym){
   loadDailyForecastScorecard();
 }
 
+function _sqKindLabel(kind){
+  return kind === 'squeeze_active' ? 'ACTIVE' : 'FORMING';
+}
+
+function _sqKindClass(kind){
+  return kind === 'squeeze_active' ? 'active' : 'forming';
+}
+
+function _renderSqueezePicks(data){
+  var wrap = document.getElementById('sq-table-wrap');
+  var meta = document.getElementById('sq-meta');
+  var foot = document.getElementById('sq-foot');
+  if(!wrap) return;
+  var picks = (data && data.picks) ? data.picks.slice() : [];
+  picks.sort(function(a, b){ return (b.confidence_pct || 0) - (a.confidence_pct || 0); });
+  var sess = (data && data.market_session) ? data.market_session : '—';
+  var scanTs = data && data.last_scan_ts ? new Date(data.last_scan_ts * 1000) : null;
+  var scanStr = scanTs ? scanTs.toLocaleTimeString('en-US', {hour:'numeric', minute:'2-digit', timeZone:'America/New_York'}) + ' ET' : '—';
+  if(meta){
+    meta.innerHTML = escHtml(sess)
+      + ' · scan ' + escHtml(scanStr)
+      + (data && data.fetch_ok != null ? ' · ' + data.fetch_ok + '/44 ok' : '');
+  }
+  if(!picks.length){
+    var idle = !(data && (data.is_rth || data.is_premarket));
+    wrap.innerHTML = '<div class="sq-empty"><b>No squeeze picks right now</b><br>'
+      + (idle ? 'Market closed — radar resumes at 9:30 AM ET.' : 'Ghost is watching all 44 symbols. You\'ll get Telegram + this panel when RVOL + move thresholds hit.')
+      + '</div>';
+    if(foot) foot.textContent = 'Panel refresh every 3 min · backend scan every 60s · ' + (data && data.enabled === false ? 'radar disabled' : 'radar enabled');
+    return;
+  }
+  var rows = picks.map(function(p){
+    var cls = p.kind === 'squeeze_active' ? 'sq-active' : 'sq-forming';
+    return '<tr class="' + cls + '">'
+      + '<td><span class="sq-sym">' + escHtml(p.symbol) + '</span> '
+      + '<span class="sq-kind ' + _sqKindClass(p.kind) + '">' + _sqKindLabel(p.kind) + '</span></td>'
+      + '<td class="sq-num">' + _fmtUsd(p.buy) + '</td>'
+      + '<td class="sq-num">' + _fmtUsd(p.sell) + '</td>'
+      + '<td class="sq-conf">' + (p.confidence_pct != null ? p.confidence_pct + '%' : '—') + '</td>'
+      + '<td style="color:#64748b;font-size:11px">RVOL ' + (p.rvol != null ? Number(p.rvol).toFixed(1) + '×' : '—')
+      + ' · peak +' + (p.peak_move_pct != null ? Number(p.peak_move_pct).toFixed(1) : '—') + '%</td>'
+      + '</tr>';
+  }).join('');
+  wrap.innerHTML = '<table class="sq-table"><thead><tr>'
+    + '<th>Stock</th><th>Buy</th><th>Sell</th><th>Confidence</th><th>Context</th>'
+    + '</tr></thead><tbody>' + rows + '</tbody></table>';
+  if(foot){
+    var alerts = (data.alert_history && data.alert_history.length) ? data.alert_history.length + ' Telegram alert(s) today' : 'No Telegram alerts this session yet';
+    foot.textContent = alerts + ' · panel refresh every 3 min · scan every 60s during market hours';
+  }
+}
+
+async function loadSqueezePicks(){
+  try{
+    var data = await _fetchJson('/api/squeeze/picks', {ok:false, picks:[]});
+    _renderSqueezePicks(data);
+    window._sqLastLoad = Date.now();
+  }catch(e){
+    var wrap = document.getElementById('sq-table-wrap');
+    if(wrap) wrap.innerHTML = '<div class="sq-empty">Squeeze panel load error.</div>';
+  }
+}
+
 async function _populateDfSymbols(){
   try{
     _dfUniverse = await _fetchJson('/api/wolf/watchlist-forecast-universe', {watchlist: [], symbols: ['WOLF']});
@@ -3180,6 +3279,7 @@ async function load(){
     loadPerformanceLog();
     loadTodayPredictionPanel(false);
     _maybeTodayPredMarketCloseRefresh();
+    loadSqueezePicks();
     renderGhostScore(ghostScore, watching);
     renderHero(price, watching);
     renderPlay(picks, watching);
@@ -3649,6 +3749,7 @@ setInterval(function(){ if(!document.hidden) loadPerformanceLog(); }, 120000);
 setInterval(function(){ if(!document.hidden){ _maybeTodayPredMarketCloseRefresh(); loadTodayPredictionPanel(false); } }, 900000);
 setInterval(function(){ if(!document.hidden) loadAttribution(); }, 300000);
 setInterval(function(){ if(!document.hidden) loadDailyForecastScorecard(); }, 900000);
+setInterval(function(){ if(!document.hidden) loadSqueezePicks(); }, 180000);
 _renderAutoStatus();
 </script>
 </body>

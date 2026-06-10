@@ -76,6 +76,17 @@ def test_squeeze_trade_levels_uses_session_high():
     assert sell == 4.92
 
 
-def test_prefilter_skips_quiet_names():
+def test_candidate_to_pick_matches_telegram_fields():
+    from core.squeeze_monitor import candidate_to_pick, format_squeeze_alert
+
+    metrics = {"price": 4.52, "session_high": 4.92, "peak_move_pct": 7.2, "current_move_pct": 1.0}
+    pick = candidate_to_pick("SPCE", "squeeze_active", metrics, 3.0, {"squeeze_risk": "high"})
+    msg = format_squeeze_alert("SPCE", "squeeze_active", metrics, 3.0, {"squeeze_risk": "high"})
+    assert pick["symbol"] == "SPCE"
+    assert pick["buy"] == 4.52
+    assert pick["sell"] == 4.92
+    assert pick["confidence_pct"] >= 70
+    assert "Buy: $4.52" in pick["message"]
+    assert pick["message"] == msg
     assert prefilter_candidate(0.5, 0.2, 0.8) is False
     assert prefilter_candidate(3.0, 2.5, 2.0) is True

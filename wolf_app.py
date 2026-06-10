@@ -3164,6 +3164,28 @@ def squeeze_status_endpoint():
         return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
 
 
+@APP.get("/api/squeeze/picks")
+def squeeze_picks_endpoint():
+    """Live short-squeeze picks — same fields as Telegram alerts (buy/sell/confidence)."""
+    try:
+        from core.market_hours import is_us_premarket, is_us_rth, market_session_label
+        from core.squeeze_monitor import get_squeeze_picks
+
+        board = get_squeeze_picks()
+        return {
+            "ok": True,
+            "enabled": os.getenv("SQUEEZE_MONITOR_ENABLED", "1") == "1",
+            "market_session": market_session_label(),
+            "is_rth": is_us_rth(),
+            "is_premarket": is_us_premarket(),
+            "scan_interval_sec": int(os.getenv("SQUEEZE_MONITOR_INTERVAL", "60")),
+            "panel_refresh_sec": int(os.getenv("SQUEEZE_PANEL_REFRESH_SEC", "180")),
+            **board,
+        }
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200], "picks": []}, status_code=500)
+
+
 @APP.post("/api/admin/squeeze-scan", include_in_schema=False)
 async def admin_squeeze_scan(request: Request, x_cron_secret: str = Header(default="")):
     """Force one squeeze watchlist scan now (stress test / ops)."""
