@@ -273,8 +273,9 @@ async def _run_watchlist_scan() -> None:
     global _last_scan_report
     _last_scan_report = dict(report)
 
-    fetch_timeout = float(os.getenv("SQUEEZE_FETCH_TIMEOUT_S", "12"))
-    with ThreadPoolExecutor(max_workers=int(os.getenv("SQUEEZE_FETCH_WORKERS", "8"))) as pool:
+    fetch_timeout = float(os.getenv("SQUEEZE_FETCH_TIMEOUT_S", "18"))
+    workers = int(os.getenv("SQUEEZE_FETCH_WORKERS", "4"))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
         tasks = {
             sym: loop.run_in_executor(pool, _sync_fetch_metrics, sym) for sym in symbols
         }
