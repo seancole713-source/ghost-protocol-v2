@@ -224,6 +224,59 @@ def _rth_close_from_bars(
     return round(float(filtered[-1]["c"]), 4)
 
 
+def _parse_bar_session_date(bar: dict, et) -> Optional[str]:
+    """Bar timestamp as YYYY-MM-DD in America/New_York."""
+    import datetime as _dt
+
+    s = bar.get("t") or bar.get("timestamp") or ""
+    if not s:
+        return None
+    try:
+        ts = _dt.datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=_dt.timezone.utc)
+        if et:
+            ts = ts.astimezone(et)
+        return ts.date().isoformat()
+    except Exception:
+        return str(s)[:10] if len(str(s)) >= 10 else None
+
+
+def _today_ohlc_from_alpaca_daily(
+    sym: str,
+    headers: dict,
+    session_date,
+    et,
+) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float]]:
+    """Fallback: today's cash-session O/H/L from 1Day bar when 5Min bars are empty."""
+    import datetime as _dt
+
+    try:
+        end = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        start = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        want = session_date.isoformat() if hasattr(session_date, "isoformat") else str(session_date)[:10]
+        for feed_name in ("sip", "iex"):
+            url = (
+                f"https://data.alpaca.markets/v2/stocks/{sym.upper()}/bars"
+                f"?timeframe=1Day&start={start}&end={end}&limit=10&feed={feed_name}"
+            )
+            r = requests.get(url, headers=headers, timeout=TIMEOUT)
+            if r.status_code != 200:
+                continue
+            for bar in reversed(r.json().get("bars") or []):
+                if _parse_bar_session_date(bar, et) != want:
+                    continue
+                o = float(bar.get("o") or 0)
+                h = float(bar.get("h") or 0)
+                l = float(bar.get("l") or 0)
+                c = float(bar.get("c") or 0)
+                if o > 0 and h > 0:
+                    return round(o, 4), round(h, 4), round(l, 4), round(c, 4) if c > 0 else None
+    except Exception as exc:
+        LOGGER.debug("intraday daily fallback %s: %s", sym, str(exc)[:80])
+    return None, None, None, None
+
+
 def get_intraday_session(symbol: str) -> Dict[str, Any]:
     """Today's O/H/L + last trade via Alpaca (fallback yfinance).
 
@@ -239,14 +292,16 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
     cached = _intraday_cache.get(sym)
     if cached and (time.time() - cached[0]) < INTRADAY_QUOTE_TTL_S:
         out = dict(cached[1])
-        trade = _alpaca(sym)
-        if trade:
-            out["price"] = round(float(trade), 4)
-            if out.get("previous_close") and out["previous_close"] > 0:
-                out["change_abs"] = round(out["price"] - out["previous_close"], 4)
-                out["change_pct"] = round(out["change_abs"] / out["previous_close"] * 100, 3)
-        out["as_of_ts"] = int(time.time())
-        return out
+        # Price-only cache hits must not skip OHLC refresh when open/high/low are missing.
+        if out.get("today_open") is not None and out.get("today_high") is not None:
+            trade = _alpaca(sym)
+            if trade:
+                out["price"] = round(float(trade), 4)
+                if out.get("previous_close") and out["previous_close"] > 0:
+                    out["change_abs"] = round(out["price"] - out["previous_close"], 4)
+                    out["change_pct"] = round(out["change_abs"] / out["previous_close"] * 100, 3)
+            out["as_of_ts"] = int(time.time())
+            return out
 
     try:
         from zoneinfo import ZoneInfo
@@ -336,6 +391,19 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
                     break
         except Exception as exc:
             LOGGER.debug("intraday alpaca %s: %s", sym, str(exc)[:80])
+
+    if (today_open is None or today_high is None) and headers:
+        d_o, d_h, d_l, d_c = _today_ohlc_from_alpaca_daily(sym, headers, session_date, et)
+        if d_o is not None:
+            today_open, today_high, today_low = d_o, d_h, d_l
+            if rth_open is None:
+                rth_open, rth_high, rth_low = d_o, d_h, d_l
+            if rth_close is None and d_c:
+                rth_close = d_c
+            feed = feed or "alpaca_1d"
+
+    if today_open is None and rth_open is not None:
+        today_open, today_high, today_low = rth_open, rth_high, rth_low
 
     trade = _alpaca(sym)
     if trade:

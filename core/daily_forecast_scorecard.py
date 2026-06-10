@@ -266,6 +266,20 @@ def build_prediction_panel(
         if live.get("price") is None:
             live["price"] = market_actual["close"]
 
+    if live.get("panel_label") == "after hours" and market_actual:
+        if live.get("today_open") is None:
+            live["today_open"] = market_actual["open"]
+            live["today_high"] = market_actual["high"]
+            live["today_low"] = market_actual["low"]
+    elif market_actual and live_date == market_date and live.get("today_open") is None:
+        live["today_open"] = market_actual["open"]
+        live["today_high"] = market_actual["high"]
+        live["today_low"] = market_actual["low"]
+    elif live.get("today_open") is None:
+        ro, rh, rl = live.get("rth_open"), live.get("rth_high"), live.get("rth_low")
+        if ro is not None:
+            live["today_open"], live["today_high"], live["today_low"] = ro, rh, rl
+
     return {
         "predict_date": predict_date,
         "market_date": market_date,

@@ -239,3 +239,28 @@ def test_market_uses_rth_close_after_hours(monkeypatch):
     assert panel["live"]["price"] == 4.165
     assert panel["live"]["panel_label"] == "after hours"
 
+
+def test_live_panel_backfills_ohlc_from_market_when_quote_price_only(monkeypatch):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from core.daily_forecast_scorecard import build_prediction_panel
+
+    rows = [
+        {"ts": "2026-06-09T04:00:00Z", "open": 4.41, "high": 4.92, "low": 4.27, "close": 4.59},
+        {"ts": "2026-06-10T04:00:00Z", "open": 4.41, "high": 4.92, "low": 4.27, "close": 4.68},
+    ]
+    monkeypatch.setattr("core.daily_forecast_scorecard._up_prob_at_bar", lambda *a, **k: 0.65)
+    monkeypatch.setattr(
+        "core.daily_forecast_scorecard.forecast_band_vol_pct",
+        lambda *a, **k: {"vol_pct": 0.05, "source": "test"},
+    )
+    wed_eh = datetime(2026, 6, 10, 16, 2, tzinfo=ZoneInfo("America/New_York"))
+    live = {"price": 4.68, "session": "afterhours", "rth_close": 4.68}
+    panel = build_prediction_panel(
+        "SPCE", rows, [], object(), ["f1"], [], "stock", live, now_et=wed_eh,
+    )
+    assert panel["live"]["today_open"] == 4.41
+    assert panel["live"]["today_high"] == 4.92
+    assert panel["live"]["today_low"] == 4.27
+    assert panel["live"]["price"] == 4.68
+

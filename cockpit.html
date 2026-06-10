@@ -2357,7 +2357,10 @@ function _renderDpThreeRows(sym, panel, next, lastResolved, live){
     lastResolved = panel.market || lastResolved;
   }
   if(live && live.price != null){
-    rows.push(_dpOhlcRow('live', sym, _dpLiveDate(live), live.today_open, live.today_high, live.today_low, live.price, _dpLiveScore(live)));
+    var lo = live.today_open != null ? live.today_open : live.rth_open;
+    var lh = live.today_high != null ? live.today_high : live.rth_high;
+    var ll = live.today_low != null ? live.today_low : live.rth_low;
+    rows.push(_dpOhlcRow('live', sym, _dpLiveDate(live), lo, lh, ll, live.price, _dpLiveScore(live)));
   }
   if(!next || !next.predicted){
     rows.push('<tr><td colspan="7" class="dp-empty">No next-session forecast for <b>' + escHtml(sym) + '</b> yet.</td></tr>');
