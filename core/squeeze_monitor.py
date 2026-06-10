@@ -41,6 +41,10 @@ COOLDOWN_SEC = int(os.getenv("SQUEEZE_ALERT_COOLDOWN", "7200"))
 _last_alert: Dict[str, float] = {}
 _short_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 _SHORT_CACHE_TTL = 86400
+_last_scan_report: Dict[str, Any] = {
+    "ok": False,
+    "message": "No scan completed yet",
+}
 
 
 def rth_elapsed_fraction(now: Optional[datetime] = None) -> float:
@@ -88,6 +92,19 @@ def evaluate_squeeze_signal(
     if move >= forming_move and rvol >= forming_vol:
         return "squeeze_forming"
     return None
+
+
+def prefilter_candidate(peak_move_pct: float, current_move_pct: float, rvol: float) -> bool:
+    """Cheap gate before short-interest fetch (avoids 44× yfinance per cycle)."""
+    move = max(peak_move_pct, current_move_pct)
+    if move < 2.0 or rvol < 1.5:
+        return False
+    return True
+
+
+def get_squeeze_status() -> Dict[str, Any]:
+    """Last completed watchlist scan snapshot (for /api/squeeze/status)."""
+    return dict(_last_scan_report)
 
 
 def squeeze_confidence(
@@ -167,6 +184,8 @@ async def start_squeeze_monitor() -> None:
 
 
 async def _run_watchlist_scan() -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
     from core.market_hours import is_us_premarket, is_us_rth
 
     if not (is_us_rth() or is_us_premarket()):
@@ -177,25 +196,76 @@ async def _run_watchlist_scan() -> None:
     symbols = sorted(get_edge_set())
     loop = asyncio.get_running_loop()
     elapsed = rth_elapsed_fraction()
+    t0 = time.time()
+    report: Dict[str, Any] = {
+        "ok": True,
+        "ts": int(time.time()),
+        "session": "rth" if is_us_rth() else "premarket",
+        "symbols": len(symbols),
+        "fetch_ok": 0,
+        "fetch_fail": 0,
+        "candidates": [],
+        "alerts_sent": 0,
+        "duration_ms": 0,
+        "elapsed_frac": round(elapsed, 4),
+    }
+
+    with ThreadPoolExecutor(max_workers=int(os.getenv("SQUEEZE_FETCH_WORKERS", "8"))) as pool:
+        tasks = {
+            sym: loop.run_in_executor(pool, _sync_fetch_metrics, sym) for sym in symbols
+        }
+        metrics_map: Dict[str, Optional[Dict[str, Any]]] = {}
+        for sym, task in tasks.items():
+            try:
+                metrics_map[sym] = await task
+            except Exception as exc:
+                LOGGER.debug("[SqueezeMonitor] fetch %s: %s", sym, exc)
+                metrics_map[sym] = None
 
     for symbol in symbols:
-        try:
-            metrics = await loop.run_in_executor(None, _sync_fetch_metrics, symbol)
-            if not metrics:
-                continue
+        metrics = metrics_map.get(symbol)
+        if not metrics:
+            report["fetch_fail"] += 1
+            continue
+        report["fetch_ok"] += 1
+        rvol = compute_rvol(metrics["session_volume"], metrics["avg_daily_volume"], elapsed)
+        peak_pct = metrics["peak_move_pct"]
+        current_pct = metrics["current_move_pct"]
+
+        kind = evaluate_squeeze_signal(peak_pct, current_pct, rvol, short_risk=None)
+        short_ctx: Dict[str, Any] = {}
+        if not kind and prefilter_candidate(peak_pct, current_pct, rvol):
             short_ctx = _short_context(symbol)
-            short_risk = short_ctx.get("squeeze_risk")
-            peak_pct = metrics["peak_move_pct"]
-            current_pct = metrics["current_move_pct"]
-            rvol = compute_rvol(metrics["session_volume"], metrics["avg_daily_volume"], elapsed)
             kind = evaluate_squeeze_signal(
-                peak_pct, current_pct, rvol, short_risk=short_risk,
+                peak_pct, current_pct, rvol, short_risk=short_ctx.get("squeeze_risk"),
             )
-            if kind:
-                _maybe_alert(symbol, kind, metrics, rvol, short_ctx)
-        except Exception as exc:
-            LOGGER.debug("[SqueezeMonitor] %s: %s", symbol, exc)
-        await asyncio.sleep(0.05)
+        elif kind:
+            short_ctx = _short_context(symbol)
+
+        if kind:
+            cand = {
+                "symbol": symbol,
+                "kind": kind,
+                "peak_move_pct": round(peak_pct, 2),
+                "current_move_pct": round(current_pct, 2),
+                "rvol": round(rvol, 2),
+                "price": metrics["price"],
+                "short_risk": short_ctx.get("squeeze_risk"),
+            }
+            report["candidates"].append(cand)
+            if _maybe_alert(symbol, kind, metrics, rvol, short_ctx):
+                report["alerts_sent"] += 1
+
+    report["duration_ms"] = int((time.time() - t0) * 1000)
+    global _last_scan_report
+    _last_scan_report = report
+    LOGGER.info(
+        "[SqueezeMonitor] scan ok=%s fail=%s candidates=%s ms=%s",
+        report["fetch_ok"],
+        report["fetch_fail"],
+        len(report["candidates"]),
+        report["duration_ms"],
+    )
 
 
 def _short_context(symbol: str) -> Dict[str, Any]:
@@ -294,10 +364,35 @@ def _sync_fetch_metrics(symbol: str) -> Optional[Dict[str, Any]]:
         if not bars or not prev_close or not avg_vol:
             return _yf_fetch_metrics(sym)
 
-        session_vol = sum(float(b.get("v", 0)) for b in bars if b.get("v"))
-        highs = [float(b.get("h", 0)) for b in bars if b.get("h")]
-        last_px = float(bars[-1].get("c", 0)) if bars else 0.0
-        session_high = max(highs) if highs else last_px
+        from core.market_hours import is_us_rth
+        from core.prices import _bar_et_minutes, _ohlc_from_bars
+
+        use_rth = is_us_rth() and et is not None
+        if use_rth:
+            _, rth_high, _ = _ohlc_from_bars(
+                bars, et, start_min=_RTH_OPEN_MIN, end_min=_RTH_CLOSE_MIN,
+            )
+            session_high = rth_high if rth_high else max(float(b.get("h", 0)) for b in bars)
+            session_vol = sum(
+                float(b.get("v", 0))
+                for b in bars
+                if b.get("v")
+                and (m := _bar_et_minutes(b, et)) is not None
+                and _RTH_OPEN_MIN <= m < _RTH_CLOSE_MIN
+            )
+            rth_closes = [
+                float(b["c"])
+                for b in bars
+                if b.get("c")
+                and (m := _bar_et_minutes(b, et)) is not None
+                and _RTH_OPEN_MIN <= m < _RTH_CLOSE_MIN
+            ]
+            last_px = rth_closes[-1] if rth_closes else float(bars[-1].get("c", 0))
+        else:
+            session_vol = sum(float(b.get("v", 0)) for b in bars if b.get("v"))
+            highs = [float(b.get("h", 0)) for b in bars if b.get("h")]
+            last_px = float(bars[-1].get("c", 0)) if bars else 0.0
+            session_high = max(highs) if highs else last_px
         if prev_close <= 0:
             return None
 
@@ -355,14 +450,15 @@ def _maybe_alert(
     metrics: Dict[str, Any],
     rvol: float,
     short_ctx: Dict[str, Any],
-) -> None:
+) -> bool:
     key = f"{symbol}:{kind}"
     now = time.time()
     if now - _last_alert.get(key, 0) < COOLDOWN_SEC:
-        return
+        return False
     _last_alert[key] = now
     msg = format_squeeze_alert(symbol, kind, metrics, rvol, short_ctx)
     _send_telegram(key, msg)
+    return True
 
 
 def _send_telegram(key: str, message: str) -> None:

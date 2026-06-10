@@ -4,6 +4,7 @@ from core.squeeze_monitor import (
     compute_rvol,
     evaluate_squeeze_signal,
     format_squeeze_alert,
+    prefilter_candidate,
     rth_elapsed_fraction,
     squeeze_confidence,
     squeeze_trade_levels,
@@ -73,3 +74,8 @@ def test_squeeze_trade_levels_uses_session_high():
     buy, sell = squeeze_trade_levels(4.52, 4.92, "squeeze_active")
     assert buy == 4.52
     assert sell == 4.92
+
+
+def test_prefilter_skips_quiet_names():
+    assert prefilter_candidate(0.5, 0.2, 0.8) is False
+    assert prefilter_candidate(3.0, 2.5, 2.0) is True

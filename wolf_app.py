@@ -3128,6 +3128,43 @@ def shadow_stats_endpoint(days: int = 30):
         return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
 
 
+@APP.get("/api/squeeze/status")
+def squeeze_status_endpoint():
+    """Last watchlist squeeze-radar scan snapshot (44 symbols, RVOL + candidates)."""
+    try:
+        from core.market_hours import is_us_premarket, is_us_rth, market_session_label
+        from core.squeeze_monitor import get_squeeze_status
+
+        st = get_squeeze_status()
+        return {
+            "ok": True,
+            "enabled": os.getenv("SQUEEZE_MONITOR_ENABLED", "1") == "1",
+            "market_session": market_session_label(),
+            "is_rth": is_us_rth(),
+            "is_premarket": is_us_premarket(),
+            "scan_interval_sec": int(os.getenv("SQUEEZE_MONITOR_INTERVAL", "60")),
+            **st,
+        }
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
+@APP.post("/api/admin/squeeze-scan", include_in_schema=False)
+async def admin_squeeze_scan(request: Request, x_cron_secret: str = Header(default="")):
+    """Force one squeeze watchlist scan now (stress test / ops)."""
+    if not _cron_ok(x_cron_secret) and not _admin_token_valid(
+        request.cookies.get(_ADMIN_COOKIE, "")
+    ):
+        return JSONResponse({"detail": "Not Found"}, status_code=404)
+    try:
+        from core.squeeze_monitor import _run_watchlist_scan, get_squeeze_status
+
+        await _run_watchlist_scan()
+        return {"ok": True, **get_squeeze_status()}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
 @APP.post("/api/admin/shadow-cycle", include_in_schema=False)
 def admin_shadow_cycle(request: Request, x_cron_secret: str = Header(default=""), dry_run: bool = False):
     """Run shadow seed + resolve now (ops). Gated by cron secret or admin cookie."""
