@@ -3229,6 +3229,135 @@ async def admin_squeeze_scan(request: Request, x_cron_secret: str = Header(defau
         return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
 
 
+@APP.get("/api/ghost/contract")
+def ghost_contract_endpoint():
+    """Post-falsification product contract — honest lane positioning (Phase 1)."""
+    try:
+        from core.ghost_contract import ghost_contract
+
+        return {"ok": True, **ghost_contract()}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
+@APP.get("/api/ghost/blueprint")
+def ghost_blueprint_endpoint():
+    """Phase 1+2 module status for admin/cockpit verification."""
+    try:
+        from core.feature_drift import compute_drift
+        from core.ghost_contract import ghost_contract
+        from core.news_sentiment import score_articles
+        from core.options_flow import probe_options_flow
+        from core.regime_calibration import regime_calibration_enabled, sma5_gate_trend_up_bypass
+        from core.squeeze_ml_v2 import model_info
+
+        drift = compute_drift("WOLF", window=14)
+        opts = probe_options_flow("WOLF")
+        articles: list = []
+        try:
+            from core.news import get_recent_articles
+
+            articles = get_recent_articles(20, symbol="WOLF") or []
+        except Exception:
+            pass
+        sent = score_articles(articles, symbol="WOLF")
+        return {
+            "ok": True,
+            "contract": ghost_contract(),
+            "phase1": {
+                "regime_calibration": regime_calibration_enabled(),
+                "sma5_trend_up_bypass": sma5_gate_trend_up_bypass(),
+                "squeeze_ml_v2": model_info(),
+            },
+            "phase2": {
+                "feature_drift": {"status": drift.get("status"), "alerts": len(drift.get("alerts") or [])},
+                "news_sentiment": {"label": sent.get("label"), "count": sent.get("count")},
+                "options_flow": {
+                    "available": opts.get("available"),
+                    "put_call_volume_ratio": opts.get("put_call_volume_ratio"),
+                },
+            },
+        }
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
+@APP.get("/api/ghost/regime")
+def ghost_regime_endpoint(symbol: str = "WOLF"):
+    """Unified price + engine regime label (Phase 2)."""
+    try:
+        from core.regime_classifier import unified_regime
+
+        sym = (symbol or "WOLF").upper()
+        payload: dict = {"price": None, "sma_5d": None, "volume_ratio": None}
+        try:
+            with db_conn() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    SELECT payload FROM ghost_feature_snapshots
+                    WHERE symbol = %s AND payload IS NOT NULL
+                    ORDER BY feature_asof_ts DESC
+                    LIMIT 1
+                    """,
+                    (sym,),
+                )
+                row = cur.fetchone()
+                if row and row[0] and isinstance(row[0], dict):
+                    p = row[0]
+                    payload["price"] = p.get("close") or p.get("price")
+                    payload["sma_5d"] = p.get("sma_5d")
+                    payload["volume_ratio"] = p.get("volume_ratio")
+                    payload["above_ema200"] = p.get("above_ema200")
+                    payload["adx_trending"] = p.get("adx_trending")
+                    payload["ema_trend_bullish"] = p.get("ema_trend_bullish")
+                    payload["adx"] = p.get("adx")
+        except Exception:
+            pass
+        regime = unified_regime(**{k: payload[k] for k in payload if payload[k] is not None})
+        return {"ok": True, "symbol": sym, **regime}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
+@APP.get("/api/ghost/drift")
+def ghost_drift_endpoint(symbol: str = "WOLF", window: int = 14):
+    """Feature drift alerts vs baseline snapshots (Phase 2)."""
+    try:
+        from core.feature_drift import compute_drift
+
+        return compute_drift(symbol, window=window)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
+@APP.get("/api/ghost/sentiment")
+def ghost_sentiment_endpoint(symbol: str = "WOLF", limit: int = 20):
+    """Lexicon sentiment on recent headlines (Phase 2)."""
+    try:
+        from core.news import get_recent_articles
+        from core.news_sentiment import score_articles
+
+        sym = (symbol or "WOLF").upper()
+        raw = get_recent_articles(min(limit, 50), symbol=sym) or []
+        out = score_articles(raw, symbol=sym)
+        out["symbol"] = sym
+        return out
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
+@APP.get("/api/ghost/options")
+def ghost_options_endpoint(symbol: str = "WOLF"):
+    """Options put/call volume probe (Phase 2)."""
+    try:
+        from core.options_flow import probe_options_flow
+
+        return probe_options_flow(symbol)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
 @APP.post("/api/admin/shadow-cycle", include_in_schema=False)
 def admin_shadow_cycle(request: Request, x_cron_secret: str = Header(default=""), dry_run: bool = False):
     """Run shadow seed + resolve now (ops). Gated by cron secret or admin cookie."""
@@ -4839,7 +4968,7 @@ def v3_train(x_cron_secret: str = Header(default=""), force: bool = False):
 
 # PR #19 deploy-version constant. Bump on every "did Railway pick up
 # the new code?" PR so /api/_version reveals the truth in one curl.
-_RUNNING_PR_VERSION = 59
+_RUNNING_PR_VERSION = 60
 
 
 def _deploy_meta() -> dict:

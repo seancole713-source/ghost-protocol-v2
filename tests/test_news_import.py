@@ -50,7 +50,7 @@ def test_fetch_news_sentiment_wrapper(monkeypatch):
     import core.news as news
 
     news._symbol_sentiment["WOLF"] = 0.42
-    monkeypatch.setattr("core.news_sentiment.list_articles", lambda **kw: [])
+    monkeypatch.setattr("core.news_store.list_articles", lambda **kw: [])
     out = fetch_news_sentiment("WOLF")
     assert out["ok"] is True
     assert out["sentiment_label"] == "BULLISH"

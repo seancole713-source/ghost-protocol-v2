@@ -1,42 +1,46 @@
 # Ghost Protocol v2 — PROJECT STATE
-**Last updated:** 2026-06-07
+**Last updated:** 2026-06-10
 **Read this first.** Any agent picking up this project must read this file before touching any code.
 
 > This file was significantly stale (pre-v3.2) until 2026-05-23. It now reflects
 > the v3.2 XGBoost engine, the four-gate chain, aggressive objective mode, the
 > cookie-login `/admin` console, and the pick-journal credibility ledger.
+> **PR #60 (2026-06-10):** Post-falsification product contract, regime calibration,
+> squeeze ML v2, unified regime classifier, lexicon sentiment, feature drift, options flow probe.
 
 ---
 
-## THE NORTH-STAR
+## THE NORTH-STAR (retired — post-falsification)
 
-**~80% prediction accuracy on WOLF — but only under an honest, narrow contract.**
+**The legacy ~80% accuracy claim on WOLF is abandoned.** Falsification gate tripped
+(N≥30 resolved picks, WR below floor, 95% CI excludes 80%). Ghost now positions as:
 
-80% is *not* achievable on "WOLF goes up tomorrow" (that's ≤55% for the best funds
-alive). It is achievable on a conditional, selective question: *given a
-high-conviction setup, will WOLF move in direction D before stop S over horizon
-H, with N≥30 samples/year?* The system is built for **selective prediction** —
-it stays silent most of the time and only fires when the gates agree.
-**Silence is the product, not a bug.**
+**Selective directional aid + intraday squeeze radar** — track live win rate, expectancy,
+and Brier on the pick journal; no fixed accuracy marketing. See `core/ghost_contract.py`
+and `/api/ghost/contract`.
+
+80% was *not* achievable on "WOLF goes up tomorrow" (that's ≤55% for the best funds
+alive). The system is built for **selective prediction** — it stays silent most of the
+time and only fires when the gates agree. **Silence is the product, not a bug.**
 
 The full vision is the "WOLFSPEED-Only Prediction Engine" blueprint (7 specialist
 models → meta-model, 12 data categories, regime detection, options flow, etc.).
 Today we have the *bones*: one model, one ticker, a confidence gate, a calibration
-path, and (as of PR #30) the credibility ledger. The path forward is disciplined
-additions, gated by **data accumulation** — see "Honesty layer" below.
+path, squeeze radar, and the credibility ledger. Phase 1+2 modules (regime calibration,
+squeeze ML v2, drift/sentiment/options probes) are wired as of PR #60.
 
 ### Honesty layer (pre-registered, do not move the goalposts)
 
 - WOLF is **post-Chapter-11** (new shares 2025-09-29) → only ~250 trading days of
   the security that actually exists. Pre-bankruptcy WOLF is a *different
   instrument* — never train on it as if continuous.
-- The 80% claim is judged only after enough resolved high-conviction picks
-  accumulate. Until then the journal reads **insufficient_samples** by design.
+- The 80% claim **was judged and abandoned** once enough resolved high-conviction picks
+  accumulated. The journal surfaces this at `verdict.falsification` on
+  `/api/wolf/pick-journal` with status `ABANDON_80_CLAIM`.
 - **Kill condition** (`core/prediction.py → FALSIFICATION_THRESHOLD`): once N≥30
   resolved high-conviction picks, if win rate < 70% **and** the 95% CI excludes
   80%, the 80% claim is **abandoned** and the system repositions as a
-  lower-confidence directional aid. Surfaced at `verdict.falsification` on
-  `/api/wolf/pick-journal`.
+  lower-confidence directional aid.
 
 ---
 

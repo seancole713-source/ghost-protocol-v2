@@ -1851,10 +1851,21 @@ def predict_live_ex(symbol, asset_type, scores=None):
                 scores["regime"]["sma_5d"] = round(float(sma_5d), 4)
                 scores["regime"]["price_vs_sma5_pct"] = round((cur_px - sma_5d) / sma_5d * 100, 2)
         if blocked_sma:
-            LOGGER.info(
-                f"REGIME GATE [{symbol}]: price {cur_px:.2f} below 5d SMA {sma_5d:.2f} — skip BUY"
-            )
-            regime_block = True
+            bypass = False
+            try:
+                from core.regime_calibration import sma5_gate_trend_up_bypass
+                if sma5_gate_trend_up_bypass() and regime_label == "Trend-up":
+                    bypass = True
+                    LOGGER.info(
+                        f"REGIME GATE [{symbol}]: SMA5 bypass in Trend-up (price {cur_px:.2f} vs SMA {sma_5d:.2f})"
+                    )
+            except Exception:
+                pass
+            if not bypass:
+                LOGGER.info(
+                    f"REGIME GATE [{symbol}]: price {cur_px:.2f} below 5d SMA {sma_5d:.2f} — skip BUY"
+                )
+                regime_block = True
 
     invert_cols = meta.get("feature_inversions") or []
     if invert_cols:
@@ -1869,6 +1880,14 @@ def predict_live_ex(symbol, asset_type, scores=None):
     min_edge = _v3_min_edge()
     min_acc = _v3_min_holdout_acc()
     min_p = _v3_min_win_proba()
+    if scores is not None and isinstance(scores.get("regime"), dict):
+        try:
+            from core.regime_calibration import effective_min_win_proba, regime_calibration_meta
+            rl = scores["regime"].get("label")
+            min_p = effective_min_win_proba(rl, base=min_p)
+            scores["regime_calibration"] = regime_calibration_meta(rl, base=_v3_min_win_proba())
+        except Exception:
+            pass
     min_wf_acc = _v3_min_wf_acc_mean()
     edge = meta.get('edge', 0)
     wf_acc_mean = float(meta.get("wf_acc_mean", meta.get("accuracy", 0)))

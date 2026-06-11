@@ -76,6 +76,7 @@ def test_build_scorecard_row_fields():
     assert row["stop"] < row["buy"]
     assert row["squeeze_score"] > 0
     assert row["probabilities"]["p_continue_3pct_60m"] > 0
+    assert row["probability_model"] in ("squeeze_ml_v2", "heuristic_v1")
     assert row["above_vwap"] is True
 
 

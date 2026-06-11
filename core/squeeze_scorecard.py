@@ -135,6 +135,23 @@ def build_scorecard_row(
         above_vwap=above_vwap,
         kind=kind,
     )
+    try:
+        from core.squeeze_ml_v2 import blend_probabilities, model_info
+
+        short_risk = (short_ctx or {}).get("squeeze_risk")
+        probs = blend_probabilities(
+            probs,
+            setup_score=setup,
+            trigger_score=trigger,
+            confirm_score=confirm,
+            rvol=rvol,
+            peak_move_pct=float(metrics["peak_move_pct"]),
+            above_vwap=above_vwap,
+            short_risk=short_risk,
+        )
+        ml_meta = model_info()
+    except Exception:
+        ml_meta = {"model": "heuristic_v1"}
     from core.squeeze_monitor import squeeze_trade_levels
 
     trade_kind = kind or "squeeze_forming"
@@ -157,6 +174,7 @@ def build_scorecard_row(
         "trigger_score": trigger,
         "confirm_score": confirm,
         "probabilities": probs,
+        "probability_model": ml_meta.get("model", "heuristic_v1"),
         "short_float_pct": (short_ctx or {}).get("short_float_pct"),
         "days_to_cover": (short_ctx or {}).get("days_to_cover"),
         "short_risk": (short_ctx or {}).get("squeeze_risk"),
@@ -168,8 +186,14 @@ def build_scorecard_row(
 
 def scorecard_legend() -> Dict[str, Any]:
     """API/cockpit copy for what the scores mean."""
+    try:
+        from core.squeeze_ml_v2 import model_info
+        ml = model_info()
+    except Exception:
+        ml = {}
     return {
-        "model": "heuristic_v1",
+        "model": ml.get("model", "heuristic_v1"),
+        "probability_blend": ml,
         "timezone": "America/Chicago",
         "session": {
             "premarket": "3:00 AM – 8:30 AM CT",

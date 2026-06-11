@@ -123,13 +123,36 @@ body{background:radial-gradient(1100px 520px at 50% -8%,#1a0f14 0%,#0a0a0a 58%) 
   <h3>Squeeze status</h3>
   <div class="desc">44-symbol intraday scan · <b>3 AM – 7 PM CT</b> · Telegram on RVOL + move thresholds.
   Independent of the v3 gate chain above — can fire while v3 shows WATCHING / 0 saved.
-  v3 Telegram cron below is a <b>separate</b> path (WOLF picks &ge; 80% conf).</div>
+  v3 Telegram cron below is a <b>separate</b> path (WOLF picks via v3 gate chain).</div>
   <div class="row">
     <button class="secondary" onclick="loadSqueezeStatus()">Refresh</button>
     <button class="secondary" onclick="forceSqueezeScan()">Force scan now</button>
     <a href="/cockpit#squeeze-picks-section" style="font-size:12px;color:#8b5cf6;margin-left:8px">Open cockpit panel &rarr;</a>
   </div>
   <div id="squeeze-status" style="margin-top:10px"><div class="kv">Loading&#8230;</div></div>
+</div>
+
+<!-- ─── Phase 1+2 blueprint modules ─── -->
+<div class="sec-label">Blueprint Modules (Phase 1+2)</div>
+<div class="card">
+  <h3>Product contract &amp; module status</h3>
+  <div class="desc">Post-falsification positioning, regime calibration, squeeze ML v2, feature drift, lexicon sentiment, and WOLF options flow probe.</div>
+  <div class="row">
+    <button class="secondary" onclick="loadBlueprintStatus()">Refresh</button>
+  </div>
+  <div id="blueprint-status" style="margin-top:10px"><div class="kv">Loading&#8230;</div></div>
+</div>
+<div class="card">
+  <h3>Feature drift (WOLF)</h3>
+  <div class="desc">Z-shift alerts when recent feature snapshots diverge from baseline (<code>GHOST_FEATURE_DRIFT</code>).</div>
+  <div class="row"><button class="secondary" onclick="loadFeatureDrift()">Refresh</button></div>
+  <div id="feature-drift" style="margin-top:10px"><div class="kv">Loading&#8230;</div></div>
+</div>
+<div class="card">
+  <h3>Options flow (WOLF)</h3>
+  <div class="desc">Nearest-expiry put/call volume ratio via yfinance — best-effort, may be empty on thin chains.</div>
+  <div class="row"><button class="secondary" onclick="loadOptionsFlow()">Refresh</button></div>
+  <div id="options-flow" style="margin-top:10px"><div class="kv">Loading&#8230;</div></div>
 </div>
 
 <!-- ─── Maintenance / purges ─── -->
@@ -907,6 +930,74 @@ async function loadSqueezeStatus(){
   }
 }
 
+async function loadBlueprintStatus(){
+  var el = document.getElementById('blueprint-status');
+  if(!el) return;
+  try{
+    var g = await fetch('/api/ghost/blueprint').then(function(r){return r.json()});
+    if(!g || g.ok !== true){ el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> unavailable</div>'; return; }
+    var c = g.contract || {};
+    var p1 = g.phase1 || {};
+    var p2 = g.phase2 || {};
+    var sq = p1.squeeze_ml_v2 || {};
+    var drift = p2.feature_drift || {};
+    var sent = p2.news_sentiment || {};
+    var opts = p2.options_flow || {};
+    el.innerHTML = '<div class="kv"><b>' + escHtml(c.headline || 'Ghost') + '</b> · contract v' + escHtml(c.version || '?') + '</div>'
+      + '<div class="kv">Phase 1: regime calibration <b>' + (p1.regime_calibration ? 'on' : 'off') + '</b>'
+      + ' · SMA5 Trend-up bypass <b>' + (p1.sma5_trend_up_bypass ? 'on' : 'off') + '</b>'
+      + ' · squeeze ML <b>' + escHtml(sq.model || '—') + '</b></div>'
+      + '<div class="kv">Phase 2: drift <b>' + escHtml(drift.status || '—') + '</b> (' + (drift.alerts||0) + ' alerts)'
+      + ' · sentiment <b>' + escHtml(sent.label || '—') + '</b> (' + (sent.count||0) + ' headlines)'
+      + ' · options PCR <b>' + (opts.put_call_volume_ratio != null ? opts.put_call_volume_ratio : '—') + '</b></div>';
+  }catch(e){
+    el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml(String(e)) + '</div>';
+  }
+}
+
+async function loadFeatureDrift(){
+  var el = document.getElementById('feature-drift');
+  if(!el) return;
+  try{
+    var g = await fetch('/api/ghost/drift?symbol=WOLF').then(function(r){return r.json()});
+    if(!g || g.ok !== true){ el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml((g&&g.error)||'unavailable') + '</div>'; return; }
+    if(g.enabled === false){ el.innerHTML = '<div class="kv">Feature drift monitor disabled (<code>GHOST_FEATURE_DRIFT</code>).</div>'; return; }
+    if(g.status === 'insufficient_samples'){
+      el.innerHTML = '<div class="kv">Insufficient snapshots (' + (g.samples||0) + ') — need more feature history.</div>'; return;
+    }
+    var alerts = g.alerts || [];
+    if(!alerts.length){
+      el.innerHTML = '<div class="kv"><span class="ok">&#10003;</span> Stable · ' + (g.samples||0) + ' samples</div>'; return;
+    }
+    var rows = alerts.map(function(a){
+      return '<tr><td><code>' + escHtml(a.feature) + '</code></td><td>' + a.z_shift + '</td>'
+        + '<td>' + a.recent_mean + '</td><td>' + a.baseline_mean + '</td></tr>';
+    }).join('');
+    el.innerHTML = '<div class="kv"><span class="warn">&#9888;</span> ' + alerts.length + ' drift alert(s)</div>'
+      + '<table class="tbl"><thead><tr><th>Feature</th><th>Z</th><th>Recent</th><th>Baseline</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  }catch(e){
+    el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml(String(e)) + '</div>';
+  }
+}
+
+async function loadOptionsFlow(){
+  var el = document.getElementById('options-flow');
+  if(!el) return;
+  try{
+    var g = await fetch('/api/ghost/options?symbol=WOLF').then(function(r){return r.json()});
+    if(!g || g.ok !== true){ el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml((g&&g.error)||'unavailable') + '</div>'; return; }
+    if(!g.available){
+      el.innerHTML = '<div class="kv">' + escHtml(g.note || 'No options volume on nearest expiry') + '</div>'; return;
+    }
+    el.innerHTML = '<div class="kv">Nearest expiry <b>' + escHtml(g.nearest_expiry||'—') + '</b>'
+      + ' · put/call vol ratio <b>' + (g.put_call_volume_ratio != null ? g.put_call_volume_ratio : '—') + '</b>'
+      + ' · calls <b>' + (g.total_call_volume||0) + '</b> · puts <b>' + (g.total_put_volume||0) + '</b>'
+      + ' · skew <b>' + escHtml(g.skew_hint||'—') + '</b></div>';
+  }catch(e){
+    el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml(String(e)) + '</div>';
+  }
+}
+
 async function forceSqueezeScan(){
   var el = document.getElementById('squeeze-status');
   if(el) el.innerHTML = '<div class="kv"><span class="warn">&#x21BB; Running forced scan...</span></div>';
@@ -1021,6 +1112,8 @@ loadEngineQuality();
 loadDeployMeta();
 loadGateStatus();
 loadSqueezeStatus();
+loadBlueprintStatus();
+setTimeout(function(){ loadFeatureDrift(); loadOptionsFlow(); }, 200);
 setTimeout(function(){ loadGateHistory(); loadKillStatus(); loadPnl(); }, 400);
 setTimeout(function(){ loadLineage(); loadAuditLog(); }, 800);
 setInterval(loadPnl, 120000);

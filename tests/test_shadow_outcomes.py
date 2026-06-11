@@ -224,7 +224,9 @@ def test_regime_blocked_eval_still_scores_up_prob(monkeypatch):
     monkeypatch.setattr(_se, "_block_up_below_sma5",
                         lambda s, a, px: (True, px * 1.1, px))
     for k, v in {"V3_MIN_WIN_PROBA": "0.55", "V3_MIN_EDGE": "0.0",
-                 "V3_MIN_HOLDOUT_ACC": "0.0", "V3_MIN_WF_ACC_MEAN": "0.0"}.items():
+                 "V3_MIN_HOLDOUT_ACC": "0.0", "V3_MIN_WF_ACC_MEAN": "0.0",
+                 "REGIME_GATE_SMA5_TREND_UP_BYPASS": "0",
+                 "GHOST_REGIME_CALIBRATION": "0"}.items():
         monkeypatch.setenv(k, v)
 
     scores = {}
