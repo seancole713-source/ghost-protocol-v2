@@ -1,22 +1,63 @@
-import os, logging, psycopg2, psycopg2.pool
+import os, logging, time, psycopg2, psycopg2.pool
 from typing import Optional
 
 LOGGER = logging.getLogger("ghost.db")
 _pool: Optional[psycopg2.pool.ThreadedConnectionPool] = None
+_POOL_MIN = int(os.getenv("DB_POOL_MIN", "2"))
+_POOL_MAX = int(os.getenv("DB_POOL_MAX", "25"))
+_GETCONN_RETRIES = max(1, int(os.getenv("DB_POOL_GET_RETRIES", "4")))
+_GETCONN_RETRY_DELAY_S = float(os.getenv("DB_POOL_RETRY_DELAY_S", "0.12"))
+
 
 def init_db():
     global _pool
-    _pool = psycopg2.pool.ThreadedConnectionPool(2, 10, dsn=os.environ["DATABASE_URL"])
-    LOGGER.info("DB pool ready")
+    _pool = psycopg2.pool.ThreadedConnectionPool(
+        _POOL_MIN, _POOL_MAX, dsn=os.environ["DATABASE_URL"],
+    )
+    LOGGER.info("DB pool ready (min=%s max=%s)", _POOL_MIN, _POOL_MAX)
     _ensure_tables()
     _migrate_schema()
 
+
 def get_conn():
-    if not _pool: raise RuntimeError("Call init_db() first")
-    return _pool.getconn()
+    if not _pool:
+        raise RuntimeError("Call init_db() first")
+    last_err: Optional[Exception] = None
+    for attempt in range(_GETCONN_RETRIES):
+        try:
+            return _pool.getconn()
+        except psycopg2.pool.PoolError as exc:
+            last_err = exc
+            if attempt + 1 < _GETCONN_RETRIES:
+                time.sleep(_GETCONN_RETRY_DELAY_S * (attempt + 1))
+            else:
+                LOGGER.warning(
+                    "DB pool exhausted after %s attempts (max=%s)",
+                    _GETCONN_RETRIES,
+                    _POOL_MAX,
+                )
+    assert last_err is not None
+    raise last_err
+
 
 def put_conn(conn):
-    if _pool: _pool.putconn(conn)
+    if not _pool or not conn:
+        return
+    try:
+        conn.rollback()
+    except Exception:
+        pass
+    _pool.putconn(conn)
+
+
+def pool_stats() -> dict:
+    """Lightweight pool metadata for ops dashboards."""
+    return {
+        "ready": _pool is not None,
+        "min": _POOL_MIN,
+        "max": _POOL_MAX,
+        "retries": _GETCONN_RETRIES,
+    }
 
 class db_conn:
     def __enter__(self):

@@ -117,6 +117,21 @@ body{background:radial-gradient(1100px 520px at 50% -8%,#1a0f14 0%,#0a0a0a 58%) 
   <div id="cron-result" class="result"></div>
 </div>
 
+<!-- ─── Intraday squeeze radar (independent of v3 gates) ─── -->
+<div class="sec-label">Intraday Squeeze Radar</div>
+<div class="card">
+  <h3>Squeeze status</h3>
+  <div class="desc">44-symbol intraday scan · <b>3 AM – 7 PM CT</b> · Telegram on RVOL + move thresholds.
+  Independent of the v3 gate chain above — can fire while v3 shows WATCHING / 0 saved.
+  v3 Telegram cron below is a <b>separate</b> path (WOLF picks &ge; 80% conf).</div>
+  <div class="row">
+    <button class="secondary" onclick="loadSqueezeStatus()">Refresh</button>
+    <button class="secondary" onclick="forceSqueezeScan()">Force scan now</button>
+    <a href="/cockpit#squeeze-picks-section" style="font-size:12px;color:#8b5cf6;margin-left:8px">Open cockpit panel &rarr;</a>
+  </div>
+  <div id="squeeze-status" style="margin-top:10px"><div class="kv">Loading&#8230;</div></div>
+</div>
+
 <!-- ─── Maintenance / purges ─── -->
 <div class="sec-label">Maintenance</div>
 <div class="card">
@@ -138,7 +153,7 @@ body{background:radial-gradient(1100px 520px at 50% -8%,#1a0f14 0%,#0a0a0a 58%) 
 <div class="sec-label">Objective Gate Monitor</div>
 <div class="card">
   <h3>Where Each Cycle Lands vs the Gates</h3>
-  <div class="desc">Live view of the prediction gating chain: active objective mode + thresholds, the alert confidence floor, WOLF's resolved-pick phase, and a fresh model prediction with per-gate pass/fail. Refreshes every 60s; <b>Refresh Now</b> forces a re-poll (runs the model, ~1-2s).</div>
+  <div class="desc">Live view of the prediction gating chain: active objective mode + thresholds, the alert confidence floor, WOLF's resolved-pick phase, and a fresh model prediction with per-gate pass/fail. Refreshes every 60s; <b>Refresh Now</b> forces a re-poll (runs the model, ~1-2s). <b>v3 lane only</b> — squeeze radar is separate (see above).</div>
   <div class="row">
     <button class="secondary" onclick="loadGateStatus()">Refresh Now</button>
   </div>
@@ -816,6 +831,100 @@ async function resumeEngine(){
   loadKillStatus();
 }
 
+function fmtUsd(n){
+  if(n == null || isNaN(Number(n))) return '—';
+  return '$' + Number(n).toFixed(2);
+}
+
+function fmtSqScanCt(ts){
+  if(!ts) return '—';
+  return new Date(ts * 1000).toLocaleTimeString('en-US', {
+    hour: 'numeric', minute: '2-digit', timeZone: 'America/Chicago'
+  }) + ' CT';
+}
+
+async function loadSqueezeStatus(){
+  var el = document.getElementById('squeeze-status');
+  if(!el) return;
+  el.innerHTML = '<div class="kv"><span class="warn">&#x21BB; Loading...</span></div>';
+  try{
+    var g = await fetch('/api/squeeze/picks').then(function(r){return r.json()});
+    if(!g || g.ok === false){
+      el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml((g&&g.error)||'unavailable') + '</div>';
+      return;
+    }
+    var scanStr = fmtSqScanCt(g.last_scan_ts);
+    var radarCls = g.radar_active ? 'ok' : 'warn';
+    var radarTxt = g.radar_active ? 'LIVE' : ('PAUSED · resumes ' + escHtml(g.radar_resume_ct || '3:00 AM CT'));
+    var head = '<div class="big ' + (g.radar_active ? 'pass' : 'warn') + '" style="font-size:20px">' + radarTxt + '</div>'
+      + '<div class="kv" style="margin-top:8px">'
+      + '<b>' + escHtml(g.now_ct || '—') + '</b> · ' + escHtml(g.market_session || '—')
+      + ' · last scan <b>' + escHtml(scanStr) + '</b>'
+      + (g.fetch_ok != null ? ' · priced <b>' + g.fetch_ok + '/44</b>' : '')
+      + (g.duration_ms != null ? ' · ' + g.duration_ms + 'ms' : '')
+      + '<br>Leaders <b>' + ((g.leaders && g.leaders.length) || 0) + '</b>'
+      + ' · squeeze picks <b>' + (g.pick_count || 0) + '</b>'
+      + ' · Telegram alerts today <b>' + ((g.alert_history && g.alert_history.length) || 0) + '</b>'
+      + ' · scan every ' + (g.scan_interval_sec || 60) + 's</div>';
+    var alerts = (g.alert_history || []).slice(0, 8);
+    var alertBlock = '';
+    if(alerts.length){
+      alertBlock = '<div class="kv" style="margin:12px 0 6px"><b>Telegram squeeze alerts this session</b></div>'
+        + '<table class="tbl"><thead><tr>'
+        + '<th>Stock</th><th>Buy</th><th>Sell</th><th>Score</th><th>P(+3%)</th><th>Peak</th><th>When</th>'
+        + '</tr></thead><tbody>'
+        + alerts.map(function(p){
+          var prob = p.probabilities && p.probabilities.p_continue_3pct_60m != null
+            ? Math.round(p.probabilities.p_continue_3pct_60m) + '%' : '—';
+          return '<tr><td><b>' + escHtml(p.symbol) + '</b></td>'
+            + '<td>' + fmtUsd(p.buy) + '</td><td>' + fmtUsd(p.sell) + '</td>'
+            + '<td>' + (p.squeeze_score != null ? Math.round(p.squeeze_score) : '—') + '</td>'
+            + '<td>' + prob + '</td>'
+            + '<td>+' + (p.peak_move_pct != null ? Number(p.peak_move_pct).toFixed(1) : '—') + '%</td>'
+            + '<td>' + fmtTimeAgo(p.alerted_at || g.last_scan_ts) + '</td></tr>';
+        }).join('') + '</tbody></table>';
+    } else {
+      alertBlock = '<div class="kv" style="margin-top:10px;color:#666">No squeeze Telegram alerts this session yet.</div>';
+    }
+    var leaders = (g.leaders || []).slice(0, 5);
+    var leaderBlock = '';
+    if(leaders.length){
+      leaderBlock = '<div class="kv" style="margin:12px 0 6px"><b>Top movers (scorecard)</b></div>'
+        + '<table class="tbl"><thead><tr>'
+        + '<th>Stock</th><th>Buy</th><th>Sell</th><th>Score</th><th>RVOL</th><th>Peak</th>'
+        + '</tr></thead><tbody>'
+        + leaders.map(function(p){
+          return '<tr><td><b>' + escHtml(p.symbol) + '</b></td>'
+            + '<td>' + fmtUsd(p.buy) + '</td><td>' + fmtUsd(p.sell) + '</td>'
+            + '<td>' + (p.squeeze_score != null ? Math.round(p.squeeze_score) : '—') + '</td>'
+            + '<td>' + (p.rvol != null ? Number(p.rvol).toFixed(1) + '×' : '—') + '</td>'
+            + '<td>+' + (p.peak_move_pct != null ? Number(p.peak_move_pct).toFixed(1) : '—') + '%</td></tr>';
+        }).join('') + '</tbody></table>';
+    }
+    el.innerHTML = head + alertBlock + leaderBlock;
+  }catch(e){
+    el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml(String(e)) + '</div>';
+  }
+}
+
+async function forceSqueezeScan(){
+  var el = document.getElementById('squeeze-status');
+  if(el) el.innerHTML = '<div class="kv"><span class="warn">&#x21BB; Running forced scan...</span></div>';
+  try{
+    var resp = await fetch('/api/admin/squeeze-scan', {
+      method: 'POST',
+      headers: {'x-cron-secret': getSecret(), 'Content-Type': 'application/json'}
+    });
+    if(resp.status === 403 || resp.status === 404){
+      if(el) el.innerHTML = '<div class="kv"><span class="fail">Force scan failed — need valid x-cron-secret or admin cookie.</span></div>';
+      return;
+    }
+    await loadSqueezeStatus();
+  }catch(e){
+    if(el) el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml(String(e)) + '</div>';
+  }
+}
+
 async function loadKillStatus(){
   var el = document.getElementById('kill-status');
   if(!el) return;
@@ -855,7 +964,10 @@ async function loadKillStatus(){
     }).join('');
     el.innerHTML = head
       + '<table class="tbl"><thead><tr><th>Condition</th><th>Current vs threshold</th><th>Samples/window</th><th>Status</th></tr></thead><tbody>'
-      + rows + '</tbody></table>';
+      + rows + '</tbody></table>'
+      + (g.pool && g.pool.ready
+        ? '<div class="kv" style="margin-top:8px">DB pool max ' + escHtml(String(g.pool.max)) + '</div>'
+        : '');
   }catch(e){
     el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml(String(e)) + '</div>';
   }
@@ -908,16 +1020,15 @@ async function loadAuditLog(){
 loadEngineQuality();
 loadDeployMeta();
 loadGateStatus();
-loadGateHistory();
-loadKillStatus();
-loadPnl();
-loadLineage();
-loadAuditLog();
+loadSqueezeStatus();
+setTimeout(function(){ loadGateHistory(); loadKillStatus(); loadPnl(); }, 400);
+setTimeout(function(){ loadLineage(); loadAuditLog(); }, 800);
 setInterval(loadPnl, 120000);
 setInterval(loadGateHistory, 120000);
 setInterval(loadEngineQuality, 60000);
 setInterval(loadGateStatus, 60000);
 setInterval(loadKillStatus, 120000);
+setInterval(loadSqueezeStatus, 60000);
 </script>
 
 </body>

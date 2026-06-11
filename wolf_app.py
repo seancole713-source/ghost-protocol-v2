@@ -3579,10 +3579,12 @@ def wolf_kill_status():
     threshold with a green/red/insufficient flag. Read-only — does not enforce.
     """
     try:
-        from core.prediction import evaluate_kill_conditions, engine_pause_state
-        out = evaluate_kill_conditions()
+        from core.db import pool_stats
+        from core.prediction import evaluate_kill_conditions
+
+        out = evaluate_kill_conditions(include_pause=True)
         if isinstance(out, dict):
-            out["engine_pause"] = engine_pause_state()
+            out["pool"] = pool_stats()
         return out
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
@@ -4837,7 +4839,7 @@ def v3_train(x_cron_secret: str = Header(default=""), force: bool = False):
 
 # PR #19 deploy-version constant. Bump on every "did Railway pick up
 # the new code?" PR so /api/_version reveals the truth in one curl.
-_RUNNING_PR_VERSION = 58
+_RUNNING_PR_VERSION = 59
 
 
 def _deploy_meta() -> dict:

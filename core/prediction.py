@@ -178,7 +178,45 @@ def _kill_symbol_universe() -> List[str]:
         return list(STOCK_SYMBOLS) or ["WOLF"]
 
 
-def evaluate_kill_conditions() -> Dict[str, Any]:
+_ENGINE_PAUSE_KEYS = (
+    "engine_paused", "engine_pause_reason", "engine_pause_ts",
+    "engine_pause_auto_resume_at", "engine_pause_alerted",
+)
+
+
+def _clear_engine_pause():
+    try:
+        with db_conn() as c:
+            cur = c.cursor()
+            cur.execute(
+                "DELETE FROM ghost_state WHERE key IN ("
+                + ",".join(["%s"] * len(_ENGINE_PAUSE_KEYS)) + ")",
+                _ENGINE_PAUSE_KEYS,
+            )
+    except Exception as e:
+        LOGGER.warning("clear engine pause failed: " + str(e)[:80])
+
+
+def _parse_engine_pause_state(st: Dict[str, Any]) -> Dict[str, Any]:
+    if st.get("engine_paused") != "1":
+        return {"paused": False}
+    auto = st.get("engine_pause_auto_resume_at")
+    if auto:
+        try:
+            if int(time.time()) >= int(auto):
+                _clear_engine_pause()
+                return {"paused": False, "auto_resumed": True}
+        except Exception:
+            pass
+    return {
+        "paused": True,
+        "reason": st.get("engine_pause_reason") or "",
+        "since": int(st["engine_pause_ts"]) if st.get("engine_pause_ts") else None,
+        "auto_resume_at": int(auto) if auto else None,
+    }
+
+
+def evaluate_kill_conditions(*, include_pause: bool = False) -> Dict[str, Any]:
     """Read-only evaluation of the kill conditions over the rolling resolved-pick
     history (v3.2 era, watchlist symbols). Returns per-condition status with current
     value vs threshold and a green/red/insufficient flag. Does NOT enforce. During
@@ -187,6 +225,7 @@ def evaluate_kill_conditions() -> Dict[str, Any]:
     need = max(cfg["winrate_window"], cfg["brier_window"],
                cfg["expectancy_window"], cfg["consec_losses"], cfg["min_samples"])
     symbols = _kill_symbol_universe()
+    pause_state: Dict[str, Any] = {"paused": False}
     try:
         with db_conn() as conn:
             cur = conn.cursor()
@@ -196,6 +235,15 @@ def evaluate_kill_conditions() -> Dict[str, Any]:
                 "ORDER BY resolved_at DESC NULLS LAST, id DESC LIMIT %s",
                 (symbols, need))
             rows = cur.fetchall()   # newest first
+            if include_pause:
+                cur.execute(
+                    "SELECT key,val FROM ghost_state WHERE key IN ("
+                    + ",".join(["%s"] * len(_ENGINE_PAUSE_KEYS)) + ")",
+                    _ENGINE_PAUSE_KEYS,
+                )
+                pause_state = _parse_engine_pause_state(
+                    {k: v for k, v in cur.fetchall()}
+                )
     except Exception as e:
         return {"ok": False, "error": str(e)[:160]}
 
@@ -263,32 +311,16 @@ def evaluate_kill_conditions() -> Dict[str, Any]:
         "triggered": ex_trig, "status": _status(ex_trig, ex_enough),
     })
 
-    return {
+    out = {
         "ok": True,
         "enabled": cfg["enabled"],
         "any_triggered": any(c["triggered"] for c in conds),
         "resolved_available": len(rows),
         "conditions": conds,
     }
-
-
-_ENGINE_PAUSE_KEYS = (
-    "engine_paused", "engine_pause_reason", "engine_pause_ts",
-    "engine_pause_auto_resume_at", "engine_pause_alerted",
-)
-
-
-def _clear_engine_pause():
-    try:
-        with db_conn() as c:
-            cur = c.cursor()
-            cur.execute(
-                "DELETE FROM ghost_state WHERE key IN ("
-                + ",".join(["%s"] * len(_ENGINE_PAUSE_KEYS)) + ")",
-                _ENGINE_PAUSE_KEYS,
-            )
-    except Exception as e:
-        LOGGER.warning("clear engine pause failed: " + str(e)[:80])
+    if include_pause:
+        out["engine_pause"] = pause_state
+    return out
 
 
 def engine_pause_state() -> Dict[str, Any]:
@@ -302,25 +334,9 @@ def engine_pause_state() -> Dict[str, Any]:
                 + ",".join(["%s"] * len(_ENGINE_PAUSE_KEYS)) + ")",
                 _ENGINE_PAUSE_KEYS,
             )
-            st = {k: v for k, v in cur.fetchall()}
+            return _parse_engine_pause_state({k: v for k, v in cur.fetchall()})
     except Exception:
         return {"paused": False}
-    if st.get("engine_paused") != "1":
-        return {"paused": False}
-    auto = st.get("engine_pause_auto_resume_at")
-    if auto:
-        try:
-            if int(time.time()) >= int(auto):
-                _clear_engine_pause()
-                return {"paused": False, "auto_resumed": True}
-        except Exception:
-            pass
-    return {
-        "paused": True,
-        "reason": st.get("engine_pause_reason") or "",
-        "since": int(st["engine_pause_ts"]) if st.get("engine_pause_ts") else None,
-        "auto_resume_at": int(auto) if auto else None,
-    }
 
 
 def resume_engine() -> Dict[str, Any]:
