@@ -483,6 +483,11 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
 .sq-kind.forming{color:#facc15;background:rgba(250,204,21,.1);border:1px solid rgba(250,204,21,.2)}
 .sq-empty{padding:28px 12px;text-align:center;color:#64748b;font-size:12px;line-height:1.5}
 .sq-foot{font-size:10px;color:#475569;margin-top:10px}
+.sq-session{font-size:11px;color:#94a3b8;background:#0f0f0f;border:1px solid #1a1a1a;border-radius:8px;padding:8px 12px;margin-bottom:10px;line-height:1.45}
+.sq-session b{color:#e2e8f0;font-weight:700}
+.sq-score{font-weight:800;color:#38bdf8;font-variant-numeric:tabular-nums}
+.sq-prob{font-weight:700;color:#a78bfa;font-variant-numeric:tabular-nums;font-size:11px}
+.sq-comp{font-size:9px;color:#64748b;display:block;margin-top:2px}
 .dp-sym{font-weight:800;color:#f8fafc;font-size:17px;line-height:1.2}
 .dp-card.dp-market .dp-sym{font-size:15px;color:#cbd5e1}
 .dp-score{font-size:13px;font-weight:800;white-space:normal}
@@ -729,10 +734,11 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
       <div class="sq-head">
         <div>
           <div class="sq-title">Live squeeze picks</div>
-          <div class="sq-sub">Same as Telegram — <b>Buy</b>, <b>Sell</b>, RVOL, peak %. Scans all <b>44</b> symbols; panel refreshes every <b>3 min</b>.</div>
+          <div class="sq-sub">Scorecard + probability targets · <b>Buy</b> / <b>Sell</b> now (CT session clock). Scans all <b>44</b> symbols; panel refreshes every <b>3 min</b>.</div>
         </div>
         <div class="sq-meta" id="sq-meta">Loading…</div>
       </div>
+      <div class="sq-session" id="sq-session">Loading session clock…</div>
       <div id="sq-table-wrap"><div class="sq-empty">Scanning watchlist for squeeze signals…</div></div>
       <div class="sq-foot" id="sq-foot">Radar scan every 60s during extended hours (3 AM – 7 PM CT) · alerts via Telegram when thresholds hit</div>
     </div>
@@ -2552,22 +2558,64 @@ function _sqKindClass(kind){
   return kind === 'squeeze_active' ? 'active' : 'forming';
 }
 
+function _sqScore(p){
+  if(!p || p.squeeze_score == null) return '—';
+  return Math.round(Number(p.squeeze_score));
+}
+
+function _sqProb(p, key){
+  var probs = p && p.probabilities;
+  if(!probs || probs[key] == null) return '—';
+  return Math.round(Number(probs[key])) + '%';
+}
+
+function _sqCompLine(p){
+  if(!p || p.setup_score == null) return '';
+  return 'S' + Math.round(p.setup_score) + ' · T' + Math.round(p.trigger_score) + ' · C' + Math.round(p.confirm_score);
+}
+
+function _sqTradeCells(p, withStop){
+  var buy = p.buy != null ? p.buy : p.price;
+  var sell = p.sell != null ? p.sell : p.price;
+  var html = '<td class="sq-num">' + _fmtUsd(buy) + '</td>'
+    + '<td class="sq-num">' + _fmtUsd(sell) + '</td>';
+  if(withStop){
+    html += '<td class="sq-num" style="color:#94a3b8">' + (p.stop != null ? _fmtUsd(p.stop) : '—') + '</td>';
+  }
+  html += '<td class="sq-score">' + _sqScore(p)
+    + (_sqCompLine(p) ? '<span class="sq-comp">' + escHtml(_sqCompLine(p)) + '</span>' : '')
+    + '</td>'
+    + '<td class="sq-prob">' + _sqProb(p, 'p_continue_3pct_60m') + '</td>';
+  return html;
+}
+
 function _renderSqueezePicks(data){
   var wrap = document.getElementById('sq-table-wrap');
   var meta = document.getElementById('sq-meta');
   var foot = document.getElementById('sq-foot');
+  var sessEl = document.getElementById('sq-session');
   if(!wrap) return;
   var picks = (data && data.picks) ? data.picks.slice() : [];
-  picks.sort(function(a, b){ return (b.confidence_pct || 0) - (a.confidence_pct || 0); });
+  picks.sort(function(a, b){
+    var sa = a.squeeze_score != null ? a.squeeze_score : (a.confidence_pct || 0);
+    var sb = b.squeeze_score != null ? b.squeeze_score : (b.confidence_pct || 0);
+    return sb - sa;
+  });
   var sess = (data && data.market_session) ? data.market_session : '—';
   var nowCt = (data && (data.now_ct || data.now_et)) ? (data.now_ct || data.now_et) : '';
   var scanTs = data && data.last_scan_ts ? new Date(data.last_scan_ts * 1000) : null;
   var scanStr = scanTs ? scanTs.toLocaleTimeString('en-US', {hour:'numeric', minute:'2-digit', timeZone:'America/Chicago'}) + ' CT' : '—';
-  if(meta){
-    meta.innerHTML = (nowCt ? escHtml(nowCt) + ' · ' : '')
+  var scMeta = data && data.scorecard;
+  var scSess = scMeta && scMeta.session;
+  if(sessEl){
+    sessEl.innerHTML = (nowCt ? '<b>' + escHtml(nowCt) + '</b> · ' : '')
       + escHtml(sess)
-      + ' · scan ' + escHtml(scanStr)
-      + (data && data.fetch_ok != null ? ' · ' + data.fetch_ok + '/44 ok' : '');
+      + (scSess ? ' · Premarket <b>' + escHtml(scSess.premarket) + '</b> · Cash <b>' + escHtml(scSess.cash) + '</b> · Extended <b>' + escHtml(scSess.after_hours) + '</b>' : '');
+  }
+  if(meta){
+    meta.innerHTML = 'Scan ' + escHtml(scanStr)
+      + (data && data.fetch_ok != null ? ' · ' + data.fetch_ok + '/44 ok' : '')
+      + (data && data.duration_ms != null ? ' · ' + data.duration_ms + 'ms' : '');
   }
   if(!picks.length){
     var overnight = sess === 'Market Closed';
@@ -2588,11 +2636,8 @@ function _renderSqueezePicks(data){
     var sessionAlerts = (data && data.alert_history) ? data.alert_history.slice() : [];
     if(leaders.length){
       var lrows = leaders.map(function(p){
-        var buy = p.buy != null ? p.buy : p.price;
-        var sell = p.sell != null ? p.sell : p.price;
         return '<tr><td><span class="sq-sym">' + escHtml(p.symbol) + '</span></td>'
-          + '<td class="sq-num">' + _fmtUsd(buy) + '</td>'
-          + '<td class="sq-num">' + _fmtUsd(sell) + '</td>'
+          + _sqTradeCells(p, true)
           + '<td class="sq-num">+' + (p.peak_move_pct != null ? Number(p.peak_move_pct).toFixed(1) : '—') + '%</td>'
           + '<td class="sq-conf">' + (p.rvol != null ? Number(p.rvol).toFixed(1) + '×' : '—') + '</td></tr>';
       }).join('');
@@ -2600,12 +2645,14 @@ function _renderSqueezePicks(data){
       if(sessionAlerts.length){
         alertBlock = '<div style="font-size:10px;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:16px 0 6px">Telegram alerts this session</div>'
           + '<table class="sq-table"><thead><tr>'
-          + '<th>Stock</th><th>Buy</th><th>Sell</th><th>Conf</th><th>Peak</th>'
+          + '<th>Stock</th><th>Buy</th><th>Sell</th><th>Score</th><th>P(+3% 60m)</th><th>Conf</th><th>Peak</th>'
           + '</tr></thead><tbody>'
           + sessionAlerts.map(function(p){
             return '<tr class="sq-forming"><td><span class="sq-sym">' + escHtml(p.symbol) + '</span></td>'
               + '<td class="sq-num">' + _fmtUsd(p.buy) + '</td>'
               + '<td class="sq-num">' + _fmtUsd(p.sell) + '</td>'
+              + '<td class="sq-score">' + _sqScore(p) + '</td>'
+              + '<td class="sq-prob">' + _sqProb(p, 'p_continue_3pct_60m') + '</td>'
               + '<td class="sq-conf">' + (p.confidence_pct != null ? p.confidence_pct + '%' : '—') + '</td>'
               + '<td class="sq-num">+' + (p.peak_move_pct != null ? Number(p.peak_move_pct).toFixed(1) : '—') + '%</td></tr>';
           }).join('')
@@ -2613,9 +2660,9 @@ function _renderSqueezePicks(data){
       }
       wrap.innerHTML = '<div class="sq-empty" style="padding-bottom:12px"><b>No new squeeze alerts this scan</b><br>' + msg + '</div>'
         + alertBlock
-        + '<div style="font-size:10px;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:16px 0 6px">Top movers · buy / sell now</div>'
+        + '<div style="font-size:10px;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:16px 0 6px">Top movers · buy / sell now (scorecard v1)</div>'
         + '<table class="sq-table"><thead><tr>'
-        + '<th>Stock</th><th>Buy</th><th>Sell</th><th>Peak</th><th>RVOL</th>'
+        + '<th>Stock</th><th>Buy</th><th>Sell</th><th>Stop</th><th>Score</th><th>P(+3% 60m)</th><th>Peak</th><th>RVOL</th>'
         + '</tr></thead><tbody>' + lrows + '</tbody></table>';
     } else {
       wrap.innerHTML = '<div class="sq-empty"><b>No new squeeze alerts this scan</b><br>' + msg + '</div>';
@@ -2628,19 +2675,21 @@ function _renderSqueezePicks(data){
     return '<tr class="' + cls + '">'
       + '<td><span class="sq-sym">' + escHtml(p.symbol) + '</span> '
       + '<span class="sq-kind ' + _sqKindClass(p.kind) + '">' + _sqKindLabel(p.kind) + '</span></td>'
-      + '<td class="sq-num">' + _fmtUsd(p.buy) + '</td>'
-      + '<td class="sq-num">' + _fmtUsd(p.sell) + '</td>'
+      + _sqTradeCells(p, true)
       + '<td class="sq-conf">' + (p.confidence_pct != null ? p.confidence_pct + '%' : '—') + '</td>'
       + '<td style="color:#64748b;font-size:11px">RVOL ' + (p.rvol != null ? Number(p.rvol).toFixed(1) + '×' : '—')
-      + ' · peak +' + (p.peak_move_pct != null ? Number(p.peak_move_pct).toFixed(1) : '—') + '%</td>'
+      + ' · peak +' + (p.peak_move_pct != null ? Number(p.peak_move_pct).toFixed(1) : '—') + '%'
+      + (p.above_vwap === true ? ' · above VWAP' : (p.above_vwap === false ? ' · below VWAP' : ''))
+      + '</td>'
       + '</tr>';
   }).join('');
   wrap.innerHTML = '<table class="sq-table"><thead><tr>'
-    + '<th>Stock</th><th>Buy</th><th>Sell</th><th>Confidence</th><th>Peak · RVOL</th>'
+    + '<th>Stock</th><th>Buy</th><th>Sell</th><th>Stop</th><th>Score</th><th>P(+3% 60m)</th><th>Conf</th><th>Peak · RVOL</th>'
     + '</tr></thead><tbody>' + rows + '</tbody></table>';
   if(foot){
+    var probNote = scMeta && scMeta.probabilities_note ? scMeta.probabilities_note : 'Heuristic probability targets';
     var alerts = (data.alert_history && data.alert_history.length) ? data.alert_history.length + ' Telegram alert(s) today' : 'No Telegram alerts this session yet';
-    foot.textContent = alerts + ' · panel refresh every 3 min · scan every 60s during market hours';
+    foot.textContent = alerts + ' · ' + probNote + ' · panel refresh every 3 min · scan every 60s (CT extended hours)';
   }
 }
 

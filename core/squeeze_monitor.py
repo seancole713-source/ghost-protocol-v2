@@ -52,6 +52,7 @@ _last_scan_report: Dict[str, Any] = {
 }
 _alert_history: List[Dict[str, Any]] = []
 _ALERT_HISTORY_MAX = 30
+_alert_session_date: Optional[Any] = None
 
 
 def rth_elapsed_fraction(now: Optional[datetime] = None) -> float:
@@ -174,31 +175,26 @@ def candidate_to_pick(
     rvol: float,
     short_ctx: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """Telegram-aligned pick row for cockpit + API."""
-    buy, sell = squeeze_trade_levels(metrics["price"], metrics["session_high"], kind)
+    """Telegram-aligned pick row for cockpit + API (includes scorecard + probability targets)."""
+    from core.squeeze_scorecard import build_scorecard_row
+
+    row = build_scorecard_row(symbol, metrics, rvol, short_ctx, kind=kind)
     conf = squeeze_confidence(
         metrics["peak_move_pct"],
         rvol,
         short_risk=short_ctx.get("squeeze_risk"),
         kind=kind,
     )
-    return {
-        "symbol": symbol.upper(),
-        "kind": kind,
-        "buy": buy,
-        "sell": sell,
-        "confidence_pct": conf,
-        "price": round(float(metrics["price"]), 2),
-        "peak_move_pct": round(float(metrics["peak_move_pct"]), 2),
-        "current_move_pct": round(float(metrics["current_move_pct"]), 2),
-        "rvol": round(float(rvol), 2),
-        "short_risk": short_ctx.get("squeeze_risk"),
-        "message": format_squeeze_alert(symbol, kind, metrics, rvol, short_ctx),
-    }
+    row["confidence_pct"] = conf
+    row["short_risk"] = short_ctx.get("squeeze_risk")
+    row["message"] = format_squeeze_alert(symbol, kind, metrics, rvol, short_ctx)
+    return row
 
 
 def get_squeeze_picks() -> Dict[str, Any]:
     """Active squeeze picks from the latest scan + recent Telegram alerts."""
+    from core.squeeze_scorecard import scorecard_legend
+
     st = dict(_last_scan_report)
     picks = list(st.get("picks") or st.get("candidates") or [])
     return {
@@ -212,7 +208,26 @@ def get_squeeze_picks() -> Dict[str, Any]:
         "fetch_fail": st.get("fetch_fail"),
         "duration_ms": st.get("duration_ms"),
         "leaders": list(st.get("leaders") or []),
+        "scorecard": scorecard_legend(),
     }
+
+
+async def prewarm_short_cache() -> None:
+    """Background: warm short-interest cache before RTH (Finviz/yfinance, one symbol at a time)."""
+    from config.symbols import get_edge_set
+    from core.market_hours import is_us_extended_hours
+
+    delay = float(os.getenv("SQUEEZE_SHORT_PREWARM_DELAY_S", "2.5"))
+    symbols = sorted(get_edge_set())
+    LOGGER.info("[SqueezeMonitor] Short-cache prewarm — %s symbols", len(symbols))
+    for sym in symbols:
+        if not is_us_extended_hours():
+            return
+        try:
+            _short_context(sym)
+        except Exception as exc:
+            LOGGER.debug("[SqueezeMonitor] prewarm %s: %s", sym, exc)
+        await asyncio.sleep(delay)
 
 
 async def start_squeeze_monitor() -> None:
@@ -228,6 +243,8 @@ async def start_squeeze_monitor() -> None:
         SQUEEZE_PRICE_PCT,
         SQUEEZE_VOL_MULT,
     )
+    if os.getenv("SQUEEZE_SHORT_PREWARM", "1").strip().lower() in ("1", "true", "yes", "on"):
+        asyncio.create_task(prewarm_short_cache())
     while True:
         try:
             await _run_watchlist_scan()
@@ -243,6 +260,17 @@ async def start_squeeze_monitor() -> None:
         await asyncio.sleep(CHECK_INTERVAL_SEC)
 
 
+def _reset_alert_history_if_new_session() -> None:
+    """Clear in-memory Telegram alert list at start of each CT calendar day."""
+    global _alert_history, _alert_session_date
+    from core.market_hours import session_hm
+
+    today = session_hm()[0].date()
+    if _alert_session_date != today:
+        _alert_history = []
+        _alert_session_date = today
+
+
 async def _run_watchlist_scan() -> None:
     from concurrent.futures import ThreadPoolExecutor
 
@@ -250,6 +278,8 @@ async def _run_watchlist_scan() -> None:
 
     if not is_us_extended_hours():
         return
+
+    _reset_alert_history_if_new_session()
 
     from config.symbols import get_edge_set
 
@@ -290,6 +320,7 @@ async def _run_watchlist_scan() -> None:
                 LOGGER.debug("[SqueezeMonitor] fetch %s: %s", sym, exc)
                 metrics_map[sym] = None
 
+    short_ctx_map: Dict[str, Dict[str, Any]] = {}
     for symbol in symbols:
         metrics = metrics_map.get(symbol)
         if not metrics:
@@ -300,15 +331,8 @@ async def _run_watchlist_scan() -> None:
         peak_pct = metrics["peak_move_pct"]
         current_pct = metrics["current_move_pct"]
 
-        buy, sell = squeeze_trade_levels(
-            float(metrics["price"]),
-            float(metrics.get("session_high") or metrics["price"]),
-            "squeeze_forming",
-        )
         report.setdefault("leaders", []).append({
             "symbol": symbol,
-            "buy": buy,
-            "sell": sell,
             "peak_move_pct": round(peak_pct, 2),
             "current_move_pct": round(current_pct, 2),
             "rvol": round(rvol, 2),
@@ -319,11 +343,13 @@ async def _run_watchlist_scan() -> None:
         short_ctx: Dict[str, Any] = {}
         if not kind and prefilter_candidate(peak_pct, current_pct, rvol):
             short_ctx = _short_context(symbol)
+            short_ctx_map[symbol] = short_ctx
             kind = evaluate_squeeze_signal(
                 peak_pct, current_pct, rvol, short_risk=short_ctx.get("squeeze_risk"),
             )
         elif kind:
             short_ctx = _short_context(symbol)
+            short_ctx_map[symbol] = short_ctx
 
         if kind:
             pick = candidate_to_pick(symbol, kind, metrics, rvol, short_ctx)
@@ -334,9 +360,28 @@ async def _run_watchlist_scan() -> None:
                 del _alert_history[_ALERT_HISTORY_MAX:]
 
     report["picks"] = list(report["candidates"])
+    from core.squeeze_scorecard import build_scorecard_row
+
     leaders = report.get("leaders") or []
     leaders.sort(key=lambda x: (x.get("peak_move_pct") or 0, x.get("rvol") or 0), reverse=True)
-    report["leaders"] = leaders[:8]
+    enriched: List[Dict[str, Any]] = []
+    for leader in leaders[:8]:
+        sym = leader["symbol"]
+        metrics = metrics_map.get(sym)
+        if not metrics:
+            enriched.append(leader)
+            continue
+        short_ctx = short_ctx_map.get(sym) or _short_context(sym)
+        enriched.append(
+            build_scorecard_row(
+                sym,
+                metrics,
+                float(leader["rvol"]),
+                short_ctx,
+                kind="squeeze_forming",
+            )
+        )
+    report["leaders"] = enriched
 
     report["duration_ms"] = int((time.time() - t0) * 1000)
     report["status"] = "complete"
@@ -350,6 +395,28 @@ async def _run_watchlist_scan() -> None:
     )
 
 
+def _short_context_from_finviz(symbol: str) -> Dict[str, Any]:
+    """Finviz scrape fallback when Yahoo short data is unavailable (429 / Alpaca-only mode)."""
+    out: Dict[str, Any] = {
+        "short_float_pct": None,
+        "days_to_cover": None,
+        "squeeze_risk": None,
+    }
+    try:
+        from core.wolf_context import _fetch_finviz
+
+        fv = _fetch_finviz(symbol.upper())
+        sf = fv.get("short_float")
+        dtc = fv.get("days_to_cover")
+        if sf is not None:
+            out["short_float_pct"] = round(float(sf), 2)
+        if dtc is not None:
+            out["days_to_cover"] = round(float(dtc), 2)
+    except Exception as exc:
+        LOGGER.debug("[SqueezeMonitor] finviz short %s: %s", symbol, exc)
+    return out
+
+
 def _short_context(symbol: str) -> Dict[str, Any]:
     sym = symbol.upper()
     cached = _short_cache.get(sym)
@@ -360,23 +427,33 @@ def _short_context(symbol: str) -> Dict[str, Any]:
         "days_to_cover": None,
         "squeeze_risk": None,
     }
-    try:
-        import yfinance as yf
+    if _yf_short_enabled():
+        try:
+            import yfinance as yf
 
-        info = yf.Ticker(sym).info or {}
-        sf = info.get("shortPercentOfFloat")
-        dtc = info.get("shortRatio")
-        if sf is not None:
-            out["short_float_pct"] = round(float(sf) * 100, 2)
-        if dtc is not None:
-            out["days_to_cover"] = round(float(dtc), 2)
-        from api.wolf_endpoints import _squeeze_risk_tag
+            info = yf.Ticker(sym).info or {}
+            sf = info.get("shortPercentOfFloat")
+            dtc = info.get("shortRatio")
+            if sf is not None:
+                out["short_float_pct"] = round(float(sf) * 100, 2)
+            if dtc is not None:
+                out["days_to_cover"] = round(float(dtc), 2)
+        except Exception as exc:
+            LOGGER.debug("[SqueezeMonitor] yfinance short %s: %s", sym, exc)
+    if out["short_float_pct"] is None and out["days_to_cover"] is None:
+        out = _short_context_from_finviz(sym)
+    from api.wolf_endpoints import _squeeze_risk_tag
 
-        out["squeeze_risk"] = _squeeze_risk_tag(out["short_float_pct"], out["days_to_cover"])
-    except Exception:
-        pass
+    out["squeeze_risk"] = _squeeze_risk_tag(out["short_float_pct"], out["days_to_cover"])
     _short_cache[sym] = (time.time(), out)
     return out
+
+
+def _yf_short_enabled() -> bool:
+    """Separate from price fallback — short-interest can use Yahoo when not rate-limited."""
+    if os.getenv("SQUEEZE_YF_SHORT", "1").strip().lower() in ("0", "false", "no", "off"):
+        return False
+    return True
 
 
 def _yf_fallback_enabled() -> bool:
@@ -448,7 +525,7 @@ def _sync_fetch_metrics(symbol: str) -> Optional[Dict[str, Any]]:
         last_px = float(last_px)
         session_high = float(session_high or last_px)
 
-        avg_vol, session_vol = _fetch_volumes(sym)
+        avg_vol, session_vol, vwap = _fetch_volumes(sym)
         if not avg_vol or avg_vol <= 0:
             return _yf_fetch_metrics(sym) if _yf_fallback_enabled() else None
         if not session_vol or session_vol <= 0:
@@ -460,6 +537,7 @@ def _sync_fetch_metrics(symbol: str) -> Optional[Dict[str, Any]]:
             "session_high": session_high,
             "session_volume": float(session_vol),
             "avg_daily_volume": float(avg_vol),
+            "vwap": vwap,
             "peak_move_pct": (session_high - prev_close) / prev_close * 100,
             "current_move_pct": (last_px - prev_close) / prev_close * 100,
         }
@@ -468,8 +546,25 @@ def _sync_fetch_metrics(symbol: str) -> Optional[Dict[str, Any]]:
         return _yf_fetch_metrics(sym) if _yf_fallback_enabled() else None
 
 
-def _fetch_volumes(symbol: str) -> Tuple[Optional[float], Optional[float]]:
-    """Return (avg_daily_volume, session_volume_so_far)."""
+def _vwap_from_bars(bars: List[Dict[str, Any]]) -> Optional[float]:
+    num = den = 0.0
+    for b in bars:
+        v = float(b.get("v", 0) or 0)
+        if v <= 0:
+            continue
+        h = float(b.get("h", 0) or 0)
+        l = float(b.get("l", 0) or 0)
+        c = float(b.get("c", 0) or 0)
+        if h <= 0 and l <= 0 and c <= 0:
+            continue
+        tp = (h + l + c) / 3.0
+        num += tp * v
+        den += v
+    return round(num / den, 4) if den > 0 else None
+
+
+def _fetch_volumes(symbol: str) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+    """Return (avg_daily_volume, session_volume_so_far, session_vwap)."""
     sym = symbol.upper()
     headers = _alpaca_headers()
     if headers:
@@ -495,7 +590,7 @@ def _fetch_volumes(symbol: str) -> Tuple[Optional[float], Optional[float]]:
                 day_start = now_utc.replace(hour=9, minute=0, second=0, microsecond=0)
             start_str = day_start.strftime("%Y-%m-%dT%H:%M:%SZ")
             end_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
-            avg_vol = session_vol = None
+            avg_vol = session_vol = vwap = None
             for feed in ("sip", "iex"):
                 url = (
                     f"https://data.alpaca.markets/v2/stocks/{sym}/bars"
@@ -521,16 +616,17 @@ def _fetch_volumes(symbol: str) -> Tuple[Optional[float], Optional[float]]:
                 bars = r.json().get("bars") or []
                 if bars:
                     session_vol = sum(float(b.get("v", 0)) for b in bars if b.get("v"))
+                    vwap = _vwap_from_bars(bars)
                     break
             if avg_vol and session_vol:
-                return avg_vol, session_vol
+                return avg_vol, session_vol, vwap
             if avg_vol:
-                return avg_vol, avg_vol * 0.4
+                return avg_vol, avg_vol * 0.4, vwap
         except Exception as exc:
             LOGGER.debug("[SqueezeMonitor] alpaca vol %s: %s", sym, exc)
 
     if not _yf_fallback_enabled():
-        return None, None
+        return None, None, None
 
     try:
         import yfinance as yf
@@ -539,15 +635,20 @@ def _fetch_volumes(symbol: str) -> Tuple[Optional[float], Optional[float]]:
         hist = t.history(period="30d", interval="1d")
         intraday = t.history(period="1d", interval="5m")
         if hist is None or hist.empty:
-            return None, None
+            return None, None, None
         avg_vol = float(hist["Volume"].iloc[-20:].mean())
+        vwap = None
         if intraday is not None and not intraday.empty:
             session_vol = float(intraday["Volume"].sum())
+            tp = (intraday["High"] + intraday["Low"] + intraday["Close"]) / 3.0
+            vols = intraday["Volume"].astype(float)
+            den = float(vols.sum())
+            vwap = round(float((tp * vols).sum() / den), 4) if den > 0 else None
         else:
             session_vol = float(hist["Volume"].iloc[-1])
-        return avg_vol, session_vol
+        return avg_vol, session_vol, vwap
     except Exception:
-        return None, None
+        return None, None, None
 
 
 def _yf_fetch_metrics(symbol: str) -> Optional[Dict[str, Any]]:
@@ -571,12 +672,19 @@ def _yf_fetch_metrics(symbol: str) -> Optional[Dict[str, Any]]:
             last_px = float(hist["Close"].iloc[-1])
         if prev_close <= 0:
             return None
+        vwap = None
+        if intraday is not None and not intraday.empty:
+            tp = (intraday["High"] + intraday["Low"] + intraday["Close"]) / 3.0
+            vols = intraday["Volume"].astype(float)
+            den = float(vols.sum())
+            vwap = round(float((tp * vols).sum() / den), 4) if den > 0 else None
         return {
             "price": last_px,
             "prior_close": prev_close,
             "session_high": session_high,
             "session_volume": session_vol,
             "avg_daily_volume": avg_vol,
+            "vwap": vwap,
             "peak_move_pct": (session_high - prev_close) / prev_close * 100,
             "current_move_pct": (last_px - prev_close) / prev_close * 100,
         }
