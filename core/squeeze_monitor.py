@@ -50,6 +50,11 @@ _last_scan_report: Dict[str, Any] = {
     "ok": False,
     "message": "No scan completed yet",
 }
+_scan_cache_path = os.path.join(
+    os.path.dirname(os.path.dirname(__file__)),
+    "data",
+    "squeeze_last_scan.json",
+)
 _alert_history: List[Dict[str, Any]] = []
 _ALERT_HISTORY_MAX = 30
 _alert_session_date: Optional[Any] = None
@@ -110,7 +115,46 @@ def prefilter_candidate(peak_move_pct: float, current_move_pct: float, rvol: flo
 
 def get_squeeze_status() -> Dict[str, Any]:
     """Last completed watchlist scan snapshot (for /api/squeeze/status)."""
+    _ensure_scan_cache_loaded()
     return dict(_last_scan_report)
+
+
+def _ensure_scan_cache_loaded() -> None:
+    """Load persisted last scan when in-memory state is empty (e.g. after deploy overnight)."""
+    global _last_scan_report
+    if _last_scan_report.get("status") == "complete" and _last_scan_report.get("ts"):
+        return
+    if not os.path.isfile(_scan_cache_path):
+        return
+    try:
+        import json
+
+        with open(_scan_cache_path, encoding="utf-8") as fh:
+            cached = json.load(fh)
+        if isinstance(cached, dict) and cached.get("ts"):
+            _last_scan_report = cached
+    except Exception as exc:
+        LOGGER.debug("[SqueezeMonitor] load scan cache: %s", exc)
+
+
+def _persist_scan_report(report: Dict[str, Any]) -> None:
+    if report.get("status") != "complete":
+        return
+    try:
+        import json
+
+        os.makedirs(os.path.dirname(_scan_cache_path), exist_ok=True)
+        payload = {
+            k: report.get(k)
+            for k in (
+                "ok", "ts", "session", "symbols", "fetch_ok", "fetch_fail",
+                "picks", "candidates", "leaders", "duration_ms", "status", "elapsed_frac",
+            )
+        }
+        with open(_scan_cache_path, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+    except Exception as exc:
+        LOGGER.debug("[SqueezeMonitor] persist scan cache: %s", exc)
 
 
 def squeeze_confidence(
@@ -193,22 +237,30 @@ def candidate_to_pick(
 
 def get_squeeze_picks() -> Dict[str, Any]:
     """Active squeeze picks from the latest scan + recent Telegram alerts."""
+    from core.market_hours import is_us_extended_hours, next_radar_resume_label
     from core.squeeze_scorecard import scorecard_legend
 
+    _ensure_scan_cache_loaded()
     st = dict(_last_scan_report)
     picks = list(st.get("picks") or st.get("candidates") or [])
+    radar_active = is_us_extended_hours()
+    last_ts = st.get("ts")
     return {
-        "ok": bool(st.get("ok")),
+        "scan_ok": bool(st.get("ok") and st.get("status") == "complete"),
         "picks": picks,
         "pick_count": len(picks),
         "alert_history": list(_alert_history),
-        "last_scan_ts": st.get("ts"),
+        "last_scan_ts": last_ts,
         "last_scan_status": st.get("status"),
+        "last_scan_session": st.get("session"),
         "fetch_ok": st.get("fetch_ok"),
         "fetch_fail": st.get("fetch_fail"),
         "duration_ms": st.get("duration_ms"),
         "leaders": list(st.get("leaders") or []),
         "scorecard": scorecard_legend(),
+        "radar_active": radar_active,
+        "radar_resume_ct": next_radar_resume_label(),
+        "snapshot_stale": bool(not radar_active and last_ts),
     }
 
 
@@ -245,6 +297,7 @@ async def start_squeeze_monitor() -> None:
     )
     if os.getenv("SQUEEZE_SHORT_PREWARM", "1").strip().lower() in ("1", "true", "yes", "on"):
         asyncio.create_task(prewarm_short_cache())
+    _ensure_scan_cache_loaded()
     while True:
         try:
             await _run_watchlist_scan()
@@ -386,6 +439,7 @@ async def _run_watchlist_scan() -> None:
     report["duration_ms"] = int((time.time() - t0) * 1000)
     report["status"] = "complete"
     _last_scan_report = report
+    _persist_scan_report(report)
     LOGGER.info(
         "[SqueezeMonitor] scan ok=%s fail=%s candidates=%s ms=%s",
         report["fetch_ok"],

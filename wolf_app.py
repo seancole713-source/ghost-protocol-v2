@@ -3186,6 +3186,7 @@ def squeeze_picks_endpoint():
             is_us_premarket,
             is_us_rth,
             market_session_label,
+            next_radar_resume_label,
             now_ct_iso,
             now_et_iso,
         )
@@ -3193,6 +3194,7 @@ def squeeze_picks_endpoint():
 
         board = get_squeeze_picks()
         return {
+            **board,
             "ok": True,
             "enabled": os.getenv("SQUEEZE_MONITOR_ENABLED", "1") == "1",
             "market_session": market_session_label(),
@@ -3202,9 +3204,10 @@ def squeeze_picks_endpoint():
             "is_premarket": is_us_premarket(),
             "is_after_hours": is_us_after_hours(),
             "is_extended_hours": is_us_extended_hours(),
+            "radar_active": board.get("radar_active", is_us_extended_hours()),
+            "radar_resume_ct": board.get("radar_resume_ct") or next_radar_resume_label(),
             "scan_interval_sec": int(os.getenv("SQUEEZE_MONITOR_INTERVAL", "60")),
             "panel_refresh_sec": int(os.getenv("SQUEEZE_PANEL_REFRESH_SEC", "180")),
-            **board,
         }
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)[:200], "picks": []}, status_code=500)
@@ -4834,7 +4837,7 @@ def v3_train(x_cron_secret: str = Header(default=""), force: bool = False):
 
 # PR #19 deploy-version constant. Bump on every "did Railway pick up
 # the new code?" PR so /api/_version reveals the truth in one curl.
-_RUNNING_PR_VERSION = 56
+_RUNNING_PR_VERSION = 57
 
 
 def _deploy_meta() -> dict:

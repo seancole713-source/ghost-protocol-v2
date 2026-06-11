@@ -83,6 +83,24 @@ def is_us_extended_hours(now: _dt.datetime | None = None) -> bool:
     return PREMARKET_START_MIN <= hm < AFTERHOURS_END_MIN
 
 
+def next_radar_resume_label(now: _dt.datetime | None = None) -> str:
+    """Human label for when the squeeze radar next wakes (premarket 3:00 AM CT)."""
+    now, hm = session_hm(now)
+    if is_us_extended_hours(now):
+        return "now (live)"
+    # Weekend → next Monday 3:00 AM CT
+    if now.weekday() == 5:
+        return "Mon 3:00 AM CT"
+    if now.weekday() == 6:
+        return "Mon 3:00 AM CT"
+    # Weekday overnight (after 7 PM) or before 3 AM → next 3:00 AM CT
+    if hm >= AFTERHOURS_END_MIN or hm < PREMARKET_START_MIN:
+        if now.weekday() == 4 and hm >= AFTERHOURS_END_MIN:
+            return "Mon 3:00 AM CT"
+        return "3:00 AM CT"
+    return "3:00 AM CT"
+
+
 def now_ct_iso(now: _dt.datetime | None = None) -> str:
     """Current Central wall clock for UI, e.g. '3:22 PM CT'."""
     n = now or _now_ct()

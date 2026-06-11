@@ -2613,19 +2613,33 @@ function _renderSqueezePicks(data){
       + (scSess ? ' · Premarket <b>' + escHtml(scSess.premarket) + '</b> · Cash <b>' + escHtml(scSess.cash) + '</b> · Extended <b>' + escHtml(scSess.after_hours) + '</b>' : '');
   }
   if(meta){
-    meta.innerHTML = 'Scan ' + escHtml(scanStr)
-      + (data && data.fetch_ok != null ? ' · ' + data.fetch_ok + '/44 ok' : '')
-      + (data && data.duration_ms != null ? ' · ' + data.duration_ms + 'ms' : '');
+    var radarOn = !!(data && data.radar_active);
+    if(radarOn){
+      meta.innerHTML = 'Scan ' + escHtml(scanStr)
+        + (data && data.fetch_ok != null ? ' · ' + data.fetch_ok + '/44 ok' : '')
+        + (data && data.duration_ms != null ? ' · ' + data.duration_ms + 'ms' : '');
+    } else {
+      var resume = (data && data.radar_resume_ct) ? data.radar_resume_ct : '3:00 AM CT';
+      meta.innerHTML = 'Scan paused · resumes <b>' + escHtml(resume) + '</b>'
+        + (scanTs ? ' · last ' + escHtml(scanStr) : '');
+    }
   }
   if(!picks.length){
-    var overnight = sess === 'Market Closed';
-    var watching = !!(data && (data.is_rth || data.is_premarket || data.is_extended_hours));
+    var radarOn = !!(data && data.radar_active);
+    var overnight = !radarOn;
+    var watching = radarOn;
     var leaders = (data && data.leaders) ? data.leaders.slice() : [];
+    var stale = !!(data && data.snapshot_stale);
     var fetchLine = (data && data.fetch_ok != null)
       ? ' Priced <b>' + data.fetch_ok + '/44</b> on last scan.'
       : '';
+    var resumeCt = (data && data.radar_resume_ct) ? data.radar_resume_ct : '3:00 AM CT';
+    var emptyTitle = overnight
+      ? 'Radar offline overnight'
+      : 'No new squeeze alerts this scan';
     var msg = overnight
-      ? 'Overnight — radar sleeps until premarket (3:00 AM CT).'
+      ? 'Ghost sleeps <b>7:00 PM – 3:00 AM CT</b>. Premarket scan starts at <b>' + escHtml(resumeCt) + '</b>.'
+        + (scanTs ? ' Last scan at <b>' + escHtml(scanStr) + '</b>.' : '')
       : watching
         ? 'Radar is <b>live</b> — watching all 44 symbols.' + fetchLine
           + ' Table below shows <b>buy now</b> / <b>sell now</b> (same levels as Telegram).'
@@ -2658,16 +2672,20 @@ function _renderSqueezePicks(data){
           }).join('')
           + '</tbody></table>';
       }
-      wrap.innerHTML = '<div class="sq-empty" style="padding-bottom:12px"><b>No new squeeze alerts this scan</b><br>' + msg + '</div>'
+      wrap.innerHTML = '<div class="sq-empty" style="padding-bottom:12px"><b>' + emptyTitle + '</b><br>' + msg + '</div>'
         + alertBlock
-        + '<div style="font-size:10px;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:16px 0 6px">Top movers · buy / sell now (scorecard v1)</div>'
+        + '<div style="font-size:10px;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:16px 0 6px">'
+        + (stale ? 'Last session snapshot (not live) · ' : '')
+        + 'Top movers · buy / sell now (scorecard v1)</div>'
         + '<table class="sq-table"><thead><tr>'
         + '<th>Stock</th><th>Buy</th><th>Sell</th><th>Stop</th><th>Score</th><th>P(+3% 60m)</th><th>Peak</th><th>RVOL</th>'
         + '</tr></thead><tbody>' + lrows + '</tbody></table>';
     } else {
-      wrap.innerHTML = '<div class="sq-empty"><b>No new squeeze alerts this scan</b><br>' + msg + '</div>';
+      wrap.innerHTML = '<div class="sq-empty"><b>' + emptyTitle + '</b><br>' + msg + '</div>';
     }
-    if(foot) foot.textContent = 'Panel refresh every 3 min · backend scan every 60s · ' + (data && data.enabled === false ? 'radar disabled' : 'radar enabled');
+    if(foot) foot.textContent = (overnight ? 'Radar paused overnight · ' : '')
+      + 'Panel refresh every 3 min · backend scan every 60s during extended hours · '
+      + (data && data.enabled === false ? 'radar disabled' : 'radar enabled');
     return;
   }
   var rows = picks.map(function(p){
