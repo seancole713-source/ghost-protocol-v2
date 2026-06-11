@@ -17,8 +17,27 @@ session logs are preserved at the bottom as accountability history.
 """
 
 # ============================================================
-# LIVE SYSTEM — LAST VERIFIED 2026-06-10 (PR #60 pushed; prod verify pending user)
+# LIVE SYSTEM — LAST VERIFIED 2026-06-11 (PR #60 prod-verified by operator)
 # ============================================================
+
+PROD_VERIFY_2026_06_11 = {
+    "deploy_id": "7367631c",
+    "git_sha_short_admin": "87db7b4",
+    "git_sha_short_cockpit": "b20fff6",
+    "railway_active": True,
+    "python": "3.13.13",
+    "phase1_2_admin": "contract v2.0-post-falsification; regime cal on; squeeze_ml_v2 on",
+    "cockpit": "contract banner + POST-FALSIFICATION MODE; squeeze paused overnight OK",
+    "kill_status": "all clear; DB pool max 25 loads",
+    "v3_gate": "WOLF up_prob 0.5373 vs floor 0.5380 (-0.0007); SMA5 Trend-up bypass logged",
+    "squeeze_overnight": "PAUSED resumes 3:00 AM CT — expected at 12:14 AM CT",
+    "drift": "insufficient_samples (0) — expected early",
+    "options_pcr": "empty — thin chain OK",
+    "scan_health_7d": "187 cycles, 44/44 scanned, 0 saved (silence by design)",
+    "journal": "28.2% WR, ABANDON_80_CLAIM copy live",
+    "known_noise": "Alpaca SIP 403→IEX OK; yfinance WOLF flake overnight; RDFN delisted noise",
+    "next_watch": "First 3 AM CT squeeze wake Thu 2026-06-11; weekly checklist during session",
+}
 
 PRODUCTION_URL = "https://ghost-protocol-v2-production.up.railway.app"
 GITHUB_REPO = "seancole713-source/ghost-protocol-v2"
@@ -173,8 +192,9 @@ V2_PICK_FIELDS = {
 TODO = """
 P0 — PRODUCT POSITION (done 2026-06-10)
 [x] Falsification gate tripped — ABANDON_80_CLAIM; honest copy in cockpit + ghost_contract
-[ ] User prod-verify PR #60: /api/_version _pr_version=60, /api/ghost/*, cockpit banner, admin cards
-[ ] Weekly ops checklist (PROJECT_STATE.md) — run 5 URLs + admin cards once/week
+[x] User prod-verify PR #60 (2026-06-11): admin + cockpit Phase 1+2 cards, kill-status, overnight squeeze pause
+[ ] Weekly ops checklist (PROJECT_STATE.md) — run 5 URLs + admin cards once/week (first full pass during CT session)
+[ ] Confirm squeeze radar wake after 3:00 AM CT 2026-06-11 (leaders + last_scan_ts)
 
 P1 — PHASE 3 DEPTH (probes exist; not yet gating picks)
 [ ] Train squeeze ML v2 from labeled squeeze outcomes (replace baseline logistic in data/squeeze_ml_v2.json)
@@ -235,6 +255,7 @@ COMPLETED = """
 [x] Investor-view forensic cleanup (15 items) — PR #23/#24
 [x] Intraday squeeze radar + scorecard (PR #55-#59): CT session 3 AM–7 PM, Telegram path separate from v3
 [x] Phase 1+2 blueprint modules wired (PR #60, 91dc94c) — see COMPLETED_PHASE1_2 above
+[x] PR #60 prod-verified on Railway 2026-06-11 (operator) — see PROD_VERIFY_2026_06_11
 """
 
 # ============================================================
@@ -284,6 +305,30 @@ FAILURES = """
 # ============================================================
 
 SESSION_LOG = """
+--- 2026-06-11 | PR #60 prod verification (operator, Railway tender-benevolence) ---
+Context: operator pasted live admin + cockpit + deploy logs after Phase 1+2 ship.
+Sandbox cannot reach Railway; this entry records operator-confirmed prod state.
+
+User-verified on prod 2026-06-11 (~12:14 AM CT):
+  - Railway deploy 7367631c Active; Python 3.13.13; build from main (checklist b20fff6)
+  - /admin: Blueprint Phase 1 on (regime cal, SMA5 bypass, squeeze_ml_v2); Phase 2 cards load
+  - /admin: kill conditions all clear; no connection pool exhausted
+  - /admin: squeeze PAUSED overnight, resumes 3:00 AM CT; leaders 0 overnight (expected)
+  - /admin: gate-status WOLF up_prob 0.5373 vs effective floor 0.5380 (prob_low -0.0007)
+  - /cockpit: contract banner + POST-FALSIFICATION MODE; deploy b20fff6 shown
+  - /cockpit: squeeze radar offline overnight copy correct; v3 WATCHING 13d silent OK
+  - Logs: REGIME GATE SMA5 bypass Trend-up WOLF; Cycle 0/0 picks; market_hours=False OK
+  - Logs: Alpaca SIP 403 → IEX fallback (not a regression); yfinance WOLF flake overnight
+  - Performance log: 187 scan cycles / 7d, 44 scanned, binding v3_regime_gate
+
+Not yet verified this session (watch next):
+  - GET /api/_version _pr_version: 60 (operator did not paste curl; admin UI confirms Phase 1+2)
+  - First post-deploy 3 AM CT squeeze scan with leaders populated (due Thu 2026-06-11 AM)
+
+Open / next:
+  - Weekly ops checklist during CT session
+  - Passive accumulation (drift samples, squeeze labels) — no Phase 3 code yet
+
 --- 2026-06-10 | Phase 1+2 blueprint + squeeze radar + post-falsification contract ---
 Context: operator chose "Phase 1 + Phase 2" (not product-only). Falsification gate
 already tripped (~28% WR, CI excludes 80%). Goal: honest repositioning, wire blueprint
@@ -311,12 +356,8 @@ Shipped Phase 1+2 (commit 91dc94c, _pr_version 60):
     - admin Blueprint / feature drift / options flow cards
     - tests/test_ghost_phase12.py; 403 tests passing at push
 
-Prod verify (PENDING — user must confirm; sandbox cannot reach Railway):
-  - GET /api/_version -> _pr_version: 60, git_sha matches 91dc94c
-  - GET /api/ghost/contract, /api/ghost/blueprint
-  - /cockpit pick journal: contract banner + POST-FALSIFICATION MODE verdict
-  - /admin: Blueprint Modules, Feature drift, Options flow cards
-  - First 3 AM CT squeeze scan after deploy populates leaders (overnight radar_active=false is OK)
+Prod verify: completed 2026-06-11 by operator — see session log entry above.
+  Squeeze first-wake check still pending Thu 2026-06-11 3 AM CT.
 
 Open / Phase 3:
   - Retrain squeeze ML v2 from labeled outcomes (baseline weights are priors only)
