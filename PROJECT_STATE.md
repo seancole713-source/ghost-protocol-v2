@@ -87,9 +87,21 @@ walk-forward validation. The WOLF model trained at **~65.4% holdout accuracy**
 4. **Meta gates**: reject if `edge < V3_MIN_EDGE`, holdout `accuracy < V3_MIN_HOLDOUT_ACC`,
    or walk-forward acc/edge below floors.
 5. Confidence: `conf = clamp(accuracy + (up_prob − min_p) × 4.0, 0.75, 0.95)`
-   where `accuracy ≈ 0.654` (model holdout) and `min_p = V3_MIN_WIN_PROBA` (0.55).
+   where `accuracy ≈ 0.654` (model holdout) and `min_p = V3_MIN_WIN_PROBA` (0.55),
+   **regime-adjusted** via `core/regime_calibration.py` when `GHOST_REGIME_CALIBRATION=1` (PR #60).
 6. If `scores` dict is passed, it's populated with the **specialist score vector
    + regime-at-issuance** (PR #30) for the pick journal.
+
+### Two lanes (independent products)
+
+| Lane | Role | When active |
+|------|------|-------------|
+| **v3 picks** | ~3-day gated XGBoost holds | ~30 min prediction cycles; often silent |
+| **Squeeze radar** | Intraday RVOL + move scorecard | **3 AM – 7 PM CT**; separate Telegram path |
+
+Squeeze lane: `core/squeeze_monitor.py` → `GET /api/squeeze/picks` (scorecard buy/sell/stop,
+P(+3%) with squeeze ML v2 blend). v3 lane unchanged — falsification gate tripped; journal
+shows `ABANDON_80_CLAIM`. See `GET /api/ghost/contract`.
 
 ### The four-gate chain (why the system is usually silent)
 1. **Model gate** — engine emits a signal at all (regime + meta gates above).
@@ -155,7 +167,13 @@ schema had NOT NULL on run_at; migration drops it but it may return).
 - `GET /api/wolf/gate-history` — **rolling per-cycle gate outcomes** (last 50) (PR #29)
 - `GET /api/wolf/pick-journal` — **credibility ledger** (PR #30): paginated audit
   trail + win rate w/ 95% Wilson CI + expectancy + Brier + `verdict.falsification`
-- `GET /api/_version` — running PR version marker
+- `GET /api/squeeze/picks` — intraday squeeze board (scorecard, buy/sell/stop, CT session)
+- `GET /api/squeeze/status` — last 44-symbol scan snapshot + `radar_active`
+- `GET /api/ghost/contract` — post-falsification product contract (PR #60)
+- `GET /api/ghost/blueprint` — Phase 1+2 module status rollup
+- `GET /api/ghost/regime | /drift | /sentiment | /options` — Phase 2 probes
+- `GET /api/shadow-stats` — virtual hit-rate scoreboard (gates ignored)
+- `GET /api/_version` — running PR version marker (`_RUNNING_PR_VERSION`, currently **60**)
 - `GET /api/diag/data-sources` — feed-tier visibility
 
 **Protected (`x-cron-secret`):**
@@ -168,7 +186,8 @@ schema had NOT NULL on run_at; migration drops it but it may return).
 **Admin (`/admin`, cookie auth — PR #28):**
 - `GET /admin` — operator console (login form if no cookie)
 - `POST /admin/login` (JSON body — no python-multipart dep) / `POST /admin/logout`
-- Console cards: gate monitor, gate history, train/purge/data-source, engine quality.
+- Console cards: gate monitor, gate history, **squeeze status**, **blueprint modules**,
+  **feature drift**, **options flow**, train/purge/data-source, engine quality, kill status.
 
 ---
 
@@ -188,7 +207,9 @@ HTTP Basic.
   perf strip, **Daily Prediction Panel** (next session + last session rows),
   **Forecast vs Reality scorecard** (full watchlist chips),
   stats, earnings, analyst, news, portfolio (**Ask Ghost / WOLF play / chart below portfolio**),
-  **Pick Journal**, **Signal History**, **Performance Log**, Truth Mode.
+  **Intraday squeeze radar** (CT session clock, score/P(+3%)/stop, overnight offline copy),
+  **Today's v3 pick** lane label, **Pick Journal** (contract banner + POST-FALSIFICATION verdict),
+  **Signal History**, **Performance Log**, Truth Mode.
 - **Operator console:** `admin.html` at `GET /admin` (cookie-gated).
 - Cockpit JS uses v2 field names: `outcome` (not status), `stop_price` (not
   stop_loss), `expires_at` (unix). Calculate gain as `(target-entry)/entry*100`.
@@ -226,19 +247,25 @@ ALL of: `Procfile` boot-echo string, `nixpacks.toml` `cache_bust` comment, and t
 
 ## NOT YET BUILT (blueprint backlog, dependency-ordered)
 
-- [ ] **Accumulate ~30+ resolved high-conviction picks** so the falsification gate
-      can be honestly evaluated (cold-start; gates everything below).
-- [ ] **Regime detector (HMM)** — Squeeze/Trend-up/Trend-down/Chop/Capitulation.
-      Deferred per honesty layer: ~250 days is too thin for a 5-state HMM, and it
-      adds a *new* silencing gate to an engine that barely fires. Build after the
-      journal shows where losses cluster.
-- [ ] Options-flow model (Polygon) — put/call, IV skew, GEX. **Validate WOLF
-      options depth first** before assuming mega-cap GEX techniques transfer.
-- [ ] Sentiment model (FinBERT) on the existing news pipeline.
-- [ ] Feature-drift monitoring (KL divergence).
-- [ ] Paid data provider for Key Stats / Analyst / Short Interest (budget decision).
-- [ ] Regime-conditional calibration (separate isotonic maps per regime) — the
-      journal already captures regime-at-issuance to enable this.
+### Done (Phase 1+2 — PR #60, commit `91dc94c`)
+- [x] **Falsification evaluated** — gate tripped; `ABANDON_80_CLAIM`; honest product copy
+- [x] **Regime calibration (dynamic min_p)** — `core/regime_calibration.py`; not full isotonic maps
+- [x] **Squeeze ML v2 (baseline blend)** — logistic priors until labeled outcomes accrue
+- [x] **Unified regime classifier (rules)** — price + engine labels; not HMM
+- [x] **Lexicon sentiment probe** — `core/news_sentiment.py`; not FinBERT
+- [x] **Feature drift (z-shift)** — `ghost_feature_snapshots`; not KL divergence
+- [x] **Options flow probe (yfinance PCR)** — nearest expiry; not Polygon GEX model
+- [x] **Intraday squeeze radar** — scorecard, CT session, admin card, scan cache
+
+### Still open (Phase 3 depth)
+- [ ] **Prod-verify PR #60** on Railway (user) — `/api/_version`, `/api/ghost/*`, cockpit, admin
+- [ ] **Retrain squeeze ML v2** from labeled squeeze session outcomes
+- [ ] **Regime detector (HMM)** — deferred: ~250 days too thin for 5-state HMM
+- [ ] **Options-flow model (Polygon)** — IV skew, GEX; validate WOLF chain depth first
+- [ ] **Sentiment model (FinBERT)** on existing news pipeline
+- [ ] **Feature-drift KL divergence** (upgrade from z-shift alerts)
+- [ ] **Regime-conditional isotonic calibration** — separate maps per regime
+- [ ] **Paid data provider** for Key Stats / Analyst / Short Interest (budget decision)
 
 ---
 
@@ -286,3 +313,8 @@ ALL of: `Procfile` boot-echo string, `nixpacks.toml` `cache_bust` comment, and t
 | — | 06-09 | **Shadow scoring** — `core/shadow_outcomes.py`: every scanned symbol's daily eval resolved as a virtual pick (live TP/SL bar-path rules, gates ignored); `/api/shadow-stats` + MCP `ghost_shadow_stats` + hourly scheduler job; regime gates in `predict_live_ex` now enforce AFTER model scoring so all 44 evals carry `up_prob` (live-verified: pending rows seeding) |
 | — | 06-09 | **Silence card leaderboard + alert dedup** — ranked closest-to-firing candidates in 8 AM card; accurate scan-cadence copy (was "Tomorrow 8 AM" — wrong, engine scans ~30 min); portfolio exit alerts dedupe by symbol (was duplicate AMC); morning card claims daily Telegram slot before cycle (was duplicate SILENCE cards) |
 | — | 06-09 | **Crypto junk purged on prod** — `POST /api/admin/purge-crypto-junk` deleted 223,873 legacy crypto/zero-entry rows from `predictions` (user-approved; dry-run verified first) |
+| **#55** | 06-10 | **Squeeze scorecard + CT radar** — Setup/Trigger/Confirm, heuristic P(+3%), buy/sell/stop, `/api/squeeze/picks`, cockpit panel (`d7477d1`) |
+| **#56** | 06-10 | **Overnight squeeze honesty** — persist `data/squeeze_last_scan.json`, paused/resume CT copy (`d17ffe3`) |
+| **#57** | 06-10 | **Two-lane cockpit labels** — Today's v3 pick vs intraday squeeze (`3d9f4b9`) |
+| **#58** | 06-10 | **Admin squeeze card + DB pool fix** — kill-status no longer exhausts pool; force scan (`c0bad2e`) |
+| **#60** | 06-10 | **Phase 1+2 blueprint wired** — ghost_contract, regime_calibration, squeeze_ml_v2, regime/sentiment/drift/options probes, `/api/ghost/*`, admin cards, 403 tests (`91dc94c`) |

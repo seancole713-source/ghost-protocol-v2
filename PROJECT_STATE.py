@@ -17,7 +17,7 @@ session logs are preserved at the bottom as accountability history.
 """
 
 # ============================================================
-# LIVE SYSTEM — LAST VERIFIED 2026-06-07 (44/44 models, daily forecast panel)
+# LIVE SYSTEM — LAST VERIFIED 2026-06-10 (PR #60 pushed; prod verify pending user)
 # ============================================================
 
 PRODUCTION_URL = "https://ghost-protocol-v2-production.up.railway.app"
@@ -32,15 +32,18 @@ ADMIN_CONSOLE = "/admin — HMAC cookie login (PR #28). Investor cockpit at /coc
 # Sandbox CANNOT reach Railway prod (egress allowlist). All prod verification = user.
 
 # ============================================================
-# NORTH-STAR — ~80% on WOLF under an honest, narrow contract
+# NORTH-STAR — RETIRED (post-falsification, 2026-06-10)
 # ============================================================
 
 NORTH_STAR = {
-    "target": "~80% accuracy on selective high-conviction WOLF picks (not daily direction)",
-    "philosophy": "selective prediction — silent most of the time, fire only when gates agree",
+    "status": "ABANDON_80_CLAIM — legacy ~80% selective-pick claim retired",
+    "headline": "Selective directional aid + intraday squeeze radar",
+    "philosophy": "Silent most cycles on v3 lane; squeeze radar independent (3 AM–7 PM CT)",
     "data_reality": "WOLF post-Chapter-11 (new shares 2025-09-29) ~250 trading days only",
     "blueprint": "WOLFSPEED-Only Prediction Engine: 7 specialists -> meta-model, 12 data cats",
-    "today": "1 model (XGBoost v3.2 ~65.4%), four-gate chain, aggressive mode, credibility ledger live",
+    "today": "v3.2 XGBoost ~65.4% holdout, four-gate chain, squeeze scorecard, Phase 1+2 probes wired",
+    "contract": "core/ghost_contract.py + GET /api/ghost/contract",
+    "metrics": "Track live win rate, expectancy, Brier on pick journal — no fixed accuracy marketing",
 }
 
 # Kill condition (pre-registered). See core.prediction.FALSIFICATION_THRESHOLD.
@@ -49,7 +52,9 @@ FALSIFICATION = {
     "win_rate_floor": 0.70,
     "north_star": 0.80,
     "rule": "N>=30 AND win_rate<0.70 AND 95% CI excludes 0.80 => abandon the 80% claim",
+    "status": "TRIPPED — ABANDON_80_CLAIM (journal ~28% WR, CI excludes 80%)",
     "surfaced_at": "GET /api/wolf/pick-journal -> verdict.falsification",
+    "product_copy": "GET /api/ghost/contract",
 }
 
 # ============================================================
@@ -125,7 +130,13 @@ ENDPOINTS_PUBLIC = [
     "GET /api/wolf/gate-status     — live four-gate diagnostic (PR #27)",
     "GET /api/wolf/gate-history    — rolling per-cycle gate outcomes, last 50 (PR #29)",
     "GET /api/wolf/pick-journal    — credibility ledger: audit trail + win-rate CI + expectancy + Brier + falsification (PR #30)",
-    "GET /api/_version             — running PR version marker",
+    "GET /api/squeeze/picks        — intraday squeeze board (buy/sell/stop, scorecard, CT session) (PR #55-#60)",
+    "GET /api/squeeze/status       — last 44-symbol scan snapshot + radar_active (PR #55-#60)",
+    "GET /api/ghost/contract       — post-falsification product contract (PR #60)",
+    "GET /api/ghost/blueprint      — Phase 1+2 module status rollup (PR #60)",
+    "GET /api/ghost/{regime,drift,sentiment,options} — Phase 2 probes (PR #60)",
+    "GET /api/shadow-stats         — virtual hit-rate scoreboard (gates ignored)",
+    "GET /api/_version             — running PR version marker (_RUNNING_PR_VERSION)",
     "GET /api/diag/data-sources    — feed-tier visibility",
 ]
 
@@ -160,23 +171,45 @@ V2_PICK_FIELDS = {
 # ============================================================
 
 TODO = """
-P0 — COLD-START (gates everything below)
-[ ] Accumulate ~30+ resolved high-conviction picks so the falsification gate can
-    be honestly evaluated. As of 2026-05-23: 1 resolved pick. Silence is by design.
+P0 — PRODUCT POSITION (done 2026-06-10)
+[x] Falsification gate tripped — ABANDON_80_CLAIM; honest copy in cockpit + ghost_contract
+[ ] User prod-verify PR #60: /api/_version _pr_version=60, /api/ghost/*, cockpit banner, admin cards
 
-P1 — NEXT BLUEPRINT MODULES (only after the journal has data)
-[ ] Regime detector (HMM): Squeeze/Trend-up/Trend-down/Chop/Capitulation.
-    DEFERRED: ~250 days too thin for a 5-state HMM, and it adds a new silencing
-    gate to an engine that barely fires. Build after the journal shows loss clusters.
-[ ] Options-flow model (Polygon): put/call, IV skew, GEX. VALIDATE WOLF options
-    depth first — do not assume mega-cap GEX techniques transfer to a $3.4B name.
-[ ] Sentiment model (FinBERT) on the existing news pipeline.
-[ ] Feature-drift monitoring (KL divergence).
-[ ] Regime-conditional calibration (journal already captures regime-at-issuance).
+P1 — PHASE 3 DEPTH (probes exist; not yet gating picks)
+[ ] Train squeeze ML v2 from labeled squeeze outcomes (replace baseline logistic in data/squeeze_ml_v2.json)
+[ ] FinBERT sentiment on existing news pipeline (lexicon_v1 is probe-only today)
+[ ] Wire drift alerts to Telegram/admin when GHOST_DRIFT_Z_ALERT fires
+[ ] Full options-flow model (Polygon IV skew/GEX) — validate WOLF chain depth first
+[ ] Regime-conditional isotonic calibration (separate maps per regime; journal has regime-at-issuance)
+[ ] Regime detector (HMM) — DEFERRED: ~250 days too thin; build after journal shows loss clusters
 
 P2 — DATA (budget decision, not code)
-[ ] Key Stats / Analyst / Short Interest return empty on current tier. Needs a
-    paid provider (Finnhub paid / Tiingo / Alpha Vantage).
+[ ] Key Stats / Analyst / Short Interest return empty on current tier. Needs paid provider.
+"""
+
+COMPLETED_PHASE1_2 = """
+Phase 1 (PR #60, commit 91dc94c):
+[x] core/ghost_contract.py + GET /api/ghost/contract — post-falsification product copy
+[x] core/regime_calibration.py — effective_min_win_proba by regime; SMA5 Trend-up bypass (env)
+[x] core/squeeze_ml_v2.py — 60/40 blend into squeeze scorecard probabilities
+[x] Cockpit: contract banner, pick-journal POST-FALSIFICATION MODE copy
+[x] signal_engine wired: regime_calibration meta on scores; min_p adjusted live
+
+Phase 2 (PR #60, commit 91dc94c):
+[x] core/regime_classifier.py + GET /api/ghost/regime
+[x] core/news_sentiment.py lexicon_v1 + fetch_news_sentiment + GET /api/ghost/sentiment
+[x] core/feature_drift.py z-shift alerts + GET /api/ghost/drift + admin card
+[x] core/options_flow.py yfinance PCR probe + GET /api/ghost/options + admin card
+[x] GET /api/ghost/blueprint + admin Blueprint Modules card
+[x] tests/test_ghost_phase12.py (403 total tests passing at ship)
+
+Squeeze radar lane (PR #55-#59, commits d7477d1..c0bad2e):
+[x] core/squeeze_scorecard.py — Setup/Trigger/Confirm + heuristic + ML blend
+[x] core/squeeze_monitor.py — 44-symbol scan, VWAP, Finviz short fallback, scan cache
+[x] core/market_hours.py — CT session helpers, next_radar_resume_label
+[x] GET /api/squeeze/picks | /api/squeeze/status; POST /api/admin/squeeze-scan
+[x] Cockpit intraday squeeze panel + Today's v3 pick lane labels
+[x] Admin squeeze status card; core/db.py pool max 25 + kill-status bundled query
 """
 
 # ============================================================
@@ -199,6 +232,8 @@ COMPLETED = """
     - cockpit module-7 Pick Journal card
 [x] News textual filter (killed Zoom/IBM/Ralph-Lauren leak) — PR #26
 [x] Investor-view forensic cleanup (15 items) — PR #23/#24
+[x] Intraday squeeze radar + scorecard (PR #55-#59): CT session 3 AM–7 PM, Telegram path separate from v3
+[x] Phase 1+2 blueprint modules wired (PR #60, 91dc94c) — see COMPLETED_PHASE1_2 above
 """
 
 # ============================================================
@@ -248,6 +283,46 @@ FAILURES = """
 # ============================================================
 
 SESSION_LOG = """
+--- 2026-06-10 | Phase 1+2 blueprint + squeeze radar + post-falsification contract ---
+Context: operator chose "Phase 1 + Phase 2" (not product-only). Falsification gate
+already tripped (~28% WR, CI excludes 80%). Goal: honest repositioning, wire blueprint
+probes, keep squeeze radar production-ready for next CT session.
+
+Two lanes (independent):
+  v3 picks     — ~3-day gated XGBoost holds; silent when regime/objective gates bind
+  squeeze radar — intraday RVOL + move; 3 AM–7 PM CT; separate Telegram path
+
+Shipped squeeze lane (commits d7477d1 .. c0bad2e, _pr_version 55–59):
+  d7477d1 — squeeze scorecard (Setup/Trigger/Confirm), CT radar, probability targets
+  d17ffe3 — overnight panel honest copy; persist data/squeeze_last_scan.json
+  3d9f4b9 — cockpit lane labels (Today's v3 pick vs intraday squeeze)
+  c0bad2e — admin squeeze card; db pool max 25; kill-status single checkout fix
+
+Shipped Phase 1+2 (commit 91dc94c, _pr_version 60):
+  Phase 1:
+    - core/ghost_contract.py, cockpit contract banner, pick-journal POST-FALSIFICATION copy
+    - core/regime_calibration.py wired in signal_engine (effective_min_win_proba, SMA5 bypass)
+    - core/squeeze_ml_v2.py blended into squeeze_scorecard (60% ML / 40% heuristic)
+  Phase 2:
+    - core/regime_classifier.py, news_sentiment (lexicon + fetch_news_sentiment)
+    - core/feature_drift.py, core/options_flow.py
+    - GET /api/ghost/{contract,blueprint,regime,drift,sentiment,options}
+    - admin Blueprint / feature drift / options flow cards
+    - tests/test_ghost_phase12.py; 403 tests passing at push
+
+Prod verify (PENDING — user must confirm; sandbox cannot reach Railway):
+  - GET /api/_version -> _pr_version: 60, git_sha matches 91dc94c
+  - GET /api/ghost/contract, /api/ghost/blueprint
+  - /cockpit pick journal: contract banner + POST-FALSIFICATION MODE verdict
+  - /admin: Blueprint Modules, Feature drift, Options flow cards
+  - First 3 AM CT squeeze scan after deploy populates leaders (overnight radar_active=false is OK)
+
+Open / Phase 3:
+  - Retrain squeeze ML v2 from labeled outcomes (baseline weights are priors only)
+  - FinBERT sentiment; KL drift; Polygon options/GEX; per-regime isotonic maps
+  - HMM regime detector still deferred (~250 trading days too thin)
+  - Paid feed for Key Stats / Analyst / Short Interest
+
 --- 2026-06-07 | Open pick review (change mind mid-trade) ---
 Context: operator wanted Ghost always tracking — withdraw or refresh when live scans
 no longer support an open pick (not locked until expiry).
