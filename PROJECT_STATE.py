@@ -174,6 +174,7 @@ TODO = """
 P0 — PRODUCT POSITION (done 2026-06-10)
 [x] Falsification gate tripped — ABANDON_80_CLAIM; honest copy in cockpit + ghost_contract
 [ ] User prod-verify PR #60: /api/_version _pr_version=60, /api/ghost/*, cockpit banner, admin cards
+[ ] Weekly ops checklist (PROJECT_STATE.md) — run 5 URLs + admin cards once/week
 
 P1 — PHASE 3 DEPTH (probes exist; not yet gating picks)
 [ ] Train squeeze ML v2 from labeled squeeze outcomes (replace baseline logistic in data/squeeze_ml_v2.json)

@@ -269,6 +269,52 @@ ALL of: `Procfile` boot-echo string, `nixpacks.toml` `cache_bust` comment, and t
 
 ---
 
+## WEEKLY OPS CHECKLIST (5 URLs + healthy accumulation)
+
+Run once per week (any time for deploy checks; squeeze/radar checks best **Mon–Fri 3 AM–7 PM CT**). Mark prod-verified in `PROJECT_STATE.py` only after you personally confirm.
+
+**Base:** `https://ghost-protocol-v2-production.up.railway.app`
+
+| # | URL | Healthy signal | Red flag |
+|---|-----|----------------|----------|
+| 1 | `/api/_version` | `_pr_version: 60`, `git_sha_short` matches recent `main` | Stale SHA vs GitHub; `_pr_version` &lt; 60 |
+| 2 | `/api/ghost/contract` | `ok: true`, `north_star_retired: true`, two lanes in `lanes` | `ok: false` or missing contract |
+| 3 | `/api/squeeze/picks` | During session: `radar_active: true`, `scan_ok: true`, `last_scan_ts` fresh (&lt;5 min); leaders populated | `radar_active: false` mid-session; `fetch_fail` high; empty leaders all week |
+| 4 | `/api/wolf/pick-journal?limit=5` | `ok: true`, `verdict.falsification.status` present (expect `ABANDON_80_CLAIM`); metrics updating if picks resolve | 500 / pool errors; journal frozen weeks with open picks |
+| 5 | `/api/shadow-stats?days=7` | `ok: true`, `enabled: true`, `resolved` growing week-over-week; WOLF row has pending or resolved rows | `enabled: false`; zero seeded rows for 7+ days (scans broken) |
+
+**Admin (`/admin`, cookie login) — same session, optional depth:**
+
+| Card | Healthy | Red flag |
+|------|---------|----------|
+| **Squeeze status** | Last scan time recent; top movers show scores/RVOL; Telegram alerts on volatile days (may be **zero** on quiet days — OK) | No scan for full CT session; force-scan fails |
+| **Blueprint modules** | Phase 1 flags on; squeeze ML `squeeze_ml_v2`; drift `stable` or `insufficient_samples` early on | Phase 1 off unexpectedly; drift `alert` on many features |
+| **Kill conditions** | Loads without “connection pool exhausted” | Pool / DB errors |
+| **Gate status** | Binding gate named (e.g. `v3_regime_gate`); WOLF `up_prob` shown | Blank / 500 |
+
+### What “healthy accumulation” means (passive — no action required)
+
+| Data | Accumulates when | “Enough” for Phase 3 (rule of thumb) |
+|------|------------------|--------------------------------------|
+| **Squeeze scan rows** | Every ~60s, **3 AM–7 PM CT** weekdays | Leaders table updating daily = radar alive |
+| **Squeeze Telegram alerts** | Only on **~2.5× RVOL + move** thresholds | **Quiet weeks with 0 alerts is normal**; retrain needs **~30+ alerted or high-score moments** with known 60m follow-through (not built yet — manual export or future label table) |
+| **v3 pick journal** | When a pick **fires** + reconcile resolves (~3-day hold) | Slow by design; shadow stats are the main v3 learning surface while journal is quiet |
+| **Shadow virtual picks** | Hourly job + each market scan seeds evals | **100+ resolved** shadow rows across watchlist over 30d = engine eval pipeline healthy |
+| **Feature drift** | `ghost_feature_snapshots` from scans | Admin drift: **`samples` ≥ 30** before trusting alerts; `insufficient_samples` OK for first weeks |
+| **Squeeze ML v2 retrain** | Not automatic yet | Wait until labeled outcome dataset exists (target: **≥30 squeeze events** with binary +3%/60m label); until then baseline weights in `data/squeeze_ml_v2.json` are intentional |
+
+### Weekly pass/fail (30 seconds)
+
+- [ ] Deploy current (`/api/_version`)
+- [ ] Contract + lanes honest (`/api/ghost/contract`)
+- [ ] Squeeze radar scanned this week (`/api/squeeze/picks` or admin squeeze card)
+- [ ] No infra regressions (kill-status, gate-status on `/admin`)
+- [ ] Shadow stats still seeding (`/api/shadow-stats?days=7`)
+
+**When to start Phase 3 squeeze ML work:** admin shows **≥30 session alerts or exported high-score leaders** you can label, *or* you add a `ghost_squeeze_outcomes` label pipeline — not before.
+
+---
+
 ## CHANGE LOG (this era)
 
 | PR | Date | What changed |
