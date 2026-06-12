@@ -1,12 +1,13 @@
 # Ghost Protocol v2 — PROJECT STATE
-**Last updated:** 2026-06-11
+**Last updated:** 2026-06-12
 **Read this first.** Any agent picking up this project must read this file before touching any code.
 
 > This file was significantly stale (pre-v3.2) until 2026-05-23. It now reflects
 > the v3.2 XGBoost engine, the four-gate chain, aggressive objective mode, the
 > cookie-login `/admin` console, and the pick-journal credibility ledger.
-> **PR #60 (2026-06-10):** Post-falsification product contract, regime calibration,
-> squeeze ML v2, unified regime classifier, lexicon sentiment, feature drift, options flow probe.
+> **PR #61–#62 (2026-06-12):** Squeeze daily accountability log (`ghost_squeeze_outcomes`,
+> EOD resolve, cockpit + admin UI) and post-falsification truth-mode UX (hero strip,
+> v3 pick lane copy aligned with pick journal).
 
 ---
 
@@ -58,13 +59,15 @@ squeeze ML v2, drift/sentiment/options probes) are wired as of PR #60.
 | Investor cockpit | `/cockpit` — WOLF-first UI |
 | Cron trigger | cron-job.org fires `POST /api/morning-card` daily 8 AM CT |
 | Auth header name | `x-cron-secret` (value in Railway env as `CRON_SECRET`) |
-| **Last prod-verified** | **2026-06-11** — operator confirmed PR #60 on Railway (`7367631c`) |
+| **Last prod-verified** | **2026-06-12** — operator + browser agent confirmed PR #61–#62 on Railway (`376bf8c`, deploy `ba7b1c7e`) |
 
 **Sandbox cannot reach Railway** (egress allowlist) — all production verification
 is done by the user. Agents must not claim prod-verified without user confirmation.
 **PR #60 prod verify:** passed 2026-06-11 (admin blueprint/kill/gates, cockpit contract +
-POST-FALSIFICATION copy, overnight squeeze pause OK). Squeeze **first 3 AM CT wake** after
-deploy still to confirm Thu 2026-06-11.
+POST-FALSIFICATION copy, overnight squeeze pause OK).
+**PR #61–#62 prod verify:** passed 2026-06-12 — squeeze daily log API + cockpit section,
+11 rows logged today (pending EOD); hero truth strip + v3 pick lane post-falsification copy;
+squeeze radar live ~8:39 AM CT wake confirmed (4 Telegram alerts, AMC ACTIVE).
 
 ### Live env config (set in Railway, confirmed by user)
 - `OBJECTIVE_MODE=aggressive`
@@ -104,8 +107,10 @@ walk-forward validation. The WOLF model trained at **~65.4% holdout accuracy**
 | **Squeeze radar** | Intraday RVOL + move scorecard | **3 AM – 7 PM CT**; separate Telegram path |
 
 Squeeze lane: `core/squeeze_monitor.py` → `GET /api/squeeze/picks` (scorecard buy/sell/stop,
-P(+3%) with squeeze ML v2 blend). v3 lane unchanged — falsification gate tripped; journal
-shows `ABANDON_80_CLAIM`. See `GET /api/ghost/contract`.
+P(+3%) with squeeze ML v2 blend). Predictions persist to `ghost_squeeze_outcomes` via
+`core/squeeze_outcomes.py` → `GET /api/squeeze/daily-log` (EOD resolve vs session OHLC).
+v3 lane unchanged — falsification gate tripped; journal shows `ABANDON_80_CLAIM`.
+See `GET /api/ghost/contract`.
 
 ### The four-gate chain (why the system is usually silent)
 1. **Model gate** — engine emits a signal at all (regime + meta gates above).
@@ -173,11 +178,13 @@ schema had NOT NULL on run_at; migration drops it but it may return).
   trail + win rate w/ 95% Wilson CI + expectancy + Brier + `verdict.falsification`
 - `GET /api/squeeze/picks` — intraday squeeze board (scorecard, buy/sell/stop, CT session)
 - `GET /api/squeeze/status` — last 44-symbol scan snapshot + `radar_active`
+- `GET /api/squeeze/daily-log` — squeeze prediction ledger vs session OHLC (PR #61)
+- `POST /api/admin/squeeze-resolve` — force EOD resolve (ops / backfill)
 - `GET /api/ghost/contract` — post-falsification product contract (PR #60)
 - `GET /api/ghost/blueprint` — Phase 1+2 module status rollup
 - `GET /api/ghost/regime | /drift | /sentiment | /options` — Phase 2 probes
 - `GET /api/shadow-stats` — virtual hit-rate scoreboard (gates ignored)
-- `GET /api/_version` — running PR version marker (`_RUNNING_PR_VERSION`, currently **60**)
+- `GET /api/_version` — running PR version marker (`_RUNNING_PR_VERSION`, currently **62**)
 - `GET /api/diag/data-sources` — feed-tier visibility
 
 **Protected (`x-cron-secret`):**
@@ -190,8 +197,9 @@ schema had NOT NULL on run_at; migration drops it but it may return).
 **Admin (`/admin`, cookie auth — PR #28):**
 - `GET /admin` — operator console (login form if no cookie)
 - `POST /admin/login` (JSON body — no python-multipart dep) / `POST /admin/logout`
-- Console cards: gate monitor, gate history, **squeeze status**, **blueprint modules**,
-  **feature drift**, **options flow**, train/purge/data-source, engine quality, kill status.
+- Console cards: gate monitor, gate history, **squeeze status**, **squeeze daily log**,
+  **blueprint modules**, **feature drift**, **options flow**, train/purge/data-source,
+  engine quality, kill status.
 
 ---
 
@@ -212,6 +220,8 @@ HTTP Basic.
   **Forecast vs Reality scorecard** (full watchlist chips),
   stats, earnings, analyst, news, portfolio (**Ask Ghost / WOLF play / chart below portfolio**),
   **Intraday squeeze radar** (CT session clock, score/P(+3%)/stop, overnight offline copy),
+  **Squeeze accountability log** (predicted buy/sell/stop vs session OHLC, EOD resolve),
+  **v3 pick lane · post-falsification** (hero truth strip, BIAS ONLY gauge when gates bind),
   **Today's v3 pick** lane label, **Pick Journal** (contract banner + POST-FALSIFICATION verdict),
   **Signal History**, **Performance Log**, Truth Mode.
 - **Operator console:** `admin.html` at `GET /admin` (cookie-gated).
@@ -260,10 +270,14 @@ ALL of: `Procfile` boot-echo string, `nixpacks.toml` `cache_bust` comment, and t
 - [x] **Feature drift (z-shift)** — `ghost_feature_snapshots`; not KL divergence
 - [x] **Options flow probe (yfinance PCR)** — nearest expiry; not Polygon GEX model
 - [x] **Intraday squeeze radar** — scorecard, CT session, admin card, scan cache
+- [x] **Squeeze daily log** — `ghost_squeeze_outcomes`, EOD job, cockpit + admin UI (PR #61)
+- [x] **Truth-mode UX alignment** — hero strip, v3 pick lane copy, BIAS ONLY gauge (PR #62)
 
 ### Still open (Phase 3 depth)
 - [x] **Prod-verify PR #60** on Railway — **2026-06-11** operator confirmed (see session log)
-- [ ] **Squeeze first-wake check** — Thu 2026-06-11 after 3:00 AM CT (leaders + `last_scan_ts`)
+- [x] **Prod-verify PR #61–#62** — **2026-06-12** operator + browser agent confirmed (`376bf8c`)
+- [x] **Squeeze first-wake check** — **2026-06-12** ~8:39 AM CT; radar live, 4 Telegram alerts, leaders populated
+- [ ] **Squeeze EOD resolve check** — after 3:00 PM CT 2026-06-12 (11 rows should resolve with session OHLC)
 - [ ] **Weekly ops checklist** — first full pass during CT session (see below)
 - [ ] **Retrain squeeze ML v2** from labeled squeeze session outcomes
 - [ ] **Regime detector (HMM)** — deferred: ~250 days too thin for 5-state HMM
@@ -283,9 +297,10 @@ Run once per week (any time for deploy checks; squeeze/radar checks best **Mon�
 
 | # | URL | Healthy signal | Red flag |
 |---|-----|----------------|----------|
-| 1 | `/api/_version` | `_pr_version: 60`, `git_sha_short` matches recent `main` | Stale SHA vs GitHub; `_pr_version` &lt; 60 |
+| 1 | `/api/_version` | `_pr_version: 62`, `git_sha_short` matches recent `main` | Stale SHA vs GitHub; `_pr_version` &lt; 62 |
 | 2 | `/api/ghost/contract` | `ok: true`, `north_star_retired: true`, two lanes in `lanes` | `ok: false` or missing contract |
 | 3 | `/api/squeeze/picks` | During session: `radar_active: true`, `scan_ok: true`, `last_scan_ts` fresh (&lt;5 min); leaders populated | `radar_active: false` mid-session; `fetch_fail` high; empty leaders all week |
+| 3b | `/api/squeeze/daily-log?days=14` | `enabled: true`, rows accrue on Telegram/candidate; `days[]` summaries update | `enabled: false`; zero rows after active alert day |
 | 4 | `/api/wolf/pick-journal?limit=5` | `ok: true`, `verdict.falsification.status` present (expect `ABANDON_80_CLAIM`); metrics updating if picks resolve | 500 / pool errors; journal frozen weeks with open picks |
 | 5 | `/api/shadow-stats?days=7` | `ok: true`, `enabled: true`, `resolved` growing week-over-week; WOLF row has pending or resolved rows | `enabled: false`; zero seeded rows for 7+ days (scans broken) |
 
@@ -293,6 +308,7 @@ Run once per week (any time for deploy checks; squeeze/radar checks best **Mon�
 
 | Card | Healthy | Red flag |
 |------|---------|----------|
+| **Squeeze daily log** | Rows for session date; pending before 3 PM CT; resolved after EOD job | API 500; cockpit `#squeeze-daily-log-section` missing |
 | **Squeeze status** | Last scan time recent; top movers show scores/RVOL; Telegram alerts on volatile days (may be **zero** on quiet days — OK) | No scan for full CT session; force-scan fails |
 | **Blueprint modules** | Phase 1 flags on; squeeze ML `squeeze_ml_v2`; drift `stable` or `insufficient_samples` early on | Phase 1 off unexpectedly; drift `alert` on many features |
 | **Kill conditions** | Loads without “connection pool exhausted” | Pool / DB errors |
@@ -303,7 +319,8 @@ Run once per week (any time for deploy checks; squeeze/radar checks best **Mon�
 | Data | Accumulates when | “Enough” for Phase 3 (rule of thumb) |
 |------|------------------|--------------------------------------|
 | **Squeeze scan rows** | Every ~60s, **3 AM–7 PM CT** weekdays | Leaders table updating daily = radar alive |
-| **Squeeze Telegram alerts** | Only on **~2.5× RVOL + move** thresholds | **Quiet weeks with 0 alerts is normal**; retrain needs **~30+ alerted or high-score moments** with known 60m follow-through (not built yet — manual export or future label table) |
+| **Squeeze Telegram alerts** | Only on **~2.5× RVOL + move** thresholds | **Quiet weeks with 0 alerts is normal**; retrain needs **~30+ resolved rows** in `ghost_squeeze_outcomes` with EOD labels |
+| **Squeeze outcome labels** | `ghost_squeeze_outcomes` — Telegram + first candidate/day; EOD resolve after 3 PM CT | Rows stuck pending after market close; resolve job not firing |
 | **v3 pick journal** | When a pick **fires** + reconcile resolves (~3-day hold) | Slow by design; shadow stats are the main v3 learning surface while journal is quiet |
 | **Shadow virtual picks** | Hourly job + each market scan seeds evals | **100+ resolved** shadow rows across watchlist over 30d = engine eval pipeline healthy |
 | **Feature drift** | `ghost_feature_snapshots` from scans | Admin drift: **`samples` ≥ 30** before trusting alerts; `insufficient_samples` OK for first weeks |
@@ -314,10 +331,11 @@ Run once per week (any time for deploy checks; squeeze/radar checks best **Mon�
 - [ ] Deploy current (`/api/_version`)
 - [ ] Contract + lanes honest (`/api/ghost/contract`)
 - [ ] Squeeze radar scanned this week (`/api/squeeze/picks` or admin squeeze card)
+- [ ] Squeeze daily log accruing (`/api/squeeze/daily-log?days=7`)
 - [ ] No infra regressions (kill-status, gate-status on `/admin`)
 - [ ] Shadow stats still seeding (`/api/shadow-stats?days=7`)
 
-**When to start Phase 3 squeeze ML work:** admin shows **≥30 session alerts or exported high-score leaders** you can label, *or* you add a `ghost_squeeze_outcomes` label pipeline — not before.
+**When to start Phase 3 squeeze ML work:** `ghost_squeeze_outcomes` has **≥30 resolved rows** with WIN/LOSS/NEUTRAL labels (target after ~2–3 active squeeze weeks), not before.
 
 ---
 
@@ -370,4 +388,7 @@ Run once per week (any time for deploy checks; squeeze/radar checks best **Mon�
 | **#57** | 06-10 | **Two-lane cockpit labels** — Today's v3 pick vs intraday squeeze (`3d9f4b9`) |
 | **#58** | 06-10 | **Admin squeeze card + DB pool fix** — kill-status no longer exhausts pool; force scan (`c0bad2e`) |
 | **#60** | 06-10 | **Phase 1+2 blueprint wired** — ghost_contract, regime_calibration, squeeze_ml_v2, regime/sentiment/drift/options probes, `/api/ghost/*`, admin cards, 403 tests (`91dc94c`) |
+| **#61** | 06-12 | **Squeeze daily log** — `ghost_squeeze_outcomes`, EOD resolve job, `/api/squeeze/daily-log`, cockpit accountability section + admin card (`37c5db6`) |
+| **#62** | 06-12 | **Truth-mode UX** — hero post-falsification strip, v3 pick lane copy, BIAS ONLY gauge, journal-aligned perf copy (`376bf8c`) |
 | — | 06-11 | **PR #60 prod-verified** — operator confirmed Railway `7367631c`: admin blueprint/kill/gates, cockpit POST-FALSIFICATION + contract banner, overnight squeeze pause OK; ledger `b20fff6` |
+| — | 06-12 | **PR #61–#62 prod-verified** — operator + browser agent: `_pr_version` 62, `376bf8c`; squeeze daily log 11 rows pending EOD; hero truth strip + v3 lane copy; squeeze wake + 4 Telegram alerts |

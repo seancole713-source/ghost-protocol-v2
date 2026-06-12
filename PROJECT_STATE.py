@@ -17,8 +17,25 @@ session logs are preserved at the bottom as accountability history.
 """
 
 # ============================================================
-# LIVE SYSTEM — LAST VERIFIED 2026-06-11 (PR #60 prod-verified by operator)
+# LIVE SYSTEM — LAST VERIFIED 2026-06-12 (PR #61–#62 prod-verified by operator + browser agent)
 # ============================================================
+
+PROD_VERIFY_2026_06_12 = {
+    "deploy_id": "ba7b1c7e-ccd3-480c-8bd4-5e9b01cf2886",
+    "git_sha_short": "376bf8c",
+    "_pr_version": 62,
+    "verified_at_ct": "2026-06-12 ~11:06 AM CT",
+    "squeeze_daily_log_api": "11 rows 2026-06-12 (8 telegram, 11 pending EOD)",
+    "squeeze_daily_log_ui": "#squeeze-daily-log-section SQUEEZE ACCOUNTABILITY LOG — AMC row pending",
+    "hero_truth_strip": "POST-FALSIFICATION · WR 28.6% 2W/5L · expectancy +0.28% · Pick journal link",
+    "v3_pick_lane": "v3 pick lane · post-falsification + honest subtitle",
+    "ghost_score": "46 WATCHING · bias only — no trade cleared gates (14d)",
+    "squeeze_radar": "live 10:53 AM CT · 35/44 ok · 4 Telegram alerts · AMC ACTIVE",
+    "journal": "POST-FALSIFICATION MODE; 28.6% issued / 25% closed; Brier 0.597",
+    "engine": "44 scanned · 0 saved · v3_regime_gate binding (ITRI near-miss)",
+    "known_noise": "price feeds 1/2 on freshness probe; Alpaca SIP→IEX OK",
+    "next_watch": "EOD resolve after 3 PM CT 2026-06-12 (11 rows → session OHLC)",
+}
 
 PROD_VERIFY_2026_06_11 = {
     "deploy_id": "7367631c",
@@ -151,6 +168,8 @@ ENDPOINTS_PUBLIC = [
     "GET /api/wolf/pick-journal    — credibility ledger: audit trail + win-rate CI + expectancy + Brier + falsification (PR #30)",
     "GET /api/squeeze/picks        — intraday squeeze board (buy/sell/stop, scorecard, CT session) (PR #55-#60)",
     "GET /api/squeeze/status       — last 44-symbol scan snapshot + radar_active (PR #55-#60)",
+    "GET /api/squeeze/daily-log    — squeeze prediction ledger vs session OHLC (PR #61)",
+    "POST /api/admin/squeeze-resolve — force EOD resolve (ops)",
     "GET /api/ghost/contract       — post-falsification product contract (PR #60)",
     "GET /api/ghost/blueprint      — Phase 1+2 module status rollup (PR #60)",
     "GET /api/ghost/{regime,drift,sentiment,options} — Phase 2 probes (PR #60)",
@@ -193,11 +212,13 @@ TODO = """
 P0 — PRODUCT POSITION (done 2026-06-10)
 [x] Falsification gate tripped — ABANDON_80_CLAIM; honest copy in cockpit + ghost_contract
 [x] User prod-verify PR #60 (2026-06-11): admin + cockpit Phase 1+2 cards, kill-status, overnight squeeze pause
+[x] User prod-verify PR #61–#62 (2026-06-12): squeeze daily log API+UI, hero truth strip, v3 lane copy, squeeze wake
+[ ] Squeeze EOD resolve verify — after 3 PM CT 2026-06-12 (11 pending rows → OHLC + outcome)
 [ ] Weekly ops checklist (PROJECT_STATE.md) — run 5 URLs + admin cards once/week (first full pass during CT session)
-[ ] Confirm squeeze radar wake after 3:00 AM CT 2026-06-11 (leaders + last_scan_ts)
+[x] Confirm squeeze radar wake after 3:00 AM CT 2026-06-11 (leaders + last_scan_ts) — verified 2026-06-12 session
 
 P1 — PHASE 3 DEPTH (probes exist; not yet gating picks)
-[ ] Train squeeze ML v2 from labeled squeeze outcomes (replace baseline logistic in data/squeeze_ml_v2.json)
+[ ] Train squeeze ML v2 from labeled squeeze outcomes in ghost_squeeze_outcomes (replace baseline logistic in data/squeeze_ml_v2.json)
 [ ] FinBERT sentiment on existing news pipeline (lexicon_v1 is probe-only today)
 [ ] Wire drift alerts to Telegram/admin when GHOST_DRIFT_Z_ALERT fires
 [ ] Full options-flow model (Polygon IV skew/GEX) — validate WOLF chain depth first
@@ -231,6 +252,13 @@ Squeeze radar lane (PR #55-#59, commits d7477d1..c0bad2e):
 [x] GET /api/squeeze/picks | /api/squeeze/status; POST /api/admin/squeeze-scan
 [x] Cockpit intraday squeeze panel + Today's v3 pick lane labels
 [x] Admin squeeze status card; core/db.py pool max 25 + kill-status bundled query
+
+PR #61–#62 (commits 37c5db6, 376bf8c, _pr_version 61–62):
+[x] core/squeeze_outcomes.py — ghost_squeeze_outcomes table, record on Telegram/candidate, EOD resolve
+[x] GET /api/squeeze/daily-log; POST /api/admin/squeeze-resolve; squeeze_eod scheduler job
+[x] Cockpit squeeze accountability log (#squeeze-daily-log-section) + admin daily log card
+[x] Truth-mode UX — hero-truth-strip, v3 pick lane post-falsification copy, BIAS ONLY gauge
+[x] tests/test_squeeze_outcomes.py
 """
 
 # ============================================================
@@ -256,6 +284,8 @@ COMPLETED = """
 [x] Intraday squeeze radar + scorecard (PR #55-#59): CT session 3 AM–7 PM, Telegram path separate from v3
 [x] Phase 1+2 blueprint modules wired (PR #60, 91dc94c) — see COMPLETED_PHASE1_2 above
 [x] PR #60 prod-verified on Railway 2026-06-11 (operator) — see PROD_VERIFY_2026_06_11
+[x] Squeeze daily log + truth-mode UX (PR #61–#62) — see COMPLETED_PHASE1_2 above
+[x] PR #61–#62 prod-verified on Railway 2026-06-12 (operator + browser agent) — see PROD_VERIFY_2026_06_12
 """
 
 # ============================================================
@@ -305,6 +335,28 @@ FAILURES = """
 # ============================================================
 
 SESSION_LOG = """
+--- 2026-06-12 | PR #61–#62 prod verification (operator + browser agent, Railway tender-benevolence) ---
+Context: squeeze daily log + truth-mode UX shipped (37c5db6, 376bf8c). Operator ran
+follow-up browser verify after initial agent missed #squeeze-daily-log-section.
+
+User-verified on prod 2026-06-12 (~10:54–11:06 AM CT):
+  - GET /api/_version: _pr_version 62, git_sha_short 376bf8c; cockpit deploy badge matches
+  - GET /api/squeeze/daily-log: 11 rows 2026-06-12 (8 telegram), all pending (correct pre-EOD)
+  - /cockpit #squeeze-daily-log-section: SQUEEZE ACCOUNTABILITY LOG; AMC pending row shown
+  - /cockpit #hero-truth-strip: POST-FALSIFICATION · WR 28.6% 2W/5L · expectancy +0.28%
+  - /cockpit #v3-pick-label: v3 pick lane · post-falsification (not squeeze subheader)
+  - Squeeze radar live: ~35/44 priced, 4 Telegram alerts, AMC ACTIVE
+  - Ghost score WATCHING 14d · 0 saved · regime gate binding (expected post-falsification)
+  - Journal POST-FALSIFICATION MODE; closed-after-cutover 25% WR
+
+Not yet verified this session:
+  - EOD resolve after 3 PM CT (11 rows should get session OHLC + WIN/LOSS/NEUTRAL)
+
+Open / next:
+  - Confirm EOD resolve 2026-06-12 PM
+  - Weekly ops checklist first full pass
+  - Passive label accumulation in ghost_squeeze_outcomes toward Phase 3 squeeze ML retrain
+
 --- 2026-06-11 | PR #60 prod verification (operator, Railway tender-benevolence) ---
 Context: operator pasted live admin + cockpit + deploy logs after Phase 1+2 ship.
 Sandbox cannot reach Railway; this entry records operator-confirmed prod state.
@@ -323,7 +375,7 @@ User-verified on prod 2026-06-11 (~12:14 AM CT):
 
 Not yet verified this session (watch next):
   - GET /api/_version _pr_version: 60 (operator did not paste curl; admin UI confirms Phase 1+2)
-  - First post-deploy 3 AM CT squeeze scan with leaders populated (due Thu 2026-06-11 AM)
+  - First post-deploy 3 AM CT squeeze scan with leaders populated — **done 2026-06-12** (see 2026-06-12 session log)
 
 Open / next:
   - Weekly ops checklist during CT session
@@ -356,8 +408,8 @@ Shipped Phase 1+2 (commit 91dc94c, _pr_version 60):
     - admin Blueprint / feature drift / options flow cards
     - tests/test_ghost_phase12.py; 403 tests passing at push
 
-Prod verify: completed 2026-06-11 by operator — see session log entry above.
-  Squeeze first-wake check still pending Thu 2026-06-11 3 AM CT.
+Prod verify: PR #60 completed 2026-06-11; PR #61–#62 completed 2026-06-12 — see session logs.
+  Squeeze first-wake check: verified 2026-06-12 AM CT session.
 
 Open / Phase 3:
   - Retrain squeeze ML v2 from labeled outcomes (baseline weights are priors only)
