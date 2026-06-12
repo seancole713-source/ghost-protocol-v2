@@ -407,10 +407,27 @@ async def _run_watchlist_scan() -> None:
         if kind:
             pick = candidate_to_pick(symbol, kind, metrics, rvol, short_ctx)
             report["candidates"].append(pick)
+            try:
+                from core.squeeze_outcomes import record_squeeze_prediction
+
+                record_squeeze_prediction(pick, source="candidate")
+            except Exception:
+                pass
             if _maybe_alert(symbol, kind, metrics, rvol, short_ctx):
                 report["alerts_sent"] += 1
-                _alert_history.insert(0, {**pick, "alerted_at": int(time.time())})
+                alerted_at = int(time.time())
+                _alert_history.insert(0, {**pick, "alerted_at": alerted_at})
                 del _alert_history[_ALERT_HISTORY_MAX:]
+                try:
+                    from core.squeeze_outcomes import record_squeeze_prediction
+
+                    record_squeeze_prediction(
+                        {**pick, "alerted_at": alerted_at},
+                        source="telegram",
+                        alerted_at=alerted_at,
+                    )
+                except Exception:
+                    pass
 
     report["picks"] = list(report["candidates"])
     from core.squeeze_scorecard import build_scorecard_row

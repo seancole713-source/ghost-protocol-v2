@@ -1312,6 +1312,9 @@ async def lifespan(app: FastAPI):
     scheduler.register("weekly_summary", _weekly_summary_job, interval_s=3600)
     # Daily summary (roadmap #3b): hourly tick, fires once/day at DAILY_SUMMARY_HOUR.
     scheduler.register("daily_summary", _daily_summary_job, interval_s=3600)
+    from core.squeeze_outcomes import run_squeeze_eod_job as _squeeze_eod_job
+
+    scheduler.register("squeeze_eod", _squeeze_eod_job, interval_s=3600)
     scheduler.register("reconcile", reconcile_outcomes, interval_s=900)
     # T19: Auto-refresh portfolio stock prices every 15 min
     from core.portfolio_routes import auto_refresh_portfolio_prices
@@ -3229,6 +3232,47 @@ async def admin_squeeze_scan(request: Request, x_cron_secret: str = Header(defau
         return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
 
 
+@APP.get("/api/squeeze/daily-log")
+def squeeze_daily_log_endpoint(
+    session_date: str = "",
+    days: int = 14,
+):
+    """Squeeze prediction ledger — Ghost buy/sell/stop vs cash-session OHLC (EOD resolve)."""
+    try:
+        from core.squeeze_outcomes import squeeze_daily_log
+
+        return squeeze_daily_log(
+            session_date=session_date.strip() or None,
+            days=max(1, min(90, int(days))),
+        )
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200], "rows": []}, status_code=500)
+
+
+@APP.post("/api/admin/squeeze-resolve", include_in_schema=False)
+async def admin_squeeze_resolve(
+    request: Request,
+    x_cron_secret: str = Header(default=""),
+    session_date: str = "",
+):
+    """Force EOD resolution for squeeze daily log (ops / backfill)."""
+    if not _cron_ok(x_cron_secret) and not _admin_token_valid(
+        request.cookies.get(_ADMIN_COOKIE, "")
+    ):
+        return JSONResponse({"detail": "Not Found"}, status_code=404)
+    try:
+        from core.squeeze_outcomes import resolve_pending_squeeze_days, resolve_squeeze_outcomes
+
+        sd = session_date.strip() or None
+        if sd:
+            n = resolve_squeeze_outcomes(sd)
+        else:
+            n = resolve_pending_squeeze_days(14)
+        return {"ok": True, "resolved": n, "session_date": sd}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
 @APP.get("/api/ghost/contract")
 def ghost_contract_endpoint():
     """Post-falsification product contract — honest lane positioning (Phase 1)."""
@@ -4968,7 +5012,7 @@ def v3_train(x_cron_secret: str = Header(default=""), force: bool = False):
 
 # PR #19 deploy-version constant. Bump on every "did Railway pick up
 # the new code?" PR so /api/_version reveals the truth in one curl.
-_RUNNING_PR_VERSION = 60
+_RUNNING_PR_VERSION = 61
 
 
 def _deploy_meta() -> dict:

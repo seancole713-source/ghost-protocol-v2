@@ -131,6 +131,16 @@ body{background:radial-gradient(1100px 520px at 50% -8%,#1a0f14 0%,#0a0a0a 58%) 
   </div>
   <div id="squeeze-status" style="margin-top:10px"><div class="kv">Loading&#8230;</div></div>
 </div>
+<div class="card">
+  <h3>Squeeze daily log</h3>
+  <div class="desc">End-of-day accountability: Ghost squeeze <b>buy / sell / stop</b> at alert vs cash-session OHLC. Auto-resolves after <b>3:00 PM CT</b> (<code>SQUEEZE_EOD_HOUR</code>). Persists to DB — survives redeploys.</div>
+  <div class="row">
+    <button class="secondary" onclick="loadSqueezeDailyLog()">Refresh log</button>
+    <button class="secondary" onclick="forceSqueezeResolve()">Resolve pending now</button>
+    <a href="/cockpit#squeeze-daily-log-section" style="font-size:12px;color:#8b5cf6;margin-left:8px">Open cockpit log &rarr;</a>
+  </div>
+  <div id="squeeze-daily-log" style="margin-top:10px"><div class="kv">Loading&#8230;</div></div>
+</div>
 
 <!-- ─── Phase 1+2 blueprint modules ─── -->
 <div class="sec-label">Blueprint Modules (Phase 1+2)</div>
@@ -930,6 +940,75 @@ async function loadSqueezeStatus(){
   }
 }
 
+async function loadSqueezeDailyLog(){
+  var el = document.getElementById('squeeze-daily-log');
+  if(!el) return;
+  el.innerHTML = '<div class="kv"><span class="warn">&#x21BB; Loading...</span></div>';
+  try{
+    var g = await fetch('/api/squeeze/daily-log?days=14').then(function(r){return r.json()});
+    if(!g || g.ok === false){
+      el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml((g&&g.error)||'unavailable') + '</div>';
+      return;
+    }
+    if(g.enabled === false){
+      el.innerHTML = '<div class="kv">Daily log disabled (<code>SQUEEZE_DAILY_LOG</code>)</div>';
+      return;
+    }
+    var days = g.days || [];
+    var today = g.today_ct || '—';
+    var head = '<div class="kv">Today <b>' + escHtml(today) + '</b> · '
+      + days.length + ' day(s) in ledger · '
+      + (g.note ? escHtml(g.note) : '') + '</div>';
+    if(!days.length){
+      el.innerHTML = head + '<div class="kv" style="margin-top:10px;color:#666">No squeeze predictions logged yet.</div>';
+      return;
+    }
+    var summaryRows = days.slice(0, 10).map(function(d){
+      return '<tr><td><b>' + escHtml(d.session_date) + '</b></td>'
+        + '<td>' + d.count + '</td>'
+        + '<td>' + d.telegram + '</td>'
+        + '<td>' + (d.resolved ? (d.wins + 'W / ' + d.losses + 'L') : '—') + '</td>'
+        + '<td>' + (d.pending || '—') + '</td></tr>';
+    }).join('');
+    var focus = g.session_date || (days[0] && days[0].session_date);
+    var detail = (g.rows || []).filter(function(r){ return r.session_date === focus; }).slice(0, 12);
+    var detailBlock = '';
+    if(detail.length){
+      detailBlock = '<div class="kv" style="margin:12px 0 6px"><b>Latest day detail · ' + escHtml(focus) + '</b></div>'
+        + '<table class="tbl"><thead><tr>'
+        + '<th>Stock</th><th>Buy</th><th>Sell</th><th>Close</th><th>Outcome</th><th>Close P&amp;L</th>'
+        + '</tr></thead><tbody>'
+        + detail.map(function(r){
+          return '<tr><td><b>' + escHtml(r.symbol) + '</b><br><span style="color:#666;font-size:11px">' + escHtml(r.source || '') + '</span></td>'
+            + '<td>' + fmtUsd(r.buy) + '</td><td>' + fmtUsd(r.sell) + '</td>'
+            + '<td>' + fmtUsd(r.session_close) + '</td>'
+            + '<td>' + escHtml(r.outcome || 'pending') + '</td>'
+            + '<td>' + (r.close_pnl_pct != null ? (r.close_pnl_pct >= 0 ? '+' : '') + Number(r.close_pnl_pct).toFixed(2) + '%' : '—') + '</td></tr>';
+        }).join('') + '</tbody></table>';
+    }
+    el.innerHTML = head
+      + '<div class="kv" style="margin:12px 0 6px"><b>Daily summaries</b></div>'
+      + '<table class="tbl"><thead><tr><th>Date</th><th>Rows</th><th>Telegram</th><th>W/L</th><th>Pending</th></tr></thead><tbody>'
+      + summaryRows + '</tbody></table>'
+      + detailBlock;
+  }catch(e){
+    el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml(String(e)) + '</div>';
+  }
+}
+
+async function forceSqueezeResolve(){
+  try{
+    var r = await fetch('/api/admin/squeeze-resolve', {
+      method: 'POST',
+      headers: {'x-cron-secret': getSecret(), 'Content-Type': 'application/json'}
+    });
+    if(r.status === 403 || r.status === 404){ alert('Resolve failed: bad or missing x-cron-secret'); return; }
+    var g = await r.json().catch(function(){return {};});
+    alert('Resolved ' + (g.resolved != null ? g.resolved : 0) + ' row(s)');
+  }catch(e){ alert('Resolve failed: ' + e); }
+  loadSqueezeDailyLog();
+}
+
 async function loadBlueprintStatus(){
   var el = document.getElementById('blueprint-status');
   if(!el) return;
@@ -1112,6 +1191,7 @@ loadEngineQuality();
 loadDeployMeta();
 loadGateStatus();
 loadSqueezeStatus();
+loadSqueezeDailyLog();
 loadBlueprintStatus();
 setTimeout(function(){ loadFeatureDrift(); loadOptionsFlow(); }, 200);
 setTimeout(function(){ loadGateHistory(); loadKillStatus(); loadPnl(); }, 400);
@@ -1122,6 +1202,7 @@ setInterval(loadEngineQuality, 60000);
 setInterval(loadGateStatus, 60000);
 setInterval(loadKillStatus, 120000);
 setInterval(loadSqueezeStatus, 60000);
+setInterval(loadSqueezeDailyLog, 300000);
 </script>
 
 </body>

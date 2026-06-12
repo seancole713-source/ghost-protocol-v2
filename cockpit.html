@@ -490,6 +490,15 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
 .sq-score{font-weight:800;color:#38bdf8;font-variant-numeric:tabular-nums}
 .sq-prob{font-weight:700;color:#a78bfa;font-variant-numeric:tabular-nums;font-size:11px}
 .sq-comp{font-size:9px;color:#64748b;display:block;margin-top:2px}
+.sq-outcome{font-size:9px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;padding:2px 8px;border-radius:999px;display:inline-block}
+.sq-outcome.win{color:#4ade80;background:rgba(74,222,128,.12);border:1px solid rgba(74,222,128,.25)}
+.sq-outcome.loss{color:#f87171;background:rgba(248,113,113,.12);border:1px solid rgba(248,113,113,.25)}
+.sq-outcome.neutral{color:#94a3b8;background:rgba(148,163,184,.1);border:1px solid rgba(148,163,184,.2)}
+.sq-outcome.mixed{color:#fbbf24;background:rgba(251,191,36,.1);border:1px solid rgba(251,191,36,.2)}
+.sq-outcome.pending{color:#64748b;background:rgba(100,116,139,.1);border:1px solid rgba(100,116,139,.2)}
+.sq-actual{font-size:11px;color:#cbd5e1;line-height:1.35}
+.sq-gap-pos{color:#4ade80;font-weight:700}
+.sq-gap-neg{color:#f87171;font-weight:700}
 .dp-sym{font-weight:800;color:#f8fafc;font-size:17px;line-height:1.2}
 .dp-card.dp-market .dp-sym{font-size:15px;color:#cbd5e1}
 .dp-score{font-size:13px;font-weight:800;white-space:normal}
@@ -743,6 +752,23 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
       <div class="sq-session" id="sq-session">Loading session clock…</div>
       <div id="sq-table-wrap"><div class="sq-empty">Scanning watchlist for squeeze signals…</div></div>
       <div class="sq-foot" id="sq-foot">Radar scan every 60s during extended hours (3 AM – 7 PM CT) · alerts via Telegram when thresholds hit</div>
+    </div>
+  </section>
+
+  <!-- ─── Squeeze daily log (predicted vs market close) ─── -->
+  <section class="block" id="squeeze-daily-log-section">
+    <div class="sec-label">Squeeze accountability log</div>
+    <div class="sq-panel">
+      <div class="sq-head">
+        <div>
+          <div class="sq-title">Daily squeeze prediction log</div>
+          <div class="sq-sub">Ghost <b>buy / sell / stop</b> at alert time vs cash-session <b>open · high · low · close</b>. Resolves after <b>3:00 PM CT</b> market close.</div>
+        </div>
+        <div class="sq-meta" id="sql-meta">Loading…</div>
+      </div>
+      <div id="sql-day-chips" class="tp-chips" style="margin-bottom:10px"></div>
+      <div id="sql-table-wrap"><div class="sq-empty">Loading squeeze daily log…</div></div>
+      <div class="sq-foot" id="sql-foot">WIN = session high reached sell target · LOSS = session low hit stop · close P&amp;L vs buy at alert</div>
     </div>
   </section>
 
@@ -2788,6 +2814,117 @@ async function loadSqueezePicks(){
   }
 }
 
+function _sqOutcomeBadge(outcome){
+  if(!outcome) return '<span class="sq-outcome pending">Pending</span>';
+  var cls = String(outcome).toLowerCase();
+  return '<span class="sq-outcome ' + escHtml(cls) + '">' + escHtml(outcome) + '</span>';
+}
+
+function _sqPct(n, digits){
+  if(n == null || isNaN(Number(n))) return '—';
+  var v = Number(n);
+  var sign = v > 0 ? '+' : '';
+  return sign + v.toFixed(digits != null ? digits : 1) + '%';
+}
+
+function _sqActualLine(row){
+  if(row.session_close == null){
+    return '<span style="color:#64748b">Awaiting EOD resolve</span>';
+  }
+  return '<div class="sq-actual">O ' + _fmtUsd(row.session_open)
+    + ' · H ' + _fmtUsd(row.session_high)
+    + ' · L ' + _fmtUsd(row.session_low)
+    + '<br><b>Close ' + _fmtUsd(row.session_close) + '</b></div>';
+}
+
+function _renderSqueezeDailyLog(data, focusDay){
+  var wrap = document.getElementById('sql-table-wrap');
+  var meta = document.getElementById('sql-meta');
+  var foot = document.getElementById('sql-foot');
+  var chips = document.getElementById('sql-day-chips');
+  if(!wrap) return;
+  if(!data || data.ok === false){
+    wrap.innerHTML = '<div class="sq-empty">Squeeze daily log unavailable.</div>';
+    return;
+  }
+  if(data.enabled === false){
+    wrap.innerHTML = '<div class="sq-empty">Squeeze daily log disabled (<code>SQUEEZE_DAILY_LOG</code>).</div>';
+    return;
+  }
+  var days = (data.days || []).slice();
+  var focus = focusDay || data.session_date || (days[0] && days[0].session_date) || data.today_ct;
+  var rows = (data.rows || []).filter(function(r){ return r.session_date === focus; });
+  if(!rows.length && days.length){
+    var dayInfo = days.find(function(d){ return d.session_date === focus; });
+    if(dayInfo && dayInfo.count === 0) rows = [];
+  }
+  if(meta){
+    var daySum = days.find(function(d){ return d.session_date === focus; });
+    meta.innerHTML = focus === data.today_ct ? '<b>Today</b> · ' + escHtml(focus) : escHtml(focus);
+    if(daySum){
+      meta.innerHTML += ' · ' + daySum.count + ' prediction(s)'
+        + (daySum.resolved ? ' · ' + daySum.wins + 'W / ' + daySum.losses + 'L' : '')
+        + (daySum.pending ? ' · ' + daySum.pending + ' pending' : '');
+    }
+  }
+  if(chips){
+    chips.innerHTML = days.slice(0, 14).map(function(d){
+      var active = d.session_date === focus ? ' active' : '';
+      var label = d.session_date === data.today_ct ? d.session_date + ' (today)' : d.session_date;
+      var stats = d.resolved ? ' · ' + d.wins + 'W/' + d.losses + 'L' : (d.pending ? ' · pending' : '');
+      return '<button type="button" class="tp-chip' + active + '" onclick="loadSqueezeDailyLog(\'' + escHtml(d.session_date) + '\')">'
+        + escHtml(label) + escHtml(stats) + '</button>';
+    }).join('');
+  }
+  if(!rows.length){
+    wrap.innerHTML = '<div class="sq-empty"><b>No squeeze predictions logged for ' + escHtml(focus) + '</b><br>'
+      + 'Telegram alerts and scorecard candidates are recorded here once the radar fires.</div>';
+  } else {
+    var body = rows.map(function(r){
+      var src = r.source === 'telegram' ? 'Telegram' : 'Candidate';
+      var closeGap = r.target_gap_pct;
+      var gapCls = closeGap == null ? '' : (closeGap >= 0 ? ' sq-gap-pos' : ' sq-gap-neg');
+      return '<tr>'
+        + '<td><span class="sq-sym">' + escHtml(r.symbol) + '</span>'
+        + '<div style="font-size:10px;color:#64748b;margin-top:2px">' + escHtml(src) + ' · ' + escHtml(r.kind || '') + '</div></td>'
+        + '<td class="sq-num">' + _fmtUsd(r.buy) + '<br><span style="color:#64748b;font-size:10px">sell ' + _fmtUsd(r.sell) + '</span>'
+        + '<br><span style="color:#64748b;font-size:10px">stop ' + _fmtUsd(r.stop) + '</span></td>'
+        + '<td>' + _sqActualLine(r) + '</td>'
+        + '<td>' + _sqOutcomeBadge(r.outcome)
+        + (r.close_pnl_pct != null ? '<div style="margin-top:4px;font-size:10px">Close vs buy: <span class="' + (r.close_pnl_pct >= 0 ? 'sq-gap-pos' : 'sq-gap-neg') + '">' + _sqPct(r.close_pnl_pct, 2) + '</span></div>' : '')
+        + (closeGap != null ? '<div style="font-size:10px;color:#64748b">Close vs sell: <span class="' + gapCls.trim() + '">' + _sqPct(closeGap, 2) + '</span></div>' : '')
+        + '</td>'
+        + '<td class="sq-score">' + (r.squeeze_score != null ? Math.round(r.squeeze_score) : '—')
+        + '<div style="font-size:10px;color:#64748b;margin-top:2px">P(+3%) ' + (r.p_continue_3pct_60m != null ? Math.round(r.p_continue_3pct_60m) + '%' : '—') + '</div></td>'
+        + '<td style="font-size:11px;color:#64748b">RVOL ' + (r.rvol != null ? Number(r.rvol).toFixed(1) + '×' : '—')
+        + '<br>peak +' + (r.peak_move_pct != null ? Number(r.peak_move_pct).toFixed(1) : '—') + '%'
+        + (r.hit_target ? '<br><span class="sq-gap-pos">hit sell</span>' : '')
+        + (r.hit_stop ? '<br><span class="sq-gap-neg">hit stop</span>' : '')
+        + '</td>'
+        + '</tr>';
+    }).join('');
+    wrap.innerHTML = '<table class="sq-table"><thead><tr>'
+      + '<th>Stock</th><th>Ghost predicted</th><th>Market (session)</th><th>Outcome</th><th>Score</th><th>Context</th>'
+      + '</tr></thead><tbody>' + body + '</tbody></table>';
+  }
+  if(foot && data.note){
+    foot.textContent = data.note + ' · Refreshes every 15 min · resolves after 3:00 PM CT';
+  }
+}
+
+async function loadSqueezeDailyLog(sessionDate){
+  try{
+    var q = sessionDate ? ('?session_date=' + encodeURIComponent(sessionDate) + '&days=14') : '?days=14';
+    var data = await _fetchJson('/api/squeeze/daily-log' + q, {ok:false, rows:[]});
+    window._sqLogData = data;
+    window._sqLogFocus = sessionDate || (data && data.session_date) || null;
+    _renderSqueezeDailyLog(data, window._sqLogFocus);
+  }catch(e){
+    var wrap = document.getElementById('sql-table-wrap');
+    if(wrap) wrap.innerHTML = '<div class="sq-empty">Squeeze daily log load error.</div>';
+  }
+}
+
 async function _populateDfSymbols(){
   try{
     _dfUniverse = await _fetchJson('/api/wolf/watchlist-forecast-universe', {watchlist: [], symbols: ['WOLF']});
@@ -3458,6 +3595,7 @@ async function load(){
     loadTodayPredictionPanel(false);
     _maybeTodayPredMarketCloseRefresh();
     loadSqueezePicks();
+    loadSqueezeDailyLog();
     renderGhostScore(ghostScore, watching);
     renderHero(price, watching);
     renderPlay(picks, watching);
@@ -3946,6 +4084,7 @@ setInterval(function(){ if(!document.hidden){ _maybeTodayPredMarketCloseRefresh(
 setInterval(function(){ if(!document.hidden) loadAttribution(); }, 300000);
 setInterval(function(){ if(!document.hidden) loadDailyForecastScorecard(); }, 900000);
 setInterval(function(){ if(!document.hidden) loadSqueezePicks(); }, 180000);
+setInterval(function(){ if(!document.hidden) loadSqueezeDailyLog(window._sqLogFocus || null); }, 900000);
 _renderAutoStatus();
 </script>
 </body>
