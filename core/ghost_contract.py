@@ -14,9 +14,9 @@ def ghost_contract() -> Dict[str, Any]:
         "headline": "Selective directional aid + intraday squeeze radar",
         "lanes": {
             "v3_picks": {
-                "label": "Today's v3 pick",
+                "label": "v3 pick lane",
                 "horizon": "~3-day TP/SL holds",
-                "philosophy": "Silent most cycles; fires only when model + gates agree.",
+                "philosophy": "Research-grade gate chain — silent most cycles; live journal tracks edge, not marketing accuracy.",
                 "accuracy_claim": None,
             },
             "squeeze_radar": {

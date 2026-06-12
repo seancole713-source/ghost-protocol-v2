@@ -81,6 +81,18 @@ section.block{margin-bottom:32px}
 .hero-refresh{background:#1a1a1a;border:1px solid #2a2a2a;color:#888;font-size:12px;font-weight:600;padding:8px 14px;border-radius:8px;cursor:pointer}
 .hero-refresh:hover{background:#222;color:#ccc}
 .hero-ts{font-size:11px;color:#444}
+.hero-truth-strip{margin-top:12px;padding:10px 14px;border-radius:10px;border:1px solid rgba(255,77,79,.28);background:rgba(255,77,79,.06);font-size:11px;line-height:1.55;color:#94a3b8}
+.hero-truth-strip .hts-inner{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px}
+.hero-truth-strip .hts-badge{font-size:9px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;padding:3px 8px;border-radius:999px;color:#ff6b6b;background:rgba(255,77,79,.12);border:1px solid rgba(255,77,79,.25)}
+.hero-truth-strip .hts-badge.watch{color:#facc15;background:rgba(250,204,21,.1);border-color:rgba(250,204,21,.25)}
+.hero-truth-strip .hts-wr-bad{color:#ff6b6b}
+.hero-truth-strip .hts-wr-ok{color:#4ade80}
+.hero-truth-strip .hts-sep{color:#475569}
+.hero-truth-strip .hts-link{color:#c4b5fd;font-weight:700;text-decoration:none}
+.hero-truth-strip .hts-link:hover{text-decoration:underline}
+.v3-pick-sub{font-size:11px;color:#64748b;margin:-4px 0 10px;line-height:1.45}
+.truth-mode-box{border-color:rgba(255,77,79,.22)!important;background:rgba(255,77,79,.04)!important}
+.play-card .play-disclaimer{font-size:10px;color:#64748b;margin-top:8px;line-height:1.45}
 
 /* ─── Performance strip ─── */
 .perf{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:24px;min-height:96px}
@@ -714,7 +726,7 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
     </div>
     <div class="gs-side">
       <div class="gs-side-head">Ghost Score <span class="gs-regime" id="gs-regime"></span></div>
-      <div class="gs-side-sub" id="gs-side-sub">A composite read of WOLF &mdash; model + volume + sector + momentum + freshness.</div>
+      <div class="gs-side-sub" id="gs-side-sub">Composite WOLF read — model bias only until a v3 pick clears gates. Live edge: pick journal.</div>
       <div class="gs-bars" id="gs-bars"></div>
       <div class="gs-meta" id="gs-meta"></div>
     </div>
@@ -727,6 +739,7 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
         <div class="hero-ticker">NYSE: WOLF · WOLFSPEED</div>
         <div class="hero-price" id="hero-price">—</div>
         <div class="hero-change" id="hero-change">—</div>
+        <div class="hero-truth-strip" id="hero-truth-strip" style="display:none"></div>
         <div class="hero-ah" id="hero-ah"></div>
         <div id="engine-badge" class="engine-badge live" style="display:none"></div>
       </div>
@@ -999,9 +1012,10 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
     </div>
   </section>
 
-  <!-- ─── Today's v3 pick ─── -->
+  <!-- ─── v3 pick lane (truth mode) ─── -->
   <section class="block" id="v3-pick-section">
-    <div class="sec-label">Today&#39;s v3 pick</div>
+    <div class="sec-label" id="v3-pick-label">v3 pick lane</div>
+    <div class="v3-pick-sub" id="v3-pick-sub">Silent when gates bind · live pick journal is the scoreboard, not headline accuracy.</div>
     <div id="v3-squeeze-alerts" style="display:none"></div>
     <div id="sgrid"><div class="empty"><div class="ico">&#9203;</div>Loading picks…</div></div>
   </section>
@@ -1261,7 +1275,91 @@ function _computeWatching(health, gs){
   return {watching: days >= 7, days: days};
 }
 
-function renderGhostScore(gs, watching){
+function _buildTruthCtx(watching, stats, journal, contract){
+  var f = (journal && journal.verdict && journal.verdict.falsification) || {};
+  var m = (journal && journal.metrics) || {};
+  var pv = (stats && stats.post_v32) || {};
+  var postFals = f.status === 'ABANDON_80_CLAIM' || !!(contract && contract.north_star_retired);
+  return {
+    postFalsification: postFals,
+    falsificationStatus: f.status || (postFals ? 'ABANDON_80_CLAIM' : 'unknown'),
+    watching: !!(watching && watching.watching),
+    watchDays: watching ? watching.days : 0,
+    liveWr: pv.win_rate_pct,
+    liveWins: pv.wins || 0,
+    liveLosses: pv.losses || 0,
+    liveTotal: pv.total || 0,
+    expectancy: m.expectancy_pct,
+    brier: m.brier,
+    journalResolved: m.resolved || 0
+  };
+}
+
+function _storeTruthCtx(ctx){
+  window._ghostTruthCtx = ctx || null;
+  _renderV3PickSectionHead(ctx);
+  _renderHeroTruthStrip(ctx);
+}
+
+function _renderV3PickSectionHead(ctx){
+  var lbl = document.getElementById('v3-pick-label');
+  var sub = document.getElementById('v3-pick-sub');
+  if(!lbl || !sub) return;
+  if(ctx && ctx.postFalsification){
+    lbl.textContent = 'v3 pick lane · post-falsification';
+    sub.innerHTML = 'Legacy 80% claim retired · gates prefer <b>silence</b> over miscalibrated high-confidence calls. '
+      + 'Track live win rate and expectancy in the <a href="#pick-journal-section" style="color:#c4b5fd">pick journal</a> — not hero confidence labels.';
+  } else if(ctx && ctx.watching){
+    lbl.textContent = 'v3 pick lane · watching';
+    sub.textContent = 'No pick cleared the confidence floor in ' + ctx.watchDays + ' day'
+      + (ctx.watchDays === 1 ? '' : 's') + '. Intraday squeeze radar (above) is a separate lane.';
+  } else {
+    lbl.textContent = 'v3 pick lane';
+    sub.textContent = 'Fires only when model + gates agree · see pick journal for live outcomes.';
+  }
+}
+
+function _renderHeroTruthStrip(ctx){
+  var el = document.getElementById('hero-truth-strip');
+  if(!el) return;
+  if(!ctx || (!ctx.postFalsification && !ctx.watching && !(ctx.liveTotal > 0))){
+    el.innerHTML = '';
+    el.style.display = 'none';
+    return;
+  }
+  el.style.display = 'block';
+  var parts = [];
+  if(ctx.postFalsification){
+    parts.push('<span class="hts-badge">POST-FALSIFICATION</span>');
+    parts.push('<span>Telemetry / research mode — not sized for mechanical capital deployment.</span>');
+  } else if(ctx.watching){
+    parts.push('<span class="hts-badge watch">WATCHING</span>');
+    parts.push('<span>No v3 pick cleared gates in <b>' + ctx.watchDays + 'd</b>.</span>');
+  }
+  if(ctx.liveTotal > 0){
+    var wrCls = ctx.liveWr >= 50 ? 'hts-wr-ok' : 'hts-wr-bad';
+    parts.push('<span class="' + wrCls + '">Live pick WR <b>' + ctx.liveWr + '%</b> · '
+      + ctx.liveWins + 'W/' + ctx.liveLosses + 'L</span>');
+  }
+  if(ctx.expectancy != null && ctx.journalResolved >= 10){
+    parts.push('<span>Expectancy <b>' + _pjPct(ctx.expectancy) + '</b></span>');
+  }
+  parts.push('<a class="hts-link" href="#pick-journal-section">Pick journal ↓</a>');
+  el.innerHTML = '<div class="hts-inner">' + parts.join('<span class="hts-sep">·</span>') + '</div>';
+}
+
+function _refreshTruthSurfaces(){
+  var ctx = window._ghostTruthCtx;
+  var gs = window._lastGhostScore;
+  var price = window._lastHeroPrice;
+  var picks = window._lastPicksPack;
+  var watching = window._lastWatching;
+  if(gs && watching) renderGhostScore(gs, watching, ctx);
+  if(price && watching) renderHero(price, watching, ctx);
+  if(picks && watching) renderPlay(picks, watching, ctx);
+}
+
+function renderGhostScore(gs, watching, truth){
   var wrap = document.getElementById('ghost-score-wrap');
   var fg = document.getElementById('gs-gauge-fg');
   var scoreEl = document.getElementById('gs-score');
@@ -1270,6 +1368,8 @@ function renderGhostScore(gs, watching){
   var metaEl = document.getElementById('gs-meta');
   var subEl = document.getElementById('gs-side-sub');
   var regimeEl = document.getElementById('gs-regime');
+  truth = truth || window._ghostTruthCtx;
+  var suppressAction = !!(truth && truth.postFalsification) || !!(watching && watching.watching);
 
   if(!gs || gs.ok === false){
     if(wrap) wrap.classList.remove('watching');
@@ -1304,32 +1404,31 @@ function renderGhostScore(gs, watching){
   var color = gsScoreColor(score);
   var tradeAction = (gs.trade_action || '').replace(/_/g, ' ');
   var biasLabel = gs.bias_label || '';
-  // Prefer explicit trade action over composite signal label when not in WATCHING staleness mode.
-  if(watching && watching.watching){
+  if(suppressAction){
     if(wrap) wrap.classList.add('watching');
     fg.setAttribute('d', gsArcPath(score));
     fg.setAttribute('stroke', '#555');
     scoreEl.textContent = Math.round(score);
     scoreEl.style.color = '';
-    sigEl.textContent = 'WATCHING';
+    sigEl.textContent = (watching && watching.watching) ? 'WATCHING' : 'BIAS ONLY';
     sigEl.className = 'gs-signal hold';
   } else {
     if(wrap) wrap.classList.remove('watching');
     if(tradeAction){
-    fg.setAttribute('d', gsArcPath(score));
-    fg.setAttribute('stroke', color);
-    scoreEl.textContent = Math.round(score);
-    scoreEl.style.color = color;
-    sigEl.textContent = tradeAction;
-    var taUp = tradeAction.indexOf('SUPER BUY') >= 0 || tradeAction === 'BUY NOW';
-    sigEl.className = 'gs-signal ' + (taUp ? (tradeAction.indexOf('SUPER') >= 0 ? 'strong-buy' : 'buy') : 'hold');
+      fg.setAttribute('d', gsArcPath(score));
+      fg.setAttribute('stroke', color);
+      scoreEl.textContent = Math.round(score);
+      scoreEl.style.color = color;
+      sigEl.textContent = tradeAction;
+      var taUp = tradeAction.indexOf('SUPER BUY') >= 0 || tradeAction === 'BUY NOW';
+      sigEl.className = 'gs-signal ' + (taUp ? (tradeAction.indexOf('SUPER') >= 0 ? 'strong-buy' : 'buy') : 'hold');
     } else {
-    fg.setAttribute('d', gsArcPath(score));
-    fg.setAttribute('stroke', color);
-    scoreEl.textContent = Math.round(score);
-    scoreEl.style.color = color;
-    sigEl.textContent = (gs.signal || 'HOLD').replace('_', ' ');
-    sigEl.className = 'gs-signal ' + gsSignalClass(gs.signal);
+      fg.setAttribute('d', gsArcPath(score));
+      fg.setAttribute('stroke', color);
+      scoreEl.textContent = Math.round(score);
+      scoreEl.style.color = color;
+      sigEl.textContent = (gs.signal || 'HOLD').replace('_', ' ');
+      sigEl.className = 'gs-signal ' + gsSignalClass(gs.signal);
     }
   }
 
@@ -1356,7 +1455,13 @@ function renderGhostScore(gs, watching){
   var inputs = gs.inputs || {};
   var parts = [];
   if(inputs.model_direction && inputs.model_confidence != null){
-    parts.push('Latest pick ' + escHtml(inputs.model_direction) + ' @ ' + Math.round(inputs.model_confidence * 100) + '%');
+    if(truth && truth.postFalsification){
+      parts.push('Model bias ' + escHtml(inputs.model_direction) + ' @ '
+        + Math.round(inputs.model_confidence * 100) + '% — not a live trade call');
+    } else {
+      parts.push('Latest pick ' + escHtml(inputs.model_direction) + ' @ '
+        + Math.round(inputs.model_confidence * 100) + '%');
+    }
   }
   if(inputs.volume_ratio != null){
     parts.push(inputs.volume_ratio.toFixed(2) + 'x volume');
@@ -1377,6 +1482,8 @@ function renderGhostScore(gs, watching){
   if(watching && watching.watching){
     var _flr = (gs.confidence_floor != null) ? (Math.round(gs.confidence_floor * 100) + '%') : 'the confidence';
     parts.unshift('composite score · no pick ≥ ' + _flr + ' floor in ' + watching.days + 'd');
+  } else if(truth && truth.postFalsification){
+    parts.unshift('post-falsification · gauge is bias telemetry — journal tracks live edge');
   }
   if(gs.trade_note){
     parts.unshift(gs.trade_note);
@@ -1394,12 +1501,13 @@ function renderGhostScore(gs, watching){
 }
 
 /* ─── Hero & market status ─── */
-function renderHero(price, watching){
+function renderHero(price, watching, truth){
   var pe = document.getElementById('hero-price');
   var ce = document.getElementById('hero-change');
   var ae = document.getElementById('hero-ah');
   var te = document.getElementById('hero-ts');
   var mb = document.getElementById('mkt-badge');
+  truth = truth || window._ghostTruthCtx;
 
   if(!price || price.ok === false || price.price == null){
     pe.textContent = '—';
@@ -1441,12 +1549,17 @@ function renderHero(price, watching){
                               : st.indexOf('after') >= 0 || st.indexOf('pre') >= 0 ? 'after'
                               : 'closed');
   // PR #23: hero subtitle reflects WATCHING when no signal has fired
-  // for 7+ days. Replaces any prior bullish/bearish framing.
+  // for 7+ days. Post-falsification adds live journal context.
   if(watching && watching.watching){
     ce.className = 'hero-change flat';
     ce.innerHTML = '<span style="color:#888">WATCHING &mdash; no v3 pick cleared the confidence floor in '
       + watching.days + ' day' + (watching.days === 1 ? '' : 's') + '</span>';
+  } else if(truth && truth.postFalsification && truth.liveTotal > 0){
+    ce.className = 'hero-change flat';
+    ce.innerHTML = '<span style="color:#888">Truth mode &mdash; live pick WR <b style="color:#ff6b6b">'
+      + truth.liveWr + '%</b> (' + truth.liveWins + 'W/' + truth.liveLosses + 'L) · model confidence ≠ tradable edge</span>';
   }
+  _renderHeroTruthStrip(truth);
 }
 
 /* ─── Performance strip ─── */
@@ -1473,6 +1586,9 @@ function renderPerf(stats, conf, recent){
     wrEl.textContent = pv.win_rate_pct + '%';
     wrEl.className = 'perf-val big ' + (pv.win_rate_pct >= 55 ? 'pos' : pv.win_rate_pct >= 45 ? '' : 'neg');
     wrSub.textContent = pv.wins + 'W / ' + pv.losses + 'L issued · since ' + fmtDateShort(pv.start_ts);
+    if(pv.win_rate_pct < 45){
+      wrSub.textContent += ' · journal: negative edge — not deployment-ready';
+    }
   } else if(v32rt > 0){
     wrEl.textContent = pres.win_rate_pct + '%';
     wrEl.className = 'perf-val big ' + (pres.win_rate_pct >= 55 ? 'pos' : '');
@@ -1617,18 +1733,26 @@ function _renderV3SqueezeAlerts(picks, watching){
     + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
 }
 
-function renderPlay(picks, watching){
+function renderPlay(picks, watching, truth){
   var sg = document.getElementById('sgrid');
+  truth = truth || window._ghostTruthCtx;
+  _renderV3PickSectionHead(truth);
   _renderV3SqueezeAlerts(picks, watching);
   var active = (picks && picks.active) || [];
   var stocks = active.filter(function(p){
     return (p.asset_type === 'stock' || !p.asset_type) && (p.entry_price || 0) > 0;
   });
+  var truthBanner = (truth && truth.postFalsification)
+    ? '<div class="info-box truth-mode-box"><b>Post-falsification mode.</b> Any open v3 card below is a gated model output — '
+      + 'not a capital-deployment signal. Live journal WR is ~'
+      + (truth.liveWr != null ? truth.liveWr + '%' : 'sub-30%')
+      + '; size only after journal edge improves.</div>'
+    : '';
   // PR #23: WATCHING mode suppresses any BUY/SELL card from rendering —
   // even if an old open pick is still in the DB, we don't surface it as
   // actionable when the engine hasn't fired a fresh signal in 7+ days.
   if(watching && watching.watching){
-    sg.innerHTML = '<div class="info-box"><b>WATCHING &mdash; no v3 pick cleared the confidence floor in '
+    sg.innerHTML = truthBanner + '<div class="info-box"><b>WATCHING &mdash; no v3 pick cleared the confidence floor in '
       + watching.days + ' day' + (watching.days === 1 ? '' : 's') + '.</b><br><br>'
       + 'Ghost is scanning every cycle but the v3 engine has not produced a high-confidence pick. '
       + 'When a new signal clears the floor, it will appear here. Intraday squeeze alerts (if any) show above.</div>';
@@ -1649,7 +1773,7 @@ function renderPlay(picks, watching){
         : ah
           ? 'US market is in <b>after-hours</b> (3:00 – 7:00 PM CT). Ghost still scans on the off-hours cadence.'
           : 'US market is <b>closed</b>. Regular hours: Mon–Fri 8:30 AM – 3:00 PM CT.';
-    sg.innerHTML = '<div class="info-box"><b>No active v3 pick right now.</b><br><br>'
+    sg.innerHTML = truthBanner + '<div class="info-box"><b>No active v3 pick right now.</b><br><br>'
       + sessMsg
       + '<br><br>Ghost re-scans every ~30 min and <b>withdraws</b> open v3 picks if the model changes mind. Intraday squeeze alerts (if any) show above.</div>';
     return;
@@ -1659,8 +1783,16 @@ function renderPlay(picks, watching){
     var sym = (top.symbol || '—').toUpperCase();
     var pct = Math.round(top.confidence * 100);
     var cc = pct >= 85 ? 'h' : pct >= 70 ? 'm' : 'l';
-    var sl = pct >= 85 ? 'Strong signal' : pct >= 70 ? 'Good signal' : 'Moderate signal';
+    var postFals = truth && truth.postFalsification;
+    var sl = postFals
+      ? (pct >= 85 ? 'High model confidence' : pct >= 70 ? 'Moderate model confidence' : 'Low model confidence')
+      : (pct >= 85 ? 'Strong signal' : pct >= 70 ? 'Good signal' : 'Moderate signal');
     var decay = computeDecay(top.confidence, top.predicted_at, top.expires_at);
+    var confLabel = postFals ? Math.round(decay.now*100) + '% model confidence' : Math.round(decay.now*100) + '% confident';
+    var disclaimer = postFals
+      ? '<div class="play-disclaimer">Journal live WR ~' + (truth.liveWr != null ? truth.liveWr + '%' : '—')
+        + ' — confidence at issuance is not calibrated tradable edge.</div>'
+      : '';
     return '<div class="play-card ' + (buy ? 'buy' : 'sell') + '">'
       + '<div class="play-head"><span class="play-sym">' + escHtml(sym) + '</span>'
       + '<span class="play-pill ' + (buy ? 'buy' : 'sell') + '">' + (buy ? 'BUY' : 'SELL') + '</span></div>'
@@ -1673,13 +1805,13 @@ function renderPlay(picks, watching){
       + '<div class="lv s"><div class="lv-label">STOP</div><div class="lv-val">' + fmtPrice(top.stop_price) + '</div></div>'
       + '</div>'
       + '<div class="conf-bar"><div class="conf-fill ' + cc + '" style="width:' + (decay.now*100) + '%"></div></div>'
-      + '<div class="conf-meta"><span>' + sl + '</span><span>' + Math.round(decay.now*100) + '% confident</span></div>'
+      + '<div class="conf-meta"><span>' + sl + '</span><span>' + confLabel + '</span></div>'
       + '<div class="decay-line">&#9203; ' + timeLeft(top.expires_at)
       + (decay.atExpiry != null ? ' &middot; decays to <b>' + Math.round(decay.atExpiry*100) + '%</b> by expiry' : '')
-      + '</div></div>';
+      + '</div>' + disclaimer + '</div>';
   }
   stocks.sort(function(a,b){return b.confidence - a.confidence});
-  sg.innerHTML = '<div class="play-grid">' + stocks.map(playCard).join('') + '</div>';
+  sg.innerHTML = truthBanner + '<div class="play-grid">' + stocks.map(playCard).join('') + '</div>';
 }
 
 function computeDecay(initialConf, predictedAt, expiresAt){
@@ -3579,13 +3711,20 @@ async function load(){
       _fetchJson('/api/wolf/ghost-score', {ok:false}),
       _fetchJson('/api/wolf/price', {ok:false}),
       _fetchJson('/api/picks'),
+      _fetchJson('/api/ghost/contract', {ok:false}),
+      _fetchJson('/api/wolf/pick-journal?limit=1&offset=0', {ok:false}),
     ]);
     var ctxPack = await ctxP;
     var core = await coreP;
     var deployMeta = core[0];
     var h = ctxPack.h, stats = ctxPack.stats;
     var ghostScore = core[1], price = core[2], picks = core[3];
+    var contract = core[4], journal = core[5];
     var watching = _computeWatching(h, ghostScore);
+    var truthCtx = _buildTruthCtx(watching, stats, journal, contract);
+    _storeTruthCtx(truthCtx);
+    window._lastGhostScore = ghostScore;
+    window._lastHeroPrice = price;
 
     _renderDeployBadge((deployMeta && deployMeta.git_sha) ? deployMeta : ctxPack.deploy);
     _renderEngineBadge(ctxPack.v3);
@@ -3596,11 +3735,12 @@ async function load(){
     _maybeTodayPredMarketCloseRefresh();
     loadSqueezePicks();
     loadSqueezeDailyLog();
-    renderGhostScore(ghostScore, watching);
-    renderHero(price, watching);
-    renderPlay(picks, watching);
+    renderGhostScore(ghostScore, watching, truthCtx);
+    renderHero(price, watching, truthCtx);
+    renderPlay(picks, watching, truthCtx);
     window._lastPicksPack = picks;
     window._lastWatching = watching;
+    window._lastStatsPack = stats;
     document.getElementById('f-open').textContent = stats.open_positions || 0;
     window._lastLoad = Date.now();
     _renderAutoStatus();
@@ -3721,6 +3861,10 @@ async function loadPickJournal(reset){
   if(_pjOffset === 0){
     document.getElementById('pj-verdict').innerHTML = _renderPjVerdict(data.metrics, data.verdict);
     document.getElementById('pj-metrics').innerHTML = _renderPjMetrics(data.metrics);
+    var contract = await fetch('/api/ghost/contract').then(function(r){return r.json()}).catch(function(){return null;});
+    var truthCtx = _buildTruthCtx(window._lastWatching, window._lastStatsPack, data, contract);
+    _storeTruthCtx(truthCtx);
+    _refreshTruthSurfaces();
   }
   _renderPjList(data.picks, _pjOffset > 0);
   var moreWrap = document.getElementById('pj-more-wrap');
