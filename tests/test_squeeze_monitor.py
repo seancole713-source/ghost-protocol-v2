@@ -99,3 +99,27 @@ def test_candidate_to_pick_matches_telegram_fields():
     assert pick["message"] == msg
     assert prefilter_candidate(0.5, 0.2, 0.8) is False
     assert prefilter_candidate(3.0, 2.5, 2.0) is True
+
+
+def test_get_squeeze_picks_exposes_fetch_failed_symbols(monkeypatch):
+    import core.squeeze_monitor as sm
+
+    monkeypatch.setattr(
+        sm,
+        "_last_scan_report",
+        {
+            "status": "complete",
+            "ts": 1,
+            "fetch_ok": 40,
+            "fetch_fail": 3,
+            "fetch_failed_symbols": ["SAP", "IQ", "TME"],
+            "symbols": 43,
+            "picks": [],
+            "candidates": [],
+            "leaders": [],
+        },
+    )
+    monkeypatch.setattr(sm, "_alert_history", [])
+    board = sm.get_squeeze_picks()
+    assert board["fetch_failed_symbols"] == ["SAP", "IQ", "TME"]
+    assert board["symbols"] == 43

@@ -148,6 +148,7 @@ def _persist_scan_report(report: Dict[str, Any]) -> None:
             k: report.get(k)
             for k in (
                 "ok", "ts", "session", "symbols", "fetch_ok", "fetch_fail",
+                "fetch_failed_symbols",
                 "picks", "candidates", "leaders", "duration_ms", "status", "elapsed_frac",
             )
         }
@@ -276,6 +277,8 @@ def get_squeeze_picks() -> Dict[str, Any]:
         "last_scan_session": st.get("session"),
         "fetch_ok": st.get("fetch_ok"),
         "fetch_fail": st.get("fetch_fail"),
+        "fetch_failed_symbols": list(st.get("fetch_failed_symbols") or []),
+        "symbols": st.get("symbols"),
         "duration_ms": st.get("duration_ms"),
         "leaders": leaders,
         "scorecard": scorecard_legend(),
@@ -368,6 +371,7 @@ async def _run_watchlist_scan() -> None:
         "symbols": len(symbols),
         "fetch_ok": 0,
         "fetch_fail": 0,
+        "fetch_failed_symbols": [],
         "candidates": [],
         "alerts_sent": 0,
         "duration_ms": 0,
@@ -399,6 +403,7 @@ async def _run_watchlist_scan() -> None:
         metrics = metrics_map.get(symbol)
         if not metrics:
             report["fetch_fail"] += 1
+            report["fetch_failed_symbols"].append(symbol)
             continue
         report["fetch_ok"] += 1
         rvol = compute_rvol(metrics["session_volume"], metrics["avg_daily_volume"], elapsed)

@@ -758,14 +758,14 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
     </div>
   </section>
 
-  <!-- ─── Intraday squeeze radar (44-symbol · Telegram-aligned) ─── -->
+  <!-- ─── Intraday squeeze radar (43-symbol · Telegram-aligned) ─── -->
   <section class="block" id="squeeze-picks-section">
     <div class="sec-label">Intraday squeeze radar</div>
     <div class="sq-panel">
       <div class="sq-head">
         <div>
           <div class="sq-title">Intraday squeeze radar</div>
-          <div class="sq-sub">Scorecard + probability targets · <b>Buy</b> / <b>Sell</b> at alert · <b>Live vs alert</b> updates each scan. Scans all <b>44</b> symbols; panel refreshes every <b>3 min</b>.</div>
+          <div class="sq-sub">Scorecard + probability targets · <b>Buy</b> / <b>Sell</b> at alert · <b>Live vs alert</b> updates each scan. Scans all <b>43</b> symbols; panel refreshes every <b>3 min</b>.</div>
         </div>
         <div class="sq-meta" id="sq-meta">Loading…</div>
       </div>
@@ -2892,8 +2892,13 @@ function _renderSqueezePicks(data){
     var watching = radarOn;
     var leaders = (data && data.leaders) ? data.leaders.slice() : [];
     var stale = !!(data && data.snapshot_stale);
+    var symCount = (data && data.symbols) ? data.symbols : 43;
     var fetchLine = (data && data.fetch_ok != null)
-      ? ' Priced <b>' + data.fetch_ok + '/44</b> on last scan.'
+      ? ' Priced <b>' + data.fetch_ok + '/' + symCount + '</b> on last scan.'
+      : '';
+    var failSyms = (data && data.fetch_failed_symbols) ? data.fetch_failed_symbols : [];
+    var failLine = failSyms.length
+      ? ' Unpriced: <b>' + escHtml(failSyms.join(', ')) + '</b>.'
       : '';
     var resumeCt = (data && data.radar_resume_ct) ? data.radar_resume_ct : '3:00 AM CT';
     var emptyTitle = overnight
@@ -2903,7 +2908,7 @@ function _renderSqueezePicks(data){
       ? 'Ghost sleeps <b>7:00 PM – 3:00 AM CT</b>. Premarket scan starts at <b>' + escHtml(resumeCt) + '</b>.'
         + (scanTs ? ' Last scan at <b>' + escHtml(scanStr) + '</b>.' : '')
       : watching
-        ? 'Radar is <b>live</b> — watching all 44 symbols.' + fetchLine
+        ? 'Radar is <b>live</b> — watching all ' + symCount + ' symbols.' + fetchLine + failLine
           + ' Table below shows <b>buy now</b> / <b>sell now</b> (same levels as Telegram).'
           + (data && data.is_after_hours
             ? ' Cash market closed at <b>3:00 PM CT</b> — extended-hours quotes only until 7:00 PM CT.'

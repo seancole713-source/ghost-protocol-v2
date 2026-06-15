@@ -7,9 +7,13 @@ from config.symbols import (
 )
 
 
-def test_official_watchlist_has_44_symbols():
-    assert len(OFFICIAL_WATCHLIST) == 44
-    assert len(set(OFFICIAL_WATCHLIST)) == 44
+def test_official_watchlist_has_43_symbols():
+    assert len(OFFICIAL_WATCHLIST) == 43
+    assert len(set(OFFICIAL_WATCHLIST)) == 43
+
+
+def test_official_watchlist_excludes_delisted_rdfn():
+    assert "RDFN" not in OFFICIAL_WATCHLIST
 
 
 def test_official_watchlist_includes_screenshot_symbols():
@@ -18,7 +22,7 @@ def test_official_watchlist_includes_screenshot_symbols():
         "NOK", "AI", "YMM", "SABR", "WOLF",
         "HIMS", "HOOD", "SOUN", "BB", "ARCT", "LCID", "RIOT", "PLUG", "ABCL",
         "SAP", "TAL", "PLTK", "GME", "RIG", "TLRY", "BMBL", "SNAP", "DJT", "LU",
-        "PFE", "ARDT", "CVNA", "BILL", "RDFN", "DUOL", "XPO", "STUB", "TGTX", "ITRI",
+        "PFE", "ARDT", "CVNA", "BILL", "DUOL", "XPO", "STUB", "TGTX", "ITRI",
     }
     assert expected == set(OFFICIAL_WATCHLIST)
 

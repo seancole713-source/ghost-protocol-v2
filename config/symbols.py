@@ -20,7 +20,7 @@ _WATCHLIST_SKIP = frozenset({"GHOST", "TEST"})
 OFFICIAL_WATCHLIST: Tuple[str, ...] = (
     "ABCL", "AI", "AMC", "ARCT", "ARDT", "BB", "BILL", "BMBL", "CLNE", "CVNA",
     "DJT", "DUOL", "FLNC", "GME", "HIMS", "HOOD", "IQ", "ITRI", "LCID", "LU",
-    "LULU", "NOK", "ODD", "OPK", "OPTU", "PFE", "PLTK", "PLUG", "RDFN", "RIG",
+    "LULU", "NOK", "ODD", "OPK", "OPTU", "PFE", "PLTK", "PLUG", "RIG",
     "RIOT", "SABR", "SAP", "SNAP", "SOUN", "SPCE", "STUB", "TAL", "TGTX", "TLRY",
     "TME", "WOLF", "XPO", "YMM",
 )
