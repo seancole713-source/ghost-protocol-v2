@@ -511,6 +511,13 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
 .sq-actual{font-size:11px;color:#cbd5e1;line-height:1.35}
 .sq-gap-pos{color:#4ade80;font-weight:700}
 .sq-gap-neg{color:#f87171;font-weight:700}
+.sq-drift{font-size:11px;line-height:1.4}
+.sq-drift.above{color:#4ade80}
+.sq-drift.below{color:#facc15}
+.sq-drift.fading{color:#f87171}
+.sq-drift.at{color:#94a3b8}
+.sq-drift-block{margin-bottom:14px;padding:12px 14px;border:1px solid #1f1f1f;border-radius:10px;background:#0a0a0a}
+.sq-drift-block-h{font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:#64748b;margin-bottom:8px}
 .dp-sym{font-weight:800;color:#f8fafc;font-size:17px;line-height:1.2}
 .dp-card.dp-market .dp-sym{font-size:15px;color:#cbd5e1}
 .dp-score{font-size:13px;font-weight:800;white-space:normal}
@@ -758,7 +765,7 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
       <div class="sq-head">
         <div>
           <div class="sq-title">Intraday squeeze radar</div>
-          <div class="sq-sub">Scorecard + probability targets · <b>Buy</b> / <b>Sell</b> now (CT session clock). Scans all <b>44</b> symbols; panel refreshes every <b>3 min</b>.</div>
+          <div class="sq-sub">Scorecard + probability targets · <b>Buy</b> / <b>Sell</b> at alert · <b>Live vs alert</b> updates each scan. Scans all <b>44</b> symbols; panel refreshes every <b>3 min</b>.</div>
         </div>
         <div class="sq-meta" id="sq-meta">Loading…</div>
       </div>
@@ -775,7 +782,7 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
       <div class="sq-head">
         <div>
           <div class="sq-title">Daily squeeze prediction log</div>
-          <div class="sq-sub">Ghost <b>buy / sell / stop</b> at alert time vs cash-session <b>open · high · low · close</b>. Resolves after <b>3:00 PM CT</b> market close.</div>
+          <div class="sq-sub">Ghost <b>buy / sell / stop</b> at alert vs <b>live now</b> (intraday) and cash-session <b>close</b> (EOD). Resolves after <b>3:00 PM CT</b>.</div>
         </div>
         <div class="sq-meta" id="sql-meta">Loading…</div>
       </div>
@@ -2793,6 +2800,42 @@ function _sqCompLine(p){
   return 'S' + Math.round(p.setup_score) + ' · T' + Math.round(p.trigger_score) + ' · C' + Math.round(p.confirm_score);
 }
 
+function _sqDriftInner(p){
+  if(p == null || p.gap_pct == null || p.live_price == null){
+    if(p && p.live_price != null){
+      return _fmtUsd(p.live_price) + '<br><span style="color:#64748b;font-size:10px">no alert yet</span>';
+    }
+    return '<span style="color:#64748b">—</span>';
+  }
+  var st = p.drift_status || 'below';
+  var sign = p.gap_pct > 0 ? '+' : '';
+  return _fmtUsd(p.live_price)
+    + '<br><span class="sq-drift ' + escHtml(st) + '">' + sign + Number(p.gap_pct).toFixed(2) + '% vs alert</span>'
+    + '<br><span style="color:#64748b;font-size:10px">alert ' + _fmtUsd(p.alert_buy || p.buy) + '</span>';
+}
+
+function _sqDriftCell(p){
+  return '<td class="sq-num">' + _sqDriftInner(p) + '</td>';
+}
+
+function _sqDriftSummaryBlock(rows, title){
+  if(!rows || !rows.length) return '';
+  var body = rows.map(function(r){
+    var st = r.drift_status || 'below';
+    var sign = r.gap_pct > 0 ? '+' : '';
+    return '<tr><td><span class="sq-sym">' + escHtml(r.symbol) + '</span>'
+      + (r.kind ? ' <span class="sq-kind ' + _sqKindClass(r.kind) + '">' + _sqKindLabel(r.kind) + '</span>' : '')
+      + '</td>'
+      + '<td class="sq-num">' + _fmtUsd(r.alert_buy) + '</td>'
+      + '<td class="sq-num">' + _fmtUsd(r.live_price) + '</td>'
+      + '<td class="sq-drift ' + escHtml(st) + '">' + sign + Number(r.gap_pct).toFixed(2) + '% · ' + escHtml(r.gap_label || '') + '</td></tr>';
+  }).join('');
+  return '<div class="sq-drift-block"><div class="sq-drift-block-h">' + escHtml(title) + '</div>'
+    + '<table class="sq-table"><thead><tr>'
+    + '<th>Stock</th><th>Alert buy</th><th>Live now</th><th>Gap</th>'
+    + '</tr></thead><tbody>' + body + '</tbody></table></div>';
+}
+
 function _sqTradeCells(p, withStop){
   var buy = p.buy != null ? p.buy : p.price;
   var sell = p.sell != null ? p.sell : p.price;
@@ -2878,12 +2921,13 @@ function _renderSqueezePicks(data){
       if(sessionAlerts.length){
         alertBlock = '<div style="font-size:10px;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:16px 0 6px">Telegram alerts this session</div>'
           + '<table class="sq-table"><thead><tr>'
-          + '<th>Stock</th><th>Buy</th><th>Sell</th><th>Score</th><th>P(+3% 60m)</th><th>Conf</th><th>Peak</th>'
+          + '<th>Stock</th><th>Buy</th><th>Sell</th><th>Live vs alert</th><th>Score</th><th>P(+3% 60m)</th><th>Conf</th><th>Peak</th>'
           + '</tr></thead><tbody>'
-          + sessionAlerts.map(function(p){
+          + sessionAlerts.slice(0, 8).map(function(p){
             return '<tr class="sq-forming"><td><span class="sq-sym">' + escHtml(p.symbol) + '</span></td>'
               + '<td class="sq-num">' + _fmtUsd(p.buy) + '</td>'
               + '<td class="sq-num">' + _fmtUsd(p.sell) + '</td>'
+              + _sqDriftCell(p)
               + '<td class="sq-score">' + _sqScore(p) + '</td>'
               + '<td class="sq-prob">' + _sqProb(p, 'p_continue_3pct_60m') + '</td>'
               + '<td class="sq-conf">' + (p.confidence_pct != null ? p.confidence_pct + '%' : '—') + '</td>'
@@ -2891,7 +2935,9 @@ function _renderSqueezePicks(data){
           }).join('')
           + '</tbody></table>';
       }
-      wrap.innerHTML = '<div class="sq-empty" style="padding-bottom:12px"><b>' + emptyTitle + '</b><br>' + msg + '</div>'
+      var driftBlock = _sqDriftSummaryBlock(data.live_drift, 'Ghost prediction vs live · Telegram alert buy');
+      wrap.innerHTML = driftBlock
+        + '<div class="sq-empty" style="padding-bottom:12px"><b>' + emptyTitle + '</b><br>' + msg + '</div>'
         + alertBlock
         + '<div style="font-size:10px;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:16px 0 6px">'
         + (stale ? 'Last session snapshot (not live) · ' : '')
@@ -2907,12 +2953,14 @@ function _renderSqueezePicks(data){
       + (data && data.enabled === false ? 'radar disabled' : 'radar enabled');
     return;
   }
+  var driftBlock = _sqDriftSummaryBlock(data.live_drift, 'Ghost prediction vs live · first Telegram alert buy');
   var rows = picks.map(function(p){
     var cls = p.kind === 'squeeze_active' ? 'sq-active' : 'sq-forming';
     return '<tr class="' + cls + '">'
       + '<td><span class="sq-sym">' + escHtml(p.symbol) + '</span> '
       + '<span class="sq-kind ' + _sqKindClass(p.kind) + '">' + _sqKindLabel(p.kind) + '</span></td>'
       + _sqTradeCells(p, true)
+      + _sqDriftCell(p)
       + '<td class="sq-conf">' + (p.confidence_pct != null ? p.confidence_pct + '%' : '—') + '</td>'
       + '<td style="color:#64748b;font-size:11px">RVOL ' + (p.rvol != null ? Number(p.rvol).toFixed(1) + '×' : '—')
       + ' · peak +' + (p.peak_move_pct != null ? Number(p.peak_move_pct).toFixed(1) : '—') + '%'
@@ -2920,8 +2968,9 @@ function _renderSqueezePicks(data){
       + '</td>'
       + '</tr>';
   }).join('');
-  wrap.innerHTML = '<table class="sq-table"><thead><tr>'
-    + '<th>Stock</th><th>Buy</th><th>Sell</th><th>Stop</th><th>Score</th><th>P(+3% 60m)</th><th>Conf</th><th>Peak · RVOL</th>'
+  wrap.innerHTML = driftBlock
+    + '<table class="sq-table"><thead><tr>'
+    + '<th>Stock</th><th>Buy</th><th>Sell</th><th>Stop</th><th>Score</th><th>P(+3% 60m)</th><th>Live vs alert</th><th>Conf</th><th>Peak · RVOL</th>'
     + '</tr></thead><tbody>' + rows + '</tbody></table>';
   if(foot){
     var probNote = scMeta && scMeta.probabilities_note ? scMeta.probabilities_note : 'Heuristic probability targets';
@@ -3012,15 +3061,20 @@ function _renderSqueezeDailyLog(data, focusDay){
     wrap.innerHTML = '<div class="sq-empty"><b>No squeeze predictions logged for ' + escHtml(focus) + '</b><br>'
       + 'Telegram alerts and scorecard candidates are recorded here once the radar fires.</div>';
   } else {
+    var driftBlock = _sqDriftSummaryBlock(data.live_drift, 'Intraday · alert buy vs live now (Telegram)');
     var body = rows.map(function(r){
       var src = r.source === 'telegram' ? 'Telegram' : 'Candidate';
       var closeGap = r.target_gap_pct;
       var gapCls = closeGap == null ? '' : (closeGap >= 0 ? ' sq-gap-pos' : ' sq-gap-neg');
+      var liveCell = r.outcome
+        ? '<span style="color:#64748b">—</span>'
+        : (r.live_price != null ? _sqDriftInner(r) : '<span style="color:#64748b">Awaiting quote</span>');
       return '<tr>'
         + '<td><span class="sq-sym">' + escHtml(r.symbol) + '</span>'
         + '<div style="font-size:10px;color:#64748b;margin-top:2px">' + escHtml(src) + ' · ' + escHtml(r.kind || '') + '</div></td>'
         + '<td class="sq-num">' + _fmtUsd(r.buy) + '<br><span style="color:#64748b;font-size:10px">sell ' + _fmtUsd(r.sell) + '</span>'
         + '<br><span style="color:#64748b;font-size:10px">stop ' + _fmtUsd(r.stop) + '</span></td>'
+        + '<td class="sq-num">' + liveCell + '</td>'
         + '<td>' + _sqActualLine(r) + '</td>'
         + '<td>' + _sqOutcomeBadge(r.outcome)
         + (r.close_pnl_pct != null ? '<div style="margin-top:4px;font-size:10px">Close vs buy: <span class="' + (r.close_pnl_pct >= 0 ? 'sq-gap-pos' : 'sq-gap-neg') + '">' + _sqPct(r.close_pnl_pct, 2) + '</span></div>' : '')
@@ -3035,12 +3089,13 @@ function _renderSqueezeDailyLog(data, focusDay){
         + '</td>'
         + '</tr>';
     }).join('');
-    wrap.innerHTML = '<table class="sq-table"><thead><tr>'
-      + '<th>Stock</th><th>Ghost predicted</th><th>Market (session)</th><th>Outcome</th><th>Score</th><th>Context</th>'
+    wrap.innerHTML = driftBlock
+      + '<table class="sq-table"><thead><tr>'
+      + '<th>Stock</th><th>Ghost predicted</th><th>Live vs alert</th><th>Market (EOD)</th><th>Outcome</th><th>Score</th><th>Context</th>'
       + '</tr></thead><tbody>' + body + '</tbody></table>';
   }
   if(foot && data.note){
-    foot.textContent = data.note + ' · Refreshes every 15 min · resolves after 3:00 PM CT';
+    foot.textContent = data.note + ' · Live drift on panel refresh · EOD resolves after 3:00 PM CT';
   }
 }
 

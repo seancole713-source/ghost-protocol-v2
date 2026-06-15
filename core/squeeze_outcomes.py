@@ -442,6 +442,13 @@ def squeeze_daily_log(
             "resolved_at": r[24],
         })
 
+    try:
+        from core.squeeze_live_drift import enrich_daily_log_rows
+
+        rows = enrich_daily_log_rows(rows)
+    except Exception as exc:
+        LOGGER.debug("enrich_daily_log_rows: %s", str(exc)[:80])
+
     by_day: Dict[str, List[Dict[str, Any]]] = {}
     for row in rows:
         by_day.setdefault(row["session_date"], []).append(row)
@@ -466,6 +473,26 @@ def squeeze_daily_log(
     focus = session_date or today
     focus_rows = by_day.get(focus, rows if session_date else [])
 
+    live_drift: List[Dict[str, Any]] = []
+    seen_syms = set()
+    for r in sorted(rows, key=lambda x: int(x.get("alerted_at") or 0)):
+        if r.get("outcome") or r.get("source") != "telegram":
+            continue
+        sym = (r.get("symbol") or "").upper()
+        if not sym or sym in seen_syms or r.get("gap_pct") is None:
+            continue
+        seen_syms.add(sym)
+        live_drift.append({
+            "symbol": sym,
+            "kind": r.get("kind"),
+            "alert_buy": r.get("alert_buy") or r.get("buy"),
+            "live_price": r.get("live_price"),
+            "gap_pct": r.get("gap_pct"),
+            "gap_label": r.get("gap_label"),
+            "drift_status": r.get("drift_status"),
+        })
+    live_drift.sort(key=lambda x: x.get("gap_pct") or 0)
+
     return {
         "ok": True,
         "enabled": True,
@@ -473,9 +500,11 @@ def squeeze_daily_log(
         "today_ct": today,
         "rows": focus_rows if session_date else rows[:200],
         "days": summaries,
+        "live_drift": live_drift,
         "note": (
             "Ghost squeeze buy/sell/stop at alert time vs cash-session OHLC. "
-            "WIN = session high reached sell target; LOSS = session low hit stop."
+            "WIN = session high reached sell target; LOSS = session low hit stop. "
+            "Live drift = first Telegram alert buy vs quote now (intraday)."
         ),
     }
 

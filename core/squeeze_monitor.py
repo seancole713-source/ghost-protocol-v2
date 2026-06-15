@@ -239,24 +239,45 @@ def get_squeeze_picks() -> Dict[str, Any]:
     """Active squeeze picks from the latest scan + recent Telegram alerts."""
     from core.market_hours import is_us_extended_hours, next_radar_resume_label
     from core.squeeze_scorecard import scorecard_legend
+    from core.squeeze_live_drift import build_live_drift_board, enrich_pick_rows, first_alert_buy_map, live_price_map, attach_live_drift
 
     _ensure_scan_cache_loaded()
     st = dict(_last_scan_report)
     picks = list(st.get("picks") or st.get("candidates") or [])
+    leaders = list(st.get("leaders") or [])
+    alerts = list(_alert_history)
+    picks = enrich_pick_rows(picks, alerts, leaders)
+    alert_map = first_alert_buy_map(alerts)
+    live_map = live_price_map(picks, leaders)
+    enriched_alerts: List[Dict[str, Any]] = []
+    for a in alerts:
+        item = dict(a)
+        sym = (item.get("symbol") or "").upper()
+        live = live_map.get(sym) or item.get("price") or item.get("buy")
+        if live is not None:
+            try:
+                item["live_price"] = round(float(live), 4)
+            except (TypeError, ValueError):
+                pass
+        alert_buy = alert_map.get(sym)
+        if alert_buy is not None and item.get("live_price") is not None:
+            attach_live_drift(item, alert_buy=float(alert_buy), live_price=item["live_price"])
+        enriched_alerts.append(item)
     radar_active = is_us_extended_hours()
     last_ts = st.get("ts")
     return {
         "scan_ok": bool(st.get("ok") and st.get("status") == "complete"),
         "picks": picks,
         "pick_count": len(picks),
-        "alert_history": list(_alert_history),
+        "alert_history": enriched_alerts,
+        "live_drift": build_live_drift_board(alerts, picks, leaders),
         "last_scan_ts": last_ts,
         "last_scan_status": st.get("status"),
         "last_scan_session": st.get("session"),
         "fetch_ok": st.get("fetch_ok"),
         "fetch_fail": st.get("fetch_fail"),
         "duration_ms": st.get("duration_ms"),
-        "leaders": list(st.get("leaders") or []),
+        "leaders": leaders,
         "scorecard": scorecard_legend(),
         "radar_active": radar_active,
         "radar_resume_ct": next_radar_resume_label(),
