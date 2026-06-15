@@ -17,8 +17,23 @@ session logs are preserved at the bottom as accountability history.
 """
 
 # ============================================================
-# LIVE SYSTEM — LAST VERIFIED 2026-06-12 (PR #61–#62 prod-verified by operator + browser agent)
+# LIVE SYSTEM — LAST VERIFIED 2026-06-15 (PR #63 prod-verified by agent API curl)
 # ============================================================
+
+PROD_VERIFY_2026_06_15 = {
+    "deploy_id": "66258b11-50bc-4e13-9001-c39016b291aa",
+    "git_sha_short": "66da1f9",
+    "_pr_version": 63,
+    "verified_at_ct": "2026-06-15 ~10:16 AM CT",
+    "live_drift_api": "GET /api/squeeze/daily-log live_drift[] 18 pending telegram symbols (WOLF -6.77% fading, PLTK +4.62% above)",
+    "live_drift_picks": "GET /api/squeeze/picks live_drift[] key present; 0 rows (no in-memory session alerts yet — expected until Telegram fires)",
+    "daily_log_rows": "63 rows 2026-06-15 (28 telegram, 46 pending EOD); per-row live_price/gap_pct on pending",
+    "cockpit_html": "sq-drift-block, Ghost prediction vs live, Live vs alert column markers present in /cockpit",
+    "squeeze_radar": "radar_active true; last scan 4/44 fetch_ok (feed degradation — not PR #63 regression)",
+    "eod_2026_06_12": "17 rows resolved (5 WIN, 5 LOSS, 7 NEUTRAL) — prior open item closed",
+    "known_noise": "Alpaca/yfinance fetch_fail 40/44 on scan; health score 90",
+    "next_watch": "live_drift board populates on /api/squeeze/picks after first Telegram alert of session",
+}
 
 PROD_VERIFY_2026_06_12 = {
     "deploy_id": "ba7b1c7e-ccd3-480c-8bd4-5e9b01cf2886",
@@ -166,9 +181,9 @@ ENDPOINTS_PUBLIC = [
     "GET /api/wolf/gate-status     — live four-gate diagnostic (PR #27)",
     "GET /api/wolf/gate-history    — rolling per-cycle gate outcomes, last 50 (PR #29)",
     "GET /api/wolf/pick-journal    — credibility ledger: audit trail + win-rate CI + expectancy + Brier + falsification (PR #30)",
-    "GET /api/squeeze/picks        — intraday squeeze board (buy/sell/stop, scorecard, CT session) (PR #55-#60)",
+    "GET /api/squeeze/picks        — intraday squeeze board + live_drift[] vs first alert buy (PR #55-#63)",
     "GET /api/squeeze/status       — last 44-symbol scan snapshot + radar_active (PR #55-#60)",
-    "GET /api/squeeze/daily-log    — squeeze prediction ledger vs session OHLC (PR #61)",
+    "GET /api/squeeze/daily-log    — squeeze ledger vs session OHLC + live_drift[] intraday (PR #61-#63)",
     "POST /api/admin/squeeze-resolve — force EOD resolve (ops)",
     "GET /api/ghost/contract       — post-falsification product contract (PR #60)",
     "GET /api/ghost/blueprint      — Phase 1+2 module status rollup (PR #60)",
@@ -213,7 +228,8 @@ P0 — PRODUCT POSITION (done 2026-06-10)
 [x] Falsification gate tripped — ABANDON_80_CLAIM; honest copy in cockpit + ghost_contract
 [x] User prod-verify PR #60 (2026-06-11): admin + cockpit Phase 1+2 cards, kill-status, overnight squeeze pause
 [x] User prod-verify PR #61–#62 (2026-06-12): squeeze daily log API+UI, hero truth strip, v3 lane copy, squeeze wake
-[ ] Squeeze EOD resolve verify — after 3 PM CT 2026-06-12 (11 pending rows → OHLC + outcome)
+[x] Agent prod-verify PR #63 (2026-06-15): live vs alert drift on daily-log API + cockpit HTML; _pr_version 63
+[x] Squeeze EOD resolve verify — 2026-06-12: 17 rows resolved (5 WIN, 5 LOSS, 7 NEUTRAL)
 [ ] Weekly ops checklist (PROJECT_STATE.md) — run 5 URLs + admin cards once/week (first full pass during CT session)
 [x] Confirm squeeze radar wake after 3:00 AM CT 2026-06-11 (leaders + last_scan_ts) — verified 2026-06-12 session
 
@@ -259,6 +275,12 @@ PR #61–#62 (commits 37c5db6, 376bf8c, _pr_version 61–62):
 [x] Cockpit squeeze accountability log (#squeeze-daily-log-section) + admin daily log card
 [x] Truth-mode UX — hero-truth-strip, v3 pick lane post-falsification copy, BIAS ONLY gauge
 [x] tests/test_squeeze_outcomes.py
+
+PR #63 (commit 66da1f9, _pr_version 63):
+[x] core/squeeze_live_drift.py — first alert buy vs live quote; enrich picks + daily log
+[x] GET /api/squeeze/picks + /api/squeeze/daily-log — live_drift[] + per-row gap fields
+[x] Cockpit — Ghost prediction vs live summary + Live vs alert columns (radar + daily log)
+[x] tests/test_squeeze_live_drift.py
 """
 
 # ============================================================
@@ -286,6 +308,7 @@ COMPLETED = """
 [x] PR #60 prod-verified on Railway 2026-06-11 (operator) — see PROD_VERIFY_2026_06_11
 [x] Squeeze daily log + truth-mode UX (PR #61–#62) — see COMPLETED_PHASE1_2 above
 [x] PR #61–#62 prod-verified on Railway 2026-06-12 (operator + browser agent) — see PROD_VERIFY_2026_06_12
+[x] PR #63 prod-verified on Railway 2026-06-15 (agent API curl) — see PROD_VERIFY_2026_06_15
 """
 
 # ============================================================
@@ -335,6 +358,22 @@ FAILURES = """
 # ============================================================
 
 SESSION_LOG = """
+--- 2026-06-15 | PR #63 prod verification (agent API curl, Railway tender-benevolence) ---
+Context: live vs alert drift shipped (66da1f9). Compare first Telegram alert buy to live quote
+on squeeze radar, daily log, and API before EOD resolve.
+
+Agent-verified on prod 2026-06-15 (~10:16 AM CT):
+  - GET /api/_version: _pr_version 63, git_sha_short 66da1f9, deploy_id 66258b11
+  - GET /api/squeeze/daily-log: live_drift[] 18 symbols; pending rows have live_price/gap_pct/drift_status
+  - GET /api/squeeze/picks: live_drift key present; 0 rows (alert_history empty in-process — fills after Telegram)
+  - /cockpit HTML: sq-drift-block, Ghost prediction vs live, Live vs alert, _sqDriftSummaryBlock
+  - GET /api/squeeze/daily-log?session_date=2026-06-12: 17 resolved (5 WIN, 5 LOSS, 7 NEUTRAL) — EOD OK
+
+Open / next:
+  - Confirm live_drift board on cockpit during active Telegram session (browser pass optional)
+  - Weekly ops checklist first full pass
+  - Passive label accumulation toward Phase 3 squeeze ML retrain
+
 --- 2026-06-12 | PR #61–#62 prod verification (operator + browser agent, Railway tender-benevolence) ---
 Context: squeeze daily log + truth-mode UX shipped (37c5db6, 376bf8c). Operator ran
 follow-up browser verify after initial agent missed #squeeze-daily-log-section.

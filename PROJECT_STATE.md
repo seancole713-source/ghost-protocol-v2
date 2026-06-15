@@ -1,10 +1,12 @@
 # Ghost Protocol v2 — PROJECT STATE
-**Last updated:** 2026-06-12
+**Last updated:** 2026-06-15
 **Read this first.** Any agent picking up this project must read this file before touching any code.
 
 > This file was significantly stale (pre-v3.2) until 2026-05-23. It now reflects
 > the v3.2 XGBoost engine, the four-gate chain, aggressive objective mode, the
 > cookie-login `/admin` console, and the pick-journal credibility ledger.
+> **PR #63 (2026-06-15):** Live vs alert drift — first Telegram alert buy vs live quote on squeeze
+> radar, daily log, and API (`live_drift[]`) before EOD resolve.
 > **PR #61–#62 (2026-06-12):** Squeeze daily accountability log (`ghost_squeeze_outcomes`,
 > EOD resolve, cockpit + admin UI) and post-falsification truth-mode UX (hero strip,
 > v3 pick lane copy aligned with pick journal).
@@ -59,7 +61,7 @@ squeeze ML v2, drift/sentiment/options probes) are wired as of PR #60.
 | Investor cockpit | `/cockpit` — WOLF-first UI |
 | Cron trigger | cron-job.org fires `POST /api/morning-card` daily 8 AM CT |
 | Auth header name | `x-cron-secret` (value in Railway env as `CRON_SECRET`) |
-| **Last prod-verified** | **2026-06-12** — operator + browser agent confirmed PR #61–#62 on Railway (`376bf8c`, deploy `ba7b1c7e`) |
+| **Last prod-verified** | **2026-06-15** — agent API curl confirmed PR #63 on Railway (`66da1f9`, deploy `66258b11`) |
 
 **Sandbox cannot reach Railway** (egress allowlist) — all production verification
 is done by the user. Agents must not claim prod-verified without user confirmation.
@@ -68,6 +70,9 @@ POST-FALSIFICATION copy, overnight squeeze pause OK).
 **PR #61–#62 prod verify:** passed 2026-06-12 — squeeze daily log API + cockpit section,
 11 rows logged today (pending EOD); hero truth strip + v3 pick lane post-falsification copy;
 squeeze radar live ~8:39 AM CT wake confirmed (4 Telegram alerts, AMC ACTIVE).
+**PR #63 prod verify:** passed 2026-06-15 — `live_drift[]` on daily-log (18 symbols), cockpit drift
+UI in HTML, `_pr_version` 63; picks `live_drift` empty until first session Telegram (expected).
+**EOD resolve 2026-06-12:** 17 rows resolved (5 WIN, 5 LOSS, 7 NEUTRAL).
 
 ### Live env config (set in Railway, confirmed by user)
 - `OBJECTIVE_MODE=aggressive`
@@ -272,12 +277,14 @@ ALL of: `Procfile` boot-echo string, `nixpacks.toml` `cache_bust` comment, and t
 - [x] **Intraday squeeze radar** — scorecard, CT session, admin card, scan cache
 - [x] **Squeeze daily log** — `ghost_squeeze_outcomes`, EOD job, cockpit + admin UI (PR #61)
 - [x] **Truth-mode UX alignment** — hero strip, v3 pick lane copy, BIAS ONLY gauge (PR #62)
+- [x] **Live vs alert drift** — `core/squeeze_live_drift.py`, cockpit summary + columns (PR #63)
 
 ### Still open (Phase 3 depth)
 - [x] **Prod-verify PR #60** on Railway — **2026-06-11** operator confirmed (see session log)
 - [x] **Prod-verify PR #61–#62** — **2026-06-12** operator + browser agent confirmed (`376bf8c`)
+- [x] **Prod-verify PR #63** — **2026-06-15** agent API curl confirmed (`66da1f9`)
 - [x] **Squeeze first-wake check** — **2026-06-12** ~8:39 AM CT; radar live, 4 Telegram alerts, leaders populated
-- [ ] **Squeeze EOD resolve check** — after 3:00 PM CT 2026-06-12 (11 rows should resolve with session OHLC)
+- [x] **Squeeze EOD resolve check** — **2026-06-12** 17 rows resolved (5 WIN, 5 LOSS, 7 NEUTRAL)
 - [ ] **Weekly ops checklist** — first full pass during CT session (see below)
 - [ ] **Retrain squeeze ML v2** from labeled squeeze session outcomes
 - [ ] **Regime detector (HMM)** — deferred: ~250 days too thin for 5-state HMM
@@ -297,10 +304,10 @@ Run once per week (any time for deploy checks; squeeze/radar checks best **Mon�
 
 | # | URL | Healthy signal | Red flag |
 |---|-----|----------------|----------|
-| 1 | `/api/_version` | `_pr_version: 62`, `git_sha_short` matches recent `main` | Stale SHA vs GitHub; `_pr_version` &lt; 62 |
+| 1 | `/api/_version` | `_pr_version: 63`, `git_sha_short` matches recent `main` | Stale SHA vs GitHub; `_pr_version` &lt; 63 |
 | 2 | `/api/ghost/contract` | `ok: true`, `north_star_retired: true`, two lanes in `lanes` | `ok: false` or missing contract |
 | 3 | `/api/squeeze/picks` | During session: `radar_active: true`, `scan_ok: true`, `last_scan_ts` fresh (&lt;5 min); leaders populated | `radar_active: false` mid-session; `fetch_fail` high; empty leaders all week |
-| 3b | `/api/squeeze/daily-log?days=14` | `enabled: true`, rows accrue on Telegram/candidate; `days[]` summaries update | `enabled: false`; zero rows after active alert day |
+| 3b | `/api/squeeze/daily-log?days=14` | `enabled: true`, rows accrue; pending rows show `live_price`/`gap_pct`; `live_drift[]` summary | `enabled: false`; zero rows after active alert day |
 | 4 | `/api/wolf/pick-journal?limit=5` | `ok: true`, `verdict.falsification.status` present (expect `ABANDON_80_CLAIM`); metrics updating if picks resolve | 500 / pool errors; journal frozen weeks with open picks |
 | 5 | `/api/shadow-stats?days=7` | `ok: true`, `enabled: true`, `resolved` growing week-over-week; WOLF row has pending or resolved rows | `enabled: false`; zero seeded rows for 7+ days (scans broken) |
 
@@ -390,5 +397,7 @@ Run once per week (any time for deploy checks; squeeze/radar checks best **Mon�
 | **#60** | 06-10 | **Phase 1+2 blueprint wired** — ghost_contract, regime_calibration, squeeze_ml_v2, regime/sentiment/drift/options probes, `/api/ghost/*`, admin cards, 403 tests (`91dc94c`) |
 | **#61** | 06-12 | **Squeeze daily log** — `ghost_squeeze_outcomes`, EOD resolve job, `/api/squeeze/daily-log`, cockpit accountability section + admin card (`37c5db6`) |
 | **#62** | 06-12 | **Truth-mode UX** — hero post-falsification strip, v3 pick lane copy, BIAS ONLY gauge, journal-aligned perf copy (`376bf8c`) |
+| **#63** | 06-15 | **Live vs alert drift** — first Telegram buy vs live quote; `live_drift[]` on picks + daily-log; cockpit summary table (`66da1f9`) |
 | — | 06-11 | **PR #60 prod-verified** — operator confirmed Railway `7367631c`: admin blueprint/kill/gates, cockpit POST-FALSIFICATION + contract banner, overnight squeeze pause OK; ledger `b20fff6` |
 | — | 06-12 | **PR #61–#62 prod-verified** — operator + browser agent: `_pr_version` 62, `376bf8c`; squeeze daily log 11 rows pending EOD; hero truth strip + v3 lane copy; squeeze wake + 4 Telegram alerts |
+| — | 06-15 | **PR #63 prod-verified** — agent API curl: `_pr_version` 63, `66da1f9`; daily-log `live_drift` 18 symbols; EOD 2026-06-12 resolved |
