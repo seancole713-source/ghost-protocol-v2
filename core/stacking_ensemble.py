@@ -1,11 +1,11 @@
 """
 core/stacking_ensemble.py — Meta-stacking ensemble (Pillar 1).
 
-3 base models (XGBoost, HistGradientBoosting, RandomForest), each independently
-probability-calibrated on the holdout slice. A LogisticRegression meta-model
-trained on out-of-fold base predictions learns which model to trust when.
+2 base models (XGBoost, RandomForest), each independently probability-calibrated
+on the holdout slice. A LogisticRegression meta-model trained on out-of-fold
+base predictions learns which model to trust when.
 
-All dependencies are in scikit-learn + xgboost — no C++ compilation needed.
+All dependencies are in scikit-learn + xgboost — zero new deps, zero compilation.
 Activation: V3_ENSEMBLE=stacking (default "off" preserves single XGBoost).
 """
 from __future__ import annotations
@@ -50,20 +50,6 @@ def _build_xgb(params: dict) -> Any:
     )
 
 
-def _build_hgb(params: dict) -> Any:
-    """HistGradientBoostingClassifier — scikit-learn, no C++ compilation needed."""
-    from sklearn.ensemble import HistGradientBoostingClassifier
-    return HistGradientBoostingClassifier(
-        max_iter=params.get("n_estimators", 200),
-        max_depth=params.get("max_depth", 5),
-        learning_rate=params.get("learning_rate", 0.03),
-        max_leaf_nodes=params.get("max_leaf_nodes", 31),
-        min_samples_leaf=params.get("min_samples_leaf", 20),
-        random_state=43,
-        early_stopping=False,
-    )
-
-
 def _build_rf(params: dict) -> Any:
     from sklearn.ensemble import RandomForestClassifier
     return RandomForestClassifier(
@@ -78,7 +64,6 @@ def _build_rf(params: dict) -> Any:
 
 _BASE_BUILDERS = {
     "xgb": _build_xgb,
-    "hgb": _build_hgb,
     "rf": _build_rf,
 }
 
@@ -100,7 +85,7 @@ def _calibrate_model(model, X_calib, y_calib, method: str = "sigmoid") -> Any:
 # ── Stacking ensemble ──────────────────────────────────────────────────
 
 class StackingEnsemble:
-    """3-model stack with LogisticRegression meta-model.
+    """2-model stack with LogisticRegression meta-model.
 
     Pickleable — persists exactly like a bare model. Exposes the sklearn
     classifier surface (classes_, predict_proba, predict).
@@ -113,7 +98,6 @@ class StackingEnsemble:
         self.classes_ = np.array([0, 1])
 
     def predict_proba(self, X):
-        # Each base model emits P(WIN)
         base_probas = []
         for m in self.base_models:
             p = m.predict_proba(X)
@@ -134,7 +118,7 @@ def build_stacking_ensemble(
     sample_weight=None,
     feature_cols=None,
 ) -> Tuple[Any, Dict[str, Any]]:
-    """Build and calibrate 3 base models, then train LR meta-model.
+    """Build and calibrate 2 base models, then train LR meta-model.
 
     Returns (ensemble, meta_dict) where ensemble is a StackingEnsemble
     ready for pickle persistence.
@@ -158,8 +142,7 @@ def build_stacking_ensemble(
         "subsample": 0.8,
         "colsample_bytree": 0.7,
         "min_child_weight": 3,
-        "min_samples_leaf": 20,
-        "max_leaf_nodes": 31,
+        "min_samples_leaf": 5,
         "scale_pos_weight": scale,
     }
 
@@ -169,12 +152,10 @@ def build_stacking_ensemble(
     for name, builder in _BASE_BUILDERS.items():
         try:
             model = builder(params)
-            # HistGradientBoostingClassifier doesn't support sample_weight in fit
             if sample_weight is not None and name == "xgb":
                 model.fit(X_train, y_train, sample_weight=sample_weight)
             else:
                 model.fit(X_train, y_train)
-            # Calibrate on holdout slice
             if len(X_calib) >= 10:
                 cal = _calibrate_model(model, X_calib, y_calib)
                 base_models.append(cal)
