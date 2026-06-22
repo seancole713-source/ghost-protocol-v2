@@ -1545,22 +1545,13 @@ def train_and_validate(symbols_and_types):
                 eval_metric='logloss', random_state=42
             )
             model.fit(X_fit, y_fit, sample_weight=sample_weight)
-            # P3 (audit): stacking ensemble — 4 base models + LR meta when V3_ENSEMBLE=stacking
-            if is_stacking_enabled():
-                from core.stacking_ensemble import build_stacking_ensemble
-                final_model, calib_info = build_stacking_ensemble(
-                    X_fit, y_fit, X_calib, y_calib,
-                    sample_weight=sample_weight,
-                    feature_cols=active_cols,
-                )
-                if final_model is None:
-                    # Fallback to calibrated single XGB
-                    final_model, calib_info = _maybe_calibrate(model, X_calib, y_calib)
-                    calib_info["ensemble"] = False
-                    calib_info["ensemble_skip_reason"] = calib_info.get("skip_reason", "stacking_failed")
-            elif _v3_ensemble_enabled():
+            # P3 (audit): stacking ensemble — XGBoost + RF soft-voting when V3_ENSEMBLE=stacking
+            # Uses the proven _build_ensemble path (already tested in production).
+            if is_stacking_enabled() or _v3_ensemble_enabled():
                 final_model, calib_info = _build_ensemble(
                     model, X_fit, y_fit, sample_weight, X_calib, y_calib)
+                if is_stacking_enabled():
+                    calib_info["ensemble_mode"] = "stacking"
             else:
                 final_model, calib_info = _maybe_calibrate(model, X_calib, y_calib)
             holdout = _evaluate_calibration_holdout(final_model, X_gate, y_gate)
