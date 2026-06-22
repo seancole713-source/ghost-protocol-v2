@@ -163,8 +163,18 @@ def position_sizing_plan(
     confidence: Optional[float] = None,
     account_size: Optional[float] = None,
     risk_pct: Optional[float] = None,
+    win_rate: Optional[float] = None,
+    avg_win_pct: Optional[float] = None,
+    avg_loss_pct: Optional[float] = None,
+    open_positions: int = 0,
 ) -> Dict[str, Any]:
-    """1% (or configured) account risk sizing from entry/stop distance."""
+    """Position sizing with Kelly criterion integration (Pillar 8).
+
+    When win_rate, avg_win_pct, and avg_loss_pct are provided, computes
+    the mathematically optimal Kelly fraction and blends it with the
+    fixed-percentage risk model. Also applies portfolio heat scaling
+    when multiple positions are open.
+    """
     cfg = risk_settings()
     account = float(account_size if account_size is not None else cfg["account_size_usd"])
     rp = float(risk_pct if risk_pct is not None else cfg["risk_pct_per_trade"])
@@ -182,6 +192,36 @@ def position_sizing_plan(
     stop_dist_pct = abs(entry_f - stop_f) / entry_f * 100.0
     if stop_dist_pct <= 0:
         return {"ok": False, "error": "stop distance zero", "max_loss_usd": max_loss}
+
+    # P8 (audit): Kelly criterion — mathematically optimal fraction when stats available
+    kelly_frac = None
+    kelly_note = None
+    if win_rate is not None and avg_win_pct is not None and avg_loss_pct is not None:
+        try:
+            from core.kelly_sizing import kelly_fraction as _kf
+            kelly_frac = _kf(win_rate, avg_win_pct, avg_loss_pct)
+            if kelly_frac > 0:
+                # Blend: use Kelly fraction as a multiplier on the fixed risk pct
+                rp = min(rp, kelly_frac * 100.0)  # Kelly fraction → percentage
+                max_loss = round(account * rp / 100.0, 2)
+                kelly_note = f"Kelly f*={kelly_frac:.4f} → risk {rp:.2f}%"
+            else:
+                kelly_note = f"Kelly f*={kelly_frac:.4f} (no edge) — using fixed {rp:.2f}%"
+        except Exception:
+            pass
+
+    # P8 (audit): portfolio heat scaling — reduce size as more positions open
+    heat_mult = 1.0
+    if open_positions > 1:
+        try:
+            from core.kelly_sizing import portfolio_heat_scale as _phs
+            heat_mult = _phs(open_positions)
+            if heat_mult < 1.0:
+                max_loss = round(max_loss * heat_mult, 2)
+                rp = round(rp * heat_mult, 2)
+        except Exception:
+            pass
+
     notional = max_loss / (stop_dist_pct / 100.0)
     shares = int(notional / entry_f) if entry_f > 0 else 0
     if shares < 1:
@@ -198,6 +238,10 @@ def position_sizing_plan(
         "suggested_notional_usd": actual_notional,
         "estimated_loss_at_stop_usd": actual_loss,
         "pick_action": pick_action_tier(confidence or 0.75) if confidence else None,
+        "kelly_fraction": kelly_frac,
+        "kelly_note": kelly_note,
+        "portfolio_heat_mult": heat_mult if heat_mult < 1.0 else None,
+        "open_positions": open_positions,
     }
 
 

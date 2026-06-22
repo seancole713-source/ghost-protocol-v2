@@ -1239,6 +1239,23 @@ def run_prediction_cycle(with_diag: bool = False):
                 "regime_block": skip in ("v3_regime_gate", "regime_gate"),
             }
 
+    # P2 (audit): stash all symbol features for cross-sectional ranking on the
+    # next scan cycle. predict_live_ex reads _last_scan_features to compute
+    # percentile ranks within the watchlist — "most oversold in the watchlist"
+    # is a stronger signal than "RSI=32" alone.
+    try:
+        _all_feats = {}
+        for _ev in symbol_evals:
+            _sym = _ev.get("symbol")
+            _feats = (_ev.get("scores") or {}).get("features") or {}
+            if _sym and isinstance(_feats, dict) and _feats:
+                _all_feats[_sym] = _feats
+        if _all_feats:
+            from core.signal_engine import predict_live_ex
+            predict_live_ex._last_scan_features = _all_feats
+    except Exception:
+        pass
+
     all_picks.sort(key=lambda x: x["confidence"], reverse=True)
     top = all_picks[:DAILY_CAP]
     _suppress_reason = None
