@@ -2,9 +2,9 @@
 # which forces Railway/Nixpacks to invalidate the build-layer cache and
 # rebuild the container image. Increment the version below if Railway
 # starts serving stale containers again.
-# cache_bust = "pr65-stacking-ensemble"
+# cache_bust = "pr66-lgb-catboost-deps"
 [phases.setup]
-aptPkgs = ["libpq-dev", "gcc", "python3-dev"]
+aptPkgs = ["libpq-dev", "gcc", "python3-dev", "libomp-dev", "build-essential", "cmake"]
 
 [phases.install]
 cmds = ["pip install -r requirements.txt"]
