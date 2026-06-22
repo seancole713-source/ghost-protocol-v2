@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Ghost Protocol — Cockpit v2 Mockup</title>
+<style>
+  :root{
+    --bg:#070708; --card:rgba(255,255,255,.035); --card2:rgba(255,255,255,.05);
+    --bd:rgba(255,255,255,.07); --bd2:rgba(255,255,255,.10);
+    --tx:#f4f4f5; --mut:#8b8b93; --mut2:#5c5c63;
+    --vi:#8b5cf6; --vi2:#a78bfa;
+    --grn:#34d399; --grn2:#22c55e; --red:#f87171; --amb:#fbbf24;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    background:radial-gradient(1200px 600px at 50% -10%,rgba(139,92,246,.10),transparent 60%),var(--bg);
+    color:var(--tx); -webkit-font-smoothing:antialiased; min-height:100vh;
+    padding:22px 16px 60px;
+  }
+  .wrap{max-width:600px;margin:0 auto}
+
+  /* top bar */
+  .top{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+  .brand{display:flex;align-items:center;gap:9px;font-weight:800;letter-spacing:.04em;font-size:15px}
+  .brand .ghost{color:var(--tx)} .brand .proto{color:var(--red)}
+  .brand .dot{width:9px;height:9px;border-radius:50%;background:var(--grn);box-shadow:0 0 10px var(--grn)}
+  .clock{color:var(--mut);font-size:12.5px;font-variant-numeric:tabular-nums}
+
+  /* status ribbon */
+  .ribbon{
+    display:flex;flex-wrap:wrap;gap:8px;align-items:center;
+    background:var(--card);border:1px solid var(--bd);border-radius:14px;
+    padding:11px 14px;margin-bottom:22px;font-size:12px;color:var(--mut)
+  }
+  .pill{padding:3px 9px;border-radius:999px;font-weight:700;font-size:11px;letter-spacing:.03em}
+  .pill.research{background:rgba(251,191,36,.12);color:var(--amb);border:1px solid rgba(251,191,36,.25)}
+  .pill.live{background:rgba(52,211,153,.12);color:var(--grn);border:1px solid rgba(52,211,153,.25)}
+  .ribbon .sep{color:var(--mut2)}
+  .ribbon b{color:var(--tx)}
+
+  /* section heading */
+  .sec{display:flex;align-items:center;gap:9px;margin:26px 4px 12px}
+  .sec .bar{width:3px;height:15px;border-radius:2px;background:var(--vi)}
+  .sec h2{font-size:12px;letter-spacing:.13em;color:var(--mut);font-weight:700;text-transform:uppercase}
+
+  .hero-title{font-size:23px;font-weight:800;letter-spacing:-.01em;margin:2px 4px 2px}
+  .hero-sub{font-size:13px;color:var(--mut);margin:0 4px 16px;line-height:1.45}
+
+  /* tier */
+  .tier-label{display:flex;align-items:center;gap:8px;margin:18px 4px 10px;font-size:13px;font-weight:700;color:var(--mut)}
+  .tier-label .em{font-size:15px}
+  .tier-label .rng{color:var(--mut2);font-weight:600;font-size:12px}
+
+  .card{background:var(--card);border:1px solid var(--bd);border-radius:18px;overflow:hidden}
+
+  /* mover row — cash app style */
+  .row{display:flex;align-items:center;gap:14px;padding:16px 18px;border-bottom:1px solid var(--bd)}
+  .row:last-child{border-bottom:none}
+  .logo{width:42px;height:42px;border-radius:50%;flex-shrink:0;display:flex;align-items:center;justify-content:center;
+        font-weight:800;font-size:13px;letter-spacing:.02em;color:#0b0b0c}
+  .meta{flex:1;min-width:0}
+  .meta .nm{font-size:17px;font-weight:700;line-height:1.15}
+  .meta .sb{font-size:12.5px;color:var(--mut);margin-top:2px;font-variant-numeric:tabular-nums}
+  .spark{width:64px;height:30px;flex-shrink:0;opacity:.9}
+  .right{text-align:right;flex-shrink:0;min-width:78px}
+  .right .pk{font-size:18px;font-weight:800;font-variant-numeric:tabular-nums}
+  .right .pk.up{color:var(--grn)} .right .pk.big{color:var(--vi2)}
+  .right .cf{font-size:11.5px;color:var(--mut);margin-top:3px}
+  .right .cf b{color:var(--tx)}
+
+  /* open picks */
+  .pick{display:flex;align-items:center;gap:12px;padding:14px 18px;border-bottom:1px solid var(--bd)}
+  .pick:last-child{border-bottom:none}
+  .pick .tk{font-weight:700;font-size:15px;width:54px}
+  .pick .dir{font-size:11px;font-weight:700;color:var(--grn);background:rgba(52,211,153,.10);
+             border:1px solid rgba(52,211,153,.22);padding:2px 7px;border-radius:6px}
+  .pick .cf{color:var(--mut);font-size:13px;font-variant-numeric:tabular-nums}
+  .pick .en{margin-left:auto;font-weight:700;font-size:14px;font-variant-numeric:tabular-nums}
+  .pick .ex{color:var(--mut2);font-size:11px;width:62px;text-align:right}
+
+  /* watch line */
+  .watch{display:flex;align-items:center;gap:10px;padding:13px 18px;color:var(--mut);font-size:13px}
+  .watch .wdot{width:8px;height:8px;border-radius:50%;background:var(--mut2)}
+  .watch b{color:var(--tx)}
+
+  /* honesty strip */
+  .truth{margin-top:26px;background:linear-gradient(180deg,rgba(248,113,113,.06),rgba(255,255,255,.02));
+         border:1px solid rgba(248,113,113,.18);border-radius:18px;padding:18px}
+  .truth .hd{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+  .truth .hd .t{font-size:12px;letter-spacing:.1em;color:var(--mut);font-weight:700;text-transform:uppercase}
+  .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+  .stat{background:rgba(0,0,0,.25);border:1px solid var(--bd);border-radius:12px;padding:12px 12px}
+  .stat .k{font-size:10.5px;letter-spacing:.06em;color:var(--mut2);text-transform:uppercase;margin-bottom:6px}
+  .stat .v{font-size:20px;font-weight:800;font-variant-numeric:tabular-nums}
+  .stat .v.red{color:var(--red)} .stat .v.amb{color:var(--amb)} .stat .v.mut{color:var(--mut)}
+  .stat .s{font-size:10.5px;color:var(--mut);margin-top:3px}
+  .truth .note{margin-top:13px;font-size:12px;color:var(--mut);line-height:1.5}
+  .truth .note b{color:var(--amb)}
+
+  .foot{text-align:center;color:var(--mut2);font-size:11px;margin-top:24px;line-height:1.6}
+  .foot a{color:var(--vi2);text-decoration:none}
+  .mock{display:inline-block;margin-top:8px;font-size:10px;letter-spacing:.1em;color:var(--mut2);
+        border:1px dashed var(--bd2);border-radius:6px;padding:3px 8px}
+
+  @media(max-width:520px){
+    .grid{grid-template-columns:repeat(2,1fr)}
+    .spark{display:none}
+    .hero-title{font-size:20px}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="top">
+    <div class="brand"><span class="dot"></span><span class="ghost">GHOST</span>&nbsp;<span class="proto">PROTOCOL</span></div>
+    <div class="clock">11:37 AM CT</div>
+  </div>
+
+  <div class="ribbon">
+    <span class="pill live">ENGINE LIVE</span>
+    <span class="pill research">RESEARCH MODE</span>
+    <span class="sep">·</span> Win rate <b>28.6%</b>
+    <span class="sep">·</span> Direction edge <b>53%</b>
+    <span class="sep">·</span> Scanned <b>43</b>
+  </div>
+
+  <!-- HERO: movers board -->
+  <div class="hero-title">Today's Top Squeeze Candidates</div>
+  <div class="hero-sub">Ghost's highest-conviction setups, ranked by expected move. Not financial advice · research telemetry.</div>
+
+  <!-- BIG tier -->
+  <div class="tier-label"><span class="em">🚀</span> BIG MOVERS <span class="rng">· expected peak ≥ 8%</span></div>
+  <div class="card">
+    <div class="row">
+      <div class="logo" style="background:linear-gradient(135deg,#f0abfc,#c084fc)">HM</div>
+      <div class="meta"><div class="nm">HIMS</div><div class="sb">Hims &amp; Hers · buy $35.46</div></div>
+      <svg class="spark" viewBox="0 0 64 30"><polyline fill="none" stroke="#34d399" stroke-width="2" points="0,24 12,20 24,22 36,12 48,8 64,3"/></svg>
+      <div class="right"><div class="pk big">+11.2%</div><div class="cf">conf <b>71%</b></div></div>
+    </div>
+    <div class="row">
+      <div class="logo" style="background:linear-gradient(135deg,#fcd34d,#fb923c)">BB</div>
+      <div class="meta"><div class="nm">BB</div><div class="sb">BlackBerry · buy $8.96</div></div>
+      <svg class="spark" viewBox="0 0 64 30"><polyline fill="none" stroke="#34d399" stroke-width="2" points="0,22 12,24 24,16 36,18 48,9 64,6"/></svg>
+      <div class="right"><div class="pk big">+9.4%</div><div class="cf">conf <b>68%</b></div></div>
+    </div>
+  </div>
+
+  <!-- STEADY tier -->
+  <div class="tier-label"><span class="em">📈</span> STEADY GAINS <span class="rng">· expected peak 3–8%</span></div>
+  <div class="card">
+    <div class="row">
+      <div class="logo" style="background:linear-gradient(135deg,#fca5a5,#f87171)">RT</div>
+      <div class="meta"><div class="nm">RIOT</div><div class="sb">Riot Platforms · buy $29.42</div></div>
+      <svg class="spark" viewBox="0 0 64 30"><polyline fill="none" stroke="#34d399" stroke-width="2" points="0,20 12,18 24,21 36,14 48,15 64,9"/></svg>
+      <div class="right"><div class="pk up">+7.9%</div><div class="cf">conf <b>60%</b></div></div>
+    </div>
+    <div class="row">
+      <div class="logo" style="background:linear-gradient(135deg,#93c5fd,#60a5fa)">TG</div>
+      <div class="meta"><div class="nm">TGTX</div><div class="sb">TG Therapeutics · buy $54.79</div></div>
+      <svg class="spark" viewBox="0 0 64 30"><polyline fill="none" stroke="#34d399" stroke-width="2" points="0,21 12,19 24,16 36,17 48,12 64,10"/></svg>
+      <div class="right"><div class="pk up">+7.3%</div><div class="cf">conf <b>59%</b></div></div>
+    </div>
+    <div class="row">
+      <div class="logo" style="background:linear-gradient(135deg,#6ee7b7,#34d399)">NK</div>
+      <div class="meta"><div class="nm">NOK</div><div class="sb">Nokia · buy $14.11</div></div>
+      <svg class="spark" viewBox="0 0 64 30"><polyline fill="none" stroke="#34d399" stroke-width="2" points="0,19 12,20 24,17 36,18 48,14 64,12"/></svg>
+      <div class="right"><div class="pk up">+5.7%</div><div class="cf">conf <b>54%</b></div></div>
+    </div>
+  </div>
+
+  <!-- WOLF namesake watch (honest: no setup) -->
+  <div class="card" style="margin-top:10px">
+    <div class="watch"><span class="wdot"></span> <b>WOLF</b>&nbsp;· watching — no setup cleared the gate (p 0.48 &lt; 0.55)</div>
+  </div>
+
+  <!-- OPEN PICKS -->
+  <div class="sec"><span class="bar"></span><h2>Your Open Picks · 4 awaiting resolution</h2></div>
+  <div class="card">
+    <div class="pick"><span class="tk">XPO</span><span class="dir">UP</span><span class="cf">79%</span><span class="en">$201.60</span><span class="ex">just now</span></div>
+    <div class="pick"><span class="tk">ITRI</span><span class="dir">UP</span><span class="cf">75%</span><span class="en">$80.99</span><span class="ex">just now</span></div>
+    <div class="pick"><span class="tk">BB</span><span class="dir">UP</span><span class="cf">75%</span><span class="en">$8.98</span><span class="ex">just now</span></div>
+    <div class="pick"><span class="tk">NOK</span><span class="dir">UP</span><span class="cf">75%</span><span class="en">$14.09</span><span class="ex">just now</span></div>
+  </div>
+
+  <!-- HONESTY STRIP -->
+  <div class="truth">
+    <div class="hd">
+      <div class="t">Live Track Record · Post-Falsification</div>
+      <span class="pill research">NOT DEPLOYMENT-READY</span>
+    </div>
+    <div class="grid">
+      <div class="stat"><div class="k">Win Rate</div><div class="v red">28.6%</div><div class="s">2W / 5L issued</div></div>
+      <div class="stat"><div class="k">Direction Edge</div><div class="v amb">53%</div><div class="s">coin flip = 50%</div></div>
+      <div class="stat"><div class="k">Expectancy</div><div class="v">+0.30%</div><div class="s">per pick</div></div>
+      <div class="stat"><div class="k">If Followed</div><div class="v red">−4.2%</div><div class="s">PF 0.60 · 8 trades</div></div>
+    </div>
+    <div class="note">⚠ <b>Honesty layer:</b> the engine is in research mode — directional edge is near coin-flip and realized expectancy is thin. Targets shown are <b>expected peaks from the squeeze radar</b>, not guaranteed gains. Size only after the journal edge improves.</div>
+  </div>
+
+  <div class="foot">
+    Operator controls (training, calibration, audit, alerts) live at <a>/admin</a> — secured login.
+    <br><span class="mock">MOCKUP · REPRESENTATIVE DATA · FOR DESIGN APPROVAL ONLY</span>
+  </div>
+
+</div>
+</body>
+</html>
