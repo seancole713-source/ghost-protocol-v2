@@ -1,10 +1,11 @@
 """
 core/stacking_ensemble.py — Meta-stacking ensemble (Pillar 1).
 
-4 base models (XGBoost, LightGBM, CatBoost, RandomForest), each independently
+3 base models (XGBoost, HistGradientBoosting, RandomForest), each independently
 probability-calibrated on the holdout slice. A LogisticRegression meta-model
 trained on out-of-fold base predictions learns which model to trust when.
 
+All dependencies are in scikit-learn + xgboost — no C++ compilation needed.
 Activation: V3_ENSEMBLE=stacking (default "off" preserves single XGBoost).
 """
 from __future__ import annotations
@@ -49,32 +50,18 @@ def _build_xgb(params: dict) -> Any:
     )
 
 
-def _build_lgb(params: dict) -> Any:
-    from lightgbm import LGBMClassifier
-    return LGBMClassifier(
-        n_estimators=params.get("n_estimators", 200),
+def _build_hgb(params: dict) -> Any:
+    """HistGradientBoostingClassifier — scikit-learn, no C++ compilation needed."""
+    from sklearn.ensemble import HistGradientBoostingClassifier
+    return HistGradientBoostingClassifier(
+        max_iter=params.get("n_estimators", 200),
         max_depth=params.get("max_depth", 5),
         learning_rate=params.get("learning_rate", 0.03),
-        subsample=params.get("subsample", 0.8),
-        colsample_bytree=params.get("colsample_bytree", 0.7),
-        min_child_samples=params.get("min_child_samples", 20),
+        max_leaf_nodes=params.get("max_leaf_nodes", 31),
+        min_samples_leaf=params.get("min_samples_leaf", 20),
         class_weight=params.get("class_weight"),
         random_state=43,
-        verbose=-1,
-    )
-
-
-def _build_cat(params: dict) -> Any:
-    from catboost import CatBoostClassifier
-    return CatBoostClassifier(
-        iterations=params.get("n_estimators", 200),
-        depth=params.get("max_depth", 4),
-        learning_rate=params.get("learning_rate", 0.03),
-        subsample=params.get("subsample", 0.8),
-        class_weights=params.get("class_weights"),
-        random_seed=44,
-        logging_level="Silent",
-        allow_writing_files=False,
+        early_stopping=False,
     )
 
 
@@ -92,8 +79,7 @@ def _build_rf(params: dict) -> Any:
 
 _BASE_BUILDERS = {
     "xgb": _build_xgb,
-    "lgb": _build_lgb,
-    "cat": _build_cat,
+    "hgb": _build_hgb,
     "rf": _build_rf,
 }
 
@@ -115,7 +101,7 @@ def _calibrate_model(model, X_calib, y_calib, method: str = "sigmoid") -> Any:
 # ── Stacking ensemble ──────────────────────────────────────────────────
 
 class StackingEnsemble:
-    """4-model stack with LogisticRegression meta-model.
+    """3-model stack with LogisticRegression meta-model.
 
     Pickleable — persists exactly like a bare model. Exposes the sklearn
     classifier surface (classes_, predict_proba, predict).
@@ -149,7 +135,7 @@ def build_stacking_ensemble(
     sample_weight=None,
     feature_cols=None,
 ) -> Tuple[Any, Dict[str, Any]]:
-    """Build and calibrate 4 base models, then train LR meta-model.
+    """Build and calibrate 3 base models, then train LR meta-model.
 
     Returns (ensemble, meta_dict) where ensemble is a StackingEnsemble
     ready for pickle persistence.
@@ -173,7 +159,8 @@ def build_stacking_ensemble(
         "subsample": 0.8,
         "colsample_bytree": 0.7,
         "min_child_weight": 3,
-        "min_child_samples": 20,
+        "min_samples_leaf": 20,
+        "max_leaf_nodes": 31,
         "scale_pos_weight": scale,
     }
 
@@ -183,10 +170,9 @@ def build_stacking_ensemble(
     for name, builder in _BASE_BUILDERS.items():
         try:
             model = builder(params)
-            if sample_weight is not None and name != "cat":
+            # HistGradientBoostingClassifier doesn't support sample_weight in fit
+            if sample_weight is not None and name == "xgb":
                 model.fit(X_train, y_train, sample_weight=sample_weight)
-            elif name == "cat":
-                model.fit(X_train, y_train, sample_weight=sample_weight if sample_weight is not None else None)
             else:
                 model.fit(X_train, y_train)
             # Calibrate on holdout slice
@@ -212,10 +198,8 @@ def build_stacking_ensemble(
         for j, name in enumerate(base_names):
             builder = _BASE_BUILDERS[name]
             fold_model = builder(params)
-            if sample_weight is not None and name != "cat":
+            if sample_weight is not None and name == "xgb":
                 fold_model.fit(X_tr, y_tr, sample_weight=sample_weight[train_idx])
-            elif name == "cat":
-                fold_model.fit(X_tr, y_tr, sample_weight=sample_weight[train_idx] if sample_weight is not None else None)
             else:
                 fold_model.fit(X_tr, y_tr)
             p = fold_model.predict_proba(X_val)
