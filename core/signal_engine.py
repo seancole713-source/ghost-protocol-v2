@@ -2059,6 +2059,10 @@ def get_model_status():
                     "label_schema": m.get("label_schema", ""),
                     "label_hold_bars": m.get("label_hold_bars", V3_LABEL_HOLD_BARS),
                     "feature_schema": m.get("feature_schema", ""),
+                    "ensemble": bool(m.get("ensemble", False)),
+                    "ensemble_members": m.get("ensemble_members"),
+                    "conformal_ok": bool(m.get("conformal_ok", False)),
+                    "conformal_q_hat": m.get("conformal_q_hat"),
                     "serveable": reject is None,
                 }
                 if reject:
