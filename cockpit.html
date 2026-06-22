@@ -712,6 +712,87 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
 
 <div class="main">
 
+  <!-- ═══════════ CLEAN MOVERS BOARD · facelift v2 (default view) ═══════════ -->
+  <style id="mvr-style">
+    #movers-board{margin-bottom:22px}
+    .mvr-top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+    .mvr-h1{font-size:23px;font-weight:800;letter-spacing:-.02em;color:#fff}
+    .mvr-sub{font-size:12.5px;color:#888;margin:3px 0 0;max-width:430px;line-height:1.45}
+    .mvr-toggle{font-size:12px;font-weight:600;color:#9ca3af;background:#161616;border:1px solid #262626;border-radius:999px;padding:7px 13px;cursor:pointer;white-space:nowrap}
+    .mvr-toggle:hover{color:#fff;border-color:#3a3a3a}
+    .mvr-ribbon{display:flex;flex-wrap:wrap;gap:8px;align-items:center;background:#111;border:1px solid #1e1e1e;border-radius:12px;padding:10px 14px;margin-bottom:18px;font-size:12px;color:#888}
+    .mvr-pill{padding:3px 9px;border-radius:999px;font-weight:700;font-size:10.5px;letter-spacing:.04em}
+    .mvr-pill.research{background:#1a1206;color:#fbbf24;border:1px solid #5b4412}
+    .mvr-pill.live{background:#071a0d;color:#86efac;border:1px solid #14532d}
+    .mvr-ribbon .gdot{width:8px;height:8px;border-radius:50%;background:#4ade80;box-shadow:0 0 8px #4ade80}
+    .mvr-ribbon b{color:#fff}
+    .mvr-ribbon .sep{color:#3a3a3a}
+    .mvr-tier-label{display:flex;align-items:center;gap:8px;margin:16px 2px 9px;font-size:12.5px;font-weight:700;color:#9ca3af}
+    .mvr-tier-label .mvr-rng{color:#555;font-weight:600;font-size:11.5px}
+    .mvr-card{background:#111;border:1px solid #1e1e1e;border-radius:18px;overflow:hidden}
+    .mvr-row{display:flex;align-items:center;gap:13px;padding:15px 17px;border-bottom:1px solid #1a1a1a}
+    .mvr-row:last-child{border-bottom:none}
+    .mvr-logo{width:40px;height:40px;border-radius:50%;flex:0 0 auto;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:12px;color:#0b0b0c;background:linear-gradient(135deg,#6ee7b7,#34d399)}
+    .mvr-logo.big{background:linear-gradient(135deg,#c4b5fd,#a78bfa)}
+    .mvr-meta{flex:1;min-width:0}
+    .mvr-nm{font-size:16px;font-weight:700;line-height:1.15}
+    .mvr-sb{font-size:12px;color:#888;margin-top:2px}
+    .mvr-right{text-align:right;flex:0 0 auto;min-width:76px}
+    .mvr-pk{font-size:17px;font-weight:800;color:#4ade80}
+    .mvr-pk.big{color:#a78bfa}
+    .mvr-cf{font-size:11px;color:#888;margin-top:3px}
+    .mvr-cf b{color:#fff}
+    .mvr-empty{padding:20px;color:#777;font-size:13px;text-align:center;background:#0e0e0e;border:1px dashed #232323;border-radius:14px}
+    .mvr-seclabel{font-size:10px;font-weight:700;letter-spacing:2px;color:#666;text-transform:uppercase;margin:24px 2px 10px}
+    .mvr-pick{display:flex;align-items:center;gap:12px;padding:13px 17px;border-bottom:1px solid #1a1a1a}
+    .mvr-pick:last-child{border-bottom:none}
+    .mvr-tk{font-weight:700;font-size:15px;width:58px}
+    .mvr-dir{font-size:10.5px;font-weight:700;color:#86efac;background:#0c2616;border:1px solid #14532d;padding:2px 7px;border-radius:6px}
+    .mvr-pc{color:#888;font-size:13px}
+    .mvr-en{margin-left:auto;font-weight:700;font-size:14px}
+    .mvr-truth{margin-top:22px;background:linear-gradient(180deg,rgba(239,68,68,.05),rgba(255,255,255,.015));border:1px solid #3a1a1a;border-radius:18px;padding:16px}
+    .mvr-truth-hd{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:13px;flex-wrap:wrap}
+    .mvr-truth-hd .t{font-size:10px;letter-spacing:1.5px;color:#777;font-weight:700;text-transform:uppercase}
+    .mvr-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:9px}
+    .mvr-stat{background:#0d0d0d;border:1px solid #1c1c1c;border-radius:12px;padding:11px}
+    .mvr-stat .k{font-size:9.5px;letter-spacing:.06em;color:#666;text-transform:uppercase;margin-bottom:5px}
+    .mvr-stat .v{font-size:19px;font-weight:800;color:#fff}
+    .mvr-stat .v.red{color:#f87171}.mvr-stat .v.amb{color:#fbbf24}.mvr-stat .v.grn{color:#4ade80}
+    .mvr-stat .s{font-size:10px;color:#777;margin-top:2px}
+    .mvr-note{margin-top:12px;font-size:11.5px;color:#888;line-height:1.5}
+    .mvr-note b{color:#fbbf24}
+    @media(max-width:560px){.mvr-grid{grid-template-columns:repeat(2,1fr)}.mvr-h1{font-size:20px}}
+  </style>
+  <section id="movers-board" class="mvr">
+    <div class="mvr-top">
+      <div>
+        <div class="mvr-h1">Today&#39;s Top Movers</div>
+        <div class="mvr-sub">Ghost&#39;s highest-conviction squeeze setups, ranked by expected move. Research telemetry — not financial advice.</div>
+      </div>
+      <button class="mvr-toggle" id="mvr-toggle" onclick="mvrToggleDash()">Show full dashboard &#9662;</button>
+    </div>
+    <div class="mvr-ribbon">
+      <span class="gdot"></span> <span class="mvr-pill research" id="mvr-mode">RESEARCH MODE</span>
+      <span class="sep">·</span> Win rate <b id="mvr-rib-wr">&#8212;</b>
+      <span class="sep">·</span> Direction edge <b id="mvr-rib-de">&#8212;</b>
+      <span class="sep">·</span> Scanning <b>43</b>
+    </div>
+    <div id="mvr-tiers"><div class="mvr-empty">Loading squeeze radar&#8230;</div></div>
+    <div class="mvr-seclabel">Your Open Picks</div>
+    <div class="mvr-card" id="mvr-picks"><div class="mvr-empty">Loading&#8230;</div></div>
+    <div class="mvr-truth">
+      <div class="mvr-truth-hd"><div class="t">Live Track Record · Post-Falsification</div><span class="mvr-pill research">NOT DEPLOYMENT-READY</span></div>
+      <div class="mvr-grid">
+        <div class="mvr-stat"><div class="k">Win Rate</div><div class="v" id="mvr-wr">&#8212;</div><div class="s" id="mvr-wr-sub"></div></div>
+        <div class="mvr-stat"><div class="k">Direction Edge</div><div class="v amb" id="mvr-de">&#8212;</div><div class="s">coin flip = 50%</div></div>
+        <div class="mvr-stat"><div class="k">Expectancy</div><div class="v" id="mvr-ex">&#8212;</div><div class="s">per pick</div></div>
+        <div class="mvr-stat"><div class="k">If Followed</div><div class="v" id="mvr-ret">&#8212;</div><div class="s" id="mvr-ret-sub"></div></div>
+      </div>
+      <div class="mvr-note">&#9888; Targets are <b>expected peaks from the squeeze radar</b>, not guaranteed gains. Directional edge is near coin-flip — size only after the journal edge improves.</div>
+    </div>
+  </section>
+  <!-- ═══════════ END CLEAN MOVERS BOARD ═══════════ -->
+
   <!-- ─── Ghost Score gauge ─── -->
   <section class="ghost-score-wrap" id="ghost-score-wrap">
     <div class="gs-gauge-box">
@@ -3805,6 +3886,7 @@ async function load(){
     window._lastLoad = Date.now();
     _renderAutoStatus();
 
+    loadMoversBoard();
     void loadCockpitSecondary(ctxPack, watching);
   } catch(e){
     console.error(e);
@@ -4275,10 +4357,113 @@ _deferBelowFold(function(){
     loadDailyForecastScorecard();
   });
 });
+/* ═══ Clean Movers Board (facelift v2) — non-destructive overlay ═══ */
+function _mvrEsc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
+function _mvrFmt(n,d){ return (n==null||n===''||isNaN(n))?'—':Number(n).toFixed(d==null?2:d); }
+function _mvrSet(id,txt){ var el=document.getElementById(id); if(el) el.textContent=txt; }
+function _mvrColorVal(id,val,opts){
+  var el=document.getElementById(id); if(!el) return;
+  el.classList.remove('red','amb','grn');
+  if(val==null||val===''||isNaN(val)) return;
+  opts=opts||{}; var v=Number(val);
+  if(opts.neg){ el.classList.add(v<0?'red':'grn'); return; }
+  if(opts.wr){ el.classList.add(v<50?'red':(v<60?'amb':'grn')); return; }
+}
+function _mvrTier(em,label,rng,rows,big){
+  if(!rows.length) return '';
+  var out='<div class="mvr-tier-label"><span>'+em+'</span> '+label+' <span class="mvr-rng">· '+rng+'</span></div><div class="mvr-card">';
+  rows.forEach(function(p){
+    var init=_mvrEsc((p.symbol||'').slice(0,2));
+    var peak=(p.peak_move_pct!=null)?('+'+_mvrFmt(p.peak_move_pct,1)+'%'):'—';
+    var conf=(p.confidence_pct!=null)?Math.round(p.confidence_pct):null;
+    var buy=(p.buy!=null)?('buy $'+_mvrFmt(p.buy,2)):'awaiting quote';
+    out+='<div class="mvr-row"><div class="mvr-logo'+(big?' big':'')+'">'+init+'</div>'
+      +'<div class="mvr-meta"><div class="mvr-nm">'+_mvrEsc(p.symbol)+'</div><div class="mvr-sb">'+_mvrEsc(buy)+'</div></div>'
+      +'<div class="mvr-right"><div class="mvr-pk'+(big?' big':'')+'">'+peak+'</div>'
+      +'<div class="mvr-cf">'+(conf!=null?('conf <b>'+conf+'%</b>'):'')+'</div></div></div>';
+  });
+  return out+'</div>';
+}
+function _renderMovers(sq){
+  var host=document.getElementById('mvr-tiers'); if(!host) return;
+  var picks=(sq&&sq.picks)?sq.picks.slice():[];
+  picks=picks.filter(function(p){ return p&&p.symbol&&p.peak_move_pct!=null; });
+  picks.sort(function(a,b){ return (b.peak_move_pct||0)-(a.peak_move_pct||0); });
+  var big=picks.filter(function(p){ return (p.peak_move_pct||0)>=8; }).slice(0,3);
+  var steady=picks.filter(function(p){ return (p.peak_move_pct||0)>=3 && (p.peak_move_pct||0)<8; }).slice(0,3);
+  if(!sq||sq.ok===false||(big.length===0&&steady.length===0)){
+    var resume=(sq&&sq.radar_resume_ct)?(' · resumes '+_mvrEsc(sq.radar_resume_ct)):'';
+    host.innerHTML='<div class="mvr-empty">No squeeze candidates right now'+resume+'. Ghost is scanning '+((sq&&sq.symbols)||43)+' symbols.</div>';
+    return;
+  }
+  host.innerHTML=_mvrTier('🚀','BIG MOVERS','expected peak ≥ 8%',big,true)
+    +_mvrTier('📈','STEADY GAINS','expected peak 3–8%',steady,false);
+}
+function _renderMoversPicks(pp){
+  var host=document.getElementById('mvr-picks'); if(!host) return;
+  var act=(pp&&pp.active)?pp.active:[];
+  if(!act.length){ host.innerHTML='<div class="mvr-empty">No open picks — engine is watching.</div>'; return; }
+  var html='';
+  act.slice(0,6).forEach(function(p){
+    var conf=(p.confidence!=null)?(Math.round(p.confidence*100)+'%'):'—';
+    var en=(p.entry_price!=null)?('$'+_mvrFmt(p.entry_price,2)):'—';
+    html+='<div class="mvr-pick"><span class="mvr-tk">'+_mvrEsc(p.symbol)+'</span>'
+      +'<span class="mvr-dir">'+_mvrEsc(p.direction||'UP')+'</span>'
+      +'<span class="mvr-pc">'+conf+'</span><span class="mvr-en">'+en+'</span></div>';
+  });
+  host.innerHTML=html;
+}
+function _renderMoversTruth(ctx,pnl,pj,fc){
+  var pv=(ctx&&ctx.stats&&ctx.stats.post_v32)?ctx.stats.post_v32:{};
+  var wr=(pv.win_rate_pct!=null)?(_mvrFmt(pv.win_rate_pct,1)+'%'):'—';
+  _mvrSet('mvr-wr',wr); _mvrColorVal('mvr-wr',pv.win_rate_pct,{wr:true});
+  _mvrSet('mvr-wr-sub',(pv.wins!=null&&pv.losses!=null)?(pv.wins+'W / '+pv.losses+'L'):'');
+  var de=(fc&&fc.summary&&fc.summary.direction_hit_rate_pct!=null)?(_mvrFmt(fc.summary.direction_hit_rate_pct,0)+'%'):'—';
+  _mvrSet('mvr-de',de);
+  var m=(pj&&pj.metrics)?pj.metrics:{};
+  var ex=(m.expectancy_pct!=null)?((m.expectancy_pct>=0?'+':'')+_mvrFmt(m.expectancy_pct,2)+'%'):'—';
+  _mvrSet('mvr-ex',ex); _mvrColorVal('mvr-ex',m.expectancy_pct,{neg:true});
+  var rp=(pnl&&pnl.total_return_pct!=null)?pnl.total_return_pct:null;
+  var ret=(rp!=null)?((rp>=0?'+':'')+_mvrFmt(rp,1)+'%'):'—';
+  _mvrSet('mvr-ret',ret); _mvrColorVal('mvr-ret',rp,{neg:true});
+  _mvrSet('mvr-ret-sub',(pnl&&pnl.profit_factor!=null)?('PF '+_mvrFmt(pnl.profit_factor,2)):'');
+  _mvrSet('mvr-rib-wr',wr); _mvrSet('mvr-rib-de',de);
+  var fal=(pj&&pj.verdict&&pj.verdict.falsification)?pj.verdict.falsification.status:null;
+  var pill=document.getElementById('mvr-mode');
+  if(pill){
+    if(fal==='on_track'){ pill.textContent='ON TRACK'; pill.className='mvr-pill live'; }
+    else { pill.textContent='RESEARCH MODE'; pill.className='mvr-pill research'; }
+  }
+}
+async function loadMoversBoard(){
+  try{
+    var sq=await _fetchJson('/api/squeeze/picks',{ok:false,picks:[]}); _renderMovers(sq);
+    var pp=await _fetchJson('/api/picks',{active:[]}); _renderMoversPicks(pp);
+    var ctx=await _fetchJson('/api/cockpit/context',{ok:false});
+    var pnl=await _fetchJson('/api/wolf/pnl',{});
+    var pj=await _fetchJson('/api/wolf/pick-journal?limit=1&offset=0',{});
+    var fc=await _fetchJson('/api/wolf/daily-forecast-scorecard?symbol=WOLF&days=14',{});
+    _renderMoversTruth(ctx,pnl,pj,fc);
+  }catch(e){ console.error('movers board',e); }
+}
+function _mvrSetLegacy(show){
+  var main=document.querySelector('.main'); if(!main) return;
+  Array.prototype.forEach.call(main.children,function(el){
+    if(el.id==='movers-board') return;
+    if(el.tagName==='STYLE') return;
+    el.style.display = show ? '' : 'none';
+  });
+  window._mvrLegacyShown=!!show;
+  var btn=document.getElementById('mvr-toggle');
+  if(btn) btn.innerHTML = show ? 'Hide full dashboard &#9652;' : 'Show full dashboard &#9662;';
+}
+function mvrToggleDash(){ _mvrSetLegacy(!window._mvrLegacyShown); }
+
 // Visibility-aware polling (roadmap #3c): skip refreshes while the tab is
 // hidden (a load() fires on return via visibilitychange), so we don't hammer
 // the API in backgrounded tabs.
 setInterval(function(){ if(!document.hidden) load(); }, 60000);
+setInterval(function(){ if(!document.hidden) loadMoversBoard(); }, 180000);
 setInterval(function(){ if(!document.hidden) loadEquityChart(); }, 120000);
 setInterval(function(){ if(!document.hidden) loadShortInterest(); }, 300000);
 setInterval(function(){ if(!document.hidden) loadPickJournal(true); }, 120000);
@@ -4290,6 +4475,8 @@ setInterval(function(){ if(!document.hidden) loadDailyForecastScorecard(); }, 90
 setInterval(function(){ if(!document.hidden) loadSqueezePicks(); }, 180000);
 setInterval(function(){ if(!document.hidden) loadSqueezeDailyLog(window._sqLogFocus || null); }, 900000);
 _renderAutoStatus();
+// facelift v2: default to the clean movers board; legacy dashboard one toggle away.
+try{ _mvrSetLegacy(false); loadMoversBoard(); }catch(e){ console.error('mvr init', e); }
 </script>
 </body>
 </html>
