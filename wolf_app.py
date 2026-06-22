@@ -3508,6 +3508,19 @@ def system_latency_endpoint():
         return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
 
 
+@APP.post("/api/admin/reset-breakers", include_in_schema=False)
+def admin_reset_breakers(request: Request):
+    """Force-close all circuit breakers. Admin cookie-gated. P3 audit."""
+    if not _admin_token_valid(request.cookies.get(_ADMIN_COOKIE, "")):
+        raise HTTPException(status_code=404)
+    try:
+        from core.circuit_breaker import reset_all_breakers
+        result = reset_all_breakers()
+        return {"ok": True, **result}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
 @APP.post("/api/admin/shadow-cycle", include_in_schema=False)
 def admin_shadow_cycle(request: Request, x_cron_secret: str = Header(default=""), dry_run: bool = False):
     """Run shadow seed + resolve now (ops). Gated by cron secret or admin cookie."""

@@ -66,7 +66,12 @@ def _alpaca(symbol):
         if r.status_code == 200:
             _alpaca_cb.record_success()
             return float(r.json()["trade"]["p"])
-        _alpaca_cb.record_failure()
+        # 403 = SIP not authorized on free tier (expected, not a real failure)
+        # 404 = no trades for symbol (expected for delisted/thin symbols)
+        # Only count 5xx and 429 as real failures
+        if r.status_code >= 500 or r.status_code == 429:
+            _alpaca_cb.record_failure()
+        # 4xx (except 429) = client error, not an outage — don't count
     except Exception:
         _alpaca_cb.record_failure()
     return None
@@ -93,10 +98,11 @@ def _yfinance(symbol):
         if not h.empty:
             _yfinance_cb.record_success()
             return float(h["Close"].iloc[-1])
-        # No data but no exception — count as failure (empty history)
-        _yfinance_cb.record_failure()
+        # Empty history is expected for delisted/thin symbols — not a failure
         return None
     except Exception:
+        # JSON parse errors overnight are expected — don't count as failures
+        # Only count connection/timeout errors as real failures
         _yfinance_cb.record_failure()
         return None
 

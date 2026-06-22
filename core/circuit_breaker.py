@@ -111,6 +111,13 @@ class CircuitBreaker:
             "last_failure_ts": self._last_failure_ts or None,
         }
 
+    def reset(self) -> None:
+        """Force-close the circuit breaker. Use for manual recovery."""
+        self._circuit_open_until = 0.0
+        self._failure_count = 0
+        self._half_open_probes = 0
+        LOGGER.info("CB %s: manually RESET — circuit CLOSED", self.name)
+
 
 # Pre-instantiated breakers for Ghost's external APIs.
 # Created at module load so all call sites share the same breaker state.
@@ -152,3 +159,10 @@ def all_breaker_status() -> dict:
         b.name: b.status()
         for b in (_yfinance_cb, _finnhub_cb, _polygon_cb, _alpaca_cb, _anthropic_cb)
     }
+
+
+def reset_all_breakers() -> dict:
+    """Force-close all circuit breakers. Admin recovery tool."""
+    for b in (_yfinance_cb, _finnhub_cb, _polygon_cb, _alpaca_cb, _anthropic_cb):
+        b.reset()
+    return {"ok": True, "message": "All circuit breakers reset to closed"}
