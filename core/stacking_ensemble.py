@@ -59,7 +59,6 @@ def _build_hgb(params: dict) -> Any:
         learning_rate=params.get("learning_rate", 0.03),
         max_leaf_nodes=params.get("max_leaf_nodes", 31),
         min_samples_leaf=params.get("min_samples_leaf", 20),
-        class_weight=params.get("class_weight"),
         random_state=43,
         early_stopping=False,
     )
