@@ -1547,6 +1547,7 @@ def train_and_validate(symbols_and_types):
             model.fit(X_fit, y_fit, sample_weight=sample_weight)
             # P3 (audit): stacking ensemble — XGBoost + RF soft-voting when V3_ENSEMBLE=stacking
             # Uses the proven _build_ensemble path (already tested in production).
+            from core.stacking_ensemble import is_stacking_enabled
             if is_stacking_enabled() or _v3_ensemble_enabled():
                 final_model, calib_info = _build_ensemble(
                     model, X_fit, y_fit, sample_weight, X_calib, y_calib)
