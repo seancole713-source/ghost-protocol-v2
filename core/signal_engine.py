@@ -161,11 +161,17 @@ def _v3_wf_acc_min_overrides() -> dict:
     """
     Optional per-symbol absolute floor overrides for wf_acc_min.
     Env format: V3_WF_ACC_MIN_OVERRIDES="WOLF=0.55"
+
+    Sanity cap: no override can exceed the base wf_acc_mean floor (40% default).
+    A per-symbol wf_acc_min above the wf_acc_mean requirement is nonsensical —
+    it demands every fold beat the mean requirement, which thin-data symbols
+    (like post-Chapter-11 WOLF) cannot satisfy.
     """
     raw = (os.getenv("V3_WF_ACC_MIN_OVERRIDES", "") or "").strip()
     out = {}
     if not raw:
         return out
+    cap = _v3_min_wf_acc_mean()  # 40% default — no override can exceed this
     for part in raw.split(","):
         part = part.strip()
         if not part or "=" not in part:
@@ -175,7 +181,14 @@ def _v3_wf_acc_min_overrides() -> dict:
         if not sym:
             continue
         try:
-            out[sym] = float(v.strip())
+            val = float(v.strip())
+            if val > cap:
+                LOGGER.info(
+                    "wf_acc_min override %s=%.2f capped at base wf_acc_mean %.2f",
+                    sym, val, cap,
+                )
+                val = cap
+            out[sym] = val
         except Exception:
             continue
     return out

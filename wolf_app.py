@@ -1615,15 +1615,21 @@ async def _security_headers_mw(request: Request, call_next):
     return resp
 
 
-# P3-5 (audit): latency SLO tracking middleware — records p50/p95/p99 per route
+# P3-5 (audit): latency SLO tracking middleware — records p50/p95/p99 per route.
+# Excludes long-running training endpoints (v3_train, v3_train_sync) which
+# would inflate p95/p99 and make SLOs meaningless for normal API routes.
+_SLO_EXCLUDE_PREFIXES = ("/api/v3/train",)
+
 @APP.middleware("http")
 async def _latency_slo_mw(request: Request, call_next):
     t0 = time.time()
     resp = await call_next(request)
     elapsed_ms = (time.time() - t0) * 1000
     try:
-        from core.latency_slo import record
-        record(request.url.path, elapsed_ms)
+        path = request.url.path
+        if not any(path.startswith(p) for p in _SLO_EXCLUDE_PREFIXES):
+            from core.latency_slo import record
+            record(path, elapsed_ms)
     except Exception:
         pass
     return resp
