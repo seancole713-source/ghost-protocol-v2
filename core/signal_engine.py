@@ -655,7 +655,7 @@ def _calculate_features(df):
     try:
         _d = _dt.datetime.fromisoformat(str(ts).replace('Z','+00:00'))
         hod, dow = _d.hour, _d.weekday()
-    except:
+    except Exception:
         hod, dow = 12, 0
 
     cur = float(closes[-1])
@@ -1545,7 +1545,20 @@ def train_and_validate(symbols_and_types):
                 eval_metric='logloss', random_state=42
             )
             model.fit(X_fit, y_fit, sample_weight=sample_weight)
-            if _v3_ensemble_enabled():
+            # P3 (audit): stacking ensemble — 4 base models + LR meta when V3_ENSEMBLE=stacking
+            if is_stacking_enabled():
+                from core.stacking_ensemble import build_stacking_ensemble
+                final_model, calib_info = build_stacking_ensemble(
+                    X_fit, y_fit, X_calib, y_calib,
+                    sample_weight=sample_weight,
+                    feature_cols=active_cols,
+                )
+                if final_model is None:
+                    # Fallback to calibrated single XGB
+                    final_model, calib_info = _maybe_calibrate(model, X_calib, y_calib)
+                    calib_info["ensemble"] = False
+                    calib_info["ensemble_skip_reason"] = calib_info.get("skip_reason", "stacking_failed")
+            elif _v3_ensemble_enabled():
                 final_model, calib_info = _build_ensemble(
                     model, X_fit, y_fit, sample_weight, X_calib, y_calib)
             else:
@@ -1564,6 +1577,26 @@ def train_and_validate(symbols_and_types):
                 "gate_n": holdout.get("gate_n", 0),
                 "reliability_monotonic": reliability_mono,
             })
+            # P7 (audit): conformal calibration from holdout predictions.
+            # Stored in model meta and applied in predict_live_ex when present.
+            try:
+                from core.conformal_calibration import calibrate_conformal
+                if len(X_gate) >= 10:
+                    gate_probs = final_model.predict_proba(X_gate)[:, 1]
+                    conformal = calibrate_conformal(gate_probs, y_gate)
+                else:
+                    conformal = {
+                        "ok": False,
+                        "error": f"Need >=10 gate samples, have {len(X_gate)}",
+                        "samples": int(len(X_gate)),
+                    }
+            except Exception as _conf_e:
+                conformal = {
+                    "ok": False,
+                    "error": str(_conf_e)[:120],
+                    "samples": int(len(X_gate)),
+                }
+            calib_info["conformal"] = conformal
             # W1: feed the same peer pool into the walk-forward folds, so the
             # gate validates the deployed pooled model rather than a WOLF-only
             # one the engine never serves (and each thin fold trains on more).
@@ -1661,6 +1694,13 @@ def train_and_validate(symbols_and_types):
                     "calibration_method": calib_info.get("method"),
                     "gate_brier": calib_info.get("gate_brier"),
                     "reliability_bins": calib_info.get("reliability_bins") or [],
+                    "conformal_ok": bool((calib_info.get("conformal") or {}).get("ok", False)),
+                    "conformal_q_hat": (calib_info.get("conformal") or {}).get("q_hat"),
+                    "conformal_alpha": (calib_info.get("conformal") or {}).get("alpha"),
+                    "conformal_samples": (calib_info.get("conformal") or {}).get("samples", 0),
+                    "conformal_brier_raw": (calib_info.get("conformal") or {}).get("brier_raw"),
+                    "conformal_brier_calibrated": (calib_info.get("conformal") or {}).get("brier_calibrated"),
+                    "conformal_brier_improvement": (calib_info.get("conformal") or {}).get("brier_improvement"),
                     "ensemble": bool(calib_info.get("ensemble", False)),
                     "ensemble_members": calib_info.get("members"),
                     "pool_enabled": pool_info["enabled"],
@@ -1778,6 +1818,26 @@ def predict_live_ex(symbol, asset_type, scores=None):
     features = _calculate_features(rows)
     from core.feature_schema import attach_feature_asof
     attach_feature_asof(features, rows[-1].get("ts") if rows else None)
+
+    # P2 (audit): cross-sectional rank features — percentile within watchlist
+    try:
+        from core.cross_sectional import compute_cross_sectional, CS_FEATURE_NAMES
+        _all_sym_feats = getattr(predict_live_ex, '_last_scan_features', None)
+        if _all_sym_feats and symbol in _all_sym_feats:
+            cs = compute_cross_sectional(symbol, features, _all_sym_feats)
+            for k, v in cs.items():
+                features[k] = v
+    except Exception:
+        pass
+
+    # P3 (audit): macro regime features — VIX, yield curve, Fed rate, etc.
+    try:
+        from core.macro_regime import get_macro_features, MACRO_FEATURE_NAMES
+        macro = get_macro_features()
+        for k, v in macro.items():
+            features[k] = v
+    except Exception:
+        pass
 
     # W3: same point-in-time sector relative strength as training, for the
     # current (last) bar. Only when enabled, matching the persisted feature set.
@@ -1917,6 +1977,8 @@ def predict_live_ex(symbol, asset_type, scores=None):
             "calibrated": bool(meta.get("calibrated", False)),
             "calibration_method": meta.get("calibration_method"),
             "gate_brier": meta.get("gate_brier"),
+            "conformal_ok": bool(meta.get("conformal_ok", False)),
+            "conformal_q_hat": meta.get("conformal_q_hat"),
             "ensemble": bool(meta.get("ensemble", False)),
         }
         scores["direction_source"] = "classifier_up_prob"
@@ -1935,10 +1997,19 @@ def predict_live_ex(symbol, asset_type, scores=None):
         return None, "meta_gate"
 
     # Phase 2: confidence = calibrated P(win); Brier/journal treat this as the stated probability.
+    # P7 (audit): conformal calibration when available — replaces heuristic with
+    # mathematically guaranteed prediction intervals.
     if up_prob > min_p:
-        conf = round(min(0.98, max(0.0, up_prob)), 3)
+        q_hat = meta.get("conformal_q_hat")
+        if q_hat is not None and float(q_hat) > 0:
+            from core.conformal_calibration import conformal_confidence
+            conf = conformal_confidence(up_prob, float(q_hat), float(accuracy), float(min_p))
+        else:
+            conf = round(min(0.98, max(0.0, up_prob)), 3)
         if scores is not None:
             scores["confidence"] = conf
+            if q_hat is not None:
+                scores["conformal_q_hat"] = float(q_hat)
         return ("UP", conf), None
     # DOWN signals disabled — 1.5% WR on 274 trades, not viable
     # Ghost is BUY-only system

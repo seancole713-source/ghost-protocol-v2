@@ -1,13 +1,13 @@
 """
-core/model.py
-Ghost Protocol — XGBoost signal model.
+core/model.py — DEPRECATED (P2-3 audit cleanup).
 
-Training: called by weekly scheduler once >=MIN_TRAIN_ROWS resolved
-          predictions with features exist in DB.
-Inference: loaded by prediction.py at startup; falls back to win-rate
-           logic if model file is absent.
+This legacy XGBoost model (6-feature, disk-persisted) is superseded by
+core/signal_engine.py v3.2 (per-symbol TP/SL models in ghost_v3_model).
+
+The functions below are retained for backward-compatibility only.
+New code should use core.signal_engine.predict_live_ex() and
+core.signal_engine.train_and_validate().
 """
-
 import os
 import json
 import logging
@@ -49,10 +49,13 @@ def _row_to_features(features_json):
     ]
 
 
-# ─── Inference ─────────────────────────────────────────────────────────────────
+# ─── Inference (DEPRECATED — use signal_engine.predict_live_ex) ───────────────
 
 def load_model():
-    """Load model from disk, cached. Returns model or None."""
+    """Load model from disk, cached. Returns model or None.
+
+    DEPRECATED: v3.2 uses signal_engine.load_model(symbol) from ghost_v3_model.
+    """
     global _model_cache, _model_loaded_at
     now = time.time()
     if _model_cache is not None and (now - _model_loaded_at) < MODEL_RELOAD_S:
@@ -75,6 +78,8 @@ def predict_with_model(features_dict):
     """
     Run model inference. Returns (direction, confidence) or None if no model.
     Only fires BUY signals — SELL is disabled until model proves SELL edge.
+
+    DEPRECATED: v3.2 uses signal_engine.predict_live_ex().
     """
     model = load_model()
     if model is None:
@@ -92,7 +97,7 @@ def predict_with_model(features_dict):
         return None
 
 
-# ─── Training ──────────────────────────────────────────────────────────────────
+# ─── Training (DEPRECATED — use signal_engine.train_and_validate) ──────────────
 
 def _load_training_data():
     """Pull labeled rows with features from DB. Returns (X, y, timestamps)."""

@@ -94,32 +94,6 @@ def _ensure_tables():
             )
         """)
         cur.execute("""
-            CREATE TABLE IF NOT EXISTS paper_trades (
-                id SERIAL PRIMARY KEY,
-                prediction_id INTEGER,
-                symbol VARCHAR(20),
-                direction VARCHAR(10),
-                entry_price FLOAT,
-                target_price FLOAT,
-                stop_price FLOAT,
-                entry_time BIGINT,
-                exit_time BIGINT,
-                exit_price FLOAT,
-                result VARCHAR(10),
-                pnl_pct FLOAT,
-                usd_in FLOAT DEFAULT 100.0,
-                usd_out FLOAT
-            )
-        """)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS price_cache (
-                symbol VARCHAR(20) PRIMARY KEY,
-                price FLOAT NOT NULL,
-                source VARCHAR(30),
-                updated_at BIGINT NOT NULL
-            )
-        """)
-        cur.execute("""
             CREATE TABLE IF NOT EXISTS ghost_state (
                 key TEXT PRIMARY KEY,
                 val TEXT

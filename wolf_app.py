@@ -1,7 +1,7 @@
 import os, sys, time, logging, threading, hmac, secrets as _secrets
 import config.symbols  # noqa: F401 — pin official watchlist before engine imports
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Header, HTTPException, Depends, Request
+from fastapi import FastAPI, Header, HTTPException, Depends, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -851,6 +851,12 @@ def _market_scan_job():
     pick that fires is pushed through the alert sweep (Telegram + email/SMS)."""
     if os.getenv("MARKET_SCAN_ENABLED", "1").strip().lower() not in ("1", "true", "yes", "on"):
         return
+    # P3 (audit): degraded mode — evaluate before scan
+    try:
+        from core.degraded_mode import check_degraded
+        check_degraded()
+    except Exception:
+        pass
     import datetime as _dt, pytz as _tz
     from core.prediction import run_prediction_cycle
     now = int(time.time())
@@ -1609,6 +1615,20 @@ async def _security_headers_mw(request: Request, call_next):
     return resp
 
 
+# P3-5 (audit): latency SLO tracking middleware — records p50/p95/p99 per route
+@APP.middleware("http")
+async def _latency_slo_mw(request: Request, call_next):
+    t0 = time.time()
+    resp = await call_next(request)
+    elapsed_ms = (time.time() - t0) * 1000
+    try:
+        from core.latency_slo import record
+        record(request.url.path, elapsed_ms)
+    except Exception:
+        pass
+    return resp
+
+
 # ── Static/SEO + version routes (audit v2 #1/#2/#3/#9) ───────────────────
 _BASE_URL = os.getenv("PUBLIC_BASE_URL", "https://ghost-protocol-v2-production.up.railway.app").rstrip("/")
 
@@ -2325,6 +2345,30 @@ def health():
     except Exception as _se:
         LOGGER.warning("health.scheduler_status failed: " + str(_se)[:120])
 
+    # 8. Degraded mode (P3 audit)
+    degraded = False
+    degraded_reasons = []
+    try:
+        from core.degraded_mode import check_degraded
+        d = check_degraded()
+        degraded = d.get("degraded", False)
+        if degraded:
+            degraded_reasons = d.get("reasons", [])
+            warnings.append("DEGRADED MODE: " + ", ".join(degraded_reasons[:3]))
+    except Exception:
+        pass
+
+    # 9. Dead-letter queue (P1-2 audit)
+    dead_letter_count = 0
+    try:
+        from core.telegram import get_dead_letter_queue
+        dlq = get_dead_letter_queue()
+        dead_letter_count = len(dlq)
+        if dead_letter_count > 0:
+            warnings.append(f"Telegram dead-letter queue: {dead_letter_count} undelivered alerts")
+    except Exception:
+        pass
+
     score = max(0, min(100, 100 - len(issues)*20 - len(warnings)*5))
     status_str = "healthy" if score >= 80 and not issues else "degraded" if score >= 50 else "critical"
     return {
@@ -2336,6 +2380,8 @@ def health():
         "open_picks": open_picks, "dedup_blocked": dedup_blocked,
         "last_morning_card_min": last_card_min, "confidence_floor": conf_floor,
         "price_feeds": feeds, "tasks": tasks, "issues": issues, "warnings": warnings,
+        "degraded": degraded, "degraded_reasons": degraded_reasons,
+        "dead_letter_count": dead_letter_count,
     }
 
 def _health_public():
@@ -3037,9 +3083,12 @@ def wolf_gate_status():
             lp["binding_confidence_threshold"] = round(binding_conf, 3)
             lp["bootstrap_min_conf"] = round(boot_conf, 3)
             # up_prob needed to clear the binding threshold, inverting
-            # conf = clamp(accuracy + (up_prob - min_p) * 4, 0.75, 0.95):
+            # conf = clamp(accuracy + (up_prob - min_p) * CONFIDENCE_SLOPE, 0.75, 0.95):
+            # P1-1 (audit): CONFIDENCE_SLOPE env-var replaces the heuristic 4.0 multiplier.
+            # Default 4.0; calibrate against resolved picks to find the empirical slope.
+            _conf_slope = float(os.getenv("CONFIDENCE_SLOPE", "4.0"))
             if acc is not None and min_p is not None:
-                needed = min_p + (binding_conf - acc) / 4.0
+                needed = min_p + (binding_conf - acc) / max(_conf_slope, 0.5)
                 needed = max(needed, min_p)   # must also exceed min_p to emit UP
                 lp["up_prob_needed_to_fire"] = round(needed, 4)
                 if up_prob is not None:
@@ -3398,6 +3447,57 @@ def ghost_options_endpoint(symbol: str = "WOLF"):
         from core.options_flow import probe_options_flow
 
         return probe_options_flow(symbol)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
+@APP.get("/api/ghost/score-spec")
+def ghost_score_spec_endpoint():
+    """Ghost Score v1.0 specification — weights, thresholds, signal labels,
+    modifier tables, and determinism audit. Public, read-only. P3 audit."""
+    try:
+        from core.ghost_score_spec import (
+            GHOST_SCORE_SPEC_VERSION,
+            GHOST_WEIGHTS,
+            GHOST_SIGNAL_LABELS,
+            SQUEEZE_MODIFIER,
+            REGIME_MODIFIER,
+        )
+        return {
+            "ok": True,
+            "version": GHOST_SCORE_SPEC_VERSION,
+            "weights": GHOST_WEIGHTS,
+            "signal_labels": {f"{lo}-{hi}": label for (lo, hi), label in GHOST_SIGNAL_LABELS.items()},
+            "squeeze_modifier": SQUEEZE_MODIFIER,
+            "regime_modifier": REGIME_MODIFIER,
+            "deterministic": True,
+            "note": "All components are deterministic. Claude Haiku sentiment is NOT a Ghost Score component.",
+        }
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
+@APP.get("/api/system/degraded")
+def system_degraded_endpoint():
+    """Degraded-mode status — open circuit breakers, confidence bump, squeeze interval. P3 audit."""
+    try:
+        from core.degraded_mode import check_degraded
+        return {"ok": True, **check_degraded()}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
+@APP.get("/api/system/latency")
+def system_latency_endpoint():
+    """Request latency SLOs — p50/p95/p99 per route over 5-min window. P3 audit."""
+    try:
+        from core.latency_slo import all_stats, slowest_routes
+        stats = all_stats()
+        return {
+            "ok": True,
+            **stats,
+            "slowest_routes": slowest_routes(5),
+        }
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
 
@@ -4081,15 +4181,18 @@ def db_probe():
         try:
             cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='ghost_tracked_picks' ORDER BY ordinal_position")
             counts["ghost_tracked_picks_cols"] = [r[0] for r in cur.fetchall()]
-        except: pass
+        except Exception:
+            pass
         try:
             cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='ghost_predictions' ORDER BY ordinal_position")
             counts["ghost_predictions_cols"] = [r[0] for r in cur.fetchall()][:10]
-        except: pass
+        except Exception:
+            pass
         try:
             cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name='money_game_trades' ORDER BY ordinal_position")
             counts["money_game_trades_cols"] = [r[0] for r in cur.fetchall()]
-        except: pass
+        except Exception:
+            pass
     return {"ok": True, "counts": counts}
 
 @APP.get("/api/symbol-accuracy")
@@ -4721,6 +4824,116 @@ def v3_lineage(limit: int = 50):
         return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
 
 
+@APP.get("/api/v3/explain/{symbol}")
+def v3_explain(symbol: str):
+    """SHAP waterfall for the latest prediction on a symbol (P2-5 audit).
+
+    Returns the top 5 features driving the model's up_prob, ranked by
+    SHAP magnitude. Requires the trained model to be loadable and the
+    latest feature snapshot to exist. Public, read-only.
+    """
+    try:
+        sym = (symbol or "WOLF").upper()
+        from core.signal_engine import load_model, FEATURE_COLS
+        model, feature_cols, meta = load_model(sym)
+        if model is None:
+            return {"ok": False, "error": f"no loadable model for {sym}", "symbol": sym}
+        # Get latest feature snapshot
+        import json as _j
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT payload FROM ghost_feature_snapshots "
+                "WHERE symbol = %s AND payload IS NOT NULL "
+                "ORDER BY feature_asof_ts DESC LIMIT 1",
+                (sym,),
+            )
+            row = cur.fetchone()
+        if not row or not row[0]:
+            return {"ok": False, "error": f"no feature snapshot for {sym}", "symbol": sym}
+        snap = row[0] if isinstance(row[0], dict) else _j.loads(row[0])
+        # Build feature vector in the model's column order
+        vec = []
+        for col in feature_cols:
+            vec.append(float(snap.get(col, 0.0)))
+        import numpy as np
+        X = np.array([vec])
+        up_prob = float(model.predict_proba(X)[0][1])
+        # SHAP waterfall (top 5 features by magnitude)
+        shap_values = []
+        try:
+            import shap
+            explainer = shap.TreeExplainer(model)
+            shap_vals = explainer.shap_values(X)
+            if isinstance(shap_vals, list):
+                sv = shap_vals[1][0] if len(shap_vals) > 1 else shap_vals[0][0]
+            else:
+                sv = shap_vals[0]
+            base = float(explainer.expected_value[1]) if isinstance(explainer.expected_value, list) else float(explainer.expected_value)
+            for i, col in enumerate(feature_cols):
+                shap_values.append({
+                    "feature": col,
+                    "value": round(float(vec[i]), 6),
+                    "shap": round(float(sv[i]), 6),
+                    "abs_shap": round(abs(float(sv[i])), 6),
+                })
+            shap_values.sort(key=lambda x: x["abs_shap"], reverse=True)
+        except ImportError:
+            shap_values = [{"feature": "shap_unavailable", "note": "pip install shap"}]
+        except Exception as _se:
+            shap_values = [{"feature": "shap_error", "note": str(_se)[:120]}]
+        return {
+            "ok": True,
+            "symbol": sym,
+            "up_prob": round(up_prob, 4),
+            "base_value": round(base, 4) if 'base' in dir() else None,
+            "feature_cols": feature_cols,
+            "top_features": shap_values[:5],
+            "all_features": shap_values,
+            "model_meta": {
+                "accuracy": meta.get("accuracy"),
+                "trained_at": meta.get("trained_at"),
+                "calibrated": meta.get("calibrated", False),
+            },
+        }
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
+@APP.get("/api/admin/telegram/dead-letter", include_in_schema=False)
+def admin_telegram_dead_letter(request: Request):
+    """View the Telegram dead-letter queue (P1-2 audit).
+
+    Gated by admin cookie — 404 when unauthenticated.
+    """
+    if not _admin_token_valid(request.cookies.get(_ADMIN_COOKIE, "")):
+        raise HTTPException(status_code=404)
+    try:
+        from core.telegram import get_dead_letter_queue
+        queue = get_dead_letter_queue()
+        return {"ok": True, "count": len(queue), "entries": queue}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
+@APP.post("/api/admin/telegram/dead-letter/replay", include_in_schema=False)
+async def admin_telegram_dead_letter_replay(request: Request):
+    """Replay one dead-letter entry by index (0 = oldest). P1-2 audit.
+
+    JSON body: {"index": 0}. Gated by admin cookie.
+    """
+    if not _admin_token_valid(request.cookies.get(_ADMIN_COOKIE, "")):
+        raise HTTPException(status_code=404)
+    try:
+        body = await request.json()
+        idx = int(body.get("index", 0))
+        from core.telegram import replay_dead_letter
+        result = replay_dead_letter(idx)
+        return {"ok": True, **result}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
 @APP.get("/api/admin/news/import-format", include_in_schema=False)
 def news_import_format():
     """JSON schema/help for manual news imports."""
@@ -4888,6 +5101,27 @@ def cockpit_context():
         stats, direction, v3, activity = _cockpit_cached_db_payload()
         # WOLF-only mode: regime gate is a no-op.
         regime = {"ok": True, "block_crypto_buys": False, "reduce_size": False, "reason": "", "btc_24h_pct": 0.0}
+        # P1-3: circuit breaker status for cockpit visibility
+        cb_status = {}
+        try:
+            from core.circuit_breaker import all_breaker_status
+            cb_status = all_breaker_status()
+        except Exception:
+            pass
+        # P3: degraded mode status
+        degraded = {}
+        try:
+            from core.degraded_mode import check_degraded
+            degraded = check_degraded()
+        except Exception:
+            pass
+        # P3: latency SLO summary
+        latency = {}
+        try:
+            from core.latency_slo import all_stats
+            latency = all_stats()
+        except Exception:
+            pass
         return {
             "ok": True,
             "health": health(),
@@ -4897,9 +5131,63 @@ def cockpit_context():
             "v3": v3,
             "activity": activity,
             "deploy": _deploy_meta(),
+            "circuit_breakers": cb_status,
+            "degraded": degraded,
+            "latency": latency.get("overall", {}),
         }
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)[:120]}, status_code=500)
+
+
+# P3-3 (audit): WebSocket live feed for cockpit — pushes price updates,
+# squeeze alerts, and prediction changes without polling.
+_WS_CLIENTS: set = set()
+
+
+@APP.websocket("/ws/cockpit")
+async def ws_cockpit(ws: WebSocket):
+    await ws.accept()
+    _WS_CLIENTS.add(ws)
+    try:
+        while True:
+            try:
+                data = await ws.receive_text()
+                if data == "ping":
+                    # Push a lightweight snapshot: latest squeeze picks + WOLF price
+                    payload = {"type": "pong", "ts": int(time.time())}
+                    try:
+                        from core.squeeze_monitor import get_squeeze_picks
+                        sp = get_squeeze_picks()
+                        payload["squeeze"] = {
+                            "picks": sp.get("picks", [])[:5],
+                            "radar_active": sp.get("radar_active"),
+                        }
+                    except Exception:
+                        payload["squeeze"] = {"error": "unavailable"}
+                    try:
+                        from core.prices import get_stock_price
+                        payload["wol f_price"] = get_stock_price("WOLF")
+                    except Exception:
+                        payload["wol f_price"] = None
+                    await ws.send_json(payload)
+            except WebSocketDisconnect:
+                break
+            except Exception:
+                await ws.send_json({"type": "error", "detail": "invalid message"})
+    finally:
+        _WS_CLIENTS.discard(ws)
+
+
+async def _ws_broadcast(payload: dict) -> None:
+    """Best-effort broadcast to all connected cockpit WebSocket clients."""
+    dead: list = []
+    for ws in list(_WS_CLIENTS):
+        try:
+            await ws.send_json(payload)
+        except Exception:
+            dead.append(ws)
+    for ws in dead:
+        _WS_CLIENTS.discard(ws)
 
 
 def _v3_train_collect_symbols() -> list:
@@ -5012,7 +5300,7 @@ def v3_train(x_cron_secret: str = Header(default=""), force: bool = False):
 
 # PR #19 deploy-version constant. Bump on every "did Railway pick up
 # the new code?" PR so /api/_version reveals the truth in one curl.
-_RUNNING_PR_VERSION = 64
+_RUNNING_PR_VERSION = 65
 
 
 def _deploy_meta() -> dict:

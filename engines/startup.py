@@ -1,26 +1,12 @@
 # ══════════════════════════════════════════════════════════════
 # FILE: engines/startup.py
-# PURPOSE: Startup event handler — runs on app boot. Initializes DB tables,
-#          loads models, starts the prediction loop, paper trading,
-#          accuracy tracking, and background tasks.
-# STATUS: STABLE (recently patched)
-# LINES: ~911
-# ──────────────────────────────────────────────────────────────
-# CHANGE LOG:
-#   2026-03-19 — Briefing header added (Browser Agent)
-#   2026-03-19 — Bug #23 fixed: wrapped _get_conn() and _get_connection()
-#                in proper 'with' context managers (lines ~361, ~472)
-# ──────────────────────────────────────────────────────────────
-# KNOWN ISSUES:
-#   - Market mood update fails when SPY data unavailable (weekends/after hours)
-# ──────────────────────────────────────────────────────────────
-# DO NOT CHANGE (frozen interfaces):
-#   startup_event()            — registered in wolf_app.py as on_event("startup")
-#   run_ghost_loop()           — main prediction loop, called from startup
-#   IMPORTANT: All get_sync_connection() / _get_conn() / _get_connection()
-#              calls MUST use 'with' statement — they are @contextmanager
+# STATUS: DEPRECATED — startup is handled by wolf_app.py lifespan().
+#         This module is retained for reference only. _on_startup()
+#         is never invoked in production. The app_config injection
+#         below would fail because engines/app_config.py does not exist.
+#         DO NOT import this module in new code.
 # ══════════════════════════════════════════════════════════════
-"""Event handler: startup — extracted from wolf_app.py (Step 12)"""
+"""Event handler: startup — extracted from wolf_app.py (Step 12) — DEPRECATED"""
 # fmt: off
 # ruff: noqa
 
@@ -34,19 +20,17 @@ from datetime import datetime, timezone, timedelta
 
 LOGGER = logging.getLogger("ghost")
 
-# ── Inject all app-config constants (STAGE1_ENABLED, SIM_MODE, etc.) ─────
-# engines/startup.py is a thin module extracted from wolf_app.py (Step 12).
-# _on_startup() and helper functions reference many module-level constants
-# (STAGE1_ENABLED, DATABASE_URL, SIM_MODE, DEFAULT_STOCKS, …) that live in
-# engines/app_config.py.  Injecting them here mirrors the pattern used in
-# wolf_app.py and all 16 route modules, and fixes the NameError cascade
-# that was keeping all 9 background workers from starting.
-try:
-    import engines.app_config as _ac
-    globals().update({k: v for k, v in vars(_ac).items() if not k.startswith("__")})
-    del _ac
-except Exception as _ac_err:
-    LOGGER.warning(f"[STARTUP] Could not inject app_config globals: {_ac_err}")
+# ── app_config injection REMOVED (P3 audit cleanup) ───────────────────
+# engines/app_config.py does not exist. The globals injection below was
+# a NameError cascade waiting to happen. Since _on_startup() is never
+# called (wolf_app.py lifespan() handles all startup), this module is
+# retained for reference only. The injection block is replaced with a
+# clean warning so any accidental import surfaces the deprecation clearly.
+LOGGER.warning(
+    "[STARTUP] engines/startup.py is DEPRECATED — startup is handled by "
+    "wolf_app.py lifespan(). This module is retained for reference only. "
+    "Do not import it in new code."
+)
 
 # ── Missing imports that were lost when wolf_app.py was split (Step 12) ──
 # _post_startup_init: launches alert-worker, accuracy-tracker, autopilot,

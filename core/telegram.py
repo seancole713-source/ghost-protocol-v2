@@ -1,4 +1,4 @@
-import os, logging, requests
+import os, logging, requests, time
 
 LOGGER = logging.getLogger("ghost.telegram")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -7,25 +7,115 @@ DISCORD_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
 ALERTS_ENABLED = os.getenv("ALERTS_ENABLED", "1") == "1"
 NL = chr(10)
 
+# P1-2 (audit): retry + dead-letter queue for Telegram alerts
+_TELEGRAM_RETRIES = max(1, int(os.getenv("TELEGRAM_RETRIES", "3")))
+_TELEGRAM_RETRY_BACKOFF_S = [2.0, 4.0, 8.0]  # per-attempt backoff
+
+
 def _send(text):
+    """Send to Telegram + Discord with retry. On final failure, write to dead-letter queue."""
     if not ALERTS_ENABLED:
         LOGGER.info("Alerts disabled")
         return True
     ok = True
     if BOT_TOKEN and CHAT_ID:
-        try:
-            url = "https://api.telegram.org/bot" + BOT_TOKEN + "/sendMessage"
-            r = requests.post(url, json={"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"}, timeout=10)
-            ok = r.ok
-            if r.ok: LOGGER.info("Telegram OK")
-            else: LOGGER.error("Telegram fail: " + r.text[:80])
-        except Exception as e:
-            LOGGER.error("Telegram error: " + str(e))
+        last_err = None
+        for attempt in range(_TELEGRAM_RETRIES):
+            try:
+                url = "https://api.telegram.org/bot" + BOT_TOKEN + "/sendMessage"
+                r = requests.post(url, json={"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"}, timeout=10)
+                if r.ok:
+                    LOGGER.info("Telegram OK (attempt %s)", attempt + 1)
+                    break
+                last_err = f"HTTP {r.status_code}: {r.text[:80]}"
+                LOGGER.error("Telegram fail (attempt %s): %s", attempt + 1, last_err)
+            except Exception as e:
+                last_err = str(e)[:160]
+                LOGGER.error("Telegram error (attempt %s): %s", attempt + 1, last_err)
+            if attempt + 1 < _TELEGRAM_RETRIES:
+                backoff = _TELEGRAM_RETRY_BACKOFF_S[min(attempt, len(_TELEGRAM_RETRY_BACKOFF_S) - 1)]
+                time.sleep(backoff)
+        else:
+            # All retries exhausted — write to dead-letter queue
             ok = False
+            LOGGER.error("Telegram dead-letter: all %s retries failed — %s", _TELEGRAM_RETRIES, last_err)
+            try:
+                _enqueue_dead_letter(text, last_err or "unknown")
+            except Exception as _dle:
+                LOGGER.error("Dead-letter write failed: %s", str(_dle)[:80])
     if DISCORD_URL:
-        try: requests.post(DISCORD_URL, json={"content": text}, timeout=10)
-        except: pass
+        try:
+            requests.post(DISCORD_URL, json={"content": text}, timeout=10)
+        except Exception:
+            pass
     return ok
+
+
+def _enqueue_dead_letter(text: str, error: str) -> None:
+    """Append a failed alert to ghost_state.telegram_dead_letter (last 50)."""
+    import json as _j
+    from core.db import db_conn
+    entry = {"ts": int(time.time()), "text": text[:500], "error": error[:200]}
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            cur.execute("SELECT val FROM ghost_state WHERE key='telegram_dead_letter'")
+            row = cur.fetchone()
+            queue = []
+            if row and row[0]:
+                try:
+                    queue = _j.loads(row[0])
+                except Exception:
+                    queue = []
+            if not isinstance(queue, list):
+                queue = []
+            queue.append(entry)
+            queue = queue[-50:]
+            cur.execute(
+                "INSERT INTO ghost_state(key,val) VALUES('telegram_dead_letter',%s) "
+                "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val", (_j.dumps(queue),))
+    except Exception:
+        pass  # best-effort; never raise into the caller
+
+
+def get_dead_letter_queue() -> list:
+    """Read dead-letter queue for /api/admin/telegram/dead-letter."""
+    import json as _j
+    from core.db import db_conn
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT val FROM ghost_state WHERE key='telegram_dead_letter'")
+            row = cur.fetchone()
+            if row and row[0]:
+                return _j.loads(row[0])
+    except Exception:
+        pass
+    return []
+
+
+def replay_dead_letter(index: int) -> dict:
+    """Replay one dead-letter entry by index (0 = oldest)."""
+    queue = get_dead_letter_queue()
+    if not queue or index < 0 or index >= len(queue):
+        return {"ok": False, "error": "invalid index"}
+    entry = queue[index]
+    ok = _send(entry.get("text", ""))
+    if ok:
+        # Remove from queue on success
+        import json as _j
+        from core.db import db_conn
+        queue.pop(index)
+        try:
+            with db_conn() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    "INSERT INTO ghost_state(key,val) VALUES('telegram_dead_letter',%s) "
+                    "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val", (_j.dumps(queue),))
+        except Exception:
+            pass
+    return {"ok": ok, "entry": entry, "remaining": len(queue)}
 
 def _fmt(v):
     if v is None: return "$0"

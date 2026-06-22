@@ -274,21 +274,45 @@ def list_articles(
 
 
 def refresh_symbol_sentiments() -> Dict[str, float]:
-    """Aggregate recent article sentiment per symbol into memory cache."""
+    """Aggregate recent article sentiment per symbol into memory cache.
+
+    Routes to the active sentiment engine:
+      - SENTIMENT_ENGINE=vader → VADER (deterministic, no API cost)
+      - SENTIMENT_ENGINE=claude or unset → Claude Haiku (existing behavior)
+      - Falls back to keyword scorer if primary is unavailable.
+    """
     from core.news import _fallback_scores, _score_with_claude, _symbol_sentiment
 
     ensure_news_tables()
     articles = list_articles(limit=200)
     scores: Dict[str, float] = {}
+
     if articles:
-        if os.getenv("ANTHROPIC_API_KEY", "").strip():
+        # Check for VADER engine first (P3 audit — deterministic, no cost)
+        engine = os.getenv("SENTIMENT_ENGINE", "claude").strip().lower()
+        if engine == "vader":
+            try:
+                from core.sentiment_vader import score_headlines_vader
+                scores = score_headlines_vader(articles)
+                if scores:
+                    LOGGER.info("VADER sentiment: %s symbols scored", len(scores))
+            except Exception as e:
+                LOGGER.warning("VADER sentiment failed: %s", str(e)[:80])
+
+        # Claude path (default)
+        if not scores and os.getenv("ANTHROPIC_API_KEY", "").strip():
             scores = _score_with_claude(articles) or {}
+
+        # Keyword fallback (always available)
         if not scores:
             scores = _fallback_scores(articles)
+
+        # Supplement with any pre-scored articles
         for row in articles:
             sym = row["symbol"]
             if row.get("sentiment") is not None and sym not in scores:
                 scores[sym] = float(row["sentiment"])
+
     _symbol_sentiment.clear()
     _symbol_sentiment.update(scores)
     return dict(scores)

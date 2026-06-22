@@ -334,7 +334,16 @@ async def start_squeeze_monitor() -> None:
                 "status": "error",
                 "error": str(exc)[:200],
             }
-        await asyncio.sleep(CHECK_INTERVAL_SEC)
+        # P3 (audit): degraded mode — double scan interval when APIs are down
+        _interval = CHECK_INTERVAL_SEC
+        try:
+            from core.degraded_mode import degraded_squeeze_interval_mult
+            _mult = degraded_squeeze_interval_mult()
+            if _mult > 1.0:
+                _interval = int(CHECK_INTERVAL_SEC * _mult)
+        except Exception:
+            pass
+        await asyncio.sleep(_interval)
 
 
 def _reset_alert_history_if_new_session() -> None:

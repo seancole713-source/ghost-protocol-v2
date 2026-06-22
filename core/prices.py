@@ -1,6 +1,9 @@
 """
 core/prices.py - Stock price fetcher (WOLF-only mode).
 Primary: Alpaca real-time trades. Fallback: yfinance (fast_info + history).
+
+P0-2 (audit): yfinance circuit breaker prevents wasted calls during persistent
+JSON-parse failures overnight. P1-4: staleness flag on cached prices.
 """
 import os, time, logging, requests
 from typing import Dict, Tuple, Any, Optional
@@ -10,8 +13,13 @@ POLYGON_KEY = os.getenv("POLYGON_API_KEY", "")
 TIMEOUT = float(os.getenv("PRICE_PROVIDER_TIMEOUT_S", "8.0"))
 STOCK_CACHE_TTL = int(os.getenv("STOCK_PRICE_TTL_S", "60"))  # refresh every 60s during market hours
 INTRADAY_QUOTE_TTL_S = int(os.getenv("INTRADAY_QUOTE_TTL_S", "900"))  # RTH O/H/L bars; trade overlay on cache hit
+# P2-6: force-refresh intraday OHLC if live price moves > this pct from cached values
+INTRADAY_MOVE_REFRESH_PCT = float(os.getenv("INTRADAY_MOVE_REFRESH_PCT", "2.0"))
 _mem_cache: Dict[str, Tuple[float, float]] = {}
 _intraday_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+
+# P0-2: circuit breaker for yfinance (wired in _yfinance below)
+from core.circuit_breaker import _yfinance_cb, _alpaca_cb
 
 # US equity regular hours — Central Time (see core.market_hours)
 from core.market_hours import (
@@ -42,6 +50,9 @@ def _cache_set(symbol, price):
 
 def _alpaca(symbol):
     """Real-time stock price from Alpaca — free tier, works on Railway."""
+    # P1-3: circuit breaker gate
+    if not _alpaca_cb.allow():
+        return None
     try:
         key = os.getenv("ALPACA_KEY_ID", "")
         secret = os.getenv("ALPACA_SECRET_KEY", "")
@@ -53,13 +64,18 @@ def _alpaca(symbol):
             timeout=TIMEOUT,
         )
         if r.status_code == 200:
+            _alpaca_cb.record_success()
             return float(r.json()["trade"]["p"])
+        _alpaca_cb.record_failure()
     except Exception:
-        pass
+        _alpaca_cb.record_failure()
     return None
 
 
 def _yfinance(symbol):
+    # P0-2: circuit breaker — skip yfinance entirely when circuit is open
+    if not _yfinance_cb.allow():
+        return None
     try:
         import yfinance as yf
         tk = yf.Ticker(symbol)
@@ -68,26 +84,39 @@ def _yfinance(symbol):
             fi = tk.fast_info
             live = getattr(fi, 'last_price', None) or getattr(fi, 'lastPrice', None)
             if live and float(live) > 0:
+                _yfinance_cb.record_success()
                 return float(live)
         except Exception:
             pass
         # Fallback: latest close (pre/post market or closed)
         h = tk.history(period="2d")
         if not h.empty:
+            _yfinance_cb.record_success()
             return float(h["Close"].iloc[-1])
+        # No data but no exception — count as failure (empty history)
+        _yfinance_cb.record_failure()
+        return None
     except Exception:
+        _yfinance_cb.record_failure()
         return None
 
 
-def get_stock_price(symbol):
+def get_stock_price(symbol, *, with_staleness: bool = False):
+    """Return live price. When with_staleness=True, returns (price, stale_flag)."""
     cached = _cache_get(symbol)
     if cached:
-        return cached
+        return (cached, False) if with_staleness else cached
     # Alpaca = real-time, yfinance = prev-close fallback
     price = _alpaca(symbol) or _yfinance(symbol)
     if price:
         _cache_set(symbol, price)
-    return price
+        return (price, False) if with_staleness else price
+    # All providers failed — serve stale cache if available
+    if symbol in _mem_cache:
+        stale_price, _ts = _mem_cache[symbol]
+        LOGGER.debug("price %s: all providers failed, serving stale cache", symbol)
+        return (stale_price, True) if with_staleness else stale_price
+    return (None, True) if with_staleness else None
 
 
 def get_price(symbol, asset_type=None):
@@ -303,8 +332,24 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
                 if out.get("previous_close") and out["previous_close"] > 0:
                     out["change_abs"] = round(out["price"] - out["previous_close"], 4)
                     out["change_pct"] = round(out["change_abs"] / out["previous_close"] * 100, 3)
-            out["as_of_ts"] = int(time.time())
-            return out
+            # P2-6: force-refresh OHLC if live price moved significantly from cached values
+            cached_high = out.get("today_high")
+            cached_low = out.get("today_low")
+            if trade and cached_high and cached_low:
+                move_from_high = abs(float(trade) - float(cached_high)) / float(cached_high) * 100 if float(cached_high) > 0 else 0
+                move_from_low = abs(float(trade) - float(cached_low)) / float(cached_low) * 100 if float(cached_low) > 0 else 0
+                if max(move_from_high, move_from_low) >= INTRADAY_MOVE_REFRESH_PCT:
+                    LOGGER.info("intraday %s: live price moved %.1f%% from cached OHLC, force-refreshing",
+                                sym, max(move_from_high, move_from_low))
+                    del _intraday_cache[sym]  # force full refresh below
+                    cached = None
+            if cached is not None:
+                # P1-4: staleness flag — cached data is within TTL but not live-refreshed
+                cache_age_s = int(time.time() - cached[0])
+                out["data_stale"] = cache_age_s > (INTRADAY_QUOTE_TTL_S / 2)
+                out["cache_age_s"] = cache_age_s
+                out["as_of_ts"] = int(time.time())
+                return out
 
     try:
         from zoneinfo import ZoneInfo

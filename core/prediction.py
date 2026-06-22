@@ -1002,6 +1002,15 @@ def _predict_symbol_ex(symbol, asset_type, regime, scores_out=None):
     if _is_premarket() and _premarket_scan_enabled():
         _floor = min(0.98, _floor + _premarket_floor_bump())
         score_vector["premarket_floor_bump"] = _premarket_floor_bump()
+    # P3 (audit): degraded mode — raise confidence floor when >2 APIs are circuit-broken
+    try:
+        from core.degraded_mode import degraded_conf_bump
+        _deg_bump = degraded_conf_bump()
+        if _deg_bump > 0:
+            _floor = min(0.98, _floor + _deg_bump)
+            score_vector["degraded_conf_bump"] = _deg_bump
+    except Exception:
+        pass
     if confidence < _floor:
         score_vector["confidence"] = float(confidence)
         score_vector["confidence_floor"] = float(_floor)

@@ -4,6 +4,8 @@ core/news.py - News brain with Claude-powered sentiment scoring.
 Fetches Finnhub company-news for watchlist symbols (rotating batch each cycle).
 Manual imports land in ghost_news_articles via core/news_store.py.
 Scores headlines via Claude Haiku (or keyword fallback); prediction reads get_symbol_sentiment().
+
+P1-3 (audit): circuit breakers on Finnhub and Anthropic to prevent cascading waste.
 """
 import os, time, logging, json, requests
 from typing import List, Dict, Optional
@@ -11,6 +13,9 @@ from typing import List, Dict, Optional
 LOGGER = logging.getLogger("ghost.news")
 FINNHUB_KEY = os.getenv("FINNHUB_API_KEY", "")
 ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+
+# P1-3: circuit breakers for external API calls
+from core.circuit_breaker import _finnhub_cb, _anthropic_cb
 
 BEARISH_WORDS = [
     "crash","collapse","fall","drop","decline","loss","bankrupt","fraud",
@@ -97,6 +102,10 @@ def _score_with_claude(articles: List[Dict]) -> Dict[str, float]:
     )
 
     try:
+        # P1-3: circuit breaker gate for Anthropic
+        if not _anthropic_cb.allow():
+            LOGGER.info("Claude sentiment skipped: Anthropic circuit breaker open")
+            return {}
         resp = requests.post(
             "https://api.anthropic.com/v1/messages",
             headers={
@@ -112,6 +121,7 @@ def _score_with_claude(articles: List[Dict]) -> Dict[str, float]:
             timeout=15,
         )
         if resp.status_code == 200:
+            _anthropic_cb.record_success()
             raw = resp.json()["content"][0]["text"].strip()
             start = raw.find("{")
             end = raw.rfind("}") + 1
@@ -121,8 +131,10 @@ def _score_with_claude(articles: List[Dict]) -> Dict[str, float]:
                 LOGGER.info(f"Claude sentiment: {clean}")
                 return clean
         else:
+            _anthropic_cb.record_failure()
             LOGGER.warning(f"Claude API {resp.status_code}: {resp.text[:100]}")
     except Exception as e:
+        _anthropic_cb.record_failure()
         LOGGER.warning(f"Claude sentiment error: {e}")
     return {}
 
@@ -142,6 +154,9 @@ def _fetch_finnhub_stock(symbol: str) -> List[Dict]:
     global _finnhub_fail_streak
     if not FINNHUB_KEY:
         return []
+    # P1-3: circuit breaker gate
+    if not _finnhub_cb.allow():
+        return []
     try:
         import datetime
         today = datetime.date.today().isoformat()
@@ -158,6 +173,7 @@ def _fetch_finnhub_stock(symbol: str) -> List[Dict]:
                 if _finnhub_fail_streak >= 3:
                     LOGGER.info("Finnhub recovered after %s consecutive failures", _finnhub_fail_streak)
                 _finnhub_fail_streak = 0
+                _finnhub_cb.record_success()
                 return [{"title": a["headline"], "symbols": [symbol], "source": "finnhub_stock"}
                         for a in r.json()[:5] if "headline" in a]
             except requests.RequestException as e:
@@ -165,6 +181,7 @@ def _fetch_finnhub_stock(symbol: str) -> List[Dict]:
                     time.sleep(0.2)
                     continue
                 _finnhub_fail_streak += 1
+                _finnhub_cb.record_failure()
                 if _finnhub_fail_streak >= 3:
                     LOGGER.warning(
                         "Finnhub stock fetch failing %s (streak=%s): %s",
@@ -181,6 +198,7 @@ def _fetch_finnhub_stock(symbol: str) -> List[Dict]:
                     )
                 return []
     except Exception:
+        _finnhub_cb.record_failure()
         return []
 
 

@@ -1,9 +1,12 @@
 """
 core/scheduler.py - Single background task runner for Ghost Protocol v2.
 One scheduler. All tasks registered here. No duplicates.
+
+P2-2 (audit): per-task timeout via asyncio.wait_for prevents one slow task
+from stalling all background jobs.
 """
 import asyncio, logging, time
-from typing import Callable, Dict, List
+from typing import Callable, Dict, List, Optional
 from dataclasses import dataclass, field
 
 LOGGER = logging.getLogger("ghost.scheduler")
@@ -16,15 +19,27 @@ class Task:
     last_run: float = 0.0
     run_count: int = 0
     error_count: int = 0
+    timeout_count: int = 0
     last_error: str = ""
+    # P2-2: per-task timeout (env-tunable, default 120s)
+    timeout_s: Optional[float] = None
 
 _tasks: Dict[str, Task] = {}
 _running = False
 
-def register(name: str, fn: Callable, interval_s: int):
+# P2-2: default task timeout
+_DEFAULT_TASK_TIMEOUT_S = float(
+    __import__("os").getenv("SCHEDULER_TASK_TIMEOUT_S", "120")
+)
+
+
+def register(name: str, fn: Callable, interval_s: int, timeout_s: Optional[float] = None):
     """Register a background task. Call before start()."""
-    _tasks[name] = Task(name=name, fn=fn, interval_s=interval_s)
-    LOGGER.info(f"Task registered: {name} every {interval_s}s")
+    _tasks[name] = Task(
+        name=name, fn=fn, interval_s=interval_s,
+        timeout_s=timeout_s if timeout_s is not None else _DEFAULT_TASK_TIMEOUT_S,
+    )
+    LOGGER.info(f"Task registered: {name} every {interval_s}s timeout={_tasks[name].timeout_s}s")
 
 def start():
     """Start the scheduler loop in a background asyncio task."""
@@ -46,18 +61,24 @@ async def _loop():
         await asyncio.sleep(10)
 
 async def _run_task(task: Task):
-    """Run a single task, catch errors, update metadata."""
+    """Run a single task with timeout, catch errors, update metadata."""
     try:
         task.last_run = time.time()
-        if asyncio.iscoroutinefunction(task.fn):
-            await task.fn()
+        coro = task.fn() if asyncio.iscoroutinefunction(task.fn) else asyncio.get_event_loop().run_in_executor(None, task.fn)
+        timeout = task.timeout_s if task.timeout_s and task.timeout_s > 0 else None
+        if timeout:
+            await asyncio.wait_for(coro, timeout=timeout)
         else:
-            await asyncio.get_event_loop().run_in_executor(None, task.fn)
+            await coro
         task.run_count += 1
         LOGGER.debug(f"Task {task.name} completed (run #{task.run_count})")
+    except asyncio.TimeoutError:
+        task.timeout_count += 1
+        task.last_error = f"timeout after {task.timeout_s}s"
+        LOGGER.error(f"Task {task.name} TIMEOUT after {task.timeout_s}s (timeout #{task.timeout_count})")
     except Exception as e:
         task.error_count += 1
-        task.last_error = str(e)
+        task.last_error = str(e)[:200]
         LOGGER.error(f"Task {task.name} failed: {e}")
 
 def status() -> List[dict]:
@@ -66,11 +87,13 @@ def status() -> List[dict]:
     return [{
         "name": t.name,
         "interval_s": t.interval_s,
+        "timeout_s": t.timeout_s,
         "last_run_ago_s": int(now - t.last_run) if t.last_run else None,
         "run_count": t.run_count,
         "error_count": t.error_count,
+        "timeout_count": t.timeout_count,
         "last_error": t.last_error or None,
-        "healthy": t.error_count == 0 or t.run_count > t.error_count,
+        "healthy": (t.error_count == 0 and t.timeout_count == 0) or t.run_count > (t.error_count + t.timeout_count),
     } for t in _tasks.values()]
 
 def stop():
