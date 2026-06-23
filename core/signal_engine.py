@@ -1104,6 +1104,13 @@ def _try_yfinance_ohlcv(symbol, period):
     Returns the standard row shape {ts, open, high, low, close, volume}
     or None if all strategies fail.
     """
+    from core.circuit_breaker import _yfinance_cb
+
+    # Circuit breaker gate — skip yfinance entirely when circuit is open
+    if not _yfinance_cb.allow():
+        LOGGER.info(f"yfinance {symbol}: circuit OPEN, skipping")
+        return None
+
     import datetime as _dt
     yf_period_primary = {'3m': '3mo', '6m': '6mo', '1y': '1y', '2y': '2y'}.get(period, '1y')
     period_candidates = [yf_period_primary]
@@ -1118,16 +1125,28 @@ def _try_yfinance_ohlcv(symbol, period):
             rows = _yf_rows_from_history(tk, period=p)
             if rows:
                 LOGGER.info(f"yfinance {symbol}: {len(rows)} bars (period={p})")
+                _yfinance_cb.record_success()
                 return rows
         end = _dt.datetime.now(_dt.timezone.utc)
         start = end - _dt.timedelta(days=240)
         rows = _yf_rows_from_history(tk, start=start, end=end)
         if rows:
             LOGGER.info(f"yfinance {symbol}: {len(rows)} bars (start={start.date()})")
+            _yfinance_cb.record_success()
             return rows
+        # Empty history = no data for ticker (delisted/thin) — not a failure
         return None
     except Exception as e:
-        LOGGER.warning(f"yfinance fallback {symbol}: {e}")
+        es = str(e)
+        # 429 / rate-limit = real outage, count as breaker failure
+        if "429" in es or "Too Many Requests" in es or "rate limit" in es.lower():
+            LOGGER.warning(f"yfinance {symbol}: RATE LIMITED (429) — counting as breaker failure")
+            _yfinance_cb.record_failure()
+        elif "connection" in es.lower() or "timeout" in es.lower() or "timed out" in es.lower():
+            LOGGER.warning(f"yfinance {symbol}: connection/timeout — counting as breaker failure: {e}")
+            _yfinance_cb.record_failure()
+        else:
+            LOGGER.warning(f"yfinance fallback {symbol}: {e}")
         return None
 
 
@@ -1161,7 +1180,11 @@ def _yf_rows_from_history(tk, period=None, start=None, end=None):
             except Exception:
                 continue
         return rows if rows else None
-    except Exception:
+    except Exception as e:
+        es = str(e)
+        # Re-raise rate-limit errors so the caller can count them as breaker failures
+        if "429" in es or "Too Many Requests" in es or "rate limit" in es.lower():
+            raise
         return None
 
 

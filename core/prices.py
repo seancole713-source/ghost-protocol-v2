@@ -100,10 +100,18 @@ def _yfinance(symbol):
             return float(h["Close"].iloc[-1])
         # Empty history is expected for delisted/thin symbols — not a failure
         return None
-    except Exception:
-        # JSON parse errors overnight are expected — don't count as failures
-        # Only count connection/timeout errors as real failures
-        _yfinance_cb.record_failure()
+    except Exception as e:
+        es = str(e)
+        # 429 / rate-limit / connection errors = real outage, count as breaker failure
+        if "429" in es or "Too Many Requests" in es or "rate limit" in es.lower():
+            LOGGER.warning(f"yfinance {symbol}: RATE LIMITED (429) — counting as breaker failure")
+            _yfinance_cb.record_failure()
+        elif "connection" in es.lower() or "timeout" in es.lower() or "timed out" in es.lower():
+            LOGGER.warning(f"yfinance {symbol}: connection/timeout — counting as breaker failure: {e}")
+            _yfinance_cb.record_failure()
+        else:
+            # JSON parse errors overnight are expected — don't count as failures
+            LOGGER.debug(f"yfinance {symbol}: non-critical error: {e}")
         return None
 
 
