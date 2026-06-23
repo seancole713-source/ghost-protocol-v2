@@ -3445,10 +3445,10 @@ def test_short_trend_direction():
 def test_deploy_version_reports_bumped_version():
     out = wolf_app.deploy_version()
     assert out["ok"] is True
-    assert out["app_version"] == "2.1.0"
+    assert out["app_version"] == "2.5.0"
     assert out["_pr_version"] == wolf_app._RUNNING_PR_VERSION
-    assert wolf_app.APP_VERSION == "2.1.0"
-    assert wolf_app.APP.version == "2.1.0"
+    assert wolf_app.APP_VERSION == "2.5.0"
+    assert wolf_app.APP.version == "2.5.0"
 
 
 # ── fix/cockpit-ghost-rows: portfolio API filters ZZE2E/test rows ───────

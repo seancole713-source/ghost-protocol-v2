@@ -4,27 +4,20 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Ghost Protocol — WOLF Command Center</title>
+<link rel="stylesheet" href="/static/base.css">
 <style>
-*{margin:0;padding:0;box-sizing:border-box}
-body{background:#0a0a0a;color:#fff;font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;min-height:100vh;line-height:1.4}
-a{color:#60a5fa;text-decoration:none}
-a:hover{text-decoration:underline}
-code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;color:#aaa;background:#1a1a1a;padding:1px 5px;border-radius:3px}
+/* ─── Cockpit-specific overrides ─── */
+body{min-height:100vh;line-height:1.4}
+.main{max-width:1180px;padding:24px 24px 40px}
+section.block{margin-bottom:32px}
+.sec-label{margin-bottom:12px}
 
-/* ─── Top bar ─── */
-.topbar{display:flex;align-items:center;justify-content:space-between;padding:14px 24px;background:#111;border-bottom:1px solid #1e1e1e;position:sticky;top:0;z-index:100}
-.logo{font-size:17px;font-weight:800;letter-spacing:2px}
-.logo span{color:#ff3b3b}
-.top-right{display:flex;align-items:center;gap:14px;font-size:13px;color:#888}
+/* ─── Market badge ─── */
 .mkt-badge{font-size:11px;font-weight:700;letter-spacing:.5px;padding:4px 10px;border-radius:20px;background:#1a1a1a;border:1px solid #2a2a2a}
 .mkt-badge.open{background:#071a0d;border-color:#14532d;color:#86efac}
 .mkt-badge.after{background:#1a1206;border-color:#7c5912;color:#fbbf24}
 .mkt-badge.closed{background:#1a0707;border-color:#5b1a1a;color:#fca5a5}
-
-/* ─── Main container ─── */
-.main{max-width:1180px;margin:0 auto;padding:24px 24px 40px}
-section.block{margin-bottom:32px}
-.sec-label{font-size:10px;font-weight:700;letter-spacing:2px;color:#666;text-transform:uppercase;margin-bottom:12px}
+.top-right{display:flex;align-items:center;gap:14px;font-size:13px;color:#888}
 
 /* ─── Ghost Score gauge ─── */
 .ghost-score-wrap{background:#111;border:1px solid #1e1e1e;border-radius:20px;padding:20px 24px;margin-bottom:18px;display:grid;grid-template-columns:auto 1fr;gap:24px;align-items:center;min-height:168px}
@@ -333,7 +326,7 @@ section.block{margin-bottom:32px}
 .footer{background:#111;border-top:1px solid #1e1e1e;padding:12px 24px;display:flex;gap:20px;font-size:11px;color:#444;flex-wrap:wrap;margin-top:40px}
 .footer b{color:#666}
 
-/* ─── Design polish v2 (additive overrides — rounded cards, depth, KPI type) ─── */
+/* ─── Cockpit design polish (additive overrides) ─── */
 body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) fixed,#0a0a0a}
 .card,.perf-card,.chart-wrap,.stats-grid,.ghost-score-wrap,.hero,.short-tile,.port-form{
   border-radius:16px;border-color:#23232e;
@@ -344,10 +337,7 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
   box-shadow:inset 0 1px 0 rgba(255,255,255,.04), 0 12px 30px rgba(0,0,0,.45)}
 .perf-val,.gs-score{letter-spacing:-.6px}
 .perf-lbl,.sec-label,.gs-side-head{color:#7c7c90}
-.sec-label{position:relative;padding-left:12px}
-.sec-label::before{content:"";position:absolute;left:0;top:1px;bottom:1px;width:3px;border-radius:2px;
-  background:linear-gradient(180deg,#8b5cf6,#6d28d9)}
-/* KPI delta chips + outcome donut (design v2) */
+/* KPI delta chips + outcome donut */
 .perf-delta{font-size:11px;font-weight:700;letter-spacing:0;margin-left:7px;vertical-align:middle}
 .perf-delta.up{color:#22c55e}
 .perf-delta.down{color:#ff3b3b}
@@ -357,8 +347,7 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
 .donut-center{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none}
 .donut-total{font-size:30px;font-weight:800;letter-spacing:-.6px}
 .donut-total-lbl{font-size:11px;color:#888}
-/* Section consistency (roadmap #2d): frame the bare list sections so they match
-   the carded sections' depth/radius. */
+/* Section consistency */
 #sh-list, .pj-list, #pl-open, #pl-resolved, #pl-cycles, #pl-cycle-detail{background:#0d0d0d;border:1px solid #23232e;border-radius:16px;padding:6px 12px;
   box-shadow:inset 0 1px 0 rgba(255,255,255,.03)}
 #sh-list .tbl, .pj-list .empty, #pl-open .tbl, #pl-resolved .tbl, #pl-cycles .tbl{margin:6px 0}
@@ -374,11 +363,9 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
 #pl-cycle-detail{display:none;margin-top:12px}
 #pl-cycle-detail.open{display:block}
 .pl-detail-head{font-size:11px;color:#888;margin:8px 4px 10px}
-/* Live auto-refresh indicator (roadmap #3c) */
+/* Live auto-refresh indicator */
 .auto-status{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:700;letter-spacing:.5px;color:#86efac;background:#0a2a14;border:1px solid #14532d;border-radius:14px;padding:4px 10px;margin-right:8px;white-space:nowrap;vertical-align:middle}
 .auto-status.paused{color:#facc15;background:#1a1a06;border-color:#5b4112}
-.deploy-badge{font-size:10px;font-weight:700;letter-spacing:.4px;color:#94a3b8;background:#111827;border:1px solid #334155;border-radius:999px;padding:3px 9px;margin-right:8px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-.deploy-badge.unset{color:#64748b;border-color:#475569}
 .engine-badge{display:inline-block;font-size:10px;font-weight:700;letter-spacing:.3px;border-radius:999px;padding:3px 10px;margin-top:8px}
 .engine-badge.live{color:#86efac;background:#0a2a14;border:1px solid #14532d}
 .engine-badge.paused{color:#facc15;background:#1a1a06;border:1px solid #5b4112}
@@ -1214,12 +1201,14 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
   <span style="margin-left:auto;color:#333">Refresh: 60s · Price feed: Alpaca → Polygon → yfinance → Stooq</span>
 </div>
 
+<script src="/static/ghost.js"></script>
 <script>
 /* ═══════════════════════════════════════════════════════════════
  * Cockpit JS — WOLF command center
- * Each render* function is a pure (input → DOM mutation). The
- * single async load() is the orchestrator; it fetches everything
- * in parallel and dispatches to renderers.
+ * Shared helpers (escHtml, fmtTsIso, fmtTimeAgo, fmtDateShort,
+ * fmtPrice, fmtMoney, fmtPct, fmtInt, fmtVol, fmtUsd, _fetchJson,
+ * renderDeployMeta, renderModelTable, gateBadge, _outcomeBadge,
+ * _pjPct, timeLeft) loaded from /static/ghost.js
  * ═══════════════════════════════════════════════════════════════ */
 
 const _charts = {};                              // Chart.js instance cache
@@ -1237,23 +1226,22 @@ function ensureChartJs(){
   });
   return _chartJsReady;
 }
-// Vertical gradient fill for area charts (audit design v2) — color at top
-// fading to transparent at the bottom, the signature analytics-dashboard look.
+// Vertical gradient fill for area charts
 function _areaGradient(ctx, hex){
   try{
     var h = (ctx.canvas && ctx.canvas.height) ? ctx.canvas.height : 280;
     var g = ctx.createLinearGradient(0, 0, 0, h);
-    g.addColorStop(0, hex + '66');   // ~40% at top
-    g.addColorStop(1, hex + '00');   // transparent at bottom
+    g.addColorStop(0, hex + '66');
+    g.addColorStop(1, hex + '00');
     return g;
   }catch(e){ return hex + '22'; }
 }
-// KPI deltas (design v2): real period-over-period chips only — no fabrication.
+// KPI deltas: real period-over-period chips only — no fabrication.
 function _wrDelta(trades){
   var resolved = (trades || []).filter(function(t){ return t.outcome === 'WIN' || t.outcome === 'LOSS'; });
-  if(resolved.length < 20) return null;   // need two full windows to compare
+  if(resolved.length < 20) return null;
   function wr(arr){ if(!arr.length) return null; var w = arr.filter(function(t){ return t.outcome === 'WIN'; }).length; return w / arr.length * 100; }
-  var recent = wr(resolved.slice(0, 10)), prior = wr(resolved.slice(10, 20));   // trades newest-first
+  var recent = wr(resolved.slice(0, 10)), prior = wr(resolved.slice(10, 20));
   if(recent == null || prior == null) return null;
   return Math.round(recent - prior);
 }
@@ -1292,18 +1280,6 @@ function renderOutcomeDonut(recent){
 }
 let _chartRange = '1d';
 let _newsCat = 'all';
-
-/* ─── Helpers ─── */
-function escHtml(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/'/g,'&#39;').replace(/"/g,'&quot;')}
-function fmtMoney(v,places){if(v==null||isNaN(v))return '—';var n=Number(v);if(Math.abs(n)>=1e9)return '$'+(n/1e9).toFixed(2)+'B';if(Math.abs(n)>=1e6)return '$'+(n/1e6).toFixed(2)+'M';if(Math.abs(n)>=1e3)return '$'+(n/1e3).toFixed(2)+'K';return '$'+n.toFixed(places==null?2:places)}
-function fmtPrice(v){if(v==null||isNaN(v))return '—';var n=Number(v);if(n>=100)return '$'+n.toFixed(2);if(n>=1)return '$'+n.toFixed(3);return '$'+n.toFixed(6)}
-function fmtPct(v,places){if(v==null||isNaN(v))return '—';var n=Number(v);return(n>=0?'+':'')+n.toFixed(places==null?2:places)+'%'}
-function fmtInt(v){if(v==null||isNaN(v))return '—';return Number(v).toLocaleString('en-US')}
-function fmtVol(v){if(v==null||isNaN(v))return '—';var n=Number(v);if(n>=1e9)return (n/1e9).toFixed(2)+'B';if(n>=1e6)return (n/1e6).toFixed(2)+'M';if(n>=1e3)return (n/1e3).toFixed(2)+'K';return n.toLocaleString('en-US')}
-function fmtTsIso(ts){if(ts==null||ts===0)return '—';var s=Number(ts);if(s>1e12)s=Math.floor(s/1000);var d=new Date(s*1000);if(isNaN(d.getTime()))return '—';return d.toISOString().replace('T',' ').slice(0,19)+' UTC'}
-function fmtDateShort(ts){if(ts==null||ts===0)return '—';var s=Number(ts);if(s>1e12)s=Math.floor(s/1000);var d=new Date(s*1000);if(isNaN(d.getTime()))return '—';return d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}
-function fmtTimeAgo(ts){if(!ts)return '';var s=Math.floor(Date.now()/1000)-Number(ts);if(s<60)return 'just now';if(s<3600)return Math.floor(s/60)+'m ago';if(s<86400)return Math.floor(s/3600)+'h ago';return Math.floor(s/86400)+'d ago'}
-function timeLeft(ts){var s=(ts||0)-(Date.now()/1000);if(s<=0)return 'Expired';var h=Math.floor(s/3600);if(h>=24)return Math.floor(h/24)+'d left';return h+'h left'}
 
 /* ─── Ghost Score gauge ─── */
 // SVG arc helper: returns the path "d" for an arc from 0% to pct%
@@ -1575,6 +1551,10 @@ function renderGhostScore(gs, watching, truth){
   }
   if(gs.trade_note){
     parts.unshift(gs.trade_note);
+  }
+  // Always show the confidence floor so investors can see gate tightness
+  if(gs.confidence_floor != null){
+    parts.push('conf floor ' + Math.round(gs.confidence_floor * 100) + '%');
   }
   metaEl.innerHTML = parts.length ? parts.join(' · ') : 'No input data';
   if(subEl){
@@ -3726,9 +3706,7 @@ function renderCatalysts(ctx, analyst, news){
 })();
 
 /* ─── Orchestrator (staged: hero first, below-fold lazy) ─── */
-function _fetchJson(url, fallback){
-  return fetch(url).then(function(r){ return r.json(); }).catch(function(){ return fallback; });
-}
+// _fetchJson is loaded from /static/ghost.js (checks response.ok before .json())
 
 async function _loadCoreContext(){
   var ctx = await _fetchJson('/api/cockpit/context', {ok:false});
@@ -3749,27 +3727,8 @@ async function _loadCoreContext(){
   return {h: h, stats: stats, dir: dir, v3: v3, activity: null, deploy: null};
 }
 
-function _renderDeployBadge(deploy){
-  var el = document.getElementById('deploy-badge');
-  if(!el) return;
-  if(!deploy || !deploy.git_sha || deploy.git_sha === 'unset'){
-    el.className = 'deploy-badge unset';
-    el.textContent = 'deploy unset';
-    el.title = 'Set RAILWAY_GIT_COMMIT_SHA on deploy · check /version';
-    return;
-  }
-  el.className = 'deploy-badge';
-  var short = deploy.git_sha_short || deploy.git_sha.slice(0, 7);
-  el.textContent = 'deploy ' + short;
-  el.title = 'git ' + deploy.git_sha
-    + (deploy.deploy_id && deploy.deploy_id !== 'unset' ? '\ndeploy ' + deploy.deploy_id : '')
-    + (deploy.app_version ? '\nv' + deploy.app_version : '');
-  var metaBuild = document.querySelector('meta[name="ghost-build"]');
-  if(metaBuild && metaBuild.getAttribute('content') && metaBuild.getAttribute('content') !== short){
-    el.className = 'deploy-badge unset';
-    el.title = 'Cached page build ' + metaBuild.getAttribute('content') + ' · live ' + short + '\nHard refresh (Cmd+Shift+R)';
-  }
-}
+// _renderDeployBadge is now renderDeployMeta from /static/ghost.js
+function _renderDeployBadge(deploy){ renderDeployMeta(deploy, 'deploy-badge'); }
 
 function _renderEngineBadge(v3){
   var el = document.getElementById('engine-badge');
@@ -3843,6 +3802,60 @@ async function loadCockpitSecondary(ctxPack, watching){
     console.error(e);
   }
 }
+
+/* ─── WebSocket live feed (PR #66) ─── */
+var _ws = null, _wsReconnectTimer = null;
+function _connectWebSocket(){
+  if(_ws && _ws.readyState === WebSocket.OPEN) return;
+  var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  var url = proto + '//' + location.host + '/ws/cockpit';
+  try{
+    _ws = new WebSocket(url);
+    _ws.onopen = function(){
+      // Start ping loop — server responds with squeeze + WOLF price snapshot
+      _ws._pingInterval = setInterval(function(){
+        if(_ws && _ws.readyState === WebSocket.OPEN) _ws.send('ping');
+      }, 30000);
+    };
+    _ws.onmessage = function(ev){
+      try{
+        var data = JSON.parse(ev.data);
+        if(data.type === 'pong'){
+          // Update WOLF price if provided (server key is "wol f_price" — note the space)
+          if(data["wol f_price"] != null && window._lastHeroPrice){
+            window._lastHeroPrice.price = data["wol f_price"];
+            window._lastHeroPrice.ts = data.ts;
+            renderHero(window._lastHeroPrice, window._lastWatching, window._ghostTruthCtx);
+          }
+          // Squeeze: server sends only picks[:5] + radar_active — not the full
+          // /api/squeeze/picks shape that _renderSqueezePicks expects. Merge into
+          // _sqLastData so the next full poll has context, but don't render partial.
+          if(data.squeeze){
+            if(!window._sqLastData) window._sqLastData = {};
+            if(data.squeeze.picks) window._sqLastData.picks = data.squeeze.picks;
+            if(data.squeeze.radar_active != null) window._sqLastData.radar_active = data.squeeze.radar_active;
+          }
+        }
+      }catch(e){}
+    };
+    _ws.onclose = function(){
+      if(_ws && _ws._pingInterval) clearInterval(_ws._pingInterval);
+      _ws = null;
+      // Reconnect after 10s
+      if(!document.hidden){
+        _wsReconnectTimer = setTimeout(_connectWebSocket, 10000);
+      }
+    };
+    _ws.onerror = function(){};
+  }catch(e){}
+}
+// Reconnect on visibility restore
+document.addEventListener('visibilitychange', function(){
+  if(!document.hidden && (!_ws || _ws.readyState !== WebSocket.OPEN)){
+    if(_wsReconnectTimer) clearTimeout(_wsReconnectTimer);
+    _connectWebSocket();
+  }
+});
 
 async function load(){
   try{
@@ -3921,7 +3934,7 @@ document.addEventListener('visibilitychange', function(){
 var _pjOffset = 0;
 var _pjLimit = 25;
 
-function _pjPct(v){ return (v === null || v === undefined) ? '—' : (v >= 0 ? '+' : '') + v.toFixed(2) + '%'; }
+// _pjPct and _outcomeBadge are loaded from /static/ghost.js
 function _pjDate(ts){ if(!ts) return '—'; return new Date(ts*1000).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'2-digit'}); }
 
 function _renderPjVerdict(m, v){
@@ -3970,12 +3983,7 @@ function _renderPjMetrics(m){
     cell('BRIER (live picks)', br) + '</div>';
 }
 
-function _outcomeBadge(o){
-  var map = {WIN:['#1ec77d','WIN'], LOSS:['#ff4d4f','LOSS'], EXPIRED:['#8b96a8','EXP'], WITHDRAWN:['#ffb84d','WDR']};
-  if(!o) return '<span style="color:#f5a623;font-weight:600">OPEN</span>';
-  var x = map[o] || ['#8b96a8', o];
-  return '<span style="color:' + x[0] + ';font-weight:700">' + x[1] + '</span>';
-}
+// _outcomeBadge is loaded from /static/ghost.js
 
 function _renderPjList(picks, append){
   var el = document.getElementById('pj-list');
@@ -4342,6 +4350,7 @@ setInterval(function(){
 }, 1000);
 
 load();
+_connectWebSocket();
 _deferBelowFold(function(){
   _applyDfViewMode();
   loadPortfolio();

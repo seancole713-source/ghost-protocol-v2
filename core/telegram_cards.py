@@ -13,6 +13,15 @@ from typing import Any, Dict, List, Optional
 NL = chr(10)
 
 
+def _app_version() -> str:
+    """Best-effort app version for Telegram card model-version line."""
+    try:
+        from wolf_app import APP_VERSION
+        return str(APP_VERSION)
+    except Exception:
+        return "v3.2"
+
+
 def conviction_from_confidence(confidence: float) -> str:
     """HIGH/MEDIUM/LOW band for the headline conviction tag."""
     c = float(confidence or 0)
@@ -74,7 +83,7 @@ def format_daily_card(d: Dict[str, Any]) -> str:
     lines = [
         "<b>GHOST PROTOCOL | WOLF Daily Card</b>",
         "Date: " + str(d.get("date", "")),
-        "Model Version: " + str(d.get("model_version", "v3.2")),
+        "Model Version: " + str(d.get("model_version") or _app_version()),
         "",
         "<b>ACTION:</b> " + str(action),
         "",

@@ -44,7 +44,7 @@ def _cron_ok(provided: str, strict: bool = False) -> bool:
 # Semantic app version. Bumped to 2.1.0 for the audit batch: kill conditions +
 # enforcement, full pick journal, realized P&L, security hardening, regime tag,
 # Telegram cards, admin lineage/audit, rate limiting, short-interest wiring.
-APP_VERSION = "2.1.0"
+APP_VERSION = "2.5.0"
 
 _COVERAGE_RETRAIN_RUNNING = False
 _RETRAIN_JOB_LOCK = threading.Lock()
