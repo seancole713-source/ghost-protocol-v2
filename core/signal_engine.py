@@ -76,6 +76,22 @@ def _v3_train_symbol_delay_sec() -> float:
     return max(0.0, float(os.getenv("V3_TRAIN_SYMBOL_DELAY_SEC", "0.35")))
 
 
+def _v3_scan_symbol_delay_sec() -> float:
+    """Pause between symbols during live scan to avoid API rate-limit storms.
+
+    Default 0.5s — with 43 symbols that adds ~21s to the scan but prevents
+    the 429 cascade that kills all 5 feed tiers simultaneously."""
+    return max(0.0, float(os.getenv("V3_SCAN_SYMBOL_DELAY_SEC", "0.5")))
+
+
+def _v3_adx_trending_threshold() -> float:
+    """ADX threshold for 'trending' classification in regime gate.
+
+    Default 15 (lowered from hardcoded 20). Below this, the market is
+    considered choppy/sideways and BUY signals are blocked."""
+    return max(5.0, float(os.getenv("V3_ADX_TRENDING_THRESHOLD", "15")))
+
+
 def _v3_watchlist_peer_pool_enabled() -> bool:
     return (os.getenv("V3_WATCHLIST_PEER_POOL", "on") or "on").strip().lower() not in (
         "0", "off", "false", "no",
@@ -735,7 +751,7 @@ def _calculate_features(df):
         'ema_trend_bullish': ema_trend_bullish,
         'ema20_vs_ema50': float((ema20 - ema50) / ema50) if ema50 > 0 else 0.0,
         'adx': adx,
-        'adx_trending': 1 if adx > 20 else 0,
+        'adx_trending': 1 if adx > _v3_adx_trending_threshold() else 0,
         'adx_strong': 1 if adx > 30 else 0,
         'atr_pct': float(atr / cur) if cur > 0 else 0.02,
         'obv_slope': obv_slope,
@@ -1920,8 +1936,9 @@ def predict_live_ex(symbol, asset_type, scores=None):
     # a regime block still returns before any signal is emitted.
     regime_block = False
     # Gate 1: below EMA200 + choppy = high-probability loss setup
+    adx_thresh = _v3_adx_trending_threshold()
     if above_ema200 == 0 and adx_trending == 0:
-        LOGGER.info(f"REGIME GATE [{symbol}]: below EMA200 + ADX={adx_val:.1f}<20 — skip BUY")
+        LOGGER.info(f"REGIME GATE [{symbol}]: below EMA200 + ADX={adx_val:.1f}<{adx_thresh:.0f} — skip BUY")
         regime_block = True
 
     # Gate 2: full bearish alignment, not oversold

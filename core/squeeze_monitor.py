@@ -391,7 +391,11 @@ async def _run_watchlist_scan() -> None:
     _last_scan_report = dict(report)
 
     fetch_timeout = float(os.getenv("SQUEEZE_FETCH_TIMEOUT_S", "18"))
-    workers = int(os.getenv("SQUEEZE_FETCH_WORKERS", "4"))
+    # Default to 1 worker to avoid hammering APIs with parallel requests.
+    # 4 workers × 44 symbols = 176 concurrent API calls that trigger 429 storms.
+    workers = int(os.getenv("SQUEEZE_FETCH_WORKERS", "1"))
+    # Inter-symbol delay for sequential fetches (only used when workers=1)
+    fetch_delay = float(os.getenv("SQUEEZE_FETCH_DELAY_S", "0.3"))
     with ThreadPoolExecutor(max_workers=workers) as pool:
         tasks = {
             sym: loop.run_in_executor(pool, _sync_fetch_metrics, sym) for sym in symbols

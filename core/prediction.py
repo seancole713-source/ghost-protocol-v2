@@ -1268,6 +1268,14 @@ def run_prediction_cycle(with_diag: bool = False):
                 "price_vs_sma5_pct": _reg.get("price_vs_sma5_pct"),
                 "regime_block": skip in ("v3_regime_gate", "regime_gate"),
             }
+        # Inter-symbol delay to prevent API rate-limit storms across all 5 feed tiers
+        try:
+            from core.signal_engine import _v3_scan_symbol_delay_sec
+            delay = _v3_scan_symbol_delay_sec()
+            if delay > 0:
+                time.sleep(delay)
+        except Exception:
+            pass
 
     # P2 (audit): stash all symbol features for cross-sectional ranking on the
     # next scan cycle. predict_live_ex reads _last_scan_features to compute
