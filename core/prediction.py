@@ -181,6 +181,7 @@ def _kill_symbol_universe() -> List[str]:
 _ENGINE_PAUSE_KEYS = (
     "engine_paused", "engine_pause_reason", "engine_pause_ts",
     "engine_pause_auto_resume_at", "engine_pause_alerted",
+    "engine_pause_grace_until",
 )
 
 
@@ -340,10 +341,23 @@ def engine_pause_state() -> Dict[str, Any]:
 
 
 def resume_engine() -> Dict[str, Any]:
-    """Manual resume — clears any kill-condition pause."""
+    """Manual resume — clears any kill-condition pause and sets a 2-hour grace
+    period so the engine has time to generate new picks before kill conditions
+    re-evaluate."""
     _clear_engine_pause()
-    LOGGER.warning("ENGINE RESUMED (manual): kill-condition pause cleared")
-    return {"ok": True, "resumed": True}
+    # Set a 2-hour grace period after manual resume
+    grace_until = int(time.time()) + 7200
+    try:
+        with db_conn() as c:
+            cur = c.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            cur.execute(
+                "INSERT INTO ghost_state(key,val) VALUES('engine_pause_grace_until',%s) "
+                "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val", (str(grace_until),))
+    except Exception:
+        pass
+    LOGGER.warning("ENGINE RESUMED (manual): kill-condition pause cleared, grace until %s", grace_until)
+    return {"ok": True, "resumed": True, "grace_until": grace_until}
 
 
 def enforce_kill_conditions() -> Dict[str, Any]:
@@ -366,6 +380,22 @@ def enforce_kill_conditions() -> Dict[str, Any]:
             LOGGER.info("Kill conditions cleared — engine auto-resumed")
             return {"paused": False, "cleared": True}
         return {"paused": False}
+
+    # Grace period after manual resume: don't re-pause immediately
+    grace_until = None
+    try:
+        with db_conn() as c:
+            cur = c.cursor()
+            cur.execute("SELECT val FROM ghost_state WHERE key='engine_pause_grace_until'")
+            row = cur.fetchone()
+            if row and row[0]:
+                grace_until = int(row[0])
+    except Exception:
+        pass
+    if grace_until and int(time.time()) < grace_until:
+        LOGGER.info("Kill conditions tripped but grace period active until %s — not pausing", grace_until)
+        return {"paused": False, "grace_active": True, "grace_until": grace_until,
+                "tripped_conditions": [c["name"] for c in tripped]}
 
     actions = sorted({c["action"] for c in tripped})
     reason = "; ".join(c["name"] + "->" + c["action"] for c in tripped)
