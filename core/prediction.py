@@ -217,11 +217,14 @@ def _parse_engine_pause_state(st: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def evaluate_kill_conditions(*, include_pause: bool = False) -> Dict[str, Any]:
+def evaluate_kill_conditions(*, include_pause: bool = False, since_ts: int = 0) -> Dict[str, Any]:
     """Read-only evaluation of the kill conditions over the rolling resolved-pick
     history (v3.2 era, watchlist symbols). Returns per-condition status with current
     value vs threshold and a green/red/insufficient flag. Does NOT enforce. During
-    cold start every gated condition reads 'insufficient' and never trips."""
+    cold start every gated condition reads 'insufficient' and never trips.
+
+    When since_ts > 0, only picks resolved after that timestamp are considered.
+    This allows manual resume to reset the window — only new outcomes count."""
     cfg = _kill_cfg()
     need = max(cfg["winrate_window"], cfg["brier_window"],
                cfg["expectancy_window"], cfg["consec_losses"], cfg["min_samples"])
@@ -230,11 +233,19 @@ def evaluate_kill_conditions(*, include_pause: bool = False) -> Dict[str, Any]:
     try:
         with db_conn() as conn:
             cur = conn.cursor()
-            cur.execute(
-                "SELECT confidence, outcome, pnl_pct FROM predictions "
-                "WHERE symbol = ANY(%s) AND id >= 223438 AND outcome IS NOT NULL "
-                "ORDER BY resolved_at DESC NULLS LAST, id DESC LIMIT %s",
-                (symbols, need))
+            if since_ts > 0:
+                cur.execute(
+                    "SELECT confidence, outcome, pnl_pct FROM predictions "
+                    "WHERE symbol = ANY(%s) AND id >= 223438 AND outcome IS NOT NULL "
+                    "AND resolved_at >= %s "
+                    "ORDER BY resolved_at DESC NULLS LAST, id DESC LIMIT %s",
+                    (symbols, since_ts, need))
+            else:
+                cur.execute(
+                    "SELECT confidence, outcome, pnl_pct FROM predictions "
+                    "WHERE symbol = ANY(%s) AND id >= 223438 AND outcome IS NOT NULL "
+                    "ORDER BY resolved_at DESC NULLS LAST, id DESC LIMIT %s",
+                    (symbols, need))
             rows = cur.fetchall()   # newest first
             if include_pause:
                 cur.execute(
@@ -341,12 +352,12 @@ def engine_pause_state() -> Dict[str, Any]:
 
 
 def resume_engine() -> Dict[str, Any]:
-    """Manual resume — clears any kill-condition pause and sets a 2-hour grace
-    period so the engine has time to generate new picks before kill conditions
-    re-evaluate."""
+    """Manual resume — clears any kill-condition pause and resets the kill
+    condition window so only outcomes resolved after this point count.
+    Also sets a 24-hour grace period as a safety net."""
     _clear_engine_pause()
-    # Set a 2-hour grace period after manual resume
-    grace_until = int(time.time()) + 7200
+    now = int(time.time())
+    grace_until = now + 86400  # 24-hour grace
     try:
         with db_conn() as c:
             cur = c.cursor()
@@ -354,10 +365,14 @@ def resume_engine() -> Dict[str, Any]:
             cur.execute(
                 "INSERT INTO ghost_state(key,val) VALUES('engine_pause_grace_until',%s) "
                 "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val", (str(grace_until),))
+            # Store the resume timestamp so kill conditions only look at outcomes after this
+            cur.execute(
+                "INSERT INTO ghost_state(key,val) VALUES('engine_pause_resume_ts',%s) "
+                "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val", (str(now),))
     except Exception:
         pass
-    LOGGER.warning("ENGINE RESUMED (manual): kill-condition pause cleared, grace until %s", grace_until)
-    return {"ok": True, "resumed": True, "grace_until": grace_until}
+    LOGGER.warning("ENGINE RESUMED (manual): kill-condition window reset, grace until %s", grace_until)
+    return {"ok": True, "resumed": True, "grace_until": grace_until, "window_reset": True}
 
 
 def enforce_kill_conditions() -> Dict[str, Any]:
@@ -369,7 +384,18 @@ def enforce_kill_conditions() -> Dict[str, Any]:
     cfg = _kill_cfg()
     if not cfg["enabled"]:
         return {"paused": False, "enabled": False}
-    ev = evaluate_kill_conditions()
+    # Use window reset: only count outcomes resolved after the last manual resume
+    since_ts = 0
+    try:
+        with db_conn() as c:
+            cur = c.cursor()
+            cur.execute("SELECT val FROM ghost_state WHERE key='engine_pause_resume_ts'")
+            row = cur.fetchone()
+            if row and row[0]:
+                since_ts = int(row[0])
+    except Exception:
+        pass
+    ev = evaluate_kill_conditions(since_ts=since_ts)
     if not ev.get("ok"):
         return engine_pause_state()
     tripped = [c for c in ev["conditions"] if c["triggered"]]
