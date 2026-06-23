@@ -394,7 +394,7 @@ async def _run_watchlist_scan() -> None:
     # Default to 1 worker to avoid hammering APIs with parallel requests.
     # 4 workers × 44 symbols = 176 concurrent API calls that trigger 429 storms.
     workers = int(os.getenv("SQUEEZE_FETCH_WORKERS", "1"))
-    # Inter-symbol delay for sequential fetches (only used when workers=1)
+    # Inter-symbol delay for sequential fetches
     fetch_delay = float(os.getenv("SQUEEZE_FETCH_DELAY_S", "0.3"))
     with ThreadPoolExecutor(max_workers=workers) as pool:
         tasks = {
@@ -410,6 +410,9 @@ async def _run_watchlist_scan() -> None:
             except Exception as exc:
                 LOGGER.debug("[SqueezeMonitor] fetch %s: %s", sym, exc)
                 metrics_map[sym] = None
+            # Inter-symbol delay to prevent API rate-limit storms
+            if fetch_delay > 0:
+                await asyncio.sleep(fetch_delay)
 
     short_ctx_map: Dict[str, Dict[str, Any]] = {}
     for symbol in symbols:

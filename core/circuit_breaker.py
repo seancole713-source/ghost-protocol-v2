@@ -37,6 +37,8 @@ class CircuitBreaker:
     failure_threshold: int = 5       # consecutive failures to open circuit
     cooldown_seconds: int = 300      # how long circuit stays open
     half_open_max: int = 2           # max probe requests in half-open state
+    rate_limit_window_s: int = 60    # window for call-rate tracking
+    rate_limit_max_calls: int = 20   # max calls in window before auto-open
 
     _failure_count: int = field(default=0, init=False)
     _circuit_open_until: float = field(default=0.0, init=False)
@@ -44,6 +46,7 @@ class CircuitBreaker:
     _last_failure_ts: float = field(default=0.0, init=False)
     _total_failures: int = field(default=0, init=False)
     _total_successes: int = field(default=0, init=False)
+    _call_timestamps: list = field(default_factory=list, init=False)  # rate-limit tracking
 
     @property
     def state(self) -> str:
@@ -70,6 +73,20 @@ class CircuitBreaker:
             self._circuit_open_until = 0.0
             self._failure_count = 0
             self._half_open_probes = 0
+        # Rate-limit tracking: if we're making too many calls, auto-open
+        if self.rate_limit_max_calls > 0:
+            cutoff = now - self.rate_limit_window_s
+            self._call_timestamps = [t for t in self._call_timestamps if t > cutoff]
+            if len(self._call_timestamps) >= self.rate_limit_max_calls:
+                self._circuit_open_until = now + self.cooldown_seconds
+                self._half_open_probes = 0
+                LOGGER.warning(
+                    "CB %s: %s calls in %ss — rate-limit circuit OPEN for %ss",
+                    self.name, len(self._call_timestamps), self.rate_limit_window_s,
+                    self.cooldown_seconds,
+                )
+                return False
+        self._call_timestamps.append(now)
         return True
 
     def record_success(self) -> None:
@@ -99,6 +116,9 @@ class CircuitBreaker:
 
     def status(self) -> dict:
         """Read-only status for diagnostics."""
+        now = time.time()
+        cutoff = now - self.rate_limit_window_s
+        recent_calls = sum(1 for t in self._call_timestamps if t > cutoff)
         return {
             "name": self.name,
             "state": self.state,
@@ -109,6 +129,8 @@ class CircuitBreaker:
             "total_successes": self._total_successes,
             "total_failures": self._total_failures,
             "last_failure_ts": self._last_failure_ts or None,
+            "recent_calls": recent_calls,
+            "rate_limit_max_calls": self.rate_limit_max_calls,
         }
 
     def reset(self) -> None:
@@ -116,6 +138,7 @@ class CircuitBreaker:
         self._circuit_open_until = 0.0
         self._failure_count = 0
         self._half_open_probes = 0
+        self._call_timestamps = []
         LOGGER.info("CB %s: manually RESET — circuit CLOSED", self.name)
 
 
@@ -126,6 +149,8 @@ _yfinance_cb = CircuitBreaker(
     name="yfinance",
     failure_threshold=int(__import__("os").getenv("CB_YFINANCE_THRESHOLD", "5")),
     cooldown_seconds=int(__import__("os").getenv("CB_YFINANCE_COOLDOWN_S", "600")),
+    rate_limit_window_s=int(__import__("os").getenv("CB_YFINANCE_RATE_WINDOW_S", "60")),
+    rate_limit_max_calls=int(__import__("os").getenv("CB_YFINANCE_RATE_MAX_CALLS", "15")),
 )
 
 _finnhub_cb = CircuitBreaker(

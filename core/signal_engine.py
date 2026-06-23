@@ -87,9 +87,10 @@ def _v3_scan_symbol_delay_sec() -> float:
 def _v3_adx_trending_threshold() -> float:
     """ADX threshold for 'trending' classification in regime gate.
 
-    Default 15 (lowered from hardcoded 20). Below this, the market is
-    considered choppy/sideways and BUY signals are blocked."""
-    return max(5.0, float(os.getenv("V3_ADX_TRENDING_THRESHOLD", "15")))
+    Default 12 (lowered from 20). Below this, the market is
+    considered choppy/sideways and BUY signals are blocked.
+    Set V3_ADX_TRENDING_THRESHOLD lower to allow picks in milder trends."""
+    return max(5.0, float(os.getenv("V3_ADX_TRENDING_THRESHOLD", "12")))
 
 
 def _v3_watchlist_peer_pool_enabled() -> bool:
@@ -1948,6 +1949,8 @@ def predict_live_ex(symbol, asset_type, scores=None):
 
     # Gate 3: price below 5-day SMA. Only checked when gates 1-2 passed (the
     # SMA fetch costs a daily-bars call; preserves the original early-out cost).
+    # Can be disabled via V3_BLOCK_UP_BELOW_SMA5=0 for choppy markets where
+    # SMA5 gate blocks too many candidates.
     if not regime_block:
         cur_px = float(rows[-1].get("close") or 0)
         blocked_sma, sma_5d, cur_px = _block_up_below_sma5(symbol, asset_type, cur_px)
