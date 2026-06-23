@@ -3803,10 +3803,11 @@ async function loadCockpitSecondary(ctxPack, watching){
   }
 }
 
-/* ─── WebSocket live feed (PR #66) ─── */
-var _ws = null, _wsReconnectTimer = null;
+/* ─── WebSocket live feed (PR #66) + HTTP polling fallback (PR #71) ─── */
+var _ws = null, _wsReconnectTimer = null, _wsPollTimer = null, _wsUsePoll = false;
 function _connectWebSocket(){
   if(_ws && _ws.readyState === WebSocket.OPEN) return;
+  if(_wsUsePoll) return; // already on polling fallback
   var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   var url = proto + '//' + location.host + '/ws/cockpit';
   try{
@@ -3820,40 +3821,73 @@ function _connectWebSocket(){
     _ws.onmessage = function(ev){
       try{
         var data = JSON.parse(ev.data);
-        if(data.type === 'pong'){
-          // Update WOLF price if provided (server key is "wol f_price" — note the space)
-          if(data["wol f_price"] != null && window._lastHeroPrice){
-            window._lastHeroPrice.price = data["wol f_price"];
-            window._lastHeroPrice.ts = data.ts;
-            renderHero(window._lastHeroPrice, window._lastWatching, window._ghostTruthCtx);
-          }
-          // Squeeze: server sends only picks[:5] + radar_active — not the full
-          // /api/squeeze/picks shape that _renderSqueezePicks expects. Merge into
-          // _sqLastData so the next full poll has context, but don't render partial.
-          if(data.squeeze){
-            if(!window._sqLastData) window._sqLastData = {};
-            if(data.squeeze.picks) window._sqLastData.picks = data.squeeze.picks;
-            if(data.squeeze.radar_active != null) window._sqLastData.radar_active = data.squeeze.radar_active;
-          }
-        }
+        _applyLiveData(data);
       }catch(e){}
     };
     _ws.onclose = function(){
       if(_ws && _ws._pingInterval) clearInterval(_ws._pingInterval);
       _ws = null;
-      // Reconnect after 10s
-      if(!document.hidden){
-        _wsReconnectTimer = setTimeout(_connectWebSocket, 10000);
+      // Fall back to HTTP polling if WebSocket keeps failing
+      if(!_wsUsePoll){
+        _startHttpPoll();
       }
     };
-    _ws.onerror = function(){};
-  }catch(e){}
+    _ws.onerror = function(){
+      // WebSocket failed — switch to HTTP polling immediately
+      if(!_wsUsePoll){
+        _ws = null;
+        _startHttpPoll();
+      }
+    };
+  }catch(e){
+    _startHttpPoll();
+  }
+}
+
+function _startHttpPoll(){
+  _wsUsePoll = true;
+  if(_wsPollTimer) clearInterval(_wsPollTimer);
+  // Poll /api/cockpit/live every 30s (same cadence as WebSocket ping)
+  _wsPollTimer = setInterval(function(){
+    _fetchJson('/api/cockpit/live', {ok:false}).then(function(data){
+      if(data) _applyLiveData(data);
+    }).catch(function(){});
+  }, 30000);
+  // Also fetch immediately
+  _fetchJson('/api/cockpit/live', {ok:false}).then(function(data){
+    if(data) _applyLiveData(data);
+  }).catch(function(){});
+}
+
+function _applyLiveData(data){
+  if(data.type !== 'pong') return;
+  // Update WOLF price if provided (server key is "wol f_price" — note the space)
+  if(data["wol f_price"] != null && window._lastHeroPrice){
+    window._lastHeroPrice.price = data["wol f_price"];
+    window._lastHeroPrice.ts = data.ts;
+    renderHero(window._lastHeroPrice, window._lastWatching, window._ghostTruthCtx);
+  }
+  // Squeeze: server sends only picks[:5] + radar_active — not the full
+  // /api/squeeze/picks shape that _renderSqueezePicks expects. Merge into
+  // _sqLastData so the next full poll has context, but don't render partial.
+  if(data.squeeze){
+    if(!window._sqLastData) window._sqLastData = {};
+    if(data.squeeze.picks) window._sqLastData.picks = data.squeeze.picks;
+    if(data.squeeze.radar_active != null) window._sqLastData.radar_active = data.squeeze.radar_active;
+  }
 }
 // Reconnect on visibility restore
 document.addEventListener('visibilitychange', function(){
-  if(!document.hidden && (!_ws || _ws.readyState !== WebSocket.OPEN)){
-    if(_wsReconnectTimer) clearTimeout(_wsReconnectTimer);
-    _connectWebSocket();
+  if(!document.hidden){
+    if(_wsUsePoll){
+      // Resume polling immediately
+      _fetchJson('/api/cockpit/live', {ok:false}).then(function(data){
+        if(data) _applyLiveData(data);
+      }).catch(function(){});
+    } else if(!_ws || _ws.readyState !== WebSocket.OPEN){
+      if(_wsReconnectTimer) clearTimeout(_wsReconnectTimer);
+      _connectWebSocket();
+    }
   }
 });
 

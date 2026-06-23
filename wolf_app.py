@@ -5160,7 +5160,35 @@ def cockpit_context():
 
 # P3-3 (audit): WebSocket live feed for cockpit — pushes price updates,
 # squeeze alerts, and prediction changes without polling.
+# Also provides an HTTP polling fallback (/api/cockpit/live) for when
+# the websockets library isn't available in the deployment environment.
 _WS_CLIENTS: set = set()
+
+
+@APP.get("/api/cockpit/live", include_in_schema=False)
+def cockpit_live_poll():
+    """HTTP polling fallback for cockpit live data (WebSocket alternative).
+
+    Returns the same payload the WebSocket would push on a ping, so the
+    cockpit can use this when /ws/cockpit is unavailable (e.g. nixpacks
+    build cache preventing websockets from installing).
+    """
+    payload = {"type": "pong", "ts": int(time.time())}
+    try:
+        from core.squeeze_monitor import get_squeeze_picks
+        sp = get_squeeze_picks()
+        payload["squeeze"] = {
+            "picks": sp.get("picks", [])[:5],
+            "radar_active": sp.get("radar_active"),
+        }
+    except Exception:
+        payload["squeeze"] = {"error": "unavailable"}
+    try:
+        from core.prices import get_stock_price
+        payload["wol f_price"] = get_stock_price("WOLF")
+    except Exception:
+        payload["wol f_price"] = None
+    return payload
 
 
 @APP.websocket("/ws/cockpit")
