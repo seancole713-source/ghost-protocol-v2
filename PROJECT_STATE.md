@@ -2,6 +2,12 @@
 **Last updated:** 2026-06-15
 **Read this first.** Any agent picking up this project must read this file before touching any code.
 
+> ## 🚀 LAUNCH READINESS REVIEW
+> A comprehensive, multi-phase, trust-the-money review prompt lives at **[`LAUNCH_PROMPT.md`](./LAUNCH_PROMPT.md)** at the repo root.
+> **Trigger phrase:** *"ready launch prompt and execute report"*.
+> Any agent — Claude, browser-control, general — can execute it and produce a launch-readiness report with three verdict formats (binary GO/NO-GO, graded scorecard A–F, severity-ranked P0–P3 punch list). Every phase, every time. No skipping.
+> This is the canonical way to ask "is Ghost ready for a real user to trust real money?" — do not write ad-hoc audits; run the launch prompt instead.
+
 > This file was significantly stale (pre-v3.2) until 2026-05-23. It now reflects
 > the v3.2 XGBoost engine, the four-gate chain, aggressive objective mode, the
 > cookie-login `/admin` console, and the pick-journal credibility ledger.
