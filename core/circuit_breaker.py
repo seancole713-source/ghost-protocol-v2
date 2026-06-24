@@ -169,6 +169,8 @@ _alpaca_cb = CircuitBreaker(
     name="alpaca",
     failure_threshold=int(__import__("os").getenv("CB_ALPACA_THRESHOLD", "5")),
     cooldown_seconds=int(__import__("os").getenv("CB_ALPACA_COOLDOWN_S", "300")),
+    rate_limit_window_s=int(__import__("os").getenv("CB_ALPACA_RATE_WINDOW_S", "60")),
+    rate_limit_max_calls=int(__import__("os").getenv("CB_ALPACA_RATE_MAX_CALLS", "30")),
 )
 
 _anthropic_cb = CircuitBreaker(
