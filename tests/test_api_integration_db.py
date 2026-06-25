@@ -22,6 +22,7 @@ def integration_db(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", test_dsn)
     monkeypatch.setenv("GHOST_TEST_MODE", "1")
     monkeypatch.setenv("GHOST_MCP_TOKEN", "itest-token")
+    monkeypatch.setenv("WATCHLIST_FILTER_ENABLED", "0")  # PR #76: tests seed non-watchlist symbols
 
     # Reset any stale pool before initializing against explicit test DB.
     try:

@@ -507,6 +507,9 @@ def _watchlist_scan_enabled() -> bool:
 
 
 EXCLUDE = set(s for s in os.getenv("EXCLUDE_SYMBOLS","").split(",") if s.strip())
+# PR #76: write-side watchlist guard — only OFFICIAL_WATCHLIST symbols may be saved.
+from config.symbols import OFFICIAL_WATCHLIST as _OFFICIAL_WATCHLIST
+_WATCHLIST_SET = frozenset(_OFFICIAL_WATCHLIST)
 _OBJECTIVE_RUNTIME_MODE_CACHE: Dict[str, Any] = {"mode": None, "ts": 0.0}
 
 
@@ -1374,6 +1377,12 @@ def run_prediction_cycle(with_diag: bool = False):
         for pick in top:
             try:
                 sym = pick["symbol"]
+                # PR #76: write-side watchlist guard — only OFFICIAL_WATCHLIST symbols
+                # may be saved. Prevents mega-cap pollution (PLTR/MSFT/TSLA/etc.)
+                # from polluting the journal even if they slip past the scan filter.
+                if sym not in _WATCHLIST_SET:
+                    LOGGER.info("WATCHLIST-GUARD: skipping non-watchlist symbol " + sym)
+                    continue
                 if _symbol_has_open_pick(cur, sym, now_ts):
                     LOGGER.info("DEDUP: skipping " + sym)
                     dedup_blocked += 1

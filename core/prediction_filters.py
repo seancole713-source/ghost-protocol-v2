@@ -1,8 +1,19 @@
 """SQL fragments for real stock picks vs crypto-era / sandbox junk rows."""
 
+import os
+from config.symbols import OFFICIAL_WATCHLIST
+
+# PR #76: watchlist-membership filter — only OFFICIAL_WATCHLIST symbols appear
+# in stats/journal queries. Disable via WATCHLIST_FILTER_ENABLED=0 for tests.
+_WATCHLIST_FILTER = ""
+if os.getenv("WATCHLIST_FILTER_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on"):
+    _WATCHLIST_SQL = ",".join(f"'{s}'" for s in OFFICIAL_WATCHLIST)
+    _WATCHLIST_FILTER = f" AND symbol IN ({_WATCHLIST_SQL})"
+
 REAL_TRADE_WHERE = (
     "entry_price IS NOT NULL AND entry_price > 0 "
     "AND COALESCE(asset_type, 'stock') = 'stock'"
+    + _WATCHLIST_FILTER
 )
 
 CRYPTO_JUNK_WHERE = (
