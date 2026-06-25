@@ -59,19 +59,26 @@ def _fetch_fred_series(series_id: str) -> Optional[float]:
 
 def _fetch_yfinance_series(ticker: str, period: str = "1mo") -> Optional[float]:
     """Fetch latest close for a yfinance ticker."""
+    from core.circuit_breaker import _yfinance_cb
+    if not _yfinance_cb.allow():
+        return None
     try:
         import yfinance as yf
         tk = yf.Ticker(ticker)
         h = tk.history(period=period)
         if not h.empty:
+            _yfinance_cb.record_success()
             return float(h["Close"].iloc[-1])
     except Exception:
-        pass
+        _yfinance_cb.record_failure()
     return None
 
 
 def _fetch_yfinance_return(ticker: str, days: int = 20) -> Optional[float]:
     """Fetch N-day return for a yfinance ticker."""
+    from core.circuit_breaker import _yfinance_cb
+    if not _yfinance_cb.allow():
+        return None
     try:
         import yfinance as yf
         tk = yf.Ticker(ticker)
@@ -80,9 +87,10 @@ def _fetch_yfinance_return(ticker: str, days: int = 20) -> Optional[float]:
             start = float(h["Close"].iloc[-days-1]) if len(h) > days else float(h["Close"].iloc[0])
             end = float(h["Close"].iloc[-1])
             if start > 0:
+                _yfinance_cb.record_success()
                 return (end - start) / start
     except Exception:
-        pass
+        _yfinance_cb.record_failure()
     return None
 
 
@@ -121,13 +129,16 @@ def fetch_macro_features() -> Dict[str, float]:
     # 6. SPY vs SMA_50
     spy_close = _fetch_yfinance_series("SPY", "3mo")
     spy_sma50 = None
-    try:
-        import yfinance as yf
-        h = yf.Ticker("SPY").history(period="3mo")
-        if len(h) >= 50:
-            spy_sma50 = float(h["Close"].iloc[-50:].mean())
-    except Exception:
-        pass
+    from core.circuit_breaker import _yfinance_cb
+    if _yfinance_cb.allow():
+        try:
+            import yfinance as yf
+            h = yf.Ticker("SPY").history(period="3mo")
+            if len(h) >= 50:
+                spy_sma50 = float(h["Close"].iloc[-50:].mean())
+                _yfinance_cb.record_success()
+        except Exception:
+            _yfinance_cb.record_failure()
     if spy_close and spy_sma50 and spy_sma50 > 0:
         features["macro_spy_vs_sma50"] = round(spy_close / spy_sma50 - 1.0, 4)
     else:

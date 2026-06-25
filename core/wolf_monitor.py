@@ -234,6 +234,9 @@ async def _fetch_wolf_intraday() -> Optional[dict]:
 
 def _sync_yf_fetch() -> Optional[dict]:
     """Blocking yfinance call — run in executor."""
+    from core.circuit_breaker import _yfinance_cb
+    if not _yfinance_cb.allow():
+        return None
     try:
         import yfinance as yf  # type: ignore
         t = yf.Ticker(SYMBOL)
@@ -243,6 +246,7 @@ def _sync_yf_fetch() -> Optional[dict]:
         current = hist.iloc[-1]
         prior = hist.iloc[-2]
         avg_vol = float(hist["Volume"].iloc[-20:].mean()) if len(hist) >= 20 else float(hist["Volume"].mean())
+        _yfinance_cb.record_success()
         return {
             "price": float(current["Close"]),
             "prior_close": float(prior["Close"]),
@@ -250,6 +254,7 @@ def _sync_yf_fetch() -> Optional[dict]:
             "avg_vol_20d": avg_vol,
         }
     except Exception:
+        _yfinance_cb.record_failure()
         return None
 
 

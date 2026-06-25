@@ -541,18 +541,22 @@ def _short_context(symbol: str) -> Dict[str, Any]:
         "squeeze_risk": None,
     }
     if _yf_short_enabled():
-        try:
-            import yfinance as yf
+        from core.circuit_breaker import _yfinance_cb
+        if _yfinance_cb.allow():
+            try:
+                import yfinance as yf
 
-            info = yf.Ticker(sym).info or {}
-            sf = info.get("shortPercentOfFloat")
-            dtc = info.get("shortRatio")
-            if sf is not None:
-                out["short_float_pct"] = round(float(sf) * 100, 2)
-            if dtc is not None:
-                out["days_to_cover"] = round(float(dtc), 2)
-        except Exception as exc:
-            LOGGER.debug("[SqueezeMonitor] yfinance short %s: %s", sym, exc)
+                info = yf.Ticker(sym).info or {}
+                sf = info.get("shortPercentOfFloat")
+                dtc = info.get("shortRatio")
+                if sf is not None:
+                    out["short_float_pct"] = round(float(sf) * 100, 2)
+                if dtc is not None:
+                    out["days_to_cover"] = round(float(dtc), 2)
+                _yfinance_cb.record_success()
+            except Exception as exc:
+                _yfinance_cb.record_failure()
+                LOGGER.debug("[SqueezeMonitor] yfinance short %s: %s", sym, exc)
     if out["short_float_pct"] is None and out["days_to_cover"] is None:
         out = _short_context_from_finviz(sym)
     from api.wolf_endpoints import _squeeze_risk_tag
@@ -741,6 +745,10 @@ def _fetch_volumes(symbol: str) -> Tuple[Optional[float], Optional[float], Optio
     if not _yf_fallback_enabled():
         return None, None, None
 
+    from core.circuit_breaker import _yfinance_cb
+    if not _yfinance_cb.allow():
+        return None, None, None
+
     try:
         import yfinance as yf
 
@@ -759,12 +767,17 @@ def _fetch_volumes(symbol: str) -> Tuple[Optional[float], Optional[float], Optio
             vwap = round(float((tp * vols).sum() / den), 4) if den > 0 else None
         else:
             session_vol = float(hist["Volume"].iloc[-1])
+        _yfinance_cb.record_success()
         return avg_vol, session_vol, vwap
     except Exception:
+        _yfinance_cb.record_failure()
         return None, None, None
 
 
 def _yf_fetch_metrics(symbol: str) -> Optional[Dict[str, Any]]:
+    from core.circuit_breaker import _yfinance_cb
+    if not _yfinance_cb.allow():
+        return None
     try:
         import yfinance as yf
 
@@ -791,6 +804,7 @@ def _yf_fetch_metrics(symbol: str) -> Optional[Dict[str, Any]]:
             vols = intraday["Volume"].astype(float)
             den = float(vols.sum())
             vwap = round(float((tp * vols).sum() / den), 4) if den > 0 else None
+        _yfinance_cb.record_success()
         return {
             "price": last_px,
             "prior_close": prev_close,
@@ -802,6 +816,7 @@ def _yf_fetch_metrics(symbol: str) -> Optional[Dict[str, Any]]:
             "current_move_pct": (last_px - prev_close) / prev_close * 100,
         }
     except Exception:
+        _yfinance_cb.record_failure()
         return None
 
 

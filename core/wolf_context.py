@@ -320,11 +320,17 @@ def _fetch_price_change(ticker: str) -> float:
                     pct = ((bar["c"] - bar["o"]) / bar["o"]) * 100
         else:
             # Fallback: yfinance (no API key needed)
-            import yfinance as yf  # type: ignore
-            t = yf.Ticker(ticker)
-            hist = t.history(period="2d")
-            if len(hist) >= 2:
-                pct = ((hist["Close"].iloc[-1] - hist["Close"].iloc[-2]) / hist["Close"].iloc[-2]) * 100
+            from core.circuit_breaker import _yfinance_cb
+            if _yfinance_cb.allow():
+                try:
+                    import yfinance as yf  # type: ignore
+                    t = yf.Ticker(ticker)
+                    hist = t.history(period="2d")
+                    if len(hist) >= 2:
+                        pct = ((hist["Close"].iloc[-1] - hist["Close"].iloc[-2]) / hist["Close"].iloc[-2]) * 100
+                        _yfinance_cb.record_success()
+                except Exception:
+                    _yfinance_cb.record_failure()
     except Exception as exc:
         LOGGER.debug(f"Price change fetch failed for {ticker}: {exc}")
 
