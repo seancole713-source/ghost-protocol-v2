@@ -1554,7 +1554,7 @@ _RL_EXEMPT_PATHS = ("/api/health",)
 def _rate_limit_cfg():
     enabled = os.getenv("RATE_LIMIT_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
     try:
-        rpm = max(1, int(os.getenv("RATE_LIMIT_RPM", "120")))
+        rpm = max(1, int(os.getenv("RATE_LIMIT_RPM", "300")))
     except Exception:
         rpm = 120
     return enabled, rpm
