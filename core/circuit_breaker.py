@@ -79,7 +79,9 @@ class CircuitBreaker:
             self._call_timestamps = [t for t in self._call_timestamps if t > cutoff]
             if len(self._call_timestamps) >= self.rate_limit_max_calls:
                 self._circuit_open_until = now + self.cooldown_seconds
-                self._half_open_probes = 0
+                # Exhaust half-open probes so the breaker truly blocks.
+                # Probes reset naturally when cooldown expires (see above).
+                self._half_open_probes = self.half_open_max
                 LOGGER.warning(
                     "CB %s: %s calls in %ss — rate-limit circuit OPEN for %ss",
                     self.name, len(self._call_timestamps), self.rate_limit_window_s,
