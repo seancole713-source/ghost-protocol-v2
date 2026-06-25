@@ -1019,14 +1019,18 @@ def _predict_symbol_ex(symbol, asset_type, regime, scores_out=None):
         return None, "excluded"
     price = get_price(symbol, asset_type)
     if (not price or price <= 0) and asset_type == "stock":
-        try:
-            import yfinance as _yf
-            _hist = _yf.Ticker(symbol).history(period="2d")
-            if not _hist.empty:
-                price = float(_hist["Close"].iloc[-1])
-                LOGGER.info("Stock prev-close for " + symbol + ": $" + str(round(price,2)))
-        except Exception as _pe:
-            LOGGER.warning("Prev-close fallback failed " + symbol + ": " + str(_pe))
+        from core.circuit_breaker import _yfinance_cb
+        if _yfinance_cb.allow():
+            try:
+                import yfinance as _yf
+                _hist = _yf.Ticker(symbol).history(period="2d")
+                if not _hist.empty:
+                    price = float(_hist["Close"].iloc[-1])
+                    _yfinance_cb.record_success()
+                    LOGGER.info("Stock prev-close for " + symbol + ": $" + str(round(price,2)))
+            except Exception as _pe:
+                _yfinance_cb.record_failure()
+                LOGGER.warning("Prev-close fallback failed " + symbol + ": " + str(_pe))
     if not price or price <= 0:
         return None, "no_price"
     score_vector = scores_out if scores_out is not None else {}
