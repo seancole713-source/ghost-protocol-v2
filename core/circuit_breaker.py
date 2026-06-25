@@ -107,8 +107,12 @@ class CircuitBreaker:
         self._last_failure_ts = now
         self._failure_count += 1
         if self._failure_count >= self.failure_threshold:
+            was_already_open = bool(self._circuit_open_until and now < self._circuit_open_until)
             self._circuit_open_until = now + self.cooldown_seconds
-            self._half_open_probes = 0
+            # Only reset half-open probes on initial trip. If the circuit was
+            # already open, probes are exhausted — don't grant more free probes.
+            if not was_already_open:
+                self._half_open_probes = 0
             LOGGER.warning(
                 "CB %s: %s consecutive failures — circuit OPEN for %ss",
                 self.name, self._failure_count, self.cooldown_seconds,
