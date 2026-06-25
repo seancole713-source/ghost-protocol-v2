@@ -109,8 +109,11 @@ def _yfinance(symbol):
         elif "connection" in es.lower() or "timeout" in es.lower() or "timed out" in es.lower():
             LOGGER.warning(f"yfinance {symbol}: connection/timeout — counting as breaker failure: {e}")
             _yfinance_cb.record_failure()
+        elif "Expecting value" in es or "JSON" in es or "json" in es.lower() or "parse" in es.lower():
+            # JSON parse errors (empty response / Yahoo blocking Railway IP) — count as breaker failure
+            LOGGER.warning(f"yfinance {symbol}: JSON parse error (empty response) — counting as breaker failure: {e}")
+            _yfinance_cb.record_failure()
         else:
-            # JSON parse errors overnight are expected — don't count as failures
             LOGGER.debug(f"yfinance {symbol}: non-critical error: {e}")
         return None
 

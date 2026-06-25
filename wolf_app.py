@@ -14,6 +14,11 @@ logging.basicConfig(
 )
 LOGGER = logging.getLogger("ghost")
 
+# PR #70: suppress yfinance library noise (JSON parse errors, 429s, delisted warnings).
+# yfinance logs at ERROR level for transient Yahoo API issues that Ghost already
+# handles via circuit breakers. Duplicate logging clutters Railway logs.
+logging.getLogger("yfinance").setLevel(logging.CRITICAL)
+
 # PR #15 cache-bust banner. Logged once at module import. If this line is
 # missing from Railway logs after a deploy, the container is stale (the
 # Procfile boot echo is the shell-level twin of this check).

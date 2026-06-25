@@ -1163,7 +1163,12 @@ def _try_yfinance_ohlcv(symbol, period):
             LOGGER.warning(f"yfinance {symbol}: connection/timeout — counting as breaker failure: {e}")
             _yfinance_cb.record_failure()
         else:
-            LOGGER.warning(f"yfinance fallback {symbol}: {e}")
+            # JSON parse errors (empty response / Yahoo blocking Railway IP) — count as breaker failure
+            if "Expecting value" in es or "JSON" in es or "json" in es.lower() or "parse" in es.lower():
+                LOGGER.warning(f"yfinance {symbol}: JSON parse error (empty response) — counting as breaker failure: {e}")
+                _yfinance_cb.record_failure()
+            else:
+                LOGGER.warning(f"yfinance fallback {symbol}: {e}")
         return None
 
 

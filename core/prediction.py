@@ -1273,6 +1273,11 @@ def run_prediction_cycle(with_diag: bool = False):
             all_picks.append(pick)
         elif skip:
             skip_counts[skip] = skip_counts.get(skip, 0) + 1
+        # PR #70: inter-symbol delay to prevent Alpaca rate-limit storms.
+        # 43 symbols × ~1.5s = ~65s per cycle, well within the 30-call/60s limit.
+        _scan_delay = float(os.getenv("SCAN_INTER_SYMBOL_DELAY_S", "1.2"))
+        if _scan_delay > 0:
+            time.sleep(_scan_delay)
         try:
             from core.performance_log import symbol_eval_from_scan
             symbol_evals.append(symbol_eval_from_scan(symbol, pick, skip, _sv, _eval_ts))
