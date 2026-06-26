@@ -965,16 +965,22 @@ def _morning_card_job():
     if top and float(top.get("confidence") or 0) >= min_conf:
         try:
             from core.telegram import send_daily_card
-            send_daily_card(_build_daily_card_data(top))
-            LOGGER.info("Daily card sent: %s %s @ %.0f%%", top.get("symbol"),
-                        top.get("direction"), float(top.get("confidence") or 0) * 100)
+            ok = send_daily_card(_build_daily_card_data(top))
+            if ok:
+                LOGGER.info("Daily card sent: %s %s @ %.0f%%", top.get("symbol"),
+                            top.get("direction"), float(top.get("confidence") or 0) * 100)
+            else:
+                LOGGER.error("Daily card FAILED to send (dead-lettered): %s", top.get("symbol"))
         except Exception as _ce:
             LOGGER.error("Daily card send failed: " + str(_ce)[:120])
     else:
         try:
             from core.telegram import send_silence_card
-            send_silence_card(_build_silence_card_data(_cycle_diag if isinstance(_cycle_diag, dict) else {}))
-            LOGGER.info("Silence card sent (no pick >= %.0f%%)", min_conf * 100)
+            ok = send_silence_card(_build_silence_card_data(_cycle_diag if isinstance(_cycle_diag, dict) else {}))
+            if ok:
+                LOGGER.info("Silence card sent (no pick >= %.0f%%)", min_conf * 100)
+            else:
+                LOGGER.error("Silence card FAILED to send (dead-lettered)")
         except Exception as _se:
             LOGGER.error("Silence card send failed: " + str(_se)[:120])
     return picks
@@ -2840,7 +2846,10 @@ def wolf_signal_alert_check(x_cron_secret: str = Header(default="")):
                     + (f"\nWindow: ~{hrs}h" if hrs is not None else "")
                 )
                 try:
-                    _send(body)
+                    ok = _send(body)
+                    if not ok:
+                        errors.append(f"id={pid} telegram: dead-lettered after retries")
+                        continue
                 except Exception as _se:
                     errors.append(f"id={pid} telegram: {str(_se)[:80]}")
                     continue

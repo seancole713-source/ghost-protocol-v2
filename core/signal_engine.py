@@ -1188,16 +1188,26 @@ def _yf_rows_from_history(tk, period=None, start=None, end=None):
         for ix, row in h.iterrows():
             try:
                 close = float(row["Close"])
-                if close <= 0:
+                # PR #79: reject NaN/Inf — NaN <= 0 is False in Python,
+                # so non-finite values would pass the old check and produce
+                # NaN features that crash JSONB inserts.
+                import math as _math
+                if not _math.isfinite(close) or close <= 0:
                     continue
                 ts = ix.strftime('%Y-%m-%dT%H:%M:%SZ') if hasattr(ix, 'strftime') else str(ix)
+                o = float(row["Open"])
+                h = float(row["High"])
+                l = float(row["Low"])
+                v = float(row.get("Volume", 0) or 0)
+                if not all(_math.isfinite(x) and x >= 0 for x in (o, h, l, v)):
+                    continue
                 rows.append({
                     'ts': ts,
-                    'open': float(row["Open"]),
-                    'high': float(row["High"]),
-                    'low': float(row["Low"]),
+                    'open': o,
+                    'high': h,
+                    'low': l,
                     'close': close,
-                    'volume': float(row.get("Volume", 0) or 0),
+                    'volume': v,
                 })
             except Exception:
                 continue

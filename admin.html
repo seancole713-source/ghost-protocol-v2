@@ -1055,10 +1055,10 @@ async function loadDeadLetter(){
   try{
     var g = await _fetchJson('/api/admin/telegram/dead-letter');
     if(!g || g.ok === false){el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml((g&&g.error)||'unavailable or not signed in') + '</div>';return}
-    var items = g.items || [];
+    var items = g.entries || [];
     if(!items.length){el.innerHTML = '<div class="kv"><span class="ok">&#10003;</span> Queue empty.</div>';return}
     var rows = items.slice(0, 20).map(function(d){
-      return '<tr><td>' + fmtTimeAgo(d.ts) + '</td><td><code>' + escHtml((d.error || '').slice(0, 80)) + '</code></td><td>' + escHtml((d.payload || '').slice(0, 120)) + '</td></tr>';
+      return '<tr><td>' + fmtTimeAgo(d.ts) + '</td><td><code>' + escHtml((d.error || '').slice(0, 80)) + '</code></td><td>' + escHtml((d.text || '').slice(0, 120)) + '</td></tr>';
     }).join('');
     el.innerHTML = '<div class="kv"><b>' + items.length + '</b> failed message(s)</div>'
       + '<table class="tbl"><thead><tr><th>When</th><th>Error</th><th>Payload</th></tr></thead><tbody>' + rows + '</tbody></table>';
@@ -1066,12 +1066,12 @@ async function loadDeadLetter(){
 }
 
 async function replayDeadLetter(){
-  if(!confirm('Replay all dead-letter messages? This will retry sending.')) return;
+  if(!confirm('Replay oldest dead-letter message? This will retry sending the first entry.')) return;
   try{
-    var r = await fetch('/api/admin/telegram/dead-letter/replay', {method:'POST',headers:{'Content-Type':'application/json'}});
+    var r = await fetch('/api/admin/telegram/dead-letter/replay', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({index:0})});
     if(r.status === 404){alert('Replay failed — not signed in as admin.');return}
     var g = await r.json().catch(function(){return {};});
-    alert(g.ok ? ('Replayed ' + (g.replayed||0) + ' message(s).') : ('Replay failed: ' + (g.error || 'unknown')));
+    alert(g.ok ? ('Replayed 1 message. ' + (g.remaining||0) + ' remaining.') : ('Replay failed: ' + (g.error || 'unknown')));
   }catch(e){alert('Replay failed: ' + e);}
   loadDeadLetter();
 }

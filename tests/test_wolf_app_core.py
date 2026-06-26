@@ -503,7 +503,7 @@ def _patch_signal_alert(monkeypatch, cur, sent_messages):
     monkeypatch.setattr(wolf_app, "db_conn", lambda: _DbCtx())
 
     import core.telegram as _tg
-    monkeypatch.setattr(_tg, "_send", lambda text: sent_messages.append(text))
+    monkeypatch.setattr(_tg, "_send", lambda text: (sent_messages.append(text), True)[1])
 
 
 def test_signal_alert_check_skips_when_daily_cap_reached(monkeypatch):

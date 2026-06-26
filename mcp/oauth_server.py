@@ -162,8 +162,27 @@ def redirect_uri_allowed(requested: str, allowed_list: list) -> bool:
 
 
 def fetch_cimd_client(client_id: str) -> Optional[Dict[str, Any]]:
-    """Fetch and validate Client ID Metadata Document (HTTPS URL client_id)."""
+    """Fetch and validate Client ID Metadata Document (HTTPS URL client_id).
+
+    PR #79: SSRF hardening — block private/reserved IP ranges before fetch.
+    Only public internet hosts are allowed for CIMD metadata retrieval.
+    """
     if not client_id.startswith("https://"):
+        return None
+    # SSRF guard: resolve hostname and block private/reserved IPs
+    try:
+        from urllib.parse import urlparse
+        import ipaddress
+        host = urlparse(client_id).hostname
+        if not host:
+            return None
+        import socket
+        addr = socket.gethostbyname(host)
+        ip = ipaddress.ip_address(addr)
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved:
+            LOGGER.warning("CIMD fetch blocked: %s resolves to private/reserved IP %s", client_id, addr)
+            return None
+    except Exception:
         return None
     try:
         resp = requests.get(client_id, timeout=10, headers={"Accept": "application/json"})
