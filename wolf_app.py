@@ -32,6 +32,16 @@ LOGGER.info(
 
 CRON_SECRET = os.getenv("CRON_SECRET", "")
 
+# PR #77: refuse to boot in production without CRON_SECRET set.
+# _cron_ok() fails open when the secret is empty (dev convenience), but
+# production must never expose admin/cron/training routes without auth.
+if os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("RAILWAY_SERVICE_NAME"):
+    if not CRON_SECRET:
+        raise RuntimeError(
+            "CRON_SECRET is required in production (Railway). "
+            "Set it in the Railway dashboard under Variables."
+        )
+
 
 def _cron_ok(provided: str, strict: bool = False) -> bool:
     """Constant-time check for x-cron-secret header.
@@ -3903,8 +3913,10 @@ def admin_resume_engine(x_cron_secret: str = Header(default="")):
 
 
 @APP.post("/api/test-alert")
-def test_alert():
+def test_alert(x_cron_secret: str = Header(default="")):
     """Send test message to Telegram to verify connection."""
+    if not _cron_ok(x_cron_secret, strict=True):
+        raise HTTPException(status_code=403)
     from core.telegram import send_test
     ok = send_test()
     return {"ok": ok, "message": "Test alert sent to Telegram + Discord"}

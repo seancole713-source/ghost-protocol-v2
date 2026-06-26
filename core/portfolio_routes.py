@@ -115,8 +115,10 @@ async def add_portfolio(request: Request):
     return {"ok":True,"id":new_id,"symbol":sym}
 
 @portfolio_router.post("/api/portfolio/{position_id}/price")
-def set_manual_price(position_id: int, data: dict):
+def set_manual_price(position_id: int, data: dict, request: Request):
     """Set manual price when live feed fails (e.g. WOLF)."""
+    from mcp.security import require_portfolio_auth
+    require_portfolio_auth(request)
     try:
         price = float(data.get("price", 0))
         with db_conn() as conn:
@@ -334,8 +336,10 @@ def auto_refresh_portfolio_prices():
         return 0
 
 
-@portfolio_router.get("/api/portfolio/refresh-prices")
-def refresh_portfolio_prices():
+@portfolio_router.post("/api/portfolio/refresh-prices")
+def refresh_portfolio_prices(request: Request):
     """T19: Manually trigger portfolio price refresh."""
+    from mcp.security import require_portfolio_auth
+    require_portfolio_auth(request)
     updated = auto_refresh_portfolio_prices()
     return {"ok": True, "updated": updated}

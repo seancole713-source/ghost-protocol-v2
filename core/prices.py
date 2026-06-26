@@ -153,14 +153,18 @@ def get_extended_session(symbol: str) -> Dict[str, Any]:
     prev_close = None
     pre_market = None
     post_market = None
+    from core.circuit_breaker import _yfinance_cb
     try:
+        if not _yfinance_cb.allow():
+            return {}
         import yfinance as yf
         fi = yf.Ticker(sym).fast_info
         prev_close = getattr(fi, "previous_close", None) or getattr(fi, "previousClose", None)
         pre_market = getattr(fi, "pre_market_price", None) or getattr(fi, "preMarketPrice", None)
         post_market = getattr(fi, "post_market_price", None) or getattr(fi, "postMarketPrice", None)
+        _yfinance_cb.record_success()
     except Exception:
-        pass
+        _yfinance_cb.record_failure()
     try:
         if prev_close is not None:
             prev_close = float(prev_close)
@@ -477,25 +481,27 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
         feed = feed or "alpaca_trade"
 
     if today_open is None or today_high is None:
-        try:
-            import yfinance as yf
-            h = yf.Ticker(sym).history(period="1d", interval="5m")
-            if h is not None and not h.empty:
-                # yfinance 5m during RTH — filter roughly to session hours
-                today_open = round(float(h["Open"].iloc[0]), 4)
-                today_high = round(float(h["High"].max()), 4)
-                today_low = round(float(h["Low"].min()), 4)
-                yf_last = round(float(h["Close"].iloc[-1]), 4)
-                if not last_price:
-                    last_price = yf_last
-                feed = feed or "yfinance_5m"
-            if prev_close is None:
-                fi = yf.Ticker(sym).fast_info
-                pc = getattr(fi, "previous_close", None) or getattr(fi, "previousClose", None)
-                if pc:
-                    prev_close = round(float(pc), 4)
-        except Exception:
-            pass
+        from core.circuit_breaker import _yfinance_cb
+        if _yfinance_cb.allow():
+            try:
+                import yfinance as yf
+                h = yf.Ticker(sym).history(period="1d", interval="5m")
+                if h is not None and not h.empty:
+                    today_open = round(float(h["Open"].iloc[0]), 4)
+                    today_high = round(float(h["High"].max()), 4)
+                    today_low = round(float(h["Low"].min()), 4)
+                    yf_last = round(float(h["Close"].iloc[-1]), 4)
+                    if not last_price:
+                        last_price = yf_last
+                    feed = feed or "yfinance_5m"
+                if prev_close is None:
+                    fi = yf.Ticker(sym).fast_info
+                    pc = getattr(fi, "previous_close", None) or getattr(fi, "previousClose", None)
+                    if pc:
+                        prev_close = round(float(pc), 4)
+                _yfinance_cb.record_success()
+            except Exception:
+                _yfinance_cb.record_failure()
 
     chg_abs = chg_pct = None
     if last_price and prev_close and prev_close > 0:

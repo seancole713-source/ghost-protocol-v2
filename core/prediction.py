@@ -1132,7 +1132,7 @@ def _predict_symbol_ex(symbol, asset_type, regime, scores_out=None):
         if abs(sent) > 0.1:
             dir_mult = 1.0 if direction in ("UP", "BUY") else -1.0
             adj = round(sent * dir_mult * 0.10, 3)
-            confidence = round(max(CONFIDENCE_FLOOR, min(0.98, confidence + adj)), 3)
+            confidence = round(max(_floor, min(0.98, confidence + adj)), 3)
             LOGGER.info("[SENTIMENT] " + symbol + " news=" + str(round(sent,2)) + " adj=" + str(adj) + " conf=" + str(confidence))
     except Exception:
         pass
@@ -1306,14 +1306,9 @@ def run_prediction_cycle(with_diag: bool = False):
                 "price_vs_sma5_pct": _reg.get("price_vs_sma5_pct"),
                 "regime_block": skip in ("v3_regime_gate", "regime_gate"),
             }
-        # Inter-symbol delay to prevent API rate-limit storms across all 5 feed tiers
-        try:
-            from core.signal_engine import _v3_scan_symbol_delay_sec
-            delay = _v3_scan_symbol_delay_sec()
-            if delay > 0:
-                time.sleep(delay)
-        except Exception:
-            pass
+        # NOTE: SCAN_INTER_SYMBOL_DELAY_S above already handles inter-symbol
+        # rate-limiting. The old _v3_scan_symbol_delay_sec second sleep was
+        # redundant (PR #77) — removed to avoid double-delaying the scan loop.
 
     # P2 (audit): stash all symbol features for cross-sectional ranking on the
     # next scan cycle. predict_live_ex reads _last_scan_features to compute
