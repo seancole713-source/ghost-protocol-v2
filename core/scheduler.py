@@ -23,6 +23,10 @@ class Task:
     last_error: str = ""
     # P2-2: per-task timeout (env-tunable, default 120s)
     timeout_s: Optional[float] = None
+    # PR #77: overlap guard — prevents scheduler from starting a new
+    # instance while the previous one is still running.
+    running: bool = field(default=False, init=False)
+    skipped_overlap_count: int = field(default=0, init=False)
 
 _tasks: Dict[str, Task] = {}
 _running = False
@@ -57,11 +61,16 @@ async def _loop():
         now = time.time()
         for task in list(_tasks.values()):
             if now - task.last_run >= task.interval_s:
+                if task.running:
+                    task.skipped_overlap_count += 1
+                    LOGGER.debug("Task %s skipped (overlap #%s)", task.name, task.skipped_overlap_count)
+                    continue
                 asyncio.create_task(_run_task(task))
         await asyncio.sleep(10)
 
 async def _run_task(task: Task):
     """Run a single task with timeout, catch errors, update metadata."""
+    task.running = True
     try:
         task.last_run = time.time()
         coro = task.fn() if asyncio.iscoroutinefunction(task.fn) else asyncio.get_event_loop().run_in_executor(None, task.fn)
@@ -80,6 +89,8 @@ async def _run_task(task: Task):
         task.error_count += 1
         task.last_error = str(e)[:200]
         LOGGER.error(f"Task {task.name} failed: {e}")
+    finally:
+        task.running = False
 
 def status() -> List[dict]:
     """Return status of all tasks for health check."""

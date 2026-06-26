@@ -30,11 +30,15 @@ _degraded_reasons: list = []
 
 
 def _count_open_circuits() -> int:
-    """Count how many circuit breakers are currently open."""
+    """Count how many circuit breakers are currently open or half-open.
+    PR #77: half_open also counts as impaired — a breaker in half_open
+    is still effectively unavailable (probes may succeed, but the feed is
+    degraded). Previously only "open" was counted, missing the window
+    between initial trip and cooldown expiry."""
     try:
         from core.circuit_breaker import all_breaker_status
         statuses = all_breaker_status()
-        return sum(1 for s in statuses.values() if s.get("state") == "open")
+        return sum(1 for s in statuses.values() if s.get("state") in ("open", "half_open"))
     except Exception:
         return 0
 

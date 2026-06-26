@@ -3861,9 +3861,10 @@ function _startHttpPoll(){
 
 function _applyLiveData(data){
   if(data.type !== 'pong') return;
-  // Update WOLF price if provided (server key is "wol f_price" — note the space)
-  if(data["wol f_price"] != null && window._lastHeroPrice){
-    window._lastHeroPrice.price = data["wol f_price"];
+  // Update WOLF price — prefer canonical wolf_price, fall back to legacy typo key
+  var wolfPx = data.wolf_price != null ? data.wolf_price : data["wol f_price"];
+  if(wolfPx != null && window._lastHeroPrice){
+    window._lastHeroPrice.price = wolfPx;
     window._lastHeroPrice.ts = data.ts;
     renderHero(window._lastHeroPrice, window._lastWatching, window._ghostTruthCtx);
   }

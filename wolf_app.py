@@ -1571,10 +1571,15 @@ def _rate_limit_cfg():
 
 
 def _client_ip(request: Request) -> str:
+    # PR #77: prefer request.client.host (set by Railway's trusted proxy).
+    # Only fall back to X-Forwarded-For when client.host is unavailable.
+    # This prevents XFF spoofing from bypassing the per-IP rate limiter.
+    if request.client and request.client.host:
+        return request.client.host
     xff = request.headers.get("x-forwarded-for")
     if xff:
         return xff.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+    return "unknown"
 
 
 @APP.middleware("http")
@@ -5202,8 +5207,11 @@ def cockpit_live_poll():
         payload["squeeze"] = {"error": "unavailable"}
     try:
         from core.prices import get_stock_price
-        payload["wol f_price"] = get_stock_price("WOLF")
+        price = get_stock_price("WOLF")
+        payload["wolf_price"] = price       # PR #77: canonical key
+        payload["wol f_price"] = price      # legacy typo — remove after frontend migration
     except Exception:
+        payload["wolf_price"] = None
         payload["wol f_price"] = None
     return payload
 
@@ -5230,8 +5238,11 @@ async def ws_cockpit(ws: WebSocket):
                         payload["squeeze"] = {"error": "unavailable"}
                     try:
                         from core.prices import get_stock_price
-                        payload["wol f_price"] = get_stock_price("WOLF")
+                        price = get_stock_price("WOLF")
+                        payload["wolf_price"] = price       # PR #77: canonical key
+                        payload["wol f_price"] = price      # legacy typo
                     except Exception:
+                        payload["wolf_price"] = None
                         payload["wol f_price"] = None
                     await ws.send_json(payload)
             except WebSocketDisconnect:

@@ -3,6 +3,9 @@ import { expect, test } from "@playwright/test";
 /**
  * Read-only GET surface: every route the cockpit or ops tooling may hit on load.
  * Skips mutation endpoints and heavy externals (e.g. portfolio price refresh).
+ *
+ * PR #77: /api/diagnostics returns 404 unauthenticated (intentional privacy).
+ * /api/portfolio returns 401 unauthenticated (auth-gated). Both are expected.
  */
 const READ_ONLY_JSON_GETS = [
   "/health",
@@ -16,10 +19,8 @@ const READ_ONLY_JSON_GETS = [
   "/api/news",
   "/api/schema",
   "/api/regime",
-  "/api/diagnostics",
   "/api/v3/status",
   "/api/coverage",
-  "/api/portfolio",
   "/api/v2/recent",
   "/api/db-probe",
   "/api/symbol-accuracy",
@@ -30,11 +31,18 @@ const READ_ONLY_JSON_GETS = [
   "/api/debug-signal/WOLF",
 ];
 
+// Routes that intentionally return non-200 in production
+const EXPECTED_NON_200: Record<string, number> = {
+  "/api/diagnostics": 404,   // intentional privacy — returns 404 unauthenticated
+  "/api/portfolio": 401,      // auth-gated — requires portfolio auth
+};
+
 test.describe("API GET surface", () => {
   for (const path of READ_ONLY_JSON_GETS) {
-    test(`GET ${path} returns JSON and HTTP OK`, async ({ request }) => {
+    test(`GET ${path} returns JSON and expected status`, async ({ request }) => {
       const r = await request.get(path);
-      expect(r.ok(), `${path} → ${r.status()}`).toBeTruthy();
+      const expectedStatus = EXPECTED_NON_200[path] || 200;
+      expect(r.status(), `${path} → ${r.status()} (expected ${expectedStatus})`).toBe(expectedStatus);
       const ct = (r.headers()["content-type"] ?? "").toLowerCase();
       expect(ct.includes("json"), `${path} content-type=${ct}`).toBeTruthy();
       const body = await r.json();

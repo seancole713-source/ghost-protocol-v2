@@ -2,20 +2,20 @@ import { expect, test } from "@playwright/test";
 import { attachStrictClientMonitors } from "./error-collectors";
 
 test.describe("Cockpit smoke", () => {
-  test("cockpit page renders tabs and title", async ({ page }) => {
+  test("cockpit page renders core elements and title", async ({ page }) => {
     const { consoleErrors, pageErrors, failedApiResponses } = attachStrictClientMonitors(page);
 
     const response = await page.goto("/cockpit", { waitUntil: "domcontentloaded" });
     expect(response?.ok()).toBeTruthy();
 
-    await expect(page.locator("#cgrid")).not.toContainText("Loading plays", { timeout: 25_000 });
-    await expect(page.locator("#stxt")).not.toHaveText("Load error — refresh");
+    // PR #77: updated selectors to match redesigned cockpit (June 2026).
+    // Old IDs (#cgrid, #stxt, #tab-stocks, etc.) no longer exist.
+    await expect(page.locator("#movers-board")).toBeVisible({ timeout: 25_000 });
+    await expect(page.locator("#ghost-score-wrap")).toBeVisible();
+    await expect(page.locator("#deploy-badge")).toBeVisible();
+    await expect(page.locator("#f-open")).toBeVisible();
 
     await expect(page.locator(".logo")).toContainText("GHOST PROTOCOL");
-    await expect(page.locator("#tab-stocks")).toBeVisible();
-    await expect(page.locator("#tab-portfolio")).toBeVisible();
-    await expect(page.locator("#tab-results")).toBeVisible();
-    await expect(page.locator("#tab-news")).toBeVisible();
 
     expect(consoleErrors, `Console errors found: ${consoleErrors.join(" | ")}`).toHaveLength(0);
     expect(pageErrors, `pageerror: ${pageErrors.join(" | ")}`).toHaveLength(0);

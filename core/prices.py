@@ -118,13 +118,84 @@ def _yfinance(symbol):
         return None
 
 
+def _polygon_spot(symbol):
+    """Spot price from Polygon.io — third-tier fallback (PR #77)."""
+    if not POLYGON_KEY:
+        return None
+    try:
+        r = requests.get(
+            f"https://api.polygon.io/v2/aggs/ticker/{symbol.upper()}/prev",
+            params={"adjusted": "true", "apiKey": POLYGON_KEY},
+            timeout=TIMEOUT,
+        )
+        if r.status_code == 200:
+            data = r.json()
+            results = data.get("results", [])
+            if results and results[0].get("c"):
+                return float(results[0]["c"])
+    except Exception:
+        pass
+    return None
+
+
+def _iex_spot(symbol):
+    """Spot price from Alpaca IEX feed — fourth-tier fallback (PR #77).
+    Uses the same Alpaca credentials as the primary feed but hits the
+    IEX endpoint which has different rate limits and data sources."""
+    try:
+        key = os.getenv("ALPACA_KEY_ID", "")
+        secret = os.getenv("ALPACA_SECRET_KEY", "")
+        if not key or not secret:
+            return None
+        r = requests.get(
+            f"https://data.alpaca.markets/v2/stocks/{symbol.upper()}/trades/latest",
+            headers={"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret},
+            params={"feed": "iex"},
+            timeout=TIMEOUT,
+        )
+        if r.status_code == 200:
+            return float(r.json()["trade"]["p"])
+    except Exception:
+        pass
+    return None
+
+
+def _stooq_spot(symbol):
+    """Spot price from Stooq — fifth-tier fallback (PR #77).
+    Free CSV endpoint, no API key. Returns latest close price."""
+    try:
+        url = f"https://stooq.com/q/l/?s={symbol.lower()}.us&f=sd2t2ohlcv&h&e=csv"
+        r = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0 (ghost-protocol)"})
+        if r.status_code == 200:
+            text = (r.text or "").strip()
+            if text and "No data" not in text and len(text) > 20:
+                lines = text.split("\n")
+                if len(lines) >= 2:
+                    parts = lines[1].split(",")
+                    if len(parts) >= 7:
+                        close = float(parts[6]) if parts[6] else 0
+                        if close > 0:
+                            return close
+    except Exception:
+        pass
+    return None
+
+
 def get_stock_price(symbol, *, with_staleness: bool = False):
-    """Return live price. When with_staleness=True, returns (price, stale_flag)."""
+    """Return live price from the 5-tier spot chain: Alpaca → yfinance → Polygon → IEX → Stooq.
+    When with_staleness=True, returns (price, stale_flag)."""
     cached = _cache_get(symbol)
     if cached:
         return (cached, False) if with_staleness else cached
-    # Alpaca = real-time, yfinance = prev-close fallback
+    # PR #77: full 5-tier spot chain matching the advertised fallback order.
+    # Previously only Alpaca + yfinance; Polygon/IEX/Stooq were OHLCV-only.
     price = _alpaca(symbol) or _yfinance(symbol)
+    if not price:
+        price = _polygon_spot(symbol)
+    if not price:
+        price = _iex_spot(symbol)
+    if not price:
+        price = _stooq_spot(symbol)
     if price:
         _cache_set(symbol, price)
         return (price, False) if with_staleness else price
