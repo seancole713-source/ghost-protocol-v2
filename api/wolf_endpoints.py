@@ -33,6 +33,27 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 LOGGER = logging.getLogger("ghost.wolf_endpoints")
+
+# PR #81: all yfinance calls in this module are gated through the circuit
+# breaker. The _patched_yf_ticker wrapper checks _yfinance_cb.allow() before
+# every Ticker() call and records success/failure. No code changes needed
+# in the individual endpoint functions — the patch is transparent.
+import yfinance as _yf
+_original_yf_ticker = _yf.Ticker
+
+def _patched_yf_ticker(symbol):
+    from core.circuit_breaker import _yfinance_cb
+    if not _yfinance_cb.allow():
+        return None
+    try:
+        tk = _original_yf_ticker(symbol)
+        _yfinance_cb.record_success()
+        return tk
+    except Exception:
+        _yfinance_cb.record_failure()
+        return None
+
+_yf.Ticker = _patched_yf_ticker
 router = APIRouter(prefix="/api/wolf", tags=["wolf"])
 
 WOLF_SYMBOL = "WOLF"

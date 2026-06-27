@@ -1217,6 +1217,8 @@ class _DF:
 def test_try_yfinance_ohlcv_retries_shorter_period_when_primary_empty(monkeypatch):
     """1y empty → falls through to 6mo, which has data → returns those rows."""
     import core.signal_engine as _se
+    from core.circuit_breaker import _yfinance_cb
+    _yfinance_cb.reset()  # PR #81: ensure breaker is closed for test
 
     calls = []
     bar = {"ts": "2026-01-02", "Open": 60.0, "High": 62.0, "Low": 59.0, "Close": 61.0, "Volume": 100_000}
@@ -1248,6 +1250,8 @@ def test_try_yfinance_ohlcv_retries_shorter_period_when_primary_empty(monkeypatc
 def test_try_yfinance_ohlcv_falls_through_to_explicit_dates(monkeypatch):
     """All period candidates empty → tries explicit start/end last."""
     import core.signal_engine as _se
+    from core.circuit_breaker import _yfinance_cb
+    _yfinance_cb.reset()  # PR #81: ensure breaker is closed for test
 
     calls = []
     bar = {"ts": "2026-01-02", "Open": 60, "High": 62, "Low": 59, "Close": 61, "Volume": 100_000}
