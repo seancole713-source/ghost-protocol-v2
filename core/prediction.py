@@ -1796,8 +1796,10 @@ def reconcile_outcomes():
         with db_conn() as conn:
             cur = conn.cursor()
             cur.execute(
-                "UPDATE predictions SET outcome=%s,exit_price=%s,pnl_pct=%s,resolved_at=%s WHERE id=%s",
+                "UPDATE predictions SET outcome=%s,exit_price=%s,pnl_pct=%s,resolved_at=%s WHERE id=%s AND outcome IS NULL",
                 (outcome, exit_price, pnl, now, pred_id))
+            if cur.rowcount == 0:
+                continue  # already resolved by another path
         resolved += 1
         try:
             from core.performance_log import record_pick_resolution

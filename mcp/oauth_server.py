@@ -185,7 +185,7 @@ def fetch_cimd_client(client_id: str) -> Optional[Dict[str, Any]]:
     except Exception:
         return None
     try:
-        resp = requests.get(client_id, timeout=10, headers={"Accept": "application/json"})
+        resp = requests.get(client_id, timeout=10, headers={"Accept": "application/json"}, allow_redirects=False)
         if resp.status_code != 200:
             return None
         doc = resp.json()

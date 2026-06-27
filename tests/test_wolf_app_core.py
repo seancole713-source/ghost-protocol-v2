@@ -1553,6 +1553,12 @@ def test_v3_train_sync_returns_actual_result_with_pr_version(monkeypatch):
     stale deploys at-a-glance."""
     monkeypatch.setenv("CRON_SECRET", "")
     cur = _patch_state_cursor(monkeypatch)
+    # PR #80: mock the training lock so the test doesn't deadlock
+    class _MockLock:
+        def locked(self): return False
+        def acquire(self): return True
+        def release(self): pass
+    monkeypatch.setattr(wolf_app, "_RETRAIN_JOB_LOCK", _MockLock())
 
     # Mock train_and_validate to return a known-passing result
     import core.signal_engine as _se
@@ -1580,6 +1586,12 @@ def test_v3_train_sync_returns_500_with_error_on_exception(monkeypatch):
     string surfaced + state=exception recorded."""
     monkeypatch.setenv("CRON_SECRET", "")
     cur = _patch_state_cursor(monkeypatch)
+    # PR #80: mock the training lock
+    class _MockLock:
+        def locked(self): return False
+        def acquire(self): return True
+        def release(self): pass
+    monkeypatch.setattr(wolf_app, "_RETRAIN_JOB_LOCK", _MockLock())
     import core.signal_engine as _se
     monkeypatch.setattr(_se, "train_and_validate",
                         lambda stocks: (_ for _ in ()).throw(RuntimeError("xgboost died")))
@@ -1655,6 +1667,12 @@ def test_v3_train_sync_includes_train_details_in_response(monkeypatch):
     inside its response under 'train_details' so the cockpit can render
     per-symbol gate metrics without needing a separate fetch."""
     monkeypatch.setenv("CRON_SECRET", "")
+    # PR #80: mock the training lock
+    class _MockLock:
+        def locked(self): return False
+        def acquire(self): return True
+        def release(self): pass
+    monkeypatch.setattr(wolf_app, "_RETRAIN_JOB_LOCK", _MockLock())
 
     # Cursor that returns canned ghost_state.last_train_details row
     detail_payload = {
@@ -2360,6 +2378,9 @@ def test_check_feeds_probes_wolf_by_default(monkeypatch):
     probed = []
     monkeypatch.setattr(_prices, "_alpaca", lambda sym: (probed.append(("alpaca", sym)), None)[1])
     monkeypatch.setattr(_prices, "_yfinance", lambda sym: (probed.append(("yfinance", sym)), 42.0)[1])
+    monkeypatch.setattr(_prices, "_polygon_spot", lambda sym: (probed.append(("polygon", sym)), None)[1])
+    monkeypatch.setattr(_prices, "_iex_spot", lambda sym: (probed.append(("iex", sym)), None)[1])
+    monkeypatch.setattr(_prices, "_stooq_spot", lambda sym: (probed.append(("stooq", sym)), None)[1])
     monkeypatch.delenv("HEALTH_PROBE_SYMBOL", raising=False)
     r = _prices.check_feeds()
     assert r["probe_symbol"] == "WOLF"
@@ -2367,7 +2388,7 @@ def test_check_feeds_probes_wolf_by_default(monkeypatch):
     assert r["yfinance"] is True
     assert r["priceable"] is True
     assert "WOLF priceable" in r["summary"]
-    assert "1/2" in r["summary"]
+    assert "1/5" in r["summary"]
     assert all(sym == "WOLF" for (_kind, sym) in probed)
 
 
@@ -2376,12 +2397,15 @@ def test_check_feeds_respects_health_probe_symbol_env(monkeypatch):
     import core.prices as _prices
     monkeypatch.setattr(_prices, "_alpaca", lambda sym: 1.0)
     monkeypatch.setattr(_prices, "_yfinance", lambda sym: None)
+    monkeypatch.setattr(_prices, "_polygon_spot", lambda sym: None)
+    monkeypatch.setattr(_prices, "_iex_spot", lambda sym: None)
+    monkeypatch.setattr(_prices, "_stooq_spot", lambda sym: None)
     monkeypatch.setenv("HEALTH_PROBE_SYMBOL", "MSFT")
     r = _prices.check_feeds()
     assert r["probe_symbol"] == "MSFT"
     assert r["alpaca_stock"] is True
     assert r["yfinance"] is False
-    assert "1/2" in r["summary"]
+    assert "1/5" in r["summary"]
     assert "MSFT" in r["summary"]
 
 

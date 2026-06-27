@@ -3321,7 +3321,17 @@ async function loadShortInterest(){
 
 /* ─── Portfolio (kept from prior cockpit) ─── */
 async function loadPortfolio(){
-  var data = await fetch('/api/portfolio').then(function(r){return r.json()}).catch(function(){return {positions:[]}});
+  var resp = await fetch('/api/portfolio');
+  if(resp.status === 401){
+    var tw = document.getElementById('ptotals');
+    var pw = document.getElementById('ppositions');
+    var gp = document.getElementById('gp-section');
+    tw.innerHTML = '';
+    pw.innerHTML = '<div class="empty"><div class="ico">&#128274;</div>Sign in at <a href="/admin">/admin</a> to view portfolio.</div>';
+    gp.innerHTML = '';
+    return;
+  }
+  var data = await resp.json().catch(function(){return {positions:[]}});
   var ps = data.positions || [];
   var tw = document.getElementById('ptotals');
   var pw = document.getElementById('ppositions');

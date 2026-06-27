@@ -194,22 +194,25 @@ def build_ask_context() -> Dict[str, Any]:
     try:
         from core.portfolio_routes import build_portfolio_payload
 
-        pf = build_portfolio_payload()
-        if isinstance(pf, dict):
-            ctx["portfolio"] = {
-                "positions": [
-                    {
-                        "symbol": p.get("symbol"),
-                        "quantity": p.get("quantity"),
-                        "buy_price": p.get("buy_price"),
-                        "gain_loss_pct": p.get("gain_loss_pct"),
-                        "gain_loss": p.get("gain_loss"),
-                        "current_value": p.get("current_value"),
-                    }
-                    for p in (pf.get("positions") or [])[:20]
-                ],
-                "total_gain_loss": pf.get("total_gain_loss"),
-            }
+        if include_portfolio:
+            pf = build_portfolio_payload()
+            if isinstance(pf, dict):
+                ctx["portfolio"] = {
+                    "positions": [
+                        {
+                            "symbol": p.get("symbol"),
+                            "quantity": p.get("quantity"),
+                            "buy_price": p.get("buy_price"),
+                            "gain_loss_pct": p.get("gain_loss_pct"),
+                            "gain_loss": p.get("gain_loss"),
+                            "current_value": p.get("current_value"),
+                        }
+                        for p in (pf.get("positions") or [])[:20]
+                    ],
+                    "total_gain_loss": pf.get("total_gain_loss"),
+                }
+        else:
+            ctx["portfolio"] = {"note": "portfolio context excluded (public endpoint)"}
     except Exception as e:
         ctx["portfolio_error"] = str(e)[:120]
 

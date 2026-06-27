@@ -1554,7 +1554,7 @@ async def get_ghost_ask_context(request: Request):
     from mcp.security import require_mcp_auth
     require_mcp_auth(request)
     from core.ghost_ask import build_ask_context
-    return JSONResponse(content={"ok": True, "context": build_ask_context()})
+    return JSONResponse(content={"ok": True, "context": build_ask_context(include_portfolio=True)})
 
 
 @router.get("/risk-discipline")

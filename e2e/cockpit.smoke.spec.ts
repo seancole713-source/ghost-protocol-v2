@@ -11,7 +11,10 @@ test.describe("Cockpit smoke", () => {
     // PR #77: updated selectors to match redesigned cockpit (June 2026).
     // Old IDs (#cgrid, #stxt, #tab-stocks, etc.) no longer exist.
     await expect(page.locator("#movers-board")).toBeVisible({ timeout: 25_000 });
-    await expect(page.locator("#ghost-score-wrap")).toBeVisible();
+    // PR #80: #ghost-score-wrap is hidden behind the "Show full dashboard"
+    // toggle. Click it first, then assert the full dashboard is visible.
+    await page.locator("#mvr-toggle").click();
+    await expect(page.locator("#ghost-score-wrap")).toBeVisible({ timeout: 10_000 });
     await expect(page.locator("#deploy-badge")).toBeVisible();
     await expect(page.locator("#f-open")).toBeVisible();
 

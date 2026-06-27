@@ -925,19 +925,48 @@ def _morning_card_job():
                 LOGGER.info(
                     "Morning card already sent today (" + _today_ct + ") — will run prediction cycle, skip duplicate Telegram"
                 )
-            elif not _skip_telegram:
-                # Claim today's Telegram slot before the cycle so overlapping cron +
-                # startup self-heal cannot both send SILENCE cards.
-                _cur_d.execute(
-                    "INSERT INTO ghost_state(key,val) VALUES('last_morning_card_date',%s) "
-                    "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
-                    (_today_ct,),
-                )
-                _dc2.commit()
     except Exception as _de:
         LOGGER.warning("Dedup check failed: "+str(_de)[:60])
     picks, _cycle_diag = run_prediction_cycle(with_diag=True)
-    # Record card fire time for startup self-healing check
+    # PR #80: only claim the CT-day dedup slot AFTER a successful send.
+    # Previously the slot was claimed before the send, so a dead-lettered
+    # card would consume the slot and prevent automatic retry that day.
+    if _skip_telegram:
+        LOGGER.info("Morning card: Telegram skipped (same CT day); cycle returned %s saved picks", len(picks or []))
+        return picks
+    # Overhauled cards (feat/telegram-cards): a high-conviction pick gets the
+    # full daily card; otherwise the SILENCE card. The once-per-CT-day dedup
+    # above (last_morning_card_date) prevents duplicate sends on restart/self-heal.
+    min_conf = _daily_min_conf()
+    top = max(picks, key=lambda p: float(p.get("confidence") or 0)) if picks else None
+    if top and float(top.get("confidence") or 0) >= min_conf:
+        try:
+            from core.telegram import send_daily_card
+            ok = send_daily_card(_build_daily_card_data(top))
+            if ok:
+                _record_morning_card_sent()
+                LOGGER.info("Daily card sent: %s %s @ %.0f%%", top.get("symbol"),
+                            top.get("direction"), float(top.get("confidence") or 0) * 100)
+            else:
+                LOGGER.error("Daily card FAILED to send (dead-lettered): %s", top.get("symbol"))
+        except Exception as _ce:
+            LOGGER.error("Daily card send failed: " + str(_ce)[:120])
+    else:
+        try:
+            from core.telegram import send_silence_card
+            ok = send_silence_card(_build_silence_card_data(_cycle_diag if isinstance(_cycle_diag, dict) else {}))
+            if ok:
+                _record_morning_card_sent()
+                LOGGER.info("Silence card sent (no pick >= %.0f%%)", min_conf * 100)
+            else:
+                LOGGER.error("Silence card FAILED to send (dead-lettered)")
+        except Exception as _se:
+            LOGGER.error("Silence card send failed: " + str(_se)[:120])
+    return picks
+
+
+def _record_morning_card_sent():
+    """PR #80: record morning card sent date AFTER successful send, not before."""
     try:
         import datetime as _dt2, pytz as _pytz2
         _ct2 = _pytz2.timezone("America/Chicago")
@@ -954,36 +983,6 @@ def _morning_card_job():
             )
     except Exception:
         pass
-    if _skip_telegram:
-        LOGGER.info("Morning card: Telegram skipped (same CT day); cycle returned %s saved picks", len(picks or []))
-        return picks
-    # Overhauled cards (feat/telegram-cards): a high-conviction pick gets the
-    # full daily card; otherwise the SILENCE card. The once-per-CT-day dedup
-    # above (last_morning_card_date) prevents duplicate sends on restart/self-heal.
-    min_conf = _daily_min_conf()
-    top = max(picks, key=lambda p: float(p.get("confidence") or 0)) if picks else None
-    if top and float(top.get("confidence") or 0) >= min_conf:
-        try:
-            from core.telegram import send_daily_card
-            ok = send_daily_card(_build_daily_card_data(top))
-            if ok:
-                LOGGER.info("Daily card sent: %s %s @ %.0f%%", top.get("symbol"),
-                            top.get("direction"), float(top.get("confidence") or 0) * 100)
-            else:
-                LOGGER.error("Daily card FAILED to send (dead-lettered): %s", top.get("symbol"))
-        except Exception as _ce:
-            LOGGER.error("Daily card send failed: " + str(_ce)[:120])
-    else:
-        try:
-            from core.telegram import send_silence_card
-            ok = send_silence_card(_build_silence_card_data(_cycle_diag if isinstance(_cycle_diag, dict) else {}))
-            if ok:
-                LOGGER.info("Silence card sent (no pick >= %.0f%%)", min_conf * 100)
-            else:
-                LOGGER.error("Silence card FAILED to send (dead-lettered)")
-        except Exception as _se:
-            LOGGER.error("Silence card send failed: " + str(_se)[:120])
-    return picks
 
 _WEEKDAY_INDEX = {"monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
                   "friday": 4, "saturday": 5, "sunday": 6}
@@ -4379,8 +4378,10 @@ def run_watchdog(x_cron_secret: str = Header(default="")):
                 with db_conn() as conn:
                     cur = conn.cursor()
                     cur.execute(
-                        "UPDATE predictions SET outcome=%s,exit_price=%s,pnl_pct=%s,resolved_at=%s WHERE id=%s",
+                        "UPDATE predictions SET outcome=%s,exit_price=%s,pnl_pct=%s,resolved_at=%s WHERE id=%s AND outcome IS NULL",
                         (hit, exit_price, pnl, int(time.time()), pred_id))
+                    if cur.rowcount == 0:
+                        continue  # already resolved by another path
                 try:
                     usd_out = round(100 * (1 + pnl / 100), 2)
                     send_position_alert(symbol, direction, hit, entry, exit_price, pnl, usd_out)
@@ -5328,6 +5329,10 @@ def v3_train(x_cron_secret: str = Header(default=""), force: bool = False):
     LOGGER.info(f"[v3_train] PR14_DIAG ENDPOINT_INVOKED force={force}")
     if not _cron_ok(x_cron_secret):
         return JSONResponse({"ok":False,"error":"Forbidden"}, status_code=403)
+    # PR #80: prevent concurrent training jobs from racing model writes
+    if _RETRAIN_JOB_LOCK.locked():
+        return JSONResponse({"ok": False, "error": "training_already_running"}, status_code=409)
+    _RETRAIN_JOB_LOCK.acquire()
     started_at = int(time.time())
     _record_v3_train_state(
         ts=started_at, state="started", force=str(force).lower(),
@@ -5374,6 +5379,11 @@ def v3_train(x_cron_secret: str = Header(default=""), force: bool = False):
                 error=str(e)[:300],
                 finished_at=int(time.time()),
             )
+        finally:
+            try:
+                _RETRAIN_JOB_LOCK.release()
+            except Exception:
+                pass
     threading.Thread(target=_train, daemon=True).start()
     # PR #19: response now includes _pr_version so the operator can verify
     # from a single curl whether the deployed code is fresh or stale. If the
@@ -5443,6 +5453,10 @@ def v3_train_sync(x_cron_secret: str = Header(default=""), force: bool = False):
     LOGGER.info(f"[v3_train_sync] PR19_DIAG ENDPOINT_INVOKED force={force}")
     if not _cron_ok(x_cron_secret):
         return JSONResponse({"ok": False, "error": "Forbidden"}, status_code=403)
+    # PR #80: prevent concurrent training jobs from racing model writes
+    if _RETRAIN_JOB_LOCK.locked():
+        return JSONResponse({"ok": False, "error": "training_already_running"}, status_code=409)
+    _RETRAIN_JOB_LOCK.acquire()
     started_at = int(time.time())
     _record_v3_train_state(
         ts=started_at, state="started", force=str(force).lower(),

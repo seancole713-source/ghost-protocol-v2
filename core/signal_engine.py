@@ -1011,19 +1011,27 @@ def _try_stooq_ohlcv(symbol, period):
             try:
                 date_str = row.get("Date") or ""
                 close = float(row.get("Close", 0) or 0)
-                if close <= 0:
+                # PR #80: reject NaN/Inf — same fix as yfinance path (PR #79)
+                import math as _math
+                if not _math.isfinite(close) or close <= 0:
                     continue
                 row_date = datetime.strptime(date_str, "%Y-%m-%d").date()
                 if row_date < cutoff_date:
                     skipped_pre_cutoff += 1
                     continue
+                o = float(row.get("Open", 0) or 0)
+                h = float(row.get("High", 0) or 0)
+                l = float(row.get("Low", 0) or 0)
+                v = float(row.get("Volume", 0) or 0)
+                if not all(_math.isfinite(x) and x >= 0 for x in (o, h, l, v)):
+                    continue
                 rows.append({
                     "ts": row_date.strftime("%Y-%m-%dT00:00:00Z"),
-                    "open": float(row.get("Open", 0) or 0),
-                    "high": float(row.get("High", 0) or 0),
-                    "low": float(row.get("Low", 0) or 0),
+                    "open": o,
+                    "high": h,
+                    "low": l,
                     "close": close,
-                    "volume": float(row.get("Volume", 0) or 0),
+                    "volume": v,
                 })
             except Exception:
                 continue
@@ -1080,16 +1088,24 @@ def _try_polygon_ohlcv(symbol, period):
         for bar in results:
             try:
                 close = float(bar.get("c", 0))
-                if close <= 0:
+                # PR #80: reject NaN/Inf
+                import math as _math
+                if not _math.isfinite(close) or close <= 0:
                     continue
                 ts = datetime.fromtimestamp(bar["t"] / 1000, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+                o = float(bar.get("o", 0))
+                h = float(bar.get("h", 0))
+                l = float(bar.get("l", 0))
+                v = float(bar.get("v", 0))
+                if not all(_math.isfinite(x) and x >= 0 for x in (o, h, l, v)):
+                    continue
                 rows.append({
                     "ts": ts,
-                    "open": float(bar.get("o", 0)),
-                    "high": float(bar.get("h", 0)),
-                    "low": float(bar.get("l", 0)),
+                    "open": o,
+                    "high": h,
+                    "low": l,
                     "close": close,
-                    "volume": float(bar.get("v", 0)),
+                    "volume": v,
                 })
             except Exception:
                 continue

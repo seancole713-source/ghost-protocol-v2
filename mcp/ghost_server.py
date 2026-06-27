@@ -46,7 +46,7 @@ class GhostMcpGetClient:
 def _handler_ghost_context() -> Dict[str, Any]:
     from core.ghost_ask import build_ask_context
 
-    return {"ok": True, "context": build_ask_context()}
+    return {"ok": True, "context": build_ask_context(include_portfolio=True)}
 
 
 def _handler_ghost_score() -> Dict[str, Any]:

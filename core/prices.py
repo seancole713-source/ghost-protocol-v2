@@ -616,19 +616,22 @@ def get_vix():
 def check_feeds():
     """Health check — can we price the target symbol right now?
 
-    WOLF-only system: probe the actual target (WOLF), not a proxy ticker. The
-    earlier AAPL probe measured generic "feed alive" but hid whether we can
-    actually price WOLF — misleading for a single-ticker product. Reports each
-    spot-price feed plus an overall `priceable` flag. Full multi-tier OHLCV
-    coverage detail lives at /api/diag/data-sources. Override with
-    HEALTH_PROBE_SYMBOL if you specifically want to test generic feed health.
+    PR #80: probes all 5 spot-price tiers (Alpaca, yfinance, Polygon, IEX,
+    Stooq) matching the get_stock_price() fallback chain. Previously only
+    reported 2 feeds, missing the newly added Polygon/IEX/Stooq spot tiers.
     """
     probe = os.getenv("HEALTH_PROBE_SYMBOL", "WOLF")
     _al = _alpaca(probe) is not None
     _yf = _yfinance(probe) is not None
-    priceable = bool(_al or _yf)
-    r = {"alpaca_stock": _al, "yfinance": _yf, "probe_symbol": probe, "priceable": priceable}
-    working = sum(1 for v in (_al, _yf) if v)
-    r["summary"] = (f"{probe} priceable ({working}/2 feeds)" if priceable
-                    else f"{probe} NOT priceable (0/2 feeds)")
+    _pg = _polygon_spot(probe) is not None
+    _ix = _iex_spot(probe) is not None
+    _sq = _stooq_spot(probe) is not None
+    priceable = bool(_al or _yf or _pg or _ix or _sq)
+    r = {
+        "alpaca_stock": _al, "yfinance": _yf, "polygon": _pg,
+        "iex": _ix, "stooq": _sq, "probe_symbol": probe, "priceable": priceable,
+    }
+    working = sum(1 for v in (_al, _yf, _pg, _ix, _sq) if v)
+    r["summary"] = (f"{probe} priceable ({working}/5 feeds)" if priceable
+                    else f"{probe} NOT priceable (0/5 feeds)")
     return r
