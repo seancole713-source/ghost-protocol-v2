@@ -64,6 +64,8 @@ def test_console_contains_live_market_mirror_and_score_language():
         "Mirror score",
         "Precision",
         "Live market truth",
+        "Expected high zone",
+        "Expected low zone",
         "End-of-day mirror",
         "Live market mirror",
     ):
@@ -115,6 +117,7 @@ def test_console_fetches_required_existing_and_new_apis():
         "/api/wolf/super-ghost/if-followed?symbol=",
         "/api/wolf/super-ghost/learning?symbol=",
         "/api/wolf/super-ghost/precision?symbol=",
+        "/api/wolf/super-ghost/range-calibration?symbol=",
         "/api/wolf/super-ghost/feature-profile?symbol=",
         "/api/wolf/super-ghost/shadow?symbol=",
         "/api/wolf/super-ghost/promotion?symbol=",
@@ -128,6 +131,7 @@ def test_console_fetches_required_existing_and_new_apis():
         assert endpoint in text
     assert "Learning brain" in text
     assert "Precision brain" in text
+    assert "Range calibration" in text
     assert "Feature memory" in text
     assert "Shadow models" in text
     assert "Promotion gate" in text
@@ -157,6 +161,7 @@ def test_console_inline_javascript_has_required_functions():
         "function renderMirror",
         "function mirrorScore",
         "function livePrecisionScore",
+        "function rangeHtml",
         "function addPool",
         "function removePool",
         "function logPrediction",
