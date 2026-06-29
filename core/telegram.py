@@ -275,3 +275,15 @@ def send_risk_discipline_alert(title, body):
 
 def send_test():
     return _send("Ghost Protocol v2 -- Telegram connected OK")
+
+
+def send_telegram_message(text) -> bool:
+    """Public alert sender used by the live runtime alert paths.
+
+    ``core/squeeze_monitor.py`` and ``core/wolf_monitor.py`` import
+    ``send_telegram_message`` (historically from a never-created
+    ``core.telegram_hunter`` module). This is the canonical implementation;
+    ``core/telegram_hunter.py`` is a thin compatibility shim that re-exports it.
+    Returns True on success (or when alerts are disabled), False on failure.
+    """
+    return _send(str(text))

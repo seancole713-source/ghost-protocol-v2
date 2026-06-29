@@ -1578,6 +1578,30 @@ async def get_ghost_ask_context(request: Request):
     return JSONResponse(content={"ok": True, "context": build_ask_context(include_portfolio=True)})
 
 
+@router.post("/war-room")
+async def post_war_room(request: Request):
+    """Run the 6-agent equity-research War Room for a symbol.
+
+    Body: {"symbol": "WOLF"}
+    Auth: GHOST_MCP_TOKEN (header/bearer) or admin cookie — not public.
+    Requires ANTHROPIC_API_KEY on the server. Rate-limited per CT day
+    (WAR_ROOM_DAILY_LIMIT, default 5).
+    """
+    from mcp.security import require_portfolio_auth
+    require_portfolio_auth(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    symbol = str(body.get("symbol") or "").strip()
+    from core.war_room import run_war_room
+    result = run_war_room(symbol)
+    status = 200 if result.get("ok") else 400
+    return JSONResponse(content=result, status_code=status)
+
+
 @router.get("/risk-discipline")
 async def get_risk_discipline():
     from core.risk_discipline import combined_trading_block, position_sizing_plan, risk_settings
