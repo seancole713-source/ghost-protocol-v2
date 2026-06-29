@@ -84,11 +84,12 @@ squeeze ML v2, drift/sentiment/options probes) are wired as of PR #60.
 | Investor cockpit | `/cockpit` — WOLF-first UI |
 | Cron trigger | cron-job.org fires `POST /api/morning-card` daily 8 AM CT |
 | Auth header name | `x-cron-secret` (value in Railway env as `CRON_SECRET`) |
-| **Last prod-verified** | **2026-06-29** — PR #91 deployed (`3a83893`, `_pr_version 91`); 504 tests passing; console trust-state polish live; WOLF coverage gate still 21/25 |
+| **Last prod-verified** | **2026-06-29** — PR #92 deployed (`c6c912b`, `_pr_version 92`); 508 tests passing; console launch-review follow-ups live (favicon, no-intraday guard, coverage-gate copy) |
 
 **Agent CAN reach Railway** as of 2026-06-22 session — all production verification is done via `curl` from the local terminal.
 
 **PR #91 prod verify:** passed 2026-06-29 — `GET /api/_version` sha `3a83893`, `_pr_version 91`; `/picks` contains post-falsification banner, completed-predictions Top Stocks copy, and hidden duplicate top-tabs.
+**PR #92 prod verify:** passed 2026-06-29 — `GET /api/_version` sha `c6c912b`, `_pr_version 92`; `/favicon.ico` returns 200 image/svg+xml (was 404); `/picks` has null-safe `money()` ("No intraday data" instead of `$0.00`) + coverage A/B-gate note (≥18/25).
 **PR #88–#90 prod verify:** passed 2026-06-29 — `GET /api/_version` sha `5bc05a0`, `_pr_version 88`; `/api/wolf/super-ghost/coverage?symbol=WOLF` returned 21/25 and `meets_ab_gate=true`; AAPL 19/25; NVDA 20/25; gate invariant no-A/B-below-18 verified.
 **PR #86–#87 prod verify:** passed 2026-06-29 — `/picks` unified console live, `/legacy-picks` preserved, `/cockpit` preserved, `/api/market/session/WOLF` live mirror endpoint responding.
 **PR #84 prod verify:** passed 2026-06-29 — Truth Ledger routes live (`history`, `accuracy`, `if-followed`, auth-gated `resolve`).
@@ -485,3 +486,4 @@ Run once per week (any time for deploy checks; squeeze/radar checks best **Mon�
 | **#89** | 06-29 | **History source fix** — `get_daily_history()` now delegates first to production-proven `_fetch_ohlcv` chain (Alpaca SIP→IEX→Polygon→yfinance→Stooq) before direct fallbacks |
 | **#90** | 06-29 | **Generic SEC ticker→CIK** — common large-cap CIK map + best-effort SEC ticker index; AAPL/NVDA/etc fundamentals resolve, not WOLF-only |
 | **#91** | 06-29 | **Ghost console trust-state polish** — persistent post-falsification banner, clearer Top Stocks “completed predictions” copy, duplicate top-tabs hidden; `_pr_version` 91 |
+| **#92** | 06-29 | **Console launch-review follow-ups** — null-safe `money()` shows “No intraday data” instead of `$0.00`; Overview coverage note explains the ≥18/25 A/B-grade gate; `/favicon.ico` route + inline icon (was 404); `_pr_version` 92 |

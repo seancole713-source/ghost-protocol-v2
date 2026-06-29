@@ -11,12 +11,36 @@ RULES:
   6. This is not documentation. It is an accountability ledger.
      Agents lie. This file exists because of that.
 
-LAST UPDATED: 2026-06-29 — PR #91 Ghost console trust-state polish (504 tests passing)
+LAST UPDATED: 2026-06-29 — PR #92 console launch-review follow-ups (508 tests passing)
 """
 
 # ============================================================
-# LIVE SYSTEM — LAST VERIFIED 2026-06-29 (PR #91 deployed)
+# LIVE SYSTEM — LAST VERIFIED 2026-06-29 (PR #92 deployed)
 # ============================================================
+
+PROD_VERIFY_2026_06_29_PR92 = {
+    "deploy_id": "Railway auto-deploy from main",
+    "git_sha_short": "c6c912b",
+    "_pr_version": 92,
+    "verified_at_ct": "2026-06-29",
+    "tests": "508 passed, 3 deselected/skipped, 2 warnings; compileall exit 0",
+    "live_acceptance": {
+        "version_endpoint": "GET /api/_version -> sha=c6c912b, _pr_version=92, app_version=2.5.0",
+        "favicon": "GET /favicon.ico -> 200 image/svg+xml (was 404)",
+        "no_intraday_guard": "/picks money() is null-safe; missing live OHLC shows 'No intraday data' not $0.00",
+        "coverage_gate_copy": "/picks Overview coverage note explains >=18/25 A/B-grade gate (WOLF 21/25, meets_ab_gate true)",
+    },
+    "key_fixes": [
+        "Root cause of IQ/LCID $0.00 was client-side JS Number(null)===0; fixed money() + m3row",
+        "Overview coverage metric now states the 18/25 A/B-grade evidence gate",
+        "/favicon.ico (+/favicon.svg) route added; inline SVG <link rel=icon>",
+        "Deploy/cache markers bumped to _pr_version 92",
+    ],
+    "known_issues": [
+        "External CSS extraction still deferred (inline styles; maintainability only, not a blocker)",
+        "Intraday live fields remain feed/cache-sensitive; UI now degrades honestly to 'No intraday data'",
+    ],
+}
 
 PROD_VERIFY_2026_06_29_PR91 = {
     "deploy_id": "Railway auto-deploy from main",
