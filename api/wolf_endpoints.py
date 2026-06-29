@@ -1835,3 +1835,43 @@ async def post_super_ghost_learn(request: Request):
         limit = 500
     from core.super_ghost_learning import learn_from_ledger
     return JSONResponse(content=learn_from_ledger(symbol=sym, horizon=horizon, limit=limit))
+
+
+@router.get("/super-ghost/lab")
+async def get_super_ghost_lab(symbol: str = "", horizon: int = 5):
+    """Latest Champion/Challenger Lab result.
+
+    The lab compares production Ghost against shadow challengers on resolved
+    Truth Ledger rows. It is evidence-generation only: no auto-promotion and no
+    trading. Use POST /super-ghost/lab/run (auth-gated) to create a new run.
+    """
+    from core.super_ghost_lab import latest_lab_summary
+    sym = (symbol or "").strip().upper() or None
+    return JSONResponse(content=latest_lab_summary(symbol=sym, horizon=horizon))
+
+
+@router.post("/super-ghost/lab/run")
+async def post_super_ghost_lab_run(request: Request):
+    """Run the Champion/Challenger shadow lab. Auth required.
+
+    Body optional: {"symbol": "WOLF", "horizon": 5, "limit": 1000}
+    """
+    from mcp.security import require_mcp_auth
+    require_mcp_auth(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    sym = (str(body.get("symbol") or "")).strip().upper() or None
+    try:
+        horizon = int(body.get("horizon") or 5)
+    except Exception:
+        horizon = 5
+    try:
+        limit = int(body.get("limit") or 1000)
+    except Exception:
+        limit = 1000
+    from core.super_ghost_lab import run_lab
+    return JSONResponse(content=run_lab(symbol=sym, horizon=horizon, limit=limit, persist=True))

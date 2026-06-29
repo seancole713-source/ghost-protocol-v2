@@ -678,6 +678,11 @@ def run_resolver_job() -> Dict[str, Any]:
             out["learning"] = learn_from_ledger(limit=500)
         except Exception as learn_exc:
             out["learning"] = {"ok": False, "error": str(learn_exc)[:120]}
+        try:
+            from core.super_ghost_lab import run_lab
+            out["lab"] = run_lab(limit=1000, persist=True)
+        except Exception as lab_exc:
+            out["lab"] = {"ok": False, "error": str(lab_exc)[:120]}
         return out
     except Exception as exc:
         LOGGER.warning("run_resolver_job: %s", str(exc)[:120])
