@@ -11,15 +11,39 @@ RULES:
   6. This is not documentation. It is an accountability ledger.
      Agents lie. This file exists because of that.
 
-LAST UPDATED: 2026-06-29 — PR #104 Regime-Specific Calibration Brain (578 tests passing)
+LAST UPDATED: 2026-06-29 — PR #105 Strict Top Pick Evidence Gate (582 tests passing)
 """
 
 # ============================================================
-# LIVE SYSTEM — LAST VERIFIED 2026-06-29 (PR #104 deployed)
+# LIVE SYSTEM — LAST VERIFIED 2026-06-29 (PR #105 deployed)
 # ============================================================
 
 
 
+
+
+PROD_VERIFY_2026_06_29_PR105 = {
+    "deploy_id": "Railway auto-deploy from main",
+    "git_sha_short": "8234a16",
+    "_pr_version": 105,
+    "verified_at_ct": "2026-06-29",
+    "tests": "582 passed, 3 skipped, 2 warnings; compileall exit 0",
+    "live_acceptance": {
+        "version_endpoint": "GET /api/_version -> sha=8234a16, _pr_version=105, app_version=2.5.0",
+        "top_pick_gate": "GET /api/wolf/super-ghost/top-pick-gate?symbol=WOLF&horizon=5 -> ok true, decision LOCKED, eligible false, blockers present",
+        "console": "/picks includes Top Pick gate Health row and positive-if-followed/calibrated-evidence copy",
+    },
+    "key_fixes": [
+        "core/super_ghost_top_picks.py: centralized backend Top Pick Evidence Gate",
+        "Top Picks requires completed predictions, >=70% direction wins, >=60/100 precision, calibration readiness, positive if-followed evidence, and clear kill conditions",
+        "GET /api/wolf/super-ghost/top-pick-gate endpoint",
+        "Console Top Stocks gate consumes backend gate instead of partial local-only checks",
+    ],
+    "known_issues": [
+        "Gate is intentionally locked until enough resolved evidence/calibration exists",
+        "Top Picks remains evidence-only; no auto-trading or trade-now actions",
+    ],
+}
 
 PROD_VERIFY_2026_06_29_PR104 = {
     "deploy_id": "Railway auto-deploy from main",
