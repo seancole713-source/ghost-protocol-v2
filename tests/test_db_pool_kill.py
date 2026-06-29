@@ -1,6 +1,5 @@
 """DB pool resilience + kill-status bundle."""
 
-import pytest
 
 
 def test_pool_stats_after_init(monkeypatch):

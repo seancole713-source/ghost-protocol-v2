@@ -1,13 +1,12 @@
 """Tests for Ghost MCP Phase 1.6 (OAuth lazy auth, path token, portfolio admin)."""
 import json
 
-import pytest
 from fastapi.testclient import TestClient
 
 import wolf_app
 from mcp.ghost_server import ALLOWED_HTTP_METHOD, GhostMcpGetClient
 from mcp.jsonrpc import clear_sessions_for_tests
-from mcp.security import verify_mcp_path_token, verify_mcp_token
+from mcp.security import verify_mcp_path_token
 
 
 def _client(monkeypatch, token: str = "test-mcp-secret"):

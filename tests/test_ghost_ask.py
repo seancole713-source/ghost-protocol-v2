@@ -1,5 +1,4 @@
 """Tests for Ghost Ask (Claude Q&A grounded in live state)."""
-import json
 
 from fastapi.testclient import TestClient
 

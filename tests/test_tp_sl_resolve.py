@@ -2,7 +2,6 @@
 import time
 from datetime import datetime, timezone
 
-import pytest
 
 from core import tp_sl_resolve as tps
 

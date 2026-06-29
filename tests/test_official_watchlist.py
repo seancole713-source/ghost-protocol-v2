@@ -3,7 +3,6 @@ from config.symbols import (
     OFFICIAL_WATCHLIST,
     OFFICIAL_WATCHLIST_CSV,
     watchlist_symbol_pairs,
-    watchlist_symbols,
 )
 
 

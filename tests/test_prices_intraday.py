@@ -3,8 +3,8 @@ from core.market_hours import RTH_CLOSE_MIN, RTH_OPEN_MIN, SESSION_TZ
 from core.prices import _ohlc_from_bars
 
 
-def _bar(hour, minute, o, h, l, c):
-    return {"t": f"2026-06-08T{hour:02d}:{minute:02d}:00-04:00", "o": o, "h": h, "l": l, "c": c}
+def _bar(hour, minute, o, h, low, c):
+    return {"t": f"2026-06-08T{hour:02d}:{minute:02d}:00-04:00", "o": o, "h": h, "l": low, "c": c}
 
 
 def test_ohlc_from_bars_rth_window():

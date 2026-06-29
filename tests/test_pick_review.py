@@ -1,8 +1,6 @@
 """Open pick review — withdraw when model changes mind."""
-import json
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from core import pick_review as pr
 
