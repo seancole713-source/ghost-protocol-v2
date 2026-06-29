@@ -34,6 +34,9 @@ def test_resolve_row_win_when_high_reaches_sell():
     assert meta["session_close"] == 11.2
     assert meta["close_pnl_pct"] == 12.0
     assert meta["target_gap_pct"] == round((11.2 - 12.0) / 12.0 * 100, 3)
+    assert meta["precision_score"] is not None
+    assert meta["precision_grade"] in {"A", "B", "C", "D", "F"}
+    assert meta["precision"]["target_stop_result"] == "WIN"
 
 
 def test_resolve_row_loss_when_low_hits_stop():
@@ -60,3 +63,11 @@ def test_resolve_row_hit_3pct_flag():
     meta = _resolve_row(10.0, 15.0, 8.0, {"open": 10.0, "high": 10.31, "low": 9.9, "close": 10.2})
     assert meta["hit_3pct"] is True
     assert meta["outcome"] == "NEUTRAL"
+
+
+def test_resolve_row_precision_marks_direction_win_but_target_too_low():
+    meta = _resolve_row(11.41, 11.87, 10.27, {"open": 11.35, "high": 12.61, "low": 11.35, "close": 12.30})
+    assert meta["outcome"] == "WIN"
+    assert meta["precision_score"] < 75
+    assert meta["mistake_type"] in {"target_too_low", "stop_too_wide", "direction_right_low_precision"}
+
