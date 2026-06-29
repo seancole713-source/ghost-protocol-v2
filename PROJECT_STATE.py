@@ -11,12 +11,36 @@ RULES:
   6. This is not documentation. It is an accountability ledger.
      Agents lie. This file exists because of that.
 
-LAST UPDATED: 2026-06-29 — PR #82–#90 Super Ghost coverage gate + console (503 tests passing)
+LAST UPDATED: 2026-06-29 — PR #91 Ghost console trust-state polish (504 tests passing)
 """
 
 # ============================================================
-# LIVE SYSTEM — LAST VERIFIED 2026-06-29 (PR #90 deployed)
+# LIVE SYSTEM — LAST VERIFIED 2026-06-29 (PR #91 deployed)
 # ============================================================
+
+PROD_VERIFY_2026_06_29_PR91 = {
+    "deploy_id": "Railway auto-deploy from main",
+    "git_sha_short": "3a83893",
+    "_pr_version": 91,
+    "verified_at_ct": "2026-06-29",
+    "tests": "504 passed, 3 deselected/skipped, 2 warnings; compileall exit 0",
+    "live_acceptance": {
+        "version_endpoint": "GET /api/_version -> sha=3a83893, _pr_version=91, app_version=2.5.0",
+        "console_markers": "/picks contains post-falsification banner, completed-predictions Top Stocks copy, hidden duplicate top-tabs",
+        "wolf_coverage_still_ok": "GET /api/wolf/super-ghost/coverage?symbol=WOLF -> 21/25, meets_ab_gate=true",
+    },
+    "key_fixes": [
+        "Global post-falsification / old-80%-claim-abandoned banner outside Health tab",
+        "Top Stocks gate copy changed from resolved sample jargon to completed predictions / 5 minimum",
+        "Duplicate top-tab chrome hidden; sidebar remains visible navigation source",
+        "Deploy/cache markers bumped to _pr_version 91",
+    ],
+    "known_issues": [
+        "Coverage gate threshold (18/25) still could be explained more directly in Overview",
+        "Favicon still 404",
+        "If a market-session feed temporarily lacks OHLC, UI should say No intraday data rather than implying $0.00",
+    ],
+}
 
 PROD_VERIFY_2026_06_29 = {
     "deploy_id": "Railway auto-deploy from main",
@@ -491,6 +515,12 @@ Important honesty note:
   WOLF meeting coverage gate does NOT mean "buy" or "high confidence." Live output
   can still be grade F / NO EDGE — WATCH ONLY if the evidence is weak. That is correct.
   Coverage is a prerequisite for trust, not a promise of profit.
+
+PR #91 follow-up polish shipped after the review:
+  - Added persistent post-falsification banner outside Health.
+  - Replaced "resolved sample" jargon with "completed predictions" copy.
+  - Hid duplicate top-tab chrome; sidebar nav is the single visible nav source.
+  - Deployed as sha 3a83893, _pr_version 91; 504 tests passing.
 
 Remaining P1 work:
   - Form 4 insider parser
