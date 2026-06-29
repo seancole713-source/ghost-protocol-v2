@@ -87,7 +87,6 @@ def test_daily_summary_job_skips_off_hour(monkeypatch):
     monkeypatch.setenv("DAILY_SUMMARY_ENABLED", "1")
     monkeypatch.setenv("DAILY_SUMMARY_HOUR", "16")
     import datetime as _dt
-    import pytz as _tz
 
     class _FixedDT(_dt.datetime):
         @classmethod

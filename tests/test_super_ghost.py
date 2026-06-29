@@ -5,8 +5,6 @@ from core.super_ghost import (
     CHECKLIST,
     build_super_ghost,
     checklist_manifest,
-    detect_market_regime,
-    generate_ai_brief,
 )
 
 

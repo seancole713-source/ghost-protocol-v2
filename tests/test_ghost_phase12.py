@@ -1,6 +1,5 @@
 """Phase 1+2 modules — contract, calibration, ML v2, regime, sentiment, drift, options."""
 
-import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -9,7 +8,6 @@ from core.ghost_contract import CONTRACT_VERSION, ghost_contract
 from core.news_sentiment import score_articles, score_headline
 from core.regime_calibration import (
     effective_min_win_proba,
-    regime_calibration_enabled,
     regime_calibration_meta,
     sma5_gate_trend_up_bypass,
 )

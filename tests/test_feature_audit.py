@@ -1,6 +1,5 @@
 """Tests for Phase 3 feature audit + regime peer weighting."""
 import numpy as np
-import pytest
 
 from core.feature_audit import (
     apply_inversions_to_features,

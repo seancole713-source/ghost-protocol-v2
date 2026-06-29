@@ -1,5 +1,4 @@
 """roadmap #4a — backtesting metrics. Separate file (no overlap with open PRs)."""
-import math
 
 
 def _t(pnl, outcome=None, conf=None, pa=None, ra=None):

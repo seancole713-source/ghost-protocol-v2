@@ -269,7 +269,8 @@ def _patch_db_conn_with_cursor(monkeypatch, cur):
         def __exit__(self, exc_type, exc, tb):
             return False
 
-    ctx_factory = lambda: _DbCtx()
+    def ctx_factory():
+        return _DbCtx()
     monkeypatch.setattr(wolf_app, "db_conn", ctx_factory)
     try:
         import core.db as _cdb
@@ -370,7 +371,8 @@ def test_v3_status_reports_missing_expected_models(monkeypatch):
 def test_v3_status_system_health_block_healthy(monkeypatch):
     """The system block rolls up engine/kill/coverage/activity/pnl into a
     healthy snapshot when every signal is nominal."""
-    import core.signal_engine as _se, core.prediction as _pred
+    import core.signal_engine as _se
+    import core.prediction as _pred
     monkeypatch.setenv("STOCK_SYMBOLS", "WOLF")
     monkeypatch.setattr(_pred, "STOCK_SYMBOLS", ["WOLF"])
     monkeypatch.setattr(_se, "get_model_status",
@@ -388,14 +390,19 @@ def test_v3_status_system_health_block_healthy(monkeypatch):
 
     class _Cur:
         last = ""
-        def execute(self, sql, params=None): self.last = sql
+        def execute(self, sql, params=None):
+            self.last = sql
         def fetchall(self):
-            if "ghost_state" in self.last: return gs_rows
-            if "ORDER BY resolved_at" in self.last: return resolved
+            if "ghost_state" in self.last:
+                return gs_rows
+            if "ORDER BY resolved_at" in self.last:
+                return resolved
             return []
         def fetchone(self):
-            if "COUNT(*)" in self.last and "outcome IS NULL" in self.last: return (2,)
-            if "COUNT(*)" in self.last and "resolved_at >=" in self.last: return (5,)
+            if "COUNT(*)" in self.last and "outcome IS NULL" in self.last:
+                return (2,)
+            if "COUNT(*)" in self.last and "resolved_at >=" in self.last:
+                return (5,)
             return (0,)
 
     class _Conn:
@@ -424,7 +431,8 @@ def test_v3_status_system_health_block_healthy(monkeypatch):
 
 def test_v3_status_system_health_degrades_on_pause(monkeypatch):
     """Engine pause + kill trip surface as issues and downgrade the roll-up."""
-    import core.signal_engine as _se, core.prediction as _pred
+    import core.signal_engine as _se
+    import core.prediction as _pred
     monkeypatch.setattr(_se, "get_model_status",
                         lambda: {"trained": True, "models": 3, "symbols": {"WOLF": {}}})
     monkeypatch.setattr(_pred, "engine_pause_state",
@@ -435,7 +443,8 @@ def test_v3_status_system_health_degrades_on_pause(monkeypatch):
 
     class _Cur:
         last = ""
-        def execute(self, sql, params=None): self.last = sql
+        def execute(self, sql, params=None):
+            self.last = sql
         def fetchall(self): return []
         def fetchone(self): return (0,)
 
@@ -1766,7 +1775,8 @@ def test_v3_wf_test_size_floor_default_and_env(monkeypatch):
 def _install_fake_xgboost(monkeypatch):
     """Stub xgboost.XGBClassifier + sklearn.metrics.accuracy_score so WF
     tests run without the heavy ML deps installed in the sandbox."""
-    import sys, types
+    import sys
+    import types
     import numpy as np
 
     class _StubModel:
@@ -1835,7 +1845,8 @@ def test_walk_forward_pools_peers_into_training_only(monkeypatch):
     deployed pooled model, not a WOLF-only one."""
     import core.signal_engine as _se
     import numpy as np
-    import sys, types
+    import sys
+    import types
     for k in ("V3_WF_MIN_TRAIN", "V3_WF_TEST_SIZE", "V3_WF_MIN_TRAIN_FRAC", "V3_WF_TEST_FRAC"):
         monkeypatch.delenv(k, raising=False)
 
@@ -1849,16 +1860,20 @@ def test_walk_forward_pools_peers_into_training_only(monkeypatch):
         def predict(self, X):
             return np.zeros(len(X))
 
-    fake_xgb = types.ModuleType("xgboost"); fake_xgb.XGBClassifier = _Capture
+    fake_xgb = types.ModuleType("xgboost")
+    fake_xgb.XGBClassifier = _Capture
     monkeypatch.setitem(sys.modules, "xgboost", fake_xgb)
-    fake_sklearn = types.ModuleType("sklearn"); fake_metrics = types.ModuleType("sklearn.metrics")
+    fake_sklearn = types.ModuleType("sklearn")
+    fake_metrics = types.ModuleType("sklearn.metrics")
     fake_metrics.accuracy_score = lambda a, b: 0.6
     fake_sklearn.metrics = fake_metrics
     monkeypatch.setitem(sys.modules, "sklearn", fake_sklearn)
     monkeypatch.setitem(sys.modules, "sklearn.metrics", fake_metrics)
 
-    X = np.zeros((127, 3)); y = np.array([0, 1] * 63 + [0])
-    X_peer = np.ones((40, 3)); y_peer = np.array([0, 1] * 20)
+    X = np.zeros((127, 3))
+    y = np.array([0, 1] * 63 + [0])
+    X_peer = np.ones((40, 3))
+    y_peer = np.array([0, 1] * 20)
     out = _se._walk_forward_scores(X, y, X_peer, y_peer, 3.0)
     assert out["fold_count"] >= 3
     assert seen, "model.fit was never called"
@@ -2299,7 +2314,8 @@ def test_news_filter_drops_articles_without_wolf_mention(monkeypatch):
     ]
     import core.news as _news
     monkeypatch.setattr(_news, "get_recent_articles", lambda n, symbol=None: fake_articles)
-    import sys, types
+    import sys
+    import types
     fake_yf = types.ModuleType("yfinance")
 
     class _Tk:
@@ -2333,7 +2349,8 @@ def test_news_filter_replaces_finnhub_stock_source_label(monkeypatch):
     ]
     import core.news as _news
     monkeypatch.setattr(_news, "get_recent_articles", lambda n, symbol=None: fake_articles)
-    import sys, types
+    import sys
+    import types
     fake_yf = types.ModuleType("yfinance")
 
     class _Tk:
@@ -2433,7 +2450,8 @@ def test_news_yfinance_augmentation_applies_wolf_filter(monkeypatch):
         {"title": "Random tech news", "publisher": "TechCrunch", "summary": "About silicon carbide chips"},
         {"title": "Ralph Lauren launches collection", "publisher": "Reuters", "link": "https://reuters.com/rl"},
     ]
-    import sys, types
+    import sys
+    import types
     fake_yf = types.ModuleType("yfinance")
 
     class _Tk:
@@ -2465,7 +2483,8 @@ def test_news_source_label_uses_publisher_not_generic_news(monkeypatch):
     we._CACHE.clear()
     import core.news as _news
     monkeypatch.setattr(_news, "get_recent_articles", lambda n, symbol=None: [])
-    import sys, types
+    import sys
+    import types
     fake_yf = types.ModuleType("yfinance")
 
     class _Tk:
@@ -2500,7 +2519,8 @@ def test_news_source_falls_back_to_hostname_when_only_finnhub_label(monkeypatch)
         {"title": "WOLFSPEED announces deal", "source": "finnhub_stock",
          "url": "https://www.reuters.com/article/wolf-deal", "symbols": []},
     ])
-    import sys, types
+    import sys
+    import types
     fake_yf = types.ModuleType("yfinance")
 
     class _Tk:
@@ -2764,7 +2784,8 @@ def test_gate_history_empty_when_no_record(monkeypatch):
 def test_predict_ex_captures_near_miss_on_floor_skip(monkeypatch):
     """A below-floor signal returns the skip code AND writes up_prob +
     confidence/floor into scores_out so the cycle can log how close it came."""
-    import core.prediction as _pred, core.signal_engine as _se
+    import core.prediction as _pred
+    import core.signal_engine as _se
     monkeypatch.setattr(_pred, "get_price", lambda s, a=None: 100.0)
 
     def _ple(s, a, scores=None):
@@ -2826,7 +2847,8 @@ def _pick_journal_db(total, listing_rows, resolved_rows, monkeypatch):
     the pick-journal endpoint issues (count / listing / resolved)."""
     class _Cur:
         def __init__(self): self.last = ""
-        def execute(self, sql, params=None): self.last = sql
+        def execute(self, sql, params=None):
+            self.last = sql
         def fetchone(self):
             if "COUNT(" in self.last:
                 return (total,)
@@ -2994,7 +3016,8 @@ def test_wolf_pnl_endpoint_reads_db(monkeypatch):
     ]
 
     class _Cur:
-        def execute(self, sql, params=None): self.last = sql
+        def execute(self, sql, params=None):
+            self.last = sql
         def fetchall(self): return rows
         def fetchone(self): return None
 
@@ -3169,7 +3192,8 @@ def _enforcement_db(resolved_rows, state, monkeypatch):
 def test_enforce_pauses_on_trip_and_manual_resume(monkeypatch):
     """A hard trip (auto_pause etc.) pauses the engine with no auto-resume; the
     state persists and resume_engine() clears it. Telegram is stubbed."""
-    import core.prediction as _pred, core.telegram as _tel
+    import core.prediction as _pred
+    import core.telegram as _tel
     monkeypatch.setattr(_tel, "send_health_alert", lambda *a, **k: None)
     monkeypatch.setenv("KILL_WINRATE_WINDOW", "30")
     monkeypatch.setenv("KILL_EXPECTANCY_WINDOW", "20")
@@ -3192,7 +3216,8 @@ def test_enforce_pauses_on_trip_and_manual_resume(monkeypatch):
 def test_enforce_cooldown_only_sets_autoresume(monkeypatch):
     """Only consecutive-losses trips (insufficient samples elsewhere) => cooldown
     with an auto-resume time; the pause clears itself once that time passes."""
-    import core.prediction as _pred, core.telegram as _tel
+    import core.prediction as _pred
+    import core.telegram as _tel
     monkeypatch.setattr(_tel, "send_health_alert", lambda *a, **k: None)
     monkeypatch.setenv("KILL_CONSEC_LOSSES", "3")
     monkeypatch.setenv("KILL_MIN_SAMPLES", "3")
@@ -3212,7 +3237,8 @@ def test_enforce_cooldown_only_sets_autoresume(monkeypatch):
 
 def test_enforce_clears_pause_when_conditions_clear(monkeypatch):
     """When kill conditions no longer trip, enforcement auto-resumes the engine."""
-    import core.prediction as _pred, core.telegram as _tel
+    import core.prediction as _pred
+    import core.telegram as _tel
     monkeypatch.setattr(_tel, "send_health_alert", lambda *a, **k: None)
     state = {"engine_paused": "1", "engine_pause_reason": "consecutive_losses->cooldown"}
     rows = [(0.85, "WIN", 2.0)] * 5
@@ -3378,7 +3404,8 @@ def test_v3_lineage_endpoint_newest_first(monkeypatch):
     ]
 
     class _Cur:
-        def execute(self, sql, params=None): self.last = sql
+        def execute(self, sql, params=None):
+            self.last = sql
         def fetchone(self):
             if "model_lineage" in self.last:
                 return (json.dumps(hist),)
@@ -3418,7 +3445,8 @@ def test_admin_audit_log_returns_entries_with_valid_cookie(monkeypatch):
            {"ts": 2, "action": "purge_test_predictions", "detail": "deleted=3"}]
 
     class _Cur:
-        def execute(self, sql, params=None): self.last = sql
+        def execute(self, sql, params=None):
+            self.last = sql
         def fetchone(self):
             if "admin_audit_log" in self.last:
                 return (json.dumps(log),)
@@ -3492,7 +3520,8 @@ def test_get_portfolio_filters_ghost_rows(monkeypatch):
     ]
 
     class _Cur:
-        def execute(self, sql, params=None): self.last = sql
+        def execute(self, sql, params=None):
+            self.last = sql
         def fetchall(self):
             return rows if "user_portfolio" in getattr(self, "last", "") else []
         def fetchone(self): return None

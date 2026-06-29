@@ -3,7 +3,6 @@
 The resolver math is tested as pure functions (no DB). The log/history/accuracy/
 if-followed paths are tested with an in-memory fake DB so the suite stays offline.
 """
-import time
 
 import core.super_ghost_ledger as ledger
 
@@ -315,7 +314,7 @@ def test_resolve_predictions_updates_rows(monkeypatch):
     ]
     _install_fake_db(monkeypatch, store)
     closes = [100 + i for i in range(1, 21)]
-    series = ledger_series = _series_from_closes(t0, closes)
+    series = _series_from_closes(t0, closes)
     monkeypatch.setattr(ledger, "_ohlc_series", lambda sym, period="6mo": series)
     out = ledger.resolve_predictions(now=t0 + 40 * 86400)
     assert out["ok"] is True

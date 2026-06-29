@@ -1,5 +1,4 @@
 """Tests for operator risk discipline (sizing, daily lock, action labels)."""
-import os
 
 import pytest
 

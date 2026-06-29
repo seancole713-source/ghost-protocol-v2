@@ -95,9 +95,7 @@ def test_signal_engine_wrapper_delegates_to_shared_path():
 
 
 def test_load_model_rejects_stale_label_schema(monkeypatch):
-    import base64
     import json
-    import pickle
 
     import core.db as _db
     import core.signal_engine as _se
