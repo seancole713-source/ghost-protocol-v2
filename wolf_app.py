@@ -23,7 +23,7 @@ logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 # missing from Railway logs after a deploy, the container is stale (the
 # Procfile boot echo is the shell-level twin of this check).
 LOGGER.info(
-    "[wolf_app] BOOT_BANNER PR76_CACHEBUST_CT "
+    "[wolf_app] BOOT_BANNER PR78_CACHEBUST_CT "
     "DEPLOY_VERSION=%s GIT_SHA=%s DEPLOY_ID=%s",
     os.getenv("DEPLOY_VERSION", "unset"),
     os.getenv("RAILWAY_GIT_COMMIT_SHA", "unset"),
@@ -1677,7 +1677,7 @@ def robots_txt():
 
 @APP.get("/sitemap.xml", include_in_schema=False)
 def sitemap_xml():
-    urls = ["/", "/cockpit"]
+    urls = ["/", "/picks", "/cockpit"]
     items = "".join("<url><loc>" + _BASE_URL + u + "</loc></url>" for u in urls)
     body = ('<?xml version="1.0" encoding="UTF-8"?>'
             '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
@@ -5402,7 +5402,7 @@ def v3_train(x_cron_secret: str = Header(default=""), force: bool = False):
 
 # PR #19 deploy-version constant. Bump on every "did Railway pick up
 # the new code?" PR so /api/_version reveals the truth in one curl.
-_RUNNING_PR_VERSION = 76
+_RUNNING_PR_VERSION = 78
 
 
 def _deploy_meta() -> dict:

@@ -59,10 +59,10 @@ test.describe("API GET surface", () => {
     expect(t.includes("<html")).toBeTruthy();
   });
 
-  test("GET / redirects toward cockpit", async ({ request }) => {
+  test("GET / redirects toward picks (main landing page)", async ({ request }) => {
     const r = await request.get("/", { maxRedirects: 0 });
     expect([301, 302, 303, 307, 308]).toContain(r.status());
     const loc = r.headers()["location"] ?? "";
-    expect(loc).toMatch(/cockpit/i);
+    expect(loc).toMatch(/picks/i);
   });
 });

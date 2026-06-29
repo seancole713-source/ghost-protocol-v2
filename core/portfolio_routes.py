@@ -244,8 +244,10 @@ async def admin_rebuild_cashapp_watchlist(x_cron_secret: str = Header(default=""
 
 @portfolio_router.get("/")
 def root():
+    # Main landing page = the simple "Ghost Picks" trade tracker (/picks).
+    # The full operator dashboard remains available at /cockpit.
     from fastapi.responses import RedirectResponse
-    return RedirectResponse(url="/cockpit")
+    return RedirectResponse(url="/picks")
 
 @portfolio_router.get("/api/v2/recent")
 def v2_recent(symbol: str = "WOLF"):
