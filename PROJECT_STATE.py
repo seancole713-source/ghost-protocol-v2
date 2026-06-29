@@ -18,6 +18,54 @@ LAST UPDATED: 2026-06-29 — PR #95 Champion/Challenger Lab (523 tests passing)
 # LIVE SYSTEM — LAST VERIFIED 2026-06-29 (PR #95 deployed)
 # ============================================================
 
+PROD_VERIFY_2026_06_29_PR95 = {
+    "deploy_id": "Railway auto-deploy from main",
+    "git_sha_short": "aba64f3",
+    "_pr_version": 95,
+    "verified_at_ct": "2026-06-29",
+    "tests": "523 passed, 3 deselected/skipped, 2 warnings; compileall exit 0",
+    "live_acceptance": {
+        "version_endpoint": "GET /api/_version -> sha=aba64f3, _pr_version=95, app_version=2.5.0",
+        "lab_summary": "GET /api/wolf/super-ghost/lab?symbol=WOLF&horizon=5 -> ok true, cold-start, 6 candidate manifest entries",
+        "lab_run_auth_gate": "POST /api/wolf/super-ghost/lab/run without auth -> 401",
+        "console": "/picks includes Research lab Health row",
+    },
+    "key_fixes": [
+        "core/super_ghost_lab.py: Champion/Challenger shadow benchmark lab",
+        "Persistent lab memory tables: super_ghost_lab_runs and super_ghost_lab_results",
+        "Candidate policies: production_champion, coverage_gate, strict_confidence, grade_b_or_better, regime_aligned, edge_score_policy",
+        "Benchmark metrics: win rate, false positives, avg signed return, profit factor, drawdown, score",
+        "Conservative recommendation gates; no auto-promotion and no trading",
+        "Public GET /api/wolf/super-ghost/lab and auth-gated POST /lab/run",
+        "Hourly resolver now also runs the lab after learning",
+    ],
+    "known_issues": [
+        "Lab is cold-start until enough resolved Super Ghost ledger rows exist",
+        "Lab recommendations are shadow evidence only; no automated production model promotion yet",
+    ],
+}
+
+PROD_VERIFY_2026_06_29_PR94 = {
+    "deploy_id": "Railway auto-deploy from main",
+    "git_sha_short": "f4156a4",
+    "_pr_version": 94,
+    "verified_at_ct": "2026-06-29",
+    "tests": "517 passed, 3 deselected/skipped, 2 warnings; compileall exit 0",
+    "live_acceptance": {
+        "version_endpoint": "GET /api/_version -> sha=f4156a4, _pr_version=94, app_version=2.5.0",
+        "learning_summary": "GET /api/wolf/super-ghost/learning?symbol=WOLF&horizon=5 -> ok true, cold-start",
+        "target_calibration": "target_move_multiplier uses direction-correct rows only; target_calibration_samples exposed",
+    },
+    "key_fixes": [
+        "Wrong-direction rows no longer dilute target-magnitude learning",
+        "The $5 target -> $7 realized lesson stays target_too_low even with unrelated wrong-direction rows",
+        "Win-rate and confidence still learn from all rows",
+    ],
+    "known_issues": [
+        "Learning remains cold-start until enough resolved rows exist",
+    ],
+}
+
 PROD_VERIFY_2026_06_29_PR93 = {
     "deploy_id": "Railway auto-deploy from main",
     "git_sha_short": "90a9fc7",
