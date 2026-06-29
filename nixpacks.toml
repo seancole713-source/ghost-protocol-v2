@@ -2,7 +2,7 @@
 # which forces Railway/Nixpacks to invalidate the build-layer cache and
 # rebuild the container image. Increment the version below if Railway
 # starts serving stale containers again.
-# cache_bust = "pr100-point-in-time-feature-store"
+# cache_bust = "pr101-expanded-data-brain"
 [phases.setup]
 aptPkgs = ["libpq-dev", "gcc", "python3-dev"]
 
