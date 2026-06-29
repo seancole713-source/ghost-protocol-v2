@@ -47,6 +47,19 @@ _CACHE_TTL_S = int(os.getenv("SEC_FUNDAMENTALS_TTL_S", "21600"))  # 6h
 _WOLF_CIK = "0000895419"
 _STATIC_CIK = {"WOLF": _WOLF_CIK}
 
+# Small built-in map for common large-caps so fundamentals resolve even if the
+# SEC ticker->CIK index is unreachable. Extend freely; EDGAR_CIK_<SYM> overrides.
+_COMMON_CIK = {
+    "AAPL": "0000320193", "MSFT": "0000789019", "NVDA": "0001045810",
+    "TSLA": "0001318605", "AMZN": "0001018724", "GOOGL": "0001652044",
+    "GOOG": "0001652044", "META": "0001326801", "AMD": "0000002488",
+    "NFLX": "0001065280", "INTC": "0000050863", "PLTR": "0001321655",
+}
+
+# Cached ticker->CIK index from SEC (loaded lazily, best-effort).
+_ticker_index: Dict[str, str] = {}
+_ticker_index_loaded = False
+
 _EPS_TAGS = ("EarningsPerShareDiluted", "EarningsPerShareBasic")
 _REVENUE_TAGS = (
     "RevenueFromContractWithCustomerExcludingAssessedTax",
@@ -66,6 +79,35 @@ def _finite(v: Any) -> Optional[float]:
         return None
 
 
+def _load_ticker_index() -> None:
+    """Best-effort load of SEC's ticker->CIK index. Never raises.
+
+    Reachable from Railway (same SEC hosts as the working EDGAR fetcher); may be
+    blocked from some sandboxes, in which case we silently keep the static maps.
+    """
+    global _ticker_index_loaded
+    if _ticker_index_loaded:
+        return
+    _ticker_index_loaded = True
+    for url in (
+        "https://www.sec.gov/files/company_tickers.json",
+        "https://data.sec.gov/files/company_tickers.json",
+    ):
+        try:
+            r = requests.get(url, headers={"User-Agent": _SEC_USER_AGENT}, timeout=_TIMEOUT)
+            if r.status_code == 200:
+                data = r.json() or {}
+                for v in data.values():
+                    t = str(v.get("ticker") or "").upper()
+                    cik = v.get("cik_str")
+                    if t and cik is not None:
+                        _ticker_index[t] = str(cik).zfill(10)
+                if _ticker_index:
+                    return
+        except Exception as exc:
+            LOGGER.debug("sec ticker index %s: %s", url, str(exc)[:100])
+
+
 def cik_for_symbol(symbol: str) -> Optional[str]:
     sym = (symbol or "").upper()
     env = os.getenv(f"EDGAR_CIK_{sym}")
@@ -73,7 +115,11 @@ def cik_for_symbol(symbol: str) -> Optional[str]:
         return env.zfill(10)
     if sym in _STATIC_CIK:
         return _STATIC_CIK[sym]
-    return None
+    if sym in _COMMON_CIK:
+        return _COMMON_CIK[sym]
+    # Best-effort dynamic resolution via SEC's public ticker index.
+    _load_ticker_index()
+    return _ticker_index.get(sym)
 
 
 def _get_concept(cik: str, tag: str) -> Optional[Dict[str, Any]]:
