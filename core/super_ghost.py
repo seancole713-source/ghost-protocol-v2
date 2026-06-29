@@ -1091,6 +1091,24 @@ def build_super_ghost(symbol: str = "WOLF", *, snapshot: Optional[Dict[str, Any]
     for spec in CHECKLIST:
         items.setdefault(spec.key, _unknown(spec, "Checklist evaluator did not produce this item.", "engine"))
     report = _aggregate(sym, items, risk_plan)
+    # PR #93: bounded learning adjustment from resolved Truth Ledger outcomes.
+    # If Ghost previously called a target too low/high or got direction wrong,
+    # the learning brain records that as a profile and can dampen confidence or
+    # modestly adjust future target distance. DB failures/cold-start never block
+    # the deterministic report.
+    try:
+        from core.super_ghost_learning import apply_learning_to_report, get_learning_profile
+
+        direction = str((report.get("prediction") or {}).get("direction") or "HOLD").upper()
+        profile = get_learning_profile(sym, direction, horizon=5)
+        report = apply_learning_to_report(report, profile)
+    except Exception as _learn_exc:
+        report["learning_adjustment"] = {
+            "available": False,
+            "status": "unavailable",
+            "message": "Learning profile unavailable; deterministic report returned unchanged.",
+            "error": str(_learn_exc)[:120],
+        }
     if ai:
         report["ai_brief"] = generate_ai_brief(sym, report, snapshot=snap)
     return report
