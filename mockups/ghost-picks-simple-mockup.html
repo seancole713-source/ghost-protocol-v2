@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Ghost Picks — Simple Trade Tracker (Mockup)</title>
+<style>
+  :root{
+    --bg:#0b0d10; --card:#15181d; --card2:#1b1f26; --bd:#262b33;
+    --tx:#f5f7fa; --mut:#8b93a0; --mut2:#5a626e;
+    --grn:#22c55e; --grn2:#4ade80; --grnbg:#0c2417;
+    --red:#ef4444; --red2:#f87171; --redbg:#2a1011;
+    --amb:#f59e0b; --ambbg:#2a1f06;
+    --blu:#3b82f6;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    background:var(--bg);color:var(--tx);-webkit-font-smoothing:antialiased;
+    padding:18px 14px 50px;
+  }
+  .app{max-width:430px;margin:0 auto}
+
+  /* header */
+  .hd{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px}
+  .brand{display:flex;align-items:center;gap:9px}
+  .brand .gh{font-size:21px}
+  .brand .nm{font-size:19px;font-weight:800;letter-spacing:-.01em}
+  .brand .nm span{color:#ff5a5f}
+  .tag{font-size:13px;color:var(--mut);margin:2px 2px 14px}
+
+  .trackpill{font-size:10px;font-weight:800;letter-spacing:.06em;color:var(--amb);
+    background:var(--ambbg);border:1px solid #4a3a12;border-radius:999px;padding:4px 9px}
+
+  /* scoreboard */
+  .score{display:flex;gap:9px;margin-bottom:20px}
+  .sc{flex:1;background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:12px 10px;text-align:center}
+  .sc .n{font-size:22px;font-weight:800;line-height:1}
+  .sc .n.grn{color:var(--grn2)} .sc .n.red{color:var(--red2)} .sc .n.amb{color:var(--amb)}
+  .sc .l{font-size:10.5px;color:var(--mut);margin-top:5px;letter-spacing:.02em}
+
+  .section{font-size:11px;font-weight:800;letter-spacing:1.5px;color:var(--mut);text-transform:uppercase;margin:22px 4px 11px;display:flex;align-items:center;gap:8px}
+  .section .live-dot{width:7px;height:7px;border-radius:50%;background:var(--grn);box-shadow:0 0 8px var(--grn);animation:pulse 1.6s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+
+  /* pick card */
+  .card{background:var(--card);border:1px solid var(--bd);border-radius:18px;padding:16px;margin-bottom:13px}
+  .ctop{display:flex;align-items:center;gap:11px;margin-bottom:14px}
+  .logo{width:38px;height:38px;border-radius:11px;flex:0 0 auto;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:12px;color:#0b0d10}
+  .who{flex:1;min-width:0}
+  .who .t{font-size:16px;font-weight:800;line-height:1.1}
+  .who .s{font-size:12px;color:var(--mut);margin-top:2px}
+  .badge{font-size:10.5px;font-weight:800;letter-spacing:.04em;padding:4px 9px;border-radius:8px;white-space:nowrap}
+  .badge.play{background:#0c1e2e;color:#7dd3fc;border:1px solid #1e3a52}
+  .badge.wait{background:#1c1f26;color:var(--mut);border:1px solid var(--bd)}
+  .badge.win{background:var(--grnbg);color:var(--grn2);border:1px solid #14532d}
+  .badge.loss{background:var(--redbg);color:var(--red2);border:1px solid #5b1a1a}
+
+  /* buy / sell row */
+  .bs{display:flex;align-items:stretch;gap:10px;margin-bottom:14px}
+  .leg{flex:1;background:var(--card2);border-radius:12px;padding:11px 13px}
+  .leg .k{font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;margin-bottom:4px}
+  .leg .v{font-size:21px;font-weight:800;letter-spacing:-.02em}
+  .leg.buy{border:1px solid #1e3a2a}.leg.buy .k{color:var(--grn2)}
+  .leg.sell{border:1px solid #3a3320}.leg.sell .k{color:var(--amb)}
+  .arrow{display:flex;align-items:center;color:var(--mut2);font-size:18px}
+
+  /* live tracker bar */
+  .track{margin-top:4px}
+  .bar{position:relative;height:10px;border-radius:6px;background:linear-gradient(90deg,#3a1518 0%,#2a2410 38%,#13301d 100%);margin:20px 0 8px}
+  .bar .mk{position:absolute;top:50%;transform:translate(-50%,-50%);width:16px;height:16px;border-radius:50%;background:#fff;border:3px solid #0b0d10;box-shadow:0 0 0 2px #fff}
+  .bar .tickbuy,.bar .ticksell{position:absolute;top:-17px;font-size:9.5px;font-weight:700;color:var(--mut);transform:translateX(-50%)}
+  .bar .stopmark{position:absolute;top:14px;left:0;font-size:9px;color:var(--red2);font-weight:700}
+  .bar .sellmark{position:absolute;top:14px;right:0;font-size:9px;color:var(--amb);font-weight:700;transform:none}
+  .liverow{display:flex;align-items:baseline;justify-content:space-between;margin-top:14px}
+  .liverow .now{font-size:14px}
+  .liverow .now b{font-size:17px;font-weight:800}
+  .liverow .pl{font-size:14px;font-weight:800}
+  .pl.up{color:var(--grn2)} .pl.dn{color:var(--red2)} .pl.flat{color:var(--mut)}
+  .stopnote{font-size:11.5px;color:var(--mut);margin-top:9px;display:flex;align-items:center;gap:6px}
+  .stopnote b{color:var(--red2)}
+
+  /* finished compact */
+  .done{display:flex;align-items:center;gap:11px;background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:13px 15px;margin-bottom:10px}
+  .done .logo{width:32px;height:32px;border-radius:9px;font-size:11px}
+  .done .who2{flex:1}
+  .done .who2 .t{font-size:14px;font-weight:800}
+  .done .who2 .s{font-size:11.5px;color:var(--mut);margin-top:1px}
+  .done .res{font-size:15px;font-weight:800;text-align:right}
+  .done .res .sub{font-size:10.5px;font-weight:700;display:block;margin-top:1px}
+  .res.win{color:var(--grn2)} .res.loss{color:var(--red2)}
+
+  .foot{margin-top:24px;background:var(--card);border:1px solid #3a2a12;border-radius:14px;padding:14px 16px}
+  .foot .ft{font-size:11px;font-weight:800;letter-spacing:.5px;color:var(--amb);text-transform:uppercase;margin-bottom:6px}
+  .foot p{font-size:12px;color:var(--mut);line-height:1.5}
+  .mock{display:block;text-align:center;margin-top:16px;font-size:10px;letter-spacing:.1em;color:var(--mut2)}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <div class="hd">
+    <div class="brand"><span class="gh">👻</span><span class="nm">Ghost <span>Picks</span></span></div>
+    <span class="trackpill">TRACKING · NOT ADVICE</span>
+  </div>
+  <div class="tag">Simple buy/sell ideas — watch them play out live before you ever risk a dollar.</div>
+
+  <!-- honest scoreboard -->
+  <div class="score">
+    <div class="sc"><div class="n">5</div><div class="l">Live now</div></div>
+    <div class="sc"><div class="n grn">2</div><div class="l">Hit target</div></div>
+    <div class="sc"><div class="n red">5</div><div class="l">Stopped out</div></div>
+    <div class="sc"><div class="n amb">29%</div><div class="l">Right so far</div></div>
+  </div>
+
+  <!-- LIVE -->
+  <div class="section"><span class="live-dot"></span> Live right now</div>
+
+  <!-- card 1: in play, winning -->
+  <div class="card">
+    <div class="ctop">
+      <div class="logo" style="background:linear-gradient(135deg,#fca5a5,#f87171)">AMC</div>
+      <div class="who"><div class="t">AMC</div><div class="s">AMC Entertainment</div></div>
+      <span class="badge play">IN PLAY</span>
+    </div>
+    <div class="bs">
+      <div class="leg buy"><div class="k">Buy at</div><div class="v">$2.83</div></div>
+      <div class="arrow">→</div>
+      <div class="leg sell"><div class="k">Sell at</div><div class="v">$2.94</div></div>
+    </div>
+    <div class="track">
+      <div class="bar">
+        <span class="tickbuy" style="left:30%">BUY</span>
+        <span class="ticksell" style="left:100%">SELL</span>
+        <span class="mk" style="left:70%"></span>
+        <span class="stopmark">stop $2.64</span>
+        <span class="sellmark">target</span>
+      </div>
+      <div class="liverow">
+        <div class="now">Now <b>$2.89</b></div>
+        <div class="pl up">▲ +2.1% · halfway there</div>
+      </div>
+      <div class="stopnote">🛡️ Safety exit if it drops to <b>$2.64</b> (−6.7%)</div>
+    </div>
+  </div>
+
+  <!-- card 2: in play, losing -->
+  <div class="card">
+    <div class="ctop">
+      <div class="logo" style="background:linear-gradient(135deg,#fcd34d,#fb923c)">BB</div>
+      <div class="who"><div class="t">BB</div><div class="s">BlackBerry</div></div>
+      <span class="badge play">IN PLAY</span>
+    </div>
+    <div class="bs">
+      <div class="leg buy"><div class="k">Buy at</div><div class="v">$8.96</div></div>
+      <div class="arrow">→</div>
+      <div class="leg sell"><div class="k">Sell at</div><div class="v">$9.18</div></div>
+    </div>
+    <div class="track">
+      <div class="bar">
+        <span class="tickbuy" style="left:48%">BUY</span>
+        <span class="ticksell" style="left:100%">SELL</span>
+        <span class="mk" style="left:22%"></span>
+        <span class="stopmark">stop $8.35</span>
+        <span class="sellmark">target</span>
+      </div>
+      <div class="liverow">
+        <div class="now">Now <b>$8.78</b></div>
+        <div class="pl dn">▼ −2.0% · nearing stop</div>
+      </div>
+      <div class="stopnote">🛡️ Safety exit if it drops to <b>$8.35</b> (−6.8%)</div>
+    </div>
+  </div>
+
+  <!-- card 3: waiting (not bought yet) -->
+  <div class="card">
+    <div class="ctop">
+      <div class="logo" style="background:linear-gradient(135deg,#6ee7b7,#34d399)">NOK</div>
+      <div class="who"><div class="t">NOK</div><div class="s">Nokia</div></div>
+      <span class="badge wait">WAITING TO BUY</span>
+    </div>
+    <div class="bs">
+      <div class="leg buy"><div class="k">Buy at</div><div class="v">$14.11</div></div>
+      <div class="arrow">→</div>
+      <div class="leg sell"><div class="k">Sell at</div><div class="v">$14.67</div></div>
+    </div>
+    <div class="track">
+      <div class="bar">
+        <span class="tickbuy" style="left:55%">BUY</span>
+        <span class="ticksell" style="left:100%">SELL</span>
+        <span class="mk" style="left:40%"></span>
+        <span class="stopmark">stop $13.42</span>
+        <span class="sellmark">target</span>
+      </div>
+      <div class="liverow">
+        <div class="now">Now <b>$13.90</b></div>
+        <div class="pl flat">hasn't hit buy price yet</div>
+      </div>
+      <div class="stopnote">⏳ Wait until it reaches <b>$14.11</b> before buying.</div>
+    </div>
+  </div>
+
+  <!-- FINISHED -->
+  <div class="section">Finished today</div>
+
+  <div class="done">
+    <div class="logo" style="background:linear-gradient(135deg,#c4b5fd,#a78bfa)">HM</div>
+    <div class="who2"><div class="t">HIMS</div><div class="s">Bought $35.46 → Sold $36.88</div></div>
+    <div class="res win">🎯 WIN<span class="sub">+4.0%</span></div>
+  </div>
+
+  <div class="done">
+    <div class="logo" style="background:linear-gradient(135deg,#fca5a5,#f87171)">LU</div>
+    <div class="who2"><div class="t">LU</div><div class="s">Bought $1.29 → Stopped $1.25</div></div>
+    <div class="res loss">🛑 LOSS<span class="sub">−3.1%</span></div>
+  </div>
+
+  <div class="done">
+    <div class="logo" style="background:linear-gradient(135deg,#93c5fd,#60a5fa)">SB</div>
+    <div class="who2"><div class="t">SABR</div><div class="s">Bought $1.84 → Stopped $1.74</div></div>
+    <div class="res loss">🛑 LOSS<span class="sub">−5.4%</span></div>
+  </div>
+
+  <!-- honest footer -->
+  <div class="foot">
+    <div class="ft">⚠️ Read this first</div>
+    <p>These are <b>model predictions being tracked live</b> — not financial advice. Right now Ghost is correct about <b>29%</b> of the time, so it is <b>not</b> ready to trade with real money. Watch the scoreboard climb before you trust it. The goal of this screen is to <b>prove the predictions</b> first.</p>
+  </div>
+
+  <span class="mock">MOCKUP · SAMPLE DATA · FOR DESIGN APPROVAL ONLY</span>
+
+</div>
+</body>
+</html>
