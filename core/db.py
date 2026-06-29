@@ -206,4 +206,11 @@ def _migrate_schema():
             ensure_shadow_tables(cur)
     except Exception as e:
         LOGGER.warning("Super Ghost shadow tables: " + str(e)[:80])
+    try:
+        from core.super_ghost_promotion import ensure_promotion_tables
+        with db_conn() as conn:
+            cur = conn.cursor()
+            ensure_promotion_tables(cur)
+    except Exception as e:
+        LOGGER.warning("Super Ghost promotion tables: " + str(e)[:80])
     LOGGER.info("Schema migration complete")
