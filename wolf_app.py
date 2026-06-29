@@ -23,7 +23,7 @@ logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 # missing from Railway logs after a deploy, the container is stale (the
 # Procfile boot echo is the shell-level twin of this check).
 LOGGER.info(
-    "[wolf_app] BOOT_BANNER PR83_CACHEBUST_CT "
+    "[wolf_app] BOOT_BANNER PR84_CACHEBUST_CT "
     "DEPLOY_VERSION=%s GIT_SHA=%s DEPLOY_ID=%s",
     os.getenv("DEPLOY_VERSION", "unset"),
     os.getenv("RAILWAY_GIT_COMMIT_SHA", "unset"),
@@ -1341,6 +1341,17 @@ async def lifespan(app: FastAPI):
     from core.squeeze_outcomes import run_squeeze_eod_job as _squeeze_eod_job
 
     scheduler.register("squeeze_eod", _squeeze_eod_job, interval_s=3600)
+    # PR #84: Super Ghost Truth Ledger — resolve logged predictions vs realized
+    # price at 1/5/20-day horizons so accuracy + if-followed stats accrue.
+    from core.super_ghost_ledger import run_resolver_job as _super_ghost_resolver
+
+    def _super_ghost_ledger_job():
+        try:
+            _super_ghost_resolver()
+        except Exception as _e:
+            LOGGER.warning("super ghost ledger job failed: %s", str(_e)[:80])
+
+    scheduler.register("super_ghost_ledger", _super_ghost_ledger_job, interval_s=3600)
     scheduler.register("reconcile", reconcile_outcomes, interval_s=900)
     # T19: Auto-refresh portfolio stock prices every 15 min
     from core.portfolio_routes import auto_refresh_portfolio_prices
@@ -5402,7 +5413,7 @@ def v3_train(x_cron_secret: str = Header(default=""), force: bool = False):
 
 # PR #19 deploy-version constant. Bump on every "did Railway pick up
 # the new code?" PR so /api/_version reveals the truth in one curl.
-_RUNNING_PR_VERSION = 83
+_RUNNING_PR_VERSION = 84
 
 
 def _deploy_meta() -> dict:
