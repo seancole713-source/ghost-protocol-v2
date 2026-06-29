@@ -11,14 +11,42 @@ RULES:
   6. This is not documentation. It is an accountability ledger.
      Agents lie. This file exists because of that.
 
-LAST UPDATED: 2026-06-29 — PR #103 Adaptive Range Calibration Brain (569 tests passing)
+LAST UPDATED: 2026-06-29 — PR #104 Regime-Specific Calibration Brain (578 tests passing)
 """
 
 # ============================================================
-# LIVE SYSTEM — LAST VERIFIED 2026-06-29 (PR #103 deployed)
+# LIVE SYSTEM — LAST VERIFIED 2026-06-29 (PR #104 deployed)
 # ============================================================
 
 
+
+
+PROD_VERIFY_2026_06_29_PR104 = {
+    "deploy_id": "Railway auto-deploy from main",
+    "git_sha_short": "83f208e",
+    "_pr_version": 104,
+    "verified_at_ct": "2026-06-29",
+    "tests": "578 passed, 3 skipped, 2 warnings; compileall exit 0",
+    "live_acceptance": {
+        "version_endpoint": "GET /api/_version -> sha=83f208e, _pr_version=104, app_version=2.5.0",
+        "regime_calibration": "GET /api/wolf/super-ghost/regime-calibration?symbol=WOLF&horizon=5 -> ok true, cold-start 0 profiles",
+        "regime_rebuild_auth_gate": "POST /api/wolf/super-ghost/regime-calibration/rebuild without auth -> 401",
+        "super_ghost_report": "GET /api/wolf/super-ghost?symbol=WOLF -> includes regime_calibration cold-start block with detected regime/setup bucket",
+        "console": "/picks includes Regime calibration Health row",
+    },
+    "key_fixes": [
+        "core/super_ghost_regime_calibration.py: regime/setup-specific calibration slices",
+        "New super_ghost_regime_calibration_profiles table",
+        "Buckets by market regime (risk_on/risk_off/high_volatility/mixed) and setup style (news/earnings/squeeze/thin_liquidity/analyst/general)",
+        "Runtime lookup uses narrow symbol+regime+setup profile first, then broader safe fallbacks",
+        "Public /regime-calibration endpoint and auth-gated /regime-calibration/rebuild",
+        "Resolver job rebuilds regime calibration after broad range calibration",
+    ],
+    "known_issues": [
+        "Regime slices are cold-start until enough resolved precision events exist per market/setup bucket",
+        "Price adjustment remains bounded and long-plan-only until short-side calibration is validated",
+    ],
+}
 
 PROD_VERIFY_2026_06_29_PR103 = {
     "deploy_id": "Railway auto-deploy from main",

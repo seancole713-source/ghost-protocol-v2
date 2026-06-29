@@ -21,6 +21,7 @@
 > - **PR #101 Expanded Data Brain:** SEC/news/macro/options evidence snapshots live via `/api/wolf/super-ghost/data-brain`; merged into Super Ghost snapshots.
 > - **PR #102 Precision Brain:** production `c21bca2`, `_pr_version 102`; WIN/LOSS is now separated from price precision, Top Picks requires directional proof plus ≥60/100 precision; suite **561 passed**.
 > - **PR #103 Range Calibration Brain:** production `b2c3c50`, `_pr_version 103`; precision profiles can now produce bounded raw-vs-calibrated targets/stops and expected high/low/close zones; suite **569 passed**.
+> - **PR #104 Regime Calibration Brain:** production `83f208e`, `_pr_version 104`; calibration now slices by market regime/setup style (risk-on/off/high-vol/news/earnings/squeeze) with safe fallbacks; suite **578 passed**.
 >
 > **PR #70–#81 (2026-06-25–26):** Comprehensive security + reliability audit. 12 PRs deployed.
 > - **Circuit breaker fixes:** infinite half-open probe loop (yfinance + Alpaca rate-limit) — breakers now actually block when tripped
@@ -87,10 +88,11 @@ squeeze ML v2, drift/sentiment/options probes) are wired as of PR #60.
 | Investor cockpit | `/cockpit` — WOLF-first UI |
 | Cron trigger | cron-job.org fires `POST /api/morning-card` daily 8 AM CT |
 | Auth header name | `x-cron-secret` (value in Railway env as `CRON_SECRET`) |
-| **Last prod-verified** | **2026-06-29** — PR #103 deployed (`b2c3c50`, `_pr_version 103`); 569 tests passing; Range Calibration Brain live (`/range-calibration`, auth-gated `/range-calibration/rebuild`), `range_calibration` block on Super Ghost reports, `/picks` Range calibration UI row |
+| **Last prod-verified** | **2026-06-29** — PR #104 deployed (`83f208e`, `_pr_version 104`); 578 tests passing; Regime Calibration Brain live (`/regime-calibration`, auth-gated `/regime-calibration/rebuild`), `regime_calibration` block on Super Ghost reports, `/picks` Regime calibration UI row |
 
 **Agent CAN reach Railway** as of 2026-06-22 session — all production verification is done via `curl` from the local terminal.
 
+**PR #104 prod verify:** passed 2026-06-29 — `GET /api/_version` sha `83f208e`, `_pr_version 104`; `/api/wolf/super-ghost/regime-calibration?symbol=WOLF&horizon=5` ok (cold-start 0 profiles); `/regime-calibration/rebuild` 401 without auth; `/api/wolf/super-ghost?symbol=WOLF` includes `regime_calibration` cold-start block with detected regime/setup bucket; `/picks` includes Regime calibration Health row; full suite 578 passed.
 **PR #103 prod verify:** passed 2026-06-29 — `GET /api/_version` sha `b2c3c50`, `_pr_version 103`; `/api/wolf/super-ghost/range-calibration?symbol=WOLF&horizon=5` ok (cold-start 0 profiles); `/range-calibration/rebuild` 401 without auth; `/api/wolf/super-ghost?symbol=WOLF` includes `range_calibration` cold-start block; `/picks` includes Range calibration Health row; full suite 569 passed.
 **PR #102 prod verify:** passed 2026-06-29 — `GET /api/_version` sha `c21bca2`, `_pr_version 102`; `/api/wolf/super-ghost/precision?symbol=WOLF&horizon=5` ok (cold-start 0 profiles/events); `/precision/score` 401 without auth; `/api/squeeze/daily-log?days=7` rows include `precision_score`; `/picks` includes Precision brain Health row; full suite 561 passed.
 **PR #101 live verify:** passed 2026-06-29 on current PR #102 deploy — `/api/wolf/super-ghost/data-brain?symbol=WOLF` ok with coverage payload; `/data-brain/refresh` 401 without auth; `/picks` includes Data brain Health row.
@@ -510,3 +512,4 @@ Run once per week (any time for deploy checks; squeeze/radar checks best **Mon�
 | **#101** | 06-29 | **Expanded Data Brain** — `core/super_ghost_data_brain.py`, SEC XBRL fundamentals, 8-K/material filing context, Form 4 insider parsing, news freshness/catalyst/guidance classifier, macro/options evidence snapshots, `/data-brain`, `/data-brain/history`, auth-gated `/data-brain/refresh`, console Data brain row; `_pr_version` 101 |
 | **#102** | 06-29 | **Precision Scoring Brain** — separates direction WIN/LOSS from price precision; `core/ghost_precision.py`, `core/super_ghost_precision.py`, durable precision events/profiles, squeeze daily-log precision fields, `/precision`, auth-gated `/precision/score`, Top Picks now requires ≥70% direction wins plus ≥60/100 precision; `_pr_version` 102 |
 | **#103** | 06-29 | **Adaptive Range Calibration Brain** — `core/super_ghost_range_calibration.py`, durable range calibration profiles, bounded target/stop multipliers from Precision Brain profiles, raw-vs-calibrated target/stop fields, expected high/low/close zones, `/range-calibration`, auth-gated `/range-calibration/rebuild`, resolver integration, console Range calibration row; `_pr_version` 103 |
+| **#104** | 06-29 | **Regime-Specific Calibration Brain** — `core/super_ghost_regime_calibration.py`, durable regime/setup calibration slices, buckets by risk-on/risk-off/high-volatility and news/earnings/squeeze/setup style, narrow-to-broad fallback lookup, `/regime-calibration`, auth-gated `/regime-calibration/rebuild`, Super Ghost `regime_calibration` block, console Regime calibration row; `_pr_version` 104 |
