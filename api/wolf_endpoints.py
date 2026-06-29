@@ -1633,7 +1633,7 @@ async def get_ghost_score():
 
 
 @router.get("/super-ghost")
-async def get_super_ghost(symbol: str = WOLF_SYMBOL, ai: int = 0):
+async def get_super_ghost(symbol: str = WOLF_SYMBOL, ai: int = 0, log: int = 0):
     """Super Ghost 25-point prediction-intelligence report.
 
     This is not an auto-trading endpoint. It returns a prediction-grade
@@ -1646,12 +1646,17 @@ async def get_super_ghost(symbol: str = WOLF_SYMBOL, ai: int = 0):
     Pass ``?ai=1`` to also call the built-in AI brain (Claude) for a
     news-reading, regime-aware ``ai_brief``. The AI path is uncached and
     degrades gracefully (``ai_brief.available=false``) when no key is set.
+
+    Pass ``?log=1`` to also persist this prediction to the Super Ghost Truth
+    Ledger (PR #84) so it can later be scored at 1/5/20-day horizons. The
+    logged row id is returned under ``ledger_id`` (uncached path only).
     """
     sym = (symbol or WOLF_SYMBOL).strip().upper()
     from core.super_ghost import build_super_ghost
     want_ai = bool(ai)
+    want_log = bool(log)
     # Only the deterministic report is cached; the AI brief is always fresh.
-    if not want_ai:
+    if not want_ai and not want_log:
         cache_key = "super-ghost:" + sym
         cached = _cache_get(cache_key, 180)
         if cached:
@@ -1660,6 +1665,69 @@ async def get_super_ghost(symbol: str = WOLF_SYMBOL, ai: int = 0):
         if result.get("ok"):
             _cache_set(cache_key, result)
     else:
-        result = build_super_ghost(sym, ai=True)
+        result = build_super_ghost(sym, ai=want_ai)
+    if want_log and result.get("ok"):
+        try:
+            from core.super_ghost_ledger import log_prediction
+            result["ledger_id"] = log_prediction(result)
+        except Exception as _le:
+            LOGGER.warning("super-ghost ledger log failed: %s", str(_le)[:120])
+            result["ledger_id"] = None
     status = 200 if result.get("ok") else 400
     return JSONResponse(content=result, status_code=status)
+
+
+@router.post("/super-ghost/log")
+async def post_super_ghost_log(request: Request):
+    """Persist a fresh Super Ghost prediction to the Truth Ledger.
+
+    Body (optional): {"symbol": "WOLF"}. Builds the deterministic report for the
+    symbol and logs it; returns the report plus the new ``ledger_id``.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    sym = (str(body.get("symbol") or WOLF_SYMBOL)).strip().upper()
+    from core.super_ghost import build_super_ghost
+    from core.super_ghost_ledger import log_prediction
+    result = build_super_ghost(sym)
+    if not result.get("ok"):
+        return JSONResponse(content=result, status_code=400)
+    result["ledger_id"] = log_prediction(result)
+    return JSONResponse(content={"ok": True, "ledger_id": result.get("ledger_id"), "symbol": sym, "prediction": result.get("prediction")})
+
+
+@router.get("/super-ghost/history")
+async def get_super_ghost_history(symbol: str = "", limit: int = 100, payload: int = 0):
+    """Recent logged Super Ghost predictions (newest first)."""
+    from core.super_ghost_ledger import get_history
+    sym = (symbol or "").strip().upper() or None
+    return JSONResponse(content=get_history(symbol=sym, limit=limit, include_payload=bool(payload)))
+
+
+@router.get("/super-ghost/accuracy")
+async def get_super_ghost_accuracy(symbol: str = "", horizon: int = 5):
+    """Resolved-accuracy stats by grade / confidence / direction / regime."""
+    from core.super_ghost_ledger import get_accuracy
+    sym = (symbol or "").strip().upper() or None
+    return JSONResponse(content=get_accuracy(symbol=sym, horizon=horizon))
+
+
+@router.get("/super-ghost/if-followed")
+async def get_super_ghost_if_followed(symbol: str = "", horizon: int = 5):
+    """If-followed performance of Ghost's directional calls (measurement only)."""
+    from core.super_ghost_ledger import get_if_followed
+    sym = (symbol or "").strip().upper() or None
+    return JSONResponse(content=get_if_followed(symbol=sym, horizon=horizon))
+
+
+@router.post("/super-ghost/resolve")
+async def post_super_ghost_resolve(request: Request):
+    """Resolve pending ledger predictions against realized prices. GHOST_MCP_TOKEN required."""
+    from mcp.security import require_mcp_auth
+    require_mcp_auth(request)
+    from core.super_ghost_ledger import resolve_predictions
+    return JSONResponse(content=resolve_predictions(limit=500))

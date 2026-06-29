@@ -170,4 +170,11 @@ def _migrate_schema():
             ensure_squeeze_outcomes_table(cur)
     except Exception as e:
         LOGGER.warning("Squeeze outcomes table: " + str(e)[:80])
+    try:
+        from core.super_ghost_ledger import ensure_ledger_table
+        with db_conn() as conn:
+            cur = conn.cursor()
+            ensure_ledger_table(cur)
+    except Exception as e:
+        LOGGER.warning("Super Ghost ledger table: " + str(e)[:80])
     LOGGER.info("Schema migration complete")
