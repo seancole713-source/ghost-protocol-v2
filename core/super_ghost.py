@@ -17,6 +17,9 @@ Scores are directional in [-2, +2]: negative = bearish, positive = bullish,
 from __future__ import annotations
 
 import math
+import json
+import logging
+import os
 import statistics
 import time
 from dataclasses import dataclass
@@ -24,6 +27,15 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
 Category = str
+
+LOGGER = logging.getLogger("ghost.super_ghost")
+
+# The "AI brain already built and waiting" is Ghost's existing Anthropic
+# integration (core/ghost_ask.py, core/war_room.py). Super Ghost reuses the same
+# key + endpoint so the news-reading analyst layer is real AI, not templated text.
+ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+SUPER_GHOST_AI_MODEL = os.getenv("SUPER_GHOST_AI_MODEL", os.getenv("WAR_ROOM_MODEL", "claude-sonnet-4-20250514"))
+SUPER_GHOST_AI_MAX_TOKENS = max(512, min(4096, int(os.getenv("SUPER_GHOST_AI_MAX_TOKENS", "1400"))))
 
 
 @dataclass(frozen=True)
@@ -677,7 +689,14 @@ def _aggregate(symbol: str, items_by_key: Dict[str, Dict[str, Any]], risk_plan: 
     elif edge <= -0.18:
         direction = "DOWN"
 
-    conviction = round(_clamp(abs(edge) * 100.0 * (0.55 + 0.45 * data_quality), 0.0, 100.0), 1)
+    base_conviction = abs(edge) * 100.0 * (0.55 + 0.45 * data_quality)
+    # "Adjust to the market": scale conviction by the detected regime so a long
+    # in a risk-off/high-VIX tape (or a short in a melt-up) is trusted less.
+    regime = detect_market_regime(items_by_key)
+    regime_mult = _regime_conviction_multiplier(regime, direction)
+    regime["conviction_multiplier"] = regime_mult
+    regime["direction_assessed"] = direction
+    conviction = round(_clamp(base_conviction * regime_mult, 0.0, 100.0), 1)
     confidence = round(_clamp(0.50 + (conviction / 100.0) * 0.45, 0.50, 0.95), 3)
     if data_quality < 0.60 or critical_quality < 0.55:
         confidence = min(confidence, 0.68)
@@ -736,7 +755,7 @@ def _aggregate(symbol: str, items_by_key: Dict[str, Dict[str, Any]], risk_plan: 
     top_bearish = sorted([x for x in available if float(x.get("score") or 0) < 0], key=lambda x: float(x["score"]) * float(x.get("weight") or 1))[:5]
     unknown_critical = [x for x in critical if not x.get("available")]
 
-    brain = _ai_brain(symbol, direction, action, top_bullish, top_bearish, unknown_critical, risk_plan, data_quality)
+    brain = _ai_brain(symbol, direction, action, top_bullish, top_bearish, unknown_critical, risk_plan, data_quality, regime)
 
     return {
         "symbol": symbol,
@@ -767,6 +786,7 @@ def _aggregate(symbol: str, items_by_key: Dict[str, Dict[str, Any]], risk_plan: 
             "bullish": _driver_summary(top_bullish),
             "bearish": _driver_summary(top_bearish),
         },
+        "market_regime": regime,
         "checklist": items,
         "ai_brain": brain,
     }
@@ -776,20 +796,228 @@ def _driver_summary(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return [{"id": x.get("id"), "key": x.get("key"), "title": x.get("title"), "status": x.get("status"), "score": x.get("score"), "evidence": x.get("evidence")} for x in items]
 
 
-def _ai_brain(symbol: str, direction: str, action: str, bullish: List[Dict[str, Any]], bearish: List[Dict[str, Any]], unknown_critical: List[Dict[str, Any]], risk_plan: Dict[str, Any], data_quality: float) -> Dict[str, Any]:
+def detect_market_regime(items_by_key: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """Classify the broad market regime so Ghost can *adjust to the market*.
+
+    The user's explicit ask was a system that "knows how to adjust to the
+    market." This reads the already-scored market-context items (SPX, Nasdaq,
+    sector, VIX, Fed/CPI) and returns a regime label plus a conviction
+    multiplier. Long setups are trusted less in risk-off / high-fear tape;
+    short setups are trusted less in a strong risk-on melt-up. Unknown macro
+    data keeps the multiplier neutral instead of guessing.
+    """
+    def _score(key: str) -> Optional[float]:
+        it = items_by_key.get(key) or {}
+        if not it.get("available") or it.get("score") is None:
+            return None
+        return float(it["score"])
+
+    spx = _score("spx")
+    ndx = _score("nasdaq")
+    sector = _score("sector")
+    vix_item = items_by_key.get("vix") or {}
+    vix_val = _f((vix_item.get("value") or {}).get("vix")) if vix_item.get("available") else None
+    fed = _score("fed_cpi")
+
+    breadth = [v for v in (spx, ndx, sector) if v is not None]
+    macro_available = len(breadth) + (1 if vix_val is not None else 0) + (1 if fed is not None else 0)
+    if macro_available == 0:
+        return {
+            "label": "unknown",
+            "risk_state": "unknown",
+            "conviction_multiplier": 1.0,
+            "vix": None,
+            "breadth_score": None,
+            "macro_inputs_available": 0,
+            "note": "No market-context data available; conviction not adjusted for regime.",
+        }
+
+    breadth_score = round(sum(breadth) / len(breadth), 3) if breadth else 0.0
+    high_vol = vix_val is not None and vix_val >= 25.0
+    calm = vix_val is not None and vix_val < 15.0
+
+    if breadth_score >= 0.5 and not high_vol:
+        risk_state = "risk_on"
+    elif breadth_score <= -0.5 or high_vol:
+        risk_state = "risk_off"
+    else:
+        risk_state = "neutral"
+
+    if high_vol and breadth_score <= -0.25:
+        label = "risk_off_high_volatility"
+    elif risk_state == "risk_on" and calm:
+        label = "calm_risk_on"
+    elif risk_state == "risk_on":
+        label = "risk_on"
+    elif risk_state == "risk_off":
+        label = "risk_off"
+    else:
+        label = "mixed"
+
+    return {
+        "label": label,
+        "risk_state": risk_state,
+        "vix": round(vix_val, 2) if vix_val is not None else None,
+        "breadth_score": breadth_score,
+        "fed_cpi_score": fed,
+        "macro_inputs_available": macro_available,
+        "high_volatility": bool(high_vol),
+        # Multiplier filled in per-direction by _regime_conviction_multiplier.
+        "conviction_multiplier": 1.0,
+        "note": f"Regime '{label}' from breadth {breadth_score:+.2f}"
+        + (f", VIX {vix_val:.1f}" if vix_val is not None else "")
+        + ".",
+    }
+
+
+def _regime_conviction_multiplier(regime: Dict[str, Any], direction: str) -> float:
+    """How much to scale conviction given the regime and trade direction.
+
+    This is the concrete 'adjust to the market' lever. Range ~[0.55, 1.15].
+    """
+    if not regime or regime.get("risk_state") in (None, "unknown"):
+        return 1.0
+    risk_state = regime.get("risk_state")
+    high_vol = bool(regime.get("high_volatility"))
+    mult = 1.0
+    if direction == "UP":
+        if risk_state == "risk_on":
+            mult *= 1.12
+        elif risk_state == "risk_off":
+            mult *= 0.70
+    elif direction == "DOWN":
+        if risk_state == "risk_off":
+            mult *= 1.10
+        elif risk_state == "risk_on":
+            mult *= 0.75
+    # Fear tape compresses conviction in either direction (whippy, gap-prone).
+    if high_vol:
+        mult *= 0.85
+    return round(_clamp(mult, 0.55, 1.15), 3)
+
+
+def generate_ai_brief(symbol: str, report: Dict[str, Any], *, snapshot: Optional[Dict[str, Any]] = None, timeout: float = 45.0) -> Dict[str, Any]:
+    """Use the real AI brain (Claude) to read the news + checklist and explain.
+
+    This is the "built-in AI that reads the news" layer. It is OFF by default on
+    the endpoint (opt-in via ?ai=1) so the fast deterministic report stays free
+    and offline. It never fabricates: it is handed ONLY Ghost's own scored
+    checklist, top drivers, regime, and recent headlines, and asked to explain
+    and stress-test — not to invent numbers. Degrades gracefully with no key.
+    """
+    if not ANTHROPIC_KEY:
+        return {"ok": False, "available": False, "reason": "ANTHROPIC_API_KEY not configured; deterministic ai_brain still provided."}
+
+    pred = report.get("prediction") or {}
+    headlines = []
+    for a in ((snapshot or {}).get("news") or [])[:12]:
+        if isinstance(a, dict):
+            t = str(a.get("title") or a.get("headline") or "").strip()
+            if t:
+                headlines.append(t[:160])
+    brain_input = {
+        "symbol": symbol,
+        "prediction": {
+            "direction": pred.get("direction"),
+            "confidence": pred.get("confidence"),
+            "conviction_score": pred.get("conviction_score"),
+            "quality_score": pred.get("quality_score"),
+            "accuracy_grade": pred.get("accuracy_grade"),
+            "action": pred.get("action"),
+            "data_quality": pred.get("data_quality"),
+        },
+        "market_regime": report.get("market_regime"),
+        "top_bullish": [{"title": d.get("title"), "evidence": d.get("evidence")} for d in (report.get("top_drivers") or {}).get("bullish", [])],
+        "top_bearish": [{"title": d.get("title"), "evidence": d.get("evidence")} for d in (report.get("top_drivers") or {}).get("bearish", [])],
+        "missing_critical": [m.get("title") for m in (report.get("coverage") or {}).get("missing_critical", [])],
+        "recent_headlines": headlines,
+        "risk_plan": report.get("risk_plan"),
+    }
+    system = (
+        "You are Super Ghost's equity-research brain. You are given ONLY Ghost's own "
+        "computed 25-point checklist result, the market regime, the strongest bullish and "
+        "bearish drivers, what data is missing, and recent headlines. Your job: read the "
+        "news and signals and explain, in plain English, why the stock might move and how "
+        "the current market regime changes the trust level. RULES: (1) Do NOT invent prices, "
+        "EPS, or figures not provided. (2) If critical data is missing, say so and lower trust. "
+        "(3) This is prediction intelligence for a human, NOT financial advice and NOT an order. "
+        "Return STRICT JSON with keys: thesis (string), news_read (string: what the headlines imply), "
+        "regime_effect (string: how the market regime adjusts the call), bull_case (array of strings), "
+        "bear_case (array of strings), what_would_change_my_mind (array of strings), "
+        "trust (one of: high, medium, low), one_liner (string)."
+    )
+    user = "Ghost report (JSON):\n" + json.dumps(brain_input, default=str)[:9000] + "\n\nReturn only the JSON object."
+    try:
+        import requests
+        resp = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={"x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+            json={"model": SUPER_GHOST_AI_MODEL, "max_tokens": SUPER_GHOST_AI_MAX_TOKENS, "system": system, "messages": [{"role": "user", "content": user}]},
+            timeout=timeout,
+        )
+        if resp.status_code != 200:
+            LOGGER.warning("Super Ghost AI brief %s: %s", resp.status_code, resp.text[:120])
+            return {"ok": False, "available": False, "reason": f"AI model error ({resp.status_code})"}
+        data = resp.json()
+        text = ""
+        for block in data.get("content") or []:
+            if block.get("type") == "text":
+                text += block.get("text") or ""
+        text = text.strip()
+        parsed = _safe_parse_json(text)
+        if parsed is None:
+            return {"ok": True, "available": True, "model": SUPER_GHOST_AI_MODEL, "format": "text", "analysis": text[:4000]}
+        parsed.update({"ok": True, "available": True, "model": SUPER_GHOST_AI_MODEL, "format": "json"})
+        return parsed
+    except Exception as e:
+        LOGGER.warning("Super Ghost AI brief failed: %s", str(e)[:160])
+        return {"ok": False, "available": False, "reason": str(e)[:160]}
+
+
+def _safe_parse_json(text: str) -> Optional[Dict[str, Any]]:
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+    start = text.find("{")
+    end = text.rfind("}")
+    if 0 <= start < end:
+        try:
+            return json.loads(text[start : end + 1])
+        except Exception:
+            return None
+    return None
+
+
+def _ai_brain(symbol: str, direction: str, action: str, bullish: List[Dict[str, Any]], bearish: List[Dict[str, Any]], unknown_critical: List[Dict[str, Any]], risk_plan: Dict[str, Any], data_quality: float, regime: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     bull_text = "; ".join([f"{x['title']}: {x.get('evidence') or x.get('status')}" for x in bullish[:3]]) or "No strong bullish drivers yet."
     bear_text = "; ".join([f"{x['title']}: {x.get('evidence') or x.get('status')}" for x in bearish[:3]]) or "No strong bearish drivers yet."
     missing = ", ".join([x.get("title", "unknown") for x in unknown_critical[:5]])
+    regime = regime or {}
+    regime_label = regime.get("label", "unknown")
+    regime_mult = regime.get("conviction_multiplier", 1.0)
     if direction == "UP":
         thesis = f"{symbol} has a bullish prediction bias, but trust depends on data coverage and risk/reward. Strongest supports: {bull_text}"
     elif direction == "DOWN":
         thesis = f"{symbol} has a bearish prediction bias. Main pressure points: {bear_text}"
     else:
         thesis = f"{symbol} does not have enough clean edge for a directional prediction yet."
+    if regime_label != "unknown":
+        if regime_mult > 1.0:
+            regime_effect = f"Market regime '{regime_label}' SUPPORTS a {direction} bias — conviction scaled up x{regime_mult}."
+        elif regime_mult < 1.0:
+            regime_effect = f"Market regime '{regime_label}' works AGAINST a {direction} bias — conviction scaled down x{regime_mult}."
+        else:
+            regime_effect = f"Market regime '{regime_label}' is neutral for this direction."
+    else:
+        regime_effect = "Market regime unknown (macro feeds unavailable); conviction not regime-adjusted."
     return {
         "name": "Super Ghost Brain v1",
         "thesis": thesis,
         "counter_thesis": bear_text if direction == "UP" else bull_text if direction == "DOWN" else f"Bullish: {bull_text} | Bearish: {bear_text}",
+        "regime_effect": regime_effect,
         "trust_instruction": "Trust strong predictions only when data quality, critical coverage, and risk/reward are all strong. Unknown data lowers the grade.",
         "what_to_verify_next": [x.get("title") for x in unknown_critical[:8]],
         "risk_sentence": (
@@ -801,11 +1029,16 @@ def _ai_brain(symbol: str, direction: str, action: str, bullish: List[Dict[str, 
     }
 
 
-def build_super_ghost(symbol: str = "WOLF", *, snapshot: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def build_super_ghost(symbol: str = "WOLF", *, snapshot: Optional[Dict[str, Any]] = None, ai: bool = False) -> Dict[str, Any]:
     """Build a Super Ghost 25-point prediction-intelligence report.
 
     ``snapshot`` is optional and used by tests / future batch jobs. When omitted,
     live best-effort data is fetched through existing Ghost data modules.
+
+    ``ai=True`` additionally calls the real built-in AI brain (Claude) to read
+    the headlines + checklist and return an explained, regime-aware brief. It is
+    opt-in so the deterministic report stays fast/free/offline; it degrades
+    gracefully (``ai_brief.available == False``) when no API key is configured.
     """
     sym = (symbol or "").strip().upper()
     if not sym:
@@ -819,7 +1052,10 @@ def build_super_ghost(symbol: str = "WOLF", *, snapshot: Optional[Dict[str, Any]
     # Guarantee every checklist row exists exactly once.
     for spec in CHECKLIST:
         items.setdefault(spec.key, _unknown(spec, "Checklist evaluator did not produce this item.", "engine"))
-    return _aggregate(sym, items, risk_plan)
+    report = _aggregate(sym, items, risk_plan)
+    if ai:
+        report["ai_brief"] = generate_ai_brief(sym, report, snapshot=snap)
+    return report
 
 
 def _df_to_points(df: Any) -> List[Dict[str, Any]]:

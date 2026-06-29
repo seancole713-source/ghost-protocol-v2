@@ -1,7 +1,13 @@
 from fastapi.testclient import TestClient
 
 import wolf_app
-from core.super_ghost import CHECKLIST, build_super_ghost, checklist_manifest
+from core.super_ghost import (
+    CHECKLIST,
+    build_super_ghost,
+    checklist_manifest,
+    detect_market_regime,
+    generate_ai_brief,
+)
 
 
 def _trend_rows(start=10.0, step=0.05, n=260, volume=1_000_000):
@@ -145,3 +151,95 @@ def test_super_ghost_endpoint(monkeypatch):
     r = client.get("/api/wolf/super-ghost?symbol=ABCD")
     assert r.status_code == 200
     assert r.json()["symbol"] == "ABCD"
+
+
+def _risk_off_snapshot():
+    """Same strong stock, but a falling broad market + high VIX (risk-off)."""
+    snap = _sample_snapshot()
+    snap["spx_history"] = [{"ts": i, "close": 5200 - i * 2.0, "volume": 0} for i in range(80)]
+    snap["qqq_history"] = [{"ts": i, "close": 350 - i * 0.3, "volume": 0} for i in range(80)]
+    snap["ixic_history"] = [{"ts": i, "close": 17000 - i * 10.0, "volume": 0} for i in range(80)]
+    snap["sector_history"] = [{"ts": i, "close": 220 - i * 0.4, "volume": 0} for i in range(80)]
+    snap["vix"] = 32.0
+    snap["vix_history"] = [{"ts": i, "close": 32.0, "volume": 0} for i in range(30)]
+    return snap
+
+
+def test_super_ghost_report_includes_market_regime_block():
+    report = build_super_ghost("WOLF", snapshot=_sample_snapshot())
+    assert "market_regime" in report
+    mr = report["market_regime"]
+    for key in ("label", "risk_state", "conviction_multiplier", "macro_inputs_available"):
+        assert key in mr
+    # ai_brain must now explain the regime effect (deterministic, no key needed).
+    assert "regime_effect" in report["ai_brain"]
+
+
+def test_super_ghost_regime_dampens_conviction_in_risk_off_high_vol():
+    risk_on = build_super_ghost("WOLF", snapshot=_sample_snapshot())
+    risk_off = build_super_ghost("WOLF", snapshot=_risk_off_snapshot())
+    # Same underlying bullish stock; a risk-off, high-VIX tape must lower an UP
+    # call's conviction and apply a sub-1.0 regime multiplier.
+    assert risk_off["market_regime"]["risk_state"] == "risk_off"
+    assert risk_off["market_regime"]["high_volatility"] is True
+    assert risk_off["market_regime"]["conviction_multiplier"] < 1.0
+    assert risk_off["prediction"]["conviction_score"] < risk_on["prediction"]["conviction_score"]
+
+
+def test_detect_market_regime_unknown_when_no_macro():
+    # Empty snapshot -> all macro items unknown -> neutral multiplier, no guess.
+    report = build_super_ghost("WOLF", snapshot={"symbol": "WOLF"})
+    mr = report["market_regime"]
+    assert mr["label"] == "unknown"
+    assert mr["conviction_multiplier"] == 1.0
+
+
+def test_super_ghost_ai_brief_degrades_without_key(monkeypatch):
+    monkeypatch.setattr("core.super_ghost.ANTHROPIC_KEY", "")
+    report = build_super_ghost("WOLF", snapshot=_sample_snapshot(), ai=True)
+    assert "ai_brief" in report
+    assert report["ai_brief"]["available"] is False
+    # The deterministic brain is still present so the report is never empty.
+    assert "Super Ghost Brain" in report["ai_brain"]["name"]
+
+
+def test_super_ghost_ai_brief_uses_real_brain_when_key_present(monkeypatch):
+    monkeypatch.setattr("core.super_ghost.ANTHROPIC_KEY", "test-key")
+
+    class FakeResp:
+        status_code = 200
+
+        def json(self):
+            return {"content": [{"type": "text", "text": (
+                '{"thesis":"demand improving","news_read":"contract + launch bullish",'
+                '"regime_effect":"risk-on supports longs","bull_case":["EPS beat"],'
+                '"bear_case":["thin float"],"what_would_change_my_mind":["guidance cut"],'
+                '"trust":"medium","one_liner":"Constructive but verify"}'
+            )}]}
+
+    import requests as _rq
+    monkeypatch.setattr(_rq, "post", lambda *a, **k: FakeResp())
+    report = build_super_ghost("WOLF", snapshot=_sample_snapshot(), ai=True)
+    brief = report["ai_brief"]
+    assert brief["available"] is True
+    assert brief["format"] == "json"
+    assert brief["trust"] == "medium"
+    assert "thesis" in brief and brief["thesis"]
+
+
+def test_super_ghost_endpoint_ai_param_passes_through(monkeypatch):
+    from api import wolf_endpoints
+
+    wolf_endpoints._CACHE.clear()
+    captured = {}
+
+    def fake_build(symbol, ai=False):
+        captured["symbol"] = symbol
+        captured["ai"] = ai
+        return {"ok": True, "symbol": symbol, "engine": "test", "prediction": {"direction": "HOLD"}, "checklist": [], "ai_brief": {"available": False}}
+
+    monkeypatch.setattr("core.super_ghost.build_super_ghost", fake_build)
+    client = TestClient(wolf_app.APP)
+    r = client.get("/api/wolf/super-ghost?symbol=ABCD&ai=1")
+    assert r.status_code == 200
+    assert captured["ai"] is True

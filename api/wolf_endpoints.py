@@ -1633,22 +1633,33 @@ async def get_ghost_score():
 
 
 @router.get("/super-ghost")
-async def get_super_ghost(symbol: str = WOLF_SYMBOL):
+async def get_super_ghost(symbol: str = WOLF_SYMBOL, ai: int = 0):
     """Super Ghost 25-point prediction-intelligence report.
 
     This is not an auto-trading endpoint. It returns a prediction-grade
     checklist covering fundamentals/news, price action, market context, and
     risk planning. Unknown feeds stay marked unknown instead of being treated
     as bullish/bearish.
+
+    The report always includes a deterministic ``market_regime`` block (Ghost
+    adjusting conviction to the broad tape) and a deterministic ``ai_brain``.
+    Pass ``?ai=1`` to also call the built-in AI brain (Claude) for a
+    news-reading, regime-aware ``ai_brief``. The AI path is uncached and
+    degrades gracefully (``ai_brief.available=false``) when no key is set.
     """
     sym = (symbol or WOLF_SYMBOL).strip().upper()
-    cache_key = "super-ghost:" + sym
-    cached = _cache_get(cache_key, 180)
-    if cached:
-        return JSONResponse(content=cached)
     from core.super_ghost import build_super_ghost
-    result = build_super_ghost(sym)
+    want_ai = bool(ai)
+    # Only the deterministic report is cached; the AI brief is always fresh.
+    if not want_ai:
+        cache_key = "super-ghost:" + sym
+        cached = _cache_get(cache_key, 180)
+        if cached:
+            return JSONResponse(content=cached)
+        result = build_super_ghost(sym)
+        if result.get("ok"):
+            _cache_set(cache_key, result)
+    else:
+        result = build_super_ghost(sym, ai=True)
     status = 200 if result.get("ok") else 400
-    if result.get("ok"):
-        _cache_set(cache_key, result)
     return JSONResponse(content=result, status_code=status)
