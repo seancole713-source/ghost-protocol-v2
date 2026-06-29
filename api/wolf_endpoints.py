@@ -12,6 +12,7 @@ Endpoints
   GET /api/wolf/earnings         — quarterly EPS estimate vs actual + revenue
   GET /api/wolf/analyst          — price targets + recommendation distribution + latest rating
   GET /api/wolf/news             — WOLF-relevant news with category tags
+  GET /api/wolf/super-ghost      — 25-point prediction-intelligence report
 
 All endpoints follow the graceful-degradation pattern: on any failure they
 return HTTP 200 with `{"ok": False, "error": "..."}` plus an empty-default
@@ -1629,3 +1630,25 @@ async def get_ghost_score():
     Frontend renders this as a gauge at the top of the cockpit.
     """
     return JSONResponse(content=ghost_score_payload_sync())
+
+
+@router.get("/super-ghost")
+async def get_super_ghost(symbol: str = WOLF_SYMBOL):
+    """Super Ghost 25-point prediction-intelligence report.
+
+    This is not an auto-trading endpoint. It returns a prediction-grade
+    checklist covering fundamentals/news, price action, market context, and
+    risk planning. Unknown feeds stay marked unknown instead of being treated
+    as bullish/bearish.
+    """
+    sym = (symbol or WOLF_SYMBOL).strip().upper()
+    cache_key = "super-ghost:" + sym
+    cached = _cache_get(cache_key, 180)
+    if cached:
+        return JSONResponse(content=cached)
+    from core.super_ghost import build_super_ghost
+    result = build_super_ghost(sym)
+    status = 200 if result.get("ok") else 400
+    if result.get("ok"):
+        _cache_set(cache_key, result)
+    return JSONResponse(content=result, status_code=status)
