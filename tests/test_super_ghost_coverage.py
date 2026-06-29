@@ -208,7 +208,9 @@ def test_market_history_no_keys_returns_empty(monkeypatch):
     monkeypatch.delenv("ALPACA_KEY_ID", raising=False)
     monkeypatch.delenv("ALPACA_SECRET_KEY", raising=False)
 
-    # yfinance fallback returns nothing in CI -> overall [] (never raises).
+    # Stub every tier so the test is hermetic (no network) and asserts the
+    # "all sources failed -> []" contract.
+    monkeypatch.setattr(mh, "_signal_engine_ohlcv", lambda *a, **k: [])
     monkeypatch.setattr(mh, "_yfinance_daily_bars", lambda *a, **k: [])
     rows = mh.get_daily_history("WOLF", 50)
     assert rows == []
@@ -221,6 +223,9 @@ def test_market_history_parses_alpaca_bars(monkeypatch):
     mh.clear_cache()
     monkeypatch.setenv("ALPACA_KEY_ID", "k")
     monkeypatch.setenv("ALPACA_SECRET_KEY", "s")
+    # Force the direct-Alpaca tier to be exercised by disabling the
+    # signal_engine delegate for this test.
+    monkeypatch.setattr(mh, "_signal_engine_ohlcv", lambda *a, **k: [])
 
     class FakeResp:
         status_code = 200
@@ -241,6 +246,32 @@ def test_market_history_parses_alpaca_bars(monkeypatch):
     assert rows[0]["close"] == 10.5
     assert rows[-1]["close"] == 11.5
     assert rows[-1]["volume"] == 2000
+
+
+def test_market_history_prefers_signal_engine_chain(monkeypatch):
+    """get_daily_history must try the production-proven _fetch_ohlcv chain first."""
+    import core.market_history as mh
+
+    mh.clear_cache()
+    fake_rows = [
+        {"ts": "2026-06-01T00:00:00Z", "open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": 100},
+        {"ts": "2026-06-02T00:00:00Z", "open": 1.5, "high": 2.5, "low": 1.0, "close": 2.0, "volume": 200},
+    ]
+    import core.signal_engine as se
+    monkeypatch.setattr(se, "_fetch_ohlcv", lambda *a, **k: fake_rows)
+    # If the delegate is used, the Alpaca/yfinance tiers must never be reached.
+    monkeypatch.setattr(mh, "_alpaca_daily_bars", lambda *a, **k: (_ for _ in ()).throw(AssertionError("alpaca tier should not run")))
+    rows = mh.get_daily_history("WOLF", 50)
+    assert [r["close"] for r in rows] == [1.5, 2.0]
+
+
+def test_period_for_days_mapping():
+    from core.market_history import _period_for_days
+
+    assert _period_for_days(90) == "3m"
+    assert _period_for_days(180) == "6m"
+    assert _period_for_days(365) == "1y"
+    assert _period_for_days(400) == "2y"
 
 
 def test_min_coverage_constant_is_18_by_default():

@@ -168,10 +168,63 @@ def _yfinance_daily_bars(symbol: str, days: int) -> List[Dict[str, Any]]:
     return rows[-days:] if len(rows) > days else rows
 
 
+def _period_for_days(days: int) -> str:
+    """Map a trading-day count to the period strings ``_fetch_ohlcv`` accepts."""
+    if days <= 90:
+        return "3m"
+    if days <= 180:
+        return "6m"
+    if days <= 365:
+        return "1y"
+    return "2y"
+
+
+def _signal_engine_ohlcv(symbol: str, days: int) -> List[Dict[str, Any]]:
+    """Delegate to the production-proven multi-tier OHLCV chain.
+
+    ``core.signal_engine._fetch_ohlcv`` already powers live model training on
+    Railway (Alpaca SIP -> IEX -> Polygon -> yfinance -> Stooq) and returns rows
+    in the exact ``{ts, open, high, low, close, volume}`` shape we need. Never
+    raises; returns ``[]`` on any problem so the caller can fall through.
+    """
+    try:
+        from core.signal_engine import _fetch_ohlcv
+    except Exception:
+        return []
+    try:
+        rows = _fetch_ohlcv(symbol, "stock", period=_period_for_days(days), interval="1d")
+    except Exception as exc:  # pragma: no cover - defensive
+        LOGGER.debug("signal_engine ohlcv %s: %s", symbol, str(exc)[:100])
+        return []
+    if not rows:
+        return []
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        close = _finite(r.get("close"))
+        if close is None:
+            continue
+        out.append({
+            "ts": r.get("ts"),
+            "open": _finite(r.get("open")),
+            "high": _finite(r.get("high")),
+            "low": _finite(r.get("low")),
+            "close": close,
+            "volume": _int(r.get("volume")),
+        })
+    return out[-days:] if len(out) > days else out
+
+
 def get_daily_history(symbol: str, days: int = 400) -> List[Dict[str, Any]]:
     """Best-effort daily OHLCV history (oldest -> newest), Railway-friendly.
 
-    Source order: Alpaca daily bars (works on Railway) -> yfinance (dev/local).
+    Source order:
+      1. ``core.signal_engine._fetch_ohlcv`` - the production-proven multi-tier
+         chain (Alpaca SIP -> IEX -> Polygon -> yfinance -> Stooq) that the live
+         model trainer already relies on. This is the most reliable path on
+         Railway, so we try it first.
+      2. Direct Alpaca daily bars (this module) - kept as a secondary so the
+         module is still useful if signal_engine is unavailable.
+      3. yfinance (dev/local).
     Returns ``[]`` if every source fails; callers must treat empty as "unknown".
     """
     sym = (symbol or "").strip().upper()
@@ -183,7 +236,9 @@ def get_daily_history(symbol: str, days: int = 400) -> List[Dict[str, Any]]:
     if cached and (now - cached[0]) < _CACHE_TTL_S:
         return [dict(r) for r in cached[1]]
 
-    rows = _alpaca_daily_bars(sym, days)
+    rows = _signal_engine_ohlcv(sym, days)
+    if not rows:
+        rows = _alpaca_daily_bars(sym, days)
     if not rows:
         rows = _yfinance_daily_bars(sym, days)
 
