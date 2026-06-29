@@ -34,6 +34,38 @@ def test_super_ghost_log_param_triggers_ledger(monkeypatch):
     assert calls["logged"] == "WOLF"
 
 
+def test_super_ghost_coverage_endpoint(monkeypatch):
+    """PR #88 coverage health endpoint returns gate metadata + per-category map."""
+    from api import wolf_endpoints
+
+    wolf_endpoints._CACHE.clear()
+
+    def fake_build(symbol, ai=False):
+        return {
+            "ok": True,
+            "symbol": symbol,
+            "engine": "test",
+            "prediction": {"direction": "UP", "accuracy_grade": "C", "coverage_gated": True},
+            "coverage": {"available": 10, "total": 25, "meets_ab_gate": False},
+            "checklist": [
+                {"id": 1, "key": "eps", "title": "EPS", "category": "company_fundamentals_news", "available": True, "critical": True},
+                {"id": 8, "key": "perf_30d", "title": "30d", "category": "price_action_performance", "available": False, "critical": True},
+            ],
+        }
+
+    monkeypatch.setattr("core.super_ghost.build_super_ghost", fake_build)
+    r = _client().get("/api/wolf/super-ghost/coverage?symbol=WOLF")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["min_for_ab_grade"] == 18
+    assert body["meets_ab_gate"] is False
+    assert body["coverage_gated"] is True
+    assert "by_category" in body and "price_action_performance" in body["by_category"]
+    assert any(m["key"] == "perf_30d" for m in body["missing"])
+    assert "data_sources" in body
+
+
 def test_super_ghost_no_log_param_does_not_log(monkeypatch):
     from api import wolf_endpoints
 

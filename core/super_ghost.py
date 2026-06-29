@@ -43,6 +43,12 @@ SUPER_GHOST_AI_MODEL = os.getenv(
 )
 SUPER_GHOST_AI_MAX_TOKENS = max(512, min(4096, int(os.getenv("SUPER_GHOST_AI_MAX_TOKENS", "1400"))))
 
+# PR #88 acceptance gate: the minimum number of resolved checklist items (out of
+# 25) required before the report is allowed to show an A/B trust grade or a
+# HIGH-CONVICTION action. Below this, trust is capped at C. Env-overridable so
+# the bar can be tuned without a code change, but it can never exceed 25.
+MIN_COVERAGE_FOR_AB = max(1, min(25, int(os.getenv("SUPER_GHOST_MIN_COVERAGE_AB", "18"))))
+
 
 @dataclass(frozen=True)
 class CheckSpec:
@@ -322,11 +328,21 @@ def _evaluate_company(symbol: str, snapshot: Dict[str, Any], items: Dict[str, Di
     # 1 EPS beat/miss
     act = _f(earnings.get("actual_eps") or earnings.get("eps_actual"))
     est = _f(earnings.get("estimate_eps") or earnings.get("eps_estimate"))
+    eps_prior = _f(earnings.get("eps_year_ago") or earnings.get("eps_prior_year"))
     if act is not None and est is not None:
         diff = act - est
         rel = diff / max(abs(est), 0.01)
         sc = 1.5 if diff > 0 and rel >= 0.05 else (0.7 if diff > 0 else (-1.5 if rel <= -0.05 else -0.7 if diff < 0 else 0.0))
         _add_item(items, "eps", score=sc, value={"actual_eps": act, "estimate_eps": est, "surprise": round(diff, 4)}, evidence=("EPS beat estimate" if diff > 0 else "EPS missed estimate" if diff < 0 else "EPS matched estimate"), source="earnings")
+    elif act is not None and eps_prior is not None:
+        # No consensus estimate available (free SEC data has no estimates). Score
+        # the YoY EPS trend instead and label it honestly so it is never mistaken
+        # for a beat/miss-vs-consensus.
+        diff = act - eps_prior
+        rel = diff / max(abs(eps_prior), 0.01)
+        sc = 1.2 if diff > 0 and rel >= 0.05 else (0.6 if diff > 0 else (-1.2 if rel <= -0.05 else -0.6 if diff < 0 else 0.0))
+        period = str(earnings.get("eps_period") or "").strip()
+        _add_item(items, "eps", score=sc, value={"actual_eps": act, "eps_year_ago": eps_prior, "yoy_change": round(diff, 4), "basis": "yoy_trend"}, evidence=(f"EPS {('rose' if diff > 0 else 'fell' if diff < 0 else 'flat')} YoY ({eps_prior:+.2f} -> {act:+.2f})" + (f", {period}" if period else "") + " [no consensus estimate; YoY trend]"), source=str(earnings.get("source") or "sec_xbrl"), confidence=0.6)
     else:
         _add_unknown(items, "eps", "EPS actual/estimate unavailable; do not count this as bullish.", "earnings")
 
@@ -728,11 +744,23 @@ def _aggregate(symbol: str, items_by_key: Dict[str, Dict[str, Any]], risk_plan: 
     else:
         grade = "F"
 
+    # PR #88 coverage gate (hard acceptance rule): an A/B trust grade requires a
+    # genuinely well-covered checklist. If fewer than MIN_COVERAGE_FOR_AB of 25
+    # checks resolved, the report cannot show A+/A/B+/B no matter how strong the
+    # thin edge looks -- it is capped at C. This makes "high coverage" a
+    # precondition for "high trust" and prevents overconfident calls on sparse
+    # data (exactly the 7/25 production state this PR fixes).
+    coverage_count = len(available)
+    coverage_gated = False
+    if coverage_count < MIN_COVERAGE_FOR_AB and grade in ("A+", "A", "B+", "B"):
+        grade = "C"
+        coverage_gated = True
+
     if direction == "HOLD" or data_quality < 0.55 or critical_quality < 0.50:
         action = "NO EDGE — WATCH ONLY"
     elif blockers:
         action = "NO PREDICTION — RISK BLOCKED"
-    elif quality_score >= 78 and confidence >= 0.70:
+    elif coverage_count >= MIN_COVERAGE_FOR_AB and quality_score >= 78 and confidence >= 0.70:
         action = f"HIGH-CONVICTION {direction} PREDICTION"
     elif quality_score >= 62:
         action = f"WATCHLIST {direction} BIAS"
@@ -779,12 +807,16 @@ def _aggregate(symbol: str, items_by_key: Dict[str, Dict[str, Any]], risk_plan: 
             "action": action,
             "data_quality": round(data_quality, 3),
             "critical_data_quality": round(critical_quality, 3),
+            "coverage_gated": coverage_gated,
             "blockers": [{"key": x.get("key"), "title": x.get("title"), "evidence": x.get("evidence")} for x in blockers],
         },
         "risk_plan": {k: _safe_round(v, 4) if isinstance(v, float) else v for k, v in risk_plan.items()},
         "coverage": {
             "available": len(available),
             "total": len(CHECKLIST),
+            "min_for_ab_grade": MIN_COVERAGE_FOR_AB,
+            "meets_ab_gate": coverage_count >= MIN_COVERAGE_FOR_AB,
+            "gated": coverage_gated,
             "missing_critical": [{"id": x["id"], "key": x["key"], "title": x["title"], "evidence": x.get("evidence")} for x in unknown_critical],
         },
         "categories": by_category,
@@ -1143,16 +1175,66 @@ def _fetch_live_snapshot(symbol: str) -> Dict[str, Any]:
         snap["avg_volume"] = info.get("averageVolume") or info.get("averageDailyVolume10Day")
         snap["week52_high"] = snap.get("week52_high") or info.get("fiftyTwoWeekHigh")
         snap["week52_low"] = snap.get("week52_low") or info.get("fiftyTwoWeekLow")
-        snap["history"] = _df_to_points(yf_history(symbol, "1y", "1d"))
-        snap["spy_history"] = _df_to_points(yf_history("SPY", "3mo", "1d"))
-        snap["qqq_history"] = _df_to_points(yf_history("QQQ", "3mo", "1d"))
+        # PR #88: source daily history from the Railway-friendly chain (Alpaca
+        # daily bars -> yfinance), not yfinance-only. Yahoo blocks Railway IPs,
+        # which is why every price-action check went dark in production. Tradable
+        # ETFs (SPY/QQQ/sector) resolve via Alpaca; cash indices (^GSPC/^IXIC/^VIX)
+        # are not on Alpaca's equity feed, so they keep the yfinance path but the
+        # engine already falls back spx->SPY, nasdaq->QQQ, and VIX->macro.
+        def _hist(sym_: str, days: int, yf_period: str) -> List[Dict[str, Any]]:
+            try:
+                from core.market_history import get_daily_history
+                rows = get_daily_history(sym_, days)
+                if rows:
+                    return rows
+            except Exception:
+                pass
+            return _df_to_points(yf_history(sym_, yf_period, "1d"))
+
+        snap["history"] = _hist(symbol, 400, "1y")
+        snap["spy_history"] = _hist("SPY", 90, "3mo")
+        snap["qqq_history"] = _hist("QQQ", 90, "3mo")
         snap["spx_history"] = _df_to_points(yf_history("^GSPC", "3mo", "1d"))
         snap["ixic_history"] = _df_to_points(yf_history("^IXIC", "3mo", "1d"))
         snap["vix_history"] = _df_to_points(yf_history("^VIX", "1mo", "1d"))
-        if snap.get("sector_etf"):
-            snap["sector_history"] = _df_to_points(yf_history(str(snap["sector_etf"]), "3mo", "1d"))
+        if snap.get("sector_etf") and str(snap["sector_etf"]).upper() != "SPY":
+            snap["sector_history"] = _hist(str(snap["sector_etf"]), 90, "3mo")
+        elif snap.get("sector_etf"):
+            snap["sector_history"] = list(snap.get("spy_history") or [])
+        # Current price fallback via the 5-tier spot chain (Alpaca->...->Stooq)
+        # and, last, the latest historical close — so risk checks (20-22) have an
+        # entry even when yfinance fast_info is blocked.
+        if not _f(snap.get("current_price")):
+            try:
+                from core.prices import get_stock_price
+                px = get_stock_price(symbol)
+                if px:
+                    snap["current_price"] = float(px)
+            except Exception:
+                pass
+        if not _f(snap.get("current_price")) and snap.get("history"):
+            closes = _closes(snap["history"])
+            if closes:
+                snap["current_price"] = closes[-1]
         if tk is not None:
             snap["earnings"] = _latest_earnings_from_yf(symbol, tk)
+        # PR #88: SEC XBRL fundamentals (EPS YoY + revenue YoY) merged in. This
+        # is the Railway-reachable replacement for yfinance fundamentals and the
+        # primary unlock for checklist items 1-2 in production.
+        try:
+            from core.sec_fundamentals import get_fundamentals
+            sec_f = get_fundamentals(symbol)
+            if sec_f.get("available"):
+                merged = dict(snap.get("earnings") or {})
+                for k in ("actual_eps", "eps_actual", "eps_year_ago", "eps_period",
+                           "revenue", "revenue_year_ago", "revenue_yoy", "revenue_period"):
+                    if sec_f.get(k) is not None and merged.get(k) is None:
+                        merged[k] = sec_f[k]
+                merged.setdefault("source", "sec_xbrl")
+                snap["earnings"] = merged
+                snap["sec_fundamentals"] = sec_f
+        except Exception:
+            pass
         # analyst data
         recs = {"strong_buy": 0, "buy": 0, "hold": 0, "underperform": 0, "sell": 0}
         try:
