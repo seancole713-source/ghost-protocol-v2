@@ -43,6 +43,11 @@
   .brand .nm span{color:#ff5a5f}
   .trackpill{font-size:10px;font-weight:800;letter-spacing:.05em;color:#0a0c10;padding:6px 11px;border-radius:999px;
     background:rgba(251,191,36,.92);box-shadow:inset 0 1px 0 rgba(255,255,255,.5)}
+  .hd-right{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+  .dashbtn{font-size:11px;font-weight:700;letter-spacing:.03em;color:#cdd4de;text-decoration:none;
+    padding:6px 12px;border-radius:999px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.16);
+    -webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);white-space:nowrap}
+  .dashbtn:hover{color:#fff;border-color:rgba(255,255,255,.32);background:rgba(255,255,255,.1)}
 
   .seg{display:flex;padding:5px;margin:6px 0 16px;border-radius:20px;gap:4px}
   .seg button{flex:1;border:none;background:transparent;color:var(--mut);font-size:13.5px;font-weight:700;
@@ -129,7 +134,10 @@
   <div class="hdwrap">
     <div class="hd">
       <div class="brand"><span class="gh">&#128123;</span><span class="nm">Ghost <span>Picks</span></span></div>
-      <span class="trackpill">TRACKING &middot; NOT ADVICE</span>
+      <div class="hd-right">
+        <span class="trackpill">TRACKING &middot; NOT ADVICE</span>
+        <a href="/cockpit" class="dashbtn">&#8862; Full dashboard</a>
+      </div>
     </div>
   </div>
 
@@ -197,7 +205,9 @@ function renderLive(board){
     return;
   }
   hd.textContent='Live right now · '+picks.length;
-  host.innerHTML=picks.map(liveCard).join('');
+  var marketOpen=!!(board && board.radar_active);
+  var resumeCt=(board && board.radar_resume_ct) ? _esc(board.radar_resume_ct) : '';
+  host.innerHTML=picks.map(function(p){ return liveCard(p, marketOpen, resumeCt); }).join('');
 }
 
 function liveCard(p){
@@ -210,6 +220,8 @@ function liveCard(p){
   var conf=(p.confidence_pct!=null)?Math.round(p.confidence_pct):null;
 
   var cls='flat', dot='var(--mut2)', plCls='flat', big='&#8212;', sub='', mkPct=buyPct, badge='<span class="badge wait">WAITING TO BUY</span>', note='';
+  var liveLbl='Live market price';
+  var priceStr=(live!=null?('<span class="cur">$</span>'+_f(live,2)):'no quote');
   if(live!=null){
     mkPct=_clamp((live-stop)/span*100,1,99);
     if(live<=stop){
@@ -229,6 +241,16 @@ function liveCard(p){
     }
   }
   if(!note){ note='&#128737;&#65039; Auto safety-exit at <b>$'+_f(stop,2)+'</b> if it turns.'; }
+  // Market-closed override: when the radar isn't active, the "live" price is a
+  // stale fallback (== buy), so don't show a misleading "IN PLAY +0.0%". Show a
+  // calm closed state with the resume time instead.
+  if(marketOpen===false){
+    badge='<span class="badge wait">MARKET CLOSED</span>';
+    cls='flat'; dot='var(--mut2)'; plCls='flat'; liveLbl='Market closed';
+    priceStr='&#8212;'; big='&#8212;'; sub=resumeCt?('opens '+resumeCt):'opens at market open';
+    mkPct=buyPct;
+    note='&#9203; Live tracking resumes '+(resumeCt||'when the market opens')+'.';
+  }
 
   return ''+
   '<div class="card glass">'+
@@ -245,8 +267,8 @@ function liveCard(p){
     '<div class="live '+cls+'">'+
       '<div class="live-hd">'+
         '<div>'+
-          '<div class="live-lbl"><span class="live-dot" style="background:'+dot+';box-shadow:0 0 10px '+dot+'"></span> Live market price</div>'+
-          '<div class="live-price">'+(live!=null?('<span class="cur">$</span>'+_f(live,2)):'no quote')+'</div>'+
+          '<div class="live-lbl"><span class="live-dot" style="background:'+dot+';box-shadow:0 0 10px '+dot+'"></span> '+liveLbl+'</div>'+
+          '<div class="live-price">'+priceStr+'</div>'+
         '</div>'+
         '<div class="live-pl pl '+plCls+'">'+big+'<span class="sub">'+sub+'</span></div>'+
       '</div>'+
