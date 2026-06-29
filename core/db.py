@@ -177,4 +177,11 @@ def _migrate_schema():
             ensure_ledger_table(cur)
     except Exception as e:
         LOGGER.warning("Super Ghost ledger table: " + str(e)[:80])
+    try:
+        from core.super_ghost_learning import ensure_learning_tables
+        with db_conn() as conn:
+            cur = conn.cursor()
+            ensure_learning_tables(cur)
+    except Exception as e:
+        LOGGER.warning("Super Ghost learning tables: " + str(e)[:80])
     LOGGER.info("Schema migration complete")

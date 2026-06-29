@@ -666,9 +666,19 @@ def get_if_followed(*, symbol: Optional[str] = None, horizon: int = 5) -> Dict[s
 
 
 def run_resolver_job() -> Dict[str, Any]:
-    """Scheduler hook: resolve pending predictions. Safe + idempotent."""
+    """Scheduler hook: resolve pending predictions, then update learning brain.
+
+    PR #93: Learning is tied to truth. The brain only learns after outcomes have
+    been resolved, so every adjustment traces back to a real ledger result.
+    """
     try:
-        return resolve_predictions(limit=500)
+        out = resolve_predictions(limit=500)
+        try:
+            from core.super_ghost_learning import learn_from_ledger
+            out["learning"] = learn_from_ledger(limit=500)
+        except Exception as learn_exc:
+            out["learning"] = {"ok": False, "error": str(learn_exc)[:120]}
+        return out
     except Exception as exc:
         LOGGER.warning("run_resolver_job: %s", str(exc)[:120])
         return {"ok": False, "error": str(exc)[:120]}

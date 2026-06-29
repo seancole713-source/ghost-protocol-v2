@@ -1793,3 +1793,45 @@ async def get_super_ghost_coverage(symbol: str = WOLF_SYMBOL):
         "data_sources": sources,
         "disclaimer": "Prediction intelligence only; not financial advice and not auto-trading.",
     })
+
+
+@router.get("/super-ghost/learning")
+async def get_super_ghost_learning(symbol: str = "", horizon: int = 5, limit: int = 20):
+    """Super Ghost Learning Brain summary.
+
+    Shows what Ghost has learned from resolved Truth Ledger outcomes: recent
+    mistake postmortems and per-symbol/direction learning profiles. Example:
+    if Ghost predicted a $5 target and realized price printed $7, the lesson is
+    recorded as ``target_too_low`` and future similar targets can be widened
+    modestly after enough samples.
+    """
+    from core.super_ghost_learning import learning_summary
+    sym = (symbol or "").strip().upper() or None
+    return JSONResponse(content=learning_summary(symbol=sym, horizon=horizon, limit=limit))
+
+
+@router.post("/super-ghost/learn")
+async def post_super_ghost_learn(request: Request):
+    """Run the Learning Brain against resolved Truth Ledger rows. Auth required.
+
+    Body optional: {"symbol": "WOLF", "horizon": 5, "limit": 500}
+    """
+    from mcp.security import require_mcp_auth
+    require_mcp_auth(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    sym = (str(body.get("symbol") or "")).strip().upper() or None
+    try:
+        horizon = int(body.get("horizon") or 5)
+    except Exception:
+        horizon = 5
+    try:
+        limit = int(body.get("limit") or 500)
+    except Exception:
+        limit = 500
+    from core.super_ghost_learning import learn_from_ledger
+    return JSONResponse(content=learn_from_ledger(symbol=sym, horizon=horizon, limit=limit))
