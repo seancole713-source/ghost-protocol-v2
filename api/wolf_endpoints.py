@@ -1989,3 +1989,40 @@ async def post_super_ghost_shadow_resolve(request: Request):
         limit = 1000
     from core.super_ghost_shadow import resolve_shadow_predictions
     return JSONResponse(content=resolve_shadow_predictions(symbol=sym, limit=limit))
+
+
+@router.get("/super-ghost/promotion")
+async def get_super_ghost_promotion(symbol: str = "", limit: int = 20):
+    """Latest Promotion Gate reviews.
+
+    Reviews decide PROMOTE_CANDIDATE / KEEP_CHAMPION / KEEP_SHADOWING /
+    RETIRE_CANDIDATE / INSUFFICIENT_EVIDENCE. Evidence only; no auto-promotion.
+    """
+    from core.super_ghost_promotion import latest_promotion_reviews
+    sym = (symbol or "").strip().upper() or None
+    return JSONResponse(content=latest_promotion_reviews(symbol=sym, limit=limit))
+
+
+@router.post("/super-ghost/promotion/review")
+async def post_super_ghost_promotion_review(request: Request):
+    """Run and persist a Promotion Gate review. Auth required.
+
+    Body optional: {"symbol": "WOLF", "horizon": 5, "candidate_id": "...", "source": "lab|shadow"}
+    """
+    from mcp.security import require_mcp_auth
+    require_mcp_auth(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    sym = (str(body.get("symbol") or "")).strip().upper() or None
+    candidate_id = (str(body.get("candidate_id") or "")).strip() or None
+    source = (str(body.get("source") or "lab")).strip().lower()
+    try:
+        horizon = int(body.get("horizon") or 5)
+    except Exception:
+        horizon = 5
+    from core.super_ghost_promotion import run_promotion_review
+    return JSONResponse(content=run_promotion_review(symbol=sym, horizon=horizon, candidate_id=candidate_id, source=source, persist=True))

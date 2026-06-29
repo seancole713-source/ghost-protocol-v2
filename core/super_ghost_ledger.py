@@ -705,6 +705,11 @@ def run_resolver_job() -> Dict[str, Any]:
             out["shadow_models"] = resolve_shadow_predictions(limit=2000)
         except Exception as shadow_exc:
             out["shadow_models"] = {"ok": False, "error": str(shadow_exc)[:120]}
+        try:
+            from core.super_ghost_promotion import run_promotion_review
+            out["promotion_gate"] = run_promotion_review(persist=True)
+        except Exception as promo_exc:
+            out["promotion_gate"] = {"ok": False, "error": str(promo_exc)[:120]}
         return out
     except Exception as exc:
         LOGGER.warning("run_resolver_job: %s", str(exc)[:120])
