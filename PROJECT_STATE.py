@@ -11,11 +11,11 @@ RULES:
   6. This is not documentation. It is an accountability ledger.
      Agents lie. This file exists because of that.
 
-LAST UPDATED: 2026-06-29 — PR #108 Startup Auth Hardening (587 passed, 3 skipped, warning-clean)
+LAST UPDATED: 2026-06-29 — PR #109 Quality Gate Cleanup (lint/type-check/test/compile clean)
 """
 
 # ============================================================
-# LIVE SYSTEM — LAST VERIFIED 2026-06-29 (PR #108 deployed)
+# LIVE SYSTEM — LAST VERIFIED 2026-06-29 (PR #109 test/config cleanup deployed; runtime marker PR108)
 # ============================================================
 
 
@@ -24,6 +24,28 @@ LAST UPDATED: 2026-06-29 — PR #108 Startup Auth Hardening (587 passed, 3 skipp
 
 
 
+
+
+PROD_VERIFY_2026_06_29_PR109 = {
+    "deploy_id": "Railway auto-deploy from main",
+    "git_sha_short": "35da460",
+    "_pr_version": 108,
+    "verified_at_ct": "2026-06-29",
+    "tests": "npm run lint pass; npm run type-check pass; 587 passed, 3 skipped; compileall pass",
+    "live_acceptance": {
+        "version_endpoint": "GET /api/_version -> sha=35da460, _pr_version=108, app_version=2.5.0",
+        "lint": "npm run lint -> All checks passed",
+        "type_check": "npm run type-check -> Success: no issues found in 5 source files",
+        "test_suite": "python3 -m pytest tests/ -q -> 587 passed, 3 skipped",
+        "compile": "make test-compile -> pass",
+    },
+    "key_fixes": [
+        "Ruff cleanup across configured lint surface",
+        "Type-check script now follows mypy.ini and checks production audit/prelaunch scripts",
+        "All configured local quality gates pass cleanly",
+    ],
+    "known_issues": [],
+}
 
 PROD_VERIFY_2026_06_29_PR108 = {
     "deploy_id": "Railway auto-deploy from main",
