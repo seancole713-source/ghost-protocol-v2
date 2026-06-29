@@ -4563,6 +4563,14 @@ def cockpit():
     return _serve_html_page("cockpit.html")
 
 
+@APP.get("/picks", include_in_schema=False)
+def picks_page():
+    """Simple consumer trade-tracker page — buy/sell ideas with live price tracked
+    against each call (squeeze lane). Liquid-glass UI; wired to /api/squeeze/picks
+    and /api/squeeze/daily-log."""
+    return _serve_html_page("picks.html")
+
+
 # ────────────────────────────────────────────────────────────────
 # /admin — cookie-login operator console (PR #28)
 # ────────────────────────────────────────────────────────────────
