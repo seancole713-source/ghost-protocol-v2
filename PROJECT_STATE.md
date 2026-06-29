@@ -8,7 +8,7 @@
 > Any agent — Claude, browser-control, general — can execute it and produce a launch-readiness report with three verdict formats (binary GO/NO-GO, graded scorecard A–F, severity-ranked P0–P3 punch list). Every phase, every time. No skipping.
 > This is the canonical way to ask "is Ghost ready for a real user to trust real money?" — do not write ad-hoc audits; run the launch prompt instead.
 
-> **PR #82–#90 (2026-06-28–29): Super Ghost foundation → prediction console → live coverage gate.**
+> **PR #82–#102 (2026-06-28–29): Super Ghost foundation → self-improving prediction console.**
 > - **Super Ghost AI brain:** market-regime adjustment + optional Claude AI brief on `/api/wolf/super-ghost?ai=1`; model fixed to `claude-haiku-4-5-20251001`.
 > - **Truth Ledger:** every Super Ghost prediction can be logged, resolved, measured for accuracy, and scored on if-followed performance.
 > - **Master build map:** `docs/SUPER_GHOST_MASTER_BUILD.md` + `docs/super_ghost_master_plan.json` define the full end-to-end max build with CI-enforced plan tests.
@@ -18,6 +18,8 @@
 > - **Hard trust gate:** no A/B grade and no HIGH-CONVICTION action unless coverage ≥18/25 (`MIN_COVERAGE_FOR_AB=18`).
 > - **Live verified 2026-06-29:** production `5bc05a0`, `_pr_version 88`; WOLF coverage **21/25** (`meets_ab_gate=true`), AAPL **19/25**, NVDA **20/25**; full suite **503 passed**.
 > - **PR #91 UI trust polish:** production `3a83893`, `_pr_version 91`; Top Stocks copy now says completed predictions, global post-falsification banner added, duplicate top tabs hidden; suite **504 passed**.
+> - **PR #101 Expanded Data Brain:** SEC/news/macro/options evidence snapshots live via `/api/wolf/super-ghost/data-brain`; merged into Super Ghost snapshots.
+> - **PR #102 Precision Brain:** production `c21bca2`, `_pr_version 102`; WIN/LOSS is now separated from price precision, Top Picks requires directional proof plus ≥60/100 precision; suite **561 passed**.
 >
 > **PR #70–#81 (2026-06-25–26):** Comprehensive security + reliability audit. 12 PRs deployed.
 > - **Circuit breaker fixes:** infinite half-open probe loop (yfinance + Alpaca rate-limit) — breakers now actually block when tripped
@@ -84,10 +86,12 @@ squeeze ML v2, drift/sentiment/options probes) are wired as of PR #60.
 | Investor cockpit | `/cockpit` — WOLF-first UI |
 | Cron trigger | cron-job.org fires `POST /api/morning-card` daily 8 AM CT |
 | Auth header name | `x-cron-secret` (value in Railway env as `CRON_SECRET`) |
-| **Last prod-verified** | **2026-06-29** — PR #100 deployed (`8254319`, `_pr_version 100`); 549 tests passing; Point-in-Time Feature Store live (`/feature-store`, `/feature-store/audit`, auth-gated `/feature-store/snapshot`) |
+| **Last prod-verified** | **2026-06-29** — PR #102 deployed (`c21bca2`, `_pr_version 102`); 561 tests passing; Precision Brain live (`/precision`, auth-gated `/precision/score`), squeeze daily-log precision fields, `/picks` Precision brain UI row |
 
 **Agent CAN reach Railway** as of 2026-06-22 session — all production verification is done via `curl` from the local terminal.
 
+**PR #102 prod verify:** passed 2026-06-29 — `GET /api/_version` sha `c21bca2`, `_pr_version 102`; `/api/wolf/super-ghost/precision?symbol=WOLF&horizon=5` ok (cold-start 0 profiles/events); `/precision/score` 401 without auth; `/api/squeeze/daily-log?days=7` rows include `precision_score`; `/picks` includes Precision brain Health row; full suite 561 passed.
+**PR #101 live verify:** passed 2026-06-29 on current PR #102 deploy — `/api/wolf/super-ghost/data-brain?symbol=WOLF` ok with coverage payload; `/data-brain/refresh` 401 without auth; `/picks` includes Data brain Health row.
 **PR #91 prod verify:** passed 2026-06-29 — `GET /api/_version` sha `3a83893`, `_pr_version 91`; `/picks` contains post-falsification banner, completed-predictions Top Stocks copy, and hidden duplicate top-tabs.
 **PR #93 prod verify:** passed 2026-06-29 — `GET /api/_version` sha `90a9fc7`, `_pr_version 93`; `GET /api/wolf/super-ghost/learning?symbol=WOLF&horizon=5` ok with cold-start 0 profiles/lessons; `GET /api/wolf/super-ghost?symbol=WOLF` includes `learning_adjustment`; `POST /api/wolf/super-ghost/learn` returns 401 without auth.
 **PR #100 prod verify:** passed 2026-06-29 — `GET /api/_version` sha `8254319`, `_pr_version 100`; `/api/wolf/super-ghost/feature-store?symbol=WOLF` ok (cold-start 0 snapshots); `/feature-store/audit?symbol=WOLF` ok clean/0 leaks; `/feature-store/snapshot` 401 without auth; `/picks` includes Point-in-time store Health row.
@@ -501,3 +505,5 @@ Run once per week (any time for deploy checks; squeeze/radar checks best **Mon�
 | **#98** | 06-29 | **Shadow Model Runner** — `core/super_ghost_shadow.py`, 7 specialist shadow brains (technical, news, fundamental, macro, regime, learning-adjusted, ensemble), persistent shadow predictions/profiles, resolver scoring, `/shadow`, `/shadow/models`, auth-gated `/shadow/run` + `/shadow/resolve`, console Shadow models row; deployed as `_pr_version` 97 |
 | **#99** | 06-29 | **Promotion Gate** — `core/super_ghost_promotion.py`, durable promotion reviews, decisions `PROMOTE_CANDIDATE` / `KEEP_CHAMPION` / `KEEP_SHADOWING` / `RETIRE_CANDIDATE` / `INSUFFICIENT_EVIDENCE`, strict gates for rows/actionable/profit factor/win-rate/EV/false positives/drawdown, `/promotion`, auth-gated `/promotion/review`, scheduler integration, console Promotion gate row; `_pr_version` 99 |
 | **#100** | 06-29 | **Point-in-Time Feature Store** — `core/super_ghost_feature_store.py`, immutable prediction-time snapshots, source timestamp walk/audit, leakage detection, `/feature-store`, `/feature-store/audit`, auth-gated `/feature-store/snapshot`, console Point-in-time store row; `_pr_version` 100 |
+| **#101** | 06-29 | **Expanded Data Brain** — `core/super_ghost_data_brain.py`, SEC XBRL fundamentals, 8-K/material filing context, Form 4 insider parsing, news freshness/catalyst/guidance classifier, macro/options evidence snapshots, `/data-brain`, `/data-brain/history`, auth-gated `/data-brain/refresh`, console Data brain row; `_pr_version` 101 |
+| **#102** | 06-29 | **Precision Scoring Brain** — separates direction WIN/LOSS from price precision; `core/ghost_precision.py`, `core/super_ghost_precision.py`, durable precision events/profiles, squeeze daily-log precision fields, `/precision`, auth-gated `/precision/score`, Top Picks now requires ≥70% direction wins plus ≥60/100 precision; `_pr_version` 102 |

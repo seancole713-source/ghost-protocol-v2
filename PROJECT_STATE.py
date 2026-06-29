@@ -11,12 +11,63 @@ RULES:
   6. This is not documentation. It is an accountability ledger.
      Agents lie. This file exists because of that.
 
-LAST UPDATED: 2026-06-29 — PR #100 Point-in-Time Feature Store (549 tests passing)
+LAST UPDATED: 2026-06-29 — PR #102 Precision Scoring Brain (561 tests passing)
 """
 
 # ============================================================
-# LIVE SYSTEM — LAST VERIFIED 2026-06-29 (PR #100 deployed)
+# LIVE SYSTEM — LAST VERIFIED 2026-06-29 (PR #102 deployed)
 # ============================================================
+
+
+PROD_VERIFY_2026_06_29_PR102 = {
+    "deploy_id": "ed610631-19c1-4c4e-a10d-a030656c9ba7",
+    "git_sha_short": "c21bca2",
+    "_pr_version": 102,
+    "verified_at_ct": "2026-06-29",
+    "tests": "561 passed, 3 skipped, 2 warnings; compileall exit 0",
+    "live_acceptance": {
+        "version_endpoint": "GET /api/_version -> sha=c21bca2, _pr_version=102, app_version=2.5.0",
+        "precision_summary": "GET /api/wolf/super-ghost/precision?symbol=WOLF&horizon=5 -> ok true, cold-start 0 profiles/events",
+        "precision_score_auth_gate": "POST /api/wolf/super-ghost/precision/score without auth -> 401",
+        "squeeze_daily_log": "GET /api/squeeze/daily-log?days=7 -> rows include precision_score / precision_grade / mistake_type fields",
+        "console": "/picks includes Precision brain Health row and Direction-vs-Precision EOD mirror copy",
+    },
+    "key_fixes": [
+        "core/ghost_precision.py: pure target-stop truth vs price-precision scorer",
+        "core/super_ghost_precision.py: durable Super Ghost precision events + profiles",
+        "Top Picks gate now requires both >=70% directional wins and >=60/100 average precision",
+        "Squeeze daily-log stores precision_score, precision_grade, mistake_type, and precision_json",
+        "Console shows Mirror score and Precision separately, so a WIN cannot hide poor price accuracy",
+    ],
+    "known_issues": [
+        "Precision profiles are cold-start until resolved Super Ghost ledger rows are scored",
+        "Intraday same-bar path order is still unknown for squeeze MIXED rows; finer tape data is future work",
+    ],
+}
+
+PROD_VERIFY_2026_06_29_PR101 = {
+    "deploy_id": "Verified on PR #102 deployment after PR #101 merge",
+    "git_sha_short": "e7cb673",
+    "_pr_version": 101,
+    "verified_at_ct": "2026-06-29",
+    "tests": "554 passed, 3 deselected/skipped, 2 warnings during PR #101; PR #102 full suite 561 passed after merge",
+    "live_acceptance": {
+        "data_brain": "GET /api/wolf/super-ghost/data-brain?symbol=WOLF -> ok true, coverage payload present",
+        "data_brain_history": "GET /api/wolf/super-ghost/data-brain/history?symbol=WOLF -> route live (cold-start allowed)",
+        "refresh_auth_gate": "POST /api/wolf/super-ghost/data-brain/refresh without auth -> 401",
+        "console": "/picks includes Data brain Health row",
+    },
+    "key_fixes": [
+        "core/super_ghost_data_brain.py: expanded SEC/news/macro/options evidence collector",
+        "New super_ghost_data_brain_snapshots table",
+        "Super Ghost snapshot merges available Form 4 insider activity, guidance/catalyst context, and options flow payload",
+        "Public /data-brain and /data-brain/history endpoints; auth-gated /data-brain/refresh",
+    ],
+    "known_issues": [
+        "Provider depth varies by symbol; unavailable sources are explicit rather than fabricated",
+        "Data Brain snapshots are cold-start until refresh/persist runs on production",
+    ],
+}
 
 PROD_VERIFY_2026_06_29_PR100 = {
     "deploy_id": "Railway auto-deploy from main",
