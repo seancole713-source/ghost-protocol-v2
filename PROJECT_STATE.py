@@ -11,11 +11,11 @@ RULES:
   6. This is not documentation. It is an accountability ledger.
      Agents lie. This file exists because of that.
 
-LAST UPDATED: 2026-06-29 — PR #94 learning target-calibration fix (517 tests passing)
+LAST UPDATED: 2026-06-29 — PR #95 Champion/Challenger Lab (523 tests passing)
 """
 
 # ============================================================
-# LIVE SYSTEM — LAST VERIFIED 2026-06-29 (PR #94 deployed)
+# LIVE SYSTEM — LAST VERIFIED 2026-06-29 (PR #95 deployed)
 # ============================================================
 
 PROD_VERIFY_2026_06_29_PR93 = {
@@ -567,6 +567,12 @@ Important honesty note:
   WOLF meeting coverage gate does NOT mean "buy" or "high confidence." Live output
   can still be grade F / NO EDGE — WATCH ONLY if the evidence is weak. That is correct.
   Coverage is a prerequisite for trust, not a promise of profit.
+
+PR #95 Champion/Challenger Lab shipped after the evolution directive:
+  - Production Ghost now competes against shadow challenger policies on resolved ledger rows.
+  - Results are persisted in super_ghost_lab_runs/results.
+  - Conservative gates prevent any recommendation without enough rows/actionable calls/improvement.
+  - No auto-promotion and no trading; this creates evidence only.
 
 PR #93 Learning Brain shipped after the evolution directive:
   - Every resolved Super Ghost prediction can become a learning event.
