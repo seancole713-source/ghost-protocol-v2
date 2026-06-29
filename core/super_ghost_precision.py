@@ -169,6 +169,15 @@ def score_ledger_row(row: Dict[str, Any], *, horizon: int = 5) -> Dict[str, Any]
     scored["created_at"] = row.get("created_at")
     scored["resolved_price"] = close
     scored["resolved_return_pct"] = _f(row.get(f"return_{h}d_pct"))
+    errs = scored.get("errors_pct") or {}
+    # Keep these at top level so profile builders can learn magnitude errors
+    # without needing to know the nested payload schema.
+    scored["target_error_pct"] = errs.get("target")
+    scored["stop_error_pct"] = errs.get("stop")
+    scored["open_error_pct"] = errs.get("open")
+    scored["low_error_pct"] = errs.get("low")
+    scored["high_error_pct"] = errs.get("high")
+    scored["close_error_pct"] = errs.get("close_vs_entry")
     return scored
 
 

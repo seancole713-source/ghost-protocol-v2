@@ -716,6 +716,11 @@ def run_resolver_job() -> Dict[str, Any]:
         except Exception as range_exc:
             out["range_calibration"] = {"ok": False, "error": str(range_exc)[:120]}
         try:
+            from core.super_ghost_regime_calibration import rebuild_regime_calibration
+            out["regime_calibration"] = rebuild_regime_calibration(limit=2000)
+        except Exception as regime_cal_exc:
+            out["regime_calibration"] = {"ok": False, "error": str(regime_cal_exc)[:120]}
+        try:
             from core.super_ghost_shadow import resolve_shadow_predictions
             out["shadow_models"] = resolve_shadow_predictions(limit=2000)
         except Exception as shadow_exc:

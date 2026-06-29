@@ -1131,6 +1131,24 @@ def build_super_ghost(symbol: str = "WOLF", *, snapshot: Optional[Dict[str, Any]
             "message": "Range calibration profile unavailable; risk plan returned unchanged.",
             "error": str(_range_exc)[:120],
         }
+    # PR #104: regime-specific calibration is narrower than the broad range
+    # profile. If a risk-on/risk-off/high-vol/setup slice has enough evidence,
+    # it can override the broad calibrated range. Otherwise it leaves the broad
+    # risk plan untouched and reports cold-start/fallback status.
+    try:
+        from core.super_ghost_regime_calibration import apply_regime_calibration_to_report, get_regime_calibration_profile
+
+        direction = str((report.get("prediction") or {}).get("direction") or "HOLD").upper()
+        profile = get_regime_calibration_profile(sym, direction, report, horizon=5)
+        report = apply_regime_calibration_to_report(report, profile)
+    except Exception as _regime_cal_exc:
+        report["regime_calibration"] = {
+            "available": False,
+            "applied": False,
+            "status": "unavailable",
+            "message": "Regime-specific calibration unavailable; existing risk plan returned unchanged.",
+            "error": str(_regime_cal_exc)[:120],
+        }
     if ai:
         report["ai_brief"] = generate_ai_brief(sym, report, snapshot=snap)
     return report
