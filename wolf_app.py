@@ -23,7 +23,7 @@ logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 # missing from Railway logs after a deploy, the container is stale (the
 # Procfile boot echo is the shell-level twin of this check).
 LOGGER.info(
-    "[wolf_app] BOOT_BANNER PR84_CACHEBUST_CT "
+    "[wolf_app] BOOT_BANNER PR86_CACHEBUST_CT "
     "DEPLOY_VERSION=%s GIT_SHA=%s DEPLOY_ID=%s",
     os.getenv("DEPLOY_VERSION", "unset"),
     os.getenv("RAILWAY_GIT_COMMIT_SHA", "unset"),
@@ -4574,11 +4574,26 @@ def cockpit():
     return _serve_html_page("cockpit.html")
 
 
+@APP.get("/", include_in_schema=False)
+def root_console():
+    """Unified Liquid Glass prediction console (PR #86)."""
+    return _serve_html_page("ghost_console.html")
+
+
 @APP.get("/picks", include_in_schema=False)
 def picks_page():
-    """Simple consumer trade-tracker page — buy/sell ideas with live price tracked
-    against each call (squeeze lane). Liquid-glass UI; wired to /api/squeeze/picks
-    and /api/squeeze/daily-log."""
+    """Unified Liquid Glass prediction console (PR #86).
+
+    Merges the old Ghost Picks consumer tracker and the operator dashboard into
+    one clean sidebar-based command center. The old picks page remains available
+    at /legacy-picks during rollout.
+    """
+    return _serve_html_page("ghost_console.html")
+
+
+@APP.get("/legacy-picks", include_in_schema=False)
+def legacy_picks_page():
+    """Legacy Ghost Picks page kept as a rollout fallback for PR #86."""
     return _serve_html_page("picks.html")
 
 
@@ -5413,7 +5428,7 @@ def v3_train(x_cron_secret: str = Header(default=""), force: bool = False):
 
 # PR #19 deploy-version constant. Bump on every "did Railway pick up
 # the new code?" PR so /api/_version reveals the truth in one curl.
-_RUNNING_PR_VERSION = 84
+_RUNNING_PR_VERSION = 86
 
 
 def _deploy_meta() -> dict:
