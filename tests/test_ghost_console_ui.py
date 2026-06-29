@@ -187,3 +187,41 @@ def test_market_session_endpoint_degrades_to_spot(monkeypatch):
     d = r.json()
     assert d["price"] == 12.34
     assert d["live_open"] is None
+
+
+def test_console_money_is_null_safe_and_shows_no_intraday_data():
+    """PR #92: missing live OHLC must never render as $0.00.
+
+    Root cause of the IQ/LCID '$0.00' artifact was JS Number(null) === 0, so
+    money(null) returned '$0.00'. money() must guard null/'' and the mirror row
+    must show an explicit 'No intraday data' instead of a fake price.
+    """
+    text = _html()
+    assert "function money(v){if(v==null||v==='')return '—'" in text
+    assert "No intraday data" in text
+
+
+def test_console_explains_coverage_ab_gate_in_overview():
+    """PR #92: Overview coverage metric must explain the >=18/25 A/B-grade gate,
+    not just show a bare 21/25 count."""
+    text = _html()
+    assert "mCoverageNote" in text
+    assert "A/B-grade evidence gate" in text or "A/B-grade gate" in text
+    assert "min_for_ab_grade" in text
+
+
+def test_console_has_favicon_link():
+    """PR #92: page declares a favicon so the browser's /favicon.ico request
+    resolves instead of 404ing."""
+    text = _html()
+    assert "rel=\"icon\"" in text
+
+
+def test_favicon_route_serves_icon():
+    """PR #92: /favicon.ico (and /favicon.svg) return a real icon, not 404."""
+    client = TestClient(wolf_app.APP)
+    for path in ("/favicon.ico", "/favicon.svg"):
+        r = client.get(path)
+        assert r.status_code == 200, path
+        assert "svg" in r.headers.get("content-type", "").lower()
+        assert b"<svg" in r.content

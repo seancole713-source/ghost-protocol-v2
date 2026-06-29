@@ -23,7 +23,7 @@ logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 # missing from Railway logs after a deploy, the container is stale (the
 # Procfile boot echo is the shell-level twin of this check).
 LOGGER.info(
-    "[wolf_app] BOOT_BANNER PR91_CACHEBUST_CT "
+    "[wolf_app] BOOT_BANNER PR92_CACHEBUST_CT "
     "DEPLOY_VERSION=%s GIT_SHA=%s DEPLOY_ID=%s",
     os.getenv("DEPLOY_VERSION", "unset"),
     os.getenv("RAILWAY_GIT_COMMIT_SHA", "unset"),
@@ -4643,6 +4643,28 @@ def picks_page():
     return _serve_html_page("ghost_console.html")
 
 
+# Tiny inline ghost favicon (SVG). PR #92: browsers auto-request /favicon.ico on
+# every page load; without this route that request 404s (flagged in the launch
+# review). Served as an SVG data-equivalent with long cache so it costs nothing.
+_FAVICON_SVG = (
+    "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'>"
+    "<rect width='32' height='32' rx='8' fill='#0b1424'/>"
+    "<text x='16' y='23' font-size='20' text-anchor='middle' fill='#5eead4' "
+    "font-family='Arial'>G</text></svg>"
+)
+
+
+@APP.get("/favicon.ico", include_in_schema=False)
+@APP.get("/favicon.svg", include_in_schema=False)
+def favicon():
+    """Serve a small ghost favicon so /favicon.ico no longer 404s."""
+    return Response(
+        content=_FAVICON_SVG,
+        media_type="image/svg+xml",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
 @APP.get("/legacy-picks", include_in_schema=False)
 def legacy_picks_page():
     """Legacy Ghost Picks page kept as a rollout fallback for PR #86."""
@@ -5480,7 +5502,7 @@ def v3_train(x_cron_secret: str = Header(default=""), force: bool = False):
 
 # PR #19 deploy-version constant. Bump on every "did Railway pick up
 # the new code?" PR so /api/_version reveals the truth in one curl.
-_RUNNING_PR_VERSION = 91
+_RUNNING_PR_VERSION = 92
 
 
 def _deploy_meta() -> dict:
