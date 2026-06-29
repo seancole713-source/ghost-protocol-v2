@@ -115,6 +115,7 @@ def test_console_fetches_required_existing_and_new_apis():
         "/api/wolf/super-ghost/shadow?symbol=",
         "/api/wolf/super-ghost/promotion?symbol=",
         "/api/wolf/super-ghost/feature-store/audit?symbol=",
+        "/api/wolf/super-ghost/data-brain?symbol=",
         "/api/picks?limit=50",
         "/api/squeeze/picks",
         "/api/squeeze/daily-log?days=7",
@@ -126,6 +127,7 @@ def test_console_fetches_required_existing_and_new_apis():
     assert "Shadow models" in text
     assert "Promotion gate" in text
     assert "Point-in-time store" in text
+    assert "Data brain" in text
 
 
 def test_console_routes_serve_new_and_legacy_pages():

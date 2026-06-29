@@ -2065,3 +2065,38 @@ async def post_super_ghost_feature_store_snapshot(request: Request):
     if not report.get("ok"):
         return JSONResponse(content=report, status_code=400)
     return JSONResponse(content=build_feature_snapshot(report))
+
+
+@router.get("/super-ghost/data-brain")
+async def get_super_ghost_data_brain(symbol: str = WOLF_SYMBOL, persist: int = 0):
+    """Expanded Data Brain snapshot (SEC/news/macro/options evidence)."""
+    sym = (symbol or WOLF_SYMBOL).strip().upper()
+    if persist:
+        from core.super_ghost_data_brain import persist_data_brain
+        return JSONResponse(content=persist_data_brain(sym))
+    from core.super_ghost_data_brain import build_data_brain
+    return JSONResponse(content=build_data_brain(sym))
+
+
+@router.get("/super-ghost/data-brain/history")
+async def get_super_ghost_data_brain_history(symbol: str = "", limit: int = 20):
+    """Persisted Data Brain snapshots."""
+    from core.super_ghost_data_brain import latest_data_brain_snapshots
+    sym = (symbol or "").strip().upper() or None
+    return JSONResponse(content=latest_data_brain_snapshots(symbol=sym, limit=limit))
+
+
+@router.post("/super-ghost/data-brain/refresh")
+async def post_super_ghost_data_brain_refresh(request: Request):
+    """Refresh and persist Data Brain snapshot. Auth required."""
+    from mcp.security import require_mcp_auth
+    require_mcp_auth(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    sym = (str(body.get("symbol") or WOLF_SYMBOL)).strip().upper()
+    from core.super_ghost_data_brain import persist_data_brain
+    return JSONResponse(content=persist_data_brain(sym))

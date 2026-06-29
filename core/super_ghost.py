@@ -1082,6 +1082,10 @@ def build_super_ghost(symbol: str = "WOLF", *, snapshot: Optional[Dict[str, Any]
     if not sym:
         return {"ok": False, "error": "symbol required"}
     snap = dict(snapshot or _fetch_live_snapshot(sym))
+    # Test/batch callers may pass a prebuilt Data Brain snapshot. Merge it the
+    # same way the live fetch path does, without triggering network calls.
+    if isinstance(snap.get("data_brain"), dict):
+        _merge_data_brain(snap, snap["data_brain"])
     items: Dict[str, Dict[str, Any]] = {}
     _evaluate_company(sym, snap, items)
     price_ctx = _evaluate_price_action(sym, snap, items)
@@ -1112,6 +1116,32 @@ def build_super_ghost(symbol: str = "WOLF", *, snapshot: Optional[Dict[str, Any]
     if ai:
         report["ai_brief"] = generate_ai_brief(sym, report, snapshot=snap)
     return report
+
+
+def _merge_data_brain(snap: Dict[str, Any], dbn: Dict[str, Any]) -> None:
+    """Merge available Data Brain evidence into the live snapshot.
+
+    Missing data is not fabricated. Only genuinely available source fields are
+    promoted into the fields consumed by existing checklist evaluators.
+    """
+    snap["data_brain"] = dbn
+    srcs = dbn.get("sources") or {}
+    form4 = srcs.get("form4_activity") or {}
+    if form4.get("available") and (form4.get("net_shares") is not None or form4.get("buys") is not None or form4.get("sells") is not None):
+        snap["insider_trading"] = {
+            "net_shares": form4.get("net_shares"),
+            "buys": form4.get("buys"),
+            "sells": form4.get("sells"),
+            "source": "sec_form4",
+            "as_of_ts": form4.get("as_of_ts"),
+        }
+    nq = srcs.get("news_quality") or {}
+    if dbn.get("derived", {}).get("guidance_signal") in ("bullish", "bearish") and nq.get("available"):
+        terms = (nq.get("guidance_bullish_terms") or []) + (nq.get("guidance_bearish_terms") or [])
+        if terms:
+            snap["guidance"] = " ".join(terms)
+    if srcs.get("options_context"):
+        snap["options_flow"] = srcs.get("options_context")
 
 
 def _df_to_points(df: Any) -> List[Dict[str, Any]]:
@@ -1313,6 +1343,16 @@ def _fetch_live_snapshot(symbol: str) -> Dict[str, Any]:
                 snap.setdefault("news", []).append({"title": "Recent 8-K earnings results detected", "category": "earnings", "symbols": [symbol], "sentiment": 0.0})
             if ed.get("has_delisting_risk"):
                 snap.setdefault("news", []).append({"title": "Recent 8-K delisting risk detected", "category": "company", "symbols": [symbol], "sentiment": -0.8})
+        except Exception:
+            pass
+        # PR #101: Expanded Data Brain (point-in-time aware evidence collector).
+        # Adds richer raw context without fabricating missing values. These
+        # signals are stored under data_brain and only merged into existing
+        # Super Ghost fields when the source is genuinely available.
+        try:
+            from core.super_ghost_data_brain import build_data_brain
+            dbn = build_data_brain(symbol)
+            _merge_data_brain(snap, dbn)
         except Exception:
             pass
         try:
