@@ -115,6 +115,10 @@ MODEL_DB_KEY = "ghost_v3_model_pkl"
 FEATURES_DB_KEY = "ghost_v3_features_json"
 
 
+def _model_payload_max_bytes() -> int:
+    return max(1024, int(os.getenv("V3_MODEL_MAX_BYTES", str(50 * 1024 * 1024))))
+
+
 def _v3_min_holdout_acc() -> float:
     return float(os.getenv("V3_MIN_HOLDOUT_ACC", "0.55"))
 
@@ -1756,7 +1760,11 @@ def train_and_validate(symbols_and_types):
             })
             details.append(symbol_detail)
             if passes:
-                model_bytes = base64.b64encode(pickle.dumps(final_model)).decode('ascii')
+                import hashlib
+                raw_model_bytes = pickle.dumps(final_model)
+                model_sha256 = hashlib.sha256(raw_model_bytes).hexdigest()
+                model_payload_bytes = len(raw_model_bytes)
+                model_bytes = base64.b64encode(raw_model_bytes).decode('ascii')
                 meta = json.dumps({
                     "feature_cols": active_cols, "accuracy": accuracy,
                     "natural_rate": natural_rate, "edge": edge,
@@ -1790,6 +1798,8 @@ def train_and_validate(symbols_and_types):
                     "feature_audit": feature_audit,
                     "feature_inversions": sorted(invert_cols),
                     "reliability_monotonic": reliability_mono,
+                    "model_sha256": model_sha256,
+                    "model_payload_bytes": model_payload_bytes,
                 })
                 with db_conn() as conn:
                     cur = conn.cursor()
@@ -1834,14 +1844,13 @@ def model_serve_guard(meta: Optional[Dict[str, Any]]) -> Optional[str]:
 def load_model(symbol=None):
     if not symbol: return None, None, None
     try:
-        import pickle, base64
+        import pickle, base64, binascii, hashlib
         from core.db import db_conn
         with db_conn() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT value FROM ghost_v3_model WHERE key=%s", (f"model_{symbol}",))
-            row = cur.fetchone()
-            if not row: return None, None, None
-            model = pickle.loads(base64.b64decode(row[0]))
+            # PR #107: validate metadata before any pickle deserialization.
+            # Stale/invalid model metadata should reject without touching the
+            # untrusted-by-default model payload.
             cur.execute("SELECT value FROM ghost_v3_model WHERE key=%s", (f"meta_{symbol}",))
             mrow = cur.fetchone()
             if not mrow: return None, None, None
@@ -1850,6 +1859,32 @@ def load_model(symbol=None):
             if reject:
                 LOGGER.info("load_model %s: rejected (%s)", symbol, reject)
                 return None, None, None
+            cur.execute("SELECT value FROM ghost_v3_model WHERE key=%s", (f"model_{symbol}",))
+            row = cur.fetchone()
+            if not row: return None, None, None
+            encoded = row[0] or ""
+            if len(encoded) > _model_payload_max_bytes() * 2:
+                LOGGER.warning("load_model %s: rejected model payload too large (encoded=%s)", symbol, len(encoded))
+                return None, None, None
+            try:
+                raw = base64.b64decode(encoded, validate=True)
+            except (binascii.Error, ValueError) as dec_exc:
+                LOGGER.warning("load_model %s: invalid base64 payload: %s", symbol, str(dec_exc)[:80])
+                return None, None, None
+            if len(raw) > _model_payload_max_bytes():
+                LOGGER.warning("load_model %s: rejected model payload too large (bytes=%s)", symbol, len(raw))
+                return None, None, None
+            expected_sha = str(meta.get("model_sha256") or "").strip().lower()
+            if expected_sha:
+                actual_sha = hashlib.sha256(raw).hexdigest()
+                if actual_sha != expected_sha:
+                    LOGGER.warning("load_model %s: model sha256 mismatch", symbol)
+                    return None, None, None
+            else:
+                # Legacy rows predate PR #107. They remain loadable only after
+                # metadata serve guards pass; newly trained models include a hash.
+                LOGGER.info("load_model %s: legacy model without sha256 metadata", symbol)
+            model = pickle.loads(raw)
             return model, meta.get('feature_cols', FEATURE_COLS), meta
     except Exception as e:
         LOGGER.warning(f"load_model {symbol}: {e}"); return None, None, None

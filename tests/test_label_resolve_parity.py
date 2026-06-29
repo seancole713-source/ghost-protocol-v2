@@ -106,22 +106,22 @@ def test_load_model_rejects_stale_label_schema(monkeypatch):
 
     class _Cur:
         def __init__(self):
-            self._step = 0
+            self._key = None
 
         def execute(self, sql, params=None):
-            pass
+            self._key = params[0] if params else None
 
         def fetchone(self):
-            self._step += 1
-            if self._step == 1:
-                return (base64.b64encode(pickle.dumps(object())).decode("ascii"),)
-            if self._step == 2:
+            if self._key == "meta_WOLF":
                 return (json.dumps({
                     "label_type": _se.LABEL_TYPE,
                     "label_schema": "tp_sl_index_v0",
                     "feature_schema": _se._v3_feature_schema(),
                     "trained_at": 9999999999,
                 }),)
+            if self._key == "model_WOLF":
+                # Invalid payload proves stale meta rejects before base64/pickle.
+                return ("not-valid-base64",)
             return None
 
     class _Conn:
