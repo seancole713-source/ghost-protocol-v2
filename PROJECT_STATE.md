@@ -1,5 +1,5 @@
 # Ghost Protocol v2 — PROJECT STATE
-**Last updated:** 2026-06-28
+**Last updated:** 2026-06-29
 **Read this first.** Any agent picking up this project must read this file before touching any code.
 
 > ## 🚀 LAUNCH READINESS REVIEW
@@ -8,6 +8,16 @@
 > Any agent — Claude, browser-control, general — can execute it and produce a launch-readiness report with three verdict formats (binary GO/NO-GO, graded scorecard A–F, severity-ranked P0–P3 punch list). Every phase, every time. No skipping.
 > This is the canonical way to ask "is Ghost ready for a real user to trust real money?" — do not write ad-hoc audits; run the launch prompt instead.
 
+> **PR #82–#90 (2026-06-28–29): Super Ghost foundation → prediction console → live coverage gate.**
+> - **Super Ghost AI brain:** market-regime adjustment + optional Claude AI brief on `/api/wolf/super-ghost?ai=1`; model fixed to `claude-haiku-4-5-20251001`.
+> - **Truth Ledger:** every Super Ghost prediction can be logged, resolved, measured for accuracy, and scored on if-followed performance.
+> - **Master build map:** `docs/SUPER_GHOST_MASTER_BUILD.md` + `docs/super_ghost_master_plan.json` define the full end-to-end max build with CI-enforced plan tests.
+> - **Unified UI:** `/picks` is now the Liquid Glass prediction console; legacy pages preserved at `/legacy-picks` and `/cockpit`.
+> - **Live market mirror:** `/api/market/session/{symbol}` compares live open/high/low/price against prediction reference/stop/target.
+> - **Data coverage upgrade:** `core/market_history.py` uses the production-proven `_fetch_ohlcv` chain; `core/sec_fundamentals.py` adds SEC XBRL EPS/revenue + generic ticker→CIK.
+> - **Hard trust gate:** no A/B grade and no HIGH-CONVICTION action unless coverage ≥18/25 (`MIN_COVERAGE_FOR_AB=18`).
+> - **Live verified 2026-06-29:** production `5bc05a0`, `_pr_version 88`; WOLF coverage **21/25** (`meets_ab_gate=true`), AAPL **19/25**, NVDA **20/25**; full suite **503 passed**.
+>
 > **PR #70–#81 (2026-06-25–26):** Comprehensive security + reliability audit. 12 PRs deployed.
 > - **Circuit breaker fixes:** infinite half-open probe loop (yfinance + Alpaca rate-limit) — breakers now actually block when tripped
 > - **yfinance hardening:** all raw yfinance calls gated behind `_yfinance_cb`; JSON parse errors count as breaker failures; library noise suppressed; NaN sanitization in all OHLCV paths
@@ -73,10 +83,13 @@ squeeze ML v2, drift/sentiment/options probes) are wired as of PR #60.
 | Investor cockpit | `/cockpit` — WOLF-first UI |
 | Cron trigger | cron-job.org fires `POST /api/morning-card` daily 8 AM CT |
 | Auth header name | `x-cron-secret` (value in Railway env as `CRON_SECRET`) |
-| **Last prod-verified** | **2026-06-28** — PR #81 deployed (2cb3db3); 426 tests passing; yfinance wrapper + War Room endpoint live |
+| **Last prod-verified** | **2026-06-29** — PR #90 deployed (`5bc05a0`, `_pr_version 88`); 503 tests passing; Super Ghost coverage gate live; WOLF 21/25 coverage |
 
 **Agent CAN reach Railway** as of 2026-06-22 session — all production verification is done via `curl` from the local terminal.
 
+**PR #88–#90 prod verify:** passed 2026-06-29 — `GET /api/_version` sha `5bc05a0`, `_pr_version 88`; `/api/wolf/super-ghost/coverage?symbol=WOLF` returned 21/25 and `meets_ab_gate=true`; AAPL 19/25; NVDA 20/25; gate invariant no-A/B-below-18 verified.
+**PR #86–#87 prod verify:** passed 2026-06-29 — `/picks` unified console live, `/legacy-picks` preserved, `/cockpit` preserved, `/api/market/session/WOLF` live mirror endpoint responding.
+**PR #84 prod verify:** passed 2026-06-29 — Truth Ledger routes live (`history`, `accuracy`, `if-followed`, auth-gated `resolve`).
 **PR #69 prod verify:** passed 2026-06-22 — breaker fix deployed, squeeze radar recovering (20+/43 fetches), WOLF price feed restored, health 90–95, pr_version=69.
 **PR #68 prod verify:** passed 2026-06-22 — WOLF ensemble=True, conformal_ok=True, q_hat=0.7401, acc=59.6. WF gate fix working.
 **PR #66 prod verify:** passed 2026-06-22 — 41/44 ensemble models, 41/44 conformal, retrain `state=passed`, pr_version=66 then 67→68→69.
@@ -460,3 +473,12 @@ Run once per week (any time for deploy checks; squeeze/radar checks best **Mon�
 | **#79** | 06-26 | **4 continuation findings** — NaN sanitization in Polygon/Stooq OHLCV, Telegram dedup conditional on `_send()`, dead-letter admin UI fix, OAuth CIMD SSRF hardening |
 | **#80** | 06-26 | **9 third-pass findings** — Ghost Ask portfolio leak, Polygon/Stooq NaN, check_feeds 5-tier, Playwright hidden element, cockpit 401 handling, reconcile double-resolve, train endpoint lock, morning card dedup after send, OAuth redirects |
 | **#81** | 06-26 | **GP-A03 fix + War Room** — yfinance wrapper (`core/yfinance_client.py`) + `api/wolf_endpoints.py` monkeypatch (zero raw yfinance calls remain); War Room endpoint (`POST /api/wolf/war-room`) — 6-agent equity research pipeline powered by Claude Sonnet |
+| **#82** | 06-28 | **Super Ghost AI brain + market-regime adjustment** — `detect_market_regime()`, conviction multiplier, Claude AI brief on `GET /api/wolf/super-ghost?ai=1` |
+| **#83** | 06-28 | **Super Ghost AI model fix** — default AI model changed to proven `claude-haiku-4-5-20251001`; live `ai_brief.available=true` verified |
+| **#84** | 06-28 | **Super Ghost Truth Ledger** — `super_ghost_predictions` table, log/history/accuracy/if-followed/resolve endpoints, scheduler resolver job |
+| **#85** | 06-28 | **Super Ghost Master Build map** — `docs/SUPER_GHOST_MASTER_BUILD.md`, machine-readable `super_ghost_master_plan.json`, CI guard `tests/test_master_plan.py` |
+| **#86** | 06-29 | **Unified Liquid Glass prediction console** — `/` + `/picks` serve `ghost_console.html`; tabs: Overview, Top stocks, Bullish, Today, 48 hour, This week, Live mirror, Health; `/legacy-picks` + `/cockpit` preserved |
+| **#87** | 06-29 | **Real live-market mirror** — `GET /api/market/session/{symbol}` exposes live open/high/low/price; console compares prediction reference/stop/target against live session data |
+| **#88** | 06-29 | **Super Ghost Data Coverage Upgrade** — `core/market_history.py`, `core/sec_fundamentals.py`, EPS YoY/revenue YoY, current-price fallback, hard coverage gate (`MIN_COVERAGE_FOR_AB=18`), `/api/wolf/super-ghost/coverage` |
+| **#89** | 06-29 | **History source fix** — `get_daily_history()` now delegates first to production-proven `_fetch_ohlcv` chain (Alpaca SIP→IEX→Polygon→yfinance→Stooq) before direct fallbacks |
+| **#90** | 06-29 | **Generic SEC ticker→CIK** — common large-cap CIK map + best-effort SEC ticker index; AAPL/NVDA/etc fundamentals resolve, not WOLF-only |

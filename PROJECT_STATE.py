@@ -11,12 +11,55 @@ RULES:
   6. This is not documentation. It is an accountability ledger.
      Agents lie. This file exists because of that.
 
-LAST UPDATED: 2026-06-28 — PR #70–#81 audit session (12 PRs, 426 tests passing)
+LAST UPDATED: 2026-06-29 — PR #82–#90 Super Ghost coverage gate + console (503 tests passing)
 """
 
 # ============================================================
-# LIVE SYSTEM — LAST VERIFIED 2026-06-28 (PR #81 deployed)
+# LIVE SYSTEM — LAST VERIFIED 2026-06-29 (PR #90 deployed)
 # ============================================================
+
+PROD_VERIFY_2026_06_29 = {
+    "deploy_id": "Railway auto-deploy from main",
+    "git_sha_short": "5bc05a0",
+    "_pr_version": 88,
+    "verified_at_ct": "2026-06-29",
+    "tests": "503 passed, 3 skipped/deselected, 2 warnings; compileall exit 0",
+    "live_acceptance": {
+        "version_endpoint": "GET /api/_version -> sha=5bc05a0, _pr_version=88, app_version=2.5.0",
+        "wolf_coverage": "GET /api/wolf/super-ghost/coverage?symbol=WOLF -> 21/25, meets_ab_gate=true",
+        "aapl_coverage": "AAPL -> 19/25, meets_ab_gate=true",
+        "nvda_coverage": "NVDA -> 20/25, meets_ab_gate=true",
+        "gate_invariant": "No A/B grade and no HIGH-CONVICTION action below 18/25; verified in tests and live metadata",
+    },
+    "key_fixes": [
+        "Super Ghost 25-point engine has market-regime conviction adjustment + optional Claude AI brief",
+        "AI model default fixed to proven claude-haiku-4-5-20251001",
+        "Truth Ledger shipped: log/history/accuracy/if-followed/resolve routes + scheduler resolver",
+        "Master Build map shipped and CI-enforced",
+        "Unified Liquid Glass console live at /picks; /legacy-picks and /cockpit preserved",
+        "Live market mirror endpoint GET /api/market/session/{symbol}",
+        "Railway-friendly market history via core/market_history.py delegating to _fetch_ohlcv chain",
+        "SEC XBRL fundamentals via core/sec_fundamentals.py (EPS YoY + revenue YoY)",
+        "Generic ticker->CIK resolution for common large-caps + best-effort SEC ticker index",
+        "Hard A/B coverage gate MIN_COVERAGE_FOR_AB=18, exposed in report coverage{}",
+        "Coverage health endpoint GET /api/wolf/super-ghost/coverage",
+    ],
+    "new_files": [
+        "ghost_console.html — unified Liquid Glass prediction console",
+        "core/super_ghost.py — 25-point prediction-intelligence engine",
+        "core/super_ghost_ledger.py — truth ledger + outcome resolver",
+        "core/market_history.py — Railway-friendly daily OHLCV history",
+        "core/sec_fundamentals.py — SEC XBRL fundamentals + ticker->CIK",
+        "docs/SUPER_GHOST_MASTER_BUILD.md — max build roadmap",
+        "docs/super_ghost_master_plan.json — machine-readable plan",
+        "tests/test_super_ghost_coverage.py — coverage gate + source tests",
+    ],
+    "known_issues": [
+        "Coverage can vary by symbol/provider/cache; unknowns are honest and block A/B if below 18/25",
+        "Form 4 insider parser, 13F institutional parser, analyst revisions, options chain, and macro event calendar are still future P1 work",
+        "No guaranteed-profit claims; output remains prediction intelligence only, not financial advice or auto-trading",
+    ],
+}
 
 PROD_VERIFY_2026_06_28 = {
     "deploy_id": "2cb3db3",
@@ -382,6 +425,82 @@ FAILURES = """
 # ============================================================
 
 SESSION_LOG = """
+--- 2026-06-28–29 | PR #82–#90 — Super Ghost foundation, unified console, live coverage gate ---
+Context: User clarified Ghost is a prediction-market/intelligence product, not an
+auto-trading/broker bot. Mission: build toward the strongest possible stock prediction
+platform while staying honest — no guaranteed profit, no fake accuracy, no fake data.
+
+Phase 1 — Super Ghost intelligence layer (PR #82–#83):
+  - Added market-regime detection and conviction adjustment (SPX/Nasdaq/sector/VIX/Fed/CPI context)
+  - Added optional real AI brief on /api/wolf/super-ghost?ai=1 using Ghost's Anthropic integration
+  - Fixed model default to the proven Ghost Ask model: claude-haiku-4-5-20251001
+  - Live verified ai_brief.available=true after PR #83
+
+Phase 2 — Prediction Truth Ledger (PR #84):
+  - Added core/super_ghost_ledger.py and super_ghost_predictions table
+  - Routes: log, history, accuracy, if-followed, resolve
+  - Hourly resolver job added; resolve is auth-gated
+  - Purpose: every prediction can be judged later; wins include correct DOWN calls, not only UP calls
+
+Phase 3 — Max Build roadmap (PR #85):
+  - Added docs/SUPER_GHOST_MASTER_BUILD.md
+  - Added docs/super_ghost_master_plan.json (98 requirements, 11 phases)
+  - Added tests/test_master_plan.py so the plan itself is CI-enforced
+  - Next true accuracy phase identified: P1 Data Coverage Upgrade
+
+Phase 4 — Unified Liquid Glass prediction console (PR #86–#87):
+  - / and /picks now serve ghost_console.html, the unified prediction console
+  - Preserved /legacy-picks and /cockpit
+  - Sidebar tabs: Overview, Top stocks, Bullish, Today, 48 hour, This week, Live mirror, Health
+  - Local prediction pool controls; Top Picks gated by truth-ledger win rate
+  - Added GET /api/market/session/{symbol} for live open/high/low/price mirror
+
+Phase 5 — Data Coverage Upgrade + hard trust gate (PR #88–#90):
+  Root cause: live Super Ghost coverage was 7/25 because _fetch_live_snapshot sourced
+  price history + fundamentals from yfinance. Yahoo blocks Railway IPs, starving the
+  existing scorers. The scorers were not the problem; the live data path was.
+
+  - PR #88:
+    * core/market_history.py added
+    * core/sec_fundamentals.py added
+    * EPS YoY + revenue YoY via SEC XBRL
+    * current-price fallback via existing 5-tier spot chain
+    * hard gate MIN_COVERAGE_FOR_AB=18: no A/B grade and no HIGH-CONVICTION below 18/25
+    * GET /api/wolf/super-ghost/coverage added
+  - PR #89:
+    * get_daily_history() now delegates first to production-proven _fetch_ohlcv chain:
+      Alpaca SIP -> IEX -> Polygon -> yfinance -> Stooq
+  - PR #90:
+    * Generic ticker->CIK support for SEC fundamentals; common large-cap built-in map
+      and best-effort SEC ticker index
+
+Live verified on production 2026-06-29:
+  - GET /api/_version: sha=5bc05a0, _pr_version=88, app_version=2.5.0
+  - GET /api/wolf/super-ghost/coverage?symbol=WOLF: 21/25, meets_ab_gate=true
+  - AAPL: 19/25, meets_ab_gate=true
+  - NVDA: 20/25, meets_ab_gate=true
+  - Deployed report carries coverage.min_for_ab_grade=18 and meets_ab_gate metadata
+  - Invariant verified: if coverage <18, no A+/A/B+/B grade and no HIGH-CONVICTION
+
+Tests:
+  - make test: 503 passed, 3 deselected/skipped, 2 warnings
+  - make test-compile: exit 0
+  - Focused suite: 34 passed (coverage gate, Super Ghost, master plan)
+
+Important honesty note:
+  WOLF meeting coverage gate does NOT mean "buy" or "high confidence." Live output
+  can still be grade F / NO EDGE — WATCH ONLY if the evidence is weak. That is correct.
+  Coverage is a prerequisite for trust, not a promise of profit.
+
+Remaining P1 work:
+  - Form 4 insider parser
+  - 13F institutional parser
+  - analyst revisions / target-change feed
+  - options chain / unusual activity
+  - macro event calendar + CPI/Fed surprise classifier
+  - guidance/news event classifier + dedup
+  - server-persisted prediction pool + richer chart overlays
+
 --- 2026-06-25–26 | PR #70–#81 — Comprehensive security + reliability audit (12 PRs) ---
 Context: User asked "is ghost working perfect now can i trust the predictions?"
 This triggered a multi-phase audit spanning 2 days, 12 PRs, and 3 external agent
