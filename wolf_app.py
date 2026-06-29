@@ -23,7 +23,7 @@ logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 # missing from Railway logs after a deploy, the container is stale (the
 # Procfile boot echo is the shell-level twin of this check).
 LOGGER.info(
-    "[wolf_app] BOOT_BANNER PR84_CACHEBUST_CT "
+    "[wolf_app] BOOT_BANNER PR85_CACHEBUST_CT "
     "DEPLOY_VERSION=%s GIT_SHA=%s DEPLOY_ID=%s",
     os.getenv("DEPLOY_VERSION", "unset"),
     os.getenv("RAILWAY_GIT_COMMIT_SHA", "unset"),
@@ -5413,7 +5413,7 @@ def v3_train(x_cron_secret: str = Header(default=""), force: bool = False):
 
 # PR #19 deploy-version constant. Bump on every "did Railway pick up
 # the new code?" PR so /api/_version reveals the truth in one curl.
-_RUNNING_PR_VERSION = 84
+_RUNNING_PR_VERSION = 85
 
 
 def _deploy_meta() -> dict:

@@ -756,7 +756,10 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
         <div class="mvr-h1">Today&#39;s Top Movers</div>
         <div class="mvr-sub">Ghost&#39;s highest-conviction squeeze setups, ranked by expected move. Research telemetry — not financial advice.</div>
       </div>
-      <button class="mvr-toggle" id="mvr-toggle" onclick="mvrToggleDash()">Show full dashboard &#9662;</button>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end">
+        <a href="/picks" class="mvr-toggle" style="text-decoration:none;display:inline-block">&#128123; Ghost Picks</a>
+        <button class="mvr-toggle" id="mvr-toggle" onclick="mvrToggleDash()">Show full dashboard &#9662;</button>
+      </div>
     </div>
     <div class="mvr-ribbon">
       <span class="gdot"></span> <span class="mvr-pill research" id="mvr-mode">RESEARCH MODE</span>
