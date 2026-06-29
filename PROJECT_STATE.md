@@ -84,12 +84,13 @@ squeeze ML v2, drift/sentiment/options probes) are wired as of PR #60.
 | Investor cockpit | `/cockpit` — WOLF-first UI |
 | Cron trigger | cron-job.org fires `POST /api/morning-card` daily 8 AM CT |
 | Auth header name | `x-cron-secret` (value in Railway env as `CRON_SECRET`) |
-| **Last prod-verified** | **2026-06-29** — PR #93 deployed (`90a9fc7`, `_pr_version 93`); 515 tests passing; Super Ghost Learning Brain live (`learning_adjustment`, `/learning`, auth-gated `/learn`) |
+| **Last prod-verified** | **2026-06-29** — PR #94 deployed (`f4156a4`, `_pr_version 94`); 517 tests passing; learning target-calibration fix live (correct-direction rows only) |
 
 **Agent CAN reach Railway** as of 2026-06-22 session — all production verification is done via `curl` from the local terminal.
 
 **PR #91 prod verify:** passed 2026-06-29 — `GET /api/_version` sha `3a83893`, `_pr_version 91`; `/picks` contains post-falsification banner, completed-predictions Top Stocks copy, and hidden duplicate top-tabs.
 **PR #93 prod verify:** passed 2026-06-29 — `GET /api/_version` sha `90a9fc7`, `_pr_version 93`; `GET /api/wolf/super-ghost/learning?symbol=WOLF&horizon=5` ok with cold-start 0 profiles/lessons; `GET /api/wolf/super-ghost?symbol=WOLF` includes `learning_adjustment`; `POST /api/wolf/super-ghost/learn` returns 401 without auth.
+**PR #94 prod verify:** passed 2026-06-29 — `GET /api/_version` sha `f4156a4`, `_pr_version 94`; learning summary ok (cold-start), report carries `learning_adjustment`, `/learn` 401 without auth. Fix: `target_move_multiplier` now calibrates from direction-correct rows only (+`target_calibration_samples`), so wrong-direction noise no longer dilutes the "$5→$7 target too low" lesson.
 **PR #92 prod verify:** passed 2026-06-29 — `GET /api/_version` sha `c6c912b`, `_pr_version 92`; `/favicon.ico` returns 200 image/svg+xml (was 404); `/picks` has null-safe `money()` ("No intraday data" instead of `$0.00`) + coverage A/B-gate note (≥18/25).
 **PR #88–#90 prod verify:** passed 2026-06-29 — `GET /api/_version` sha `5bc05a0`, `_pr_version 88`; `/api/wolf/super-ghost/coverage?symbol=WOLF` returned 21/25 and `meets_ab_gate=true`; AAPL 19/25; NVDA 20/25; gate invariant no-A/B-below-18 verified.
 **PR #86–#87 prod verify:** passed 2026-06-29 — `/picks` unified console live, `/legacy-picks` preserved, `/cockpit` preserved, `/api/market/session/WOLF` live mirror endpoint responding.
@@ -489,3 +490,4 @@ Run once per week (any time for deploy checks; squeeze/radar checks best **Mon�
 | **#91** | 06-29 | **Ghost console trust-state polish** — persistent post-falsification banner, clearer Top Stocks “completed predictions” copy, duplicate top-tabs hidden; `_pr_version` 91 |
 | **#92** | 06-29 | **Console launch-review follow-ups** — null-safe `money()` shows “No intraday data” instead of `$0.00`; Overview coverage note explains the ≥18/25 A/B-grade gate; `/favicon.ico` route + inline icon (was 404); `_pr_version` 92 |
 | **#93** | 06-29 | **Super Ghost Learning Brain** — learns from resolved Truth Ledger mistakes; postmortem events + learning profiles; handles target-too-low case ($5 predicted → $7 realized); bounded confidence/target adjustments; `/api/wolf/super-ghost/learning`, auth-gated `/learn`, Health row; `_pr_version` 93 |
+| **#94** | 06-29 | **Learning target-calibration fix** — `target_move_multiplier` now learns only from direction-correct rows (+`target_calibration_samples`), so wrong-direction noise no longer dilutes the "$5→$7 target too low" magnitude lesson; win-rate/confidence still use all rows; `_pr_version` 94 |

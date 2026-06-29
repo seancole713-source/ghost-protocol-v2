@@ -11,11 +11,11 @@ RULES:
   6. This is not documentation. It is an accountability ledger.
      Agents lie. This file exists because of that.
 
-LAST UPDATED: 2026-06-29 — PR #93 Super Ghost Learning Brain (515 tests passing)
+LAST UPDATED: 2026-06-29 — PR #94 learning target-calibration fix (517 tests passing)
 """
 
 # ============================================================
-# LIVE SYSTEM — LAST VERIFIED 2026-06-29 (PR #93 deployed)
+# LIVE SYSTEM — LAST VERIFIED 2026-06-29 (PR #94 deployed)
 # ============================================================
 
 PROD_VERIFY_2026_06_29_PR93 = {
