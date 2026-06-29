@@ -232,3 +232,13 @@ def test_v3_train_route_maps_to_trainer_not_helper():
                  if getattr(r, "path", None) == "/api/v3/train")
     assert route.endpoint is wolf_app.v3_train
     assert "POST" in route.methods
+
+
+def test_picks_page_route_serves_html(monkeypatch):
+    """The simple consumer trade-tracker page is served at GET /picks and carries
+    its live market-rate panel markup."""
+    with _client_with_test_mode(monkeypatch) as client:
+        r = client.get("/picks")
+    assert r.status_code == 200
+    assert "Ghost" in r.text
+    assert "Live market price" in r.text
