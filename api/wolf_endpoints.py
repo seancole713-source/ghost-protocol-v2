@@ -1938,6 +1938,18 @@ async def post_super_ghost_regime_calibration_rebuild(request: Request):
     return JSONResponse(content=rebuild_regime_calibration(symbol=sym, horizon=horizon, limit=limit))
 
 
+@router.get("/super-ghost/top-pick-gate")
+async def get_super_ghost_top_pick_gate(symbol: str = WOLF_SYMBOL, horizon: int = 5):
+    """Strict Top Picks evidence gate.
+
+    A symbol cannot be promoted to Top Picks unless it clears direction,
+    precision, calibration, expectancy, and kill-condition checks.
+    """
+    sym = (symbol or WOLF_SYMBOL).strip().upper()
+    from core.super_ghost_top_picks import evaluate_top_pick_gate
+    return JSONResponse(content=evaluate_top_pick_gate(sym, horizon=horizon))
+
+
 @router.get("/super-ghost/lab")
 async def get_super_ghost_lab(symbol: str = "", horizon: int = 5):
     """Latest Champion/Challenger Lab result.
