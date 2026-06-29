@@ -1,5 +1,5 @@
 # Ghost Protocol v2 — PROJECT STATE
-**Last updated:** 2026-06-23
+**Last updated:** 2026-06-28
 **Read this first.** Any agent picking up this project must read this file before touching any code.
 
 > ## 🚀 LAUNCH READINESS REVIEW
@@ -8,15 +8,17 @@
 > Any agent — Claude, browser-control, general — can execute it and produce a launch-readiness report with three verdict formats (binary GO/NO-GO, graded scorecard A–F, severity-ranked P0–P3 punch list). Every phase, every time. No skipping.
 > This is the canonical way to ask "is Ghost ready for a real user to trust real money?" — do not write ad-hoc audits; run the launch prompt instead.
 
-> This file was significantly stale (pre-v3.2) until 2026-05-23. It now reflects
-> the v3.2 XGBoost engine, the four-gate chain, aggressive objective mode, the
-> cookie-login `/admin` console, and the pick-journal credibility ledger.
-> **PR #65–#69 (2026-06-22):** Major reliability + accuracy overhaul. See Change Log below.
-> - PR #65: Config sync + settings alignment
-> - PR #66: Stacking ensemble (XGBoost + RF soft-voting), conformal calibration, missing import fix (`is_stacking_enabled` NameError killed all retrains), EDGAR integration, VADER sentiment, Ghost Score spec v1.0, circuit breakers on all 5 external APIs, degraded mode, latency SLO, dead-letter queue, SHAP explain endpoint, WebSocket cockpit feed
-> - PR #67: Cross-sectional rank features wired into scan loop; Kelly criterion + portfolio heat scaling integrated into `position_sizing_plan()`
-> - PR #68: Fixed WOLF ensemble gate — `V3_WF_ACC_MIN_OVERRIDES` was demanding every WF fold beat 52% (nonsensical for thin post-Chapter 11 data); capped at `wf_acc_mean` floor (40%). Fixed latency SLO tail — excluded `/api/v3/train*` from p95/p99 tracking.
-> - PR #69: Fixed circuit breaker false-positives — Alpaca 403/404 (SIP free-tier expected) and yfinance empty history no longer count as failures. Added `reset_all_breakers()` + `POST /api/admin/reset-breakers` for manual recovery. **This fixed the squeeze radar (was 0/43 fetches, now 20+/43).**
+> **PR #70–#81 (2026-06-25–26):** Comprehensive security + reliability audit. 12 PRs deployed.
+> - **Circuit breaker fixes:** infinite half-open probe loop (yfinance + Alpaca rate-limit) — breakers now actually block when tripped
+> - **yfinance hardening:** all raw yfinance calls gated behind `_yfinance_cb`; JSON parse errors count as breaker failures; library noise suppressed; NaN sanitization in all OHLCV paths
+> - **5-tier spot price chain:** `get_stock_price()` now uses Alpaca → yfinance → Polygon → IEX → Stooq (was only 2-tier)
+> - **Auth fixes:** unauthenticated portfolio mutation routes gated; public `/api/test-alert` requires cron secret; `CRON_SECRET` production boot guard; Ghost Ask portfolio leak fixed
+> - **Prediction correctness:** sentiment confidence floor bypass fixed; reconcile/legacy watchdog double-resolve fixed; morning card dedup after send success
+> - **Infrastructure:** API rate limiter 120→300 RPM; scheduler overlap guard; degraded mode counts half_open; X-Forwarded-For hardening; train endpoint concurrency lock
+> - **Watchlist filter:** `REAL_TRADE_WHERE` includes watchlist-membership filter; write-side guard in prediction cycle
+> - **Tests:** CircuitBreaker class state-machine tests (8 new); 426 passing
+> - **New capability:** War Room endpoint (`POST /api/wolf/war-room`) — 6-agent equity research pipeline (Analyst → Valuation → Bull → Bear → Fact-Checker → Judge) powered by Claude Sonnet
+> - **yfinance wrapper:** `core/yfinance_client.py` + `api/wolf_endpoints.py` monkeypatch — zero raw yfinance calls remain
 >
 > **PR #63 (2026-06-15):** Live vs alert drift — first Telegram alert buy vs live quote on squeeze radar, daily log, and API (`live_drift[]`) before EOD resolve.
 > **PR #61–#62 (2026-06-12):** Squeeze daily accountability log (`ghost_squeeze_outcomes`, EOD resolve, cockpit + admin UI) and post-falsification truth-mode UX.
@@ -71,7 +73,7 @@ squeeze ML v2, drift/sentiment/options probes) are wired as of PR #60.
 | Investor cockpit | `/cockpit` — WOLF-first UI |
 | Cron trigger | cron-job.org fires `POST /api/morning-card` daily 8 AM CT |
 | Auth header name | `x-cron-secret` (value in Railway env as `CRON_SECRET`) |
-| **Last prod-verified** | **2026-06-22** — agent API curl confirmed PR #69 on Railway, WOLF ensemble=True, conformal_ok=True, health score 95, 41/44 ensemble models |
+| **Last prod-verified** | **2026-06-28** — PR #81 deployed (2cb3db3); 426 tests passing; yfinance wrapper + War Room endpoint live |
 
 **Agent CAN reach Railway** as of 2026-06-22 session — all production verification is done via `curl` from the local terminal.
 
@@ -91,13 +93,13 @@ squeeze ML v2, drift/sentiment/options probes) are wired as of PR #60.
 - **v3 training gates:** `V3_MIN_HOLDOUT_ACC=0.38`, `V3_MIN_WF_ACC_MEAN=0.40`, `V3_MIN_EDGE=0.0`, `V3_WF_ACC_MIN_SLACK=0.15`, `V3_MIN_TP_SL_WINS=10`, `V3_MIN_WF_FOLDS=2`
 - **Model coverage (2026-06-22):** **41/44** watchlist symbols ensemble, 41/44 conformal
 
-### ⚠️ ACTIVE CONCERN: Confidence floor lowered to 0.55
+### ✅ RESOLVED: Confidence floor restored to 0.75
 
-`MIN_ALERT_CONFIDENCE` is `0.55` live (was designed at 0.75). Combined with `bootstrap_min_conf=0.65` (was 0.78), the gates are meaningfully looser than the original design. The pick journal shows `combined_wr=0.25` (2W/8 resolved) on the current phase. This is a **small-sample** concern (8 picks), not yet a kill-condition trigger (needs 30). But keep an eye on it. If you want to restore selectivity, raise `MIN_ALERT_CONFIDENCE` back to 0.75 in Railway env.
+`MIN_ALERT_CONFIDENCE` was `0.55` live (was designed at 0.75). **Fixed in Railway env (2026-06-25).** Now `MIN_ALERT_CONFIDENCE=0.75`, `OBJECTIVE_BOOTSTRAP_MIN_CONF=0.78`. Combined with the sentiment confidence-floor bypass fix (PR #77), the gates are back to design spec.
 
-### ⚠️ ACTIVE CONCERN: Expired mega-cap picks in DB
+### ✅ RESOLVED: Mega-cap pollution filtered
 
-The `picks` table contains ~37 EXPIRED picks on PLTR, MSFT, TSLA, AMZN, META, NVDA, NET at 0.79–1.0 confidence. These appear to be legacy test/data rows or from a period when `STOCK_SYMBOLS` included mega-caps. They pollute the journal stats. `core/prediction_filters.py` `REAL_TRADE_WHERE` should exclude them; verify the journal is filtering correctly.
+The `picks` table contained ~37 EXPIRED picks on PLTR, MSFT, TSLA, AMZN, META, NVDA, NET. **Fixed in PR #76.** `REAL_TRADE_WHERE` now includes `AND symbol IN (OFFICIAL_WATCHLIST)` — all 43 watchlist symbols. Write-side guard in `_predict_symbol_ex` also blocks non-watchlist saves. RDFN excluded from `STOCK_SYMBOLS`.
 
 ---
 
@@ -446,3 +448,15 @@ Run once per week (any time for deploy checks; squeeze/radar checks best **Mon�
 | **#67** | 06-22 | **Cross-sectional features + Kelly sizing** — after 44-symbol scan loop, `_all_feats` dict stashed on `predict_live_ex._last_scan_features`; `position_sizing_plan()` now accepts `win_rate/avg_win_pct/avg_loss_pct/open_positions` and returns `kelly_fraction/kelly_note/portfolio_heat_mult` via `core.kelly_sizing` |
 | **#68** | 06-22 | **WOLF gate fix + latency SLO fix** — `V3_WF_ACC_MIN_OVERRIDES=WOLF=0.52` on Railway demanded every WF fold beat 52%; capped at `wf_acc_mean` (40%) by code (`_v3_wf_acc_min_overrides()` sanity cap). `_SLO_EXCLUDE_PREFIXES = ("/api/v3/train",)` excludes multi-minute training from p95/p99. Result: WOLF ensemble=True, 41/44 ensemble, 41/44 conformal. |
 | **#69** | 06-22 | **Circuit breaker false-positive fix** — Alpaca SIP 403/404 (free-tier expected) and yfinance empty history no longer count as `record_failure()`. Before fix: Alpaca had 4,785 false failures → breaker open → 0/43 squeeze fetches. After fix: squeeze radar recovering (20+/43). Added `reset_all_breakers()` + `POST /api/admin/reset-breakers`. |
+| **#70** | 06-25 | **yfinance JSON parse breaker + Alpaca rate-limit storm** — JSON parse errors in `_yfinance()` now count as breaker failures; 1.2s inter-symbol delay in scan loop; yfinance 0.2.44→0.2.54; yfinance library logger suppressed to CRITICAL |
+| **#71** | 06-25 | **Circuit breaker infinite half-open probe loop (yfinance)** — `record_failure()` was resetting `_half_open_probes=0` on every failure, granting infinite free probes. Breaker now only resets probes on initial trip. |
+| **#72** | 06-25 | **Circuit breaker infinite half-open probe loop (Alpaca rate-limit)** — Same bug in rate-limit path: `_half_open_probes=0` made `state` return `"half_open"`, allowing in-flight calls to close the circuit 12ms after trip. Now exhausts probes on rate-limit trip. |
+| **#73** | 06-25 | **API rate limiter 120→300 RPM** — Cockpit fires ~25 parallel API calls on page load; 120 RPM (2/sec) couldn't handle the burst. |
+| **#74** | 06-25 | **Gate prev-close yfinance fallback behind circuit breaker** — `_predict_symbol_ex` had a raw yfinance call that bypassed the breaker. |
+| **#75** | 06-25 | **Gate all remaining raw yfinance calls** — macro_regime, wolf_monitor, wolf_context, squeeze_monitor all now check `_yfinance_cb.allow()`. |
+| **#76** | 06-25 | **Watchlist-membership filter** — `REAL_TRADE_WHERE` now includes `AND symbol IN (OFFICIAL_WATCHLIST)`; write-side guard in prediction cycle. |
+| **#77** | 06-26 | **6 audit findings** — unauth portfolio routes, raw yfinance in extended/intraday, sentiment confidence floor bypass, public test-alert auth, CRON_SECRET production boot guard, double inter-symbol delay |
+| **#78** | 06-26 | **7 audit findings** — 5-tier spot chain (Polygon/IEX/Stooq spot functions), degraded mode half_open counting, scheduler overlap guard, XFF hardening, Playwright selectors, CircuitBreaker tests (8 new), wolf_price alias |
+| **#79** | 06-26 | **4 continuation findings** — NaN sanitization in Polygon/Stooq OHLCV, Telegram dedup conditional on `_send()`, dead-letter admin UI fix, OAuth CIMD SSRF hardening |
+| **#80** | 06-26 | **9 third-pass findings** — Ghost Ask portfolio leak, Polygon/Stooq NaN, check_feeds 5-tier, Playwright hidden element, cockpit 401 handling, reconcile double-resolve, train endpoint lock, morning card dedup after send, OAuth redirects |
+| **#81** | 06-26 | **GP-A03 fix + War Room** — yfinance wrapper (`core/yfinance_client.py`) + `api/wolf_endpoints.py` monkeypatch (zero raw yfinance calls remain); War Room endpoint (`POST /api/wolf/war-room`) — 6-agent equity research pipeline powered by Claude Sonnet |
