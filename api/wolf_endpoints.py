@@ -2026,3 +2026,42 @@ async def post_super_ghost_promotion_review(request: Request):
         horizon = 5
     from core.super_ghost_promotion import run_promotion_review
     return JSONResponse(content=run_promotion_review(symbol=sym, horizon=horizon, candidate_id=candidate_id, source=source, persist=True))
+
+
+@router.get("/super-ghost/feature-store")
+async def get_super_ghost_feature_store(symbol: str = "", limit: int = 50):
+    """Point-in-time feature snapshots captured at prediction time."""
+    from core.super_ghost_feature_store import latest_snapshots
+    sym = (symbol or "").strip().upper() or None
+    return JSONResponse(content=latest_snapshots(symbol=sym, limit=limit))
+
+
+@router.get("/super-ghost/feature-store/audit")
+async def get_super_ghost_feature_store_audit(symbol: str = "", limit: int = 200):
+    """Leakage audit for point-in-time feature snapshots."""
+    from core.super_ghost_feature_store import leakage_audit
+    sym = (symbol or "").strip().upper() or None
+    return JSONResponse(content=leakage_audit(symbol=sym, limit=limit))
+
+
+@router.post("/super-ghost/feature-store/snapshot")
+async def post_super_ghost_feature_store_snapshot(request: Request):
+    """Create a point-in-time snapshot for a fresh Super Ghost report. Auth required.
+
+    Body optional: {"symbol": "WOLF"}.
+    """
+    from mcp.security import require_mcp_auth
+    require_mcp_auth(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    sym = (str(body.get("symbol") or WOLF_SYMBOL)).strip().upper()
+    from core.super_ghost import build_super_ghost
+    from core.super_ghost_feature_store import build_feature_snapshot
+    report = build_super_ghost(sym)
+    if not report.get("ok"):
+        return JSONResponse(content=report, status_code=400)
+    return JSONResponse(content=build_feature_snapshot(report))

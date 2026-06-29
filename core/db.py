@@ -213,4 +213,11 @@ def _migrate_schema():
             ensure_promotion_tables(cur)
     except Exception as e:
         LOGGER.warning("Super Ghost promotion tables: " + str(e)[:80])
+    try:
+        from core.super_ghost_feature_store import ensure_feature_store_tables
+        with db_conn() as conn:
+            cur = conn.cursor()
+            ensure_feature_store_tables(cur)
+    except Exception as e:
+        LOGGER.warning("Super Ghost feature store tables: " + str(e)[:80])
     LOGGER.info("Schema migration complete")
