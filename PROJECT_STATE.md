@@ -27,6 +27,7 @@
 > - **PR #107 Model deserialization hardening:** production `a74b71d`, `_pr_version 107`; model metadata now validates before pickle load, new models include SHA256 integrity, suite **585 passed, 3 skipped**.
 > - **PR #108 Startup auth hardening:** production `089a5fc`, `_pr_version 108`; removed hardcoded default API bearer token and added static secret checks; suite **587 passed, 3 skipped**.
 > - **PR #109 Quality gate cleanup:** production `35da460`, `_pr_version 108`; `npm run lint`, `npm run type-check`, pytest, and compile all pass cleanly.
+> - **PR #110 Error-signature verifier fix:** production `8616306`, `_pr_version 108`; gated diagnostics/audit routes no longer false-fail public verification; error-signature + health-audit gates pass.
 >
 > **PR #70–#81 (2026-06-25–26):** Comprehensive security + reliability audit. 12 PRs deployed.
 > - **Circuit breaker fixes:** infinite half-open probe loop (yfinance + Alpaca rate-limit) — breakers now actually block when tripped
@@ -93,10 +94,11 @@ squeeze ML v2, drift/sentiment/options probes) are wired as of PR #60.
 | Investor cockpit | `/cockpit` — WOLF-first UI |
 | Cron trigger | cron-job.org fires `POST /api/morning-card` daily 8 AM CT |
 | Auth header name | `x-cron-secret` (value in Railway env as `CRON_SECRET`) |
-| **Last prod-verified** | **2026-06-29** — PR #109 quality-gate cleanup deployed (`35da460`, `_pr_version 108`); lint/type-check/tests/compile pass cleanly; runtime PR108 hardening remains live |
+| **Last prod-verified** | **2026-06-29** — PR #110 verifier fix deployed (`8616306`, `_pr_version 108`); error-signature + health-audit gates pass; lint/type-check/tests/compile/prelaunch/live gates clean |
 
 **Agent CAN reach Railway** as of 2026-06-22 session — all production verification is done via `curl` from the local terminal.
 
+**PR #110 prod verify:** passed 2026-06-29 — `GET /api/_version` sha `8616306`, `_pr_version 108`; `npm run verify:error-signatures` passed (gated diagnostics/audit skipped safely); `npm run verify:health-audit` passed public-history fallback. Test/tooling-only change; runtime marker remains 108.
 **PR #109 prod verify:** passed 2026-06-29 — `GET /api/_version` sha `35da460`, `_pr_version 108`; `npm run lint` passed; `npm run type-check` passed; `python3 -m pytest tests/ -q` passed 587/3 skipped; `make test-compile` passed. Test/config-only change; runtime marker remains 108.
 **PR #108 prod verify:** passed 2026-06-29 — `GET /api/_version` sha `089a5fc`, `_pr_version 108`; `/health` score 90; `/api/wolf/super-ghost/top-pick-gate?symbol=WOLF&horizon=5` ok with `decision=LOCKED`; local suite warning-clean: 587 passed, 3 skipped.
 **PR #107 prod verify:** passed 2026-06-29 — `GET /api/_version` sha `a74b71d`, `_pr_version 107`; `/health` score 95; `/api/wolf/super-ghost/top-pick-gate?symbol=WOLF&horizon=5` ok with `decision=LOCKED`; `/api/wolf/super-ghost?symbol=WOLF` ok with honest `NO EDGE — WATCH ONLY`; local suite warning-clean: 585 passed, 3 skipped.
@@ -528,3 +530,4 @@ Run once per week (any time for deploy checks; squeeze/radar checks best **Mon�
 | **#107** | 06-29 | **Model deserialization hardening** — `load_model()` validates metadata before pickle/base64, caps payload size, strict base64 decode, stores `model_sha256`/payload size on new training, verifies SHA when present, legacy rows only load after serve guards pass; `_pr_version` 107 |
 | **#108** | 06-29 | **Startup auth-token hardening** — removed hardcoded default `API_AUTH_TOKEN` (`ghost-prod-2024`) from startup self-call logic, skip startup predictions unless token explicitly configured, added static secret checks for public HTML; `_pr_version` 108 |
 | **#109** | 06-29 | **Quality gate cleanup** — ruff cleanup across configured lint surface; type-check script now uses `mypy.ini` for production audit/prelaunch scripts; `npm run lint`, `npm run type-check`, pytest, and compile pass cleanly; no runtime marker bump |
+| **#110** | 06-29 | **Error-signature verifier gated-route fix** — `scripts/check_error_signatures.py` now treats unauthenticated `/api/diagnostics` 404 and `/api/health/audit` 403/404 without `CRON_SECRET` as gated/skipped, not app failures; verifier tests added; no runtime marker bump |

@@ -11,11 +11,11 @@ RULES:
   6. This is not documentation. It is an accountability ledger.
      Agents lie. This file exists because of that.
 
-LAST UPDATED: 2026-06-29 — PR #109 Quality Gate Cleanup (lint/type-check/test/compile clean)
+LAST UPDATED: 2026-06-29 — PR #110 Error-Signature Verifier Fix (all verification gates clean)
 """
 
 # ============================================================
-# LIVE SYSTEM — LAST VERIFIED 2026-06-29 (PR #109 test/config cleanup deployed; runtime marker PR108)
+# LIVE SYSTEM — LAST VERIFIED 2026-06-29 (PR #110 verifier fix deployed; runtime marker PR108)
 # ============================================================
 
 
@@ -25,6 +25,26 @@ LAST UPDATED: 2026-06-29 — PR #109 Quality Gate Cleanup (lint/type-check/test/
 
 
 
+
+
+PROD_VERIFY_2026_06_29_PR110 = {
+    "deploy_id": "Railway auto-deploy from main",
+    "git_sha_short": "8616306",
+    "_pr_version": 108,
+    "verified_at_ct": "2026-06-29",
+    "tests": "verify:error-signatures pass; verify:health-audit pass public fallback",
+    "live_acceptance": {
+        "version_endpoint": "GET /api/_version -> sha=8616306, _pr_version=108, app_version=2.5.0",
+        "error_signatures": "npm run verify:error-signatures -> PASS; gated diagnostics/audit skipped safely without admin/CRON secret",
+        "health_audit": "npm run verify:health-audit -> PASS public history fallback; POST skipped because CRON_SECRET unset locally",
+    },
+    "key_fixes": [
+        "check_error_signatures no longer false-fails on intentionally admin-gated /api/diagnostics",
+        "check_error_signatures no longer false-fails on /api/health/audit when CRON_SECRET is unset locally",
+        "Focused tests cover gated diagnostics and audit behavior",
+    ],
+    "known_issues": [],
+}
 
 PROD_VERIFY_2026_06_29_PR109 = {
     "deploy_id": "Railway auto-deploy from main",
