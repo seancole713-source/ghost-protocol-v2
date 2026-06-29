@@ -211,7 +211,14 @@ def log_prediction(report: Dict[str, Any], *, created_at: Optional[int] = None) 
                 ),
             )
             r = cur.fetchone()
-            return int(r[0]) if r else None
+            ledger_id = int(r[0]) if r else None
+            if ledger_id:
+                try:
+                    from core.super_ghost_memory import log_prediction_memory
+                    log_prediction_memory(cur, ledger_id, report)
+                except Exception as mem_exc:
+                    LOGGER.warning("log_prediction memory %s: %s", row.get("symbol"), str(mem_exc)[:120])
+            return ledger_id
     except Exception as exc:
         LOGGER.warning("log_prediction %s: %s", row.get("symbol"), str(exc)[:160])
         return None
@@ -683,6 +690,11 @@ def run_resolver_job() -> Dict[str, Any]:
             out["lab"] = run_lab(limit=1000, persist=True)
         except Exception as lab_exc:
             out["lab"] = {"ok": False, "error": str(lab_exc)[:120]}
+        try:
+            from core.super_ghost_memory import score_features_from_ledger
+            out["feature_memory"] = score_features_from_ledger(limit=2000)
+        except Exception as mem_exc:
+            out["feature_memory"] = {"ok": False, "error": str(mem_exc)[:120]}
         return out
     except Exception as exc:
         LOGGER.warning("run_resolver_job: %s", str(exc)[:120])
