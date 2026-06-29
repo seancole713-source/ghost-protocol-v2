@@ -53,11 +53,12 @@ def test_console_contains_required_sidebar_and_prediction_tabs():
 def test_console_contains_live_market_mirror_and_score_language():
     text = _html()
     for phrase in (
-        "Prediction open/ref",
+        "Open / reference",
+        "Low / stop",
+        "High / target",
         "Live now",
-        "Predicted low / stop",
-        "Predicted high / target",
-        "Mirror",
+        "Mirror score",
+        "Live market truth",
         "End-of-day mirror",
         "Live market mirror",
     ):
@@ -65,6 +66,10 @@ def test_console_contains_live_market_mirror_and_score_language():
     # The user specifically wanted UP and DOWN both counted as wins when direction is right.
     assert "DOWN predictions count as wins when price falls" in text
     assert "Win means Ghost got direction correct" in text
+    # PR #87: predicted-vs-live mirror must use real session OHLC (open/high/low),
+    # not just the spot price, so the user can compare predicted open/low/high to
+    # what the live market actually printed.
+    assert "m3row" in text and "live_open" in text and "live_low" in text and "live_high" in text
 
 
 def test_console_contains_pool_management_and_top_pick_gate():
@@ -93,7 +98,7 @@ def test_console_fetches_required_existing_and_new_apis():
         "/api/picks?limit=50",
         "/api/squeeze/picks",
         "/api/squeeze/daily-log?days=7",
-        "/api/price/",
+        "/api/market/session/",
     ):
         assert endpoint in text
 
@@ -125,3 +130,45 @@ def test_console_inline_javascript_has_required_functions():
         "function healthHtml",
     ):
         assert fn in text
+
+
+def test_market_session_endpoint_serves_live_ohlc(monkeypatch):
+    """PR #87: /api/market/session/{symbol} exposes real today open/high/low so
+    the console mirror can compare predicted open/low/high vs live market truth."""
+    import core.prices as prices
+
+    monkeypatch.setattr(prices, "get_intraday_session", lambda sym: {
+        "symbol": sym, "price": 45.35, "previous_close": 44.0,
+        "session": "rth", "session_label": "Market open", "market_date": "2026-06-29",
+        "today_open": 44.5, "today_high": 46.1, "today_low": 43.9,
+        "change_abs": 1.35, "change_pct": 3.07, "feed": "alpaca", "as_of_ts": 1782753278,
+    })
+    client = TestClient(wolf_app.APP)
+    r = client.get("/api/market/session/WOLF")
+    assert r.status_code == 200
+    d = r.json()
+    assert d["ok"] is True
+    assert d["symbol"] == "WOLF"
+    assert d["live_open"] == 44.5
+    assert d["live_high"] == 46.1
+    assert d["live_low"] == 43.9
+    assert d["price"] == 45.35
+    assert d["session_label"] == "Market open"
+
+
+def test_market_session_endpoint_degrades_to_spot(monkeypatch):
+    """If intraday OHLC fails, the endpoint still returns a spot-price fallback
+    rather than raising, so the console never blanks."""
+    import core.prices as prices
+
+    def _boom(sym):
+        raise RuntimeError("feed down")
+
+    monkeypatch.setattr(prices, "get_intraday_session", _boom)
+    monkeypatch.setattr(prices, "get_price", lambda sym: 12.34)
+    client = TestClient(wolf_app.APP)
+    r = client.get("/api/market/session/WOLF")
+    assert r.status_code == 200
+    d = r.json()
+    assert d["price"] == 12.34
+    assert d["live_open"] is None
