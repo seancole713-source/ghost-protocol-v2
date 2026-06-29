@@ -11,12 +11,38 @@ RULES:
   6. This is not documentation. It is an accountability ledger.
      Agents lie. This file exists because of that.
 
-LAST UPDATED: 2026-06-29 — PR #98 Shadow Model Runner (536 tests passing)
+LAST UPDATED: 2026-06-29 — PR #99 Promotion Gate (544 tests passing)
 """
 
 # ============================================================
-# LIVE SYSTEM — LAST VERIFIED 2026-06-29 (PR #98 / _pr_version 97 deployed)
+# LIVE SYSTEM — LAST VERIFIED 2026-06-29 (PR #99 deployed)
 # ============================================================
+
+PROD_VERIFY_2026_06_29_PR99 = {
+    "deploy_id": "Railway auto-deploy from main",
+    "git_sha_short": "cdf810b",
+    "_pr_version": 99,
+    "verified_at_ct": "2026-06-29",
+    "tests": "544 passed, 3 deselected/skipped, 2 warnings; compileall exit 0",
+    "live_acceptance": {
+        "version_endpoint": "GET /api/_version -> sha=cdf810b, _pr_version=99, app_version=2.5.0",
+        "promotion": "GET /api/wolf/super-ghost/promotion?symbol=WOLF -> ok true, cold-start 0 reviews, requirements present",
+        "promotion_review_auth_gate": "POST /api/wolf/super-ghost/promotion/review without auth -> 401",
+        "console": "/picks includes Promotion gate Health row",
+    },
+    "key_fixes": [
+        "core/super_ghost_promotion.py: conservative promotion review gate",
+        "Durable super_ghost_promotion_reviews table",
+        "Decisions: PROMOTE_CANDIDATE, KEEP_CHAMPION, KEEP_SHADOWING, RETIRE_CANDIDATE, INSUFFICIENT_EVIDENCE",
+        "Gates for minimum rows/actionable calls/profit factor/win-rate delta/EV delta/false positives/drawdown",
+        "Scheduler now runs promotion review after resolver, learning, lab, feature memory, and shadow resolution",
+        "Public /promotion and auth-gated /promotion/review",
+    ],
+    "known_issues": [
+        "Promotion reviews are cold-start until enough lab/shadow evidence accumulates",
+        "Gate creates recommendations only; no automated model promotion yet",
+    ],
+}
 
 PROD_VERIFY_2026_06_29_PR98 = {
     "deploy_id": "Railway auto-deploy from main",
@@ -670,6 +696,10 @@ Important honesty note:
   WOLF meeting coverage gate does NOT mean "buy" or "high confidence." Live output
   can still be grade F / NO EDGE — WATCH ONLY if the evidence is weak. That is correct.
   Coverage is a prerequisite for trust, not a promise of profit.
+
+PR #99 Promotion Gate shipped after the evolution directive:
+  - Ghost can now decide PROMOTE / KEEP CHAMPION / KEEP SHADOWING / RETIRE / INSUFFICIENT using strict evidence gates.
+  - No auto-promotion; this creates auditable review records only.
 
 PR #98 Shadow Model Runner shipped after the evolution directive:
   - Seven specialist prediction brains now run in parallel with production Ghost when predictions are logged.
