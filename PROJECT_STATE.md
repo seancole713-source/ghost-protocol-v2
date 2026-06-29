@@ -24,6 +24,7 @@
 > - **PR #104 Regime Calibration Brain:** production `83f208e`, `_pr_version 104`; calibration now slices by market regime/setup style (risk-on/off/high-vol/news/earnings/squeeze) with safe fallbacks; suite **578 passed**.
 > - **PR #105 Top Pick Evidence Gate:** production `8234a16`, `_pr_version 105`; Top Picks now require direction proof, precision proof, calibration readiness, positive if-followed evidence, and clear kill conditions; suite **582 passed**.
 > - **PR #106 Test warning cleanup:** production `0e944aa`, `_pr_version 105`; suite is warning-clean with **582 passed, 3 skipped**.
+> - **PR #107 Model deserialization hardening:** production `a74b71d`, `_pr_version 107`; model metadata now validates before pickle load, new models include SHA256 integrity, suite **585 passed, 3 skipped**.
 >
 > **PR #70–#81 (2026-06-25–26):** Comprehensive security + reliability audit. 12 PRs deployed.
 > - **Circuit breaker fixes:** infinite half-open probe loop (yfinance + Alpaca rate-limit) — breakers now actually block when tripped
@@ -90,10 +91,11 @@ squeeze ML v2, drift/sentiment/options probes) are wired as of PR #60.
 | Investor cockpit | `/cockpit` — WOLF-first UI |
 | Cron trigger | cron-job.org fires `POST /api/morning-card` daily 8 AM CT |
 | Auth header name | `x-cron-secret` (value in Railway env as `CRON_SECRET`) |
-| **Last prod-verified** | **2026-06-29** — PR #106 test-cleanup deployed (`0e944aa`, `_pr_version 105`); suite warning-clean with 582 passed, 3 skipped; Top Pick Evidence Gate remains live (`/top-pick-gate`) |
+| **Last prod-verified** | **2026-06-29** — PR #107 deployed (`a74b71d`, `_pr_version 107`); 585 tests passed, 3 skipped; model deserialization hardened; live `/health` score 95; Super Ghost + Top Pick Gate routes verified |
 
 **Agent CAN reach Railway** as of 2026-06-22 session — all production verification is done via `curl` from the local terminal.
 
+**PR #107 prod verify:** passed 2026-06-29 — `GET /api/_version` sha `a74b71d`, `_pr_version 107`; `/health` score 95; `/api/wolf/super-ghost/top-pick-gate?symbol=WOLF&horizon=5` ok with `decision=LOCKED`; `/api/wolf/super-ghost?symbol=WOLF` ok with honest `NO EDGE — WATCH ONLY`; local suite warning-clean: 585 passed, 3 skipped.
 **PR #106 prod verify:** passed 2026-06-29 — `GET /api/_version` sha `0e944aa`, `_pr_version 105`; local `python3 -m pytest tests/ -q` is warning-clean: 582 passed, 3 skipped. Test-only change; no runtime marker bump.
 **PR #105 prod verify:** passed 2026-06-29 — `GET /api/_version` sha `8234a16`, `_pr_version 105`; `/api/wolf/super-ghost/top-pick-gate?symbol=WOLF&horizon=5` ok with `decision=LOCKED`, `eligible=false`, blockers present; `/picks` includes Top Pick gate Health row and positive-if-followed/calibrated-evidence copy; full suite 582 passed.
 **PR #104 prod verify:** passed 2026-06-29 — `GET /api/_version` sha `83f208e`, `_pr_version 104`; `/api/wolf/super-ghost/regime-calibration?symbol=WOLF&horizon=5` ok (cold-start 0 profiles); `/regime-calibration/rebuild` 401 without auth; `/api/wolf/super-ghost?symbol=WOLF` includes `regime_calibration` cold-start block with detected regime/setup bucket; `/picks` includes Regime calibration Health row; full suite 578 passed.
@@ -519,3 +521,4 @@ Run once per week (any time for deploy checks; squeeze/radar checks best **Mon�
 | **#104** | 06-29 | **Regime-Specific Calibration Brain** — `core/super_ghost_regime_calibration.py`, durable regime/setup calibration slices, buckets by risk-on/risk-off/high-volatility and news/earnings/squeeze/setup style, narrow-to-broad fallback lookup, `/regime-calibration`, auth-gated `/regime-calibration/rebuild`, Super Ghost `regime_calibration` block, console Regime calibration row; `_pr_version` 104 |
 | **#105** | 06-29 | **Strict Top Pick Evidence Gate** — `core/super_ghost_top_picks.py`, `/api/wolf/super-ghost/top-pick-gate`, backend gate requires completed predictions, ≥70% directional wins, ≥60/100 precision, calibration readiness, positive if-followed evidence, and clear kill conditions; console Top Stocks consumes gate; `_pr_version` 105 |
 | **#106** | 06-29 | **Test warning cleanup** — filtered known third-party sklearn/scipy deprecation noise in `pytest.ini`; full suite now warning-clean (`582 passed, 3 skipped`); no runtime marker bump |
+| **#107** | 06-29 | **Model deserialization hardening** — `load_model()` validates metadata before pickle/base64, caps payload size, strict base64 decode, stores `model_sha256`/payload size on new training, verifies SHA when present, legacy rows only load after serve guards pass; `_pr_version` 107 |

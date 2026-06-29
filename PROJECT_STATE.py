@@ -11,17 +11,43 @@ RULES:
   6. This is not documentation. It is an accountability ledger.
      Agents lie. This file exists because of that.
 
-LAST UPDATED: 2026-06-29 — PR #106 Test Warning Cleanup (582 passed, 3 skipped, warning-clean)
+LAST UPDATED: 2026-06-29 — PR #107 Model Deserialization Hardening (585 passed, 3 skipped, warning-clean)
 """
 
 # ============================================================
-# LIVE SYSTEM — LAST VERIFIED 2026-06-29 (PR #106 test-cleanup deployed; runtime marker PR105)
+# LIVE SYSTEM — LAST VERIFIED 2026-06-29 (PR #107 deployed)
 # ============================================================
 
 
 
 
 
+
+
+PROD_VERIFY_2026_06_29_PR107 = {
+    "deploy_id": "Railway auto-deploy from main",
+    "git_sha_short": "a74b71d",
+    "_pr_version": 107,
+    "verified_at_ct": "2026-06-29",
+    "tests": "585 passed, 3 skipped; warning-clean",
+    "live_acceptance": {
+        "version_endpoint": "GET /api/_version -> sha=a74b71d, _pr_version=107, app_version=2.5.0",
+        "health": "GET /health -> score 95",
+        "top_pick_gate": "GET /api/wolf/super-ghost/top-pick-gate?symbol=WOLF&horizon=5 -> ok true, decision LOCKED",
+        "super_ghost": "GET /api/wolf/super-ghost?symbol=WOLF -> ok true, NO EDGE — WATCH ONLY",
+        "test_suite": "python3 -m pytest tests/ -q -> 585 passed, 3 skipped, no warnings summary",
+    },
+    "key_fixes": [
+        "load_model validates metadata before model payload decode/unpickle",
+        "Strict base64 decode and max payload size guard",
+        "New trained models persist model_sha256 and model_payload_bytes",
+        "If model_sha256 exists, load verifies hash before pickle.loads",
+        "Legacy model rows only load after serve guards pass",
+    ],
+    "known_issues": [
+        "Legacy DB model rows without SHA are still loadable after metadata guards; retraining will add SHA metadata",
+    ],
+}
 
 PROD_VERIFY_2026_06_29_PR106 = {
     "deploy_id": "Railway auto-deploy from main",
