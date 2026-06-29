@@ -11,12 +11,38 @@ RULES:
   6. This is not documentation. It is an accountability ledger.
      Agents lie. This file exists because of that.
 
-LAST UPDATED: 2026-06-29 — PR #99 Promotion Gate (544 tests passing)
+LAST UPDATED: 2026-06-29 — PR #100 Point-in-Time Feature Store (549 tests passing)
 """
 
 # ============================================================
-# LIVE SYSTEM — LAST VERIFIED 2026-06-29 (PR #99 deployed)
+# LIVE SYSTEM — LAST VERIFIED 2026-06-29 (PR #100 deployed)
 # ============================================================
+
+PROD_VERIFY_2026_06_29_PR100 = {
+    "deploy_id": "Railway auto-deploy from main",
+    "git_sha_short": "8254319",
+    "_pr_version": 100,
+    "verified_at_ct": "2026-06-29",
+    "tests": "549 passed, 3 deselected/skipped, 2 warnings; compileall exit 0",
+    "live_acceptance": {
+        "version_endpoint": "GET /api/_version -> sha=8254319, _pr_version=100, app_version=2.5.0",
+        "feature_store": "GET /api/wolf/super-ghost/feature-store?symbol=WOLF -> ok true, cold-start 0 snapshots",
+        "leakage_audit": "GET /api/wolf/super-ghost/feature-store/audit?symbol=WOLF -> ok true, clean, 0 leaks",
+        "snapshot_auth_gate": "POST /api/wolf/super-ghost/feature-store/snapshot without auth -> 401",
+        "console": "/picks includes Point-in-time store Health row",
+    },
+    "key_fixes": [
+        "core/super_ghost_feature_store.py: immutable point-in-time snapshots for Super Ghost reports",
+        "New super_ghost_feature_snapshots table",
+        "Source timestamp parser/walker catches future source timestamps",
+        "Snapshots persist on log_prediction with ledger_id",
+        "Public /feature-store and /feature-store/audit endpoints; auth-gated /feature-store/snapshot",
+    ],
+    "known_issues": [
+        "Snapshot table is cold-start until new Super Ghost predictions are logged",
+        "Raw external data source timestamps are limited by what upstream providers expose",
+    ],
+}
 
 PROD_VERIFY_2026_06_29_PR99 = {
     "deploy_id": "Railway auto-deploy from main",
@@ -696,6 +722,11 @@ Important honesty note:
   WOLF meeting coverage gate does NOT mean "buy" or "high confidence." Live output
   can still be grade F / NO EDGE — WATCH ONLY if the evidence is weak. That is correct.
   Coverage is a prerequisite for trust, not a promise of profit.
+
+PR #100 Point-in-Time Feature Store shipped after the evolution directive:
+  - Every logged Super Ghost prediction now gets an immutable feature snapshot.
+  - Timestamp audit flags any source data dated after the prediction time.
+  - This prevents future leakage in learning/lab/model-training work.
 
 PR #99 Promotion Gate shipped after the evolution directive:
   - Ghost can now decide PROMOTE / KEEP CHAMPION / KEEP SHADOWING / RETIRE / INSUFFICIENT using strict evidence gates.
