@@ -62,6 +62,7 @@ def test_console_contains_live_market_mirror_and_score_language():
         "High / target",
         "Live now",
         "Mirror score",
+        "Precision",
         "Live market truth",
         "End-of-day mirror",
         "Live market mirror",
@@ -70,6 +71,8 @@ def test_console_contains_live_market_mirror_and_score_language():
     # The user specifically wanted UP and DOWN both counted as wins when direction is right.
     assert "DOWN call counts as a win when price falls" in text or "DOWN call also counts as a win when price falls" in text
     assert "A win means Ghost got the direction right" in text
+    assert "Direction result and precision are separate" in text
+    assert "60/100+ average precision score" in text
     # PR #87: predicted-vs-live mirror must use real session OHLC (open/high/low),
     # not just the spot price, so the user can compare predicted open/low/high to
     # what the live market actually printed.
@@ -111,6 +114,7 @@ def test_console_fetches_required_existing_and_new_apis():
         "/api/wolf/super-ghost/accuracy?symbol=",
         "/api/wolf/super-ghost/if-followed?symbol=",
         "/api/wolf/super-ghost/learning?symbol=",
+        "/api/wolf/super-ghost/precision?symbol=",
         "/api/wolf/super-ghost/feature-profile?symbol=",
         "/api/wolf/super-ghost/shadow?symbol=",
         "/api/wolf/super-ghost/promotion?symbol=",
@@ -123,6 +127,7 @@ def test_console_fetches_required_existing_and_new_apis():
     ):
         assert endpoint in text
     assert "Learning brain" in text
+    assert "Precision brain" in text
     assert "Feature memory" in text
     assert "Shadow models" in text
     assert "Promotion gate" in text
@@ -151,6 +156,7 @@ def test_console_inline_javascript_has_required_functions():
     for fn in (
         "function renderMirror",
         "function mirrorScore",
+        "function livePrecisionScore",
         "function addPool",
         "function removePool",
         "function logPrediction",

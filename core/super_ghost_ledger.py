@@ -706,6 +706,11 @@ def run_resolver_job() -> Dict[str, Any]:
         except Exception as mem_exc:
             out["feature_memory"] = {"ok": False, "error": str(mem_exc)[:120]}
         try:
+            from core.super_ghost_precision import score_precision_from_ledger
+            out["precision_brain"] = score_precision_from_ledger(limit=2000)
+        except Exception as precision_exc:
+            out["precision_brain"] = {"ok": False, "error": str(precision_exc)[:120]}
+        try:
             from core.super_ghost_shadow import resolve_shadow_predictions
             out["shadow_models"] = resolve_shadow_predictions(limit=2000)
         except Exception as shadow_exc:

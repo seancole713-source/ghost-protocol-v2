@@ -1837,6 +1837,43 @@ async def post_super_ghost_learn(request: Request):
     return JSONResponse(content=learn_from_ledger(symbol=sym, horizon=horizon, limit=limit))
 
 
+@router.get("/super-ghost/precision")
+async def get_super_ghost_precision(symbol: str = "", horizon: int = 5, limit: int = 20):
+    """Super Ghost Precision Brain summary.
+
+    Direction WIN/LOSS answers "was the side right?" Precision answers "were
+    Ghost's predicted open/low/high/target/stop levels close enough?" This route
+    powers the Top Picks precision gate and the operator-facing learning view.
+    """
+    from core.super_ghost_precision import precision_summary
+    sym = (symbol or "").strip().upper() or None
+    return JSONResponse(content=precision_summary(symbol=sym, horizon=horizon, limit=limit))
+
+
+@router.post("/super-ghost/precision/score")
+async def post_super_ghost_precision_score(request: Request):
+    """Score resolved Truth Ledger rows for price precision. Auth required."""
+    from mcp.security import require_mcp_auth
+    require_mcp_auth(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    sym = (str(body.get("symbol") or "")).strip().upper() or None
+    try:
+        horizon = int(body.get("horizon") or 5)
+    except Exception:
+        horizon = 5
+    try:
+        limit = int(body.get("limit") or 1000)
+    except Exception:
+        limit = 1000
+    from core.super_ghost_precision import score_precision_from_ledger
+    return JSONResponse(content=score_precision_from_ledger(symbol=sym, horizon=horizon, limit=limit))
+
+
 @router.get("/super-ghost/lab")
 async def get_super_ghost_lab(symbol: str = "", horizon: int = 5):
     """Latest Champion/Challenger Lab result.

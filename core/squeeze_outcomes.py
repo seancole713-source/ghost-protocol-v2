@@ -47,6 +47,17 @@ def _parse_bar_date(ts: str) -> str:
     return s.split("T")[0] if "T" in s else s[:10]
 
 
+def _coerce_json(v: Any) -> Any:
+    if v is None:
+        return None
+    if isinstance(v, (dict, list)):
+        return v
+    try:
+        return json.loads(v)
+    except Exception:
+        return v
+
+
 def ensure_squeeze_outcomes_table(cur) -> None:
     cur.execute(
         """
@@ -80,11 +91,24 @@ def ensure_squeeze_outcomes_table(cur) -> None:
             hit_3pct BOOLEAN,
             close_pnl_pct FLOAT,
             target_gap_pct FLOAT,
+            precision_score FLOAT,
+            precision_grade VARCHAR(4),
+            mistake_type VARCHAR(64),
+            precision_json JSONB,
             resolved_at BIGINT,
             created_at BIGINT NOT NULL
         )
         """
     )
+    # Existing production tables need additive migrations because CREATE TABLE
+    # IF NOT EXISTS will not add new PR #102 precision columns.
+    for sql in (
+        "ALTER TABLE ghost_squeeze_outcomes ADD COLUMN IF NOT EXISTS precision_score FLOAT",
+        "ALTER TABLE ghost_squeeze_outcomes ADD COLUMN IF NOT EXISTS precision_grade VARCHAR(4)",
+        "ALTER TABLE ghost_squeeze_outcomes ADD COLUMN IF NOT EXISTS mistake_type VARCHAR(64)",
+        "ALTER TABLE ghost_squeeze_outcomes ADD COLUMN IF NOT EXISTS precision_json JSONB",
+    ):
+        cur.execute(sql)
     cur.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_squeeze_outcomes_session
@@ -245,6 +269,21 @@ def _resolve_row(
         outcome = "NEUTRAL"
     close_pnl = ((c - float(buy)) / float(buy) * 100.0) if buy else None
     target_gap = ((c - float(sell)) / float(sell) * 100.0) if sell else None
+    try:
+        from core.ghost_precision import score_trade_precision
+
+        precision = score_trade_precision(
+            direction="UP",
+            entry=buy,
+            target=sell,
+            stop=stop,
+            live_open=o,
+            live_low=l,
+            live_high=h,
+            live_close=c,
+        )
+    except Exception:
+        precision = {}
     return {
         "outcome": outcome,
         "session_open": o,
@@ -256,6 +295,10 @@ def _resolve_row(
         "hit_3pct": hit_3pct,
         "close_pnl_pct": round(close_pnl, 3) if close_pnl is not None else None,
         "target_gap_pct": round(target_gap, 3) if target_gap is not None else None,
+        "precision_score": precision.get("precision_score"),
+        "precision_grade": precision.get("precision_grade"),
+        "mistake_type": precision.get("mistake_type"),
+        "precision": precision,
     }
 
 
@@ -302,6 +345,10 @@ def resolve_squeeze_outcomes(session_date: Optional[str] = None) -> int:
                         hit_3pct = %s,
                         close_pnl_pct = %s,
                         target_gap_pct = %s,
+                        precision_score = %s,
+                        precision_grade = %s,
+                        mistake_type = %s,
+                        precision_json = %s::jsonb,
                         resolved_at = %s
                     WHERE id = %s
                     """,
@@ -316,6 +363,10 @@ def resolve_squeeze_outcomes(session_date: Optional[str] = None) -> int:
                         meta["hit_3pct"],
                         meta["close_pnl_pct"],
                         meta["target_gap_pct"],
+                        meta.get("precision_score"),
+                        meta.get("precision_grade"),
+                        meta.get("mistake_type"),
+                        json.dumps(meta.get("precision") or {}, default=str),
                         now,
                         rid,
                     ),
@@ -377,6 +428,7 @@ def squeeze_daily_log(
                            confidence_pct, rvol, peak_move_pct,
                            outcome, session_open, session_high, session_low, session_close,
                            hit_target, hit_stop, hit_3pct, close_pnl_pct, target_gap_pct,
+                           precision_score, precision_grade, mistake_type, precision_json,
                            resolved_at
                     FROM ghost_squeeze_outcomes
                     WHERE session_date = %s
@@ -400,6 +452,7 @@ def squeeze_daily_log(
                            confidence_pct, rvol, peak_move_pct,
                            outcome, session_open, session_high, session_low, session_close,
                            hit_target, hit_stop, hit_3pct, close_pnl_pct, target_gap_pct,
+                           precision_score, precision_grade, mistake_type, precision_json,
                            resolved_at
                     FROM ghost_squeeze_outcomes
                     WHERE session_date >= %s
@@ -439,8 +492,37 @@ def squeeze_daily_log(
             "hit_3pct": r[21],
             "close_pnl_pct": r[22],
             "target_gap_pct": r[23],
-            "resolved_at": r[24],
+            "precision_score": r[24],
+            "precision_grade": r[25],
+            "mistake_type": r[26],
+            "precision": _coerce_json(r[27]) if r[27] is not None else None,
+            "resolved_at": r[28],
         })
+
+    # Backfill API payloads for older rows that predate PR #102 without writing
+    # to the DB. This keeps the UI honest immediately after deploy.
+    try:
+        from core.ghost_precision import score_trade_precision
+
+        for row in rows:
+            if row.get("precision") or row.get("session_open") is None:
+                continue
+            precision = score_trade_precision(
+                direction="UP",
+                entry=row.get("buy"),
+                target=row.get("sell"),
+                stop=row.get("stop"),
+                live_open=row.get("session_open"),
+                live_low=row.get("session_low"),
+                live_high=row.get("session_high"),
+                live_close=row.get("session_close"),
+            )
+            row["precision"] = precision
+            row["precision_score"] = precision.get("precision_score")
+            row["precision_grade"] = precision.get("precision_grade")
+            row["mistake_type"] = precision.get("mistake_type")
+    except Exception as exc:
+        LOGGER.debug("squeeze precision backfill: %s", str(exc)[:80])
 
     try:
         from core.squeeze_live_drift import enrich_daily_log_rows
