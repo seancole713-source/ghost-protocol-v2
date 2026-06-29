@@ -76,6 +76,8 @@ def test_console_contains_live_market_mirror_and_score_language():
     assert "A win means Ghost got the direction right" in text
     assert "Direction result and precision are separate" in text
     assert "60/100+ average precision score" in text
+    assert "positive if-followed" in text
+    assert "calibrated range evidence" in text
     # PR #87: predicted-vs-live mirror must use real session OHLC (open/high/low),
     # not just the spot price, so the user can compare predicted open/low/high to
     # what the live market actually printed.
@@ -116,6 +118,7 @@ def test_console_fetches_required_existing_and_new_apis():
         "/api/wolf/super-ghost/history?symbol=",
         "/api/wolf/super-ghost/accuracy?symbol=",
         "/api/wolf/super-ghost/if-followed?symbol=",
+        "/api/wolf/super-ghost/top-pick-gate?symbol=",
         "/api/wolf/super-ghost/learning?symbol=",
         "/api/wolf/super-ghost/precision?symbol=",
         "/api/wolf/super-ghost/range-calibration?symbol=",
@@ -135,6 +138,7 @@ def test_console_fetches_required_existing_and_new_apis():
     assert "Precision brain" in text
     assert "Range calibration" in text
     assert "Regime calibration" in text
+    assert "Top Pick gate" in text
     assert "Feature memory" in text
     assert "Shadow models" in text
     assert "Promotion gate" in text
