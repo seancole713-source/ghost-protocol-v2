@@ -11,13 +11,41 @@ RULES:
   6. This is not documentation. It is an accountability ledger.
      Agents lie. This file exists because of that.
 
-LAST UPDATED: 2026-06-29 — PR #102 Precision Scoring Brain (561 tests passing)
+LAST UPDATED: 2026-06-29 — PR #103 Adaptive Range Calibration Brain (569 tests passing)
 """
 
 # ============================================================
-# LIVE SYSTEM — LAST VERIFIED 2026-06-29 (PR #102 deployed)
+# LIVE SYSTEM — LAST VERIFIED 2026-06-29 (PR #103 deployed)
 # ============================================================
 
+
+
+PROD_VERIFY_2026_06_29_PR103 = {
+    "deploy_id": "Railway auto-deploy from main",
+    "git_sha_short": "b2c3c50",
+    "_pr_version": 103,
+    "verified_at_ct": "2026-06-29",
+    "tests": "569 passed, 3 skipped, 2 warnings; compileall exit 0",
+    "live_acceptance": {
+        "version_endpoint": "GET /api/_version -> sha=b2c3c50, _pr_version=103, app_version=2.5.0",
+        "range_calibration": "GET /api/wolf/super-ghost/range-calibration?symbol=WOLF&horizon=5 -> ok true, cold-start 0 profiles",
+        "range_rebuild_auth_gate": "POST /api/wolf/super-ghost/range-calibration/rebuild without auth -> 401",
+        "super_ghost_report": "GET /api/wolf/super-ghost?symbol=WOLF -> includes range_calibration cold-start block; raw risk plan unchanged until enough precision samples",
+        "console": "/picks includes Range calibration Health row",
+    },
+    "key_fixes": [
+        "core/super_ghost_range_calibration.py: bounded adaptive range calibration from Precision Brain profiles",
+        "New super_ghost_range_calibration_profiles table",
+        "Target/stop multipliers derive from target_too_low, target_too_high, stop_too_wide, stop_too_tight, and low-precision patterns",
+        "Super Ghost risk_plan can publish target_price_raw/calibrated, stop_loss_raw/calibrated, expected high/low/close zones, bull/bear cases, and invalidation level",
+        "Public /range-calibration endpoint and auth-gated /range-calibration/rebuild",
+        "Resolver job rebuilds range calibration after precision scoring",
+    ],
+    "known_issues": [
+        "Range profiles are cold-start until enough precision profiles exist",
+        "Calibration currently applies price-adjustment only to long-oriented UP risk plans; DOWN/HOLD keep raw plan until short-side range model is validated",
+    ],
+}
 
 PROD_VERIFY_2026_06_29_PR102 = {
     "deploy_id": "ed610631-19c1-4c4e-a10d-a030656c9ba7",
