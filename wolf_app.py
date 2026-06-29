@@ -23,7 +23,7 @@ logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 # missing from Railway logs after a deploy, the container is stale (the
 # Procfile boot echo is the shell-level twin of this check).
 LOGGER.info(
-    "[wolf_app] BOOT_BANNER PR86_CACHEBUST_CT "
+    "[wolf_app] BOOT_BANNER PR87_CACHEBUST_CT "
     "DEPLOY_VERSION=%s GIT_SHA=%s DEPLOY_ID=%s",
     os.getenv("DEPLOY_VERSION", "unset"),
     os.getenv("RAILWAY_GIT_COMMIT_SHA", "unset"),
@@ -4014,6 +4014,58 @@ def get_price_endpoint(symbol: str, asset_type: str = "stock"):
     price = get_price(symbol)
     return {"ok": price is not None, "symbol": symbol, "price": price}
 
+
+@APP.get("/api/market/session/{symbol}")
+def get_market_session_endpoint(symbol: str):
+    """Live intraday session OHLC for the prediction mirror (PR #87).
+
+    The unified console mirrors each prediction against real market truth:
+    predicted open/ref vs live open, predicted low/stop vs the session low,
+    predicted high/target vs the session high. ``/api/price`` only returns the
+    spot price, so the mirror's live low/high/open were blank for Super Ghost
+    pool symbols. This exposes core.prices.get_intraday_session(), which already
+    computes today's open/high/low + last price via the Alpaca→yfinance chain.
+    Read-only, best-effort: returns ok:false with a spot-price fallback rather
+    than raising when feeds are unavailable.
+    """
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        return {"ok": False, "error": "symbol required"}
+    try:
+        from core.prices import get_intraday_session, get_price
+        sess = get_intraday_session(sym) or {}
+        has_ohlc = sess.get("today_open") is not None or sess.get("today_high") is not None
+        if not sess.get("price"):
+            spot = get_price(sym)
+            if spot is not None:
+                sess["price"] = spot
+        out = {
+            "ok": bool(sess.get("price") is not None or has_ohlc),
+            "symbol": sym,
+            "price": sess.get("price"),
+            "previous_close": sess.get("previous_close"),
+            "session": sess.get("session"),
+            "session_label": sess.get("session_label"),
+            "market_date": sess.get("market_date"),
+            "live_open": sess.get("today_open"),
+            "live_high": sess.get("today_high"),
+            "live_low": sess.get("today_low"),
+            "change_abs": sess.get("change_abs"),
+            "change_pct": sess.get("change_pct"),
+            "feed": sess.get("feed"),
+            "as_of_ts": sess.get("as_of_ts"),
+        }
+        return out
+    except Exception as e:
+        try:
+            from core.prices import get_price
+            spot = get_price(sym)
+        except Exception:
+            spot = None
+        return {"ok": spot is not None, "symbol": sym, "price": spot,
+                "live_open": None, "live_high": None, "live_low": None,
+                "error": str(e)[:160]}
+
 @APP.post("/api/migrate-outcomes")
 def migrate_outcomes(x_cron_secret: str = Header(default="")):
     """INSERT from ghost_prediction_outcomes (13k rows) into predictions."""
@@ -5428,7 +5480,7 @@ def v3_train(x_cron_secret: str = Header(default=""), force: bool = False):
 
 # PR #19 deploy-version constant. Bump on every "did Railway pick up
 # the new code?" PR so /api/_version reveals the truth in one curl.
-_RUNNING_PR_VERSION = 86
+_RUNNING_PR_VERSION = 87
 
 
 def _deploy_meta() -> dict:
