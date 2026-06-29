@@ -11,12 +11,39 @@ RULES:
   6. This is not documentation. It is an accountability ledger.
      Agents lie. This file exists because of that.
 
-LAST UPDATED: 2026-06-29 — PR #96 Feature Attribution Memory (529 tests passing)
+LAST UPDATED: 2026-06-29 — PR #98 Shadow Model Runner (536 tests passing)
 """
 
 # ============================================================
-# LIVE SYSTEM — LAST VERIFIED 2026-06-29 (PR #96 deployed)
+# LIVE SYSTEM — LAST VERIFIED 2026-06-29 (PR #98 / _pr_version 97 deployed)
 # ============================================================
+
+PROD_VERIFY_2026_06_29_PR98 = {
+    "deploy_id": "Railway auto-deploy from main",
+    "git_sha_short": "3cc0987",
+    "_pr_version": 97,
+    "verified_at_ct": "2026-06-29",
+    "tests": "536 passed, 3 deselected/skipped, 2 warnings; compileall exit 0",
+    "live_acceptance": {
+        "version_endpoint": "GET /api/_version -> sha=3cc0987, _pr_version=97, app_version=2.5.0",
+        "shadow_summary": "GET /api/wolf/super-ghost/shadow?symbol=WOLF -> ok true, 7-model manifest",
+        "shadow_models": "GET /api/wolf/super-ghost/shadow/models -> ok true, 7-model manifest",
+        "auth_gates": "POST /shadow/run and /shadow/resolve without auth -> 401",
+        "console": "/picks includes Shadow models Health row",
+    },
+    "key_fixes": [
+        "core/super_ghost_shadow.py: 7 specialist shadow prediction brains",
+        "Persistent tables: super_ghost_shadow_predictions and super_ghost_shadow_model_profiles",
+        "Shadows generated whenever a Super Ghost prediction is logged",
+        "Shadow resolver scores against parent Truth Ledger outcomes",
+        "Specialists: technical, news, fundamental, macro, regime, learning-adjusted, ensemble",
+        "Public /shadow /shadow/models and auth-gated /shadow/run /shadow/resolve",
+    ],
+    "known_issues": [
+        "Shadow profiles are cold-start until logged shadow predictions resolve",
+        "No auto-promotion; promotion gate remains a future PR",
+    ],
+}
 
 PROD_VERIFY_2026_06_29_PR96 = {
     "deploy_id": "Railway auto-deploy from main",
@@ -643,6 +670,11 @@ Important honesty note:
   WOLF meeting coverage gate does NOT mean "buy" or "high confidence." Live output
   can still be grade F / NO EDGE — WATCH ONLY if the evidence is weak. That is correct.
   Coverage is a prerequisite for trust, not a promise of profit.
+
+PR #98 Shadow Model Runner shipped after the evolution directive:
+  - Seven specialist prediction brains now run in parallel with production Ghost when predictions are logged.
+  - Shadow predictions are stored and later resolved against parent Truth Ledger outcomes.
+  - This creates true model disagreement memory for future promotion gates.
 
 PR #96 Feature Attribution Memory shipped after the evolution directive:
   - Every logged Super Ghost checklist point is now feature-attribution memory.
