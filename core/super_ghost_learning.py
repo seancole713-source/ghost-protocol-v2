@@ -275,15 +275,26 @@ def profile_from_lessons(lessons: Iterable[Dict[str, Any] | Lesson]) -> Dict[str
     wins = [r for r in rows if r.get("direction_correct") is True]
     rets = [_f(r.get("realized_return_pct")) for r in rows]
     rets = [x for x in rets if x is not None]
-    target_errs = [_f(r.get("target_error_pct")) for r in rows if _f(r.get("target_error_pct")) is not None]
     avg_ret = sum(rets) / len(rets) if rets else None
-    avg_te = sum(target_errs) / len(target_errs) if target_errs else None
-    avg_abs_te = sum(abs(x) for x in target_errs) / len(target_errs) if target_errs else None
     win_rate = len(wins) / n if n else None
 
+    # Target-magnitude calibration must learn ONLY from direction-correct rows.
+    # A wrong-direction prediction's "target error" is meaningless noise for
+    # how far a *correct* call should aim; mixing it in dilutes the real lesson
+    # (e.g. "$5 target, price hit $7" = target too low). We therefore compute
+    # the target-move multiplier from correct-direction lessons and require a
+    # minimum number of them before adjusting.
+    te_rows = [r for r in wins if _f(r.get("target_error_pct")) is not None]
+    target_errs_correct = [_f(r.get("target_error_pct")) for r in te_rows]
+    # Report-level error stats still reflect every resolved row (full picture).
+    all_target_errs = [_f(r.get("target_error_pct")) for r in rows if _f(r.get("target_error_pct")) is not None]
+    avg_te = (sum(target_errs_correct) / len(target_errs_correct)) if target_errs_correct else None
+    avg_abs_te = (sum(abs(x) for x in all_target_errs) / len(all_target_errs)) if all_target_errs else None
+
     # Target multiplier is on the move from entry->target, not on absolute price.
-    # If average target error is +40%, widen the move, but cap hard to avoid overfit.
-    if avg_te is None or n < MIN_PROFILE_SAMPLES:
+    # If average (correct-call) target error is +40%, widen the move, but cap
+    # hard to avoid overfit, and only once enough correct-direction samples exist.
+    if avg_te is None or len(target_errs_correct) < MIN_PROFILE_SAMPLES:
         target_mult = 1.0
     else:
         target_mult = _clamp(1.0 + (avg_te / 100.0) * 0.50, MIN_TARGET_MOVE_MULT, MAX_TARGET_MOVE_MULT)
@@ -324,6 +335,7 @@ def profile_from_lessons(lessons: Iterable[Dict[str, Any] | Lesson]) -> Dict[str
         "avg_target_error_pct": round(avg_te, 3) if avg_te is not None else None,
         "avg_abs_target_error_pct": round(avg_abs_te, 3) if avg_abs_te is not None else None,
         "target_move_multiplier": round(target_mult, 4),
+        "target_calibration_samples": len(target_errs_correct),
         "confidence_delta": round(conf_delta, 4),
         "conviction_multiplier": round(conv_mult, 4),
         "learning_status": status,
