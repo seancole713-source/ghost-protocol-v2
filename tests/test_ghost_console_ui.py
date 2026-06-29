@@ -43,11 +43,15 @@ def test_console_contains_required_sidebar_and_prediction_tabs():
         "Health",
     ):
         assert label in text
-    # Top horizontal tabs mirror the sidebar.
+    # Section routing remains one stable data-section contract.
     assert "data-section=\"top\"" in text
     assert "data-section=\"bullish\"" in text
     assert "data-section=\"h48\"" in text
     assert "data-section=\"week\"" in text
+    # PR #91 polish: duplicated top-tab chrome is hidden; sidebar nav is the
+    # single visible navigation source.
+    assert ".tabs{display:none}" in text
+    assert "id=\"topTabs\" aria-hidden=\"true\"" in text
 
 
 def test_console_contains_live_market_mirror_and_score_language():
@@ -64,8 +68,8 @@ def test_console_contains_live_market_mirror_and_score_language():
     ):
         assert phrase in text
     # The user specifically wanted UP and DOWN both counted as wins when direction is right.
-    assert "DOWN predictions count as wins when price falls" in text
-    assert "Win means Ghost got direction correct" in text
+    assert "DOWN call counts as a win when price falls" in text or "DOWN call also counts as a win when price falls" in text
+    assert "A win means Ghost got the direction right" in text
     # PR #87: predicted-vs-live mirror must use real session OHLC (open/high/low),
     # not just the spot price, so the user can compare predicted open/low/high to
     # what the live market actually printed.
@@ -81,6 +85,17 @@ def test_console_contains_pool_management_and_top_pick_gate():
     assert "Top Picks locked" in text
     assert "≥70%" in text or "&ge;70%" in text
     assert "proven directional win rate" in text
+    assert "at least 5 completed predictions" in text
+    assert "Current completed predictions" in text
+
+
+def test_console_surfaces_post_falsification_state_outside_health_tab():
+    text = _html()
+    assert "id=\"killBanner\"" in text
+    assert "function renderTrustBanner" in text
+    assert "Post-falsification mode: old 80% claim abandoned." in text
+    assert "Truth gate active" in text
+    assert "stays NO EDGE until coverage, risk, and truth-ledger gates" in text
 
 
 def test_console_fetches_required_existing_and_new_apis():
