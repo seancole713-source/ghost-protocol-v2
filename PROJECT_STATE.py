@@ -11,16 +11,34 @@ RULES:
   6. This is not documentation. It is an accountability ledger.
      Agents lie. This file exists because of that.
 
-LAST UPDATED: 2026-06-29 — PR #105 Strict Top Pick Evidence Gate (582 tests passing)
+LAST UPDATED: 2026-06-29 — PR #106 Test Warning Cleanup (582 passed, 3 skipped, warning-clean)
 """
 
 # ============================================================
-# LIVE SYSTEM — LAST VERIFIED 2026-06-29 (PR #105 deployed)
+# LIVE SYSTEM — LAST VERIFIED 2026-06-29 (PR #106 test-cleanup deployed; runtime marker PR105)
 # ============================================================
 
 
 
 
+
+
+PROD_VERIFY_2026_06_29_PR106 = {
+    "deploy_id": "Railway auto-deploy from main",
+    "git_sha_short": "0e944aa",
+    "_pr_version": 105,
+    "verified_at_ct": "2026-06-29",
+    "tests": "582 passed, 3 skipped; warning-clean",
+    "live_acceptance": {
+        "version_endpoint": "GET /api/_version -> sha=0e944aa, _pr_version=105, app_version=2.5.0",
+        "test_suite": "python3 -m pytest tests/ -q -> 582 passed, 3 skipped, no warnings summary",
+    },
+    "key_fixes": [
+        "pytest.ini filters known third-party sklearn/scipy L-BFGS-B disp/iprint deprecation noise",
+        "Project warnings remain actionable; runtime behavior unchanged",
+    ],
+    "known_issues": [],
+}
 
 PROD_VERIFY_2026_06_29_PR105 = {
     "deploy_id": "Railway auto-deploy from main",
