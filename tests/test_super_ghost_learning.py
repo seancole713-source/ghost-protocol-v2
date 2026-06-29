@@ -131,6 +131,52 @@ def test_apply_learning_dampens_bad_direction_profile():
     assert out["prediction"]["accuracy_grade"] == "C"
 
 
+def _up_target_too_low(i):
+    return classify_lesson({
+        "id": i, "symbol": "T", "direction": "UP",
+        "reference_price": 4.5, "target_price": 5.0, "stop_loss": 4.2,
+        "price_5d": 7.0, "return_5d_pct": 55.56, "correct_5d": True,
+    }, horizon=5)
+
+
+def _up_wrong_direction(i):
+    return classify_lesson({
+        "id": i, "symbol": "T", "direction": "UP",
+        "reference_price": 10.0, "target_price": 11.0, "stop_loss": 9.5,
+        "price_5d": 8.0, "return_5d_pct": -20.0, "correct_5d": False,
+    }, horizon=5)
+
+
+def test_target_calibration_ignores_wrong_direction_noise():
+    """Target-magnitude learning must use only direction-correct rows.
+
+    A wrong-direction call's 'target error' is noise for how far a correct call
+    should aim. With 3 clean '+40% too low' lessons plus 2 wrong-direction rows,
+    the widen multiplier must still reflect the +40% magnitude lesson, not be
+    diluted toward 1.0 by the wrong-direction rows.
+    """
+    clean = profile_from_lessons([_up_target_too_low(i) for i in range(4)])
+    mixed = profile_from_lessons(
+        [_up_target_too_low(i) for i in range(3)] + [_up_wrong_direction(i) for i in range(3, 5)]
+    )
+    # avg_target_error_pct is computed from correct-direction rows only.
+    assert clean["avg_target_error_pct"] == 40.0
+    assert mixed["avg_target_error_pct"] == 40.0
+    # The widen multiplier survives the wrong-direction noise.
+    assert mixed["target_move_multiplier"] == clean["target_move_multiplier"] == 1.2
+    assert mixed["target_calibration_samples"] == 3
+    # Win rate still reflects ALL rows (3 correct / 5 total).
+    assert mixed["direction_win_rate"] == 0.6
+
+
+def test_target_calibration_requires_minimum_correct_samples():
+    """Below the minimum count of correct-direction magnitude samples, no widen."""
+    few = profile_from_lessons(
+        [_up_target_too_low(0), _up_target_too_low(1)] + [_up_wrong_direction(i) for i in range(2, 5)]
+    )
+    assert few["target_calibration_samples"] == 2
+    assert few["target_move_multiplier"] == 1.0
+
 def test_super_ghost_report_contains_learning_adjustment_cold_start():
     from core.super_ghost import build_super_ghost
 
