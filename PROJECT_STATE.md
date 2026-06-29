@@ -25,6 +25,7 @@
 > - **PR #105 Top Pick Evidence Gate:** production `8234a16`, `_pr_version 105`; Top Picks now require direction proof, precision proof, calibration readiness, positive if-followed evidence, and clear kill conditions; suite **582 passed**.
 > - **PR #106 Test warning cleanup:** production `0e944aa`, `_pr_version 105`; suite is warning-clean with **582 passed, 3 skipped**.
 > - **PR #107 Model deserialization hardening:** production `a74b71d`, `_pr_version 107`; model metadata now validates before pickle load, new models include SHA256 integrity, suite **585 passed, 3 skipped**.
+> - **PR #108 Startup auth hardening:** production `089a5fc`, `_pr_version 108`; removed hardcoded default API bearer token and added static secret checks; suite **587 passed, 3 skipped**.
 >
 > **PR #70–#81 (2026-06-25–26):** Comprehensive security + reliability audit. 12 PRs deployed.
 > - **Circuit breaker fixes:** infinite half-open probe loop (yfinance + Alpaca rate-limit) — breakers now actually block when tripped
@@ -91,10 +92,11 @@ squeeze ML v2, drift/sentiment/options probes) are wired as of PR #60.
 | Investor cockpit | `/cockpit` — WOLF-first UI |
 | Cron trigger | cron-job.org fires `POST /api/morning-card` daily 8 AM CT |
 | Auth header name | `x-cron-secret` (value in Railway env as `CRON_SECRET`) |
-| **Last prod-verified** | **2026-06-29** — PR #107 deployed (`a74b71d`, `_pr_version 107`); 585 tests passed, 3 skipped; model deserialization hardened; live `/health` score 95; Super Ghost + Top Pick Gate routes verified |
+| **Last prod-verified** | **2026-06-29** — PR #108 deployed (`089a5fc`, `_pr_version 108`); 587 tests passed, 3 skipped; hardcoded startup API token removed; live `/health` score 90; Top Pick Gate route verified locked |
 
 **Agent CAN reach Railway** as of 2026-06-22 session — all production verification is done via `curl` from the local terminal.
 
+**PR #108 prod verify:** passed 2026-06-29 — `GET /api/_version` sha `089a5fc`, `_pr_version 108`; `/health` score 90; `/api/wolf/super-ghost/top-pick-gate?symbol=WOLF&horizon=5` ok with `decision=LOCKED`; local suite warning-clean: 587 passed, 3 skipped.
 **PR #107 prod verify:** passed 2026-06-29 — `GET /api/_version` sha `a74b71d`, `_pr_version 107`; `/health` score 95; `/api/wolf/super-ghost/top-pick-gate?symbol=WOLF&horizon=5` ok with `decision=LOCKED`; `/api/wolf/super-ghost?symbol=WOLF` ok with honest `NO EDGE — WATCH ONLY`; local suite warning-clean: 585 passed, 3 skipped.
 **PR #106 prod verify:** passed 2026-06-29 — `GET /api/_version` sha `0e944aa`, `_pr_version 105`; local `python3 -m pytest tests/ -q` is warning-clean: 582 passed, 3 skipped. Test-only change; no runtime marker bump.
 **PR #105 prod verify:** passed 2026-06-29 — `GET /api/_version` sha `8234a16`, `_pr_version 105`; `/api/wolf/super-ghost/top-pick-gate?symbol=WOLF&horizon=5` ok with `decision=LOCKED`, `eligible=false`, blockers present; `/picks` includes Top Pick gate Health row and positive-if-followed/calibrated-evidence copy; full suite 582 passed.
@@ -522,3 +524,4 @@ Run once per week (any time for deploy checks; squeeze/radar checks best **Mon�
 | **#105** | 06-29 | **Strict Top Pick Evidence Gate** — `core/super_ghost_top_picks.py`, `/api/wolf/super-ghost/top-pick-gate`, backend gate requires completed predictions, ≥70% directional wins, ≥60/100 precision, calibration readiness, positive if-followed evidence, and clear kill conditions; console Top Stocks consumes gate; `_pr_version` 105 |
 | **#106** | 06-29 | **Test warning cleanup** — filtered known third-party sklearn/scipy deprecation noise in `pytest.ini`; full suite now warning-clean (`582 passed, 3 skipped`); no runtime marker bump |
 | **#107** | 06-29 | **Model deserialization hardening** — `load_model()` validates metadata before pickle/base64, caps payload size, strict base64 decode, stores `model_sha256`/payload size on new training, verifies SHA when present, legacy rows only load after serve guards pass; `_pr_version` 107 |
+| **#108** | 06-29 | **Startup auth-token hardening** — removed hardcoded default `API_AUTH_TOKEN` (`ghost-prod-2024`) from startup self-call logic, skip startup predictions unless token explicitly configured, added static secret checks for public HTML; `_pr_version` 108 |

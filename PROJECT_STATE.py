@@ -11,11 +11,11 @@ RULES:
   6. This is not documentation. It is an accountability ledger.
      Agents lie. This file exists because of that.
 
-LAST UPDATED: 2026-06-29 — PR #107 Model Deserialization Hardening (585 passed, 3 skipped, warning-clean)
+LAST UPDATED: 2026-06-29 — PR #108 Startup Auth Hardening (587 passed, 3 skipped, warning-clean)
 """
 
 # ============================================================
-# LIVE SYSTEM — LAST VERIFIED 2026-06-29 (PR #107 deployed)
+# LIVE SYSTEM — LAST VERIFIED 2026-06-29 (PR #108 deployed)
 # ============================================================
 
 
@@ -23,6 +23,27 @@ LAST UPDATED: 2026-06-29 — PR #107 Model Deserialization Hardening (585 passed
 
 
 
+
+
+PROD_VERIFY_2026_06_29_PR108 = {
+    "deploy_id": "Railway auto-deploy from main",
+    "git_sha_short": "089a5fc",
+    "_pr_version": 108,
+    "verified_at_ct": "2026-06-29",
+    "tests": "587 passed, 3 skipped; warning-clean",
+    "live_acceptance": {
+        "version_endpoint": "GET /api/_version -> sha=089a5fc, _pr_version=108, app_version=2.5.0",
+        "health": "GET /health -> score 90",
+        "top_pick_gate": "GET /api/wolf/super-ghost/top-pick-gate?symbol=WOLF&horizon=5 -> ok true, decision LOCKED",
+        "test_suite": "python3 -m pytest tests/ -q -> 587 passed, 3 skipped, no warnings summary",
+    },
+    "key_fixes": [
+        "Removed hardcoded default API_AUTH_TOKEN from startup self-call logic",
+        "Startup predictions now skip unless API_AUTH_TOKEN is explicitly configured",
+        "Static tests assert no default API auth token and no raw private keys/live secrets in public HTML",
+    ],
+    "known_issues": [],
+}
 
 PROD_VERIFY_2026_06_29_PR107 = {
     "deploy_id": "Railway auto-deploy from main",
