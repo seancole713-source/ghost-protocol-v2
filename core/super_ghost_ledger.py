@@ -214,6 +214,11 @@ def log_prediction(report: Dict[str, Any], *, created_at: Optional[int] = None) 
             ledger_id = int(r[0]) if r else None
             if ledger_id:
                 try:
+                    from core.super_ghost_feature_store import persist_feature_snapshot
+                    persist_feature_snapshot(cur, report, ledger_id=ledger_id, prediction_ts=ts)
+                except Exception as store_exc:
+                    LOGGER.warning("log_prediction feature_store %s: %s", row.get("symbol"), str(store_exc)[:120])
+                try:
                     from core.super_ghost_memory import log_prediction_memory
                     log_prediction_memory(cur, ledger_id, report)
                 except Exception as mem_exc:
