@@ -191,4 +191,12 @@ def _migrate_schema():
             ensure_lab_tables(cur)
     except Exception as e:
         LOGGER.warning("Super Ghost lab tables: " + str(e)[:80])
+    try:
+        from core.super_ghost_memory import ensure_memory_tables, ensure_default_model
+        with db_conn() as conn:
+            cur = conn.cursor()
+            ensure_memory_tables(cur)
+            ensure_default_model(cur)
+    except Exception as e:
+        LOGGER.warning("Super Ghost memory tables: " + str(e)[:80])
     LOGGER.info("Schema migration complete")

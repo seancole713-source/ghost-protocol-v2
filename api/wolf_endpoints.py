@@ -1875,3 +1875,50 @@ async def post_super_ghost_lab_run(request: Request):
         limit = 1000
     from core.super_ghost_lab import run_lab
     return JSONResponse(content=run_lab(symbol=sym, horizon=horizon, limit=limit, persist=True))
+
+
+@router.get("/super-ghost/models")
+async def get_super_ghost_models():
+    """Model registry for Super Ghost production/shadow brains."""
+    from core.super_ghost_memory import list_models
+    return JSONResponse(content=list_models())
+
+
+@router.get("/super-ghost/features")
+async def get_super_ghost_features(symbol: str = "", limit: int = 100):
+    """Recent per-prediction feature attribution rows."""
+    from core.super_ghost_memory import recent_features
+    sym = (symbol or "").strip().upper() or None
+    return JSONResponse(content=recent_features(symbol=sym, limit=limit))
+
+
+@router.get("/super-ghost/feature-profile")
+async def get_super_ghost_feature_profile(symbol: str = "", horizon: int = 5, limit: int = 50):
+    """Long-term reliability profiles for Super Ghost features."""
+    from core.super_ghost_memory import feature_profile
+    sym = (symbol or "").strip().upper() or None
+    return JSONResponse(content=feature_profile(symbol=sym, horizon=horizon, limit=limit))
+
+
+@router.post("/super-ghost/features/score")
+async def post_super_ghost_features_score(request: Request):
+    """Score stored prediction features against resolved outcomes. Auth required."""
+    from mcp.security import require_mcp_auth
+    require_mcp_auth(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    sym = (str(body.get("symbol") or "")).strip().upper() or None
+    try:
+        horizon = int(body.get("horizon") or 5)
+    except Exception:
+        horizon = 5
+    try:
+        limit = int(body.get("limit") or 1000)
+    except Exception:
+        limit = 1000
+    from core.super_ghost_memory import score_features_from_ledger
+    return JSONResponse(content=score_features_from_ledger(symbol=sym, horizon=horizon, limit=limit))

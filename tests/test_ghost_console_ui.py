@@ -111,6 +111,7 @@ def test_console_fetches_required_existing_and_new_apis():
         "/api/wolf/super-ghost/accuracy?symbol=",
         "/api/wolf/super-ghost/if-followed?symbol=",
         "/api/wolf/super-ghost/learning?symbol=",
+        "/api/wolf/super-ghost/feature-profile?symbol=",
         "/api/picks?limit=50",
         "/api/squeeze/picks",
         "/api/squeeze/daily-log?days=7",
@@ -118,6 +119,7 @@ def test_console_fetches_required_existing_and_new_apis():
     ):
         assert endpoint in text
     assert "Learning brain" in text
+    assert "Feature memory" in text
 
 
 def test_console_routes_serve_new_and_legacy_pages():
