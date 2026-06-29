@@ -1906,6 +1906,38 @@ async def post_super_ghost_range_calibration_rebuild(request: Request):
     return JSONResponse(content=rebuild_range_calibration(symbol=sym, horizon=horizon, limit=limit))
 
 
+@router.get("/super-ghost/regime-calibration")
+async def get_super_ghost_regime_calibration(symbol: str = "", horizon: int = 5, limit: int = 20):
+    """Regime/setup-specific adaptive calibration derived from precision events."""
+    from core.super_ghost_regime_calibration import regime_calibration_summary
+    sym = (symbol or "").strip().upper() or None
+    return JSONResponse(content=regime_calibration_summary(symbol=sym, horizon=horizon, limit=limit))
+
+
+@router.post("/super-ghost/regime-calibration/rebuild")
+async def post_super_ghost_regime_calibration_rebuild(request: Request):
+    """Rebuild regime-specific calibration slices. Auth required."""
+    from mcp.security import require_mcp_auth
+    require_mcp_auth(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    sym = (str(body.get("symbol") or "")).strip().upper() or None
+    try:
+        horizon = int(body.get("horizon") or 5)
+    except Exception:
+        horizon = 5
+    try:
+        limit = int(body.get("limit") or 1000)
+    except Exception:
+        limit = 1000
+    from core.super_ghost_regime_calibration import rebuild_regime_calibration
+    return JSONResponse(content=rebuild_regime_calibration(symbol=sym, horizon=horizon, limit=limit))
+
+
 @router.get("/super-ghost/lab")
 async def get_super_ghost_lab(symbol: str = "", horizon: int = 5):
     """Latest Champion/Challenger Lab result.
