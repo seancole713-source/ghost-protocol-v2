@@ -37,7 +37,16 @@ def _is_known(sig: Dict[str, str], baseline: List[Dict[str, str]]) -> bool:
 
 
 def _diagnostics_errors(base_url: str) -> List[Dict[str, str]]:
-    payload = _fetch_json(f"{base_url}/api/diagnostics")
+    try:
+        payload = _fetch_json(f"{base_url}/api/diagnostics")
+    except requests.HTTPError as exc:
+        # /api/diagnostics intentionally returns 404 without the admin cookie so
+        # public CI/live gates do not leak internals. Treat auth-gated absence as
+        # "not collectible" rather than an application error.
+        if exc.response is not None and exc.response.status_code in (401, 403, 404):
+            print("WARN: /api/diagnostics gated; skipping diagnostics error signatures")
+            return []
+        raise
     details = payload.get("details", {})
     errors = details.get("errors", []) if isinstance(details, dict) else []
     out: List[Dict[str, str]] = []
@@ -52,7 +61,13 @@ def _audit_failures(base_url: str, cron_secret: str) -> List[Dict[str, str]]:
     headers: Dict[str, str] = {}
     if cron_secret:
         headers["X-Cron-Secret"] = cron_secret
-    payload = _fetch_json(f"{base_url}/api/health/audit?auto_fix=true", method="POST", headers=headers)
+    try:
+        payload = _fetch_json(f"{base_url}/api/health/audit?auto_fix=true", method="POST", headers=headers)
+    except requests.HTTPError as exc:
+        if not cron_secret and exc.response is not None and exc.response.status_code in (401, 403, 404):
+            print("WARN: /api/health/audit gated and CRON_SECRET unset; skipping audit error signatures")
+            return []
+        raise
     if payload.get("ok") is not True:
         return [{"source": "audit", "check": "audit.endpoint", "detail": _normalize(str(payload))}]
     audit = payload.get("audit", {})
