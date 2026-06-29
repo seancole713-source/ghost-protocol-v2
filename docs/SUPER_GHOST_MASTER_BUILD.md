@@ -125,12 +125,26 @@ because code exists — it is done when its gate is *measured true*.
 Checklist engine, AI brief, market-regime adjustment, **truth ledger + resolver**, accuracy &
 if-followed endpoints — all live and tested (470+ tests).
 
-### ▶ P1 — Data Coverage Upgrade — **NEXT**
+### ▶ P1 — Data Coverage Upgrade — **IN PROGRESS (PR88)**
 Raise live evidence from ~7/25 to **18+/25** for WOLF and **≥15/25** for every tracked symbol.
-Build: SEC XBRL EPS/revenue extractor · Form 4 insider parser · 13F institutional parser · analyst
-ratings/revisions feed · sector-ETF mapper · macro/Fed/CPI calendar + surprise classifier · options-
-chain snapshot · guidance/news event classifier · coverage dashboard.
-**Gate:** no prediction may be graded **A/B unless coverage ≥ 18/25**.
+**PR88 root-cause fix + first slice:** live coverage was stuck at 7/25 not because scorers were
+missing but because `_fetch_live_snapshot` sourced *all* price history and fundamentals from
+yfinance, which Yahoo blocks from Railway's datacenter IPs. PR88 re-sources the data from
+Railway-reachable providers:
+- **Daily OHLCV history** → `core/market_history.py` (Alpaca daily bars, the same source PR87
+  proved live, with a yfinance fallback for dev). This alone reactivates checks 8–14 (price
+  action) plus 16/17 and the price-derived risk checks 20–22.
+- **EPS YoY + revenue YoY** → `core/sec_fundamentals.py` (SEC XBRL `companyconcept`, same host as
+  the working 8-K fetcher). Feeds checks 1–2 with an honest *YoY-trend* EPS signal (clearly
+  labelled — never a fake "beat vs consensus").
+- **Current-price fallback** → the 5-tier `core/prices.py` spot chain, so risk/entry never dies.
+
+Still to build in P1: Form 4 insider parser · 13F institutional parser · analyst ratings/revisions
+feed · macro/Fed/CPI calendar + surprise classifier · options-chain snapshot · guidance/news event
+classifier · coverage dashboard.
+**Gate (now ENFORCED in code + CI):** no prediction may be graded **A/B unless coverage ≥ 18/25**,
+and no **HIGH-CONVICTION** action below that bar. Implemented as `MIN_COVERAGE_FOR_AB` in
+`core/super_ghost.py` and guarded by `tests/test_super_ghost_coverage.py`.
 
 ### P2 — Automated Prediction Logging
 Schedule predictions (pre-open, open, midday, power hour, close) + event-driven (earnings, 8-K,

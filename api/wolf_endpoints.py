@@ -1731,3 +1731,65 @@ async def post_super_ghost_resolve(request: Request):
     require_mcp_auth(request)
     from core.super_ghost_ledger import resolve_predictions
     return JSONResponse(content=resolve_predictions(limit=500))
+
+
+@router.get("/super-ghost/coverage")
+async def get_super_ghost_coverage(symbol: str = WOLF_SYMBOL):
+    """PR #88 coverage health check.
+
+    A clear, public read of *how much* live evidence Ghost actually has for a
+    symbol right now: how many of the 25 checks resolved, whether that meets the
+    A/B-grade gate (>=18/25), which checks are missing, and which upstream data
+    sources are reachable. This is the "confirm Ghost is working" panel the
+    operator asked for, and it makes the coverage upgrade observable live.
+    """
+    sym = (symbol or WOLF_SYMBOL).strip().upper()
+    from core.super_ghost import MIN_COVERAGE_FOR_AB, build_super_ghost
+    report = build_super_ghost(sym)
+    if not report.get("ok"):
+        return JSONResponse(content=report, status_code=400)
+    checklist = report.get("checklist", [])
+    available = [c for c in checklist if c.get("available")]
+    missing = [
+        {"id": c.get("id"), "key": c.get("key"), "title": c.get("title"), "critical": c.get("critical")}
+        for c in checklist if not c.get("available")
+    ]
+    by_cat: dict = {}
+    for c in checklist:
+        cat = c.get("category", "other")
+        slot = by_cat.setdefault(cat, {"available": 0, "total": 0})
+        slot["total"] += 1
+        if c.get("available"):
+            slot["available"] += 1
+    sources = {}
+    try:
+        from core.market_history import history_source_status
+        sources["daily_history"] = history_source_status()
+    except Exception as exc:  # pragma: no cover - defensive
+        sources["daily_history"] = {"error": str(exc)[:120]}
+    try:
+        from core.sec_fundamentals import get_fundamentals
+        f = get_fundamentals(sym)
+        sources["sec_fundamentals"] = {
+            "available": f.get("available"),
+            "has_eps": f.get("actual_eps") is not None,
+            "has_revenue_yoy": f.get("revenue_yoy") is not None,
+            "reason": f.get("reason"),
+        }
+    except Exception as exc:  # pragma: no cover - defensive
+        sources["sec_fundamentals"] = {"error": str(exc)[:120]}
+    cov = report.get("coverage", {})
+    return JSONResponse(content={
+        "ok": True,
+        "symbol": sym,
+        "available": len(available),
+        "total": len(checklist),
+        "min_for_ab_grade": MIN_COVERAGE_FOR_AB,
+        "meets_ab_gate": cov.get("meets_ab_gate"),
+        "coverage_gated": report.get("prediction", {}).get("coverage_gated"),
+        "accuracy_grade": report.get("prediction", {}).get("accuracy_grade"),
+        "by_category": by_cat,
+        "missing": missing,
+        "data_sources": sources,
+        "disclaimer": "Prediction intelligence only; not financial advice and not auto-trading.",
+    })
