@@ -857,7 +857,10 @@ async def _on_startup():
             # Get base URL from environment or default to localhost
             port = _os_module.getenv("PORT", "8080")
             base_url = f"http://localhost:{port}"
-            auth_token = _os_module.getenv("API_AUTH_TOKEN", "ghost-prod-2024")
+            auth_token = _os_module.getenv("API_AUTH_TOKEN", "").strip()
+            if not auth_token:
+                LOGGER.warning("[STARTUP PREDS] skipped: API_AUTH_TOKEN is not configured")
+                return
 
             stocks_triggered = 0
 
@@ -925,4 +928,3 @@ async def _on_startup():
         LOGGER.info("[GHOST STARTUP] 🎯 Watchlist squeeze monitor started")
     except Exception as sq_err:
         LOGGER.warning(f"[GHOST STARTUP] Squeeze monitor start failed: {sq_err}")
-
