@@ -1113,6 +1113,24 @@ def build_super_ghost(symbol: str = "WOLF", *, snapshot: Optional[Dict[str, Any]
             "message": "Learning profile unavailable; deterministic report returned unchanged.",
             "error": str(_learn_exc)[:120],
         }
+    # PR #103: range calibration uses PR #102 precision profiles to publish
+    # raw-vs-calibrated target/stop/range estimates. It is bounded and only
+    # applies after enough resolved precision samples exist; cold-start keeps
+    # the existing risk plan unchanged but still explains why.
+    try:
+        from core.super_ghost_range_calibration import apply_range_calibration_to_report, get_range_calibration_profile
+
+        direction = str((report.get("prediction") or {}).get("direction") or "HOLD").upper()
+        profile = get_range_calibration_profile(sym, direction, horizon=5)
+        report = apply_range_calibration_to_report(report, profile)
+    except Exception as _range_exc:
+        report["range_calibration"] = {
+            "available": False,
+            "applied": False,
+            "status": "unavailable",
+            "message": "Range calibration profile unavailable; risk plan returned unchanged.",
+            "error": str(_range_exc)[:120],
+        }
     if ai:
         report["ai_brief"] = generate_ai_brief(sym, report, snapshot=snap)
     return report

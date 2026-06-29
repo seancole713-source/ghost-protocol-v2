@@ -234,4 +234,11 @@ def _migrate_schema():
             ensure_precision_tables(cur)
     except Exception as e:
         LOGGER.warning("Super Ghost precision tables: " + str(e)[:80])
+    try:
+        from core.super_ghost_range_calibration import ensure_range_calibration_tables
+        with db_conn() as conn:
+            cur = conn.cursor()
+            ensure_range_calibration_tables(cur)
+    except Exception as e:
+        LOGGER.warning("Super Ghost range calibration tables: " + str(e)[:80])
     LOGGER.info("Schema migration complete")
