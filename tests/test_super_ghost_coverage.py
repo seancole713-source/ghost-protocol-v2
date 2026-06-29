@@ -191,12 +191,24 @@ def test_sec_quarterly_series_dedupes_and_skips_cumulative():
     assert yoy["prior"]["val"] == 0.20
 
 
-def test_sec_fundamentals_unknown_symbol_is_honest():
-    from core.sec_fundamentals import get_fundamentals
+def test_sec_fundamentals_unknown_symbol_is_honest(monkeypatch):
+    import core.sec_fundamentals as sf
 
-    out = get_fundamentals("NO_SUCH_TICKER_ZZZ")
+    sf.clear_cache()
+    # Keep hermetic: do not hit the network for the ticker index.
+    monkeypatch.setattr(sf, "_load_ticker_index", lambda: None)
+    out = sf.get_fundamentals("NO_SUCH_TICKER_ZZZ")
     assert out["available"] is False
     assert out.get("reason") == "no_cik_mapping"
+
+
+def test_sec_common_cik_resolves_without_network(monkeypatch):
+    import core.sec_fundamentals as sf
+
+    # AAPL is in the built-in common map, so no network lookup is needed.
+    monkeypatch.setattr(sf, "_load_ticker_index", lambda: (_ for _ in ()).throw(AssertionError("should not load index")))
+    assert sf.cik_for_symbol("AAPL") == "0000320193"
+    assert sf.cik_for_symbol("WOLF") == "0000895419"
 
 
 # ---- market_history module (contract: never raises, degrades to []) --------
