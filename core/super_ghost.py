@@ -33,8 +33,14 @@ LOGGER = logging.getLogger("ghost.super_ghost")
 # The "AI brain already built and waiting" is Ghost's existing Anthropic
 # integration (core/ghost_ask.py, core/war_room.py). Super Ghost reuses the same
 # key + endpoint so the news-reading analyst layer is real AI, not templated text.
+# Default to the SAME model Ghost Ask uses in production (claude-haiku-4-5):
+# it is the proven-good model string for this account. (The War Room Sonnet
+# string returns HTTP 404 for this key, so do not default to it here.)
 ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-SUPER_GHOST_AI_MODEL = os.getenv("SUPER_GHOST_AI_MODEL", os.getenv("WAR_ROOM_MODEL", "claude-sonnet-4-20250514"))
+SUPER_GHOST_AI_MODEL = os.getenv(
+    "SUPER_GHOST_AI_MODEL",
+    os.getenv("GHOST_ASK_MODEL", "claude-haiku-4-5-20251001"),
+)
 SUPER_GHOST_AI_MAX_TOKENS = max(512, min(4096, int(os.getenv("SUPER_GHOST_AI_MAX_TOKENS", "1400"))))
 
 
