@@ -199,4 +199,11 @@ def _migrate_schema():
             ensure_default_model(cur)
     except Exception as e:
         LOGGER.warning("Super Ghost memory tables: " + str(e)[:80])
+    try:
+        from core.super_ghost_shadow import ensure_shadow_tables
+        with db_conn() as conn:
+            cur = conn.cursor()
+            ensure_shadow_tables(cur)
+    except Exception as e:
+        LOGGER.warning("Super Ghost shadow tables: " + str(e)[:80])
     LOGGER.info("Schema migration complete")

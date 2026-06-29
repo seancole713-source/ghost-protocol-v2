@@ -218,6 +218,11 @@ def log_prediction(report: Dict[str, Any], *, created_at: Optional[int] = None) 
                     log_prediction_memory(cur, ledger_id, report)
                 except Exception as mem_exc:
                     LOGGER.warning("log_prediction memory %s: %s", row.get("symbol"), str(mem_exc)[:120])
+                try:
+                    from core.super_ghost_shadow import store_shadow_predictions
+                    store_shadow_predictions(cur, ledger_id, report)
+                except Exception as shadow_exc:
+                    LOGGER.warning("log_prediction shadow %s: %s", row.get("symbol"), str(shadow_exc)[:120])
             return ledger_id
     except Exception as exc:
         LOGGER.warning("log_prediction %s: %s", row.get("symbol"), str(exc)[:160])
@@ -695,6 +700,11 @@ def run_resolver_job() -> Dict[str, Any]:
             out["feature_memory"] = score_features_from_ledger(limit=2000)
         except Exception as mem_exc:
             out["feature_memory"] = {"ok": False, "error": str(mem_exc)[:120]}
+        try:
+            from core.super_ghost_shadow import resolve_shadow_predictions
+            out["shadow_models"] = resolve_shadow_predictions(limit=2000)
+        except Exception as shadow_exc:
+            out["shadow_models"] = {"ok": False, "error": str(shadow_exc)[:120]}
         return out
     except Exception as exc:
         LOGGER.warning("run_resolver_job: %s", str(exc)[:120])

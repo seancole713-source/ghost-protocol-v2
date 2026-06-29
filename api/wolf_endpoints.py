@@ -1922,3 +1922,70 @@ async def post_super_ghost_features_score(request: Request):
         limit = 1000
     from core.super_ghost_memory import score_features_from_ledger
     return JSONResponse(content=score_features_from_ledger(symbol=sym, horizon=horizon, limit=limit))
+
+
+@router.get("/super-ghost/shadow")
+async def get_super_ghost_shadow(symbol: str = "", limit: int = 50):
+    """Recent shadow-model predictions (specialist brains running in parallel)."""
+    from core.super_ghost_shadow import shadow_summary
+    sym = (symbol or "").strip().upper() or None
+    return JSONResponse(content=shadow_summary(symbol=sym, limit=limit))
+
+
+@router.get("/super-ghost/shadow/models")
+async def get_super_ghost_shadow_models():
+    """Shadow model profiles + manifest."""
+    from core.super_ghost_shadow import shadow_model_profiles
+    return JSONResponse(content=shadow_model_profiles())
+
+
+@router.post("/super-ghost/shadow/run")
+async def post_super_ghost_shadow_run(request: Request):
+    """Generate shadow predictions for a fresh Super Ghost report. Auth required.
+
+    Body optional: {"symbol": "WOLF", "log": true}. If log=true, the parent
+    Super Ghost prediction is logged first, which automatically stores shadow
+    predictions. If log=false, returns generated shadows without persistence.
+    """
+    from mcp.security import require_mcp_auth
+    require_mcp_auth(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    sym = (str(body.get("symbol") or WOLF_SYMBOL)).strip().upper()
+    persist = bool(body.get("log", True))
+    from core.super_ghost import build_super_ghost
+    from core.super_ghost_shadow import run_shadow_models
+    report = build_super_ghost(sym)
+    shadows = run_shadow_models(report)
+    ledger_id = None
+    if persist and report.get("ok"):
+        try:
+            from core.super_ghost_ledger import log_prediction
+            ledger_id = log_prediction(report)
+        except Exception:
+            ledger_id = None
+    return JSONResponse(content={"ok": True, "symbol": sym, "ledger_id": ledger_id, "shadow_predictions": shadows})
+
+
+@router.post("/super-ghost/shadow/resolve")
+async def post_super_ghost_shadow_resolve(request: Request):
+    """Resolve shadow predictions against parent Truth Ledger outcomes. Auth required."""
+    from mcp.security import require_mcp_auth
+    require_mcp_auth(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    sym = (str(body.get("symbol") or "")).strip().upper() or None
+    try:
+        limit = int(body.get("limit") or 1000)
+    except Exception:
+        limit = 1000
+    from core.super_ghost_shadow import resolve_shadow_predictions
+    return JSONResponse(content=resolve_shadow_predictions(symbol=sym, limit=limit))
