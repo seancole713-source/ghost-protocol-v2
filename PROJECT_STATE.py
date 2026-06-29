@@ -11,12 +11,40 @@ RULES:
   6. This is not documentation. It is an accountability ledger.
      Agents lie. This file exists because of that.
 
-LAST UPDATED: 2026-06-29 — PR #92 console launch-review follow-ups (508 tests passing)
+LAST UPDATED: 2026-06-29 — PR #93 Super Ghost Learning Brain (515 tests passing)
 """
 
 # ============================================================
-# LIVE SYSTEM — LAST VERIFIED 2026-06-29 (PR #92 deployed)
+# LIVE SYSTEM — LAST VERIFIED 2026-06-29 (PR #93 deployed)
 # ============================================================
+
+PROD_VERIFY_2026_06_29_PR93 = {
+    "deploy_id": "Railway auto-deploy from main",
+    "git_sha_short": "90a9fc7",
+    "_pr_version": 93,
+    "verified_at_ct": "2026-06-29",
+    "tests": "515 passed, 3 deselected/skipped, 2 warnings; compileall exit 0",
+    "live_acceptance": {
+        "version_endpoint": "GET /api/_version -> sha=90a9fc7, _pr_version=93, app_version=2.5.0",
+        "learning_summary": "GET /api/wolf/super-ghost/learning?symbol=WOLF&horizon=5 -> ok true, cold-start 0 profiles/lessons",
+        "report_learning_block": "GET /api/wolf/super-ghost?symbol=WOLF includes learning_adjustment",
+        "learn_auth_gate": "POST /api/wolf/super-ghost/learn without auth -> 401",
+    },
+    "key_fixes": [
+        "core/super_ghost_learning.py: postmortem events + learning profiles from resolved ledger outcomes",
+        "Classifies target_too_low / target_too_high / wrong_direction / missed_move / good_skip / direction_right",
+        "User's $5 target -> $7 realized case is learned as target_too_low and can widen future target moves after enough samples",
+        "Bounded confidence/conviction/target adjustments applied to build_super_ghost reports",
+        "Hourly resolver now triggers learning after outcome resolution",
+        "Public GET /api/wolf/super-ghost/learning and auth-gated POST /learn",
+        "Console Health row shows Learning brain profile/lesson counts",
+    ],
+    "known_issues": [
+        "Learning is cold-start until enough resolved Super Ghost ledger rows exist (min 3 per symbol/direction/horizon)",
+        "Adjustments are deliberately bounded and do not bypass coverage/risk gates",
+        "This is evidence-based learning, not guaranteed prediction or auto-trading",
+    ],
+}
 
 PROD_VERIFY_2026_06_29_PR92 = {
     "deploy_id": "Railway auto-deploy from main",
@@ -539,6 +567,12 @@ Important honesty note:
   WOLF meeting coverage gate does NOT mean "buy" or "high confidence." Live output
   can still be grade F / NO EDGE — WATCH ONLY if the evidence is weak. That is correct.
   Coverage is a prerequisite for trust, not a promise of profit.
+
+PR #93 Learning Brain shipped after the evolution directive:
+  - Every resolved Super Ghost prediction can become a learning event.
+  - If Ghost predicts a target too low/high (e.g. $5 -> $7), it records the mistake type and lesson.
+  - Learning profiles can apply bounded future confidence/conviction/target adjustments after enough samples.
+  - Learning is visible via /api/wolf/super-ghost/learning and the console Health row.
 
 PR #91 follow-up polish shipped after the review:
   - Added persistent post-falsification banner outside Health.
