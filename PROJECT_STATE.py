@@ -11,12 +11,40 @@ RULES:
   6. This is not documentation. It is an accountability ledger.
      Agents lie. This file exists because of that.
 
-LAST UPDATED: 2026-06-29 — PR #95 Champion/Challenger Lab (523 tests passing)
+LAST UPDATED: 2026-06-29 — PR #96 Feature Attribution Memory (529 tests passing)
 """
 
 # ============================================================
-# LIVE SYSTEM — LAST VERIFIED 2026-06-29 (PR #95 deployed)
+# LIVE SYSTEM — LAST VERIFIED 2026-06-29 (PR #96 deployed)
 # ============================================================
+
+PROD_VERIFY_2026_06_29_PR96 = {
+    "deploy_id": "Railway auto-deploy from main",
+    "git_sha_short": "4ea2e24",
+    "_pr_version": 96,
+    "verified_at_ct": "2026-06-29",
+    "tests": "529 passed, 3 deselected/skipped, 2 warnings; compileall exit 0",
+    "live_acceptance": {
+        "version_endpoint": "GET /api/_version -> sha=4ea2e24, _pr_version=96, app_version=2.5.0",
+        "models": "GET /api/wolf/super-ghost/models -> ok true, 1 production model",
+        "feature_profile": "GET /api/wolf/super-ghost/feature-profile?symbol=WOLF&horizon=5 -> ok true, cold-start 0 profiles",
+        "feature_score_auth_gate": "POST /api/wolf/super-ghost/features/score without auth -> 401",
+        "console": "/picks includes Feature memory Health row",
+    },
+    "key_fixes": [
+        "core/super_ghost_memory.py: Model Registry + Feature Attribution Memory",
+        "New durable tables: model_versions, prediction_features, feature_outcomes, feature_profiles, model_contributions",
+        "Every logged Super Ghost checklist item becomes a feature attribution row",
+        "Resolved outcomes classify features as helped/hurt/underweighted/noise/missing",
+        "Feature reliability profiles remember which evidence has worked by symbol/horizon",
+        "Public /models /features /feature-profile and auth-gated /features/score",
+        "Hourly resolver now also scores feature memory",
+    ],
+    "known_issues": [
+        "Feature profiles are cold-start until logged predictions resolve and features are scored",
+        "Feature attribution currently uses checklist scores; future PRs should add model-specific SHAP/importance values",
+    ],
+}
 
 PROD_VERIFY_2026_06_29_PR95 = {
     "deploy_id": "Railway auto-deploy from main",
@@ -615,6 +643,11 @@ Important honesty note:
   WOLF meeting coverage gate does NOT mean "buy" or "high confidence." Live output
   can still be grade F / NO EDGE — WATCH ONLY if the evidence is weak. That is correct.
   Coverage is a prerequisite for trust, not a promise of profit.
+
+PR #96 Feature Attribution Memory shipped after the evolution directive:
+  - Every logged Super Ghost checklist point is now feature-attribution memory.
+  - Resolved outcomes classify features as helped/hurt/underweighted/noise/missing.
+  - Feature reliability profiles create long-term memory of which evidence mattered.
 
 PR #95 Champion/Challenger Lab shipped after the evolution directive:
   - Production Ghost now competes against shadow challenger policies on resolved ledger rows.
