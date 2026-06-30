@@ -8,7 +8,7 @@
     "type-check": "mypy --config-file mypy.ini",
     "test": "make test",
     "build": "make test-compile",
-    "test:e2e": "playwright test",
+    "test:e2e": "env -u NO_COLOR FORCE_COLOR=0 playwright test",
     "verify:live": "python3 scripts/verify_live_health.py",
     "verify:health-audit": "python3 scripts/verify_health_audit.py",
     "verify:error-signatures": "python3 scripts/check_error_signatures.py",

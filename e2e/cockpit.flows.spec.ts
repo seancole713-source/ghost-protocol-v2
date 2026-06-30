@@ -27,7 +27,7 @@ test.describe("Cockpit flows", () => {
     await page.locator("#p-sym").fill("");
     await page.locator("#p-qty").fill("");
     await page.locator("#p-bp").fill("");
-    await page.locator(".btn-add").click();
+    await page.locator("#port-form .btn-add").click();
     await expect(page.locator("#perr")).toContainText("Fill in symbol");
 
     await page.reload({ waitUntil: "domcontentloaded" });

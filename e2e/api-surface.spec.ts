@@ -37,10 +37,21 @@ const EXPECTED_NON_200: Record<string, number> = {
   "/api/portfolio": 401,      // auth-gated — requires portfolio auth
 };
 
+async function getWithRateLimitRetry(request: any, path: string) {
+  let last = await request.get(path);
+  for (const delayMs of [1_000, 2_500, 5_000, 10_000]) {
+    if (last.status() !== 429) return last;
+    const retryAfter = Number(last.headers()["retry-after"] || 0);
+    await new Promise((resolve) => setTimeout(resolve, Math.max(delayMs, retryAfter * 1000)));
+    last = await request.get(path);
+  }
+  return last;
+}
+
 test.describe("API GET surface", () => {
   for (const path of READ_ONLY_JSON_GETS) {
     test(`GET ${path} returns JSON and expected status`, async ({ request }) => {
-      const r = await request.get(path);
+      const r = await getWithRateLimitRetry(request, path);
       const expectedStatus = EXPECTED_NON_200[path] || 200;
       expect(r.status(), `${path} → ${r.status()} (expected ${expectedStatus})`).toBe(expectedStatus);
       const ct = (r.headers()["content-type"] ?? "").toLowerCase();
