@@ -7,19 +7,13 @@ test.describe("Cockpit flows", () => {
     const { consoleErrors, pageErrors, failedApiResponses } = attachStrictClientMonitors(page);
 
     await page.goto("/cockpit", { waitUntil: "domcontentloaded" });
-    await expect(page.locator("#cgrid")).not.toContainText("Loading plays", { timeout: 25_000 });
-    expect(await page.locator("#panel-stocks").evaluate((el) => el.classList.contains("active"))).toBeTruthy();
+    await expect(page.locator("#movers-board")).toBeVisible({ timeout: 25_000 });
+    await expect(page.locator("#mvr-tiers")).not.toContainText("Loading squeeze radar", { timeout: 25_000 });
 
-    const tabs: Array<"stocks" | "portfolio" | "results" | "news"> = [
-      "stocks",
-      "portfolio",
-      "results",
-      "news",
-    ];
-    for (const id of tabs) {
-      await page.locator(`#tab-${id}`).click();
-      await expect(page.locator(`#panel-${id}`)).toHaveClass(/active/);
-    }
+    await page.locator("#mvr-toggle").click();
+    await expect(page.locator("#ghost-score-wrap")).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator("#squeeze-picks-section")).toBeVisible();
+    await expect(page.locator("#portfolio-section")).toBeVisible();
 
     const body = page.locator("#truth-body");
     const toggle = page.locator("#truth-toggle");
@@ -29,7 +23,7 @@ test.describe("Cockpit flows", () => {
     await toggle.click();
     await expect(body).not.toHaveClass(/collapsed/);
 
-    await page.locator("#tab-portfolio").click();
+    await page.locator("#add-pos-toggle").click();
     await page.locator("#p-sym").fill("");
     await page.locator("#p-qty").fill("");
     await page.locator("#p-bp").fill("");
@@ -38,14 +32,14 @@ test.describe("Cockpit flows", () => {
 
     await page.reload({ waitUntil: "domcontentloaded" });
     await expect(page.locator(".logo")).toContainText("GHOST PROTOCOL");
-    await expect(page.locator("#panel-stocks")).toHaveClass(/active/);
+    await expect(page.locator("#movers-board")).toBeVisible();
 
     expect(consoleErrors, `console errors: ${consoleErrors.join(" | ")}`).toHaveLength(0);
     expect(pageErrors, `pageerror: ${pageErrors.join(" | ")}`).toHaveLength(0);
     expect(failedApiResponses, JSON.stringify(failedApiResponses)).toHaveLength(0);
   });
 
-  test("POST /api/portfolio rejects empty symbol", async ({ request }) => {
+  test("POST /api/portfolio requires auth before validation", async ({ request }) => {
     const r = await request.post("/api/portfolio", {
       data: {
         symbol: "",
@@ -55,9 +49,8 @@ test.describe("Cockpit flows", () => {
         buy_date: "2026-01-01",
       },
     });
-    expect(r.ok()).toBeTruthy();
+    expect(r.status()).toBe(401);
     const j = await r.json();
-    expect(j.ok).toBe(false);
-    expect(String(j.error || "").length).toBeGreaterThan(0);
+    expect(j.detail || j.error).toBeTruthy();
   });
 });
