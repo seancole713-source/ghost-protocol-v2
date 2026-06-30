@@ -1054,7 +1054,7 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
   </section>
 
   <!-- ─── Portfolio ─── -->
-  <section class="block">
+  <section class="block" id="portfolio-section">
     <div class="sec-label">My Portfolio</div>
     <button class="btn-add" id="add-pos-toggle" onclick="toggleAddPos()" style="margin-bottom:12px">+ Add a Position</button>
     <div class="port-form" id="port-form" style="display:none">
@@ -3320,6 +3320,16 @@ async function loadShortInterest(){
 }
 
 /* ─── Portfolio (kept from prior cockpit) ─── */
+
+function renderPortfolioLocked(){
+  var tw = document.getElementById('ptotals');
+  var pw = document.getElementById('ppositions');
+  var gp = document.getElementById('gp-section');
+  if(tw) tw.innerHTML = '';
+  if(pw) pw.innerHTML = '<div class="empty"><div class="ico">&#128274;</div>Sign in at <a href="/admin">/admin</a> to view portfolio.<br><button class="btn-add" style="margin-top:10px;max-width:220px" onclick="loadPortfolio()">Load portfolio</button></div>';
+  if(gp) gp.innerHTML = '';
+}
+
 async function loadPortfolio(){
   var resp = await fetch('/api/portfolio');
   if(resp.status === 401){
@@ -4398,7 +4408,7 @@ load();
 _connectWebSocket();
 _deferBelowFold(function(){
   _applyDfViewMode();
-  loadPortfolio();
+  renderPortfolioLocked();
   loadEquityChart();
   loadShortInterest();
   loadGhostContract();
