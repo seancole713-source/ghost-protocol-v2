@@ -11,11 +11,11 @@ RULES:
   6. This is not documentation. It is an accountability ledger.
      Agents lie. This file exists because of that.
 
-LAST UPDATED: 2026-06-29 — PR #110 Error-Signature Verifier Fix (all verification gates clean)
+LAST UPDATED: 2026-06-29 — PR #112 Playwright E2E Gate Cleanup (full gates clean)
 """
 
 # ============================================================
-# LIVE SYSTEM — LAST VERIFIED 2026-06-29 (PR #110 verifier fix deployed; runtime marker PR108)
+# LIVE SYSTEM — LAST VERIFIED 2026-06-29 (PR #112 deployed; runtime marker PR111)
 # ============================================================
 
 
@@ -26,6 +26,54 @@ LAST UPDATED: 2026-06-29 — PR #110 Error-Signature Verifier Fix (all verificat
 
 
 
+
+
+PROD_VERIFY_2026_06_29_PR112 = {
+    "deploy_id": "Railway auto-deploy from main",
+    "git_sha_short": "3e8ba89",
+    "_pr_version": 111,
+    "verified_at_ct": "2026-06-29",
+    "tests": "lint pass; type-check pass; 590 passed, 3 skipped; compile pass; live/prelaunch/error-signature/health-audit pass; Playwright 33/33 pass",
+    "live_acceptance": {
+        "version_endpoint": "GET /api/_version -> sha=3e8ba89, _pr_version=111, app_version=2.5.0",
+        "lint": "npm run lint -> pass",
+        "type_check": "npm run type-check -> pass",
+        "pytest": "python3 -m pytest tests/ -q -> 590 passed, 3 skipped",
+        "compile": "make test-compile -> pass",
+        "live_health": "npm run verify:live -> pass",
+        "error_signatures": "npm run verify:error-signatures -> pass",
+        "health_audit": "npm run verify:health-audit -> pass public fallback",
+        "prelaunch": "npm run verify:prelaunch -> ALL PASS (7 checks)",
+        "playwright": "npm run test:e2e -> 33 passed",
+    },
+    "key_fixes": [
+        "Playwright cockpit flow uses current redesigned cockpit selectors",
+        "Portfolio E2E verifies auth-gated security contract instead of unauthenticated mutation",
+        "API surface E2E retries transient 429s with backoff",
+        "Playwright script runs without NO_COLOR/FORCE_COLOR warning noise",
+    ],
+    "known_issues": [
+        "Manual browser QA still recommended for authenticated admin login/logout because local verifier has no CRON_SECRET/admin cookie",
+    ],
+}
+
+PROD_VERIFY_2026_06_29_PR111 = {
+    "deploy_id": "Railway auto-deploy from main",
+    "git_sha_short": "28c8d77",
+    "_pr_version": 111,
+    "verified_at_ct": "2026-06-29",
+    "tests": "CI test pass; post-PR112 Playwright confirms cockpit/portfolio contract",
+    "live_acceptance": {
+        "version_endpoint": "GET /api/_version -> sha=28c8d77, _pr_version=111, app_version=2.5.0",
+        "cockpit": "Public cockpit no longer auto-fetches auth-gated portfolio; locked portfolio state visible",
+    },
+    "key_fixes": [
+        "cockpit.html: render locked portfolio state by default and manual Load Portfolio button",
+        "e2e: redesigned cockpit selectors replace removed legacy #cgrid/tab-panel assumptions",
+        "e2e: portfolio mutation tests now assert 401 auth gating",
+    ],
+    "known_issues": [],
+}
 
 PROD_VERIFY_2026_06_29_PR110 = {
     "deploy_id": "Railway auto-deploy from main",
