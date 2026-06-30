@@ -29,6 +29,7 @@
 > - **PR #109 Quality gate cleanup:** production `35da460`, `_pr_version 108`; `npm run lint`, `npm run type-check`, pytest, and compile all pass cleanly.
 > - **PR #110 Error-signature verifier fix:** production `8616306`, `_pr_version 108`; gated diagnostics/audit routes no longer false-fail public verification; error-signature + health-audit gates pass.
 > - **PR #111–#112 Playwright E2E gate cleanup:** production `3e8ba89`, `_pr_version 111`; cockpit E2E aligns with secure portfolio contract and full Playwright suite passes **33/33**.
+> - **PR #113 Health-audit cockpit contract:** production `9edd4ac`, `_pr_version 113`; authenticated health audit now PASS with 0 unresolved findings; full gate set passes.
 >
 > **PR #70–#81 (2026-06-25–26):** Comprehensive security + reliability audit. 12 PRs deployed.
 > - **Circuit breaker fixes:** infinite half-open probe loop (yfinance + Alpaca rate-limit) — breakers now actually block when tripped
@@ -95,10 +96,11 @@ squeeze ML v2, drift/sentiment/options probes) are wired as of PR #60.
 | Investor cockpit | `/cockpit` — WOLF-first UI |
 | Cron trigger | cron-job.org fires `POST /api/morning-card` daily 8 AM CT |
 | Auth header name | `x-cron-secret` (value in Railway env as `CRON_SECRET`) |
-| **Last prod-verified** | **2026-06-29** — PR #112 deployed (`3e8ba89`, `_pr_version 111`); full gate set clean: lint, type-check, 590 pytest passed/3 skipped, compile, live health, error-signatures, health-audit fallback, prelaunch smoke, Playwright 33/33 |
+| **Last prod-verified** | **2026-06-29** — PR #113 deployed (`9edd4ac`, `_pr_version 113`); authenticated admin checks 7/7; authenticated health audit PASS unresolved=0; full gate set clean: lint, type-check, 590 pytest passed/3 skipped, compile, live health, error-signatures, health-audit, prelaunch smoke, Playwright 33/33 |
 
 **Agent CAN reach Railway** as of 2026-06-22 session — all production verification is done via `curl` from the local terminal.
 
+**PR #113 prod verify:** passed 2026-06-29 — `GET /api/_version` sha `9edd4ac`, `_pr_version 113`; authenticated admin checks 7/7 (login, diagnostics, admin health score 95, portfolio read, health audit no-autofix PASS unresolved=0, logout, post-logout diagnostics gated); full gate set passed: lint, type-check, pytest 590/3 skipped, compile, live health, error-signatures, health-audit, prelaunch smoke, Playwright 33/33.
 **PR #112 prod verify:** passed 2026-06-29 — `GET /api/_version` sha `3e8ba89`, `_pr_version 111`; `npm run test:e2e` passed 33/33 with no NO_COLOR/FORCE_COLOR warnings; full gate set passed: lint, type-check, pytest 590/3 skipped, compile, live health, error-signatures, health-audit fallback, prelaunch smoke. Test/tooling-only change; runtime marker remains 111.
 **PR #111 prod verify:** passed 2026-06-29 — `GET /api/_version` sha `28c8d77`, `_pr_version 111`; public cockpit no longer auto-fetches auth-gated portfolio (no 401 console noise), portfolio locked state visible, E2E selectors updated to current cockpit.
 **PR #110 prod verify:** passed 2026-06-29 — `GET /api/_version` sha `8616306`, `_pr_version 108`; `npm run verify:error-signatures` passed (gated diagnostics/audit skipped safely); `npm run verify:health-audit` passed public-history fallback. Test/tooling-only change; runtime marker remains 108.
@@ -536,3 +538,4 @@ Run once per week (any time for deploy checks; squeeze/radar checks best **Mon�
 | **#110** | 06-29 | **Error-signature verifier gated-route fix** — `scripts/check_error_signatures.py` now treats unauthenticated `/api/diagnostics` 404 and `/api/health/audit` 403/404 without `CRON_SECRET` as gated/skipped, not app failures; verifier tests added; no runtime marker bump |
 | **#111** | 06-29 | **Secure cockpit / E2E alignment** — public cockpit renders locked portfolio state without auto-fetching auth-gated `/api/portfolio`, stable `#portfolio-section`, E2E updated for redesigned cockpit and auth-gated portfolio; `_pr_version` 111 |
 | **#112** | 06-29 | **Playwright E2E stabilization** — precise portfolio submit selector, API surface 429 retry/backoff, warning-clean Playwright script; `npm run test:e2e` passes 33/33; no runtime marker bump |
+| **#113** | 06-29 | **Health-audit cockpit contract** — `core/health_audit.py` static cockpit check updated from removed legacy tabs to redesigned cockpit markers (`movers-board`, `mvr-toggle`, `portfolio-section`, `renderPortfolioLocked`, truth controls); authenticated health audit now PASS unresolved=0; `_pr_version` 113 |

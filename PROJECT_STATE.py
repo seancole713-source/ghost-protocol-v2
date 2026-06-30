@@ -11,11 +11,11 @@ RULES:
   6. This is not documentation. It is an accountability ledger.
      Agents lie. This file exists because of that.
 
-LAST UPDATED: 2026-06-29 — PR #112 Playwright E2E Gate Cleanup (full gates clean)
+LAST UPDATED: 2026-06-29 — PR #113 Health Audit Cockpit Contract (authenticated audit PASS)
 """
 
 # ============================================================
-# LIVE SYSTEM — LAST VERIFIED 2026-06-29 (PR #112 deployed; runtime marker PR111)
+# LIVE SYSTEM — LAST VERIFIED 2026-06-29 (PR #113 deployed; authenticated audit PASS)
 # ============================================================
 
 
@@ -27,6 +27,37 @@ LAST UPDATED: 2026-06-29 — PR #112 Playwright E2E Gate Cleanup (full gates cle
 
 
 
+
+
+PROD_VERIFY_2026_06_29_PR113 = {
+    "deploy_id": "Railway auto-deploy from main",
+    "git_sha_short": "9edd4ac",
+    "_pr_version": 113,
+    "verified_at_ct": "2026-06-29",
+    "tests": "Authenticated admin 7/7; health audit PASS unresolved=0; lint/type-check/pytest/compile/live/error-signatures/health-audit/prelaunch/Playwright all pass",
+    "live_acceptance": {
+        "version_endpoint": "GET /api/_version -> sha=9edd4ac, _pr_version=113, app_version=2.5.0",
+        "authenticated_admin": "login, diagnostics, admin health, portfolio read, logout, post-logout gating all pass",
+        "authenticated_health_audit": "POST /api/health/audit?auto_fix=false with CRON_SECRET -> audit_status PASS, unresolved=0",
+        "lint": "npm run lint -> pass",
+        "type_check": "npm run type-check -> pass",
+        "pytest": "python3 -m pytest tests/ -q -> 590 passed, 3 skipped",
+        "compile": "make test-compile -> pass",
+        "live_health": "npm run verify:live -> pass",
+        "error_signatures": "npm run verify:error-signatures -> pass",
+        "health_audit_public": "npm run verify:health-audit -> pass public fallback",
+        "prelaunch": "npm run verify:prelaunch -> ALL PASS (7 checks)",
+        "playwright": "npm run test:e2e -> 33 passed",
+    },
+    "key_fixes": [
+        "Health audit cockpit static check updated to redesigned cockpit UI tokens",
+        "Removed stale expectations for tab-stocks/tab-portfolio/function show(",
+        "Authenticated health audit now reports PASS with zero unresolved findings",
+    ],
+    "known_issues": [
+        "Rotate the temporary admin/cron secret shared during verification after this session",
+    ],
+}
 
 PROD_VERIFY_2026_06_29_PR112 = {
     "deploy_id": "Railway auto-deploy from main",
