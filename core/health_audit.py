@@ -491,12 +491,17 @@ def run_health_audit(
         with open(cockpit_path, "r", encoding="utf-8") as f:
             html = f.read()
         required_tokens = [
-            "tab-stocks",
-            "tab-portfolio",
+            "movers-board",
+            "mvr-toggle",
+            "ghost-score-wrap",
+            "squeeze-picks-section",
+            "portfolio-section",
+            "add-pos-toggle",
+            "renderPortfolioLocked",
             "addPos()",
             "delPos(",
             "truth-toggle",
-            "function show(",
+            "truth-body",
         ]
         missing = [tok for tok in required_tokens if tok not in html]
         if not missing:
@@ -504,7 +509,7 @@ def run_health_audit(
                 _finding(
                     "PASS",
                     "frontend:cockpit_static",
-                    "Key UI handlers/tabs present in cockpit.html",
+                    "Key redesigned cockpit UI handlers/sections present in cockpit.html",
                     "medium",
                     False,
                     "not needed",
