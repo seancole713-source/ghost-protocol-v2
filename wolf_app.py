@@ -3532,6 +3532,16 @@ def system_degraded_endpoint():
         return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
 
 
+@APP.get("/api/system/breakers")
+def system_breakers_endpoint():
+    """Per-breaker status — name, state, failure count, cooldown, rate-limit info."""
+    try:
+        from core.circuit_breaker import all_breaker_status
+        return {"ok": True, "breakers": all_breaker_status()}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
 @APP.get("/api/system/latency")
 def system_latency_endpoint():
     """Request latency SLOs — p50/p95/p99 per route over 5-min window. P3 audit."""
@@ -5509,7 +5519,7 @@ def v3_train(x_cron_secret: str = Header(default=""), force: bool = False):
 
 # PR #19 deploy-version constant. Bump on every "did Railway pick up
 # the new code?" PR so /api/_version reveals the truth in one curl.
-_RUNNING_PR_VERSION = 113
+_RUNNING_PR_VERSION = 114
 
 
 def _deploy_meta() -> dict:

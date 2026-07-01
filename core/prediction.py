@@ -28,6 +28,15 @@ CONFIDENCE_FLOOR = float(os.getenv("MIN_ALERT_CONFIDENCE", "0.80"))  # raised: f
 DAILY_CAP        = int(os.getenv("DAILY_ALERT_CAP", "10"))
 TARGET_PCT       = float(os.getenv("TARGET_PCT", "0.06"))
 STOP_PCT         = float(os.getenv("STOP_PCT", "0.03"))
+
+# Research pick mode: when the engine has < RESEARCH_MIN_RESOLVED resolved picks,
+# it fires low-confidence "research" picks to break the 0-prediction deadlock
+# and accumulate outcomes for the learning flywheel. Research picks bypass the
+# confidence floor and objective gate but still require a v3 model signal.
+RESEARCH_PICK_ENABLED = os.getenv("RESEARCH_PICK_ENABLED", "1") not in ("0", "false", "False", "")
+RESEARCH_CONFIDENCE_FLOOR = float(os.getenv("RESEARCH_CONFIDENCE_FLOOR", "0.55"))
+RESEARCH_MIN_RESOLVED = int(os.getenv("RESEARCH_MIN_RESOLVED", "15"))
+RESEARCH_DAILY_CAP = int(os.getenv("RESEARCH_DAILY_CAP", "3"))
 MIN_SAMPLES      = int(os.getenv("MIN_SAMPLES", "10"))
 EDGE_THRESHOLD   = 0.55
 INVERSE_THRESHOLD = 0.40
@@ -1061,7 +1070,28 @@ def _predict_symbol_ex(symbol, asset_type, regime, scores_out=None):
         return None, "v3_no_signal"
     direction, confidence = signal
 
+    # Research pick mode: when the engine has too few resolved picks to prove
+    # edge, lower the confidence floor and skip the objective gate so the
+    # learning flywheel can start accumulating outcomes.
+    is_research = False
+    if RESEARCH_PICK_ENABLED:
+        try:
+            with db_conn() as rc:
+                rc_cur = rc.cursor()
+                rc_cur.execute(
+                    "SELECT COUNT(*) FROM predictions WHERE outcome IS NOT NULL AND asset_type='stock'"
+                )
+                resolved = int(rc_cur.fetchone()[0])
+                if resolved < RESEARCH_MIN_RESOLVED:
+                    is_research = True
+        except Exception:
+            pass
+
     _floor = regime.get('confidence_floor_override', CONFIDENCE_FLOOR) if isinstance(regime, dict) else CONFIDENCE_FLOOR
+    if is_research:
+        _floor = RESEARCH_CONFIDENCE_FLOOR
+        score_vector["research_pick"] = True
+        score_vector["research_floor"] = RESEARCH_CONFIDENCE_FLOOR
     if _is_premarket() and _premarket_scan_enabled():
         _floor = min(0.98, _floor + _premarket_floor_bump())
         score_vector["premarket_floor_bump"] = _premarket_floor_bump()
@@ -1084,18 +1114,20 @@ def _predict_symbol_ex(symbol, asset_type, regime, scores_out=None):
         LOGGER.info("SELL blocked: " + symbol + " — DOWN signals 1.9% wr historically")
         return None, "sell_blocked"
 
-    objective_ok, objective_skip, objective_meta = _objective_gate(sym, direction, float(confidence))
-    if not objective_ok:
-        LOGGER.info(
-            "OBJECTIVE GATE blocked %s %s: wr=%s total=%s target=%s conf=%.3f",
-            sym,
-            direction,
-            objective_meta.get("combined_wr"),
-            objective_meta.get("combined_total"),
-            objective_meta.get("target_wr"),
-            float(confidence),
-        )
-        return None, objective_skip
+    # Research picks skip the objective gate — there's no track record to evaluate yet.
+    if not is_research:
+        objective_ok, objective_skip, objective_meta = _objective_gate(sym, direction, float(confidence))
+        if not objective_ok:
+            LOGGER.info(
+                "OBJECTIVE GATE blocked %s %s: wr=%s total=%s target=%s conf=%.3f",
+                sym,
+                direction,
+                objective_meta.get("combined_wr"),
+                objective_meta.get("combined_total"),
+                objective_meta.get("target_wr"),
+                float(confidence),
+            )
+            return None, objective_skip
 
     now = int(time.time())
     # Align live hold with v3.2 training labels (N daily forward bars, not 48 calendar hours).
@@ -1181,8 +1213,9 @@ def _predict_symbol_ex(symbol, asset_type, regime, scores_out=None):
         "features":     features,
         "scores":       score_vector,
         "pos_size_pct": pos_pct,
-        "objective_expected_wr": objective_meta.get("combined_wr"),
-        "objective_samples": objective_meta.get("combined_total"),
+        "objective_expected_wr": objective_meta.get("combined_wr") if not is_research else None,
+        "objective_samples": objective_meta.get("combined_total") if not is_research else None,
+        "kind":         "research" if is_research else "live",
     }, None
 
 
@@ -1328,7 +1361,11 @@ def run_prediction_cycle(with_diag: bool = False):
         pass
 
     all_picks.sort(key=lambda x: x["confidence"], reverse=True)
-    top = all_picks[:DAILY_CAP]
+    # Research picks have their own daily cap to prevent flooding.
+    research_picks = [p for p in all_picks if p.get("kind") == "research"]
+    live_picks = [p for p in all_picks if p.get("kind") != "research"]
+    top = live_picks[:DAILY_CAP] + research_picks[:RESEARCH_DAILY_CAP]
+    top.sort(key=lambda x: x["confidence"], reverse=True)
     _suppress_reason = None
     _suppressed = 0
     _risk_block = None

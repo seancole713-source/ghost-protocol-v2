@@ -62,12 +62,12 @@ def check_degraded() -> Dict[str, Any]:
                 "DEGRADED MODE ENTERED: %s/%s APIs circuit-broken",
                 open_count, 5,
             )
-        # Collect reasons
+        # Collect reasons — include half_open since _count_open_circuits counts both
         try:
             from core.circuit_breaker import all_breaker_status
             _degraded_reasons = [
-                f"{name}: open" for name, s in all_breaker_status().items()
-                if s.get("state") == "open"
+                f"{name}: {s.get('state')}" for name, s in all_breaker_status().items()
+                if s.get("state") in ("open", "half_open")
             ]
         except Exception:
             _degraded_reasons = [f"{open_count} APIs circuit-broken"]

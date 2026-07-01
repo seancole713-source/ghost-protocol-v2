@@ -162,22 +162,12 @@ def _iex_spot(symbol):
 
 def _stooq_spot(symbol):
     """Spot price from Stooq — fifth-tier fallback (PR #77).
-    Free CSV endpoint, no API key. Returns latest close price."""
-    try:
-        url = f"https://stooq.com/q/l/?s={symbol.lower()}.us&f=sd2t2ohlcv&h&e=csv"
-        r = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0 (ghost-protocol)"})
-        if r.status_code == 200:
-            text = (r.text or "").strip()
-            if text and "No data" not in text and len(text) > 20:
-                lines = text.split("\n")
-                if len(lines) >= 2:
-                    parts = lines[1].split(",")
-                    if len(parts) >= 7:
-                        close = float(parts[6]) if parts[6] else 0
-                        if close > 0:
-                            return close
-    except Exception:
-        pass
+
+    DEPRECATED (2026-07-01): Stooq now requires a JavaScript challenge
+    (Cloudflare-style browser verification) and returns 403/JS-challenge
+    for all server-side requests. This function is kept as a no-op stub
+    to avoid breaking callers; it always returns None.
+    """
     return None
 
 
