@@ -2775,11 +2775,14 @@ def research_status_endpoint():
     try:
         from core.prediction import (
             RESEARCH_PICK_ENABLED, RESEARCH_CONFIDENCE_FLOOR,
-            RESEARCH_MIN_RESOLVED, RESEARCH_DAILY_CAP,
+            RESEARCH_MIN_RESOLVED, RESEARCH_DAILY_CAP, RESEARCH_STALL_HOURS,
         )
         from core.db import db_conn
         resolved = 0
         research_today = 0
+        active = 0
+        recent_fires = 0
+        stalled = False
         try:
             with db_conn() as rc:
                 cur = rc.cursor()
@@ -2790,18 +2793,36 @@ def research_status_endpoint():
                     (int(time.time()) - 86400,),
                 )
                 research_today = int(cur.fetchone()[0])
+                cur.execute(
+                    "SELECT COUNT(*) FROM predictions WHERE outcome IS NULL AND expires_at > %s",
+                    (int(time.time()),),
+                )
+                active = int(cur.fetchone()[0])
+                stall_cutoff = int(time.time()) - RESEARCH_STALL_HOURS * 3600
+                cur.execute(
+                    "SELECT COUNT(*) FROM predictions WHERE predicted_at > %s",
+                    (stall_cutoff,),
+                )
+                recent_fires = int(cur.fetchone()[0])
+                stalled = active == 0 and recent_fires == 0 and resolved >= RESEARCH_MIN_RESOLVED
         except Exception:
             pass
+        research_active = RESEARCH_PICK_ENABLED and (resolved < RESEARCH_MIN_RESOLVED or stalled)
         return {
             "ok": True,
             "research_enabled": RESEARCH_PICK_ENABLED,
-            "research_active": RESEARCH_PICK_ENABLED and resolved < RESEARCH_MIN_RESOLVED,
+            "research_active": research_active,
+            "research_reason": "cold_start" if resolved < RESEARCH_MIN_RESOLVED else ("stall" if stalled else None),
             "resolved_picks": resolved,
             "min_for_exit": RESEARCH_MIN_RESOLVED,
             "remaining": max(0, RESEARCH_MIN_RESOLVED - resolved),
-            "confidence_floor": RESEARCH_CONFIDENCE_FLOOR if (RESEARCH_PICK_ENABLED and resolved < RESEARCH_MIN_RESOLVED) else None,
+            "confidence_floor": RESEARCH_CONFIDENCE_FLOOR if research_active else None,
             "research_today": research_today,
             "research_daily_cap": RESEARCH_DAILY_CAP,
+            "active_picks": active,
+            "recent_fires_24h": recent_fires,
+            "stall_hours": RESEARCH_STALL_HOURS,
+            "stalled": stalled,
         }
     except Exception as e:
         return {"ok": False, "error": str(e)[:200]}
