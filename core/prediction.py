@@ -33,10 +33,13 @@ STOP_PCT         = float(os.getenv("STOP_PCT", "0.03"))
 # it fires low-confidence "research" picks to break the 0-prediction deadlock
 # and accumulate outcomes for the learning flywheel. Research picks bypass the
 # confidence floor and objective gate but still require a v3 model signal.
+# Also activates when the engine has 0 active picks and hasn't fired in
+# RESEARCH_STALL_HOURS hours (stall detection — prevents permanent silence).
 RESEARCH_PICK_ENABLED = os.getenv("RESEARCH_PICK_ENABLED", "1") not in ("0", "false", "False", "")
 RESEARCH_CONFIDENCE_FLOOR = float(os.getenv("RESEARCH_CONFIDENCE_FLOOR", "0.55"))
 RESEARCH_MIN_RESOLVED = int(os.getenv("RESEARCH_MIN_RESOLVED", "15"))
 RESEARCH_DAILY_CAP = int(os.getenv("RESEARCH_DAILY_CAP", "3"))
+RESEARCH_STALL_HOURS = int(os.getenv("RESEARCH_STALL_HOURS", "24"))
 MIN_SAMPLES      = int(os.getenv("MIN_SAMPLES", "10"))
 EDGE_THRESHOLD   = 0.55
 INVERSE_THRESHOLD = 0.40
@@ -1052,6 +1055,9 @@ def _predict_symbol_ex(symbol, asset_type, regime, scores_out=None):
 
     # Research pick mode: check BEFORE calling predict_live_ex so the lowered
     # min_win_proba threshold takes effect inside the v3 model.
+    # Activates when:
+    #   1. < RESEARCH_MIN_RESOLVED resolved picks (cold start), OR
+    #   2. 0 active picks + no fires in RESEARCH_STALL_HOURS (stall detection)
     is_research = False
     if RESEARCH_PICK_ENABLED:
         try:
@@ -1063,6 +1069,23 @@ def _predict_symbol_ex(symbol, asset_type, regime, scores_out=None):
                 resolved = int(rc_cur.fetchone()[0])
                 if resolved < RESEARCH_MIN_RESOLVED:
                     is_research = True
+                else:
+                    # Stall detection: 0 active picks + no recent fires
+                    rc_cur.execute(
+                        "SELECT COUNT(*) FROM predictions WHERE outcome IS NULL AND expires_at > %s",
+                        (int(time.time()),),
+                    )
+                    active = int(rc_cur.fetchone()[0])
+                    if active == 0:
+                        stall_cutoff = int(time.time()) - RESEARCH_STALL_HOURS * 3600
+                        rc_cur.execute(
+                            "SELECT COUNT(*) FROM predictions WHERE predicted_at > %s",
+                            (stall_cutoff,),
+                        )
+                        recent_fires = int(rc_cur.fetchone()[0])
+                        if recent_fires == 0:
+                            is_research = True
+                            score_vector["research_stall"] = True
         except Exception:
             pass
 
