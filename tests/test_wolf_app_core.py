@@ -2667,7 +2667,7 @@ def test_gate_status_shows_no_alert_when_below_bootstrap_conf(monkeypatch):
                         lambda s, d: {"combined_total": 2, "combined_wins": 1, "combined_wr": 0.5})
     monkeypatch.setattr(_pred, "_objective_gate",
                         lambda s, d, c: (c >= 0.78, None if c >= 0.78 else "objective_bootstrap_conf", {}))
-    monkeypatch.setattr(_se, "predict_live_ex", lambda s, a, scores=None: (("UP", 0.76), None))
+    monkeypatch.setattr(_se, "predict_live_ex", lambda s, a, scores=None, research_mode=False: (("UP", 0.76), None))
 
     out = wolf_app.wolf_gate_status()
     lp = out["live_prediction"]
@@ -2788,7 +2788,7 @@ def test_predict_ex_captures_near_miss_on_floor_skip(monkeypatch):
     import core.signal_engine as _se
     monkeypatch.setattr(_pred, "get_price", lambda s, a=None: 100.0)
 
-    def _ple(s, a, scores=None):
+    def _ple(s, a, scores=None, research_mode=False):
         if scores is not None:
             scores["up_prob"] = 0.58
             scores["model_meta"] = {"min_win_proba": 0.55}

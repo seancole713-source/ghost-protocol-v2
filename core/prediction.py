@@ -1049,9 +1049,26 @@ def _predict_symbol_ex(symbol, asset_type, regime, scores_out=None):
     # Scan price at evaluation — shadow scoring uses it as the virtual entry
     # for silenced evals (core.shadow_outcomes).
     score_vector["price"] = round(float(price), 6)
+
+    # Research pick mode: check BEFORE calling predict_live_ex so the lowered
+    # min_win_proba threshold takes effect inside the v3 model.
+    is_research = False
+    if RESEARCH_PICK_ENABLED:
+        try:
+            with db_conn() as rc:
+                rc_cur = rc.cursor()
+                rc_cur.execute(
+                    "SELECT COUNT(*) FROM predictions WHERE outcome IS NOT NULL AND asset_type='stock'"
+                )
+                resolved = int(rc_cur.fetchone()[0])
+                if resolved < RESEARCH_MIN_RESOLVED:
+                    is_research = True
+        except Exception:
+            pass
+
     try:
         from core.signal_engine import predict_live_ex
-        signal, v3_reason = predict_live_ex(symbol, "stock", scores=score_vector)
+        signal, v3_reason = predict_live_ex(symbol, "stock", scores=score_vector, research_mode=is_research)
     except Exception as _pe:
         LOGGER.warning("v3 engine error for " + symbol + ": " + str(_pe))
         return None, "v3_engine_error"
@@ -1069,23 +1086,6 @@ def _predict_symbol_ex(symbol, asset_type, regime, scores_out=None):
             return None, "v3_prob_low"
         return None, "v3_no_signal"
     direction, confidence = signal
-
-    # Research pick mode: when the engine has too few resolved picks to prove
-    # edge, lower the confidence floor and skip the objective gate so the
-    # learning flywheel can start accumulating outcomes.
-    is_research = False
-    if RESEARCH_PICK_ENABLED:
-        try:
-            with db_conn() as rc:
-                rc_cur = rc.cursor()
-                rc_cur.execute(
-                    "SELECT COUNT(*) FROM predictions WHERE outcome IS NOT NULL AND asset_type='stock'"
-                )
-                resolved = int(rc_cur.fetchone()[0])
-                if resolved < RESEARCH_MIN_RESOLVED:
-                    is_research = True
-        except Exception:
-            pass
 
     _floor = regime.get('confidence_floor_override', CONFIDENCE_FLOOR) if isinstance(regime, dict) else CONFIDENCE_FLOOR
     if is_research:

@@ -1889,7 +1889,7 @@ def load_model(symbol=None):
     except Exception as e:
         LOGGER.warning(f"load_model {symbol}: {e}"); return None, None, None
 
-def predict_live_ex(symbol, asset_type, scores=None):
+def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
     """
     Like predict_live but returns (signal_tuple_or_None, reason_code_or_None).
     reason_code is for diagnostics/metrics only.
@@ -1898,6 +1898,10 @@ def predict_live_ex(symbol, asset_type, scores=None):
     with the specialist score vector + regime-at-issuance (blueprint §4: the
     pick journal must capture the full score vector, not just the outcome).
     Callers that omit it are unaffected.
+
+    research_mode=True lowers the min_win_proba threshold to 0.40 so the
+    engine can fire low-confidence picks when the system has too few resolved
+    outcomes to prove edge (research pick mode, PR #114).
     """
     model, feature_cols, meta = load_model(symbol)
     if model is None:
@@ -2054,6 +2058,8 @@ def predict_live_ex(symbol, asset_type, scores=None):
     min_edge = _v3_min_edge()
     min_acc = _v3_min_holdout_acc()
     min_p = _v3_min_win_proba()
+    if research_mode:
+        min_p = 0.40  # research: lower bar to let low-confidence signals through
     if scores is not None and isinstance(scores.get("regime"), dict):
         try:
             from core.regime_calibration import effective_min_win_proba, regime_calibration_meta
