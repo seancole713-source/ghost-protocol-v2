@@ -17,6 +17,10 @@ INTRADAY_QUOTE_TTL_S = int(os.getenv("INTRADAY_QUOTE_TTL_S", "900"))  # RTH O/H/
 INTRADAY_MOVE_REFRESH_PCT = float(os.getenv("INTRADAY_MOVE_REFRESH_PCT", "2.0"))
 _mem_cache: Dict[str, Tuple[float, float]] = {}
 _intraday_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+# Persistent prev_close cache — survives market close when all feeds are down.
+# TTL is 24h so yesterday's close is available for after-hours / pre-market.
+_prev_close_cache: Dict[str, Tuple[float, float]] = {}
+_PREV_CLOSE_TTL_S = int(os.getenv("PREV_CLOSE_TTL_S", "86400"))  # 24h
 
 # P0-2: circuit breaker for yfinance (wired in _yfinance below)
 from core.circuit_breaker import _yfinance_cb, _alpaca_cb
@@ -600,6 +604,15 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
         pc = _stooq_spot(sym)
         if pc:
             prev_close = round(float(pc), 4)
+
+    # Persistent prev_close cache: when all live feeds are down (market closed,
+    # breakers open), fall back to the last known prev_close from earlier today.
+    if prev_close is None:
+        cached_pc = _prev_close_cache.get(sym)
+        if cached_pc and (time.time() - cached_pc[0]) < _PREV_CLOSE_TTL_S:
+            prev_close = cached_pc[1]
+    elif prev_close > 0:
+        _prev_close_cache[sym] = (time.time(), prev_close)
 
     chg_abs = chg_pct = None
     if last_price and prev_close and prev_close > 0:
