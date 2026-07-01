@@ -566,11 +566,21 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
                     if not last_price:
                         last_price = yf_last
                     feed = feed or "yfinance_5m"
-                if prev_close is None:
-                    fi = yf.Ticker(sym).fast_info
-                    pc = getattr(fi, "previous_close", None) or getattr(fi, "previousClose", None)
-                    if pc:
-                        prev_close = round(float(pc), 4)
+                _yfinance_cb.record_success()
+            except Exception:
+                _yfinance_cb.record_failure()
+
+    # prev_close fallback: always try yfinance when prev_close is still missing,
+    # regardless of OHLC state (Alpaca may give OHLC but not prev_close).
+    if prev_close is None:
+        from core.circuit_breaker import _yfinance_cb
+        if _yfinance_cb.allow():
+            try:
+                import yfinance as yf
+                fi = yf.Ticker(sym).fast_info
+                pc = getattr(fi, "previous_close", None) or getattr(fi, "previousClose", None)
+                if pc:
+                    prev_close = round(float(pc), 4)
                 _yfinance_cb.record_success()
             except Exception:
                 _yfinance_cb.record_failure()
