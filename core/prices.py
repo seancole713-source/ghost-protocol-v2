@@ -542,6 +542,13 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
                     prev_close = round(float(dbars[0].get("o", 0)), 4)
                 if prev_close and prev_close > 0:
                     break
+            # Free-tier Alpaca may return 401 on 1Day bars. Fall back to the
+            # first 5-min bar's open, which is effectively yesterday's close.
+            if prev_close is None and bars:
+                first_bar = bars[0]
+                o = float(first_bar.get("o", 0))
+                if o > 0:
+                    prev_close = round(o, 4)
         except Exception as exc:
             LOGGER.debug("intraday alpaca %s: %s", sym, str(exc)[:80])
 
