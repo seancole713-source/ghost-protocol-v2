@@ -19,8 +19,45 @@ _mem_cache: Dict[str, Tuple[float, float]] = {}
 _intraday_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 # Persistent prev_close cache — survives market close when all feeds are down.
 # TTL is 24h so yesterday's close is available for after-hours / pre-market.
+# Backed by ghost_state table for restart survival.
 _prev_close_cache: Dict[str, Tuple[float, float]] = {}
 _PREV_CLOSE_TTL_S = int(os.getenv("PREV_CLOSE_TTL_S", "86400"))  # 24h
+
+def _load_prev_close_cache():
+    """Load persisted prev_close values from ghost_state on module init."""
+    try:
+        from core.db import db_conn
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT val FROM ghost_state WHERE key='prev_close_cache'")
+            row = cur.fetchone()
+            if row and row[0]:
+                import json
+                data = json.loads(row[0])
+                now = time.time()
+                for sym, (ts, val) in data.items():
+                    if now - ts < _PREV_CLOSE_TTL_S and val > 0:
+                        _prev_close_cache[sym] = (ts, val)
+    except Exception:
+        pass
+
+def _save_prev_close_cache():
+    """Persist prev_close cache to ghost_state so it survives restarts."""
+    try:
+        from core.db import db_conn
+        import json
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO ghost_state (key, val) VALUES ('prev_close_cache', %s) "
+                "ON CONFLICT (key) DO UPDATE SET val = EXCLUDED.val",
+                (json.dumps(_prev_close_cache),),
+            )
+    except Exception:
+        pass
+
+# Load persisted cache on module init
+_load_prev_close_cache()
 
 # P0-2: circuit breaker for yfinance (wired in _yfinance below)
 from core.circuit_breaker import _yfinance_cb, _alpaca_cb
@@ -613,6 +650,7 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
             prev_close = cached_pc[1]
     elif prev_close > 0:
         _prev_close_cache[sym] = (time.time(), prev_close)
+        _save_prev_close_cache()
 
     chg_abs = chg_pct = None
     if last_price and prev_close and prev_close > 0:

@@ -147,6 +147,30 @@ class CircuitBreaker:
         self._call_timestamps = []
         LOGGER.info("CB %s: manually RESET — circuit CLOSED", self.name)
 
+    def auto_recover(self) -> bool:
+        """Auto-close if the breaker is open but the failure streak is stale.
+
+        Returns True if the breaker was auto-closed, False otherwise.
+        Call this periodically (e.g., from the health check or scheduler).
+        A breaker that's been open for > cooldown_seconds with no new failures
+        in the last cooldown window is likely a stale trip — the API may be
+        healthy again. Auto-close it to avoid permanent degraded state.
+        """
+        now = time.time()
+        if self.state == "closed":
+            return False
+        # Only auto-recover if the breaker has been open past its cooldown
+        # AND no new failures have occurred in the last cooldown window.
+        if self._circuit_open_until and now >= self._circuit_open_until:
+            if self._last_failure_ts == 0 or (now - self._last_failure_ts) > self.cooldown_seconds:
+                LOGGER.info(
+                    "CB %s: auto-recovery — cooldown expired + no recent failures, circuit CLOSED",
+                    self.name,
+                )
+                self.reset()
+                return True
+        return False
+
 
 # Pre-instantiated breakers for Ghost's external APIs.
 # Created at module load so all call sites share the same breaker state.
@@ -199,3 +223,15 @@ def reset_all_breakers() -> dict:
     for b in (_yfinance_cb, _finnhub_cb, _polygon_cb, _alpaca_cb, _anthropic_cb):
         b.reset()
     return {"ok": True, "message": "All circuit breakers reset to closed"}
+
+
+def auto_recover_breakers() -> dict:
+    """Auto-close any breakers whose cooldown has expired with no recent failures.
+    Called from the health check to prevent permanent degraded state."""
+    recovered = []
+    for b in (_yfinance_cb, _finnhub_cb, _polygon_cb, _alpaca_cb, _anthropic_cb):
+        if b.auto_recover():
+            recovered.append(b.name)
+    if recovered:
+        LOGGER.info("Auto-recovered breakers: %s", ", ".join(recovered))
+    return {"ok": True, "recovered": recovered}

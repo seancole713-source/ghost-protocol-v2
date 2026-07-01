@@ -2400,6 +2400,15 @@ def health():
     except Exception:
         pass
 
+    # 8b. Auto-recover stale breakers (PR #114)
+    try:
+        from core.circuit_breaker import auto_recover_breakers
+        ar = auto_recover_breakers()
+        if ar.get("recovered"):
+            warnings.append("Auto-recovered breakers: " + ", ".join(ar["recovered"]))
+    except Exception:
+        pass
+
     # 9. Dead-letter queue (P1-2 audit)
     dead_letter_count = 0
     try:
@@ -2758,6 +2767,44 @@ def trigger_predictions(x_cron_secret: str = Header(default="")):
     from core.prediction import run_prediction_cycle
     picks = run_prediction_cycle()
     return {"ok": True, "picks_generated": len(picks), "picks": picks}
+
+
+@APP.get("/api/research/status")
+def research_status_endpoint():
+    """Public read-only: research pick mode status + resolved count + gate info."""
+    try:
+        from core.prediction import (
+            RESEARCH_PICK_ENABLED, RESEARCH_CONFIDENCE_FLOOR,
+            RESEARCH_MIN_RESOLVED, RESEARCH_DAILY_CAP,
+        )
+        from core.db import db_conn
+        resolved = 0
+        research_today = 0
+        try:
+            with db_conn() as rc:
+                cur = rc.cursor()
+                cur.execute("SELECT COUNT(*) FROM predictions WHERE outcome IS NOT NULL AND asset_type='stock'")
+                resolved = int(cur.fetchone()[0])
+                cur.execute(
+                    "SELECT COUNT(*) FROM predictions WHERE scores->>'research_pick' = 'true' AND predicted_at > %s",
+                    (int(time.time()) - 86400,),
+                )
+                research_today = int(cur.fetchone()[0])
+        except Exception:
+            pass
+        return {
+            "ok": True,
+            "research_enabled": RESEARCH_PICK_ENABLED,
+            "research_active": RESEARCH_PICK_ENABLED and resolved < RESEARCH_MIN_RESOLVED,
+            "resolved_picks": resolved,
+            "min_for_exit": RESEARCH_MIN_RESOLVED,
+            "remaining": max(0, RESEARCH_MIN_RESOLVED - resolved),
+            "confidence_floor": RESEARCH_CONFIDENCE_FLOOR if (RESEARCH_PICK_ENABLED and resolved < RESEARCH_MIN_RESOLVED) else None,
+            "research_today": research_today,
+            "research_daily_cap": RESEARCH_DAILY_CAP,
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200]}
 
 @APP.post("/api/morning-card")
 def trigger_morning_card(x_cron_secret: str = Header(default="")):
