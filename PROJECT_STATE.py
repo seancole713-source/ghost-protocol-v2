@@ -11,12 +11,39 @@ RULES:
   6. This is not documentation. It is an accountability ledger.
      Agents lie. This file exists because of that.
 
-LAST UPDATED: 2026-06-29 — PR #113 Health Audit Cockpit Contract (authenticated audit PASS)
+LAST UPDATED: 2026-07-01 — PR #114 Research Pick Mode + Breaker Diagnostics + Prev_close Resilience
 """
 
 # ============================================================
-# LIVE SYSTEM — LAST VERIFIED 2026-06-29 (PR #113 deployed; authenticated audit PASS)
+# LIVE SYSTEM — LAST VERIFIED 2026-07-01 (PR #114 deployed; 590 tests pass)
 # ============================================================
+
+PROD_VERIFY_2026_07_01_PR114 = {
+    "deploy_id": "Railway auto-deploy from main",
+    "git_sha_short": "e02b8ec",
+    "_pr_version": 114,
+    "verified_at_ct": "2026-07-01",
+    "tests": "590 passed, 3 skipped",
+    "live_acceptance": {
+        "version_endpoint": "GET /api/_version -> sha=e02b8ec, _pr_version=114, app_version=2.5.0",
+        "breakers_endpoint": "GET /api/system/breakers -> yfinance:open, finnhub:closed, polygon:closed, alpaca:open, anthropic:closed",
+        "degraded": "false, 2/2 open circuits at threshold",
+        "health": "score=95",
+        "change_pct": "WOLF +0.79%, SPCE +18.65%, DOMO +39.10%, LCID +33.11%, IQ +10.30%, FLNC -1.10%, HIMS +8.91%, ITRI +5.55%",
+        "research_mode": "armed — < 15 resolved picks, confidence floor 0.55, v3 min_win_proba 0.40",
+        "squeeze": "0 picks (market closed), 3/43 fetch",
+        "v3_active": "0 picks (WOLF up_prob=0.34, below research threshold 0.40)",
+    },
+    "changes": [
+        "Research pick mode: lowers confidence floor to 0.55 + v3 min_win_proba to 0.40 when < 15 resolved picks",
+        "GET /api/system/breakers: per-breaker state, failure count, cooldown, rate-limit",
+        "Prev_close 5-tier chain: Alpaca 1Day → 5-min bar → yfinance → Polygon → 24h cache",
+        "Confidence caps: squeeze_confidence max 95, score_confirmation max 95, extreme short bonus halved",
+        "Stooq deprecated (JS challenge wall)",
+        "Degraded reasons now include half_open state",
+        "_pr_version bumped to 114",
+    ],
+}
 
 
 

@@ -1,5 +1,5 @@
 # Ghost Protocol v2 — PROJECT STATE
-**Last updated:** 2026-06-29
+**Last updated:** 2026-07-01
 **Read this first.** Any agent picking up this project must read this file before touching any code.
 
 > ## 🚀 LAUNCH READINESS REVIEW
@@ -7,6 +7,15 @@
 > **Trigger phrase:** *"ready launch prompt and execute report"*.
 > Any agent — Claude, browser-control, general — can execute it and produce a launch-readiness report with three verdict formats (binary GO/NO-GO, graded scorecard A–F, severity-ranked P0–P3 punch list). Every phase, every time. No skipping.
 > This is the canonical way to ask "is Ghost ready for a real user to trust real money?" — do not write ad-hoc audits; run the launch prompt instead.
+
+> **PR #114 (2026-07-01): Research pick mode + breaker diagnostics + prev_close resilience.**
+> - **Research pick mode:** when < 15 resolved picks, engine lowers confidence floor to 0.55 and v3 min_win_proba to 0.40, skips objective gate. Research picks capped at 3/day, labeled `kind: "research"`. Breaks the 0-prediction deadlock so the learning flywheel can start.
+> - **Breaker status endpoint:** `GET /api/system/breakers` returns per-breaker state, failure count, cooldown, rate-limit info for all 5 breakers.
+> - **Prev_close chain (5 tiers):** Alpaca 1Day → Alpaca 5-min first bar → yfinance fast_info → Polygon /prev → Persistent 24h cache. Survives market close when all breakers are open.
+> - **Confidence caps:** `squeeze_confidence()` max 95 (was 100), `score_confirmation()` max 95 (was 100), extreme short risk bonus halved 20→10.
+> - **Stooq deprecated:** JS challenge wall blocks all server-side requests; `_stooq_spot()` is a no-op stub.
+> - **Degraded reasons fix:** now includes half_open state (matching `_count_open_circuits`).
+> - **Production:** `_pr_version 114`, sha `e02b8ec`, **590 tests pass, 3 skipped**.
 
 > **PR #82–#102 (2026-06-28–29): Super Ghost foundation → self-improving prediction console.**
 > - **Super Ghost AI brain:** market-regime adjustment + optional Claude AI brief on `/api/wolf/super-ghost?ai=1`; model fixed to `claude-haiku-4-5-20251001`.
