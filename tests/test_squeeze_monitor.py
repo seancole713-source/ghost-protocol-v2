@@ -53,7 +53,7 @@ def test_rth_elapsed_fraction_midday_near_half():
 
 def test_squeeze_confidence_active_high_short():
     conf = squeeze_confidence(7.0, 3.0, short_risk="extreme", kind="squeeze_active")
-    assert conf >= 70
+    assert conf >= 65  # extreme short risk bonus halved to avoid 100% overconfidence
 
 
 def test_format_squeeze_alert_simple():

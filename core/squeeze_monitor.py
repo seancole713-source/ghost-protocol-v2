@@ -165,15 +165,21 @@ def squeeze_confidence(
     short_risk: Optional[str] = None,
     kind: str = "squeeze_forming",
 ) -> int:
-    """0–100 squeeze confidence from move, RVOL, and short-float context."""
+    """0–95 squeeze confidence from move, RVOL, and short-float context.
+
+    Capped at 95 — 100% confidence is never credible in any prediction system.
+    Extreme short risk adds squeeze potential but also signals fragility, so the
+    short-risk bonus is halved for "extreme" to avoid overconfidence on the
+    riskiest names.
+    """
     move = max(0.0, peak_move_pct)
     move_pts = min(40.0, move * 4.0)
     rvol_pts = min(30.0, max(0.0, (rvol - 1.0) * 10.0))
-    short_pts = {"extreme": 20.0, "high": 15.0, "medium": 10.0, "low": 5.0}.get(
+    short_pts = {"extreme": 10.0, "high": 12.0, "medium": 10.0, "low": 5.0}.get(
         short_risk or "", 0.0,
     )
     kind_pts = 10.0 if kind == "squeeze_active" else 0.0
-    return int(round(min(100.0, max(0.0, move_pts + rvol_pts + short_pts + kind_pts))))
+    return int(round(min(95.0, max(0.0, move_pts + rvol_pts + short_pts + kind_pts))))
 
 
 def squeeze_trade_levels(

@@ -33,7 +33,7 @@ def score_trigger(peak_move_pct: float, current_move_pct: float, *, has_catalyst
 
 
 def score_confirmation(rvol: float, above_vwap: Optional[bool]) -> float:
-    """Participation: RVOL + price vs session VWAP."""
+    """Participation: RVOL + price vs session VWAP.  Capped at 95."""
     pts = min(65.0, max(0.0, float(rvol) - 0.5) * 18.0)
     if above_vwap is True:
         pts += 35.0
@@ -41,7 +41,7 @@ def score_confirmation(rvol: float, above_vwap: Optional[bool]) -> float:
         pts += 5.0
     else:
         pts += 12.0
-    return round(min(100.0, pts), 1)
+    return round(min(95.0, pts), 1)
 
 
 def squeeze_score(setup: float, trigger: float, confirmation: float) -> float:

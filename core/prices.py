@@ -416,14 +416,15 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
     cached = _intraday_cache.get(sym)
     if cached and (time.time() - cached[0]) < INTRADAY_QUOTE_TTL_S:
         out = dict(cached[1])
-        # Price-only cache hits must not skip OHLC refresh when open/high/low are missing.
+        # Always refresh price + change on cache hit when we can get a live trade.
+        trade = _alpaca(sym)
+        if trade:
+            out["price"] = round(float(trade), 4)
+            if out.get("previous_close") and out["previous_close"] > 0:
+                out["change_abs"] = round(out["price"] - out["previous_close"], 4)
+                out["change_pct"] = round(out["change_abs"] / out["previous_close"] * 100, 3)
+        # OHLC-specific refresh: only when we already have open/high/low cached.
         if out.get("today_open") is not None and out.get("today_high") is not None:
-            trade = _alpaca(sym)
-            if trade:
-                out["price"] = round(float(trade), 4)
-                if out.get("previous_close") and out["previous_close"] > 0:
-                    out["change_abs"] = round(out["price"] - out["previous_close"], 4)
-                    out["change_pct"] = round(out["change_abs"] / out["previous_close"] * 100, 3)
             # P2-6: force-refresh OHLC if live price moved significantly from cached values
             cached_high = out.get("today_high")
             cached_low = out.get("today_low")
