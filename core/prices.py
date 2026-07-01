@@ -423,6 +423,15 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
             if out.get("previous_close") and out["previous_close"] > 0:
                 out["change_abs"] = round(out["price"] - out["previous_close"], 4)
                 out["change_pct"] = round(out["change_abs"] / out["previous_close"] * 100, 3)
+        # prev_close may be null in cache if yfinance was down on first fetch.
+        # Try Polygon/Stooq as non-yfinance fallbacks.
+        if not out.get("previous_close"):
+            pc = _polygon_spot(sym) or _stooq_spot(sym)
+            if pc:
+                out["previous_close"] = round(float(pc), 4)
+                if out.get("price") and out["price"] > 0:
+                    out["change_abs"] = round(out["price"] - out["previous_close"], 4)
+                    out["change_pct"] = round(out["change_abs"] / out["previous_close"] * 100, 3)
         # OHLC-specific refresh: only when we already have open/high/low cached.
         if out.get("today_open") is not None and out.get("today_high") is not None:
             # P2-6: force-refresh OHLC if live price moved significantly from cached values
@@ -570,8 +579,8 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
             except Exception:
                 _yfinance_cb.record_failure()
 
-    # prev_close fallback: always try yfinance when prev_close is still missing,
-    # regardless of OHLC state (Alpaca may give OHLC but not prev_close).
+    # prev_close fallback: try yfinance first, then Polygon, then Stooq.
+    # Alpaca daily bars may not always return prev_close for thin symbols.
     if prev_close is None:
         from core.circuit_breaker import _yfinance_cb
         if _yfinance_cb.allow():
@@ -584,6 +593,14 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
                 _yfinance_cb.record_success()
             except Exception:
                 _yfinance_cb.record_failure()
+    if prev_close is None:
+        pc = _polygon_spot(sym)
+        if pc:
+            prev_close = round(float(pc), 4)
+    if prev_close is None:
+        pc = _stooq_spot(sym)
+        if pc:
+            prev_close = round(float(pc), 4)
 
     chg_abs = chg_pct = None
     if last_price and prev_close and prev_close > 0:
