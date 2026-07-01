@@ -4039,6 +4039,13 @@ def get_market_session_endpoint(symbol: str):
             spot = get_price(sym)
             if spot is not None:
                 sess["price"] = spot
+        # Recompute change_pct after price patch — get_intraday_session may
+        # have prev_close but no last_price when Alpaca breaker is open.
+        if sess.get("price") and sess.get("previous_close") and sess["previous_close"] > 0:
+            if sess.get("change_pct") is None:
+                chg = round(sess["price"] - sess["previous_close"], 4)
+                sess["change_abs"] = chg
+                sess["change_pct"] = round(chg / sess["previous_close"] * 100, 3)
         out = {
             "ok": bool(sess.get("price") is not None or has_ohlc),
             "symbol": sym,

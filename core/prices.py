@@ -420,9 +420,11 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
         trade = _alpaca(sym)
         if trade:
             out["price"] = round(float(trade), 4)
-            if out.get("previous_close") and out["previous_close"] > 0:
-                out["change_abs"] = round(out["price"] - out["previous_close"], 4)
-                out["change_pct"] = round(out["change_abs"] / out["previous_close"] * 100, 3)
+        # Compute change_pct whenever we have both price and prev_close,
+        # even if the live trade fetch failed (breaker may be open).
+        if out.get("price") and out.get("previous_close") and out["previous_close"] > 0:
+            out["change_abs"] = round(out["price"] - out["previous_close"], 4)
+            out["change_pct"] = round(out["change_abs"] / out["previous_close"] * 100, 3)
         # prev_close may be null in cache if yfinance was down on first fetch.
         # Try Polygon/Stooq as non-yfinance fallbacks.
         if not out.get("previous_close"):
