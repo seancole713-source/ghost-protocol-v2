@@ -66,6 +66,23 @@ def test_data_brain_refresh_requires_auth():
     assert r.status_code in (401, 403)
 
 
+def test_data_brain_persist_param_requires_auth(monkeypatch):
+    """?persist=1 writes a snapshot row — must be auth-gated like /refresh."""
+    monkeypatch.setenv("CRON_SECRET", "prod-like")
+    monkeypatch.setenv("GHOST_MCP_TOKEN", "secret")
+    monkeypatch.setenv("GHOST_TEST_MODE", "1")  # bypass HTTPS
+    calls = {"persisted": False}
+    monkeypatch.setattr("core.super_ghost_data_brain.persist_data_brain",
+                        lambda symbol: calls.__setitem__("persisted", True))
+    client = TestClient(wolf_app.APP)
+    r = client.get("/api/wolf/super-ghost/data-brain?symbol=WOLF&persist=1")
+    assert r.status_code == 401
+    assert calls["persisted"] is False
+    r2 = client.get("/api/wolf/super-ghost/data-brain?symbol=WOLF&persist=1",
+                    headers={"X-Ghost-Mcp-Token": "secret"})
+    assert r2.status_code == 200
+
+
 def test_super_ghost_merges_available_form4_into_insider_snapshot(monkeypatch):
     from core.super_ghost import build_super_ghost
 

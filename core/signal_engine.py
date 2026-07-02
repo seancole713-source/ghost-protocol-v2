@@ -1861,6 +1861,26 @@ def load_model(symbol=None):
         from core.db import db_conn
         with db_conn() as conn:
             cur = conn.cursor()
+            # PR #115: check for approved promotion — if a challenger model
+            # has been approved, use it instead of the production champion.
+            model_key = f"model_{symbol}"
+            try:
+                cur.execute(
+                    "SELECT candidate_id FROM super_ghost_promotion_reviews "
+                    "WHERE symbol=%s AND approved_for_promotion=TRUE "
+                    "ORDER BY created_at DESC LIMIT 1",
+                    (symbol,),
+                )
+                promo_row = cur.fetchone()
+                if promo_row and promo_row[0]:
+                    promoted_key = f"model_{promo_row[0]}"
+                    # Verify the promoted model exists before switching
+                    cur.execute("SELECT value FROM ghost_v3_model WHERE key=%s", (promoted_key,))
+                    if cur.fetchone():
+                        model_key = promoted_key
+                        LOGGER.info("load_model %s: using promoted model %s", symbol, promoted_key)
+            except Exception:
+                pass  # promotion table may not exist yet
             # PR #107: validate metadata before any pickle deserialization.
             # Stale/invalid model metadata should reject without touching the
             # untrusted-by-default model payload.

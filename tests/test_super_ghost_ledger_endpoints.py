@@ -88,6 +88,8 @@ def test_post_super_ghost_log_endpoint(monkeypatch):
     monkeypatch.setattr("core.super_ghost.build_super_ghost",
                         lambda symbol: {"ok": True, "symbol": symbol, "prediction": {"direction": "UP"}, "checklist": []})
     monkeypatch.setattr("core.super_ghost_ledger.log_prediction", lambda report: 7)
+    # POST /log is a ledger write — requires MCP auth; bypass for test
+    monkeypatch.setattr("mcp.security.require_mcp_auth", lambda r: None)
     r = _client().post("/api/wolf/super-ghost/log", json={"symbol": "ABCD"})
     assert r.status_code == 200
     body = r.json()
@@ -96,9 +98,26 @@ def test_post_super_ghost_log_endpoint(monkeypatch):
     assert body["symbol"] == "ABCD"
 
 
+def test_post_super_ghost_log_requires_auth(monkeypatch):
+    """Unauthenticated POST /super-ghost/log must not write to the ledger."""
+    monkeypatch.setenv("CRON_SECRET", "prod-like")
+    monkeypatch.setenv("GHOST_MCP_TOKEN", "secret")
+    monkeypatch.setenv("GHOST_TEST_MODE", "1")  # bypass HTTPS
+    calls = {"built": False, "logged": False}
+    monkeypatch.setattr("core.super_ghost.build_super_ghost",
+                        lambda symbol: calls.__setitem__("built", True) or {"ok": True, "symbol": symbol})
+    monkeypatch.setattr("core.super_ghost_ledger.log_prediction",
+                        lambda report: calls.__setitem__("logged", True))
+    r = _client().post("/api/wolf/super-ghost/log", json={"symbol": "ABCD"})
+    assert r.status_code == 401
+    assert calls["built"] is False
+    assert calls["logged"] is False
+
+
 def test_post_super_ghost_log_rejects_bad_build(monkeypatch):
     monkeypatch.setattr("core.super_ghost.build_super_ghost",
                         lambda symbol: {"ok": False, "error": "boom"})
+    monkeypatch.setattr("mcp.security.require_mcp_auth", lambda r: None)
     r = _client().post("/api/wolf/super-ghost/log", json={"symbol": "ZZZ"})
     assert r.status_code == 400
 

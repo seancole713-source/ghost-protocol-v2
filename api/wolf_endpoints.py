@@ -1657,6 +1657,7 @@ async def get_super_ghost(request: Request, symbol: str = WOLF_SYMBOL, ai: int =
     these paths fire paid Claude calls or write to the truth ledger.
     The base report (no ai, no log) is public and read-only.
     """
+    import asyncio
     sym = (symbol or WOLF_SYMBOL).strip().upper()
     from core.super_ghost import build_super_ghost
     want_ai = bool(ai)
@@ -1666,16 +1667,17 @@ async def get_super_ghost(request: Request, symbol: str = WOLF_SYMBOL, ai: int =
         from mcp.security import require_mcp_auth
         require_mcp_auth(request)
     # Only the deterministic report is cached; the AI brief is always fresh.
+    # build_super_ghost fans out to many feeds (and Claude when ai=1), so it
+    # always runs in the thread pool to keep the event loop free.
     if not want_ai and not want_log:
         cache_key = "super-ghost:" + sym
         cached = _cache_get(cache_key, 180)
         if cached:
             return JSONResponse(content=cached)
-        result = build_super_ghost(sym)
+        result = await asyncio.to_thread(build_super_ghost, sym)
         if result.get("ok"):
             _cache_set(cache_key, result)
     else:
-        import asyncio
         result = await asyncio.to_thread(build_super_ghost, sym, ai=want_ai)
     if want_log and result.get("ok"):
         try:
@@ -1694,7 +1696,11 @@ async def post_super_ghost_log(request: Request):
 
     Body (optional): {"symbol": "WOLF"}. Builds the deterministic report for the
     symbol and logs it; returns the report plus the new ``ledger_id``.
+
+    **Auth:** GHOST_MCP_TOKEN required — this writes to the truth ledger.
     """
+    from mcp.security import require_mcp_auth
+    require_mcp_auth(request)
     try:
         body = await request.json()
     except Exception:
@@ -1702,9 +1708,10 @@ async def post_super_ghost_log(request: Request):
     if not isinstance(body, dict):
         body = {}
     sym = (str(body.get("symbol") or WOLF_SYMBOL)).strip().upper()
+    import asyncio
     from core.super_ghost import build_super_ghost
     from core.super_ghost_ledger import log_prediction
-    result = build_super_ghost(sym)
+    result = await asyncio.to_thread(build_super_ghost, sym)
     if not result.get("ok"):
         return JSONResponse(content=result, status_code=400)
     result["ledger_id"] = log_prediction(result)
@@ -1755,8 +1762,9 @@ async def get_super_ghost_coverage(symbol: str = WOLF_SYMBOL):
     operator asked for, and it makes the coverage upgrade observable live.
     """
     sym = (symbol or WOLF_SYMBOL).strip().upper()
+    import asyncio
     from core.super_ghost import MIN_COVERAGE_FOR_AB, build_super_ghost
-    report = build_super_ghost(sym)
+    report = await asyncio.to_thread(build_super_ghost, sym)
     if not report.get("ok"):
         return JSONResponse(content=report, status_code=400)
     checklist = report.get("checklist", [])
@@ -2192,14 +2200,21 @@ async def post_super_ghost_feature_store_snapshot(request: Request):
 
 
 @router.get("/super-ghost/data-brain")
-async def get_super_ghost_data_brain(symbol: str = WOLF_SYMBOL, persist: int = 0):
-    """Expanded Data Brain snapshot (SEC/news/macro/options evidence)."""
+async def get_super_ghost_data_brain(request: Request, symbol: str = WOLF_SYMBOL, persist: int = 0):
+    """Expanded Data Brain snapshot (SEC/news/macro/options evidence).
+
+    **Auth:** ``?persist=1`` requires MCP auth (GHOST_MCP_TOKEN) — it writes
+    a snapshot row. The plain read is public.
+    """
+    import asyncio
     sym = (symbol or WOLF_SYMBOL).strip().upper()
     if persist:
+        from mcp.security import require_mcp_auth
+        require_mcp_auth(request)
         from core.super_ghost_data_brain import persist_data_brain
-        return JSONResponse(content=persist_data_brain(sym))
+        return JSONResponse(content=await asyncio.to_thread(persist_data_brain, sym))
     from core.super_ghost_data_brain import build_data_brain
-    return JSONResponse(content=build_data_brain(sym))
+    return JSONResponse(content=await asyncio.to_thread(build_data_brain, sym))
 
 
 @router.get("/super-ghost/data-brain/history")

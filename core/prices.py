@@ -218,20 +218,20 @@ def _stooq_spot(symbol):
 
 
 def get_stock_price(symbol, *, with_staleness: bool = False):
-    """Return live price from the 5-tier spot chain: Alpaca → yfinance → Polygon → IEX → Stooq.
-    When with_staleness=True, returns (price, stale_flag)."""
+    """Return live price from the spot chain: Alpaca → yfinance → Alpaca IEX.
+    When with_staleness=True, returns (price, stale_flag).
+
+    Polygon is intentionally NOT in this chain: its /prev endpoint returns
+    yesterday's close, not a live price, and serving it as spot silently
+    corrupts entries, drift, and TP/SL checks. It remains available as an
+    explicit prev_close source only (see _polygon_spot / get_prev_close).
+    Stooq is deprecated (JS challenge, always None)."""
     cached = _cache_get(symbol)
     if cached:
         return (cached, False) if with_staleness else cached
-    # PR #77: full 5-tier spot chain matching the advertised fallback order.
-    # Previously only Alpaca + yfinance; Polygon/IEX/Stooq were OHLCV-only.
     price = _alpaca(symbol) or _yfinance(symbol)
     if not price:
-        price = _polygon_spot(symbol)
-    if not price:
         price = _iex_spot(symbol)
-    if not price:
-        price = _stooq_spot(symbol)
     if price:
         _cache_set(symbol, price)
         return (price, False) if with_staleness else price
@@ -699,9 +699,10 @@ def get_vix():
 def check_feeds():
     """Health check — can we price the target symbol right now?
 
-    PR #80: probes all 5 spot-price tiers (Alpaca, yfinance, Polygon, IEX,
-    Stooq) matching the get_stock_price() fallback chain. Previously only
-    reported 2 feeds, missing the newly added Polygon/IEX/Stooq spot tiers.
+    Probes all 5 feeds for visibility, but ``priceable`` only counts the
+    live spot tiers (Alpaca, yfinance, IEX). Polygon is prev_close-only
+    (its /prev endpoint returns yesterday's close) and Stooq is deprecated,
+    so neither can actually price the symbol live.
     """
     probe = os.getenv("HEALTH_PROBE_SYMBOL", "WOLF")
     _al = _alpaca(probe) is not None
@@ -709,12 +710,12 @@ def check_feeds():
     _pg = _polygon_spot(probe) is not None
     _ix = _iex_spot(probe) is not None
     _sq = _stooq_spot(probe) is not None
-    priceable = bool(_al or _yf or _pg or _ix or _sq)
+    priceable = bool(_al or _yf or _ix)
     r = {
         "alpaca_stock": _al, "yfinance": _yf, "polygon": _pg,
         "iex": _ix, "stooq": _sq, "probe_symbol": probe, "priceable": priceable,
     }
     working = sum(1 for v in (_al, _yf, _pg, _ix, _sq) if v)
     r["summary"] = (f"{probe} priceable ({working}/5 feeds)" if priceable
-                    else f"{probe} NOT priceable (0/5 feeds)")
+                    else f"{probe} NOT priceable ({working}/5 feeds)")
     return r
