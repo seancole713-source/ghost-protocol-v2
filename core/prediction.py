@@ -25,7 +25,11 @@ LOGGER = logging.getLogger("ghost.prediction")
 # Serialize prediction saves across concurrent cycles (market scan + cron overlap).
 _PREDICTION_SAVE_LOCK_ID = 8723491
 
-CONFIDENCE_FLOOR = float(os.getenv("MIN_ALERT_CONFIDENCE", "0.80"))  # raised: filter weak signals
+def _confidence_floor() -> float:
+    from core.accuracy_contract import resolve_float
+    return resolve_float("MIN_ALERT_CONFIDENCE", "min_alert_confidence", lo=0.50, hi=0.99)
+
+CONFIDENCE_FLOOR = _confidence_floor()  # module load; call _confidence_floor() at runtime for fresh env
 DAILY_CAP        = int(os.getenv("DAILY_ALERT_CAP", "10"))
 TARGET_PCT       = float(os.getenv("TARGET_PCT", "0.06"))
 STOP_PCT         = float(os.getenv("STOP_PCT", "0.03"))
@@ -170,10 +174,11 @@ def resolve_binding_skip(
 #   consecutive losses  >= K    -> cooldown            (KILL_CONSEC_LOSSES)
 #   expectancy (mean pnl%) < 0  over N -> halt_manual_review (KILL_EXPECTANCY_WINDOW)
 def _kill_cfg() -> Dict[str, Any]:
+    from core.accuracy_contract import resolve_float
     g = os.getenv
     return {
         "enabled": g("KILL_SWITCH_ENABLED", "1") not in ("0", "false", "False", ""),
-        "winrate_floor": float(g("KILL_WINRATE_FLOOR", "0.70")),
+        "winrate_floor": resolve_float("KILL_WINRATE_FLOOR", "kill_winrate_floor", lo=0.40, hi=0.95),
         "winrate_window": max(1, int(g("KILL_WINRATE_WINDOW", "30"))),
         "brier_ceiling": float(g("KILL_BRIER_CEILING", "0.35")),
         "brier_window": max(1, int(g("KILL_BRIER_WINDOW", "30"))),
@@ -531,10 +536,13 @@ _OBJECTIVE_RUNTIME_MODE_CACHE: Dict[str, Any] = {"mode": None, "ts": 0.0}
 
 
 def _objective_mode() -> str:
+    from core.accuracy_contract import active_contract, contract_name
     if _objective_auto_enabled():
         cached_mode = _objective_runtime_mode()
         if cached_mode in ("aggressive", "balanced", "precision"):
             return cached_mode
+    if contract_name() in ("70", "80"):
+        return active_contract().objective_mode
     mode = (os.getenv("OBJECTIVE_MODE", "precision") or "").strip().lower()
     if mode in ("aggressive", "balanced", "precision"):
         return mode
@@ -593,11 +601,20 @@ def _objective_int(name: str, default: int, lo: int, hi: int) -> int:
 
 
 def _objective_effective_config() -> Dict[str, Any]:
+    from core.accuracy_contract import active_contract, contract_name, resolve_float
     mode = _objective_mode()
     defaults = _objective_mode_defaults(mode)
-    target_wr = _objective_float("OBJECTIVE_TARGET_WIN_RATE", float(defaults["target_wr"]), 0.50, 0.95)
+    if contract_name() in ("70", "80"):
+        spec = active_contract()
+        defaults = {
+            "target_wr": spec.target_win_rate,
+            "min_samples": float(spec.objective_min_samples),
+            "bootstrap_min_conf": spec.objective_bootstrap_min_conf,
+            "lookback_days": defaults.get("lookback_days", 150.0),
+        }
+    target_wr = resolve_float("OBJECTIVE_TARGET_WIN_RATE", "target_win_rate", lo=0.50, hi=0.95)
     min_samples = _objective_int("OBJECTIVE_MIN_SAMPLES", int(defaults["min_samples"]), 5, 5000)
-    bootstrap_min_conf = _objective_float("OBJECTIVE_BOOTSTRAP_MIN_CONF", float(defaults["bootstrap_min_conf"]), 0.50, 0.99)
+    bootstrap_min_conf = resolve_float("OBJECTIVE_BOOTSTRAP_MIN_CONF", "objective_bootstrap_min_conf", lo=0.50, hi=0.99)
     lookback_days = _objective_int("OBJECTIVE_LOOKBACK_DAYS", int(defaults["lookback_days"]), 7, 3650)
     return {
         "mode": mode,
@@ -1121,7 +1138,7 @@ def _predict_symbol_ex(symbol, asset_type, regime, scores_out=None):
         return None, "v3_no_signal"
     direction, confidence = signal
 
-    _floor = regime.get('confidence_floor_override', CONFIDENCE_FLOOR) if isinstance(regime, dict) else CONFIDENCE_FLOOR
+    _floor = regime.get('confidence_floor_override', _confidence_floor()) if isinstance(regime, dict) else _confidence_floor()
     if is_research:
         _floor = RESEARCH_CONFIDENCE_FLOOR
         score_vector["research_pick"] = True

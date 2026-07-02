@@ -39,10 +39,8 @@ def precision_gate_enabled() -> bool:
 
 
 def precision_target() -> float:
-    try:
-        return float(os.getenv("V3_PRECISION_TARGET", "0.70"))
-    except Exception:
-        return 0.70
+    from core.accuracy_contract import resolve_float
+    return resolve_float("V3_PRECISION_TARGET", "precision_target", lo=0.50, hi=0.95)
 
 
 def _min_support_calib() -> int:
