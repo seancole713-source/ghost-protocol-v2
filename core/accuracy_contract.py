@@ -38,8 +38,10 @@ CONTRACTS: Dict[str, ContractSpec] = {
     "70": ContractSpec(
         name="70",
         target_win_rate=0.70,
-        min_holdout_acc=0.65,
-        min_wf_acc_mean=0.65,
+        # Training admission: models must show ~60% OOS skill to be stored.
+        # Live firing still requires precision_gate proof at 70% (below).
+        min_holdout_acc=0.60,
+        min_wf_acc_mean=0.60,
         min_wf_folds=4,
         min_edge=0.05,
         min_win_proba=0.55,

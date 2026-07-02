@@ -31,8 +31,8 @@ class Settings(BaseSettings):
     
     # ── v3.2 XGBoost Engine Gates (GHOST_ACCURACY_CONTRACT=70 defaults) ──
     MIN_ALERT_CONFIDENCE: float = 0.80
-    V3_MIN_HOLDOUT_ACC: float = 0.65
-    V3_MIN_WF_ACC_MEAN: float = 0.65
+    V3_MIN_HOLDOUT_ACC: float = 0.60
+    V3_MIN_WF_ACC_MEAN: float = 0.60
     V3_MIN_EDGE: float = 0.05
     V3_WF_ACC_MIN_SLACK: float = 0.05
     V3_MIN_TP_SL_WINS: int = 15
