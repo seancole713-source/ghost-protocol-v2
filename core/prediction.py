@@ -13,6 +13,7 @@ import os, time, logging, json
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Tuple
 from core.db import db_conn
+from core.prediction_filters import NON_RESEARCH_WHERE
 from core.vol_targets import base_vol_pct, stop_pct_from_vol
 try:
     from core.prices import get_price
@@ -250,14 +251,14 @@ def evaluate_kill_conditions(*, include_pause: bool = False, since_ts: int = 0) 
                     "SELECT confidence, outcome, pnl_pct FROM predictions "
                     "WHERE symbol = ANY(%s) AND id >= 223438 AND outcome IS NOT NULL "
                     "AND resolved_at >= %s "
-                    "AND (scores->>'research_pick' IS NULL OR scores->>'research_pick' != 'true') "
+                    "AND " + NON_RESEARCH_WHERE + " "
                     "ORDER BY resolved_at DESC NULLS LAST, id DESC LIMIT %s",
                     (symbols, since_ts, need))
             else:
                 cur.execute(
                     "SELECT confidence, outcome, pnl_pct FROM predictions "
                     "WHERE symbol = ANY(%s) AND id >= 223438 AND outcome IS NOT NULL "
-                    "AND (scores->>'research_pick' IS NULL OR scores->>'research_pick' != 'true') "
+                    "AND " + NON_RESEARCH_WHERE + " "
                     "ORDER BY resolved_at DESC NULLS LAST, id DESC LIMIT %s",
                     (symbols, need))
             rows = cur.fetchall()   # newest first
@@ -692,7 +693,7 @@ def _objective_symbol_stats(symbol: str, direction: str) -> Dict[str, Any]:
               AND direction = ANY(%s)
               AND outcome IN ('WIN','LOSS')
               AND COALESCE(resolved_at, predicted_at, run_at, 0) >= %s
-              AND (scores->>'research_pick' IS NULL OR scores->>'research_pick' != 'true')
+              AND """ + NON_RESEARCH_WHERE + """
             """,
             (symbol, list(aliases), cutoff),
         )
@@ -781,7 +782,7 @@ def _objective_recent_v2_stats(window_days: int) -> Dict[str, Any]:
             WHERE direction IN ('UP','BUY')
               AND outcome IN ('WIN','LOSS')
               AND COALESCE(resolved_at, predicted_at, run_at, 0) >= %s
-              AND (scores->>'research_pick' IS NULL OR scores->>'research_pick' != 'true')
+              AND """ + NON_RESEARCH_WHERE + """
             """,
             (cutoff,),
         )
@@ -1111,6 +1112,8 @@ def _predict_symbol_ex(symbol, asset_type, regime, scores_out=None):
             return None, "v3_meta_gate"
         if v3_reason == "prob_low":
             return None, "v3_prob_low"
+        if v3_reason == "down_shadow_only":
+            return None, "sell_blocked"
         return None, "v3_no_signal"
     direction, confidence = signal
 
@@ -1136,10 +1139,19 @@ def _predict_symbol_ex(symbol, asset_type, regime, scores_out=None):
         score_vector["confidence_floor"] = float(_floor)
         return None, "below_confidence_floor"
 
-    # SELL signals blocked: 1.9% win rate across 211 trades (data as of 2026-03-25)
+    # DOWN lane disabled by default (legacy SELL signals: 1.9% win rate across
+    # 211 trades as of 2026-03-25). signal_engine only emits DOWN when
+    # V3_DOWN_SIGNALS_ENABLED=1; this is the belt-and-suspenders check at fire
+    # time so a misconfigured engine can never fire DOWN with the flag off.
     if direction == "DOWN":
-        LOGGER.info("SELL blocked: " + symbol + " — DOWN signals 1.9% wr historically")
-        return None, "sell_blocked"
+        try:
+            from core.signal_engine import _v3_down_signals_enabled
+            down_ok = _v3_down_signals_enabled()
+        except Exception:
+            down_ok = False
+        if not down_ok:
+            LOGGER.info("SELL blocked: " + symbol + " — DOWN lane disabled (V3_DOWN_SIGNALS_ENABLED=0)")
+            return None, "sell_blocked"
 
     # Research picks skip the objective gate — there's no track record to evaluate yet.
     if not is_research:

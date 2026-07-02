@@ -688,15 +688,17 @@ function renderCoverage(cov){
 function renderEnsemble(v3){
   var b=document.getElementById('t-ens-status'),k=document.getElementById('t-ens-kv');
   if(!v3||!v3.trained){b.textContent='—';b.className='big';k.innerHTML='<b>No models loaded</b>';return}
-  var syms=v3.symbols||{},keys=Object.keys(syms);
-  var ensCount=0,confCount=0,total=keys.length;
-  keys.forEach(function(sym){
-    var m=syms[sym];
+  /* Phase 2: symbols[sym] may be nested per direction ({UP:{...},DOWN:{...}})
+   * or a legacy flat summary. _modelRows (ghost.js) handles both. */
+  var rows=_modelRows(v3.symbols||{});
+  var ensCount=0,confCount=0,total=rows.length;
+  rows.forEach(function(pair){
+    var m=pair[1];
     if(m.ensemble) ensCount++;
     if(m.conformal_ok) confCount++;
   });
   b.textContent=ensCount+'/'+total+' ens';b.className='big '+(ensCount>=total*0.8?'pass':'warn');
-  var lines=['<b>Ensemble</b> '+ensCount+'/'+total+' symbols'];
+  var lines=['<b>Ensemble</b> '+ensCount+'/'+total+' models'];
   lines.push('<b>Conformal</b> '+confCount+'/'+total+' calibrated');
   if(v3.mean_acc!=null) lines.push('<b>Mean acc</b> '+(v3.mean_acc*100).toFixed(1)+'%');
   if(v3.mean_edge!=null) lines.push('<b>Mean edge</b> '+(v3.mean_edge*100).toFixed(1)+'%');

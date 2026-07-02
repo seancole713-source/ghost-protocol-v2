@@ -162,7 +162,9 @@ def _v32_stats_start_ts(cur):
                 ts = int(m.get("trained_at", 0) or 0)
                 if ts > 0:
                     trained.append(ts)
-                sym = str(key or "").replace("meta_", "").strip().upper()
+                sym = _strip_model_direction_suffix(
+                    str(key or "").replace("meta_", "").strip()
+                ).upper()
                 if sym:
                     model_syms.append(sym)
             except Exception:
@@ -248,7 +250,8 @@ def _build_symbol_universe_payload() -> dict:
             "SELECT key, updated_at FROM ghost_v3_model WHERE key LIKE 'meta_%' ORDER BY key"
         )
         models_db = [
-            {"symbol": str(k).replace("meta_", "").upper(), "updated_at": ts}
+            {"symbol": str(k).replace("meta_", "").upper(), "updated_at": ts,
+             "base_symbol": _strip_model_direction_suffix(str(k).replace("meta_", "")).upper()}
             for k, ts in cur.fetchall()
         ]
         cur.execute(
@@ -290,7 +293,9 @@ def _build_symbol_universe_payload() -> dict:
 
     stored = model_st.get("stored_symbols") or {}
     serveable = model_st.get("symbols") or {}
-    stored_syms = sorted(stored.keys())
+    # stored_symbols keys carry the Phase 2 direction suffix (WOLF_up);
+    # normalize to bare symbols for watchlist comparisons.
+    stored_syms = sorted({_strip_model_direction_suffix(k) for k in stored.keys()})
     serveable_syms = sorted(serveable.keys())
 
     picks_enriched = {}
@@ -345,7 +350,7 @@ def _build_symbol_universe_payload() -> dict:
             "by_symbol": stored,
             "official_missing_model": sorted(official_set - set(stored_syms)),
             "official_not_serveable": sorted(
-                sym for sym in official_set if sym in stored and sym not in serveable
+                sym for sym in official_set if sym in set(stored_syms) and sym not in serveable
             ),
         },
         "picks": {
@@ -503,7 +508,11 @@ def _purge_v3_stale_or_weak():
             cur = conn.cursor()
             cur.execute("SELECT key, value FROM ghost_v3_model WHERE key LIKE 'meta_%'")
             for key, val in cur.fetchall():
-                sym = key.replace("meta_", "")
+                raw = key.replace("meta_", "")
+                # Phase 2 keys carry a direction suffix (meta_WOLF_up); the
+                # watchlist check must use the bare symbol or WOLF_UP would
+                # read as off-watchlist and purge WOLF's own models.
+                sym = _strip_model_direction_suffix(raw)
                 try:
                     meta = _j.loads(val)
                     if model_serve_guard(meta) is None:
@@ -513,14 +522,32 @@ def _purge_v3_stale_or_weak():
                     if off_watchlist or legacy:
                         cur.execute(
                             "DELETE FROM ghost_v3_model WHERE key IN (%s,%s)",
-                            (f"model_{sym}", f"meta_{sym}"),
+                            (f"model_{raw}", f"meta_{raw}"),
                         )
                         purged += 1
                 except Exception:
                     pass
+        if purged:
+            try:
+                from core.signal_engine import invalidate_model_cache
+                invalidate_model_cache()
+            except Exception:
+                pass
         return purged
     except Exception:
         return 0
+
+
+def _strip_model_direction_suffix(raw_key: str) -> str:
+    """Bare symbol from a ghost_v3_model key stem (Phase 2 directional keys).
+
+    'WOLF_up' / 'WOLF_down' -> 'WOLF'; legacy 'WOLF' passes through.
+    """
+    if raw_key.endswith("_up"):
+        return raw_key[:-3]
+    if raw_key.endswith("_down"):
+        return raw_key[:-5]
+    return raw_key
 
 
 def _expire_open_picks_without_v3_model():
@@ -531,7 +558,13 @@ def _expire_open_picks_without_v3_model():
         with db_conn() as conn:
             cur = conn.cursor()
             cur.execute("SELECT key FROM ghost_v3_model WHERE key LIKE 'meta_%'")
-            model_syms = {row[0].replace("meta_", "") for row in cur.fetchall()}
+            # Normalize Phase 2 directional keys (meta_WOLF_up) to bare
+            # symbols, or every open pick would mass-expire once the legacy
+            # meta_WOLF row ages out.
+            model_syms = {
+                _strip_model_direction_suffix(row[0].replace("meta_", ""))
+                for row in cur.fetchall()
+            }
             cur.execute(
                 "SELECT id, symbol FROM predictions "
                 "WHERE outcome IS NULL AND expires_at > %s",
@@ -614,7 +647,11 @@ def _wolf_retrain_in_days():
     try:
         with db_conn() as c:
             cur = c.cursor()
-            cur.execute("SELECT value FROM ghost_v3_model WHERE key='meta_WOLF'")
+            # Phase 2 directional key first, legacy key as fallback.
+            cur.execute(
+                "SELECT value FROM ghost_v3_model WHERE key IN ('meta_WOLF_up','meta_WOLF') "
+                "ORDER BY key DESC LIMIT 1"
+            )
             r = cur.fetchone()
         if r and r[0]:
             ta = json.loads(r[0]).get("trained_at")
@@ -1954,9 +1991,11 @@ async def diagnostics(request: Request = None):
         else:
             _ok("models.walk_forward", "all models pass walk-forward floor")
 
-        # Active picks with no model
+        # Active picks with no model (normalize Phase 2 directional keys)
         _active_syms = set(r[0] for r in _active)
-        _model_syms = set(k.replace("meta_","") for k,_ in _model_rows)
+        _model_syms = set(
+            _strip_model_direction_suffix(k.replace("meta_", "")) for k, _ in _model_rows
+        )
         _no_model = _active_syms - _model_syms
         if _no_model:
             _score -= _warn("models.coverage", f"Active picks with no model: {list(_no_model)}")
@@ -2087,26 +2126,36 @@ async def delete_model(x_cron_secret: str = Header(None), non_wolf_only: bool = 
             cur.execute("SELECT key, value FROM ghost_v3_model WHERE key LIKE 'meta_%'")
             rows = cur.fetchall()
             for key, val in rows:
-                sym = key.replace("meta_", "")
+                raw = key.replace("meta_", "")
+                # Phase 2 directional keys (meta_WOLF_up): compare on the bare
+                # symbol so non_wolf_only never deletes WOLF's own models, but
+                # delete by the raw key stem.
+                sym = _strip_model_direction_suffix(raw)
                 if non_wolf_only:
                     if str(sym).upper() == "WOLF":
-                        kept.append(f"{sym}(WOLF)")
+                        kept.append(f"{raw}(WOLF)")
                         continue
                     cur.execute("DELETE FROM ghost_v3_model WHERE key IN (%s, %s)",
-                               (f"model_{sym}", f"meta_{sym}"))
-                    deleted.append(f"{sym}(non-WOLF)")
+                               (f"model_{raw}", f"meta_{raw}"))
+                    deleted.append(f"{raw}(non-WOLF)")
                     continue
                 try:
                     meta = _j.loads(val)
                     acc = meta.get("accuracy", 0)
                     if acc < ACCURACY_FLOOR:
                         cur.execute("DELETE FROM ghost_v3_model WHERE key IN (%s, %s)",
-                                   (f"model_{sym}", f"meta_{sym}"))
-                        deleted.append(f"{sym}(acc={round(acc*100,1)}%)")
+                                   (f"model_{raw}", f"meta_{raw}"))
+                        deleted.append(f"{raw}(acc={round(acc*100,1)}%)")
                     else:
-                        kept.append(f"{sym}(acc={round(acc*100,1)}%)")
+                        kept.append(f"{raw}(acc={round(acc*100,1)}%)")
                 except Exception:
                     pass
+        if deleted:
+            try:
+                from core.signal_engine import invalidate_model_cache
+                invalidate_model_cache()
+            except Exception:
+                pass
         return {"ok": True, "mode": "non_wolf_only" if non_wolf_only else "low_accuracy",
                 "deleted": deleted, "kept": kept}
     except Exception as e:
@@ -4839,6 +4888,34 @@ def admin_page(request: Request):
     return _serve_html_page("admin.html")
 
 
+# /admin/login sits outside the /api/* rate-limit middleware, so it needs its
+# own throttle — the admin secret is the whole security boundary and must not
+# be brute-forceable online.
+_LOGIN_ATTEMPTS = _collections.defaultdict(_collections.deque)  # ip -> deque[ts]
+_LOGIN_ATTEMPTS_LOCK = threading.Lock()
+
+
+def _login_throttled(ip: str) -> bool:
+    """True if this IP exceeded LOGIN_ATTEMPTS_PER_MIN (default 5) in 60s."""
+    try:
+        limit = max(1, int(os.getenv("LOGIN_ATTEMPTS_PER_MIN", "5")))
+    except Exception:
+        limit = 5
+    now = time.time()
+    with _LOGIN_ATTEMPTS_LOCK:
+        dq = _LOGIN_ATTEMPTS[ip]
+        cutoff = now - 60
+        while dq and dq[0] < cutoff:
+            dq.popleft()
+        if len(dq) >= limit:
+            return True
+        dq.append(now)
+        if len(_LOGIN_ATTEMPTS) > 4096:
+            for _k in [k for k, v in list(_LOGIN_ATTEMPTS.items()) if not v]:
+                _LOGIN_ATTEMPTS.pop(_k, None)
+    return False
+
+
 @APP.post("/admin/login", include_in_schema=False)
 async def admin_login(request: Request):
     """Validate the posted secret against CRON_SECRET; set the signed cookie.
@@ -4846,6 +4923,11 @@ async def admin_login(request: Request):
     JSON body {"secret": "..."} (no python-multipart dependency). On success
     sets an HttpOnly, SameSite=Lax cookie valid for 8h and returns {ok:true}.
     """
+    if _login_throttled(_client_ip(request)):
+        return JSONResponse(
+            {"ok": False, "error": "too many attempts"},
+            status_code=429, headers={"Retry-After": "60"},
+        )
     expected = os.environ.get("CRON_SECRET", "")
     provided = ""
     try:
@@ -5590,7 +5672,7 @@ def v3_train(x_cron_secret: str = Header(default=""), force: bool = False):
 
 # PR #19 deploy-version constant. Bump on every "did Railway pick up
 # the new code?" PR so /api/_version reveals the truth in one curl.
-_RUNNING_PR_VERSION = 116
+_RUNNING_PR_VERSION = 117
 
 
 def _deploy_meta() -> dict:
@@ -5799,13 +5881,17 @@ def v3_backtest(x_cron_secret: str = Header(default=""), symbol: str = "WOLF", a
     try:
         from core.signal_engine import backtest_symbol, V3_LABEL_HOLD_BARS, LABEL_TYPE
         from core.vol_targets import base_vol_pct
-        rows = backtest_symbol(symbol, asset_type)
-        if not rows:
+        up_rows, down_rows = backtest_symbol(symbol, asset_type)
+        rows = up_rows  # primary analysis on UP rows
+        if not rows and not down_rows:
             return {"ok": False, "error": "No data for " + symbol}
         total = len(rows)
         hits = sum(1 for r in rows if r['label'] == 1)
         expired = sum(1 for r in rows if r.get('outcome') == 'EXPIRED')
         losses = sum(1 for r in rows if r.get('outcome') == 'LOSS')
+        # DOWN stats
+        down_total = len(down_rows)
+        down_hits = sum(1 for r in down_rows if r['label'] == 1) if down_rows else 0
         vol_pct = base_vol_pct(symbol, asset_type)
         indicators = {
             'rsi_oversold': lambda f: f.get('rsi_oversold', 0) == 1,
@@ -5829,6 +5915,8 @@ def v3_backtest(x_cron_secret: str = Header(default=""), symbol: str = "WOLF", a
                 "LOSS": round(losses/total*100,1) if total else 0,
                 "EXPIRED": round(expired/total*100,1) if total else 0,
             },
+            "down_samples": down_total,
+            "down_natural_tp_sl_win_pct": round(down_hits/down_total*100,1) if down_total else 0,
             "vol_target_frac": vol_pct,
             "label_lookahead_daily_bars": V3_LABEL_HOLD_BARS,
             "indicators": results,

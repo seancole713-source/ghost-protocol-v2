@@ -45,13 +45,28 @@ function renderDeployMeta(v, elId){
 }
 
 /* ─── Model table renderer ─── */
+/* Flatten /api/v3/status symbols into [label, summary] rows.
+ * Phase 2 shape: symbols[sym] = {UP:{...}, DOWN:{...}} (nested per direction).
+ * Legacy shape:  symbols[sym] = {...flat summary...}. */
+function _modelRows(syms){
+  var rows=[];
+  Object.keys(syms).sort().forEach(function(k){
+    var m=syms[k]||{};
+    if(m.accuracy!=null||m.engine!=null){rows.push([k,m]);return}   /* legacy flat */
+    ['UP','DOWN'].forEach(function(dir){
+      if(m[dir])rows.push([k+' '+dir,m[dir]]);
+    });
+  });
+  return rows;
+}
+
 function renderModelTable(v3){
   if(!v3||!v3.trained)return '<p class="kv">'+escHtml(v3&&v3.reason?v3.reason:'No v3 models loaded.')+'</p>';
-  var syms=v3.symbols||{},keys=Object.keys(syms).sort();
-  if(!keys.length)return '<p class="kv">No symbol rows.</p>';
+  var rows=_modelRows(v3.symbols||{});
+  if(!rows.length)return '<p class="kv">No symbol rows.</p>';
   var h='<table class="tbl"><thead><tr><th>Symbol</th><th>Engine</th><th>Label</th><th>Acc</th><th>WF mean</th><th>WF min</th><th>Edge</th><th>N</th></tr></thead><tbody>';
-  keys.forEach(function(k){
-    var m=syms[k];
+  rows.forEach(function(pair){
+    var k=pair[0],m=pair[1];
     h+='<tr><td><b>'+escHtml(k)+'</b></td><td>'+escHtml(m.engine!=null?m.engine:'—')+'</td>'
       +'<td>'+escHtml(m.label_type||'—')+'</td>'
       +'<td>'+(m.accuracy!=null?m.accuracy:'—')+'%</td>'
