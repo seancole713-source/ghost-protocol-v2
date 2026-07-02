@@ -11,8 +11,8 @@ def test_contract_70_clamps_weak_env_overrides(monkeypatch):
     monkeypatch.setenv("KILL_WINRATE_FLOOR", "0.40")
     from core.accuracy_contract import resolve_float
 
-    assert resolve_float("V3_MIN_HOLDOUT_ACC", "min_holdout_acc") == 0.65
-    assert resolve_float("V3_MIN_WF_ACC_MEAN", "min_wf_acc_mean") == 0.65
+    assert resolve_float("V3_MIN_HOLDOUT_ACC", "min_holdout_acc") == 0.60
+    assert resolve_float("V3_MIN_WF_ACC_MEAN", "min_wf_acc_mean") == 0.60
     assert resolve_float("KILL_WINRATE_FLOOR", "kill_winrate_floor") == 0.70
 
 

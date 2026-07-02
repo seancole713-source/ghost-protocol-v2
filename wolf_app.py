@@ -5672,7 +5672,7 @@ def v3_train(x_cron_secret: str = Header(default=""), force: bool = False):
 
 # PR #19 deploy-version constant. Bump on every "did Railway pick up
 # the new code?" PR so /api/_version reveals the truth in one curl.
-_RUNNING_PR_VERSION = 122
+_RUNNING_PR_VERSION = 123
 
 
 def _deploy_meta() -> dict:
