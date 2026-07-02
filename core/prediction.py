@@ -250,12 +250,14 @@ def evaluate_kill_conditions(*, include_pause: bool = False, since_ts: int = 0) 
                     "SELECT confidence, outcome, pnl_pct FROM predictions "
                     "WHERE symbol = ANY(%s) AND id >= 223438 AND outcome IS NOT NULL "
                     "AND resolved_at >= %s "
+                    "AND (scores->>'research_pick' IS NULL OR scores->>'research_pick' != 'true') "
                     "ORDER BY resolved_at DESC NULLS LAST, id DESC LIMIT %s",
                     (symbols, since_ts, need))
             else:
                 cur.execute(
                     "SELECT confidence, outcome, pnl_pct FROM predictions "
                     "WHERE symbol = ANY(%s) AND id >= 223438 AND outcome IS NOT NULL "
+                    "AND (scores->>'research_pick' IS NULL OR scores->>'research_pick' != 'true') "
                     "ORDER BY resolved_at DESC NULLS LAST, id DESC LIMIT %s",
                     (symbols, need))
             rows = cur.fetchall()   # newest first
@@ -778,6 +780,7 @@ def _objective_recent_v2_stats(window_days: int) -> Dict[str, Any]:
             WHERE direction IN ('UP','BUY')
               AND outcome IN ('WIN','LOSS')
               AND COALESCE(resolved_at, predicted_at, run_at, 0) >= %s
+              AND (scores->>'research_pick' IS NULL OR scores->>'research_pick' != 'true')
             """,
             (cutoff,),
         )
@@ -1385,9 +1388,22 @@ def run_prediction_cycle(with_diag: bool = False):
 
     all_picks.sort(key=lambda x: x["confidence"], reverse=True)
     # Research picks have their own daily cap to prevent flooding.
+    # Count research picks already saved today (not just this cycle).
+    research_today = 0
+    try:
+        with db_conn() as rc:
+            rc_cur = rc.cursor()
+            rc_cur.execute(
+                "SELECT COUNT(*) FROM predictions WHERE scores->>'research_pick' = 'true' AND predicted_at > %s",
+                (int(time.time()) - 86400,),
+            )
+            research_today = int(rc_cur.fetchone()[0])
+    except Exception:
+        pass
+    research_remaining = max(0, RESEARCH_DAILY_CAP - research_today)
     research_picks = [p for p in all_picks if p.get("kind") == "research"]
     live_picks = [p for p in all_picks if p.get("kind") != "research"]
-    top = live_picks[:DAILY_CAP] + research_picks[:RESEARCH_DAILY_CAP]
+    top = live_picks[:DAILY_CAP] + research_picks[:research_remaining]
     top.sort(key=lambda x: x["confidence"], reverse=True)
     _suppress_reason = None
     _suppressed = 0

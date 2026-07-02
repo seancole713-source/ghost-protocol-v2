@@ -212,23 +212,31 @@ def log_prediction(report: Dict[str, Any], *, created_at: Optional[int] = None) 
             )
             r = cur.fetchone()
             ledger_id = int(r[0]) if r else None
-            if ledger_id:
-                try:
-                    from core.super_ghost_feature_store import persist_feature_snapshot
-                    persist_feature_snapshot(cur, report, ledger_id=ledger_id, prediction_ts=ts)
-                except Exception as store_exc:
-                    LOGGER.warning("log_prediction feature_store %s: %s", row.get("symbol"), str(store_exc)[:120])
-                try:
-                    from core.super_ghost_memory import log_prediction_memory
-                    log_prediction_memory(cur, ledger_id, report)
-                except Exception as mem_exc:
-                    LOGGER.warning("log_prediction memory %s: %s", row.get("symbol"), str(mem_exc)[:120])
-                try:
-                    from core.super_ghost_shadow import store_shadow_predictions
-                    store_shadow_predictions(cur, ledger_id, report)
-                except Exception as shadow_exc:
-                    LOGGER.warning("log_prediction shadow %s: %s", row.get("symbol"), str(shadow_exc)[:120])
-            return ledger_id
+        # Commit the INSERT before side-writes so a side-write failure
+        # doesn't roll back the ledger row (silent data loss).
+        if ledger_id:
+            try:
+                from core.super_ghost_feature_store import persist_feature_snapshot
+                from core.db import db_conn as _db2
+                with _db2() as conn2:
+                    persist_feature_snapshot(conn2.cursor(), report, ledger_id=ledger_id, prediction_ts=ts)
+            except Exception as store_exc:
+                LOGGER.warning("log_prediction feature_store %s: %s", row.get("symbol"), str(store_exc)[:120])
+            try:
+                from core.super_ghost_memory import log_prediction_memory
+                from core.db import db_conn as _db3
+                with _db3() as conn3:
+                    log_prediction_memory(conn3.cursor(), ledger_id, report)
+            except Exception as mem_exc:
+                LOGGER.warning("log_prediction memory %s: %s", row.get("symbol"), str(mem_exc)[:120])
+            try:
+                from core.super_ghost_shadow import store_shadow_predictions
+                from core.db import db_conn as _db4
+                with _db4() as conn4:
+                    store_shadow_predictions(conn4.cursor(), ledger_id, report)
+            except Exception as shadow_exc:
+                LOGGER.warning("log_prediction shadow %s: %s", row.get("symbol"), str(shadow_exc)[:120])
+        return ledger_id
     except Exception as exc:
         LOGGER.warning("log_prediction %s: %s", row.get("symbol"), str(exc)[:160])
         return None

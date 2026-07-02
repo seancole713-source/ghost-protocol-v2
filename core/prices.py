@@ -160,7 +160,12 @@ def _yfinance(symbol):
 
 
 def _polygon_spot(symbol):
-    """Spot price from Polygon.io — third-tier fallback (PR #77)."""
+    """Previous close from Polygon.io — used ONLY for prev_close fallback.
+
+    WARNING: This calls the /prev endpoint which returns YESTERDAY'S close,
+    not a live spot price. Do NOT use this for live pricing — it is only
+    suitable as a prev_close source when all other feeds are down.
+    """
     if not POLYGON_KEY:
         return None
     try:

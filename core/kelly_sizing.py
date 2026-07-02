@@ -28,10 +28,12 @@ def kelly_fraction(
     avg_win_pct: float,
     avg_loss_pct: float,
 ) -> float:
-    """Compute Kelly fraction: f* = edge / odds.
+    """Compute Kelly fraction: f* = win_rate - (1-win_rate) / odds.
 
-    edge = win_rate × avg_win - (1-win_rate) × |avg_loss|
-    odds = avg_win / |avg_loss|
+    Standard Kelly criterion for binary outcomes:
+      f* = (p × b - q) / b  where  b = avg_win / |avg_loss|
+
+    Simplified: f* = p - q / b = win_rate - (1-win_rate) × |avg_loss| / avg_win
 
     Returns fraction of capital to risk (capped at _MAX_POSITION_PCT).
     """
@@ -41,13 +43,12 @@ def kelly_fraction(
     if abs_loss == 0:
         return 0.0
 
-    edge = win_rate * avg_win_pct - (1.0 - win_rate) * abs_loss
     odds = avg_win_pct / abs_loss
-
     if odds <= 0:
         return 0.0
 
-    f_star = edge / odds
+    # Correct Kelly: f* = p - (1-p) / b
+    f_star = win_rate - (1.0 - win_rate) / odds
     f_star = max(0.0, f_star)
 
     # Apply half-Kelly fraction for safety

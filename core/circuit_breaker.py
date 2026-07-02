@@ -148,21 +148,21 @@ class CircuitBreaker:
         LOGGER.info("CB %s: manually RESET — circuit CLOSED", self.name)
 
     def auto_recover(self) -> bool:
-        """Auto-close if the breaker is open but idle or cooldown expired.
+        """Auto-close if the breaker cooldown has genuinely expired.
 
         Returns True if the breaker was auto-closed, False otherwise.
-        An open breaker with zero recent calls is a transient rate-limit spike,
-        not a persistent outage — safe to reset immediately.
+        Only auto-recovers when the cooldown has fully elapsed — idle alone
+        is not sufficient (rate-limit windows clear faster than cooldowns,
+        and auto-recovering on idle would defeat the cooldown protection).
         """
         now = time.time()
         if self.state == "closed":
             return False
         cooldown_expired = self._circuit_open_until and now >= self._circuit_open_until
-        idle = len([t for t in self._call_timestamps if t > now - self.rate_limit_window_s]) == 0
-        if cooldown_expired or idle:
+        if cooldown_expired:
             LOGGER.info(
-                "CB %s: auto-recovery — cooldown_expired=%s idle=%s, circuit CLOSED",
-                self.name, cooldown_expired, idle,
+                "CB %s: auto-recovery — cooldown expired, circuit CLOSED",
+                self.name,
             )
             self.reset()
             return True
