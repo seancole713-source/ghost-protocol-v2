@@ -980,9 +980,14 @@ def test_backtest_symbol_returns_empty_when_under_min_bars(monkeypatch):
 def test_backtest_symbol_window_governs_sample_count(monkeypatch):
     """Smaller window must produce more labeled samples on the same input."""
     import core.signal_engine as _se
-    # 200 deterministic bars — enough to label with either window
-    rows = [{"ts": f"2026-01-{i:02d}", "open": 60.0 + i*0.1, "high": 61.0 + i*0.1,
-             "low": 59.0 + i*0.1, "close": 60.0 + i*0.1, "volume": 100000} for i in range(1, 201)]
+    # 200 bars with valid dates and wide enough range to generate WIN/LOSS labels
+    import datetime as _dt
+    base = _dt.date(2026, 1, 1)
+    rows = []
+    for i in range(1, 201):
+        d = base + _dt.timedelta(days=i)
+        rows.append({"ts": d.isoformat(), "open": 60.0 + i*0.5, "high": 66.0 + i*0.5,
+                      "low": 54.0 + i*0.5, "close": 60.0 + i*0.5, "volume": 100000})
     monkeypatch.setattr(_se, "_fetch_ohlcv", lambda symbol, asset_type: rows)
     monkeypatch.setenv("MIN_BACKTEST_BARS", "10")
     monkeypatch.setenv("V3_BACKTEST_WINDOW", "120")

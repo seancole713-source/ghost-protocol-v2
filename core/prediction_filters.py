@@ -16,6 +16,12 @@ REAL_TRADE_WHERE = (
     + _WATCHLIST_FILTER
 )
 
+# Research picks (low-bar, research_pick=true in scores) must never count
+# toward credibility metrics: win rate, falsification verdict, objective gates.
+NON_RESEARCH_WHERE = (
+    "(scores->>'research_pick' IS NULL OR scores->>'research_pick' != 'true')"
+)
+
 CRYPTO_JUNK_WHERE = (
     "COALESCE(asset_type, 'stock') != 'stock' "
     "OR entry_price IS NULL OR entry_price <= 0"

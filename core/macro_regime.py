@@ -39,10 +39,14 @@ def _fetch_fred_series(series_id: str) -> Optional[float]:
     """Fetch the latest value for a FRED series. Free, no API key."""
     try:
         import requests
+        fred_key = os.getenv("FRED_API_KEY", "").strip()
+        if not fred_key:
+            LOGGER.debug("FRED_API_KEY not set — yield spread / fed rate will be unavailable")
+            return None
         url = f"https://api.stlouisfed.org/fred/series/observations"
         params = {
             "series_id": series_id,
-            "api_key": os.getenv("FRED_API_KEY", "none"),  # works without key for basic access
+            "api_key": fred_key,
             "file_type": "json",
             "sort_order": "desc",
             "limit": 1,

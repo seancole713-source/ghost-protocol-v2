@@ -212,7 +212,7 @@ def _v32_stats_start_ts(cur):
     return final_ts
 
 
-from core.prediction_filters import CRYPTO_JUNK_WHERE, REAL_TRADE_WHERE, picks_where as _picks_where
+from core.prediction_filters import CRYPTO_JUNK_WHERE, NON_RESEARCH_WHERE, REAL_TRADE_WHERE, picks_where as _picks_where
 
 
 def _build_symbol_universe_payload() -> dict:
@@ -3747,9 +3747,12 @@ def wolf_pick_journal(limit: int = 50, offset: int = 0, symbol: str = "ALL"):
                 base_params + (lim, off),
             )
             rows = cur.fetchall()
+            # Credibility metrics + falsification verdict exclude research picks
+            # (low-bar by design); the paginated journal listing still shows them.
             cur.execute(
                 "SELECT confidence,outcome,pnl_pct FROM predictions WHERE "
-                + scope_sql + "id >= %s AND outcome IS NOT NULL AND " + REAL_TRADE_WHERE,
+                + scope_sql + "id >= %s AND outcome IS NOT NULL AND " + REAL_TRADE_WHERE
+                + " AND " + NON_RESEARCH_WHERE,
                 base_params,
             )
             resolved = cur.fetchall()

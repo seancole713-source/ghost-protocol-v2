@@ -692,6 +692,7 @@ def _objective_symbol_stats(symbol: str, direction: str) -> Dict[str, Any]:
               AND direction = ANY(%s)
               AND outcome IN ('WIN','LOSS')
               AND COALESCE(resolved_at, predicted_at, run_at, 0) >= %s
+              AND (scores->>'research_pick' IS NULL OR scores->>'research_pick' != 'true')
             """,
             (symbol, list(aliases), cutoff),
         )

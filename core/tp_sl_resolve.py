@@ -199,6 +199,21 @@ def simulate_tp_sl_label(
     return outcome if outcome else "EXPIRED"
 
 
+def simulate_down_tp_sl_label(
+    rows: Sequence[Dict[str, Any]],
+    entry_idx: int,
+    hold_bars: int,
+    vol_pct: float,
+) -> str:
+    """DOWN label generator — same forward-window rules as UP, but target is below entry.
+
+    Phase 0 (PR #115): Ghost was structurally unable to bet down. This provides
+    the training labels for a DOWN model so the engine can be accurate in bear
+    markets instead of only being silent.
+    """
+    return simulate_tp_sl_label(rows, entry_idx, hold_bars, vol_pct, direction="DOWN")
+
+
 def reconcile_training_label(
     *,
     rows: Sequence[Dict[str, Any]],

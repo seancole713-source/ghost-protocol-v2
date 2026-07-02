@@ -777,6 +777,14 @@ FEATURE_COLS = [
     'atr_pct',
     'obv_slope','obv_accumulating',
     'stoch_k','stoch_d','stoch_oversold','stoch_overbought',
+    # Phase 0 (PR #115): macro + cross-sectional features were computed every
+    # cycle but never added to the training feature list — the model was blind
+    # to VIX, yield curve, sector ranks, and peer-relative strength.
+    'macro_vix_level','macro_yield_spread','macro_fed_rate',
+    'macro_dxy_change','macro_spy_20d_return','macro_spy_vs_sma50',
+    'macro_smh_vs_spy','macro_vix_regime',
+    'cs_rsi_rank','cs_volume_rank','cs_momentum_rank','cs_sma_distance_rank',
+    'cs_atr_rank','cs_adx_rank','cs_short_float_rank','cs_sector_corr',
 ]
 
 
@@ -1264,6 +1272,11 @@ def backtest_symbol(symbol, asset_type):
         if sector_on:
             features["sector_rel_strength"] = _sector_rel_at(rows, aligned_sector, i, sector_lookback)
         outcome = _simulate_up_tp_sl(rows, i, V3_LABEL_HOLD_BARS, vol_pct)
+        # EXPIRED = no TP/SL hit within hold_bars — a flat/sideways week.
+        # Exclude from training: it provides no directional signal and
+        # counting it as LOSS teaches the model that calm markets are bad.
+        if outcome == "EXPIRED":
+            continue
         labeled.append({"features": features, "label": 1 if outcome == "WIN" else 0, "outcome": outcome})
     wins = sum(1 for r in labeled if r["label"] == 1)
     LOGGER.info(

@@ -242,6 +242,33 @@ def log_prediction(report: Dict[str, Any], *, created_at: Optional[int] = None) 
         return None
 
 
+def auto_log_watchlist() -> Dict[str, Any]:
+    """Auto-log Super Ghost predictions for all 43 watchlist symbols.
+
+    PR #115: The learning brains need ~14,000 bucket-samples but receive ~365/year
+    from manual clicks. Auto-logging all 43 symbols daily multiplies sample volume
+    ~43×, making cold-start exit practically reachable.
+    """
+    try:
+        from config.symbols import OFFICIAL_WATCHLIST
+        from core.super_ghost import build_super_ghost
+        symbols = list(OFFICIAL_WATCHLIST)
+        logged = 0
+        errors = 0
+        for sym in symbols:
+            try:
+                report = build_super_ghost(sym)
+                if report.get("ok"):
+                    lid = log_prediction(report)
+                    if lid:
+                        logged += 1
+            except Exception:
+                errors += 1
+        return {"ok": True, "auto_logged": logged, "errors": errors, "total": len(symbols)}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200]}
+
+
 def _direction_correct(direction: str, ret_pct: Optional[float]) -> Optional[bool]:
     """Whether a prediction direction matched realized return.
 
@@ -695,9 +722,23 @@ def run_resolver_job() -> Dict[str, Any]:
 
     PR #93: Learning is tied to truth. The brain only learns after outcomes have
     been resolved, so every adjustment traces back to a real ledger result.
+
+    PR #115: Auto-logs all 43 watchlist symbols daily to multiply sample volume
+    ~43× so the learning brains can exit cold start.
     """
     try:
-        out = resolve_predictions(limit=500)
+        # Auto-log all watchlist symbols before resolving (PR #115)
+        try:
+            from core.super_ghost_ledger import auto_log_watchlist
+            out = auto_log_watchlist()
+        except Exception as auto_exc:
+            out = {"ok": False, "error": str(auto_exc)[:120]}
+        # Resolve existing predictions
+        try:
+            resolve_out = resolve_predictions(limit=500)
+            out.update(resolve_out)
+        except Exception as resolve_exc:
+            out["resolve"] = {"ok": False, "error": str(resolve_exc)[:120]}
         try:
             from core.super_ghost_learning import learn_from_ledger
             out["learning"] = learn_from_ledger(limit=500)
