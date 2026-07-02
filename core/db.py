@@ -146,6 +146,27 @@ def _migrate_schema():
         CREATE UNIQUE INDEX IF NOT EXISTS idx_predictions_one_open_symbol
         ON predictions (symbol) WHERE outcome IS NULL
         """,
+        # Hot-query indexes (audit M2-2). predictions is the fastest-growing
+        # table (~223k rows) and previously had only the partial unique index.
+        # 1. Per-symbol history reads: WHERE symbol=%s [AND predicted_at >= %s]
+        #    ORDER BY predicted_at DESC (predictions/history/stats endpoints).
+        """
+        CREATE INDEX IF NOT EXISTS idx_predictions_symbol_time
+        ON predictions (symbol, predicted_at DESC)
+        """,
+        # 2. Resolved-outcome scans: WHERE outcome IN ('WIN','LOSS') AND
+        #    resolved_at > %s (health audits, win-rate stats, kill conditions).
+        """
+        CREATE INDEX IF NOT EXISTS idx_predictions_outcome_resolved
+        ON predictions (outcome, resolved_at DESC) WHERE outcome IS NOT NULL
+        """,
+        # 3. Research-pick cap check runs every scan cycle against the JSONB
+        #    scores column; expression index avoids a full-table JSONB scan.
+        """
+        CREATE INDEX IF NOT EXISTS idx_predictions_research_pick
+        ON predictions ((scores->>'research_pick'), predicted_at DESC)
+        WHERE scores->>'research_pick' = 'true'
+        """,
     ]
     with db_conn() as conn:
         cur = conn.cursor()

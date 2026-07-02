@@ -294,8 +294,12 @@ def stats_by_direction():
 @portfolio_router.post("/api/admin/expire-picks", include_in_schema=False)
 def force_expire_picks(x_cron_secret: str = Header(default="")):
     """Force-expire all open picks so fresh ones can be generated."""
-    import os, time as _time
-    if x_cron_secret != os.getenv("CRON_SECRET",""):
+    import hmac as _hmac, os, time as _time
+    expected = os.getenv("CRON_SECRET", "")
+    # Constant-time compare; empty expected (no secret configured) always denies.
+    if not expected or not _hmac.compare_digest(
+        (x_cron_secret or "").encode("utf-8"), expected.encode("utf-8")
+    ):
         return JSONResponse({"ok":False,"error":"Forbidden"}, status_code=403)
     try:
         with db_conn() as conn:

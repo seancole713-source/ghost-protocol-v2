@@ -1,4 +1,26 @@
 """Pytest bootstrap — allow STOCK_SYMBOLS env overrides in tests only."""
 import os
+import sys
+
+import pytest
 
 os.environ.setdefault("GHOST_ALLOW_ENV_WATCHLIST", "1")
+
+
+@pytest.fixture(autouse=True)
+def _clear_module_caches():
+    """Module-level caches (model cache, login throttle) must not leak state
+    between tests."""
+    se = sys.modules.get("core.signal_engine")
+    if se is not None:
+        try:
+            se.invalidate_model_cache()
+        except Exception:
+            pass
+    wa = sys.modules.get("wolf_app")
+    if wa is not None:
+        try:
+            wa._LOGIN_ATTEMPTS.clear()
+        except Exception:
+            pass
+    yield

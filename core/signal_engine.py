@@ -11,7 +11,7 @@ UPGRADES (2026-03-30) from GitHub research:
 v3.2: Training labels match live paper trades — WIN = hit vol-based target before stop
 within N daily bars (see V3_LABEL_HOLD_BARS), same TP/SL math as core.vol_targets.
 """
-import os, time, logging, json
+import os, time, logging, json, threading
 import numpy as np
 from typing import Any, Dict, List, Optional
 from core.vol_targets import base_vol_pct, stop_pct_from_vol
@@ -113,6 +113,34 @@ def clear_ohlcv_cache() -> None:
 
 MODEL_DB_KEY = "ghost_v3_model_pkl"
 FEATURES_DB_KEY = "ghost_v3_features_json"
+
+# ── model cache ──────────────────────────────────────────────────────────────
+# Every scan cycle used to re-read + re-unpickle every model from Postgres
+# (43 symbols × 2 directions × 2 SELECTs ≈ 172 round-trips per cycle) even
+# though models only change on retrain. Cache deserialized models per
+# (symbol, direction) with a TTL; writers invalidate explicitly.
+_MODEL_CACHE: dict = {}
+_MODEL_CACHE_LOCK = threading.Lock()
+
+
+def _model_cache_ttl_s() -> int:
+    return max(0, int(os.getenv("V3_MODEL_CACHE_TTL_S", "3600")))
+
+
+def invalidate_model_cache(symbol: str = None) -> None:
+    """Drop cached models — all of them, or just one symbol's directions.
+
+    Called after train_and_validate persists new models and from the admin
+    delete/purge paths, so a stale in-memory model is never served after its
+    DB row changed.
+    """
+    sym = (symbol or "").upper()
+    with _MODEL_CACHE_LOCK:
+        if not sym:
+            _MODEL_CACHE.clear()
+            return
+        for key in [k for k in _MODEL_CACHE if k[0] == sym]:
+            del _MODEL_CACHE[key]
 
 
 def _model_payload_max_bytes() -> int:
@@ -306,6 +334,19 @@ def _v3_pool_training_enabled() -> bool:
     """
     return (os.getenv("V3_POOL_TRAINING", "on") or "on").strip().lower() not in (
         "0", "off", "false", "no",
+    )
+
+
+def _v3_down_signals_enabled() -> bool:
+    """Whether DOWN-model signals may fire live (Phase 2).
+
+    Off by default: DOWN probabilities are journaled shadow-only (scores
+    carry down_prob on every scan) until the DOWN lane earns a track record.
+    A stronger-but-unfireable DOWN score must never suppress a fireable UP
+    pick. core.prediction honors the same flag at fire time.
+    """
+    return (os.getenv("V3_DOWN_SIGNALS_ENABLED", "0") or "0").strip().lower() in (
+        "1", "on", "true", "yes",
     )
 
 
@@ -570,6 +611,12 @@ def _simulate_up_tp_sl(rows: list, entry_idx: int, hold_bars: int, vol_pct: floa
     """Path simulation on daily OHLC — delegates to shared tp_sl_resolve (Phase 5)."""
     from core.tp_sl_resolve import simulate_tp_sl_label
     return simulate_tp_sl_label(rows, entry_idx, hold_bars, vol_pct, "UP")
+
+
+def _simulate_down_tp_sl(rows: list, entry_idx: int, hold_bars: int, vol_pct: float) -> str:
+    """DOWN label generator — delegates to shared tp_sl_resolve (Phase 2, PR #116)."""
+    from core.tp_sl_resolve import simulate_down_tp_sl_label
+    return simulate_down_tp_sl_label(rows, entry_idx, hold_bars, vol_pct)
 
 def _rsi(closes, period=14):
     if len(closes) < period + 1: return 50.0
@@ -1252,9 +1299,10 @@ def backtest_symbol(symbol, asset_type):
     rows = _fetch_ohlcv(symbol, asset_type)
     min_bars = _min_backtest_bars()
     if not rows or len(rows) < min_bars:
-        return []
+        return [], []
     vol_pct = base_vol_pct(symbol, asset_type)
-    labeled = []
+    labeled_up = []
+    labeled_down = []
     window = _effective_backtest_window(len(rows))
     margin = V3_LABEL_HOLD_BARS + 1
     # W3: align a sector series to these bars once, then read it point-in-time
@@ -1281,24 +1329,28 @@ def backtest_symbol(symbol, asset_type):
                     features[k] = v
         except Exception:
             pass
-        outcome = _simulate_up_tp_sl(rows, i, V3_LABEL_HOLD_BARS, vol_pct)
-        # EXPIRED = no TP/SL hit within hold_bars — a flat/sideways week.
-        # Exclude from training: it provides no directional signal and
-        # counting it as LOSS teaches the model that calm markets are bad.
-        if outcome == "EXPIRED":
-            continue
-        labeled.append({"features": features, "label": 1 if outcome == "WIN" else 0, "outcome": outcome})
-    wins = sum(1 for r in labeled if r["label"] == 1)
+        # UP label
+        up_outcome = _simulate_up_tp_sl(rows, i, V3_LABEL_HOLD_BARS, vol_pct)
+        if up_outcome != "EXPIRED":
+            labeled_up.append({"features": dict(features), "label": 1 if up_outcome == "WIN" else 0, "outcome": up_outcome, "direction": "UP"})
+        # DOWN label (Phase 2): same bar, opposite direction
+        down_outcome = _simulate_down_tp_sl(rows, i, V3_LABEL_HOLD_BARS, vol_pct)
+        if down_outcome != "EXPIRED":
+            labeled_down.append({"features": dict(features), "label": 1 if down_outcome == "WIN" else 0, "outcome": down_outcome, "direction": "DOWN"})
+    up_wins = sum(1 for r in labeled_up if r["label"] == 1)
+    down_wins = sum(1 for r in labeled_down if r["label"] == 1)
     LOGGER.info(
-        f"Backtest {symbol}: {len(labeled)} samples (TP/SL labels, {V3_LABEL_HOLD_BARS}d bars), "
-        f"{round(wins/len(labeled)*100,1) if labeled else 0}% natural WIN rate"
+        f"Backtest {symbol}: UP={len(labeled_up)} ({round(up_wins/len(labeled_up)*100,1) if labeled_up else 0}% WIN) "
+        f"DOWN={len(labeled_down)} ({round(down_wins/len(labeled_down)*100,1) if labeled_down else 0}% WIN) "
+        f"({V3_LABEL_HOLD_BARS}d bars)"
     )
-    return labeled
+    return labeled_up, labeled_down
 
 def build_training_data(symbols_and_types):
     all_rows = []
     for symbol, asset_type in symbols_and_types:
-        all_rows.extend(backtest_symbol(symbol, asset_type))
+        up_rows, down_rows = backtest_symbol(symbol, asset_type)
+        all_rows.extend(up_rows)
     if len(all_rows) < _min_train_rows(): return None, None, []
     # Phase 1: compute cross-sectional ranks per date across all symbols.
     # Group rows by date, compute percentile ranks within each date group,
@@ -1568,8 +1620,13 @@ def _collect_peer_rows(target_symbol):
 
     Each peer is labeled by the same triple-barrier backtest as the target,
     using the peer's own volatility, so labels are consistent across symbols.
-    Peers that fail to fetch or have too few labeled rows are skipped. Returns
-    (pooled_rows, peers_used) where peers_used is a per-peer sample-count list.
+    Peers that fail to fetch or have too few labeled rows are skipped.
+
+    Phase 2: labels are direction-specific (an UP label means TP-before-SL on
+    a long; a DOWN label means TP-before-SL on a short), so peer pools must be
+    kept per-direction — feeding UP-labeled peer rows into DOWN training would
+    contaminate the DOWN model. Returns ({"UP": rows, "DOWN": rows},
+    peers_used) where peers_used lists per-peer sample counts per direction.
     """
     target = (target_symbol or "").upper()
     peers = [p for p in _v3_peer_symbols() if p != target]
@@ -1588,26 +1645,254 @@ def _collect_peer_rows(target_symbol):
                     break
         except Exception as e:
             LOGGER.info(f"pool: watchlist peers skipped ({str(e)[:80]})")
-    pooled, used = [], []
+    pooled = {"UP": [], "DOWN": []}
+    used = []
     min_rows = _min_train_rows()
     for p in peers:
         try:
-            rows = backtest_symbol(p, "stock")
+            up_rows, down_rows = backtest_symbol(p, "stock")
         except Exception as e:
             LOGGER.info(f"pool: peer {p} skipped ({str(e)[:80]})")
             continue
-        if rows and len(rows) >= min_rows:
-            pooled.extend(rows)
-            used.append({"symbol": p, "n": len(rows)})
+        entry = {"symbol": p}
+        if up_rows and len(up_rows) >= min_rows:
+            pooled["UP"].extend(up_rows)
+            entry["n"] = len(up_rows)
+        if down_rows and len(down_rows) >= min_rows:
+            pooled["DOWN"].extend(down_rows)
+            entry["n_down"] = len(down_rows)
+        if len(entry) > 1:
+            used.append(entry)
         else:
-            LOGGER.info(f"pool: peer {p} skipped (only {len(rows) if rows else 0} rows)")
+            LOGGER.info(
+                f"pool: peer {p} skipped (UP={len(up_rows) if up_rows else 0} "
+                f"DOWN={len(down_rows) if down_rows else 0} rows, need {min_rows})"
+            )
     return pooled, used
+
+
+def _train_one_direction(rows, symbol, direction, active_cols, peer_rows, peers_used, pool_info):
+    """Train a single-direction model (UP or DOWN). Returns (passed, detail, model_bytes, meta_json)."""
+    from xgboost import XGBClassifier
+    import pickle, base64, hashlib
+    from core.db import db_conn
+
+    n_samples = len(rows)
+    min_rows = _min_train_rows()
+    wins_ct = int(np.sum([r["label"] for r in rows]))
+    min_wins = _v3_min_tp_sl_wins()
+    train_end, calib_end = _v3_holdout_slices(len(rows))
+    feature_audit: List[Dict[str, Any]] = []
+    invert_cols: set = set()
+    if _v3_feature_audit_enabled() and (len(rows) - calib_end) >= 10:
+        from core.feature_audit import (
+            apply_inversions_to_features,
+            audit_gate_features,
+            select_inverted_features,
+        )
+        gate_preview = rows[calib_end:]
+        X_gate_preview = np.array([
+            [r["features"].get(c, 0.0) for c in active_cols] for r in gate_preview
+        ])
+        y_gate_preview = np.array([r["label"] for r in gate_preview])
+        feature_audit = audit_gate_features(
+            X_gate_preview, y_gate_preview, active_cols,
+        )
+        invert_cols = select_inverted_features(feature_audit)
+        if invert_cols:
+            for r in rows:
+                apply_inversions_to_features(r["features"], invert_cols)
+    X = np.array([[r["features"].get(c, 0.0) for c in active_cols] for r in rows])
+    y = np.array([r["label"] for r in rows])
+    train_end, calib_end = _v3_holdout_slices(len(X))
+    X_train, y_train = X[:train_end], y[:train_end]
+    X_calib, y_calib = X[train_end:calib_end], y[train_end:calib_end]
+    X_gate, y_gate = X[calib_end:], y[calib_end:]
+    natural_rate = float(np.mean(y_gate)) if len(y_gate) else 0.0
+    X_fit, y_fit, sample_weight = _assemble_pooled_training(
+        X_train, y_train, peer_rows, active_cols, _v3_wolf_sample_weight(),
+        target_train_rows=rows[:train_end],
+    )
+    pos_ct = int(np.sum(y_fit))
+    neg_ct = int(len(y_fit) - pos_ct)
+    spw = (neg_ct / pos_ct) if pos_ct > 0 else 1.0
+    min_acc = _v3_min_holdout_acc()
+    min_edge = _v3_min_edge()
+    holdout_overrides = _v3_holdout_acc_overrides()
+    symbol_min_acc = holdout_overrides.get(symbol.upper(), min_acc)
+    model = XGBClassifier(
+        n_estimators=200, max_depth=4, learning_rate=0.03,
+        subsample=0.8, colsample_bytree=0.7, min_child_weight=3,
+        scale_pos_weight=min(25.0, max(1.0, float(spw))),
+        eval_metric='logloss', random_state=42
+    )
+    model.fit(X_fit, y_fit, sample_weight=sample_weight)
+    from core.stacking_ensemble import is_stacking_enabled
+    if is_stacking_enabled() or _v3_ensemble_enabled():
+        final_model, calib_info = _build_ensemble(
+            model, X_fit, y_fit, sample_weight, X_calib, y_calib)
+        if is_stacking_enabled():
+            calib_info["ensemble_mode"] = "stacking"
+    else:
+        final_model, calib_info = _maybe_calibrate(model, X_calib, y_calib)
+    holdout = _evaluate_calibration_holdout(final_model, X_gate, y_gate)
+    accuracy = float(holdout["holdout_acc"])
+    edge = float(holdout["edge"])
+    natural_rate = float(holdout["natural_rate"])
+    from core.feature_audit import reliability_bins_monotonic
+    reliability_mono = reliability_bins_monotonic(
+        holdout.get("reliability_bins") or [],
+    )
+    calib_info.update({
+        "gate_brier": holdout.get("gate_brier"),
+        "reliability_bins": holdout.get("reliability_bins") or [],
+        "gate_n": holdout.get("gate_n", 0),
+        "reliability_monotonic": reliability_mono,
+    })
+    try:
+        from core.conformal_calibration import calibrate_conformal
+        if len(X_gate) >= 10:
+            gate_probs = final_model.predict_proba(X_gate)[:, 1]
+            conformal = calibrate_conformal(gate_probs, y_gate)
+        else:
+            conformal = {
+                "ok": False,
+                "error": f"Need >=10 gate samples, have {len(X_gate)}",
+                "samples": int(len(X_gate)),
+            }
+    except Exception as _conf_e:
+        conformal = {
+            "ok": False,
+            "error": str(_conf_e)[:120],
+            "samples": int(len(X_gate)),
+        }
+    calib_info["conformal"] = conformal
+    if peer_rows:
+        X_peer_wf = np.array([[r["features"].get(c, 0.0) for c in active_cols] for r in peer_rows])
+        y_peer_wf = np.array([r["label"] for r in peer_rows])
+        wf = _walk_forward_scores(X, y, X_peer_wf, y_peer_wf, _v3_wolf_sample_weight())
+    else:
+        wf = _walk_forward_scores(X, y)
+    min_wf_acc = _v3_min_wf_acc_mean()
+    min_wf_folds = _v3_min_wf_folds()
+    wf_slack = _v3_wf_acc_min_slack()
+    min_wf_acc_min = (min_wf_acc - wf_slack)
+    symbol_overrides = _v3_wf_acc_min_overrides()
+    symbol_wf_acc_min = symbol_overrides.get(symbol.upper(), min_wf_acc_min)
+    max_brier = _v3_max_calibration_brier()
+    min_wf_edge = _v3_min_wf_edge()
+    gate_checks = [
+        ("n_samples", n_samples >= min_rows, f"n_samples<{min_rows} ({n_samples})"),
+        ("tp_sl_wins", wins_ct >= min_wins, f"tp_sl_wins<{min_wins} ({wins_ct})"),
+        ("holdout_acc", accuracy >= symbol_min_acc, f"holdout_acc < {symbol_min_acc*100:.1f}% ({accuracy*100:.1f}%)"),
+        ("edge", edge >= min_edge, f"edge < {min_edge*100:.1f}% ({edge*100:.1f}%)"),
+        ("wf_folds", wf["fold_count"] >= min_wf_folds, f"wf_folds < {min_wf_folds} ({wf['fold_count']})"),
+        ("wf_acc_mean", wf["acc_mean"] >= min_wf_acc, f"wf_acc_mean < {min_wf_acc*100:.1f}% ({wf['acc_mean']*100:.1f}%)"),
+        ("wf_edge_mean", wf["edge_mean"] >= min_wf_edge, f"wf_edge_mean < {min_wf_edge*100:.1f}% ({wf['edge_mean']*100:.1f}%)"),
+        ("wf_acc_min", wf["acc_min"] >= symbol_wf_acc_min, f"wf_acc_min < {symbol_wf_acc_min*100:.1f}% ({wf['acc_min']*100:.1f}%)"),
+    ]
+    if calib_info.get("calibrated") and int(holdout.get("gate_n") or 0) >= 10:
+        brier = calib_info.get("gate_brier")
+        brier_ok = brier is not None and float(brier) < max_brier
+        gate_checks.append((
+            "calibration_brier",
+            brier_ok,
+            f"gate_brier {brier} >= {max_brier}" if not brier_ok else f"gate_brier {brier} < {max_brier}",
+        ))
+    fail_reason = next((msg for _, ok, msg in gate_checks if not ok), None)
+    passes = fail_reason is None
+    LOGGER.info(
+        f"RETRAIN [{symbol}/{direction}]: acc={accuracy*100:.1f}% edge={edge*100:.1f}% "
+        f"brier={calib_info.get('gate_brier')} wf_folds={wf['fold_count']} "
+        f"wf_acc_mean={wf['acc_mean']*100:.1f}% "
+        f"wf_edge_mean={wf['edge_mean']*100:.1f}% wf_acc_min={wf['acc_min']*100:.1f}% "
+        f"| {'PASS' if passes else 'FAIL: ' + fail_reason}"
+    )
+    detail = {
+        "direction": direction,
+        "passed": bool(passes),
+        "fail_reason": fail_reason,
+        "stage": "trained",
+        "n_samples": n_samples,
+        "wins_ct": wins_ct,
+        "natural_rate": round(natural_rate, 4),
+        "holdout_acc": round(accuracy, 4),
+        "edge": round(edge, 4),
+        "calibration": calib_info,
+        "holdout_slices": {
+            "train_n": int(len(X_train)),
+            "calib_n": int(len(X_calib)),
+            "gate_n": int(len(X_gate)),
+        },
+        "wf_fold_count": int(wf["fold_count"]),
+        "wf_acc_mean": round(wf["acc_mean"], 4),
+        "wf_acc_min": round(wf["acc_min"], 4),
+        "wf_edge_mean": round(wf["edge_mean"], 4),
+        "wf_edge_min": round(wf["edge_min"], 4),
+        "pool": pool_info,
+        "feature_audit": feature_audit,
+        "feature_inversions": sorted(invert_cols),
+        "reliability_monotonic": reliability_mono,
+        "gates": [{"name": n, "passed": bool(p), "msg": m} for n, p, m in gate_checks],
+        "thresholds": {
+            "min_train_rows": min_rows,
+            "min_tp_sl_wins": min_wins,
+            "min_holdout_acc": symbol_min_acc,
+            "min_edge": min_edge,
+            "min_wf_folds": min_wf_folds,
+            "min_wf_acc_mean": min_wf_acc,
+            "min_wf_acc_min": symbol_wf_acc_min,
+            "min_wf_edge": min_wf_edge,
+        },
+    }
+    if not passes:
+        return False, detail, None, None
+    raw_model_bytes = pickle.dumps(final_model)
+    model_sha256 = hashlib.sha256(raw_model_bytes).hexdigest()
+    model_payload_bytes = len(raw_model_bytes)
+    model_bytes = base64.b64encode(raw_model_bytes).decode('ascii')
+    meta = json.dumps({
+        "feature_cols": active_cols, "accuracy": accuracy,
+        "natural_rate": natural_rate, "edge": edge,
+        "trained_at": time.time(), "n_samples": len(rows),
+        "engine_version": "v3.2_tp_sl_daily",
+        "direction": direction,
+        "label_type": LABEL_TYPE,
+        "label_schema": _v3_label_schema(),
+        "feature_schema": _v3_feature_schema(),
+        "label_hold_bars": V3_LABEL_HOLD_BARS,
+        "calibrated": calib_info["calibrated"],
+        "calibration_method": calib_info.get("method"),
+        "gate_brier": calib_info.get("gate_brier"),
+        "reliability_bins": calib_info.get("reliability_bins") or [],
+        "conformal_ok": bool((calib_info.get("conformal") or {}).get("ok", False)),
+        "conformal_q_hat": (calib_info.get("conformal") or {}).get("q_hat"),
+        "conformal_alpha": (calib_info.get("conformal") or {}).get("alpha"),
+        "conformal_samples": (calib_info.get("conformal") or {}).get("samples", 0),
+        "conformal_brier_raw": (calib_info.get("conformal") or {}).get("brier_raw"),
+        "conformal_brier_calibrated": (calib_info.get("conformal") or {}).get("brier_calibrated"),
+        "conformal_brier_improvement": (calib_info.get("conformal") or {}).get("brier_improvement"),
+        "ensemble": bool(calib_info.get("ensemble", False)),
+        "ensemble_members": calib_info.get("members"),
+        "pool_enabled": pool_info["enabled"],
+        "pool_peer_sample_count": pool_info["peer_sample_count"],
+        "pool_peers": [p["symbol"] for p in peers_used],
+        "wf_fold_count": wf["fold_count"],
+        "wf_acc_mean": wf["acc_mean"],
+        "wf_acc_min": wf["acc_min"],
+        "wf_edge_mean": wf["edge_mean"],
+        "wf_edge_min": wf["edge_min"],
+        "feature_audit": feature_audit,
+        "feature_inversions": sorted(invert_cols),
+        "reliability_monotonic": reliability_mono,
+        "model_sha256": model_sha256,
+        "model_payload_bytes": model_payload_bytes,
+    })
+    return True, detail, model_bytes, meta
 
 
 def train_and_validate(symbols_and_types):
     try:
-        from xgboost import XGBClassifier
-        from sklearn.metrics import accuracy_score
         import pickle, base64
         from core.db import db_conn
     except ImportError as e:
@@ -1619,268 +1904,93 @@ def train_and_validate(symbols_and_types):
     for idx, (symbol, asset_type) in enumerate(symbols_and_types):
         symbol_detail = {"symbol": symbol, "asset_type": asset_type}
         try:
-            rows = backtest_symbol(symbol, asset_type)
-            n_samples = len(rows) if rows else 0
+            up_rows, down_rows = backtest_symbol(symbol, asset_type)
             min_rows = _min_train_rows()
-            if not rows or n_samples < min_rows:
-                LOGGER.info(f"RETRAIN [{symbol}]: first pass n={n_samples}, retrying after backoff")
+            # Retry once if both directions are thin
+            up_n = len(up_rows) if up_rows else 0
+            down_n = len(down_rows) if down_rows else 0
+            if up_n < min_rows and down_n < min_rows:
+                LOGGER.info(f"RETRAIN [{symbol}]: first pass UP={up_n} DOWN={down_n}, retrying after backoff")
                 time.sleep(2.0)
-                rows = backtest_symbol(symbol, asset_type)
-                n_samples = len(rows) if rows else 0
-            if not rows or n_samples < min_rows:
-                fail_msg = f"n_samples<{min_rows} ({n_samples})"
+                up_rows, down_rows = backtest_symbol(symbol, asset_type)
+                up_n = len(up_rows) if up_rows else 0
+                down_n = len(down_rows) if down_rows else 0
+            if up_n < min_rows and down_n < min_rows:
+                fail_msg = f"n_samples<{min_rows} (UP={up_n} DOWN={down_n})"
                 LOGGER.info(
                     f"RETRAIN [{symbol}]: acc=NA edge=NA wf_folds=NA wf_acc_mean=NA wf_edge_mean=NA wf_acc_min=NA "
                     f"| FAIL: {fail_msg}"
                 )
                 symbol_detail.update({
                     "passed": False, "fail_reason": fail_msg,
-                    "n_samples": n_samples, "stage": "pre_train",
+                    "n_samples": max(up_n, down_n), "stage": "pre_train",
                 })
                 details.append(symbol_detail)
                 continue
             active_cols = _active_feature_cols()
-            wins_ct = int(np.sum([r["label"] for r in rows]))
-            min_wins = _v3_min_tp_sl_wins()
-            train_end, calib_end = _v3_holdout_slices(len(rows))
-            feature_audit: List[Dict[str, Any]] = []
-            invert_cols: set = set()
-            if _v3_feature_audit_enabled() and (len(rows) - calib_end) >= 10:
-                from core.feature_audit import (
-                    apply_inversions_to_features,
-                    audit_gate_features,
-                    select_inverted_features,
-                )
-                gate_preview = rows[calib_end:]
-                X_gate_preview = np.array([
-                    [r["features"].get(c, 0.0) for c in active_cols] for r in gate_preview
-                ])
-                y_gate_preview = np.array([r["label"] for r in gate_preview])
-                feature_audit = audit_gate_features(
-                    X_gate_preview, y_gate_preview, active_cols,
-                )
-                invert_cols = select_inverted_features(feature_audit)
-                if invert_cols:
-                    for r in rows:
-                        apply_inversions_to_features(r["features"], invert_cols)
-            X = np.array([[r["features"].get(c, 0.0) for c in active_cols] for r in rows])
-            y = np.array([r["label"] for r in rows])
-            train_end, calib_end = _v3_holdout_slices(len(X))
-            X_train, y_train = X[:train_end], y[:train_end]
-            X_calib, y_calib = X[train_end:calib_end], y[train_end:calib_end]
-            X_gate, y_gate = X[calib_end:], y[calib_end:]
-            natural_rate = float(np.mean(y_gate)) if len(y_gate) else 0.0
-            # W1: pool peer/sector samples into the FIT set to break the
-            # small-data wall. Calib + gate slices stay target-only; calib fits
-            # Platt/isotonic, gate drives holdout accuracy / edge promotion.
-            peer_rows, peers_used = ([], [])
+            # Peer pools are per-direction: UP labels come from long-side
+            # triple-barrier outcomes, DOWN labels from short-side. Mixing
+            # them would contaminate the DOWN model with UP-labeled rows.
+            peer_pools, peers_used = ({"UP": [], "DOWN": []}, [])
             if _v3_pool_training_enabled():
-                peer_rows, peers_used = _collect_peer_rows(symbol)
-            X_fit, y_fit, sample_weight = _assemble_pooled_training(
-                X_train, y_train, peer_rows, active_cols, _v3_wolf_sample_weight(),
-                target_train_rows=rows[:train_end],
-            )
+                peer_pools, peers_used = _collect_peer_rows(symbol)
             pool_info = {
                 "enabled": _v3_pool_training_enabled(),
-                "peer_sample_count": int(len(peer_rows)),
+                "peer_sample_count": int(len(peer_pools.get("UP") or [])),
+                "peer_sample_count_down": int(len(peer_pools.get("DOWN") or [])),
                 "peers": peers_used,
-                "pooled_train_n": int(len(X_fit)),
-                "wolf_train_n": int(len(X_train)),
                 "wolf_sample_weight": _v3_wolf_sample_weight(),
             }
-            pos_ct = int(np.sum(y_fit))
-            neg_ct = int(len(y_fit) - pos_ct)
-            spw = (neg_ct / pos_ct) if pos_ct > 0 else 1.0
-            min_acc = _v3_min_holdout_acc()
-            min_edge = _v3_min_edge()
-            holdout_overrides = _v3_holdout_acc_overrides()
-            symbol_min_acc = holdout_overrides.get(symbol.upper(), min_acc)
-            model = XGBClassifier(
-                n_estimators=200, max_depth=4, learning_rate=0.03,
-                subsample=0.8, colsample_bytree=0.7, min_child_weight=3,
-                scale_pos_weight=min(25.0, max(1.0, float(spw))),
-                eval_metric='logloss', random_state=42
-            )
-            model.fit(X_fit, y_fit, sample_weight=sample_weight)
-            # P3 (audit): stacking ensemble — XGBoost + RF soft-voting when V3_ENSEMBLE=stacking
-            # Uses the proven _build_ensemble path (already tested in production).
-            from core.stacking_ensemble import is_stacking_enabled
-            if is_stacking_enabled() or _v3_ensemble_enabled():
-                final_model, calib_info = _build_ensemble(
-                    model, X_fit, y_fit, sample_weight, X_calib, y_calib)
-                if is_stacking_enabled():
-                    calib_info["ensemble_mode"] = "stacking"
-            else:
-                final_model, calib_info = _maybe_calibrate(model, X_calib, y_calib)
-            holdout = _evaluate_calibration_holdout(final_model, X_gate, y_gate)
-            accuracy = float(holdout["holdout_acc"])
-            edge = float(holdout["edge"])
-            natural_rate = float(holdout["natural_rate"])
-            from core.feature_audit import reliability_bins_monotonic
-            reliability_mono = reliability_bins_monotonic(
-                holdout.get("reliability_bins") or [],
-            )
-            calib_info.update({
-                "gate_brier": holdout.get("gate_brier"),
-                "reliability_bins": holdout.get("reliability_bins") or [],
-                "gate_n": holdout.get("gate_n", 0),
-                "reliability_monotonic": reliability_mono,
-            })
-            # P7 (audit): conformal calibration from holdout predictions.
-            # Stored in model meta and applied in predict_live_ex when present.
-            try:
-                from core.conformal_calibration import calibrate_conformal
-                if len(X_gate) >= 10:
-                    gate_probs = final_model.predict_proba(X_gate)[:, 1]
-                    conformal = calibrate_conformal(gate_probs, y_gate)
-                else:
-                    conformal = {
-                        "ok": False,
-                        "error": f"Need >=10 gate samples, have {len(X_gate)}",
-                        "samples": int(len(X_gate)),
-                    }
-            except Exception as _conf_e:
-                conformal = {
-                    "ok": False,
-                    "error": str(_conf_e)[:120],
-                    "samples": int(len(X_gate)),
-                }
-            calib_info["conformal"] = conformal
-            # W1: feed the same peer pool into the walk-forward folds, so the
-            # gate validates the deployed pooled model rather than a WOLF-only
-            # one the engine never serves (and each thin fold trains on more).
-            if peer_rows:
-                X_peer_wf = np.array([[r["features"].get(c, 0.0) for c in active_cols] for r in peer_rows])
-                y_peer_wf = np.array([r["label"] for r in peer_rows])
-                wf = _walk_forward_scores(X, y, X_peer_wf, y_peer_wf, _v3_wolf_sample_weight())
-            else:
-                wf = _walk_forward_scores(X, y)
-            min_wf_acc = _v3_min_wf_acc_mean()
-            min_wf_folds = _v3_min_wf_folds()
-            # Allow modest fold variance while keeping strict mean WF quality.
-            wf_slack = _v3_wf_acc_min_slack()
-            min_wf_acc_min = (min_wf_acc - wf_slack)
-            symbol_overrides = _v3_wf_acc_min_overrides()
-            symbol_wf_acc_min = symbol_overrides.get(symbol.upper(), min_wf_acc_min)
-            max_brier = _v3_max_calibration_brier()
-            min_wf_edge = _v3_min_wf_edge()
-            gate_checks = [
-                ("n_samples", n_samples >= min_rows, f"n_samples<{min_rows} ({n_samples})"),
-                ("tp_sl_wins", wins_ct >= min_wins, f"tp_sl_wins<{min_wins} ({wins_ct})"),
-                ("holdout_acc", accuracy >= symbol_min_acc, f"holdout_acc < {symbol_min_acc*100:.1f}% ({accuracy*100:.1f}%)"),
-                ("edge", edge >= min_edge, f"edge < {min_edge*100:.1f}% ({edge*100:.1f}%)"),
-                ("wf_folds", wf["fold_count"] >= min_wf_folds, f"wf_folds < {min_wf_folds} ({wf['fold_count']})"),
-                ("wf_acc_mean", wf["acc_mean"] >= min_wf_acc, f"wf_acc_mean < {min_wf_acc*100:.1f}% ({wf['acc_mean']*100:.1f}%)"),
-                ("wf_edge_mean", wf["edge_mean"] >= min_wf_edge, f"wf_edge_mean < {min_wf_edge*100:.1f}% ({wf['edge_mean']*100:.1f}%)"),
-                ("wf_acc_min", wf["acc_min"] >= symbol_wf_acc_min, f"wf_acc_min < {symbol_wf_acc_min*100:.1f}% ({wf['acc_min']*100:.1f}%)"),
-            ]
-            if calib_info.get("calibrated") and int(holdout.get("gate_n") or 0) >= 10:
-                brier = calib_info.get("gate_brier")
-                brier_ok = brier is not None and float(brier) < max_brier
-                gate_checks.append((
-                    "calibration_brier",
-                    brier_ok,
-                    f"gate_brier {brier} >= {max_brier}" if not brier_ok else f"gate_brier {brier} < {max_brier}",
-                ))
-            fail_reason = next((msg for _, ok, msg in gate_checks if not ok), None)
-            passes = fail_reason is None
-            LOGGER.info(
-                f"RETRAIN [{symbol}]: acc={accuracy*100:.1f}% edge={edge*100:.1f}% "
-                f"brier={calib_info.get('gate_brier')} wf_folds={wf['fold_count']} "
-                f"wf_acc_mean={wf['acc_mean']*100:.1f}% "
-                f"wf_edge_mean={wf['edge_mean']*100:.1f}% wf_acc_min={wf['acc_min']*100:.1f}% "
-                f"| {'PASS' if passes else 'FAIL: ' + fail_reason}"
-            )
+            # Train UP model
+            up_passed = False
+            up_detail = {}
+            if up_n >= min_rows:
+                up_passed, up_detail, up_model_bytes, up_meta = _train_one_direction(
+                    up_rows, symbol, "UP", active_cols,
+                    peer_pools.get("UP") or [], peers_used, pool_info)
+                if up_passed and up_model_bytes:
+                    with db_conn() as conn:
+                        cur = conn.cursor()
+                        cur.execute("CREATE TABLE IF NOT EXISTS ghost_v3_model "
+                                    "(key TEXT PRIMARY KEY, value TEXT, updated_at BIGINT)")
+                        cur.execute("INSERT INTO ghost_v3_model(key,value,updated_at) VALUES(%s,%s,%s) "
+                                    "ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at",
+                                    (f"model_{symbol}_up", up_model_bytes, int(time.time())))
+                        cur.execute("INSERT INTO ghost_v3_model(key,value,updated_at) VALUES(%s,%s,%s) "
+                                    "ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at",
+                                    (f"meta_{symbol}_up", up_meta, int(time.time())))
+                    invalidate_model_cache(symbol)
+                    total_passed += 1
+            # Train DOWN model
+            down_passed = False
+            down_detail = {}
+            if down_n >= min_rows:
+                down_passed, down_detail, down_model_bytes, down_meta = _train_one_direction(
+                    down_rows, symbol, "DOWN", active_cols,
+                    peer_pools.get("DOWN") or [], peers_used, pool_info)
+                if down_passed and down_model_bytes:
+                    with db_conn() as conn:
+                        cur = conn.cursor()
+                        cur.execute("CREATE TABLE IF NOT EXISTS ghost_v3_model "
+                                    "(key TEXT PRIMARY KEY, value TEXT, updated_at BIGINT)")
+                        cur.execute("INSERT INTO ghost_v3_model(key,value,updated_at) VALUES(%s,%s,%s) "
+                                    "ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at",
+                                    (f"model_{symbol}_down", down_model_bytes, int(time.time())))
+                        cur.execute("INSERT INTO ghost_v3_model(key,value,updated_at) VALUES(%s,%s,%s) "
+                                    "ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at",
+                                    (f"meta_{symbol}_down", down_meta, int(time.time())))
+                    invalidate_model_cache(symbol)
+                    total_passed += 1
+            # Build combined detail
             symbol_detail.update({
-                "passed": bool(passes),
-                "fail_reason": fail_reason,
+                "passed": up_passed or down_passed,
                 "stage": "trained",
-                "n_samples": n_samples,
-                "wins_ct": wins_ct,
-                "natural_rate": round(natural_rate, 4),
-                "holdout_acc": round(accuracy, 4),
-                "edge": round(edge, 4),
-                "calibration": calib_info,
-                "holdout_slices": {
-                    "train_n": int(len(X_train)),
-                    "calib_n": int(len(X_calib)),
-                    "gate_n": int(len(X_gate)),
-                },
-                "wf_fold_count": int(wf["fold_count"]),
-                "wf_acc_mean": round(wf["acc_mean"], 4),
-                "wf_acc_min": round(wf["acc_min"], 4),
-                "wf_edge_mean": round(wf["edge_mean"], 4),
-                "wf_edge_min": round(wf["edge_min"], 4),
-                "pool": pool_info,
-                "feature_audit": feature_audit,
-                "feature_inversions": sorted(invert_cols),
-                "reliability_monotonic": reliability_mono,
-                "gates": [{"name": n, "passed": bool(p), "msg": m} for n, p, m in gate_checks],
-                "thresholds": {
-                    "min_train_rows": min_rows,
-                    "min_tp_sl_wins": min_wins,
-                    "min_holdout_acc": symbol_min_acc,
-                    "min_edge": min_edge,
-                    "min_wf_folds": min_wf_folds,
-                    "min_wf_acc_mean": min_wf_acc,
-                    "min_wf_acc_min": symbol_wf_acc_min,
-                    "min_wf_edge": min_wf_edge,
+                "directions": {
+                    "UP": up_detail,
+                    "DOWN": down_detail,
                 },
             })
             details.append(symbol_detail)
-            if passes:
-                import hashlib
-                raw_model_bytes = pickle.dumps(final_model)
-                model_sha256 = hashlib.sha256(raw_model_bytes).hexdigest()
-                model_payload_bytes = len(raw_model_bytes)
-                model_bytes = base64.b64encode(raw_model_bytes).decode('ascii')
-                meta = json.dumps({
-                    "feature_cols": active_cols, "accuracy": accuracy,
-                    "natural_rate": natural_rate, "edge": edge,
-                    "trained_at": time.time(), "n_samples": len(rows),
-                    "engine_version": "v3.2_tp_sl_daily",
-                    "label_type": LABEL_TYPE,
-                    "label_schema": _v3_label_schema(),
-                    "feature_schema": _v3_feature_schema(),
-                    "label_hold_bars": V3_LABEL_HOLD_BARS,
-                    "calibrated": calib_info["calibrated"],
-                    "calibration_method": calib_info.get("method"),
-                    "gate_brier": calib_info.get("gate_brier"),
-                    "reliability_bins": calib_info.get("reliability_bins") or [],
-                    "conformal_ok": bool((calib_info.get("conformal") or {}).get("ok", False)),
-                    "conformal_q_hat": (calib_info.get("conformal") or {}).get("q_hat"),
-                    "conformal_alpha": (calib_info.get("conformal") or {}).get("alpha"),
-                    "conformal_samples": (calib_info.get("conformal") or {}).get("samples", 0),
-                    "conformal_brier_raw": (calib_info.get("conformal") or {}).get("brier_raw"),
-                    "conformal_brier_calibrated": (calib_info.get("conformal") or {}).get("brier_calibrated"),
-                    "conformal_brier_improvement": (calib_info.get("conformal") or {}).get("brier_improvement"),
-                    "ensemble": bool(calib_info.get("ensemble", False)),
-                    "ensemble_members": calib_info.get("members"),
-                    "pool_enabled": pool_info["enabled"],
-                    "pool_peer_sample_count": pool_info["peer_sample_count"],
-                    "pool_peers": [p["symbol"] for p in peers_used],
-                    "wf_fold_count": wf["fold_count"],
-                    "wf_acc_mean": wf["acc_mean"],
-                    "wf_acc_min": wf["acc_min"],
-                    "wf_edge_mean": wf["edge_mean"],
-                    "wf_edge_min": wf["edge_min"],
-                    "feature_audit": feature_audit,
-                    "feature_inversions": sorted(invert_cols),
-                    "reliability_monotonic": reliability_mono,
-                    "model_sha256": model_sha256,
-                    "model_payload_bytes": model_payload_bytes,
-                })
-                with db_conn() as conn:
-                    cur = conn.cursor()
-                    cur.execute("CREATE TABLE IF NOT EXISTS ghost_v3_model "
-                                "(key TEXT PRIMARY KEY, value TEXT, updated_at BIGINT)")
-                    cur.execute("INSERT INTO ghost_v3_model(key,value,updated_at) VALUES(%s,%s,%s) "
-                                "ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at",
-                                (f"model_{symbol}", model_bytes, int(time.time())))
-                    cur.execute("INSERT INTO ghost_v3_model(key,value,updated_at) VALUES(%s,%s,%s) "
-                                "ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at",
-                                (f"meta_{symbol}", meta, int(time.time())))
-                total_passed += 1
         except Exception as e:
             LOGGER.warning(f"Training failed {symbol}: {e}")
             symbol_detail.update({
@@ -1890,9 +2000,9 @@ def train_and_validate(symbols_and_types):
             details.append(symbol_detail)
         if symbol_delay > 0 and idx + 1 < len(symbols_and_types):
             time.sleep(symbol_delay)
-    LOGGER.info(f"v3.2 training: {total_passed}/{len(symbols_and_types)} passed")
+    LOGGER.info(f"v3.2 training: {total_passed}/{len(symbols_and_types)*2} direction-models passed")
     _persist_train_details(details)
-    return None, total_passed / max(len(symbols_and_types), 1), total_passed > 0
+    return None, total_passed / max(len(symbols_and_types) * 2, 1), total_passed > 0
 
 
 def model_serve_guard(meta: Optional[Dict[str, Any]]) -> Optional[str]:
@@ -1910,60 +2020,88 @@ def model_serve_guard(meta: Optional[Dict[str, Any]]) -> Optional[str]:
     return None
 
 
-def load_model(symbol=None):
+def load_model(symbol=None, direction="UP"):
+    """Load a trained model for symbol+direction. direction is 'UP' or 'DOWN' (Phase 2).
+
+    Results (including negative lookups) are cached per (symbol, direction)
+    for V3_MODEL_CACHE_TTL_S; retrain/delete paths call
+    invalidate_model_cache(). The serve guard (model_expired etc.) is
+    re-evaluated on every call, so a cached model can still age out.
+    """
     if not symbol: return None, None, None
+    ttl = _model_cache_ttl_s()
+    cache_key = (str(symbol).upper(), str(direction).upper())
+    if ttl > 0:
+        with _MODEL_CACHE_LOCK:
+            hit = _MODEL_CACHE.get(cache_key)
+        if hit is not None:
+            model, feature_cols, meta, cached_at = hit
+            if time.time() - cached_at < ttl:
+                # Serve guard re-check: a model cached fresh can expire mid-TTL.
+                if meta is not None and model_serve_guard(meta):
+                    return None, None, None
+                return model, feature_cols, meta
+    model, feature_cols, meta = _load_model_uncached(symbol, direction)
+    if ttl > 0:
+        with _MODEL_CACHE_LOCK:
+            if len(_MODEL_CACHE) > 256:  # safety bound; universe is ~90 keys
+                _MODEL_CACHE.clear()
+            _MODEL_CACHE[cache_key] = (model, feature_cols, meta, time.time())
+    return model, feature_cols, meta
+
+
+def _load_model_uncached(symbol, direction="UP"):
     try:
         import pickle, base64, binascii, hashlib
         from core.db import db_conn
         with db_conn() as conn:
             cur = conn.cursor()
-            # NOTE: promotion-gate model selection is intentionally NOT wired
-            # here. Promotion candidates are shadow-brain configs (e.g.
-            # "strict_confidence"), not persisted model blobs in ghost_v3_model,
-            # and the meta_{symbol} sha256 integrity check only pairs with
-            # model_{symbol}. Wiring it requires persisting challenger models
-            # with their own meta rows first (Phase 1). Until then the gate is
-            # report-only by design — do not add a lookup that cannot switch.
-            # PR #107: validate metadata before any pickle deserialization.
-            # Stale/invalid model metadata should reject without touching the
-            # untrusted-by-default model payload.
-            cur.execute("SELECT value FROM ghost_v3_model WHERE key=%s", (f"meta_{symbol}",))
+            model_key = f"model_{symbol}_{direction.lower()}"
+            meta_key = f"meta_{symbol}_{direction.lower()}"
+            cur.execute("SELECT value FROM ghost_v3_model WHERE key=%s", (meta_key,))
             mrow = cur.fetchone()
-            if not mrow: return None, None, None
+            if not mrow:
+                # Fallback: legacy keys without direction suffix (pre-Phase 2)
+                if direction == "UP":
+                    cur.execute("SELECT value FROM ghost_v3_model WHERE key=%s", (f"meta_{symbol}",))
+                    mrow = cur.fetchone()
+                    if mrow:
+                        model_key = f"model_{symbol}"
+                        meta_key = f"meta_{symbol}"
+                if not mrow:
+                    return None, None, None
             meta = json.loads(mrow[0])
             reject = model_serve_guard(meta)
             if reject:
-                LOGGER.info("load_model %s: rejected (%s)", symbol, reject)
+                LOGGER.info("load_model %s/%s: rejected (%s)", symbol, direction, reject)
                 return None, None, None
-            cur.execute("SELECT value FROM ghost_v3_model WHERE key=%s", (f"model_{symbol}",))
+            cur.execute("SELECT value FROM ghost_v3_model WHERE key=%s", (model_key,))
             row = cur.fetchone()
             if not row: return None, None, None
             encoded = row[0] or ""
             if len(encoded) > _model_payload_max_bytes() * 2:
-                LOGGER.warning("load_model %s: rejected model payload too large (encoded=%s)", symbol, len(encoded))
+                LOGGER.warning("load_model %s/%s: rejected model payload too large (encoded=%s)", symbol, direction, len(encoded))
                 return None, None, None
             try:
                 raw = base64.b64decode(encoded, validate=True)
             except (binascii.Error, ValueError) as dec_exc:
-                LOGGER.warning("load_model %s: invalid base64 payload: %s", symbol, str(dec_exc)[:80])
+                LOGGER.warning("load_model %s/%s: invalid base64 payload: %s", symbol, direction, str(dec_exc)[:80])
                 return None, None, None
             if len(raw) > _model_payload_max_bytes():
-                LOGGER.warning("load_model %s: rejected model payload too large (bytes=%s)", symbol, len(raw))
+                LOGGER.warning("load_model %s/%s: rejected model payload too large (bytes=%s)", symbol, direction, len(raw))
                 return None, None, None
             expected_sha = str(meta.get("model_sha256") or "").strip().lower()
             if expected_sha:
                 actual_sha = hashlib.sha256(raw).hexdigest()
                 if actual_sha != expected_sha:
-                    LOGGER.warning("load_model %s: model sha256 mismatch", symbol)
+                    LOGGER.warning("load_model %s/%s: model sha256 mismatch", symbol, direction)
                     return None, None, None
             else:
-                # Legacy rows predate PR #107. They remain loadable only after
-                # metadata serve guards pass; newly trained models include a hash.
-                LOGGER.info("load_model %s: legacy model without sha256 metadata", symbol)
+                LOGGER.info("load_model %s/%s: legacy model without sha256 metadata", symbol, direction)
             model = pickle.loads(raw)
             return model, meta.get('feature_cols', FEATURE_COLS), meta
     except Exception as e:
-        LOGGER.warning(f"load_model {symbol}: {e}"); return None, None, None
+        LOGGER.warning(f"load_model {symbol}/{direction}: {e}"); return None, None, None
 
 def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
     """
@@ -1979,9 +2117,17 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
     engine can fire low-confidence picks when the system has too few resolved
     outcomes to prove edge (research pick mode, PR #114).
     """
-    model, feature_cols, meta = load_model(symbol)
-    if model is None:
+    # Phase 2: load both UP and DOWN models. UP is the production lane; DOWN
+    # is scored for the journal (shadow) and can only fire when explicitly
+    # enabled via V3_DOWN_SIGNALS_ENABLED (load_model handles legacy keys).
+    up_model, up_feature_cols, up_meta = load_model(symbol, "UP")
+    down_model, down_feature_cols, down_meta = load_model(symbol, "DOWN")
+    if up_model is None and down_model is None:
         return None, "no_model"
+
+    # Use UP feature cols as canonical (both directions share the same schema)
+    feature_cols = up_feature_cols or down_feature_cols or FEATURE_COLS
+    meta = up_meta or down_meta or {}
 
     rows = _fetch_ohlcv(symbol, asset_type, period='5d', interval='1h')
     if not rows or len(rows) < 30:
@@ -2129,8 +2275,41 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
             apply_inversions_to_features(scores["features"], invert_cols)
 
     X = np.array([[features.get(c, 0.0) for c in feature_cols]])
-    proba = model.predict_proba(X)[0]
-    up_prob = float(proba[1])
+
+    # Phase 2: score both UP and DOWN models, pick the stronger signal
+    up_prob = None
+    down_prob = None
+    if up_model is not None:
+        try:
+            up_proba = up_model.predict_proba(X)[0]
+            up_prob = float(up_proba[1])
+        except Exception:
+            pass
+    if down_model is not None:
+        try:
+            down_proba = down_model.predict_proba(X)[0]
+            down_prob = float(down_proba[1])
+        except Exception:
+            pass
+
+    if up_prob is None and down_prob is None:
+        return None, "no_model"
+
+    # Journal record: the raw stronger signal, independent of firing rules —
+    # shadow analysis needs to see when DOWN outscored UP even though only the
+    # UP lane can fire in production.
+    if up_prob is not None and (down_prob is None or up_prob >= down_prob):
+        journal_direction = "UP"
+    else:
+        journal_direction = "DOWN"
+
+    # Firing lanes: UP is production (identical to pre-Phase 2 behavior).
+    # DOWN fires only when V3_DOWN_SIGNALS_ENABLED=1 and the UP lane did not
+    # fire. Meta gates are evaluated per-lane against that lane's own model.
+    primary_meta = (up_meta or {}) if up_prob is not None else (down_meta or {})
+    primary_prob = up_prob if up_prob is not None else down_prob
+    primary_direction = "UP" if up_prob is not None else "DOWN"
+
     min_edge = _v3_min_edge()
     min_acc = _v3_min_holdout_acc()
     min_p = _v3_min_win_proba()
@@ -2145,71 +2324,97 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
         except Exception:
             pass
     min_wf_acc = _v3_min_wf_acc_mean()
-    edge = meta.get('edge', 0)
-    wf_acc_mean = float(meta.get("wf_acc_mean", meta.get("accuracy", 0)))
-    wf_edge_mean = float(meta.get("wf_edge_mean", meta.get("edge", 0)))
-    wf_fold_count = int(meta.get("wf_fold_count", 0))
-    accuracy = meta.get('accuracy', min_acc)
+    edge = primary_meta.get('edge', 0)
+    wf_acc_mean = float(primary_meta.get("wf_acc_mean", primary_meta.get("accuracy", 0)))
+    wf_edge_mean = float(primary_meta.get("wf_edge_mean", primary_meta.get("edge", 0)))
+    wf_fold_count = int(primary_meta.get("wf_fold_count", 0))
+    accuracy = primary_meta.get('accuracy', min_acc)
 
     # Capture the model score vector NOW — before the meta gates and the prob_low
-    # return — so /api/wolf/gate-status can show where up_prob landed relative to
-    # the gates even on cycles that do not fire.
+    # return — so /api/wolf/gate-status can show where probabilities landed.
     if scores is not None:
-        fires = up_prob > min_p
-        scores["up_prob"] = round(up_prob, 4)
+        fires = primary_prob > min_p
+        scores["up_prob"] = round(up_prob, 4) if up_prob is not None else None
+        scores["down_prob"] = round(down_prob, 4) if down_prob is not None else None
+        scores["winning_direction"] = journal_direction
+        scores["win_prob"] = round(primary_prob, 4)
+        scores["down_signals_enabled"] = _v3_down_signals_enabled()
         scores["specialists"] = {
-            "daily_swing": {"model": "xgboost_v3", "up_prob": round(up_prob, 4),
-                            "vote": "UP" if fires else "none"},
+            "daily_swing": {
+                "model": "xgboost_v3",
+                "up_prob": round(up_prob, 4) if up_prob is not None else None,
+                "down_prob": round(down_prob, 4) if down_prob is not None else None,
+                "vote": primary_direction if fires else "none",
+            },
         }
         scores["specialist_count"] = 1
-        scores["specialist_agree_up"] = 1 if fires else 0
+        scores["specialist_agree_up"] = 1 if (fires and primary_direction == "UP") else 0
         scores["model_meta"] = {
+            "direction": primary_direction,
             "accuracy": round(float(accuracy), 4),
             "edge": round(float(edge), 4),
             "wf_acc_mean": round(wf_acc_mean, 4),
             "wf_edge_mean": round(wf_edge_mean, 4),
             "wf_fold_count": wf_fold_count,
             "min_win_proba": round(float(min_p), 4),
-            "calibrated": bool(meta.get("calibrated", False)),
-            "calibration_method": meta.get("calibration_method"),
-            "gate_brier": meta.get("gate_brier"),
-            "conformal_ok": bool(meta.get("conformal_ok", False)),
-            "conformal_q_hat": meta.get("conformal_q_hat"),
-            "ensemble": bool(meta.get("ensemble", False)),
+            "calibrated": bool(primary_meta.get("calibrated", False)),
+            "calibration_method": primary_meta.get("calibration_method"),
+            "gate_brier": primary_meta.get("gate_brier"),
+            "conformal_ok": bool(primary_meta.get("conformal_ok", False)),
+            "conformal_q_hat": primary_meta.get("conformal_q_hat"),
+            "ensemble": bool(primary_meta.get("ensemble", False)),
         }
-        scores["direction_source"] = "classifier_up_prob"
-        scores["trade_signal_source"] = "classifier_up_prob"
+        scores["direction_source"] = "classifier_dual"
+        scores["trade_signal_source"] = "classifier_dual"
 
-    # Regime block enforced here — after the score capture above, so the eval
-    # journal and shadow scoring see up_prob even on regime-blocked cycles.
-    if regime_block:
-        return None, "regime_gate"
+    def _evaluate_lane(direction, prob, meta):
+        """Meta + probability gates for one direction lane. Regime gates are
+        BUY-only, so only the UP lane can be regime-blocked."""
+        if direction == "UP" and regime_block:
+            return None, "regime_gate"
+        lane_edge = meta.get('edge', 0)
+        lane_wf_acc = float(meta.get("wf_acc_mean", meta.get("accuracy", 0)))
+        lane_wf_edge = float(meta.get("wf_edge_mean", meta.get("edge", 0)))
+        lane_folds = int(meta.get("wf_fold_count", 0))
+        if lane_edge < min_edge:
+            return None, "meta_gate"
+        if meta.get('accuracy', 0) < min_acc:
+            return None, "meta_gate"
+        if lane_folds > 0 and (lane_wf_acc < min_wf_acc or lane_wf_edge < min_edge):
+            return None, "meta_gate"
+        if prob > min_p:
+            q_hat = meta.get("conformal_q_hat")
+            if q_hat is not None and float(q_hat) > 0:
+                from core.conformal_calibration import conformal_confidence
+                conf = conformal_confidence(
+                    prob, float(q_hat), float(meta.get('accuracy', min_acc)), float(min_p))
+            else:
+                conf = round(min(0.98, max(0.0, prob)), 3)
+            if scores is not None:
+                scores["confidence"] = conf
+                if q_hat is not None:
+                    scores["conformal_q_hat"] = float(q_hat)
+            return (direction, conf), None
+        return None, "prob_low"
 
-    if edge < min_edge:
-        return None, "meta_gate"
-    if meta.get('accuracy', 0) < min_acc:
-        return None, "meta_gate"
-    if wf_fold_count > 0 and (wf_acc_mean < min_wf_acc or wf_edge_mean < min_edge):
-        return None, "meta_gate"
+    # UP lane first — a blocked/weaker DOWN score never suppresses UP.
+    reason = "no_model"
+    if up_prob is not None:
+        sig, reason = _evaluate_lane("UP", up_prob, up_meta or {})
+        if sig:
+            return sig, None
 
-    # Phase 2: confidence = calibrated P(win); Brier/journal treat this as the stated probability.
-    # P7 (audit): conformal calibration when available — replaces heuristic with
-    # mathematically guaranteed prediction intervals.
-    if up_prob > min_p:
-        q_hat = meta.get("conformal_q_hat")
-        if q_hat is not None and float(q_hat) > 0:
-            from core.conformal_calibration import conformal_confidence
-            conf = conformal_confidence(up_prob, float(q_hat), float(accuracy), float(min_p))
-        else:
-            conf = round(min(0.98, max(0.0, up_prob)), 3)
-        if scores is not None:
-            scores["confidence"] = conf
-            if q_hat is not None:
-                scores["conformal_q_hat"] = float(q_hat)
-        return ("UP", conf), None
-    # DOWN signals disabled — 1.5% WR on 274 trades, not viable
-    # Ghost is BUY-only system
-    return None, "prob_low"
+    # DOWN lane: shadow-only unless explicitly enabled.
+    if down_prob is not None and _v3_down_signals_enabled():
+        d_sig, d_reason = _evaluate_lane("DOWN", down_prob, down_meta or {})
+        if d_sig:
+            return d_sig, None
+        if up_prob is None:
+            reason = d_reason
+    elif up_prob is None:
+        # Only a DOWN model exists and the lane is disabled — nothing can fire.
+        reason = "down_shadow_only"
+    return None, reason
 
 
 def predict_live(symbol, asset_type):
@@ -2236,11 +2441,24 @@ def get_model_status():
             symbols = {}
             stored = {}
             for key, val in rows:
-                sym = key.replace('meta_',''); m = json.loads(val)
+                raw_key = key.replace('meta_', '')
+                # Phase 2: directional keys like WOLF_up, WOLF_down
+                # Legacy keys: just WOLF
+                if raw_key.endswith('_up'):
+                    sym = raw_key[:-3]
+                    direction = "UP"
+                elif raw_key.endswith('_down'):
+                    sym = raw_key[:-5]
+                    direction = "DOWN"
+                else:
+                    sym = raw_key
+                    direction = "UP"  # legacy models are UP-only
+                m = json.loads(val)
                 reject = model_serve_guard(m)
-                if sym not in model_keys:
+                if raw_key not in model_keys:
                     reject = reject or "missing_pickle"
                 summary = {
+                    "direction": direction,
                     "accuracy": round(m.get("accuracy",0)*100,1),
                     "natural_rate": round(m.get("natural_rate",0)*100,1),
                     "edge": round(m.get("edge",0)*100,1),
@@ -2263,12 +2481,14 @@ def get_model_status():
                 }
                 if reject:
                     summary["serve_reject"] = reject
-                stored[sym] = summary
+                stored[raw_key] = summary
                 if reject is None:
-                    symbols[sym] = summary
+                    if sym not in symbols:
+                        symbols[sym] = {}
+                    symbols[sym][direction] = summary
             out = {
                 "trained": bool(symbols),
-                "models": len(symbols),
+                "models": sum(len(v) for v in symbols.values()),
                 "models_stored": len(stored),
                 "symbols": symbols,
                 "stored_symbols": stored,

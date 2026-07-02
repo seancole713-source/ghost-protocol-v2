@@ -725,7 +725,18 @@ def build_watchlist_universe() -> Dict[str, Any]:
 
     st = get_model_status() or {}
     loaded = set((st.get("symbols") or {}).keys())
-    stored = set((st.get("stored_symbols") or st.get("symbols") or {}).keys())
+    # stored_symbols keys may carry the Phase 2 direction suffix (WOLF_up);
+    # index rejects by bare symbol for the watchlist comparison below.
+    stored_raw = st.get("stored_symbols") or st.get("symbols") or {}
+    stored_by_sym: Dict[str, Any] = {}
+    for raw_key, summary in stored_raw.items():
+        base = raw_key
+        if base.endswith("_up"):
+            base = base[:-3]
+        elif base.endswith("_down"):
+            base = base[:-5]
+        stored_by_sym.setdefault(base, summary)
+    stored = set(stored_by_sym.keys())
     try:
         from core.signal_engine import get_last_train_fail_for_symbol
     except Exception:
@@ -737,7 +748,7 @@ def build_watchlist_universe() -> Dict[str, Any]:
     for sym in all_syms:
         entry = {"symbol": sym, "has_model": sym in loaded, "serveable": sym in loaded}
         if sym in stored and sym not in loaded:
-            reject = ((st.get("stored_symbols") or {}).get(sym) or {}).get("serve_reject")
+            reject = (stored_by_sym.get(sym) or {}).get("serve_reject")
             if reject:
                 entry["serve_reject"] = reject
                 stale_count += 1

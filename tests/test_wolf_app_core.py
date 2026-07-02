@@ -973,8 +973,9 @@ def test_backtest_symbol_returns_empty_when_under_min_bars(monkeypatch):
     import core.signal_engine as _se
     monkeypatch.setenv("MIN_BACKTEST_BARS", "100")
     monkeypatch.setattr(_se, "_fetch_ohlcv", lambda symbol, asset_type: [{"ts": "x", "close": 1.0}] * 90)
-    out = _se.backtest_symbol("WOLF", "stock")
-    assert out == []
+    up_rows, down_rows = _se.backtest_symbol("WOLF", "stock")
+    assert up_rows == []
+    assert down_rows == []
 
 
 def test_backtest_symbol_window_governs_sample_count(monkeypatch):
@@ -991,12 +992,12 @@ def test_backtest_symbol_window_governs_sample_count(monkeypatch):
     monkeypatch.setattr(_se, "_fetch_ohlcv", lambda symbol, asset_type: rows)
     monkeypatch.setenv("MIN_BACKTEST_BARS", "10")
     monkeypatch.setenv("V3_BACKTEST_WINDOW", "120")
-    out_120 = _se.backtest_symbol("WOLF", "stock")
+    out_120_up, _ = _se.backtest_symbol("WOLF", "stock")
     monkeypatch.setenv("V3_BACKTEST_WINDOW", "60")
-    out_60 = _se.backtest_symbol("WOLF", "stock")
+    out_60_up, _ = _se.backtest_symbol("WOLF", "stock")
     # Smaller window → strictly more samples (60 vs 120 = +60 more iterations)
-    assert len(out_60) > len(out_120) > 0
-    assert len(out_60) - len(out_120) == 60
+    assert len(out_60_up) > len(out_120_up) > 0
+    assert len(out_60_up) - len(out_120_up) == 60
 
 
 # ── _fetch_ohlcv yfinance fallback (PR fix/wolf-training-yfinance-fallback) ──
@@ -2299,6 +2300,25 @@ def test_admin_login_sets_cookie_then_admin_serves_console(monkeypatch):
     assert "Objective Gate Monitor" in r.text or "GHOST <span>ADMIN" in r.text
 
 
+def test_admin_login_throttles_brute_force(monkeypatch):
+    """6th login attempt in a minute from one IP returns 429 (audit M1-2)."""
+    monkeypatch.setenv("CRON_SECRET", "letmein")
+    monkeypatch.setenv("LOGIN_ATTEMPTS_PER_MIN", "5")
+    wolf_app._LOGIN_ATTEMPTS.clear()
+    from fastapi.testclient import TestClient
+    c = TestClient(wolf_app.APP)
+    for _ in range(5):
+        r = c.post("/admin/login", json={"secret": "wrong"})
+        assert r.status_code == 401
+    r = c.post("/admin/login", json={"secret": "wrong"})
+    assert r.status_code == 429
+    assert r.headers.get("Retry-After") == "60"
+    # Even the CORRECT secret is throttled once the window is exhausted
+    r = c.post("/admin/login", json={"secret": "letmein"})
+    assert r.status_code == 429
+    wolf_app._LOGIN_ATTEMPTS.clear()
+
+
 def test_news_filter_drops_articles_without_wolf_mention(monkeypatch):
     """Articles with no symbol tags AND no WOLF mention must be dropped.
     Pre-PR-#23 the empty-syms branch fell through and leaked Zoom / IBM /
@@ -2934,7 +2954,7 @@ def test_predict_live_ex_journals_full_feature_vector(monkeypatch):
         def predict_proba(self, X): return _np.array([[0.1, 0.9]])
     meta = {"edge": 0.3, "accuracy": 0.66, "wf_acc_mean": 0.64,
             "wf_edge_mean": 0.2, "wf_fold_count": 4, "trained_at": time.time()}
-    monkeypatch.setattr(_se, "load_model", lambda s: (_M(), _se.FEATURE_COLS, meta))
+    monkeypatch.setattr(_se, "load_model", lambda s, direction="UP": (_M(), _se.FEATURE_COLS, meta))
     for k, v in {"V3_MIN_WIN_PROBA": "0.55", "V3_MIN_EDGE": "0.0",
                  "V3_MIN_HOLDOUT_ACC": "0.0", "V3_MIN_WF_ACC_MEAN": "0.0"}.items():
         monkeypatch.setenv(k, v)
@@ -3975,17 +3995,32 @@ def test_collect_peer_rows_skips_thin_and_failed(monkeypatch):
 
     def fake_bt(sym, atype):
         if sym == "GOOD":
-            return [{"features": {}, "label": 1}] * 5
+            # 5 UP rows and 4 DOWN rows — both above min_train_rows
+            return [{"features": {}, "label": 1}] * 5, [{"features": {}, "label": 0}] * 4
         if sym == "THIN":
-            return [{"features": {}, "label": 0}] * 2   # below min_train_rows
+            return [{"features": {}, "label": 0}] * 2, []  # below min_train_rows
         if sym == "BOOM":
             raise RuntimeError("feed down")
-        return []
+        return [], []
     monkeypatch.setattr(_se, "backtest_symbol", fake_bt)
 
     pooled, used = _se._collect_peer_rows("WOLF")       # target excluded from peers
-    assert len(pooled) == 5
-    assert used == [{"symbol": "GOOD", "n": 5}]
+    assert len(pooled["UP"]) == 5
+    assert len(pooled["DOWN"]) == 4
+    assert used == [{"symbol": "GOOD", "n": 5, "n_down": 4}]
+
+
+def test_collect_peer_rows_pools_are_direction_separated(monkeypatch):
+    """DOWN peer pool must never receive UP-labeled rows (Phase 2 fix)."""
+    import core.signal_engine as _se
+    monkeypatch.setattr(_se, "_v3_peer_symbols", lambda: ["PEER"])
+    monkeypatch.setattr(_se, "_min_train_rows", lambda: 2)
+    up = [{"features": {"f": 1.0}, "label": 1, "side": "up"}] * 3
+    down = [{"features": {"f": -1.0}, "label": 1, "side": "down"}] * 3
+    monkeypatch.setattr(_se, "backtest_symbol", lambda s, a: (up, down))
+    pooled, _used = _se._collect_peer_rows("WOLF")
+    assert all(r["side"] == "up" for r in pooled["UP"])
+    assert all(r["side"] == "down" for r in pooled["DOWN"])
 
 
 def test_feature_schema_tracks_pool_and_sector_flags(monkeypatch):
@@ -4186,10 +4221,10 @@ def test_has_loadable_v3_model_requires_actual_load(monkeypatch):
     import core.signal_engine as _se
     monkeypatch.setenv("STOCK_SYMBOLS", "WOLF")
     # rows may exist, but load_model rejects (schema/label/age) -> NOT loadable -> retrain
-    monkeypatch.setattr(_se, "load_model", lambda s: (None, None, None))
+    monkeypatch.setattr(_se, "load_model", lambda s, direction="UP": (None, None, None))
     assert wolf_app._has_loadable_v3_model() is False
     # a model that actually loads -> loadable -> skip retrain
-    monkeypatch.setattr(_se, "load_model", lambda s: (object(), ["rsi"], {"feature_schema": "macd_pct_v1+sec0"}))
+    monkeypatch.setattr(_se, "load_model", lambda s, direction="UP": (object(), ["rsi"], {"feature_schema": "macd_pct_v1+sec0"}))
     assert wolf_app._has_loadable_v3_model() is True
 
 
@@ -4198,7 +4233,7 @@ def test_has_loadable_v3_model_any_symbol_counts(monkeypatch):
     import core.signal_engine as _se
     monkeypatch.setenv("STOCK_SYMBOLS", "WOLF,ON")
     monkeypatch.setattr(_se, "load_model",
-                        lambda s: (object(), ["rsi"], {}) if s == "ON" else (None, None, None))
+                        lambda s, direction="UP": (object(), ["rsi"], {}) if s == "ON" else (None, None, None))
     assert wolf_app._has_loadable_v3_model() is True
 
 
