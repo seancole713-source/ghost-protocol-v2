@@ -303,6 +303,39 @@ def test_get_history_returns_rows(monkeypatch):
     assert set(out["rows"][0].keys()) >= set(cols)
 
 
+def test_auto_log_watchlist_skips_recently_logged_symbols(monkeypatch):
+    """The resolver job fires hourly; the daily guard must make repeat calls
+    no-ops so volume stays ~43/day, not ~1,032/day of correlated duplicates."""
+    from config.symbols import OFFICIAL_WATCHLIST
+    built = []
+    monkeypatch.setattr(ledger, "ledger_enabled", lambda: True)
+    monkeypatch.setattr(ledger, "_symbols_logged_since", lambda cutoff: set(OFFICIAL_WATCHLIST))
+    monkeypatch.setattr("core.super_ghost.build_super_ghost",
+                        lambda sym: built.append(sym) or {"ok": True, "symbol": sym})
+    monkeypatch.setattr(ledger, "log_prediction", lambda report: 1)
+    out = ledger.auto_log_watchlist()
+    assert out["ok"] is True
+    assert out["auto_logged"] == 0
+    assert out["skipped_recent"] == len(OFFICIAL_WATCHLIST)
+    assert built == []  # no expensive report builds for already-logged symbols
+
+
+def test_auto_log_watchlist_logs_only_missing_symbols(monkeypatch):
+    from config.symbols import OFFICIAL_WATCHLIST
+    all_syms = list(OFFICIAL_WATCHLIST)
+    already = set(all_syms[:-2])  # all but the last two logged today
+    built = []
+    monkeypatch.setattr(ledger, "_symbols_logged_since", lambda cutoff: already)
+    monkeypatch.setattr("core.super_ghost.build_super_ghost",
+                        lambda sym: built.append(sym) or {"ok": True, "symbol": sym})
+    monkeypatch.setattr(ledger, "log_prediction", lambda report: 7)
+    out = ledger.auto_log_watchlist()
+    assert out["ok"] is True
+    assert out["auto_logged"] == 2
+    assert out["skipped_recent"] == len(all_syms) - 2
+    assert sorted(built) == sorted(all_syms[-2:])
+
+
 def test_resolve_predictions_updates_rows(monkeypatch):
     # One unresolved UP row for WOLF; provide a rising price series.
     t0 = 1_700_000_000

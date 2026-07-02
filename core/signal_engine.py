@@ -1861,26 +1861,13 @@ def load_model(symbol=None):
         from core.db import db_conn
         with db_conn() as conn:
             cur = conn.cursor()
-            # PR #115: check for approved promotion — if a challenger model
-            # has been approved, use it instead of the production champion.
-            model_key = f"model_{symbol}"
-            try:
-                cur.execute(
-                    "SELECT candidate_id FROM super_ghost_promotion_reviews "
-                    "WHERE symbol=%s AND approved_for_promotion=TRUE "
-                    "ORDER BY created_at DESC LIMIT 1",
-                    (symbol,),
-                )
-                promo_row = cur.fetchone()
-                if promo_row and promo_row[0]:
-                    promoted_key = f"model_{promo_row[0]}"
-                    # Verify the promoted model exists before switching
-                    cur.execute("SELECT value FROM ghost_v3_model WHERE key=%s", (promoted_key,))
-                    if cur.fetchone():
-                        model_key = promoted_key
-                        LOGGER.info("load_model %s: using promoted model %s", symbol, promoted_key)
-            except Exception:
-                pass  # promotion table may not exist yet
+            # NOTE: promotion-gate model selection is intentionally NOT wired
+            # here. Promotion candidates are shadow-brain configs (e.g.
+            # "strict_confidence"), not persisted model blobs in ghost_v3_model,
+            # and the meta_{symbol} sha256 integrity check only pairs with
+            # model_{symbol}. Wiring it requires persisting challenger models
+            # with their own meta rows first (Phase 1). Until then the gate is
+            # report-only by design — do not add a lookup that cannot switch.
             # PR #107: validate metadata before any pickle deserialization.
             # Stale/invalid model metadata should reject without touching the
             # untrusted-by-default model payload.

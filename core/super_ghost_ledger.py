@@ -242,20 +242,51 @@ def log_prediction(report: Dict[str, Any], *, created_at: Optional[int] = None) 
         return None
 
 
+# Skip symbols auto-logged within this window. The resolver job fires hourly;
+# without a guard each symbol would be logged 24×/day — correlated near-duplicate
+# rows that inflate learning-brain bucket counts with fake confidence. 20h (not
+# 24h) tolerates scheduler jitter so the daily log doesn't drift later each day.
+_AUTO_LOG_MIN_GAP_S = 20 * 3600
+
+
+def _symbols_logged_since(cutoff_ts: int) -> set:
+    """Symbols with a ledger row at/after cutoff_ts. Fails open (empty set)."""
+    try:
+        from core.db import db_conn
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT DISTINCT symbol FROM super_ghost_predictions WHERE created_at >= %s",
+                (int(cutoff_ts),),
+            )
+            return {r[0] for r in cur.fetchall()}
+    except Exception as exc:
+        LOGGER.warning("auto_log recent-symbols check failed: %s", str(exc)[:120])
+        return set()
+
+
 def auto_log_watchlist() -> Dict[str, Any]:
-    """Auto-log Super Ghost predictions for all 43 watchlist symbols.
+    """Auto-log Super Ghost predictions for all 43 watchlist symbols, once per day.
 
     PR #115: The learning brains need ~14,000 bucket-samples but receive ~365/year
     from manual clicks. Auto-logging all 43 symbols daily multiplies sample volume
     ~43×, making cold-start exit practically reachable.
+
+    Called from the hourly resolver job; the per-symbol daily guard makes the
+    extra invocations no-ops, so volume stays ~43/day, not ~1,032/day.
     """
     try:
         from config.symbols import OFFICIAL_WATCHLIST
         from core.super_ghost import build_super_ghost
         symbols = list(OFFICIAL_WATCHLIST)
+        already = _symbols_logged_since(int(_now()) - _AUTO_LOG_MIN_GAP_S)
         logged = 0
+        skipped = 0
         errors = 0
         for sym in symbols:
+            if sym in already:
+                skipped += 1
+                continue
             try:
                 report = build_super_ghost(sym)
                 if report.get("ok"):
@@ -264,7 +295,8 @@ def auto_log_watchlist() -> Dict[str, Any]:
                         logged += 1
             except Exception:
                 errors += 1
-        return {"ok": True, "auto_logged": logged, "errors": errors, "total": len(symbols)}
+        return {"ok": True, "auto_logged": logged, "skipped_recent": skipped,
+                "errors": errors, "total": len(symbols)}
     except Exception as e:
         return {"ok": False, "error": str(e)[:200]}
 
