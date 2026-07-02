@@ -26,8 +26,16 @@ LOGGER.info("[signal_engine] MODULE_LOADED PR17_DIAG ohlcv_chain=sip|iex|polygon
 LABEL_TYPE = "tp_sl_daily"
 # Phase 5: calendar forward bars + shared resolve path (see core.tp_sl_resolve.LABEL_SCHEMA).
 def _v3_label_schema() -> str:
+    """Label schema id — includes TP/SL geometry so a stop-width change
+    (V3_STOP_VOL_MULT) invalidates every stored model and forces retrains.
+    Serving a model trained on different geometry would silently break the
+    precision-gate contract."""
     from core.tp_sl_resolve import LABEL_SCHEMA
-    return LABEL_SCHEMA
+    from core.vol_targets import _stop_vol_mult
+    m = _stop_vol_mult()
+    if abs(m - 0.65) < 1e-9:
+        return LABEL_SCHEMA
+    return f"{LABEL_SCHEMA}_sm{m:g}"
 
 # Daily bars only: approximate 48h stock hold with this many forward bars (24h each).
 V3_LABEL_HOLD_BARS = max(1, int(os.getenv("V3_LABEL_HOLD_BARS", "3")))

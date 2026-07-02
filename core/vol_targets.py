@@ -25,9 +25,24 @@ def base_vol_pct(symbol: str, asset_type: str) -> float:
     return float(VOL_MAP.get((symbol or "").upper(), default))
 
 
+def _stop_vol_mult() -> float:
+    """Stop distance as a multiple of the target vol fraction.
+
+    0.65 (default) = tight stop, 1.54:1 reward:risk, breakeven win rate 40%.
+    Higher values widen the stop: win rate rises (fewer stop-outs) while
+    reward:risk falls. Phase 3 precision experiments sweep this to find the
+    geometry where >=70% OOS precision is provable with positive expectancy.
+    Training labels and live TP/SL both read it — they can never diverge.
+    """
+    try:
+        return max(0.1, float(os.getenv("V3_STOP_VOL_MULT", "0.65")))
+    except Exception:
+        return 0.65
+
+
 def stop_pct_from_vol(vol_pct: float) -> float:
-    """Stop distance as fraction of entry; live uses vol * 0.65."""
-    return float(vol_pct) * 0.65
+    """Stop distance as fraction of entry (vol * V3_STOP_VOL_MULT)."""
+    return float(vol_pct) * _stop_vol_mult()
 
 
 def _forecast_band_lookback() -> int:
