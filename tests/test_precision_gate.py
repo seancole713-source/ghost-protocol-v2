@@ -199,3 +199,62 @@ def test_env_off_switch_restores_legacy_behavior(monkeypatch):
     _patch(monkeypatch, up_p=0.95, precision_gate=None)
     sig, reason = _se.predict_live_ex("WOLF", "stock")
     assert sig is not None and sig[0] == "UP"
+
+
+# ------------------------------------------------------- pooled global gate
+
+def test_select_global_threshold_needs_wilson_bound(monkeypatch):
+    from core.precision_gate import select_global_threshold
+    monkeypatch.setenv("V3_PRECISION_GLOBAL_MIN_SUPPORT", "20")
+    monkeypatch.setenv("V3_PRECISION_GLOBAL_WILSON_SLACK", "0.05")
+    # 30 picks at 73% precision above 0.6: wilson_low ~= 0.55 -> NOT enough
+    probs = [0.65] * 30 + [0.4] * 30
+    labels = [1] * 22 + [0] * 8 + [0] * 30
+    out = select_global_threshold(probs, labels, target=0.70)
+    assert out["ok"] is False
+    assert "wilson" in (out.get("fail_reason") or "")
+    # 300 picks at 76%: wilson_low ~= 0.71 -> proven
+    probs = [0.65] * 300 + [0.4] * 100
+    labels = [1] * 228 + [0] * 72 + [0] * 100
+    out = select_global_threshold(probs, labels, target=0.70)
+    assert out["ok"] is True
+    assert out["threshold"] == 0.65
+
+
+def test_unproven_symbol_falls_back_to_global_pool(monkeypatch):
+    """Symbol gate unproven + globally proven pool -> fires above pooled threshold."""
+    import core.precision_gate as _pg
+    monkeypatch.delenv("V3_PRECISION_GATE", raising=False)
+    _patch(monkeypatch, up_p=0.72,
+           precision_gate={"ok": False, "fail_reason": "no_calib_operating_point"})
+    monkeypatch.setattr(
+        _pg, "load_global_threshold",
+        lambda d: {"ok": True, "threshold": 0.66, "target": 0.70})
+    # predict imports from core.precision_gate inside the lane — patch there
+    scores = {}
+    sig, reason = _se.predict_live_ex("WOLF", "stock", scores=scores)
+    assert sig is not None and sig[0] == "UP"
+    assert scores["precision_gate_up"]["source"] == "global_pool"
+    assert scores["precision_gate_up"]["threshold"] == 0.66
+
+
+def test_global_pool_threshold_still_blocks_below(monkeypatch):
+    import core.precision_gate as _pg
+    monkeypatch.delenv("V3_PRECISION_GATE", raising=False)
+    _patch(monkeypatch, up_p=0.60, precision_gate={"ok": False})
+    monkeypatch.setattr(
+        _pg, "load_global_threshold",
+        lambda d: {"ok": True, "threshold": 0.66, "target": 0.70})
+    sig, reason = _se.predict_live_ex("WOLF", "stock")
+    assert sig is None
+    assert reason == "prob_low"
+
+
+def test_no_global_pool_keeps_symbol_blocked(monkeypatch):
+    import core.precision_gate as _pg
+    monkeypatch.delenv("V3_PRECISION_GATE", raising=False)
+    _patch(monkeypatch, up_p=0.95, precision_gate={"ok": False})
+    monkeypatch.setattr(_pg, "load_global_threshold", lambda d: None)
+    sig, reason = _se.predict_live_ex("WOLF", "stock")
+    assert sig is None
+    assert reason == "precision_unproven"

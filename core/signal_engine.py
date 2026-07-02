@@ -1794,7 +1794,15 @@ def _train_one_direction(rows, symbol, direction, active_cols, peer_rows, peers_
         )
     except Exception as _pg_e:
         precision_info = {"ok": False, "fail_reason": "error: " + str(_pg_e)[:120]}
+        gate_probs_pg = []
     calib_info["precision_gate"] = precision_info
+    # Gate-slice OOS predictions feed the pooled cross-symbol operating point
+    # (see core.precision_gate.store_global_thresholds). Popped from detail by
+    # train_and_validate before persisting.
+    _gate_oos = {
+        "probs": [round(float(p), 4) for p in gate_probs_pg],
+        "labels": [int(v) for v in y_gate],
+    }
     if peer_rows:
         X_peer_wf = np.array([[r["features"].get(c, 0.0) for c in active_cols] for r in peer_rows])
         y_peer_wf = np.array([r["label"] for r in peer_rows])
@@ -1859,6 +1867,7 @@ def _train_one_direction(rows, symbol, direction, active_cols, peer_rows, peers_
         "wf_acc_min": round(wf["acc_min"], 4),
         "wf_edge_mean": round(wf["edge_mean"], 4),
         "wf_edge_min": round(wf["edge_min"], 4),
+        "gate_oos": _gate_oos,
         "pool": pool_info,
         "feature_audit": feature_audit,
         "feature_inversions": sorted(invert_cols),
@@ -1930,6 +1939,10 @@ def train_and_validate(symbols_and_types):
         LOGGER.error("Missing dep: "+str(e)); return None, 0.0, False
     total_passed = 0
     details: list = []
+    # Pooled gate-slice OOS predictions across every trained symbol — feeds the
+    # cross-symbol precision operating point (per-symbol slices are too thin).
+    _global_pools = {"UP": {"probs": [], "labels": []},
+                     "DOWN": {"probs": [], "labels": []}}
     clear_ohlcv_cache()
     symbol_delay = _v3_train_symbol_delay_sec()
     for idx, (symbol, asset_type) in enumerate(symbols_and_types):
@@ -2012,6 +2025,15 @@ def train_and_validate(symbols_and_types):
                                     (f"meta_{symbol}_down", down_meta, int(time.time())))
                     invalidate_model_cache(symbol)
                     total_passed += 1
+            # Pool gate-slice OOS predictions for the global operating point
+            # (only from models that passed quality gates and were persisted),
+            # then drop the bulky arrays from the persisted detail blob.
+            for _dirname, _det, _ok in (("UP", up_detail, up_passed),
+                                        ("DOWN", down_detail, down_passed)):
+                _oos = _det.pop("gate_oos", None) if isinstance(_det, dict) else None
+                if _ok and _oos and _oos.get("probs"):
+                    _global_pools[_dirname]["probs"].extend(_oos["probs"])
+                    _global_pools[_dirname]["labels"].extend(_oos["labels"])
             # Build combined detail
             symbol_detail.update({
                 "passed": up_passed or down_passed,
@@ -2032,6 +2054,15 @@ def train_and_validate(symbols_and_types):
         if symbol_delay > 0 and idx + 1 < len(symbols_and_types):
             time.sleep(symbol_delay)
     LOGGER.info(f"v3.2 training: {total_passed}/{len(symbols_and_types)*2} direction-models passed")
+    # Cross-symbol precision operating point: pooled gate-slice OOS predictions
+    # give the statistical power per-symbol slices lack. Only meaningful on
+    # multi-symbol sweeps; single-symbol retrains keep the existing thresholds.
+    if len(symbols_and_types) >= 5:
+        try:
+            from core.precision_gate import store_global_thresholds
+            store_global_thresholds(_global_pools)
+        except Exception as _gt_e:
+            LOGGER.warning("global precision threshold update failed: %s", str(_gt_e)[:120])
     _persist_train_details(details)
     return None, total_passed / max(len(symbols_and_types) * 2, 1), total_passed > 0
 
@@ -2415,17 +2446,31 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
             return None, "meta_gate"
         # Phase 3: precision-targeted fire threshold — the 70% contract.
         # Live picks may only fire above an operating point that demonstrably
-        # won >= V3_PRECISION_TARGET out-of-sample. Research picks are the
-        # exploration lane and skip this (they're excluded from accuracy stats).
+        # won >= V3_PRECISION_TARGET out-of-sample. Symbol-level proof (own
+        # calib/gate slices) is preferred; when the symbol's slices are too
+        # thin to prove anything, fall back to the pooled cross-symbol
+        # operating point (thousands of OOS samples, Wilson-bounded). Research
+        # picks are the exploration lane and skip this entirely.
         eff_min_p = min_p
-        from core.precision_gate import precision_gate_enabled
+        from core.precision_gate import (
+            global_fallback_enabled,
+            load_global_threshold,
+            precision_gate_enabled,
+        )
         if not research_mode and precision_gate_enabled():
             pg = meta.get("precision_gate") or {}
+            source = "symbol"
+            if not pg.get("ok") and global_fallback_enabled():
+                g = load_global_threshold(direction)
+                if g and g.get("ok"):
+                    pg = g
+                    source = "global_pool"
             if scores is not None:
                 scores["precision_gate_" + direction.lower()] = {
                     "ok": bool(pg.get("ok")),
                     "threshold": pg.get("threshold"),
                     "target": pg.get("target"),
+                    "source": source if pg.get("ok") else None,
                     "fail_reason": pg.get("fail_reason"),
                 }
             if not pg.get("ok"):

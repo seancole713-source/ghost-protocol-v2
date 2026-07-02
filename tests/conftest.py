@@ -24,6 +24,12 @@ def _clear_module_caches():
             px._SIP_FORBIDDEN["until"] = 0.0
         except Exception:
             pass
+    pg = sys.modules.get("core.precision_gate")
+    if pg is not None:
+        try:
+            pg.invalidate_global_threshold_cache()
+        except Exception:
+            pass
     wa = sys.modules.get("wolf_app")
     if wa is not None:
         try:
