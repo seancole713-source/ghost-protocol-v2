@@ -175,3 +175,187 @@ def fetch_macro_features() -> Dict[str, float]:
 def get_macro_features() -> Dict[str, float]:
     """Public accessor — returns cached or fresh macro features."""
     return fetch_macro_features()
+
+
+# ── Phase 1: historical macro features for point-in-time training ──
+
+_HISTORICAL_MACRO_CACHE: Dict[str, Any] = {"ts": 0.0, "series": {}}
+
+
+def _fetch_yfinance_daily_history(ticker: str, period: str = "2y") -> Optional[Dict[str, float]]:
+    """Fetch daily close history for a yfinance ticker. Returns {date_str: close}."""
+    from core.circuit_breaker import _yfinance_cb
+    if not _yfinance_cb.allow():
+        return None
+    try:
+        import yfinance as yf
+        h = yf.Ticker(ticker).history(period=period)
+        if h.empty:
+            return None
+        _yfinance_cb.record_success()
+        out: Dict[str, float] = {}
+        for idx, row in h.iterrows():
+            date_str = str(idx.date())
+            out[date_str] = float(row["Close"])
+        return out
+    except Exception:
+        _yfinance_cb.record_failure()
+        return None
+
+
+def _fetch_fred_time_series(series_id: str) -> Optional[Dict[str, float]]:
+    """Fetch full FRED time series. Returns {date_str: value}."""
+    try:
+        import requests
+        fred_key = os.getenv("FRED_API_KEY", "").strip()
+        if not fred_key:
+            return None
+        url = "https://api.stlouisfed.org/fred/series/observations"
+        params = {
+            "series_id": series_id,
+            "api_key": fred_key,
+            "file_type": "json",
+            "sort_order": "asc",
+            "limit": 5000,
+        }
+        r = requests.get(url, params=params, timeout=30)
+        if r.status_code != 200:
+            return None
+        obs = r.json().get("observations", [])
+        out: Dict[str, float] = {}
+        for o in obs:
+            val = o.get("value")
+            if val and val != ".":
+                out[o["date"]] = float(val)
+        return out
+    except Exception as e:
+        LOGGER.debug("FRED time series %s: %s", series_id, str(e)[:80])
+        return None
+
+
+def _build_historical_macro_series() -> Dict[str, Dict[str, float]]:
+    """Build per-date macro feature dicts for the last 2 years.
+
+    Returns {date_str: {macro_feature_name: value}}.
+    Cached for 24h — macro history doesn't change intraday.
+    """
+    now = time.time()
+    if _HISTORICAL_MACRO_CACHE["ts"] and (now - _HISTORICAL_MACRO_CACHE["ts"]) < _MACRO_CACHE_TTL:
+        return dict(_HISTORICAL_MACRO_CACHE["series"])
+
+    series: Dict[str, Dict[str, float]] = {}
+
+    # Fetch daily histories
+    vix_hist = _fetch_yfinance_daily_history("^VIX", "2y") or {}
+    spy_hist = _fetch_yfinance_daily_history("SPY", "2y") or {}
+    dxy_hist = _fetch_yfinance_daily_history("DX-Y.NYB", "2y") or {}
+    smh_hist = _fetch_yfinance_daily_history("SMH", "2y") or {}
+    t10_hist = _fetch_fred_time_series("DGS10") or {}
+    t2_hist = _fetch_fred_time_series("DGS2") or {}
+    fed_hist = _fetch_fred_time_series("DFF") or {}
+
+    # Collect all dates
+    all_dates = sorted(set(
+        list(vix_hist.keys()) + list(spy_hist.keys()) +
+        list(dxy_hist.keys()) + list(smh_hist.keys())
+    ))
+
+    # Build per-date features
+    for i, date_str in enumerate(all_dates):
+        feats: Dict[str, float] = {}
+
+        # VIX
+        vix = vix_hist.get(date_str)
+        feats["macro_vix_level"] = round(vix / 40.0, 4) if vix else 0.5
+
+        # Yield spread
+        t10 = t10_hist.get(date_str)
+        t2 = t2_hist.get(date_str)
+        if t10 is not None and t2 is not None:
+            feats["macro_yield_spread"] = round((t10 - t2) / 2.0, 4)
+        else:
+            feats["macro_yield_spread"] = 0.0
+
+        # Fed rate
+        fed = fed_hist.get(date_str)
+        feats["macro_fed_rate"] = round(fed / 10.0, 4) if fed else 0.5
+
+        # DXY 20-day return
+        if i >= 20:
+            dxy_start = dxy_hist.get(all_dates[i - 20])
+            dxy_end = dxy_hist.get(date_str)
+            if dxy_start and dxy_end and dxy_start > 0:
+                feats["macro_dxy_change"] = round((dxy_end - dxy_start) / dxy_start, 4)
+            else:
+                feats["macro_dxy_change"] = 0.0
+        else:
+            feats["macro_dxy_change"] = 0.0
+
+        # SPY 20-day return
+        if i >= 20:
+            spy_start = spy_hist.get(all_dates[i - 20])
+            spy_end = spy_hist.get(date_str)
+            if spy_start and spy_end and spy_start > 0:
+                feats["macro_spy_20d_return"] = round((spy_end - spy_start) / spy_start, 4)
+            else:
+                feats["macro_spy_20d_return"] = 0.0
+        else:
+            feats["macro_spy_20d_return"] = 0.0
+
+        # SPY vs SMA50
+        if i >= 50:
+            spy_window = [spy_hist.get(all_dates[j]) for j in range(i - 49, i + 1)]
+            spy_window = [v for v in spy_window if v is not None]
+            if len(spy_window) >= 40:
+                sma50 = sum(spy_window) / len(spy_window)
+                spy_close = spy_hist.get(date_str)
+                if spy_close and sma50 > 0:
+                    feats["macro_spy_vs_sma50"] = round(spy_close / sma50 - 1.0, 4)
+                else:
+                    feats["macro_spy_vs_sma50"] = 0.0
+            else:
+                feats["macro_spy_vs_sma50"] = 0.0
+        else:
+            feats["macro_spy_vs_sma50"] = 0.0
+
+        # SMH vs SPY
+        if i >= 20:
+            smh_start = smh_hist.get(all_dates[i - 20])
+            smh_end = smh_hist.get(date_str)
+            spy_start2 = spy_hist.get(all_dates[i - 20])
+            spy_end2 = spy_hist.get(date_str)
+            if all(v is not None and v > 0 for v in [smh_start, smh_end, spy_start2, spy_end2]):
+                smh_ret = (smh_end - smh_start) / smh_start
+                spy_ret = (spy_end2 - spy_start2) / spy_start2
+                feats["macro_smh_vs_spy"] = round(smh_ret - spy_ret, 4)
+            else:
+                feats["macro_smh_vs_spy"] = 0.0
+        else:
+            feats["macro_smh_vs_spy"] = 0.0
+
+        # VIX regime
+        vix_val = vix if vix else 20
+        if vix_val < 20:
+            feats["macro_vix_regime"] = 0.0
+        elif vix_val < 30:
+            feats["macro_vix_regime"] = 1.0
+        else:
+            feats["macro_vix_regime"] = 2.0
+
+        series[date_str] = feats
+
+    _HISTORICAL_MACRO_CACHE["ts"] = now
+    _HISTORICAL_MACRO_CACHE["series"] = dict(series)
+    LOGGER.info("Historical macro series built: %d dates", len(series))
+    return dict(series)
+
+
+def get_macro_features_for_date(date_str: str) -> Dict[str, float]:
+    """Point-in-time macro features for a historical training bar date.
+
+    Returns a dict of 8 macro feature values, or zeros if unavailable.
+    Phase 1 (PR #116): replaces the training-as-zeros behavior so the model
+    learns regime-conditional patterns instead of seeing constants.
+    """
+    series = _build_historical_macro_series()
+    return dict(series.get(date_str, {}))

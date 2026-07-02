@@ -1271,6 +1271,16 @@ def backtest_symbol(symbol, asset_type):
         features["asset_type"] = asset_type
         if sector_on:
             features["sector_rel_strength"] = _sector_rel_at(rows, aligned_sector, i, sector_lookback)
+        # Phase 1: point-in-time macro features for this training bar's date
+        try:
+            bar_date = str(rows[i].get("ts", ""))[:10]
+            if bar_date:
+                from core.macro_regime import get_macro_features_for_date
+                macro = get_macro_features_for_date(bar_date)
+                for k, v in macro.items():
+                    features[k] = v
+        except Exception:
+            pass
         outcome = _simulate_up_tp_sl(rows, i, V3_LABEL_HOLD_BARS, vol_pct)
         # EXPIRED = no TP/SL hit within hold_bars — a flat/sideways week.
         # Exclude from training: it provides no directional signal and
@@ -1290,6 +1300,52 @@ def build_training_data(symbols_and_types):
     for symbol, asset_type in symbols_and_types:
         all_rows.extend(backtest_symbol(symbol, asset_type))
     if len(all_rows) < _min_train_rows(): return None, None, []
+    # Phase 1: compute cross-sectional ranks per date across all symbols.
+    # Group rows by date, compute percentile ranks within each date group,
+    # then inject back into the feature dicts.
+    try:
+        from collections import defaultdict
+        by_date: dict = defaultdict(list)
+        for r in all_rows:
+            ts = r["features"].get("feature_asof_ts")
+            if ts:
+                date_key = str(ts)[:10]
+                by_date[date_key].append(r)
+        for date_key, date_rows in by_date.items():
+            if len(date_rows) < 2:
+                continue
+            # Collect peer values for each metric
+            for r in date_rows:
+                f = r["features"]
+                peers = [r2["features"] for r2 in date_rows if r2 is not r]
+                if not peers:
+                    continue
+                # RSI rank
+                rsi_vals = [p["rsi"] for p in peers if p.get("rsi") is not None]
+                if rsi_vals and f.get("rsi") is not None:
+                    f["cs_rsi_rank"] = round(sum(1 for v in rsi_vals if v < f["rsi"]) / max(len(rsi_vals), 1), 4)
+                # Volume rank
+                vol_vals = [p["volume_ratio"] for p in peers if p.get("volume_ratio") is not None]
+                if vol_vals and f.get("volume_ratio") is not None:
+                    f["cs_volume_rank"] = round(sum(1 for v in vol_vals if v < f["volume_ratio"]) / max(len(vol_vals), 1), 4)
+                # Momentum rank
+                mom_vals = [p["mom_4h"] for p in peers if p.get("mom_4h") is not None]
+                if mom_vals and f.get("mom_4h") is not None:
+                    f["cs_momentum_rank"] = round(sum(1 for v in mom_vals if v < f["mom_4h"]) / max(len(mom_vals), 1), 4)
+                # SMA distance rank
+                sma_vals = [p["price_in_range"] for p in peers if p.get("price_in_range") is not None]
+                if sma_vals and f.get("price_in_range") is not None:
+                    f["cs_sma_distance_rank"] = round(sum(1 for v in sma_vals if v < f["price_in_range"]) / max(len(sma_vals), 1), 4)
+                # ATR rank
+                atr_vals = [p["atr_pct"] for p in peers if p.get("atr_pct") is not None]
+                if atr_vals and f.get("atr_pct") is not None:
+                    f["cs_atr_rank"] = round(sum(1 for v in atr_vals if v < f["atr_pct"]) / max(len(atr_vals), 1), 4)
+                # ADX rank
+                adx_vals = [p["adx"] for p in peers if p.get("adx") is not None]
+                if adx_vals and f.get("adx") is not None:
+                    f["cs_adx_rank"] = round(sum(1 for v in adx_vals if v < f["adx"]) / max(len(adx_vals), 1), 4)
+    except Exception as e:
+        LOGGER.warning("cross-sectional training features: %s", str(e)[:120])
     active_cols = _active_feature_cols()
     X = np.array([[r['features'].get(c, 0.0) for c in active_cols] for r in all_rows])
     y = np.array([r['label'] for r in all_rows])
