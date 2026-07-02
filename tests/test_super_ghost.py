@@ -237,6 +237,8 @@ def test_super_ghost_endpoint_ai_param_passes_through(monkeypatch):
         return {"ok": True, "symbol": symbol, "engine": "test", "prediction": {"direction": "HOLD"}, "checklist": [], "ai_brief": {"available": False}}
 
     monkeypatch.setattr("core.super_ghost.build_super_ghost", fake_build)
+    # PR #114: ai=1 requires MCP auth — bypass for test
+    monkeypatch.setattr("mcp.security.require_mcp_auth", lambda r: None)
     client = TestClient(wolf_app.APP)
     r = client.get("/api/wolf/super-ghost?symbol=ABCD&ai=1")
     assert r.status_code == 200

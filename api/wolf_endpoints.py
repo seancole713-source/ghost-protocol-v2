@@ -1633,7 +1633,7 @@ async def get_ghost_score():
 
 
 @router.get("/super-ghost")
-async def get_super_ghost(symbol: str = WOLF_SYMBOL, ai: int = 0, log: int = 0):
+async def get_super_ghost(request: Request, symbol: str = WOLF_SYMBOL, ai: int = 0, log: int = 0):
     """Super Ghost 25-point prediction-intelligence report.
 
     This is not an auto-trading endpoint. It returns a prediction-grade
@@ -1650,11 +1650,19 @@ async def get_super_ghost(symbol: str = WOLF_SYMBOL, ai: int = 0, log: int = 0):
     Pass ``?log=1`` to also persist this prediction to the Super Ghost Truth
     Ledger (PR #84) so it can later be scored at 1/5/20-day horizons. The
     logged row id is returned under ``ledger_id`` (uncached path only).
+
+    **Auth:** ``?ai=1`` and ``?log=1`` require MCP auth (GHOST_MCP_TOKEN) —
+    these paths fire paid Claude calls or write to the truth ledger.
+    The base report (no ai, no log) is public and read-only.
     """
     sym = (symbol or WOLF_SYMBOL).strip().upper()
     from core.super_ghost import build_super_ghost
     want_ai = bool(ai)
     want_log = bool(log)
+    # Auth-gate write/Claude paths
+    if want_ai or want_log:
+        from mcp.security import require_mcp_auth
+        require_mcp_auth(request)
     # Only the deterministic report is cached; the AI brief is always fresh.
     if not want_ai and not want_log:
         cache_key = "super-ghost:" + sym

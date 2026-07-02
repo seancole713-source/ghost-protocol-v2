@@ -27,6 +27,8 @@ def test_super_ghost_log_param_triggers_ledger(monkeypatch):
 
     monkeypatch.setattr("core.super_ghost.build_super_ghost", fake_build)
     monkeypatch.setattr("core.super_ghost_ledger.log_prediction", fake_log)
+    # log=1 is a ledger write — requires MCP auth; bypass for test
+    monkeypatch.setattr("mcp.security.require_mcp_auth", lambda r: None)
     r = _client().get("/api/wolf/super-ghost?symbol=WOLF&log=1")
     assert r.status_code == 200
     body = r.json()
