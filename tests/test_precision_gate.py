@@ -142,6 +142,9 @@ def _patch(monkeypatch, up_p, precision_gate):
         if direction == "UP" else (None, None, None))
     monkeypatch.setattr(_se, "_fetch_ohlcv",
                         lambda s, a, period="5d", interval="1h": _uptrend_rows())
+    # Legacy contract so these tests isolate precision-gate behavior from the
+    # 70% contract floor clamps on training meta gates.
+    monkeypatch.setenv("GHOST_ACCURACY_CONTRACT", "legacy")
     for k, v in {"V3_MIN_WIN_PROBA": "0.55", "V3_MIN_EDGE": "0.0",
                  "V3_MIN_HOLDOUT_ACC": "0.0", "V3_MIN_WF_ACC_MEAN": "0.0"}.items():
         monkeypatch.setenv(k, v)
@@ -186,12 +189,30 @@ def test_proven_model_fires_above_threshold(monkeypatch):
     assert scores["precision_gate_up"]["threshold"] == 0.68
 
 
-def test_research_mode_bypasses_precision_gate(monkeypatch):
-    """Research picks are the exploration lane — excluded from accuracy stats."""
+def test_research_mode_bypasses_precision_gate_under_legacy(monkeypatch):
+    """Legacy contract only — 70% contract blocks unproven research picks."""
+    monkeypatch.setenv("GHOST_ACCURACY_CONTRACT", "legacy")
     monkeypatch.delenv("V3_PRECISION_GATE", raising=False)
     _patch(monkeypatch, up_p=0.60, precision_gate={"ok": False})
     sig, reason = _se.predict_live_ex("WOLF", "stock", research_mode=True)
     assert sig is not None and sig[0] == "UP"
+
+
+def test_research_mode_blocked_when_contract_70(monkeypatch):
+    monkeypatch.setenv("GHOST_ACCURACY_CONTRACT", "70")
+    monkeypatch.delenv("V3_PRECISION_GATE", raising=False)
+    meta = {"edge": 0.3, "accuracy": 0.66, "wf_acc_mean": 0.70,
+            "wf_edge_mean": 0.2, "wf_fold_count": 4, "trained_at": time.time(),
+            "precision_gate": {"ok": False}}
+    monkeypatch.setattr(
+        _se, "load_model",
+        lambda s, direction="UP": (_Model(0.60), _se.FEATURE_COLS, dict(meta))
+        if direction == "UP" else (None, None, None))
+    monkeypatch.setattr(_se, "_fetch_ohlcv",
+                        lambda s, a, period="5d", interval="1h": _uptrend_rows())
+    sig, reason = _se.predict_live_ex("WOLF", "stock", research_mode=True)
+    assert sig is None
+    assert reason == "precision_unproven"
 
 
 def test_env_off_switch_restores_legacy_behavior(monkeypatch):

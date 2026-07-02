@@ -160,11 +160,13 @@ def _model_payload_max_bytes() -> int:
 
 
 def _v3_min_holdout_acc() -> float:
-    return float(os.getenv("V3_MIN_HOLDOUT_ACC", "0.55"))
+    from core.accuracy_contract import resolve_float
+    return resolve_float("V3_MIN_HOLDOUT_ACC", "min_holdout_acc", lo=0.30, hi=0.95)
 
 
 def _v3_min_edge() -> float:
-    return float(os.getenv("V3_MIN_EDGE", "0.05"))
+    from core.accuracy_contract import resolve_float
+    return resolve_float("V3_MIN_EDGE", "min_edge", lo=0.0, hi=0.50)
 
 
 def _v3_min_wf_edge() -> float:
@@ -173,7 +175,8 @@ def _v3_min_wf_edge() -> float:
 
 
 def _v3_min_win_proba() -> float:
-    return float(os.getenv("V3_MIN_WIN_PROBA", "0.55"))
+    from core.accuracy_contract import resolve_float
+    return resolve_float("V3_MIN_WIN_PROBA", "min_win_proba", lo=0.40, hi=0.95)
 
 
 def _v3_min_tp_sl_wins() -> int:
@@ -181,11 +184,13 @@ def _v3_min_tp_sl_wins() -> int:
 
 
 def _v3_min_wf_folds() -> int:
-    return max(2, int(os.getenv("V3_MIN_WF_FOLDS", "3")))
+    from core.accuracy_contract import resolve_int
+    return resolve_int("V3_MIN_WF_FOLDS", "min_wf_folds", lo=2, hi=12)
 
 
 def _v3_min_wf_acc_mean() -> float:
-    return float(os.getenv("V3_MIN_WF_ACC_MEAN", "0.60"))
+    from core.accuracy_contract import resolve_float
+    return resolve_float("V3_MIN_WF_ACC_MEAN", "min_wf_acc_mean", lo=0.30, hi=0.95)
 
 
 def _v3_wf_acc_min_slack() -> float:
@@ -2453,19 +2458,17 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
         if lane_folds > 0 and (lane_wf_acc < min_wf_acc or lane_wf_edge < min_edge):
             return None, "meta_gate"
         # Phase 3: precision-targeted fire threshold — the 70% contract.
-        # Live picks may only fire above an operating point that demonstrably
-        # won >= V3_PRECISION_TARGET out-of-sample. Symbol-level proof (own
-        # calib/gate slices) is preferred; when the symbol's slices are too
-        # thin to prove anything, fall back to the pooled cross-symbol
-        # operating point (thousands of OOS samples, Wilson-bounded). Research
-        # picks are the exploration lane and skip this entirely.
         eff_min_p = min_p
+        from core.accuracy_contract import research_bypasses_precision_gate
         from core.precision_gate import (
             global_fallback_enabled,
             load_global_threshold,
             precision_gate_enabled,
         )
-        if not research_mode and precision_gate_enabled():
+        enforce_precision = precision_gate_enabled() and (
+            not research_mode or not research_bypasses_precision_gate()
+        )
+        if enforce_precision:
             pg = meta.get("precision_gate") or {}
             source = "symbol"
             if not pg.get("ok") and global_fallback_enabled():

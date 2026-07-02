@@ -5672,14 +5672,14 @@ def v3_train(x_cron_secret: str = Header(default=""), force: bool = False):
 
 # PR #19 deploy-version constant. Bump on every "did Railway pick up
 # the new code?" PR so /api/_version reveals the truth in one curl.
-_RUNNING_PR_VERSION = 121
+_RUNNING_PR_VERSION = 122
 
 
 def _deploy_meta() -> dict:
     """Railway-injected deploy metadata for cockpit/admin verification."""
     sha = os.getenv("RAILWAY_GIT_COMMIT_SHA", "unset")
     short = sha[:7] if sha and sha != "unset" else "unset"
-    return {
+    meta = {
         "git_sha": sha,
         "git_sha_short": short,
         "deploy_id": os.getenv("RAILWAY_DEPLOYMENT_ID", "unset"),
@@ -5687,6 +5687,12 @@ def _deploy_meta() -> dict:
         "app_version": APP_VERSION,
         "_pr_version": _RUNNING_PR_VERSION,
     }
+    try:
+        from core.accuracy_contract import contract_summary
+        meta["accuracy_contract"] = contract_summary()
+    except Exception:
+        pass
+    return meta
 
 
 @APP.get("/api/_version")

@@ -43,6 +43,7 @@ _META = {"edge": 0.3, "accuracy": 0.66, "wf_acc_mean": 0.64,
 
 
 def _patch_gates(monkeypatch):
+    monkeypatch.setenv("GHOST_ACCURACY_CONTRACT", "legacy")
     for k, v in {"V3_MIN_WIN_PROBA": "0.55", "V3_MIN_EDGE": "0.0",
                  "V3_MIN_HOLDOUT_ACC": "0.0", "V3_MIN_WF_ACC_MEAN": "0.0"}.items():
         monkeypatch.setenv(k, v)

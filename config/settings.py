@@ -29,16 +29,17 @@ class Settings(BaseSettings):
     FINNHUB_API_KEY: Optional[str] = None
     ANTHROPIC_API_KEY: Optional[str] = None
     
-    # ── v3.2 XGBoost Engine Gates ──────────────────────────────────────
-    # Live production defaults (Railway env, aggressive mode).
-    MIN_ALERT_CONFIDENCE: float = 0.75
-    V3_MIN_HOLDOUT_ACC: float = 0.38
-    V3_MIN_WF_ACC_MEAN: float = 0.40
-    V3_MIN_EDGE: float = 0.0
-    V3_WF_ACC_MIN_SLACK: float = 0.15
-    V3_MIN_TP_SL_WINS: int = 10
-    V3_MIN_WF_FOLDS: int = 2
+    # ── v3.2 XGBoost Engine Gates (GHOST_ACCURACY_CONTRACT=70 defaults) ──
+    MIN_ALERT_CONFIDENCE: float = 0.80
+    V3_MIN_HOLDOUT_ACC: float = 0.65
+    V3_MIN_WF_ACC_MEAN: float = 0.65
+    V3_MIN_EDGE: float = 0.05
+    V3_WF_ACC_MIN_SLACK: float = 0.05
+    V3_MIN_TP_SL_WINS: int = 15
+    V3_MIN_WF_FOLDS: int = 4
     V3_MIN_WIN_PROBA: float = 0.55
+    V3_PRECISION_TARGET: float = 0.70
+    GHOST_ACCURACY_CONTRACT: str = "70"
     V3_LABEL_HOLD_BARS: int = 3
     V3_CALIBRATION: str = "on"
     V3_CALIBRATION_METHOD: str = "auto"
@@ -47,13 +48,13 @@ class Settings(BaseSettings):
     V3_ENSEMBLE: str = "off"
     
     # ── Objective Mode ──────────────────────────────────────────────────
-    OBJECTIVE_MODE: str = "aggressive"
+    OBJECTIVE_MODE: str = "balanced"
     OBJECTIVE_AUTO_MODE_ENABLED: str = "0"
     OBJECTIVE_ENFORCE: str = "1"
-    OBJECTIVE_TARGET_WIN_RATE: float = 0.62
-    OBJECTIVE_MIN_SAMPLES: int = 8
-    OBJECTIVE_BOOTSTRAP_MIN_CONF: float = 0.75
-    OBJECTIVE_LOOKBACK_DAYS: int = 120
+    OBJECTIVE_TARGET_WIN_RATE: float = 0.70
+    OBJECTIVE_MIN_SAMPLES: int = 12
+    OBJECTIVE_BOOTSTRAP_MIN_CONF: float = 0.85
+    OBJECTIVE_LOOKBACK_DAYS: int = 150
     
     # ── Kill Conditions ─────────────────────────────────────────────────
     KILL_SWITCH_ENABLED: str = "1"
