@@ -1564,8 +1564,9 @@ async def post_ghost_ask(request: Request):
     history = body.get("history")
     if history is not None and not isinstance(history, list):
         history = None
+    import asyncio
     from core.ghost_ask import ask_ghost
-    result = ask_ghost(question, history=history)
+    result = await asyncio.to_thread(ask_ghost, question, history=history)
     status = 200 if result.get("ok") else 400
     return JSONResponse(content=result, status_code=status)
 
@@ -1598,7 +1599,8 @@ async def post_war_room(request: Request):
         body = {}
     symbol = str(body.get("symbol") or "").strip()
     from core.war_room import run_war_room
-    result = run_war_room(symbol)
+    import asyncio
+    result = await asyncio.to_thread(run_war_room, symbol)
     status = 200 if result.get("ok") else 400
     return JSONResponse(content=result, status_code=status)
 
@@ -1673,7 +1675,8 @@ async def get_super_ghost(request: Request, symbol: str = WOLF_SYMBOL, ai: int =
         if result.get("ok"):
             _cache_set(cache_key, result)
     else:
-        result = build_super_ghost(sym, ai=want_ai)
+        import asyncio
+        result = await asyncio.to_thread(build_super_ghost, sym, ai=want_ai)
     if want_log and result.get("ok"):
         try:
             from core.super_ghost_ledger import log_prediction
