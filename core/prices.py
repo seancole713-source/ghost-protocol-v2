@@ -43,6 +43,21 @@ def _intraday_breakout_pct(trade, cached_high, cached_low) -> float:
     return 0.0
 _mem_cache: Dict[str, Tuple[float, float]] = {}
 _intraday_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+# Free-tier Alpaca keys are never SIP-entitled: after the first 403, skip SIP
+# for a while instead of burning one guaranteed-403 call per request.
+_SIP_FORBIDDEN = {"until": 0.0}
+
+
+def _alpaca_bar_feeds() -> tuple:
+    """Feed priority for Alpaca bar fetches — drops SIP while it's known 403."""
+    if time.time() < _SIP_FORBIDDEN["until"]:
+        return ("iex",)
+    return ("sip", "iex")
+
+
+def _note_alpaca_feed_status(feed_name: str, status_code: int) -> None:
+    if feed_name == "sip" and status_code == 403:
+        _SIP_FORBIDDEN["until"] = time.time() + 6 * 3600
 # Persistent prev_close cache — survives market close when all feeds are down.
 # TTL is 24h so yesterday's close is available for after-hours / pre-market.
 # Backed by ghost_state table for restart survival.
@@ -441,13 +456,14 @@ def _today_ohlc_from_alpaca_daily(
         end = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         start = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
         want = session_date.isoformat() if hasattr(session_date, "isoformat") else str(session_date)[:10]
-        for feed_name in ("sip", "iex"):
+        for feed_name in _alpaca_bar_feeds():
             url = (
                 f"https://data.alpaca.markets/v2/stocks/{sym.upper()}/bars"
                 f"?timeframe=1Day&start={start}&end={end}&limit=10&feed={feed_name}"
             )
             r = requests.get(url, headers=headers, timeout=TIMEOUT)
             if r.status_code != 200:
+                _note_alpaca_feed_status(feed_name, r.status_code)
                 continue
             for bar in reversed(r.json().get("bars") or []):
                 if _parse_bar_session_date(bar, tz) != want:
@@ -560,13 +576,14 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
             start_str = day_start.strftime("%Y-%m-%dT%H:%M:%SZ")
             end_str = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             bars = []
-            for feed_name in ("sip", "iex"):
+            for feed_name in _alpaca_bar_feeds():
                 url = (
                     f"https://data.alpaca.markets/v2/stocks/{sym}/bars"
                     f"?timeframe=5Min&start={start_str}&end={end_str}&limit=10000&feed={feed_name}"
                 )
                 r = requests.get(url, headers=headers, timeout=TIMEOUT)
                 if r.status_code != 200:
+                    _note_alpaca_feed_status(feed_name, r.status_code)
                     continue
                 bars = r.json().get("bars") or []
                 if not bars:
@@ -588,13 +605,14 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
                     today_open, today_high, today_low = ext_open, ext_high, ext_low
             d_end = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             d_start = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
-            for feed_name in ("sip", "iex"):
+            for feed_name in _alpaca_bar_feeds():
                 url = (
                     f"https://data.alpaca.markets/v2/stocks/{sym}/bars"
                     f"?timeframe=1Day&start={d_start}&end={d_end}&limit=5&feed={feed_name}"
                 )
                 r = requests.get(url, headers=headers, timeout=TIMEOUT)
                 if r.status_code != 200:
+                    _note_alpaca_feed_status(feed_name, r.status_code)
                     continue
                 dbars = r.json().get("bars") or []
                 if len(dbars) >= 2:

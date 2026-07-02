@@ -15,6 +15,13 @@ def _clear_module_caches():
     if se is not None:
         try:
             se.invalidate_model_cache()
+            se._SIP_FORBIDDEN["until"] = 0.0
+        except Exception:
+            pass
+    px = sys.modules.get("core.prices")
+    if px is not None:
+        try:
+            px._SIP_FORBIDDEN["until"] = 0.0
         except Exception:
             pass
     wa = sys.modules.get("wolf_app")

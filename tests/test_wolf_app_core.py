@@ -2953,7 +2953,8 @@ def test_predict_live_ex_journals_full_feature_vector(monkeypatch):
     class _M:
         def predict_proba(self, X): return _np.array([[0.1, 0.9]])
     meta = {"edge": 0.3, "accuracy": 0.66, "wf_acc_mean": 0.64,
-            "wf_edge_mean": 0.2, "wf_fold_count": 4, "trained_at": time.time()}
+            "wf_edge_mean": 0.2, "wf_fold_count": 4, "trained_at": time.time(),
+            "precision_gate": {"ok": True, "threshold": 0.55, "target": 0.70}}
     monkeypatch.setattr(_se, "load_model", lambda s, direction="UP": (_M(), _se.FEATURE_COLS, meta))
     for k, v in {"V3_MIN_WIN_PROBA": "0.55", "V3_MIN_EDGE": "0.0",
                  "V3_MIN_HOLDOUT_ACC": "0.0", "V3_MIN_WF_ACC_MEAN": "0.0"}.items():

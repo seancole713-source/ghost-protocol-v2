@@ -218,7 +218,8 @@ def test_regime_blocked_eval_still_scores_up_prob(monkeypatch):
             return _np.array([[0.4, 0.6]])
 
     meta = {"edge": 0.3, "accuracy": 0.66, "wf_acc_mean": 0.64,
-            "wf_edge_mean": 0.2, "wf_fold_count": 4, "trained_at": _t.time()}
+            "wf_edge_mean": 0.2, "wf_fold_count": 4, "trained_at": _t.time(),
+            "precision_gate": {"ok": True, "threshold": 0.55, "target": 0.70}}
     monkeypatch.setattr(_se, "load_model", lambda s, direction="UP": (_M(), _se.FEATURE_COLS, meta))
     # Uptrend clears gates 1-2; force the SMA5 gate to block.
     monkeypatch.setattr(_se, "_block_up_below_sma5",

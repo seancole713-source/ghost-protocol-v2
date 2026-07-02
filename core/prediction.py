@@ -75,6 +75,7 @@ _SKIP_PRIORITY: List[str] = [
     "objective_bootstrap_conf",
     "v3_regime_gate",
     "v3_meta_gate",
+    "v3_precision_unproven",
     "v3_prob_low",
     "v3_intraday_data",
     "v3_engine_error",
@@ -92,6 +93,7 @@ _SKIP_LABELS: Dict[str, str] = {
     "objective_bootstrap_conf": "objective bootstrap (confidence below bootstrap minimum)",
     "v3_regime_gate": "v3 live regime gate blocked BUY",
     "v3_meta_gate": "v3 model metadata failed live thresholds",
+    "v3_precision_unproven": "v3 model has no proven >=target-precision operating point (retrain needed)",
     "v3_prob_low": "v3 model prob below BUY floor",
     "v3_intraday_data": "v3 intraday bars missing/short",
     "v3_engine_error": "v3 engine error",
@@ -1110,6 +1112,8 @@ def _predict_symbol_ex(symbol, asset_type, regime, scores_out=None):
             return None, "v3_intraday_data"
         if v3_reason == "meta_gate":
             return None, "v3_meta_gate"
+        if v3_reason == "precision_unproven":
+            return None, "v3_precision_unproven"
         if v3_reason == "prob_low":
             return None, "v3_prob_low"
         if v3_reason == "down_shadow_only":

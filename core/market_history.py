@@ -93,7 +93,8 @@ def _alpaca_daily_bars(symbol: str, days: int) -> List[Dict[str, Any]]:
     start_str = start.strftime("%Y-%m-%dT%H:%M:%SZ")
     end_str = end.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    for feed_name in ("sip", "iex"):
+    from core.prices import _alpaca_bar_feeds, _note_alpaca_feed_status
+    for feed_name in _alpaca_bar_feeds():
         rows: List[Dict[str, Any]] = []
         page_token: Optional[str] = None
         ok = True
@@ -115,6 +116,7 @@ def _alpaca_daily_bars(symbol: str, days: int) -> List[Dict[str, Any]]:
                 # 5xx/429 = real outage -> breaker failure.
                 if r.status_code >= 500 or r.status_code == 429:
                     _alpaca_cb.record_failure()
+                _note_alpaca_feed_status(feed_name, r.status_code)
                 ok = False
                 break
             body = r.json() or {}
