@@ -59,3 +59,71 @@ def test_intraday_cache_skips_when_ohlc_missing(monkeypatch):
     out = dict(cached[1])
     assert out.get("today_open") is None
     assert not (out.get("today_open") is not None and out.get("today_high") is not None)
+
+
+class TestIntradayBreakoutPct:
+    """Force-refresh must key on range BREAKOUT, not distance from high/low.
+
+    Regression: the original P2-6 check used max(distance-from-high,
+    distance-from-low), which is >= half the day's range by construction — so
+    every volatile symbol busted the cache on every call, hammering Alpaca
+    into its rate-limit breaker (50 calls/60s -> OPEN 300s) and starving the
+    squeeze scan.
+    """
+
+    def test_inside_range_is_never_stale(self):
+        from core.prices import _intraday_breakout_pct
+
+        # Stock down 8% on the day: price sits far below the high all session.
+        assert _intraday_breakout_pct(9.20, 10.00, 9.15) == 0.0
+        # Mid-range.
+        assert _intraday_breakout_pct(9.50, 10.00, 9.00) == 0.0
+        # Exactly at the boundaries.
+        assert _intraday_breakout_pct(10.00, 10.00, 9.00) == 0.0
+        assert _intraday_breakout_pct(9.00, 10.00, 9.00) == 0.0
+
+    def test_breakout_above_high(self):
+        from core.prices import _intraday_breakout_pct
+
+        pct = _intraday_breakout_pct(10.50, 10.00, 9.00)
+        assert abs(pct - 5.0) < 1e-9
+
+    def test_breakout_below_low(self):
+        from core.prices import _intraday_breakout_pct
+
+        pct = _intraday_breakout_pct(8.55, 10.00, 9.00)
+        assert abs(pct - 5.0) < 1e-9
+
+    def test_garbage_inputs_are_not_stale(self):
+        from core.prices import _intraday_breakout_pct
+
+        assert _intraday_breakout_pct(None, 10.0, 9.0) == 0.0
+        assert _intraday_breakout_pct("x", 10.0, 9.0) == 0.0
+        assert _intraday_breakout_pct(9.5, 0, 9.0) == 0.0
+        assert _intraday_breakout_pct(9.5, 10.0, -1) == 0.0
+
+    def test_cache_survives_big_red_day(self, monkeypatch):
+        """Price 8% below the cached high but inside the range: the cache-hit
+        path must return cached OHLC without deleting the entry."""
+        import time as _time
+
+        from core import prices as px
+
+        px._intraday_cache.clear()
+        px._intraday_cache["DJT"] = (
+            _time.time(),
+            {
+                "symbol": "DJT",
+                "price": 20.0,
+                "today_open": 21.5,
+                "today_high": 21.8,
+                "today_low": 19.9,
+                "previous_close": 21.7,
+                "session": "rth",
+            },
+        )
+        monkeypatch.setattr(px, "_alpaca", lambda s: 20.05)  # inside [19.9, 21.8]
+        out = px.get_intraday_session("DJT")
+        assert out["today_high"] == 21.8
+        assert "DJT" in px._intraday_cache
+        px._intraday_cache.clear()

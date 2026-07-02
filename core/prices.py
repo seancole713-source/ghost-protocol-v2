@@ -13,8 +13,34 @@ POLYGON_KEY = os.getenv("POLYGON_API_KEY", "")
 TIMEOUT = float(os.getenv("PRICE_PROVIDER_TIMEOUT_S", "8.0"))
 STOCK_CACHE_TTL = int(os.getenv("STOCK_PRICE_TTL_S", "60"))  # refresh every 60s during market hours
 INTRADAY_QUOTE_TTL_S = int(os.getenv("INTRADAY_QUOTE_TTL_S", "900"))  # RTH O/H/L bars; trade overlay on cache hit
-# P2-6: force-refresh intraday OHLC if live price moves > this pct from cached values
+# P2-6: force-refresh intraday OHLC when the live trade breaks this far OUTSIDE
+# the cached high/low range (a breakout means cached OHLC is provably stale).
 INTRADAY_MOVE_REFRESH_PCT = float(os.getenv("INTRADAY_MOVE_REFRESH_PCT", "2.0"))
+
+
+def _intraday_breakout_pct(trade, cached_high, cached_low) -> float:
+    """Percent the live trade sits OUTSIDE the cached [low, high] range.
+
+    Returns 0.0 while the trade is inside the range. Distance from the high or
+    low while inside the range is normal — on any big red day the price sits
+    far below the session high all day — and must not bust the cache. The
+    original P2-6 check measured that distance, which self-triggered on every
+    call for any symbol with a >2x-threshold intraday range, deleted the cache
+    each poll, and hammered Alpaca into its rate-limit breaker (50 calls/60s).
+    """
+    try:
+        t = float(trade)
+        hi = float(cached_high)
+        lo = float(cached_low)
+    except (TypeError, ValueError):
+        return 0.0
+    if t <= 0 or hi <= 0 or lo <= 0:
+        return 0.0
+    if t > hi:
+        return (t - hi) / hi * 100.0
+    if t < lo:
+        return (lo - t) / lo * 100.0
+    return 0.0
 _mem_cache: Dict[str, Tuple[float, float]] = {}
 _intraday_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 # Persistent prev_close cache — survives market close when all feeds are down.
@@ -476,11 +502,10 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
             cached_high = out.get("today_high")
             cached_low = out.get("today_low")
             if trade and cached_high and cached_low:
-                move_from_high = abs(float(trade) - float(cached_high)) / float(cached_high) * 100 if float(cached_high) > 0 else 0
-                move_from_low = abs(float(trade) - float(cached_low)) / float(cached_low) * 100 if float(cached_low) > 0 else 0
-                if max(move_from_high, move_from_low) >= INTRADAY_MOVE_REFRESH_PCT:
-                    LOGGER.info("intraday %s: live price moved %.1f%% from cached OHLC, force-refreshing",
-                                sym, max(move_from_high, move_from_low))
+                breakout = _intraday_breakout_pct(trade, cached_high, cached_low)
+                if breakout >= INTRADAY_MOVE_REFRESH_PCT:
+                    LOGGER.info("intraday %s: live trade broke %.1f%% outside cached OHLC range, force-refreshing",
+                                sym, breakout)
                     del _intraday_cache[sym]  # force full refresh below
                     cached = None
             if cached is not None:
