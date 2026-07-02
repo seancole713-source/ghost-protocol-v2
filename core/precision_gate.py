@@ -26,6 +26,7 @@ Env knobs (read at call time so ops can retune without deploy):
 import logging
 import math
 import os
+import threading
 from typing import Any, Dict, Optional, Sequence
 
 LOGGER = logging.getLogger("ghost.precision_gate")
@@ -166,3 +167,134 @@ def select_fire_threshold(
         return out
     out["ok"] = True
     return out
+
+
+# ------------------------------------------------------------------ global pool
+
+def _global_min_support() -> int:
+    return max(1, int(os.getenv("V3_PRECISION_GLOBAL_MIN_SUPPORT", "30")))
+
+
+def _global_wilson_slack() -> float:
+    try:
+        return max(0.0, float(os.getenv("V3_PRECISION_GLOBAL_WILSON_SLACK", "0.05")))
+    except Exception:
+        return 0.05
+
+
+def global_fallback_enabled() -> bool:
+    return (os.getenv("V3_PRECISION_GLOBAL", "on") or "on").strip().lower() not in (
+        "0", "off", "false", "no",
+    )
+
+
+_GLOBAL_STATE_KEY = "v3_global_fire_threshold"
+_GLOBAL_CACHE: Dict[str, Any] = {"ts": 0.0, "val": None}
+_GLOBAL_CACHE_TTL_S = 300
+_GLOBAL_CACHE_LOCK = threading.Lock()
+
+
+def select_global_threshold(
+    probs: Sequence[float],
+    labels: Sequence[int],
+    target: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Pooled cross-symbol operating point for one direction.
+
+    Per-symbol gate slices (~56 rows) rarely have the statistical power to
+    prove a 70% operating point even where one exists. Pooling every stored
+    model's untouched gate-slice predictions (calibrated probabilities are
+    comparable across symbols) gives thousands of OOS samples. The pooled
+    threshold must clear the target on raw precision AND keep its Wilson
+    lower bound within slack of the target — a bar per-symbol slices can't
+    fake with luck.
+    """
+    tgt = precision_target() if target is None else float(target)
+    out: Dict[str, Any] = {"ok": False, "target": round(tgt, 4),
+                           "pool_n": int(min(len(probs), len(labels)))}
+    candidate = threshold_search(probs, labels, tgt, _global_min_support())
+    if candidate is None:
+        out["fail_reason"] = "no_pooled_operating_point"
+        return out
+    wilson_floor = tgt - _global_wilson_slack()
+    if candidate["wilson_low"] < wilson_floor:
+        out["fail_reason"] = (
+            f"pooled_wilson_low<{wilson_floor:.2f} ({candidate['wilson_low']})"
+        )
+        out["candidate"] = candidate
+        return out
+    out.update(candidate)
+    out["ok"] = True
+    return out
+
+
+def store_global_thresholds(pools: Dict[str, Dict[str, Sequence]]) -> Dict[str, Any]:
+    """Compute + persist pooled thresholds per direction from a training sweep.
+
+    pools = {"UP": {"probs": [...], "labels": [...]}, "DOWN": {...}}
+    Persisted to ghost_state so predict-time lanes can fall back to the
+    globally-proven operating point when a symbol's own gate is unproven.
+    """
+    import json as _json
+    import time as _time
+    result: Dict[str, Any] = {"ts": int(_time.time())}
+    for direction in ("UP", "DOWN"):
+        pool = pools.get(direction) or {}
+        result[direction] = select_global_threshold(
+            pool.get("probs") or [], pool.get("labels") or [],
+        )
+    try:
+        from core.db import db_conn
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            cur.execute(
+                "INSERT INTO ghost_state (key, val) VALUES (%s, %s) "
+                "ON CONFLICT (key) DO UPDATE SET val = EXCLUDED.val",
+                (_GLOBAL_STATE_KEY, _json.dumps(result)),
+            )
+        with _GLOBAL_CACHE_LOCK:
+            _GLOBAL_CACHE["ts"] = 0.0
+            _GLOBAL_CACHE["val"] = None
+        LOGGER.info(
+            "precision_gate global thresholds stored: UP=%s DOWN=%s",
+            (result["UP"].get("threshold") if result["UP"].get("ok") else "unproven"),
+            (result["DOWN"].get("threshold") if result["DOWN"].get("ok") else "unproven"),
+        )
+    except Exception as e:
+        LOGGER.warning("precision_gate global threshold store failed: %s", str(e)[:120])
+        result["store_error"] = str(e)[:120]
+    return result
+
+
+def load_global_threshold(direction: str) -> Optional[Dict[str, Any]]:
+    """Cached read of the pooled operating point for one direction (or None)."""
+    import json as _json
+    import time as _time
+    with _GLOBAL_CACHE_LOCK:
+        if _GLOBAL_CACHE["val"] is not None and (_time.time() - _GLOBAL_CACHE["ts"]) < _GLOBAL_CACHE_TTL_S:
+            blob = _GLOBAL_CACHE["val"]
+        else:
+            blob = None
+    if blob is None:
+        try:
+            from core.db import db_conn
+            with db_conn() as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT val FROM ghost_state WHERE key = %s", (_GLOBAL_STATE_KEY,))
+                row = cur.fetchone()
+            blob = _json.loads(row[0]) if row and row[0] else {}
+        except Exception as e:
+            LOGGER.debug("precision_gate global threshold load failed: %s", str(e)[:120])
+            return None
+        with _GLOBAL_CACHE_LOCK:
+            _GLOBAL_CACHE["ts"] = _time.time()
+            _GLOBAL_CACHE["val"] = blob
+    entry = blob.get((direction or "").upper()) if isinstance(blob, dict) else None
+    return entry if isinstance(entry, dict) else None
+
+
+def invalidate_global_threshold_cache() -> None:
+    with _GLOBAL_CACHE_LOCK:
+        _GLOBAL_CACHE["ts"] = 0.0
+        _GLOBAL_CACHE["val"] = None
