@@ -37,7 +37,9 @@ class _Model:
 
 
 _META = {"edge": 0.3, "accuracy": 0.66, "wf_acc_mean": 0.64,
-         "wf_edge_mean": 0.2, "wf_fold_count": 4, "trained_at": time.time()}
+         "wf_edge_mean": 0.2, "wf_fold_count": 4, "trained_at": time.time(),
+         # Phase 3: a model may only fire above its proven-precision threshold.
+         "precision_gate": {"ok": True, "threshold": 0.55, "target": 0.70}}
 
 
 def _patch_gates(monkeypatch):

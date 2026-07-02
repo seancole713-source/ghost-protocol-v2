@@ -86,7 +86,8 @@ def test_feature_asof_on_live_features(monkeypatch):
             return _np.array([[0.2, 0.61]])
 
     meta = {"edge": 0.2, "accuracy": 0.6, "wf_acc_mean": 0.6, "wf_edge_mean": 0.1,
-            "wf_fold_count": 3, "trained_at": time.time()}
+            "wf_fold_count": 3, "trained_at": time.time(),
+            "precision_gate": {"ok": True, "threshold": 0.55, "target": 0.70}}
     monkeypatch.setattr(_se, "load_model", lambda s, direction="UP": (_M(), _se.FEATURE_COLS, meta))
     for k, v in {"V3_MIN_WIN_PROBA": "0.55", "V3_MIN_EDGE": "0.0",
                  "V3_MIN_HOLDOUT_ACC": "0.0", "V3_MIN_WF_ACC_MEAN": "0.0"}.items():
@@ -117,7 +118,8 @@ def test_confidence_equals_up_prob(monkeypatch):
             return _np.array([[0.18, 0.6234]])
 
     meta = {"edge": 0.3, "accuracy": 0.66, "wf_acc_mean": 0.64,
-            "wf_edge_mean": 0.2, "wf_fold_count": 4, "trained_at": time.time()}
+            "wf_edge_mean": 0.2, "wf_fold_count": 4, "trained_at": time.time(),
+            "precision_gate": {"ok": True, "threshold": 0.55, "target": 0.70}}
     monkeypatch.setattr(_se, "load_model", lambda s, direction="UP": (_M(), _se.FEATURE_COLS, meta))
     for k, v in {"V3_MIN_WIN_PROBA": "0.55", "V3_MIN_EDGE": "0.0",
                  "V3_MIN_HOLDOUT_ACC": "0.0", "V3_MIN_WF_ACC_MEAN": "0.0"}.items():

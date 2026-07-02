@@ -122,6 +122,10 @@ FEATURES_DB_KEY = "ghost_v3_features_json"
 _MODEL_CACHE: dict = {}
 _MODEL_CACHE_LOCK = threading.Lock()
 
+# Free-tier Alpaca keys are never SIP-entitled: after the first 403, skip SIP
+# for a while instead of burning one guaranteed-403 call per symbol per sweep.
+_SIP_FORBIDDEN = {"until": 0.0}
+
 
 def _model_cache_ttl_s() -> int:
     return max(0, int(os.getenv("V3_MODEL_CACHE_TTL_S", "3600")))
@@ -931,6 +935,10 @@ def _fetch_ohlcv_once(symbol, asset_type, period='1y', interval='1d'):
             r = _req.get(url, headers=headers, timeout=30)
             if r.status_code != 200:
                 LOGGER.info(f"Alpaca feed={feed} {symbol}: HTTP {r.status_code}")
+                if feed == 'sip' and r.status_code == 403:
+                    # Free-tier keys are never SIP-entitled — remember and stop
+                    # burning one guaranteed-403 call per symbol per sweep.
+                    _SIP_FORBIDDEN["until"] = time.time() + 6 * 3600
                 return None
             bars = r.json().get('bars', [])
             rows = [{'ts': b.get('t', ''), 'open': float(b.get('o', 0)),
@@ -942,8 +950,10 @@ def _fetch_ohlcv_once(symbol, asset_type, period='1y', interval='1d'):
             LOGGER.warning(f"Alpaca feed={feed} {symbol}: {e}")
             return None
 
-    rows = _try_feed('sip')
+    rows = None
     feed_used = 'sip'
+    if time.time() >= _SIP_FORBIDDEN["until"]:
+        rows = _try_feed('sip')
     if not rows:
         LOGGER.info(f"Alpaca SIP returned nothing for {symbol}, trying IEX fallback")
         rows = _try_feed('iex')
@@ -1767,6 +1777,24 @@ def _train_one_direction(rows, symbol, direction, active_cols, peer_rows, peers_
             "samples": int(len(X_gate)),
         }
     calib_info["conformal"] = conformal
+    # Phase 3: precision-targeted fire threshold. Chosen on the calib slice,
+    # validated on the untouched gate slice. A model without a proven >=target
+    # operating point is stored (shadow/research still work) but cannot fire
+    # live picks — see _evaluate_lane.
+    try:
+        from core.precision_gate import select_fire_threshold
+        calib_probs = (
+            final_model.predict_proba(X_calib)[:, 1] if len(X_calib) else []
+        )
+        gate_probs_pg = (
+            final_model.predict_proba(X_gate)[:, 1] if len(X_gate) else []
+        )
+        precision_info = select_fire_threshold(
+            calib_probs, y_calib, gate_probs_pg, y_gate,
+        )
+    except Exception as _pg_e:
+        precision_info = {"ok": False, "fail_reason": "error: " + str(_pg_e)[:120]}
+    calib_info["precision_gate"] = precision_info
     if peer_rows:
         X_peer_wf = np.array([[r["features"].get(c, 0.0) for c in active_cols] for r in peer_rows])
         y_peer_wf = np.array([r["label"] for r in peer_rows])
@@ -1801,11 +1829,13 @@ def _train_one_direction(rows, symbol, direction, active_cols, peer_rows, peers_
         ))
     fail_reason = next((msg for _, ok, msg in gate_checks if not ok), None)
     passes = fail_reason is None
+    _pg = calib_info.get("precision_gate") or {}
     LOGGER.info(
         f"RETRAIN [{symbol}/{direction}]: acc={accuracy*100:.1f}% edge={edge*100:.1f}% "
         f"brier={calib_info.get('gate_brier')} wf_folds={wf['fold_count']} "
         f"wf_acc_mean={wf['acc_mean']*100:.1f}% "
         f"wf_edge_mean={wf['edge_mean']*100:.1f}% wf_acc_min={wf['acc_min']*100:.1f}% "
+        f"precision_gate={'ok thr=' + str(_pg.get('threshold')) if _pg.get('ok') else 'UNPROVEN (' + str(_pg.get('fail_reason')) + ')'} "
         f"| {'PASS' if passes else 'FAIL: ' + fail_reason}"
     )
     detail = {
@@ -1882,6 +1912,7 @@ def _train_one_direction(rows, symbol, direction, active_cols, peer_rows, peers_
         "wf_acc_min": wf["acc_min"],
         "wf_edge_mean": wf["edge_mean"],
         "wf_edge_min": wf["edge_min"],
+        "precision_gate": calib_info.get("precision_gate"),
         "feature_audit": feature_audit,
         "feature_inversions": sorted(invert_cols),
         "reliability_monotonic": reliability_mono,
@@ -2382,7 +2413,25 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
             return None, "meta_gate"
         if lane_folds > 0 and (lane_wf_acc < min_wf_acc or lane_wf_edge < min_edge):
             return None, "meta_gate"
-        if prob > min_p:
+        # Phase 3: precision-targeted fire threshold — the 70% contract.
+        # Live picks may only fire above an operating point that demonstrably
+        # won >= V3_PRECISION_TARGET out-of-sample. Research picks are the
+        # exploration lane and skip this (they're excluded from accuracy stats).
+        eff_min_p = min_p
+        from core.precision_gate import precision_gate_enabled
+        if not research_mode and precision_gate_enabled():
+            pg = meta.get("precision_gate") or {}
+            if scores is not None:
+                scores["precision_gate_" + direction.lower()] = {
+                    "ok": bool(pg.get("ok")),
+                    "threshold": pg.get("threshold"),
+                    "target": pg.get("target"),
+                    "fail_reason": pg.get("fail_reason"),
+                }
+            if not pg.get("ok"):
+                return None, "precision_unproven"
+            eff_min_p = max(min_p, float(pg.get("threshold", min_p)))
+        if prob > eff_min_p:
             q_hat = meta.get("conformal_q_hat")
             if q_hat is not None and float(q_hat) > 0:
                 from core.conformal_calibration import conformal_confidence
@@ -2477,6 +2526,8 @@ def get_model_status():
                     "ensemble_members": m.get("ensemble_members"),
                     "conformal_ok": bool(m.get("conformal_ok", False)),
                     "conformal_q_hat": m.get("conformal_q_hat"),
+                    "precision_ok": bool((m.get("precision_gate") or {}).get("ok", False)),
+                    "fire_threshold": (m.get("precision_gate") or {}).get("threshold"),
                     "serveable": reject is None,
                 }
                 if reject:

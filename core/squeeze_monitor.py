@@ -607,13 +607,15 @@ def _alpaca_prev_close(symbol: str) -> Optional[float]:
 
         end = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         start = (datetime.now(timezone.utc) - timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        for feed in ("sip", "iex"):
+        from core.prices import _alpaca_bar_feeds, _note_alpaca_feed_status
+        for feed in _alpaca_bar_feeds():
             url = (
                 f"https://data.alpaca.markets/v2/stocks/{sym}/bars"
                 f"?timeframe=1Day&start={start}&end={end}&limit=5&feed={feed}"
             )
             r = requests.get(url, headers=headers, timeout=_TIMEOUT)
             if r.status_code != 200:
+                _note_alpaca_feed_status(feed, r.status_code)
                 continue
             dbars = r.json().get("bars") or []
             if len(dbars) >= 2:
@@ -714,7 +716,8 @@ def _fetch_volumes(symbol: str) -> Tuple[Optional[float], Optional[float], Optio
             start_str = day_start.strftime("%Y-%m-%dT%H:%M:%SZ")
             end_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
             avg_vol = session_vol = vwap = None
-            for feed in ("sip", "iex"):
+            from core.prices import _alpaca_bar_feeds, _note_alpaca_feed_status
+            for feed in _alpaca_bar_feeds():
                 url = (
                     f"https://data.alpaca.markets/v2/stocks/{sym}/bars"
                     f"?timeframe=1Day&start={(now_utc - timedelta(days=30)).strftime('%Y-%m-%dT%H:%M:%SZ')}"
@@ -722,19 +725,21 @@ def _fetch_volumes(symbol: str) -> Tuple[Optional[float], Optional[float], Optio
                 )
                 r = requests.get(url, headers=headers, timeout=_TIMEOUT)
                 if r.status_code != 200:
+                    _note_alpaca_feed_status(feed, r.status_code)
                     continue
                 dbars = r.json().get("bars") or []
                 vols = [float(b.get("v", 0)) for b in dbars[-20:] if b.get("v")]
                 if vols:
                     avg_vol = sum(vols) / len(vols)
                     break
-            for feed in ("sip", "iex"):
+            for feed in _alpaca_bar_feeds():
                 url = (
                     f"https://data.alpaca.markets/v2/stocks/{sym}/bars"
                     f"?timeframe=5Min&start={start_str}&end={end_str}&limit=10000&feed={feed}"
                 )
                 r = requests.get(url, headers=headers, timeout=_TIMEOUT)
                 if r.status_code != 200:
+                    _note_alpaca_feed_status(feed, r.status_code)
                     continue
                 bars = r.json().get("bars") or []
                 if bars:
