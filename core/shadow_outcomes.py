@@ -94,7 +94,10 @@ def pick_daily_first(evals: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         prev = chosen.get(key)
         if prev is None or int(ts) < int(prev["eval_ts"]):
             chosen[key] = ev
-    return list(chosen.values())
+    # Deterministic (symbol, date) order: concurrent seeders acquire row locks
+    # in the same order, which removes the lock-order deadlock between the
+    # hourly job and the market-scan seed.
+    return [chosen[k] for k in sorted(chosen)]
 
 
 def _eval_entry_price(ev: Dict[str, Any]) -> Optional[float]:
@@ -121,6 +124,10 @@ def _eval_entry_price(ev: Dict[str, Any]) -> Optional[float]:
     return None
 
 
+# Advisory-lock key for the shadow seeder — arbitrary constant, unique app-wide.
+_SEED_ADVISORY_LOCK_KEY = 749_301_552
+
+
 def seed_shadow_rows(days_back: int = 3) -> int:
     """Insert pending shadow rows from recent symbol evals (idempotent)."""
     from core.db import db_conn
@@ -128,6 +135,16 @@ def seed_shadow_rows(days_back: int = 3) -> int:
     cutoff = int(time.time()) - max(1, int(days_back)) * 86400
     with db_conn() as conn:
         cur = conn.cursor()
+        # Single-seeder guard: the hourly job and the market-scan seed can run
+        # concurrently; seeding is idempotent, so if another transaction holds
+        # the lock just skip — the next run catches anything missed. This (plus
+        # deterministic insert order in pick_daily_first) removes the
+        # "deadlock detected" failures seen in production.
+        cur.execute("SELECT pg_try_advisory_xact_lock(%s)", (_SEED_ADVISORY_LOCK_KEY,))
+        row = cur.fetchone()
+        if not (row and row[0]):
+            LOGGER.debug("shadow seed: another seeder holds the lock, skipping")
+            return 0
         ensure_shadow_table(cur)
         try:
             cur.execute(

@@ -1,1 +1,1 @@
-web: echo "[BOOT] PR124_CONTRACT_INTEGRITY_CT DEPLOY_VERSION=${DEPLOY_VERSION:-unset} GIT_SHA=${RAILWAY_GIT_COMMIT_SHA:-unset} DEPLOY_ID=${RAILWAY_DEPLOYMENT_ID:-unset}" && uvicorn wolf_app:APP --host 0.0.0.0 --port $PORT --ws websockets --log-config uvicorn_log.json
+web: echo "[BOOT] PR125_FEED_RESILIENCE_CT DEPLOY_VERSION=${DEPLOY_VERSION:-unset} GIT_SHA=${RAILWAY_GIT_COMMIT_SHA:-unset} DEPLOY_ID=${RAILWAY_DEPLOYMENT_ID:-unset}" && uvicorn wolf_app:APP --host 0.0.0.0 --port $PORT --ws websockets --log-config uvicorn_log.json

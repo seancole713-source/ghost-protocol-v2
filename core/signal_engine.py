@@ -112,12 +112,39 @@ def _v3_watchlist_peer_pool_max() -> int:
 
 
 _OHLCV_CACHE: dict = {}
+_OHLCV_CACHE_LOCK = threading.Lock()
+_OHLCV_KEY_LOCKS: dict = {}
+
+
+def _ohlcv_cache_ttl_s() -> int:
+    """Success-entry TTL. Daily bars move slowly; 15 min keeps intraday
+    resolution fresh while collapsing repeat fetches across resolvers."""
+    return max(0, int(os.getenv("V3_OHLCV_CACHE_TTL_S", "900")))
+
+
+def _ohlcv_neg_cache_ttl_s() -> int:
+    """Failure-entry TTL. A symbol with no data anywhere (delisted etc.) used
+    to re-run the full 5-tier x 3-retry chain on EVERY resolver pass — a
+    permanent 429 storm. Cache the miss so it retries at most once per TTL."""
+    return max(0, int(os.getenv("V3_OHLCV_NEG_CACHE_TTL_S", "600")))
 
 
 def clear_ohlcv_cache() -> None:
     """Drop in-memory OHLCV cache (call at start of each batch train)."""
-    global _OHLCV_CACHE
-    _OHLCV_CACHE = {}
+    with _OHLCV_CACHE_LOCK:
+        _OHLCV_CACHE.clear()
+
+
+def _ohlcv_key_lock(cache_key) -> "threading.Lock":
+    """Per-key lock so concurrent callers (reconcile + watchdog + squeeze)
+    never run the fetch chain for the same symbol simultaneously — the second
+    caller waits briefly and reuses the first one's cached result."""
+    with _OHLCV_CACHE_LOCK:
+        lock = _OHLCV_KEY_LOCKS.get(cache_key)
+        if lock is None:
+            lock = threading.Lock()
+            _OHLCV_KEY_LOCKS[cache_key] = lock
+        return lock
 
 MODEL_DB_KEY = "ghost_v3_model_pkl"
 FEATURES_DB_KEY = "ghost_v3_features_json"
@@ -975,7 +1002,10 @@ def _fetch_ohlcv_once(symbol, asset_type, period='1y', interval='1d'):
                     # burning one guaranteed-403 call per symbol per sweep.
                     _SIP_FORBIDDEN["until"] = time.time() + 6 * 3600
                 return None
-            bars = r.json().get('bars', [])
+            # Alpaca returns HTTP 200 with "bars": null for symbols with no
+            # data (e.g. delisted) — .get('bars', []) keeps the null, then
+            # iteration raises "'NoneType' object is not iterable".
+            bars = r.json().get('bars') or []
             rows = [{'ts': b.get('t', ''), 'open': float(b.get('o', 0)),
                      'high': float(b.get('h', 0)), 'low': float(b.get('l', 0)),
                      'close': float(b.get('c', 0)), 'volume': float(b.get('v', 0))}
@@ -1055,26 +1085,54 @@ def _block_up_below_sma5(symbol, asset_type, current_price):
 
 
 def _fetch_ohlcv(symbol, asset_type, period=None, interval='1d'):
-    """Fetch daily OHLCV with in-run cache + retries on empty responses."""
+    """Fetch daily OHLCV with TTL cache, negative cache, and in-flight dedupe.
+
+    Entries are (expires_at, rows). Successes cache for V3_OHLCV_CACHE_TTL_S
+    (900s) so intraday resolution stays fresh but repeat fetches collapse.
+    Failures cache for V3_OHLCV_NEG_CACHE_TTL_S (600s) so a dead symbol can't
+    hammer every feed tier on every resolver pass. A per-key lock serializes
+    concurrent callers so only one runs the fetch chain per symbol.
+    """
     period = period or _v3_ohlcv_period()
     sym = (symbol or "").upper()
     atype = (asset_type or "stock").strip().lower()
     cache_key = (sym, atype, period)
-    if cache_key in _OHLCV_CACHE:
-        return _OHLCV_CACHE[cache_key]
-    retries = _v3_ohlcv_fetch_retries()
-    for attempt in range(retries):
-        rows = _fetch_ohlcv_once(symbol, asset_type, period, interval)
-        if rows:
-            _OHLCV_CACHE[cache_key] = rows
+
+    def _cached():
+        with _OHLCV_CACHE_LOCK:
+            hit = _OHLCV_CACHE.get(cache_key)
+        if hit is not None:
+            expires_at, rows = hit
+            if time.time() < expires_at:
+                return True, rows
+        return False, None
+
+    ok, rows = _cached()
+    if ok:
+        return rows
+    with _ohlcv_key_lock(cache_key):
+        # Double-check: another thread may have fetched while we waited.
+        ok, rows = _cached()
+        if ok:
             return rows
-        if attempt + 1 < retries:
-            delay = 0.5 * (2 ** attempt)
-            LOGGER.info(
-                f"_fetch_ohlcv {sym}: empty on attempt {attempt + 1}/{retries}, retry in {delay:.1f}s"
-            )
-            time.sleep(delay)
-    return None
+        retries = _v3_ohlcv_fetch_retries()
+        for attempt in range(retries):
+            rows = _fetch_ohlcv_once(symbol, asset_type, period, interval)
+            if rows:
+                with _OHLCV_CACHE_LOCK:
+                    _OHLCV_CACHE[cache_key] = (time.time() + _ohlcv_cache_ttl_s(), rows)
+                return rows
+            if attempt + 1 < retries:
+                delay = 0.5 * (2 ** attempt)
+                LOGGER.info(
+                    f"_fetch_ohlcv {sym}: empty on attempt {attempt + 1}/{retries}, retry in {delay:.1f}s"
+                )
+                time.sleep(delay)
+        neg_ttl = _ohlcv_neg_cache_ttl_s()
+        if neg_ttl > 0:
+            with _OHLCV_CACHE_LOCK:
+                _OHLCV_CACHE[cache_key] = (time.time() + neg_ttl, None)
+        return None
 
 
 def _try_stooq_ohlcv(symbol, period):

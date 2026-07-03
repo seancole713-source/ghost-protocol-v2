@@ -44,6 +44,11 @@ _META = {"edge": 0.3, "accuracy": 0.66, "wf_acc_mean": 0.64,
 
 def _patch_gates(monkeypatch):
     monkeypatch.setenv("GHOST_ACCURACY_CONTRACT", "legacy")
+    # Hermetic: when CI runs during US premarket (4:00-9:30 AM CT) the live
+    # extended-session overlay stomps the synthetic fixture's last bar with the
+    # REAL symbol price, flipping the regime — a time-of-day-flaky failure.
+    # Kill the overlay deterministically.
+    monkeypatch.setenv("GHOST_PREMARKET_SCAN", "0")
     for k, v in {"V3_MIN_WIN_PROBA": "0.55", "V3_MIN_EDGE": "0.0",
                  "V3_MIN_HOLDOUT_ACC": "0.0", "V3_MIN_WF_ACC_MEAN": "0.0"}.items():
         monkeypatch.setenv(k, v)
