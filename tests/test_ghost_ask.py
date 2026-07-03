@@ -73,7 +73,7 @@ def test_ask_success_mock_claude(monkeypatch):
     monkeypatch.setattr("core.ghost_ask.ANTHROPIC_KEY", "test-key")
     monkeypatch.setattr(
         "core.ghost_ask.build_ask_context",
-        lambda: {
+        lambda include_portfolio=False: {
             "ghost_score": {"trade_action": "NO TRADE", "bias_label": "mild bullish bias"},
             "engine_pause": {"paused": True},
             "portfolio": {"positions": []},
