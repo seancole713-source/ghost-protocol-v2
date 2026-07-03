@@ -1,10 +1,13 @@
 """Shared direction breakdown for /api/stats/direction and /api/cockpit/context."""
 
-from core.prediction_filters import REAL_TRADE_WHERE
+from core.prediction_filters import NON_RESEARCH_WHERE, REAL_TRADE_WHERE
 
 
 def compute_stats_by_direction(cur):
-    """Run direction breakdown using an existing DB cursor."""
+    """Run direction breakdown using an existing DB cursor.
+
+    Research picks are excluded — outcome-based metrics must match what the
+    gates use, and research probes are low-bar by design."""
     cur.execute(
         """
         SELECT direction,
@@ -15,6 +18,8 @@ def compute_stats_by_direction(cur):
         WHERE outcome IN ('WIN','LOSS','STOP','EXPIRED') AND id >= 223438
           AND """
         + REAL_TRADE_WHERE
+        + " AND "
+        + NON_RESEARCH_WHERE
         + """
         GROUP BY direction
         """
