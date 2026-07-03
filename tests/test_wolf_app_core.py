@@ -2957,6 +2957,9 @@ def test_predict_live_ex_journals_full_feature_vector(monkeypatch):
             "precision_gate": {"ok": True, "threshold": 0.55, "target": 0.70}}
     monkeypatch.setattr(_se, "load_model", lambda s, direction="UP": (_M(), _se.FEATURE_COLS, meta))
     monkeypatch.setenv("GHOST_ACCURACY_CONTRACT", "legacy")
+    # Hermetic: kill the live premarket overlay so the real symbol price can't
+    # stomp the synthetic fixture when CI runs during 4:00-9:30 AM CT.
+    monkeypatch.setenv("GHOST_PREMARKET_SCAN", "0")
     for k, v in {"V3_MIN_WIN_PROBA": "0.55", "V3_MIN_EDGE": "0.0",
                  "V3_MIN_HOLDOUT_ACC": "0.0", "V3_MIN_WF_ACC_MEAN": "0.0"}.items():
         monkeypatch.setenv(k, v)
