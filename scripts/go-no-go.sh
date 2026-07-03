@@ -32,9 +32,12 @@ def get_json(path: str) -> dict:
     return resp.json()
 
 
+# Public health is deliberately slim (audit v2 #10): {status, score, ts} only.
+# Detail (db/issues/warnings/feeds) lives behind the cookie-gated /admin/health,
+# so this gate checks the PUBLIC contract — do not re-add internal keys here.
 h1 = get_json("/health")
 h2 = get_json("/api/health")
-required = {"status", "score", "db", "issues", "warnings"}
+required = {"status", "score", "ts"}
 if not required.issubset(h1):
     fail_check("/health", f"missing keys {required - set(h1)}")
 if not required.issubset(h2):
@@ -43,7 +46,11 @@ if h1.get("status") not in ("healthy", "degraded", "critical"):
     fail_check("/health", f"invalid status {h1.get('status')}")
 if h2.get("status") not in ("healthy", "degraded", "critical"):
     fail_check("/api/health", f"invalid status {h2.get('status')}")
-pass_check("/health and /api/health")
+internal_keys = {"db", "issues", "warnings", "price_feeds", "tasks"}
+leaked = internal_keys & (set(h1) | set(h2))
+if leaked:
+    fail_check("/health", f"internal keys leaked into public payload: {sorted(leaked)}")
+pass_check("/health and /api/health (slim public contract)")
 
 stats = get_json("/api/stats")
 ctx = get_json("/api/cockpit/context")
@@ -60,12 +67,12 @@ if cs.get("post_v32") != stats.get("post_v32"):
     fail_check("stats consistency", "post_v32 mismatch")
 pass_check("/api/stats vs /api/cockpit/context")
 
-diag = get_json("/api/diagnostics")
-if not all(k in diag for k in ("score", "status", "details")):
-    fail_check("/api/diagnostics", "missing keys")
-if not isinstance(diag.get("checks_passed"), int):
-    fail_check("/api/diagnostics", "checks_passed not int")
-pass_check("/api/diagnostics")
+# /api/diagnostics is admin-gated and returns 404 unauthenticated (by design —
+# it leaks scheduler/model internals). The gate here asserts it stays hidden.
+resp = requests.get(f"{base_url}/api/diagnostics", timeout=20)
+if resp.status_code != 404:
+    fail_check("/api/diagnostics", f"expected 404 unauthenticated, got HTTP {resp.status_code}")
+pass_check("/api/diagnostics (hidden without admin session)")
 
 cov = get_json("/api/coverage")
 if cov.get("ok") is not True:
@@ -85,8 +92,8 @@ if cockpit.status_code != 200:
 html = cockpit.text
 if "Ghost Protocol" not in html and "GHOST PROTOCOL" not in html:
     fail_check("/cockpit", "missing expected title text")
-if "tab-crypto" not in html:
-    fail_check("/cockpit", "missing expected tab marker")
+if 'id="ask-ghost-section"' not in html and 'id="activity-strip"' not in html:
+    fail_check("/cockpit", "missing expected section markers (stale deploy?)")
 pass_check("/cockpit page")
 
 print()
