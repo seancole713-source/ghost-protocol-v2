@@ -85,8 +85,13 @@ def test_my_picks_routes_are_auth_gated():
 
 def test_my_picks_routes_registered():
     import core.portfolio_routes as pr
-    paths = {getattr(r, "path", None): sorted(getattr(r, "methods", []) or [])
-             for r in pr.portfolio_router.routes}
-    assert "GET" in paths.get("/api/my-picks", [])
-    assert "POST" in paths.get("/api/my-picks", [])
-    assert "DELETE" in paths.get("/api/my-picks/{symbol}", [])
+    # GET and POST on the same path are separate route objects — aggregate
+    # methods per path instead of letting a dict comprehension clobber them.
+    paths: dict = {}
+    for r in pr.portfolio_router.routes:
+        p = getattr(r, "path", None)
+        for m in (getattr(r, "methods", []) or []):
+            paths.setdefault(p, set()).add(m)
+    assert "GET" in paths.get("/api/my-picks", set())
+    assert "POST" in paths.get("/api/my-picks", set())
+    assert "DELETE" in paths.get("/api/my-picks/{symbol}", set())
