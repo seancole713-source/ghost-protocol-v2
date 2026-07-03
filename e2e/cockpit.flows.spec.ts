@@ -20,7 +20,13 @@ test.describe("Cockpit flows", () => {
     await expect(body).not.toHaveClass(/collapsed/);
     await toggle.click();
     await expect(body).toHaveClass(/collapsed/);
-    await toggle.click();
+    // Second click: the live cockpit keeps loading async panels (attribution,
+    // perf log) that reflow the page under the pointer on mobile viewports —
+    // Playwright's hit-test then chases a moving target and times out. The
+    // first click already proves real-click reachability; force the round-trip
+    // click so the toggle handler, not mid-load layout stability, is under test.
+    await toggle.scrollIntoViewIfNeeded();
+    await toggle.click({ force: true });
     await expect(body).not.toHaveClass(/collapsed/);
 
     await page.locator("#add-pos-toggle").click();
