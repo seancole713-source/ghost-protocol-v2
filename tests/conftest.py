@@ -37,3 +37,16 @@ def _clear_module_caches():
         except Exception:
             pass
     yield
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_premarket(monkeypatch):
+    """Kill the live premarket overlay for every test by default.
+
+    predict_live_ex's premarket path makes REAL market-data calls during
+    4:00-9:30 AM CT and stomps synthetic fixtures' last bar with the live
+    symbol price — a time-of-day flake where the suite fails only when CI
+    happens to run in that window. Premarket-specific tests re-enable via
+    their own monkeypatch (delenv restores the default-on behavior; setenv
+    forces a value) — both override this autouse default."""
+    monkeypatch.setenv("GHOST_PREMARKET_SCAN", "0")
