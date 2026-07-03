@@ -1,5 +1,5 @@
 # Ghost Protocol v2 — PROJECT STATE
-**Last updated:** 2026-07-01
+**Last updated:** 2026-07-02
 **Read this first.** Any agent picking up this project must read this file before touching any code.
 
 > ## 🚀 LAUNCH READINESS REVIEW
@@ -16,6 +16,33 @@
 > - **Stooq deprecated:** JS challenge wall blocks all server-side requests; `_stooq_spot()` is a no-op stub.
 > - **Degraded reasons fix:** now includes half_open state (matching `_count_open_circuits`).
 > - **Production:** `_pr_version 114`, sha `e02b8ec`, **590 tests pass, 3 skipped**.
+
+> **PR #115 (2026-07-01): P0 audit fixes — Kelly, breakers, research, auth, async.**
+> - **Kelly formula corrected:** `f* = p - (1-p)/b` (was `edge/odds`, off by factor of avg_loss²). Every position was drastically under-sized.
+> - **Breaker auto-recovery fixed:** removed idle clause that caused flapping; only recovers on genuine cooldown expiry. Wired into health check.
+> - **Research pick hardening:** filtered from kill conditions, objective gate, auto-mode selector, and falsification queries. Daily cap counts across all cycles today (not per-cycle). `is_research` computed BEFORE `predict_live_ex` call.
+> - **Auth-gated writes:** `/api/wolf/super-ghost?ai=1` and `?log=1` require MCP auth token. Claude calls use `asyncio.to_thread()` to avoid blocking event loop.
+> - **log_prediction data loss fix:** commit INSERT before side-writes in separate transactions.
+> - **Polygon spot documented:** `/prev` endpoint only — not a live price source.
+> - **Production:** `_pr_version 115`, sha `968b2c4`, **602 tests pass, 3 skipped**.
+
+> **PR #116 (2026-07-01–02): Phase 0–1 model architecture — macro features, cross-sectional, auto-log.**
+> - **Phase 0 — Model blindness:** FEATURE_COLS expanded 33→49 (8 macro + 8 cross-sectional). FRED_API_KEY default changed from literal "none" to empty string check. EXPIRED labels excluded from training (flat-sideways weeks ≠ LOSS).
+> - **Phase 1 — Point-in-time training:** `_build_historical_macro_series()` (2yr daily VIX/SPY/DXY/SMH/FRED). `get_macro_features_for_date()` injects per-bar macro. `build_training_data()` computes cross-sectional percentile ranks per date.
+> - **Auto-log watchlist:** `auto_log_watchlist()` logs all 43 symbols daily with 20h guard — 43× multiplier on learning rows (~15,695/yr vs ~365).
+> - **Dead promotion gate removed:** `load_model()` no longer has premature promotion wiring.
+> - **Production:** `_pr_version 116`, sha `968b2c4`, **602 tests pass, 3 skipped**, health 100/100.
+
+> **Phase 2 — DOWN model (2026-07-02, local — NOT YET DEPLOYED):**
+> - **`_simulate_down_tp_sl()`** bridge added → delegates to `core.tp_sl_resolve.simulate_down_tp_sl_label()`.
+> - **`backtest_symbol()`** now returns `(up_rows, down_rows)` tuple — each bar generates both UP and DOWN labeled rows.
+> - **`_train_one_direction()`** extracted from `train_and_validate()` — trains a single-direction model with all existing gates (feature audit, pool, ensemble, calibration, conformal, WF).
+> - **`train_and_validate()`** calls `_train_one_direction()` for both UP and DOWN. Persists as `model_{symbol}_up` / `model_{symbol}_down` and `meta_{symbol}_up` / `meta_{symbol}_down`.
+> - **`load_model(symbol, direction="UP")`** — accepts direction, falls back to legacy keys for pre-Phase 2 models.
+> - **`predict_live_ex()`** — loads both UP and DOWN models, scores both, picks stronger signal. Returns `("UP", conf)` or `("DOWN", conf)`. DOWN signals skip regime gates (BUY-only). Scores journal now includes `up_prob`, `down_prob`, `winning_direction`, `win_prob`.
+> - **`get_model_status()`** — parses directional keys, groups by symbol with direction labels.
+> - **Tests:** 602 passed, 3 skipped (identical to pre-Phase 2). All mock fixes applied across 4 test files.
+> - **Status:** Code complete, tests green. Awaiting deploy to production.
 
 > **PR #82–#102 (2026-06-28–29): Super Ghost foundation → self-improving prediction console.**
 > - **Super Ghost AI brain:** market-regime adjustment + optional Claude AI brief on `/api/wolf/super-ghost?ai=1`; model fixed to `claude-haiku-4-5-20251001`.

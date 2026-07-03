@@ -11,37 +11,33 @@ RULES:
   6. This is not documentation. It is an accountability ledger.
      Agents lie. This file exists because of that.
 
-LAST UPDATED: 2026-07-01 — PR #114 Research Pick Mode + Breaker Diagnostics + Prev_close Resilience
+LAST UPDATED: 2026-07-02 — Phase 2 DOWN model (local, not yet deployed)
 """
 
 # ============================================================
-# LIVE SYSTEM — LAST VERIFIED 2026-07-01 (PR #114 deployed; 590 tests pass)
+# LIVE SYSTEM — LAST VERIFIED 2026-07-02 (PR #116 deployed; 602 tests pass)
 # ============================================================
 
-PROD_VERIFY_2026_07_01_PR114 = {
+PROD_VERIFY_2026_07_02_PR116 = {
     "deploy_id": "Railway auto-deploy from main",
-    "git_sha_short": "e02b8ec",
-    "_pr_version": 114,
-    "verified_at_ct": "2026-07-01",
-    "tests": "590 passed, 3 skipped",
+    "git_sha_short": "968b2c4",
+    "_pr_version": 116,
+    "verified_at_ct": "2026-07-02",
+    "tests": "602 passed, 3 skipped",
     "live_acceptance": {
-        "version_endpoint": "GET /api/_version -> sha=e02b8ec, _pr_version=114, app_version=2.5.0",
-        "breakers_endpoint": "GET /api/system/breakers -> yfinance:open, finnhub:closed, polygon:closed, alpaca:open, anthropic:closed",
-        "degraded": "false, 2/2 open circuits at threshold",
-        "health": "score=95",
-        "change_pct": "WOLF +0.79%, SPCE +18.65%, DOMO +39.10%, LCID +33.11%, IQ +10.30%, FLNC -1.10%, HIMS +8.91%, ITRI +5.55%",
-        "research_mode": "armed — < 15 resolved picks, confidence floor 0.55, v3 min_win_proba 0.40",
-        "squeeze": "0 picks (market closed), 3/43 fetch",
-        "v3_active": "0 picks (WOLF up_prob=0.34, below research threshold 0.40)",
+        "version_endpoint": "GET /api/_version -> sha=968b2c4, _pr_version=116, app_version=2.5.0",
+        "breakers_endpoint": "GET /api/system/breakers -> yfinance:open(3/5), finnhub:closed, polygon:closed, alpaca:open(7/5), anthropic:closed",
+        "degraded": "false, 2 open circuits at threshold",
+        "health": "score=100",
+        "research_mode": "research_active=false, 63 resolved picks (exited research), 2 research picks today",
+        "v3_active": "0 picks (WOLF up_prob=0.3714, below threshold 0.5096, regime=Chop ADX=9.5)",
+        "super_ghost": "HOLD — NO EDGE, quality 41.1% (F), coverage 21/25, R:R 4.41:1",
+        "models": "43/43 symbols trained (UP direction only — Phase 2 DOWN model not yet deployed)",
     },
     "changes": [
-        "Research pick mode: lowers confidence floor to 0.55 + v3 min_win_proba to 0.40 when < 15 resolved picks",
-        "GET /api/system/breakers: per-breaker state, failure count, cooldown, rate-limit",
-        "Prev_close 5-tier chain: Alpaca 1Day → 5-min bar → yfinance → Polygon → 24h cache",
-        "Confidence caps: squeeze_confidence max 95, score_confirmation max 95, extreme short bonus halved",
-        "Stooq deprecated (JS challenge wall)",
-        "Degraded reasons now include half_open state",
-        "_pr_version bumped to 114",
+        "PR #115: Kelly formula corrected, breaker auto-recovery fixed, research pick hardening, auth-gated writes, async fixes",
+        "PR #116: Phase 0 model blindness (33→49 features), Phase 1 point-in-time training, auto-log watchlist (43× multiplier), dead promotion gate removed",
+        "Phase 2 (local): DOWN model — backtest_symbol returns (up, down) tuple, _train_one_direction helper, dual model training, predict_live_ex picks stronger signal",
     ],
 }
 
