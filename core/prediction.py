@@ -902,6 +902,26 @@ def _get_sentiment(symbol):
         return 0.0
 
 
+def sentiment_confidence_adjustment(sent: float, direction: str) -> float:
+    """Brake-only news-sentiment confidence adjustment (accuracy contract).
+
+    News sentiment is an unproven heuristic — under the 70% contract it may
+    REDUCE confidence (news against the trade → smaller position tier) but
+    never increase it. Raising post-gate confidence inflated pos_size_pct
+    (e.g. 0.79 + 0.06 news → 0.85 → 4% instead of 2%) on evidence with no
+    demonstrated precision. Returns a value in [-0.10, 0.0]; 0.0 when |sent|
+    is inside the +-0.1 dead zone or the news aligns with the trade.
+    """
+    try:
+        s = float(sent)
+    except Exception:
+        return 0.0
+    if abs(s) <= 0.1:
+        return 0.0
+    dir_mult = 1.0 if str(direction).upper() in ("UP", "BUY") else -1.0
+    return min(0.0, max(-0.10, round(s * dir_mult * 0.10, 3)))
+
+
 def _get_symbol_signal(symbol, current_price):
     """
     v3: Use XGBoost model trained on real price data.
@@ -1216,15 +1236,19 @@ def _predict_symbol_ex(symbol, asset_type, regime, scores_out=None):
     except Exception:
         pass
 
-    # Claude news sentiment: nudges confidence +-10% based on news alignment
+    # Claude news sentiment — BRAKE ONLY (accuracy contract): see
+    # sentiment_confidence_adjustment. An unproven news heuristic may lower
+    # confidence (and therefore position size) when news runs against the
+    # trade, but may never raise it — raising confidence after the gates
+    # inflated pos_size_pct tiers on a signal with no demonstrated precision.
     sentiment_score = 0.0
     try:
         sent = _get_sentiment(symbol)
         sentiment_score = float(sent)
-        if abs(sent) > 0.1:
-            dir_mult = 1.0 if direction in ("UP", "BUY") else -1.0
-            adj = round(sent * dir_mult * 0.10, 3)
+        adj = sentiment_confidence_adjustment(sent, direction)
+        if adj < 0:
             confidence = round(max(_floor, min(0.98, confidence + adj)), 3)
+        if abs(sent) > 0.1:
             LOGGER.info("[SENTIMENT] " + symbol + " news=" + str(round(sent,2)) + " adj=" + str(adj) + " conf=" + str(confidence))
     except Exception:
         pass

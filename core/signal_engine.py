@@ -223,6 +223,28 @@ def _v3_holdout_slices(n: int) -> tuple:
     return train_end, calib_end
 
 
+def _purged_holdout_bounds(n: int, train_end: int, calib_end: int, purge: int) -> tuple:
+    """Purged fit-bounds for the train/calib slices (leakage guard).
+
+    Triple-barrier labels look ahead V3_LABEL_HOLD_BARS bars, so the last
+    `purge` rows of the train slice resolve on calib-period prices and the last
+    `purge` rows of the calib slice resolve on gate-period prices. Fitting or
+    threshold-selecting on those rows leaks the very future the precision gate
+    is supposed to be proven against. Returns (train_fit_end, calib_fit_end):
+
+        X_train = X[:train_fit_end]           # purged tail dropped
+        X_calib = X[train_end:calib_fit_end]  # purged tail dropped
+        X_gate  = X[calib_end:]               # untouched
+
+    Guards keep at least 1 row per slice on tiny datasets (fallback paths
+    already handle degenerate calib sizes).
+    """
+    purge = max(0, int(purge))
+    train_fit_end = max(1, int(train_end) - purge)
+    calib_fit_end = max(int(train_end) + 1, int(calib_end) - purge)
+    return train_fit_end, calib_fit_end
+
+
 def _v3_wf_acc_min_overrides() -> dict:
     """
     Optional per-symbol absolute floor overrides for wf_acc_min.
@@ -1728,13 +1750,18 @@ def _train_one_direction(rows, symbol, direction, active_cols, peer_rows, peers_
     X = np.array([[r["features"].get(c, 0.0) for c in active_cols] for r in rows])
     y = np.array([r["label"] for r in rows])
     train_end, calib_end = _v3_holdout_slices(len(X))
-    X_train, y_train = X[:train_end], y[:train_end]
-    X_calib, y_calib = X[train_end:calib_end], y[train_end:calib_end]
+    # Leakage guard: labels look ahead V3_LABEL_HOLD_BARS bars, so drop the
+    # purge-tail of the train and calib slices — otherwise the precision gate's
+    # "proven OOS" threshold is chosen/validated on partially-seen futures.
+    train_fit_end, calib_fit_end = _purged_holdout_bounds(
+        len(X), train_end, calib_end, _v3_wf_purge())
+    X_train, y_train = X[:train_fit_end], y[:train_fit_end]
+    X_calib, y_calib = X[train_end:calib_fit_end], y[train_end:calib_fit_end]
     X_gate, y_gate = X[calib_end:], y[calib_end:]
     natural_rate = float(np.mean(y_gate)) if len(y_gate) else 0.0
     X_fit, y_fit, sample_weight = _assemble_pooled_training(
         X_train, y_train, peer_rows, active_cols, _v3_wolf_sample_weight(),
-        target_train_rows=rows[:train_end],
+        target_train_rows=rows[:train_fit_end],
     )
     pos_ct = int(np.sum(y_fit))
     neg_ct = int(len(y_fit) - pos_ct)

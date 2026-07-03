@@ -22,6 +22,17 @@ NON_RESEARCH_WHERE = (
     "(scores->>'research_pick' IS NULL OR scores->>'research_pick' != 'true')"
 )
 
+
+def non_research_where(alias: str = "") -> str:
+    """NON_RESEARCH_WHERE with an optional table alias (e.g. "p") for joined
+    queries. Research picks are excluded from every outcome-based metric AND
+    from live alerts — they exist to feed the learning loop, not to be acted on."""
+    prefix = f"{alias}." if alias else ""
+    return (
+        f"({prefix}scores->>'research_pick' IS NULL "
+        f"OR {prefix}scores->>'research_pick' != 'true')"
+    )
+
 CRYPTO_JUNK_WHERE = (
     "COALESCE(asset_type, 'stock') != 'stock' "
     "OR entry_price IS NULL OR entry_price <= 0"

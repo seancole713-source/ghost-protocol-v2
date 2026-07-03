@@ -214,7 +214,7 @@ def _v32_stats_start_ts(cur):
     return final_ts
 
 
-from core.prediction_filters import CRYPTO_JUNK_WHERE, NON_RESEARCH_WHERE, REAL_TRADE_WHERE, picks_where as _picks_where
+from core.prediction_filters import CRYPTO_JUNK_WHERE, NON_RESEARCH_WHERE, REAL_TRADE_WHERE, non_research_where, picks_where as _picks_where
 
 
 def _build_symbol_universe_payload() -> dict:
@@ -378,9 +378,12 @@ def _build_symbol_universe_payload() -> dict:
 
 def _compute_get_stats(cur):
     """Payload for GET /api/stats using an existing cursor."""
+    # Outcome-based stats exclude research picks (low-bar learning probes) so the
+    # headline win rate matches what the objective gate / kill switch actually use.
     cur.execute(
         "SELECT outcome, COUNT(*) FROM predictions WHERE outcome IN ('WIN','LOSS') "
-        "AND predicted_at IS NOT NULL AND " + REAL_TRADE_WHERE + " GROUP BY outcome"
+        "AND predicted_at IS NOT NULL AND " + REAL_TRADE_WHERE
+        + " AND " + NON_RESEARCH_WHERE + " GROUP BY outcome"
     )
     rows = {r[0]: r[1] for r in cur.fetchall()}
     wins = rows.get("WIN", 0)
@@ -397,7 +400,7 @@ def _compute_get_stats(cur):
         cur.execute(
             "SELECT outcome, COUNT(*) FROM predictions "
             "WHERE outcome IN ('WIN','LOSS') AND predicted_at IS NOT NULL AND predicted_at >= %s "
-            "AND " + REAL_TRADE_WHERE + " GROUP BY outcome",
+            "AND " + REAL_TRADE_WHERE + " AND " + NON_RESEARCH_WHERE + " GROUP BY outcome",
             (v32_start_ts,),
         )
         v32_rows = {r[0]: r[1] for r in cur.fetchall()}
@@ -408,7 +411,7 @@ def _compute_get_stats(cur):
         cur.execute(
             "SELECT outcome, COUNT(*) FROM predictions "
             "WHERE outcome IN ('WIN','LOSS') AND resolved_at IS NOT NULL AND resolved_at >= %s "
-            "AND " + REAL_TRADE_WHERE + " GROUP BY outcome",
+            "AND " + REAL_TRADE_WHERE + " AND " + NON_RESEARCH_WHERE + " GROUP BY outcome",
             (v32_start_ts,),
         )
         v32r_rows = {r[0]: r[1] for r in cur.fetchall()}
@@ -808,7 +811,8 @@ def _build_daily_summary():
                         s["would_fire_cycles"] += 1
             cur.execute(
                 "SELECT outcome, pnl_pct FROM predictions WHERE symbol='WOLF' "
-                "AND resolved_at >= %s AND outcome IN ('WIN','LOSS')", (day_start,))
+                "AND resolved_at >= %s AND outcome IN ('WIN','LOSS') "
+                "AND " + NON_RESEARCH_WHERE, (day_start,))
             for o, p in cur.fetchall():
                 if o == "WIN":
                     s["resolved"]["wins"] += 1
@@ -1042,7 +1046,8 @@ def _build_weekly_card_data() -> dict:
             cur = c.cursor()
             cur.execute(
                 "SELECT resolved_at,outcome,pnl_pct,entry_price,exit_price FROM predictions "
-                "WHERE symbol='WOLF' AND resolved_at >= %s AND outcome IN ('WIN','LOSS') ORDER BY resolved_at ASC",
+                "WHERE symbol='WOLF' AND resolved_at >= %s AND outcome IN ('WIN','LOSS') "
+                "AND " + NON_RESEARCH_WHERE + " ORDER BY resolved_at ASC",
                 (cutoff,))
             for r in cur.fetchall():
                 if r[1] == "WIN":
@@ -2938,6 +2943,8 @@ def wolf_signal_alert_check(x_cron_secret: str = Header(default="")):
                 return {"ok": True, "sent": [], "skipped_reason": "daily cap reached",
                         "sent_today": sent_today, "daily_cap": daily_cap}
 
+            # Research picks are learning probes fired below the accuracy
+            # contract — they must NEVER be alerted as live BUY/SELL signals.
             cur.execute(
                 """
                 SELECT p.id, p.direction, p.confidence, p.entry_price, p.target_price,
@@ -2949,6 +2956,7 @@ def wolf_signal_alert_check(x_cron_secret: str = Header(default="")):
                   AND p.confidence >= %s
                   AND p.predicted_at >= %s
                   AND a.prediction_id IS NULL
+                  AND """ + non_research_where("p") + """
                 ORDER BY p.confidence DESC, p.predicted_at DESC
                 LIMIT %s
                 """,
@@ -4285,6 +4293,7 @@ def get_stats_v32():
                 WHERE direction IN ('UP','BUY')
                 AND predicted_at IS NOT NULL AND predicted_at >= %s
                 AND outcome IN ('WIN','LOSS')
+                AND """ + NON_RESEARCH_WHERE + """
                 GROUP BY outcome
                 """,
                 (v32_start_ts,),
@@ -4300,6 +4309,7 @@ def get_stats_v32():
                 WHERE direction IN ('UP','BUY')
                 AND resolved_at IS NOT NULL AND resolved_at >= %s
                 AND outcome IN ('WIN','LOSS')
+                AND """ + NON_RESEARCH_WHERE + """
                 GROUP BY outcome
                 """,
                 (v32_start_ts,),
@@ -5047,6 +5057,7 @@ def _v3_system_health(model_status: dict) -> dict:
             cur.execute(
                 "SELECT resolved_at,symbol,outcome,pnl_pct,entry_price,exit_price FROM predictions "
                 "WHERE symbol = ANY(%s) AND id >= %s AND outcome IS NOT NULL AND pnl_pct IS NOT NULL "
+                "AND " + NON_RESEARCH_WHERE + " "
                 "ORDER BY resolved_at ASC NULLS LAST, id ASC",
                 (watchlist_syms, _V32_ERA_MIN_ID),
             )
@@ -5672,7 +5683,7 @@ def v3_train(x_cron_secret: str = Header(default=""), force: bool = False):
 
 # PR #19 deploy-version constant. Bump on every "did Railway pick up
 # the new code?" PR so /api/_version reveals the truth in one curl.
-_RUNNING_PR_VERSION = 123
+_RUNNING_PR_VERSION = 124
 
 
 def _deploy_meta() -> dict:
