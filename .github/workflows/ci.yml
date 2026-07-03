@@ -107,6 +107,31 @@ jobs:
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
 
+      # Every push to main triggers a Railway redeploy of the same commit this
+      # job is about to smoke-test — without a settle gate the browser suite
+      # races the container swap and catches transient 502s (zero-console-error
+      # assertions then fail on an infra blip, not a bug). Require 3 consecutive
+      # healthy responses before starting.
+      - name: Wait for deploy to settle
+        run: |
+          echo "Waiting for $BASE_URL/health to be stable..."
+          ok=0
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$BASE_URL/health" || echo 000)
+            if [ "$code" = "200" ]; then
+              ok=$((ok+1))
+              if [ "$ok" -ge 3 ]; then
+                echo "Healthy x3 — proceeding"
+                exit 0
+              fi
+            else
+              echo "attempt $i: HTTP $code — resetting streak"
+              ok=0
+            fi
+            sleep 10
+          done
+          echo "::warning::$BASE_URL/health never stabilized after ~5 min; running smoke anyway"
+
       - name: Run Playwright smoke suite
         run: npm run test:e2e
 
