@@ -28,6 +28,8 @@ import time
 import math
 import logging
 import threading
+
+from core.prediction_filters import V32_ERA_MIN_ID
 from dataclasses import asdict
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -1100,7 +1102,7 @@ async def get_wolf_backtest():
             cur = conn.cursor()
             cur.execute(
                 "SELECT predicted_at, resolved_at, outcome, pnl_pct, confidence FROM predictions "
-                "WHERE symbol='WOLF' AND id >= 223438 AND outcome IS NOT NULL AND pnl_pct IS NOT NULL "
+                "WHERE symbol='WOLF' AND id >= " + str(V32_ERA_MIN_ID) + " AND outcome IS NOT NULL AND pnl_pct IS NOT NULL "
                 "ORDER BY predicted_at ASC NULLS LAST, id ASC")
             rows = cur.fetchall()
         trades = [{
@@ -1132,7 +1134,7 @@ async def get_wolf_attribution():
         with db_conn() as conn:
             cur = conn.cursor()
             cur.execute(
-                "SELECT outcome, scores FROM predictions WHERE symbol='WOLF' AND id >= 223438 "
+                "SELECT outcome, scores FROM predictions WHERE symbol='WOLF' AND id >= " + str(V32_ERA_MIN_ID) + " "
                 "AND outcome IN ('WIN','LOSS') AND scores IS NOT NULL ORDER BY predicted_at ASC NULLS LAST, id ASC")
             rows = cur.fetchall()
         trades = []
@@ -1548,8 +1550,20 @@ async def post_ghost_ask(request: Request):
     """Ask Claude about live Ghost state (portfolio, SILENCE, cooldown, WOLF gates).
 
     Body: {"question": "...", "history": [{"role":"user"|"assistant","content":"..."}]}
+    Auth: admin cookie / GHOST_MCP_TOKEN / OAuth — this endpoint spends the
+    paid Anthropic budget, so it is not public (forensic audit P0-1). Returns
+    a JSON 401 the cockpit chat can render via its data.error path.
     Requires ANTHROPIC_API_KEY on the server. Rate-limited per CT day.
     """
+    from fastapi import HTTPException
+    from mcp.security import require_portfolio_auth
+    try:
+        require_portfolio_auth(request)
+    except HTTPException:
+        return JSONResponse(
+            content={"ok": False, "error": "Login required — sign in at /admin, then ask again."},
+            status_code=401,
+        )
     try:
         body = await request.json()
     except Exception:

@@ -51,8 +51,14 @@ def _system_prompt() -> str:
     )
 
 
-def build_ask_context() -> Dict[str, Any]:
-    """Snapshot live Ghost state for Claude (sync, no HTTP loopback)."""
+def build_ask_context(include_portfolio: bool = False) -> Dict[str, Any]:
+    """Snapshot live Ghost state for Claude (sync, no HTTP loopback).
+
+    include_portfolio defaults to False because the public /api/wolf/ask path
+    consumes this context — personal holdings may only be included for
+    auth-gated callers (/api/wolf/ask/context, MCP ghost_context). This flag
+    is the PII control; never rely on exception handling to omit the block.
+    """
     ctx: Dict[str, Any] = {"ts": int(time.time())}
     try:
         from core.market_hours import is_us_premarket, market_session_label
@@ -92,7 +98,7 @@ def build_ask_context() -> Dict[str, Any]:
 
     try:
         from core.db import db_conn
-        _V32_MIN = 223438
+        from core.prediction_filters import V32_ERA_MIN_ID as _V32_MIN
         with db_conn() as conn:
             cur = conn.cursor()
             cur.execute(
@@ -304,7 +310,8 @@ def ask_ghost(
     if lim:
         return {"ok": False, "error": lim}
 
-    context = build_ask_context()
+    # Public endpoint: never include personal portfolio holdings.
+    context = build_ask_context(include_portfolio=False)
     user_content = (
         "Ghost live context (JSON):\n"
         + json.dumps(context, default=str)[:12000]

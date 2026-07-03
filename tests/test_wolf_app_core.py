@@ -2276,7 +2276,9 @@ def test_admin_cookie_token_expiry(monkeypatch):
 
 
 def test_admin_token_valid_dev_mode_when_secret_unset(monkeypatch):
-    """No CRON_SECRET → any token (even empty) is accepted (dev mode)."""
+    """No CRON_SECRET + explicit GHOST_DEV_MODE=1 (conftest sets it) → any
+    token is accepted. Without the flag it fails closed — see
+    tests/test_forensic_security.py (PR #127)."""
     monkeypatch.delenv("CRON_SECRET", raising=False)
     assert wolf_app._admin_token_valid("") is True
     assert wolf_app._admin_token_valid("anything") is True
@@ -3106,10 +3108,27 @@ def test_v2_recent_defaults_to_wolf(monkeypatch):
     pr.v2_recent(symbol="tsla")
     assert captured["params"] == ("TSLA",)
 
-    # ALL bypasses the filter (internal cross-symbol listing)
+    # ALL is the internal cross-symbol listing — auth-gated since PR #127.
+    # Unauthenticated (no dev-mode admin session) it must raise, never query.
+    import pytest
+    from fastapi import HTTPException
+    import mcp.security as sec
+    monkeypatch.setattr(sec, "require_portfolio_auth", pr_raise_401)
+    captured.clear()
+    with pytest.raises(HTTPException):
+        pr.v2_recent(symbol="ALL")
+    assert "sql" not in captured   # gate fired before any query
+
+    # With auth satisfied, ALL bypasses the symbol filter as before.
+    monkeypatch.setattr(sec, "require_portfolio_auth", lambda request: None)
     pr.v2_recent(symbol="ALL")
     assert "symbol=%s" not in captured["sql"]
     assert captured["params"] is None
+
+
+def pr_raise_401(request):
+    from fastapi import HTTPException
+    raise HTTPException(status_code=401, detail="Unauthorized")
 
 
 # ── audit §2: kill conditions ───────────────────────────────────────────

@@ -251,11 +251,15 @@ def root():
     return RedirectResponse(url="/picks")
 
 @portfolio_router.get("/api/v2/recent")
-def v2_recent(symbol: str = "WOLF"):
+def v2_recent(request: Request = None, symbol: str = "WOLF"):
     """Recent resolved trades. Security (audit): defaults to WOLF-only so the
-    public investor view never leaks the full multi-symbol history. Pass
-    ?symbol=ALL for the unfiltered cross-symbol listing (internal use)."""
+    public investor view never leaks the full multi-symbol history. The
+    ?symbol=ALL cross-symbol listing is internal use and therefore auth-gated
+    (forensic audit P1-1: 'internal use' by docstring alone is not a control)."""
     _all = str(symbol).strip().upper() in ("ALL", "*", "")
+    if _all:
+        from mcp.security import require_portfolio_auth
+        require_portfolio_auth(request)
     with db_conn() as conn:
         cur = conn.cursor()
         if _all:

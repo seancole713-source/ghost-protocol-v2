@@ -10,6 +10,12 @@ if os.getenv("WATCHLIST_FILTER_ENABLED", "1").strip().lower() in ("1", "true", "
     _WATCHLIST_SQL = ",".join(f"'{s}'" for s in OFFICIAL_WATCHLIST)
     _WATCHLIST_FILTER = f" AND symbol IN ({_WATCHLIST_SQL})"
 
+# v3.2 accounting-era watermark: predictions with id below this predate the
+# current outcome/exit rules and are excluded from all win-rate math. Single
+# source of truth — stats queries must reference this constant instead of
+# re-hardcoding the literal (forensic audit: it appeared in 6 places).
+V32_ERA_MIN_ID = 223438
+
 REAL_TRADE_WHERE = (
     "entry_price IS NOT NULL AND entry_price > 0 "
     "AND COALESCE(asset_type, 'stock') = 'stock'"

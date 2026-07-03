@@ -65,8 +65,10 @@ def run_watchdog():
                     pred_id, symbol, hit,
                     exit_price=exit_price, pnl_pct=pnl, source="watchdog",
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                # Non-fatal, but must be visible: a swallowed perf-log write
+                # silently diverges accounting (forensic audit P0-1).
+                LOGGER.error("record_pick_resolution failed for %s #%s: %s", symbol, pred_id, str(e)[:160])
             try:
                 from core.telegram import send_position_alert
                 usd_out = round(100 * (1 + pnl / 100), 2)
