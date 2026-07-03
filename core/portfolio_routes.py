@@ -342,6 +342,43 @@ def auto_refresh_portfolio_prices():
         return 0
 
 
+# ── My Picks — personal server-persisted watchlist (own tab in the console).
+# Personal investment info, so every route is portfolio-auth gated. The
+# console falls back to its localStorage pool when unauthenticated.
+
+@portfolio_router.get("/api/my-picks")
+def get_my_picks(request: Request):
+    from mcp.security import require_portfolio_auth
+    require_portfolio_auth(request)
+    from core.my_picks import build_my_picks_payload
+    return build_my_picks_payload()
+
+
+@portfolio_router.post("/api/my-picks")
+async def add_my_pick(request: Request):
+    from mcp.security import require_portfolio_auth
+    require_portfolio_auth(request)
+    from core.my_picks import add_symbol
+    d = await request.json()
+    with db_conn() as conn:
+        cur = conn.cursor()
+        out = add_symbol(cur, d.get("symbol"), str(d.get("note") or ""))
+        conn.commit()
+    return out
+
+
+@portfolio_router.delete("/api/my-picks/{symbol}")
+def delete_my_pick(symbol: str, request: Request):
+    from mcp.security import require_portfolio_auth
+    require_portfolio_auth(request)
+    from core.my_picks import remove_symbol
+    with db_conn() as conn:
+        cur = conn.cursor()
+        out = remove_symbol(cur, symbol)
+        conn.commit()
+    return out
+
+
 @portfolio_router.post("/api/portfolio/refresh-prices")
 def refresh_portfolio_prices(request: Request):
     """T19: Manually trigger portfolio price refresh."""
