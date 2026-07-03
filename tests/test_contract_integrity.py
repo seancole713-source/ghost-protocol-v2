@@ -144,9 +144,9 @@ def test_purged_holdout_bounds_tiny_n_guards():
     assert calib_fit_end >= 3   # train_end + 1
 
 
-def test_train_symbol_uses_purged_bounds():
+def test_training_path_uses_purged_bounds():
     """Tripwire: the training path must slice through the purge helper."""
     import core.signal_engine as se
-    src = inspect.getsource(se._train_symbol)
+    src = inspect.getsource(se._train_one_direction)
     assert "_purged_holdout_bounds" in src
     assert "rows[:train_fit_end]" in src
