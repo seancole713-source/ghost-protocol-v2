@@ -145,6 +145,10 @@ def _patch(monkeypatch, up_p, precision_gate):
     # Legacy contract so these tests isolate precision-gate behavior from the
     # 70% contract floor clamps on training meta gates.
     monkeypatch.setenv("GHOST_ACCURACY_CONTRACT", "legacy")
+    # Hermetic: kill the live premarket overlay — during 4:00-9:30 AM CT it
+    # stomps the synthetic fixture's last bar with the REAL symbol price and
+    # flips the regime gate (time-of-day flake).
+    monkeypatch.setenv("GHOST_PREMARKET_SCAN", "0")
     for k, v in {"V3_MIN_WIN_PROBA": "0.55", "V3_MIN_EDGE": "0.0",
                  "V3_MIN_HOLDOUT_ACC": "0.0", "V3_MIN_WF_ACC_MEAN": "0.0"}.items():
         monkeypatch.setenv(k, v)
