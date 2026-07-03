@@ -1,6 +1,6 @@
 """Shared direction breakdown for /api/stats/direction and /api/cockpit/context."""
 
-from core.prediction_filters import NON_RESEARCH_WHERE, REAL_TRADE_WHERE
+from core.prediction_filters import NON_RESEARCH_WHERE, REAL_TRADE_WHERE, V32_ERA_MIN_ID
 
 
 def compute_stats_by_direction(cur):
@@ -9,13 +9,13 @@ def compute_stats_by_direction(cur):
     Research picks are excluded — outcome-based metrics must match what the
     gates use, and research probes are low-bar by design."""
     cur.execute(
-        """
+        f"""
         SELECT direction,
                COUNT(*) as total,
                SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) as wins,
                ROUND(AVG(CASE WHEN pnl_pct IS NOT NULL THEN pnl_pct ELSE 0 END)::numeric,2) as avg_pnl
         FROM predictions
-        WHERE outcome IN ('WIN','LOSS','STOP','EXPIRED') AND id >= 223438
+        WHERE outcome IN ('WIN','LOSS','STOP','EXPIRED') AND id >= {V32_ERA_MIN_ID}
           AND """
         + REAL_TRADE_WHERE
         + " AND "

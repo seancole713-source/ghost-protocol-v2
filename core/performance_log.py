@@ -643,7 +643,7 @@ def fetch_progress_summary(days: int = 7) -> Dict[str, Any]:
 
     days = max(1, min(90, int(days)))
     since = int(time.time()) - days * 86400
-    v32_min = 223438
+    from core.prediction_filters import V32_ERA_MIN_ID as v32_min
     with db_conn() as conn:
         cur = conn.cursor()
         ensure_perf_tables(cur)

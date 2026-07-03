@@ -13,7 +13,7 @@ import os, time, logging, json
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Tuple
 from core.db import db_conn
-from core.prediction_filters import NON_RESEARCH_WHERE
+from core.prediction_filters import NON_RESEARCH_WHERE, V32_ERA_MIN_ID
 from core.vol_targets import base_vol_pct, stop_pct_from_vol
 try:
     from core.prices import get_price
@@ -256,7 +256,7 @@ def evaluate_kill_conditions(*, include_pause: bool = False, since_ts: int = 0) 
             if since_ts > 0:
                 cur.execute(
                     "SELECT confidence, outcome, pnl_pct FROM predictions "
-                    "WHERE symbol = ANY(%s) AND id >= 223438 AND outcome IS NOT NULL "
+                    "WHERE symbol = ANY(%s) AND id >= " + str(V32_ERA_MIN_ID) + " AND outcome IS NOT NULL "
                     "AND resolved_at >= %s "
                     "AND " + NON_RESEARCH_WHERE + " "
                     "ORDER BY resolved_at DESC NULLS LAST, id DESC LIMIT %s",
@@ -264,7 +264,7 @@ def evaluate_kill_conditions(*, include_pause: bool = False, since_ts: int = 0) 
             else:
                 cur.execute(
                     "SELECT confidence, outcome, pnl_pct FROM predictions "
-                    "WHERE symbol = ANY(%s) AND id >= 223438 AND outcome IS NOT NULL "
+                    "WHERE symbol = ANY(%s) AND id >= " + str(V32_ERA_MIN_ID) + " AND outcome IS NOT NULL "
                     "AND " + NON_RESEARCH_WHERE + " "
                     "ORDER BY resolved_at DESC NULLS LAST, id DESC LIMIT %s",
                     (symbols, need))
@@ -960,7 +960,7 @@ def _legacy_signal(symbol, current_price):
         with db_conn() as _ac:
             _c = _ac.cursor()
             _c.execute(
-                "SELECT COUNT(*), SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) FROM predictions WHERE symbol=%s AND outcome IN ('WIN','LOSS') AND direction='UP' AND id >= 223438",
+                "SELECT COUNT(*), SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) FROM predictions WHERE symbol=%s AND outcome IN ('WIN','LOSS') AND direction='UP' AND id >= " + str(V32_ERA_MIN_ID),
                 (symbol,))
             _r = _c.fetchone()
             if _r and _r[0] and _r[0] >= 20:
@@ -1331,7 +1331,7 @@ def _circuit_breaker_floor():
             _cc = _cb.cursor()
             _cc.execute(
                 "SELECT outcome, resolved_at FROM predictions WHERE outcome IN ('WIN','LOSS') "
-                "AND direction='UP' AND id >= 223438 ORDER BY resolved_at DESC LIMIT %s",
+                "AND direction='UP' AND id >= " + str(V32_ERA_MIN_ID) + " ORDER BY resolved_at DESC LIMIT %s",
                 (streak_n,))
             rows = _cc.fetchall()
         if len(rows) == streak_n and all(r[0] == 'LOSS' for r in rows):
@@ -1941,8 +1941,10 @@ def reconcile_outcomes():
                 pred_id, symbol, outcome,
                 exit_price=exit_price, pnl_pct=pnl, source="reconcile",
             )
-        except Exception:
-            pass
+        except Exception as e:
+            # Never abort resolution, but a perf-log miss is silent P&L
+            # divergence — it must be visible in logs (forensic audit P0-1).
+            LOGGER.error("record_pick_resolution failed for %s #%s: %s", symbol, pred_id, str(e)[:160])
         LOGGER.info("Resolved " + symbol + " " + direction + ": " + outcome + " " + str(round(pnl,2)) + "%")
         # Watchdog: fire Telegram alert immediately when pick resolves
         if outcome in ("WIN", "LOSS"):

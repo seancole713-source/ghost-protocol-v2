@@ -23,7 +23,7 @@ logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 # missing from Railway logs after a deploy, the container is stale (the
 # Procfile boot echo is the shell-level twin of this check).
 LOGGER.info(
-    "[wolf_app] BOOT_BANNER PR126_MY_PICKS_CT "
+    "[wolf_app] BOOT_BANNER PR127_FORENSIC_SECURITY "
     "DEPLOY_VERSION=%s GIT_SHA=%s DEPLOY_ID=%s",
     os.getenv("DEPLOY_VERSION", "unset"),
     os.getenv("RAILWAY_GIT_COMMIT_SHA", "unset"),
@@ -1612,7 +1612,12 @@ APP = FastAPI(
     redoc_url="/redoc" if _DOCS_ENABLED else None,
     openapi_url="/openapi.json" if _DOCS_ENABLED else None,
 )
-APP.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+# CORS: the cockpit/picks pages are served same-origin, so no origin needs
+# cross-site access by default. GHOST_CORS_ORIGINS (comma-separated) can widen
+# it; "*" keeps the legacy wildcard. Auth is bearer/cookie(SameSite=Lax) and
+# allow_credentials stays False, so this is exposure-narrowing, not auth.
+_CORS_ORIGINS = [o.strip() for o in os.getenv("GHOST_CORS_ORIGINS", "*").split(",") if o.strip()]
+APP.add_middleware(CORSMiddleware, allow_origins=_CORS_ORIGINS, allow_methods=["*"], allow_headers=["*"])
 
 
 # ── Public-endpoint rate limiting (audit) ────────────────────────────────
@@ -3752,7 +3757,7 @@ def _top_scan_candidates(limit: int = 5) -> list:
 # v3.2 era marker — predictions with id >= this are Ghost's high-conviction
 # v3.2-engine picks. Used across the codebase (core.stats_direction, core.prediction)
 # to exclude ~223k legacy v1 rows from credibility stats.
-_V32_ERA_MIN_ID = 223438
+from core.prediction_filters import V32_ERA_MIN_ID as _V32_ERA_MIN_ID  # single source of truth
 
 
 def _pick_journal_scope(symbol: str):
@@ -4847,12 +4852,14 @@ def _admin_mint_token(ttl_s: int = _ADMIN_TTL_S) -> str:
 def _admin_token_valid(token: str) -> bool:
     """True if the cookie token is a non-expired, correctly-signed value.
 
-    Dev mode (no CRON_SECRET) always returns True — mirrors _cron_ok
-    strict=False semantics.
+    Dev mode (no CRON_SECRET) requires explicit GHOST_DEV_MODE=1 — mirrors
+    _cron_ok semantics. Without the flag, an unset secret fails CLOSED so a
+    deploy on any platform (not just Railway, whose boot guard refuses to
+    start) never exposes /admin, /api/portfolio, or /api/my-picks.
     """
     secret = os.environ.get("CRON_SECRET", "")
     if not secret:
-        return True
+        return os.getenv("GHOST_DEV_MODE", "").strip().lower() in ("1", "true", "yes", "on")
     if not token or "." not in token:
         return False
     try:
@@ -5691,7 +5698,7 @@ def v3_train(x_cron_secret: str = Header(default=""), force: bool = False):
 
 # PR #19 deploy-version constant. Bump on every "did Railway pick up
 # the new code?" PR so /api/_version reveals the truth in one curl.
-_RUNNING_PR_VERSION = 126
+_RUNNING_PR_VERSION = 127
 
 
 def _deploy_meta() -> dict:
