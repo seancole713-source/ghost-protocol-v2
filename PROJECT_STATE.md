@@ -8,6 +8,13 @@
 > Any agent — Claude, browser-control, general — can execute it and produce a launch-readiness report with three verdict formats (binary GO/NO-GO, graded scorecard A–F, severity-ranked P0–P3 punch list). Every phase, every time. No skipping.
 > This is the canonical way to ask "is Ghost ready for a real user to trust real money?" — do not write ad-hoc audits; run the launch prompt instead.
 
+> **PR #121/124 (2026-07-03): Accuracy-contract integrity audit — 4 defects fixed.**
+> - **Purged holdout slices (P0):** train/calib/gate were contiguous with 3-bar look-ahead labels — the precision gate's "proven >=70%" threshold was chosen/validated on boundary-leaked data. `_purged_holdout_bounds` drops the look-ahead tails; **retrain required for stored `precision_gate` metadata to be re-proven on clean slices.**
+> - **Honest display stats (P0):** research picks now excluded from headline win rate (`_compute_get_stats`), direction edge, `/api/stats/v32`, daily/weekly summaries, and the if-followed equity source — display numbers now match gate numbers.
+> - **Research-safe alerts (P1):** Telegram/email sweep excludes `research_pick` rows — learning probes can never be alerted as live BUY signals.
+> - **Brake-only sentiment (P1):** news sentiment can no longer raise post-gate confidence/position size (`sentiment_confidence_adjustment`, may only reduce).
+> - Verified clean: `_legacy_signal` dead (no bypass), `threshold_search` math, `_evaluate_lane` enforcement, objective/kill/journal exclusions. 661 tests pass. Markers → `_pr_version 124`. **Not yet prod-verified.**
+
 > **PR #114 (2026-07-01): Research pick mode + breaker diagnostics + prev_close resilience.**
 > - **Research pick mode:** when < 15 resolved picks, engine lowers confidence floor to 0.55 and v3 min_win_proba to 0.40, skips objective gate. Research picks capped at 3/day, labeled `kind: "research"`. Breaks the 0-prediction deadlock so the learning flywheel can start.
 > - **Breaker status endpoint:** `GET /api/system/breakers` returns per-breaker state, failure count, cooldown, rate-limit info for all 5 breakers.
