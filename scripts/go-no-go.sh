@@ -81,9 +81,13 @@ ms = cov.get("model_status", {})
 if "trained" not in ms:
     fail_check("/api/coverage", "model_status missing trained")
 if ms.get("trained"):
+    # Phase-2 directional models: symbols map to {"UP": summary, "DOWN": summary};
+    # legacy models were a flat summary. Validate wf_acc_min per lane either way.
     for name, meta in ms.get("symbols", {}).items():
-        if "wf_acc_min" not in meta:
-            fail_check("/api/coverage", f"{name} missing wf_acc_min")
+        lanes = meta if isinstance(meta, dict) and ("UP" in meta or "DOWN" in meta) else {"UP": meta}
+        for direction, lane in lanes.items():
+            if not isinstance(lane, dict) or "wf_acc_min" not in lane:
+                fail_check("/api/coverage", f"{name}/{direction} missing wf_acc_min")
 pass_check("/api/coverage")
 
 cockpit = requests.get(f"{base_url}/cockpit", timeout=20)
