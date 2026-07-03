@@ -225,9 +225,10 @@ async def admin_rebuild_cashapp_watchlist(x_cron_secret: str = Header(default=""
     for sym in symbols:
         if sym == "WOLF":
             try:
-                from api.wolf_endpoints import wolf_price_payload_sync
-
-                prices[sym] = float(wolf_price_payload_sync().get("price") or 0)
+                from core.prices import get_price
+                px = get_price("WOLF", "stock")
+                if px:
+                    prices[sym] = float(px)
             except Exception:
                 pass
         if not prices.get(sym):

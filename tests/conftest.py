@@ -50,3 +50,5 @@ def _hermetic_premarket(monkeypatch):
     their own monkeypatch (delenv restores the default-on behavior; setenv
     forces a value) — both override this autouse default."""
     monkeypatch.setenv("GHOST_PREMARKET_SCAN", "0")
+    # PR #125: tests run in dev mode — _cron_ok requires explicit GHOST_DEV_MODE=1
+    monkeypatch.setenv("GHOST_DEV_MODE", "1")

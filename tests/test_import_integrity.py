@@ -43,42 +43,10 @@ def _load_scanner():
     return mod
 
 
-# Known-broken first-party modules as of the audit that introduced this test.
-# Most live in legacy/optional paths (engines/startup.py is not imported by the
-# app; core/stock_engine.py is referenced only by a backtest comment) and are
-# all guarded by try/except EXCEPT core.pattern_tracker. Shrinking this set is
-# encouraged; growing it should require a deliberate baseline update.
-KNOWN_BROKEN_BASELINE = {
-    "core.accuracy_tracker",
-    "core.ai_advisor.scanner",
-    "core.ai_memory",
-    "core.auto_calibrate_scheduler",
-    "core.auto_prediction_loop",
-    "core.confidence_calibrator",
-    "core.data_pillars.feature_orchestrator",
-    "core.db_pool",
-    "core.economic_calendar",
-    "core.ensemble_predictor",
-    "core.feedback_loop",
-    "core.goals_tracker",
-    "core.heartbeat",
-    "core.learning_loop",
-    "core.migration_runner",
-    "core.ml_trainer",
-    "core.online_calibrator",
-    "core.paper_tracker",
-    "core.pattern_tracker",
-    "core.position_sizer",
-    "core.prediction_evaluator",
-    "core.prediction_killswitch",
-    "core.prediction_store",
-    "core.regime_detector",
-    "core.sector_momentum",
-    "core.shutdown_handler",
-    "core.stock_gates",
-    "core.v2_quality",
-    "core.watchlist_prediction_scheduler",
-}
+# PR #125 audit: dead code removed (stock_engine.py, world_feed_fusion.py,
+# engines/startup.py, model.py, routes/schema.py). All first-party imports
+# now resolve. Baseline cleared — the ratchet starts fresh.
+KNOWN_BROKEN_BASELINE: set[str] = set()
 
 
 def test_no_new_broken_first_party_imports():
@@ -98,14 +66,16 @@ def test_baseline_does_not_silently_overstate():
     """If every baseline module gets fixed, clear the baseline.
 
     Keeps the allowlist honest so it can't hide a future real regression behind
-    a stale name. Fails only if EVERY listed module now resolves.
+    a stale name. When the baseline is empty (all imports clean), this is a PASS.
     """
     scanner = _load_scanner()
     result = scanner.scan()
     still_broken = {m["module"] for m in result["missing"]} & KNOWN_BROKEN_BASELINE
-    assert still_broken, (
-        "Every module in KNOWN_BROKEN_BASELINE now resolves — clear the baseline."
-    )
+    if KNOWN_BROKEN_BASELINE:
+        assert still_broken, (
+            "Every module in KNOWN_BROKEN_BASELINE now resolves — clear the baseline."
+        )
+    # Empty baseline + no broken imports = clean state. This is the goal.
 
 
 def test_live_alert_path_imports_resolve():

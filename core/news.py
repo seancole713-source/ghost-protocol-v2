@@ -30,7 +30,8 @@ BULLISH_WORDS = [
     "breakout","milestone","win","success","positive","optimistic","upside","outperform",
     "holds","holds ground","above","climbing","adds","gains","advances","up "]
 
-_seen_headlines = set()
+_seen_headlines: set = set()
+_MAX_SEEN_HEADLINES = 5000  # PR #125 audit: cap to prevent unbounded memory growth
 _cached_articles: List[Dict] = []
 # Per-symbol sentiment scores updated every 30 min. Read by prediction.py.
 # Values: -1.0 (very bearish) to +1.0 (very bullish), 0.0 = neutral/unknown

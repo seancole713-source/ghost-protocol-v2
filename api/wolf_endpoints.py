@@ -27,6 +27,7 @@ import os
 import time
 import math
 import logging
+import threading
 from dataclasses import asdict
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -64,10 +65,12 @@ WOLF_SYMBOL = "WOLF"
 # TTL cache (single in-process dict, keyed by endpoint name)
 # ────────────────────────────────────────────────────────────────
 _CACHE: Dict[str, Tuple[float, Any]] = {}
+_CACHE_LOCK = threading.Lock()
 
 
 def _cache_get(key: str, ttl_s: float):
-    hit = _CACHE.get(key)
+    with _CACHE_LOCK:
+        hit = _CACHE.get(key)
     if not hit:
         return None
     ts, payload = hit
@@ -77,7 +80,8 @@ def _cache_get(key: str, ttl_s: float):
 
 
 def _cache_set(key: str, payload: Any) -> None:
-    _CACHE[key] = (time.time(), payload)
+    with _CACHE_LOCK:
+        _CACHE[key] = (time.time(), payload)
 
 
 def _ok(payload: dict) -> dict:
@@ -1021,17 +1025,9 @@ def _categorize(title: str) -> str:
 
 
 def _squeeze_risk_tag(short_float_pct, days_to_cover) -> str:
-    """low/medium/high/extreme from short %-of-float and days-to-cover
-    (mirrors core.wolf_context._build_short_data thresholds)."""
-    sfp = short_float_pct or 0
-    dtc = days_to_cover or 0
-    if sfp >= 35 or dtc >= 5:
-        return "extreme"
-    if sfp >= 25 or dtc >= 3:
-        return "high"
-    if sfp >= 15 or dtc >= 2:
-        return "medium"
-    return "low"
+    """Re-exported from core.squeeze_monitor (canonical location, PR #125 audit)."""
+    from core.squeeze_monitor import _squeeze_risk_tag as _tag
+    return _tag(short_float_pct, days_to_cover)
 
 
 def _short_trend(shares_short, prior):

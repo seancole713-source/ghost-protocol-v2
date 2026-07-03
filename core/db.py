@@ -101,6 +101,22 @@ def _ensure_tables():
         """)
         LOGGER.info("Tables verified")
 
+
+def ensure_ghost_state(cur=None):
+    """Create ghost_state table if it doesn't exist.
+
+    Call this instead of inlining CREATE TABLE IF NOT EXISTS ghost_state
+    everywhere. Accepts an optional cursor; if None, opens its own connection.
+    Centralized per PR #125 forensic audit — 37 duplicates eliminated.
+    """
+    if cur is not None:
+        cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+        return
+    with db_conn() as conn:
+        c = conn.cursor()
+        c.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+        conn.commit()
+
 def _migrate_schema():
     """Add missing columns to v1 predictions table for v2 compatibility."""
     # V1 uses run_at, v2 uses predicted_at - add both, keep v1 data intact

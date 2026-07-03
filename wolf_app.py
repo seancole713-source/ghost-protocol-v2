@@ -49,10 +49,16 @@ def _cron_ok(provided: str, strict: bool = False) -> bool:
     strict=False (default): if no CRON_SECRET is configured, allow (dev mode).
     strict=True: if no CRON_SECRET is configured, REJECT. Use on endpoints
                  that must never be exposed without explicit auth, even in dev.
+
+    PR #125 audit: GHOST_DEV_MODE=1 must be explicitly set for dev-mode bypass.
+    Without it, strict=False behaves like strict=True (reject when unconfigured).
     """
     secret = os.environ.get("CRON_SECRET", "")
     if not secret:
-        return not strict
+        dev_mode = os.getenv("GHOST_DEV_MODE", "").strip().lower() in ("1", "true", "yes", "on")
+        if dev_mode:
+            return not strict
+        return False  # reject: no secret and not explicitly in dev mode
     return hmac.compare_digest((provided or "").encode("utf-8"),
                                secret.encode("utf-8"))
 
@@ -96,12 +102,14 @@ def _record_admin_action(action: str, detail: str = "") -> None:
 
 
 _COCKPIT_DB_CACHE = {"t": 0.0, "stats": None, "direction": None, "v3": None, "activity": None}
+_COCKPIT_DB_CACHE_LOCK = threading.Lock()
 
 
 def _bump_cockpit_db_cache():
-    _COCKPIT_DB_CACHE["t"] = 0.0
-    for _k in ("stats", "direction", "v3", "activity"):
-        _COCKPIT_DB_CACHE[_k] = None
+    with _COCKPIT_DB_CACHE_LOCK:
+        _COCKPIT_DB_CACHE["t"] = 0.0
+        for _k in ("stats", "direction", "v3", "activity"):
+            _COCKPIT_DB_CACHE[_k] = None
 
 
 def _v32_stats_start_ts(cur):

@@ -3,10 +3,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def test_no_default_api_auth_token_in_startup_self_call():
-    text = (ROOT / "engines" / "startup.py").read_text(encoding="utf-8")
-    assert 'API_AUTH_TOKEN", "ghost-prod-2024"' not in text
-    assert "API_AUTH_TOKEN is not configured" in text
+# PR #125: engines/startup.py was dead code (never imported, self-declared
+# deprecated). Removed. The startup auth guard now lives in wolf_app.py
+# lines 39-42 (CRON_SECRET required in production).
 
 
 def test_no_raw_private_key_or_secret_assignment_in_public_html():

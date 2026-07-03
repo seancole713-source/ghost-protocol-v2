@@ -11,12 +11,13 @@ encodes that judgement explicitly rather than burying it in the model.
 from typing import Any, Dict, Optional
 
 # Multiplier applied to the raw Ghost Score per regime. Neutral = 1.0.
+# Values synced with core/ghost_score_spec.py REGIME_MODIFIER (PR #125 audit).
 _REGIME_MODIFIER = {
     "Strong Uptrend": 1.10,
     "Uptrend": 1.05,
     "Choppy": 1.00,
-    "Downtrend": 0.90,
-    "Strong Downtrend": 0.80,
+    "Downtrend": 0.95,
+    "Strong Downtrend": 0.90,
     "Unknown": 1.00,
 }
 

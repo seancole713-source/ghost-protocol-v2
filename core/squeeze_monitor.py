@@ -28,6 +28,21 @@ CHECK_INTERVAL_SEC = int(os.getenv("SQUEEZE_MONITOR_INTERVAL", "60"))
 SQUEEZE_PRICE_PCT = float(os.getenv("SQUEEZE_PRICE_PCT", "5.0"))
 SQUEEZE_VOL_MULT = float(os.getenv("SQUEEZE_VOL_MULT", "2.5"))
 FORMING_PRICE_PCT = float(os.getenv("SQUEEZE_FORMING_PRICE_PCT", "3.0"))
+
+
+def _squeeze_risk_tag(short_float_pct, days_to_cover) -> str:
+    """low/medium/high/extreme from short %-of-float and days-to-cover
+    (mirrors core.wolf_context._build_short_data thresholds).
+    Canonical location — api/wolf_endpoints.py imports from here (PR #125 audit)."""
+    sfp = short_float_pct or 0
+    dtc = days_to_cover or 0
+    if sfp >= 35 or dtc >= 5:
+        return "extreme"
+    if sfp >= 25 or dtc >= 3:
+        return "high"
+    if sfp >= 15 or dtc >= 2:
+        return "medium"
+    return "low"
 FORMING_VOL_MULT = float(os.getenv("SQUEEZE_FORMING_VOL_MULT", "2.0"))
 TP_PCT_ACTIVE = float(os.getenv("SQUEEZE_TP_PCT_ACTIVE", "4.0"))
 TP_PCT_FORMING = float(os.getenv("SQUEEZE_TP_PCT_FORMING", "2.5"))
@@ -565,8 +580,6 @@ def _short_context(symbol: str) -> Dict[str, Any]:
                 LOGGER.debug("[SqueezeMonitor] yfinance short %s: %s", sym, exc)
     if out["short_float_pct"] is None and out["days_to_cover"] is None:
         out = _short_context_from_finviz(sym)
-    from api.wolf_endpoints import _squeeze_risk_tag
-
     out["squeeze_risk"] = _squeeze_risk_tag(out["short_float_pct"], out["days_to_cover"])
     _short_cache[sym] = (time.time(), out)
     return out

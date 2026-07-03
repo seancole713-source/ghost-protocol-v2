@@ -251,10 +251,19 @@ def test_cron_ok_rejects_wrong_secret_when_env_set(monkeypatch):
 
 
 def test_cron_ok_dev_mode_when_env_unset(monkeypatch):
-    """When CRON_SECRET is absent: non-strict allows, strict rejects."""
+    """When CRON_SECRET is absent: GHOST_DEV_MODE=1 allows non-strict, strict rejects."""
     monkeypatch.delenv("CRON_SECRET", raising=False)
+    monkeypatch.setenv("GHOST_DEV_MODE", "1")
     assert wolf_app._cron_ok("") is True          # non-strict: dev-mode allow
     assert wolf_app._cron_ok("", strict=True) is False  # strict: always reject
+
+
+def test_cron_ok_rejects_when_no_secret_and_no_dev_mode(monkeypatch):
+    """PR #125: without CRON_SECRET or GHOST_DEV_MODE, all requests reject."""
+    monkeypatch.delenv("CRON_SECRET", raising=False)
+    monkeypatch.delenv("GHOST_DEV_MODE", raising=False)
+    assert wolf_app._cron_ok("") is False
+    assert wolf_app._cron_ok("", strict=True) is False
 
 
 def _patch_db_conn_with_cursor(monkeypatch, cur):
@@ -748,9 +757,9 @@ def test_ghost_score_applies_regime_modifier():
     assert neutral["raw_score"] == 67.0
     assert neutral["score"] == 67.0
 
-    down = we.compute_ghost_score(**base, regime=classify_regime(49.0, 50.0))  # -2% => Downtrend ×0.90
+    down = we.compute_ghost_score(**base, regime=classify_regime(49.0, 50.0))  # -2% => Downtrend ×0.95
     assert down["raw_score"] == 67.0
-    assert abs(down["score"] - 60.3) < 1e-6        # 67 * 0.90
+    assert abs(down["score"] - 63.6) < 0.1          # 67 * 0.95 ≈ 63.6 (PR #125: synced with ghost_score_spec)
     assert down["regime"]["label"] == "Downtrend"
 
     up = we.compute_ghost_score(**base, regime=classify_regime(53.0, 50.0, volume_ratio=2.0))  # Strong Uptrend ×1.10
