@@ -120,3 +120,17 @@ def test_cors_origins_env_knob():
     src = (pathlib.Path(__file__).resolve().parents[1] / "wolf_app.py").read_text()
     assert "GHOST_CORS_ORIGINS" in src
     assert 'allow_origins=_CORS_ORIGINS' in src
+
+
+# ── kill-status shows the enforcement window, not just all-time ──────────
+
+def test_kill_status_surfaces_enforcement_window():
+    """The all-time dashboard can show triggered=red while the enforcer
+    (window reset since last manual resume) correctly stays unpaused — that
+    mismatch misread as 'kill switch broken' during the July 3 live review.
+    The endpoint must surface the enforcement-window view alongside."""
+    import inspect
+    import wolf_app
+    src = inspect.getsource(wolf_app.wolf_kill_status)
+    assert "enforcement_window" in src
+    assert "engine_pause_resume_ts" in src
