@@ -1000,6 +1000,69 @@ FAILURES = """
 # ============================================================
 
 SESSION_LOG = """
+--- 2026-07-03–04 | PR #125–#131 — security round, live verification pipeline, kill-status honesty ---
+Context: full forensic diagnostic (this agent + a second agent cross-verifying).
+The second agent shipped the critical-fix wave (regime modifier sync, ~3,600 lines
+dead code removed, ghost_state DDL centralized, GHOST_DEV_MODE dev gate) as ace0998.
+This session then verified survivors and shipped:
+
+PR #125 (marker 127) — forensic security round:
+  - build_ask_context(include_portfolio=False) restored: the portfolio-PII gate is a
+    real parameter again (was an undefined name whose NameError got swallowed; the two
+    auth-gated callers were TypeError-broken). Public /api/wolf/ask passes False explicitly.
+  - POST /api/wolf/ask auth-gated (admin cookie/MCP/OAuth) — was the only
+    unauthenticated paid-LLM endpoint. Returns renderable JSON 401.
+  - _admin_token_valid fails CLOSED without CRON_SECRET unless GHOST_DEV_MODE=1
+    (mirrors _cron_ok; previously any non-Railway deploy was wide open).
+  - /api/v2/recent?symbol=ALL auth-gated (WOLF-only default stays public).
+  - record_pick_resolution failures now LOGGER.error (were silent P&L divergence).
+  - Watermark 223438 centralized: core.prediction_filters.V32_ERA_MIN_ID (was in 8 files).
+  - GHOST_CORS_ORIGINS env knob. Tests: tests/test_forensic_security.py.
+
+PR #126–#130 — live verification pipeline modernized (was broken since inception):
+  - #126: missing TEST_DATABASE_URL/CRON_SECRET secrets now warn+skip instead of
+    hard-failing every main push (release-gates had NEVER run before this).
+  - #127: go/no-go aligned to hardened contracts — slim public /health {status,score,ts}
+    + internal-key leak tripwire; /api/diagnostics asserted 404 unauth; cockpit markers.
+  - #128: "Wait for deploy to settle" gate (3x consecutive /health 200s) — every merge
+    redeploys the exact commit the smoke suite tests; it was racing the container swap.
+  - #129: coverage check understands directional model maps {sym:{UP,DOWN}} (wf_acc_min per lane).
+  - #130: mobile truth-toggle round-trip forced (live layout churn made hit-testing flaky).
+  RESULT: first fully clean end-to-end GO in project history (run 28679241539, 44ebd3b):
+  686 unit tests + 33/33 live Playwright (desktop+mobile) + go/no-go GO + 0 critical
+  health findings + 0 new error signatures. Pipeline runs automatically on every merge.
+
+PR #131 (marker 128) — kill-status honesty:
+  - /api/wolf/kill-status showed all-time window (win_rate red, auto_pause) while
+    enforce_kill_conditions correctly evaluates only since the last manual resume
+    (engine_pause_resume_ts window reset) → paused=false looked like a broken kill
+    switch to a live reviewer. VERIFIED working-as-designed; endpoint now returns
+    enforcement_window {since_ts, conditions, any_triggered} alongside. Second
+    consecutive clean pipeline GO (90ce3b4).
+
+Prod state (user-verified 2026-07-04): _pr_version 128, health 95/100 (holiday
+freshness warnings only), degraded=false. Bootstrap phase: 2/8 wins, gate CLOSED
+(up_prob 0.4977 vs 0.6309 needed, Chop regime), recent picks WITHDRAWN by open-pick
+review (several +P&L anyway), kill dashboard red all-time / enforcement window
+insufficient (correct). Engine triple-locked: closed gate, 0.85 bootstrap floor,
+per-cycle kill enforcement. Models re-proving precision thresholds on purged slices
+post-retrain (label_schema_stale invalidation is intentional).
+
+Ghost MCP connector: OAuth completed 2026-07-04; ghost_gate_status verified live
+via MCP from a fresh session. URL: https://ghost-protocol-v2-production.up.railway.app/mcp
+
+NEXT (Monday 2026-07-06 open) — LIVE WATCH, the one untested surface:
+  1. Poll ghost_gate_status / ghost_picks / ghost_kill_status through premarket+open.
+  2. Any fire must satisfy contract-70: confidence >= floor, precision gate proven
+     (not precision_unproven), regime ok, kill conditions clear.
+  3. Any intraday resolution must land exit_price EXACTLY at target/stop (capped),
+     appear in the performance log, and any perf-log failure now logs
+     "record_pick_resolution failed" (grep Railway logs).
+  4. Watch /api/system/breakers (yfinance/alpaca) under live load; 95->100 health
+     should self-heal with fresh data.
+  Optional user config: TEST_DATABASE_URL + CRON_SECRET GitHub Actions secrets
+  activate DB integration tests + deep health audit in the pipeline.
+
 --- 2026-06-28–29 | PR #82–#90 — Super Ghost foundation, unified console, live coverage gate ---
 Context: User clarified Ghost is a prediction-market/intelligence product, not an
 auto-trading/broker bot. Mission: build toward the strongest possible stock prediction
