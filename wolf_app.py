@@ -23,7 +23,7 @@ logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 # missing from Railway logs after a deploy, the container is stale (the
 # Procfile boot echo is the shell-level twin of this check).
 LOGGER.info(
-    "[wolf_app] BOOT_BANNER PR127_FORENSIC_SECURITY "
+    "[wolf_app] BOOT_BANNER PR128_KILL_STATUS_WINDOWS "
     "DEPLOY_VERSION=%s GIT_SHA=%s DEPLOY_ID=%s",
     os.getenv("DEPLOY_VERSION", "unset"),
     os.getenv("RAILWAY_GIT_COMMIT_SHA", "unset"),
@@ -4067,6 +4067,30 @@ def wolf_kill_status():
         out = evaluate_kill_conditions(include_pause=True)
         if isinstance(out, dict):
             out["pool"] = pool_stats()
+            # Honesty: this endpoint shows the ALL-TIME rolling window, but the
+            # enforcer evaluates only outcomes since the last manual resume
+            # (window reset). Surface that second view so a red all-time flag
+            # with paused=false reads as "window reset", not "kill switch broken".
+            try:
+                resume_ts = 0
+                with db_conn() as _c:
+                    _cur = _c.cursor()
+                    _cur.execute("SELECT val FROM ghost_state WHERE key='engine_pause_resume_ts'")
+                    _row = _cur.fetchone()
+                    if _row and _row[0]:
+                        resume_ts = int(_row[0])
+                if resume_ts:
+                    ew = evaluate_kill_conditions(since_ts=resume_ts)
+                    out["enforcement_window"] = {
+                        "since_ts": resume_ts,
+                        "note": "enforcement counts only outcomes resolved after the last manual resume",
+                        "conditions": ew.get("conditions"),
+                        "any_triggered": any(c.get("triggered") for c in (ew.get("conditions") or [])),
+                    }
+                else:
+                    out["enforcement_window"] = {"since_ts": 0, "note": "no manual resume — enforcement uses the same all-time window"}
+            except Exception:
+                pass
         return out
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
@@ -5698,7 +5722,7 @@ def v3_train(x_cron_secret: str = Header(default=""), force: bool = False):
 
 # PR #19 deploy-version constant. Bump on every "did Railway pick up
 # the new code?" PR so /api/_version reveals the truth in one curl.
-_RUNNING_PR_VERSION = 127
+_RUNNING_PR_VERSION = 128
 
 
 def _deploy_meta() -> dict:
