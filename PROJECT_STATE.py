@@ -126,7 +126,7 @@ SESSION_LOG = {
         "wolf_app.py is 5,900+ lines — God Object with 101 endpoints, needs splitting into route modules",
         "core/signal_engine.py is ~2,500 lines — training, inference, OHLCV, features, gates all in one file",
         "85+ except Exception: pass blocks in core/ — intentional best-effort pattern but impossible to audit",
-        "GHOST_OAUTH_SECRET exists in Railway production (value in Railway env vars — was committed here in plaintext until 2026-07-04; ROTATE IT, git history still has it)",
+        "GHOST_OAUTH_SECRET ROTATED 2026-07-04 (leaked value in git history is now dead — cannot approve connector sessions or forge tokens). Connector survived rotation via DB-backed refresh token. New value lives only in Railway env vars; keep it out of this file.",
         "Global ValueError→422 handler (PR #129) may reclassify internal ValueErrors as client errors — watch for misleading 422s in logs",
         "scripts/calibrate_confidence_slope.py keeps its inline ghost_state DDL by design (standalone script, no app imports)",
     ],
