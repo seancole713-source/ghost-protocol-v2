@@ -55,10 +55,11 @@ def test_technical_shadow_reads_price_features():
 
 def test_run_shadow_models_returns_all_specialists():
     preds = run_shadow_models(_report())
-    assert len(preds) == 8  # 7 specialists + contrarian (PR #132)
+    assert len(preds) == 9  # 7 specialists + contrarian (PR #132) + seasonal (PR #133)
     ids = {p["model_id"] for p in preds}
     assert "ensemble_shadow_v1" in ids
     assert "contrarian_shadow_v1" in ids
+    assert "seasonal_shadow_v1" in ids
     assert all("direction" in p and "confidence" in p for p in preds)
 
 

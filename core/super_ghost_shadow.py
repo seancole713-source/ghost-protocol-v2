@@ -281,6 +281,46 @@ def contrarian_shadow(report: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def seasonal_shadow(report: Dict[str, Any]) -> Dict[str, Any]:
+    """Calendar-seasonality brain (PR #133).
+
+    Leans with this symbol's own ~4-year record for the current 5-day calendar
+    window (core.seasonality). Deliberately humble: n<=4 yearly windows is thin
+    evidence, so confidence is hard-capped at 0.65 and the brain commits only
+    when the seasonal excess is >=2.5% with >=75% year-over-year consistency.
+    Its shadow profile — not this heuristic — decides whether calendar
+    seasonality ever deserves more weight.
+    """
+    sym = (report.get("symbol") or "").upper()
+    try:
+        from core.seasonality import seasonal_window_stats
+        stats = seasonal_window_stats(sym) or {}
+    except Exception as exc:
+        stats = {"available": False, "reason": str(exc)[:80]}
+    direction, conf = "HOLD", 0.50
+    if not stats.get("available"):
+        reason = f"Seasonality unavailable: {stats.get('reason', 'no data')}."
+    else:
+        lean = stats.get("lean")
+        cons = _f(stats.get("consistency")) or 0.0
+        excess = _f(stats.get("excess_pct")) or 0.0
+        if lean in ("UP", "DOWN") and cons >= 0.75:
+            direction = lean
+            conf = round(_clamp(0.52 + min(abs(excess), 12.0) / 100.0, 0.52, 0.65), 3)
+            reason = (
+                f"{stats['n_years']}-yr calendar window: avg {stats['avg_window_pct']:+.1f}% "
+                f"vs baseline {stats['baseline_pct']:+.1f}% (excess {excess:+.1f}%, "
+                f"consistency {int(cons * 100)}%). Confidence capped — n={stats['n_years']} is thin."
+            )
+        else:
+            reason = (
+                f"No committed seasonal edge for this window "
+                f"(excess {excess:+.1f}%, consistency {int(cons * 100)}%)."
+            )
+    return _base_shadow("seasonal_shadow_v1", "seasonal", direction, conf, report,
+                        reason=reason, drivers=[stats])
+
+
 def ensemble_shadow(report: Dict[str, Any]) -> Dict[str, Any]:
     votes = [technical_shadow(report), news_shadow(report), fundamental_shadow(report), macro_shadow(report), regime_shadow(report), learning_adjusted_shadow(report)]
     up = sum(1 for v in votes if v["direction"] == "UP")
@@ -304,6 +344,7 @@ SHADOW_MODELS: Tuple[ShadowModel, ...] = (
     ShadowModel("learning_adjusted_shadow_v1", "learning", "Learning Brain adjusted production specialist.", learning_adjusted_shadow),
     ShadowModel("ensemble_shadow_v1", "ensemble", "Committee vote across all specialist shadows.", ensemble_shadow),
     ShadowModel("contrarian_shadow_v1", "contrarian", "Inverse-Ghost: bets against every committed production call (anti-signal hypothesis).", contrarian_shadow),
+    ShadowModel("seasonal_shadow_v1", "seasonal", "Calendar-seasonality lean from the symbol's own ~4-year record for the current 5-day window.", seasonal_shadow),
 )
 
 

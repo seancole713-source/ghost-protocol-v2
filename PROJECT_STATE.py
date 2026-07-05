@@ -13,7 +13,7 @@ RULES:
   7. SESSION_LOG is the handover log — read it to understand what happened in the
      last session and what's in flight. Update it at the end of every session.
 
-LAST UPDATED: 2026-07-05 — PR #132 contrarian shadow brain deployed + live-verified
+LAST UPDATED: 2026-07-05 — PR #133 seasonal shadow brain deployed + live-verified
 """
 
 # ============================================================
@@ -32,7 +32,7 @@ SESSION_LOG = {
     "production": {
         "url": "https://ghost-protocol-v2-production.up.railway.app",
         "railway_project": "tender-benevolence",
-        "pr_version": 132,
+        "pr_version": 133,
         "git_sha": "5d82d39",
         "app_version": "2.5.0",
         "health": "95/100 (live-verified 2026-07-05 post PR #130 deploy)",
@@ -55,6 +55,7 @@ SESSION_LOG = {
         "PR #122-#125: Accuracy contract 70%, feed resilience (null-bars guard, seeder deadlock, OHLCV storms), precision gate global pool, stop geometry precision",
         "PR #126: Full forensic audit fixes — 13 critical + 15 high issues resolved (regime modifier sync, 3,600 lines dead code removed, dependency inversion fixed, ghost_state DDL centralized, dev-mode auth bypass hardened, cache race conditions fixed, import integrity baseline cleared)",
         "PR #127: GO verification — 686 tests, 33/33 Playwright, 0 critical health findings, 0 new ERROR signatures, release gates all green",
+        "PR #133 (2026-07-05): seasonal_shadow_v1 added as 9th shadow brain — core/seasonality.py computes the symbol's ~4-year record for the current 5-day calendar window vs its own baseline (24h in-process cache). Commits only on excess >=2.5% with >=75% year consistency; confidence hard-capped at 0.65 (n<=4 windows is thin evidence by construction). Plumbing: OHLCV days_map +5y, Alpaca bar limit 1000->10000. Born from the post-July-4th study: 8/42 watchlist symbols positive all 4 years vs ~2.6 expected by chance. Live-verified: ABCL lean UP (+11.3% excess, 4/4), WOLF correctly NONE (0.5 consistency).",
         "PR #132 (2026-07-05): contrarian_shadow_v1 added as 8th shadow brain — inverts every committed production call (HOLD stays HOLD), mirrors risk geometry around entry. Tests the operator's anti-signal hypothesis with real evidence: under 5-day sign resolution its win_rate is the exact complement of production's on committed calls. Shadow-only; judge via shadow profiles once samples accumulate.",
         "PR #131 (2026-07-05): ValueError handler triage — 422 only for route-file origins; internal/core origins return 500 with logged traceback (no more bugs disguised as invalid_input). 4 new tests, 691 total.",
         "PR #130 (2026-07-05): God-object split — wolf_app.py 6,097→3,151 lines (82 endpoints → api/routes_admin|ghost_system|v3|wolf_ops|data, late-import + facade re-export pattern); signal_engine 2,747→2,141 lines (engine_config/indicators/features/calibration split out); all 86 silent except-pass blocks in core/ now call core.quiet.note_suppressed() (DEBUG log + COUNTS). 687 tests, live-verified: _pr_version=130, 10 moved endpoints 200, MCP connector OK.",

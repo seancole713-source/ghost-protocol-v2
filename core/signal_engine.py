@@ -513,7 +513,7 @@ def _fetch_ohlcv_once(symbol, asset_type, period='1y', interval='1d'):
     if not key or not secret:
         return None
     headers = {"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret}
-    days_map = {'3m': 90, '6m': 180, '1y': 365, '2y': 730}
+    days_map = {'3m': 90, '6m': 180, '1y': 365, '2y': 730, '5y': 1825}
     lookback_days = days_map.get(period, 365)
     end_dt = datetime.now(timezone.utc)
     start_dt = end_dt - timedelta(days=lookback_days)
@@ -523,7 +523,7 @@ def _fetch_ohlcv_once(symbol, asset_type, period='1y', interval='1d'):
     def _try_feed(feed):
         try:
             url = (f"https://data.alpaca.markets/v2/stocks/{symbol.upper()}/bars"
-                   f"?timeframe=1Day&limit=1000&feed={feed}"
+                   f"?timeframe=1Day&limit=10000&feed={feed}"
                    f"&start={start_str}&end={end_str}")
             r = _req.get(url, headers=headers, timeout=30)
             if r.status_code != 200:
@@ -683,7 +683,7 @@ def _try_stooq_ohlcv(symbol, period):
     import io as _io
     from datetime import datetime, timedelta, timezone
 
-    days_map = {'3m': 90, '6m': 180, '1y': 365, '2y': 730}
+    days_map = {'3m': 90, '6m': 180, '1y': 365, '2y': 730, '5y': 1825}
     lookback_days = days_map.get(period, 365)
     cutoff_date = datetime.now(timezone.utc).date() - timedelta(days=lookback_days)
     LOGGER.info(f"Stooq {symbol}: requesting CSV cutoff>={cutoff_date} (lookback={lookback_days}d)")
@@ -753,7 +753,7 @@ def _try_polygon_ohlcv(symbol, period):
     if not api_key:
         LOGGER.info(f"Polygon {symbol}: POLYGON_API_KEY not set on this deployment, skipping")
         return None
-    days_map = {'3m': 90, '6m': 180, '1y': 365, '2y': 730}
+    days_map = {'3m': 90, '6m': 180, '1y': 365, '2y': 730, '5y': 1825}
     lookback_days = days_map.get(period, 365)
     end_date = datetime.now(timezone.utc).date()
     start_date = end_date - timedelta(days=lookback_days + 30)  # +30 for weekend/holiday buffer
