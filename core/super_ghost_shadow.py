@@ -247,6 +247,40 @@ def learning_adjusted_shadow(report: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def contrarian_shadow(report: Dict[str, Any]) -> Dict[str, Any]:
+    """Inverse-Ghost (PR #132): bets against production on every committed call.
+
+    Tests the operator hypothesis that a persistently wrong predictor is a
+    tradable contrarian signal. Under the 5-day sign resolution this brain's
+    accuracy is exactly the complement of production's on committed calls, so
+    its profile answers the question directly: if production is truly
+    anti-skilled (not just unlucky), contrarian win_rate rises above chance
+    over enough samples. HOLD stays HOLD — no production conviction means
+    nothing to invert. Shadow-only, like every other brain here.
+    """
+    pred = report.get("prediction") or {}
+    direction = str(pred.get("direction") or "HOLD").upper()
+    conf = _clamp(_f(pred.get("confidence")) or 0.50, 0.50, 0.90)
+    inverted = {"UP": "DOWN", "DOWN": "UP"}.get(direction, "HOLD")
+    if inverted == "HOLD":
+        reason = "Production holds — contrarian has nothing to invert."
+        conf = 0.50
+    else:
+        reason = f"Inverts production {direction} (conf {conf:.2f}) — anti-signal hypothesis."
+    out = _base_shadow(
+        "contrarian_shadow_v1", "contrarian", inverted, round(conf, 3), report,
+        reason=reason,
+        drivers=[{"production_direction": direction, "production_confidence": conf}],
+    )
+    # The risk plan's target/stop were built for the production direction —
+    # mirror them around entry so the inverted trade carries sane geometry.
+    entry, tgt, stp = out.get("reference_price"), out.get("target_price"), out.get("stop_loss")
+    if inverted != "HOLD" and entry and tgt and stp:
+        out["target_price"] = round(entry - (tgt - entry), 6)
+        out["stop_loss"] = round(entry - (stp - entry), 6)
+    return out
+
+
 def ensemble_shadow(report: Dict[str, Any]) -> Dict[str, Any]:
     votes = [technical_shadow(report), news_shadow(report), fundamental_shadow(report), macro_shadow(report), regime_shadow(report), learning_adjusted_shadow(report)]
     up = sum(1 for v in votes if v["direction"] == "UP")
@@ -269,6 +303,7 @@ SHADOW_MODELS: Tuple[ShadowModel, ...] = (
     ShadowModel("regime_shadow_v1", "regime", "Regime risk-on/risk-off specialist.", regime_shadow),
     ShadowModel("learning_adjusted_shadow_v1", "learning", "Learning Brain adjusted production specialist.", learning_adjusted_shadow),
     ShadowModel("ensemble_shadow_v1", "ensemble", "Committee vote across all specialist shadows.", ensemble_shadow),
+    ShadowModel("contrarian_shadow_v1", "contrarian", "Inverse-Ghost: bets against every committed production call (anti-signal hypothesis).", contrarian_shadow),
 )
 
 
