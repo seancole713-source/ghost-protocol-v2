@@ -23,7 +23,7 @@ logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 # missing from Railway logs after a deploy, the container is stale (the
 # Procfile boot echo is the shell-level twin of this check).
 LOGGER.info(
-    "[wolf_app] BOOT_BANNER PR130_GOD_OBJECT_SPLIT "
+    "[wolf_app] BOOT_BANNER PR131_VALUEERROR_TRIAGE "
     "DEPLOY_VERSION=%s GIT_SHA=%s DEPLOY_ID=%s",
     os.getenv("DEPLOY_VERSION", "unset"),
     os.getenv("RAILWAY_GIT_COMMIT_SHA", "unset"),
@@ -1639,13 +1639,34 @@ except Exception:  # psycopg2 absent in some test contexts
     pass
 
 
+# A ValueError is only client input if it was raised in a route-handler file
+# (hand-parsed query params: int(...), float(...), date parsing). One raised
+# deeper — core/, engines, third-party libs — is an internal bug and must stay
+# a 500 with a logged traceback, not masquerade as "invalid_input" (PR #131).
+_ROUTE_FILE_MARKERS = ("wolf_app.py", f"{os.sep}api{os.sep}", "portfolio_routes.py")
+
+
+def _valueerror_origin_is_route(exc: BaseException) -> bool:
+    tb = exc.__traceback__
+    origin = ""
+    while tb:
+        origin = tb.tb_frame.f_code.co_filename
+        tb = tb.tb_next
+    return any(m in origin for m in _ROUTE_FILE_MARKERS)
+
+
 @APP.exception_handler(ValueError)
 async def _value_error_handler(request: Request, exc: ValueError):
-    # Hand-parsed params (int(...), float(...), date parsing) raise ValueError
-    # on bad client input. 422 matches FastAPI's native validation contract.
+    if _valueerror_origin_is_route(exc):
+        return JSONResponse(
+            status_code=422,
+            content={"ok": False, "error": "invalid_input", "detail": str(exc)[:300]},
+        )
+    LOGGER.error("unhandled ValueError on %s", request.url.path, exc_info=exc)
     return JSONResponse(
-        status_code=422,
-        content={"ok": False, "error": "invalid_input", "detail": str(exc)[:300]},
+        status_code=500,
+        content={"ok": False, "error": "internal_error",
+                 "detail": "Unexpected server error. The failure has been logged."},
     )
 
 
@@ -2992,7 +3013,7 @@ def _record_v3_train_state(**fields) -> None:
 
 # PR #19 deploy-version constant. Bump on every "did Railway pick up
 # the new code?" PR so /api/_version reveals the truth in one curl.
-_RUNNING_PR_VERSION = 130
+_RUNNING_PR_VERSION = 131
 
 
 def _deploy_meta() -> dict:
