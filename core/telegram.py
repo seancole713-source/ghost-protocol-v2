@@ -1,4 +1,5 @@
 import os, logging, requests, time
+from core.db import ensure_ghost_state
 
 LOGGER = logging.getLogger("ghost.telegram")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -59,7 +60,7 @@ def _enqueue_dead_letter(text: str, error: str) -> None:
     try:
         with db_conn() as conn:
             cur = conn.cursor()
-            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            ensure_ghost_state(cur)
             cur.execute("SELECT val FROM ghost_state WHERE key='telegram_dead_letter'")
             row = cur.fetchone()
             queue = []

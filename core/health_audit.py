@@ -4,6 +4,7 @@ import time
 from typing import Any, Dict, List
 
 from core.prediction_filters import REAL_TRADE_WHERE
+from core.db import ensure_ghost_state
 
 
 def _finding(
@@ -144,7 +145,7 @@ def run_health_audit(
             cur = conn.cursor()
             cur.execute("SELECT 1")
             cur.fetchone()
-            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            ensure_ghost_state(cur)
             cur.execute(
                 "SELECT outcome, COUNT(*) FROM predictions WHERE outcome IN ('WIN','LOSS') "
                 "AND " + REAL_TRADE_WHERE + " GROUP BY outcome"

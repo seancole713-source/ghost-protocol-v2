@@ -28,6 +28,7 @@ import math
 import os
 import threading
 from typing import Any, Dict, Optional, Sequence
+from core.db import ensure_ghost_state
 
 LOGGER = logging.getLogger("ghost.precision_gate")
 
@@ -245,7 +246,7 @@ def store_global_thresholds(pools: Dict[str, Dict[str, Sequence]]) -> Dict[str, 
         from core.db import db_conn
         with db_conn() as conn:
             cur = conn.cursor()
-            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            ensure_ghost_state(cur)
             cur.execute(
                 "INSERT INTO ghost_state (key, val) VALUES (%s, %s) "
                 "ON CONFLICT (key) DO UPDATE SET val = EXCLUDED.val",

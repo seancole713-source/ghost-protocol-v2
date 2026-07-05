@@ -15,6 +15,7 @@ import os, time, logging, json, threading
 import numpy as np
 from typing import Any, Dict, List, Optional
 from core.vol_targets import base_vol_pct, stop_pct_from_vol
+from core.db import ensure_ghost_state
 
 LOGGER = logging.getLogger("ghost.signal_v3")
 
@@ -1516,7 +1517,7 @@ def _persist_train_details(details_list) -> None:
         from core.db import db_conn
         with db_conn() as conn:
             cur = conn.cursor()
-            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            ensure_ghost_state(cur)
             cur.execute(
                 "INSERT INTO ghost_state(key,val) VALUES('last_train_details', %s) "
                 "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",

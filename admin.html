@@ -19,14 +19,14 @@ body{background:radial-gradient(1100px 520px at 50% -8%,#1a0f14 0%,#0a0a0a 58%) 
 .mc-tile{background:#111;border:1px solid #262626;border-radius:10px;padding:12px 14px;min-height:74px}
 .mc-tile .mc-label{font-size:10px;letter-spacing:1.2px;color:#8b96a8;text-transform:uppercase;margin-bottom:6px}
 .mc-tile .mc-value{font-size:19px;font-weight:700;color:#fff;line-height:1.2}
-.mc-tile .mc-sub{font-size:11px;color:#666;margin-top:4px;line-height:1.4}
+.mc-tile .mc-sub{font-size:11px;color:#999;margin-top:4px;line-height:1.4}
 .mc-tile.mc-ok{border-color:#14532d;background:linear-gradient(180deg,#07130b,#0d0d0d)}
 .mc-tile.mc-warn{border-color:#5b4112;background:linear-gradient(180deg,#171106,#0d0d0d)}
 .mc-tile.mc-bad{border-color:#5b1a1a;background:linear-gradient(180deg,#170808,#0d0d0d)}
 .mc-tile.mc-ok .mc-value{color:#1ec77d}
 .mc-tile.mc-warn .mc-value{color:#fbbf24}
 .mc-tile.mc-bad .mc-value{color:#ff4d4f}
-.mc-updated{font-size:11px;color:#555;margin-bottom:18px}
+.mc-updated{font-size:11px;color:#888;margin-bottom:18px}
 </style>
 </head>
 <body>
@@ -60,7 +60,7 @@ body{background:radial-gradient(1100px 520px at 50% -8%,#1a0f14 0%,#0a0a0a 58%) 
   <h3>v3 Model Controls</h3>
   <div class="desc">Synchronous training takes 1-5 min and returns the actual outcome inline. Async <b>Train Now</b> returns immediately; use <b>Refresh Status</b> after 3-5 min.</div>
   <div class="row">
-    <input type="password" id="train-secret" placeholder="x-cron-secret" autocomplete="off" spellcheck="false">
+    <input type="password" id="train-secret" aria-label="Cron secret" placeholder="x-cron-secret" autocomplete="off" spellcheck="false">
     <button onclick="trainNow()">Train Now</button>
     <button class="secondary" onclick="trainSync()" title="Blocks 1-5 min, returns actual result">Train (sync)</button>
     <button class="secondary" onclick="refreshStatus()">Refresh Status</button>
@@ -77,7 +77,7 @@ body{background:radial-gradient(1100px 520px at 50% -8%,#1a0f14 0%,#0a0a0a 58%) 
   <h3>Import News JSON</h3>
   <div class="desc">Paste a JSON file matching <code>data/news_import.example.json</code> or fetch the schema from <code>/api/admin/news/import-format</code>. Symbols must be on the 43-stock watchlist. Ghost also auto-pulls Finnhub every 30 min (8 symbols per cycle).</div>
   <div class="row">
-    <input type="file" id="news-file" accept=".json,application/json">
+    <input type="file" id="news-file" aria-label="News JSON file" accept=".json,application/json">
     <button class="secondary" onclick="showNewsFormat()">Show Format</button>
     <button onclick="importNewsJson()">Import News</button>
   </div>
@@ -150,7 +150,7 @@ body{background:radial-gradient(1100px 520px at 50% -8%,#1a0f14 0%,#0a0a0a 58%) 
   <h3>Truth Ledger &middot; resolved accuracy</h3>
   <div class="desc">Every logged Super Ghost prediction vs realized outcome. <code>win_rate_wilson_low</code> is the small-sample 95% floor &mdash; trust it over raw win rate at low N.</div>
   <div class="row">
-    <select id="sg-horizon" style="background:#0a0a0a;border:1px solid #2a2a2a;color:#ccc;border-radius:8px;padding:8px 10px">
+    <select id="sg-horizon" aria-label="Prediction horizon" style="background:#0a0a0a;border:1px solid #2a2a2a;color:#ccc;border-radius:8px;padding:8px 10px">
       <option value="1">1-day horizon</option>
       <option value="5" selected>5-day horizon</option>
       <option value="20">20-day horizon</option>
@@ -185,7 +185,7 @@ body{background:radial-gradient(1100px 520px at 50% -8%,#1a0f14 0%,#0a0a0a 58%) 
   <h3>Super Ghost Maintenance</h3>
   <div class="desc">Manual triggers for the resolve/learn pipeline. These require <code>GHOST_MCP_TOKEN</code> (not the cron secret). The scheduler runs these automatically &mdash; use only to force an immediate pass.</div>
   <div class="row">
-    <input type="password" id="sg-token" placeholder="x-ghost-mcp-token" autocomplete="off" spellcheck="false">
+    <input type="password" id="sg-token" aria-label="Ghost MCP token" placeholder="x-ghost-mcp-token" autocomplete="off" spellcheck="false">
     <button class="secondary" onclick="sgAction('resolve','/api/wolf/super-ghost/resolve')">Resolve Ledger</button>
     <button class="secondary" onclick="sgAction('learn','/api/wolf/super-ghost/learn')">Run Learning</button>
     <button class="secondary" onclick="sgAction('precision','/api/wolf/super-ghost/precision/score')">Score Precision</button>
@@ -431,7 +431,7 @@ function renderTrainDetails(td){
         ['wf_acc_mean',(s.wf_acc_mean!=null?(s.wf_acc_mean*100).toFixed(1)+'%':'—'),(s.thresholds&&s.thresholds.min_wf_acc_mean!=null?(s.thresholds.min_wf_acc_mean*100).toFixed(1)+'%':'—')],
       ];
       html+='<table class="tbl" style="margin-left:14px"><tr>'+rows.map(function(m){
-        return '<td style="color:#888">'+m[0]+'</td><td style="color:#fff"><b>'+escHtml(String(m[1]))+'</b></td><td style="color:#666">need&ge; '+escHtml(String(m[2]))+'</td>';
+        return '<td style="color:#888">'+m[0]+'</td><td style="color:#fff"><b>'+escHtml(String(m[1]))+'</b></td><td style="color:#999">need&ge; '+escHtml(String(m[2]))+'</td>';
       }).join('</tr><tr>')+'</tr></table>';
     }
   });
@@ -829,7 +829,7 @@ async function loadGateHistory(){
         var sb = (nm.symbol ? escHtml(nm.symbol)+' ' : '') + 'conf=' + Number(nm.confidence).toFixed(4) + '/' + Number(nm.bootstrap_min_conf).toFixed(2);
         sb += ' <span class="' + (bgap >= 0 ? 'ok' : 'warn') + '">' + (bgap >= 0 ? '+' : '') + bgap.toFixed(4) + '</span>';
         sb += ' <span style="color:#8b96a8;font-size:10px">bootstrap min</span>';
-        if(nm.up_prob != null && nm.min_win_proba != null){sb += '<div style="font-size:10px;color:#555">prob cleared: p=' + nm.up_prob + '/' + nm.min_win_proba + '</div>';}
+        if(nm.up_prob != null && nm.min_win_proba != null){sb += '<div style="font-size:10px;color:#888">prob cleared: p=' + nm.up_prob + '/' + nm.min_win_proba + '</div>';}
         return sb;
       }
       var s = (nm.symbol ? escHtml(nm.symbol)+' ' : '') + 'p=' + nm.up_prob;
@@ -959,7 +959,7 @@ async function loadSqueezeStatus(){
           var prob = p.probabilities && p.probabilities.p_continue_3pct_60m != null ? Math.round(p.probabilities.p_continue_3pct_60m) + '%' : '—';
           return '<tr><td><b>' + escHtml(p.symbol) + '</b></td><td>' + fmtUsd(p.buy) + '</td><td>' + fmtUsd(p.sell) + '</td><td>' + (p.squeeze_score != null ? Math.round(p.squeeze_score) : '—') + '</td><td>' + prob + '</td><td>+' + (p.peak_move_pct != null ? Number(p.peak_move_pct).toFixed(1) : '—') + '%</td><td>' + fmtTimeAgo(p.alerted_at || g.last_scan_ts) + '</td></tr>';
         }).join('') + '</tbody></table>';
-    } else {alertBlock = '<div class="kv" style="margin-top:10px;color:#666">No squeeze Telegram alerts this session yet.</div>';}
+    } else {alertBlock = '<div class="kv" style="margin-top:10px;color:#999">No squeeze Telegram alerts this session yet.</div>';}
     var leaders = (g.leaders || []).slice(0, 5);
     var leaderBlock = '';
     if(leaders.length){
@@ -982,7 +982,7 @@ async function loadSqueezeDailyLog(){
     var days = g.days || [];
     var today = g.today_ct || '—';
     var head = '<div class="kv">Today <b>' + escHtml(today) + '</b> · ' + days.length + ' day(s) in ledger · ' + (g.note ? escHtml(g.note) : '') + '</div>';
-    if(!days.length){el.innerHTML = head + '<div class="kv" style="margin-top:10px;color:#666">No squeeze predictions logged yet.</div>';return}
+    if(!days.length){el.innerHTML = head + '<div class="kv" style="margin-top:10px;color:#999">No squeeze predictions logged yet.</div>';return}
     var summaryRows = days.slice(0, 10).map(function(d){
       return '<tr><td><b>' + escHtml(d.session_date) + '</b></td><td>' + d.count + '</td><td>' + d.telegram + '</td><td>' + (d.resolved ? (d.wins + 'W / ' + d.losses + 'L') : '—') + '</td><td>' + (d.pending || '—') + '</td></tr>';
     }).join('');
@@ -992,7 +992,7 @@ async function loadSqueezeDailyLog(){
     if(detail.length){
       detailBlock = '<div class="kv" style="margin:12px 0 6px"><b>Latest day detail · ' + escHtml(focus) + '</b></div>'
         + '<table class="tbl"><thead><tr><th>Stock</th><th>Buy</th><th>Sell</th><th>Close</th><th>Outcome</th><th>Close P&amp;L</th></tr></thead><tbody>'
-        + detail.map(function(r){return '<tr><td><b>' + escHtml(r.symbol) + '</b><br><span style="color:#666;font-size:11px">' + escHtml(r.source || '') + '</span></td><td>' + fmtUsd(r.buy) + '</td><td>' + fmtUsd(r.sell) + '</td><td>' + fmtUsd(r.session_close) + '</td><td>' + escHtml(r.outcome || 'pending') + '</td><td>' + (r.close_pnl_pct != null ? (r.close_pnl_pct >= 0 ? '+' : '') + Number(r.close_pnl_pct).toFixed(2) + '%' : '—') + '</td></tr>';}).join('') + '</tbody></table>';
+        + detail.map(function(r){return '<tr><td><b>' + escHtml(r.symbol) + '</b><br><span style="color:#999;font-size:11px">' + escHtml(r.source || '') + '</span></td><td>' + fmtUsd(r.buy) + '</td><td>' + fmtUsd(r.sell) + '</td><td>' + fmtUsd(r.session_close) + '</td><td>' + escHtml(r.outcome || 'pending') + '</td><td>' + (r.close_pnl_pct != null ? (r.close_pnl_pct >= 0 ? '+' : '') + Number(r.close_pnl_pct).toFixed(2) + '%' : '—') + '</td></tr>';}).join('') + '</tbody></table>';
     }
     el.innerHTML = head + '<div class="kv" style="margin:12px 0 6px"><b>Daily summaries</b></div>'
       + '<table class="tbl"><thead><tr><th>Date</th><th>Rows</th><th>Telegram</th><th>W/L</th><th>Pending</th></tr></thead><tbody>' + summaryRows + '</tbody></table>' + detailBlock;
@@ -1336,7 +1336,7 @@ async function loadSgAccuracy(h){
       return '<div class="kv" style="margin:10px 0 4px"><b>' + title + '</b></div><table class="tbl"><thead><tr><th></th><th>N</th><th>WR</th><th>Avg ret</th></tr></thead><tbody>' + rows + '</tbody></table>';
     }
     if(!g.resolved_at_horizon){
-      el.innerHTML = head + '<div class="kv" style="color:#666">No resolved predictions at this horizon yet — cold start.</div>';
+      el.innerHTML = head + '<div class="kv" style="color:#999">No resolved predictions at this horizon yet — cold start.</div>';
       return;
     }
     el.innerHTML = head + bucketTable('By direction', g.by_direction) + bucketTable('By confidence tier', g.by_confidence_tier) + bucketTable('By regime', g.by_regime);
@@ -1350,7 +1350,7 @@ async function loadSgLearning(h){
     var g = await _fetchJson('/api/wolf/super-ghost/learning?horizon=' + h + '&limit=5');
     if(!g || g.ok === false){el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml((g&&g.error)||'unavailable') + '</div>';return}
     var profiles = g.profiles || [], lessons = g.lessons || [];
-    if(!profiles.length && !lessons.length){el.innerHTML = '<div class="kv" style="color:#666">Cold start — no learning profiles yet. Populates as ledger predictions resolve.</div>';return}
+    if(!profiles.length && !lessons.length){el.innerHTML = '<div class="kv" style="color:#999">Cold start — no learning profiles yet. Populates as ledger predictions resolve.</div>';return}
     var html = '';
     if(profiles.length){
       html += '<table class="tbl"><thead><tr><th>Sym</th><th>Dir</th><th>N</th><th>WR</th><th>Status</th></tr></thead><tbody>'
@@ -1378,7 +1378,7 @@ async function loadSgTopPick(h){
     var rows = (g.checks||[]).map(function(c){
       var cur = c.current;
       if(cur !== null && typeof cur === 'object') cur = Object.keys(cur).map(function(k){return k + '=' + cur[k];}).join(' ');
-      return '<tr><td style="font-size:11px"><code>' + escHtml(c.key) + '</code></td><td>' + (c.passed ? '<span class="ok">&#10003;</span>' : '<span class="fail">&#10007;</span>') + '</td><td style="font-size:11px">' + escHtml(String(cur!=null?cur:'—')) + ' <span style="color:#666">(' + escHtml(String(c.required||'')) + ')</span></td></tr>';
+      return '<tr><td style="font-size:11px"><code>' + escHtml(c.key) + '</code></td><td>' + (c.passed ? '<span class="ok">&#10003;</span>' : '<span class="fail">&#10007;</span>') + '</td><td style="font-size:11px">' + escHtml(String(cur!=null?cur:'—')) + ' <span style="color:#999">(' + escHtml(String(c.required||'')) + ')</span></td></tr>';
     }).join('');
     el.innerHTML = head + '<table class="tbl"><thead><tr><th>Check</th><th></th><th>Current (need)</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }catch(e){el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml(String(e)) + '</div>'}
@@ -1394,11 +1394,11 @@ async function loadSgShadow(){
     if(!profiles.length){
       var manifest = g.manifest || {};
       var models = manifest.models || [];
-      el.innerHTML = '<div class="kv" style="color:#666">Cold start — ' + (models.length||0) + ' shadow brain(s) registered, none scored yet. Scores populate as parent ledger predictions resolve.</div>';
+      el.innerHTML = '<div class="kv" style="color:#999">Cold start — ' + (models.length||0) + ' shadow brain(s) registered, none scored yet. Scores populate as parent ledger predictions resolve.</div>';
       return;
     }
     var rows = profiles.slice(0,12).map(function(p){
-      return '<tr><td><b>' + escHtml(p.model_id||'—') + '</b><br><span style="color:#666;font-size:10px">' + escHtml(p.model_family||'') + '</span></td><td>' + (p.horizon_days||'—') + 'd</td><td>' + (p.sample_count||0) + '</td><td>' + (p.win_rate!=null?(p.win_rate*100).toFixed(0)+'%':'—') + '</td><td>' + (p.profit_factor!=null?p.profit_factor:'—') + '</td><td>' + (p.net_return_pct!=null?(p.net_return_pct>=0?'+':'')+p.net_return_pct+'%':'—') + '</td><td style="font-size:11px">' + escHtml(p.status||'—') + '</td></tr>';
+      return '<tr><td><b>' + escHtml(p.model_id||'—') + '</b><br><span style="color:#999;font-size:10px">' + escHtml(p.model_family||'') + '</span></td><td>' + (p.horizon_days||'—') + 'd</td><td>' + (p.sample_count||0) + '</td><td>' + (p.win_rate!=null?(p.win_rate*100).toFixed(0)+'%':'—') + '</td><td>' + (p.profit_factor!=null?p.profit_factor:'—') + '</td><td>' + (p.net_return_pct!=null?(p.net_return_pct>=0?'+':'')+p.net_return_pct+'%':'—') + '</td><td style="font-size:11px">' + escHtml(p.status||'—') + '</td></tr>';
     }).join('');
     el.innerHTML = '<table class="tbl"><thead><tr><th>Model</th><th>Hz</th><th>N</th><th>WR</th><th>PF</th><th>Net</th><th>Status</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }catch(e){el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml(String(e)) + '</div>'}
@@ -1411,7 +1411,7 @@ async function loadSgPromotion(){
     var g = await _fetchJson('/api/wolf/super-ghost/promotion?limit=8');
     if(!g || g.ok === false){el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml((g&&g.error)||'unavailable') + '</div>';return}
     var reviews = g.reviews || [];
-    if(!reviews.length){el.innerHTML = '<div class="kv" style="color:#666">No promotion reviews yet — candidates must earn shadow evidence first.</div>';return}
+    if(!reviews.length){el.innerHTML = '<div class="kv" style="color:#999">No promotion reviews yet — candidates must earn shadow evidence first.</div>';return}
     var rows = reviews.map(function(r){
       var dCls = r.approved_for_promotion ? 'ok' : (r.decision === 'RETIRE_CANDIDATE' ? 'fail' : 'warn');
       return '<tr><td>' + fmtTimeAgo(r.created_at) + '</td><td><b>' + escHtml(r.candidate_id||'—') + '</b></td><td><span class="' + dCls + '">' + escHtml(r.decision||'—') + '</span></td><td>' + (r.sample_count||0) + '</td><td style="font-size:11px;color:#888">' + escHtml((r.reason||'').slice(0,80)) + '</td></tr>';
@@ -1454,7 +1454,7 @@ async function loadResearchStatus(){
       + (g.research_active
         ? '<span class="warn"><b>&#9679; RESEARCH MODE ACTIVE</b></span> · reason: <code>' + escHtml(g.research_reason||'—') + '</code>'
         : '<span class="ok"><b>&#10003; graduated</b></span> — normal gated mode')
-      + (g.research_enabled ? '' : ' · <span style="color:#666">(feature disabled via env)</span>')
+      + (g.research_enabled ? '' : ' · <span style="color:#999">(feature disabled via env)</span>')
       + '</div>';
     el.innerHTML = head + '<table class="tbl"><tbody>'
       + '<tr><td>Resolved picks</td><td><b>' + (g.resolved_picks!=null?g.resolved_picks:'—') + '</b> / ' + (g.min_for_exit!=null?g.min_for_exit:'—') + ' needed to exit'

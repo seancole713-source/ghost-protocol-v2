@@ -19,6 +19,7 @@ import os
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+from core.db import ensure_ghost_state
 
 LOGGER = logging.getLogger("ghost.shadow")
 
@@ -484,7 +485,7 @@ def run_shadow_cycle() -> Dict[str, int]:
 
         with db_conn() as conn:
             cur = conn.cursor()
-            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            ensure_ghost_state(cur)
             cur.execute(
                 "INSERT INTO ghost_state(key,val) VALUES('last_shadow_cycle', %s) "
                 "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",

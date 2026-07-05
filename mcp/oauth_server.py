@@ -17,6 +17,7 @@ import urllib.parse
 from typing import Any, Dict, Optional, Tuple
 
 import requests
+from core.db import ensure_ghost_state
 
 LOGGER = logging.getLogger("ghost.mcp.oauth")
 
@@ -222,7 +223,7 @@ def store_auth_code(
     })
     with db_conn() as conn:
         cur = conn.cursor()
-        cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+        ensure_ghost_state(cur)
         cur.execute(
             "INSERT INTO ghost_state(key,val) VALUES(%s,%s) "
             "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
@@ -256,7 +257,7 @@ def store_refresh_token(token: str) -> None:
     exp = int(time.time()) + REFRESH_TTL_S
     with db_conn() as conn:
         cur = conn.cursor()
-        cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+        ensure_ghost_state(cur)
         cur.execute(
             "INSERT INTO ghost_state(key,val) VALUES(%s,%s) "
             "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",

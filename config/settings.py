@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     
     # App
     APP_NAME: str = "Ghost Protocol"
-    VERSION: str = "2.1.0"  # synced with wolf_app.APP_VERSION
+    VERSION: str = "2.5.0"  # synced with wolf_app.APP_VERSION
     DEBUG: bool = False
     
     # Database

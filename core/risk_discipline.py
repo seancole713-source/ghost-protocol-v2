@@ -17,7 +17,7 @@ import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-from core.db import db_conn
+from core.db import db_conn, ensure_ghost_state
 
 LOGGER = logging.getLogger("ghost.risk")
 
@@ -74,7 +74,7 @@ def _ghost_state_get(key: str) -> Optional[str]:
     try:
         with db_conn() as conn:
             cur = conn.cursor()
-            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            ensure_ghost_state(cur)
             cur.execute("SELECT val FROM ghost_state WHERE key=%s", (key,))
             row = cur.fetchone()
             return str(row[0]) if row and row[0] is not None else None
@@ -85,7 +85,7 @@ def _ghost_state_get(key: str) -> Optional[str]:
 def _ghost_state_set(key: str, val: str) -> None:
     with db_conn() as conn:
         cur = conn.cursor()
-        cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+        ensure_ghost_state(cur)
         cur.execute(
             "INSERT INTO ghost_state(key,val) VALUES(%s,%s) "
             "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",

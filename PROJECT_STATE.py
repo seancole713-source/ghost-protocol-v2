@@ -127,16 +127,9 @@ SESSION_LOG = {
         "wolf_app.py is 5,900+ lines — God Object with 101 endpoints, needs splitting into route modules",
         "core/signal_engine.py is ~2,500 lines — training, inference, OHLCV, features, gates all in one file",
         "85+ except Exception: pass blocks in core/ — intentional best-effort pattern but impossible to audit",
-        "15+ endpoints return 500 on invalid input instead of 422",
-        "No global DB-unavailable exception handler — any DB outage takes down all endpoints",
-        "Chart.js loaded from CDN with no SRI hash or local fallback",
-        "No loading spinners/skeleton screens in cockpit — just 'Loading…' text",
-        "Color contrast failures on .desc, .kv, .footer, .gs-meta (fail WCAG AA)",
-        "Missing aria-label on interactive elements in cockpit and admin",
-        "redis package listed in requirements.txt but never imported — dead dependency",
-        "datetime.utcnow() used in 7 locations — deprecated in Python 3.12+",
-        "config/settings.py VERSION stale at 2.1.0 (actual is 2.5.0)",
-        "GHOST_OAUTH_SECRET exists in Railway production (K7x_mP2vQn9LwR4sTf8hJc3bY6dA1eU0g)",
+        "GHOST_OAUTH_SECRET exists in Railway production (value in Railway env vars — was committed here in plaintext until 2026-07-04; ROTATE IT, git history still has it)",
+        "Global ValueError→422 handler (PR #129) may reclassify internal ValueErrors as client errors — watch for misleading 422s in logs",
+        "scripts/calibrate_confidence_slope.py keeps its inline ghost_state DDL by design (standalone script, no app imports)",
     ],
 
     # ── QUICK VERIFICATION COMMANDS ──
@@ -1145,6 +1138,36 @@ FAILURES = """
 # ============================================================
 
 SESSION_LOG = """
+--- 2026-07-02–04 | PR #114–#123 — Phase 2 DOWN lane, Alpaca breaker fix, GHOST_ACCURACY_CONTRACT=70 ---
+Context: Operator asked for production status, then auto-mode to build toward 70%+ live
+accuracy. Diagnosed 6.7% live win rate (legacy picks under aggressive env). Shipped
+accuracy contract; did NOT modify PROD_VERIFY or the structured SESSION_LOG dict above.
+
+Phase 1 — Alpaca breaker thrash (PR #115, v118):
+  P2-6 force-refresh busted cache when price >2% from cached high OR low — always true
+  for >4% intraday range symbols. Fix: core/prices.py _intraday_breakout_pct() — refresh
+  only when live trade breaks OUTSIDE cached [low, high]. CB_ALPACA_RATE_MAX_CALLS 50→150.
+
+Phase 2 — Phase 2 DOWN lane + audit quick wins (PR #114, v117):
+  UP fires independently of stronger DOWN; DOWN shadow-only unless V3_DOWN_SIGNALS_ENABLED=1.
+  Direction-separated peer pools; _strip_model_direction_suffix for meta_{sym}_up/_down keys.
+  Model cache, predictions indexes, login throttle, NON_RESEARCH_WHERE hygiene.
+
+Phase 3 — GHOST_ACCURACY_CONTRACT=70 (PR #119–#123):
+  core/accuracy_contract.py — unified training/firing/objective/kill floors; env cannot
+  weaken contract (V3_MIN_HOLDOUT_ACC=0.38 etc clamped). Research picks no longer bypass
+  precision gate under 70 contract. Railway: GHOST_ACCURACY_CONTRACT=70, OBJECTIVE_MODE=
+  balanced, RESEARCH_PICK_ENABLED=0, KILL_WINRATE_FLOOR=0.70. Training admission 60%
+  OOS; live fire still requires 70% precision proof. /api/_version exposes accuracy_contract.
+  Tests: 649 passed at ship. Retrain under strict gates: 0/5 batch passed initially.
+
+Operator Q&A: stale status report (v116/968b2c4) corrected — prod reached v123+;
+Phase 2 code deployed; 0 DOWN models trained; live 6.7% is pre-fix record; engine
+correctly silent (precision_unproven / meta_gate / chop) until models re-prove.
+
+Open for next agent: monitor retrain + precision_gate.ok counts; post-fix resolved WR
+only; keep V3_DOWN_SIGNALS_ENABLED=0 until DOWN shadow track record exists.
+
 --- 2026-07-03–04 | PR #125–#131 — security round, live verification pipeline, kill-status honesty ---
 Context: full forensic diagnostic (this agent + a second agent cross-verifying).
 The second agent shipped the critical-fix wave (regime modifier sync, ~3,600 lines

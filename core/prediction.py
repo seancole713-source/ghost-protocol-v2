@@ -12,7 +12,7 @@ Rules:
 import os, time, logging, json
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Tuple
-from core.db import db_conn
+from core.db import db_conn, ensure_ghost_state
 from core.prediction_filters import NON_RESEARCH_WHERE, V32_ERA_MIN_ID
 from core.vol_targets import base_vol_pct, stop_pct_from_vol
 try:
@@ -383,7 +383,7 @@ def resume_engine() -> Dict[str, Any]:
     try:
         with db_conn() as c:
             cur = c.cursor()
-            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            ensure_ghost_state(cur)
             cur.execute(
                 "INSERT INTO ghost_state(key,val) VALUES('engine_pause_grace_until',%s) "
                 "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val", (str(grace_until),))
@@ -455,7 +455,7 @@ def enforce_kill_conditions() -> Dict[str, Any]:
     try:
         with db_conn() as c:
             cur = c.cursor()
-            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            ensure_ghost_state(cur)
             pairs = [("engine_paused", "1"), ("engine_pause_reason", reason),
                      ("engine_pause_ts", str(now))]
             for k, v in pairs:
@@ -649,7 +649,7 @@ def _objective_runtime_mode(cache_ttl_s: int = 45) -> str:
     try:
         with db_conn() as conn:
             cur = conn.cursor()
-            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            ensure_ghost_state(cur)
             cur.execute("SELECT val FROM ghost_state WHERE key='objective_mode_runtime'")
             row = cur.fetchone()
             if row and row[0]:
@@ -848,7 +848,7 @@ def objective_autotune_mode() -> Dict[str, Any]:
         prev_mode = None
         with db_conn() as conn:
             cur = conn.cursor()
-            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            ensure_ghost_state(cur)
             cur.execute("SELECT val FROM ghost_state WHERE key='objective_mode_runtime'")
             row = cur.fetchone()
             prev_mode = str(row[0]).strip().lower() if row and row[0] else None
@@ -1564,7 +1564,7 @@ def run_prediction_cycle(with_diag: bool = False):
     try:
         with db_conn() as _hc:
             _cur = _hc.cursor()
-            _cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            ensure_ghost_state(_cur)
             _now = int(time.time())
             _cur.execute(
                 """
@@ -1611,7 +1611,7 @@ def run_prediction_cycle(with_diag: bool = False):
         }
         with db_conn() as _gc:
             _gcur = _gc.cursor()
-            _gcur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            ensure_ghost_state(_gcur)
             _gcur.execute("SELECT val FROM ghost_state WHERE key='gate_outcome_history'")
             _grow = _gcur.fetchone()
             _hist = []

@@ -17,6 +17,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 import requests
+from core.db import ensure_ghost_state
 
 LOGGER = logging.getLogger("ghost.war_room")
 
@@ -116,7 +117,7 @@ def _check_daily_limit() -> Optional[str]:
         today = _dt.datetime.now(tz).strftime("%Y-%m-%d")
         with db_conn() as conn:
             cur = conn.cursor()
-            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            ensure_ghost_state(cur)
             cur.execute("SELECT val FROM ghost_state WHERE key='war_room_daily_count'")
             row = cur.fetchone()
             if row:

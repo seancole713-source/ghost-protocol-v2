@@ -5,7 +5,7 @@ from fastapi import FastAPI, Header, HTTPException, Depends, Request, WebSocket,
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
-from core.db import db_conn, init_db
+from core.db import db_conn, init_db, ensure_ghost_state
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,7 +23,7 @@ logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 # missing from Railway logs after a deploy, the container is stale (the
 # Procfile boot echo is the shell-level twin of this check).
 LOGGER.info(
-    "[wolf_app] BOOT_BANNER PR128_KILL_STATUS_WINDOWS "
+    "[wolf_app] BOOT_BANNER PR129_DEBT_CLEANUP "
     "DEPLOY_VERSION=%s GIT_SHA=%s DEPLOY_ID=%s",
     os.getenv("DEPLOY_VERSION", "unset"),
     os.getenv("RAILWAY_GIT_COMMIT_SHA", "unset"),
@@ -81,7 +81,7 @@ def _record_admin_action(action: str, detail: str = "") -> None:
         entry = {"ts": int(time.time()), "action": str(action)[:60], "detail": str(detail)[:200]}
         with db_conn() as conn:
             cur = conn.cursor()
-            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            ensure_ghost_state(cur)
             cur.execute("SELECT val FROM ghost_state WHERE key='admin_audit_log'")
             row = cur.fetchone()
             log = []
@@ -132,7 +132,7 @@ def _v32_stats_start_ts(cur):
 
     # Ensure state table exists (shared with other lightweight state keys)
     try:
-        cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+        ensure_ghost_state(cur)
     except Exception:
         pass
 
@@ -857,7 +857,7 @@ def _daily_summary_job():
     try:
         with db_conn() as c:
             cur = c.cursor()
-            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            ensure_ghost_state(cur)
             cur.execute("SELECT val FROM ghost_state WHERE key='last_daily_summary_date'")
             row = cur.fetchone()
             if row and row[0] == date_str:
@@ -929,7 +929,7 @@ def _market_scan_job():
     try:
         with db_conn() as c:
             cur = c.cursor()
-            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            ensure_ghost_state(cur)
             cur.execute("SELECT val FROM ghost_state WHERE key='last_market_scan_ts'")
             row = cur.fetchone()
             last = int(row[0]) if row and row[0] else 0
@@ -1139,7 +1139,7 @@ def _weekly_summary_job():
     try:
         with db_conn() as c:
             cur = c.cursor()
-            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            ensure_ghost_state(cur)
             cur.execute("SELECT val FROM ghost_state WHERE key='last_weekly_summary_week'")
             row = cur.fetchone()
             if row and row[0] == week_tag:
@@ -1204,7 +1204,7 @@ def _coverage_maintenance_job():
     try:
         with db_conn() as conn:
             cur = conn.cursor()
-            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            ensure_ghost_state(cur)
             cur.execute("SELECT val FROM ghost_state WHERE key='last_coverage_retrain_ts'")
             row = cur.fetchone()
             last_ts = int(row[0]) if row and row[0] else 0
@@ -1448,7 +1448,7 @@ async def lifespan(app: FastAPI):
             try:
                 with db_conn() as _wc:
                     _wcur = _wc.cursor()
-                    _wcur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+                    ensure_ghost_state(_wcur)
                     _wcur.execute("SELECT val FROM ghost_state WHERE key='last_weekly_retrain_ts'")
                     _wr = _wcur.fetchone()
                     last_ts = int(_wr[0]) if _wr and _wr[0] else 0
@@ -1618,6 +1618,35 @@ APP = FastAPI(
 # allow_credentials stays False, so this is exposure-narrowing, not auth.
 _CORS_ORIGINS = [o.strip() for o in os.getenv("GHOST_CORS_ORIGINS", "*").split(",") if o.strip()]
 APP.add_middleware(CORSMiddleware, allow_origins=_CORS_ORIGINS, allow_methods=["*"], allow_headers=["*"])
+
+
+# ── Global exception handlers (audit: DB outage → 503, bad input → 422) ──
+# Without these, a Postgres outage or a hand-parsed bad query param surfaces
+# as an opaque 500 from every endpoint that touches the failure.
+try:
+    import psycopg2 as _psycopg2
+
+    @APP.exception_handler(_psycopg2.OperationalError)
+    @APP.exception_handler(_psycopg2.InterfaceError)
+    async def _db_unavailable_handler(request: Request, exc: Exception):
+        LOGGER.error("[db] unavailable on %s: %s", request.url.path, exc)
+        return JSONResponse(
+            status_code=503,
+            content={"ok": False, "error": "database_unavailable",
+                     "detail": "Database is unreachable. Retry shortly."},
+        )
+except Exception:  # psycopg2 absent in some test contexts
+    pass
+
+
+@APP.exception_handler(ValueError)
+async def _value_error_handler(request: Request, exc: ValueError):
+    # Hand-parsed params (int(...), float(...), date parsing) raise ValueError
+    # on bad client input. 422 matches FastAPI's native validation contract.
+    return JSONResponse(
+        status_code=422,
+        content={"ok": False, "error": "invalid_input", "detail": str(exc)[:300]},
+    )
 
 
 # ── Public-endpoint rate limiting (audit) ────────────────────────────────
@@ -3046,7 +3075,7 @@ def cron_signal_check(x_cron_secret: str = Header(default="")):
     try:
         with db_conn() as conn:
             cur = conn.cursor()
-            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            ensure_ghost_state(cur)
             cur.execute(
                 "INSERT INTO ghost_state(key,val) VALUES('last_signal_cron_ts',%s) "
                 "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
@@ -3156,7 +3185,7 @@ def telegram_status():
     try:
         with db_conn() as conn:
             cur = conn.cursor()
-            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            ensure_ghost_state(cur)
             cur.execute("SELECT val FROM ghost_state WHERE key='last_signal_cron_ts'")
             row = cur.fetchone()
             if row and row[0]:
@@ -3323,7 +3352,7 @@ def wolf_gate_history(limit: int = 50):
         import json as _j
         with db_conn() as conn:
             cur = conn.cursor()
-            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            ensure_ghost_state(cur)
             cur.execute("SELECT val FROM ghost_state WHERE key='gate_outcome_history'")
             row = cur.fetchone()
         hist = []
@@ -4005,7 +4034,7 @@ def wolf_daily_summary(limit: int = 30):
         import json as _j
         with db_conn() as conn:
             cur = conn.cursor()
-            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            ensure_ghost_state(cur)
             cur.execute("SELECT val FROM ghost_state WHERE key='daily_summary_history'")
             row = cur.fetchone()
         hist = []
@@ -5185,7 +5214,7 @@ def v3_lineage(limit: int = 50):
         import json as _j
         with db_conn() as conn:
             cur = conn.cursor()
-            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            ensure_ghost_state(cur)
             cur.execute("SELECT val FROM ghost_state WHERE key='model_lineage'")
             row = cur.fetchone()
         hist = []
@@ -5368,7 +5397,7 @@ def admin_audit_log(request: Request, limit: int = 100):
         import json as _j
         with db_conn() as conn:
             cur = conn.cursor()
-            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            ensure_ghost_state(cur)
             cur.execute("SELECT val FROM ghost_state WHERE key='admin_audit_log'")
             row = cur.fetchone()
         log = []
@@ -5406,7 +5435,7 @@ def coverage_status():
     try:
         with db_conn() as conn:
             cur = conn.cursor()
-            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            ensure_ghost_state(cur)
             cur.execute("SELECT val FROM ghost_state WHERE key='last_coverage_retrain_ts'")
             row = cur.fetchone()
             last_ts = int(row[0]) if row and row[0] else 0
@@ -5620,7 +5649,7 @@ def _record_v3_train_state(**fields) -> None:
     try:
         with db_conn() as conn:
             cur = conn.cursor()
-            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            ensure_ghost_state(cur)
             for name, value in fields.items():
                 cur.execute(
                     "INSERT INTO ghost_state(key,val) VALUES(%s,%s) "
@@ -5722,7 +5751,7 @@ def v3_train(x_cron_secret: str = Header(default=""), force: bool = False):
 
 # PR #19 deploy-version constant. Bump on every "did Railway pick up
 # the new code?" PR so /api/_version reveals the truth in one curl.
-_RUNNING_PR_VERSION = 128
+_RUNNING_PR_VERSION = 129
 
 
 def _deploy_meta() -> dict:
@@ -5886,7 +5915,7 @@ def v3_train_last():
     try:
         with db_conn() as conn:
             cur = conn.cursor()
-            cur.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
+            ensure_ghost_state(cur)
             cur.execute(
                 "SELECT key, val FROM ghost_state WHERE key LIKE 'last_v3_train_%'"
             )

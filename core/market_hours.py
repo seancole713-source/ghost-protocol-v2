@@ -25,7 +25,7 @@ def _now_ct() -> _dt.datetime:
 
         return _dt.datetime.now(ZoneInfo(SESSION_TZ))
     except Exception:
-        return _dt.datetime.utcnow() - _dt.timedelta(hours=6)
+        return _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None) - _dt.timedelta(hours=6)
 
 
 def session_hm(now: _dt.datetime | None = None) -> Tuple[_dt.datetime, int]:

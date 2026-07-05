@@ -538,7 +538,7 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
     except Exception:
         ct = None
 
-    now_ct = _dt.datetime.now(ct) if ct else _dt.datetime.utcnow() - _dt.timedelta(hours=6)
+    now_ct = _dt.datetime.now(ct) if ct else _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None) - _dt.timedelta(hours=6)
     session_date = now_ct.date()
     market_date = session_date.isoformat()
 
@@ -572,7 +572,7 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
                     PREMARKET_START_MIN // 60, PREMARKET_START_MIN % 60, tzinfo=ct,
                 ).astimezone(_dt.timezone.utc)
             else:
-                day_start = _dt.datetime.utcnow().replace(hour=8, minute=0, second=0, microsecond=0)
+                day_start = _dt.datetime.now(_dt.timezone.utc).replace(hour=8, minute=0, second=0, microsecond=0, tzinfo=None)
             start_str = day_start.strftime("%Y-%m-%dT%H:%M:%SZ")
             end_str = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
             bars = []
