@@ -10,6 +10,7 @@ Rules:
   - Features logged on every prediction for future ML training
 """
 import os, time, logging, json
+from core.quiet import note_suppressed
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Tuple
 from core.db import db_conn, ensure_ghost_state
@@ -228,7 +229,7 @@ def _parse_engine_pause_state(st: Dict[str, Any]) -> Dict[str, Any]:
                 _clear_engine_pause()
                 return {"paused": False, "auto_resumed": True}
         except Exception:
-            pass
+            note_suppressed()
     return {
         "paused": True,
         "reason": st.get("engine_pause_reason") or "",
@@ -392,7 +393,7 @@ def resume_engine() -> Dict[str, Any]:
                 "INSERT INTO ghost_state(key,val) VALUES('engine_pause_resume_ts',%s) "
                 "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val", (str(now),))
     except Exception:
-        pass
+        note_suppressed()
     LOGGER.warning("ENGINE RESUMED (manual): kill-condition window reset, grace until %s", grace_until)
     return {"ok": True, "resumed": True, "grace_until": grace_until, "window_reset": True}
 
@@ -416,7 +417,7 @@ def enforce_kill_conditions() -> Dict[str, Any]:
             if row and row[0]:
                 since_ts = int(row[0])
     except Exception:
-        pass
+        note_suppressed()
     ev = evaluate_kill_conditions(since_ts=since_ts)
     if not ev.get("ok"):
         return engine_pause_state()
@@ -439,7 +440,7 @@ def enforce_kill_conditions() -> Dict[str, Any]:
             if row and row[0]:
                 grace_until = int(row[0])
     except Exception:
-        pass
+        note_suppressed()
     if grace_until and int(time.time()) < grace_until:
         LOGGER.info("Kill conditions tripped but grace period active until %s — not pausing", grace_until)
         return {"paused": False, "grace_active": True, "grace_until": grace_until,
@@ -489,8 +490,7 @@ def enforce_kill_conditions() -> Dict[str, Any]:
                     "INSERT INTO ghost_state(key,val) VALUES('engine_pause_alerted',%s) "
                     "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val", (str(now),))
         except Exception:
-            pass
-
+            note_suppressed()
     return {"paused": True, "reason": reason, "since": now,
             "auto_resume_at": auto_resume_at, "actions": actions}
 
@@ -659,7 +659,7 @@ def _objective_runtime_mode(cache_ttl_s: int = 45) -> str:
                     _OBJECTIVE_RUNTIME_MODE_CACHE["ts"] = now
                     return db_mode
     except Exception:
-        pass
+        note_suppressed()
     _OBJECTIVE_RUNTIME_MODE_CACHE["mode"] = fallback_mode
     _OBJECTIVE_RUNTIME_MODE_CACHE["ts"] = now
     return fallback_mode
@@ -1131,8 +1131,7 @@ def _predict_symbol_ex(symbol, asset_type, regime, scores_out=None):
                             is_research = True
                             score_vector["research_stall"] = True
         except Exception:
-            pass
-
+            note_suppressed()
     try:
         from core.signal_engine import predict_live_ex
         signal, v3_reason = predict_live_ex(symbol, "stock", scores=score_vector, research_mode=is_research)
@@ -1174,7 +1173,7 @@ def _predict_symbol_ex(symbol, asset_type, regime, scores_out=None):
             _floor = min(0.98, _floor + _deg_bump)
             score_vector["degraded_conf_bump"] = _deg_bump
     except Exception:
-        pass
+        note_suppressed()
     if confidence < _floor:
         score_vector["confidence"] = float(confidence)
         score_vector["confidence_floor"] = float(_floor)
@@ -1234,9 +1233,7 @@ def _predict_symbol_ex(symbol, asset_type, regime, scores_out=None):
             if old_row and old_row[0] and float(old_row[0]) > 0:
                 price_4h_pct = round((price - float(old_row[0])) / float(old_row[0]) * 100, 3)
     except Exception:
-        pass
-
-    # Claude news sentiment — BRAKE ONLY (accuracy contract): see
+        note_suppressed()  # Claude news sentiment — BRAKE ONLY (accuracy contract): see
     # sentiment_confidence_adjustment. An unproven news heuristic may lower
     # confidence (and therefore position size) when news runs against the
     # trade, but may never raise it — raising confidence after the gates
@@ -1251,9 +1248,7 @@ def _predict_symbol_ex(symbol, asset_type, regime, scores_out=None):
         if abs(sent) > 0.1:
             LOGGER.info("[SENTIMENT] " + symbol + " news=" + str(round(sent,2)) + " adj=" + str(adj) + " conf=" + str(confidence))
     except Exception:
-        pass
-
-    # Build feature vector — stored in DB for future ML training
+        note_suppressed()  # Build feature vector — stored in DB for future ML training
     now_dt = datetime.now(timezone.utc)
     from core.feature_schema import FEATURE_ASOF_KEY, feature_asof_unix
     v3_feats = score_vector.get("features") if isinstance(score_vector, dict) else {}
@@ -1283,7 +1278,7 @@ def _predict_symbol_ex(symbol, asset_type, regime, scores_out=None):
             score_vector["ghost_components"] = ghost_components(
                 confidence, direction, score_vector.get("features"), now, now)
     except Exception:
-        pass
+        note_suppressed()
     return {
         "symbol":       symbol,
         "direction":    direction,
@@ -1406,7 +1401,7 @@ def run_prediction_cycle(with_diag: bool = False):
             from core.performance_log import symbol_eval_from_scan
             symbol_evals.append(symbol_eval_from_scan(symbol, pick, skip, _sv, _eval_ts))
         except Exception:
-            pass
+            note_suppressed()
         _up = _sv.get("up_prob")
         if _up is not None and (closest is None or _up > closest["up_prob"]):
             _reg = _sv.get("regime") if isinstance(_sv.get("regime"), dict) else {}
@@ -1442,8 +1437,7 @@ def run_prediction_cycle(with_diag: bool = False):
             from core.signal_engine import predict_live_ex
             predict_live_ex._last_scan_features = _all_feats
     except Exception:
-        pass
-
+        note_suppressed()
     all_picks.sort(key=lambda x: x["confidence"], reverse=True)
     # Research picks have their own daily cap to prevent flooding.
     # Count research picks already saved today (not just this cycle).
@@ -1457,7 +1451,7 @@ def run_prediction_cycle(with_diag: bool = False):
             )
             research_today = int(rc_cur.fetchone()[0])
     except Exception:
-        pass
+        note_suppressed()
     research_remaining = max(0, RESEARCH_DAILY_CAP - research_today)
     research_picks = [p for p in all_picks if p.get("kind") == "research"]
     live_picks = [p for p in all_picks if p.get("kind") != "research"]
@@ -1554,7 +1548,7 @@ def run_prediction_cycle(with_diag: bool = False):
             from core.pick_review import notify_withdrawals
             notify_withdrawals(withdrawn_picks)
         except Exception:
-            pass
+            note_suppressed()
     LOGGER.info(
         "Cycle: %d/%d picks saved | %d withdrawn | regime: %s",
         len(saved), len(all_picks), len(withdrawn_picks), regime.get("reason") or "OK",

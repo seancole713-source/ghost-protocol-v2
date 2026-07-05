@@ -15,6 +15,7 @@ Scores are directional in [-2, +2]: negative = bearish, positive = bullish,
 0 = neutral/unknown. Conviction is separate from direction.
 """
 from __future__ import annotations
+from core.quiet import note_suppressed
 
 import math
 import json
@@ -137,7 +138,7 @@ def _f(v: Any) -> Optional[float]:
         if math.isfinite(out):
             return out
     except Exception:
-        pass
+        note_suppressed()
     return None
 
 
@@ -1018,7 +1019,7 @@ def _safe_parse_json(text: str) -> Optional[Dict[str, Any]]:
     try:
         return json.loads(text)
     except Exception:
-        pass
+        note_suppressed()
     start = text.find("{")
     end = text.rfind("}")
     if 0 <= start < end:
@@ -1216,7 +1217,7 @@ def _latest_earnings_from_yf(symbol: str, tk: Any) -> Dict[str, Any]:
             out["estimate_eps"] = _f(row.get("epsEstimate"))
             out["actual_eps"] = _f(row.get("epsActual"))
     except Exception:
-        pass
+        note_suppressed()
     try:
         inc = getattr(tk, "quarterly_income_stmt", None) or getattr(tk, "quarterly_financials", None)
         if inc is not None and not getattr(inc, "empty", True):
@@ -1233,7 +1234,7 @@ def _latest_earnings_from_yf(symbol: str, tk: Any) -> Dict[str, Any]:
                 if latest is not None and year_ago and year_ago > 0:
                     out["revenue_yoy"] = (latest - year_ago) / year_ago
     except Exception:
-        pass
+        note_suppressed()
     return out
 
 
@@ -1254,7 +1255,7 @@ def _fetch_live_snapshot(symbol: str) -> Dict[str, Any]:
                 if val is not None and snap.get(key) is None:
                     snap[key] = val
             except Exception:
-                pass
+                note_suppressed()
         snap["current_price"] = snap.get("current_price") or info.get("currentPrice") or info.get("regularMarketPrice")
         snap["avg_volume"] = info.get("averageVolume") or info.get("averageDailyVolume10Day")
         snap["week52_high"] = snap.get("week52_high") or info.get("fiftyTwoWeekHigh")
@@ -1272,7 +1273,7 @@ def _fetch_live_snapshot(symbol: str) -> Dict[str, Any]:
                 if rows:
                     return rows
             except Exception:
-                pass
+                note_suppressed()
             return _df_to_points(yf_history(sym_, yf_period, "1d"))
 
         snap["history"] = _hist(symbol, 400, "1y")
@@ -1295,7 +1296,7 @@ def _fetch_live_snapshot(symbol: str) -> Dict[str, Any]:
                 if px:
                     snap["current_price"] = float(px)
             except Exception:
-                pass
+                note_suppressed()
         if not _f(snap.get("current_price")) and snap.get("history"):
             closes = _closes(snap["history"])
             if closes:
@@ -1318,8 +1319,7 @@ def _fetch_live_snapshot(symbol: str) -> Dict[str, Any]:
                 snap["earnings"] = merged
                 snap["sec_fundamentals"] = sec_f
         except Exception:
-            pass
-        # analyst data
+            note_suppressed()  # analyst data
         recs = {"strong_buy": 0, "buy": 0, "hold": 0, "underperform": 0, "sell": 0}
         try:
             if tk is not None:
@@ -1334,7 +1334,7 @@ def _fetch_live_snapshot(symbol: str) -> Dict[str, Any]:
                         "sell": _i(row.get("strongSell")) or 0,
                     }
         except Exception:
-            pass
+            note_suppressed()
         snap["analysts"] = {
             "current_price": snap.get("current_price"),
             "price_target_avg": info.get("targetMeanPrice"),
@@ -1348,7 +1348,7 @@ def _fetch_live_snapshot(symbol: str) -> Dict[str, Any]:
             from core.news import get_recent_articles
             news.extend(get_recent_articles(30, symbol=symbol) or [])
         except Exception:
-            pass
+            note_suppressed()
         for n in (yf_news(symbol) or [])[:20]:
             if isinstance(n, dict):
                 news.append({
@@ -1367,8 +1367,7 @@ def _fetch_live_snapshot(symbol: str) -> Dict[str, Any]:
                 for n in snap["news"]:
                     n.setdefault("sentiment", ns.get("sentiment_score"))
         except Exception:
-            pass
-        # EDGAR material events for earnings/officer changes/delisting risk.
+            note_suppressed()  # EDGAR material events for earnings/officer changes/delisting risk.
         try:
             from core.edgar_integration import fetch_recent_8k
             ed = fetch_recent_8k(symbol, days=90)
@@ -1380,8 +1379,7 @@ def _fetch_live_snapshot(symbol: str) -> Dict[str, Any]:
             if ed.get("has_delisting_risk"):
                 snap.setdefault("news", []).append({"title": "Recent 8-K delisting risk detected", "category": "company", "symbols": [symbol], "sentiment": -0.8})
         except Exception:
-            pass
-        # PR #101: Expanded Data Brain (point-in-time aware evidence collector).
+            note_suppressed()  # PR #101: Expanded Data Brain (point-in-time aware evidence collector).
         # Adds richer raw context without fabricating missing values. These
         # signals are stored under data_brain and only merged into existing
         # Super Ghost fields when the source is genuinely available.
@@ -1390,7 +1388,7 @@ def _fetch_live_snapshot(symbol: str) -> Dict[str, Any]:
             dbn = build_data_brain(symbol)
             _merge_data_brain(snap, dbn)
         except Exception:
-            pass
+            note_suppressed()
         try:
             from core.macro_regime import get_macro_features
             macro = get_macro_features()
@@ -1400,13 +1398,13 @@ def _fetch_live_snapshot(symbol: str) -> Dict[str, Any]:
                 "fed_rate": (macro.get("macro_fed_rate") * 10.0) if macro.get("macro_fed_rate") is not None else None,
             })
         except Exception:
-            pass
+            note_suppressed()
         try:
             from core.risk_discipline import daily_loss_lock_state, risk_settings
             snap["risk"] = risk_settings()
             snap["daily_loss_lock"] = daily_loss_lock_state()
         except Exception:
-            pass
+            note_suppressed()
     except Exception as e:
         snap["fetch_error"] = str(e)[:160]
     return snap

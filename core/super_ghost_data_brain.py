@@ -14,6 +14,7 @@ Every source carries timestamps/as-of metadata so PR #100's point-in-time store
 can audit leakage. Missing data stays missing; nothing is fabricated.
 """
 from __future__ import annotations
+from core.quiet import note_suppressed
 
 import html
 import json
@@ -58,14 +59,14 @@ def _parse_date_ts(v: Any) -> Optional[int]:
         if re.fullmatch(r"\d+(\.\d+)?", s):
             return _parse_date_ts(float(s))
     except Exception:
-        pass
+        note_suppressed()
     try:
         dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         return int(dt.timestamp())
     except Exception:
-        pass
+        note_suppressed()
     try:
         return int(datetime.fromisoformat(s[:10]).replace(tzinfo=timezone.utc).timestamp())
     except Exception:
@@ -205,7 +206,7 @@ def _recent_forms(symbol: str, *, form: str, days: int = 180, limit: int = 20) -
             if datetime.fromisoformat(d).date() < cutoff:
                 continue
         except Exception:
-            pass
+            note_suppressed()
         acc = accs[i] if i < len(accs) else ""
         doc = docs[i] if i < len(docs) else ""
         out.append({
@@ -265,7 +266,7 @@ def get_news_quality(symbol: str) -> Dict[str, Any]:
         from core.news import get_recent_articles
         articles.extend(get_recent_articles(50, symbol=symbol) or [])
     except Exception:
-        pass
+        note_suppressed()
     try:
         from core.yfinance_client import yf_news
         for n in (yf_news(symbol) or [])[:20]:
@@ -279,7 +280,7 @@ def get_news_quality(symbol: str) -> Dict[str, Any]:
                     "symbols": [symbol.upper()],
                 })
     except Exception:
-        pass
+        note_suppressed()
     q = classify_news_articles(articles)
     q["symbol"] = symbol.upper()
     return q

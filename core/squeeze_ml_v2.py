@@ -4,6 +4,7 @@ Trained coefficients are a calibrated baseline until labeled squeeze outcomes
 accrue in production. Blends with heuristic v1 probabilities (60% ML / 40% heuristic).
 """
 from __future__ import annotations
+from core.quiet import note_suppressed
 
 import json
 import math
@@ -50,7 +51,7 @@ def _load_weights() -> Dict[str, float]:
             if isinstance(data.get("weights"), dict):
                 return {**_DEFAULT_WEIGHTS, **data["weights"]}
     except Exception:
-        pass
+        note_suppressed()
     return dict(_DEFAULT_WEIGHTS)
 
 

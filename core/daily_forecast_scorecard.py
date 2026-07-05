@@ -4,6 +4,7 @@ Each row is a forecast issued at the prior session close for the next trading
 day's open / high / low, compared to realized OHLC once the session completes.
 """
 from __future__ import annotations
+from core.quiet import note_suppressed
 
 import logging
 import os
@@ -36,7 +37,7 @@ def _parse_bar_date(ts: str) -> str:
                 dt = dt.replace(tzinfo=timezone.utc)
             return dt.astimezone(ZoneInfo("America/New_York")).date().isoformat()
     except Exception:
-        pass
+        note_suppressed()
     if "T" in s:
         return s.split("T")[0]
     return s[:10]

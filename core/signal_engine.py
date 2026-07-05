@@ -12,10 +12,82 @@ v3.2: Training labels match live paper trades — WIN = hit vol-based target bef
 within N daily bars (see V3_LABEL_HOLD_BARS), same TP/SL math as core.vol_targets.
 """
 import os, time, logging, json, threading
+from core.quiet import note_suppressed
 import numpy as np
 from typing import Any, Dict, List, Optional
 from core.vol_targets import base_vol_pct, stop_pct_from_vol
 from core.db import ensure_ghost_state
+from core.engine_config import (  # noqa: F401 — facade re-exports (PR #130)
+    V3_LABEL_HOLD_BARS,
+    _min_backtest_bars,
+    _backtest_window,
+    _v3_ohlcv_period,
+    _v3_ohlcv_fetch_retries,
+    _v3_train_symbol_delay_sec,
+    _v3_scan_symbol_delay_sec,
+    _v3_adx_trending_threshold,
+    _v3_watchlist_peer_pool_enabled,
+    _v3_watchlist_peer_pool_max,
+    _model_payload_max_bytes,
+    _v3_min_holdout_acc,
+    _v3_min_edge,
+    _v3_min_wf_edge,
+    _v3_min_win_proba,
+    _v3_min_tp_sl_wins,
+    _v3_min_wf_folds,
+    _v3_min_wf_acc_mean,
+    _v3_wf_acc_min_slack,
+    _v3_split_train_frac,
+    _v3_split_calib_frac,
+    _v3_holdout_slices,
+    _purged_holdout_bounds,
+    _v3_wf_acc_min_overrides,
+    _v3_holdout_acc_overrides,
+    _v3_wf_min_train_floor,
+    _v3_wf_min_train_frac,
+    _v3_wf_test_size_floor,
+    _v3_wf_test_size_frac,
+    _v3_calibration_enabled,
+    _v3_calibration_method,
+    _v3_pool_training_enabled,
+    _v3_down_signals_enabled,
+    _v3_wolf_sample_weight,
+    _v3_sector_feature_enabled,
+    _v3_sector_proxy,
+    _v3_sector_lookback,
+    _v3_ensemble_enabled,
+    _v3_prune_features,
+    _v3_feature_schema,
+    _v3_feature_audit_enabled,
+    _v3_wf_purge,
+    _v3_max_calibration_brier,
+)
+from core.engine_features import (  # noqa: F401 — facade re-exports (PR #130)
+    FEATURE_COLS,
+    _calculate_features,
+    _date_key,
+    _align_sector_closes,
+    _sector_rel_at,
+)
+from core.engine_calibration import (  # noqa: F401 — facade re-exports (PR #130)
+    _reliability_bins,
+    _evaluate_calibration_holdout,
+    _maybe_calibrate,
+    _build_ensemble,
+)
+from core.engine_indicators import (  # noqa: F401 — facade re-exports (PR #130)
+    _rsi,
+    _macd,
+    _bollinger,
+    _volume_ratio,
+    _price_momentum,
+    _ema,
+    _adx,
+    _atr,
+    _obv_slope,
+    _stochastic,
+)
+
 
 LOGGER = logging.getLogger("ghost.signal_v3")
 
@@ -39,7 +111,6 @@ def _v3_label_schema() -> str:
     return f"{LABEL_SCHEMA}_sm{m:g}"
 
 # Daily bars only: approximate 48h stock hold with this many forward bars (24h each).
-V3_LABEL_HOLD_BARS = max(1, int(os.getenv("V3_LABEL_HOLD_BARS", "3")))
 
 
 # Training thresholds. All read from env at call time so tests can
@@ -52,15 +123,8 @@ def _min_train_rows() -> int:
     return max(1, int(os.getenv("MIN_TRAIN_ROWS", "20")))
 
 
-def _min_backtest_bars() -> int:
-    """Min OHLCV rows from the feed before backtest_symbol bothers to label (was 100)."""
-    return max(1, int(os.getenv("MIN_BACKTEST_BARS", "50")))
 
 
-def _backtest_window() -> int:
-    """Trailing-history window each labeled sample sees (was hardcoded 220).
-    Smaller window = more labeled samples from limited data but noisier features."""
-    return max(20, int(os.getenv("V3_BACKTEST_WINDOW", "120")))
 
 
 def _effective_backtest_window(n_bars: int) -> int:
@@ -71,45 +135,18 @@ def _effective_backtest_window(n_bars: int) -> int:
     return min(_backtest_window(), cap)
 
 
-def _v3_ohlcv_period() -> str:
-    """Default OHLCV lookback for training backtests (2y gives more labeled samples)."""
-    return (os.getenv("V3_OHLCV_PERIOD", "2y") or "2y").strip()
 
 
-def _v3_ohlcv_fetch_retries() -> int:
-    return max(1, int(os.getenv("V3_OHLCV_FETCH_RETRIES", "3")))
 
 
-def _v3_train_symbol_delay_sec() -> float:
-    """Pause between symbols during batch train to avoid Alpaca rate-limit empty responses."""
-    return max(0.0, float(os.getenv("V3_TRAIN_SYMBOL_DELAY_SEC", "0.35")))
 
 
-def _v3_scan_symbol_delay_sec() -> float:
-    """Pause between symbols during live scan to avoid API rate-limit storms.
-
-    Default 0.5s — with 43 symbols that adds ~21s to the scan but prevents
-    the 429 cascade that kills all 5 feed tiers simultaneously."""
-    return max(0.0, float(os.getenv("V3_SCAN_SYMBOL_DELAY_SEC", "0.5")))
 
 
-def _v3_adx_trending_threshold() -> float:
-    """ADX threshold for 'trending' classification in regime gate.
-
-    Default 12 (lowered from 20). Below this, the market is
-    considered choppy/sideways and BUY signals are blocked.
-    Set V3_ADX_TRENDING_THRESHOLD lower to allow picks in milder trends."""
-    return max(5.0, float(os.getenv("V3_ADX_TRENDING_THRESHOLD", "12")))
 
 
-def _v3_watchlist_peer_pool_enabled() -> bool:
-    return (os.getenv("V3_WATCHLIST_PEER_POOL", "on") or "on").strip().lower() not in (
-        "0", "off", "false", "no",
-    )
 
 
-def _v3_watchlist_peer_pool_max() -> int:
-    return max(0, int(os.getenv("V3_WATCHLIST_PEER_POOL_MAX", "12")))
 
 
 _OHLCV_CACHE: dict = {}
@@ -183,238 +220,50 @@ def invalidate_model_cache(symbol: str = None) -> None:
             del _MODEL_CACHE[key]
 
 
-def _model_payload_max_bytes() -> int:
-    return max(1024, int(os.getenv("V3_MODEL_MAX_BYTES", str(50 * 1024 * 1024))))
 
 
-def _v3_min_holdout_acc() -> float:
-    from core.accuracy_contract import resolve_float
-    return resolve_float("V3_MIN_HOLDOUT_ACC", "min_holdout_acc", lo=0.30, hi=0.95)
 
 
-def _v3_min_edge() -> float:
-    from core.accuracy_contract import resolve_float
-    return resolve_float("V3_MIN_EDGE", "min_edge", lo=0.0, hi=0.50)
 
 
-def _v3_min_wf_edge() -> float:
-    """Walk-forward edge floor (can be slightly negative for thin watchlist names)."""
-    return float(os.getenv("V3_MIN_WF_EDGE", "-0.05"))
 
 
-def _v3_min_win_proba() -> float:
-    from core.accuracy_contract import resolve_float
-    return resolve_float("V3_MIN_WIN_PROBA", "min_win_proba", lo=0.40, hi=0.95)
 
 
-def _v3_min_tp_sl_wins() -> int:
-    return max(5, int(os.getenv("V3_MIN_TP_SL_WINS", "15")))
 
 
-def _v3_min_wf_folds() -> int:
-    from core.accuracy_contract import resolve_int
-    return resolve_int("V3_MIN_WF_FOLDS", "min_wf_folds", lo=2, hi=12)
 
 
-def _v3_min_wf_acc_mean() -> float:
-    from core.accuracy_contract import resolve_float
-    return resolve_float("V3_MIN_WF_ACC_MEAN", "min_wf_acc_mean", lo=0.30, hi=0.95)
 
 
-def _v3_wf_acc_min_slack() -> float:
-    return float(os.getenv("V3_WF_ACC_MIN_SLACK", "0.05"))
 
 
-def _v3_split_train_frac() -> float:
-    return float(os.getenv("V3_SPLIT_TRAIN", "0.70"))
 
 
-def _v3_split_calib_frac() -> float:
-    return float(os.getenv("V3_SPLIT_CALIB", "0.15"))
 
 
-def _v3_holdout_slices(n: int) -> tuple:
-    """Time-ordered train | calib | gate index bounds (calib and gate never overlap).
-
-    Default 70/15/15. Calibration fits on the middle slice; promotion gates use
-    only the final slice so holdout accuracy is not reused for Platt/isotonic.
-    """
-    n = int(n)
-    if n < 3:
-        return 1, max(1, n - 1)
-    train_end = max(1, int(n * _v3_split_train_frac()))
-    calib_end = max(train_end + 1, int(n * (_v3_split_train_frac() + _v3_split_calib_frac())))
-    if calib_end >= n:
-        calib_end = n - 1
-    if calib_end <= train_end:
-        calib_end = min(n - 1, train_end + 1)
-    return train_end, calib_end
 
 
-def _purged_holdout_bounds(n: int, train_end: int, calib_end: int, purge: int) -> tuple:
-    """Purged fit-bounds for the train/calib slices (leakage guard).
-
-    Triple-barrier labels look ahead V3_LABEL_HOLD_BARS bars, so the last
-    `purge` rows of the train slice resolve on calib-period prices and the last
-    `purge` rows of the calib slice resolve on gate-period prices. Fitting or
-    threshold-selecting on those rows leaks the very future the precision gate
-    is supposed to be proven against. Returns (train_fit_end, calib_fit_end):
-
-        X_train = X[:train_fit_end]           # purged tail dropped
-        X_calib = X[train_end:calib_fit_end]  # purged tail dropped
-        X_gate  = X[calib_end:]               # untouched
-
-    Guards keep at least 1 row per slice on tiny datasets (fallback paths
-    already handle degenerate calib sizes).
-    """
-    purge = max(0, int(purge))
-    train_fit_end = max(1, int(train_end) - purge)
-    calib_fit_end = max(int(train_end) + 1, int(calib_end) - purge)
-    return train_fit_end, calib_fit_end
 
 
-def _v3_wf_acc_min_overrides() -> dict:
-    """
-    Optional per-symbol absolute floor overrides for wf_acc_min.
-    Env format: V3_WF_ACC_MIN_OVERRIDES="WOLF=0.55"
-
-    Sanity cap: no override can exceed the base wf_acc_mean floor (40% default).
-    A per-symbol wf_acc_min above the wf_acc_mean requirement is nonsensical —
-    it demands every fold beat the mean requirement, which thin-data symbols
-    (like post-Chapter-11 WOLF) cannot satisfy.
-    """
-    raw = (os.getenv("V3_WF_ACC_MIN_OVERRIDES", "") or "").strip()
-    out = {}
-    if not raw:
-        return out
-    cap = _v3_min_wf_acc_mean()  # 40% default — no override can exceed this
-    for part in raw.split(","):
-        part = part.strip()
-        if not part or "=" not in part:
-            continue
-        k, v = part.split("=", 1)
-        sym = (k or "").strip().upper()
-        if not sym:
-            continue
-        try:
-            val = float(v.strip())
-            if val > cap:
-                LOGGER.info(
-                    "wf_acc_min override %s=%.2f capped at base wf_acc_mean %.2f",
-                    sym, val, cap,
-                )
-                val = cap
-            out[sym] = val
-        except Exception:
-            continue
-    return out
 
 
-def _v3_holdout_acc_overrides() -> dict:
-    """Optional per-symbol holdout accuracy floors (thin gate slices).
-
-    Env format: V3_HOLDOUT_ACC_OVERRIDES=\"TLRY=0.47,SPCE=0.52\"
-    """
-    raw = (os.getenv("V3_HOLDOUT_ACC_OVERRIDES", "") or "").strip()
-    out = {}
-    if not raw:
-        return out
-    for part in raw.split(","):
-        part = part.strip()
-        if not part or "=" not in part:
-            continue
-        k, v = part.split("=", 1)
-        sym = (k or "").strip().upper()
-        if not sym:
-            continue
-        try:
-            out[sym] = float(v.strip())
-        except Exception:
-            continue
-    return out
 
 
-def _v3_wf_min_train_floor() -> int:
-    """Absolute minimum training-window size for walk-forward folds.
-
-    Was hardcoded to 120, which produced ZERO folds on WOLF's
-    post-restructure dataset (127 samples → 120 train + 20 test
-    overshoots n). Env-tunable so small-dataset tickers can run WF;
-    larger defaults can be set back on production once WOLF accumulates
-    more history.
-    """
-    return max(20, int(os.getenv("V3_WF_MIN_TRAIN", "60")))
 
 
-def _v3_wf_min_train_frac() -> float:
-    """Floor as fraction of total samples (was 0.50)."""
-    try:
-        return float(os.getenv("V3_WF_MIN_TRAIN_FRAC", "0.40"))
-    except Exception:
-        return 0.40
 
 
-def _v3_wf_test_size_floor() -> int:
-    """Absolute minimum per-fold test-window size (was hardcoded to 20)."""
-    return max(5, int(os.getenv("V3_WF_TEST_SIZE", "15")))
 
 
-def _v3_wf_test_size_frac() -> float:
-    """Test-window size as fraction of total samples (was 0.10, unchanged)."""
-    try:
-        return float(os.getenv("V3_WF_TEST_FRAC", "0.10"))
-    except Exception:
-        return 0.10
 
 
-def _v3_calibration_enabled() -> bool:
-    """Whether to wrap the trained model with probability calibration.
-
-    Calibration turns raw XGBoost predict_proba into a true win-probability so
-    the V3_MIN_WIN_PROBA firing threshold and the displayed confidence track
-    the realized win-rate. On by default; set V3_CALIBRATION=off to disable.
-    """
-    return (os.getenv("V3_CALIBRATION", "on") or "on").strip().lower() not in (
-        "0", "off", "false", "no",
-    )
 
 
-def _v3_calibration_method() -> str:
-    """Calibration map: isotonic | sigmoid | auto.
-
-    auto picks sigmoid (Platt) for small calibration sets and isotonic once
-    there is enough data for a stable non-parametric fit — isotonic overfits
-    on the ~25-sample WOLF holdout, sigmoid does not.
-    """
-    return (os.getenv("V3_CALIBRATION_METHOD", "auto") or "auto").strip().lower()
 
 
-def _v3_pool_training_enabled() -> bool:
-    """Whether to pool peer/sector samples into the model's training set (W1).
-
-    WOLF's post-Ch.11 history yields only ~127 labeled samples — too few for a
-    stable model. Pooling labeled samples from sector peers multiplies the
-    training data; all quality gates still judge the model on WOLF's own
-    holdout. Enabling pooling also price-normalizes macd_hist (the one raw
-    price-unit feature) so it is comparable across tickers. On by default; set
-    V3_POOL_TRAINING=off for the prior WOLF-only behavior.
-    """
-    return (os.getenv("V3_POOL_TRAINING", "on") or "on").strip().lower() not in (
-        "0", "off", "false", "no",
-    )
 
 
-def _v3_down_signals_enabled() -> bool:
-    """Whether DOWN-model signals may fire live (Phase 2).
-
-    Off by default: DOWN probabilities are journaled shadow-only (scores
-    carry down_prob on every scan) until the DOWN lane earns a track record.
-    A stronger-but-unfireable DOWN score must never suppress a fireable UP
-    pick. core.prediction honors the same flag at fire time.
-    """
-    return (os.getenv("V3_DOWN_SIGNALS_ENABLED", "0") or "0").strip().lower() in (
-        "1", "on", "true", "yes",
-    )
 
 
 def _v3_peer_symbols() -> list:
@@ -435,63 +284,16 @@ def _v3_peer_symbols() -> list:
     return out
 
 
-def _v3_wolf_sample_weight() -> float:
-    """Training weight on the target's own rows relative to peer rows (W1).
-
-    Peers broaden the fit but the model must still specialize to WOLF, so WOLF
-    samples are up-weighted. Default 3.0; set V3_WOLF_SAMPLE_WEIGHT to tune.
-    """
-    try:
-        return max(1.0, float(os.getenv("V3_WOLF_SAMPLE_WEIGHT", "3.0")))
-    except Exception:
-        return 3.0
 
 
-def _v3_sector_feature_enabled() -> bool:
-    """Whether to add the sector relative-strength feature to the model (W3).
-
-    Off by default: it changes the model's feature vector and needs offline
-    validation before it can be trusted, so the operator opts in via
-    V3_SECTOR_FEATURE=on and re-validates. When off the column isn't added at
-    all, so model shape and behavior are unchanged.
-    """
-    return (os.getenv("V3_SECTOR_FEATURE", "off") or "off").strip().lower() in (
-        "1", "on", "true", "yes",
-    )
 
 
-def _v3_sector_proxy() -> str:
-    """Ticker whose price series stands in for the sector (W3 relative strength)."""
-    return (os.getenv("SECTOR_PROXY", "SMH") or "SMH").strip().upper()
 
 
-def _v3_sector_lookback() -> int:
-    """Bars over which sector relative strength is measured (W3)."""
-    return max(2, int(os.getenv("V3_SECTOR_LOOKBACK", "20")))
 
 
-def _v3_ensemble_enabled() -> bool:
-    """Whether to blend a second model with XGBoost (W5).
-
-    Off by default: it changes the persisted model and must be validated before
-    it's trusted. V3_ENSEMBLE=on enables a soft-voting blend of XGBoost with a
-    RandomForest, each individually probability-calibrated.
-    """
-    return (os.getenv("V3_ENSEMBLE", "off") or "off").strip().lower() in (
-        "1", "on", "true", "yes",
-    )
 
 
-def _v3_prune_features() -> set:
-    """Feature columns to drop from the model (W5 feature pruning).
-
-    Operator-driven from the attribution view: set V3_PRUNE_FEATURES to a comma
-    list of column names that don't separate winners from losers. Empty by
-    default. Skew-safe without a schema bump because prediction reads the trained
-    column set back from model meta.
-    """
-    raw = (os.getenv("V3_PRUNE_FEATURES", "") or "").strip()
-    return {p.strip() for p in raw.split(",") if p.strip()}
 
 
 def _active_feature_cols() -> list:
@@ -533,36 +335,10 @@ class _ProbaEnsemble:
         return self.classes_[np.argmax(self.predict_proba(X), axis=1)]
 
 
-def _v3_feature_schema() -> str:
-    """Version tag for the feature vector's *semantics* (not just its columns).
-
-    load_model rejects any persisted model whose feature_schema differs from the
-    current one, forcing a retrain. This prevents train/serve skew when a
-    feature's scale/meaning changes — e.g. the macd_hist price-normalization
-    that flips with V3_POOL_TRAINING, or the W3 sector column toggling. A model
-    trained under one schema must not be served features computed under another.
-    """
-    macd = "macd_pct_v1" if _v3_pool_training_enabled() else "macd_raw_v0"
-    sector = "sec1" if _v3_sector_feature_enabled() else "sec0"
-    audit = "fa1" if _v3_feature_audit_enabled() else "fa0"
-    return f"{macd}+{sector}+{audit}"
 
 
-def _v3_feature_audit_enabled() -> bool:
-    from core.feature_audit import _v3_feature_audit_enabled as _enabled
-    return _enabled()
 
 
-def _v3_wf_purge() -> int:
-    """Bars to purge between each walk-forward train block and its test block.
-
-    The triple-barrier label looks ahead V3_LABEL_HOLD_BARS bars, so the last
-    few training samples before a test block carry outcomes that resolve inside
-    the test period — naive walk-forward leaks that future into training. Purging
-    hold_bars samples at the boundary removes the overlap (López de Prado purged
-    CV). Defaults to the label horizon; set V3_WF_PURGE=0 to disable.
-    """
-    return max(0, int(os.getenv("V3_WF_PURGE", str(V3_LABEL_HOLD_BARS))))
 
 
 def _wf_fold_bounds(n, min_train, test_size, step, purge,
@@ -685,269 +461,23 @@ def _simulate_down_tp_sl(rows: list, entry_idx: int, hold_bars: int, vol_pct: fl
     from core.tp_sl_resolve import simulate_down_tp_sl_label
     return simulate_down_tp_sl_label(rows, entry_idx, hold_bars, vol_pct)
 
-def _rsi(closes, period=14):
-    if len(closes) < period + 1: return 50.0
-    deltas = np.diff(closes)
-    gains = np.where(deltas > 0, deltas, 0)
-    losses = np.where(deltas < 0, -deltas, 0)
-    avg_gain = np.mean(gains[-period:])
-    avg_loss = np.mean(losses[-period:])
-    if avg_loss == 0: return 100.0
-    return float(100 - (100 / (1 + avg_gain / avg_loss)))
-
-def _macd(closes, fast=12, slow=26, signal=9):
-    if len(closes) < slow + signal: return 0.0, 0.0, 0.0
-    def ema(data, n):
-        k = 2/(n+1); r = [data[0]]
-        for v in data[1:]: r.append(v*k + r[-1]*(1-k))
-        return np.array(r)
-    ml = ema(closes, fast) - ema(closes, slow)
-    if len(ml) < signal: return 0.0, 0.0, 0.0
-    sl = ema(ml, signal)
-    return float(ml[-1]), float(sl[-1]), float(ml[-1] - sl[-1])
-
-def _bollinger(closes, period=20):
-    if len(closes) < period: return 0.5, 0.0
-    w = closes[-period:]; mid = np.mean(w); std = np.std(w)
-    if std == 0: return 0.5, 0.0
-    upper = mid + 2*std; lower = mid - 2*std
-    pct_b = float((closes[-1] - lower) / (upper - lower)) if (upper - lower) > 0 else 0.5
-    return pct_b, float((upper - lower) / mid)
-
-def _volume_ratio(volumes, period=20):
-    if len(volumes) < period + 1: return 1.0
-    avg = np.mean(volumes[-period-1:-1])
-    return float(volumes[-1] / avg) if avg > 0 else 1.0
-
-def _price_momentum(closes, periods=[1, 3, 5]):
-    result = {}
-    for p in periods:
-        if len(closes) > p and closes[-p-1] > 0:
-            result[f'mom_{p}h'] = float((closes[-1] - closes[-p-1]) / closes[-p-1])
-        else:
-            result[f'mom_{p}h'] = 0.0
-    return result
-
-def _ema(closes, period):
-    if len(closes) < 2: return float(closes[-1])
-    k = 2.0 / (period + 1); v = float(closes[0])
-    for c in closes[1:]: v = c * k + v * (1 - k)
-    return v
-
-def _adx(highs, lows, closes, period=14):
-    if len(closes) < period * 2: return 25.0
-    trs, pdms, ndms = [], [], []
-    for i in range(1, len(closes)):
-        h, l, pc = highs[i], lows[i], closes[i-1]
-        trs.append(max(h-l, abs(h-pc), abs(l-pc)))
-        ph = highs[i] - highs[i-1]; nl = lows[i-1] - lows[i]
-        pdms.append(max(ph, 0) if ph > nl else 0)
-        ndms.append(max(nl, 0) if nl > ph else 0)
-    def wilder(data, p):
-        s = sum(data[:p]); r = [s]
-        for v in data[p:]: s = s - s/p + v; r.append(s)
-        return r
-    dxs = []
-    for a, p, n in zip(wilder(trs, period), wilder(pdms, period), wilder(ndms, period)):
-        if a == 0: continue
-        pdi, ndi = 100*p/a, 100*n/a
-        if pdi + ndi == 0: continue
-        dxs.append(100 * abs(pdi - ndi) / (pdi + ndi))
-    return float(np.mean(dxs[-period:])) if dxs else 25.0
-
-def _atr(highs, lows, closes, period=14):
-    if len(closes) < period + 1: return float(closes[-1] * 0.02)
-    trs = [max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1]))
-           for i in range(1, len(closes))]
-    return float(np.mean(trs[-period:]))
-
-def _obv_slope(closes, volumes, period=10):
-    if len(closes) < period + 1: return 0.0
-    obv = 0.0; obvs = [0.0]
-    for i in range(1, len(closes)):
-        if closes[i] > closes[i-1]: obv += volumes[i]
-        elif closes[i] < closes[i-1]: obv -= volumes[i]
-        obvs.append(obv)
-    r = obvs[-period:]
-    if len(r) < 2: return 0.0
-    slope = (r[-1] - r[0]) / (len(r) * max(abs(r[0]), 1e-9))
-    return float(np.clip(slope, -1.0, 1.0))
-
-def _stochastic(highs, lows, closes, k_period=14, d_period=3):
-    if len(closes) < k_period: return 50.0, 50.0
-    ks = []
-    for i in range(k_period-1, len(closes)):
-        hh = max(highs[i-k_period+1:i+1]); ll = min(lows[i-k_period+1:i+1])
-        ks.append(100*(closes[i]-ll)/(hh-ll) if hh != ll else 50.0)
-    k = ks[-1]
-    d = float(np.mean(ks[-d_period:])) if len(ks) >= d_period else k
-    return float(k), float(d)
-
-def _calculate_features(df):
-    closes = np.array([c['close'] for c in df], dtype=float)
-    volumes = np.array([c['volume'] for c in df], dtype=float)
-    highs = np.array([c['high'] for c in df], dtype=float)
-    lows = np.array([c['low'] for c in df], dtype=float)
-
-    rsi = _rsi(closes)
-    macd_line, macd_sig, macd_hist = _macd(closes)
-    pct_b, band_width = _bollinger(closes)
-    vol_ratio = _volume_ratio(volumes)
-    momentum = _price_momentum(closes)
-    rh = np.max(highs[-24:]) if len(highs) >= 24 else highs[-1]
-    rl = np.min(lows[-24:]) if len(lows) >= 24 else lows[-1]
-    price_in_range = float((closes[-1] - rl) / (rh - rl + 1e-9))
-
-    import datetime as _dt
-    ts = df[-1].get('ts','') if df else ''
-    try:
-        _d = _dt.datetime.fromisoformat(str(ts).replace('Z','+00:00'))
-        hod, dow = _d.hour, _d.weekday()
-    except Exception:
-        hod, dow = 12, 0
-
-    cur = float(closes[-1])
-    n = len(closes)
-    ema20 = _ema(closes, 20)
-    # Young-ticker EMA fallback. With too little history for the longer EMAs,
-    # fall back to the longest EMA that IS valid (NOT `cur`). The old `else cur`
-    # made above_emaX = (cur>cur) = 0 and ema_trend_bullish = 0 *permanently*,
-    # which kept the BUY-only regime gate in WATCHING for new tickers like
-    # post-Ch.11 WOLF (~168 trading days < 200). Applied inside _calculate_features
-    # so train and serve stay consistent (no skew).
-    ema50 = _ema(closes, 50) if n >= 50 else ema20
-    ema200 = _ema(closes, 200) if n >= 200 else ema50
-    # Long-trend flags degrade gracefully:
-    #   n >= 200 -> full 20>50>200 stack
-    #   50 <= n < 200 -> valid 20>50 stack (ema200 is a fallback, so the strict
-    #                    ema50>ema200 self-comparison would wrongly read 0)
-    #   20 <= n < 50 -> price-vs-ema20 (only ema20 is a true EMA)
-    #   n < 20 -> neutral (1): not enough history to judge; don't block BUYs
-    if n < 20:
-        above_ema200_flag = 1
-        ema_trend_bullish = 1
-    else:
-        above_ema200_flag = 1 if cur > ema200 else 0
-        if n >= 200:
-            ema_trend_bullish = 1 if (ema20 > ema50 and ema50 > ema200) else 0
-        elif n >= 50:
-            ema_trend_bullish = 1 if (cur > ema20 and ema20 > ema50) else 0
-        else:
-            ema_trend_bullish = 1 if cur > ema20 else 0
-    adx = _adx(highs, lows, closes)
-    atr = _atr(highs, lows, closes)
-    obv_slope = _obv_slope(closes, volumes)
-    stoch_k, stoch_d = _stochastic(highs, lows, closes)
-
-    # macd_hist is in raw price units, so its scale tracks the share price. For
-    # cross-ticker pooling (W1) that makes a $5 stock incomparable to a $200
-    # one, so express it as a fraction of price. Read at runtime in both the
-    # train and live paths, so the two stay consistent regardless of the flag.
-    macd_hist_feat = (macd_hist / cur) if (_v3_pool_training_enabled() and cur > 0) else macd_hist
-
-    return {
-        'rsi': rsi,
-        'rsi_oversold': 1 if rsi < 35 else 0,
-        'rsi_overbought': 1 if rsi > 65 else 0,
-        'macd_hist': macd_hist_feat,
-        'macd_bullish': 1 if macd_hist > 0 else 0,
-        'pct_b': pct_b,
-        'bb_squeeze': 1 if band_width < 0.05 else 0,
-        'volume_ratio': min(vol_ratio, 5.0),
-        'volume_spike': 1 if vol_ratio > 1.5 else 0,
-        'mom_4h': momentum['mom_1h'],
-        'mom_8h': momentum['mom_3h'],
-        'mom_24h': momentum['mom_5h'],
-        'price_in_range': price_in_range,
-        'near_low': 1 if price_in_range < 0.25 else 0,
-        'near_high': 1 if price_in_range > 0.75 else 0,
-        'hour_of_day': hod,
-        'day_of_week': dow,
-        'is_weekend': 1 if dow >= 5 else 0,
-        'above_ema20': 1 if cur > ema20 else 0,
-        'above_ema50': 1 if cur > ema50 else 0,
-        'above_ema200': above_ema200_flag,
-        'ema_trend_bullish': ema_trend_bullish,
-        'ema20_vs_ema50': float((ema20 - ema50) / ema50) if ema50 > 0 else 0.0,
-        'adx': adx,
-        'adx_trending': 1 if adx > _v3_adx_trending_threshold() else 0,
-        'adx_strong': 1 if adx > 30 else 0,
-        'atr_pct': float(atr / cur) if cur > 0 else 0.02,
-        'obv_slope': obv_slope,
-        'obv_accumulating': 1 if obv_slope > 0 else 0,
-        'stoch_k': stoch_k,
-        'stoch_d': stoch_d,
-        'stoch_oversold': 1 if stoch_k < 20 else 0,
-        'stoch_overbought': 1 if stoch_k > 80 else 0,
-    }
-
-FEATURE_COLS = [
-    'rsi','rsi_oversold','rsi_overbought','macd_hist','macd_bullish',
-    'pct_b','bb_squeeze','volume_ratio','volume_spike',
-    'mom_4h','mom_8h','mom_24h','price_in_range','near_low','near_high',
-    'hour_of_day','day_of_week','is_weekend',
-    'above_ema20','above_ema50','above_ema200','ema_trend_bullish','ema20_vs_ema50',
-    'adx','adx_trending','adx_strong',
-    'atr_pct',
-    'obv_slope','obv_accumulating',
-    'stoch_k','stoch_d','stoch_oversold','stoch_overbought',
-    # Phase 0 (PR #115): macro + cross-sectional features were computed every
-    # cycle but never added to the training feature list — the model was blind
-    # to VIX, yield curve, sector ranks, and peer-relative strength.
-    'macro_vix_level','macro_yield_spread','macro_fed_rate',
-    'macro_dxy_change','macro_spy_20d_return','macro_spy_vs_sma50',
-    'macro_smh_vs_spy','macro_vix_regime',
-    'cs_rsi_rank','cs_volume_rank','cs_momentum_rank','cs_sma_distance_rank',
-    'cs_atr_rank','cs_adx_rank','cs_short_float_rank','cs_sector_corr',
-]
 
 
-def _date_key(ts) -> str:
-    """Date portion (YYYY-MM-DD) of an ISO/Alpaca timestamp, used for alignment."""
-    return str(ts or "")[:10]
 
 
-def _align_sector_closes(target_rows, sector_rows):
-    """Sector closes aligned 1:1 to target_rows by date (W3).
-
-    For each target bar, take the sector close on the same date; if the sector
-    has no bar that day (holiday/feed mismatch), forward-fill the most recent
-    *prior* sector close. Returns a list parallel to target_rows (None before
-    any sector data exists). Only same-or-earlier sector bars are ever used, so
-    there is no look-ahead. Assumes both series are in ascending date order
-    (as the feed returns them). Pure / unit-testable.
-    """
-    by_date = {}
-    for r in sector_rows or []:
-        by_date[_date_key(r.get("ts"))] = float(r.get("close", 0.0))
-    sector_sorted = sorted(by_date.items())
-    out, last, si = [], None, 0
-    for tr in target_rows:
-        d = _date_key(tr.get("ts"))
-        while si < len(sector_sorted) and sector_sorted[si][0] <= d:
-            last = sector_sorted[si][1]
-            si += 1
-        out.append(by_date.get(d, last))
-    return out
 
 
-def _sector_rel_at(target_rows, aligned_sector, i, lookback):
-    """Point-in-time sector relative strength at bar i (W3).
 
-    target trailing return over `lookback` bars minus the sector's, using only
-    bars at or before i. Returns 0.0 when there isn't enough history or the
-    aligned sector close is missing — a neutral value, never a guess from the
-    future.
-    """
-    if i < lookback:
-        return 0.0
-    t_past = float(target_rows[i - lookback]["close"])
-    t_cur = float(target_rows[i]["close"])
-    s_past = aligned_sector[i - lookback]
-    s_cur = aligned_sector[i]
-    if s_past is None or s_cur is None or t_past <= 0 or s_past <= 0:
-        return 0.0
-    return float((t_cur - t_past) / t_past - (s_cur - s_past) / s_past)
+
+
+
+
+
+
+
+
+
+
 
 
 def _fetch_sector_series(period='1y'):
@@ -1432,8 +962,7 @@ def backtest_symbol(symbol, asset_type):
                 for k, v in macro.items():
                     features[k] = v
         except Exception:
-            pass
-        # UP label
+            note_suppressed()  # UP label
         up_outcome = _simulate_up_tp_sl(rows, i, V3_LABEL_HOLD_BARS, vol_pct)
         if up_outcome != "EXPIRED":
             labeled_up.append({"features": dict(features), "label": 1 if up_outcome == "WIN" else 0, "outcome": up_outcome, "direction": "UP"})
@@ -1546,150 +1075,14 @@ def _persist_train_details(details_list) -> None:
         LOGGER.warning("train details persist failed: " + str(_e)[:120])
 
 
-def _v3_max_calibration_brier() -> float:
-    """Max acceptable Brier on the final holdout (gate) slice after calibration."""
-    _PHASE5_FLOOR = 0.31  # tp_sl_fwd_v1 watchlist clears through ~0.305 on prod
-    try:
-        raw = os.getenv("V3_MAX_CALIBRATION_BRIER")
-        val = float(raw) if raw not in (None, "") else _PHASE5_FLOOR
-    except Exception:
-        val = _PHASE5_FLOOR
-    if val < _PHASE5_FLOOR:
-        LOGGER.info(
-            "V3_MAX_CALIBRATION_BRIER=%s below Phase 5 floor; using %s",
-            val, _PHASE5_FLOOR,
-        )
-        return _PHASE5_FLOOR
-    return val
 
 
-def _reliability_bins(y_true, y_prob, n_bins: int = 5) -> List[Dict[str, Any]]:
-    """Reliability diagram bins: predicted prob bucket vs realized win rate."""
-    y_true = np.asarray(y_true, dtype=float)
-    y_prob = np.asarray(y_prob, dtype=float)
-    if len(y_true) == 0:
-        return []
-    n_bins = max(2, min(int(n_bins), 10))
-    bins: List[Dict[str, Any]] = []
-    for i in range(n_bins):
-        lo = i / n_bins
-        hi = (i + 1) / n_bins
-        if i == n_bins - 1:
-            mask = (y_prob >= lo) & (y_prob <= hi)
-        else:
-            mask = (y_prob >= lo) & (y_prob < hi)
-        cnt = int(np.sum(mask))
-        if cnt == 0:
-            continue
-        bins.append({
-            "bin_lo": round(lo, 3),
-            "bin_hi": round(hi, 3),
-            "n": cnt,
-            "mean_pred": round(float(np.mean(y_prob[mask])), 4),
-            "observed_rate": round(float(np.mean(y_true[mask])), 4),
-        })
-    return bins
 
 
-def _evaluate_calibration_holdout(model, X_gate, y_gate) -> Dict[str, Any]:
-    """Evaluate the deployed (calibrated) model on the untouched gate slice."""
-    from sklearn.metrics import accuracy_score, brier_score_loss
-
-    y_gate = np.asarray(y_gate)
-    if len(y_gate) == 0:
-        return {
-            "holdout_acc": 0.0,
-            "edge": 0.0,
-            "natural_rate": 0.0,
-            "gate_brier": None,
-            "reliability_bins": [],
-            "gate_n": 0,
-        }
-    proba = model.predict_proba(X_gate)[:, 1]
-    natural_rate = float(np.mean(y_gate))
-    preds = (proba >= 0.5).astype(int)
-    holdout_acc = float(accuracy_score(y_gate, preds))
-    edge = holdout_acc - natural_rate
-    gate_brier = None
-    if np.unique(y_gate).size >= 2:
-        gate_brier = round(float(brier_score_loss(y_gate, proba)), 4)
-    return {
-        "holdout_acc": holdout_acc,
-        "edge": edge,
-        "natural_rate": natural_rate,
-        "gate_brier": gate_brier,
-        "reliability_bins": _reliability_bins(y_gate, proba),
-        "gate_n": int(len(y_gate)),
-    }
 
 
-def _maybe_calibrate(model, X_calib, y_calib):
-    """Wrap a fitted base model with prefit probability calibration.
-
-    The base model was fit on the training slice and never saw X_calib, so the
-    held-out slice is a valid post-hoc calibration set (strictly time-ordered:
-    it is the most recent ~20% of the series). Returns (final_model, info).
-
-    Falls back to the raw model (info["calibrated"]=False) whenever calibration
-    isn't viable — disabled, too few points, or a single-class calib slice — so
-    training never breaks on this. Calibration quality itself is validated live
-    via the confidence-bucket calibration curve, not offline here.
-    """
-    info = {"calibrated": False, "method": None, "n_calib": int(len(X_calib))}
-    if not _v3_calibration_enabled():
-        info["skip_reason"] = "disabled"
-        return model, info
-    if len(X_calib) < 10 or np.unique(y_calib).size < 2:
-        info["skip_reason"] = "insufficient_calib_data"
-        return model, info
-    method = _v3_calibration_method()
-    if method == "auto":
-        method = "isotonic" if len(X_calib) >= 200 else "sigmoid"
-    if method not in ("isotonic", "sigmoid"):
-        method = "sigmoid"
-    try:
-        from sklearn.calibration import CalibratedClassifierCV
-        calibrated = CalibratedClassifierCV(model, method=method, cv="prefit")
-        calibrated.fit(X_calib, y_calib)
-        info.update({"calibrated": True, "method": method})
-        return calibrated, info
-    except Exception as e:
-        info["skip_reason"] = "exception: " + str(e)[:120]
-        return model, info
 
 
-def _build_ensemble(xgb_model, X_fit, y_fit, sample_weight, X_calib, y_calib):
-    """Soft-voting blend of the fitted XGB model with a RandomForest (W5).
-
-    Each component is individually probability-calibrated on the WOLF holdout,
-    then their probabilities are averaged. Returns (model, calib_info) with the
-    same calib_info shape _maybe_calibrate produces, plus ensemble metadata.
-    Falls back to the calibrated single XGB model if anything goes wrong, so
-    enabling the ensemble can never break a training run.
-    """
-    try:
-        from sklearn.ensemble import RandomForestClassifier
-        rf = RandomForestClassifier(
-            n_estimators=300, max_depth=6, min_samples_leaf=3,
-            class_weight="balanced", random_state=42,
-        )
-        rf.fit(X_fit, y_fit, sample_weight=sample_weight)
-        cal_xgb, info_x = _maybe_calibrate(xgb_model, X_calib, y_calib)
-        cal_rf, _info_r = _maybe_calibrate(rf, X_calib, y_calib)
-        ens = _ProbaEnsemble([cal_xgb, cal_rf])
-        info = {
-            "calibrated": bool(info_x.get("calibrated", False)),
-            "method": info_x.get("method"),
-            "n_calib": int(len(X_calib)),
-            "ensemble": True,
-            "members": ["xgboost", "random_forest"],
-        }
-        return ens, info
-    except Exception as e:
-        final_model, info = _maybe_calibrate(xgb_model, X_calib, y_calib)
-        info["ensemble"] = False
-        info["ensemble_skip_reason"] = "exception: " + str(e)[:120]
-        return final_model, info
 
 
 def _assemble_pooled_training(
@@ -2326,18 +1719,14 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
             for k, v in cs.items():
                 features[k] = v
     except Exception:
-        pass
-
-    # P3 (audit): macro regime features — VIX, yield curve, Fed rate, etc.
+        note_suppressed()  # P3 (audit): macro regime features — VIX, yield curve, Fed rate, etc.
     try:
         from core.macro_regime import get_macro_features, MACRO_FEATURE_NAMES
         macro = get_macro_features()
         for k, v in macro.items():
             features[k] = v
     except Exception:
-        pass
-
-    # W3: same point-in-time sector relative strength as training, for the
+        note_suppressed()  # W3: same point-in-time sector relative strength as training, for the
     # current (last) bar. Only when enabled, matching the persisted feature set.
     if _v3_sector_feature_enabled():
         aligned_sector = _align_sector_closes(rows, _fetch_sector_series())
@@ -2421,7 +1810,7 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
                         f"REGIME GATE [{symbol}]: SMA5 bypass in Trend-up (price {cur_px:.2f} vs SMA {sma_5d:.2f})"
                     )
             except Exception:
-                pass
+                note_suppressed()
             if not bypass:
                 LOGGER.info(
                     f"REGIME GATE [{symbol}]: price {cur_px:.2f} below 5d SMA {sma_5d:.2f} — skip BUY"
@@ -2445,14 +1834,13 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
             up_proba = up_model.predict_proba(X)[0]
             up_prob = float(up_proba[1])
         except Exception:
-            pass
+            note_suppressed()
     if down_model is not None:
         try:
             down_proba = down_model.predict_proba(X)[0]
             down_prob = float(down_proba[1])
         except Exception:
-            pass
-
+            note_suppressed()
     if up_prob is None and down_prob is None:
         return None, "no_model"
 
@@ -2483,7 +1871,7 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
             min_p = effective_min_win_proba(rl, base=min_p)
             scores["regime_calibration"] = regime_calibration_meta(rl, base=_v3_min_win_proba())
         except Exception:
-            pass
+            note_suppressed()
     min_wf_acc = _v3_min_wf_acc_mean()
     edge = primary_meta.get('edge', 0)
     wf_acc_mean = float(primary_meta.get("wf_acc_mean", primary_meta.get("accuracy", 0)))

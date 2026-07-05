@@ -1,4 +1,5 @@
 import os, logging, time, psycopg2, psycopg2.pool
+from core.quiet import note_suppressed
 from typing import Optional
 
 LOGGER = logging.getLogger("ghost.db")
@@ -46,7 +47,7 @@ def put_conn(conn):
     try:
         conn.rollback()
     except Exception:
-        pass
+        note_suppressed()
     _pool.putconn(conn)
 
 

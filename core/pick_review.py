@@ -1,5 +1,6 @@
 """Re-evaluate open picks each scan — withdraw or supersede when the model changes mind."""
 from __future__ import annotations
+from core.quiet import note_suppressed
 
 import json
 import logging
@@ -169,8 +170,7 @@ def _apply_withdraw(
         scores["withdraw"] = {"reason": reason, "ts": now_ts}
         cur.execute("UPDATE predictions SET scores=%s WHERE id=%s", (json.dumps(scores), pred_id))
     except Exception:
-        pass
-
+        note_suppressed()
     if record_pick_resolution:
         try:
             record_pick_resolution(
@@ -182,8 +182,7 @@ def _apply_withdraw(
                 source="pick_review",
             )
         except Exception:
-            pass
-
+            note_suppressed()
     LOGGER.info(
         "WITHDRAW %s id=%s reason=%s pnl=%.2f%%",
         symbol, pred_id, reason, pnl_pct,

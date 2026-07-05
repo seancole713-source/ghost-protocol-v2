@@ -9,6 +9,7 @@ Computed during each scan cycle after all symbols have their technical
 features. Appends 8 features to the feature vector.
 """
 from __future__ import annotations
+from core.quiet import note_suppressed
 
 import logging
 import os
@@ -143,6 +144,6 @@ def compute_sector_correlations(
                 if not np.isnan(c):
                     corrs.append(c)
             except Exception:
-                pass
+                note_suppressed()
         corr_matrix[s1] = round(float(np.mean(corrs)), 4) if corrs else 0.0
     return corr_matrix

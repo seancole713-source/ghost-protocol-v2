@@ -10,6 +10,7 @@ SMS env:    ALERT_SMS_TO, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM
 Global:     ALERTS_ENABLED(=1) gates everything (shared with Telegram).
 """
 import os
+from core.quiet import note_suppressed
 import logging
 import smtplib
 from email.mime.text import MIMEText
@@ -54,7 +55,7 @@ def send_email(subject: str, body: str) -> bool:
             try:
                 s.starttls()
             except Exception:
-                pass  # server may not support STARTTLS (e.g. local relay)
+                note_suppressed()  # server may not support STARTTLS (e.g. local relay)
             if user and pw:
                 s.login(user, pw)
             s.sendmail(frm, _recipients(to), msg.as_string())

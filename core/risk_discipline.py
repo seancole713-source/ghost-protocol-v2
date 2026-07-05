@@ -9,6 +9,7 @@ Env (defaults assume $25k account, 1% risk/trade, $250 daily stop):
   GHOST_OPEN_BUFFER_MIN       — 30   (block new fires first N min after 9:30 ET — optional)
 """
 from __future__ import annotations
+from core.quiet import note_suppressed
 
 import json
 import logging
@@ -208,9 +209,7 @@ def position_sizing_plan(
             else:
                 kelly_note = f"Kelly f*={kelly_frac:.4f} (no edge) — using fixed {rp:.2f}%"
         except Exception:
-            pass
-
-    # P8 (audit): portfolio heat scaling — reduce size as more positions open
+            note_suppressed()  # P8 (audit): portfolio heat scaling — reduce size as more positions open
     heat_mult = 1.0
     if open_positions > 1:
         try:
@@ -220,8 +219,7 @@ def position_sizing_plan(
                 max_loss = round(max_loss * heat_mult, 2)
                 rp = round(rp * heat_mult, 2)
         except Exception:
-            pass
-
+            note_suppressed()
     notional = max_loss / (stop_dist_pct / 100.0)
     shares = int(notional / entry_f) if entry_f > 0 else 0
     if shares < 1:

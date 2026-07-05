@@ -9,6 +9,7 @@ Auth: requires GHOST_MCP_TOKEN or admin cookie (not public).
 Rate limit: WAR_ROOM_DAILY_LIMIT per CT day (default 5).
 """
 from __future__ import annotations
+from core.quiet import note_suppressed
 
 import json
 import logging
@@ -161,7 +162,7 @@ def run_war_room(symbol: str) -> Dict[str, Any]:
         if px:
             context_parts.append(f"Current Price: ${px:.2f}")
     except Exception:
-        pass
+        note_suppressed()
     try:
         from core.prediction import predict_symbol
         pick = predict_symbol(sym, "stock", {})
@@ -170,8 +171,7 @@ def run_war_room(symbol: str) -> Dict[str, Any]:
         else:
             context_parts.append("Ghost Signal: No active signal (gates not met)")
     except Exception:
-        pass
-
+        note_suppressed()
     user_prompt = (
         "\n".join(context_parts)
         + f"\n\nRun the full 6-agent War Room analysis for {sym}. "

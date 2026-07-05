@@ -4,6 +4,7 @@ Records Telegram squeeze alerts (and optional first candidate snapshot per symbo
 then after cash close compares Ghost buy/sell/stop to realized open/high/low/close.
 """
 from __future__ import annotations
+from core.quiet import note_suppressed
 
 import json
 import logging
@@ -43,7 +44,7 @@ def _parse_bar_date(ts: str) -> str:
                 dt = dt.replace(tzinfo=timezone.utc)
             return dt.astimezone(ZoneInfo("America/New_York")).date().isoformat()
     except Exception:
-        pass
+        note_suppressed()
     return s.split("T")[0] if "T" in s else s[:10]
 
 
@@ -603,7 +604,7 @@ def run_squeeze_eod_job() -> Dict[str, Any]:
         if now_ct.hour < hour:
             return {"ok": True, "skipped": True, "reason": "before_eod_hour"}
     except Exception:
-        pass
+        note_suppressed()
     session_date = _ct_date()
     n = resolve_squeeze_outcomes(session_date)
     n += resolve_pending_squeeze_days(5)

@@ -1,4 +1,5 @@
 import os, logging, requests, time
+from core.quiet import note_suppressed
 from core.db import ensure_ghost_state
 
 LOGGER = logging.getLogger("ghost.telegram")
@@ -48,7 +49,7 @@ def _send(text):
         try:
             requests.post(DISCORD_URL, json={"content": text}, timeout=10)
         except Exception:
-            pass
+            note_suppressed()
     return ok
 
 
@@ -77,7 +78,7 @@ def _enqueue_dead_letter(text: str, error: str) -> None:
                 "INSERT INTO ghost_state(key,val) VALUES('telegram_dead_letter',%s) "
                 "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val", (_j.dumps(queue),))
     except Exception:
-        pass  # best-effort; never raise into the caller
+        note_suppressed()  # best-effort; never raise into the caller
 
 
 def get_dead_letter_queue() -> list:
@@ -92,7 +93,7 @@ def get_dead_letter_queue() -> list:
             if row and row[0]:
                 return _j.loads(row[0])
     except Exception:
-        pass
+        note_suppressed()
     return []
 
 
@@ -115,7 +116,7 @@ def replay_dead_letter(index: int) -> dict:
                     "INSERT INTO ghost_state(key,val) VALUES('telegram_dead_letter',%s) "
                     "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val", (_j.dumps(queue),))
         except Exception:
-            pass
+            note_suppressed()
     return {"ok": ok, "entry": entry, "remaining": len(queue)}
 
 def _fmt(v):

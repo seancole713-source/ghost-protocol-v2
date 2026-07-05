@@ -6,6 +6,7 @@ P0-2 (audit): yfinance circuit breaker prevents wasted calls during persistent
 JSON-parse failures overnight. P1-4: staleness flag on cached prices.
 """
 import os, time, logging, requests
+from core.quiet import note_suppressed
 from typing import Dict, Tuple, Any, Optional
 
 LOGGER = logging.getLogger("ghost.prices")
@@ -80,8 +81,7 @@ def _load_prev_close_cache():
                     if now - ts < _PREV_CLOSE_TTL_S and val > 0:
                         _prev_close_cache[sym] = (ts, val)
     except Exception:
-        pass
-
+        note_suppressed()
 def _save_prev_close_cache():
     """Persist prev_close cache to ghost_state so it survives restarts."""
     try:
@@ -95,9 +95,7 @@ def _save_prev_close_cache():
                 (json.dumps(_prev_close_cache),),
             )
     except Exception:
-        pass
-
-# Load persisted cache on module init
+        note_suppressed()  # Load persisted cache on module init
 _load_prev_close_cache()
 
 # P0-2: circuit breaker for yfinance (wired in _yfinance below)
@@ -174,8 +172,7 @@ def _yfinance(symbol):
                 _yfinance_cb.record_success()
                 return float(live)
         except Exception:
-            pass
-        # Fallback: latest close (pre/post market or closed)
+            note_suppressed()  # Fallback: latest close (pre/post market or closed)
         h = tk.history(period="2d")
         if not h.empty:
             _yfinance_cb.record_success()
@@ -221,7 +218,7 @@ def _polygon_spot(symbol):
             if results and results[0].get("c"):
                 return float(results[0]["c"])
     except Exception:
-        pass
+        note_suppressed()
     return None
 
 
@@ -243,7 +240,7 @@ def _iex_spot(symbol):
         if r.status_code == 200:
             return float(r.json()["trade"]["p"])
     except Exception:
-        pass
+        note_suppressed()
     return None
 
 
@@ -334,7 +331,7 @@ def get_extended_session(symbol: str) -> Dict[str, Any]:
                 if post_market and float(post_market) > 0:
                     session_price = float(post_market)
     except Exception:
-        pass
+        note_suppressed()
     gap_pct = None
     gap_abs = None
     if prev_close and prev_close > 0 and session_price and float(session_price) > 0:
@@ -735,7 +732,7 @@ def get_vix():
         if not h.empty:
             return float(h["Close"].iloc[-1])
     except Exception:
-        pass
+        note_suppressed()
     return None
 
 

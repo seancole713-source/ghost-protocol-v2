@@ -14,6 +14,7 @@ Enable: SQUEEZE_MONITOR_ENABLED=1 (default on)
 """
 
 from __future__ import annotations
+from core.quiet import note_suppressed
 
 import asyncio
 import logging
@@ -280,7 +281,7 @@ def get_squeeze_picks() -> Dict[str, Any]:
             try:
                 item["live_price"] = round(float(live), 4)
             except (TypeError, ValueError):
-                pass
+                note_suppressed()
         alert_buy = alert_map.get(sym)
         if alert_buy is not None and item.get("live_price") is not None:
             attach_live_drift(item, alert_buy=float(alert_buy), live_price=item["live_price"])
@@ -363,7 +364,7 @@ async def start_squeeze_monitor() -> None:
             if _mult > 1.0:
                 _interval = int(CHECK_INTERVAL_SEC * _mult)
         except Exception:
-            pass
+            note_suppressed()
         await asyncio.sleep(_interval)
 
 
@@ -475,7 +476,7 @@ async def _run_watchlist_scan() -> None:
 
                 record_squeeze_prediction(pick, source="candidate")
             except Exception:
-                pass
+                note_suppressed()
             if _maybe_alert(symbol, kind, metrics, rvol, short_ctx):
                 report["alerts_sent"] += 1
                 alerted_at = int(time.time())
@@ -490,8 +491,7 @@ async def _run_watchlist_scan() -> None:
                         alerted_at=alerted_at,
                     )
                 except Exception:
-                    pass
-
+                    note_suppressed()
     report["picks"] = list(report["candidates"])
     from core.squeeze_scorecard import build_scorecard_row
 

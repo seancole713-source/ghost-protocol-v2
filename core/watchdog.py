@@ -6,6 +6,7 @@ Separate from reconcile_outcomes() which runs every 15 min
 and does NOT send alerts.
 """
 import time, logging, os
+from core.quiet import note_suppressed
 from core.db import db_conn
 from core.prices import get_price
 from core.tp_sl_resolve import label_hold_bars, resolve_open_prediction
@@ -34,7 +35,7 @@ def run_watchdog():
                 from core.signal_engine import _fetch_ohlcv
                 daily_bars = _fetch_ohlcv(symbol, asset_type or "stock", period="3m")
             except Exception:
-                pass
+                note_suppressed()
             price = get_price(symbol)
             hit = resolve_open_prediction(
                 direction=direction,

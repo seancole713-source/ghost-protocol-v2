@@ -1,5 +1,6 @@
 """Lightweight news sentiment scorer (Phase 2) — lexicon, no FinBERT yet."""
 from __future__ import annotations
+from core.quiet import note_suppressed
 
 import re
 from typing import Any, Dict, List, Optional
@@ -66,7 +67,7 @@ def fetch_news_sentiment(symbol: str, *, limit: int = 10) -> Dict[str, Any]:
 
         articles = list_articles(symbol=sym, limit=limit) or []
     except Exception:
-        pass
+        note_suppressed()
     scored = score_articles(articles, symbol=sym)
     if scored.get("count"):
         avg = float(scored["avg_sentiment"] or 0.0)

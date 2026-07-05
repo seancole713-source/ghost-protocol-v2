@@ -12,6 +12,7 @@ Shadow rows live in their own table (ghost_shadow_outcomes) so perf-log
 pruning never erases the scoreboard history.
 """
 from __future__ import annotations
+from core.quiet import note_suppressed
 
 import json
 import logging
@@ -108,7 +109,7 @@ def _eval_entry_price(ev: Dict[str, Any]) -> Optional[float]:
         if p > 0:
             return p
     except Exception:
-        pass
+        note_suppressed()
     scores = ev.get("scores")
     if isinstance(scores, str):
         try:
@@ -121,7 +122,7 @@ def _eval_entry_price(ev: Dict[str, Any]) -> Optional[float]:
             if p > 0:
                 return p
         except Exception:
-            pass
+            note_suppressed()
     return None
 
 
@@ -407,7 +408,7 @@ def shadow_diagnostics() -> Dict[str, Any]:
             tz = pytz.timezone(os.getenv("GHOST_TZ", "America/Chicago"))
             out["earliest_expires_at_ct"] = datetime.fromtimestamp(exp, tz).strftime("%Y-%m-%d %H:%M %Z")
         except Exception:
-            pass
+            note_suppressed()
     elif out["pending"]:
         out["resolution_status"] = "waiting — no expiry metadata on pending rows"
     else:
@@ -447,7 +448,7 @@ def shadow_stats(days: int = 30) -> Dict[str, Any]:
         if row and row[0]:
             diag["last_cycle"] = _j.loads(row[0])
     except Exception:
-        pass
+        note_suppressed()
     out.update({
         "ok": True,
         "days": days,
@@ -492,5 +493,5 @@ def run_shadow_cycle() -> Dict[str, int]:
                 (_j.dumps({**result, "ts": int(time.time())}),),
             )
     except Exception:
-        pass
+        note_suppressed()
     return result

@@ -12,6 +12,7 @@ snapshots and audits timestamps for leakage.
 It does not trade. It does not predict. It preserves evidence.
 """
 from __future__ import annotations
+from core.quiet import note_suppressed
 
 import json
 import logging
@@ -78,14 +79,14 @@ def parse_source_ts(v: Any) -> Optional[int]:
         if s.replace(".", "", 1).isdigit():
             return parse_source_ts(float(s))
     except Exception:
-        pass
+        note_suppressed()
     try:
         dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         return int(dt.timestamp())
     except Exception:
-        pass
+        note_suppressed()
     try:
         dt = datetime.fromisoformat(s[:10]).replace(tzinfo=timezone.utc)
         return int(dt.timestamp())

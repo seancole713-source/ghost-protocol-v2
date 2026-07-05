@@ -1,5 +1,6 @@
 """core/portfolio_routes.py - Personal portfolio tracker."""
 import os
+from core.quiet import note_suppressed
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -55,7 +56,7 @@ def build_portfolio_payload() -> dict:
             from core.prices import get_price
             live = get_price(sym, atype)
         except Exception:
-            pass
+            note_suppressed()
         if live is None and manual_p:
             live = manual_p  # fallback to manually set price
         val = round(qty * live, 2) if live else None
@@ -69,7 +70,7 @@ def build_portfolio_payload() -> dict:
                 row = c.fetchone()
                 if row: sig={"direction":row[0],"confidence":round(float(row[1]),3)}
         except Exception:
-            pass
+            note_suppressed()
         positions.append({"id":r[0],"symbol":sym,"asset_type":atype,"quantity":qty,"buy_price":bp,
             "cost_basis":cost,"live_price":round(live,6) if live else None,
             "current_value":val,"gain_loss":gl,"gain_loss_pct":glp,
@@ -230,7 +231,7 @@ async def admin_rebuild_cashapp_watchlist(x_cron_secret: str = Header(default=""
                 if px:
                     prices[sym] = float(px)
             except Exception:
-                pass
+                note_suppressed()
         if not prices.get(sym):
             try:
                 url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=1d&range=1d"
@@ -341,7 +342,7 @@ def auto_refresh_portfolio_prices():
                         )
                     updated += 1
             except Exception as _se:
-                pass  # silent — stale price better than crash
+                note_suppressed()  # silent — stale price better than crash
         return updated
     except Exception as _e:
         return 0

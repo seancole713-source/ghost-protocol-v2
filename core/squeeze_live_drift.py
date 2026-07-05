@@ -1,5 +1,6 @@
 """Intraday squeeze drift — alert buy vs live quote (panel refresh)."""
 from __future__ import annotations
+from core.quiet import note_suppressed
 
 import logging
 from typing import Any, Dict, List, Optional
@@ -100,7 +101,7 @@ def enrich_pick_rows(
             try:
                 item["live_price"] = round(float(live), 4)
             except (TypeError, ValueError):
-                pass
+                note_suppressed()
         alert_buy = alert_map.get(sym)
         if alert_buy is not None and item.get("live_price") is not None:
             attach_live_drift(item, alert_buy=alert_buy, live_price=item["live_price"])

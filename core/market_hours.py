@@ -5,6 +5,7 @@ Cash session boundaries match NYSE/NASDAQ: 8:30 AM – 3:00 PM CT
 (9:30 AM – 4:00 PM Eastern).
 """
 from __future__ import annotations
+from core.quiet import note_suppressed
 
 import datetime as _dt
 from typing import Tuple
@@ -37,7 +38,7 @@ def session_hm(now: _dt.datetime | None = None) -> Tuple[_dt.datetime, int]:
 
             now = now.astimezone(ZoneInfo(SESSION_TZ))
         except Exception:
-            pass
+            note_suppressed()
     return now, now.hour * 60 + now.minute
 
 

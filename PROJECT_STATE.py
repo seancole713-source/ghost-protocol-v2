@@ -123,9 +123,9 @@ SESSION_LOG = {
 
     # ── KNOWN ISSUES / TECHNICAL DEBT ──
     "known_issues": [
-        "wolf_app.py is 5,900+ lines — God Object with 101 endpoints, needs splitting into route modules",
-        "core/signal_engine.py is ~2,500 lines — training, inference, OHLCV, features, gates all in one file",
-        "85+ except Exception: pass blocks in core/ — intentional best-effort pattern but impossible to audit",
+        "wolf_app.py split (PR #130): 82 endpoints moved to api/routes_{admin,ghost_system,v3,wolf_ops,data}.py — 3,151 lines remain (helpers, health cluster, pages, middleware, ws). Moved endpoints late-import shared helpers from wolf_app; wolf_app re-exports every moved name (facade). Do NOT top-level-import wolf_app from a routes module (cycle).",
+        "signal_engine split (PR #130): config knobs → core/engine_config.py, indicators → core/engine_indicators.py, features → core/engine_features.py, calibration → core/engine_calibration.py; 2,141 lines remain (OHLCV chain + training + inference stay — tests monkeypatch their interplay on core.signal_engine, and _ProbaEnsemble must stay for stored-model pickle paths).",
+        "except-pass sweep (PR #130): all 86 silent blocks in core/ now call core.quiet.note_suppressed() — DEBUG-logged + counted in core.quiet.COUNTS; raise logger ghost.suppressed to DEBUG to audit live.",
         "GHOST_OAUTH_SECRET ROTATED 2026-07-04 (leaked value in git history is now dead — cannot approve connector sessions or forge tokens). Connector survived rotation via DB-backed refresh token. New value lives only in Railway env vars; keep it out of this file.",
         "Global ValueError→422 handler (PR #129) may reclassify internal ValueErrors as client errors — watch for misleading 422s in logs",
         "scripts/calibrate_confidence_slope.py keeps its inline ghost_state DDL by design (standalone script, no app imports)",

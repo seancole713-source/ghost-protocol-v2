@@ -1,4 +1,5 @@
 import json
+from core.quiet import note_suppressed
 import os
 import time
 from typing import Any, Dict, List
@@ -650,7 +651,6 @@ def run_health_audit(
     try:
         _persist_run(db_conn, report)
     except Exception:
-        pass
-
+        note_suppressed()
     return report
 
