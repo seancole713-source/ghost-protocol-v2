@@ -13,7 +13,7 @@ RULES:
   7. SESSION_LOG is the handover log — read it to understand what happened in the
      last session and what's in flight. Update it at the end of every session.
 
-LAST UPDATED: 2026-07-04 — PR #129 tech-debt cleanup deployed + live-verified
+LAST UPDATED: 2026-07-05 — PR #130 God-object split + exception-audit deployed + live-verified
 """
 
 # ============================================================
@@ -32,10 +32,10 @@ SESSION_LOG = {
     "production": {
         "url": "https://ghost-protocol-v2-production.up.railway.app",
         "railway_project": "tender-benevolence",
-        "pr_version": 129,
-        "git_sha": "8183dbd",
+        "pr_version": 130,
+        "git_sha": "5d82d39",
         "app_version": "2.5.0",
-        "health": "95/100 (live-verified 2026-07-04 post PR #129 deploy)",
+        "health": "95/100 (live-verified 2026-07-05 post PR #130 deploy)",
         "degraded": False,
         "tests": "687 passed, 3 skipped",
         "playwright_e2e": "33/33 (desktop + mobile, as of PR #127)",
@@ -55,6 +55,7 @@ SESSION_LOG = {
         "PR #122-#125: Accuracy contract 70%, feed resilience (null-bars guard, seeder deadlock, OHLCV storms), precision gate global pool, stop geometry precision",
         "PR #126: Full forensic audit fixes — 13 critical + 15 high issues resolved (regime modifier sync, 3,600 lines dead code removed, dependency inversion fixed, ghost_state DDL centralized, dev-mode auth bypass hardened, cache race conditions fixed, import integrity baseline cleared)",
         "PR #127: GO verification — 686 tests, 33/33 Playwright, 0 critical health findings, 0 new ERROR signatures, release gates all green",
+        "PR #130 (2026-07-05): God-object split — wolf_app.py 6,097→3,151 lines (82 endpoints → api/routes_admin|ghost_system|v3|wolf_ops|data, late-import + facade re-export pattern); signal_engine 2,747→2,141 lines (engine_config/indicators/features/calibration split out); all 86 silent except-pass blocks in core/ now call core.quiet.note_suppressed() (DEBUG log + COUNTS). 687 tests, live-verified: _pr_version=130, 10 moved endpoints 200, MCP connector OK.",
         "PR #129 (2026-07-04): tech-debt cleanup — 33 inline ghost_state DDL sites migrated to ensure_ghost_state(); global psycopg2→503 and ValueError→422 exception handlers; Chart.js vendored to /static with SRI-pinned CDN fallback; WCAG contrast remap (#444/#555/#666 → #808080/#888/#999) in cockpit+admin; aria-labels on admin inputs/selects and cockpit icon button; label-for on portfolio inputs; pulse animation on loading placeholders (reduced-motion safe); datetime.utcnow() removed (3 real sites); settings VERSION 2.1.0→2.5.0; redis dep removed; plaintext GHOST_OAUTH_SECRET scrubbed from this file (git history still has it — rotate). Live-verified: _pr_version=129, health 95, /static/chart.umd.min.js 200, MCP gate/kill-status OK.",
     ],
 
