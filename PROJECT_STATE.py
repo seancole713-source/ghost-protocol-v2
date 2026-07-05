@@ -13,7 +13,7 @@ RULES:
   7. SESSION_LOG is the handover log — read it to understand what happened in the
      last session and what's in flight. Update it at the end of every session.
 
-LAST UPDATED: 2026-07-04 — PR #127 GO-verified, SESSION_LOG created
+LAST UPDATED: 2026-07-04 — PR #129 tech-debt cleanup deployed + live-verified
 """
 
 # ============================================================
@@ -25,25 +25,25 @@ LAST UPDATED: 2026-07-04 — PR #127 GO-verified, SESSION_LOG created
 
 SESSION_LOG = {
     "session_date": "2026-06-30 → 2026-07-04",
-    "session_span": "Multi-day: initial health check → bug discovery → autonomous execution → P0 audit → Phase 0-2 model overhaul → forensic audit → GO verification",
+    "session_span": "Multi-day: initial health check → bug discovery → autonomous execution → P0 audit → Phase 0-2 model overhaul → forensic audit → GO verification → PR #129 tech-debt cleanup",
     "handover_to": "Next AI agent picking up this project",
 
     # ── WHAT'S DEPLOYED RIGHT NOW ──
     "production": {
         "url": "https://ghost-protocol-v2-production.up.railway.app",
         "railway_project": "tender-benevolence",
-        "pr_version": 127,
-        "git_sha": "44ebd3b",
+        "pr_version": 129,
+        "git_sha": "8183dbd",
         "app_version": "2.5.0",
-        "health": "95/100",
+        "health": "95/100 (live-verified 2026-07-04 post PR #129 deploy)",
         "degraded": False,
-        "tests": "686 passed, 3 skipped",
-        "playwright_e2e": "33/33 (desktop + mobile)",
+        "tests": "687 passed, 3 skipped",
+        "playwright_e2e": "33/33 (desktop + mobile, as of PR #127)",
         "release_gates": "GO — all checks passed (first fully clean end-to-end in project history)",
-        "models_trained": "43/43 symbols (UP direction only — Phase 2 DOWN model code complete but NOT YET DEPLOYED)",
+        "models_trained": "126 models stored incl. DOWN direction (e.g. ABCL_down) — Phase 2 DOWN lane deployed; V3_DOWN_SIGNALS_ENABLED stays 0 until shadow track record exists",
         "accuracy_contract": "70% target, balanced mode",
         "research_mode": "exited (63 resolved picks, >15 threshold)",
-        "breakers": "2 open (yfinance 3/5, alpaca 7/5) — at threshold, not degraded",
+        "breakers": "yfinance open 4/5 — cooldown cycling, not degraded",
     },
 
     # ── WHAT HAPPENED THIS SESSION ──
@@ -55,6 +55,7 @@ SESSION_LOG = {
         "PR #122-#125: Accuracy contract 70%, feed resilience (null-bars guard, seeder deadlock, OHLCV storms), precision gate global pool, stop geometry precision",
         "PR #126: Full forensic audit fixes — 13 critical + 15 high issues resolved (regime modifier sync, 3,600 lines dead code removed, dependency inversion fixed, ghost_state DDL centralized, dev-mode auth bypass hardened, cache race conditions fixed, import integrity baseline cleared)",
         "PR #127: GO verification — 686 tests, 33/33 Playwright, 0 critical health findings, 0 new ERROR signatures, release gates all green",
+        "PR #129 (2026-07-04): tech-debt cleanup — 33 inline ghost_state DDL sites migrated to ensure_ghost_state(); global psycopg2→503 and ValueError→422 exception handlers; Chart.js vendored to /static with SRI-pinned CDN fallback; WCAG contrast remap (#444/#555/#666 → #808080/#888/#999) in cockpit+admin; aria-labels on admin inputs/selects and cockpit icon button; label-for on portfolio inputs; pulse animation on loading placeholders (reduced-motion safe); datetime.utcnow() removed (3 real sites); settings VERSION 2.1.0→2.5.0; redis dep removed; plaintext GHOST_OAUTH_SECRET scrubbed from this file (git history still has it — rotate). Live-verified: _pr_version=129, health 95, /static/chart.umd.min.js 200, MCP gate/kill-status OK.",
     ],
 
     # ── KEY ARCHITECTURE FACTS ──
@@ -103,14 +104,12 @@ SESSION_LOG = {
     # ── WHAT'S IN FLIGHT / NOT YET DONE ──
     "in_flight": {
         "phase_2_down_model": {
-            "status": "CODE COMPLETE, NOT DEPLOYED",
-            "description": "DOWN model training + dual-direction prediction. backtest_symbol returns (up, down) tuple, _train_one_direction trains per-direction, predict_live_ex picks stronger signal. All 668 tests pass locally.",
-            "blocked_by": "Needs merge to main + Railway deploy + retrain to generate DOWN models",
-            "files": "core/signal_engine.py, core/tp_sl_resolve.py, tests/test_wolf_app_core.py, tests/test_tp_sl_resolve.py, tests/test_shadow_outcomes.py",
+            "status": "DEPLOYED (verified 2026-07-04)",
+            "description": "DOWN model training + dual-direction prediction is on main and live; /api/v3/status shows *_down models stored. DOWN firing stays shadow-only (V3_DOWN_SIGNALS_ENABLED=0) until a shadow track record exists.",
         },
         "ghost_state_centralization": {
-            "status": "HELPER CREATED, CALLERS NOT YET MIGRATED",
-            "description": "ensure_ghost_state() exists in core/db.py but the 37 call sites still inline the DDL. Migration is mechanical — replace each inline CREATE TABLE with a call to ensure_ghost_state().",
+            "status": "DONE (PR #129)",
+            "description": "All 33 app-code call sites now call ensure_ghost_state(); scripts/calibrate_confidence_slope.py intentionally keeps inline DDL (standalone script).",
         },
         "live_fire_test": {
             "status": "UNTESTED",
