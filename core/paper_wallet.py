@@ -196,28 +196,31 @@ def run_wallet_cycle() -> Dict[str, Any]:
             cur = conn.cursor()
             ensure_paper_tables(cur)
             cfg = get_config(cur)
-            reset_ts = int(cfg.get("reset_ts") or 0)
 
             cur.execute("SELECT COUNT(*) FROM ghost_paper_trades WHERE status='open'")
             open_count = int(cur.fetchone()[0])
             cash = _cash(cur, cfg)
 
             # ── candidate signals ────────────────────────────────────────
+            now_ts = int(time.time())
+            # Mirror any still-live signal (unresolved + unexpired). No
+            # reset_ts filter: entries fill at the CURRENT quote, so mirroring
+            # an hours-old signal is honest — we buy now at now's price.
             cur.execute(
                 """SELECT id, symbol, entry_price, target_price, stop_price, expires_at
                    FROM predictions
                    WHERE outcome IS NULL AND direction IN ('UP','BUY')
-                     AND predicted_at > %s
+                     AND expires_at > %s
                      AND entry_price > 0
-                   ORDER BY predicted_at DESC LIMIT 20""", (reset_ts,))
+                   ORDER BY predicted_at DESC LIMIT 20""", (now_ts,))
             gated_rows = [("gated", f"pick:{r[0]}", r[1], r[2], r[3], r[4], r[5])
                           for r in cur.fetchall()]
             cur.execute(
                 """SELECT id, symbol, entry_price, target_price, stop_price, expires_at
                    FROM ghost_shadow_outcomes
-                   WHERE outcome IS NULL AND created_at > %s AND up_prob >= %s
+                   WHERE outcome IS NULL AND expires_at > %s AND up_prob >= %s
                    ORDER BY eval_ts DESC LIMIT 20""",
-                (reset_ts, _shadow_min_prob()))
+                (now_ts, _shadow_min_prob()))
             shadow_rows = [("shadow", f"shadow:{r[0]}", r[1], r[2], r[3], r[4], r[5])
                            for r in cur.fetchall()]
 
