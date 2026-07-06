@@ -242,6 +242,7 @@ def v3_train(x_cron_secret: str = Header(default=""), force: bool = False):
     _record_v3_train_state(
         ts=started_at, state="started", force=str(force).lower(),
         accuracy="", passed="", error="", models_before="", models_after="",
+        stocks="", finished_at="",
     )
     import threading
     def _train():
@@ -331,9 +332,21 @@ def v3_train_last():
             except Exception:
                 pass
         if "passed" in out:
-            out["passed"] = out["passed"].lower() == "true"
+            if str(out["passed"]).strip() == "":
+                out["passed"] = None
+            else:
+                out["passed"] = str(out["passed"]).lower() == "true"
         if "force" in out:
             out["force"] = out["force"].lower() == "true"
+        # PR #138: _record_v3_train_state upserts only the fields passed to it.
+        # Older "started"/"running" writes did not clear finished_at, so the
+        # endpoint could show state=running with a stale terminal timestamp from
+        # a prior run. If this invocation has not resolved passed=true/false,
+        # do not surface a terminal timestamp.
+        if out.get("state") in ("started", "running") and out.get("passed") is None:
+            stale_finished = out.pop("finished_at", None)
+            if stale_finished:
+                out["stale_finished_at_suppressed"] = stale_finished
         try:
             import json as _json
             with db_conn() as conn:
@@ -378,6 +391,7 @@ def v3_train_sync(x_cron_secret: str = Header(default=""), force: bool = False):
     _record_v3_train_state(
         ts=started_at, state="started", force=str(force).lower(),
         accuracy="", passed="", error="", models_before="", models_after="",
+        stocks="", finished_at="",
     )
     try:
         from core.signal_engine import train_and_validate, get_model_status

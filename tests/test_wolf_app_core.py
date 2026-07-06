@@ -1522,6 +1522,8 @@ def test_v3_train_accepts_force_flag_and_starts_thread(monkeypatch):
     # The 'started' phase write happened synchronously before the thread
     assert cur.state["last_v3_train_state"] == "started"
     assert cur.state["last_v3_train_force"] == "true"
+    if wolf_app._RETRAIN_JOB_LOCK.locked():
+        wolf_app._RETRAIN_JOB_LOCK.release()
 
 
 def test_v3_train_last_endpoint_returns_parsed_state(monkeypatch):
@@ -1548,6 +1550,51 @@ def test_v3_train_last_endpoint_returns_parsed_state(monkeypatch):
     assert last["ts"] == 1779470000          # coerced to int
     assert last["models_before"] == 0
     assert last["models_after"] == 1
+
+
+def test_v3_train_last_running_does_not_report_stale_terminal_fields(monkeypatch):
+    """A new running train must not inherit prior-run finished/passed truth."""
+    cur = _patch_state_cursor(monkeypatch)
+    cur.state.update({
+        "last_v3_train_ts": "1779471000",
+        "last_v3_train_state": "running",
+        "last_v3_train_accuracy": "",
+        "last_v3_train_passed": "",
+        "last_v3_train_force": "false",
+        "last_v3_train_models_before": "46",
+        "last_v3_train_finished_at": "1779470120",
+    })
+    out = wolf_app.v3_train_last()
+    last = out["last"]
+    assert last["state"] == "running"
+    assert last["passed"] is None
+    assert "finished_at" not in last
+    assert last["stale_finished_at_suppressed"] == 1779470120
+
+
+def test_v3_train_start_clears_stale_terminal_fields(monkeypatch):
+    """The synchronous start marker clears fields that caused stale running UI."""
+    monkeypatch.setenv("CRON_SECRET", "")
+    cur = _patch_state_cursor(monkeypatch)
+
+    class _FakeThread:
+        def __init__(self, target=None, daemon=None):
+            self.target = target
+        def start(self):
+            pass
+
+    import threading as _th
+    monkeypatch.setattr(_th, "Thread", _FakeThread)
+    if wolf_app._RETRAIN_JOB_LOCK.locked():
+        wolf_app._RETRAIN_JOB_LOCK.release()
+
+    out = wolf_app.v3_train(x_cron_secret="", force=False)
+    assert out["ok"] is True
+    assert cur.state["last_v3_train_state"] == "started"
+    assert cur.state["last_v3_train_finished_at"] == ""
+    assert cur.state["last_v3_train_stocks"] == ""
+    if wolf_app._RETRAIN_JOB_LOCK.locked():
+        wolf_app._RETRAIN_JOB_LOCK.release()
 
 
 def test_v3_train_last_endpoint_returns_none_when_no_history(monkeypatch):
@@ -4314,4 +4361,3 @@ def test_purge_v3_keeps_serveable_models(monkeypatch):
     purged = wolf_app._purge_v3_stale_or_weak()
     assert purged == 0
     assert deleted == []
-
