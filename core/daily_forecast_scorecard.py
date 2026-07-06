@@ -681,6 +681,12 @@ def build_daily_scorecard(symbol: str, days: int = 14, asset_type: str = "stock"
         "scored_days": len(scored),
         "avg_overall_pct": level_avg,
         "level_closeness_avg_pct": level_avg,
+        # PR #135 audit: overall_pct measures how CLOSE the predicted OHLC band
+        # was to actuals — telemetry, NOT trading accuracy. 96% closeness beside
+        # 47% direction means levels were near but direction was a coin flip.
+        "metrics_note": ("avg_overall_pct = OHLC level closeness (telemetry only); "
+                         "direction_hit_rate_pct is the trading-relevant number"),
+        "headline_metric": "direction_hit_rate_pct",
         "direction_hit_rate_pct": dir_pct,
         "trade_direction_hit_rate_pct": dir_pct,
         "direction_metric": "classifier_up_prob",

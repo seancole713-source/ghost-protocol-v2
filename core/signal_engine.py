@@ -2062,6 +2062,41 @@ def get_model_status():
                 }
                 if reject:
                     summary["serve_reject"] = reject
+                # ── Honesty fields (PR #135 audit) ──────────────────────────
+                # serveable only means "pickle loads and schema matches".
+                # fireable_now mirrors the STATIC checks of the runtime fire
+                # chain (_evaluate_lane): the model could fire if the tape
+                # cooperates. The audit found 11 precision_ok models displayed
+                # while 0 could actually fire — that gap must be visible.
+                acc_f = float(m.get("accuracy", 0) or 0)
+                nat_f = float(m.get("natural_rate", 0) or 0)
+                edge_f = float(m.get("edge", 0) or 0)
+                wf_edge_f = float(m.get("wf_edge_mean", m.get("edge", 0)) or 0)
+                wf_acc_f = float(m.get("wf_acc_mean", m.get("accuracy", 0)) or 0)
+                folds = int(m.get("wf_fold_count", 0) or 0)
+                block = None
+                if reject is not None:
+                    block = f"not_serveable:{reject}"
+                elif direction == "DOWN" and not _v3_down_signals_enabled():
+                    block = "down_lane_disabled"
+                elif edge_f < _v3_min_edge():
+                    block = f"meta_gate:edge {edge_f*100:.1f}% < {_v3_min_edge()*100:.1f}%"
+                elif acc_f < _v3_min_holdout_acc():
+                    block = f"meta_gate:holdout_acc {acc_f*100:.1f}% < {_v3_min_holdout_acc()*100:.1f}%"
+                elif folds > 0 and wf_acc_f < _v3_min_wf_acc_mean():
+                    block = f"meta_gate:wf_acc {wf_acc_f*100:.1f}% < {_v3_min_wf_acc_mean()*100:.1f}%"
+                elif folds > 0 and wf_edge_f < _v3_min_edge():
+                    block = f"meta_gate:wf_edge {wf_edge_f*100:.1f}% < {_v3_min_edge()*100:.1f}%"
+                elif not summary["precision_ok"]:
+                    block = "precision_unproven"
+                summary["fireable_now"] = block is None
+                if block:
+                    summary["fire_block_reason"] = block
+                # accuracy ~= natural_rate means a constant guess would score
+                # the same — the model added nothing (base-rate rider).
+                summary["base_rate_rider"] = bool(acc_f <= nat_f + 0.02)
+                # skill = beats base rate in-sample AND out-of-time.
+                summary["proven_skill"] = bool(edge_f > 0 and wf_edge_f > 0)
                 stored[raw_key] = summary
                 if reject is None:
                     if sym not in symbols:

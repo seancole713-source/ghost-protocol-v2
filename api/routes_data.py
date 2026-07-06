@@ -307,7 +307,15 @@ def symbol_accuracy():
         rows = cur.fetchall()
     symbols = [{"symbol": r[0], "total": r[1], "wins": r[2], "win_rate": float(r[3]), "pct_up": round(float(r[4] or 0), 2)} for r in rows]
     edges = [s for s in symbols if s["win_rate"] > 55]
-    return {"ok": True, "total_symbols": len(symbols), "symbols_with_edge": len(edges), "data": symbols}
+    return {
+        "ok": True,
+        "legacy": True,
+        "warning": ("LEGACY TABLE: ghost_prediction_outcomes predates the v3.2 engine and "
+                    "the 70% contract, and includes crypto-era picks. Do NOT read these "
+                    "win rates as current v3 stock performance — use /api/stats and "
+                    "/api/v3/status instead. (PR #135 audit)"),
+        "total_symbols": len(symbols), "symbols_with_edge": len(edges), "data": symbols,
+    }
 
 
 @router.get("/api/telegram/status")

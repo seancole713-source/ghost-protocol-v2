@@ -79,8 +79,13 @@ def _v3_min_edge() -> float:
 
 
 def _v3_min_wf_edge() -> float:
-    """Walk-forward edge floor (can be slightly negative for thin watchlist names)."""
-    return float(os.getenv("V3_MIN_WF_EDGE", "-0.05"))
+    """Walk-forward edge floor.
+
+    Raised from -0.05 to 0.0 (PR #135 audit): a model with negative
+    out-of-time edge must never count toward a 70% system. Env can still
+    tighten upward; loosening below zero requires an explicit env choice.
+    """
+    return float(os.getenv("V3_MIN_WF_EDGE", "0.0"))
 
 
 def _v3_min_win_proba() -> float:

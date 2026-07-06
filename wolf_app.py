@@ -23,7 +23,7 @@ logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 # missing from Railway logs after a deploy, the container is stale (the
 # Procfile boot echo is the shell-level twin of this check).
 LOGGER.info(
-    "[wolf_app] BOOT_BANNER PR134_NEWS_EVENT_LAYER "
+    "[wolf_app] BOOT_BANNER PR135_AUDIT_HONESTY "
     "DEPLOY_VERSION=%s GIT_SHA=%s DEPLOY_ID=%s",
     os.getenv("DEPLOY_VERSION", "unset"),
     os.getenv("RAILWAY_GIT_COMMIT_SHA", "unset"),
@@ -427,12 +427,27 @@ def _compute_get_stats(cur):
         v32r_losses = v32r_rows.get("LOSS", 0)
         v32r_total = v32r_wins + v32r_losses
     scan_stocks = [s.strip().upper() for s in os.getenv("STOCK_SYMBOLS", "WOLF").split(",") if s.strip()] or ["WOLF"]
+
+    def _wilson_lb95(w: int, n: int) -> float:
+        # 95% Wilson lower bound — the honest floor on a small-sample win rate.
+        # Stops 5-of-6 luck from being quoted as "83%". (PR #135 audit)
+        if n <= 0:
+            return 0.0
+        z = 1.96
+        p = w / n
+        denom = 1 + z * z / n
+        center = p + z * z / (2 * n)
+        margin = z * ((p * (1 - p) + z * z / (4 * n)) / n) ** 0.5
+        return round(max(0.0, (center - margin) / denom) * 100, 1)
+
     return {
         "ok": True,
         "wins": wins,
         "losses": losses,
         "total": total,
         "win_rate_pct": round(wins / total * 100, 1) if total else 0,
+        "win_rate_wilson_lb95_pct": _wilson_lb95(wins, total),
+        "sample_note": "win_rate under N=30 resolved picks is statistically weak — quote the Wilson lower bound",
         "open_positions": open_count,
         "post_v32": {
             "start_ts": v32_start_ts,
@@ -3032,7 +3047,7 @@ def _record_v3_train_state(**fields) -> None:
 
 # PR #19 deploy-version constant. Bump on every "did Railway pick up
 # the new code?" PR so /api/_version reveals the truth in one curl.
-_RUNNING_PR_VERSION = 134
+_RUNNING_PR_VERSION = 135
 
 
 def _deploy_meta() -> dict:
