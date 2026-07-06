@@ -237,6 +237,11 @@ def run_wallet_cycle() -> Dict[str, Any]:
                 entry = prices.get(sym.upper())
                 if not entry or entry <= 0:
                     continue
+                # Never enter a trade whose exit is already true: a stale
+                # signal with a blown stop books an instant fake loss, and one
+                # past its target books an instant fake win. Skip both.
+                if (stp and entry <= stp) or (tgt and entry >= tgt):
+                    continue
                 if _enter(cur, book=book, symbol=sym, source=source, entry=entry,
                           target=tgt, stop=stp, expires_at=exp):
                     entered += 1
