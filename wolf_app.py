@@ -1450,6 +1450,17 @@ async def lifespan(app: FastAPI):
 
     scheduler.register("news_event_ingest", _news_ingest_job, interval_s=900)
     scheduler.register("news_defense", _news_defense_job, interval_s=300)
+    # PR #138: paper wallet — fake-money mirror of Ghost's signals (gated +
+    # shadow books) so fill-level evidence accrues with zero real risk.
+    from core.paper_wallet import run_wallet_cycle as _paper_wallet_cycle
+
+    def _paper_wallet_job():
+        try:
+            _paper_wallet_cycle()
+        except Exception as _e:
+            LOGGER.warning("paper wallet job failed: %s", str(_e)[:100])
+
+    scheduler.register("paper_wallet", _paper_wallet_job, interval_s=300)
     # Shadow scoring: resolve every silenced model eval as a virtual pick so
     # per-symbol live hit rates accrue without firing (core.shadow_outcomes).
     from core.shadow_outcomes import run_shadow_cycle as _shadow_cycle

@@ -36,6 +36,7 @@ button,input,select{font:inherit} button{cursor:pointer}.hidden{display:none!imp
     <nav class="nav" id="sideNav">
       <button class="active" data-section="overview"><span class="dot"></span>Overview</button>
       <button data-section="mypicks"><span class="dot"></span>My picks</button>
+      <button data-section="wallet"><span class="dot"></span>Wallet</button>
       <button data-section="top"><span class="dot"></span>Top stocks</button>
       <button data-section="bullish"><span class="dot"></span>Bullish</button>
       <button data-section="today"><span class="dot"></span>Today</button>
@@ -106,6 +107,29 @@ button,input,select{font:inherit} button{cursor:pointer}.hidden{display:none!imp
     <section class="section" id="section-tracker"><div class="grid"><div class="panel glass col-12"><div class="panel-title"><div><h3>Live market mirror</h3><p>Live market price is mirrored against predicted open/reference, predicted low/stop, and target/high side by side.</p></div></div><div id="trackerList"></div></div></div></section>
     <section class="section" id="section-mypicks"><div class="grid"><div class="panel glass col-12"><div class="panel-title"><div><h3>My picks</h3><p>Your personal, server-synced watchlist — the stocks you actually hold. Every pick gets Ghost's full system read; open a card for the complete report.</p></div><div class="pool-form" style="margin:0;min-width:220px"><input id="myPickInput" placeholder="AAPL" maxlength="8"><button class="btn primary" id="myPickAdd">Add</button></div></div><div id="myPicksList"><div class="empty">Loading your picks…</div></div></div></div></section>
 
+    <section class="section" id="section-wallet"><div class="grid">
+      <div class="panel glass col-12">
+        <div class="panel-title"><div><h3>Paper wallet</h3><p><b style="color:var(--amber)">FAKE MONEY</b> — Ghost mirrors its signals here with quote-level fills so you can see, in dollars, what following it would have done. Two books: <b>Ghost picks</b> (real fired picks — silent while gates hold) and <b>Research shadow</b> (ungated signals, small fixed slices, evidence only).</p></div><span class="tag warn">paper · not advice</span></div>
+        <div class="hero-title" style="align-items:baseline;gap:24px;flex-wrap:wrap">
+          <div><div class="eyebrow">Total value</div><div class="big" id="wTotal" style="font-size:46px;margin:8px 0">—</div></div>
+          <div><div class="eyebrow" id="wPnlLbl">P&amp;L</div><div class="big" id="wPnl" style="font-size:38px;margin:8px 0">—</div></div>
+        </div>
+        <div class="metric-grid" style="grid-template-columns:repeat(4,minmax(0,1fr))">
+          <div class="metric"><div class="label">Cash</div><div class="value" id="wCash">—</div></div>
+          <div class="metric"><div class="label">Invested</div><div class="value" id="wInvested">—</div></div>
+          <div class="metric"><div class="label">Today P&amp;L</div><div class="value" id="wToday">—</div></div>
+          <div class="metric"><div class="label">Closed trades</div><div class="value" id="wClosed">—</div><div class="metric-note" id="wWr"></div></div>
+        </div>
+      </div>
+      <div class="panel glass col-6"><div class="panel-title"><div><h3>Positions</h3><p>What Ghost is holding right now.</p></div></div><div id="wPositions"><div class="empty">Loading…</div></div></div>
+      <div class="panel glass col-6"><div class="panel-title"><div><h3>Trade history</h3><p>Every paper buy and sell, newest first.</p></div></div><div id="wHistory"><div class="empty">Loading…</div></div></div>
+      <div class="panel glass col-6"><div class="panel-title"><div><h3>Daily profit</h3><p>Equity change per session.</p></div></div><div id="wDaily"><div class="empty">No sessions yet.</div></div></div>
+      <div class="panel glass col-6"><div class="panel-title"><div><h3>Wallet settings</h3><p>Changing the balance resets the wallet (positions and history wiped — a fresh experiment). Requires admin login at /admin.</p></div></div>
+        <div class="pool-form" style="margin-top:4px"><input id="wBalInput" placeholder="10000" inputmode="decimal" style="text-transform:none"><button class="btn primary" id="wBalBtn">Reset wallet</button></div>
+        <div class="footer-note" id="wCfgNote">—</div>
+      </div>
+    </div></section>
+
     <section class="section" id="section-health"><div class="grid"><div class="panel glass col-6"><div class="panel-title"><div><h3>Ghost health check</h3><p>Clear confirmation that the engine, deploy, breakers, and scoring routes are alive.</p></div></div><div id="healthFull"></div></div><div class="panel glass col-6"><div class="panel-title"><div><h3>Prediction pool controls</h3><p>Manage the local symbol pool shown by this console.</p></div></div><div id="poolManager"></div></div></div></section>
 
     <p class="footer-note">Prediction intelligence only — not financial advice and not auto-trading. Wins mean Ghost got the direction right: UP won if price rose, DOWN won if price fell.</p>
@@ -130,6 +154,20 @@ function savePool(){localStorage.setItem('ghost_console_pool',JSON.stringify(sta
 function cleanSym(v){return String(v||'').toUpperCase().replace(/[^A-Z0-9.\-]/g,'').slice(0,8)}
 function toast(msg){var el=$('toast');el.textContent=msg;el.classList.add('show');setTimeout(function(){el.classList.remove('show')},2600)}
 function switchSection(id){document.querySelectorAll('.section').forEach(function(s){s.classList.toggle('active',s.id==='section-'+id)});document.querySelectorAll('[data-section]').forEach(function(b){b.classList.toggle('active',b.getAttribute('data-section')===id)});window.scrollTo({top:0,behavior:'smooth'})}
+function _wMoney(v,signed){if(v==null)return '—';var sign=v<0?'−':(signed?'+':'');return sign+'$'+Math.abs(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}
+function _wCls(v){return v>0?'pos':(v<0?'neg':'')}
+async function loadWallet(){var w=await fetchJson('/api/wallet',{ok:false});if(!w.ok){$('wPositions').innerHTML='<div class="empty">Wallet unavailable: '+escHtml(w.error||'')+'</div>';return}
+$('wTotal').textContent=_wMoney(w.total_value);var pnl=w.total_pnl||0;var pe=$('wPnl');pe.textContent=_wMoney(pnl,true)+' ('+(w.total_pnl_pct>0?'+':'')+w.total_pnl_pct+'%)';pe.style.color=pnl>0?'var(--green2)':(pnl<0?'var(--red)':'var(--text)');$('wPnlLbl').textContent=pnl>=0?'Profit':'Loss';
+$('wCash').textContent=_wMoney(w.cash);$('wInvested').textContent=_wMoney(w.invested);var te=$('wToday');te.textContent=_wMoney(w.today_pnl,true);te.style.color=w.today_pnl>0?'var(--green2)':(w.today_pnl<0?'var(--red)':'var(--text)');
+$('wClosed').textContent=w.closed_trades;$('wWr').textContent=w.closed_trades?(w.closed_wins+' wins · '+Math.round(w.closed_wins/w.closed_trades*100)+'%'):'';
+var pos=w.open_positions||[];$('wPositions').innerHTML=pos.length?pos.map(function(p){var pc=p.pnl_pct==null?'':(' <span class="'+_wCls(p.pnl)+'">'+(p.pnl_pct>0?'+':'')+p.pnl_pct+'%</span>');return '<div class="kv"><div><b>'+escHtml(p.symbol)+'</b> <span class="tag '+(p.book==='gated'?'good':'')+'" title="'+(p.book==='gated'?'real fired pick':'research shadow signal')+'">'+p.book+'</span><br><span style="font-size:11px;color:var(--soft)">'+p.qty+' @ $'+p.entry_price+'</span></div><span><span class="chip" style="font-weight:900">'+_wMoney(p.value)+'</span>'+pc+'</span></div>'}).join(''):'<div class="empty">No open positions. '+(w.note?'':'')+'Ghost buys appear here when signals fire.</div>';
+var hist=w.history||[];$('wHistory').innerHTML=hist.length?hist.slice(0,25).map(function(h){var d=new Date((h.exit_ts||h.entry_ts)*1000);var when=(d.getMonth()+1)+'/'+d.getDate()+' '+d.getHours()+':'+String(d.getMinutes()).padStart(2,'0');return '<div class="kv"><div><span class="tag '+(h.pnl>0?'good':'bad')+'">SELL·'+escHtml(h.exit_reason||'')+'</span> <b>'+escHtml(h.symbol)+'</b><br><span style="font-size:11px;color:var(--soft)">'+h.qty+' · in $'+h.entry_price+' → out $'+h.exit_price+' · '+when+'</span></div><span class="'+_wCls(h.pnl)+'" style="font-weight:900">'+_wMoney(h.pnl,true)+'</span></div>'}).join(''):'<div class="empty">No closed trades yet — sells land here with reason (target / stop / expiry).</div>';
+var days=w.daily||[];$('wDaily').innerHTML=days.length?days.slice(0,7).map(function(dd){return '<div class="kv"><span>'+dd.date+'</span><span class="'+_wCls(dd.pnl)+'" style="font-weight:900">'+_wMoney(dd.pnl,true)+'</span></div>'}).join(''):'<div class="empty">First session snapshot lands at the next wallet cycle.</div>';
+$('wCfgNote').textContent='Started at '+_wMoney(w.starting_balance)+' · slice '+_wMoney(w.trade_slice_usd)+'/trade · shadow prob ≥ '+w.shadow_min_prob+' · '+(w.note||'');}
+async function resetWalletBalance(){var v=parseFloat($('wBalInput').value);if(!v||v<100){toast('Enter a balance of at least $100');return}
+var r=await fetch('/api/wallet/config?starting_balance='+encodeURIComponent(v),{method:'POST'}).then(function(x){return x.json().then(function(j){return {status:x.status,body:j}})}).catch(function(){return {status:0,body:{}}});
+if(r.status===403){toast('Log in at /admin first, then retry');return}
+if(r.body&&r.body.ok){toast('Wallet reset to '+_wMoney(r.body.starting_balance));loadWallet()}else{toast('Reset failed')}}
 function initNav(){document.querySelectorAll('[data-section]').forEach(function(b){b.addEventListener('click',function(){switchSection(b.getAttribute('data-section'))})});$('refreshBtn').addEventListener('click',loadAll);$('poolAdd').addEventListener('click',addPool);$('poolInput').addEventListener('keydown',function(e){if(e.key==='Enter')addPool()});window.addEventListener('scroll',function(){var y=window.scrollY;var compact=y>80&&y>state.lastScroll;state.lastScroll=y;$('topbar').classList.toggle('compact',compact);$('topTabs').classList.toggle('compact',compact)},{passive:true})}
 function addPool(){var s=cleanSym($('poolInput').value);if(!s)return;if(state.pool.indexOf(s)<0)state.pool.push(s);state.selected=s;savePool();$('poolInput').value='';renderPool();toast(s+' added to console pool');loadAll()}
 function removePool(s){state.pool=state.pool.filter(function(x){return x!==s});if(!state.pool.length)state.pool=DEFAULT_POOL.slice();if(state.selected===s)state.selected=state.pool[0];savePool();renderPool();toast(s+' removed from console pool');loadAll()}
@@ -189,7 +227,8 @@ async function addMyPick(){var s=cleanSym($('myPickInput').value);if(!s){toast('
 var r=await fetch('/api/my-picks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({symbol:s})}).then(function(x){return x.json()}).catch(function(){return {ok:false}});
 if(r&&r.ok){$('myPickInput').value='';toast(s+(r.added?' added to My picks':' already in My picks'));loadMyPicks()}else{toast(r&&r.error?r.error:'Could not add — sign in at /admin first')}}
 document.addEventListener('click',function(e){var rm=e.target.closest('[data-mypick-remove]');if(rm){var s=rm.getAttribute('data-mypick-remove');fetch('/api/my-picks/'+encodeURIComponent(s),{method:'DELETE'}).then(function(x){return x.json()}).catch(function(){return {}}).then(function(){toast(s+' removed from My picks');loadMyPicks()});return}
-if(e.target.closest('[data-section="mypicks"]'))loadMyPicks()});
+if(e.target.closest('[data-section="mypicks"]'))loadMyPicks();if(e.target.closest('[data-section="wallet"]'))loadWallet()});
+document.addEventListener('DOMContentLoaded',function(){var b=$('wBalBtn');if(b)b.addEventListener('click',resetWalletBalance)});
 (function(){var b=$('myPickAdd');if(b)b.addEventListener('click',addMyPick);var i=$('myPickInput');if(i)i.addEventListener('keydown',function(e){if(e.key==='Enter')addMyPick()})})();
 loadMyPicks();
 initNav();renderPool();loadAll();setInterval(loadAll,60000);

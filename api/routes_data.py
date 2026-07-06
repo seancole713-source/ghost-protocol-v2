@@ -817,3 +817,38 @@ def get_market_sessions_batch(symbols: str = "", max_fresh: int = -1):
         syms = list(OFFICIAL_WATCHLIST)
     mf = None if max_fresh < 0 else max_fresh
     return get_market_sessions(syms, max_fresh=mf)
+
+
+@router.get("/api/wallet")
+def get_wallet():
+    """Paper wallet summary — FAKE money, Cash-App-style view (PR #138)."""
+    from core.paper_wallet import wallet_summary
+    return wallet_summary()
+
+
+@router.post("/api/wallet/config")
+def set_wallet_config(request: Request, x_cron_secret: str = Header(default="")):
+    """Reset the paper wallet with a new starting balance. Admin/cron gated."""
+    from wolf_app import _ADMIN_COOKIE, _admin_token_valid, _cron_ok  # late import — shared state + monkeypatch-safe
+    tok = request.cookies.get(_ADMIN_COOKIE, "")
+    if not (_cron_ok(x_cron_secret) or _admin_token_valid(tok)):
+        raise HTTPException(status_code=403, detail="admin login or cron secret required")
+    bal = request.query_params.get("starting_balance")
+    if bal is None:
+        raise HTTPException(status_code=422, detail="starting_balance query param required")
+    try:
+        bal_f = float(bal)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="starting_balance must be a number")
+    from core.paper_wallet import reset_wallet
+    return reset_wallet(bal_f)
+
+
+@router.post("/api/wallet/cycle")
+def trigger_wallet_cycle(x_cron_secret: str = Header(default="")):
+    """Run one paper-wallet engine pass manually. Cron-gated."""
+    from wolf_app import _cron_ok  # late import — shared state + monkeypatch-safe
+    if not _cron_ok(x_cron_secret):
+        raise HTTPException(status_code=403)
+    from core.paper_wallet import run_wallet_cycle
+    return run_wallet_cycle()
