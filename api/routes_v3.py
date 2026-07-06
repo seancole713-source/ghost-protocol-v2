@@ -150,7 +150,7 @@ def v3_lineage(limit: int = 50):
     """Model lineage (audit) — rolling history of training runs (accuracy/edge/
     pass per symbol) so /admin can show how the model evolved across retrains.
     Newest first. Public, read-only."""
-    from wolf_app import db_conn, ensure_ghost_state  # late import — shared state + monkeypatch-safe
+    from wolf_app import _RETRAIN_JOB_LOCK, db_conn, ensure_ghost_state  # late import — shared state + monkeypatch-safe
     try:
         import json as _j
         with db_conn() as conn:
@@ -306,7 +306,7 @@ def v3_train_last():
     dict of the last_v3_train_* fields so the cockpit can render a
     "Last training result" panel without needing the cron secret.
     """
-    from wolf_app import db_conn, ensure_ghost_state  # late import — shared state + monkeypatch-safe
+    from wolf_app import _RETRAIN_JOB_LOCK, db_conn, ensure_ghost_state  # late import — shared state + monkeypatch-safe
     try:
         with db_conn() as conn:
             cur = conn.cursor()
@@ -344,6 +344,15 @@ def v3_train_last():
         # a prior run. If this invocation has not resolved passed=true/false,
         # do not surface a terminal timestamp.
         if out.get("state") in ("started", "running") and out.get("passed") is None:
+            running_now = _RETRAIN_JOB_LOCK.locked()
+            out["running_now"] = running_now
+            if not running_now:
+                out["state"] = "orphaned"
+                out["status_note"] = (
+                    "stored state was started/running but no retrain job is active "
+                    "in this process; prior job likely finished, crashed, or was "
+                    "interrupted by deploy"
+                )
             stale_finished = out.pop("finished_at", None)
             if stale_finished:
                 out["stale_finished_at_suppressed"] = stale_finished

@@ -1566,10 +1566,35 @@ def test_v3_train_last_running_does_not_report_stale_terminal_fields(monkeypatch
     })
     out = wolf_app.v3_train_last()
     last = out["last"]
-    assert last["state"] == "running"
+    assert last["state"] == "orphaned"
     assert last["passed"] is None
+    assert last["running_now"] is False
     assert "finished_at" not in last
     assert last["stale_finished_at_suppressed"] == 1779470120
+    assert "no retrain job is active" in last["status_note"]
+
+
+def test_v3_train_last_keeps_running_when_lock_active(monkeypatch):
+    """A genuine in-process train remains running when the retrain lock is held."""
+    cur = _patch_state_cursor(monkeypatch)
+    cur.state.update({
+        "last_v3_train_ts": "1779471000",
+        "last_v3_train_state": "running",
+        "last_v3_train_passed": "",
+        "last_v3_train_force": "false",
+    })
+    if not wolf_app._RETRAIN_JOB_LOCK.locked():
+        wolf_app._RETRAIN_JOB_LOCK.acquire()
+    try:
+        out = wolf_app.v3_train_last()
+    finally:
+        if wolf_app._RETRAIN_JOB_LOCK.locked():
+            wolf_app._RETRAIN_JOB_LOCK.release()
+    last = out["last"]
+    assert last["state"] == "running"
+    assert last["passed"] is None
+    assert last["running_now"] is True
+    assert "status_note" not in last
 
 
 def test_v3_train_start_clears_stale_terminal_fields(monkeypatch):
