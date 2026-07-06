@@ -2102,10 +2102,38 @@ def get_model_status():
                     if sym not in symbols:
                         symbols[sym] = {}
                     symbols[sym][direction] = summary
+            # ── Fleet honesty summary (PR #136, live-market audit P4+P5) ──
+            fireable = [k for k, v in stored.items() if v.get("fireable_now")]
+            riders = [k for k, v in stored.items() if v.get("base_rate_rider")]
+            # Watchlist symbols with no serveable model in ANY direction, with
+            # the concrete reason (audit P5: "missing" must never be a mystery).
+            missing_v3: Dict[str, str] = {}
+            try:
+                from config.symbols import OFFICIAL_WATCHLIST
+                for wsym in OFFICIAL_WATCHLIST:
+                    if wsym in symbols:
+                        continue
+                    rejects = {v.get("serve_reject") for k, v in stored.items()
+                               if k == wsym or k.startswith(f"{wsym}_")}
+                    rejects.discard(None)
+                    missing_v3[wsym] = "; ".join(sorted(rejects)) if rejects else "no_model_stored"
+            except Exception:
+                note_suppressed()
             out = {
                 "trained": bool(symbols),
                 "models": sum(len(v) for v in symbols.values()),
                 "models_stored": len(stored),
+                "fleet_summary": {
+                    "serveable": sum(1 for v in stored.values() if v.get("serveable")),
+                    "fireable_now": len(fireable),
+                    "fireable_models": fireable,
+                    "precision_ok": sum(1 for v in stored.values() if v.get("precision_ok")),
+                    "base_rate_riders": len(riders),
+                    "proven_skill": sum(1 for v in stored.values() if v.get("proven_skill")),
+                    "note": ("fireable_now is the only 'ready' number — serveable means "
+                             "the pickle loads, precision_ok alone can ride base rates"),
+                },
+                "missing_v3": missing_v3,
                 "symbols": symbols,
                 "stored_symbols": stored,
             }

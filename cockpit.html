@@ -2583,7 +2583,7 @@ function _renderDfTable(days){
       + '<td data-label="Peak rate">' + _dfRatePill(sc.peak_rate != null ? sc.peak_rate : sc.peak_pct) + '</td>'
       + '<td data-label="Low rate">' + _dfRatePill(sc.low_rate != null ? sc.low_rate : sc.low_pct) + '</td>'
       + '<td data-label="Close rate">' + _dfRatePill(sc.close_rate != null ? sc.close_rate : sc.close_pct) + '</td>'
-      + '<td data-label="Overall">' + (sc.overall_pct != null
+      + '<td data-label="Level closeness">' + (sc.overall_pct != null
         ? '<span class="' + _dfScoreClass(sc.overall_pct) + '">' + sc.overall_pct + '%</span>'
           + (sc.direction_ok ? ' <span style="color:#4ade80;font-size:10px">dir ✓</span>' : ' <span style="color:#f87171;font-size:10px">dir ✗</span>')
         : '—') + '</td>'
@@ -2591,7 +2591,7 @@ function _renderDfTable(days){
   }).join('');
   wrap.innerHTML = '<table class="df-table"><thead><tr>'
     + '<th>Session</th><th>Ghost predicted</th><th>Actual</th>'
-    + '<th>Open rate</th><th>Peak rate</th><th>Low rate</th><th>Close rate</th><th>Overall</th>'
+    + '<th>Open rate</th><th>Peak rate</th><th>Low rate</th><th>Close rate</th><th title="OHLC level closeness — telemetry, not prediction accuracy">Level close.</th>'
     + '</tr></thead><tbody>' + rows + '</tbody></table>';
 }
 
@@ -3238,11 +3238,11 @@ async function loadDailyForecastScorecard(){
       : '';
     sumEl.innerHTML = '<span style="color:#e2e8f0;font-weight:800">' + escHtml(sym) + '</span> · '
       + (sm.scored_days || 0) + ' scored sessions · '
-      + '<span title="Level-band closeness — not tradable edge">Level bands '
-      + (sm.avg_overall_pct != null ? '<span class="' + _dfScoreClass(sm.avg_overall_pct) + '">' + sm.avg_overall_pct + '%</span>' : '—')
-      + '</span> · '
-      + '<span title="Direction hit rate — what pick gates care about">Trade direction '
+      + '<span title="Direction hit rate — the trading-relevant number (audit: headline metric)"><b>Direction '
       + (sm.direction_hit_rate_pct != null ? '<span class="' + (sm.direction_hit_rate_pct >= 55 ? 'pos' : (sm.direction_hit_rate_pct < 50 ? 'neg' : '')) + '">' + sm.direction_hit_rate_pct + '%</span>' : '—')
+      + '</b></span> · '
+      + '<span title="OHLC level-band closeness — telemetry only, NOT prediction accuracy. 96% here beside coin-flip direction means levels were near but calls were wrong.">level closeness '
+      + (sm.avg_overall_pct != null ? (sm.avg_overall_pct + '% <span style="color:#808080">(telemetry)</span>') : '—')
       + '</span>'
       + (sm.model_accuracy_holdout_pct != null ? ' · holdout classifier ' + sm.model_accuracy_holdout_pct + '%' : '')
       + (sm.calibration_brier != null ? ' · <span title="Model gate-slice Brier at last retrain — not live pick journal">holdout Brier ' + sm.calibration_brier + '</span>' : '')
@@ -4211,12 +4211,12 @@ function _renderDpQuality(summary){
   var levelCls = level != null && level >= 80 ? 'pos' : '';
   var dirCls = dir != null && dir >= 55 ? 'pos' : (dir != null && dir < 50 ? 'neg' : '');
   el.innerHTML = ''
-    + '<div class="dp-q-box level"><div class="dp-q-lbl">Level bands (telemetry)</div>'
-    + '<div class="dp-q-val ' + levelCls + '">' + (level != null ? level + '% avg closeness' : '—') + '</div>'
-    + '<div class="dp-q-note">Band width from recent daily range when vol &gt; base (Phase 4) — not pick TP/SL.</div></div>'
-    + '<div class="dp-q-box trade"><div class="dp-q-lbl">Trade direction (signal)</div>'
+    + '<div class="dp-q-box trade"><div class="dp-q-lbl">Trade direction (headline)</div>'
     + '<div class="dp-q-val ' + dirCls + '">' + (dir != null ? dir + '% hit rate' : '—') + '</div>'
-    + '<div class="dp-q-note">Up/down call quality — what gates picks. Coin flip = 50%.</div></div>';
+    + '<div class="dp-q-note">Up/down call quality — what gates picks. Coin flip = 50%.</div></div>'
+    + '<div class="dp-q-box level"><div class="dp-q-lbl">Level bands (telemetry only)</div>'
+    + '<div class="dp-q-val ' + levelCls + '">' + (level != null ? level + '% avg closeness' : '—') + '</div>'
+    + '<div class="dp-q-note">How near predicted OHLC bands were — NOT prediction accuracy.</div></div>';
 }
 
 function _renderPlSummary(data){

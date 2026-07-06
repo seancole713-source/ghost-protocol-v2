@@ -800,3 +800,20 @@ def trigger_news_ingest(x_cron_secret: str = Header(default="")):
         raise HTTPException(status_code=403)
     from core.news_ingest import run_news_ingest_cycle
     return run_news_ingest_cycle()
+
+
+@router.get("/api/market/sessions")
+def get_market_sessions_batch(symbols: str = "", max_fresh: int = -1):
+    """Batch market sessions with freshness truth (PR #136, live-market audit P1+P2).
+
+    Cache-first; at most `max_fresh` symbols hit providers per call so a full
+    watchlist sweep can never trip the breakers. Partial results by design.
+    """
+    from core.market_sessions import get_market_sessions
+    if symbols.strip():
+        syms = [s for s in symbols.split(",") if s.strip()]
+    else:
+        from config.symbols import OFFICIAL_WATCHLIST
+        syms = list(OFFICIAL_WATCHLIST)
+    mf = None if max_fresh < 0 else max_fresh
+    return get_market_sessions(syms, max_fresh=mf)
