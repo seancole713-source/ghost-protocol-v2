@@ -133,3 +133,38 @@ def test_fleet_summary_counts(monkeypatch):
     assert fs["base_rate_riders"] == 1
     assert fs["precision_ok"] == 2  # display flag still overstates — that's the point
     assert "missing_v3" in st  # every unserveable watchlist symbol gets a reason
+
+
+def test_null_price_cache_falls_back_to_rth_close(monkeypatch):
+    # PR #137 audit bug: cache rows written during a failed trade fetch have
+    # price=null but valid RTH data — batch must patch like the single endpoint.
+    cache = {"WOLF": (time.time() - 30, {"price": None, "rth_close": 41.21,
+                                         "today_open": 39.62, "today_high": 42.31,
+                                         "previous_close": 40.195,
+                                         "feed": "alpaca_iex"})}
+    _setup(monkeypatch, cache=cache)
+    out = ms.get_market_sessions(["WOLF"], max_fresh=0)
+    row = out["sessions"]["WOLF"]
+    assert row["ok"] is True
+    assert row["price"] == 41.21
+    assert row["price_source"] == "rth_close_fallback"
+    assert row["change_pct"] is not None  # recomputed from patched price
+
+
+def test_ohlc_only_row_is_still_ok(monkeypatch):
+    cache = {"X": (time.time() - 30, {"price": None, "rth_close": None,
+                                      "today_open": 5.0, "today_high": 5.2,
+                                      "feed": "alpaca_iex"})}
+    _setup(monkeypatch, cache=cache)
+    out = ms.get_market_sessions(["X"], max_fresh=0)
+    row = out["sessions"]["X"]
+    assert row["ok"] is True            # has_ohlc — usable market truth exists
+    assert row["price"] == 5.0          # today_open fallback
+    assert row["price_source"] == "today_open_fallback"
+
+
+def test_truly_empty_row_stays_not_ok(monkeypatch):
+    cache = {"Y": (time.time() - 30, {"price": None, "feed": None})}
+    _setup(monkeypatch, cache=cache)
+    out = ms.get_market_sessions(["Y"], max_fresh=0)
+    assert out["sessions"]["Y"]["ok"] is False

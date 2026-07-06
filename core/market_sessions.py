@@ -82,8 +82,24 @@ def get_market_sessions(symbols: List[str], max_fresh: int | None = None) -> Dic
                 row = {"provider_state": "unavailable", "freshness_seconds": None,
                        "error": str(exc)[:80]}
         row["symbol"] = sym
-        row["ok"] = bool(row.get("price"))
         row["price_source"] = row.get("feed")
+        # PR #137 (audit fix): cached rows written while the trade fetch failed
+        # carry price=null even though the session's RTH truth exists. Mirror
+        # the single-symbol endpoint's semantics — but WITHOUT provider calls
+        # (get_price could hit feeds; the whole point here is bounded fetches).
+        # rth_close is the most recent regular-hours price in the cached row.
+        if not row.get("price"):
+            fb = row.get("rth_close") or row.get("today_open")
+            if fb:
+                row["price"] = fb
+                row["price_source"] = "rth_close_fallback" if row.get("rth_close") else "today_open_fallback"
+        if (row.get("price") and row.get("previous_close")
+                and row["previous_close"] > 0 and row.get("change_pct") is None):
+            chg = round(row["price"] - row["previous_close"], 4)
+            row["change_abs"] = chg
+            row["change_pct"] = round(chg / row["previous_close"] * 100, 3)
+        has_ohlc = row.get("today_open") is not None or row.get("today_high") is not None
+        row["ok"] = bool(row.get("price") is not None or has_ohlc)
         rows[sym] = row
 
     return {

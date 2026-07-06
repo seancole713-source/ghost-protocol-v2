@@ -300,6 +300,11 @@ def get_squeeze_picks() -> Dict[str, Any]:
         "fetch_ok": st.get("fetch_ok"),
         "fetch_fail": st.get("fetch_fail"),
         "fetch_failed_symbols": list(st.get("fetch_failed_symbols") or []),
+        # PR #137 (audit): these counts belong to the snapshot at last_scan_ts,
+        # NOT to right now — one degraded cycle (e.g. during a breaker trip)
+        # persists here until the next scan overwrites it, so this surface can
+        # legitimately disagree with newer scan log lines.
+        "fetch_note": "fetch_ok/fetch_fail are from the scan snapshot at last_scan_ts; compare timestamps before reading as current",
         "symbols": st.get("symbols"),
         "duration_ms": st.get("duration_ms"),
         "leaders": leaders,
