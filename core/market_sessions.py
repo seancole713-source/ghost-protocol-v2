@@ -100,6 +100,13 @@ def get_market_sessions(symbols: List[str], max_fresh: int | None = None) -> Dic
             row["change_pct"] = round(chg / row["previous_close"] * 100, 3)
         has_ohlc = row.get("today_open") is not None or row.get("today_high") is not None
         row["ok"] = bool(row.get("price") is not None or has_ohlc)
+        if not row["ok"] and row.get("provider_state") in ("live", "cached", "stale"):
+            # PR #140: a fresh cache entry can still be an empty failed-fetch row
+            # because core.prices caches the session shell even when no trade/OHLC
+            # was available. Do not call that "live"; provider_state should tell
+            # the operator whether there is usable market truth.
+            row["provider_state"] = "breaker_open" if not _alpaca_cb.allow() else "unavailable"
+            row["state_note"] = "no usable price/OHLC in cached session row"
         rows[sym] = row
 
     return {

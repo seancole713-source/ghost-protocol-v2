@@ -168,3 +168,13 @@ def test_truly_empty_row_stays_not_ok(monkeypatch):
     _setup(monkeypatch, cache=cache)
     out = ms.get_market_sessions(["Y"], max_fresh=0)
     assert out["sessions"]["Y"]["ok"] is False
+    assert out["sessions"]["Y"]["provider_state"] == "unavailable"
+    assert "no usable price/OHLC" in out["sessions"]["Y"]["state_note"]
+
+
+def test_truly_empty_row_with_open_breaker_is_not_labeled_live(monkeypatch):
+    cache = {"Y": (time.time() - 30, {"price": None, "feed": None})}
+    _setup(monkeypatch, cache=cache, allow=False)
+    out = ms.get_market_sessions(["Y"], max_fresh=0)
+    assert out["sessions"]["Y"]["ok"] is False
+    assert out["sessions"]["Y"]["provider_state"] == "breaker_open"
