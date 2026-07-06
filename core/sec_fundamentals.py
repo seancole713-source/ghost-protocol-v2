@@ -36,9 +36,12 @@ import requests
 
 LOGGER = logging.getLogger("ghost.sec_fundamentals")
 
+# SEC fair-access policy requires a User-Agent with contact information —
+# without an email the ticker-index endpoints return 403, which silently
+# blinded fundamentals for every non-hardcoded symbol until 2026-07-06.
 _SEC_USER_AGENT = os.getenv(
     "EDGAR_USER_AGENT",
-    "GhostProtocol/2.1 (seancole713-source/ghost-protocol-v2)",
+    "GhostProtocol/2.5 (contact: seancole713@gmail.com)",
 )
 _TIMEOUT = float(os.getenv("SEC_FUNDAMENTALS_TIMEOUT_S", "10.0"))
 _CACHE_TTL_S = int(os.getenv("SEC_FUNDAMENTALS_TTL_S", "21600"))  # 6h
@@ -59,6 +62,8 @@ _COMMON_CIK = {
 # Cached ticker->CIK index from SEC (loaded lazily, best-effort).
 _ticker_index: Dict[str, str] = {}
 _ticker_index_loaded = False
+_ticker_index_retry_at = 0.0
+_TICKER_INDEX_RETRY_S = 3600.0  # failed load retries hourly instead of never
 
 _EPS_TAGS = ("EarningsPerShareDiluted", "EarningsPerShareBasic")
 _REVENUE_TAGS = (
@@ -85,16 +90,20 @@ def _load_ticker_index() -> None:
     Reachable from Railway (same SEC hosts as the working EDGAR fetcher); may be
     blocked from some sandboxes, in which case we silently keep the static maps.
     """
-    global _ticker_index_loaded
+    global _ticker_index_loaded, _ticker_index_retry_at
     if _ticker_index_loaded:
         return
-    _ticker_index_loaded = True
+    now = time.time()
+    if now < _ticker_index_retry_at:
+        return
+    statuses = []
     for url in (
         "https://www.sec.gov/files/company_tickers.json",
         "https://data.sec.gov/files/company_tickers.json",
     ):
         try:
             r = requests.get(url, headers={"User-Agent": _SEC_USER_AGENT}, timeout=_TIMEOUT)
+            statuses.append(f"{url.split('/')[2]}={r.status_code}")
             if r.status_code == 200:
                 data = r.json() or {}
                 for v in data.values():
@@ -103,9 +112,18 @@ def _load_ticker_index() -> None:
                     if t and cik is not None:
                         _ticker_index[t] = str(cik).zfill(10)
                 if _ticker_index:
+                    _ticker_index_loaded = True
+                    LOGGER.info("sec ticker index loaded: %d tickers", len(_ticker_index))
                     return
         except Exception as exc:
-            LOGGER.debug("sec ticker index %s: %s", url, str(exc)[:100])
+            statuses.append(f"{url.split('/')[2]}=err:{str(exc)[:60]}")
+    # A dead index blinds fundamentals for every non-hardcoded symbol — this
+    # must be loud, and it must retry. (It hid at debug level for months.)
+    _ticker_index_retry_at = now + _TICKER_INDEX_RETRY_S
+    LOGGER.warning(
+        "sec ticker index UNAVAILABLE (%s) — fundamentals limited to static CIK maps; retry in %ds",
+        "; ".join(statuses), int(_TICKER_INDEX_RETRY_S),
+    )
 
 
 def cik_for_symbol(symbol: str) -> Optional[str]:

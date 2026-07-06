@@ -23,7 +23,7 @@ logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 # missing from Railway logs after a deploy, the container is stale (the
 # Procfile boot echo is the shell-level twin of this check).
 LOGGER.info(
-    "[wolf_app] BOOT_BANNER PR133_SEASONAL_SHADOW "
+    "[wolf_app] BOOT_BANNER PR134_NEWS_EVENT_LAYER "
     "DEPLOY_VERSION=%s GIT_SHA=%s DEPLOY_ID=%s",
     os.getenv("DEPLOY_VERSION", "unset"),
     os.getenv("RAILWAY_GIT_COMMIT_SHA", "unset"),
@@ -1416,6 +1416,25 @@ async def lifespan(app: FastAPI):
 
     scheduler.register("risk_discipline", _risk_discipline_job, interval_s=300)
     scheduler.register("news", run_news_cycle, interval_s=1800)
+    # PR #134: structured news-event ingestion (Alpaca+Finnhub → typed events)
+    # and the defensive tripwire (dark until NEWS_DEFENSE_ENABLED=1).
+    from core.news_ingest import run_news_ingest_cycle as _news_ingest_cycle
+    from core.news_defense import run_defense_check as _news_defense_check
+
+    def _news_ingest_job():
+        try:
+            _news_ingest_cycle()
+        except Exception as _e:
+            LOGGER.warning("news ingest job failed: %s", str(_e)[:100])
+
+    def _news_defense_job():
+        try:
+            _news_defense_check()
+        except Exception as _e:
+            LOGGER.warning("news defense job failed: %s", str(_e)[:100])
+
+    scheduler.register("news_event_ingest", _news_ingest_job, interval_s=900)
+    scheduler.register("news_defense", _news_defense_job, interval_s=300)
     # Shadow scoring: resolve every silenced model eval as a virtual pick so
     # per-symbol live hit rates accrue without firing (core.shadow_outcomes).
     from core.shadow_outcomes import run_shadow_cycle as _shadow_cycle
@@ -3013,7 +3032,7 @@ def _record_v3_train_state(**fields) -> None:
 
 # PR #19 deploy-version constant. Bump on every "did Railway pick up
 # the new code?" PR so /api/_version reveals the truth in one curl.
-_RUNNING_PR_VERSION = 133
+_RUNNING_PR_VERSION = 134
 
 
 def _deploy_meta() -> dict:

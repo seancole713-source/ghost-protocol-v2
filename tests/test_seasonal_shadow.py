@@ -101,9 +101,11 @@ def test_brain_fails_safe_when_data_layer_raises(monkeypatch):
 def test_registered_as_ninth_brain(monkeypatch):
     monkeypatch.setattr(seas, "seasonal_window_stats",
                         lambda s, **k: {"available": False, "reason": "test"})
+    import core.news_events as ne
+    monkeypatch.setattr(ne, "news_available", lambda **k: False)
     assert any(m.model_id == "seasonal_shadow_v1" for m in SHADOW_MODELS)
     preds = run_shadow_models(_report())
-    assert len(preds) == 9
+    assert len(preds) == 10  # + news_shadow_v2 (PR #134)
     assert any(p["model_id"] == "seasonal_shadow_v1" for p in preds)
 
 

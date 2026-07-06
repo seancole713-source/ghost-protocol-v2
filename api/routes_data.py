@@ -755,3 +755,40 @@ def trigger_reconcile(x_cron_secret: str = Header(default="")):
     from core.prediction import reconcile_outcomes
     count = reconcile_outcomes()
     return {"ok": True, "resolved": count}
+
+
+@router.get("/api/news/events")
+def get_news_events(symbol: str = "", limit: int = 50):
+    """Structured news events (PR #134). Read-only; newest first."""
+    from core.news_events import recent_events_for_symbol, news_available
+    lim = max(1, min(200, int(limit)))
+    if symbol:
+        events = recent_events_for_symbol(symbol, lookback_s=7 * 86400)[:lim]
+        return {"ok": True, "symbol": symbol.upper(), "available": news_available(),
+                "events": events}
+    from core.db import db_conn
+    from core.news_events import ensure_news_tables
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            ensure_news_tables(cur)
+            cur.execute(
+                """SELECT symbol, event_type, direction_hint, materiality, confidence,
+                          confirmation_status, evidence, asof_ts
+                   FROM ghost_news_events ORDER BY asof_ts DESC LIMIT %s""", (lim,))
+            keys = ("symbol", "event_type", "direction_hint", "materiality",
+                    "confidence", "confirmation_status", "evidence", "asof_ts")
+            events = [dict(zip(keys, r)) for r in cur.fetchall()]
+        return {"ok": True, "available": news_available(), "events": events}
+    except Exception as exc:
+        return JSONResponse(status_code=200, content={"ok": False, "error": str(exc)[:120]})
+
+
+@router.post("/api/news/ingest")
+def trigger_news_ingest(x_cron_secret: str = Header(default="")):
+    """Manually run one news-ingest polling pass (PR #134). Cron-gated."""
+    from wolf_app import _cron_ok  # late import — shared state + monkeypatch-safe
+    if not _cron_ok(x_cron_secret):
+        raise HTTPException(status_code=403)
+    from core.news_ingest import run_news_ingest_cycle
+    return run_news_ingest_cycle()

@@ -281,6 +281,56 @@ def contrarian_shadow(report: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def news_event_shadow(report: Dict[str, Any]) -> Dict[str, Any]:
+    """news_shadow_v2 (PR #134) — structured-event news brain.
+
+    Reads typed, deduplicated, point-in-time events (core.news_events) instead
+    of v1's thin checklist sentiment. v1 stays registered and FROZEN as the
+    baseline: same model_id + new logic would contaminate its ledger profile,
+    so this ships as a new versioned id and must beat v1 on resolved outcomes.
+
+    Guardrails honored here: decision uses only events with asof_ts <= now
+    (point-in-time by query construction); a dead feed reports "news
+    unavailable" and HOLDs rather than reading silence as bullish.
+    """
+    sym = (report.get("symbol") or "").upper()
+    try:
+        from core.news_events import news_available, recent_events_for_symbol
+        available = news_available()
+        events = recent_events_for_symbol(sym) if available else []
+    except Exception as exc:
+        available, events = False, []
+        LOGGER.debug("news_event_shadow %s: %s", sym, str(exc)[:100])
+    direction, conf = "HOLD", 0.50
+    if not available:
+        reason = "News unavailable (feed dead or never ingested) — refusing to treat silence as signal."
+    elif not events:
+        reason = "News feed live; no material events for this symbol in the last 7 days."
+    else:
+        bull = [e for e in events if e.get("direction_hint") == "bullish"]
+        bear = [e for e in events if e.get("direction_hint") == "bearish"]
+        def _wt(evs):
+            return sum(float(e.get("materiality") or 0) * float(e.get("source_reliability") or 0.6)
+                       for e in evs)
+        bw, brw = _wt(bull), _wt(bear)
+        top = events[0]  # ordered by materiality desc
+        if abs(bw - brw) < 0.35 or float(top.get("materiality") or 0) < 0.6:
+            reason = (f"Mixed/weak event tape (bull {bw:.2f} vs bear {brw:.2f}); "
+                      f"no committed call.")
+        else:
+            direction = "UP" if bw > brw else "DOWN"
+            edge = abs(bw - brw)
+            conf = round(_clamp(0.52 + min(edge, 1.4) * 0.10, 0.52, 0.68), 3)
+            reason = (f"{'Bullish' if direction == 'UP' else 'Bearish'} event edge "
+                      f"{edge:.2f} led by {top.get('event_type')} "
+                      f"(materiality {top.get('materiality')}, {top.get('confirmation_status')}).")
+    drivers = [{"available": available, "events": [
+        {k: e.get(k) for k in ("event_type", "direction_hint", "materiality",
+                               "confirmation_status", "asof_ts")} for e in events[:5]]}]
+    return _base_shadow("news_shadow_v2", "news", direction, conf, report,
+                        reason=reason, drivers=drivers)
+
+
 def seasonal_shadow(report: Dict[str, Any]) -> Dict[str, Any]:
     """Calendar-seasonality brain (PR #133).
 
@@ -345,6 +395,7 @@ SHADOW_MODELS: Tuple[ShadowModel, ...] = (
     ShadowModel("ensemble_shadow_v1", "ensemble", "Committee vote across all specialist shadows.", ensemble_shadow),
     ShadowModel("contrarian_shadow_v1", "contrarian", "Inverse-Ghost: bets against every committed production call (anti-signal hypothesis).", contrarian_shadow),
     ShadowModel("seasonal_shadow_v1", "seasonal", "Calendar-seasonality lean from the symbol's own ~4-year record for the current 5-day window.", seasonal_shadow),
+    ShadowModel("news_shadow_v2", "news", "Structured-event news brain: typed, deduplicated, point-in-time events (v1 frozen as baseline).", news_event_shadow),
 )
 
 
