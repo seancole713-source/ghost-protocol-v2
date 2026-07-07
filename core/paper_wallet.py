@@ -230,23 +230,33 @@ def run_wallet_cycle() -> Dict[str, Any]:
             open_syms = sorted({r[0] for r in cur.fetchall()})
             prices = _live_prices(sorted(set(need_prices + open_syms)))
 
+            # Observability (PR #143): why did candidates not become entries?
+            diag = {"gated_candidates": len(gated_rows),
+                    "shadow_candidates": len(shadow_rows),
+                    "skip_no_price": 0, "skip_band_crossed": 0,
+                    "skip_capacity": 0, "skip_dupe": 0}
             for book, source, sym, tgt, stp, exp in [
                     (c[0], c[1], c[2], c[3], c[4], c[5]) for c in candidates]:
                 if open_count >= _max_open() or cash < _slice_usd():
-                    break
+                    diag["skip_capacity"] += 1
+                    continue
                 entry = prices.get(sym.upper())
                 if not entry or entry <= 0:
+                    diag["skip_no_price"] += 1
                     continue
                 # Never enter a trade whose exit is already true: a stale
                 # signal with a blown stop books an instant fake loss, and one
                 # past its target books an instant fake win. Skip both.
                 if (stp and entry <= stp) or (tgt and entry >= tgt):
+                    diag["skip_band_crossed"] += 1
                     continue
                 if _enter(cur, book=book, symbol=sym, source=source, entry=entry,
                           target=tgt, stop=stp, expires_at=exp):
                     entered += 1
                     open_count += 1
                     cash -= _slice_usd()
+                else:
+                    diag["skip_dupe"] += 1
 
             # ── exits ────────────────────────────────────────────────────
             now = int(time.time())
@@ -295,7 +305,8 @@ def run_wallet_cycle() -> Dict[str, Any]:
                        pnl=EXCLUDED.pnl, ts=EXCLUDED.ts""",
                 (today, equity, round(cash, 2), round(equity - prev_eq, 2), now))
             conn.commit()
-        out = {"ok": True, "entered": entered, "closed": closed, "equity": equity}
+        out = {"ok": True, "entered": entered, "closed": closed, "equity": equity,
+               "diag": diag}
         if entered or closed:
             LOGGER.info("[paper_wallet] %s", out)
         return out
