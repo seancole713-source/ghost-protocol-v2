@@ -349,21 +349,29 @@ def auto_refresh_portfolio_prices():
 
 
 # ── My Picks — personal server-persisted watchlist (own tab in the console).
-# Personal investment info, so every route is portfolio-auth gated. The
-# console falls back to its localStorage pool when unauthenticated.
+# PR #146: this is a single-operator dashboard and the picks are just ticker
+# symbols (a watchlist, not account/balance data), so viewing and editing no
+# longer require an /admin login — the operator asked to see picks without
+# signing in. Set MY_PICKS_REQUIRE_AUTH=1 to restore the gate if the dashboard
+# is ever exposed multi-tenant.
+
+def _my_picks_gated(request: Request) -> None:
+    import os
+    if (os.getenv("MY_PICKS_REQUIRE_AUTH", "0") or "0").strip().lower() in ("1", "true", "on", "yes"):
+        from mcp.security import require_portfolio_auth
+        require_portfolio_auth(request)
+
 
 @portfolio_router.get("/api/my-picks")
 def get_my_picks(request: Request):
-    from mcp.security import require_portfolio_auth
-    require_portfolio_auth(request)
+    _my_picks_gated(request)
     from core.my_picks import build_my_picks_payload
     return build_my_picks_payload()
 
 
 @portfolio_router.post("/api/my-picks")
 async def add_my_pick(request: Request):
-    from mcp.security import require_portfolio_auth
-    require_portfolio_auth(request)
+    _my_picks_gated(request)
     from core.my_picks import add_symbol
     d = await request.json()
     with db_conn() as conn:
@@ -375,8 +383,7 @@ async def add_my_pick(request: Request):
 
 @portfolio_router.delete("/api/my-picks/{symbol}")
 def delete_my_pick(symbol: str, request: Request):
-    from mcp.security import require_portfolio_auth
-    require_portfolio_auth(request)
+    _my_picks_gated(request)
     from core.my_picks import remove_symbol
     with db_conn() as conn:
         cur = conn.cursor()

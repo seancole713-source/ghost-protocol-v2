@@ -74,13 +74,25 @@ def test_list_symbols_shapes_rows():
 
 # ── auth gating (route contract) ─────────────────────────────────────────
 
-def test_my_picks_routes_are_auth_gated():
-    """Every /api/my-picks route must call require_portfolio_auth — personal
-    investment info follows the same rule as the portfolio (PR #77/#80)."""
+def test_my_picks_auth_is_env_gated():
+    """PR #146: My picks is public by default (single-operator dashboard, the
+    operator asked to view without /admin login) but every route routes auth
+    through _my_picks_gated so MY_PICKS_REQUIRE_AUTH=1 restores the gate."""
     import inspect
     import core.portfolio_routes as pr
     for fn in (pr.get_my_picks, pr.add_my_pick, pr.delete_my_pick):
-        assert "require_portfolio_auth" in inspect.getsource(fn), fn.__name__
+        assert "_my_picks_gated" in inspect.getsource(fn), fn.__name__
+    # the gate helper honors the env flag and only then requires portfolio auth
+    gate_src = inspect.getsource(pr._my_picks_gated)
+    assert "MY_PICKS_REQUIRE_AUTH" in gate_src
+    assert "require_portfolio_auth" in gate_src
+
+
+def test_my_picks_public_by_default(monkeypatch):
+    """With the flag unset, the gate is a no-op — no auth required to view."""
+    import core.portfolio_routes as pr
+    monkeypatch.delenv("MY_PICKS_REQUIRE_AUTH", raising=False)
+    pr._my_picks_gated(object())  # must not raise even with a bogus request
 
 
 def test_my_picks_routes_registered():
