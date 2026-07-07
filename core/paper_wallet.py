@@ -139,15 +139,34 @@ def _cash(cur, cfg: Dict[str, Any]) -> float:
 
 
 def _live_prices(symbols: List[str]) -> Dict[str, Optional[float]]:
+    """Prices for the wallet's candidate/open symbols.
+
+    The batch endpoint is cache-first with a small fresh budget (anti-breaker),
+    which starved the wallet — it needs a real price for every symbol it might
+    trade, not just the 6 the batch refreshes. So: batch first, then a bounded
+    get_price() fallback (the same 5-tier spot chain the single-symbol endpoint
+    uses, breaker-protected) for any symbol the batch left null. (PR #143)
+    """
     if not symbols:
         return {}
+    out: Dict[str, Optional[float]] = {}
     try:
         from core.market_sessions import get_market_sessions
-        out = get_market_sessions(symbols, max_fresh=6)
-        return {s: r.get("price") for s, r in out["sessions"].items()}
+        sess = get_market_sessions(symbols, max_fresh=len(symbols))
+        out = {s: r.get("price") for s, r in sess["sessions"].items()}
     except Exception as exc:
-        LOGGER.warning("paper wallet prices: %s", str(exc)[:100])
-        return {}
+        LOGGER.warning("paper wallet batch prices: %s", str(exc)[:100])
+    missing = [s for s in symbols if not out.get(s.upper()) and not out.get(s)]
+    if missing:
+        try:
+            from core.prices import get_price
+            for s in missing[:40]:
+                p = get_price(s)
+                if p and p > 0:
+                    out[s.upper()] = round(float(p), 4)
+        except Exception as exc:
+            LOGGER.warning("paper wallet spot fallback: %s", str(exc)[:100])
+    return out
 
 
 def exit_fill(price: float, target, stop, expires_at, now: int):
