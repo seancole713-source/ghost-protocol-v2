@@ -169,6 +169,29 @@ def _live_prices(symbols: List[str]) -> Dict[str, Optional[float]]:
     return out
 
 
+def fresh_bands(symbol: str, entry: float, asset_type: str = "stock",
+                now: int | None = None):
+    """Target/stop/expiry bracketing the CURRENT entry, using Ghost's own
+    vol geometry (base_vol_pct + stop_pct_from_vol). (PR #145, Option B)
+
+    Mirroring at the current quote with the signal's STALE morning bands was
+    incoherent — on a down day the live price is already below the morning
+    stop, so every long was refused and the wallet never traded. Recomputing
+    the bands from the buy-now price means each entry is bracketed correctly
+    and the wallet takes positions daily (wins AND losses — the unbiased
+    evidence the whole exercise exists to gather). Same geometry the engine
+    uses, applied at the fill price.
+    """
+    from core.vol_targets import base_vol_pct, stop_pct_from_vol
+    now = int(now or time.time())
+    vol = base_vol_pct(symbol, asset_type)
+    stop_pct = stop_pct_from_vol(vol)
+    target = round(entry * (1 + vol), 4)
+    stop = round(entry * (1 - stop_pct), 4)
+    expires_at = now + int(os.getenv("PAPER_HOLD_BARS", "3")) * 86400
+    return target, stop, expires_at
+
+
 def exit_fill(price: float, target, stop, expires_at, now: int):
     """Pure fill rules (long-only). Returns (exit_price, reason) or None.
 
@@ -252,10 +275,8 @@ def run_wallet_cycle() -> Dict[str, Any]:
             # Observability (PR #143): why did candidates not become entries?
             diag = {"gated_candidates": len(gated_rows),
                     "shadow_candidates": len(shadow_rows),
-                    "skip_no_price": 0, "skip_band_crossed": 0,
-                    "skip_capacity": 0, "skip_dupe": 0}
-            for book, source, sym, tgt, stp, exp in [
-                    (c[0], c[1], c[2], c[3], c[4], c[5]) for c in candidates]:
+                    "skip_no_price": 0, "skip_capacity": 0, "skip_dupe": 0}
+            for book, source, sym in [(c[0], c[1], c[2]) for c in candidates]:
                 if open_count >= _max_open() or cash < _slice_usd():
                     diag["skip_capacity"] += 1
                     continue
@@ -263,12 +284,9 @@ def run_wallet_cycle() -> Dict[str, Any]:
                 if not entry or entry <= 0:
                     diag["skip_no_price"] += 1
                     continue
-                # Never enter a trade whose exit is already true: a stale
-                # signal with a blown stop books an instant fake loss, and one
-                # past its target books an instant fake win. Skip both.
-                if (stp and entry <= stp) or (tgt and entry >= tgt):
-                    diag["skip_band_crossed"] += 1
-                    continue
+                # Option B (PR #145): bracket the buy-now price with fresh bands
+                # from Ghost's vol geometry — no stale-band pre-crossing.
+                tgt, stp, exp = fresh_bands(sym, entry)
                 if _enter(cur, book=book, symbol=sym, source=source, entry=entry,
                           target=tgt, stop=stp, expires_at=exp):
                     entered += 1

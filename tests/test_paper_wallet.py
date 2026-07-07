@@ -77,3 +77,24 @@ def test_never_touches_a_broker():
     src = inspect.getsource(pw)
     assert "/v2/orders" not in src
     assert "alpaca.markets/v2/orders" not in src
+
+
+def test_fresh_bands_bracket_entry(monkeypatch):
+    from core.paper_wallet import fresh_bands
+    # Ghost stock default geometry: +2% target; stop = 2% * stop_mult.
+    monkeypatch.setenv("V3_STOP_VOL_MULT", "0.65")
+    tgt, stp, exp = fresh_bands("NVDA", 100.0, now=1_000_000)
+    assert tgt > 100.0 and stp < 100.0          # brackets the entry
+    assert abs(tgt - 102.0) < 0.01              # +2.0%
+    assert abs(stp - 98.7) < 0.01               # -1.3% (2% * 0.65)
+    assert exp > 1_000_000                       # future expiry
+
+
+def test_fresh_bands_never_precrossed(monkeypatch):
+    # The whole point of Option B: a fresh entry can never be already-resolved.
+    from core.paper_wallet import fresh_bands, exit_fill
+    for mult in ("0.65", "1.8"):
+        monkeypatch.setenv("V3_STOP_VOL_MULT", mult)
+        entry = 36.46
+        tgt, stp, exp = fresh_bands("WOLF", entry, now=1_000_000)
+        assert exit_fill(entry, tgt, stp, exp, 1_000_000) is None  # not pre-crossed
