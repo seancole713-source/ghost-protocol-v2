@@ -840,8 +840,15 @@ def set_wallet_config(request: Request, x_cron_secret: str = Header(default=""))
         bal_f = float(bal)
     except ValueError:
         raise HTTPException(status_code=422, detail="starting_balance must be a number")
+    goal = request.query_params.get("monthly_goal")
+    goal_f = None
+    if goal is not None:
+        try:
+            goal_f = float(goal)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="monthly_goal must be a number")
     from core.paper_wallet import reset_wallet
-    return reset_wallet(bal_f)
+    return reset_wallet(bal_f, monthly_goal=goal_f)
 
 
 @router.post("/api/wallet/cycle")

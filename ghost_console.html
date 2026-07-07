@@ -121,11 +121,19 @@ button,input,select{font:inherit} button{cursor:pointer}.hidden{display:none!imp
           <div class="metric"><div class="label">Closed trades</div><div class="value" id="wClosed">—</div><div class="metric-note" id="wWr"></div></div>
         </div>
       </div>
+      <div class="panel glass col-12">
+        <div class="panel-title"><div><h3>Monthly goal <span id="wGoalMonth" style="color:var(--soft);font-weight:700;font-size:13px"></span></h3><p id="wGoalSub">Ghost's mission each month — resets on the 1st and starts fresh toward the target.</p></div><span class="big" id="wGoalTarget" style="font-size:30px">—</span></div>
+        <div style="height:16px;border-radius:999px;background:rgba(255,255,255,.08);overflow:hidden;position:relative;margin:6px 0 10px"><div id="wGoalBar" style="height:100%;width:0%;border-radius:999px;background:linear-gradient(90deg,var(--green),var(--blue));transition:width .5s"></div></div>
+        <div class="kv"><span id="wGoalProgLbl">Progress</span><b id="wGoalProg">—</b></div>
+        <div class="kv"><span>Pace to goal</span><b id="wGoalPace">—</b></div>
+        <div class="footer-note" id="wGoalNote"></div>
+        <div id="wGoalHistory" style="margin-top:8px"></div>
+      </div>
       <div class="panel glass col-6"><div class="panel-title"><div><h3>Positions</h3><p>What Ghost is holding right now.</p></div></div><div id="wPositions"><div class="empty">Loading…</div></div></div>
       <div class="panel glass col-6"><div class="panel-title"><div><h3>Trade history</h3><p>Every paper buy and sell, newest first.</p></div></div><div id="wHistory"><div class="empty">Loading…</div></div></div>
       <div class="panel glass col-6"><div class="panel-title"><div><h3>Daily profit</h3><p>Equity change per session.</p></div></div><div id="wDaily"><div class="empty">No sessions yet.</div></div></div>
       <div class="panel glass col-6"><div class="panel-title"><div><h3>Wallet settings</h3><p>Changing the balance resets the wallet (positions and history wiped — a fresh experiment). Requires admin login at /admin.</p></div></div>
-        <div class="pool-form" style="margin-top:4px"><input id="wBalInput" placeholder="10000" inputmode="decimal" style="text-transform:none"><button class="btn primary" id="wBalBtn">Reset wallet</button></div>
+        <div class="pool-form" style="margin-top:4px;flex-wrap:wrap"><input id="wBalInput" placeholder="Start balance (10000)" inputmode="decimal" style="text-transform:none"><input id="wGoalInput" placeholder="Monthly goal (20000)" inputmode="decimal" style="text-transform:none"><button class="btn primary" id="wBalBtn">Reset wallet</button></div>
         <div class="footer-note" id="wCfgNote">—</div>
       </div>
     </div></section>
@@ -163,9 +171,23 @@ $('wClosed').textContent=w.closed_trades;$('wWr').textContent=w.closed_trades?(w
 var pos=w.open_positions||[];$('wPositions').innerHTML=pos.length?pos.map(function(p){var pc=p.pnl_pct==null?'':(' <span class="'+_wCls(p.pnl)+'">'+(p.pnl_pct>0?'+':'')+p.pnl_pct+'%</span>');return '<div class="kv"><div><b>'+escHtml(p.symbol)+'</b> <span class="tag '+(p.book==='gated'?'good':'')+'" title="'+(p.book==='gated'?'real fired pick':'research shadow signal')+'">'+p.book+'</span><br><span style="font-size:11px;color:var(--soft)">'+p.qty+' @ $'+p.entry_price+'</span></div><span><span class="chip" style="font-weight:900">'+_wMoney(p.value)+'</span>'+pc+'</span></div>'}).join(''):'<div class="empty">No open positions. '+(w.note?'':'')+'Ghost buys appear here when signals fire.</div>';
 var hist=w.history||[];$('wHistory').innerHTML=hist.length?hist.slice(0,25).map(function(h){var d=new Date((h.exit_ts||h.entry_ts)*1000);var when=(d.getMonth()+1)+'/'+d.getDate()+' '+d.getHours()+':'+String(d.getMinutes()).padStart(2,'0');return '<div class="kv"><div><span class="tag '+(h.pnl>0?'good':'bad')+'">SELL·'+escHtml(h.exit_reason||'')+'</span> <b>'+escHtml(h.symbol)+'</b><br><span style="font-size:11px;color:var(--soft)">'+h.qty+' · in $'+h.entry_price+' → out $'+h.exit_price+' · '+when+'</span></div><span class="'+_wCls(h.pnl)+'" style="font-weight:900">'+_wMoney(h.pnl,true)+'</span></div>'}).join(''):'<div class="empty">No closed trades yet — sells land here with reason (target / stop / expiry).</div>';
 var days=w.daily||[];$('wDaily').innerHTML=days.length?days.slice(0,7).map(function(dd){return '<div class="kv"><span>'+dd.date+'</span><span class="'+_wCls(dd.pnl)+'" style="font-weight:900">'+_wMoney(dd.pnl,true)+'</span></div>'}).join(''):'<div class="empty">First session snapshot lands at the next wallet cycle.</div>';
-$('wCfgNote').textContent='Started at '+_wMoney(w.starting_balance)+' · slice '+_wMoney(w.trade_slice_usd)+'/trade · shadow prob ≥ '+w.shadow_min_prob+' · '+(w.note||'');}
+$('wCfgNote').textContent='Started at '+_wMoney(w.starting_balance)+' · slice '+_wMoney(w.trade_slice_usd)+'/trade · shadow prob ≥ '+w.shadow_min_prob+' · '+(w.note||'');
+var g=w.goal;if(g){
+  $('wGoalTarget').textContent=_wMoney(g.target);
+  $('wGoalMonth').textContent=g.month?('· '+g.month):'';
+  var pct=Math.max(0,Math.min(100,g.progress_pct||0));
+  $('wGoalBar').style.width=pct+'%';
+  if(g.reached){$('wGoalBar').style.background='var(--green)'}
+  $('wGoalProgLbl').textContent=g.reached?'GOAL REACHED 🎉':'Progress toward goal';
+  $('wGoalProg').textContent=_wMoney(w.total_value)+' of '+_wMoney(g.target)+' ('+pct.toFixed(0)+'%)';
+  $('wGoalPace').textContent=g.reached?'Done for '+g.month:('Day '+g.day_of_month+' of '+g.days_in_month+' · needs '+_wMoney(g.need_per_day)+'/day for '+g.days_left+' days');
+  $('wGoalNote').textContent=g.note||'';
+  var h=g.history||[];
+  $('wGoalHistory').innerHTML=h.length?('<div class="side-section-title" style="margin:10px 0 6px">Past months</div>'+h.map(function(m){return '<div class="kv"><span>'+m.month+(m.hit_goal?' ✅':'')+'</span><span class="'+(m.return_pct>0?'pos':(m.return_pct<0?'neg':''))+'" style="font-weight:900">'+_wMoney(m.final_equity)+' ('+(m.return_pct>0?'+':'')+m.return_pct+'%)</span></div>'}).join('')):'';
+}}
 async function resetWalletBalance(){var v=parseFloat($('wBalInput').value);if(!v||v<100){toast('Enter a balance of at least $100');return}
-var r=await fetch('/api/wallet/config?starting_balance='+encodeURIComponent(v),{method:'POST'}).then(function(x){return x.json().then(function(j){return {status:x.status,body:j}})}).catch(function(){return {status:0,body:{}}});
+var g=parseFloat($('wGoalInput').value);var q='/api/wallet/config?starting_balance='+encodeURIComponent(v);if(g&&g>=v){q+='&monthly_goal='+encodeURIComponent(g)}
+var r=await fetch(q,{method:'POST'}).then(function(x){return x.json().then(function(j){return {status:x.status,body:j}})}).catch(function(){return {status:0,body:{}}});
 if(r.status===403){toast('Log in at /admin first, then retry');return}
 if(r.body&&r.body.ok){toast('Wallet reset to '+_wMoney(r.body.starting_balance));loadWallet()}else{toast('Reset failed')}}
 function initNav(){document.querySelectorAll('[data-section]').forEach(function(b){b.addEventListener('click',function(){switchSection(b.getAttribute('data-section'))})});$('refreshBtn').addEventListener('click',loadAll);$('poolAdd').addEventListener('click',addPool);$('poolInput').addEventListener('keydown',function(e){if(e.key==='Enter')addPool()});/* PR #146: topbar no longer shrinks/moves on scroll — it stays put */}

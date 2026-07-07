@@ -88,6 +88,36 @@ def ensure_paper_tables(cur) -> None:
             ts BIGINT NOT NULL
         )
     """)
+    # Each finished month's result vs the goal — the honest track record of
+    # "can Ghost 2x fake money in a month?" that survives the monthly reset.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS ghost_paper_monthly (
+            month TEXT PRIMARY KEY,
+            start_balance FLOAT NOT NULL,
+            goal FLOAT NOT NULL,
+            final_equity FLOAT NOT NULL,
+            hit_goal BOOLEAN NOT NULL,
+            return_pct FLOAT,
+            closed_at BIGINT NOT NULL
+        )
+    """)
+
+
+def _month_key() -> str:
+    import datetime as _dt
+    return _dt.date.today().strftime("%Y-%m")
+
+
+def _default_goal() -> float:
+    return float(os.getenv("PAPER_MONTHLY_GOAL", "20000"))
+
+
+def _write_config(cur, cfg: Dict[str, Any]) -> None:
+    cur.execute(
+        "INSERT INTO ghost_state(key,val) VALUES(%s,%s) "
+        "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
+        (_CONFIG_KEY, json.dumps(cfg)),
+    )
 
 
 def get_config(cur) -> Dict[str, Any]:
@@ -95,39 +125,81 @@ def get_config(cur) -> Dict[str, Any]:
     ensure_ghost_state(cur)
     cur.execute("SELECT val FROM ghost_state WHERE key=%s", (_CONFIG_KEY,))
     row = cur.fetchone()
+    cfg = None
     if row and row[0]:
         try:
-            return json.loads(row[0])
+            cfg = json.loads(row[0])
         except Exception:
             note_suppressed()
-    cfg = {"starting_balance": 10000.0, "reset_ts": int(time.time())}
-    cur.execute(
-        "INSERT INTO ghost_state(key,val) VALUES(%s,%s) "
-        "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
-        (_CONFIG_KEY, json.dumps(cfg)),
-    )
+    if cfg is None:
+        cfg = {"starting_balance": 10000.0, "reset_ts": int(time.time())}
+    # Backfill goal fields for wallets created before the monthly-goal feature.
+    changed = False
+    if "monthly_goal" not in cfg:
+        cfg["monthly_goal"] = _default_goal(); changed = True
+    if "goal_month" not in cfg:
+        cfg["goal_month"] = _month_key(); changed = True
+    if changed or not (row and row[0]):
+        _write_config(cur, cfg)
     return cfg
 
 
-def reset_wallet(starting_balance: float) -> Dict[str, Any]:
-    """Set a new balance and wipe the book history — a fresh experiment."""
+def reset_wallet(starting_balance: float,
+                 monthly_goal: float | None = None) -> Dict[str, Any]:
+    """Set a new balance/goal and wipe the book history — a fresh experiment."""
     bal = max(100.0, min(10_000_000.0, float(starting_balance)))
     from core.db import db_conn, ensure_ghost_state
     with db_conn() as conn:
         cur = conn.cursor()
         ensure_paper_tables(cur)
         ensure_ghost_state(cur)
+        prev = get_config(cur)
+        goal = float(monthly_goal) if monthly_goal is not None else float(prev.get("monthly_goal") or _default_goal())
+        goal = max(bal, min(10_000_000.0, goal))  # goal can't be below the start
         cur.execute("DELETE FROM ghost_paper_trades")
         cur.execute("DELETE FROM ghost_paper_daily")
-        cfg = {"starting_balance": bal, "reset_ts": int(time.time())}
-        cur.execute(
-            "INSERT INTO ghost_state(key,val) VALUES(%s,%s) "
-            "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
-            (_CONFIG_KEY, json.dumps(cfg)),
-        )
+        cfg = {"starting_balance": bal, "monthly_goal": goal,
+               "goal_month": _month_key(), "reset_ts": int(time.time())}
+        _write_config(cur, cfg)
         conn.commit()
-    LOGGER.info("[paper_wallet] reset to $%.2f", bal)
-    return {"ok": True, "starting_balance": bal}
+    LOGGER.info("[paper_wallet] reset to $%.2f (monthly goal $%.2f)", bal, goal)
+    return {"ok": True, "starting_balance": bal, "monthly_goal": goal}
+
+
+def _maybe_roll_month(cur, cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """On calendar-month rollover: record the finished month's result vs goal,
+    then wipe the books and start the new month fresh at starting_balance.
+
+    This is what gives the wallet its recurring purpose — every month it starts
+    over at $10k and tries again to reach the goal, and every attempt is kept
+    in ghost_paper_monthly as honest history."""
+    this_month = _month_key()
+    prev_month = cfg.get("goal_month")
+    if prev_month == this_month:
+        return cfg
+    start = float(cfg.get("starting_balance") or 10000.0)
+    goal = float(cfg.get("monthly_goal") or _default_goal())
+    # Final equity = the last daily snapshot of the closing month (already
+    # mark-to-market); fall back to cost-based equity if no snapshot exists.
+    cur.execute("SELECT equity FROM ghost_paper_daily ORDER BY trade_date DESC LIMIT 1")
+    r = cur.fetchone()
+    equity_now = float(r[0]) if r and r[0] is not None else _cash(cur, cfg)
+    ret = round((equity_now / start - 1) * 100, 2) if start else 0.0
+    cur.execute(
+        """INSERT INTO ghost_paper_monthly
+           (month, start_balance, goal, final_equity, hit_goal, return_pct, closed_at)
+           VALUES (%s,%s,%s,%s,%s,%s,%s)
+           ON CONFLICT (month) DO NOTHING""",
+        (prev_month or "unknown", start, goal, round(equity_now, 2),
+         bool(equity_now >= goal), ret, int(time.time())),
+    )
+    cur.execute("DELETE FROM ghost_paper_trades")
+    cur.execute("DELETE FROM ghost_paper_daily")
+    cfg = {**cfg, "goal_month": this_month, "reset_ts": int(time.time())}
+    _write_config(cur, cfg)
+    LOGGER.info("[paper_wallet] month %s closed at $%.2f (goal $%.2f); reset for %s",
+                prev_month, equity_now, goal, this_month)
+    return cfg
 
 
 def _cash(cur, cfg: Dict[str, Any]) -> float:
@@ -238,6 +310,7 @@ def run_wallet_cycle() -> Dict[str, Any]:
             cur = conn.cursor()
             ensure_paper_tables(cur)
             cfg = get_config(cur)
+            cfg = _maybe_roll_month(cur, cfg)  # new month → record + reset
 
             cur.execute("SELECT COUNT(*) FROM ghost_paper_trades WHERE status='open'")
             open_count = int(cur.fetchone()[0])
@@ -403,6 +476,26 @@ def wallet_summary() -> Dict[str, Any]:
             equity = round(cash + mkt_value, 2)
             start = float(cfg["starting_balance"])
             today_pnl = daily[0]["pnl"] if daily else 0.0
+
+            # ── Monthly goal progress (the wallet's recurring purpose) ──
+            import datetime as _dt
+            goal = float(cfg.get("monthly_goal") or _default_goal())
+            todd = _dt.date.today()
+            if todd.month == 12:
+                days_in_month = 31
+            else:
+                days_in_month = (_dt.date(todd.year, todd.month + 1, 1) - _dt.date(todd.year, todd.month, 1)).days
+            day_of_month = todd.day
+            days_left = max(0, days_in_month - day_of_month)
+            gained = equity - start
+            needed = goal - start
+            progress_pct = round(gained / needed * 100, 1) if needed > 0 else 0.0
+            remaining = round(goal - equity, 2)
+            need_per_day = round(remaining / days_left, 2) if days_left > 0 else remaining
+            cur.execute("SELECT month, start_balance, goal, final_equity, hit_goal, return_pct "
+                        "FROM ghost_paper_monthly ORDER BY month DESC LIMIT 12")
+            months = [dict(zip(("month", "start_balance", "goal", "final_equity",
+                                "hit_goal", "return_pct"), r)) for r in cur.fetchall()]
             return {
                 "ok": True,
                 "paper": True,
@@ -425,6 +518,21 @@ def wallet_summary() -> Dict[str, Any]:
                 "daily": daily,
                 "trade_slice_usd": _slice_usd(),
                 "shadow_min_prob": _shadow_min_prob(),
+                "goal": {
+                    "target": goal,
+                    "month": cfg.get("goal_month"),
+                    "progress_pct": progress_pct,
+                    "reached": bool(equity >= goal),
+                    "remaining": remaining,
+                    "day_of_month": day_of_month,
+                    "days_in_month": days_in_month,
+                    "days_left": days_left,
+                    "need_per_day": need_per_day,
+                    "history": months,
+                    "note": ("Aspirational stretch target. The wallet resets to the starting "
+                             "balance on the 1st of each month and tries again — every month's "
+                             "real result is kept below, so this shows what's actually achievable."),
+                },
             }
     except Exception as exc:
         LOGGER.warning("wallet summary failed: %s", str(exc)[:140])

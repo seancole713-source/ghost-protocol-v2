@@ -98,3 +98,60 @@ def test_fresh_bands_never_precrossed(monkeypatch):
         entry = 36.46
         tgt, stp, exp = fresh_bands("WOLF", entry, now=1_000_000)
         assert exit_fill(entry, tgt, stp, exp, 1_000_000) is None  # not pre-crossed
+
+
+def test_month_rollover_records_and_resets(monkeypatch):
+    import core.paper_wallet as pw
+    rows = {"daily": [("2026-07-31", 11500.0)], "trades_deleted": 0, "monthly": []}
+
+    class _Cur:
+        def __init__(self): self._last = ""
+        def execute(self, sql, params=None):
+            self._last = sql
+            if "ghost_paper_monthly" in sql and "INSERT" in sql:
+                rows["monthly"].append(params)
+            if "DELETE FROM ghost_paper_trades" in sql:
+                rows["trades_deleted"] += 1
+        def fetchone(self):
+            if "ghost_paper_daily ORDER BY" in self._last:
+                return (rows["daily"][0][1],)
+            return None
+    cur = _Cur()
+    # July config, but "today" is August → rollover fires
+    monkeypatch.setattr(pw, "_month_key", lambda: "2026-08")
+    cfg = {"starting_balance": 10000.0, "monthly_goal": 20000.0, "goal_month": "2026-07"}
+    out = pw._maybe_roll_month(cur, cfg)
+    assert out["goal_month"] == "2026-08"          # advanced to new month
+    assert rows["trades_deleted"] == 1              # books wiped
+    assert rows["monthly"], "prior month must be recorded"
+    rec = rows["monthly"][0]
+    assert rec[0] == "2026-07" and rec[3] == 11500.0 and rec[4] is False  # $11.5k < $20k goal
+
+
+def test_month_no_rollover_same_month(monkeypatch):
+    import core.paper_wallet as pw
+    monkeypatch.setattr(pw, "_month_key", lambda: "2026-07")
+    cfg = {"starting_balance": 10000.0, "monthly_goal": 20000.0, "goal_month": "2026-07"}
+
+    class _Cur:
+        def execute(self, *a): raise AssertionError("must not touch DB when same month")
+        def fetchone(self): return None
+    assert pw._maybe_roll_month(_Cur(), cfg) is cfg  # unchanged, no-op
+
+
+def test_goal_cannot_be_below_start(monkeypatch):
+    import core.paper_wallet as pw
+
+    class _Cur:
+        def execute(self, *a): pass
+        def fetchone(self): return None
+    class _Conn:
+        def cursor(self): return _Cur()
+        def commit(self): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+    import core.db as db
+    monkeypatch.setattr(db, "db_conn", lambda: _Conn())
+    monkeypatch.setattr(pw, "get_config", lambda cur: {"monthly_goal": 20000.0})
+    out = pw.reset_wallet(10000.0, monthly_goal=5000.0)  # goal below start
+    assert out["monthly_goal"] == 10000.0  # clamped up to start
