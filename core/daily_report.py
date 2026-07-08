@@ -24,6 +24,11 @@ from core.quiet import note_suppressed
 
 LOGGER = logging.getLogger("ghost.daily_report")
 
+# The snapshot job appends every 15 minutes (~96 rows/day). Without a bound this
+# notebook grows forever; the sibling ghost_perf_cycles uses the same retention
+# discipline (GHOST_PERF_RETENTION_DAYS). Keep the two consistent.
+_LOG_RETENTION_DAYS = max(2, int(os.getenv("GHOST_DAILY_REPORT_RETENTION_DAYS", "120")))
+
 
 def _safe(fn, default=None):
     try:
@@ -220,6 +225,19 @@ def ensure_daily_report_tables(cur) -> None:
         ON ghost_daily_report_logs (created_at DESC)
         """
     )
+
+
+def _prune_daily_report_logs(cur) -> int:
+    """Drop notebook rows older than the retention window.
+
+    Runs inside the same transaction as the snapshot insert so the append-only
+    log can't grow without bound (96 rows/day at the 15-min cadence). Best-effort:
+    a prune failure must never block a snapshot, so callers wrap it in a guard.
+    Returns the number of rows deleted (0 when the driver doesn't report it).
+    """
+    cutoff = int(time.time()) - _LOG_RETENTION_DAYS * 86400
+    cur.execute("DELETE FROM ghost_daily_report_logs WHERE created_at < %s", (cutoff,))
+    return int(getattr(cur, "rowcount", 0) or 0)
 
 
 def build_daily_report(day: Optional[str] = None) -> Dict[str, Any]:
@@ -443,11 +461,19 @@ def snapshot_daily_report(day: Optional[str] = None) -> Dict[str, Any]:
             ),
         )
         row = cur.fetchone()
+        # Enforce retention in the same transaction so the notebook stays bounded.
+        pruned = 0
+        try:
+            pruned = _prune_daily_report_logs(cur)
+        except Exception:
+            note_suppressed()
     return {
         "ok": True,
         "log_id": int(row[0]) if row else None,
         "report_date": report.get("date"),
         "created_at": created_at,
+        "pruned_rows": pruned,
+        "retention_days": _LOG_RETENTION_DAYS,
         "read_only_decisions": True,
         "writes_only": "ghost_daily_report_logs",
         "report": report,
@@ -459,12 +485,17 @@ def latest_daily_report_logs(
     limit: int = 24,
     day: Optional[str] = None,
     include_payload: bool = False,
+    by_day: bool = False,
 ) -> Dict[str, Any]:
     """Read persisted daily report notebook rows.
 
     GET callers use this to answer "what did Ghost log today?" without causing a
     new write. If the table is not present yet (fresh deploy before first
     scheduler tick), return an empty log rather than failing the dashboard.
+
+    ``by_day=True`` collapses the ~96 snapshots/day down to the LATEST snapshot
+    for each calendar day, so ``limit`` then means "how many days back" — the
+    day-by-day audit trail the operator asked for ("today's day report logs").
     """
     lim = max(1, min(200, int(limit)))
     params: List[Any] = []
@@ -472,21 +503,38 @@ def latest_daily_report_logs(
     if day:
         where = " WHERE report_date=%s"
         params.append(day)
-    try:
-        with _db.db_conn() as conn:
-            cur = conn.cursor()
-            cur.execute(
-                f"""
-                SELECT id, report_date, created_at, pr_version, git_sha,
+    if by_day and not day:
+        # DISTINCT ON keeps the newest snapshot per report_date; the outer sort
+        # then returns the most recent days first.
+        select_sql = f"""
+            SELECT * FROM (
+                SELECT DISTINCT ON (report_date)
+                       id, report_date, created_at, pr_version, git_sha,
                        health_score, gate_open, gate_reason, picks_saved_today,
                        wallet_total_value, wallet_today_pnl, calibration_status,
                        payload_json
-                FROM ghost_daily_report_logs{where}
-                ORDER BY created_at DESC, id DESC
-                LIMIT %s
-                """,
-                tuple(params) + (lim,),
-            )
+                FROM ghost_daily_report_logs
+                ORDER BY report_date DESC, created_at DESC, id DESC
+            ) latest_per_day
+            ORDER BY report_date DESC
+            LIMIT %s
+        """
+        query_params: tuple = (lim,)
+    else:
+        select_sql = f"""
+            SELECT id, report_date, created_at, pr_version, git_sha,
+                   health_score, gate_open, gate_reason, picks_saved_today,
+                   wallet_total_value, wallet_today_pnl, calibration_status,
+                   payload_json
+            FROM ghost_daily_report_logs{where}
+            ORDER BY created_at DESC, id DESC
+            LIMIT %s
+        """
+        query_params = tuple(params) + (lim,)
+    try:
+        with _db.db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(select_sql, query_params)
             rows = cur.fetchall()
     except Exception as exc:
         # Missing table before first snapshot is non-fatal; other DB read errors
@@ -528,6 +576,7 @@ def latest_daily_report_logs(
         "count": len(out_rows),
         "limit": lim,
         "date": day,
+        "by_day": bool(by_day and not day),
         "rows": out_rows,
     }
 
@@ -538,6 +587,7 @@ def _narrate(r: Dict[str, Any]) -> List[str]:
     w = r.get("wallet", {}) or {}
     c = r.get("calibration", {}) or {}
     idn = r.get("identity", {}) or {}
+    br = r.get("breakers", {}) or {}
     lines: List[str] = []
     lines.append(f"Ghost daily report — {r.get('date')} (PR {idn.get('pr_version')}, "
                  f"health {idn.get('health_score')}/{idn.get('health_status')}).")
@@ -554,6 +604,14 @@ def _narrate(r: Dict[str, Any]) -> List[str]:
                      f"{close_bits} Silence = designed, not broken.")
     else:
         lines.append(f"Predictions: FIRED {fired} live pick(s) today — notable, gate opened.")
+    # scan freshness — is Ghost actually awake right now?
+    age = d.get("latest_cycle_age_seconds")
+    if age is not None:
+        mins = int(age // 60)
+        fresh = "scanning live" if age <= 1200 else "STALE — no recent scan"
+        lines.append(f"Freshness: last scan {mins} min ago ({fresh}).")
+    if d.get("latest_cycle_paused"):
+        lines.append(f"Engine: PAUSED ({d.get('latest_cycle_pause_reason') or 'reason unrecorded'}).")
     ts = d.get("top_skip_reasons") or {}
     if ts:
         lines.append("Why it held back (top skips): " + ", ".join(f"{k}={v}" for k, v in ts.items()) + ".")
@@ -571,4 +629,11 @@ def _narrate(r: Dict[str, Any]) -> List[str]:
         lines.append(f"Working-or-guessing: {c.get('verdict')} "
                      f"(Brier {c.get('brier')}, {c.get('resolved_n')} resolved). "
                      f"NOT guessing — but calibration is the watch-item.")
+    # data feeds — a tripped breaker is why a section can look thin
+    if br and "error" not in br:
+        tripped = [name for name, state in br.items() if state and state != "closed"]
+        if tripped:
+            lines.append("Data feeds: DEGRADED — open breaker(s): " + ", ".join(sorted(tripped)) + ".")
+        else:
+            lines.append("Data feeds: all healthy (no open breakers).")
     return lines

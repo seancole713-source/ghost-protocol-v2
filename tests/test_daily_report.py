@@ -1,5 +1,6 @@
 """Daily report logs: full Ghost day report + append-only notebook."""
 import importlib
+import time
 
 import core.daily_report as dr
 
@@ -11,6 +12,7 @@ class _FakeCursor:
         self._rows = []
         self._one = None
         self.description = []
+        self.rowcount = 0
 
     def execute(self, sql, params=None):
         self.sqls.append(sql)
@@ -46,6 +48,8 @@ class _FakeCursor:
             self._rows = [("CLNE", "target", 10.0, 2.0, 1783523000)]
         elif "INSERT INTO ghost_daily_report_logs" in sql:
             self._one = (123,)
+        elif "DELETE FROM ghost_daily_report_logs" in sql:
+            self.rowcount = 4
         elif "FROM ghost_daily_report_logs" in sql:
             self._rows = [(123, "2026-07-08", 1783524000, 159, "abc123", 95, False,
                            "v3_meta_gate", 0, 10010.0, 10.0, "real_but_not_70",
@@ -119,6 +123,45 @@ def test_snapshot_daily_report_writes_only_report_log(monkeypatch):
     assert "INSERT INTO predictions" not in joined
     assert "ghost_paper_trades" not in joined
     assert "ghost_shadow_outcomes" not in joined
+    # Retention must run in the same transaction so the notebook stays bounded.
+    assert "DELETE FROM ghost_daily_report_logs WHERE created_at" in joined
+    assert out["pruned_rows"] == 4
+    assert out["retention_days"] == dr._LOG_RETENTION_DAYS
+
+
+def test_snapshot_prune_uses_retention_cutoff(monkeypatch):
+    cur = _patch_db(monkeypatch)
+    monkeypatch.setattr(dr, "build_daily_report", lambda day=None: {
+        "ok": True, "date": "2026-07-08", "generated_ts": 1783524000,
+        "identity": {}, "decisions": {}, "wallet": {}, "calibration": {}, "narrative": [],
+    })
+    monkeypatch.setattr(dr, "_LOG_RETENTION_DAYS", 30)
+    dr.snapshot_daily_report()
+    # Find the DELETE and confirm the cutoff is ~30 days before generated_ts.
+    delete_params = [p for sql, p in zip(cur.sqls, cur.params) if "DELETE FROM ghost_daily_report_logs" in sql]
+    assert delete_params, "prune DELETE must fire"
+    cutoff = delete_params[0][0]
+    # cutoff = now - 30d; allow slack because now=time.time() at call.
+    assert cutoff < 1783524000
+    assert abs((int(time.time()) - 30 * 86400) - cutoff) < 5
+
+
+def test_snapshot_survives_prune_failure(monkeypatch):
+    # A prune error must never block the append (observability first).
+    class _PruneBoomCursor(_FakeCursor):
+        def execute(self, sql, params=None):
+            if "DELETE FROM ghost_daily_report_logs" in sql:
+                raise RuntimeError("prune boom")
+            return super().execute(sql, params)
+    cur = _PruneBoomCursor()
+    monkeypatch.setattr(dr._db, "db_conn", lambda: _FakeConn(cur))
+    monkeypatch.setattr(dr, "build_daily_report", lambda day=None: {
+        "ok": True, "date": "2026-07-08", "generated_ts": 1783524000,
+        "identity": {}, "decisions": {}, "wallet": {}, "calibration": {}, "narrative": [],
+    })
+    out = dr.snapshot_daily_report()
+    assert out["ok"] is True and out["log_id"] == 123
+    assert out["pruned_rows"] == 0
 
 
 def test_latest_daily_report_logs_reads_persisted_rows(monkeypatch):
@@ -129,13 +172,62 @@ def test_latest_daily_report_logs_reads_persisted_rows(monkeypatch):
     assert out["rows"][0]["narrative"] == ["hello"]
 
 
+def test_latest_logs_by_day_collapses_to_one_per_day(monkeypatch):
+    # by_day must use DISTINCT ON (report_date) so ?limit means "days back",
+    # not "snapshots back" (~96/day would otherwise all be the same day).
+    cur = _patch_db(monkeypatch)
+    out = dr.latest_daily_report_logs(limit=7, by_day=True)
+    assert out["ok"] is True and out["by_day"] is True
+    joined = "\n".join(cur.sqls)
+    assert "DISTINCT ON (report_date)" in joined
+
+
+def test_latest_logs_default_is_not_by_day(monkeypatch):
+    cur = _patch_db(monkeypatch)
+    out = dr.latest_daily_report_logs(limit=5)
+    assert out.get("by_day") is False
+    assert "DISTINCT ON" not in "\n".join(cur.sqls)
+
+
+def test_narrative_speaks_breakers_and_freshness():
+    r = {
+        "date": "2026-07-08",
+        "identity": {"pr_version": 159, "health_score": 95, "health_status": "healthy"},
+        "decisions": {"picks_fired_today": 0, "scan_cycles_today": 44, "symbols_scanned": 74,
+                      "gate_reason": "v3_meta_gate", "regime": "Neutral",
+                      "latest_cycle_age_seconds": 300, "top_skip_reasons": {"no_v3_model": 800}},
+        "wallet": {"error": "skip"},
+        "calibration": {},
+        "breakers": {"yfinance": "open", "alpaca": "open", "finnhub": "closed"},
+    }
+    txt = " ".join(dr._narrate(r))
+    assert "Freshness: last scan 5 min ago" in txt
+    assert "scanning live" in txt
+    assert "Data feeds: DEGRADED" in txt
+    assert "yfinance" in txt and "alpaca" in txt
+
+
+def test_narrative_flags_stale_scan_and_healthy_feeds():
+    r = {
+        "date": "2026-07-08", "identity": {},
+        "decisions": {"picks_fired_today": 0, "scan_cycles_today": 1, "symbols_scanned": 74,
+                      "gate_reason": "v3_meta_gate", "regime": "Neutral",
+                      "latest_cycle_age_seconds": 5400, "top_skip_reasons": {}},
+        "wallet": {"error": "skip"}, "calibration": {},
+        "breakers": {"yfinance": "closed", "alpaca": "closed"},
+    }
+    txt = " ".join(dr._narrate(r))
+    assert "STALE — no recent scan" in txt
+    assert "Data feeds: all healthy" in txt
+
+
 def test_daily_report_routes(monkeypatch):
     from fastapi.testclient import TestClient
     from wolf_app import APP
 
     monkeypatch.setattr("core.daily_report.build_daily_report", lambda day=None: {"ok": True, "date": day or "today"})
-    monkeypatch.setattr("core.daily_report.latest_daily_report_logs", lambda limit=24, day=None, include_payload=False: {
-        "ok": True, "limit": limit, "date": day, "include_payload": include_payload, "rows": []
+    monkeypatch.setattr("core.daily_report.latest_daily_report_logs", lambda limit=24, day=None, include_payload=False, by_day=False: {
+        "ok": True, "limit": limit, "date": day, "include_payload": include_payload, "by_day": by_day, "rows": []
     })
     monkeypatch.setattr("wolf_app._cron_ok", lambda secret: secret == "ok")
     monkeypatch.setattr("core.daily_report.snapshot_daily_report", lambda day=None: {"ok": True, "report_date": day})
@@ -144,5 +236,7 @@ def test_daily_report_routes(monkeypatch):
     assert c.get("/api/report/daily?day=2026-07-08").json()["date"] == "2026-07-08"
     logs = c.get("/api/report/daily/logs?limit=3&day=2026-07-08&include_payload=1").json()
     assert logs["limit"] == 3 and logs["include_payload"] is True
+    by_day = c.get("/api/report/daily/logs?limit=7&by_day=1").json()
+    assert by_day["by_day"] is True and by_day["limit"] == 7
     assert c.post("/api/report/daily/snapshot").status_code == 403
     assert c.post("/api/report/daily/snapshot?day=2026-07-08", headers={"x-cron-secret": "ok"}).json()["report_date"] == "2026-07-08"

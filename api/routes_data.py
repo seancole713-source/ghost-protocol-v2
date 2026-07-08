@@ -870,13 +870,17 @@ def get_daily_report(day: str = ""):
 
 
 @router.get("/api/report/daily/logs")
-def get_daily_report_logs(limit: int = 24, day: str = "", include_payload: int = 0):
-    """Persisted daily-report notebook rows. Read-only; no new log is written."""
+def get_daily_report_logs(limit: int = 24, day: str = "", include_payload: int = 0, by_day: int = 0):
+    """Persisted daily-report notebook rows. Read-only; no new log is written.
+
+    ?by_day=1 returns the latest snapshot per calendar day (day-by-day audit
+    trail) so ?limit then means "how many days back"."""
     from core.daily_report import latest_daily_report_logs
     return latest_daily_report_logs(
         limit=limit,
         day=day or None,
         include_payload=bool(include_payload),
+        by_day=bool(by_day),
     )
 
 
