@@ -18,12 +18,16 @@ _WATCHLIST_SKIP = frozenset({"GHOST", "TEST"})
 # Official live watchlist — Ghost scans and forecasts these symbols only.
 # Sourced from investor watchlist (mobile app screenshots, Jun 2026).
 OFFICIAL_WATCHLIST: Tuple[str, ...] = (
-    "ABCL", "AI", "AMC", "ARCT", "ARDT", "BB", "BILL", "BMBL", "BTGO", "CLNE",
-    "CVNA", "DJT", "DOMO", "DUOL", "FLNC", "GME", "HIMS", "HOOD", "IQ", "ITRI",
-    "LCID", "LU", "LULU", "NOK", "ODD", "OPK", "OPTU", "PFE", "PLTK", "PLUG",
-    "RIG", "RIOT", "SABR", "SAP", "SNAP", "SOUN", "SPCE", "STUB", "TAL", "TGTX",
-    "TLRY", "TME", "WOLF", "XPO", "YMM",
-    # BTGO (BitGo, NYSE, IPO 2026-01) + DOMO (Domo) added 2026-07-08 per operator.
+    "AAPL", "ABCL", "ACDC", "AI", "AMC", "AMD", "AMZN", "APGE", "ARCT", "ARDT",
+    "AVGO", "BABA", "BB", "BBWI", "BILL", "BMBL", "BROS", "BTGO", "CLNE", "CVNA",
+    "DASH", "DJT", "DOMO", "DUOL", "FLNC", "GME", "GOOG", "GOOGL", "HIMS", "HOOD",
+    "HTZ", "INTC", "IQ", "ITRI", "JACK", "KC", "LCID", "LMND", "LU", "LULU",
+    "META", "MRVL", "MSFT", "MTZ", "MU", "NAVN", "NOK", "NVDA", "ODD", "OLLI",
+    "OPK", "OPTU", "PFE", "PLTK", "PLUG", "RIG", "RIOT", "RKT", "SABR", "SAP",
+    "SNAP", "SOUN", "SPCE", "STUB", "SW", "TAL", "TGTX", "TLRY", "TME", "TSLA",
+    "W", "WOLF", "XPO", "YMM",
+    # 74 symbols (RDFN excluded — delisted into RKT 2025-07). +30 mega-cap/growth names added 2026-07-08 per operator.
+    # SNDK excluded (feed showed implausible ~$1600); SpaceX skipped (private).
 )
 OFFICIAL_WATCHLIST_CSV = ",".join(OFFICIAL_WATCHLIST)
 

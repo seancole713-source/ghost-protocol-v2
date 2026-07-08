@@ -6,9 +6,9 @@ from config.symbols import (
 )
 
 
-def test_official_watchlist_has_45_symbols():
-    assert len(OFFICIAL_WATCHLIST) == 45
-    assert len(set(OFFICIAL_WATCHLIST)) == 45
+def test_official_watchlist_has_74_symbols():
+    assert len(OFFICIAL_WATCHLIST) == 74
+    assert len(set(OFFICIAL_WATCHLIST)) == 74
 
 
 def test_official_watchlist_excludes_delisted_rdfn():
@@ -24,13 +24,15 @@ def test_official_watchlist_includes_screenshot_symbols():
         "PFE", "ARDT", "CVNA", "BILL", "DUOL", "XPO", "STUB", "TGTX", "ITRI",
         "DOMO", "BTGO",
     }
-    assert expected == set(OFFICIAL_WATCHLIST)
+    assert expected <= set(OFFICIAL_WATCHLIST)  # base names present; watchlist has since grown
 
 
-def test_official_watchlist_excludes_old_railway_defaults():
-    assert "TSLA" not in OFFICIAL_WATCHLIST
-    assert "META" not in OFFICIAL_WATCHLIST
-    assert "AMZN" not in OFFICIAL_WATCHLIST
+def test_official_watchlist_includes_mega_caps_added_2026_07_08():
+    # Operator explicitly added mega-caps; the old "exclude railway defaults"
+    # rule was reversed. RDFN stays OUT (delisted into RKT 2025-07).
+    for s in ("TSLA", "META", "AMZN", "AAPL", "NVDA", "MSFT"):
+        assert s in OFFICIAL_WATCHLIST, s
+    assert "RDFN" not in OFFICIAL_WATCHLIST
 
 
 def test_watchlist_pairs_match_official_list(monkeypatch):
