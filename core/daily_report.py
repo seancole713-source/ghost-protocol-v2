@@ -1,19 +1,26 @@
-"""core/daily_report.py — one consolidated "today's report" (PR #157).
+"""core/daily_report.py — consolidated report + persisted logs.
 
 Everything Ghost did today and why, in one place, so a human can ask "what's
 today's report?" and get the full picture — not just the wallet. Composes the
 already-built pieces (scan cycles, gate, wallet, Watcher calibration, breakers)
 into structured sections PLUS a plain-English narrative that reads out loud.
 
-Read-only aggregation. Never raises — each section degrades to an error note so
-one dead dependency can't blank the whole report.
+``build_daily_report`` is read-only aggregation. ``snapshot_daily_report`` is the
+append-only notebook writer: it persists the current report into
+``ghost_daily_report_logs`` and never mutates predictions, gates, wallet, or
+Watcher evidence.
 """
 from __future__ import annotations
 
 import datetime as _dt
+import json as _json
 import logging
+import os
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+
+import core.db as _db
+from core.quiet import note_suppressed
 
 LOGGER = logging.getLogger("ghost.daily_report")
 
@@ -27,19 +34,197 @@ def _safe(fn, default=None):
 
 
 def _today_ct() -> str:
+    return _day_bounds_ct()[0]
+
+
+def _tzinfo():
     try:
-        import pytz
-        import os
-        tz = pytz.timezone(os.getenv("GHOST_TZ", "America/Chicago"))
-        return _dt.datetime.now(tz).strftime("%Y-%m-%d")
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(os.getenv("GHOST_TZ", "America/Chicago"))
     except Exception:
-        return _dt.date.today().isoformat()
+        return _dt.timezone.utc
 
 
-def build_daily_report() -> Dict[str, Any]:
+def _day_bounds_ct(day: Optional[str] = None) -> tuple[str, int, int]:
+    """Return (YYYY-MM-DD, start_ts, end_ts) for the configured Ghost day.
+
+    The original PR #157 code used a rolling 24h window. That answered "last 24h"
+    but not "today's report." This helper gives true calendar-day boundaries in
+    the operator timezone (America/Chicago by default).
+    """
+    tz = _tzinfo()
+    now_dt = _dt.datetime.now(tz)
+    if day:
+        try:
+            d = _dt.date.fromisoformat(day)
+        except Exception:
+            d = now_dt.date()
+    else:
+        d = now_dt.date()
+    start = _dt.datetime(d.year, d.month, d.day, tzinfo=tz)
+    end = start + _dt.timedelta(days=1)
+    return d.isoformat(), int(start.timestamp()), int(end.timestamp())
+
+
+def _as_int(v: Any, default: int = 0) -> int:
+    try:
+        return int(v or 0)
+    except Exception:
+        return default
+
+
+def _as_float(v: Any) -> Optional[float]:
+    try:
+        if v is None:
+            return None
+        return float(v)
+    except Exception:
+        return None
+
+
+def _round(v: Any, ndigits: int = 4) -> Optional[float]:
+    f = _as_float(v)
+    return round(f, ndigits) if f is not None else None
+
+
+
+def _coerce_json(v: Any) -> Any:
+    if v is None or isinstance(v, (dict, list)):
+        return v
+    try:
+        return _json.loads(v)
+    except Exception:
+        return v
+
+
+def _fetch_cycles_readonly(day_start: int, day_end: int, *, limit: int = 200) -> List[Dict[str, Any]]:
+    """Read cycle summaries without triggering performance-log DDL."""
+    with _db.db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, cycle_ts, duration_ms, scanned, candidates, saved,
+                   dedup_blocked, would_fire, binding_skip, paused,
+                   pause_reason, suppressed, suppress_reason, skip_counts,
+                   near_miss, regime, objective_mode, saved_prediction_ids
+            FROM ghost_perf_cycles
+            WHERE cycle_ts >= %s AND cycle_ts < %s
+            ORDER BY cycle_ts DESC, id DESC
+            LIMIT %s
+            """,
+            (day_start, day_end, max(1, min(500, int(limit)))),
+        )
+        rows = cur.fetchall()
+    return [
+        {
+            "id": r[0], "cycle_ts": r[1], "duration_ms": r[2],
+            "scanned": r[3], "candidates": r[4], "saved": r[5],
+            "dedup_blocked": r[6], "would_fire": bool(r[7]),
+            "binding_skip": r[8], "paused": bool(r[9]),
+            "pause_reason": r[10], "suppressed": r[11],
+            "suppress_reason": r[12], "skip_counts": _coerce_json(r[13]) or {},
+            "near_miss": _coerce_json(r[14]), "regime": _coerce_json(r[15]) or {},
+            "objective_mode": _coerce_json(r[16]) or {},
+            "saved_prediction_ids": _coerce_json(r[17]) or [],
+        }
+        for r in rows
+    ]
+
+
+def _fetch_symbol_evals_readonly(cycle_id: int, *, limit: int = 12) -> List[Dict[str, Any]]:
+    """Read per-symbol details for one cycle without side effects."""
+    with _db.db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT symbol, skip_code, fired, saved, direction, up_prob,
+                   confidence, min_win_proba, regime_label, eval_ts
+            FROM ghost_perf_symbol_evals
+            WHERE cycle_id=%s
+            ORDER BY up_prob DESC NULLS LAST, symbol ASC
+            LIMIT %s
+            """,
+            (int(cycle_id), max(1, min(100, int(limit)))),
+        )
+        rows = cur.fetchall()
+    return [
+        {
+            "symbol": r[0], "skip_code": r[1], "fired": bool(r[2]),
+            "saved": bool(r[3]), "direction": r[4], "up_prob": r[5],
+            "confidence": r[6], "min_win_proba": r[7],
+            "regime_label": r[8], "eval_ts": r[9],
+        }
+        for r in rows
+    ]
+
+
+def _fetch_events_readonly(day_start: int, day_end: int, *, limit: int = 80) -> List[Dict[str, Any]]:
+    """Read lifecycle events without triggering DDL."""
+    with _db.db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, event_ts, event_type, prediction_id, symbol, cycle_id, payload
+            FROM ghost_perf_events
+            WHERE event_ts >= %s AND event_ts < %s
+            ORDER BY event_ts DESC, id DESC
+            LIMIT %s
+            """,
+            (day_start, day_end, max(1, min(500, int(limit)))),
+        )
+        rows = cur.fetchall()
+    return [
+        {
+            "id": r[0], "event_ts": r[1], "event_type": r[2],
+            "prediction_id": r[3], "symbol": r[4], "cycle_id": r[5],
+            "payload": _coerce_json(r[6]) or {},
+        }
+        for r in rows
+    ]
+
+
+def ensure_daily_report_tables(cur) -> None:
+    """Create the append-only daily report notebook table.
+
+    This table is observability only. It stores report payloads so the operator
+    can ask for "today's logs" later even if the app restarted.
+    """
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ghost_daily_report_logs (
+            id SERIAL PRIMARY KEY,
+            report_date TEXT NOT NULL,
+            created_at BIGINT NOT NULL,
+            pr_version INT,
+            git_sha TEXT,
+            health_score INT,
+            gate_open BOOLEAN,
+            gate_reason TEXT,
+            picks_saved_today INT,
+            wallet_total_value FLOAT,
+            wallet_today_pnl FLOAT,
+            calibration_status TEXT,
+            payload_json JSONB NOT NULL
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_daily_report_logs_date_created
+        ON ghost_daily_report_logs (report_date, created_at DESC)
+        """
+    )
+    cur.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_daily_report_logs_created
+        ON ghost_daily_report_logs (created_at DESC)
+        """
+    )
+
+
+def build_daily_report(day: Optional[str] = None) -> Dict[str, Any]:
     now = int(time.time())
-    today = _today_ct()
-    day_start = now - 24 * 3600
+    today, day_start, day_end = _day_bounds_ct(day)
 
     # ── 1. build identity + health ────────────────────────────────────────
     def _identity():
@@ -53,32 +238,70 @@ def build_daily_report() -> Dict[str, Any]:
 
     # ── 2. what Ghost DID today: scans, gate, fires ───────────────────────
     def _decisions():
-        from api.routes_wolf_ops import wolf_gate_status, wolf_perf_log_cycles
-        gate = wolf_gate_status()
-        lp = (gate or {}).get("live_prediction", {})
-        cycles = (wolf_perf_log_cycles(limit=200) or {}).get("cycles", [])
-        today_cycles = [c for c in cycles if (c.get("cycle_ts") or 0) >= day_start]
-        fired = sum(int(c.get("candidates") or 0) for c in today_cycles)
-        scanned = today_cycles[0].get("scanned") if today_cycles else None
+        # DB-only performance-log read. Do NOT call /api/wolf/gate-status here:
+        # that endpoint recomputes a live prediction and has historically taken
+        # long enough to 502 the report. The performance log is the authoritative
+        # notebook of what Ghost actually scanned and why it held/fired.
+        cycles = _fetch_cycles_readonly(day_start, day_end, limit=200)
+        latest = cycles[0] if cycles else {}
+        latest_evals: List[Dict[str, Any]] = []
+        if latest.get("id"):
+            latest_evals = _fetch_symbol_evals_readonly(int(latest["id"]), limit=12)
+
+        picks_saved = sum(_as_int(c.get("saved")) for c in cycles)
+        candidates = sum(_as_int(c.get("candidates")) for c in cycles)
+        would_fire_cycles = sum(1 for c in cycles if c.get("would_fire"))
+        scanned = latest.get("scanned") if latest else None
         # aggregate skip reasons across the day
         skips: Dict[str, int] = {}
-        for c in today_cycles:
+        for c in cycles:
             for k, v in (c.get("skip_counts") or {}).items():
-                skips[k] = skips.get(k, 0) + int(v or 0)
+                skips[k] = skips.get(k, 0) + _as_int(v)
         top_skips = dict(sorted(skips.items(), key=lambda kv: -kv[1])[:6])
-        nm = today_cycles[0].get("near_miss") if today_cycles else None
+        nm = latest.get("near_miss") if latest else None
+        try:
+            from core.prediction import backfill_near_miss_for_display
+            nm = backfill_near_miss_for_display(nm)
+        except Exception:
+            note_suppressed()
+        symbol_evals = []
+        for ev in latest_evals[:12]:
+            symbol_evals.append({
+                "symbol": ev.get("symbol"),
+                "skip_code": ev.get("skip_code"),
+                "fired": bool(ev.get("fired")),
+                "saved": bool(ev.get("saved")),
+                "direction": ev.get("direction"),
+                "up_prob": _round(ev.get("up_prob"), 4),
+                "confidence": _round(ev.get("confidence"), 4),
+                "min_win_proba": _round(ev.get("min_win_proba"), 4),
+                "regime_label": ev.get("regime_label"),
+            })
+        events = _fetch_events_readonly(day_start, day_end, limit=80)[:30]
+        regime_payload = latest.get("regime") or {}
         return {
-            "gate_open": bool(lp.get("would_alert")),
-            "gate_reason": lp.get("reason"),
-            "live_up_prob": lp.get("up_prob"),
-            "up_prob_needed": lp.get("up_prob_needed_to_fire"),
-            "regime": (lp.get("regime") or {}).get("label"),
-            "phase": (gate or {}).get("symbol_stats", {}).get("phase"),
-            "scan_cycles_today": len(today_cycles),
+            "source": "ghost_perf_cycles_db_only",
+            "gate_open": bool(latest.get("would_fire") or _as_int(latest.get("saved")) > 0),
+            "gate_reason": latest.get("binding_skip") or ("open" if latest else "no_cycle_today"),
+            "latest_cycle_id": latest.get("id"),
+            "latest_cycle_ts": latest.get("cycle_ts"),
+            "latest_cycle_age_seconds": max(0, now - _as_int(latest.get("cycle_ts"))) if latest else None,
+            "latest_cycle_duration_ms": latest.get("duration_ms"),
+            "latest_cycle_paused": bool(latest.get("paused")) if latest else False,
+            "latest_cycle_pause_reason": latest.get("pause_reason"),
+            "latest_cycle_suppressed": latest.get("suppressed"),
+            "regime": regime_payload.get("label") or (nm or {}).get("regime_label"),
+            "phase": ((latest.get("objective_mode") or {}).get("phase")
+                      or (nm or {}).get("objective_mode")),
+            "scan_cycles_today": len(cycles),
             "symbols_scanned": scanned,
-            "picks_fired_today": fired,
+            "picks_fired_today": picks_saved,
+            "candidates_today": candidates,
+            "would_fire_cycles_today": would_fire_cycles,
             "top_skip_reasons": top_skips,
             "closest_to_firing": nm,
+            "latest_symbol_evals": symbol_evals,
+            "recent_events": events,
         }
     decisions = _safe(_decisions, {})
 
@@ -89,8 +312,7 @@ def build_daily_report() -> Dict[str, Any]:
         # report hang behind market-data providers. This report is observability;
         # it can use cost/realized/daily snapshot fields without live quotes.
         import json as _json
-        from core.db import db_conn
-        with db_conn() as conn:
+        with _db.db_conn() as conn:
             cur = conn.cursor()
             cur.execute("SELECT COALESCE(SUM(pnl),0), SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END), COUNT(*) "
                         "FROM ghost_paper_trades WHERE status='closed'")
@@ -115,16 +337,16 @@ def build_daily_report() -> Dict[str, Any]:
                 equity = round(start + float(realized or 0), 2)
             cur.execute("""SELECT symbol, book, entry_price, entry_ts
                            FROM ghost_paper_trades
-                           WHERE status='open' AND entry_ts >= %s
-                           ORDER BY entry_ts DESC LIMIT 50""", (day_start,))
+                           WHERE status='open' AND entry_ts >= %s AND entry_ts < %s
+                           ORDER BY entry_ts DESC LIMIT 50""", (day_start, day_end))
             opened_today = [
                 {"symbol": r[0], "book": r[1], "entry": r[2], "entry_ts": r[3]}
                 for r in cur.fetchall()
             ]
             cur.execute("""SELECT symbol, exit_reason, pnl, pnl_pct, exit_ts
                            FROM ghost_paper_trades
-                           WHERE status='closed' AND exit_ts >= %s
-                           ORDER BY exit_ts DESC LIMIT 50""", (day_start,))
+                           WHERE status='closed' AND exit_ts >= %s AND exit_ts < %s
+                           ORDER BY exit_ts DESC LIMIT 50""", (day_start, day_end))
             closed_today = [
                 {"symbol": r[0], "reason": r[1], "pnl": r[2], "pnl_pct": r[3], "exit_ts": r[4]}
                 for r in cur.fetchall()
@@ -166,9 +388,8 @@ def build_daily_report() -> Dict[str, Any]:
 
     # ── 5. breakers ───────────────────────────────────────────────────────
     def _breakers():
-        from api.routes_ghost_system import system_breakers_endpoint
-        b = system_breakers_endpoint()
-        return {k: v.get("state") for k, v in (b.get("breakers") or {}).items()}
+        from core.circuit_breaker import all_breaker_status
+        return {k: v.get("state") for k, v in (all_breaker_status() or {}).items()}
     breakers = _safe(_breakers, {})
 
     report = {
@@ -178,6 +399,137 @@ def build_daily_report() -> Dict[str, Any]:
     }
     report["narrative"] = _narrate(report)
     return report
+
+
+
+def snapshot_daily_report(day: Optional[str] = None) -> Dict[str, Any]:
+    """Append the current daily report to Ghost's notebook table.
+
+    This is the only mutating path in this module, and it writes only
+    ``ghost_daily_report_logs``. It is safe observability: no prediction, gate,
+    wallet, Watcher, or model state is changed.
+    """
+    report = build_daily_report(day=day)
+    identity = report.get("identity") or {}
+    decisions = report.get("decisions") or {}
+    wallet = report.get("wallet") or {}
+    calibration = report.get("calibration") or {}
+    created_at = _as_int(report.get("generated_ts"), int(time.time()))
+    with _db.db_conn() as conn:
+        cur = conn.cursor()
+        ensure_daily_report_tables(cur)
+        cur.execute(
+            """
+            INSERT INTO ghost_daily_report_logs (
+                report_date, created_at, pr_version, git_sha, health_score,
+                gate_open, gate_reason, picks_saved_today, wallet_total_value,
+                wallet_today_pnl, calibration_status, payload_json
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
+            RETURNING id
+            """,
+            (
+                report.get("date"),
+                created_at,
+                identity.get("pr_version"),
+                identity.get("git_sha"),
+                identity.get("health_score"),
+                bool(decisions.get("gate_open")),
+                decisions.get("gate_reason"),
+                _as_int(decisions.get("picks_fired_today")),
+                _as_float(wallet.get("total_value")),
+                _as_float(wallet.get("today_pnl")),
+                calibration.get("status"),
+                _json.dumps(report, default=str),
+            ),
+        )
+        row = cur.fetchone()
+    return {
+        "ok": True,
+        "log_id": int(row[0]) if row else None,
+        "report_date": report.get("date"),
+        "created_at": created_at,
+        "read_only_decisions": True,
+        "writes_only": "ghost_daily_report_logs",
+        "report": report,
+    }
+
+
+def latest_daily_report_logs(
+    *,
+    limit: int = 24,
+    day: Optional[str] = None,
+    include_payload: bool = False,
+) -> Dict[str, Any]:
+    """Read persisted daily report notebook rows.
+
+    GET callers use this to answer "what did Ghost log today?" without causing a
+    new write. If the table is not present yet (fresh deploy before first
+    scheduler tick), return an empty log rather than failing the dashboard.
+    """
+    lim = max(1, min(200, int(limit)))
+    params: List[Any] = []
+    where = ""
+    if day:
+        where = " WHERE report_date=%s"
+        params.append(day)
+    try:
+        with _db.db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                f"""
+                SELECT id, report_date, created_at, pr_version, git_sha,
+                       health_score, gate_open, gate_reason, picks_saved_today,
+                       wallet_total_value, wallet_today_pnl, calibration_status,
+                       payload_json
+                FROM ghost_daily_report_logs{where}
+                ORDER BY created_at DESC, id DESC
+                LIMIT %s
+                """,
+                tuple(params) + (lim,),
+            )
+            rows = cur.fetchall()
+    except Exception as exc:
+        # Missing table before first snapshot is non-fatal; other DB read errors
+        # are surfaced as an empty log with the truncated reason.
+        LOGGER.debug("daily report log read failed: %s", str(exc)[:100])
+        return {"ok": True, "read_only": True, "count": 0, "rows": [], "note": str(exc)[:120]}
+
+    out_rows: List[Dict[str, Any]] = []
+    for r in rows:
+        payload = r[12]
+        if isinstance(payload, str):
+            try:
+                payload = _json.loads(payload)
+            except Exception:
+                payload = {}
+        elif payload is None:
+            payload = {}
+        row = {
+            "id": r[0],
+            "date": r[1],
+            "created_at": r[2],
+            "pr_version": r[3],
+            "git_sha": r[4],
+            "health_score": r[5],
+            "gate_open": bool(r[6]),
+            "gate_reason": r[7],
+            "picks_saved_today": r[8],
+            "wallet_total_value": r[9],
+            "wallet_today_pnl": r[10],
+            "calibration_status": r[11],
+            "narrative": (payload or {}).get("narrative") or [],
+        }
+        if include_payload:
+            row["payload"] = payload
+        out_rows.append(row)
+    return {
+        "ok": True,
+        "read_only": True,
+        "count": len(out_rows),
+        "limit": lim,
+        "date": day,
+        "rows": out_rows,
+    }
 
 
 def _narrate(r: Dict[str, Any]) -> List[str]:
@@ -192,10 +544,14 @@ def _narrate(r: Dict[str, Any]) -> List[str]:
     # what it did
     fired = d.get("picks_fired_today")
     if fired == 0:
+        close = d.get("closest_to_firing") or {}
+        close_bits = ""
+        if close.get("symbol"):
+            close_bits = f" Closest miss: {close.get('symbol')} at up_prob {close.get('up_prob')} blocked by {close.get('skip')}."
         lines.append(f"Predictions: fired ZERO live picks today across "
                      f"{d.get('scan_cycles_today')} scans of {d.get('symbols_scanned')} symbols "
-                     f"— gate closed ({d.get('gate_reason')}), up_prob {d.get('live_up_prob')} "
-                     f"vs {d.get('up_prob_needed')} needed, regime {d.get('regime')}. Silence = designed, not broken.")
+                     f"— gate closed ({d.get('gate_reason')}), regime {d.get('regime')}."
+                     f"{close_bits} Silence = designed, not broken.")
     else:
         lines.append(f"Predictions: FIRED {fired} live pick(s) today — notable, gate opened.")
     ts = d.get("top_skip_reasons") or {}

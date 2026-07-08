@@ -286,4 +286,11 @@ def _migrate_schema():
             ensure_regime_calibration_tables(cur)
     except Exception as e:
         LOGGER.warning("Super Ghost regime calibration tables: " + str(e)[:80])
+    try:
+        from core.daily_report import ensure_daily_report_tables
+        with db_conn() as conn:
+            cur = conn.cursor()
+            ensure_daily_report_tables(cur)
+    except Exception as e:
+        LOGGER.warning("Daily report log tables: " + str(e)[:80])
     LOGGER.info("Schema migration complete")

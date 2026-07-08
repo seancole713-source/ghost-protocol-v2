@@ -862,8 +862,29 @@ def trigger_wallet_cycle(x_cron_secret: str = Header(default="")):
 
 
 @router.get("/api/report/daily")
-def get_daily_report():
-    """Consolidated 'today's report' (PR #157) — everything Ghost did + why,
+def get_daily_report(day: str = ""):
+    """Consolidated today's report — everything Ghost did + why,
     in one payload with a plain-English narrative. Read-only aggregation."""
     from core.daily_report import build_daily_report
-    return build_daily_report()
+    return build_daily_report(day=day or None)
+
+
+@router.get("/api/report/daily/logs")
+def get_daily_report_logs(limit: int = 24, day: str = "", include_payload: int = 0):
+    """Persisted daily-report notebook rows. Read-only; no new log is written."""
+    from core.daily_report import latest_daily_report_logs
+    return latest_daily_report_logs(
+        limit=limit,
+        day=day or None,
+        include_payload=bool(include_payload),
+    )
+
+
+@router.post("/api/report/daily/snapshot")
+def create_daily_report_snapshot(x_cron_secret: str = Header(default=""), day: str = ""):
+    """Append one daily-report log row. Cron-gated; writes only Ghost's report notebook."""
+    from wolf_app import _cron_ok  # late import — shared state + monkeypatch-safe
+    if not _cron_ok(x_cron_secret):
+        raise HTTPException(status_code=403)
+    from core.daily_report import snapshot_daily_report
+    return snapshot_daily_report(day=day or None)
