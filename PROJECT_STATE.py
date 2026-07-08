@@ -13,7 +13,7 @@ RULES:
   7. SESSION_LOG is the handover log — read it to understand what happened in the
      last session and what's in flight. Update it at the end of every session.
 
-LAST UPDATED: 2026-07-06 — PR #140 empty market-state honesty fix ready/deployed
+LAST UPDATED: 2026-07-08 — PR #151 candidate: wallet proven-skill filter + shadow resolver expiry cleanup; live deploy verification pending
 """
 
 # ============================================================
@@ -32,22 +32,25 @@ SESSION_LOG = {
     "production": {
         "url": "https://ghost-protocol-v2-production.up.railway.app",
         "railway_project": "tender-benevolence",
-        "pr_version": 147,
-        "git_sha": "9ad81d5 (origin/main HEAD 2026-07-08)",
+        "pr_version": 150,
+        "git_sha": "5ed0138 (origin/main HEAD; local main in sync)",
         "app_version": "2.5.0",
-        "health": "95/100 (live-verified 2026-07-08)",
+        "health": "95/100 (live-verified 2026-07-08 Fugu: /health score=95)",
         "degraded": False,
-        "tests": "758 passed, 3 skipped (python3.13 -m pytest)",
+        "tests": "767 passed, 3 skipped (python3.13 -m pytest, local pre-deploy PR #151 run 2026-07-08 Fugu)",
         "playwright_e2e": "console-audit.spec.ts 24/24 desktop+mobile (Fugu, 2026-07-08) — verifies every tab RENDERS with real data & zero JS/API errors; does NOT verify prediction accuracy (a passing tab can show 'Grade F / NO EDGE' honestly). Suite lives in e2e/console-audit.spec.ts.",
         "accuracy_contract": "70% target, balanced mode",
-        "models_trained": "126 stored, 46 serveable, 0 fireable_now (edge unproven, gate closed)",
-        "wallet": "paper wallet live+trading, ~14 shadow positions, monthly goal $20k (auto month-reset)",
+        "models_trained": "126 stored, 46 serveable, 0 fireable_now (edge unproven, gate closed) — live /api/v3/status 2026-07-08",
+        "wallet": "paper wallet live+trading, total_value ~$9,870 (-1.3% MTD), 15 open shadow positions, 16 closed (8 wins), monthly goal $20k (auto month-reset) — live /api/wallet 2026-07-08",
         "breakers": "yfinance + alpaca cycling open — not degraded",
         "frontend_verified": "Fugu's dedup fixes (dc7c4f7) CONFIRMED live 2026-07-08 (dedup JS present in live-served ghost_console.html); the 24/24 e2e ran against real production. _pr_version stayed 147 because these commits didn't bump the constant.",
+        "verified_by_fugu_2026_07_08": "Live reconciliation vs public API + local build. CONFIRMED: _pr_version=150 (git_sha 5ed0138) — task brief said 147, stale; /health=95; watchlist=74 symbols (PR #149, not the brief's 43); 10 shadow brains (contrarian/seasonal/news_shadow_v2 present); gate CLOSED (fireable_now=0, live up_prob 0.5056 vs 0.6189 needed — silence CORRECT, bootstrap); kill-status win_rate+brier RED but enforcement_window insufficient (counts only post-resume) so engine NOT paused; wallet honest & underwater (goal math confirmed impossible per KNOWN TRUTH); local suite 764 passed/3 skipped + import-integrity PASS. OBSERVATION (not fixed — prod DB not reachable via local `railway run`, host postgres.railway.internal): /api/shadow-stats shows 31 pending shadow rows, oldest expired 2026-06-15 (~23d), last resolver cycle seeded 0/resolved 0 — resolver runs hourly but appears stuck at 0; needs an agent with prod-DB/log access to confirm feed-blocked vs resolver bug before any code change. Ghost MCP already registered + Connected (no re-add needed).",
     },
 
     # ── WHAT HAPPENED THIS SESSION ──
     "session_summary": [
+        "PR #151 (2026-07-08): wallet proven-skill filter + shadow resolver expiry cleanup. Candidate fix from Fugu/master-agent session. Shadow wallet default PAPER_SHADOW_MIN_PROB raised 0.50->0.55 (env override still supported) and new symbol-level filters require >=10 resolved WIN/LOSS rows and TP rate >=55% before fake-money shadow entries; this addresses the live finding that the wallet was buying coin-flip/negative-P&L symbols just because model up_prob >=0.50, while keeping the gated book untouched. Shadow resolver now closes already-expired rows as EXPIRED at entry/0% P&L if OHLCV bars are unavailable, preventing stale pending rows from sitting forever without crediting WIN/LOSS. Boot banner/version bumped to 151. Tests added for defaults/env overrides and no-bars expiry. HONESTY: fake-money only; does not claim prediction accuracy, does not target $20k/mo, and does not touch broker APIs.",
+        "FUGU SESSION (2026-07-08): live reconciliation only — NO app-code change. Read ledger, verified every headline claim against the live public API + a local build. Corrections written into the production{} block above: pr_version 147->150 (git_sha 5ed0138), tests 758->764, watchlist 43->74 (already PR #149), models 126 stored/46 serveable/0 fireable_now. Gate CLOSED is CORRECT (live up_prob 0.5056 vs 0.6189 needed; bootstrap). kill-status win_rate/brier show RED historically but enforcement_window (post-resume) is 'insufficient' so the engine is NOT paused — matches design. Wallet underwater (-1.3% MTD) and honest; $10k->$20k/mo remains mathematically impossible per KNOWN TRUTH (did NOT touch it). Ghost MCP already registered + Connected (did not re-add; would risk clobbering Fable's parallel session). GHOST_OAUTH_SECRET confirmed present in prod env (count only; never printed); no env var changed this session. OPEN ITEM for an agent with prod-DB/log access: /api/shadow-stats has 31 pending shadow rows, oldest expired 2026-06-15 (~23d), resolver hourly job reports seeded 0/resolved 0 — could be feed-blocked (honest) or a stuck resolver (bug). Could NOT confirm from here: local `railway run` can't reach postgres.railway.internal (private-net host), so prod-DB introspection is blocked from this sandbox. Do NOT 'fix' by force-resolving; diagnose bars availability first via core.signal_engine._fetch_ohlcv on the box.",
         "PR #114: Research pick mode + breaker diagnostics + prev_close 5-tier chain + confidence caps",
         "PR #115: P0 audit — Kelly formula corrected (f* = p-(1-p)/b), breaker auto-recovery fixed, research pick hardening, auth-gated writes, async fixes",
         "PR #116: Phase 0-1 — FEATURE_COLS 33→49 (8 macro + 8 cross-sectional), point-in-time training data, auto-log watchlist (43× multiplier), dead promotion gate removed",
@@ -86,7 +89,7 @@ SESSION_LOG = {
         "features": "49 features (33 technical + 8 macro + 8 cross-sectional)",
         "data_feeds": "5-tier chain: Alpaca IEX → yfinance → Polygon → IEX → Stooq (deprecated)",
         "circuit_breakers": "5 breakers: yfinance (5/600s), alpaca (5/300s, 50/60s), finnhub, polygon, anthropic",
-        "watchlist": "43 symbols in OFFICIAL_WATCHLIST (config/symbols.py)",
+        "watchlist": "74 symbols in OFFICIAL_WATCHLIST (config/symbols.py) — live-verified PR #150/151 era; many new PR #149 symbols still need models/retrain",
         "super_ghost": "25-point checklist, coverage gate ≥18/25 for A/B grade",
         "kelly_sizing": "Corrected formula f* = p - (1-p)/b",
         "two_lanes": "v3 picks (gated, often silent) + Squeeze radar (intraday)",
@@ -1035,6 +1038,7 @@ P0 — PRODUCT POSITION (done 2026-06-10)
 [x] Confirm squeeze radar wake after 3:00 AM CT 2026-06-11 (leaders + last_scan_ts) — verified 2026-06-12 session
 
 P1 — PHASE 3 DEPTH (probes exist; not yet gating picks)
+[ ] Investigate shadow outcome resolver backlog (Fugu live-observed 2026-07-08): /api/shadow-stats shows 31 pending rows, oldest expired 2026-06-15, while last hourly cycle reports seeded=0/resolved=0. Do NOT force-resolve. First diagnose on Railway/private-net context whether core.signal_engine._fetch_ohlcv can fetch bars for the pending symbols and whether resolver logs show feed-blocked vs code-stuck behavior. Local `railway run` from this sandbox cannot reach postgres.railway.internal, so this remains unverified until an agent with prod DB/log access checks it.
 [ ] Train squeeze ML v2 from labeled squeeze outcomes in ghost_squeeze_outcomes (replace baseline logistic in data/squeeze_ml_v2.json)
 [ ] FinBERT sentiment on existing news pipeline (lexicon_v1 is probe-only today)
 [ ] Wire drift alerts to Telegram/admin when GHOST_DRIFT_Z_ALERT fires

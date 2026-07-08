@@ -236,3 +236,47 @@ def test_regime_blocked_eval_still_scores_up_prob(monkeypatch):
     assert reason == "regime_gate"
     assert scores.get("up_prob") == 0.6
     assert scores.get("model_meta", {}).get("min_win_proba") == 0.55
+
+
+def test_resolve_shadow_rows_expires_when_bars_unavailable(monkeypatch):
+    """Expired virtual picks with no bars must not stay pending forever.
+
+    PR #151: if the resolver cannot fetch OHLCV, it closes already-expired
+    virtual rows as EXPIRED at entry (0% P&L) instead of crediting WIN/LOSS.
+    """
+    import datetime as _dt
+    from core import shadow_outcomes as so
+
+    entry_ts = int(_dt.datetime(2026, 5, 20, 15, 0, tzinfo=_dt.timezone.utc).timestamp())
+    expires = int(_dt.datetime(2026, 5, 28, 21, 0, tzinfo=_dt.timezone.utc).timestamp())
+    pending_row = (9, "NOFEED", entry_ts, 10.0, 10.2, 9.87, expires)
+    updates = []
+
+    class _Cur:
+        def __init__(self):
+            self.last_sql = ""
+        def execute(self, sql, params=None):
+            self.last_sql = sql
+            if "UPDATE ghost_shadow_outcomes" in sql:
+                updates.append(params)
+        def fetchall(self):
+            if "outcome IS NULL" in self.last_sql:
+                return [pending_row]
+            return []
+
+    class _Conn:
+        def cursor(self): return _Cur()
+    class _Ctx:
+        def __enter__(self): return _Conn()
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr("core.db.db_conn", lambda: _Ctx())
+    monkeypatch.setattr(so, "ensure_shadow_table", lambda cur: None)
+    monkeypatch.setattr(so.time, "time", lambda: expires + 3600)
+
+    import core.signal_engine as _se
+    monkeypatch.setattr(_se, "_fetch_ohlcv", lambda *a, **k: [])
+
+    n = so.resolve_shadow_rows(max_symbols=5)
+    assert n == 1
+    assert updates == [("EXPIRED", 10.0, 0.0, expires + 3600, 9)]

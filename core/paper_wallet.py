@@ -9,8 +9,9 @@ Two books, never mixed:
   gated  — mirrors REAL fired picks (predictions table). This is "following
            Ghost". Currently silent while the gates hold at 0 fireable.
   shadow — mirrors the ungated virtual evaluations (ghost_shadow_outcomes)
-           above a probability floor, small fixed slices. Research evidence
-           only; it exists to accumulate fill-level data fast.
+           above a probability floor *and* a symbol-level proven-skill floor,
+           small fixed slices. Research evidence only; it exists to accumulate
+           fill-level data without buying every coin-flip symbol.
 
 Fill realism (quote-level, honestly labeled — NOT broker microstructure):
   entry  — live quote at cycle time (not the eval-time price)
@@ -44,7 +45,19 @@ def _slice_usd() -> float:
 
 
 def _shadow_min_prob() -> float:
-    return float(os.getenv("PAPER_SHADOW_MIN_PROB", "0.50"))
+    # PR #151: Shadow wallet should not buy below Ghost's own shadow/fireable
+    # probability floor by default. Keep env override for controlled experiments.
+    return float(os.getenv("PAPER_SHADOW_MIN_PROB", "0.55"))
+
+
+def _shadow_skill_min_tp_rate() -> float:
+    # Symbol-level historical TP filter for fake-money shadow entries.
+    # 0.55 = better than coin-flip after ignoring still-pending/expired rows.
+    return float(os.getenv("PAPER_SHADOW_SKILL_MIN_TP_RATE", "0.55"))
+
+
+def _shadow_skill_min_resolved() -> int:
+    return max(1, int(os.getenv("PAPER_SHADOW_SKILL_MIN_RESOLVED", "10")))
 
 
 def _max_open() -> int:
@@ -330,12 +343,35 @@ def run_wallet_cycle() -> Dict[str, Any]:
                    ORDER BY predicted_at DESC LIMIT 20""", (now_ts,))
             gated_rows = [("gated", f"pick:{r[0]}", r[1], r[2], r[3], r[4], r[5])
                           for r in cur.fetchall()]
+            # Research-wallet shadow entries must be both confident enough and
+            # historically proven for the *symbol*. PR #151: up_prob >= 0.50 was
+            # admitting coin-flip/negative-P&L symbols (e.g. 33-41% TP buckets)
+            # even though the public gate remained closed. This is still fake
+            # money only, but the evidence wallet should prefer symbols whose
+            # shadow track record clears a basic skill floor.
             cur.execute(
-                """SELECT id, symbol, entry_price, target_price, stop_price, expires_at
-                   FROM ghost_shadow_outcomes
-                   WHERE outcome IS NULL AND expires_at > %s AND up_prob >= %s
-                   ORDER BY eval_ts DESC LIMIT 20""",
-                (now_ts, _shadow_min_prob()))
+                """
+                WITH skill AS (
+                    SELECT symbol,
+                           SUM(CASE WHEN outcome IN ('WIN','LOSS') THEN 1 ELSE 0 END) AS resolved,
+                           SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) AS wins
+                    FROM ghost_shadow_outcomes
+                    WHERE outcome IS NOT NULL
+                    GROUP BY symbol
+                )
+                SELECT o.id, o.symbol, o.entry_price, o.target_price, o.stop_price, o.expires_at,
+                       COALESCE(s.resolved, 0) AS resolved,
+                       COALESCE(s.wins, 0) AS wins
+                FROM ghost_shadow_outcomes o
+                LEFT JOIN skill s ON s.symbol = o.symbol
+                WHERE o.outcome IS NULL
+                  AND o.expires_at > %s
+                  AND o.up_prob >= %s
+                  AND COALESCE(s.resolved, 0) >= %s
+                  AND (COALESCE(s.wins, 0)::float / NULLIF(s.resolved, 0)) >= %s
+                ORDER BY o.eval_ts DESC LIMIT 20
+                """,
+                (now_ts, _shadow_min_prob(), _shadow_skill_min_resolved(), _shadow_skill_min_tp_rate()))
             shadow_rows = [("shadow", f"shadow:{r[0]}", r[1], r[2], r[3], r[4], r[5])
                            for r in cur.fetchall()]
 
@@ -518,6 +554,8 @@ def wallet_summary() -> Dict[str, Any]:
                 "daily": daily,
                 "trade_slice_usd": _slice_usd(),
                 "shadow_min_prob": _shadow_min_prob(),
+                "shadow_skill_min_tp_rate": _shadow_skill_min_tp_rate(),
+                "shadow_skill_min_resolved": _shadow_skill_min_resolved(),
                 "goal": {
                     "target": goal,
                     "month": cfg.get("goal_month"),

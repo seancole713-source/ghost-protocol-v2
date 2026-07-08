@@ -248,6 +248,20 @@ def resolve_shadow_rows(max_symbols: int = 60) -> int:
         except Exception as e:
             LOGGER.debug("shadow bars %s: %s", sym, str(e)[:80])
         if not bars:
+            # PR #151: if a virtual pick is already past its hold window but
+            # no OHLCV bars are available, close it as EXPIRED at entry (0%
+            # P&L) instead of leaving it pending forever. This is conservative:
+            # no WIN/LOSS is credited without a bar path; it simply honors the
+            # documented hold expiry.
+            for (sid, _sym, eval_ts, entry, target, stop, expires_at) in rows:
+                if expires_at and now > int(expires_at):
+                    with db_conn() as conn:
+                        conn.cursor().execute(
+                            "UPDATE ghost_shadow_outcomes "
+                            "SET outcome=%s, exit_price=%s, pnl_pct=%s, resolved_at=%s WHERE id=%s",
+                            ("EXPIRED", float(entry), 0.0, now, sid),
+                        )
+                    resolved += 1
             continue
         last_close = float(bars[-1].get("close") or 0)
         for (sid, _sym, eval_ts, entry, target, stop, expires_at) in rows:

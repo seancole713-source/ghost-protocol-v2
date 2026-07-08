@@ -166,3 +166,31 @@ def test_goal_pct_of_goal_is_positive_when_underwater():
     assert progress_pct < 0            # -2.0% (below start)
     assert pct_of_goal == 49.0         # still 49% of the way to $20k
     assert pct_of_goal > 0
+
+
+def test_shadow_wallet_defaults_require_prob_floor_and_skill(monkeypatch):
+    import inspect
+    import core.paper_wallet as pw
+
+    monkeypatch.delenv("PAPER_SHADOW_MIN_PROB", raising=False)
+    monkeypatch.delenv("PAPER_SHADOW_SKILL_MIN_TP_RATE", raising=False)
+    monkeypatch.delenv("PAPER_SHADOW_SKILL_MIN_RESOLVED", raising=False)
+
+    assert pw._shadow_min_prob() == 0.55
+    assert pw._shadow_skill_min_tp_rate() == 0.55
+    assert pw._shadow_skill_min_resolved() == 10
+
+    src = inspect.getsource(pw.run_wallet_cycle)
+    assert "COALESCE(s.resolved, 0) >= %s" in src
+    assert "COALESCE(s.wins, 0)::float" in src
+
+
+def test_shadow_wallet_env_overrides_skill_filter(monkeypatch):
+    import core.paper_wallet as pw
+
+    monkeypatch.setenv("PAPER_SHADOW_MIN_PROB", "0.60")
+    monkeypatch.setenv("PAPER_SHADOW_SKILL_MIN_TP_RATE", "0.62")
+    monkeypatch.setenv("PAPER_SHADOW_SKILL_MIN_RESOLVED", "18")
+    assert pw._shadow_min_prob() == 0.60
+    assert pw._shadow_skill_min_tp_rate() == 0.62
+    assert pw._shadow_skill_min_resolved() == 18
