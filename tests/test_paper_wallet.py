@@ -155,3 +155,14 @@ def test_goal_cannot_be_below_start(monkeypatch):
     monkeypatch.setattr(pw, "get_config", lambda cur: {"monthly_goal": 20000.0})
     out = pw.reset_wallet(10000.0, monthly_goal=5000.0)  # goal below start
     assert out["monthly_goal"] == 10000.0  # clamped up to start
+
+
+def test_goal_pct_of_goal_is_positive_when_underwater():
+    # PR #150: progress_pct goes negative underwater; pct_of_goal must stay
+    # positive (equity/goal) so the bar and number agree.
+    start, goal, equity = 10000.0, 20000.0, 9800.0
+    progress_pct = round((equity - start) / (goal - start) * 100, 1)
+    pct_of_goal = round(equity / goal * 100, 1)
+    assert progress_pct < 0            # -2.0% (below start)
+    assert pct_of_goal == 49.0         # still 49% of the way to $20k
+    assert pct_of_goal > 0

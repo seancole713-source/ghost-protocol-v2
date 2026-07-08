@@ -522,6 +522,11 @@ def wallet_summary() -> Dict[str, Any]:
                     "target": goal,
                     "month": cfg.get("goal_month"),
                     "progress_pct": progress_pct,
+                    # progress_pct = (equity-start)/(goal-start): goes negative
+                    # when underwater (honest but confusing next to a bar). Also
+                    # expose pct_of_goal = equity/goal, always positive, so the
+                    # bar and the number agree. (PR #150 audit)
+                    "pct_of_goal": round(equity / goal * 100, 1) if goal > 0 else 0.0,
                     "reached": bool(equity >= goal),
                     "remaining": remaining,
                     "day_of_month": day_of_month,

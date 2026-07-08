@@ -176,11 +176,11 @@ $('wCfgNote').textContent='Started at '+_wMoney(w.starting_balance)+' · slice '
 var g=w.goal;if(g){
   $('wGoalTarget').textContent=_wMoney(g.target);
   $('wGoalMonth').textContent=g.month?('· '+g.month):'';
-  var pct=Math.max(0,Math.min(100,g.progress_pct||0));
+  var pct=Math.max(0,Math.min(100,(g.pct_of_goal!=null?g.pct_of_goal:g.progress_pct)||0));
   $('wGoalBar').style.width=pct+'%';
   if(g.reached){$('wGoalBar').style.background='var(--green)'}
-  $('wGoalProgLbl').textContent=g.reached?'GOAL REACHED 🎉':'Progress toward goal';
-  $('wGoalProg').textContent=_wMoney(w.total_value)+' of '+_wMoney(g.target)+' ('+pct.toFixed(0)+'%)';
+  $('wGoalProgLbl').textContent=g.reached?'GOAL REACHED 🎉':'Toward goal';
+  $('wGoalProg').textContent=_wMoney(w.total_value)+' of '+_wMoney(g.target)+' · '+pct.toFixed(0)+'% there';
   $('wGoalPace').textContent=g.reached?'Done for '+g.month:('Day '+g.day_of_month+' of '+g.days_in_month+' · needs '+_wMoney(g.need_per_day)+'/day for '+g.days_left+' days');
   $('wGoalNote').textContent=g.note||'';
   var h=g.history||[];

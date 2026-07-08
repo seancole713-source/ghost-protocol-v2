@@ -406,6 +406,39 @@ def resolve_pending_squeeze_days(max_days: int = 7) -> int:
     return total
 
 
+def _dedupe_candidate_telegram(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Collapse the candidate+telegram double-log at the API layer (PR #150 audit).
+
+    Each squeeze pick is persisted twice — once as source='candidate' when the
+    scanner flags it, once as source='telegram' when it's alerted — producing
+    two rows with identical (symbol, session_date, buy, sell, stop). The console
+    already dedupes for display, but the raw endpoint returned both (~70 dup
+    pairs). Keep the row that carries the richest state: prefer a resolved
+    outcome, then the 'telegram' source (the one actually alerted), then the
+    lowest id. Order is preserved.
+    """
+    def key(r):
+        return (r.get("symbol"), r.get("session_date"), r.get("buy"),
+                r.get("sell"), r.get("stop"))
+
+    def rank(r):
+        # higher is better: resolved rows win, then telegram over candidate
+        return (1 if r.get("outcome") in ("WIN", "LOSS") else 0,
+                1 if r.get("source") == "telegram" else 0,
+                -(r.get("id") or 0))
+
+    best: Dict[tuple, Dict[str, Any]] = {}
+    order: List[tuple] = []
+    for r in rows:
+        k = key(r)
+        if k not in best:
+            best[k] = r
+            order.append(k)
+        elif rank(r) > rank(best[k]):
+            best[k] = r
+    return [best[k] for k in order]
+
+
 def squeeze_daily_log(
     *,
     session_date: Optional[str] = None,
@@ -499,6 +532,8 @@ def squeeze_daily_log(
             "precision": _coerce_json(r[27]) if r[27] is not None else None,
             "resolved_at": r[28],
         })
+
+    rows = _dedupe_candidate_telegram(rows)
 
     # Backfill API payloads for older rows that predate PR #102 without writing
     # to the DB. This keeps the UI honest immediately after deploy.
