@@ -859,3 +859,11 @@ def trigger_wallet_cycle(x_cron_secret: str = Header(default="")):
         raise HTTPException(status_code=403)
     from core.paper_wallet import run_wallet_cycle
     return run_wallet_cycle()
+
+
+@router.get("/api/report/daily")
+def get_daily_report():
+    """Consolidated 'today's report' (PR #157) — everything Ghost did + why,
+    in one payload with a plain-English narrative. Read-only aggregation."""
+    from core.daily_report import build_daily_report
+    return build_daily_report()
