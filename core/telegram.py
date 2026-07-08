@@ -12,6 +12,8 @@ NL = chr(10)
 # P1-2 (audit): retry + dead-letter queue for Telegram alerts
 _TELEGRAM_RETRIES = max(1, int(os.getenv("TELEGRAM_RETRIES", "3")))
 _TELEGRAM_RETRY_BACKOFF_S = [2.0, 4.0, 8.0]  # per-attempt backoff
+_DEDUPE_STATE_KEY = "telegram_alert_dedupe_v1"
+_DEDUPE_MAX_AGE_S = max(86400, int(os.getenv("TELEGRAM_DEDUPE_RETENTION_S", "604800")))
 
 
 def _send(text):
@@ -51,6 +53,77 @@ def _send(text):
         except Exception:
             note_suppressed()
     return ok
+
+
+def _telegram_dedupe_state(cur) -> dict:
+    """Read persistent Telegram de-dupe state from ghost_state.
+
+    This survives app restarts/redeploys, which is the root cause of repeated
+    Telegram alerts when in-memory cooldown dictionaries reset.
+    """
+    import json as _j
+    ensure_ghost_state(cur)
+    cur.execute("SELECT val FROM ghost_state WHERE key=%s", (_DEDUPE_STATE_KEY,))
+    row = cur.fetchone()
+    if row and row[0]:
+        try:
+            data = _j.loads(row[0])
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            note_suppressed()
+    return {}
+
+
+def _write_telegram_dedupe_state(cur, state: dict) -> None:
+    import json as _j
+    cur.execute(
+        "INSERT INTO ghost_state(key,val) VALUES(%s,%s) "
+        "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
+        (_DEDUPE_STATE_KEY, _j.dumps(state, default=str)),
+    )
+
+
+def _dedupe_allows(key: str, cooldown_s: int, *, now: int | None = None) -> tuple[bool, int | None]:
+    """Return (allowed, last_sent_ts) for a persistent Telegram de-dupe key."""
+    if not key or cooldown_s <= 0:
+        return True, None
+    from core.db import db_conn
+
+    now_ts = int(now or time.time())
+    cutoff = now_ts - max(_DEDUPE_MAX_AGE_S, int(cooldown_s))
+    with db_conn() as conn:
+        cur = conn.cursor()
+        state = _telegram_dedupe_state(cur)
+        # Prune stale keys so this small notebook stays bounded.
+        state = {
+            str(k): int(v)
+            for k, v in state.items()
+            if isinstance(v, (int, float)) and int(v) >= cutoff
+        }
+        last = state.get(key)
+        if last is not None and now_ts - int(last) < int(cooldown_s):
+            _write_telegram_dedupe_state(cur, state)
+            return False, int(last)
+        state[key] = now_ts
+        _write_telegram_dedupe_state(cur, state)
+        return True, int(last) if last is not None else None
+
+
+def send_telegram_message_once(key: str, text: str, *, cooldown_s: int = 3600) -> bool:
+    """Send a Telegram message only once per de-dupe key/cooldown window.
+
+    If DB de-dupe state is unavailable, fail open to the normal sender: delivery
+    is more important than crashing an alert path. The normal sender still has
+    its retry + dead-letter behavior.
+    """
+    try:
+        allowed, last = _dedupe_allows(str(key), int(cooldown_s))
+        if not allowed:
+            LOGGER.info("Telegram suppressed duplicate key=%s last=%s", key, last)
+            return True
+    except Exception as exc:
+        LOGGER.warning("Telegram de-dupe unavailable for key=%s: %s", key, str(exc)[:80])
+    return send_telegram_message(text)
 
 
 def _enqueue_dead_letter(text: str, error: str) -> None:

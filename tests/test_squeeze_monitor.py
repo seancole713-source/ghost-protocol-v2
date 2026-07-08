@@ -123,3 +123,46 @@ def test_get_squeeze_picks_exposes_fetch_failed_symbols(monkeypatch):
     board = sm.get_squeeze_picks()
     assert board["fetch_failed_symbols"] == ["SAP", "IQ", "TME"]
     assert board["symbols"] == 43  # mocked passthrough value, not live count
+
+
+def test_squeeze_alert_labels_radar_not_trade():
+    msg = format_squeeze_alert(
+        "SPCE",
+        "squeeze_active",
+        {"price": 4.52, "session_high": 4.92, "peak_move_pct": 7.2},
+        3.0,
+        {"squeeze_risk": "high"},
+    )
+    assert "SQUEEZE RADAR" in msg
+    assert "Radar only" in msg
+    assert "Ghost gated trade" in msg
+
+
+def test_squeeze_maybe_alert_suppresses_low_conf(monkeypatch):
+    import core.squeeze_monitor as sm
+    sent = []
+    monkeypatch.setattr(sm, "MIN_TELEGRAM_CONFIDENCE", 80)
+    monkeypatch.setattr(sm, "_send_telegram", lambda key, msg: sent.append((key, msg)))
+    ok = sm._maybe_alert(
+        "SPCE",
+        "squeeze_forming",
+        {"price": 4.52, "session_high": 4.6, "peak_move_pct": 3.1},
+        1.6,
+        {"squeeze_risk": "low"},
+    )
+    assert ok is False
+    assert sent == []
+
+
+def test_squeeze_alert_key_changes_only_on_material_reprice():
+    import core.squeeze_monitor as sm
+    monkeypatch_pct = sm.REPRICE_ALERT_PCT
+    try:
+        sm.REPRICE_ALERT_PCT = 1.5
+        k1 = sm._squeeze_alert_key("BABA", "squeeze_forming", 109.20, 113.57, 86)
+        k2 = sm._squeeze_alert_key("BABA", "squeeze_forming", 109.25, 113.62, 86)
+        k3 = sm._squeeze_alert_key("BABA", "squeeze_forming", 112.00, 116.48, 86)
+        assert k1 == k2
+        assert k1 != k3
+    finally:
+        sm.REPRICE_ALERT_PCT = monkeypatch_pct

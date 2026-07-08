@@ -18,6 +18,7 @@ from core.quiet import note_suppressed
 
 import asyncio
 import logging
+import math
 import os
 import time
 from datetime import datetime, timedelta, timezone
@@ -59,6 +60,8 @@ from core.market_hours import (
 _TIMEOUT = float(os.getenv("PRICE_PROVIDER_TIMEOUT_S", "8.0"))
 
 COOLDOWN_SEC = int(os.getenv("SQUEEZE_ALERT_COOLDOWN", "7200"))
+MIN_TELEGRAM_CONFIDENCE = int(os.getenv("SQUEEZE_TELEGRAM_MIN_CONFIDENCE", "50"))
+REPRICE_ALERT_PCT = float(os.getenv("SQUEEZE_REPRICE_ALERT_PCT", "1.5"))
 _last_alert: Dict[str, float] = {}
 _short_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 _SHORT_CACHE_TTL = 86400
@@ -219,7 +222,11 @@ def format_squeeze_alert(
     rvol: float,
     short_ctx: Dict[str, Any],
 ) -> str:
-    """Simple Telegram body: symbol, buy, sell, confidence %."""
+    """Telegram body for radar-only squeeze alerts.
+
+    These are NOT Ghost v3 high-conviction trades. The label is intentionally
+    explicit so low/medium-confidence radar cannot be mistaken for a real pick.
+    """
     buy, sell = squeeze_trade_levels(metrics["price"], metrics["session_high"], kind)
     conf = squeeze_confidence(
         metrics["peak_move_pct"],
@@ -228,11 +235,31 @@ def format_squeeze_alert(
         kind=kind,
     )
     return (
-        f"🚨 SQUEEZE — {symbol.upper()}\n"
+        f"📡 SQUEEZE RADAR — {symbol.upper()}\n"
+        f"Radar only — not a Ghost gated trade\n"
         f"Buy: ${buy:.2f}\n"
         f"Sell: ${sell:.2f}\n"
         f"Confidence: {conf}%"
     )
+
+
+def _squeeze_alert_key(symbol: str, kind: str, buy: float, sell: float, conf: int) -> str:
+    """Stable de-dupe key with coarse price buckets.
+
+    A same-symbol radar alert should not repeat every scan, but it may re-alert
+    when the setup materially reprices. Bucketing by REPRICE_ALERT_PCT gives that
+    balance without spamming tiny penny moves.
+    """
+    pct = max(0.1, REPRICE_ALERT_PCT) / 100.0
+    # Relative price buckets: nearby prices stay in the same bucket, but a
+    # material move (e.g. >~1.5%) produces a new key and can re-alert.
+    def _bucket(px: float) -> int:
+        px = max(0.01, float(px))
+        return int(math.floor(math.log(px) / math.log(1.0 + pct)))
+    buy_bucket = _bucket(buy)
+    sell_bucket = _bucket(sell)
+    conf_bucket = int(conf // 10) * 10
+    return f"squeeze:{symbol.upper()}:{kind}:b{buy_bucket}:s{sell_bucket}:c{conf_bucket}"
 
 
 def candidate_to_pick(
@@ -856,9 +883,20 @@ def _maybe_alert(
     rvol: float,
     short_ctx: Dict[str, Any],
 ) -> bool:
-    key = f"{symbol}:{kind}"
+    buy, sell = squeeze_trade_levels(metrics["price"], metrics["session_high"], kind)
+    conf = squeeze_confidence(
+        metrics["peak_move_pct"],
+        rvol,
+        short_risk=short_ctx.get("squeeze_risk"),
+        kind=kind,
+    )
+    if conf < MIN_TELEGRAM_CONFIDENCE:
+        LOGGER.info("[SqueezeMonitor] suppress low-confidence %s %s conf=%s", symbol, kind, conf)
+        return False
+    key = _squeeze_alert_key(symbol, kind, buy, sell, conf)
     now = time.time()
-    if now - _last_alert.get(key, 0) < COOLDOWN_SEC:
+    last = _last_alert.get(key)
+    if last is not None and now - last < COOLDOWN_SEC:
         return False
     _last_alert[key] = now
     msg = format_squeeze_alert(symbol, kind, metrics, rvol, short_ctx)
@@ -868,9 +906,9 @@ def _maybe_alert(
 
 def _send_telegram(key: str, message: str) -> None:
     try:
-        from core.telegram_hunter import send_telegram_message
+        from core.telegram import send_telegram_message_once
 
-        ok = send_telegram_message(message)
+        ok = send_telegram_message_once(key, message, cooldown_s=COOLDOWN_SEC)
         LOGGER.info("[SqueezeMonitor] Alert [%s]: %s", key, "OK" if ok else "FAILED")
     except Exception as exc:
         LOGGER.error("[SqueezeMonitor] Telegram failed [%s]: %s", key, exc)

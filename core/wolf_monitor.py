@@ -40,6 +40,12 @@ VOLUME_SPIKE_MULT = float(os.getenv("WOLF_VOLUME_SPIKE", "2.0"))      # 2× avg 
 PRICE_MOVE_PCT = float(os.getenv("WOLF_PRICE_MOVE_PCT", "3.0"))       # 3% intraday alert
 SQUEEZE_PRICE_PCT = float(os.getenv("WOLF_SQUEEZE_PRICE_PCT", "5.0")) # 5% + high vol
 SQUEEZE_VOL_MULT = float(os.getenv("WOLF_SQUEEZE_VOL", "2.5"))        # 2.5× avg vol
+PRICE_MOVE_BUCKETS = tuple(
+    float(x.strip())
+    for x in os.getenv("WOLF_PRICE_MOVE_BUCKETS", "3,5,8,10,12,15,20").split(",")
+    if x.strip()
+)
+PRICE_MOVE_BUCKET_COOLDOWN = int(os.getenv("WOLF_PRICE_MOVE_BUCKET_COOLDOWN_S", "86400"))
 
 # Cooldown: don't re-send same alert type within N seconds
 COOLDOWN: dict[str, int] = {
@@ -126,8 +132,9 @@ async def _run_checks() -> None:
         move_pct = (current_price - prior_close) / prior_close * 100
         if abs(move_pct) >= PRICE_MOVE_PCT:
             direction = "🟢 UP" if move_pct > 0 else "🔴 DOWN"
+            bucket_key = _price_move_bucket_key(move_pct) or "price_move"
             _maybe_send(
-                "price_move",
+                bucket_key,
                 f"⚡ WOLF Price Alert\n"
                 f"{direction} {abs(move_pct):.1f}% intraday\n"
                 f"Price: ${current_price:.2f}  (prior close: ${prior_close:.2f})"
@@ -262,21 +269,40 @@ def _sync_yf_fetch() -> Optional[dict]:
 
 def _maybe_send(key: str, message: str, cooldown_override: Optional[int] = None) -> None:
     """Send alert only if cooldown has passed."""
-    cooldown = cooldown_override or COOLDOWN.get(key, 1800)
+    cooldown = cooldown_override or (
+        PRICE_MOVE_BUCKET_COOLDOWN if key.startswith("price_move_") else COOLDOWN.get(key, 1800)
+    )
     now = time.time()
-    if now - _last_alert.get(key, 0) < cooldown:
+    last = _last_alert.get(key)
+    if last is not None and now - last < cooldown:
         return
-    _send(key, message)
+    _last_alert[key] = now
+    _send(key, message, cooldown_s=cooldown)
 
 
-def _send(key: str, message: str) -> None:
+def _price_move_bucket_key(move_pct: float) -> Optional[str]:
+    """Bucket price alerts so the same move does not spam all day.
+
+    Example: -8.8% and -8.9% both map to DOWN_8, then only re-alert when WOLF
+    crosses a higher bucket (DOWN_10, DOWN_12...) or the cooldown expires.
+    """
+    mag = abs(float(move_pct or 0))
+    passed = [b for b in PRICE_MOVE_BUCKETS if mag >= b]
+    if not passed:
+        return None
+    side = "UP" if move_pct > 0 else "DOWN"
+    bucket = max(passed)
+    return f"price_move_{side}_{bucket:g}"
+
+
+def _send(key: str, message: str, *, cooldown_s: Optional[int] = None) -> None:
     """Send Telegram alert and update last-sent timestamp."""
     _last_alert[key] = time.time()
     try:
-        from core.telegram_hunter import send_telegram_message
+        from core.telegram import send_telegram_message_once
         ts = datetime.now(tz=timezone.utc).strftime("%H:%M UTC")
         full_msg = f"{message}\n\n⏰ {ts}"
-        ok = send_telegram_message(full_msg)
+        ok = send_telegram_message_once(f"wolf_monitor:{key}", full_msg, cooldown_s=cooldown_s or COOLDOWN.get(key, 1800))
         LOGGER.info(f"[WolfMonitor] Alert sent [{key}]: {'OK' if ok else 'FAILED'}")
     except Exception as exc:
         LOGGER.error(f"[WolfMonitor] Telegram send failed [{key}]: {exc}")
