@@ -1962,6 +1962,26 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
                 return None, "precision_unproven"
             eff_min_p = max(min_p, float(pg.get("threshold", min_p)))
         if prob > eff_min_p:
+            # PR #155: proven-skill blocker. Even a model with a calibrated
+            # threshold can be a base-rate rider or symbol-specific
+            # overconfidence (GME/NOK/XPO class). Only once the model would
+            # otherwise fire do we require the symbol's forward shadow track
+            # record to clear a basic TP-rate + expectancy bar. This preserves
+            # precise diagnostics: below-threshold signals still return
+            # prob_low, while otherwise-valid fires can be blocked as
+            # skill_unproven. This gate only tightens; it never touches shadow
+            # scoring, wallet research, or research-mode probes.
+            if not research_mode:
+                try:
+                    from core.proven_skill_gate import symbol_review
+                    skill = symbol_review(symbol)
+                except Exception as _skill_e:
+                    skill = {"ok": False, "symbol": symbol, "fail_reason": "skill_exception",
+                             "error": str(_skill_e)[:120]}
+                if scores is not None:
+                    scores["proven_skill_gate_" + direction.lower()] = skill
+                if not skill.get("ok"):
+                    return None, "skill_unproven"
             q_hat = meta.get("conformal_q_hat")
             if q_hat is not None and float(q_hat) > 0:
                 from core.conformal_calibration import conformal_confidence
@@ -2019,6 +2039,40 @@ def get_model_status():
                 model_keys.add(k.replace("model_", ""))
             symbols = {}
             stored = {}
+            skill_cache = {}
+            def _status_skill_review(symbol_name: str) -> dict:
+                """Mirror runtime proven-skill gate using this endpoint's DB cursor."""
+                sym_u = (symbol_name or "").upper()
+                if sym_u in skill_cache:
+                    return skill_cache[sym_u]
+                try:
+                    from core.proven_skill_gate import enabled as _skill_enabled, review as _skill_review
+                    if not _skill_enabled():
+                        out = {"ok": True, "disabled": True, "symbol": sym_u}
+                    else:
+                        cur.execute(
+                            """
+                            SELECT
+                              SUM(CASE WHEN outcome IN ('WIN','LOSS') THEN 1 ELSE 0 END) AS resolved,
+                              SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) AS wins,
+                              AVG(CASE WHEN outcome IN ('WIN','LOSS') THEN pnl_pct ELSE NULL END) AS avg_pnl
+                            FROM ghost_shadow_outcomes
+                            WHERE symbol=%s AND outcome IS NOT NULL
+                            """,
+                            (sym_u,),
+                        )
+                        row = cur.fetchone()
+                        out = _skill_review(
+                            sym_u,
+                            resolved=int((row and row[0]) or 0),
+                            wins=int((row and row[1]) or 0),
+                            avg_pnl_pct=(row[2] if row else None),
+                        )
+                except Exception as _skill_e:
+                    out = {"ok": False, "symbol": sym_u, "fail_reason": "skill_unavailable",
+                           "error": str(_skill_e)[:120]}
+                skill_cache[sym_u] = out
+                return out
             for key, val in rows:
                 raw_key = key.replace('meta_', '')
                 # Phase 2: directional keys like WOLF_up, WOLF_down
@@ -2089,6 +2143,15 @@ def get_model_status():
                     block = f"meta_gate:wf_edge {wf_edge_f*100:.1f}% < {_v3_min_edge()*100:.1f}%"
                 elif not summary["precision_ok"]:
                     block = "precision_unproven"
+                else:
+                    # PR #155: keep /api/v3/status honest with runtime firing.
+                    # If runtime would block an otherwise-valid UP model because
+                    # the symbol lacks forward shadow skill, status must not call
+                    # it fireable_now. DOWN is shadow-disabled by default above.
+                    skill = _status_skill_review(sym) if direction == "UP" else {"ok": True}
+                    summary["proven_skill_gate"] = skill
+                    if not skill.get("ok"):
+                        block = "skill_unproven"
                 summary["fireable_now"] = block is None
                 if block:
                     summary["fire_block_reason"] = block

@@ -127,6 +127,7 @@ def test_fleet_summary_counts(monkeypatch):
     monkeypatch.setattr(se, "model_serve_guard", lambda m: None)
     monkeypatch.setattr(se, "get_last_train_gate_summary", lambda: {})
     monkeypatch.setenv("V3_DOWN_SIGNALS_ENABLED", "0")
+    monkeypatch.setenv("V3_PROVEN_SKILL_GATE", "0")  # isolate fleet-summary legacy counts
     st = se.get_model_status()
     fs = st["fleet_summary"]
     assert fs["fireable_now"] == 1 and fs["fireable_models"] == ["GOOD_up"]

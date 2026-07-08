@@ -51,6 +51,9 @@ def _status_with(monkeypatch, metas):
     monkeypatch.setattr(db, "db_conn", lambda: _Conn())
     monkeypatch.setattr(se, "model_serve_guard", lambda m: None)
     monkeypatch.setattr(se, "get_last_train_gate_summary", lambda: {})
+    # Most PR #135 tests isolate the static meta/precision checks; PR #155
+    # proven-skill status mirroring has its own explicit test below.
+    monkeypatch.setenv("V3_PROVEN_SKILL_GATE", "0")
     return se.get_model_status()
 
 
@@ -120,3 +123,25 @@ def test_wilson_lower_bound_math():
     margin = z * ((p * (1 - p) + z * z / (4 * n)) / n) ** 0.5
     lb = (center - margin) / denom * 100
     assert 10.0 < lb < 12.0
+
+
+def test_status_mirrors_runtime_proven_skill_gate(monkeypatch):
+    class _Conn:
+        def cursor(self):
+            return _Cur({"GME_up": _meta()})
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+    import core.db as db
+    monkeypatch.setattr(db, "db_conn", lambda: _Conn())
+    monkeypatch.setattr(se, "model_serve_guard", lambda m: None)
+    monkeypatch.setattr(se, "get_last_train_gate_summary", lambda: {})
+    monkeypatch.setenv("V3_PROVEN_SKILL_GATE", "1")
+    # Fake cursor has no shadow outcome rows; status must fail closed and avoid
+    # claiming the model is fireable when runtime would block it.
+    st = se.get_model_status()
+    s = st["stored_symbols"]["GME_up"]
+    assert s["fireable_now"] is False
+    assert s["fire_block_reason"] == "skill_unproven"
+    assert s["proven_skill_gate"]["fail_reason"].startswith("resolved<")

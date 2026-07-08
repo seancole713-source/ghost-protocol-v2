@@ -52,6 +52,7 @@ def _patch_gates(monkeypatch):
     for k, v in {"V3_MIN_WIN_PROBA": "0.55", "V3_MIN_EDGE": "0.0",
                  "V3_MIN_HOLDOUT_ACC": "0.0", "V3_MIN_WF_ACC_MEAN": "0.0"}.items():
         monkeypatch.setenv(k, v)
+    monkeypatch.setenv("V3_PROVEN_SKILL_GATE", "0")
 
 
 def _patch_models(monkeypatch, up_p=None, down_p=None):

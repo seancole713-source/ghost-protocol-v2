@@ -3043,6 +3043,7 @@ def test_predict_live_ex_journals_full_feature_vector(monkeypatch):
     # Hermetic: kill the live premarket overlay so the real symbol price can't
     # stomp the synthetic fixture when CI runs during 4:00-9:30 AM CT.
     monkeypatch.setenv("GHOST_PREMARKET_SCAN", "0")
+    monkeypatch.setenv("V3_PROVEN_SKILL_GATE", "0")
     for k, v in {"V3_MIN_WIN_PROBA": "0.55", "V3_MIN_EDGE": "0.0",
                  "V3_MIN_HOLDOUT_ACC": "0.0", "V3_MIN_WF_ACC_MEAN": "0.0"}.items():
         monkeypatch.setenv(k, v)

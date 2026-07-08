@@ -152,6 +152,10 @@ def _patch(monkeypatch, up_p, precision_gate):
     for k, v in {"V3_MIN_WIN_PROBA": "0.55", "V3_MIN_EDGE": "0.0",
                  "V3_MIN_HOLDOUT_ACC": "0.0", "V3_MIN_WF_ACC_MEAN": "0.0"}.items():
         monkeypatch.setenv(k, v)
+    # Most precision-gate tests isolate precision behavior; explicit PR #155
+    # tests below exercise the proven-skill blocker.
+    import core.proven_skill_gate as _skill
+    monkeypatch.setattr(_skill, "symbol_review", lambda sym: {"ok": True, "symbol": sym, "test": True})
 
 
 def test_unproven_model_cannot_fire(monkeypatch):
@@ -283,3 +287,29 @@ def test_no_global_pool_keeps_symbol_blocked(monkeypatch):
     sig, reason = _se.predict_live_ex("WOLF", "stock")
     assert sig is None
     assert reason == "precision_unproven"
+
+
+def test_proven_skill_gate_blocks_otherwise_valid_fire(monkeypatch):
+    import core.proven_skill_gate as _skill
+    monkeypatch.delenv("V3_PRECISION_GATE", raising=False)
+    _patch(monkeypatch, up_p=0.72,
+           precision_gate={"ok": True, "threshold": 0.68, "target": 0.70})
+    monkeypatch.setattr(_skill, "symbol_review", lambda sym: {
+        "ok": False, "symbol": sym, "resolved": 30, "wins": 10,
+        "tp_rate": 0.3333, "fail_reason": "tp_rate<0.55 (0.3333)",
+    })
+    scores = {}
+    sig, reason = _se.predict_live_ex("WOLF", "stock", scores=scores)
+    assert sig is None
+    assert reason == "skill_unproven"
+    assert scores["proven_skill_gate_up"]["fail_reason"].startswith("tp_rate<")
+
+
+def test_research_mode_bypasses_proven_skill_gate(monkeypatch):
+    import core.proven_skill_gate as _skill
+    monkeypatch.delenv("V3_PRECISION_GATE", raising=False)
+    _patch(monkeypatch, up_p=0.72,
+           precision_gate={"ok": True, "threshold": 0.68, "target": 0.70})
+    monkeypatch.setattr(_skill, "symbol_review", lambda sym: {"ok": False, "fail_reason": "x"})
+    sig, reason = _se.predict_live_ex("WOLF", "stock", research_mode=True)
+    assert sig is not None and sig[0] == "UP"

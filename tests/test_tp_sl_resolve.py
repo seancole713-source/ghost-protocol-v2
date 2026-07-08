@@ -93,6 +93,7 @@ def test_feature_asof_on_live_features(monkeypatch):
     # Hermetic: kill the live premarket overlay (time-of-day flake — real
     # symbol price stomps the synthetic fixture during 4:00-9:30 AM CT).
     monkeypatch.setenv("GHOST_PREMARKET_SCAN", "0")
+    monkeypatch.setenv("V3_PROVEN_SKILL_GATE", "0")
     for k, v in {"V3_MIN_WIN_PROBA": "0.55", "V3_MIN_EDGE": "0.0",
                  "V3_MIN_HOLDOUT_ACC": "0.0", "V3_MIN_WF_ACC_MEAN": "0.0"}.items():
         monkeypatch.setenv(k, v)
@@ -129,6 +130,7 @@ def test_confidence_equals_up_prob(monkeypatch):
     # Hermetic: kill the live premarket overlay (time-of-day flake — real
     # symbol price stomps the synthetic fixture during 4:00-9:30 AM CT).
     monkeypatch.setenv("GHOST_PREMARKET_SCAN", "0")
+    monkeypatch.setenv("V3_PROVEN_SKILL_GATE", "0")
     for k, v in {"V3_MIN_WIN_PROBA": "0.55", "V3_MIN_EDGE": "0.0",
                  "V3_MIN_HOLDOUT_ACC": "0.0", "V3_MIN_WF_ACC_MEAN": "0.0"}.items():
         monkeypatch.setenv(k, v)
