@@ -156,4 +156,4 @@ def test_v1_still_registered_and_frozen_alongside_v2(monkeypatch):
     monkeypatch.setattr(seas, "seasonal_window_stats",
                         lambda s, **k: {"available": False, "reason": "test"})
     preds = run_shadow_models(_report())
-    assert len(preds) == 11
+    assert len(preds) == 12

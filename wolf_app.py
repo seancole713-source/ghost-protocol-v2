@@ -23,7 +23,7 @@ logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 # missing from Railway logs after a deploy, the container is stale (the
 # Procfile boot echo is the shell-level twin of this check).
 LOGGER.info(
-    "[wolf_app] BOOT_BANNER PR152_MOMENTUM_BRAIN "
+    "[wolf_app] BOOT_BANNER PR153_WATCHER_MOMENTUM_V2 "
     "DEPLOY_VERSION=%s GIT_SHA=%s DEPLOY_ID=%s",
     os.getenv("DEPLOY_VERSION", "unset"),
     os.getenv("RAILWAY_GIT_COMMIT_SHA", "unset"),
@@ -1472,6 +1472,17 @@ async def lifespan(app: FastAPI):
             LOGGER.warning("shadow outcomes job failed: %s", str(_e)[:80])
 
     scheduler.register("shadow_outcomes", _shadow_outcomes_job, interval_s=3600)
+    # PR #153: Watcher notebook — append-only observability snapshots.
+    # This writes only ghost_watcher_snapshots and never influences decisions.
+    from core.watcher import snapshot_watcher as _watcher_snapshot
+
+    def _watcher_job():
+        try:
+            _watcher_snapshot(days=30)
+        except Exception as _e:
+            LOGGER.warning("watcher snapshot job failed: %s", str(_e)[:100])
+
+    scheduler.register("watcher", _watcher_job, interval_s=900)
     # Coverage maintenance: if too few loadable v3 models, run rate-limited retrain.
     scheduler.register(
         "coverage_maintenance",
@@ -3058,7 +3069,7 @@ def _record_v3_train_state(**fields) -> None:
 
 # PR #19 deploy-version constant. Bump on every "did Railway pick up
 # the new code?" PR so /api/_version reveals the truth in one curl.
-_RUNNING_PR_VERSION = 152
+_RUNNING_PR_VERSION = 153
 
 
 def _deploy_meta() -> dict:
@@ -3153,6 +3164,8 @@ from api.routes_ghost_system import (  # noqa: E402,F401 — facade re-exports
     ghost_regime_endpoint,
     ghost_score_spec_endpoint,
     ghost_sentiment_endpoint,
+    watcher_summary_endpoint,
+    watcher_snapshots_endpoint,
     shadow_stats_endpoint,
     squeeze_daily_log_endpoint,
     squeeze_picks_endpoint,

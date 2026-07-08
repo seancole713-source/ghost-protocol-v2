@@ -168,6 +168,31 @@ def ghost_sentiment_endpoint(symbol: str = "WOLF", limit: int = 20):
         return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
 
 
+
+
+@router.get("/api/watcher/summary")
+def watcher_summary_endpoint(days: int = 30, limit: int = 5000):
+    """Read-only Watcher: calibration, blind spots, and shadow-brain evidence.
+
+    The Watcher is a notebook, not a control loop; it never mutates Ghost.
+    """
+    try:
+        from core.watcher import watcher_summary
+        return watcher_summary(days=days, limit=limit)
+    except Exception as e:
+        return JSONResponse({"ok": False, "read_only": True, "error": str(e)[:200]}, status_code=500)
+
+
+@router.get("/api/watcher/snapshots")
+def watcher_snapshots_endpoint(limit: int = 20):
+    """Read Watcher's own append-only notebook rows."""
+    try:
+        from core.watcher import latest_watcher_snapshots
+        return latest_watcher_snapshots(limit=limit)
+    except Exception as e:
+        return JSONResponse({"ok": False, "read_only": True, "error": str(e)[:200]}, status_code=500)
+
+
 @router.get("/api/shadow-stats")
 def shadow_stats_endpoint(days: int = 30):
     """Per-symbol virtual hit-rate scoreboard (shadow scoring). Read-only.

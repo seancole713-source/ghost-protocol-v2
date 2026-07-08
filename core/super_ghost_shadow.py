@@ -369,6 +369,47 @@ def momentum_shadow(report: Dict[str, Any]) -> Dict[str, Any]:
                         reason=reason, drivers=[m])
 
 
+
+
+def momentum_shadow_v2(report: Dict[str, Any]) -> Dict[str, Any]:
+    """Trend-following v2 (PR #153) — richer, still shadow-only.
+
+    v1 is frozen as a baseline. v2 adds relative strength, pullback/extension
+    discrimination, and regime-like trend penalties. It must earn promotion via
+    resolved shadow profiles before any real firing path can use it.
+    """
+    sym = (report.get("symbol") or "").upper()
+    try:
+        from core.momentum import compute_momentum_v2
+        m = compute_momentum_v2(sym)
+    except Exception as exc:
+        m = {"available": False, "version": "v2", "reason": str(exc)[:80]}
+    direction, conf = "HOLD", 0.50
+    if not m.get("available"):
+        reason = f"Momentum v2 unavailable: {m.get('reason', 'no data')}."
+    else:
+        score = int(m.get("score") or 0)
+        raw = int(m.get("raw_score") or score)
+        penalties = [k for k, v in (m.get("penalties") or {}).items() if v]
+        setup = m.get("setup") or "hold"
+        if score >= 6 and setup == "trend_continuation":
+            direction = "UP"
+            # Confidence capped below production fire threshold; profile earns trust later.
+            conf = round(_clamp(0.52 + score * 0.028, 0.54, 0.69), 3)
+            fired = [k for k, v in (m.get("signals") or {}).items() if v]
+            reason = (f"Trend-following v2 continuation: score {score}/8 "
+                      f"(raw {raw}, setup {setup}; {', '.join(fired)}); "
+                      f"20d {m.get('ret_20d_pct')}%, rel20 {m.get('relative_strength_20d')}, "
+                      f"ADX {m.get('adx')}. Shadow-only.")
+        elif score >= 5:
+            reason = (f"Momentum v2 watchlist only: score {score}/8 setup {setup}; "
+                      f"penalties={penalties or 'none'}; wait for forward proof.")
+        else:
+            reason = (f"No v2 trend entry ({score}/8 after penalties; raw {raw}); "
+                      f"penalties={penalties or 'none'}.")
+    return _base_shadow("momentum_shadow_v2", "momentum", direction, conf, report,
+                        reason=reason, drivers=[m])
+
 def seasonal_shadow(report: Dict[str, Any]) -> Dict[str, Any]:
     """Calendar-seasonality brain (PR #133).
 
@@ -435,6 +476,7 @@ SHADOW_MODELS: Tuple[ShadowModel, ...] = (
     ShadowModel("seasonal_shadow_v1", "seasonal", "Calendar-seasonality lean from the symbol's own ~4-year record for the current 5-day window.", seasonal_shadow),
     ShadowModel("news_shadow_v2", "news", "Structured-event news brain: typed, deduplicated, point-in-time events (v1 frozen as baseline).", news_event_shadow),
     ShadowModel("momentum_shadow_v1", "momentum", "Trend/breakout brain: leans UP on confirmed multi-week bullish runs (the ODD-style climb the base engine is blind to).", momentum_shadow),
+    ShadowModel("momentum_shadow_v2", "momentum", "Trend-following v2: multi-timeframe run detection with relative-strength, pullback, extension, and regime penalties; shadow-only until proven.", momentum_shadow_v2),
 )
 
 
