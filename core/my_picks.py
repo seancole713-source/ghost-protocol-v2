@@ -154,4 +154,25 @@ def build_my_picks_payload() -> Dict[str, Any]:
             entry["live_price"] = round(float(p), 4) if p else None
         except Exception:
             entry["live_price"] = None
+        # Fallback: if no ledger row exists, generate a live Super Ghost report
+        # so off-watchlist symbols like DOMO still show a Ghost read.
+        if not entry.get("ledger"):
+            try:
+                from core.super_ghost import build_super_ghost
+                sg = build_super_ghost(entry["symbol"], ai=False)
+                pred = sg.get("prediction") or {}
+                risk = sg.get("risk_plan") or {}
+                entry["ledger"] = {
+                    "created_at": int(time.time()),
+                    "direction": pred.get("direction"),
+                    "action": pred.get("action"),
+                    "confidence": pred.get("confidence"),
+                    "grade": pred.get("accuracy_grade"),
+                    "reference_price": risk.get("entry"),
+                    "target_price": risk.get("target_price"),
+                    "stop_loss": risk.get("stop_loss"),
+                    "regime": (sg.get("market_regime") or {}).get("label"),
+                }
+            except Exception:
+                pass
     return {"ok": True, "count": len(picks), "picks": picks, "ts": now}
