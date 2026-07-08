@@ -18,11 +18,12 @@ _WATCHLIST_SKIP = frozenset({"GHOST", "TEST"})
 # Official live watchlist — Ghost scans and forecasts these symbols only.
 # Sourced from investor watchlist (mobile app screenshots, Jun 2026).
 OFFICIAL_WATCHLIST: Tuple[str, ...] = (
-    "ABCL", "AI", "AMC", "ARCT", "ARDT", "BB", "BILL", "BMBL", "CLNE", "CVNA",
-    "DJT", "DUOL", "FLNC", "GME", "HIMS", "HOOD", "IQ", "ITRI", "LCID", "LU",
-    "LULU", "NOK", "ODD", "OPK", "OPTU", "PFE", "PLTK", "PLUG", "RIG",
-    "RIOT", "SABR", "SAP", "SNAP", "SOUN", "SPCE", "STUB", "TAL", "TGTX", "TLRY",
-    "TME", "WOLF", "XPO", "YMM",
+    "ABCL", "AI", "AMC", "ARCT", "ARDT", "BB", "BILL", "BMBL", "BTGO", "CLNE",
+    "CVNA", "DJT", "DOMO", "DUOL", "FLNC", "GME", "HIMS", "HOOD", "IQ", "ITRI",
+    "LCID", "LU", "LULU", "NOK", "ODD", "OPK", "OPTU", "PFE", "PLTK", "PLUG",
+    "RIG", "RIOT", "SABR", "SAP", "SNAP", "SOUN", "SPCE", "STUB", "TAL", "TGTX",
+    "TLRY", "TME", "WOLF", "XPO", "YMM",
+    # BTGO (BitGo, NYSE, IPO 2026-01) + DOMO (Domo) added 2026-07-08 per operator.
 )
 OFFICIAL_WATCHLIST_CSV = ",".join(OFFICIAL_WATCHLIST)
 

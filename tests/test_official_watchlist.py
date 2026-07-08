@@ -6,9 +6,9 @@ from config.symbols import (
 )
 
 
-def test_official_watchlist_has_43_symbols():
-    assert len(OFFICIAL_WATCHLIST) == 43
-    assert len(set(OFFICIAL_WATCHLIST)) == 43
+def test_official_watchlist_has_45_symbols():
+    assert len(OFFICIAL_WATCHLIST) == 45
+    assert len(set(OFFICIAL_WATCHLIST)) == 45
 
 
 def test_official_watchlist_excludes_delisted_rdfn():
@@ -22,6 +22,7 @@ def test_official_watchlist_includes_screenshot_symbols():
         "HIMS", "HOOD", "SOUN", "BB", "ARCT", "LCID", "RIOT", "PLUG", "ABCL",
         "SAP", "TAL", "PLTK", "GME", "RIG", "TLRY", "BMBL", "SNAP", "DJT", "LU",
         "PFE", "ARDT", "CVNA", "BILL", "DUOL", "XPO", "STUB", "TGTX", "ITRI",
+        "DOMO", "BTGO",
     }
     assert expected == set(OFFICIAL_WATCHLIST)
 

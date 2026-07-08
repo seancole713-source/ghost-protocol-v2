@@ -122,4 +122,4 @@ def test_get_squeeze_picks_exposes_fetch_failed_symbols(monkeypatch):
     monkeypatch.setattr(sm, "_alert_history", [])
     board = sm.get_squeeze_picks()
     assert board["fetch_failed_symbols"] == ["SAP", "IQ", "TME"]
-    assert board["symbols"] == 43
+    assert board["symbols"] == 43  # mocked passthrough value, not live count
