@@ -13,7 +13,7 @@ RULES:
   7. SESSION_LOG is the handover log — read it to understand what happened in the
      last session and what's in flight. Update it at the end of every session.
 
-LAST UPDATED: 2026-07-08 — PR #156 overconfidence calibration gate LIVE-VERIFIED after deploy
+LAST UPDATED: 2026-07-08 — PR #157 daily report endpoint; live verification required after deploy
 """
 
 # ============================================================
@@ -32,7 +32,7 @@ SESSION_LOG = {
     "production": {
         "url": "https://ghost-protocol-v2-production.up.railway.app",
         "railway_project": "tender-benevolence",
-        "pr_version": 156,
+        "pr_version": 157,
         "git_sha": "938d635 (source-backed, live-verified 2026-07-08 via /api/_version; PR #156 overconfidence calibration gate)",
         "app_version": "2.5.0",
         "health": "95/100 (live-verified 2026-07-08 after PR #156 deploy; status healthy)",
