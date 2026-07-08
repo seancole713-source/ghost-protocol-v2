@@ -41,7 +41,7 @@ def _safe_perf(start_ts: float) -> int:
 
 
 # Target denominator for "how much of the reliability surface is instrumented" (raise as checks grow).
-BASELINE_MONITORING_DIMENSIONS = 36
+BASELINE_MONITORING_DIMENSIONS = 44
 
 
 def _required_route_paths() -> List[str]:
@@ -487,7 +487,7 @@ def run_health_audit(
                 )
             )
 
-    # 6) Basic frontend static surface check (server-side).
+    # 6) Basic frontend static surface check (server-side) — cockpit.
     cockpit_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "cockpit.html")
     try:
         with open(cockpit_path, "r", encoding="utf-8") as f:
@@ -540,6 +540,257 @@ def run_health_audit(
                 False,
                 "not attempted",
                 "frontend",
+            )
+        )
+
+    # 6b) Frontend static surface check — ghost_console.html (picks page).
+    console_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ghost_console.html")
+    try:
+        with open(console_path, "r", encoding="utf-8") as f:
+            chtml = f.read()
+        console_tokens = [
+            "escHtml",           # wallet tab JS alias (prevents ReferenceError)
+            "renderDailyTable",  # Today tab EOD mirror
+            "renderWeekly",      # This week tab
+            "renderHistoryTable",
+            "renderMirror",
+            "loadMyPicks",
+            "loadWallet",
+            "renderHealth",
+            "deduped",           # deduplication logic (prevents duplicate rows)
+            "myPicksList",
+            "wTotal",            # wallet total value
+            "healthFull",
+            "section-overview",
+            "section-today",
+            "section-week",
+        ]
+        cmissing = [tok for tok in console_tokens if tok not in chtml]
+        if not cmissing:
+            findings.append(
+                _finding(
+                    "PASS",
+                    "frontend:console_static",
+                    "Key console UI handlers, dedup logic, and escHtml alias present in ghost_console.html",
+                    "medium",
+                    False,
+                    "not needed",
+                    "frontend",
+                )
+            )
+        else:
+            findings.append(
+                _finding(
+                    "FAIL",
+                    "frontend:console_static",
+                    "Missing expected console UI tokens: " + ",".join(cmissing),
+                    "high",
+                    False,
+                    "not attempted",
+                    "frontend",
+                )
+            )
+    except Exception as e:
+        findings.append(
+            _finding(
+                "FAIL",
+                "frontend:console_static",
+                f"Unable to read ghost_console.html: {str(e)[:160]}",
+                "high",
+                False,
+                "not attempted",
+                "frontend",
+            )
+        )
+
+    # 6c) API response quality — squeeze daily-log deduplication check.
+    try:
+        import requests as _requests
+        base = os.getenv("APP_BASE_URL", "").strip()
+        if not base:
+            # Try to infer from Railway or localhost
+            port = os.getenv("PORT", "8000")
+            base = f"http://localhost:{port}"
+        sq_url = f"{base}/api/squeeze/daily-log?days=3"
+        sq_resp = _requests.get(sq_url, timeout=15)
+        if sq_resp.status_code == 200:
+            sq_data = sq_resp.json()
+            sq_rows = sq_data.get("rows", []) if isinstance(sq_data, dict) else []
+            if sq_rows:
+                # Check for duplicate symbol+buy+sell+stop combos (candidate + telegram source)
+                seen = set()
+                dups = []
+                for r in sq_rows:
+                    key = f"{r.get('symbol')}|{r.get('buy')}|{r.get('sell')}|{r.get('stop')}"
+                    if key in seen:
+                        dups.append(key)
+                    seen.add(key)
+                if dups:
+                    findings.append(
+                        _finding(
+                            "FAIL",
+                            "api:squeeze_daily_log_duplicates",
+                            f"Found {len(dups)} duplicate symbol+buy+sell+stop entries in squeeze daily-log (candidate+telegram source duplication)",
+                            "high",
+                            False,
+                            "not attempted",
+                            "api_availability",
+                        )
+                    )
+                else:
+                    findings.append(
+                        _finding(
+                            "PASS",
+                            "api:squeeze_daily_log_duplicates",
+                            f"No duplicate entries in {len(sq_rows)} squeeze daily-log rows",
+                            "medium",
+                            False,
+                            "not needed",
+                            "api_availability",
+                        )
+                    )
+                # Check that resolved rows have session_open populated
+                resolved = [r for r in sq_rows if r.get("outcome") is not None]
+                missing_session = [r for r in resolved if r.get("session_open") is None]
+                if missing_session and resolved:
+                    findings.append(
+                        _finding(
+                            "FAIL",
+                            "api:squeeze_daily_log_session_data",
+                            f"{len(missing_session)}/{len(resolved)} resolved rows have null session_open (missing OHLC data)",
+                            "high",
+                            False,
+                            "not attempted",
+                            "api_availability",
+                        )
+                    )
+                else:
+                    findings.append(
+                        _finding(
+                            "PASS",
+                            "api:squeeze_daily_log_session_data",
+                            f"All {len(resolved)} resolved rows have session_open populated",
+                            "medium",
+                            False,
+                            "not needed",
+                            "api_availability",
+                        )
+                    )
+            else:
+                findings.append(
+                    _finding(
+                        "PASS",
+                        "api:squeeze_daily_log_duplicates",
+                        "No squeeze daily-log rows to check (engine may be silent)",
+                        "low",
+                        False,
+                        "not needed",
+                        "api_availability",
+                    )
+                )
+        else:
+            findings.append(
+                _finding(
+                    "FAIL",
+                    "api:squeeze_daily_log_duplicates",
+                    f"Squeeze daily-log returned HTTP {sq_resp.status_code}",
+                    "high",
+                    False,
+                    "not attempted",
+                    "api_availability",
+                )
+            )
+    except Exception as e:
+        findings.append(
+            _finding(
+                "FAIL",
+                "api:squeeze_daily_log_duplicates",
+                f"Squeeze daily-log quality check failed: {str(e)[:160]}",
+                "medium",
+                False,
+                "not attempted",
+                "api_availability",
+            )
+        )
+
+    # 6d) API response quality — Super Ghost history deduplication check.
+    try:
+        import requests as _requests2
+        base2 = os.getenv("APP_BASE_URL", "").strip()
+        if not base2:
+            port2 = os.getenv("PORT", "8000")
+            base2 = f"http://localhost:{port2}"
+        sg_url = f"{base2}/api/wolf/super-ghost/history?symbol=WOLF&limit=30"
+        sg_resp = _requests2.get(sg_url, timeout=15)
+        if sg_resp.status_code == 200:
+            sg_data = sg_resp.json()
+            sg_rows = sg_data.get("rows", []) if isinstance(sg_data, dict) else []
+            if len(sg_rows) > 1:
+                seen_sg = set()
+                sg_dups = []
+                for r in sg_rows:
+                    key = f"{r.get('symbol')}|{r.get('direction')}|{r.get('reference_price')}"
+                    if key in seen_sg:
+                        sg_dups.append(key)
+                    seen_sg.add(key)
+                if sg_dups:
+                    findings.append(
+                        _finding(
+                            "FAIL",
+                            "api:super_ghost_history_duplicates",
+                            f"Found {len(sg_dups)} duplicate symbol+direction+ref_price entries in Super Ghost history",
+                            "high",
+                            False,
+                            "not attempted",
+                            "api_availability",
+                        )
+                    )
+                else:
+                    findings.append(
+                        _finding(
+                            "PASS",
+                            "api:super_ghost_history_duplicates",
+                            f"No duplicate entries in {len(sg_rows)} Super Ghost history rows",
+                            "medium",
+                            False,
+                            "not needed",
+                            "api_availability",
+                        )
+                    )
+            else:
+                findings.append(
+                    _finding(
+                        "PASS",
+                        "api:super_ghost_history_duplicates",
+                        "Only 1 Super Ghost history row — nothing to deduplicate",
+                        "low",
+                        False,
+                        "not needed",
+                        "api_availability",
+                    )
+                )
+        else:
+            findings.append(
+                _finding(
+                    "FAIL",
+                    "api:super_ghost_history_duplicates",
+                    f"Super Ghost history returned HTTP {sg_resp.status_code}",
+                    "high",
+                    False,
+                    "not attempted",
+                    "api_availability",
+                )
+            )
+    except Exception as e:
+        findings.append(
+            _finding(
+                "FAIL",
+                "api:super_ghost_history_duplicates",
+                f"Super Ghost history quality check failed: {str(e)[:160]}",
+                "medium",
+                False,
+                "not attempted",
+                "api_availability",
             )
         )
 
