@@ -13,7 +13,7 @@ RULES:
   7. SESSION_LOG is the handover log — read it to understand what happened in the
      last session and what's in flight. Update it at the end of every session.
 
-LAST UPDATED: 2026-07-08 — PR #151 deployed/live-verified: wallet proven-skill filter + shadow resolver expiry cleanup
+LAST UPDATED: 2026-07-08 — PR #152 live + master-agent final verification; PR #151 wallet/shadow fixes included
 """
 
 # ============================================================
@@ -32,23 +32,24 @@ SESSION_LOG = {
     "production": {
         "url": "https://ghost-protocol-v2-production.up.railway.app",
         "railway_project": "tender-benevolence",
-        "pr_version": 151,
-        "git_sha": "bd9df0e (origin/main HEAD; live deploy fde3e3f5)",
+        "pr_version": 152,
+        "git_sha": "source-backed PR #152 line (verify exact live SHA via /api/_version before acting; PR #151+152 code included)",
         "app_version": "2.5.0",
-        "health": "95/100 (live-verified 2026-07-08 Fugu: /health score=95 after PR #151)",
+        "health": "95/100 (live-verified 2026-07-08 Fugu: /health score=95 after PR #152)",
         "degraded": False,
-        "tests": "767 passed, 3 skipped (python3.13 -m pytest, PR #151 pre-deploy run 2026-07-08 Fugu)",
+        "tests": "773 passed, 3 skipped (python3.13 -m pytest, PR #152 final verification run 2026-07-08 Fugu)",
         "playwright_e2e": "console-audit.spec.ts 24/24 desktop+mobile (Fugu, 2026-07-08) — verifies every tab RENDERS with real data & zero JS/API errors; does NOT verify prediction accuracy (a passing tab can show 'Grade F / NO EDGE' honestly). Suite lives in e2e/console-audit.spec.ts.",
         "accuracy_contract": "70% target, balanced mode",
         "models_trained": "126 stored, 46 serveable, 0 fireable_now (edge unproven, gate closed) — live /api/v3/status 2026-07-08",
-        "wallet": "paper wallet live+trading, total_value ~$9,897 (-1.03% MTD), 15 open shadow positions, 16 closed (8 wins), monthly goal $20k (auto month-reset); PR #151 shadow filters live: min_prob=0.55, min_tp_rate=0.55, min_resolved=10 — live /api/wallet 2026-07-08",
+        "wallet": "paper wallet live+trading, total_value ~$9,880 (-1.20% MTD), 15 open shadow positions, 16 closed (8 wins), monthly goal $20k (auto month-reset); PR #151 shadow filters live: min_prob=0.55, min_tp_rate=0.55, min_resolved=10 — live /api/wallet 2026-07-08 after PR #152",
         "breakers": "yfinance + alpaca cycling open — not degraded",
         "frontend_verified": "Fugu's dedup fixes (dc7c4f7) CONFIRMED live 2026-07-08 (dedup JS present in live-served ghost_console.html); the 24/24 e2e ran against real production. _pr_version stayed 147 because these commits didn't bump the constant.",
-        "verified_by_fugu_2026_07_08": "Live reconciliation + PR #151 verification vs public API + local build. CONFIRMED: _pr_version=151 (git_sha bd9df0e, deploy fde3e3f5) after deploy; /health=95; watchlist=74 symbols; 10 shadow brains; gate CLOSED (fireable_now=0, silence CORRECT); kill-status historical win_rate/brier RED but enforcement_window insufficient so engine NOT paused; wallet honest & underwater, with PR #151 filters live (shadow_min_prob=0.55, shadow_skill_min_tp_rate=0.55, shadow_skill_min_resolved=10); local suite 767 passed/3 skipped + import-integrity PASS. Shadow resolver backlog fixed live: before PR #151 /api/shadow-stats had 31 pending with oldest expired 2026-06-15 and cycle 0 resolved; after deploy + one admin shadow-cycle, stale June rows closed, pending=29/resolved=1138, earliest_expires_at_ct=2026-07-08 16:00 CDT, resolution_status=waiting. Ghost MCP already registered + Connected (no re-add needed). No Railway env var changed; CRON_SECRET was read only to trigger the gated shadow-cycle and was never printed or stored.",
+        "verified_by_fugu_2026_07_08": "Live reconciliation + PR #151 verification vs public API + local build. CONFIRMED: _pr_version=152 after deploy (source-backed; exact SHA must be re-read from /api/_version because docs-only ledger pushes can advance it); /health=95; watchlist=74 symbols; 11 shadow brains (PR #152 momentum_shadow_v1 added); gate CLOSED (fireable_now=0, silence CORRECT); kill-status historical win_rate/brier RED but enforcement_window insufficient so engine NOT paused; wallet honest & underwater, with PR #151 filters live (shadow_min_prob=0.55, shadow_skill_min_tp_rate=0.55, shadow_skill_min_resolved=10); local suite 773 passed/3 skipped + import-integrity PASS. Shadow resolver backlog fixed live: before PR #151 /api/shadow-stats had 31 pending with oldest expired 2026-06-15 and cycle 0 resolved; after deploy + one admin shadow-cycle, stale June rows closed, pending=29/resolved=1138, earliest_expires_at_ct=2026-07-08 16:00 CDT, resolution_status=waiting. Ghost MCP already registered + Connected (no re-add needed). No Railway env var changed; CRON_SECRET was read only to trigger the gated shadow-cycle and was never printed or stored.",
     },
 
     # ── WHAT HAPPENED THIS SESSION ──
     "session_summary": [
+        "FUGU FINALIZER (2026-07-08): master-agent final verification after concurrent PR #151 + Fable PR #152. Live verified during session as _pr_version=152, git_sha 010255f, deploy a2b1c839, /health score=95 before this docs-only ledger follow-up; verify /api/_version for the exact latest SHA before acting. PR #151 wallet proven-skill filter is live (shadow_min_prob=0.55, shadow_skill_min_tp_rate=0.55, shadow_skill_min_resolved=10) and stale shadow rows were cleared (31 pending/1136 resolved -> 29 pending/1138 resolved; remaining rows waiting until 2026-07-08 16:00 CDT). PR #152 momentum_shadow_v1 is live as the 11th shadow brain. Full current suite: 773 passed, 3 skipped; import-integrity PASS (117 files, 784 first-party imports). No Railway env vars changed; CRON_SECRET was read only once to trigger the gated shadow-cycle and never printed/stored. A temporary source-less railway up caused git_sha_short=unset, corrected by redeploying from GitHub source. Honesty: gate still closed/fireable_now=0; wallet remains fake-money and underwater; no accuracy/profit claims.",
         "PR #151 (2026-07-08): wallet proven-skill filter + shadow resolver expiry cleanup. Candidate fix from Fugu/master-agent session. Shadow wallet default PAPER_SHADOW_MIN_PROB raised 0.50->0.55 (env override still supported) and new symbol-level filters require >=10 resolved WIN/LOSS rows and TP rate >=55% before fake-money shadow entries; this addresses the live finding that the wallet was buying coin-flip/negative-P&L symbols just because model up_prob >=0.50, while keeping the gated book untouched. Shadow resolver now closes already-expired rows as EXPIRED at entry/0% P&L if OHLCV bars are unavailable, preventing stale pending rows from sitting forever without crediting WIN/LOSS. Boot banner/version bumped to 151. Tests added for defaults/env overrides and no-bars expiry. HONESTY: fake-money only; does not claim prediction accuracy, does not target $20k/mo, and does not touch broker APIs.",
         "FUGU SESSION (2026-07-08): live reconciliation only — NO app-code change. Read ledger, verified every headline claim against the live public API + a local build. Corrections written into the production{} block above: pr_version 147->150 (git_sha 5ed0138), tests 758->764, watchlist 43->74 (already PR #149), models 126 stored/46 serveable/0 fireable_now. Gate CLOSED is CORRECT (live up_prob 0.5056 vs 0.6189 needed; bootstrap). kill-status win_rate/brier show RED historically but enforcement_window (post-resume) is 'insufficient' so the engine is NOT paused — matches design. Wallet underwater (-1.3% MTD) and honest; $10k->$20k/mo remains mathematically impossible per KNOWN TRUTH (did NOT touch it). Ghost MCP already registered + Connected (did not re-add; would risk clobbering Fable's parallel session). GHOST_OAUTH_SECRET confirmed present in prod env (count only; never printed); no env var changed this session. OPEN ITEM for an agent with prod-DB/log access: /api/shadow-stats has 31 pending shadow rows, oldest expired 2026-06-15 (~23d), resolver hourly job reports seeded 0/resolved 0 — could be feed-blocked (honest) or a stuck resolver (bug). Could NOT confirm from here: local `railway run` can't reach postgres.railway.internal (private-net host), so prod-DB introspection is blocked from this sandbox. Do NOT 'fix' by force-resolving; diagnose bars availability first via core.signal_engine._fetch_ohlcv on the box.",
         "PR #114: Research pick mode + breaker diagnostics + prev_close 5-tier chain + confidence caps",
@@ -90,7 +91,7 @@ SESSION_LOG = {
         "features": "49 features (33 technical + 8 macro + 8 cross-sectional)",
         "data_feeds": "5-tier chain: Alpaca IEX → yfinance → Polygon → IEX → Stooq (deprecated)",
         "circuit_breakers": "5 breakers: yfinance (5/600s), alpaca (5/300s, 50/60s), finnhub, polygon, anthropic",
-        "watchlist": "74 symbols in OFFICIAL_WATCHLIST (config/symbols.py) — live-verified PR #150/151 era; many new PR #149 symbols still need models/retrain",
+        "watchlist": "74 symbols in OFFICIAL_WATCHLIST (config/symbols.py) — live-verified PR #152 era; many new PR #149 symbols still need models/retrain",
         "super_ghost": "25-point checklist, coverage gate ≥18/25 for A/B grade",
         "kelly_sizing": "Corrected formula f* = p - (1-p)/b",
         "two_lanes": "v3 picks (gated, often silent) + Squeeze radar (intraday)",
