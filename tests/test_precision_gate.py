@@ -156,6 +156,7 @@ def _patch(monkeypatch, up_p, precision_gate):
     # tests below exercise the proven-skill blocker.
     import core.proven_skill_gate as _skill
     monkeypatch.setattr(_skill, "symbol_review", lambda sym: {"ok": True, "symbol": sym, "test": True})
+    monkeypatch.setattr(_skill, "global_calibration_review", lambda prob: {"ok": True, "prob": prob, "test": True})
 
 
 def test_unproven_model_cannot_fire(monkeypatch):
@@ -313,3 +314,20 @@ def test_research_mode_bypasses_proven_skill_gate(monkeypatch):
     monkeypatch.setattr(_skill, "symbol_review", lambda sym: {"ok": False, "fail_reason": "x"})
     sig, reason = _se.predict_live_ex("WOLF", "stock", research_mode=True)
     assert sig is not None and sig[0] == "UP"
+
+
+def test_overconfidence_gate_blocks_otherwise_valid_high_prob(monkeypatch):
+    import core.proven_skill_gate as _skill
+    monkeypatch.delenv("V3_PRECISION_GATE", raising=False)
+    _patch(monkeypatch, up_p=0.82,
+           precision_gate={"ok": True, "threshold": 0.68, "target": 0.70})
+    monkeypatch.setattr(_skill, "symbol_review", lambda sym: {"ok": True, "symbol": sym})
+    monkeypatch.setattr(_skill, "global_calibration_review", lambda prob: {
+        "ok": False, "prob": prob, "samples": 25, "wins": 10,
+        "fail_reason": "high_prob_bucket_wr<0.55 (0.4000)",
+    })
+    scores = {}
+    sig, reason = _se.predict_live_ex("WOLF", "stock", scores=scores)
+    assert sig is None
+    assert reason == "calibration_unproven"
+    assert scores["overconfidence_gate_up"]["fail_reason"].startswith("high_prob_bucket_wr<")

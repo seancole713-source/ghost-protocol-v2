@@ -1973,7 +1973,7 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
             # scoring, wallet research, or research-mode probes.
             if not research_mode:
                 try:
-                    from core.proven_skill_gate import symbol_review
+                    from core.proven_skill_gate import global_calibration_review, symbol_review
                     skill = symbol_review(symbol)
                 except Exception as _skill_e:
                     skill = {"ok": False, "symbol": symbol, "fail_reason": "skill_exception",
@@ -1982,6 +1982,15 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
                     scores["proven_skill_gate_" + direction.lower()] = skill
                 if not skill.get("ok"):
                     return None, "skill_unproven"
+                try:
+                    cal_gate = global_calibration_review(float(prob))
+                except Exception as _cal_e:
+                    cal_gate = {"ok": False, "fail_reason": "calibration_exception",
+                                "error": str(_cal_e)[:120]}
+                if scores is not None:
+                    scores["overconfidence_gate_" + direction.lower()] = cal_gate
+                if not cal_gate.get("ok"):
+                    return None, "calibration_unproven"
             q_hat = meta.get("conformal_q_hat")
             if q_hat is not None and float(q_hat) > 0:
                 from core.conformal_calibration import conformal_confidence

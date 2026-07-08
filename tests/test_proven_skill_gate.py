@@ -42,3 +42,32 @@ def test_symbol_review_disabled(monkeypatch):
     monkeypatch.setenv("V3_PROVEN_SKILL_GATE", "0")
     out = g.symbol_review("ANY")
     assert out["ok"] is True and out["disabled"] is True
+
+
+def test_calibration_review_not_applicable_below_threshold(monkeypatch):
+    monkeypatch.delenv("V3_OVERCONFIDENCE_PROB_THRESHOLD", raising=False)
+    out = g.calibration_review(prob=0.62, samples=25, wins=10)
+    assert out["ok"] is True and out["not_applicable"] is True
+
+
+def test_calibration_review_blocks_inverted_high_bucket(monkeypatch):
+    monkeypatch.setenv("V3_OVERCONFIDENCE_PROB_THRESHOLD", "0.70")
+    monkeypatch.setenv("V3_OVERCONFIDENCE_MIN_SAMPLES", "20")
+    monkeypatch.setenv("V3_OVERCONFIDENCE_MIN_WIN_RATE", "0.55")
+    out = g.calibration_review(prob=0.82, samples=25, wins=10)  # 40% actual
+    assert out["ok"] is False
+    assert out["fail_reason"].startswith("high_prob_bucket_wr<")
+
+
+def test_calibration_review_allows_good_high_bucket(monkeypatch):
+    monkeypatch.setenv("V3_OVERCONFIDENCE_PROB_THRESHOLD", "0.70")
+    monkeypatch.setenv("V3_OVERCONFIDENCE_MIN_SAMPLES", "20")
+    monkeypatch.setenv("V3_OVERCONFIDENCE_MIN_WIN_RATE", "0.55")
+    out = g.calibration_review(prob=0.82, samples=30, wins=20)
+    assert out["ok"] is True
+
+
+def test_global_calibration_review_disabled(monkeypatch):
+    monkeypatch.setenv("V3_OVERCONFIDENCE_GATE", "0")
+    out = g.global_calibration_review(0.95)
+    assert out["ok"] is True and out["disabled"] is True

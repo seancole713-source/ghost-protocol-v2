@@ -53,6 +53,7 @@ def _patch_gates(monkeypatch):
                  "V3_MIN_HOLDOUT_ACC": "0.0", "V3_MIN_WF_ACC_MEAN": "0.0"}.items():
         monkeypatch.setenv(k, v)
     monkeypatch.setenv("V3_PROVEN_SKILL_GATE", "0")
+    monkeypatch.setenv("V3_OVERCONFIDENCE_GATE", "0")
 
 
 def _patch_models(monkeypatch, up_p=None, down_p=None):
