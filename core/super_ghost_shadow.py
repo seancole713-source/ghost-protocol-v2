@@ -331,6 +331,44 @@ def news_event_shadow(report: Dict[str, Any]) -> Dict[str, Any]:
                         reason=reason, drivers=drivers)
 
 
+def momentum_shadow(report: Dict[str, Any]) -> Dict[str, Any]:
+    """Trend/breakout brain (PR #151) — Ghost's 'other way of thinking'.
+
+    Production Ghost is a short-term mean-reversion predictor (2%/3-day). This
+    brain is the complement: it leans UP when a symbol is in a confirmed bullish
+    run — breaking to new highs, above rising moving averages, trending (ADX),
+    with volume and a strong 20-day return. This is the lens that would have
+    'seen' the ODD-style +80% climb the base engine is blind to.
+
+    Confidence-capped at 0.70 and it only commits on a strong stack (>=4 of 6
+    momentum signals). Shadow-only: its profile decides whether trend-following
+    actually pays forward, or is just hindsight bias.
+    """
+    sym = (report.get("symbol") or "").upper()
+    try:
+        from core.momentum import compute_momentum
+        m = compute_momentum(sym)
+    except Exception as exc:
+        m = {"available": False, "reason": str(exc)[:80]}
+    direction, conf = "HOLD", 0.50
+    if not m.get("available"):
+        reason = f"Momentum unavailable: {m.get('reason', 'no data')}."
+    else:
+        score = int(m.get("score") or 0)
+        if score >= 4:
+            direction = "UP"
+            conf = round(_clamp(0.50 + score * 0.033, 0.52, 0.70), 3)
+            fired = [k for k, v in (m.get("signals") or {}).items() if v]
+            reason = (f"Confirmed bullish run: {score}/6 momentum signals "
+                      f"({', '.join(fired)}); +{m.get('ret_20d_pct')}% 20d, "
+                      f"ADX {m.get('adx')}. Ride-the-trend lean, shadow-capped.")
+        else:
+            reason = (f"No confirmed run ({score}/6 momentum signals); "
+                      f"not a trend to ride.")
+    return _base_shadow("momentum_shadow_v1", "momentum", direction, conf, report,
+                        reason=reason, drivers=[m])
+
+
 def seasonal_shadow(report: Dict[str, Any]) -> Dict[str, Any]:
     """Calendar-seasonality brain (PR #133).
 
@@ -396,6 +434,7 @@ SHADOW_MODELS: Tuple[ShadowModel, ...] = (
     ShadowModel("contrarian_shadow_v1", "contrarian", "Inverse-Ghost: bets against every committed production call (anti-signal hypothesis).", contrarian_shadow),
     ShadowModel("seasonal_shadow_v1", "seasonal", "Calendar-seasonality lean from the symbol's own ~4-year record for the current 5-day window.", seasonal_shadow),
     ShadowModel("news_shadow_v2", "news", "Structured-event news brain: typed, deduplicated, point-in-time events (v1 frozen as baseline).", news_event_shadow),
+    ShadowModel("momentum_shadow_v1", "momentum", "Trend/breakout brain: leans UP on confirmed multi-week bullish runs (the ODD-style climb the base engine is blind to).", momentum_shadow),
 )
 
 

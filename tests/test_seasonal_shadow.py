@@ -105,7 +105,7 @@ def test_registered_as_ninth_brain(monkeypatch):
     monkeypatch.setattr(ne, "news_available", lambda **k: False)
     assert any(m.model_id == "seasonal_shadow_v1" for m in SHADOW_MODELS)
     preds = run_shadow_models(_report())
-    assert len(preds) == 10  # + news_shadow_v2 (PR #134)
+    assert len(preds) == 11  # + momentum (PR #151)
     assert any(p["model_id"] == "seasonal_shadow_v1" for p in preds)
 
 
