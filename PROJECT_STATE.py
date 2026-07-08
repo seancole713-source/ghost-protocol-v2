@@ -13,7 +13,7 @@ RULES:
   7. SESSION_LOG is the handover log — read it to understand what happened in the
      last session and what's in flight. Update it at the end of every session.
 
-LAST UPDATED: 2026-07-08 — PR #158 daily report performance fix; live verification required after deploy
+LAST UPDATED: 2026-07-08 — PR #159 daily report logs live-verified
 """
 
 # ============================================================
@@ -32,12 +32,12 @@ SESSION_LOG = {
     "production": {
         "url": "https://ghost-protocol-v2-production.up.railway.app",
         "railway_project": "tender-benevolence",
-        "pr_version": 158,
-        "git_sha": "938d635 (source-backed, live-verified 2026-07-08 via /api/_version; PR #156 overconfidence calibration gate)",
+        "pr_version": 159,
+        "git_sha": "4c9c92c (source-backed, live-verified 2026-07-08 via /api/_version; PR #159 daily report logs)",
         "app_version": "2.5.0",
-        "health": "95/100 (live-verified 2026-07-08 after PR #156 deploy; status healthy)",
+        "health": "95/100 (live-verified 2026-07-08 after PR #159 deploy; status healthy)",
         "degraded": False,
-        "tests": "799 passed, 3 skipped (python3.13 -m pytest, PR #156 predeploy verification run 2026-07-08 Fugu)",
+        "tests": "803 passed, 3 skipped (python3.13 -m pytest, PR #159 predeploy verification run 2026-07-08 Fugu)",
         "playwright_e2e": "console-audit.spec.ts 24/24 desktop+mobile (Fugu, 2026-07-08) — verifies every tab RENDERS with real data & zero JS/API errors; does NOT verify prediction accuracy (a passing tab can show 'Grade F / NO EDGE' honestly). Suite lives in e2e/console-audit.spec.ts.",
         "accuracy_contract": "70% target, balanced mode",
         "models_trained": "126 stored, 46 serveable, 0 fireable_now (edge unproven, gate closed) — live /api/v3/status 2026-07-08; PR #153 does not change model firing behavior",
@@ -50,6 +50,7 @@ SESSION_LOG = {
 
     # ── WHAT HAPPENED THIS SESSION ──
     "session_summary": [
+        "PR #159 (2026-07-08): DAILY REPORT LOGS. Built the missing persisted notebook behind the daily report system. /api/report/daily remains GET/read-only but now uses true America/Chicago calendar-day bounds and DB-only performance-log reads (no slow /api/wolf/gate-status recompute). Added ghost_daily_report_logs plus scheduler job daily_report every 15 minutes and cron-gated POST /api/report/daily/snapshot; both write ONLY the notebook table and never mutate predictions/gates/wallet/model state. Added GET /api/report/daily/logs for persisted readback, plus route tests proving the snapshot writer touches only ghost_daily_report_logs and the report does not call the slow live gate. Version bumped to PR #159. Verification: import-integrity PASS (122 files/824 imports), python3.13 -m pytest tests/ -q -> 803 passed/3 skipped. Deployed source-backed after one transient CLI archive deploy; final live /api/_version _pr_version=159 git_sha_short=4c9c92c deploy_id=6a98880b-1a27-43d1-ab76-97c8113a708e; /health healthy score=95; /api/report/daily returns ok with decision_source=ghost_perf_cycles_db_only, gate closed v3_meta_gate, 44 scans of 74 symbols, 0 picks fired, Watcher status real_but_not_70; /api/report/daily/logs returns persisted rows including id=3 with git_sha=4c9c92c. Note: transient archive deploy row id=2 has git_sha=unset; corrected by source-backed redeploy and left as honest history. No Railway env vars changed; no secrets read/stored.",
         "PR #158 (2026-07-08): DAILY REPORT PERFORMANCE FIX. Live verification of PR #157 found /api/report/daily timing out after 30s because the wallet section called wallet_summary(), which refreshes live prices for every open position and can block behind market-data providers. Fixed core/daily_report.py wallet section to use DB-only paper wallet reads (closed/open rows, daily snapshot, config) and explicitly label it as a DB-only snapshot. This keeps the report read-only and fast without touching wallet behavior. Tests: daily_report targeted pass; full suite 802 passed/3 skipped; import-integrity PASS. No env var changed; no secrets read/stored.",
         "FUGU FINALIZER (2026-07-08, PR #156 post-deploy): live-verified overconfidence gate after Railway SUCCESS. /api/_version _pr_version=156 git_sha_short=938d635 deploy_id=9c45a115-9c35-47ac-94f5-5c809e2bd0be; /health healthy score=95. Watcher still reports the measured flaw: high-confidence >=0.55 is 54/87 = 62.1% real_but_not_70; 55-60 bucket 74.2% (n=31), 60-70 bucket 67.7% (n=31), 70+ bucket only 40.0% (10/25) with mean up_prob 0.7894 and calibration_gap -0.3894. PR #156 blocks otherwise-fireable prob>=0.70 signals when that live bucket is weak (default min n=20, min WR=55%). Mid-prob signals below 0.70 are not blocked by this overconfidence gate. Direct railway-run DB proof remains blocked by postgres.railway.internal DNS from this shell, but app DB-backed endpoints are live and healthy. Tests/import gate PASS: 799 passed/3 skipped, import-integrity 121 files/812 imports. No Railway env var changed; no secrets read/stored.",
         "PR #157 (2026-07-08): DAILY REPORT — one consolidated 'today's report' (core/daily_report.py + GET /api/report/daily). Composes what Ghost did today (scan cycles, gate open/closed + reason, picks fired, top skip reasons, closest-to-firing), the wallet day (opened/closed trades WITH exit reason + P&L, goal progress), the Watcher calibration verdict (working-or-guessing + per-bin + blind spots), health, and breakers — PLUS a plain-English narrative[] that reads out loud. Read-only aggregation; every section degrades to an error note so one dead dep can't blank it. Answers 'what's today's report?' in one call. 802 tests.",
