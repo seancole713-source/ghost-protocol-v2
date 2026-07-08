@@ -13,7 +13,7 @@ RULES:
   7. SESSION_LOG is the handover log — read it to understand what happened in the
      last session and what's in flight. Update it at the end of every session.
 
-LAST UPDATED: 2026-07-08 — PR #157 daily report endpoint; live verification required after deploy
+LAST UPDATED: 2026-07-08 — PR #158 daily report performance fix; live verification required after deploy
 """
 
 # ============================================================
@@ -32,7 +32,7 @@ SESSION_LOG = {
     "production": {
         "url": "https://ghost-protocol-v2-production.up.railway.app",
         "railway_project": "tender-benevolence",
-        "pr_version": 157,
+        "pr_version": 158,
         "git_sha": "938d635 (source-backed, live-verified 2026-07-08 via /api/_version; PR #156 overconfidence calibration gate)",
         "app_version": "2.5.0",
         "health": "95/100 (live-verified 2026-07-08 after PR #156 deploy; status healthy)",
@@ -50,6 +50,7 @@ SESSION_LOG = {
 
     # ── WHAT HAPPENED THIS SESSION ──
     "session_summary": [
+        "PR #158 (2026-07-08): DAILY REPORT PERFORMANCE FIX. Live verification of PR #157 found /api/report/daily timing out after 30s because the wallet section called wallet_summary(), which refreshes live prices for every open position and can block behind market-data providers. Fixed core/daily_report.py wallet section to use DB-only paper wallet reads (closed/open rows, daily snapshot, config) and explicitly label it as a DB-only snapshot. This keeps the report read-only and fast without touching wallet behavior. Tests: daily_report targeted pass; full suite 802 passed/3 skipped; import-integrity PASS. No env var changed; no secrets read/stored.",
         "FUGU FINALIZER (2026-07-08, PR #156 post-deploy): live-verified overconfidence gate after Railway SUCCESS. /api/_version _pr_version=156 git_sha_short=938d635 deploy_id=9c45a115-9c35-47ac-94f5-5c809e2bd0be; /health healthy score=95. Watcher still reports the measured flaw: high-confidence >=0.55 is 54/87 = 62.1% real_but_not_70; 55-60 bucket 74.2% (n=31), 60-70 bucket 67.7% (n=31), 70+ bucket only 40.0% (10/25) with mean up_prob 0.7894 and calibration_gap -0.3894. PR #156 blocks otherwise-fireable prob>=0.70 signals when that live bucket is weak (default min n=20, min WR=55%). Mid-prob signals below 0.70 are not blocked by this overconfidence gate. Direct railway-run DB proof remains blocked by postgres.railway.internal DNS from this shell, but app DB-backed endpoints are live and healthy. Tests/import gate PASS: 799 passed/3 skipped, import-integrity 121 files/812 imports. No Railway env var changed; no secrets read/stored.",
         "PR #157 (2026-07-08): DAILY REPORT — one consolidated 'today's report' (core/daily_report.py + GET /api/report/daily). Composes what Ghost did today (scan cycles, gate open/closed + reason, picks fired, top skip reasons, closest-to-firing), the wallet day (opened/closed trades WITH exit reason + P&L, goal progress), the Watcher calibration verdict (working-or-guessing + per-bin + blind spots), health, and breakers — PLUS a plain-English narrative[] that reads out loud. Read-only aggregation; every section degrades to an error note so one dead dep can't blank it. Answers 'what's today's report?' in one call. 802 tests.",
         "PR #156 (2026-07-08): OVERCONFIDENCE CALIBRATION GATE (code-only tightening). Watcher proved the top confidence bucket is inverted/miscalibrated (up_prob >=0.70: N=25, actual win rate 40% at mean up_prob ~0.79). Added a global high-probability calibration blocker in core/proven_skill_gate.py: if an otherwise-fireable real signal has prob >= V3_OVERCONFIDENCE_PROB_THRESHOLD (default 0.70), then the live resolved shadow bucket for up_prob>=threshold must have >=20 samples and >=55% realized win rate. If the bucket is weak/unavailable, runtime returns calibration_unproven and scores include overconfidence_gate_up/down. This only applies at the final would-fire point, preserves precise diagnostics (prob_low stays prob_low), and research mode/test off-switch can bypass for evidence collection. Default is ON, but this only tightens real fires; it does not change wallet, shadow outcomes, model training, or env vars. Added pure tests for inverted/good buckets and runtime block; full suite 799 passed/3 skipped; import-integrity PASS (121 files/812 imports). HONESTY: this does not prove 70%; it prevents the known inverted 70+ bucket from firing real picks until forward calibration improves. No Railway env var changed; no secrets read/stored.",

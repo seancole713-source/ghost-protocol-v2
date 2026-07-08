@@ -84,26 +84,66 @@ def build_daily_report() -> Dict[str, Any]:
 
     # ── 3. wallet day: opened, closed (with why), P&L, goal ───────────────
     def _wallet():
-        from core.paper_wallet import wallet_summary
-        w = wallet_summary()
-        if not w.get("ok"):
-            return {"error": w.get("error", "unavailable")}
-        hist = w.get("history") or []
-        closed_today = [h for h in hist if (h.get("exit_ts") or 0) >= day_start]
-        opened_today = [p for p in (w.get("open_positions") or []) if (p.get("entry_ts") or 0) >= day_start]
+        # PR #158: DB-only wallet read. Do NOT call wallet_summary() here because
+        # it refreshes live prices for every open symbol and can make the daily
+        # report hang behind market-data providers. This report is observability;
+        # it can use cost/realized/daily snapshot fields without live quotes.
+        import json as _json
+        from core.db import db_conn
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT COALESCE(SUM(pnl),0), SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END), COUNT(*) "
+                        "FROM ghost_paper_trades WHERE status='closed'")
+            realized, total_wins, total_closed = cur.fetchone()
+            cur.execute("SELECT COUNT(*), COALESCE(SUM(qty*entry_price),0) FROM ghost_paper_trades WHERE status='open'")
+            open_count, invested = cur.fetchone()
+            cur.execute("SELECT trade_date, equity, pnl FROM ghost_paper_daily ORDER BY trade_date DESC LIMIT 1")
+            drow = cur.fetchone()
+            today_pnl = float(drow[2]) if drow else 0.0
+            equity = float(drow[1]) if drow else None
+            cur.execute("SELECT val FROM ghost_state WHERE key='paper_wallet_config'")
+            cfg_row = cur.fetchone()
+            cfg = {}
+            if cfg_row and cfg_row[0]:
+                try:
+                    cfg = _json.loads(cfg_row[0])
+                except Exception:
+                    cfg = {}
+            start = float(cfg.get("starting_balance") or 10000.0)
+            goal = float(cfg.get("monthly_goal") or 20000.0)
+            if equity is None:
+                equity = round(start + float(realized or 0), 2)
+            cur.execute("""SELECT symbol, book, entry_price, entry_ts
+                           FROM ghost_paper_trades
+                           WHERE status='open' AND entry_ts >= %s
+                           ORDER BY entry_ts DESC LIMIT 50""", (day_start,))
+            opened_today = [
+                {"symbol": r[0], "book": r[1], "entry": r[2], "entry_ts": r[3]}
+                for r in cur.fetchall()
+            ]
+            cur.execute("""SELECT symbol, exit_reason, pnl, pnl_pct, exit_ts
+                           FROM ghost_paper_trades
+                           WHERE status='closed' AND exit_ts >= %s
+                           ORDER BY exit_ts DESC LIMIT 50""", (day_start,))
+            closed_today = [
+                {"symbol": r[0], "reason": r[1], "pnl": r[2], "pnl_pct": r[3], "exit_ts": r[4]}
+                for r in cur.fetchall()
+            ]
         wins = [h for h in closed_today if (h.get("pnl") or 0) > 0]
         losses = [h for h in closed_today if (h.get("pnl") or 0) < 0]
         return {
-            "total_value": w.get("total_value"),
-            "today_pnl": w.get("today_pnl"),
-            "open_positions": len(w.get("open_positions") or []),
-            "opened_today": [{"symbol": p["symbol"], "book": p.get("book"),
-                              "entry": p.get("entry_price")} for p in opened_today],
-            "closed_today": [{"symbol": h["symbol"], "reason": h.get("exit_reason"),
-                              "pnl": h.get("pnl"), "pnl_pct": h.get("pnl_pct")} for h in closed_today],
+            "total_value": round(float(equity), 2),
+            "today_pnl": today_pnl,
+            "open_positions": int(open_count or 0),
+            "invested_cost": round(float(invested or 0), 2),
+            "opened_today": opened_today,
+            "closed_today": closed_today,
             "closed_today_wins": len(wins), "closed_today_losses": len(losses),
-            "goal": w.get("goal", {}).get("target"),
-            "goal_pct": w.get("goal", {}).get("pct_of_goal"),
+            "total_closed": int(total_closed or 0),
+            "total_closed_wins": int(total_wins or 0),
+            "goal": goal,
+            "goal_pct": round(float(equity) / goal * 100, 1) if goal else None,
+            "note": "DB-only wallet snapshot; avoids live price refresh so /api/report/daily stays fast.",
         }
     wallet = _safe(_wallet, {})
 
