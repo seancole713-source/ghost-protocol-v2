@@ -13,7 +13,7 @@ RULES:
   7. SESSION_LOG is the handover log — read it to understand what happened in the
      last session and what's in flight. Update it at the end of every session.
 
-LAST UPDATED: 2026-07-08 — PR #151 candidate: wallet proven-skill filter + shadow resolver expiry cleanup; live deploy verification pending
+LAST UPDATED: 2026-07-08 — PR #151 deployed/live-verified: wallet proven-skill filter + shadow resolver expiry cleanup
 """
 
 # ============================================================
@@ -32,19 +32,19 @@ SESSION_LOG = {
     "production": {
         "url": "https://ghost-protocol-v2-production.up.railway.app",
         "railway_project": "tender-benevolence",
-        "pr_version": 150,
-        "git_sha": "5ed0138 (origin/main HEAD; local main in sync)",
+        "pr_version": 151,
+        "git_sha": "bd9df0e (origin/main HEAD; live deploy fde3e3f5)",
         "app_version": "2.5.0",
-        "health": "95/100 (live-verified 2026-07-08 Fugu: /health score=95)",
+        "health": "95/100 (live-verified 2026-07-08 Fugu: /health score=95 after PR #151)",
         "degraded": False,
-        "tests": "767 passed, 3 skipped (python3.13 -m pytest, local pre-deploy PR #151 run 2026-07-08 Fugu)",
+        "tests": "767 passed, 3 skipped (python3.13 -m pytest, PR #151 pre-deploy run 2026-07-08 Fugu)",
         "playwright_e2e": "console-audit.spec.ts 24/24 desktop+mobile (Fugu, 2026-07-08) — verifies every tab RENDERS with real data & zero JS/API errors; does NOT verify prediction accuracy (a passing tab can show 'Grade F / NO EDGE' honestly). Suite lives in e2e/console-audit.spec.ts.",
         "accuracy_contract": "70% target, balanced mode",
         "models_trained": "126 stored, 46 serveable, 0 fireable_now (edge unproven, gate closed) — live /api/v3/status 2026-07-08",
-        "wallet": "paper wallet live+trading, total_value ~$9,870 (-1.3% MTD), 15 open shadow positions, 16 closed (8 wins), monthly goal $20k (auto month-reset) — live /api/wallet 2026-07-08",
+        "wallet": "paper wallet live+trading, total_value ~$9,897 (-1.03% MTD), 15 open shadow positions, 16 closed (8 wins), monthly goal $20k (auto month-reset); PR #151 shadow filters live: min_prob=0.55, min_tp_rate=0.55, min_resolved=10 — live /api/wallet 2026-07-08",
         "breakers": "yfinance + alpaca cycling open — not degraded",
         "frontend_verified": "Fugu's dedup fixes (dc7c4f7) CONFIRMED live 2026-07-08 (dedup JS present in live-served ghost_console.html); the 24/24 e2e ran against real production. _pr_version stayed 147 because these commits didn't bump the constant.",
-        "verified_by_fugu_2026_07_08": "Live reconciliation vs public API + local build. CONFIRMED: _pr_version=150 (git_sha 5ed0138) — task brief said 147, stale; /health=95; watchlist=74 symbols (PR #149, not the brief's 43); 10 shadow brains (contrarian/seasonal/news_shadow_v2 present); gate CLOSED (fireable_now=0, live up_prob 0.5056 vs 0.6189 needed — silence CORRECT, bootstrap); kill-status win_rate+brier RED but enforcement_window insufficient (counts only post-resume) so engine NOT paused; wallet honest & underwater (goal math confirmed impossible per KNOWN TRUTH); local suite 764 passed/3 skipped + import-integrity PASS. OBSERVATION (not fixed — prod DB not reachable via local `railway run`, host postgres.railway.internal): /api/shadow-stats shows 31 pending shadow rows, oldest expired 2026-06-15 (~23d), last resolver cycle seeded 0/resolved 0 — resolver runs hourly but appears stuck at 0; needs an agent with prod-DB/log access to confirm feed-blocked vs resolver bug before any code change. Ghost MCP already registered + Connected (no re-add needed).",
+        "verified_by_fugu_2026_07_08": "Live reconciliation + PR #151 verification vs public API + local build. CONFIRMED: _pr_version=151 (git_sha bd9df0e, deploy fde3e3f5) after deploy; /health=95; watchlist=74 symbols; 10 shadow brains; gate CLOSED (fireable_now=0, silence CORRECT); kill-status historical win_rate/brier RED but enforcement_window insufficient so engine NOT paused; wallet honest & underwater, with PR #151 filters live (shadow_min_prob=0.55, shadow_skill_min_tp_rate=0.55, shadow_skill_min_resolved=10); local suite 767 passed/3 skipped + import-integrity PASS. Shadow resolver backlog fixed live: before PR #151 /api/shadow-stats had 31 pending with oldest expired 2026-06-15 and cycle 0 resolved; after deploy + one admin shadow-cycle, stale June rows closed, pending=29/resolved=1138, earliest_expires_at_ct=2026-07-08 16:00 CDT, resolution_status=waiting. Ghost MCP already registered + Connected (no re-add needed). No Railway env var changed; CRON_SECRET was read only to trigger the gated shadow-cycle and was never printed or stored.",
     },
 
     # ── WHAT HAPPENED THIS SESSION ──
@@ -1038,7 +1038,7 @@ P0 — PRODUCT POSITION (done 2026-06-10)
 [x] Confirm squeeze radar wake after 3:00 AM CT 2026-06-11 (leaders + last_scan_ts) — verified 2026-06-12 session
 
 P1 — PHASE 3 DEPTH (probes exist; not yet gating picks)
-[ ] Investigate shadow outcome resolver backlog (Fugu live-observed 2026-07-08): /api/shadow-stats shows 31 pending rows, oldest expired 2026-06-15, while last hourly cycle reports seeded=0/resolved=0. Do NOT force-resolve. First diagnose on Railway/private-net context whether core.signal_engine._fetch_ohlcv can fetch bars for the pending symbols and whether resolver logs show feed-blocked vs code-stuck behavior. Local `railway run` from this sandbox cannot reach postgres.railway.internal, so this remains unverified until an agent with prod DB/log access checks it.
+[x] Investigate/fix shadow outcome resolver backlog — PR #151 live-verified 2026-07-08: stale June pending rows closed as EXPIRED when no OHLCV bars were available; pending 31 → 29, resolved 1136 → 1138 after deploy+admin shadow-cycle; remaining rows are no longer stale (earliest expiry 2026-07-08 16:00 CDT, status waiting).
 [ ] Train squeeze ML v2 from labeled squeeze outcomes in ghost_squeeze_outcomes (replace baseline logistic in data/squeeze_ml_v2.json)
 [ ] FinBERT sentiment on existing news pipeline (lexicon_v1 is probe-only today)
 [ ] Wire drift alerts to Telegram/admin when GHOST_DRIFT_Z_ALERT fires
