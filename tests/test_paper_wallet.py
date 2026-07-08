@@ -81,8 +81,8 @@ def test_never_touches_a_broker():
 
 def test_fresh_bands_bracket_entry(monkeypatch):
     from core.paper_wallet import fresh_bands
-    # Ghost stock default geometry: +2% target; stop = 2% * stop_mult.
-    monkeypatch.setenv("V3_STOP_VOL_MULT", "0.65")
+    # PR #154: wallet geometry is +2% target; stop = 2% * WALLET mult (0.65 default).
+    monkeypatch.delenv("PAPER_WALLET_STOP_VOL_MULT", raising=False)
     tgt, stp, exp = fresh_bands("NVDA", 100.0, now=1_000_000)
     assert tgt > 100.0 and stp < 100.0          # brackets the entry
     assert abs(tgt - 102.0) < 0.01              # +2.0%
@@ -94,10 +94,54 @@ def test_fresh_bands_never_precrossed(monkeypatch):
     # The whole point of Option B: a fresh entry can never be already-resolved.
     from core.paper_wallet import fresh_bands, exit_fill
     for mult in ("0.65", "1.8"):
-        monkeypatch.setenv("V3_STOP_VOL_MULT", mult)
+        monkeypatch.setenv("PAPER_WALLET_STOP_VOL_MULT", mult)
         entry = 36.46
         tgt, stp, exp = fresh_bands("WOLF", entry, now=1_000_000)
         assert exit_fill(entry, tgt, stp, exp, 1_000_000) is None  # not pre-crossed
+
+
+def test_wallet_stop_decoupled_from_model_mult(monkeypatch):
+    # PR #154 geometry fix: the wallet must NOT inherit the model's global
+    # V3_STOP_VOL_MULT. With the model at 1.8, the wallet stays at its own 0.65.
+    import core.paper_wallet as pw
+    monkeypatch.setenv("V3_STOP_VOL_MULT", "1.8")        # model geometry (prod)
+    monkeypatch.delenv("PAPER_WALLET_STOP_VOL_MULT", raising=False)
+    assert pw._wallet_stop_vol_mult() == 0.65
+    tgt, stp, exp = pw.fresh_bands("NVDA", 100.0, now=1_000_000)
+    assert abs(tgt - 102.0) < 0.01                       # +2.0% target
+    assert abs(stp - 98.7) < 0.01                        # -1.3% stop (NOT -3.6%)
+
+
+def test_wallet_stop_env_override(monkeypatch):
+    import core.paper_wallet as pw
+    monkeypatch.setenv("PAPER_WALLET_STOP_VOL_MULT", "0.9")
+    assert pw._wallet_stop_vol_mult() == 0.9
+    _, stp, _ = pw.fresh_bands("NVDA", 100.0, now=1_000_000)
+    assert abs(stp - 98.2) < 0.01                        # -1.8% (2% * 0.9)
+
+
+def test_geometry_stats_breakeven_math():
+    import core.paper_wallet as pw
+    # +2% target / -1.3% stop -> reward:risk ~1.54, break-even ~39.4%
+    g = pw.geometry_stats(0.02, 0.013)
+    assert abs(g["reward_risk"] - 1.5385) < 0.01
+    assert abs(g["break_even_win_rate"] - 0.3939) < 0.01
+    # +2% target / -3.6% stop (old model geometry) -> break-even ~64.3%
+    g2 = pw.geometry_stats(0.02, 0.036)
+    assert abs(g2["break_even_win_rate"] - 0.6429) < 0.01
+
+
+def test_closed_trade_expectancy_flips_positive_with_tight_stop():
+    import core.paper_wallet as pw
+    # Same 44% win rate (4 wins / 5 losses ~ 44%). Old geometry loses; new wins.
+    old = [{"pnl_pct": v} for v in [2.0, 2.0, 2.0, 2.0] + [-3.8] * 5]
+    new = [{"pnl_pct": v} for v in [2.0, 2.0, 2.0, 2.0] + [-1.3] * 5]
+    eo = pw.closed_trade_expectancy(old)
+    en = pw.closed_trade_expectancy(new)
+    assert eo["win_rate"] == en["win_rate"]              # identical predictions
+    assert eo["profitable"] is False                     # -3.8% stop bleeds
+    assert en["profitable"] is True                      # -1.3% stop profits
+    assert en["expectancy_pct"] > 0 > eo["expectancy_pct"]
 
 
 def test_month_rollover_records_and_resets(monkeypatch):

@@ -60,8 +60,110 @@ def _shadow_skill_min_resolved() -> int:
     return max(1, int(os.getenv("PAPER_SHADOW_SKILL_MIN_RESOLVED", "10")))
 
 
+def _wallet_stop_vol_mult() -> float:
+    """Stop distance as a multiple of the +target vol fraction, FOR THE WALLET ONLY.
+
+    PR #154 (geometry fix): the closed-trade post-mortem showed every win was
+    +2.0% and every loss was ~-3.7% to -4.4% — an upside-down reward:risk that
+    needs a ~64% win rate just to break even (the wallet won ~44%). The wallet
+    previously inherited the model's global V3_STOP_VOL_MULT (=1.8 in prod),
+    which is ALSO the label-schema knob (tp_sl_fwd_v1_sm1.8) and the live TP/SL
+    resolver. Flipping that env globally would instantly mark the stored model
+    fleet label_schema_stale and change live resolution before any retrain.
+
+    So the wallet gets its OWN multiplier, defaulting to 0.65 (a -1.3% stop
+    against the +2% target -> break-even win rate ~39.4% instead of ~64.3%).
+    The model fleet is untouched; the operator's global flip + retrain remains a
+    separate, ledgered step. Env override: PAPER_WALLET_STOP_VOL_MULT.
+    """
+    raw = os.getenv("PAPER_WALLET_STOP_VOL_MULT")
+    if raw is None or str(raw).strip() == "":
+        return 0.65
+    try:
+        return max(0.1, float(raw))
+    except Exception:
+        return 0.65
+
+
+def geometry_stats(target_pct: float, stop_pct: float) -> Dict[str, Any]:
+    """Pure reward:risk + break-even math for a target/stop pair (fractions).
+
+    reward_risk = target/stop; break_even_win_rate = stop/(target+stop). A trade
+    structure only makes money when the realized win rate exceeds break-even.
+    """
+    t = max(0.0, float(target_pct))
+    s = max(0.0, float(stop_pct))
+    if t <= 0 or s <= 0:
+        return {"target_pct": round(t, 6), "stop_pct": round(s, 6),
+                "reward_risk": None, "break_even_win_rate": None}
+    return {
+        "target_pct": round(t, 6),
+        "stop_pct": round(s, 6),
+        "reward_risk": round(t / s, 4),
+        "break_even_win_rate": round(s / (t + s), 4),
+    }
+
+
+def closed_trade_expectancy(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Aggregate expectancy from closed-trade pnl_pct rows (pure/testable).
+
+    rows: iterable of dicts with a numeric ``pnl_pct`` (percent, e.g. 2.0/-3.7).
+    Returns win rate, avg win/loss %, expectancy per trade %, and a plain
+    profitable/unprofitable verdict. Honest by construction: no win rate is
+    invented, expectancy is the realized mean of what actually resolved.
+    """
+    vals = []
+    for r in rows:
+        p = r.get("pnl_pct")
+        if p is None:
+            continue
+        try:
+            vals.append(float(p))
+        except Exception:
+            continue
+    n = len(vals)
+    wins = [v for v in vals if v > 0]
+    losses = [v for v in vals if v <= 0]
+    win_rate = (len(wins) / n) if n else None
+    avg_win = (sum(wins) / len(wins)) if wins else None
+    avg_loss = (sum(losses) / len(losses)) if losses else None
+    expectancy = (sum(vals) / n) if n else None
+    return {
+        "n": n,
+        "wins": len(wins),
+        "losses": len(losses),
+        "win_rate": round(win_rate, 4) if win_rate is not None else None,
+        "avg_win_pct": round(avg_win, 4) if avg_win is not None else None,
+        "avg_loss_pct": round(avg_loss, 4) if avg_loss is not None else None,
+        "expectancy_pct": round(expectancy, 4) if expectancy is not None else None,
+        "profitable": bool(expectancy is not None and expectancy > 0),
+    }
+
+
 def _max_open() -> int:
     return max(1, int(os.getenv("PAPER_MAX_OPEN", "15")))
+
+
+def _default_vol_pct_readonly() -> float:
+    """Stock default target vol fraction (matches core.vol_targets.base_vol_pct
+    for a generic stock). Used for summary geometry display only."""
+    try:
+        from core.vol_targets import base_vol_pct
+        return float(base_vol_pct("__WALLET_DEFAULT__", "stock"))
+    except Exception:
+        return 0.02
+
+
+def _model_stop_vol_mult_readonly() -> Optional[float]:
+    """The MODEL's global stop multiplier (V3_STOP_VOL_MULT), for contrast in
+    the wallet summary. Read-only; the wallet no longer uses this for its stops."""
+    raw = os.getenv("V3_STOP_VOL_MULT")
+    if raw is None or str(raw).strip() == "":
+        return None
+    try:
+        return float(raw)
+    except Exception:
+        return None
 
 
 def wallet_enabled() -> bool:
@@ -267,10 +369,14 @@ def fresh_bands(symbol: str, entry: float, asset_type: str = "stock",
     evidence the whole exercise exists to gather). Same geometry the engine
     uses, applied at the fill price.
     """
-    from core.vol_targets import base_vol_pct, stop_pct_from_vol
+    from core.vol_targets import base_vol_pct
     now = int(now or time.time())
     vol = base_vol_pct(symbol, asset_type)
-    stop_pct = stop_pct_from_vol(vol)
+    # PR #154: the wallet uses its OWN stop multiplier (default 0.65), NOT the
+    # global V3_STOP_VOL_MULT (which is the model label-schema knob). This flips
+    # the wallet to a +2% / -1.3% structure (break-even ~39%) without touching
+    # the stored model fleet or the live TP/SL resolver.
+    stop_pct = float(vol) * _wallet_stop_vol_mult()
     target = round(entry * (1 + vol), 4)
     stop = round(entry * (1 - stop_pct), 4)
     expires_at = now + int(os.getenv("PAPER_HOLD_BARS", "3")) * 86400
@@ -556,6 +662,16 @@ def wallet_summary() -> Dict[str, Any]:
                 "shadow_min_prob": _shadow_min_prob(),
                 "shadow_skill_min_tp_rate": _shadow_skill_min_tp_rate(),
                 "shadow_skill_min_resolved": _shadow_skill_min_resolved(),
+                # PR #154 geometry fix — observability for the corrected-odds
+                # experiment. wallet_stop_vol_mult is the wallet's OWN knob
+                # (default 0.65), independent of the model's V3_STOP_VOL_MULT.
+                "geometry": {
+                    "wallet_stop_vol_mult": _wallet_stop_vol_mult(),
+                    "model_stop_vol_mult": _model_stop_vol_mult_readonly(),
+                    **geometry_stats(_default_vol_pct_readonly(),
+                                     _default_vol_pct_readonly() * _wallet_stop_vol_mult()),
+                },
+                "expectancy": closed_trade_expectancy(history),
                 "goal": {
                     "target": goal,
                     "month": cfg.get("goal_month"),
