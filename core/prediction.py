@@ -407,7 +407,9 @@ def enforce_kill_conditions() -> Dict[str, Any]:
     cfg = _kill_cfg()
     if not cfg["enabled"]:
         return {"paused": False, "enabled": False}
-    # Use window reset: only count outcomes resolved after the last manual resume
+    # Use window reset: only count outcomes resolved after the last manual resume,
+    # but ONLY while the grace period is active. After grace expires, clear the
+    # stale resume timestamp so enforcement evaluates the full window again.
     since_ts = 0
     try:
         with db_conn() as c:
@@ -415,7 +417,22 @@ def enforce_kill_conditions() -> Dict[str, Any]:
             cur.execute("SELECT val FROM ghost_state WHERE key='engine_pause_resume_ts'")
             row = cur.fetchone()
             if row and row[0]:
-                since_ts = int(row[0])
+                candidate_ts = int(row[0])
+                # Only honour the resume window if grace is still active
+                cur.execute("SELECT val FROM ghost_state WHERE key='engine_pause_grace_until'")
+                grace_row = cur.fetchone()
+                if grace_row and grace_row[0]:
+                    grace_until = int(grace_row[0])
+                    if int(time.time()) < grace_until:
+                        since_ts = candidate_ts
+                    else:
+                        # Grace expired — clear stale timestamps so enforcement works
+                        cur.execute("DELETE FROM ghost_state WHERE key IN ('engine_pause_resume_ts','engine_pause_grace_until')")
+                        LOGGER.info("Kill grace period expired — cleared resume window, full enforcement active")
+                else:
+                    # No grace set — stale resume timestamp, clear it
+                    cur.execute("DELETE FROM ghost_state WHERE key='engine_pause_resume_ts'")
+                    LOGGER.info("Kill resume timestamp found without grace — cleared, full enforcement active")
     except Exception:
         note_suppressed()
     ev = evaluate_kill_conditions(since_ts=since_ts)

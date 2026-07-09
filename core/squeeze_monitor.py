@@ -60,7 +60,7 @@ from core.market_hours import (
 _TIMEOUT = float(os.getenv("PRICE_PROVIDER_TIMEOUT_S", "8.0"))
 
 COOLDOWN_SEC = int(os.getenv("SQUEEZE_ALERT_COOLDOWN", "7200"))
-MIN_TELEGRAM_CONFIDENCE = int(os.getenv("SQUEEZE_TELEGRAM_MIN_CONFIDENCE", "50"))
+MIN_TELEGRAM_CONFIDENCE = int(os.getenv("SQUEEZE_TELEGRAM_MIN_CONFIDENCE", "65"))
 REPRICE_ALERT_PCT = float(os.getenv("SQUEEZE_REPRICE_ALERT_PCT", "1.5"))
 _last_alert: Dict[str, float] = {}
 _short_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
