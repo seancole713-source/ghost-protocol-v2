@@ -60,7 +60,7 @@ from core.market_hours import (
 _TIMEOUT = float(os.getenv("PRICE_PROVIDER_TIMEOUT_S", "8.0"))
 
 COOLDOWN_SEC = int(os.getenv("SQUEEZE_ALERT_COOLDOWN", "7200"))
-MIN_TELEGRAM_CONFIDENCE = int(os.getenv("SQUEEZE_TELEGRAM_MIN_CONFIDENCE", "65"))
+MIN_TELEGRAM_CONFIDENCE = int(os.getenv("SQUEEZE_TELEGRAM_MIN_CONFIDENCE", "75"))
 REPRICE_ALERT_PCT = float(os.getenv("SQUEEZE_REPRICE_ALERT_PCT", "1.5"))
 _last_alert: Dict[str, float] = {}
 _short_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
@@ -190,14 +190,22 @@ def squeeze_confidence(
     Extreme short risk adds squeeze potential but also signals fragility, so the
     short-risk bonus is halved for "extreme" to avoid overconfidence on the
     riskiest names.
+
+    PR #161 recalibration: RVOL was overweighted (up to 30 pts) relative to
+    move (up to 40 pts). The daily log showed 90% confidence alerts losing
+    just as often as 70% ones — RVOL is participation noise, not edge.
+    Reduced RVOL ceiling 30→18 and increased move ceiling 40→50 so the
+    score better reflects actual price action quality.
     """
     move = max(0.0, peak_move_pct)
-    move_pts = min(40.0, move * 4.0)
-    rvol_pts = min(30.0, max(0.0, (rvol - 1.0) * 10.0))
-    short_pts = {"extreme": 10.0, "high": 12.0, "medium": 10.0, "low": 5.0}.get(
+    # Move is the primary signal — price already moved, squeeze is real
+    move_pts = min(50.0, move * 5.0)
+    # RVOL confirms participation but is NOT edge — reduced weight
+    rvol_pts = min(18.0, max(0.0, (rvol - 1.0) * 6.0))
+    short_pts = {"extreme": 8.0, "high": 10.0, "medium": 8.0, "low": 3.0}.get(
         short_risk or "", 0.0,
     )
-    kind_pts = 10.0 if kind == "squeeze_active" else 0.0
+    kind_pts = 8.0 if kind == "squeeze_active" else 0.0
     return int(round(min(95.0, max(0.0, move_pts + rvol_pts + short_pts + kind_pts))))
 
 
@@ -876,6 +884,61 @@ def _yf_fetch_metrics(symbol: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+def _symbol_loss_streak(symbol: str) -> int:
+    """Return consecutive resolved losses for a symbol (most recent first).
+
+    Reads ghost_squeeze_outcomes to find the current cold streak.
+    Returns 0 if the most recent resolved outcome was not a loss.
+    """
+    try:
+        from core.db import db_conn
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT outcome FROM ghost_squeeze_outcomes
+                WHERE symbol = %s AND outcome IS NOT NULL
+                ORDER BY alerted_at DESC
+                LIMIT 10
+                """,
+                (symbol.upper(),),
+            )
+            rows = cur.fetchall()
+            streak = 0
+            for (outcome,) in rows:
+                if outcome == 'LOSS':
+                    streak += 1
+                else:
+                    break
+            return streak
+    except Exception:
+        return 0
+
+
+_MAX_LOSS_STREAK = int(os.getenv("SQUEEZE_MAX_LOSS_STREAK", "3"))
+
+
+def _check_expected_value(
+    buy: float,
+    sell: float,
+    stop: float,
+    confidence_pct: int,
+) -> bool:
+    """Simple EV gate: expected gain must exceed expected loss.
+
+    win_prob from confidence_pct, gain = (sell - buy) / buy,
+    loss = (buy - stop) / buy. Requires EV > 0 to pass.
+    """
+    if buy <= 0 or sell <= buy or stop >= buy:
+        return False
+    win_prob = confidence_pct / 100.0
+    loss_prob = 1.0 - win_prob
+    gain_pct = (sell - buy) / buy
+    loss_pct = (buy - stop) / buy
+    ev = win_prob * gain_pct - loss_prob * loss_pct
+    return ev > 0.0
+
+
 def _maybe_alert(
     symbol: str,
     kind: str,
@@ -893,6 +956,30 @@ def _maybe_alert(
     if conf < MIN_TELEGRAM_CONFIDENCE:
         LOGGER.info("[SqueezeMonitor] suppress low-confidence %s %s conf=%s", symbol, kind, conf)
         return False
+
+    # PR #161: per-symbol loss streak breaker — suppress if on cold streak
+    streak = _symbol_loss_streak(symbol)
+    if streak >= _MAX_LOSS_STREAK:
+        LOGGER.info(
+            "[SqueezeMonitor] suppress cold-streak %s %s streak=%s conf=%s",
+            symbol, kind, streak, conf,
+        )
+        return False
+
+    # PR #161: EV gate — don't alert if expected value is negative
+    from core.squeeze_scorecard import compute_stop
+    stop = compute_stop(
+        metrics["price"],
+        vwap=metrics.get("vwap"),
+        prior_close=metrics.get("prior_close") if metrics.get("prior_close", 0) > 0 else None,
+    )
+    if not _check_expected_value(buy, sell, stop, conf):
+        LOGGER.info(
+            "[SqueezeMonitor] suppress negative-EV %s %s buy=%.2f sell=%.2f stop=%.2f conf=%s",
+            symbol, kind, buy, sell, stop, conf,
+        )
+        return False
+
     key = _squeeze_alert_key(symbol, kind, buy, sell, conf)
     now = time.time()
     last = _last_alert.get(key)
