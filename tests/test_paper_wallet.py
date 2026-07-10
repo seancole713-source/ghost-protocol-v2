@@ -268,3 +268,82 @@ def test_shadow_wallet_env_overrides_skill_filter(monkeypatch):
     assert pw._shadow_min_prob() == 0.60
     assert pw._shadow_skill_min_tp_rate() == 0.62
     assert pw._shadow_skill_min_resolved() == 18
+
+
+# ---------------------------------------------------------------- PR #163
+# Session gate: entries only in the RTH window; exits always run.
+
+def _ct(hour, minute, weekday_date="2026-07-08"):  # a Wednesday
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    y, m, d = map(int, weekday_date.split("-"))
+    return datetime(y, m, d, hour, minute, tzinfo=ZoneInfo("America/Chicago"))
+
+
+def test_entry_window_open_midday(monkeypatch):
+    monkeypatch.delenv("PAPER_SESSION_GATE", raising=False)
+    out = pw.entry_window(_ct(11, 0))
+    assert out["open"] is True
+
+
+def test_entry_window_blocks_overnight_and_weekend(monkeypatch):
+    monkeypatch.delenv("PAPER_SESSION_GATE", raising=False)
+    assert pw.entry_window(_ct(2, 0))["open"] is False       # pre-market night
+    assert pw.entry_window(_ct(18, 0))["open"] is False      # after hours
+    # Saturday 2026-07-11
+    assert pw.entry_window(_ct(11, 0, "2026-07-11"))["open"] is False
+
+
+def test_entry_window_blocks_open_and_close_buffers(monkeypatch):
+    monkeypatch.delenv("PAPER_SESSION_GATE", raising=False)
+    monkeypatch.delenv("PAPER_ENTRY_OPEN_BUFFER_MIN", raising=False)
+    monkeypatch.delenv("PAPER_ENTRY_CLOSE_BUFFER_MIN", raising=False)
+    assert pw.entry_window(_ct(8, 35))["open"] is False      # first 15 min
+    assert pw.entry_window(_ct(8, 46))["open"] is True       # after buffer
+    assert pw.entry_window(_ct(14, 31))["open"] is False     # last 30 min
+    assert pw.entry_window(_ct(14, 29))["open"] is True
+
+
+def test_entry_window_kill_switch(monkeypatch):
+    monkeypatch.setenv("PAPER_SESSION_GATE", "off")
+    assert pw.entry_window(_ct(2, 0))["open"] is True
+
+
+# ---------------------------------------------------------------- PR #163
+# ATR bands: per-symbol realized vol for WALLET brackets only.
+
+def _bars(rng_pct, n=15, px=100.0):
+    # daily bars with a constant high-low range of rng_pct
+    return [{"open": px, "high": px * (1 + rng_pct / 2), "low": px * (1 - rng_pct / 2),
+             "close": px, "volume": 1000} for _ in range(n)]
+
+
+def test_wallet_vol_uses_realized_range_when_wider(monkeypatch):
+    monkeypatch.delenv("PAPER_ATR_BANDS", raising=False)
+    out = pw._wallet_vol_pct("XYZ", "stock", bars=_bars(0.10))  # 10% daily range
+    assert out["vol_pct"] > 0.02                                # wider than flat 2%
+    assert out["source"].startswith("realized_range")
+
+
+def test_wallet_vol_falls_back_to_base_for_quiet_names(monkeypatch):
+    monkeypatch.delenv("PAPER_ATR_BANDS", raising=False)
+    out = pw._wallet_vol_pct("XYZ", "stock", bars=_bars(0.005))  # 0.5% range
+    assert out["vol_pct"] == 0.02                                # base floor holds
+    assert out["source"] == "base"
+
+
+def test_wallet_vol_kill_switch(monkeypatch):
+    monkeypatch.setenv("PAPER_ATR_BANDS", "off")
+    out = pw._wallet_vol_pct("XYZ", "stock", bars=_bars(0.10))
+    assert out["vol_pct"] == 0.02 and out["source"] == "base"
+
+
+def test_fresh_bands_reward_risk_preserved_with_atr(monkeypatch):
+    # Wider vol widens target AND stop together; reward:risk is untouched.
+    monkeypatch.delenv("PAPER_ATR_BANDS", raising=False)
+    monkeypatch.delenv("PAPER_WALLET_STOP_VOL_MULT", raising=False)
+    tgt, stp, _ = pw.fresh_bands("XYZ", 100.0, bars=_bars(0.10))
+    t_pct = tgt / 100.0 - 1
+    s_pct = 1 - stp / 100.0
+    assert t_pct > 0.02                                  # wider than flat
+    assert abs(s_pct / t_pct - 0.65) < 0.01              # mult preserved

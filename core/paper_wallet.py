@@ -395,8 +395,82 @@ def _live_prices(symbols: List[str]) -> Dict[str, Optional[float]]:
     return out
 
 
+def _session_gate_enabled() -> bool:
+    return (os.getenv("PAPER_SESSION_GATE", "on") or "on").strip().lower() not in (
+        "0", "off", "false", "no")
+
+
+def _entry_open_buffer_min() -> int:
+    return max(0, int(os.getenv("PAPER_ENTRY_OPEN_BUFFER_MIN", "15")))
+
+
+def _entry_close_buffer_min() -> int:
+    return max(0, int(os.getenv("PAPER_ENTRY_CLOSE_BUFFER_MIN", "30")))
+
+
+def entry_window(now=None) -> Dict[str, Any]:
+    """Is NEW-entry trading allowed right now? (PR #163 session gate)
+
+    The scheduler polls 24/7 with 5-min granularity, so entries taken outside
+    regular hours (or right at the open/close auctions) inherit overnight-gap
+    risk the 5-min exit loop cannot manage — the post-mortem showed stop
+    overshoots to -4.9% from exactly this. Entries are allowed only during
+    RTH minus buffers (default 8:45 AM – 2:30 PM CT). EXITS always run —
+    a position must be closeable whenever a quote crosses its bands.
+    """
+    if not _session_gate_enabled():
+        return {"open": True, "reason": "session_gate_disabled"}
+    try:
+        from core.market_hours import RTH_CLOSE_MIN, RTH_OPEN_MIN, session_hm
+        now_ct, hm = session_hm(now)
+        if now_ct.weekday() >= 5:
+            return {"open": False, "reason": "weekend"}
+        lo = RTH_OPEN_MIN + _entry_open_buffer_min()
+        hi = RTH_CLOSE_MIN - _entry_close_buffer_min()
+        if hm < lo:
+            return {"open": False, "reason": f"before_entry_window ({hm} < {lo})"}
+        if hm >= hi:
+            return {"open": False, "reason": f"after_entry_window ({hm} >= {hi})"}
+        return {"open": True, "reason": "rth_entry_window"}
+    except Exception as exc:  # clock failure must never brick the cycle
+        return {"open": True, "reason": f"session_clock_error: {str(exc)[:60]}"}
+
+
+def _atr_bands_enabled() -> bool:
+    return (os.getenv("PAPER_ATR_BANDS", "on") or "on").strip().lower() not in (
+        "0", "off", "false", "no")
+
+
+def _wallet_vol_pct(symbol: str, asset_type: str, bars=None) -> Dict[str, Any]:
+    """Per-symbol vol fraction for WALLET bands (PR #163).
+
+    base_vol_pct is a flat 2% for every stock — a $1.40 biotech got the same
+    bracket as MSFT, so ±geometry meant different things across the book.
+    Reuse forecast_band_vol_pct (median realized range, capped) so volatile
+    names get proportionally wider targets AND stops; reward:risk is
+    unchanged (stop is still vol * wallet mult). WALLET ONLY — model labels
+    and the live TP/SL resolver still read base_vol_pct untouched.
+    """
+    from core.vol_targets import base_vol_pct
+    base = {"vol_pct": float(base_vol_pct(symbol, asset_type)), "source": "base"}
+    if not _atr_bands_enabled():
+        return base
+    try:
+        rows = bars
+        if rows is None:
+            from core.signal_engine import _fetch_ohlcv
+            rows = _fetch_ohlcv(symbol, asset_type, period="3mo") or []
+        if len(rows) >= 3:
+            from core.vol_targets import forecast_band_vol_pct
+            fb = forecast_band_vol_pct(symbol, asset_type, rows)
+            return {"vol_pct": float(fb["vol_pct"]), "source": fb["source"]}
+    except Exception as exc:
+        LOGGER.debug("wallet ATR vol fallback for %s: %s", symbol, str(exc)[:80])
+    return base
+
+
 def fresh_bands(symbol: str, entry: float, asset_type: str = "stock",
-                now: int | None = None):
+                now: int | None = None, bars=None):
     """Target/stop/expiry bracketing the CURRENT entry, using Ghost's own
     vol geometry (base_vol_pct + stop_pct_from_vol). (PR #145, Option B)
 
@@ -407,10 +481,12 @@ def fresh_bands(symbol: str, entry: float, asset_type: str = "stock",
     and the wallet takes positions daily (wins AND losses — the unbiased
     evidence the whole exercise exists to gather). Same geometry the engine
     uses, applied at the fill price.
+
+    PR #163: vol is per-symbol realized range (wallet only) instead of the
+    flat 2% — see _wallet_vol_pct. Reward:risk is unchanged.
     """
-    from core.vol_targets import base_vol_pct
     now = int(now or time.time())
-    vol = base_vol_pct(symbol, asset_type)
+    vol = _wallet_vol_pct(symbol, asset_type, bars=bars)["vol_pct"]
     # PR #154: the wallet uses its OWN stop multiplier (default 0.65), NOT the
     # global V3_STOP_VOL_MULT (which is the model label-schema knob). This flips
     # the wallet to a +2% / -1.3% structure (break-even ~39%) without touching
@@ -480,49 +556,57 @@ def run_wallet_cycle() -> Dict[str, Any]:
 
             # ── candidate signals ────────────────────────────────────────
             now_ts = int(time.time())
+            # PR #163: entries only inside the RTH entry window (exits always
+            # run below). Skipping the candidate queries entirely when closed
+            # also stops 24/7 quote-fetch pressure on the data feeds.
+            gate = entry_window()
             # Mirror any still-live signal (unresolved + unexpired). No
             # reset_ts filter: entries fill at the CURRENT quote, so mirroring
             # an hours-old signal is honest — we buy now at now's price.
-            cur.execute(
-                """SELECT id, symbol, entry_price, target_price, stop_price, expires_at
-                   FROM predictions
-                   WHERE outcome IS NULL AND direction IN ('UP','BUY')
-                     AND expires_at > %s
-                     AND entry_price > 0
-                   ORDER BY predicted_at DESC LIMIT 20""", (now_ts,))
-            gated_rows = [("gated", f"pick:{r[0]}", r[1], r[2], r[3], r[4], r[5])
-                          for r in cur.fetchall()]
+            gated_rows = []
+            if gate.get("open"):
+                cur.execute(
+                    """SELECT id, symbol, entry_price, target_price, stop_price, expires_at
+                       FROM predictions
+                       WHERE outcome IS NULL AND direction IN ('UP','BUY')
+                         AND expires_at > %s
+                         AND entry_price > 0
+                       ORDER BY predicted_at DESC LIMIT 20""", (now_ts,))
+                gated_rows = [("gated", f"pick:{r[0]}", r[1], r[2], r[3], r[4], r[5])
+                              for r in cur.fetchall()]
             # Research-wallet shadow entries must be both confident enough and
             # historically proven for the *symbol*. PR #151: up_prob >= 0.50 was
             # admitting coin-flip/negative-P&L symbols (e.g. 33-41% TP buckets)
             # even though the public gate remained closed. This is still fake
             # money only, but the evidence wallet should prefer symbols whose
             # shadow track record clears a basic skill floor.
-            cur.execute(
-                """
-                WITH skill AS (
-                    SELECT symbol,
-                           SUM(CASE WHEN outcome IN ('WIN','LOSS') THEN 1 ELSE 0 END) AS resolved,
-                           SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) AS wins
-                    FROM ghost_shadow_outcomes
-                    WHERE outcome IS NOT NULL
-                    GROUP BY symbol
-                )
-                SELECT o.id, o.symbol, o.entry_price, o.target_price, o.stop_price, o.expires_at,
-                       COALESCE(s.resolved, 0) AS resolved,
-                       COALESCE(s.wins, 0) AS wins
-                FROM ghost_shadow_outcomes o
-                LEFT JOIN skill s ON s.symbol = o.symbol
-                WHERE o.outcome IS NULL
-                  AND o.expires_at > %s
-                  AND o.up_prob >= %s
-                  AND COALESCE(s.resolved, 0) >= %s
-                  AND (COALESCE(s.wins, 0)::float / NULLIF(s.resolved, 0)) >= %s
-                ORDER BY o.eval_ts DESC LIMIT 20
-                """,
-                (now_ts, _shadow_min_prob(), _shadow_skill_min_resolved(), _shadow_skill_min_tp_rate()))
-            shadow_rows = [("shadow", f"shadow:{r[0]}", r[1], r[2], r[3], r[4], r[5])
-                           for r in cur.fetchall()]
+            shadow_rows = []
+            if gate.get("open"):
+                cur.execute(
+                    """
+                    WITH skill AS (
+                        SELECT symbol,
+                               SUM(CASE WHEN outcome IN ('WIN','LOSS') THEN 1 ELSE 0 END) AS resolved,
+                               SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) AS wins
+                        FROM ghost_shadow_outcomes
+                        WHERE outcome IS NOT NULL
+                        GROUP BY symbol
+                    )
+                    SELECT o.id, o.symbol, o.entry_price, o.target_price, o.stop_price, o.expires_at,
+                           COALESCE(s.resolved, 0) AS resolved,
+                           COALESCE(s.wins, 0) AS wins
+                    FROM ghost_shadow_outcomes o
+                    LEFT JOIN skill s ON s.symbol = o.symbol
+                    WHERE o.outcome IS NULL
+                      AND o.expires_at > %s
+                      AND o.up_prob >= %s
+                      AND COALESCE(s.resolved, 0) >= %s
+                      AND (COALESCE(s.wins, 0)::float / NULLIF(s.resolved, 0)) >= %s
+                    ORDER BY o.eval_ts DESC LIMIT 20
+                    """,
+                    (now_ts, _shadow_min_prob(), _shadow_skill_min_resolved(), _shadow_skill_min_tp_rate()))
+                shadow_rows = [("shadow", f"shadow:{r[0]}", r[1], r[2], r[3], r[4], r[5])
+                               for r in cur.fetchall()]
 
             candidates = gated_rows + shadow_rows
             need_prices = sorted({c[2].upper() for c in candidates})
@@ -533,8 +617,22 @@ def run_wallet_cycle() -> Dict[str, Any]:
             # Observability (PR #143): why did candidates not become entries?
             diag = {"gated_candidates": len(gated_rows),
                     "shadow_candidates": len(shadow_rows),
+                    "entry_window": gate,
                     "skip_no_price": 0, "skip_capacity": 0, "skip_dupe": 0}
+            # PR #163: dupe-check BEFORE quotes/bands — previously every
+            # already-mirrored candidate burned a fresh_bands computation (and
+            # now would burn an OHLCV fetch) every 5-min cycle just to hit
+            # ON CONFLICT DO NOTHING.
+            seen_sources = set()
+            if candidates:
+                cur.execute(
+                    "SELECT source FROM ghost_paper_trades WHERE source = ANY(%s)",
+                    ([c[1] for c in candidates],))
+                seen_sources = {r[0] for r in cur.fetchall()}
             for book, source, sym in [(c[0], c[1], c[2]) for c in candidates]:
+                if source in seen_sources:
+                    diag["skip_dupe"] += 1
+                    continue
                 if open_count >= _max_open() or cash < _slice_usd():
                     diag["skip_capacity"] += 1
                     continue

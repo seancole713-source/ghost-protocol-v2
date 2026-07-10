@@ -195,7 +195,8 @@ def watcher_summary(*, days: int = 30, limit: int = 5000) -> Dict[str, Any]:
             cur.execute(
                 """
                 SELECT model_id, model_family, horizon_days, sample_count, actionable_count,
-                       wins, losses, win_rate, avg_signed_return_pct, net_return_pct, status, updated_at
+                       wins, losses, win_rate, avg_signed_return_pct, net_return_pct, status, updated_at,
+                       calibration_error
                 FROM super_ghost_shadow_model_profiles
                 ORDER BY horizon_days, win_rate DESC NULLS LAST, sample_count DESC
                 LIMIT 200
@@ -205,7 +206,10 @@ def watcher_summary(*, days: int = 30, limit: int = 5000) -> Dict[str, Any]:
                 {"model_id": r[0], "model_family": r[1], "horizon_days": r[2],
                  "sample_count": r[3], "actionable_count": r[4], "wins": r[5],
                  "losses": r[6], "win_rate": r[7], "avg_signed_return_pct": r[8],
-                 "net_return_pct": r[9], "status": r[10], "updated_at": r[11]}
+                 "net_return_pct": r[9], "status": r[10], "updated_at": r[11],
+                 # PR #163: Brier on the brain's own confidence — makes
+                 # confidence quality visible per brain, not just direction.
+                 "brier": r[12]}
                 for r in cur.fetchall()
             ]
     except Exception:

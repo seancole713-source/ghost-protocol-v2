@@ -630,7 +630,11 @@ def refresh_shadow_profiles(cur) -> int:
                SUM(CASE WHEN correct = TRUE AND direction IN ('UP','DOWN') THEN 1 ELSE 0 END) AS wins,
                SUM(CASE WHEN correct = FALSE AND direction IN ('UP','DOWN') THEN 1 ELSE 0 END) AS losses,
                AVG(CASE WHEN direction IN ('UP','DOWN') THEN signed_return_pct ELSE NULL END) AS avg_signed,
-               SUM(CASE WHEN direction IN ('UP','DOWN') THEN signed_return_pct ELSE 0 END) AS net_return
+               SUM(CASE WHEN direction IN ('UP','DOWN') THEN signed_return_pct ELSE 0 END) AS net_return,
+               AVG(CASE WHEN direction IN ('UP','DOWN') AND correct IS NOT NULL
+                             AND confidence IS NOT NULL
+                        THEN POWER(confidence - (CASE WHEN correct THEN 1.0 ELSE 0.0 END), 2)
+                        ELSE NULL END) AS brier
         FROM super_ghost_shadow_predictions
         WHERE resolved_at IS NOT NULL
         GROUP BY model_id, model_family, horizon_days
@@ -638,12 +642,16 @@ def refresh_shadow_profiles(cur) -> int:
     )
     now = _now()
     count = 0
-    for model_id, family, horizon, n, actionable, wins, losses, avg_signed, net_return in cur.fetchall():
+    for model_id, family, horizon, n, actionable, wins, losses, avg_signed, net_return, brier in cur.fetchall():
         actionable = int(actionable or 0)
         wins = int(wins or 0)
         losses = int(losses or 0)
         win_rate = wins / actionable if actionable else None
         fpr = losses / actionable if actionable else None
+        # PR #163: Brier on the brain's own confidence — the scoreboard was
+        # direction-only, so confidence-quality differences between brains
+        # (e.g. the learning brain's whole output channel) were unmeasurable.
+        brier = round(float(brier), 4) if brier is not None else None
         # Simplified profile metrics; PR98 can add regime breakdowns/calibration.
         status = "cold_start" if int(n or 0) < MIN_PROFILE_SAMPLES else ("promising" if win_rate is not None and win_rate >= 0.60 else "watch")
         cur.execute(
@@ -663,14 +671,16 @@ def refresh_shadow_profiles(cur) -> int:
                 false_positive_rate=EXCLUDED.false_positive_rate,
                 avg_signed_return_pct=EXCLUDED.avg_signed_return_pct,
                 net_return_pct=EXCLUDED.net_return_pct,
+                calibration_error=EXCLUDED.calibration_error,
                 status=EXCLUDED.status,
                 updated_at=EXCLUDED.updated_at,
                 payload_json=EXCLUDED.payload_json
             """,
             (
                 model_id, family, horizon, int(n or 0), actionable, wins, losses, win_rate, fpr,
-                avg_signed, net_return, None, 0.0, None, None, None, status, now,
-                _jsonb({"note": "Shadow model profile; no auto-promotion."}),
+                avg_signed, net_return, None, 0.0, None, None, brier, status, now,
+                _jsonb({"note": "Shadow model profile; no auto-promotion. "
+                                "calibration_error = Brier on the brain's own confidence (PR #163)."}),
             ),
         )
         count += 1
