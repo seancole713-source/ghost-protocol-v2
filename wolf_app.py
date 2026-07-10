@@ -1256,6 +1256,19 @@ def _coverage_maintenance_job():
             return
         _lock_acquired = True
         _COVERAGE_RETRAIN_RUNNING = True
+        # Write retrain timestamp BEFORE starting so cooldown works even if
+        # the process crashes/restarts mid-retrain. Without this, every restart
+        # triggers another retrain because the timestamp is never persisted.
+        try:
+            with db_conn() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    "INSERT INTO ghost_state(key,val) VALUES('last_coverage_retrain_ts',%s) "
+                    "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
+                    (str(int(time.time())),),
+                )
+        except Exception:
+            pass
         LOGGER.warning(
             "Coverage maintenance: loaded=%s floor=%s missing=%s — retraining %s symbols",
             loaded, min_models, len(missing), len(syms)
