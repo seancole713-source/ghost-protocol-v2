@@ -45,7 +45,9 @@ def _patch_fetch_cache():
     import core.signal_engine as se
     orig = se._fetch_ohlcv
 
-    def cached(symbol, asset_type, period="2y", interval=None, **kw):
+    def cached(symbol, asset_type, period=None, interval=None, **kw):
+        # period=None passes through so V3_OHLCV_PERIOD (e.g. 5y sweeps)
+        # keeps working — a hardcoded default here would silently pin 2y.
         key = (symbol, asset_type, period, interval)
         if key not in _ohlcv_cache:
             if interval is None:

@@ -3798,7 +3798,7 @@ def test_build_symbol_universe_payload_layers(monkeypatch):
 
     out = wolf_app._build_symbol_universe_payload()
     assert out["ok"] is True
-    assert out["official_watchlist"]["count"] == 74
+    assert out["official_watchlist"]["count"] == 100  # PR #164 universe expansion
     assert out["portfolio"]["count"] == 2
     assert set(out["portfolio"]["symbols"]) == {"AMC", "WOLF"}
     assert out["models"]["stored_count"] == 2
