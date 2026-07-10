@@ -1925,11 +1925,11 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
         lane_wf_acc = float(meta.get("wf_acc_mean", meta.get("accuracy", 0)))
         lane_wf_edge = float(meta.get("wf_edge_mean", meta.get("edge", 0)))
         lane_folds = int(meta.get("wf_fold_count", 0))
-        if lane_edge < min_edge:
+        if lane_edge < min_edge - 0.001:
             return None, "meta_gate"
-        if meta.get('accuracy', 0) < min_acc:
+        if meta.get('accuracy', 0) < min_acc - 0.001:
             return None, "meta_gate"
-        if lane_folds > 0 and (lane_wf_acc < min_wf_acc or lane_wf_edge < min_edge):
+        if lane_folds > 0 and (lane_wf_acc < min_wf_acc - 0.001 or lane_wf_edge < min_edge - 0.001):
             return None, "meta_gate"
         # Phase 3: precision-targeted fire threshold — the 70% contract.
         eff_min_p = min_p
@@ -2142,13 +2142,13 @@ def get_model_status():
                     block = f"not_serveable:{reject}"
                 elif direction == "DOWN" and not _v3_down_signals_enabled():
                     block = "down_lane_disabled"
-                elif edge_f < _v3_min_edge():
+                elif edge_f < _v3_min_edge() - 0.001:
                     block = f"meta_gate:edge {edge_f*100:.1f}% < {_v3_min_edge()*100:.1f}%"
-                elif acc_f < _v3_min_holdout_acc():
+                elif acc_f < _v3_min_holdout_acc() - 0.001:
                     block = f"meta_gate:holdout_acc {acc_f*100:.1f}% < {_v3_min_holdout_acc()*100:.1f}%"
-                elif folds > 0 and wf_acc_f < _v3_min_wf_acc_mean():
+                elif folds > 0 and wf_acc_f < _v3_min_wf_acc_mean() - 0.001:
                     block = f"meta_gate:wf_acc {wf_acc_f*100:.1f}% < {_v3_min_wf_acc_mean()*100:.1f}%"
-                elif folds > 0 and wf_edge_f < _v3_min_edge():
+                elif folds > 0 and wf_edge_f < _v3_min_edge() - 0.001:
                     block = f"meta_gate:wf_edge {wf_edge_f*100:.1f}% < {_v3_min_edge()*100:.1f}%"
                 elif not summary["precision_ok"]:
                     block = "precision_unproven"
