@@ -99,3 +99,54 @@ def test_shadow_post_routes_require_auth():
     r2 = client.post("/api/wolf/super-ghost/shadow/resolve", json={"symbol": "WOLF"})
     assert r1.status_code in (401, 403)
     assert r2.status_code in (401, 403)
+
+
+# ---------------------------------------------------------------- PR #162
+# Learning shadow brain: pooled fallback makes it act; the confidence floor
+# makes its judgment visible on the direction-keyed scoreboard.
+
+def test_learning_shadow_mirrors_when_cold():
+    from core.super_ghost_shadow import learning_adjusted_shadow
+    pred = learning_adjusted_shadow(_report())
+    assert pred["direction"] == "UP"            # cold-start passthrough
+    assert "cold-start" in pred["reason"]
+
+
+def test_learning_shadow_skips_marginal_pick_when_evidence_negative():
+    from core.super_ghost_shadow import learning_adjusted_shadow
+    rep = _report()
+    rep["prediction"]["confidence"] = 0.56       # marginal production call
+    rep["learning_adjustment"] = {
+        "available": True, "status": "pooled_learning", "scope": "pooled",
+        "sample_count": 40, "confidence_delta": -0.04,
+    }
+    pred = learning_adjusted_shadow(rep)
+    assert pred["direction"] == "HOLD"           # 0.56 - 0.04 = 0.52 < 0.55
+    assert "Skipped" in pred["reason"]
+    assert pred["confidence"] == 0.52
+
+
+def test_learning_shadow_keeps_confident_pick_despite_negative_evidence():
+    from core.super_ghost_shadow import learning_adjusted_shadow
+    rep = _report()
+    rep["prediction"]["confidence"] = 0.72
+    rep["learning_adjustment"] = {
+        "available": True, "status": "pooled_learning", "scope": "pooled",
+        "sample_count": 40, "confidence_delta": -0.04,
+    }
+    pred = learning_adjusted_shadow(rep)
+    assert pred["direction"] == "UP"             # 0.68 clears the floor
+    assert abs(pred["confidence"] - 0.68) < 0.001
+    assert "pooled evidence" in pred["reason"] or "pooled" in pred["reason"]
+
+
+def test_learning_shadow_dampen_still_blocks():
+    from core.super_ghost_shadow import learning_adjusted_shadow
+    rep = _report()
+    rep["learning_adjustment"] = {
+        "available": True, "status": "dampen", "scope": "symbol",
+        "sample_count": 6, "confidence_delta": -0.08,
+    }
+    pred = learning_adjusted_shadow(rep)
+    assert pred["direction"] == "HOLD"
+    assert "Dampen" in pred["reason"]

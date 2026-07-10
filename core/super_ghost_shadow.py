@@ -236,11 +236,26 @@ def learning_adjusted_shadow(report: Dict[str, Any]) -> Dict[str, Any]:
     reason = "Learning profile cold-start; mirrors production direction."
     if learn.get("available"):
         conf = _clamp(conf + (_f(learn.get("confidence_delta")) or 0.0), 0.50, 0.92)
-        reason = "Applies bounded Learning Brain adjustment from resolved outcomes."
+        scope = str(learn.get("scope") or "symbol")
+        reason = (f"Applies bounded Learning Brain adjustment ({scope} evidence, "
+                  f"{int(learn.get('sample_count') or 0)} resolved) from outcomes.")
         if learn.get("status") == "dampen":
             direction = "HOLD"
             conf = 0.52
             reason += " Dampen profile blocks action."
+        elif direction in ("UP", "DOWN") and conf < 0.55:
+            # PR #162: the brain's judgment must be VISIBLE on the scoreboard.
+            # Shadow scoring keys on direction only (confidence/target tweaks
+            # are invisible to _correct/_signed), so a learning brain that
+            # never changes direction reads byte-identical to its input
+            # forever. When the evidence-adjusted confidence is below a
+            # coin-flip-plus-noise floor, skip the pick — that's the lesson
+            # ("this class of marginal call hasn't been paying") expressed in
+            # the one dimension the scoreboard can measure.
+            direction = "HOLD"
+            reason += (f" Skipped: evidence-adjusted confidence {conf:.3f} < 0.55 "
+                       "floor — marginal picks like this haven't paid.")
+            conf = 0.52
     out = _base_shadow("learning_adjusted_shadow_v1", "learning", direction, round(conf, 3), report, reason=reason, drivers=[learn])
     if learn.get("new_target_price") is not None:
         out["target_price"] = _f(learn.get("new_target_price"))

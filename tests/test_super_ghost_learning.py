@@ -209,3 +209,95 @@ def test_learning_post_endpoint_requires_auth():
     client = TestClient(wolf_app.APP)
     r = client.post("/api/wolf/super-ghost/learn", json={"symbol": "WOLF"})
     assert r.status_code in (401, 403)
+
+
+# ---------------------------------------------------------------- PR #162
+# Pooled cross-symbol fallback: per-symbol slices almost never reach
+# MIN_PROFILE_SAMPLES across ~74 symbols, leaving the learning brain in
+# permanent cold-start while ~1,000 resolved rows went unused.
+
+def test_pooled_profile_weighted_merge():
+    from core.super_ghost_learning import pooled_profile_from_rows
+    # 3 symbols x ~10 samples each: 30 pooled >= MIN_POOLED_SAMPLES(20).
+    rows = [(10, 0.30, 1.10), (10, 0.50, 1.00), (10, 0.40, 0.90)]
+    out = pooled_profile_from_rows(rows)
+    assert out["available"] is True
+    assert out["scope"] == "pooled"
+    assert out["sample_count"] == 30
+    assert abs(out["direction_win_rate"] - 0.40) < 0.001
+    # (0.40-0.50)*0.20 = -0.02, halved for pooled -> -0.01
+    assert abs(out["confidence_delta"] - (-0.01)) < 0.001
+    assert out["learning_status"] == "pooled_learning"
+
+
+def test_pooled_profile_needs_min_samples():
+    from core.super_ghost_learning import pooled_profile_from_rows
+    out = pooled_profile_from_rows([(5, 0.20, 1.0), (5, 0.30, 1.0)])
+    assert out["available"] is False           # 10 < 20
+    assert out["learning_status"] == "cold_start"
+    assert out["confidence_delta"] == 0.0      # silent until it can speak
+
+
+def test_pooled_profile_never_dampens():
+    from core.super_ghost_learning import pooled_profile_from_rows
+    # Catastrophic pooled record: still no dampen — direction blocks stay
+    # per-symbol-evidence-only; pooled only whispers via confidence_delta.
+    out = pooled_profile_from_rows([(50, 0.20, 1.0)])
+    assert out["available"] is True
+    assert out["learning_status"] == "pooled_learning"
+    assert out["confidence_delta"] < 0         # negative lean, capped+halved
+    assert out["confidence_delta"] >= -0.04    # MAX_CONF_DELTA(0.08) * 0.5
+
+
+def test_fallback_prefers_symbol_evidence(monkeypatch):
+    import core.super_ghost_learning as sgl
+    monkeypatch.setattr(sgl, "get_learning_profile",
+                        lambda s, d, horizon=5: {"available": True, "sample_count": 4,
+                                                 "learning_status": "learning"})
+    monkeypatch.setattr(sgl, "get_pooled_learning_profile",
+                        lambda d, horizon=5: (_ for _ in ()).throw(AssertionError(
+                            "must not consult pooled when symbol evidence exists")))
+    out = sgl.get_learning_profile_with_fallback("WOLF", "UP")
+    assert out["available"] is True
+    assert out["scope"] == "symbol"
+
+
+def test_fallback_uses_pooled_when_symbol_cold(monkeypatch):
+    import core.super_ghost_learning as sgl
+    monkeypatch.setattr(sgl, "get_learning_profile",
+                        lambda s, d, horizon=5: {"available": False, "sample_count": 1,
+                                                 "learning_status": "cold_start"})
+    monkeypatch.setattr(sgl, "get_pooled_learning_profile",
+                        lambda d, horizon=5: {"available": True, "scope": "pooled",
+                                              "sample_count": 40,
+                                              "learning_status": "pooled_learning",
+                                              "confidence_delta": -0.01})
+    out = sgl.get_learning_profile_with_fallback("WOLF", "UP")
+    assert out["scope"] == "pooled"
+    assert out["fallback_from_symbol"] == "WOLF"
+
+
+def test_fallback_returns_cold_when_both_cold(monkeypatch):
+    import core.super_ghost_learning as sgl
+    monkeypatch.setattr(sgl, "get_learning_profile",
+                        lambda s, d, horizon=5: {"available": False, "sample_count": 0,
+                                                 "learning_status": "cold_start"})
+    monkeypatch.setattr(sgl, "get_pooled_learning_profile",
+                        lambda d, horizon=5: {"available": False, "sample_count": 8,
+                                              "learning_status": "cold_start"})
+    out = sgl.get_learning_profile_with_fallback("WOLF", "UP")
+    assert out["available"] is False
+
+
+def test_apply_learning_propagates_scope():
+    from core.super_ghost_learning import apply_learning_to_report
+    report = {"prediction": {"direction": "UP", "confidence": 0.70},
+              "risk_plan": {"entry": 10.0, "target_price": 10.4, "stop_loss": 9.8}}
+    profile = {"available": True, "scope": "pooled", "sample_count": 40,
+               "learning_status": "pooled_learning", "confidence_delta": -0.01,
+               "conviction_multiplier": 1.0, "target_move_multiplier": 1.0}
+    out = apply_learning_to_report(report, profile)
+    adj = out["learning_adjustment"]
+    assert adj["available"] is True
+    assert adj["scope"] == "pooled"
+    assert abs(out["prediction"]["confidence"] - 0.69) < 0.001

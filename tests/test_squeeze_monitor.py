@@ -52,8 +52,15 @@ def test_rth_elapsed_fraction_midday_near_half():
 
 
 def test_squeeze_confidence_active_high_short():
+    # 0607e8c recalibration: move ceiling 50pts, RVOL demoted to 18pts
+    # (participation noise, not edge), extreme short bonus halved to 8.
+    # 7% move (35) + RVOL 3.0 (12) + extreme (8) + active (8) = 63.
     conf = squeeze_confidence(7.0, 3.0, short_risk="extreme", kind="squeeze_active")
-    assert conf >= 65  # extreme short risk bonus halved to avoid 100% overconfidence
+    assert conf == 63
+    # Move quality dominates: a 10% mover outranks a hotter-RVOL 5% mover.
+    strong_move = squeeze_confidence(10.0, 2.0, short_risk="high", kind="squeeze_active")
+    hot_rvol = squeeze_confidence(5.0, 6.0, short_risk="high", kind="squeeze_active")
+    assert strong_move > hot_rvol
 
 
 def test_format_squeeze_alert_simple():
@@ -91,7 +98,10 @@ def test_candidate_to_pick_matches_telegram_fields():
     assert pick["symbol"] == "SPCE"
     assert pick["buy"] == 4.52
     assert pick["sell"] == 4.92
-    assert pick["confidence_pct"] >= 70
+    # 0607e8c recalibration: 7.2% move (36) + RVOL 3.0 (12) + high (10) +
+    # active (8) = 66. The old >=70 expectation predated the move-weighted
+    # rescore that demoted RVOL.
+    assert pick["confidence_pct"] == 66
     assert pick["squeeze_score"] > 0
     assert "p_continue_3pct_60m" in pick["probabilities"]
     assert "Buy: $4.52" in pick["message"]

@@ -14,9 +14,20 @@ def test_gap_through_stop_fills_at_gapped_price():
     assert (price, reason) == (9.20, "stop")
 
 
-def test_target_fills_at_target_not_better():
-    # Even if price spiked past the target, a resting limit books the limit.
-    assert exit_fill(10.9, target=10.5, stop=9.5, expires_at=None, now=1) == (10.5, "target")
+def test_target_fills_at_limit_or_better():
+    # PR #162 symmetry fix: a resting limit sell fills at limit OR BETTER.
+    # A gap up through the target books the gapped price — mirroring how a
+    # gap down through the stop books the gapped price. Exact touch = limit.
+    assert exit_fill(10.9, target=10.5, stop=9.5, expires_at=None, now=1) == (10.9, "target")
+    assert exit_fill(10.5, target=10.5, stop=9.5, expires_at=None, now=1) == (10.5, "target")
+
+
+def test_gap_fills_are_symmetric():
+    # Same 5% gap on either side must book the same magnitude of surprise.
+    down, _ = exit_fill(9.5, target=None, stop=10.0, expires_at=None, now=1)
+    up, _ = exit_fill(11.025, target=10.5, stop=None, expires_at=None, now=1)
+    assert down == 9.5      # stop gapped through: books the gap
+    assert up == 11.025     # target gapped through: books the gap too
 
 
 def test_stop_checked_before_target():
@@ -142,6 +153,25 @@ def test_closed_trade_expectancy_flips_positive_with_tight_stop():
     assert eo["profitable"] is False                     # -3.8% stop bleeds
     assert en["profitable"] is True                      # -1.3% stop profits
     assert en["expectancy_pct"] > 0 > eo["expectancy_pct"]
+
+
+def test_expectancy_by_geometry_splits_legacy_from_current():
+    import core.paper_wallet as pw
+    # Current config: 2% vol * 0.65 mult = 0.013 stop fraction.
+    # Legacy trades carry frozen -3.6% stops; current carry -1.3%.
+    legacy = [{"entry_price": 100.0, "stop_price": 96.4, "pnl_pct": -3.7}] * 3
+    current = [{"entry_price": 100.0, "stop_price": 98.7, "pnl_pct": 2.0}] * 4
+    no_stop = [{"entry_price": 100.0, "stop_price": None, "pnl_pct": 1.0}]
+    out = pw.expectancy_by_geometry(legacy + current + no_stop, 0.013)
+    assert out["legacy_geometry"]["n"] == 3
+    assert out["current_geometry"]["n"] == 4
+    assert out["unknown_geometry_n"] == 1
+    assert out["legacy_geometry"]["profitable"] is False
+    assert out["current_geometry"]["profitable"] is True
+    # WOLF's wider base vol (2.5% * 0.65 = 0.016) still counts as current.
+    wolf = [{"entry_price": 100.0, "stop_price": 98.37, "pnl_pct": 2.0}]
+    out2 = pw.expectancy_by_geometry(wolf, 0.013)
+    assert out2["current_geometry"]["n"] == 1
 
 
 def test_month_rollover_records_and_resets(monkeypatch):

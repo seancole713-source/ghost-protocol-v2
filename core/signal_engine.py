@@ -1991,6 +1991,26 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
                     scores["overconfidence_gate_" + direction.lower()] = cal_gate
                 if not cal_gate.get("ok"):
                     return None, "calibration_unproven"
+                # PR #162: live per-bin recalibration — shrink the model prob
+                # toward its Watcher bin's realized live win rate before
+                # computing confidence, so a persistently inverted bin lowers
+                # the probability itself instead of relying solely on the
+                # PR #156 block. LIVE fires only: research/shadow probes keep
+                # RAW probs — the evidence stream this layer feeds on must
+                # stay unadjusted or the loop would eat its own output.
+                try:
+                    from core.live_recalibration import live_recalibrated_prob
+                    recal = live_recalibrated_prob(float(prob), direction=direction)
+                except Exception as _recal_e:
+                    recal = {"applied": False, "prob_raw": float(prob),
+                             "prob_adjusted": float(prob),
+                             "error": str(_recal_e)[:120]}
+                if scores is not None:
+                    scores["live_recalibration_" + direction.lower()] = recal
+                prob_adj = float(recal.get("prob_adjusted", prob) or prob)
+                if prob_adj <= eff_min_p:
+                    return None, "live_recal_prob_low"
+                prob = prob_adj
             q_hat = meta.get("conformal_q_hat")
             if q_hat is not None and float(q_hat) > 0:
                 from core.conformal_calibration import conformal_confidence

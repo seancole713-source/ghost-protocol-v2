@@ -31,6 +31,12 @@ MIN_STRONG_SAMPLES = 5
 MAX_CONF_DELTA = 0.08
 MAX_TARGET_MOVE_MULT = 1.35
 MIN_TARGET_MOVE_MULT = 0.70
+# PR #162: pooled cross-symbol fallback. With picks spread across ~74 symbols,
+# per-(symbol, direction, horizon) slices almost never reach MIN_PROFILE_SAMPLES,
+# so the learning brain sat in permanent cold-start passthrough while ~1,000
+# resolved ledger rows went unused. Pooled evidence needs more samples to speak
+# and speaks at half volume (deltas halved) because it is less specific.
+MIN_POOLED_SAMPLES = 20
 
 
 def _now() -> int:
@@ -402,6 +408,7 @@ def apply_learning_to_report(report: Dict[str, Any], profile: Optional[Dict[str,
     out["learning_adjustment"] = {
         "available": True,
         "status": profile.get("learning_status"),
+        "scope": profile.get("scope", "symbol"),
         "sample_count": profile.get("sample_count"),
         "direction_win_rate": profile.get("direction_win_rate"),
         "confidence_delta": round(conf_delta, 4),
@@ -582,6 +589,101 @@ def get_learning_profile(symbol: str, direction: str, *, horizon: int = 5) -> Di
         "updated_at": r[10],
     })
     return out
+
+
+def pooled_profile_from_rows(rows: Iterable[Tuple[Any, Any, Any]]) -> Dict[str, Any]:
+    """Pure sample-weighted merge of per-symbol profiles (PR #162, testable).
+
+    rows: (sample_count, direction_win_rate, target_move_multiplier) tuples.
+    Pooled adjustments run at HALF the per-symbol strength (less specific
+    evidence → quieter voice) and NEVER emit dampen/supportive — direction
+    blocks remain per-symbol-evidence-only.
+    """
+    total = 0
+    wr_wsum = wr_n = 0.0
+    tm_wsum = tm_n = 0.0
+    for r in rows or []:
+        n = int(_f(r[0]) or 0)
+        if n <= 0:
+            continue
+        total += n
+        wr = _f(r[1])
+        if wr is not None:
+            wr_wsum += wr * n
+            wr_n += n
+        tm = _f(r[2])
+        if tm is not None:
+            tm_wsum += tm * n
+            tm_n += n
+    win_rate = (wr_wsum / wr_n) if wr_n else None
+    raw_tm = (tm_wsum / tm_n) if tm_n else 1.0
+    available = total >= MIN_POOLED_SAMPLES and win_rate is not None
+    conf_delta = 0.0
+    conv_mult = 1.0
+    target_mult = 1.0
+    if available:
+        conf_delta = _clamp((win_rate - 0.50) * 0.20, -MAX_CONF_DELTA, MAX_CONF_DELTA) * 0.5
+        conv_mult = 1.0 + (_clamp(1.0 + (win_rate - 0.50) * 0.25, 0.85, 1.15) - 1.0) * 0.5
+        target_mult = _clamp(1.0 + (raw_tm - 1.0) * 0.5, MIN_TARGET_MOVE_MULT, MAX_TARGET_MOVE_MULT)
+    return {
+        "available": available,
+        "scope": "pooled",
+        "sample_count": total,
+        "direction_win_rate": round(win_rate, 4) if win_rate is not None else None,
+        "confidence_delta": round(conf_delta, 4),
+        "conviction_multiplier": round(conv_mult, 4),
+        "target_move_multiplier": round(target_mult, 4),
+        "learning_status": "pooled_learning" if available else "cold_start",
+        "primary_lesson": ("Cross-symbol pooled lesson: adjustments derived from every "
+                           "symbol's resolved outcomes for this direction/horizon at half "
+                           "strength.") if available else None,
+        "min_pooled_samples": MIN_POOLED_SAMPLES,
+    }
+
+
+def get_pooled_learning_profile(direction: str, *, horizon: int = 5) -> Dict[str, Any]:
+    """Cross-symbol pooled learning profile for a direction+horizon (PR #162)."""
+    d = (direction or "HOLD").upper()
+    h = horizon if horizon in LEARNING_HORIZONS else 5
+    try:
+        from core.db import db_conn
+        with db_conn() as conn:
+            cur = conn.cursor()
+            ensure_learning_tables(cur)
+            cur.execute(
+                """
+                SELECT sample_count, direction_win_rate, target_move_multiplier
+                FROM super_ghost_learning_profiles
+                WHERE horizon_days=%s AND direction=%s
+                """,
+                (h, d),
+            )
+            rows = cur.fetchall()
+    except Exception as exc:
+        return {"available": False, "scope": "pooled", "error": str(exc)[:120],
+                "sample_count": 0, "learning_status": "unavailable"}
+    out = pooled_profile_from_rows(rows)
+    out.update({"direction": d, "horizon_days": h})
+    return out
+
+
+def get_learning_profile_with_fallback(symbol: str, direction: str, *,
+                                       horizon: int = 5) -> Dict[str, Any]:
+    """Per-symbol profile when it has evidence; pooled cross-symbol otherwise.
+
+    PR #162: the per-symbol slice stays authoritative the moment it clears
+    MIN_PROFILE_SAMPLES (specific evidence beats pooled). Until then the
+    pooled profile keeps the Learning Brain awake instead of a passthrough.
+    """
+    prof = get_learning_profile(symbol, direction, horizon=horizon)
+    if prof.get("available"):
+        prof.setdefault("scope", "symbol")
+        return prof
+    pooled = get_pooled_learning_profile(direction, horizon=horizon)
+    if pooled.get("available"):
+        pooled["fallback_from_symbol"] = (symbol or "").upper()
+        return pooled
+    return prof
 
 
 def learning_summary(*, symbol: Optional[str] = None, horizon: int = 5, limit: int = 20) -> Dict[str, Any]:

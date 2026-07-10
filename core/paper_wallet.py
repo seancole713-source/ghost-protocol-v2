@@ -140,6 +140,45 @@ def closed_trade_expectancy(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def expectancy_by_geometry(rows: List[Dict[str, Any]],
+                           current_stop_frac: float) -> Dict[str, Any]:
+    """Split closed-trade expectancy by the stop geometry each trade actually
+    ran under (PR #162, pure/testable).
+
+    PR #154 tightened the wallet stop (vol*1.8 → vol*0.65) but stop_price is
+    frozen per-row at entry, so the closed book is a MIX of legacy ~-3.6% stops
+    and current ~-1.3% stops. Pooling them poisons the expectancy read — the
+    old geometry's oversized losses hide whether the new geometry works.
+    Classify each row by its own frozen stop distance (1 - stop/entry):
+    within 1.5x of the current config → current_geometry, wider → legacy,
+    missing stop/entry → counted as unknown, never guessed.
+    """
+    cur_rows: List[Dict[str, Any]] = []
+    legacy_rows: List[Dict[str, Any]] = []
+    unknown = 0
+    thresh = max(1e-9, float(current_stop_frac)) * 1.5
+    for r in rows:
+        try:
+            entry = float(r.get("entry_price") or 0)
+            stop = float(r.get("stop_price") or 0)
+            frac = (1.0 - stop / entry) if (entry > 0 and stop > 0) else None
+        except Exception:
+            frac = None
+        if frac is None or frac <= 0:
+            unknown += 1
+        elif frac <= thresh:
+            cur_rows.append(r)
+        else:
+            legacy_rows.append(r)
+    return {
+        "current_stop_frac": round(float(current_stop_frac), 6),
+        "split_threshold_frac": round(thresh, 6),
+        "current_geometry": closed_trade_expectancy(cur_rows),
+        "legacy_geometry": closed_trade_expectancy(legacy_rows),
+        "unknown_geometry_n": unknown,
+    }
+
+
 def _max_open() -> int:
     return max(1, int(os.getenv("PAPER_MAX_OPEN", "15")))
 
@@ -388,14 +427,18 @@ def exit_fill(price: float, target, stop, expires_at, now: int):
 
     stop:   fills at min(stop, price) — a gap through the stop fills at the
             gapped price (the slippage bar-sims hide)
-    target: fills AT the target (resting limit fills at limit or better;
-            we book the conservative side)
+    target: fills at max(target, price) — a resting limit sell fills at the
+            limit OR BETTER, so a gap up through the target books the gapped
+            price. (PR #162 symmetry fix: booking stop gaps against us while
+            capping wins at the limit gave losers gap downside and winners no
+            gap upside — with 5-min polling that asymmetry alone manufactured
+            negative expectancy: avg win +1.96% vs avg loss -3.34%.)
     expiry: market close-out at current price
     """
     if stop and price <= stop:
         return round(min(float(stop), price), 4), "stop"
     if target and price >= target:
-        return round(float(target), 4), "target"
+        return round(max(float(target), price), 4), "target"
     if expires_at and now >= int(expires_at):
         return round(price, 4), "expiry"
     return None
@@ -601,12 +644,13 @@ def wallet_summary() -> Dict[str, Any]:
                 })
             cur.execute(
                 """SELECT id, book, symbol, qty, entry_price, entry_ts, exit_price,
-                          exit_ts, exit_reason, pnl, pnl_pct
+                          exit_ts, exit_reason, pnl, pnl_pct, target_price, stop_price
                    FROM ghost_paper_trades WHERE status='closed'
                    ORDER BY exit_ts DESC LIMIT 60""")
             history = [dict(zip(("id", "book", "symbol", "qty", "entry_price",
                                  "entry_ts", "exit_price", "exit_ts", "exit_reason",
-                                 "pnl", "pnl_pct"), r)) for r in cur.fetchall()]
+                                 "pnl", "pnl_pct", "target_price", "stop_price"), r))
+                       for r in cur.fetchall()]
             cur.execute("SELECT COUNT(*), COALESCE(SUM(pnl),0),"
                         " SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END)"
                         " FROM ghost_paper_trades WHERE status='closed'")
@@ -672,6 +716,13 @@ def wallet_summary() -> Dict[str, Any]:
                                      _default_vol_pct_readonly() * _wallet_stop_vol_mult()),
                 },
                 "expectancy": closed_trade_expectancy(history),
+                # PR #162: same 60 rows split by each trade's FROZEN stop
+                # geometry — pre-PR#154 legacy (-3.6%) vs current (-1.3%) —
+                # so the old geometry's losses can't hide whether the new
+                # geometry actually works.
+                "expectancy_by_geometry": expectancy_by_geometry(
+                    history,
+                    _default_vol_pct_readonly() * _wallet_stop_vol_mult()),
                 "goal": {
                     "target": goal,
                     "month": cfg.get("goal_month"),

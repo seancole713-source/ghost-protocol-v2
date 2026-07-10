@@ -1102,10 +1102,17 @@ def build_super_ghost(symbol: str = "WOLF", *, snapshot: Optional[Dict[str, Any]
     # modestly adjust future target distance. DB failures/cold-start never block
     # the deterministic report.
     try:
-        from core.super_ghost_learning import apply_learning_to_report, get_learning_profile
+        from core.super_ghost_learning import (
+            apply_learning_to_report,
+            get_learning_profile_with_fallback,
+        )
 
         direction = str((report.get("prediction") or {}).get("direction") or "HOLD").upper()
-        profile = get_learning_profile(sym, direction, horizon=5)
+        # PR #162: pooled cross-symbol fallback — per-symbol slices almost
+        # never reach MIN_PROFILE_SAMPLES across ~74 symbols, which left the
+        # learning brain in permanent cold-start. Symbol evidence still wins
+        # the moment it exists; pooled speaks at half strength until then.
+        profile = get_learning_profile_with_fallback(sym, direction, horizon=5)
         report = apply_learning_to_report(report, profile)
     except Exception as _learn_exc:
         report["learning_adjustment"] = {
