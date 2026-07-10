@@ -309,6 +309,12 @@ def _active_feature_cols() -> list:
     cols = [c for c in FEATURE_COLS if c not in prune]
     if _v3_sector_feature_enabled() and "sector_rel_strength" not in prune:
         cols.append("sector_rel_strength")
+    # PR #165: point-in-time SEC fundamentals (off by default; toggling
+    # changes feature_schema and forces a retrain, same as the sector col).
+    from core.fundamental_features import FUNDAMENTAL_FEATURE_NAMES
+    from core.fundamental_features import enabled as _fund_enabled
+    if _fund_enabled():
+        cols.extend(c for c in FUNDAMENTAL_FEATURE_NAMES if c not in prune)
     return cols
 
 
@@ -961,6 +967,17 @@ def backtest_symbol(symbol, asset_type):
                 macro = get_macro_features_for_date(bar_date)
                 for k, v in macro.items():
                     features[k] = v
+        except Exception:
+            note_suppressed()
+        # PR #165: point-in-time SEC fundamentals for this bar's date —
+        # a quarter is visible only once its SEC filed date has passed.
+        try:
+            from core.fundamental_features import enabled as _fund_on
+            if _fund_on():
+                bar_date = str(rows[i].get("ts", ""))[:10]
+                if bar_date:
+                    from core.fundamental_features import get_fundamental_features_for_date
+                    features.update(get_fundamental_features_for_date(symbol, bar_date))
         except Exception:
             note_suppressed()  # UP label
         up_outcome = _simulate_up_tp_sl(rows, i, V3_LABEL_HOLD_BARS, vol_pct)
@@ -1733,6 +1750,16 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
         features["sector_rel_strength"] = _sector_rel_at(
             rows, aligned_sector, len(rows) - 1, _v3_sector_lookback()
         )
+    # PR #165: same point-in-time fundamentals as training, as of the last bar.
+    try:
+        from core.fundamental_features import enabled as _fund_on
+        if _fund_on():
+            from core.fundamental_features import get_fundamental_features_for_date
+            _fund_date = str(rows[-1].get("ts", ""))[:10] if rows else ""
+            if _fund_date:
+                features.update(get_fundamental_features_for_date(symbol, _fund_date))
+    except Exception:
+        note_suppressed()
 
     above_ema200 = features.get('above_ema200', 1)
     adx_trending = features.get('adx_trending', 1)
