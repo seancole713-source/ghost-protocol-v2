@@ -125,11 +125,18 @@ def run_symbol(sym, cols):
     cap = fm.predict_proba(Xca)[:, 1] if len(Xca) else []
     gap = fm.predict_proba(Xg)[:, 1] if len(Xg) else []
     pg = select_fire_threshold(cap, yca, gap, yg, TARGET)
+    acc = float(ho["holdout_acc"] or 0)
+    edge = float(ho["edge"] or 0)
     return {"gate_probs": [float(p) for p in gap],
             "gate_labels": [int(v) for v in yg],
-            "acc": ho["holdout_acc"], "edge": ho["edge"],
+            "acc": acc, "edge": edge,
             "natural_rate": float(np.mean(y)) if n else None,
-            "pg_ok": bool(pg.get("ok")), "pg_thr": pg.get("threshold")}
+            "pg_ok": bool(pg.get("ok")), "pg_thr": pg.get("threshold"),
+            # Contract-70 SERVE floors (min_holdout_acc 0.60, min_edge 0.05):
+            # a model that fails these is never STORED in prod, so no evals,
+            # no shadow evidence — the 2026-07-10 mult-1.2 live retrain failed
+            # 0/33 exactly here. Any future config must clear these offline.
+            "serve_pass": bool(acc >= 0.60 and edge >= 0.05)}
 
 
 def ev_stats(precision, target_pct, stop_pct):
@@ -156,6 +163,7 @@ def main():
         stop_pct = target_pct * sm
         pooled_p, pooled_y = [], []
         per_sym_ok = 0
+        serve_pass_ct = 0
         nsym = 0
         for sym in SYMS:
             try:
@@ -170,10 +178,13 @@ def main():
             pooled_y += r["gate_labels"]
             if r["pg_ok"]:
                 per_sym_ok += 1
+            if r.get("serve_pass"):
+                serve_pass_ct += 1
         g = select_global_threshold(pooled_p, pooled_y, TARGET)
         row = {"target_scale": ts, "stop_mult": sm,
                "target_pct": round(target_pct, 4), "stop_pct": round(stop_pct, 4),
                "symbols": nsym, "per_symbol_proven": per_sym_ok,
+               "serve_pass": serve_pass_ct,
                "pooled_n": len(pooled_y),
                "pooled_ok": bool(g.get("ok")),
                "pooled_thr": g.get("threshold"),
