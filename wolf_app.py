@@ -2602,6 +2602,12 @@ def picks_page():
     return _serve_html_page("ghost_console.html")
 
 
+@APP.get("/studios", include_in_schema=False)
+def studios_page():
+    """Studio booking management display — Pink/Retro/Red Studio cards."""
+    return _serve_html_page("studios.html")
+
+
 # Tiny inline ghost favicon (SVG). PR #92: browsers auto-request /favicon.ico on
 # every page load; without this route that request 404s (flagged in the launch
 # review). Served as an SVG data-equivalent with long cache so it costs nothing.
@@ -3255,3 +3261,5 @@ from api.routes_data import (  # noqa: E402,F401 — facade re-exports
     get_daily_report_logs,
     create_daily_report_snapshot,
 )
+from api.routes_studios import router as _routes_studios_router  # noqa: E402
+APP.include_router(_routes_studios_router)

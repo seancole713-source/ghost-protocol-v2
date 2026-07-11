@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ghost Protocol — Studios</title>
+<link rel="stylesheet" href="/static/base.css">
+<style>
+:root{--pink:#ec4899;--retro:#f59e0b;--red:#ef4444;--bg:#0a0a0a;--card:#111;--border:#1e1e1e;--text:#e5e5e5;--muted:#888;--green:#4ade80;--red-text:#fca5a5}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh}
+.main{max-width:1200px;margin:0 auto;padding:24px}
+.header{display:flex;justify-content:space-between;align-items:center;margin-bottom:28px;flex-wrap:wrap;gap:12px}
+.header h1{font-size:22px;font-weight:800;letter-spacing:-.5px;margin:0}
+.header h1 span{color:var(--muted);font-weight:400;font-size:16px;margin-left:8px}
+.header-right{display:flex;align-items:center;gap:16px;font-size:13px;color:var(--muted)}
+.month-badge{font-size:11px;font-weight:700;letter-spacing:1px;padding:4px 10px;border-radius:20px;background:#1a1a1a;border:1px solid #2a2a2a}
+.recon-badge{font-size:11px;font-weight:700;letter-spacing:.5px;padding:4px 10px;border-radius:20px}
+.recon-badge.pass{background:#071a0d;border:1px solid #14532d;color:var(--green)}
+.recon-badge.fail{background:#1a0707;border:1px solid #5b1a1a;color:var(--red-text)}
+.studio-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:20px;margin-bottom:32px}
+.studio-card{background:var(--card);border:1px solid var(--border);border-radius:16px;padding:20px;position:relative;overflow:hidden}
+.studio-card::before{content:'';position:absolute;top:0;left:0;right:0;height:3px}
+.studio-card.pink::before{background:var(--pink)}
+.studio-card.retro::before{background:var(--retro)}
+.studio-card.red::before{background:var(--red)}
+.card-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px}
+.card-name{font-size:18px;font-weight:700}
+.card-ring{font-size:28px;font-weight:800;letter-spacing:-1px}
+.pink .card-ring{color:var(--pink)}
+.retro .card-ring{color:var(--retro)}
+.red .card-ring{color:var(--red)}
+.metrics-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px}
+.metric{background:#0d0d0d;border-radius:10px;padding:10px 12px}
+.metric-label{font-size:10px;font-weight:700;letter-spacing:1px;color:var(--muted);text-transform:uppercase;margin-bottom:4px}
+.metric-value{font-size:18px;font-weight:700}
+.metric-sub{font-size:11px;color:var(--muted);margin-top:2px}
+.metric-sub.up{color:var(--green)}
+.metric-sub.down{color:var(--red-text)}
+.rate-chip{display:inline-block;font-size:11px;font-weight:700;padding:3px 8px;border-radius:10px;background:#1a1a1a;color:var(--muted);margin-bottom:10px}
+.tabs{display:flex;gap:2px;margin-bottom:12px;border-bottom:1px solid var(--border);padding-bottom:0}
+.tab{font-size:11px;font-weight:600;padding:6px 12px;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;transition:all .15s;background:none;border-top:none;border-left:none;border-right:none}
+.tab:hover{color:var(--text)}
+.tab.active{color:var(--text);border-bottom-color:var(--text)}
+.tab-content{display:none;font-size:12px;line-height:1.6}
+.tab-content.active{display:block}
+.booking-row{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #1a1a1a;font-size:12px}
+.booking-row:last-child{border-bottom:none}
+.source-bar{display:flex;height:6px;border-radius:3px;overflow:hidden;margin:8px 0}
+.source-seg{height:100%}
+.source-legend{display:flex;gap:12px;flex-wrap:wrap;font-size:11px;color:var(--muted)}
+.source-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px}
+.perf-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:11px}
+.perf-item{display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #1a1a1a}
+.perf-item .label{color:var(--muted)}
+.perf-item .value{font-weight:600}
+.empty-state{text-align:center;padding:40px 20px;color:var(--muted)}
+.empty-state h2{font-size:18px;margin-bottom:8px}
+.empty-state p{font-size:13px}
+.recon-table{width:100%;font-size:12px;border-collapse:collapse;margin-top:16px}
+.recon-table th{text-align:left;font-size:10px;font-weight:700;letter-spacing:1px;color:var(--muted);padding:8px;border-bottom:1px solid var(--border)}
+.recon-table td{padding:8px;border-bottom:1px solid #1a1a1a}
+.recon-table .pass{color:var(--green)}
+.recon-table .fail{color:var(--red-text)}
+.skeleton{background:linear-gradient(90deg,#1a1a1a 25%,#222 50%,#1a1a1a 75%);background-size:200% 100%;animation:shimmer 1.5s infinite;border-radius:8px}
+@keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+@media(max-width:768px){.studio-grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="main">
+  <div class="header">
+    <h1>STUDIOS <span id="header-sub"></span></h1>
+    <div class="header-right">
+      <span id="recon-badge" class="recon-badge">⟳</span>
+      <span class="month-badge" id="month-badge"></span>
+      <span id="updated-at" style="font-size:11px;color:var(--muted)"></span>
+    </div>
+  </div>
+
+  <div class="studio-grid" id="studio-grid"></div>
+
+  <section style="margin-top:32px">
+    <h3 style="font-size:14px;font-weight:700;letter-spacing:1px;color:var(--muted);margin-bottom:12px">RECONCILIATION</h3>
+    <div style="overflow-x:auto">
+      <table class="recon-table" id="recon-table"></table>
+    </div>
+  </section>
+</div>
+
+<script>
+const STUDIO_COLORS = {'Pink Studio':'pink','Retro Studio':'retro','Red Studio':'red'};
+const SOURCE_COLORS = {'peerspace':'#ec4899','giggster':'#f59e0b','direct':'#4ade80','other':'#888'};
+
+function fmt$(n){return n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}
+function fmtPct(n){return n.toFixed(1)+'%'}
+function fmtChange(n){return n>=0?'↑ '+Math.abs(n)+'%':'↓ '+Math.abs(n)+'%'}
+
+function renderSkeleton(){
+  document.getElementById('studio-grid').innerHTML = [1,2,3].map(()=>`
+    <div class="studio-card"><div class="skeleton" style="height:200px"></div></div>
+  `).join('');
+}
+
+function renderStudios(data){
+  const h = data.header;
+  document.getElementById('header-sub').textContent = h.active+' ACTIVE · '+h.month_label+' MTD';
+  document.getElementById('month-badge').textContent = h.month_label+' MTD';
+  document.getElementById('updated-at').textContent = 'just now';
+
+  const rb = document.getElementById('recon-badge');
+  rb.textContent = data.all_checks_pass ? '✓ ALL CHECKS PASS' : '✗ CHECKS FAIL';
+  rb.className = 'recon-badge '+(data.all_checks_pass?'pass':'fail');
+
+  const grid = document.getElementById('studio-grid');
+  grid.innerHTML = data.studios.map(s=>{
+    const cls = STUDIO_COLORS[s.name]||'';
+    const m = s.mtd;
+    const fm = s.full_month;
+    const pm = s.prior_month;
+    const changeCls = pm.change_pct>=0?'up':'down';
+    const feeRatio = m.gross>0?(m.fees/m.gross*100).toFixed(1):'0.0';
+
+    const sourcesHtml = Object.entries(s.sources).map(([k,v])=>{
+      const color = SOURCE_COLORS[k]||SOURCE_COLORS.other;
+      return `<span><span class="source-dot" style="background:${color}"></span>${v}% ${k}</span>`;
+    }).join(' ');
+
+    const sourceBarHtml = Object.entries(s.sources).map(([k,v])=>{
+      const color = SOURCE_COLORS[k]||SOURCE_COLORS.other;
+      return `<div class="source-seg" style="width:${v}%;background:${color}"></div>`;
+    }).join('');
+
+    const bookingsHtml = s.bookings.slice(0,8).map(b=>`
+      <div class="booking-row">
+        <span>${b.date} · ${b.source}</span>
+        <span>${b.hours}hr · $${fmt$(b.gross)} · <span style="color:${b.status==='collected'?'var(--green)':'var(--muted)'}">${b.status}</span></span>
+      </div>
+    `).join('') || '<div style="color:var(--muted);font-size:12px">No bookings yet</div>';
+
+    return `
+    <div class="studio-card ${cls}">
+      <div class="card-header">
+        <div>
+          <div class="card-name">${s.name}</div>
+          <div class="rate-chip">$${s.rate}/hr</div>
+        </div>
+        <div class="card-ring">${fmtPct(s.ring_pct)}</div>
+      </div>
+
+      <div class="metrics-grid">
+        <div class="metric">
+          <div class="metric-label">Net after fees MTD</div>
+          <div class="metric-value">$${fmt$(m.net)}</div>
+          <div class="metric-sub ${changeCls}">vs prior month ${fmtChange(pm.change_pct)}</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Rate</div>
+          <div class="metric-value">$${s.rate}/hr</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">GROSS</div>
+          <div class="metric-value">$${fmt$(m.gross)}</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">FEES</div>
+          <div class="metric-value">$${fmt$(m.fees)}</div>
+          <div class="metric-sub">${feeRatio}% effective</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">HOURS</div>
+          <div class="metric-value">${m.hours} HR</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">BOOKINGS</div>
+          <div class="metric-value">${m.bookings}</div>
+          <div class="metric-sub">${m.collected} collected · ${m.expected} expected</div>
+        </div>
+      </div>
+
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px">
+        Full-month: ${fm.bookings} · $${fmt$(fm.gross)} gross · $${fmt$(fm.net)} net · ${fm.hours} HR · +$${fmt$(fm.pending_gross)} pending
+      </div>
+
+      <div class="tabs">
+        <button class="tab active" onclick="switchTab(this,'overview-${s.name.replace(/ /g,'')}')">Overview</button>
+        <button class="tab" onclick="switchTab(this,'sources-${s.name.replace(/ /g,'')}')">Sources</button>
+        <button class="tab" onclick="switchTab(this,'performance-${s.name.replace(/ /g,'')}')">Performance</button>
+        <button class="tab" onclick="switchTab(this,'bookings-${s.name.replace(/ /g,'')}')">Bookings</button>
+      </div>
+
+      <div class="tab-content active" id="overview-${s.name.replace(/ /g,'')}">
+        <div class="source-bar">${sourceBarHtml}</div>
+        <div class="source-legend">${sourcesHtml}</div>
+        <div style="margin-top:8px;font-size:11px;color:var(--muted)">
+          Status: ${Object.entries(s.statuses).map(([k,v])=>v+' '+k).join(' · ')}
+        </div>
+      </div>
+
+      <div class="tab-content" id="sources-${s.name.replace(/ /g,'')}">
+        <div class="source-bar">${sourceBarHtml}</div>
+        <div class="source-legend">${sourcesHtml}</div>
+        ${Object.entries(s.source_counts).map(([k,v])=>`
+          <div class="perf-item"><span class="label">${k}</span><span class="value">${v} bookings</span></div>
+        `).join('')}
+      </div>
+
+      <div class="tab-content" id="performance-${s.name.replace(/ /g,'')}">
+        <div class="perf-grid">
+          <div class="perf-item"><span class="label">Net/hour</span><span class="value">$${fmt$(s.net_per_hour)}</span></div>
+          <div class="perf-item"><span class="label">Avg net/booking</span><span class="value">$${fmt$(s.avg_net_per_booking)}</span></div>
+          <div class="perf-item"><span class="label">Fee ratio</span><span class="value">${feeRatio}%</span></div>
+          <div class="perf-item"><span class="label">Bookings MTD</span><span class="value">${m.bookings}</span></div>
+          <div class="perf-item"><span class="label">Hours MTD</span><span class="value">${m.hours} HR</span></div>
+          <div class="perf-item"><span class="label">Collected</span><span class="value">${m.collected}/${m.bookings}</span></div>
+        </div>
+      </div>
+
+      <div class="tab-content" id="bookings-${s.name.replace(/ /g,'')}">
+        ${bookingsHtml}
+      </div>
+    </div>`;
+  }).join('');
+
+  // Reconciliation table
+  document.getElementById('recon-table').innerHTML = `
+    <tr><th>Studio</th><th>Check</th><th>Expected</th><th>Observed</th><th>Result</th></tr>
+    ${data.reconciliation.map(c=>`
+      <tr>
+        <td>${c.studio}</td>
+        <td>${c.check}</td>
+        <td>${c.expected||'—'}</td>
+        <td>${c.observed||'—'}</td>
+        <td class="${c.pass?'pass':'fail'}">${c.pass?'✓ PASS':'✗ FAIL'}</td>
+      </tr>
+    `).join('')}
+  `;
+}
+
+function switchTab(btn, tabId){
+  const card = btn.closest('.studio-card');
+  card.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  card.querySelectorAll('.tab-content').forEach(c=>c.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById(tabId).classList.add('active');
+}
+
+async function load(){
+  renderSkeleton();
+  try{
+    const r = await fetch('/api/studios');
+    const d = await r.json();
+    if(d.ok) renderStudios(d);
+    else document.getElementById('studio-grid').innerHTML=`<div class="empty-state"><h2>Error</h2><p>${d.error}</p></div>`;
+  }catch(e){
+    document.getElementById('studio-grid').innerHTML=`<div class="empty-state"><h2>Connection Error</h2><p>${e.message}</p></div>`;
+  }
+}
+
+load();
+setInterval(load, 60000);
+</script>
+</body>
+</html>
