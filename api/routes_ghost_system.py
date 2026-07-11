@@ -65,6 +65,56 @@ def ghost_contract_endpoint():
         return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
 
 
+@router.get("/api/ghost/doctrine")
+def ghost_doctrine_spec_endpoint():
+    """Static Ghost Doctrine specification — 6-step thinking layer (PR #129)."""
+    try:
+        from core.ghost_doctrine import ghost_doctrine_spec
+
+        return {"ok": True, **ghost_doctrine_spec()}
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
+@router.get("/api/ghost/doctrine/{symbol}")
+def ghost_doctrine_symbol_endpoint(
+    symbol: str,
+    light: int = 0,
+    live: int = 0,
+):
+    """Per-symbol 6-step doctrine (PR #129).
+
+    light=1: cheap DB-only mode (latest ledger row, no super-ghost build)
+    live=1:  additionally runs predict_live_ex + up_prob inversion (heavy)
+    """
+    import asyncio
+    import os as _os
+    sym = (symbol or "").strip().upper()
+    mode = "light" if int(light) else "full"
+    include_live = bool(int(live))
+    cache_key = f"ghost-doctrine:{sym}:{mode}:{int(include_live)}"
+
+    # Check cache (reuse wolf_endpoints cache aliases)
+    try:
+        from api.wolf_endpoints import _cache_get, _cache_set
+        cached = _cache_get(cache_key, 180.0)
+        if cached:
+            return cached
+    except Exception:
+        _cache_get = None
+        _cache_set = None
+
+    try:
+        from core.ghost_doctrine import build_symbol_doctrine
+
+        payload = build_symbol_doctrine(sym, mode=mode, include_live_gate=include_live)
+        if _cache_set:
+            _cache_set(cache_key, payload)
+        return payload
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
 @router.get("/api/ghost/drift")
 def ghost_drift_endpoint(symbol: str = "WOLF", window: int = 14):
     """Feature drift alerts vs baseline snapshots (Phase 2)."""

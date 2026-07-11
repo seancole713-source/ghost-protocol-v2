@@ -1133,6 +1133,12 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
     </div>
   </section>
 
+  <!-- ─── Ghost Doctrine (PR #129) — 6-step thinking layer ─── -->
+  <section class="block" id="doctrine-section">
+    <div class="sec-label">Ghost Doctrine &middot; Clarity → Decision → Direction → Alignment → Consistency → Results</div>
+    <div id="doctrine-strip"></div>
+  </section>
+
   <!-- ─── Signal History (roadmap #4c — every engine evaluation) ─── -->
   <section class="block" id="signal-history-section">
     <div class="sec-label">Signal History &middot; every scan</div>
@@ -4036,6 +4042,37 @@ async function loadGhostContract(){
     + '</div>';
 }
 
+async function loadDoctrine(){
+  var el = document.getElementById('doctrine-strip');
+  if(!el) return;
+  try{
+    var d = await fetch('/api/ghost/doctrine/WOLF').then(function(r){return r.json()}).catch(function(){return null});
+    if(!d || d.ok !== true){ el.innerHTML = '<div class="empty">Doctrine unavailable</div>'; return; }
+    var steps = d.steps || [];
+    var html = '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">';
+    steps.forEach(function(s){
+      var cls = s.status === 'pass' ? 'good' : (s.status === 'hold' ? 'warn' : '');
+      html += '<span class="tag' + (cls ? ' ' + cls : '') + '" title="' + _mvrEsc(s.headline||'') + '">' + _mvrEsc(s.label) + '</span>';
+    });
+    html += '</div><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px">';
+    steps.forEach(function(s){
+      var cls = s.status === 'pass' ? 'good' : (s.status === 'hold' ? 'warn' : '');
+      html += '<div style="background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:12px">';
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><b style="font-size:13px">' + _mvrEsc(s.label) + '</b><span class="tag' + (cls ? ' ' + cls : '') + '" style="font-size:10px">' + _mvrEsc(s.status) + '</span></div>';
+      html += '<p style="font-size:12px;color:#8b96a8;margin:0 0 8px">' + _mvrEsc(s.headline||'') + '</p>';
+      if(s.status === 'insufficient' && s.insufficient_reason){
+        html += '<p style="font-size:11px;color:#f5a623">Insufficient evidence</p>';
+      }
+      (s.evidence||[]).slice(0,4).forEach(function(e){
+        html += '<div class="kv" style="font-size:11px"><span>' + _mvrEsc(e.name) + '</span><b>' + _mvrEsc(e.value!=null?String(e.value):'—') + '</b></div>';
+      });
+      html += '</div>';
+    });
+    html += '</div>';
+    el.innerHTML = html;
+  }catch(e){ el.innerHTML = '<div class="empty">Doctrine error</div>'; }
+}
+
 function _renderPjMetrics(m){
   if(!m) return '';
   function cell(lbl, val){ return '<div style="flex:1;min-width:90px"><div style="font-size:10px;color:#8b96a8;letter-spacing:.05em">' + lbl + '</div><div style="font-size:15px;font-weight:700;margin-top:2px">' + val + '</div></div>'; }
@@ -4424,6 +4461,7 @@ _deferBelowFold(function(){
   loadEquityChart();
   loadShortInterest();
   loadGhostContract();
+  loadDoctrine();
   loadPickJournal(true);
   loadSignalHistory();
   loadPerformanceLog();

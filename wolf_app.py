@@ -23,7 +23,7 @@ logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 # missing from Railway logs after a deploy, the container is stale (the
 # Procfile boot echo is the shell-level twin of this check).
 LOGGER.info(
-    "[wolf_app] BOOT_BANNER PR165_PIT_FUNDAMENTALS "
+    "[wolf_app] BOOT_BANNER PR129_DOCTRINE_LAYER "
     "DEPLOY_VERSION=%s GIT_SHA=%s DEPLOY_ID=%s",
     os.getenv("DEPLOY_VERSION", "unset"),
     os.getenv("RAILWAY_GIT_COMMIT_SHA", "unset"),
@@ -3099,7 +3099,7 @@ def _record_v3_train_state(**fields) -> None:
 
 # PR #19 deploy-version constant. Bump on every "did Railway pick up
 # the new code?" PR so /api/_version reveals the truth in one curl.
-_RUNNING_PR_VERSION = 165
+_RUNNING_PR_VERSION = 129
 
 
 def _deploy_meta() -> dict:
@@ -3189,6 +3189,8 @@ APP.include_router(_routes_ghost_system_router)
 from api.routes_ghost_system import (  # noqa: E402,F401 — facade re-exports
     ghost_blueprint_endpoint,
     ghost_contract_endpoint,
+    ghost_doctrine_spec_endpoint,
+    ghost_doctrine_symbol_endpoint,
     ghost_drift_endpoint,
     ghost_options_endpoint,
     ghost_regime_endpoint,

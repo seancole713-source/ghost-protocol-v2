@@ -86,6 +86,12 @@ def _cache_set(key: str, payload: Any) -> None:
         _CACHE[key] = (time.time(), payload)
 
 
+# Public aliases for cross-module cache sharing (PR #129 doctrine layer).
+# Other modules can import these instead of reaching into private _CACHE.
+get_cached_payload = _cache_get
+set_cached_payload = _cache_set
+
+
 def _ok(payload: dict) -> dict:
     out = {"ok": True}
     out.update(payload)
