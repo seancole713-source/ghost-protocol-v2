@@ -92,6 +92,148 @@ def _round(v: Any, ndigits: int = 4) -> Optional[float]:
     return round(f, ndigits) if f is not None else None
 
 
+DOCTRINE_WORDS = ("Clarity", "Decision", "Direction", "Alignment", "Consistency", "Results")
+
+
+def _build_report_doctrine(
+    *,
+    decisions: Dict[str, Any],
+    wallet: Dict[str, Any],
+    calibration: Dict[str, Any],
+    breakers: Dict[str, Any],
+    identity: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Map the daily report onto Ghost's six-word doctrine.
+
+    This is a read-only display/thinking layer. It summarizes the evidence
+    already gathered by the report; it does not call the engine, change gates, or
+    write state. Unknown values are explicitly ``insufficient``.
+    """
+    feed_states = breakers or {}
+    open_breakers = sorted([name for name, state in feed_states.items() if state and state != "closed"])
+    scan_cycles = _as_int(decisions.get("scan_cycles_today"))
+    age = decisions.get("latest_cycle_age_seconds")
+    age_i = _as_int(age) if age is not None else None
+    paused = bool(decisions.get("latest_cycle_paused"))
+    gate_open = bool(decisions.get("gate_open"))
+    fired = _as_int(decisions.get("picks_fired_today"))
+    wallet_ok = bool(wallet) and "error" not in wallet
+    cal_status = calibration.get("status")
+    cal_n = _as_int(calibration.get("resolved_n"))
+    brier = calibration.get("brier")
+    high_wr = calibration.get("high_conf_win_rate")
+    health_score = _as_int(identity.get("health_score"))
+
+    clarity_status = "pass" if scan_cycles > 0 and not open_breakers else ("hold" if scan_cycles > 0 else "insufficient")
+    decision_status = "pass" if gate_open and fired > 0 and not paused else ("hold" if scan_cycles > 0 or paused else "insufficient")
+    direction_status = "pass" if fired > 0 else ("hold" if decisions.get("closest_to_firing") or decisions.get("latest_symbol_evals") else "insufficient")
+    alignment_status = "pass" if gate_open and not paused else ("hold" if paused or decisions.get("gate_reason") else "insufficient")
+    consistency_status = "pass" if cal_n >= 30 and cal_status not in (None, "guessing") else ("hold" if cal_n > 0 else "insufficient")
+    results_status = "pass" if wallet_ok and wallet.get("today_pnl", 0) and float(wallet.get("today_pnl") or 0) > 0 else ("hold" if wallet_ok else "insufficient")
+
+    steps = [
+        {
+            "step": 1,
+            "key": "clarity",
+            "label": "Clarity",
+            "status": clarity_status,
+            "headline": (
+                f"{scan_cycles} scan(s), latest {age_i // 60 if age_i is not None else '—'} min old"
+                + (f"; open breakers: {', '.join(open_breakers)}" if open_breakers else "; feeds clear")
+            ),
+            "evidence": [
+                {"name": "health_score", "value": health_score, "source": "health"},
+                {"name": "scan_cycles_today", "value": scan_cycles, "source": "ghost_perf_cycles"},
+                {"name": "latest_cycle_age_seconds", "value": age_i, "source": "ghost_perf_cycles"},
+                {"name": "open_breakers", "value": open_breakers, "source": "circuit_breaker"},
+            ],
+        },
+        {
+            "step": 2,
+            "key": "decision",
+            "label": "Decision",
+            "status": decision_status,
+            "headline": (
+                f"{'Gate open' if gate_open else 'Gate holding'}"
+                + (f"; engine paused: {decisions.get('latest_cycle_pause_reason')}" if paused else f"; reason: {decisions.get('gate_reason')}")
+            ),
+            "evidence": [
+                {"name": "gate_open", "value": gate_open, "source": "ghost_perf_cycles"},
+                {"name": "picks_fired_today", "value": fired, "source": "ghost_perf_cycles"},
+                {"name": "latest_cycle_paused", "value": paused, "source": "ghost_perf_cycles"},
+                {"name": "gate_reason", "value": decisions.get("gate_reason"), "source": "ghost_perf_cycles"},
+            ],
+        },
+        {
+            "step": 3,
+            "key": "direction",
+            "label": "Direction",
+            "status": direction_status,
+            "headline": (
+                "Live pick fired" if fired else
+                f"Closest candidate: {(decisions.get('closest_to_firing') or {}).get('symbol') or 'none'}"
+            ),
+            "evidence": [
+                {"name": "picks_fired_today", "value": fired, "source": "ghost_perf_cycles"},
+                {"name": "closest_to_firing", "value": decisions.get("closest_to_firing"), "source": "ghost_perf_cycles"},
+                {"name": "latest_symbol_evals_count", "value": len(decisions.get("latest_symbol_evals") or []), "source": "ghost_perf_symbol_evals"},
+            ],
+        },
+        {
+            "step": 4,
+            "key": "alignment",
+            "label": "Alignment",
+            "status": alignment_status,
+            "headline": f"Regime {decisions.get('regime') or 'unknown'}; phase {decisions.get('phase') or 'unknown'}",
+            "evidence": [
+                {"name": "regime", "value": decisions.get("regime"), "source": "ghost_perf_cycles"},
+                {"name": "phase", "value": decisions.get("phase"), "source": "objective_mode"},
+                {"name": "top_skip_reasons", "value": decisions.get("top_skip_reasons"), "source": "ghost_perf_cycles"},
+            ],
+        },
+        {
+            "step": 5,
+            "key": "consistency",
+            "label": "Consistency",
+            "status": consistency_status,
+            "headline": f"Watcher: {cal_status or 'insufficient'}; {cal_n} resolved",
+            "evidence": [
+                {"name": "resolved_n", "value": cal_n, "source": "watcher_summary"},
+                {"name": "calibration_status", "value": cal_status, "source": "watcher_summary"},
+                {"name": "high_conf_win_rate", "value": high_wr, "source": "watcher_summary"},
+                {"name": "brier", "value": brier, "source": "watcher_summary"},
+            ],
+        },
+        {
+            "step": 6,
+            "key": "results",
+            "label": "Results",
+            "status": results_status,
+            "headline": (
+                f"Wallet ${wallet.get('total_value')} · today P&L {wallet.get('today_pnl')}"
+                if wallet_ok else "Wallet result unavailable"
+            ),
+            "evidence": [
+                {"name": "wallet_total_value", "value": wallet.get("total_value"), "source": "ghost_paper_daily/trades"},
+                {"name": "wallet_today_pnl", "value": wallet.get("today_pnl"), "source": "ghost_paper_daily"},
+                {"name": "closed_today_wins", "value": wallet.get("closed_today_wins"), "source": "ghost_paper_trades"},
+                {"name": "closed_today_losses", "value": wallet.get("closed_today_losses"), "source": "ghost_paper_trades"},
+                {"name": "goal_pct", "value": wallet.get("goal_pct"), "source": "paper_wallet_config"},
+            ],
+        },
+    ]
+    counts = {s: sum(1 for step in steps if step["status"] == s) for s in ("pass", "hold", "insufficient")}
+    return {
+        "ok": True,
+        "version": "1.0",
+        "words": list(DOCTRINE_WORDS),
+        "display_only": True,
+        "headline": f"{counts['pass']} pass / {counts['hold']} hold / {counts['insufficient']} insufficient",
+        "steps": steps,
+        "summary": counts,
+    }
+
+
 
 def _coerce_json(v: Any) -> Any:
     if v is None or isinstance(v, (dict, list)):
@@ -410,10 +552,18 @@ def build_daily_report(day: Optional[str] = None) -> Dict[str, Any]:
         return {k: v.get("state") for k, v in (all_breaker_status() or {}).items()}
     breakers = _safe(_breakers, {})
 
+    doctrine = _build_report_doctrine(
+        decisions=decisions,
+        wallet=wallet,
+        calibration=calibration,
+        breakers=breakers,
+        identity=identity,
+    )
     report = {
         "ok": True, "date": today, "generated_ts": now,
         "identity": identity, "decisions": decisions,
         "wallet": wallet, "calibration": calibration, "breakers": breakers,
+        "doctrine": doctrine,
     }
     report["narrative"] = _narrate(report)
     return report
@@ -588,9 +738,15 @@ def _narrate(r: Dict[str, Any]) -> List[str]:
     c = r.get("calibration", {}) or {}
     idn = r.get("identity", {}) or {}
     br = r.get("breakers", {}) or {}
+    doctrine = r.get("doctrine", {}) or {}
     lines: List[str] = []
     lines.append(f"Ghost daily report — {r.get('date')} (PR {idn.get('pr_version')}, "
                  f"health {idn.get('health_score')}/{idn.get('health_status')}).")
+    if doctrine.get("steps"):
+        lines.append("Ghost Doctrine: " + " → ".join(doctrine.get("words") or DOCTRINE_WORDS)
+                     + f" ({doctrine.get('headline')}).")
+        for step in doctrine.get("steps", [])[:6]:
+            lines.append(f"  · {step.get('label')}: {step.get('status')} — {step.get('headline')}")
     # what it did
     fired = d.get("picks_fired_today")
     if fired == 0:

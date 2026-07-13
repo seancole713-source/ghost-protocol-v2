@@ -101,8 +101,56 @@ def test_build_daily_report_uses_db_only_perf_log_not_live_gate(monkeypatch):
     assert out["decisions"]["picks_fired_today"] == 0
     assert out["decisions"]["top_skip_reasons"]["v3_meta_gate"] == 4
     assert out["wallet"]["opened_today"][0]["symbol"] == "ARCT"
+    assert out["doctrine"]["ok"] is True
+    assert out["doctrine"]["words"] == ["Clarity", "Decision", "Direction", "Alignment", "Consistency", "Results"]
+    assert [s["key"] for s in out["doctrine"]["steps"]] == [
+        "clarity", "decision", "direction", "alignment", "consistency", "results"
+    ]
+    assert "Ghost Doctrine: Clarity → Decision → Direction → Alignment → Consistency → Results" in " ".join(out["narrative"])
     assert "fired ZERO live picks" in " ".join(out["narrative"])
     assert not any("wolf_gate_status" in sql for sql in cur.sqls)
+
+
+def test_report_doctrine_maps_six_words_without_engine_calls():
+    out = dr._build_report_doctrine(
+        identity={"health_score": 95},
+        decisions={
+            "scan_cycles_today": 3,
+            "latest_cycle_age_seconds": 300,
+            "gate_open": False,
+            "picks_fired_today": 0,
+            "latest_cycle_paused": True,
+            "latest_cycle_pause_reason": "win_rate->auto_pause",
+            "gate_reason": "engine_pause",
+            "closest_to_firing": {"symbol": "XPO", "up_prob": 0.89},
+            "latest_symbol_evals": [{"symbol": "XPO"}],
+            "regime": "risk_on",
+            "phase": "bootstrap",
+            "top_skip_reasons": {"v3_prob_low": 4},
+        },
+        wallet={
+            "total_value": 10010.0,
+            "today_pnl": 10.0,
+            "closed_today_wins": 1,
+            "closed_today_losses": 0,
+            "goal_pct": 50.1,
+        },
+        calibration={
+            "status": "real_but_not_70",
+            "resolved_n": 1031,
+            "high_conf_win_rate": 0.621,
+            "brier": 0.28,
+        },
+        breakers={"alpaca": "closed", "yfinance": "closed"},
+    )
+    assert out["display_only"] is True
+    assert len(out["steps"]) == 6
+    by_key = {s["key"]: s for s in out["steps"]}
+    assert by_key["clarity"]["status"] == "pass"
+    assert by_key["decision"]["status"] == "hold"
+    assert by_key["direction"]["headline"] == "Closest candidate: XPO"
+    assert by_key["consistency"]["status"] == "pass"
+    assert by_key["results"]["status"] == "pass"
 
 
 def test_snapshot_daily_report_writes_only_report_log(monkeypatch):
