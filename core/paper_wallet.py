@@ -537,6 +537,44 @@ def _enter(cur, *, book: str, symbol: str, source: str, entry: float,
     return cur.rowcount > 0
 
 
+def _filter_new_symbol_candidates(candidates, open_book_syms):
+    """One open lot per ``(book, symbol)`` — the single source of truth for the
+    wallet's no-duplicate-per-symbol invariant.
+
+    ``source UNIQUE`` (see :func:`_enter`) only stops re-mirroring the SAME
+    signal row. Distinct shadow-outcome rows for the same symbol each carry a
+    different ``source`` (``shadow:{id}``), so before this filter they all
+    cleared ``ON CONFLICT(source) DO NOTHING`` and stacked correlated lots — the
+    live book showed ARDT/LCID/YMM x3 and XPO x2 on 2026-07-13, tripling slice
+    cost and correlated exposure and adding no per-symbol evidence (shadow
+    evidence is already capped at one row per symbol per trading day upstream).
+
+    Drops any candidate whose ``(book, symbol)`` already has an open lot, AND
+    collapses several same-``(book, symbol)`` candidates within ONE cycle to the
+    first (freshest — candidates arrive newest-first). Scope is per-book so a
+    gated lot never suppresses shadow research for that symbol, or vice versa.
+    Symbols are compared upper-cased to match how :func:`_enter` stores them.
+
+    Args:
+        candidates: iterable of ``(book, source, symbol)`` tuples.
+        open_book_syms: set of ``(book, SYMBOL_UPPER)`` currently open.
+    Returns:
+        ``(kept, skipped_count)`` — ``kept`` preserves input order. Pure: no DB,
+        fully unit-testable.
+    """
+    held = set(open_book_syms)
+    kept = []
+    skipped = 0
+    for book, source, symbol in candidates:
+        key = (book, str(symbol).upper())
+        if key in held:
+            skipped += 1
+            continue
+        held.add(key)
+        kept.append((book, source, symbol))
+    return kept, skipped
+
+
 def run_wallet_cycle() -> Dict[str, Any]:
     """One engine pass: mirror new signals, check exits, snapshot the day."""
     if not wallet_enabled():
@@ -610,15 +648,18 @@ def run_wallet_cycle() -> Dict[str, Any]:
 
             candidates = gated_rows + shadow_rows
             need_prices = sorted({c[2].upper() for c in candidates})
-            cur.execute("SELECT DISTINCT symbol FROM ghost_paper_trades WHERE status='open'")
-            open_syms = sorted({r[0] for r in cur.fetchall()})
+            cur.execute("SELECT DISTINCT book, symbol FROM ghost_paper_trades WHERE status='open'")
+            open_book_rows = cur.fetchall()
+            open_syms = sorted({r[1] for r in open_book_rows})
+            open_book_syms = {(r[0], str(r[1]).upper()) for r in open_book_rows}
             prices = _live_prices(sorted(set(need_prices + open_syms)))
 
             # Observability (PR #143): why did candidates not become entries?
             diag = {"gated_candidates": len(gated_rows),
                     "shadow_candidates": len(shadow_rows),
                     "entry_window": gate,
-                    "skip_no_price": 0, "skip_capacity": 0, "skip_dupe": 0}
+                    "skip_no_price": 0, "skip_capacity": 0, "skip_dupe": 0,
+                    "skip_open_symbol": 0}
             # PR #163: dupe-check BEFORE quotes/bands — previously every
             # already-mirrored candidate burned a fresh_bands computation (and
             # now would burn an OHLCV fetch) every 5-min cycle just to hit
@@ -629,7 +670,16 @@ def run_wallet_cycle() -> Dict[str, Any]:
                     "SELECT source FROM ghost_paper_trades WHERE source = ANY(%s)",
                     ([c[1] for c in candidates],))
                 seen_sources = {r[0] for r in cur.fetchall()}
-            for book, source, sym in [(c[0], c[1], c[2]) for c in candidates]:
+            # No-duplicate-per-symbol guard: one open lot per (book, symbol).
+            # source UNIQUE only stops re-mirroring the SAME signal row; distinct
+            # shadow rows for one symbol each have their own source and used to
+            # stack correlated lots (ARDT/LCID/YMM x3 live 2026-07-13). Filter
+            # here, BEFORE quotes/bands (PR #163 ordering), so a symbol we
+            # already hold never burns an OHLCV/fresh_bands fetch either.
+            deduped_candidates, skipped_open_symbol = _filter_new_symbol_candidates(
+                [(c[0], c[1], c[2]) for c in candidates], open_book_syms)
+            diag["skip_open_symbol"] += skipped_open_symbol
+            for book, source, sym in deduped_candidates:
                 if source in seen_sources:
                     diag["skip_dupe"] += 1
                     continue

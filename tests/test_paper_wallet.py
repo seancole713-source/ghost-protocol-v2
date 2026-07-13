@@ -347,3 +347,142 @@ def test_fresh_bands_reward_risk_preserved_with_atr(monkeypatch):
     s_pct = 1 - stp / 100.0
     assert t_pct > 0.02                                  # wider than flat
     assert abs(s_pct / t_pct - 0.65) < 0.01              # mult preserved
+
+
+# ---------------------------------------------------------------- no dup/symbol
+# One open lot per (book, symbol). ``source UNIQUE`` only stops re-mirroring the
+# SAME signal row; distinct shadow rows for one symbol each carry their own
+# source and used to stack correlated lots (ARDT/LCID/YMM x3 live 2026-07-13).
+
+def test_filter_skips_symbol_already_open_same_book():
+    # A symbol already held in the shadow book gets no second shadow lot.
+    kept, skipped = pw._filter_new_symbol_candidates(
+        [("shadow", "shadow:2", "ARDT")],
+        {("shadow", "ARDT")},
+    )
+    assert kept == []
+    assert skipped == 1
+
+
+def test_filter_collapses_same_symbol_candidates_within_one_cycle():
+    # Three fresh ARDT candidates in ONE cycle collapse to the first (freshest).
+    kept, skipped = pw._filter_new_symbol_candidates(
+        [("shadow", "shadow:9", "ARDT"),
+         ("shadow", "shadow:8", "ARDT"),
+         ("shadow", "shadow:7", "ARDT")],
+        set(),
+    )
+    assert kept == [("shadow", "shadow:9", "ARDT")]
+    assert skipped == 2
+
+
+def test_filter_is_case_insensitive():
+    # _enter stores symbol.upper(); the guard must match regardless of case.
+    kept, skipped = pw._filter_new_symbol_candidates(
+        [("shadow", "shadow:5", "ardt")],
+        {("shadow", "ARDT")},
+    )
+    assert kept == []
+    assert skipped == 1
+
+
+def test_filter_scope_is_per_book():
+    # A gated lot must NOT suppress shadow research for the same symbol,
+    # and vice-versa — the two books are independent.
+    kept, skipped = pw._filter_new_symbol_candidates(
+        [("shadow", "shadow:1", "ABCL")],
+        {("gated", "ABCL")},
+    )
+    assert kept == [("shadow", "shadow:1", "ABCL")]
+    assert skipped == 0
+
+
+def test_filter_keeps_distinct_symbols_in_order():
+    # Distinct new symbols all pass, input order preserved.
+    cands = [("shadow", "shadow:1", "ABCL"),
+             ("shadow", "shadow:2", "BB"),
+             ("gated", "pick:3", "XPO")]
+    kept, skipped = pw._filter_new_symbol_candidates(cands, set())
+    assert kept == cands
+    assert skipped == 0
+
+
+def test_run_cycle_does_not_open_duplicate_symbol(monkeypatch):
+    """Integration: two shadow candidates for ARDT (one already open, one fresh
+    dup in-cycle) yield exactly ZERO new ARDT lots; a distinct symbol still
+    enters. Proves the guard holds through the real run_wallet_cycle path."""
+    monkeypatch.setenv("PAPER_WALLET_ENABLED", "1")
+    monkeypatch.setenv("PAPER_SESSION_GATE", "0")   # entry window always open
+    inserts = []
+
+    class _Cur:
+        def __init__(self):
+            self._last = ""
+            self.rowcount = 0
+
+        def execute(self, sql, params=None):
+            self._last = sql
+            if "INSERT INTO ghost_paper_trades" in sql and params is not None:
+                # params: (book, symbol, qty, entry, now, tgt, stop, exp, source, now)
+                inserts.append({"book": params[0], "symbol": params[1],
+                                "source": params[8]})
+                self.rowcount = 1                # a real INSERT affected one row
+            else:
+                self.rowcount = 0
+
+        def fetchone(self):
+            s = self._last
+            if "COUNT(*) FROM ghost_paper_trades" in s:
+                return (1,)                      # 1 already open (the held ARDT)
+            return None
+
+        def fetchall(self):
+            s = self._last
+            if "FROM ghost_shadow_outcomes o" in s:
+                # id, symbol, entry, target, stop, expires, resolved, wins
+                return [
+                    (101, "ARDT", 10.0, 10.5, 9.7, 9_999_999_999, 20, 15),
+                    (102, "ARDT", 10.1, 10.6, 9.8, 9_999_999_999, 20, 15),
+                    (103, "BB", 8.0, 8.4, 7.7, 9_999_999_999, 20, 15),
+                ]
+            if "FROM predictions" in s:
+                return []                        # gated book silent
+            if "SELECT DISTINCT book, symbol FROM ghost_paper_trades" in s:
+                return [("shadow", "ARDT")]      # ARDT already open
+            if "SELECT source FROM ghost_paper_trades" in s:
+                return []                        # no source collision
+            if "SELECT id, symbol, qty" in s:
+                return []                        # exits: nothing to close
+            if "GROUP BY symbol" in s:
+                return []                        # daily snapshot: no open rows
+            return []
+
+    class _Conn:
+        def cursor(self):
+            return _Cur()
+
+        def commit(self):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    import core.db as db
+    monkeypatch.setattr(db, "db_conn", lambda: _Conn())
+    monkeypatch.setattr(pw, "_cash", lambda cur, cfg: 1_000_000.0)
+    monkeypatch.setattr(pw, "_max_open", lambda: 50)
+    monkeypatch.setattr(pw, "get_config", lambda cur: {"starting_balance": 10000.0})
+    monkeypatch.setattr(pw, "_maybe_roll_month", lambda cur, cfg: cfg)
+    monkeypatch.setattr(pw, "_live_prices", lambda syms: {s.upper(): 10.0 for s in syms})
+    monkeypatch.setattr(pw, "fresh_bands",
+                        lambda sym, entry, **k: (entry * 1.02, entry * 0.987, 9_999_999_999))
+
+    out = pw.run_wallet_cycle()
+    assert out["ok"] is True
+    entered_symbols = [i["symbol"] for i in inserts]
+    assert "ARDT" not in entered_symbols          # already open -> never re-entered
+    assert entered_symbols.count("BB") == 1       # distinct symbol still enters
+    assert out["diag"]["skip_open_symbol"] >= 2   # 1 already-open + 1 in-cycle dup
