@@ -486,3 +486,154 @@ def test_run_cycle_does_not_open_duplicate_symbol(monkeypatch):
     assert "ARDT" not in entered_symbols          # already open -> never re-entered
     assert entered_symbols.count("BB") == 1       # distinct symbol still enters
     assert out["diag"]["skip_open_symbol"] >= 2   # 1 already-open + 1 in-cycle dup
+
+
+# ------------------------------------------------------- duplicate cleanup ops
+# PR #133 prevents NEW duplicate open lots; this admin repair closes pre-existing
+# duplicate paper positions with audit reason, dry-run first.
+
+def test_cleanup_duplicate_positions_dry_run_keeps_oldest(monkeypatch):
+    rows = [
+        # id, book, symbol, qty, entry_price, entry_ts, source
+        (10, "shadow", "ARDT", 10.0, 10.00, 100, "shadow:10"),
+        (11, "shadow", "ardt", 10.0, 10.10, 200, "shadow:11"),
+        (12, "shadow", "ARDT", 10.0, 10.20, 300, "shadow:12"),
+        (20, "gated", "ARDT", 10.0, 10.00, 100, "pick:20"),  # per-book independent
+        (30, "shadow", "BB", 5.0, 8.00, 100, "shadow:30"),   # no duplicate
+    ]
+    updates = []
+    committed = {"n": 0}
+
+    class _Cur:
+        rowcount = 0
+        def __init__(self): self._last = ""
+        def execute(self, sql, params=None):
+            self._last = sql
+            if "UPDATE ghost_paper_trades" in sql:
+                updates.append(params)
+                self.rowcount = 1
+            else:
+                self.rowcount = 0
+        def fetchall(self):
+            if "SELECT id, book, symbol" in self._last:
+                return rows
+            return []
+
+    class _Conn:
+        def cursor(self): return _Cur()
+        def commit(self): committed["n"] += 1
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    import core.db as db
+    monkeypatch.setattr(db, "db_conn", lambda: _Conn())
+    monkeypatch.setattr(pw, "_live_prices", lambda syms: {"ARDT": 10.50})
+
+    out = pw.cleanup_duplicate_open_positions(dry_run=True)
+    assert out["ok"] is True and out["dry_run"] is True
+    assert out["duplicate_groups"] == [{"book": "shadow", "symbol": "ARDT", "open_lots": 3, "keep_id": 10}]
+    assert [i["close_id"] for i in out["to_close"]] == [11, 12]
+    assert out["planned_close_count"] == 2
+    assert out["closed_count"] == 0
+    assert updates == []
+    assert committed["n"] == 0
+
+
+def test_cleanup_duplicate_positions_apply_closes_at_quote(monkeypatch):
+    rows = [
+        (10, "shadow", "XPO", 2.0, 100.00, 100, "shadow:10"),
+        (11, "shadow", "XPO", 2.0, 101.00, 200, "shadow:11"),
+    ]
+    updates = []
+    committed = {"n": 0}
+
+    class _Cur:
+        rowcount = 0
+        def __init__(self): self._last = ""
+        def execute(self, sql, params=None):
+            self._last = sql
+            if "UPDATE ghost_paper_trades" in sql:
+                updates.append(params)
+                self.rowcount = 1
+            else:
+                self.rowcount = 0
+        def fetchall(self):
+            return rows if "SELECT id, book, symbol" in self._last else []
+
+    class _Conn:
+        def cursor(self): return _Cur()
+        def commit(self): committed["n"] += 1
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    import core.db as db
+    monkeypatch.setattr(db, "db_conn", lambda: _Conn())
+    monkeypatch.setattr(pw, "_live_prices", lambda syms: {"XPO": 103.0})
+    monkeypatch.setattr(pw.time, "time", lambda: 1234567890)
+
+    out = pw.cleanup_duplicate_open_positions(dry_run=False)
+    assert out["closed_count"] == 1
+    assert committed["n"] == 1
+    assert len(updates) == 1
+    exit_price, exit_ts, reason, pnl, pnl_pct, close_id = updates[0]
+    assert (exit_price, exit_ts, reason, close_id) == (103.0, 1234567890, "duplicate_symbol_cleanup", 11)
+    assert pnl == 4.0
+    assert pnl_pct == 1.98
+
+
+def test_cleanup_duplicate_positions_skips_when_no_live_price(monkeypatch):
+    rows = [
+        (10, "shadow", "LCID", 1.0, 5.00, 100, "shadow:10"),
+        (11, "shadow", "LCID", 1.0, 5.10, 200, "shadow:11"),
+    ]
+
+    class _Cur:
+        rowcount = 0
+        def __init__(self): self._last = ""
+        def execute(self, sql, params=None): self._last = sql
+        def fetchall(self): return rows if "SELECT id, book, symbol" in self._last else []
+    class _Conn:
+        def cursor(self): return _Cur()
+        def commit(self): raise AssertionError("no commit when nothing closes")
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    import core.db as db
+    monkeypatch.setattr(db, "db_conn", lambda: _Conn())
+    monkeypatch.setattr(pw, "_live_prices", lambda syms: {})
+
+    out = pw.cleanup_duplicate_open_positions(dry_run=False)
+    assert out["planned_close_count"] == 0
+    assert out["closed_count"] == 0
+    assert out["skipped_count"] == 1
+    assert out["skipped"][0]["skip_reason"] == "no_live_price"
+
+
+def test_cleanup_duplicate_positions_rejects_unsupported_keep_policy():
+    out = pw.cleanup_duplicate_open_positions(dry_run=True, keep="best")
+    assert out["ok"] is False
+    assert out["error"] == "unsupported_keep_policy"
+
+
+def test_cleanup_duplicate_route_is_gated_and_dry_run_default(monkeypatch):
+    from fastapi.testclient import TestClient
+    from wolf_app import APP
+
+    calls = []
+    monkeypatch.setattr("wolf_app._cron_ok", lambda secret: secret == "ok")
+    monkeypatch.setattr("wolf_app._admin_token_valid", lambda tok: False)
+    monkeypatch.setattr(
+        "core.paper_wallet.cleanup_duplicate_open_positions",
+        lambda dry_run=True, keep="oldest": calls.append((dry_run, keep)) or {
+            "ok": True, "dry_run": dry_run, "keep": keep, "planned_close_count": 0,
+        },
+    )
+    c = TestClient(APP)
+    assert c.post("/api/wallet/cleanup-duplicates").status_code == 403
+    r = c.post("/api/wallet/cleanup-duplicates", headers={"x-cron-secret": "ok"})
+    assert r.status_code == 200
+    assert r.json()["dry_run"] is True
+    assert calls[-1] == (True, "oldest")
+    r2 = c.post("/api/wallet/cleanup-duplicates?dry_run=0", headers={"x-cron-secret": "ok"})
+    assert r2.json()["dry_run"] is False
+    assert calls[-1] == (False, "oldest")

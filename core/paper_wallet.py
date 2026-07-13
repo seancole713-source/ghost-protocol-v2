@@ -320,6 +320,114 @@ def reset_wallet(starting_balance: float,
     return {"ok": True, "starting_balance": bal, "monthly_goal": goal}
 
 
+def cleanup_duplicate_open_positions(*,
+                                     dry_run: bool = True,
+                                     keep: str = "oldest") -> Dict[str, Any]:
+    """Admin-only repair for pre-PR#133 duplicate open paper lots.
+
+    PR #133 prevents NEW duplicate ``(book, symbol)`` entries, but production
+    can already contain stacked shadow lots. Leaving them open keeps the wallet
+    evidence contaminated; deleting them would rewrite history and distort
+    cash. The honest repair is: keep exactly one open lot per ``(book, symbol)``
+    and close the extras at the current quote with an explicit audit reason.
+
+    ``dry_run`` defaults true so operators can inspect the exact rows first.
+    Only the ``oldest`` keeper policy is intentionally supported: keep the first
+    exposure Ghost took, close later accidental stacked exposure.
+    """
+    keep_policy = (keep or "oldest").strip().lower()
+    if keep_policy != "oldest":
+        return {"ok": False, "error": "unsupported_keep_policy", "supported": ["oldest"]}
+
+    from core.db import db_conn
+    now = int(time.time())
+    with db_conn() as conn:
+        cur = conn.cursor()
+        ensure_paper_tables(cur)
+        cur.execute(
+            """SELECT id, book, symbol, qty, entry_price, entry_ts, source
+               FROM ghost_paper_trades
+               WHERE status='open'
+               ORDER BY book, UPPER(symbol), entry_ts ASC, id ASC"""
+        )
+        rows = cur.fetchall()
+
+        groups: Dict[tuple, List[Dict[str, Any]]] = {}
+        for tid, book, sym, qty, entry, ets, source in rows:
+            key = (str(book), str(sym).upper())
+            groups.setdefault(key, []).append({
+                "id": tid,
+                "book": str(book),
+                "symbol": str(sym).upper(),
+                "qty": float(qty),
+                "entry_price": float(entry),
+                "entry_ts": int(ets),
+                "source": source,
+            })
+
+        dup_groups = {k: v for k, v in groups.items() if len(v) > 1}
+        symbols = sorted({k[1] for k in dup_groups})
+        prices = _live_prices(symbols) if symbols else {}
+        plan = []
+        skipped = []
+        closed = []
+
+        for (book, sym), lots in sorted(dup_groups.items()):
+            # Already ordered oldest-first by SQL; keep the earliest exposure.
+            keeper = lots[0]
+            for lot in lots[1:]:
+                px = prices.get(sym)
+                item = {
+                    "book": book,
+                    "symbol": sym,
+                    "keep_id": keeper["id"],
+                    "close_id": lot["id"],
+                    "qty": lot["qty"],
+                    "entry_price": lot["entry_price"],
+                    "entry_ts": lot["entry_ts"],
+                    "exit_price": round(float(px), 4) if px and px > 0 else None,
+                    "source": lot.get("source"),
+                }
+                if not px or px <= 0:
+                    item["skip_reason"] = "no_live_price"
+                    skipped.append(item)
+                    continue
+                item["pnl"] = round((float(px) - lot["entry_price"]) * lot["qty"], 4)
+                item["pnl_pct"] = round((float(px) / lot["entry_price"] - 1) * 100, 3) if lot["entry_price"] else None
+                plan.append(item)
+
+        if not dry_run and plan:
+            for item in plan:
+                cur.execute(
+                    """UPDATE ghost_paper_trades
+                       SET status='closed', exit_price=%s, exit_ts=%s,
+                           exit_reason=%s, pnl=%s, pnl_pct=%s
+                       WHERE id=%s AND status='open'""",
+                    (item["exit_price"], now, "duplicate_symbol_cleanup",
+                     item["pnl"], item["pnl_pct"], item["close_id"]),
+                )
+                if cur.rowcount > 0:
+                    closed.append(item)
+            conn.commit()
+
+    return {
+        "ok": True,
+        "dry_run": bool(dry_run),
+        "keep": keep_policy,
+        "duplicate_groups": [
+            {"book": k[0], "symbol": k[1], "open_lots": len(v), "keep_id": v[0]["id"]}
+            for k, v in sorted(dup_groups.items())
+        ],
+        "planned_close_count": len(plan),
+        "closed_count": len(closed),
+        "skipped_count": len(skipped),
+        "to_close": plan,
+        "skipped": skipped,
+        "note": ("Dry run only — no rows changed." if dry_run else
+                 "Closed duplicate open paper lots at current quote with exit_reason=duplicate_symbol_cleanup."),
+    }
+
+
 def _maybe_roll_month(cur, cfg: Dict[str, Any]) -> Dict[str, Any]:
     """On calendar-month rollover: record the finished month's result vs goal,
     then wipe the books and start the new month fresh at starting_balance.
