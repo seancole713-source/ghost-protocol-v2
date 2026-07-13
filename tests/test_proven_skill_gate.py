@@ -51,20 +51,31 @@ def test_calibration_review_not_applicable_below_threshold(monkeypatch):
 
 
 def test_calibration_review_blocks_inverted_high_bucket(monkeypatch):
+    monkeypatch.setenv("GHOST_ACCURACY_CONTRACT", "70")
     monkeypatch.setenv("V3_OVERCONFIDENCE_PROB_THRESHOLD", "0.70")
     monkeypatch.setenv("V3_OVERCONFIDENCE_MIN_SAMPLES", "20")
-    monkeypatch.setenv("V3_OVERCONFIDENCE_MIN_WIN_RATE", "0.55")
+    monkeypatch.setenv("V3_OVERCONFIDENCE_MIN_WIN_RATE", "0.55")  # cannot loosen contract-70
     out = g.calibration_review(prob=0.82, samples=25, wins=10)  # 40% actual
     assert out["ok"] is False
-    assert out["fail_reason"].startswith("high_prob_bucket_wr<")
+    assert out["min_win_rate"] == 0.70
+    assert out["fail_reason"].startswith("high_prob_bucket_wr<0.70")
 
 
 def test_calibration_review_allows_good_high_bucket(monkeypatch):
+    monkeypatch.setenv("GHOST_ACCURACY_CONTRACT", "70")
     monkeypatch.setenv("V3_OVERCONFIDENCE_PROB_THRESHOLD", "0.70")
     monkeypatch.setenv("V3_OVERCONFIDENCE_MIN_SAMPLES", "20")
-    monkeypatch.setenv("V3_OVERCONFIDENCE_MIN_WIN_RATE", "0.55")
-    out = g.calibration_review(prob=0.82, samples=30, wins=20)
+    monkeypatch.setenv("V3_OVERCONFIDENCE_MIN_WIN_RATE", "0.55")  # cannot loosen contract-70
+    out = g.calibration_review(prob=0.82, samples=30, wins=22)
     assert out["ok"] is True
+
+
+def test_overconfidence_win_test_can_tighten_but_not_weaken_contract_70(monkeypatch):
+    monkeypatch.setenv("GHOST_ACCURACY_CONTRACT", "70")
+    monkeypatch.setenv("V3_OVERCONFIDENCE_MIN_WIN_RATE", "0.55")
+    assert g.overconfidence_min_win_rate() == 0.70
+    monkeypatch.setenv("V3_OVERCONFIDENCE_MIN_WIN_RATE", "0.80")
+    assert g.overconfidence_min_win_rate() == 0.80
 
 
 def test_global_calibration_review_disabled(monkeypatch):
