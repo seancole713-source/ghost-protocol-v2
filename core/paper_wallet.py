@@ -192,6 +192,19 @@ def _consistent_money_wilson_margin() -> float:
     return max(0.0, float(os.getenv("PAPER_CONSISTENT_WILSON_MARGIN", "0.03")))
 
 
+def _consistent_money_win_test() -> float:
+    """The win-rate the readiness gate must clear — the 'win test' bar.
+
+    The operator was explicit: passing is NOT merely clearing break-even
+    (~39% for +2%/-1.3%), it is clearing the accuracy contract's target win
+    rate — 70% under GHOST_ACCURACY_CONTRACT=70. We route through the contract
+    so this bar tracks the same 70% Ghost trains and fires against, and (under
+    contract 70/80) env can only TIGHTEN it, never weaken it below 70%.
+    """
+    from core.accuracy_contract import resolve_float
+    return resolve_float("PAPER_CONSISTENT_WIN_TEST", "target_win_rate", lo=0.0, hi=1.0)
+
+
 def consistent_money_readiness(rows: List[Dict[str, Any]],
                                current_stop_frac: float) -> Dict[str, Any]:
     """The single GO / NO-GO instrument for 'is Ghost good enough for consistent
@@ -203,9 +216,11 @@ def consistent_money_readiness(rows: List[Dict[str, Any]],
 
       1. sample  — at least ``_consistent_money_min_sample()`` resolved trades,
       2. edge    — realized expectancy per trade is positive,
-      3. skill   — the 95% Wilson LOWER bound of the win rate exceeds the
-                   structure's break-even win rate by a safety margin, so the
-                   edge is unlikely to be noise.
+      3. win test — the 95% Wilson LOWER bound of the win rate clears the WIN
+                   TEST bar: the accuracy contract's target win rate (70% under
+                   contract 70), and never less than break-even + safety margin.
+                   Using the Wilson floor (not the raw rate) means a lucky small
+                   sample cannot pass a 70% test.
 
     Only current-geometry rows count: legacy -3.6%-stop trades ran under a
     structure the wallet no longer uses, so including them would misjudge the
@@ -228,27 +243,35 @@ def consistent_money_readiness(rows: List[Dict[str, Any]],
     wilson_low = round(wilson_lower_bound(wins, n), 4) if n > 0 else None
     min_n = _consistent_money_min_sample()
     margin = _consistent_money_wilson_margin()
-    required_wr = round(break_even + margin, 4) if break_even is not None else None
+    # The win test bar the operator asked for: the contract win rate (70%),
+    # floored so it can never drop below break-even + safety margin. Passing
+    # means the win rate's honest lower bound clears the 70% test, not just
+    # that the structure is barely profitable.
+    win_test = _consistent_money_win_test()
+    break_even_floor = (break_even + margin) if break_even is not None else 0.0
+    required_wr = round(max(win_test, break_even_floor), 4)
 
     checks = {
         "sample": bool(n >= min_n),
         "positive_expectancy": bool(expectancy is not None and expectancy > 0),
-        "wilson_beats_break_even": bool(
+        "wilson_clears_win_test": bool(
             wilson_low is not None and required_wr is not None and wilson_low >= required_wr
         ),
     }
     ready = all(checks.values())
 
     if ready:
-        verdict = "READY — current-geometry edge is positive and statistically above break-even."
+        verdict = (f"READY — current-geometry win rate's 95% lower bound clears the "
+                   f"{win_test*100:.0f}% win test.")
     elif n < min_n:
         verdict = (f"NOT READY — only {n} current-geometry trades; need >= {min_n} "
                    "before an honest EV verdict is possible.")
     elif not checks["positive_expectancy"]:
         verdict = "NOT READY — current-geometry expectancy per trade is not positive."
     else:
-        verdict = ("NOT READY — win rate's 95% lower bound does not clear break-even "
-                   "plus safety margin; the edge could still be noise.")
+        verdict = (f"NOT READY — win rate's 95% lower bound ({(wilson_low or 0)*100:.1f}%) "
+                   f"does not clear the {win_test*100:.0f}% win test "
+                   f"(required lower bound >= {required_wr*100:.1f}%).")
 
     return {
         "ready": ready,
@@ -260,15 +283,18 @@ def consistent_money_readiness(rows: List[Dict[str, Any]],
         "win_rate": cur.get("win_rate"),
         "win_rate_wilson_low": wilson_low,
         "break_even_win_rate": break_even,
+        "win_test_win_rate": round(win_test, 4),
         "required_win_rate_wilson_low": required_wr,
         "requirements": {
             "min_sample": min_n,
             "wilson_safety_margin": margin,
+            "win_test_win_rate": round(win_test, 4),
             "basis": "current_geometry_only",
         },
         "note": ("Fake-money paper evidence only. 'ready' means the paper wallet's "
-                 "current-geometry trades show a statistically real positive edge — "
-                 "it is NOT financial advice and does NOT authorize real-money trading."),
+                 "current-geometry trades clear the contract win test on the win rate's "
+                 "honest lower bound — it is NOT financial advice and does NOT authorize "
+                 "real-money trading."),
     }
 
 

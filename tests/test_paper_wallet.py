@@ -641,8 +641,10 @@ def test_cleanup_duplicate_route_is_gated_and_dry_run_default(monkeypatch):
 
 # ------------------------------------------------- consistent-money readiness
 # The single GO / NO-GO instrument. Judges consistency by the Wilson LOWER
-# bound of the current-geometry win rate vs break-even — never raw win rate,
-# never a lucky small sample.
+# bound of the current-geometry win rate vs the WIN TEST bar — the contract
+# win rate (70% under contract 70), never raw win rate, never a lucky small
+# sample. The operator was explicit: passing must mean clearing 70%, not just
+# break-even (~42%).
 
 def _cur_geom_row(pnl_pct, *, entry=100.0, stop=98.7):
     # stop_frac = 1 - 98.7/100 = 1.3% -> classified as CURRENT geometry.
@@ -669,39 +671,69 @@ def test_readiness_not_ready_when_expectancy_negative(monkeypatch):
     assert out["checks"]["positive_expectancy"] is False
 
 
-def test_readiness_not_ready_when_wilson_below_break_even(monkeypatch):
+def test_readiness_not_ready_when_wilson_below_win_test(monkeypatch):
+    monkeypatch.setenv("GHOST_ACCURACY_CONTRACT", "70")
     monkeypatch.setenv("PAPER_CONSISTENT_MIN_SAMPLE", "20")
     monkeypatch.setenv("PAPER_CONSISTENT_WILSON_MARGIN", "0.03")
-    # 20 trades at exactly break-even-ish win rate: positive-ish expectancy is
-    # possible but the Wilson floor at N=20 will not clear break-even+margin.
-    rows = [_cur_geom_row(2.0) for _ in range(11)] + [_cur_geom_row(-1.3) for _ in range(9)]
+    # 20 trades at 60% win rate: positive expectancy, but the Wilson floor is
+    # nowhere near the 70% win test, so it must fail the win-test bar.
+    rows = [_cur_geom_row(2.0) for _ in range(12)] + [_cur_geom_row(-1.3) for _ in range(8)]
     out = pw.consistent_money_readiness(rows, 0.013)
     assert out["checks"]["sample"] is True
-    # break_even for +2%/-1.3% ~= 0.394; required = 0.424. Wilson_low at 55% / N=20
-    # is well under that, so skill bar fails even if expectancy is positive.
-    assert out["checks"]["wilson_beats_break_even"] is False
+    assert out["win_test_win_rate"] == 0.70
+    assert out["checks"]["wilson_clears_win_test"] is False
+    assert out["ready"] is False
+
+
+def test_readiness_60pct_that_passed_break_even_now_fails_win_test(monkeypatch):
+    # THE CORRECTION: a 60% win rate at N=100 cleared the old break-even (~42%)
+    # bar and read READY. The operator rejected that — 60% must NOT pass a 70%
+    # win test. wilson_low(60/100)=0.504 < 0.70 -> NOT READY.
+    monkeypatch.setenv("GHOST_ACCURACY_CONTRACT", "70")
+    monkeypatch.setenv("PAPER_CONSISTENT_MIN_SAMPLE", "30")
+    rows = [_cur_geom_row(2.0) for _ in range(60)] + [_cur_geom_row(-1.3) for _ in range(40)]
+    out = pw.consistent_money_readiness(rows, 0.013)
+    assert out["win_rate"] == 0.6
+    assert out["required_win_rate_wilson_low"] >= 0.70   # bar is the win test, not break-even
     assert out["ready"] is False
 
 
 def test_readiness_ready_with_strong_large_sample(monkeypatch):
     monkeypatch.setenv("PAPER_CONSISTENT_MIN_SAMPLE", "30")
     monkeypatch.setenv("PAPER_CONSISTENT_WILSON_MARGIN", "0.03")
-    # 100 trades at 70% win rate, +2%/-1.3%. Wilson_low ~0.61 >> break_even+margin
-    # (~0.42), expectancy strongly positive -> READY.
-    rows = [_cur_geom_row(2.0) for _ in range(70)] + [_cur_geom_row(-1.3) for _ in range(30)]
+    monkeypatch.setenv("GHOST_ACCURACY_CONTRACT", "70")
+    # 100 trades at 85% win rate: wilson_low ~0.767 clears the 70% win test,
+    # expectancy strongly positive -> READY. (A raw 70% would give wilson_low
+    # ~0.60 and would NOT clear the 70% test — that is the honest bar.)
+    rows = [_cur_geom_row(2.0) for _ in range(85)] + [_cur_geom_row(-1.3) for _ in range(15)]
     out = pw.consistent_money_readiness(rows, 0.013)
     assert out["ready"] is True
     assert out["checks"] == {"sample": True, "positive_expectancy": True,
-                             "wilson_beats_break_even": True}
+                             "wilson_clears_win_test": True}
     assert out["win_rate_wilson_low"] > out["required_win_rate_wilson_low"]
+    assert out["required_win_rate_wilson_low"] >= 0.70
     assert out["verdict"].startswith("READY")
+
+
+def test_readiness_win_test_defaults_to_contract_and_can_tighten(monkeypatch):
+    # The win-test bar tracks the accuracy contract (70) and env may tighten,
+    # never weaken below the contract under contract 70.
+    monkeypatch.setenv("GHOST_ACCURACY_CONTRACT", "70")
+    monkeypatch.delenv("PAPER_CONSISTENT_WIN_TEST", raising=False)
+    assert pw._consistent_money_win_test() == 0.70
+    monkeypatch.setenv("PAPER_CONSISTENT_WIN_TEST", "0.55")   # attempt to weaken
+    assert pw._consistent_money_win_test() == 0.70            # clamped up
+    monkeypatch.setenv("PAPER_CONSISTENT_WIN_TEST", "0.80")   # tighten
+    assert pw._consistent_money_win_test() == 0.80
 
 
 def test_readiness_excludes_legacy_geometry(monkeypatch):
     monkeypatch.setenv("PAPER_CONSISTENT_MIN_SAMPLE", "30")
-    # 100 strong CURRENT-geometry winners + a pile of legacy -3.6%-stop rows.
-    # Legacy rows must NOT count toward the sample or the verdict.
-    cur_rows = [_cur_geom_row(2.0) for _ in range(70)] + [_cur_geom_row(-1.3) for _ in range(30)]
+    monkeypatch.setenv("GHOST_ACCURACY_CONTRACT", "70")
+    # 100 strong CURRENT-geometry trades (85% wins, clears the 70% win test) +
+    # a pile of legacy -3.6%-stop rows. Legacy rows must NOT count toward the
+    # sample or the verdict.
+    cur_rows = [_cur_geom_row(2.0) for _ in range(85)] + [_cur_geom_row(-1.3) for _ in range(15)]
     legacy_rows = [{"entry_price": 100.0, "stop_price": 96.4, "pnl_pct": -3.6} for _ in range(40)]
     out = pw.consistent_money_readiness(cur_rows + legacy_rows, 0.013)
     assert out["n_current_geometry"] == 100      # legacy excluded
