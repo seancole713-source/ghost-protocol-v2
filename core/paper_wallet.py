@@ -660,7 +660,7 @@ def run_wallet_cycle() -> Dict[str, Any]:
                     "entry_window": gate,
                     "skip_no_price": 0, "skip_capacity": 0, "skip_dupe": 0,
                     "skip_open_symbol": 0}
-            # PR #163: dupe-check BEFORE quotes/bands — previously every
+            # PR #163: dupe-check BEFORE fresh_bands/OHLCV — previously every
             # already-mirrored candidate burned a fresh_bands computation (and
             # now would burn an OHLCV fetch) every 5-min cycle just to hit
             # ON CONFLICT DO NOTHING.
@@ -674,8 +674,8 @@ def run_wallet_cycle() -> Dict[str, Any]:
             # source UNIQUE only stops re-mirroring the SAME signal row; distinct
             # shadow rows for one symbol each have their own source and used to
             # stack correlated lots (ARDT/LCID/YMM x3 live 2026-07-13). Filter
-            # here, BEFORE quotes/bands (PR #163 ordering), so a symbol we
-            # already hold never burns an OHLCV/fresh_bands fetch either.
+            # here, BEFORE fresh_bands/OHLCV (PR #163 ordering), so a symbol we
+            # already hold never burns a fresh_bands fetch either.
             deduped_candidates, skipped_open_symbol = _filter_new_symbol_candidates(
                 [(c[0], c[1], c[2]) for c in candidates], open_book_syms)
             diag["skip_open_symbol"] += skipped_open_symbol
