@@ -114,20 +114,7 @@ def test_console_fetches_required_existing_and_new_apis():
         "/api/health",
         "/api/system/degraded",
         "/api/wolf/kill-status",
-        "/api/wolf/super-ghost?symbol=",
-        "/api/wolf/super-ghost/history?symbol=",
-        "/api/wolf/super-ghost/accuracy?symbol=",
-        "/api/wolf/super-ghost/if-followed?symbol=",
-        "/api/wolf/super-ghost/top-pick-gate?symbol=",
-        "/api/wolf/super-ghost/learning?symbol=",
-        "/api/wolf/super-ghost/precision?symbol=",
-        "/api/wolf/super-ghost/range-calibration?symbol=",
-        "/api/wolf/super-ghost/regime-calibration?symbol=",
-        "/api/wolf/super-ghost/feature-profile?symbol=",
-        "/api/wolf/super-ghost/shadow?symbol=",
-        "/api/wolf/super-ghost/promotion?symbol=",
-        "/api/wolf/super-ghost/feature-store/audit?symbol=",
-        "/api/wolf/super-ghost/data-brain?symbol=",
+        "/api/wolf/super-ghost/snapshot?symbol=",
         "/api/picks?limit=50",
         "/api/squeeze/picks",
         "/api/squeeze/daily-log?days=7",
@@ -146,6 +133,52 @@ def test_console_fetches_required_existing_and_new_apis():
     assert "Data brain" in text
 
 
+def test_console_loadall_uses_snapshot_not_old_endpoint_storm():
+    text = _html()
+    body = text[text.index("async function loadAll"):text.index("async function loadPoolPrices")]
+    assert "/api/wolf/super-ghost/snapshot?symbol=" in body
+    # Urgent/liveness feeds stay separate.
+    for endpoint in (
+        "/api/_version",
+        "/health",
+        "/api/health",
+        "/api/system/degraded",
+        "/api/wolf/kill-status",
+        "/api/picks?limit=50",
+        "/api/squeeze/picks",
+        "/api/squeeze/daily-log?days=7",
+    ):
+        assert endpoint in body
+    # These selected-symbol evidence endpoints are now server-bundled; putting
+    # them back in loadAll would recreate the Railway log storm.
+    for endpoint in (
+        "/api/wolf/super-ghost/history?symbol=",
+        "/api/wolf/super-ghost/accuracy?symbol=",
+        "/api/wolf/super-ghost/if-followed?symbol=",
+        "/api/wolf/super-ghost/top-pick-gate?symbol=",
+        "/api/wolf/super-ghost/learning?symbol=",
+        "/api/wolf/super-ghost/precision?symbol=",
+        "/api/wolf/super-ghost/range-calibration?symbol=",
+        "/api/wolf/super-ghost/regime-calibration?symbol=",
+        "/api/wolf/super-ghost/feature-profile?symbol=",
+        "/api/wolf/super-ghost/shadow?symbol=",
+        "/api/wolf/super-ghost/promotion?symbol=",
+        "/api/wolf/super-ghost/feature-store/audit?symbol=",
+        "/api/wolf/super-ghost/data-brain?symbol=",
+        "/api/ghost/doctrine/"+ "",
+    ):
+        assert endpoint not in body
+
+
+def test_console_has_peaceful_polling_controls():
+    text = _html()
+    assert "document.hidden" in text
+    assert "AbortController" in text
+    assert "queueLoadAll" in text
+    assert "visibilitychange" in text
+    assert "_lastHiddenLoad" in text
+
+
 def test_console_routes_serve_new_and_legacy_pages():
     client = TestClient(wolf_app.APP)
     root = client.get("/")
@@ -160,6 +193,36 @@ def test_console_routes_serve_new_and_legacy_pages():
     assert "Prediction command center" in picks.text
     assert "Ghost Picks" in legacy.text
     assert "WOLF Command Center" in cockpit.text
+
+
+def test_super_ghost_snapshot_endpoint_bundles_console_payload(monkeypatch):
+    client = TestClient(wolf_app.APP)
+    monkeypatch.setattr("api.wolf_endpoints._cache_get", lambda *a, **k: None)
+    monkeypatch.setattr("api.wolf_endpoints._cache_set", lambda *a, **k: None)
+    monkeypatch.setattr("core.super_ghost.build_super_ghost", lambda sym: {"ok": True, "symbol": sym, "prediction": {}})
+    monkeypatch.setattr("core.super_ghost_ledger.get_history", lambda symbol=None, limit=30, include_payload=False: {"ok": True, "rows": [{"symbol": symbol}], "limit": limit})
+    monkeypatch.setattr("core.super_ghost_ledger.get_accuracy", lambda symbol=None, horizon=5: {"ok": True, "overall": {"n": 1}, "symbol": symbol})
+    monkeypatch.setattr("core.super_ghost_ledger.get_if_followed", lambda symbol=None, horizon=5: {"ok": True, "symbol": symbol})
+    monkeypatch.setattr("core.super_ghost_top_picks.evaluate_top_pick_gate", lambda sym, horizon=5: {"ok": True, "eligible": False, "symbol": sym})
+    monkeypatch.setattr("core.super_ghost_learning.learning_summary", lambda symbol=None, horizon=5, limit=20: {"ok": True, "profiles": [], "symbol": symbol})
+    monkeypatch.setattr("core.super_ghost_precision.precision_summary", lambda symbol=None, horizon=5, limit=20: {"ok": True, "profiles": [], "symbol": symbol})
+    monkeypatch.setattr("core.super_ghost_range_calibration.range_calibration_summary", lambda symbol=None, horizon=5, limit=20: {"ok": True, "profiles": [], "symbol": symbol})
+    monkeypatch.setattr("core.super_ghost_regime_calibration.regime_calibration_summary", lambda symbol=None, horizon=5, limit=20: {"ok": True, "profiles": [], "symbol": symbol})
+    monkeypatch.setattr("core.super_ghost_lab.latest_lab_summary", lambda symbol=None, horizon=5: {"ok": True, "available": False, "symbol": symbol})
+    monkeypatch.setattr("core.super_ghost_memory.feature_profile", lambda symbol=None, horizon=5, limit=50: {"ok": True, "profiles": [], "symbol": symbol})
+    monkeypatch.setattr("core.super_ghost_shadow.shadow_summary", lambda symbol=None, limit=20: {"ok": True, "rows": [], "symbol": symbol})
+    monkeypatch.setattr("core.super_ghost_promotion.latest_promotion_reviews", lambda symbol=None, limit=5: {"ok": True, "reviews": [], "symbol": symbol})
+    monkeypatch.setattr("core.super_ghost_feature_store.leakage_audit", lambda symbol=None, limit=50: {"ok": True, "status": "clean", "symbol": symbol})
+    monkeypatch.setattr("core.super_ghost_data_brain.build_data_brain", lambda sym: {"ok": True, "symbol": sym, "coverage": {}})
+    monkeypatch.setattr("core.ghost_doctrine.build_symbol_doctrine", lambda sym: {"ok": True, "symbol": sym, "steps": []})
+    r = client.get("/api/wolf/super-ghost/snapshot?symbol=TEST&horizon=5")
+    assert r.status_code == 200
+    d = r.json()
+    assert d["ok"] is True and d["bundled"] is True and d["symbol"] == "TEST"
+    for key in ("sg", "sgHist", "sgAcc", "sgIf", "sgTopGate", "sgLearn",
+                "sgPrecision", "sgRange", "sgRegimeCal", "sgLab", "sgFeatures",
+                "sgShadow", "sgPromo", "sgStoreAudit", "sgDataBrain", "doctrine"):
+        assert key in d
 
 
 def test_console_inline_javascript_has_required_functions():
