@@ -637,3 +637,106 @@ def test_cleanup_duplicate_route_is_gated_and_dry_run_default(monkeypatch):
     r2 = c.post("/api/wallet/cleanup-duplicates?dry_run=0", headers={"x-cron-secret": "ok"})
     assert r2.json()["dry_run"] is False
     assert calls[-1] == (False, "oldest")
+
+
+# ------------------------------------------------- consistent-money readiness
+# The single GO / NO-GO instrument. Judges consistency by the Wilson LOWER
+# bound of the current-geometry win rate vs break-even — never raw win rate,
+# never a lucky small sample.
+
+def _cur_geom_row(pnl_pct, *, entry=100.0, stop=98.7):
+    # stop_frac = 1 - 98.7/100 = 1.3% -> classified as CURRENT geometry.
+    return {"entry_price": entry, "stop_price": stop, "pnl_pct": pnl_pct}
+
+
+def test_readiness_not_ready_below_min_sample(monkeypatch):
+    monkeypatch.setenv("PAPER_CONSISTENT_MIN_SAMPLE", "30")
+    # Only 5 trades, even all winners — too few to be statistically honest.
+    rows = [_cur_geom_row(2.0) for _ in range(5)]
+    out = pw.consistent_money_readiness(rows, 0.013)
+    assert out["ready"] is False
+    assert out["checks"]["sample"] is False
+    assert out["n_current_geometry"] == 5
+    assert "need >= 30" in out["verdict"]
+
+
+def test_readiness_not_ready_when_expectancy_negative(monkeypatch):
+    monkeypatch.setenv("PAPER_CONSISTENT_MIN_SAMPLE", "10")
+    # 10 trades, mostly losses -> negative expectancy, must fail.
+    rows = [_cur_geom_row(2.0) for _ in range(3)] + [_cur_geom_row(-1.3) for _ in range(7)]
+    out = pw.consistent_money_readiness(rows, 0.013)
+    assert out["ready"] is False
+    assert out["checks"]["positive_expectancy"] is False
+
+
+def test_readiness_not_ready_when_wilson_below_break_even(monkeypatch):
+    monkeypatch.setenv("PAPER_CONSISTENT_MIN_SAMPLE", "20")
+    monkeypatch.setenv("PAPER_CONSISTENT_WILSON_MARGIN", "0.03")
+    # 20 trades at exactly break-even-ish win rate: positive-ish expectancy is
+    # possible but the Wilson floor at N=20 will not clear break-even+margin.
+    rows = [_cur_geom_row(2.0) for _ in range(11)] + [_cur_geom_row(-1.3) for _ in range(9)]
+    out = pw.consistent_money_readiness(rows, 0.013)
+    assert out["checks"]["sample"] is True
+    # break_even for +2%/-1.3% ~= 0.394; required = 0.424. Wilson_low at 55% / N=20
+    # is well under that, so skill bar fails even if expectancy is positive.
+    assert out["checks"]["wilson_beats_break_even"] is False
+    assert out["ready"] is False
+
+
+def test_readiness_ready_with_strong_large_sample(monkeypatch):
+    monkeypatch.setenv("PAPER_CONSISTENT_MIN_SAMPLE", "30")
+    monkeypatch.setenv("PAPER_CONSISTENT_WILSON_MARGIN", "0.03")
+    # 100 trades at 70% win rate, +2%/-1.3%. Wilson_low ~0.61 >> break_even+margin
+    # (~0.42), expectancy strongly positive -> READY.
+    rows = [_cur_geom_row(2.0) for _ in range(70)] + [_cur_geom_row(-1.3) for _ in range(30)]
+    out = pw.consistent_money_readiness(rows, 0.013)
+    assert out["ready"] is True
+    assert out["checks"] == {"sample": True, "positive_expectancy": True,
+                             "wilson_beats_break_even": True}
+    assert out["win_rate_wilson_low"] > out["required_win_rate_wilson_low"]
+    assert out["verdict"].startswith("READY")
+
+
+def test_readiness_excludes_legacy_geometry(monkeypatch):
+    monkeypatch.setenv("PAPER_CONSISTENT_MIN_SAMPLE", "30")
+    # 100 strong CURRENT-geometry winners + a pile of legacy -3.6%-stop rows.
+    # Legacy rows must NOT count toward the sample or the verdict.
+    cur_rows = [_cur_geom_row(2.0) for _ in range(70)] + [_cur_geom_row(-1.3) for _ in range(30)]
+    legacy_rows = [{"entry_price": 100.0, "stop_price": 96.4, "pnl_pct": -3.6} for _ in range(40)]
+    out = pw.consistent_money_readiness(cur_rows + legacy_rows, 0.013)
+    assert out["n_current_geometry"] == 100      # legacy excluded
+    assert out["requirements"]["basis"] == "current_geometry_only"
+    assert out["ready"] is True
+
+
+def test_readiness_reported_in_wallet_summary(monkeypatch):
+    # wallet_summary must surface the readiness verdict for the empty/new wallet
+    # as NOT ready (no trades) without raising.
+    class _Cur:
+        def __init__(self): self._last = ""
+        def execute(self, sql, params=None): self._last = sql
+        def fetchone(self):
+            s = self._last
+            if "COUNT(*)" in s:
+                return (0, 0.0, 0)          # n_closed, realized, wins
+            if "SUM(" in s:
+                return (0.0,)               # _cash() SUM(pnl) / SUM(qty*entry)
+            if "ghost_state" in s:
+                return None                 # no stored config -> defaults
+            return None
+        def fetchall(self): return []
+
+    class _Conn:
+        def cursor(self): return _Cur()
+        def commit(self): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    import core.db as db
+    monkeypatch.setattr(db, "db_conn", lambda: _Conn())
+    monkeypatch.setattr(db, "ensure_ghost_state", lambda cur: None)
+    monkeypatch.setattr(pw, "_live_prices", lambda syms: {})
+    out = pw.wallet_summary()
+    assert out["ok"] is True
+    assert "consistent_money_readiness" in out
+    assert out["consistent_money_readiness"]["ready"] is False

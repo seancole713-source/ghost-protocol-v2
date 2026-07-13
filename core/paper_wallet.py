@@ -179,6 +179,99 @@ def expectancy_by_geometry(rows: List[Dict[str, Any]],
     }
 
 
+def _consistent_money_min_sample() -> int:
+    """Minimum resolved trades before an EV verdict is statistically honest.
+    Small samples cannot separate skill from luck; default 30, env-tunable."""
+    return max(1, int(os.getenv("PAPER_CONSISTENT_MIN_SAMPLE", "30")))
+
+
+def _consistent_money_wilson_margin() -> float:
+    """Safety cushion the Wilson-floor win rate must clear ABOVE break-even.
+    A verdict that only just clears break-even is not 'consistent'; require a
+    margin so noise cannot flip it negative. Default 3 percentage points."""
+    return max(0.0, float(os.getenv("PAPER_CONSISTENT_WILSON_MARGIN", "0.03")))
+
+
+def consistent_money_readiness(rows: List[Dict[str, Any]],
+                               current_stop_frac: float) -> Dict[str, Any]:
+    """The single GO / NO-GO instrument for 'is Ghost good enough for consistent
+    money?' — pure, testable, and honest by construction.
+
+    Judging consistency by raw win rate or raw expectancy is dishonest at low N:
+    a lucky streak reads 'profitable'. This gate instead demands that the
+    CURRENT-geometry trades (legacy oversized stops excluded) clear THREE bars:
+
+      1. sample  — at least ``_consistent_money_min_sample()`` resolved trades,
+      2. edge    — realized expectancy per trade is positive,
+      3. skill   — the 95% Wilson LOWER bound of the win rate exceeds the
+                   structure's break-even win rate by a safety margin, so the
+                   edge is unlikely to be noise.
+
+    Only current-geometry rows count: legacy -3.6%-stop trades ran under a
+    structure the wallet no longer uses, so including them would misjudge the
+    live system. Returns a verdict plus every number behind it — no hidden math,
+    no invented figures. ``ready=True`` only when all three bars pass.
+    """
+    from core.precision_gate import wilson_lower_bound
+
+    split = expectancy_by_geometry(rows, current_stop_frac)
+    cur = split["current_geometry"]
+    n = int(cur.get("n") or 0)
+    wins = int(cur.get("wins") or 0)
+    expectancy = cur.get("expectancy_pct")
+
+    # Break-even win rate for the current structure (+2% target vs stop_frac).
+    target_frac = _default_vol_pct_readonly()
+    geo = geometry_stats(target_frac, float(current_stop_frac))
+    break_even = geo.get("break_even_win_rate")
+
+    wilson_low = round(wilson_lower_bound(wins, n), 4) if n > 0 else None
+    min_n = _consistent_money_min_sample()
+    margin = _consistent_money_wilson_margin()
+    required_wr = round(break_even + margin, 4) if break_even is not None else None
+
+    checks = {
+        "sample": bool(n >= min_n),
+        "positive_expectancy": bool(expectancy is not None and expectancy > 0),
+        "wilson_beats_break_even": bool(
+            wilson_low is not None and required_wr is not None and wilson_low >= required_wr
+        ),
+    }
+    ready = all(checks.values())
+
+    if ready:
+        verdict = "READY — current-geometry edge is positive and statistically above break-even."
+    elif n < min_n:
+        verdict = (f"NOT READY — only {n} current-geometry trades; need >= {min_n} "
+                   "before an honest EV verdict is possible.")
+    elif not checks["positive_expectancy"]:
+        verdict = "NOT READY — current-geometry expectancy per trade is not positive."
+    else:
+        verdict = ("NOT READY — win rate's 95% lower bound does not clear break-even "
+                   "plus safety margin; the edge could still be noise.")
+
+    return {
+        "ready": ready,
+        "verdict": verdict,
+        "checks": checks,
+        "n_current_geometry": n,
+        "wins_current_geometry": wins,
+        "expectancy_pct": expectancy,
+        "win_rate": cur.get("win_rate"),
+        "win_rate_wilson_low": wilson_low,
+        "break_even_win_rate": break_even,
+        "required_win_rate_wilson_low": required_wr,
+        "requirements": {
+            "min_sample": min_n,
+            "wilson_safety_margin": margin,
+            "basis": "current_geometry_only",
+        },
+        "note": ("Fake-money paper evidence only. 'ready' means the paper wallet's "
+                 "current-geometry trades show a statistically real positive edge — "
+                 "it is NOT financial advice and does NOT authorize real-money trading."),
+    }
+
+
 def _max_open() -> int:
     return max(1, int(os.getenv("PAPER_MAX_OPEN", "15")))
 
@@ -977,6 +1070,13 @@ def wallet_summary() -> Dict[str, Any]:
                 # so the old geometry's losses can't hide whether the new
                 # geometry actually works.
                 "expectancy_by_geometry": expectancy_by_geometry(
+                    history,
+                    _default_vol_pct_readonly() * _wallet_stop_vol_mult()),
+                # The single GO / NO-GO read for "consistent money": current-
+                # geometry trades only, Wilson lower bound vs break-even. Honest
+                # by construction — NOT_READY until a real, statistically-proven
+                # positive edge exists on a large-enough clean sample.
+                "consistent_money_readiness": consistent_money_readiness(
                     history,
                     _default_vol_pct_readonly() * _wallet_stop_vol_mult()),
                 "goal": {
