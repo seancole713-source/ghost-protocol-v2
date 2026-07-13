@@ -100,7 +100,15 @@ def overconfidence_min_samples() -> int:
 
 
 def overconfidence_min_win_rate() -> float:
-    return max(0.0, min(1.0, float(os.getenv("V3_OVERCONFIDENCE_MIN_WIN_RATE", "0.55"))))
+    """Minimum realized win rate required for the 70+ high-confidence bucket.
+
+    This is part of the accuracy contract: in contract=70 the bucket must clear
+    the 70% win test, and env may only TIGHTEN it. Before PR #133 follow-up it
+    defaulted to 55%, which could allow a 70+ confidence bucket that was merely
+    better-than-coin-flip, not actually contract-70.
+    """
+    from core.accuracy_contract import resolve_float
+    return resolve_float("V3_OVERCONFIDENCE_MIN_WIN_RATE", "target_win_rate", lo=0.0, hi=1.0)
 
 
 def calibration_review(*, prob: float, samples: int, wins: int) -> Dict[str, Any]:

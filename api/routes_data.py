@@ -861,6 +861,28 @@ def trigger_wallet_cycle(x_cron_secret: str = Header(default="")):
     return run_wallet_cycle()
 
 
+@router.post("/api/wallet/cleanup-duplicates")
+def cleanup_wallet_duplicates(request: Request,
+                              x_cron_secret: str = Header(default="")):
+    """Close pre-PR#133 duplicate open paper lots. Admin/cron gated.
+
+    Defaults to dry_run=1 so operators can inspect exactly which fake-money
+    lots would close before mutating the paper wallet evidence ledger.
+    """
+    from wolf_app import _ADMIN_COOKIE, _admin_token_valid, _cron_ok  # late import — shared state + monkeypatch-safe
+    tok = request.cookies.get(_ADMIN_COOKIE, "")
+    if not (_cron_ok(x_cron_secret) or _admin_token_valid(tok)):
+        raise HTTPException(status_code=403, detail="admin login or cron secret required")
+    dry_raw = str(request.query_params.get("dry_run", "1")).strip().lower()
+    dry_run = dry_raw not in ("0", "false", "no", "off")
+    keep = request.query_params.get("keep", "oldest")
+    from core.paper_wallet import cleanup_duplicate_open_positions
+    out = cleanup_duplicate_open_positions(dry_run=dry_run, keep=keep)
+    if not out.get("ok"):
+        raise HTTPException(status_code=422, detail=out)
+    return out
+
+
 @router.get("/api/report/daily")
 def get_daily_report(day: str = ""):
     """Consolidated today's report — everything Ghost did + why,

@@ -1706,6 +1706,81 @@ async def get_super_ghost(request: Request, symbol: str = WOLF_SYMBOL, ai: int =
     return JSONResponse(content=result, status_code=status)
 
 
+@router.get("/super-ghost/snapshot")
+async def get_super_ghost_snapshot(symbol: str = WOLF_SYMBOL, horizon: int = 5):
+    """Bundled Super Ghost console snapshot.
+
+    The console used to fan out 15+ selected-symbol reads every refresh
+    (history, accuracy, precision, learning, feature memory, doctrine, etc.).
+    That made production logs noisy and made the browser feel frantic. This
+    route keeps urgent/liveness feeds separate, but bundles the slow
+    selected-symbol evidence into one cached read.
+    """
+    import asyncio
+
+    sym = (symbol or WOLF_SYMBOL).strip().upper()
+    try:
+        horizon_i = int(horizon or 5)
+    except Exception:
+        horizon_i = 5
+    cache_key = f"super-ghost-snapshot:{sym}:{horizon_i}"
+    cached = _cache_get(cache_key, 90)
+    if cached:
+        return JSONResponse(content=cached)
+
+    def _safe(name: str, fn, fallback: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            out = fn()
+            if isinstance(out, dict):
+                return out
+            return {**fallback, "ok": False, "error": f"{name}: non-dict payload"}
+        except Exception as exc:
+            return {**fallback, "ok": False, "error": f"{name}: {str(exc)[:160]}"}
+
+    def _build_sync() -> Dict[str, Any]:
+        from core.super_ghost import build_super_ghost
+        from core.super_ghost_ledger import get_accuracy, get_history, get_if_followed
+        from core.super_ghost_top_picks import evaluate_top_pick_gate
+        from core.super_ghost_learning import learning_summary
+        from core.super_ghost_precision import precision_summary
+        from core.super_ghost_range_calibration import range_calibration_summary
+        from core.super_ghost_regime_calibration import regime_calibration_summary
+        from core.super_ghost_lab import latest_lab_summary
+        from core.super_ghost_memory import feature_profile
+        from core.super_ghost_shadow import shadow_summary
+        from core.super_ghost_promotion import latest_promotion_reviews
+        from core.super_ghost_feature_store import leakage_audit
+        from core.super_ghost_data_brain import build_data_brain
+        from core.ghost_doctrine import build_symbol_doctrine
+
+        return {
+            "ok": True,
+            "bundled": True,
+            "symbol": sym,
+            "horizon": horizon_i,
+            "sg": _safe("super_ghost", lambda: build_super_ghost(sym), {"ok": False, "symbol": sym}),
+            "sgHist": _safe("history", lambda: get_history(symbol=sym, limit=30), {"ok": False, "rows": []}),
+            "sgAcc": _safe("accuracy", lambda: get_accuracy(symbol=sym, horizon=horizon_i), {"ok": False, "overall": {}}),
+            "sgIf": _safe("if_followed", lambda: get_if_followed(symbol=sym, horizon=horizon_i), {"ok": False}),
+            "sgTopGate": _safe("top_pick_gate", lambda: evaluate_top_pick_gate(sym, horizon=horizon_i), {"ok": False, "eligible": False, "checks": []}),
+            "sgLearn": _safe("learning", lambda: learning_summary(symbol=sym, horizon=horizon_i, limit=20), {"ok": False, "profiles": [], "recent_lessons": []}),
+            "sgPrecision": _safe("precision", lambda: precision_summary(symbol=sym, horizon=horizon_i, limit=20), {"ok": False, "profiles": [], "recent_events": []}),
+            "sgRange": _safe("range_calibration", lambda: range_calibration_summary(symbol=sym, horizon=horizon_i, limit=20), {"ok": False, "profiles": []}),
+            "sgRegimeCal": _safe("regime_calibration", lambda: regime_calibration_summary(symbol=sym, horizon=horizon_i, limit=20), {"ok": False, "profiles": []}),
+            "sgLab": _safe("lab", lambda: latest_lab_summary(symbol=sym, horizon=horizon_i), {"ok": False, "available": False, "results": []}),
+            "sgFeatures": _safe("feature_profile", lambda: feature_profile(symbol=sym, horizon=horizon_i, limit=50), {"ok": False, "profiles": []}),
+            "sgShadow": _safe("shadow", lambda: shadow_summary(symbol=sym, limit=20), {"ok": False, "rows": [], "manifest": []}),
+            "sgPromo": _safe("promotion", lambda: latest_promotion_reviews(symbol=sym, limit=5), {"ok": False, "reviews": []}),
+            "sgStoreAudit": _safe("store_audit", lambda: leakage_audit(symbol=sym, limit=50), {"ok": False, "status": "unknown", "leak_count": 0}),
+            "sgDataBrain": _safe("data_brain", lambda: build_data_brain(sym), {"ok": False, "coverage": {}}),
+            "doctrine": _safe("doctrine", lambda: build_symbol_doctrine(sym), {"ok": False, "steps": []}),
+        }
+
+    payload = await asyncio.to_thread(_build_sync)
+    _cache_set(cache_key, payload)
+    return JSONResponse(content=payload)
+
+
 @router.post("/super-ghost/log")
 async def post_super_ghost_log(request: Request):
     """Persist a fresh Super Ghost prediction to the Truth Ledger.

@@ -179,6 +179,125 @@ def expectancy_by_geometry(rows: List[Dict[str, Any]],
     }
 
 
+def _consistent_money_min_sample() -> int:
+    """Minimum resolved trades before an EV verdict is statistically honest.
+    Small samples cannot separate skill from luck; default 30, env-tunable."""
+    return max(1, int(os.getenv("PAPER_CONSISTENT_MIN_SAMPLE", "30")))
+
+
+def _consistent_money_wilson_margin() -> float:
+    """Safety cushion the Wilson-floor win rate must clear ABOVE break-even.
+    A verdict that only just clears break-even is not 'consistent'; require a
+    margin so noise cannot flip it negative. Default 3 percentage points."""
+    return max(0.0, float(os.getenv("PAPER_CONSISTENT_WILSON_MARGIN", "0.03")))
+
+
+def _consistent_money_win_test() -> float:
+    """The win-rate the readiness gate must clear — the 'win test' bar.
+
+    The operator was explicit: passing is NOT merely clearing break-even
+    (~39% for +2%/-1.3%), it is clearing the accuracy contract's target win
+    rate — 70% under GHOST_ACCURACY_CONTRACT=70. We route through the contract
+    so this bar tracks the same 70% Ghost trains and fires against, and (under
+    contract 70/80) env can only TIGHTEN it, never weaken it below 70%.
+    """
+    from core.accuracy_contract import resolve_float
+    return resolve_float("PAPER_CONSISTENT_WIN_TEST", "target_win_rate", lo=0.0, hi=1.0)
+
+
+def consistent_money_readiness(rows: List[Dict[str, Any]],
+                               current_stop_frac: float) -> Dict[str, Any]:
+    """The single GO / NO-GO instrument for 'is Ghost good enough for consistent
+    money?' — pure, testable, and honest by construction.
+
+    Judging consistency by raw win rate or raw expectancy is dishonest at low N:
+    a lucky streak reads 'profitable'. This gate instead demands that the
+    CURRENT-geometry trades (legacy oversized stops excluded) clear THREE bars:
+
+      1. sample  — at least ``_consistent_money_min_sample()`` resolved trades,
+      2. edge    — realized expectancy per trade is positive,
+      3. win test — the 95% Wilson LOWER bound of the win rate clears the WIN
+                   TEST bar: the accuracy contract's target win rate (70% under
+                   contract 70), and never less than break-even + safety margin.
+                   Using the Wilson floor (not the raw rate) means a lucky small
+                   sample cannot pass a 70% test.
+
+    Only current-geometry rows count: legacy -3.6%-stop trades ran under a
+    structure the wallet no longer uses, so including them would misjudge the
+    live system. Returns a verdict plus every number behind it — no hidden math,
+    no invented figures. ``ready=True`` only when all three bars pass.
+    """
+    from core.precision_gate import wilson_lower_bound
+
+    split = expectancy_by_geometry(rows, current_stop_frac)
+    cur = split["current_geometry"]
+    n = int(cur.get("n") or 0)
+    wins = int(cur.get("wins") or 0)
+    expectancy = cur.get("expectancy_pct")
+
+    # Break-even win rate for the current structure (+2% target vs stop_frac).
+    target_frac = _default_vol_pct_readonly()
+    geo = geometry_stats(target_frac, float(current_stop_frac))
+    break_even = geo.get("break_even_win_rate")
+
+    wilson_low = round(wilson_lower_bound(wins, n), 4) if n > 0 else None
+    min_n = _consistent_money_min_sample()
+    margin = _consistent_money_wilson_margin()
+    # The win test bar the operator asked for: the contract win rate (70%),
+    # floored so it can never drop below break-even + safety margin. Passing
+    # means the win rate's honest lower bound clears the 70% test, not just
+    # that the structure is barely profitable.
+    win_test = _consistent_money_win_test()
+    break_even_floor = (break_even + margin) if break_even is not None else 0.0
+    required_wr = round(max(win_test, break_even_floor), 4)
+
+    checks = {
+        "sample": bool(n >= min_n),
+        "positive_expectancy": bool(expectancy is not None and expectancy > 0),
+        "wilson_clears_win_test": bool(
+            wilson_low is not None and required_wr is not None and wilson_low >= required_wr
+        ),
+    }
+    ready = all(checks.values())
+
+    if ready:
+        verdict = (f"READY — current-geometry win rate's 95% lower bound clears the "
+                   f"{win_test*100:.0f}% win test.")
+    elif n < min_n:
+        verdict = (f"NOT READY — only {n} current-geometry trades; need >= {min_n} "
+                   "before an honest EV verdict is possible.")
+    elif not checks["positive_expectancy"]:
+        verdict = "NOT READY — current-geometry expectancy per trade is not positive."
+    else:
+        verdict = (f"NOT READY — win rate's 95% lower bound ({(wilson_low or 0)*100:.1f}%) "
+                   f"does not clear the {win_test*100:.0f}% win test "
+                   f"(required lower bound >= {required_wr*100:.1f}%).")
+
+    return {
+        "ready": ready,
+        "verdict": verdict,
+        "checks": checks,
+        "n_current_geometry": n,
+        "wins_current_geometry": wins,
+        "expectancy_pct": expectancy,
+        "win_rate": cur.get("win_rate"),
+        "win_rate_wilson_low": wilson_low,
+        "break_even_win_rate": break_even,
+        "win_test_win_rate": round(win_test, 4),
+        "required_win_rate_wilson_low": required_wr,
+        "requirements": {
+            "min_sample": min_n,
+            "wilson_safety_margin": margin,
+            "win_test_win_rate": round(win_test, 4),
+            "basis": "current_geometry_only",
+        },
+        "note": ("Fake-money paper evidence only. 'ready' means the paper wallet's "
+                 "current-geometry trades clear the contract win test on the win rate's "
+                 "honest lower bound — it is NOT financial advice and does NOT authorize "
+                 "real-money trading."),
+    }
+
+
 def _max_open() -> int:
     return max(1, int(os.getenv("PAPER_MAX_OPEN", "15")))
 
@@ -318,6 +437,114 @@ def reset_wallet(starting_balance: float,
         conn.commit()
     LOGGER.info("[paper_wallet] reset to $%.2f (monthly goal $%.2f)", bal, goal)
     return {"ok": True, "starting_balance": bal, "monthly_goal": goal}
+
+
+def cleanup_duplicate_open_positions(*,
+                                     dry_run: bool = True,
+                                     keep: str = "oldest") -> Dict[str, Any]:
+    """Admin-only repair for pre-PR#133 duplicate open paper lots.
+
+    PR #133 prevents NEW duplicate ``(book, symbol)`` entries, but production
+    can already contain stacked shadow lots. Leaving them open keeps the wallet
+    evidence contaminated; deleting them would rewrite history and distort
+    cash. The honest repair is: keep exactly one open lot per ``(book, symbol)``
+    and close the extras at the current quote with an explicit audit reason.
+
+    ``dry_run`` defaults true so operators can inspect the exact rows first.
+    Only the ``oldest`` keeper policy is intentionally supported: keep the first
+    exposure Ghost took, close later accidental stacked exposure.
+    """
+    keep_policy = (keep or "oldest").strip().lower()
+    if keep_policy != "oldest":
+        return {"ok": False, "error": "unsupported_keep_policy", "supported": ["oldest"]}
+
+    from core.db import db_conn
+    now = int(time.time())
+    with db_conn() as conn:
+        cur = conn.cursor()
+        ensure_paper_tables(cur)
+        cur.execute(
+            """SELECT id, book, symbol, qty, entry_price, entry_ts, source
+               FROM ghost_paper_trades
+               WHERE status='open'
+               ORDER BY book, UPPER(symbol), entry_ts ASC, id ASC"""
+        )
+        rows = cur.fetchall()
+
+        groups: Dict[tuple, List[Dict[str, Any]]] = {}
+        for tid, book, sym, qty, entry, ets, source in rows:
+            key = (str(book), str(sym).upper())
+            groups.setdefault(key, []).append({
+                "id": tid,
+                "book": str(book),
+                "symbol": str(sym).upper(),
+                "qty": float(qty),
+                "entry_price": float(entry),
+                "entry_ts": int(ets),
+                "source": source,
+            })
+
+        dup_groups = {k: v for k, v in groups.items() if len(v) > 1}
+        symbols = sorted({k[1] for k in dup_groups})
+        prices = _live_prices(symbols) if symbols else {}
+        plan = []
+        skipped = []
+        closed = []
+
+        for (book, sym), lots in sorted(dup_groups.items()):
+            # Already ordered oldest-first by SQL; keep the earliest exposure.
+            keeper = lots[0]
+            for lot in lots[1:]:
+                px = prices.get(sym)
+                item = {
+                    "book": book,
+                    "symbol": sym,
+                    "keep_id": keeper["id"],
+                    "close_id": lot["id"],
+                    "qty": lot["qty"],
+                    "entry_price": lot["entry_price"],
+                    "entry_ts": lot["entry_ts"],
+                    "exit_price": round(float(px), 4) if px and px > 0 else None,
+                    "source": lot.get("source"),
+                }
+                if not px or px <= 0:
+                    item["skip_reason"] = "no_live_price"
+                    skipped.append(item)
+                    continue
+                item["pnl"] = round((float(px) - lot["entry_price"]) * lot["qty"], 4)
+                item["pnl_pct"] = round((float(px) / lot["entry_price"] - 1) * 100, 3) if lot["entry_price"] else None
+                plan.append(item)
+
+        if not dry_run and plan:
+            for item in plan:
+                cur.execute(
+                    """UPDATE ghost_paper_trades
+                       SET status='closed', exit_price=%s, exit_ts=%s,
+                           exit_reason=%s, pnl=%s, pnl_pct=%s
+                       WHERE id=%s AND status='open'""",
+                    (item["exit_price"], now, "duplicate_symbol_cleanup",
+                     item["pnl"], item["pnl_pct"], item["close_id"]),
+                )
+                if cur.rowcount > 0:
+                    closed.append(item)
+            conn.commit()
+
+    return {
+        "ok": True,
+        "dry_run": bool(dry_run),
+        "keep": keep_policy,
+        "duplicate_groups": [
+            {"book": k[0], "symbol": k[1], "open_lots": len(v), "keep_id": v[0]["id"]}
+            for k, v in sorted(dup_groups.items())
+        ],
+        "planned_close_count": len(plan),
+        "closed_count": len(closed),
+        "skipped_count": len(skipped),
+        "to_close": plan,
+        "skipped": skipped,
+        "note": ("Dry run only — no rows changed." if dry_run else
+                 "Closed duplicate open paper lots at current quote with exit_reason=duplicate_symbol_cleanup."),
+    }
 
 
 def _maybe_roll_month(cur, cfg: Dict[str, Any]) -> Dict[str, Any]:
@@ -537,6 +764,44 @@ def _enter(cur, *, book: str, symbol: str, source: str, entry: float,
     return cur.rowcount > 0
 
 
+def _filter_new_symbol_candidates(candidates, open_book_syms):
+    """One open lot per ``(book, symbol)`` — the single source of truth for the
+    wallet's no-duplicate-per-symbol invariant.
+
+    ``source UNIQUE`` (see :func:`_enter`) only stops re-mirroring the SAME
+    signal row. Distinct shadow-outcome rows for the same symbol each carry a
+    different ``source`` (``shadow:{id}``), so before this filter they all
+    cleared ``ON CONFLICT(source) DO NOTHING`` and stacked correlated lots — the
+    live book showed ARDT/LCID/YMM x3 and XPO x2 on 2026-07-13, tripling slice
+    cost and correlated exposure and adding no per-symbol evidence (shadow
+    evidence is already capped at one row per symbol per trading day upstream).
+
+    Drops any candidate whose ``(book, symbol)`` already has an open lot, AND
+    collapses several same-``(book, symbol)`` candidates within ONE cycle to the
+    first (freshest — candidates arrive newest-first). Scope is per-book so a
+    gated lot never suppresses shadow research for that symbol, or vice versa.
+    Symbols are compared upper-cased to match how :func:`_enter` stores them.
+
+    Args:
+        candidates: iterable of ``(book, source, symbol)`` tuples.
+        open_book_syms: set of ``(book, SYMBOL_UPPER)`` currently open.
+    Returns:
+        ``(kept, skipped_count)`` — ``kept`` preserves input order. Pure: no DB,
+        fully unit-testable.
+    """
+    held = set(open_book_syms)
+    kept = []
+    skipped = 0
+    for book, source, symbol in candidates:
+        key = (book, str(symbol).upper())
+        if key in held:
+            skipped += 1
+            continue
+        held.add(key)
+        kept.append((book, source, symbol))
+    return kept, skipped
+
+
 def run_wallet_cycle() -> Dict[str, Any]:
     """One engine pass: mirror new signals, check exits, snapshot the day."""
     if not wallet_enabled():
@@ -610,16 +875,19 @@ def run_wallet_cycle() -> Dict[str, Any]:
 
             candidates = gated_rows + shadow_rows
             need_prices = sorted({c[2].upper() for c in candidates})
-            cur.execute("SELECT DISTINCT symbol FROM ghost_paper_trades WHERE status='open'")
-            open_syms = sorted({r[0] for r in cur.fetchall()})
+            cur.execute("SELECT DISTINCT book, symbol FROM ghost_paper_trades WHERE status='open'")
+            open_book_rows = cur.fetchall()
+            open_syms = sorted({r[1] for r in open_book_rows})
+            open_book_syms = {(r[0], str(r[1]).upper()) for r in open_book_rows}
             prices = _live_prices(sorted(set(need_prices + open_syms)))
 
             # Observability (PR #143): why did candidates not become entries?
             diag = {"gated_candidates": len(gated_rows),
                     "shadow_candidates": len(shadow_rows),
                     "entry_window": gate,
-                    "skip_no_price": 0, "skip_capacity": 0, "skip_dupe": 0}
-            # PR #163: dupe-check BEFORE quotes/bands — previously every
+                    "skip_no_price": 0, "skip_capacity": 0, "skip_dupe": 0,
+                    "skip_open_symbol": 0}
+            # PR #163: dupe-check BEFORE fresh_bands/OHLCV — previously every
             # already-mirrored candidate burned a fresh_bands computation (and
             # now would burn an OHLCV fetch) every 5-min cycle just to hit
             # ON CONFLICT DO NOTHING.
@@ -629,7 +897,16 @@ def run_wallet_cycle() -> Dict[str, Any]:
                     "SELECT source FROM ghost_paper_trades WHERE source = ANY(%s)",
                     ([c[1] for c in candidates],))
                 seen_sources = {r[0] for r in cur.fetchall()}
-            for book, source, sym in [(c[0], c[1], c[2]) for c in candidates]:
+            # No-duplicate-per-symbol guard: one open lot per (book, symbol).
+            # source UNIQUE only stops re-mirroring the SAME signal row; distinct
+            # shadow rows for one symbol each have their own source and used to
+            # stack correlated lots (ARDT/LCID/YMM x3 live 2026-07-13). Filter
+            # here, BEFORE fresh_bands/OHLCV (PR #163 ordering), so a symbol we
+            # already hold never burns a fresh_bands fetch either.
+            deduped_candidates, skipped_open_symbol = _filter_new_symbol_candidates(
+                [(c[0], c[1], c[2]) for c in candidates], open_book_syms)
+            diag["skip_open_symbol"] += skipped_open_symbol
+            for book, source, sym in deduped_candidates:
                 if source in seen_sources:
                     diag["skip_dupe"] += 1
                     continue
@@ -819,6 +1096,13 @@ def wallet_summary() -> Dict[str, Any]:
                 # so the old geometry's losses can't hide whether the new
                 # geometry actually works.
                 "expectancy_by_geometry": expectancy_by_geometry(
+                    history,
+                    _default_vol_pct_readonly() * _wallet_stop_vol_mult()),
+                # The single GO / NO-GO read for "consistent money": current-
+                # geometry trades only, Wilson lower bound vs break-even. Honest
+                # by construction — NOT_READY until a real, statistically-proven
+                # positive edge exists on a large-enough clean sample.
+                "consistent_money_readiness": consistent_money_readiness(
                     history,
                     _default_vol_pct_readonly() * _wallet_stop_vol_mult()),
                 "goal": {

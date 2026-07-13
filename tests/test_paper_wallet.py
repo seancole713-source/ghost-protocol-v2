@@ -347,3 +347,428 @@ def test_fresh_bands_reward_risk_preserved_with_atr(monkeypatch):
     s_pct = 1 - stp / 100.0
     assert t_pct > 0.02                                  # wider than flat
     assert abs(s_pct / t_pct - 0.65) < 0.01              # mult preserved
+
+
+# ---------------------------------------------------------------- no dup/symbol
+# One open lot per (book, symbol). ``source UNIQUE`` only stops re-mirroring the
+# SAME signal row; distinct shadow rows for one symbol each carry their own
+# source and used to stack correlated lots (ARDT/LCID/YMM x3 live 2026-07-13).
+
+def test_filter_skips_symbol_already_open_same_book():
+    # A symbol already held in the shadow book gets no second shadow lot.
+    kept, skipped = pw._filter_new_symbol_candidates(
+        [("shadow", "shadow:2", "ARDT")],
+        {("shadow", "ARDT")},
+    )
+    assert kept == []
+    assert skipped == 1
+
+
+def test_filter_collapses_same_symbol_candidates_within_one_cycle():
+    # Three fresh ARDT candidates in ONE cycle collapse to the first (freshest).
+    kept, skipped = pw._filter_new_symbol_candidates(
+        [("shadow", "shadow:9", "ARDT"),
+         ("shadow", "shadow:8", "ARDT"),
+         ("shadow", "shadow:7", "ARDT")],
+        set(),
+    )
+    assert kept == [("shadow", "shadow:9", "ARDT")]
+    assert skipped == 2
+
+
+def test_filter_is_case_insensitive():
+    # _enter stores symbol.upper(); the guard must match regardless of case.
+    kept, skipped = pw._filter_new_symbol_candidates(
+        [("shadow", "shadow:5", "ardt")],
+        {("shadow", "ARDT")},
+    )
+    assert kept == []
+    assert skipped == 1
+
+
+def test_filter_scope_is_per_book():
+    # A gated lot must NOT suppress shadow research for the same symbol,
+    # and vice-versa — the two books are independent.
+    kept, skipped = pw._filter_new_symbol_candidates(
+        [("shadow", "shadow:1", "ABCL")],
+        {("gated", "ABCL")},
+    )
+    assert kept == [("shadow", "shadow:1", "ABCL")]
+    assert skipped == 0
+
+
+def test_filter_keeps_distinct_symbols_in_order():
+    # Distinct new symbols all pass, input order preserved.
+    cands = [("shadow", "shadow:1", "ABCL"),
+             ("shadow", "shadow:2", "BB"),
+             ("gated", "pick:3", "XPO")]
+    kept, skipped = pw._filter_new_symbol_candidates(cands, set())
+    assert kept == cands
+    assert skipped == 0
+
+
+def test_run_cycle_does_not_open_duplicate_symbol(monkeypatch):
+    """Integration: two shadow candidates for ARDT (one already open, one fresh
+    dup in-cycle) yield exactly ZERO new ARDT lots; a distinct symbol still
+    enters. Proves the guard holds through the real run_wallet_cycle path."""
+    monkeypatch.setenv("PAPER_WALLET_ENABLED", "1")
+    monkeypatch.setenv("PAPER_SESSION_GATE", "0")   # entry window always open
+    inserts = []
+
+    class _Cur:
+        def __init__(self):
+            self._last = ""
+            self.rowcount = 0
+
+        def execute(self, sql, params=None):
+            self._last = sql
+            if "INSERT INTO ghost_paper_trades" in sql and params is not None:
+                # params: (book, symbol, qty, entry, now, tgt, stop, exp, source, now)
+                inserts.append({"book": params[0], "symbol": params[1],
+                                "source": params[8]})
+                self.rowcount = 1                # a real INSERT affected one row
+            else:
+                self.rowcount = 0
+
+        def fetchone(self):
+            s = self._last
+            if "COUNT(*) FROM ghost_paper_trades" in s:
+                return (1,)                      # 1 already open (the held ARDT)
+            return None
+
+        def fetchall(self):
+            s = self._last
+            if "FROM ghost_shadow_outcomes o" in s:
+                # id, symbol, entry, target, stop, expires, resolved, wins
+                return [
+                    (101, "ARDT", 10.0, 10.5, 9.7, 9_999_999_999, 20, 15),
+                    (102, "ARDT", 10.1, 10.6, 9.8, 9_999_999_999, 20, 15),
+                    (103, "BB", 8.0, 8.4, 7.7, 9_999_999_999, 20, 15),
+                ]
+            if "FROM predictions" in s:
+                return []                        # gated book silent
+            if "SELECT DISTINCT book, symbol FROM ghost_paper_trades" in s:
+                return [("shadow", "ARDT")]      # ARDT already open
+            if "SELECT source FROM ghost_paper_trades" in s:
+                return []                        # no source collision
+            if "SELECT id, symbol, qty" in s:
+                return []                        # exits: nothing to close
+            if "GROUP BY symbol" in s:
+                return []                        # daily snapshot: no open rows
+            return []
+
+    class _Conn:
+        def cursor(self):
+            return _Cur()
+
+        def commit(self):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    import core.db as db
+    monkeypatch.setattr(db, "db_conn", lambda: _Conn())
+    monkeypatch.setattr(pw, "_cash", lambda cur, cfg: 1_000_000.0)
+    monkeypatch.setattr(pw, "_max_open", lambda: 50)
+    monkeypatch.setattr(pw, "get_config", lambda cur: {"starting_balance": 10000.0})
+    monkeypatch.setattr(pw, "_maybe_roll_month", lambda cur, cfg: cfg)
+    monkeypatch.setattr(pw, "_live_prices", lambda syms: {s.upper(): 10.0 for s in syms})
+    monkeypatch.setattr(pw, "fresh_bands",
+                        lambda sym, entry, **k: (entry * 1.02, entry * 0.987, 9_999_999_999))
+
+    out = pw.run_wallet_cycle()
+    assert out["ok"] is True
+    entered_symbols = [i["symbol"] for i in inserts]
+    assert "ARDT" not in entered_symbols          # already open -> never re-entered
+    assert entered_symbols.count("BB") == 1       # distinct symbol still enters
+    assert out["diag"]["skip_open_symbol"] >= 2   # 1 already-open + 1 in-cycle dup
+
+
+# ------------------------------------------------------- duplicate cleanup ops
+# PR #133 prevents NEW duplicate open lots; this admin repair closes pre-existing
+# duplicate paper positions with audit reason, dry-run first.
+
+def test_cleanup_duplicate_positions_dry_run_keeps_oldest(monkeypatch):
+    rows = [
+        # id, book, symbol, qty, entry_price, entry_ts, source
+        (10, "shadow", "ARDT", 10.0, 10.00, 100, "shadow:10"),
+        (11, "shadow", "ardt", 10.0, 10.10, 200, "shadow:11"),
+        (12, "shadow", "ARDT", 10.0, 10.20, 300, "shadow:12"),
+        (20, "gated", "ARDT", 10.0, 10.00, 100, "pick:20"),  # per-book independent
+        (30, "shadow", "BB", 5.0, 8.00, 100, "shadow:30"),   # no duplicate
+    ]
+    updates = []
+    committed = {"n": 0}
+
+    class _Cur:
+        rowcount = 0
+        def __init__(self): self._last = ""
+        def execute(self, sql, params=None):
+            self._last = sql
+            if "UPDATE ghost_paper_trades" in sql:
+                updates.append(params)
+                self.rowcount = 1
+            else:
+                self.rowcount = 0
+        def fetchall(self):
+            if "SELECT id, book, symbol" in self._last:
+                return rows
+            return []
+
+    class _Conn:
+        def cursor(self): return _Cur()
+        def commit(self): committed["n"] += 1
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    import core.db as db
+    monkeypatch.setattr(db, "db_conn", lambda: _Conn())
+    monkeypatch.setattr(pw, "_live_prices", lambda syms: {"ARDT": 10.50})
+
+    out = pw.cleanup_duplicate_open_positions(dry_run=True)
+    assert out["ok"] is True and out["dry_run"] is True
+    assert out["duplicate_groups"] == [{"book": "shadow", "symbol": "ARDT", "open_lots": 3, "keep_id": 10}]
+    assert [i["close_id"] for i in out["to_close"]] == [11, 12]
+    assert out["planned_close_count"] == 2
+    assert out["closed_count"] == 0
+    assert updates == []
+    assert committed["n"] == 0
+
+
+def test_cleanup_duplicate_positions_apply_closes_at_quote(monkeypatch):
+    rows = [
+        (10, "shadow", "XPO", 2.0, 100.00, 100, "shadow:10"),
+        (11, "shadow", "XPO", 2.0, 101.00, 200, "shadow:11"),
+    ]
+    updates = []
+    committed = {"n": 0}
+
+    class _Cur:
+        rowcount = 0
+        def __init__(self): self._last = ""
+        def execute(self, sql, params=None):
+            self._last = sql
+            if "UPDATE ghost_paper_trades" in sql:
+                updates.append(params)
+                self.rowcount = 1
+            else:
+                self.rowcount = 0
+        def fetchall(self):
+            return rows if "SELECT id, book, symbol" in self._last else []
+
+    class _Conn:
+        def cursor(self): return _Cur()
+        def commit(self): committed["n"] += 1
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    import core.db as db
+    monkeypatch.setattr(db, "db_conn", lambda: _Conn())
+    monkeypatch.setattr(pw, "_live_prices", lambda syms: {"XPO": 103.0})
+    monkeypatch.setattr(pw.time, "time", lambda: 1234567890)
+
+    out = pw.cleanup_duplicate_open_positions(dry_run=False)
+    assert out["closed_count"] == 1
+    assert committed["n"] == 1
+    assert len(updates) == 1
+    exit_price, exit_ts, reason, pnl, pnl_pct, close_id = updates[0]
+    assert (exit_price, exit_ts, reason, close_id) == (103.0, 1234567890, "duplicate_symbol_cleanup", 11)
+    assert pnl == 4.0
+    assert pnl_pct == 1.98
+
+
+def test_cleanup_duplicate_positions_skips_when_no_live_price(monkeypatch):
+    rows = [
+        (10, "shadow", "LCID", 1.0, 5.00, 100, "shadow:10"),
+        (11, "shadow", "LCID", 1.0, 5.10, 200, "shadow:11"),
+    ]
+
+    class _Cur:
+        rowcount = 0
+        def __init__(self): self._last = ""
+        def execute(self, sql, params=None): self._last = sql
+        def fetchall(self): return rows if "SELECT id, book, symbol" in self._last else []
+    class _Conn:
+        def cursor(self): return _Cur()
+        def commit(self): raise AssertionError("no commit when nothing closes")
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    import core.db as db
+    monkeypatch.setattr(db, "db_conn", lambda: _Conn())
+    monkeypatch.setattr(pw, "_live_prices", lambda syms: {})
+
+    out = pw.cleanup_duplicate_open_positions(dry_run=False)
+    assert out["planned_close_count"] == 0
+    assert out["closed_count"] == 0
+    assert out["skipped_count"] == 1
+    assert out["skipped"][0]["skip_reason"] == "no_live_price"
+
+
+def test_cleanup_duplicate_positions_rejects_unsupported_keep_policy():
+    out = pw.cleanup_duplicate_open_positions(dry_run=True, keep="best")
+    assert out["ok"] is False
+    assert out["error"] == "unsupported_keep_policy"
+
+
+def test_cleanup_duplicate_route_is_gated_and_dry_run_default(monkeypatch):
+    from fastapi.testclient import TestClient
+    from wolf_app import APP
+
+    calls = []
+    monkeypatch.setattr("wolf_app._cron_ok", lambda secret: secret == "ok")
+    monkeypatch.setattr("wolf_app._admin_token_valid", lambda tok: False)
+    monkeypatch.setattr(
+        "core.paper_wallet.cleanup_duplicate_open_positions",
+        lambda dry_run=True, keep="oldest": calls.append((dry_run, keep)) or {
+            "ok": True, "dry_run": dry_run, "keep": keep, "planned_close_count": 0,
+        },
+    )
+    c = TestClient(APP)
+    assert c.post("/api/wallet/cleanup-duplicates").status_code == 403
+    r = c.post("/api/wallet/cleanup-duplicates", headers={"x-cron-secret": "ok"})
+    assert r.status_code == 200
+    assert r.json()["dry_run"] is True
+    assert calls[-1] == (True, "oldest")
+    r2 = c.post("/api/wallet/cleanup-duplicates?dry_run=0", headers={"x-cron-secret": "ok"})
+    assert r2.json()["dry_run"] is False
+    assert calls[-1] == (False, "oldest")
+
+
+# ------------------------------------------------- consistent-money readiness
+# The single GO / NO-GO instrument. Judges consistency by the Wilson LOWER
+# bound of the current-geometry win rate vs the WIN TEST bar — the contract
+# win rate (70% under contract 70), never raw win rate, never a lucky small
+# sample. The operator was explicit: passing must mean clearing 70%, not just
+# break-even (~42%).
+
+def _cur_geom_row(pnl_pct, *, entry=100.0, stop=98.7):
+    # stop_frac = 1 - 98.7/100 = 1.3% -> classified as CURRENT geometry.
+    return {"entry_price": entry, "stop_price": stop, "pnl_pct": pnl_pct}
+
+
+def test_readiness_not_ready_below_min_sample(monkeypatch):
+    monkeypatch.setenv("PAPER_CONSISTENT_MIN_SAMPLE", "30")
+    # Only 5 trades, even all winners — too few to be statistically honest.
+    rows = [_cur_geom_row(2.0) for _ in range(5)]
+    out = pw.consistent_money_readiness(rows, 0.013)
+    assert out["ready"] is False
+    assert out["checks"]["sample"] is False
+    assert out["n_current_geometry"] == 5
+    assert "need >= 30" in out["verdict"]
+
+
+def test_readiness_not_ready_when_expectancy_negative(monkeypatch):
+    monkeypatch.setenv("PAPER_CONSISTENT_MIN_SAMPLE", "10")
+    # 10 trades, mostly losses -> negative expectancy, must fail.
+    rows = [_cur_geom_row(2.0) for _ in range(3)] + [_cur_geom_row(-1.3) for _ in range(7)]
+    out = pw.consistent_money_readiness(rows, 0.013)
+    assert out["ready"] is False
+    assert out["checks"]["positive_expectancy"] is False
+
+
+def test_readiness_not_ready_when_wilson_below_win_test(monkeypatch):
+    monkeypatch.setenv("GHOST_ACCURACY_CONTRACT", "70")
+    monkeypatch.setenv("PAPER_CONSISTENT_MIN_SAMPLE", "20")
+    monkeypatch.setenv("PAPER_CONSISTENT_WILSON_MARGIN", "0.03")
+    # 20 trades at 60% win rate: positive expectancy, but the Wilson floor is
+    # nowhere near the 70% win test, so it must fail the win-test bar.
+    rows = [_cur_geom_row(2.0) for _ in range(12)] + [_cur_geom_row(-1.3) for _ in range(8)]
+    out = pw.consistent_money_readiness(rows, 0.013)
+    assert out["checks"]["sample"] is True
+    assert out["win_test_win_rate"] == 0.70
+    assert out["checks"]["wilson_clears_win_test"] is False
+    assert out["ready"] is False
+
+
+def test_readiness_60pct_that_passed_break_even_now_fails_win_test(monkeypatch):
+    # THE CORRECTION: a 60% win rate at N=100 cleared the old break-even (~42%)
+    # bar and read READY. The operator rejected that — 60% must NOT pass a 70%
+    # win test. wilson_low(60/100)=0.504 < 0.70 -> NOT READY.
+    monkeypatch.setenv("GHOST_ACCURACY_CONTRACT", "70")
+    monkeypatch.setenv("PAPER_CONSISTENT_MIN_SAMPLE", "30")
+    rows = [_cur_geom_row(2.0) for _ in range(60)] + [_cur_geom_row(-1.3) for _ in range(40)]
+    out = pw.consistent_money_readiness(rows, 0.013)
+    assert out["win_rate"] == 0.6
+    assert out["required_win_rate_wilson_low"] >= 0.70   # bar is the win test, not break-even
+    assert out["ready"] is False
+
+
+def test_readiness_ready_with_strong_large_sample(monkeypatch):
+    monkeypatch.setenv("PAPER_CONSISTENT_MIN_SAMPLE", "30")
+    monkeypatch.setenv("PAPER_CONSISTENT_WILSON_MARGIN", "0.03")
+    monkeypatch.setenv("GHOST_ACCURACY_CONTRACT", "70")
+    # 100 trades at 85% win rate: wilson_low ~0.767 clears the 70% win test,
+    # expectancy strongly positive -> READY. (A raw 70% would give wilson_low
+    # ~0.60 and would NOT clear the 70% test — that is the honest bar.)
+    rows = [_cur_geom_row(2.0) for _ in range(85)] + [_cur_geom_row(-1.3) for _ in range(15)]
+    out = pw.consistent_money_readiness(rows, 0.013)
+    assert out["ready"] is True
+    assert out["checks"] == {"sample": True, "positive_expectancy": True,
+                             "wilson_clears_win_test": True}
+    assert out["win_rate_wilson_low"] > out["required_win_rate_wilson_low"]
+    assert out["required_win_rate_wilson_low"] >= 0.70
+    assert out["verdict"].startswith("READY")
+
+
+def test_readiness_win_test_defaults_to_contract_and_can_tighten(monkeypatch):
+    # The win-test bar tracks the accuracy contract (70) and env may tighten,
+    # never weaken below the contract under contract 70.
+    monkeypatch.setenv("GHOST_ACCURACY_CONTRACT", "70")
+    monkeypatch.delenv("PAPER_CONSISTENT_WIN_TEST", raising=False)
+    assert pw._consistent_money_win_test() == 0.70
+    monkeypatch.setenv("PAPER_CONSISTENT_WIN_TEST", "0.55")   # attempt to weaken
+    assert pw._consistent_money_win_test() == 0.70            # clamped up
+    monkeypatch.setenv("PAPER_CONSISTENT_WIN_TEST", "0.80")   # tighten
+    assert pw._consistent_money_win_test() == 0.80
+
+
+def test_readiness_excludes_legacy_geometry(monkeypatch):
+    monkeypatch.setenv("PAPER_CONSISTENT_MIN_SAMPLE", "30")
+    monkeypatch.setenv("GHOST_ACCURACY_CONTRACT", "70")
+    # 100 strong CURRENT-geometry trades (85% wins, clears the 70% win test) +
+    # a pile of legacy -3.6%-stop rows. Legacy rows must NOT count toward the
+    # sample or the verdict.
+    cur_rows = [_cur_geom_row(2.0) for _ in range(85)] + [_cur_geom_row(-1.3) for _ in range(15)]
+    legacy_rows = [{"entry_price": 100.0, "stop_price": 96.4, "pnl_pct": -3.6} for _ in range(40)]
+    out = pw.consistent_money_readiness(cur_rows + legacy_rows, 0.013)
+    assert out["n_current_geometry"] == 100      # legacy excluded
+    assert out["requirements"]["basis"] == "current_geometry_only"
+    assert out["ready"] is True
+
+
+def test_readiness_reported_in_wallet_summary(monkeypatch):
+    # wallet_summary must surface the readiness verdict for the empty/new wallet
+    # as NOT ready (no trades) without raising.
+    class _Cur:
+        def __init__(self): self._last = ""
+        def execute(self, sql, params=None): self._last = sql
+        def fetchone(self):
+            s = self._last
+            if "COUNT(*)" in s:
+                return (0, 0.0, 0)          # n_closed, realized, wins
+            if "SUM(" in s:
+                return (0.0,)               # _cash() SUM(pnl) / SUM(qty*entry)
+            if "ghost_state" in s:
+                return None                 # no stored config -> defaults
+            return None
+        def fetchall(self): return []
+
+    class _Conn:
+        def cursor(self): return _Cur()
+        def commit(self): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    import core.db as db
+    monkeypatch.setattr(db, "db_conn", lambda: _Conn())
+    monkeypatch.setattr(db, "ensure_ghost_state", lambda cur: None)
+    monkeypatch.setattr(pw, "_live_prices", lambda syms: {})
+    out = pw.wallet_summary()
+    assert out["ok"] is True
+    assert "consistent_money_readiness" in out
+    assert out["consistent_money_readiness"]["ready"] is False
