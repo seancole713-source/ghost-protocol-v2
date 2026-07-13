@@ -87,8 +87,6 @@ def ghost_doctrine_symbol_endpoint(
     light=1: cheap DB-only mode (latest ledger row, no super-ghost build)
     live=1:  additionally runs predict_live_ex + up_prob inversion (heavy)
     """
-    import asyncio
-    import os as _os
     sym = (symbol or "").strip().upper()
     mode = "light" if int(light) else "full"
     include_live = bool(int(live))

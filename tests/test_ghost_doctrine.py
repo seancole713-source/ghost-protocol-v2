@@ -6,6 +6,19 @@ import os
 import pytest
 
 
+@pytest.fixture
+def client():
+    """FastAPI TestClient for the live app (repo convention: TestClient(wolf_app.APP)).
+
+    Defined here because this repo has no shared `client` conftest fixture — the
+    route tests below reference one, so provide it locally to match the pattern
+    used by tests/test_super_ghost_top_picks.py and tests/test_ghost_console_ui.py.
+    """
+    from fastapi.testclient import TestClient
+    import wolf_app
+    return TestClient(wolf_app.APP)
+
+
 class TestDoctrineSpec:
     def test_spec_has_6_steps_in_order(self):
         from core.ghost_doctrine import ghost_doctrine_spec, DOCTRINE_KEYS
@@ -164,6 +177,12 @@ class TestDoctrineUITripwires:
         assert "renderDoctrine" in src
         assert "?light=1" in src or "light" in src  # light mode referenced
         assert "Insufficient evidence" in src
+        # loadAll MUST actually fetch the doctrine payload, else the tab is dead
+        # (renders "Doctrine unavailable" forever). Guard against that regression.
+        assert "/api/ghost/doctrine/" in src
+        assert "doctrine:r[" in src or "doctrine:" in src
+        # My Picks per-pick chips (plan step 3): light fetch + placeholder id.
+        assert "mypick-doctrine-" in src
 
     def test_cockpit_has_doctrine_section(self):
         import os
