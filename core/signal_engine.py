@@ -2109,9 +2109,9 @@ def get_model_status():
                         cur.execute(
                             """
                             SELECT
-                              SUM(CASE WHEN outcome IN ('WIN','LOSS') THEN 1 ELSE 0 END) AS resolved,
+                              SUM(CASE WHEN outcome IN ('WIN','LOSS','EXPIRED') THEN 1 ELSE 0 END) AS resolved,
                               SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) AS wins,
-                              AVG(CASE WHEN outcome IN ('WIN','LOSS') THEN pnl_pct ELSE NULL END) AS avg_pnl
+                              AVG(CASE WHEN outcome IN ('WIN','LOSS','EXPIRED') THEN pnl_pct ELSE NULL END) AS avg_pnl
                             FROM ghost_shadow_outcomes
                             WHERE symbol=%s AND outcome IS NOT NULL
                             """,

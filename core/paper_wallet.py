@@ -840,7 +840,8 @@ def run_wallet_cycle() -> Dict[str, Any]:
                 gated_rows = [("gated", f"pick:{r[0]}", r[1], r[2], r[3], r[4], r[5])
                               for r in cur.fetchall()]
             # Research-wallet shadow entries must be both confident enough and
-            # historically proven for the *symbol*. PR #151: up_prob >= 0.50 was
+            # historically proven for the *symbol*. EXPIRED rows count as resolved
+            # non-wins, matching the contract-70 TP/SL win test. PR #151: up_prob >= 0.50 was
             # admitting coin-flip/negative-P&L symbols (e.g. 33-41% TP buckets)
             # even though the public gate remained closed. This is still fake
             # money only, but the evidence wallet should prefer symbols whose
@@ -851,7 +852,7 @@ def run_wallet_cycle() -> Dict[str, Any]:
                     """
                     WITH skill AS (
                         SELECT symbol,
-                               SUM(CASE WHEN outcome IN ('WIN','LOSS') THEN 1 ELSE 0 END) AS resolved,
+                               SUM(CASE WHEN outcome IN ('WIN','LOSS','EXPIRED') THEN 1 ELSE 0 END) AS resolved,
                                SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) AS wins
                         FROM ghost_shadow_outcomes
                         WHERE outcome IS NOT NULL

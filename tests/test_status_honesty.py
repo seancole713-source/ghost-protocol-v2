@@ -145,3 +145,5 @@ def test_status_mirrors_runtime_proven_skill_gate(monkeypatch):
     assert s["fireable_now"] is False
     assert s["fire_block_reason"] == "skill_unproven"
     assert s["proven_skill_gate"]["fail_reason"].startswith("resolved<")
+    import inspect
+    assert "outcome IN ('WIN','LOSS','EXPIRED')" in inspect.getsource(se.get_model_status)

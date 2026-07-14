@@ -2,8 +2,9 @@
 
 Tightens real firing only. A symbol may have a calibrated/probability-valid model
 and still be bad in forward shadow outcomes (GME/NOK/XPO class). This gate checks
-resolved, real forward shadow outcomes before allowing a live fire. It never
-loosens an existing gate and never changes research/shadow/wallet scoring.
+resolved, real forward shadow outcomes before allowing a live fire. It uses
+the same win-test denominator as the 70+ contract: EXPIRED is a resolved
+non-win. It never loosens an existing gate and never changes research/shadow/wallet scoring.
 """
 from __future__ import annotations
 
@@ -28,7 +29,11 @@ def min_avg_pnl_pct() -> float:
 
 
 def review(symbol: str, *, resolved: int, wins: int, avg_pnl_pct: Optional[float]) -> Dict[str, Any]:
-    """Pure proven-skill decision for a symbol's resolved shadow record."""
+    """Pure proven-skill decision for a symbol's resolved shadow record.
+
+    ``resolved`` must include EXPIRED rows as non-wins so this gate mirrors the
+    contract-70 TP/SL win test instead of silently forgiving no-hit holds.
+    """
     sym = (symbol or "").upper()
     resolved = int(resolved or 0)
     wins = int(wins or 0)
@@ -71,9 +76,9 @@ def symbol_review(symbol: str) -> Dict[str, Any]:
             cur.execute(
                 """
                 SELECT
-                  SUM(CASE WHEN outcome IN ('WIN','LOSS') THEN 1 ELSE 0 END) AS resolved,
+                  SUM(CASE WHEN outcome IN ('WIN','LOSS','EXPIRED') THEN 1 ELSE 0 END) AS resolved,
                   SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) AS wins,
-                  AVG(CASE WHEN outcome IN ('WIN','LOSS') THEN pnl_pct ELSE NULL END) AS avg_pnl
+                  AVG(CASE WHEN outcome IN ('WIN','LOSS','EXPIRED') THEN pnl_pct ELSE NULL END) AS avg_pnl
                 FROM ghost_shadow_outcomes
                 WHERE symbol=%s AND outcome IS NOT NULL
                 """,
@@ -161,7 +166,7 @@ def global_calibration_review(prob: float) -> Dict[str, Any]:
                 SELECT COUNT(*) AS samples,
                        SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) AS wins
                 FROM ghost_shadow_outcomes
-                WHERE outcome IN ('WIN','LOSS') AND up_prob >= %s
+                WHERE outcome IN ('WIN','LOSS','EXPIRED') AND up_prob >= %s
                 """,
                 (thr,),
             )

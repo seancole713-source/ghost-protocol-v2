@@ -31,8 +31,8 @@ def test_review_allows_proven_symbol(monkeypatch):
     monkeypatch.setenv("V3_PROVEN_SKILL_MIN_RESOLVED", "10")
     monkeypatch.setenv("V3_PROVEN_SKILL_MIN_TP_RATE", "0.55")
     monkeypatch.setenv("V3_PROVEN_SKILL_MIN_AVG_PNL_PCT", "0.0")
-    # ITRI public shadow stats: n=28 includes EXPIRED; resolved WIN/LOSS is 20
-    # (15 wins, 5 losses), so TP rate is 75%.
+    # ITRI public shadow stats under contract-70 semantics: if n=20 includes
+    # resolved WIN/LOSS/EXPIRED and 15 are wins, TP rate is 75%.
     out = g.review("ITRI", resolved=20, wins=15, avg_pnl_pct=0.807)
     assert out["ok"] is True
     assert out["tp_rate"] >= 0.55
@@ -82,3 +82,65 @@ def test_global_calibration_review_disabled(monkeypatch):
     monkeypatch.setenv("V3_OVERCONFIDENCE_GATE", "0")
     out = g.global_calibration_review(0.95)
     assert out["ok"] is True and out["disabled"] is True
+
+
+def test_symbol_review_counts_expired_as_resolved_non_win(monkeypatch):
+    captured = {}
+
+    class _Cur:
+        def execute(self, sql, params=None):
+            captured["sql"] = sql
+            captured["params"] = params
+        def fetchone(self):
+            return (12, 6, 0.4)
+
+    class _Conn:
+        def cursor(self): return _Cur()
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    import core.db as db
+    monkeypatch.setenv("V3_PROVEN_SKILL_GATE", "1")
+    monkeypatch.setenv("V3_PROVEN_SKILL_MIN_RESOLVED", "10")
+    monkeypatch.setenv("V3_PROVEN_SKILL_MIN_TP_RATE", "0.55")
+    monkeypatch.setenv("V3_PROVEN_SKILL_MIN_AVG_PNL_PCT", "0.0")
+    monkeypatch.setattr(db, "db_conn", lambda: _Conn())
+
+    out = g.symbol_review("BILL")
+    assert out["ok"] is False
+    assert out["resolved"] == 12
+    assert out["tp_rate"] == 0.5
+    assert out["fail_reason"].startswith("tp_rate<")
+    assert "'EXPIRED'" in captured["sql"]
+    assert captured["params"] == ("BILL",)
+
+
+def test_global_calibration_review_counts_expired_as_resolved_non_win(monkeypatch):
+    captured = {}
+
+    class _Cur:
+        def execute(self, sql, params=None):
+            captured["sql"] = sql
+            captured["params"] = params
+        def fetchone(self):
+            return (25, 10)  # includes EXPIRED in denominator
+
+    class _Conn:
+        def cursor(self): return _Cur()
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    import core.db as db
+    monkeypatch.setenv("GHOST_ACCURACY_CONTRACT", "70")
+    monkeypatch.setenv("V3_OVERCONFIDENCE_GATE", "1")
+    monkeypatch.setenv("V3_OVERCONFIDENCE_PROB_THRESHOLD", "0.70")
+    monkeypatch.setenv("V3_OVERCONFIDENCE_MIN_SAMPLES", "20")
+    monkeypatch.setattr(db, "db_conn", lambda: _Conn())
+
+    out = g.global_calibration_review(0.82)
+    assert out["ok"] is False
+    assert out["samples"] == 25
+    assert out["wins"] == 10
+    assert out["win_rate"] == 0.4
+    assert "'EXPIRED'" in captured["sql"]
+    assert captured["params"] == (0.7,)

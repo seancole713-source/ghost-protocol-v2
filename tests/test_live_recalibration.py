@@ -90,6 +90,32 @@ def test_db_failure_is_failsafe(monkeypatch):
     assert out["note"] == "stats_unavailable"
 
 
+def test_live_bin_stats_counts_expired_as_resolved_non_win(monkeypatch):
+    """The live recalibration scoreboard must use the same denominator as
+    contract_70: WIN wins; LOSS and EXPIRED resolved non-wins."""
+    captured = {}
+
+    class _Cur:
+        def execute(self, sql, params=None):
+            captured["sql"] = sql
+            captured["params"] = params
+        def fetchone(self):
+            return (3, 1)  # WIN + LOSS + EXPIRED -> 3 resolved, 1 win
+
+    class _Conn:
+        def cursor(self): return _Cur()
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    import core.db as db
+    monkeypatch.setattr(db, "db_conn", lambda: _Conn())
+
+    samples, wins = lr.live_bin_stats(0.7, 1.01)
+    assert (samples, wins) == (3, 1)
+    assert "'EXPIRED'" in captured["sql"]
+    assert captured["params"] == (0.7, 1.01)
+
+
 # ------------------------------------------- predict-time integration (UP lane)
 
 def _uptrend_rows(n=220):

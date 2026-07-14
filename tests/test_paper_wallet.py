@@ -255,6 +255,7 @@ def test_shadow_wallet_defaults_require_prob_floor_and_skill(monkeypatch):
     assert pw._shadow_skill_min_resolved() == 10
 
     src = inspect.getsource(pw.run_wallet_cycle)
+    assert "outcome IN ('WIN','LOSS','EXPIRED')" in src
     assert "COALESCE(s.resolved, 0) >= %s" in src
     assert "COALESCE(s.wins, 0)::float" in src
 

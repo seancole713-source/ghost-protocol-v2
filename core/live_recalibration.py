@@ -25,6 +25,9 @@ Scope rules (mirrors the PR #155/#156 gates):
     loop would eat its own output.
   * UP lane only. ghost_shadow_outcomes stores up_prob against the long
     geometry; applying it to the DOWN lane would mix populations.
+  * Same win-test as contract_70: EXPIRED rows are resolved non-wins, not
+    ignored, because no TP/SL hit inside the hold window is not a successful
+    target hit.
   * Fail-safe: never raises; on any DB/parse error returns the raw prob
     with applied=False. The PR #156 block remains as the backstop.
 """
@@ -112,7 +115,11 @@ def recalibrate(prob: float, samples: int, wins: int,
 
 
 def live_bin_stats(lo: float, hi: float) -> Tuple[int, int]:
-    """Resolved (samples, wins) from live shadow outcomes inside one bin."""
+    """Resolved (samples, wins) from live shadow outcomes inside one bin.
+
+    Uses the same contract-70 win-test denominator as Watcher: WIN counts as a
+    win; LOSS and EXPIRED both count as resolved non-wins.
+    """
     from core.db import db_conn
     with db_conn() as conn:
         cur = conn.cursor()
@@ -121,7 +128,7 @@ def live_bin_stats(lo: float, hi: float) -> Tuple[int, int]:
             SELECT COUNT(*) AS samples,
                    SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) AS wins
             FROM ghost_shadow_outcomes
-            WHERE outcome IN ('WIN','LOSS') AND up_prob >= %s AND up_prob < %s
+            WHERE outcome IN ('WIN','LOSS','EXPIRED') AND up_prob >= %s AND up_prob < %s
             """,
             (lo, hi),
         )
