@@ -165,3 +165,44 @@ def test_expired_counts_as_resolved_non_win_in_slices():
     assert out[0]["n"] == 3
     assert out[0]["wins"] == 1
     assert out[0]["win_rate"] == round(1 / 3, 4)
+
+
+def test_regime_gate_flag_dimension_labels():
+    for flag in ("adx_trending", "above_ema200", "ema_trend_bullish"):
+        assert cs._dim_value({flag: 1}, flag) == "yes"
+        assert cs._dim_value({flag: 0}, flag) == "no"
+        assert cs._dim_value({flag: None}, flag) is None
+        assert cs._dim_value({}, flag) is None
+
+
+def test_regime_gate_flags_are_searched_by_default():
+    # A strong pocket conditioned on Ghost's own gate flags must be discoverable.
+    rows = [{"symbol": "X", "adx_trending": 1, "above_ema200": 1, "up_prob": 0.6,
+             "outcome": "WIN" if i < 46 else "LOSS"} for i in range(52)]
+    rows += [{"symbol": "X", "adx_trending": 0, "above_ema200": 0, "up_prob": 0.6,
+              "outcome": "LOSS"} for _ in range(40)]
+    res = cs.find_qualified_slices(rows, min_n=8, min_wilson_low=0.70)
+    assert res["status"] == "qualified_slice_found"
+    keys = [q["key"] for q in res["qualified"]]
+    assert any(k.get("adx_trending") == "yes" for k in keys)
+    # The losing (no-trend) pocket must never qualify.
+    assert not any(k.get("adx_trending") == "no" for k in keys)
+
+
+def test_regime_gate_flag_missing_value_skips_row():
+    rows = [
+        {"symbol": "A", "adx_trending": None, "outcome": "WIN"},
+        {"symbol": "A", "adx_trending": 1, "outcome": "WIN"},
+        {"symbol": "A", "adx_trending": 1, "outcome": "LOSS"},
+    ]
+    out = cs.summarize_slices(rows, dims=["adx_trending"], target=0.70)
+    assert len(out) == 1
+    assert out[0]["key"]["adx_trending"] == "yes"
+    assert out[0]["n"] == 2
+
+
+def test_regime_gate_flag_expired_counts_as_non_win():
+    rows = [{"symbol": "Y", "adx_trending": 1, "outcome": o}
+            for o in (["WIN"] * 3 + ["EXPIRED"] * 2)]
+    out = cs.summarize_slices(rows, dims=["adx_trending"], target=0.70)[0]
+    assert out["wins"] == 3 and out["n"] == 5

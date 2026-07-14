@@ -63,6 +63,17 @@ def _dim_value(row: Dict[str, Any], dim: str) -> Any:
         if fv is None:
             return None
         return "fired" if bool(fv) else "unfired"
+    if dim in ("adx_trending", "above_ema200", "ema_trend_bullish"):
+        # Binary regime-gate flags Ghost keys on at issuance. Labelled so the
+        # slice key is self-describing (e.g. "adx_trending=yes"). None -> the
+        # row is skipped for that grouping (never guessed).
+        fv = row.get(dim)
+        if fv is None:
+            return None
+        try:
+            return "yes" if int(fv) else "no"
+        except Exception:
+            return None
     v = row.get(dim)
     if v is None:
         return None
@@ -136,12 +147,22 @@ DEFAULT_DIMENSION_SETS: Tuple[Tuple[str, ...], ...] = (
     ("regime_label",),
     ("up_prob_bucket",),
     ("fired",),
+    ("adx_trending",),
+    ("above_ema200",),
+    ("ema_trend_bullish",),
     ("symbol", "regime_label"),
     ("regime_label", "up_prob_bucket"),
     ("symbol", "up_prob_bucket"),
     ("fired", "regime_label"),
     ("fired", "up_prob_bucket"),
     ("fired", "symbol"),
+    ("adx_trending", "above_ema200"),
+    ("adx_trending", "ema_trend_bullish"),
+    ("above_ema200", "ema_trend_bullish"),
+    ("adx_trending", "up_prob_bucket"),
+    ("above_ema200", "up_prob_bucket"),
+    ("ema_trend_bullish", "up_prob_bucket"),
+    ("adx_trending", "above_ema200", "ema_trend_bullish"),
 )
 
 
@@ -254,7 +275,19 @@ def load_resolved_contract_rows(*, days: int = 120, limit: int = 20000) -> List[
                           WHERE pe.symbol = so.symbol AND pe.eval_ts = so.eval_ts
                             AND pe.regime_label IS NOT NULL
                           LIMIT 1)
-                       ) AS regime_label
+                       ) AS regime_label,
+                       COALESCE(so.adx_trending, (
+                          SELECT (pe.scores->'regime'->>'adx_trending')::int FROM ghost_perf_symbol_evals pe
+                          WHERE pe.symbol = so.symbol AND pe.eval_ts = so.eval_ts
+                            AND pe.scores->'regime'->>'adx_trending' IS NOT NULL LIMIT 1)) AS adx_trending,
+                       COALESCE(so.above_ema200, (
+                          SELECT (pe.scores->'regime'->>'above_ema200')::int FROM ghost_perf_symbol_evals pe
+                          WHERE pe.symbol = so.symbol AND pe.eval_ts = so.eval_ts
+                            AND pe.scores->'regime'->>'above_ema200' IS NOT NULL LIMIT 1)) AS above_ema200,
+                       COALESCE(so.ema_trend_bullish, (
+                          SELECT (pe.scores->'regime'->>'ema_trend_bullish')::int FROM ghost_perf_symbol_evals pe
+                          WHERE pe.symbol = so.symbol AND pe.eval_ts = so.eval_ts
+                            AND pe.scores->'regime'->>'ema_trend_bullish' IS NOT NULL LIMIT 1)) AS ema_trend_bullish
                 FROM ghost_shadow_outcomes so
                 WHERE so.eval_ts >= %s AND so.outcome IN ('WIN','LOSS','EXPIRED')
                 ORDER BY so.eval_ts DESC
@@ -270,6 +303,9 @@ def load_resolved_contract_rows(*, days: int = 120, limit: int = 20000) -> List[
                     "outcome": r[3],
                     "fired": r[4],
                     "regime_label": r[5],
+                    "adx_trending": r[6],
+                    "above_ema200": r[7],
+                    "ema_trend_bullish": r[8],
                 })
     except Exception:
         return []
@@ -298,7 +334,19 @@ def load_resolved_contract_rows_since(*, since_ts: int, limit: int = 50000) -> L
                           WHERE pe.symbol = so.symbol AND pe.eval_ts = so.eval_ts
                             AND pe.regime_label IS NOT NULL
                           LIMIT 1)
-                       ) AS regime_label
+                       ) AS regime_label,
+                       COALESCE(so.adx_trending, (
+                          SELECT (pe.scores->'regime'->>'adx_trending')::int FROM ghost_perf_symbol_evals pe
+                          WHERE pe.symbol = so.symbol AND pe.eval_ts = so.eval_ts
+                            AND pe.scores->'regime'->>'adx_trending' IS NOT NULL LIMIT 1)) AS adx_trending,
+                       COALESCE(so.above_ema200, (
+                          SELECT (pe.scores->'regime'->>'above_ema200')::int FROM ghost_perf_symbol_evals pe
+                          WHERE pe.symbol = so.symbol AND pe.eval_ts = so.eval_ts
+                            AND pe.scores->'regime'->>'above_ema200' IS NOT NULL LIMIT 1)) AS above_ema200,
+                       COALESCE(so.ema_trend_bullish, (
+                          SELECT (pe.scores->'regime'->>'ema_trend_bullish')::int FROM ghost_perf_symbol_evals pe
+                          WHERE pe.symbol = so.symbol AND pe.eval_ts = so.eval_ts
+                            AND pe.scores->'regime'->>'ema_trend_bullish' IS NOT NULL LIMIT 1)) AS ema_trend_bullish
                 FROM ghost_shadow_outcomes so
                 WHERE so.eval_ts > %s AND so.outcome IN ('WIN','LOSS','EXPIRED')
                 ORDER BY so.eval_ts ASC
@@ -314,6 +362,9 @@ def load_resolved_contract_rows_since(*, since_ts: int, limit: int = 50000) -> L
                     "outcome": r[3],
                     "fired": r[4],
                     "regime_label": r[5],
+                    "adx_trending": r[6],
+                    "above_ema200": r[7],
+                    "ema_trend_bullish": r[8],
                 })
     except Exception:
         return []
