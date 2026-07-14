@@ -152,3 +152,16 @@ def test_fired_dimension_missing_value_skips_row():
     assert len(out) == 1
     assert out[0]["key"]["fired"] == "fired"
     assert out[0]["n"] == 2
+
+
+def test_expired_counts_as_resolved_non_win_in_slices():
+    rows = [
+        {"symbol": "BILL", "outcome": "WIN"},
+        {"symbol": "BILL", "outcome": "LOSS"},
+        {"symbol": "BILL", "outcome": "EXPIRED"},
+        {"symbol": "BILL", "outcome": None},
+    ]
+    out = cs.summarize_slices(rows, dims=["symbol"], target=0.70)
+    assert out[0]["n"] == 3
+    assert out[0]["wins"] == 1
+    assert out[0]["win_rate"] == round(1 / 3, 4)

@@ -169,3 +169,15 @@ def test_register_slices_roundtrip_uses_ghost_state_only(monkeypatch):
     assert "ghost_paper_trades" not in joined
     loaded = reg.load_registry()
     assert loaded["mode"] == "slices"
+
+
+def test_evaluate_forward_counts_expired_as_resolved_non_win():
+    rows = [
+        {"symbol": "GOOD", "up_prob": 0.8, "eval_ts": 1100, "outcome": "WIN"},
+        {"symbol": "GOOD", "up_prob": 0.8, "eval_ts": 1200, "outcome": "EXPIRED"},
+        {"symbol": "GOOD", "up_prob": 0.8, "eval_ts": 1300, "outcome": None},
+    ]
+    out = reg.evaluate_forward(rows, registered_symbols=["GOOD"], registered_at_ts=1000)
+    assert out["n"] == 2
+    assert out["wins"] == 1
+    assert out["win_rate"] == 0.5

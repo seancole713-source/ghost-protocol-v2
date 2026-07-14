@@ -91,7 +91,7 @@ def summarize_slices(
     grouped: Dict[Tuple[Any, ...], Dict[str, int]] = {}
     for r in rows:
         outcome = str(r.get("outcome") or "").upper()
-        if outcome not in ("WIN", "LOSS"):
+        if outcome not in ("WIN", "LOSS", "EXPIRED"):
             continue
         key_parts: List[Any] = []
         ok = True
@@ -214,7 +214,7 @@ def find_qualified_slices(
         "target": target_f,
         "min_n": min_n_i,
         "min_wilson_low": min_wl,
-        "resolved_n": sum(1 for r in rows if str(r.get("outcome") or "").upper() in ("WIN", "LOSS")),
+        "resolved_n": sum(1 for r in rows if str(r.get("outcome") or "").upper() in ("WIN", "LOSS", "EXPIRED")),
         "qualified_count": len(qualified),
         "qualified": qualified,
         "best_per_dimension": best_per_dim,
@@ -256,7 +256,7 @@ def load_resolved_contract_rows(*, days: int = 120, limit: int = 20000) -> List[
                           LIMIT 1)
                        ) AS regime_label
                 FROM ghost_shadow_outcomes so
-                WHERE so.eval_ts >= %s AND so.outcome IN ('WIN','LOSS')
+                WHERE so.eval_ts >= %s AND so.outcome IN ('WIN','LOSS','EXPIRED')
                 ORDER BY so.eval_ts DESC
                 LIMIT %s
                 """,
@@ -300,7 +300,7 @@ def load_resolved_contract_rows_since(*, since_ts: int, limit: int = 50000) -> L
                           LIMIT 1)
                        ) AS regime_label
                 FROM ghost_shadow_outcomes so
-                WHERE so.eval_ts > %s AND so.outcome IN ('WIN','LOSS')
+                WHERE so.eval_ts > %s AND so.outcome IN ('WIN','LOSS','EXPIRED')
                 ORDER BY so.eval_ts ASC
                 LIMIT %s
                 """,
