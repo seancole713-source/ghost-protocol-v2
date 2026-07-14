@@ -280,3 +280,68 @@ def test_resolve_shadow_rows_expires_when_bars_unavailable(monkeypatch):
     n = so.resolve_shadow_rows(max_symbols=5)
     assert n == 1
     assert updates == [("EXPIRED", 10.0, 0.0, expires + 3600, 9)]
+
+
+def test_seed_persists_regime_label_into_durable_column(monkeypatch):
+    """seed_shadow_rows must copy the eval's regime_label into the outcome row.
+
+    The 70+ slice search conditions on regime, and the perf-eval join source is
+    pruned after ~90 days while shadow outcomes are not - the durable column is
+    what keeps a forward proof's conditioning signal from decaying.
+    """
+    import core.shadow_outcomes as so
+
+    base = 1781000000
+    # symbol, eval_ts, up_prob, confidence, skip_code, fired,
+    # entry_price, target_price, stop_price, scores, regime_label
+    eval_rows = [
+        ("WOLF", base, 0.72, 0.72, None, True, 10.0, 10.6, 9.7, {"price": 10.0}, "Trend-up"),
+    ]
+    captured = {}
+
+    class _Cur:
+        rowcount = 0
+
+        def execute(self, sql, params=None):
+            self._last = sql
+            s = sql.strip()
+            if s.startswith("SELECT pg_try_advisory_xact_lock"):
+                self._fetch = (True,)
+            elif "FROM ghost_perf_symbol_evals" in sql and "SELECT symbol" in sql:
+                self._fetch = None
+                self._rows = list(eval_rows)
+            elif s.startswith("INSERT INTO ghost_shadow_outcomes"):
+                captured["insert_sql"] = sql
+                captured["insert_params"] = params
+                self.rowcount = 1
+            else:
+                self._fetch = None
+
+        def fetchone(self):
+            return getattr(self, "_fetch", None)
+
+        def fetchall(self):
+            return getattr(self, "_rows", [])
+
+    class _Conn:
+        def cursor(self):
+            return _Cur()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    import core.db as db
+    monkeypatch.setattr(db, "db_conn", lambda: _Conn())
+    monkeypatch.setattr(so, "ensure_shadow_table", lambda cur: None)
+    monkeypatch.setattr("core.tp_sl_resolve.label_hold_bars", lambda: 5)
+    monkeypatch.setattr(
+        "core.tp_sl_resolve.expires_at_nth_trading_close", lambda ts, hold: ts + 5 * 86400
+    )
+
+    so.seed_shadow_rows(days_back=3)
+    assert "regime_label" in captured.get("insert_sql", "")
+    # regime_label is the last positional param in the insert tuple.
+    assert captured["insert_params"][-1] == "Trend-up"

@@ -326,6 +326,29 @@ def watcher_contract_70_register_endpoint(
     except Exception as e:
         return JSONResponse({"ok": False, "registered": False, "error": str(e)[:200]}, status_code=500)
 
+@router.get("/api/watcher/contract-70/slices")
+def watcher_contract_70_slices_endpoint(
+    days: int = 120,
+    min_n: int = 8,
+    min_wilson_low: float = 0.70,
+    limit: int = 20000,
+):
+    """Read-only 70+ slice search over resolved contract outcomes.
+
+    Groups the SAME TP/SL win-test rows the contract already scores by symbol,
+    market regime, and probability band, and reports which conditional slices
+    (if any) clear a Wilson-proven 0.70. A qualified slice is a CANDIDATE to
+    pre-register for a forward proof, not a 70+ claim. Never fires, never
+    loosens a gate, never mutates state.
+    """
+    try:
+        from core.contract_70_slices import contract_70_slice_search
+        return contract_70_slice_search(
+            days=days, min_n=min_n, min_wilson_low=min_wilson_low, limit=limit
+        )
+    except Exception as e:
+        return JSONResponse({"ok": False, "read_only": True, "error": str(e)[:200]}, status_code=500)
+
 
 @router.get("/api/shadow-stats")
 def shadow_stats_endpoint(days: int = 30):

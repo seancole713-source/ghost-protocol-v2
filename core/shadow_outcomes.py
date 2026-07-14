@@ -68,6 +68,16 @@ def ensure_shadow_table(cur) -> None:
         "CREATE INDEX IF NOT EXISTS idx_shadow_eval_ts "
         "ON ghost_shadow_outcomes (eval_ts DESC)"
     )
+    # Additive migration: persist the market regime AT ISSUANCE on the outcome
+    # row itself. The 70+ slice search conditions the win test on regime, and
+    # ghost_perf_symbol_evals (the join source) is pruned after ~90 days
+    # (GHOST_PERF_RETENTION_DAYS) while shadow outcomes are not — without a
+    # durable column the conditioning signal would decay out from under a
+    # forward proof. CREATE TABLE IF NOT EXISTS never adds columns to an
+    # existing prod table, so this ALTER is required.
+    cur.execute(
+        "ALTER TABLE ghost_shadow_outcomes ADD COLUMN IF NOT EXISTS regime_label TEXT"
+    )
 
 
 def _ct_date(ts: int) -> str:
@@ -151,7 +161,7 @@ def seed_shadow_rows(days_back: int = 3) -> int:
         try:
             cur.execute(
                 "SELECT symbol, eval_ts, up_prob, confidence, skip_code, fired, "
-                "entry_price, target_price, stop_price, scores "
+                "entry_price, target_price, stop_price, scores, regime_label "
                 "FROM ghost_perf_symbol_evals "
                 "WHERE eval_ts >= %s AND up_prob IS NOT NULL",
                 (cutoff,),
@@ -166,6 +176,7 @@ def seed_shadow_rows(days_back: int = 3) -> int:
                 "symbol": r[0], "eval_ts": r[1], "up_prob": r[2], "confidence": r[3],
                 "skip_code": r[4], "fired": bool(r[5]), "entry_price": r[6],
                 "target_price": r[7], "stop_price": r[8], "scores": r[9],
+                "regime_label": r[10],
             }
             for r in rows
         ]
@@ -195,8 +206,9 @@ def seed_shadow_rows(days_back: int = 3) -> int:
                 """
                 INSERT INTO ghost_shadow_outcomes
                     (symbol, trade_date, eval_ts, up_prob, confidence, skip_code, fired,
-                     entry_price, target_price, stop_price, expires_at, created_at)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                     entry_price, target_price, stop_price, expires_at, created_at,
+                     regime_label)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT (symbol, trade_date) DO NOTHING
                 """,
                 (
@@ -205,6 +217,7 @@ def seed_shadow_rows(days_back: int = 3) -> int:
                     bool(ev.get("fired")),
                     round(entry, 6), round(target, 6), round(stop, 6),
                     expires_at_nth_trading_close(eval_ts, hold), now,
+                    (str(ev.get("regime_label")) if ev.get("regime_label") is not None else None),
                 ),
             )
             inserted += cur.rowcount or 0
