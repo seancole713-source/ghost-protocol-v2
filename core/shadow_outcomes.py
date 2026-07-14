@@ -78,6 +78,17 @@ def ensure_shadow_table(cur) -> None:
     cur.execute(
         "ALTER TABLE ghost_shadow_outcomes ADD COLUMN IF NOT EXISTS regime_label TEXT"
     )
+    # Additive migration: persist Ghost's own regime-GATE flags at issuance so
+    # the 70+ slice search can condition on the exact binary market conditions
+    # Ghost gates on (adx_trending / above_ema200 / ema_trend_bullish). These
+    # are the most principled discriminators: "in which market setups does
+    # Ghost's TP/SL actually clear 70%?" Stored as SMALLINT 0/1 (NULL = unknown
+    # for older rows). Durable for the same reason regime_label is — the
+    # perf-eval join source is pruned after ~90 days while outcomes are not.
+    for _col in ("adx_trending", "above_ema200", "ema_trend_bullish"):
+        cur.execute(
+            f"ALTER TABLE ghost_shadow_outcomes ADD COLUMN IF NOT EXISTS {_col} SMALLINT"
+        )
 
 
 def _ct_date(ts: int) -> str:
@@ -138,6 +149,29 @@ def _eval_entry_price(ev: Dict[str, Any]) -> Optional[float]:
 
 # Advisory-lock key for the shadow seeder — arbitrary constant, unique app-wide.
 _SEED_ADVISORY_LOCK_KEY = 749_301_552
+
+
+def _regime_flag(ev: Dict[str, Any], key: str) -> Optional[int]:
+    """Extract a binary regime-gate flag (0/1) from an eval's scores.regime.
+
+    ``scores`` may arrive as a dict or a JSON string (psycopg variance). Returns
+    None when the flag is absent so it is stored as NULL rather than a guessed 0.
+    """
+    scores = ev.get("scores")
+    if isinstance(scores, str):
+        try:
+            scores = json.loads(scores)
+        except Exception:
+            return None
+    if not isinstance(scores, dict):
+        return None
+    regime = scores.get("regime")
+    if not isinstance(regime, dict) or key not in regime:
+        return None
+    try:
+        return 1 if int(regime.get(key)) else 0
+    except Exception:
+        return None
 
 
 def seed_shadow_rows(days_back: int = 3) -> int:
@@ -207,8 +241,8 @@ def seed_shadow_rows(days_back: int = 3) -> int:
                 INSERT INTO ghost_shadow_outcomes
                     (symbol, trade_date, eval_ts, up_prob, confidence, skip_code, fired,
                      entry_price, target_price, stop_price, expires_at, created_at,
-                     regime_label)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                     regime_label, adx_trending, above_ema200, ema_trend_bullish)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT (symbol, trade_date) DO NOTHING
                 """,
                 (
@@ -218,6 +252,9 @@ def seed_shadow_rows(days_back: int = 3) -> int:
                     round(entry, 6), round(target, 6), round(stop, 6),
                     expires_at_nth_trading_close(eval_ts, hold), now,
                     (str(ev.get("regime_label")) if ev.get("regime_label") is not None else None),
+                    _regime_flag(ev, "adx_trending"),
+                    _regime_flag(ev, "above_ema200"),
+                    _regime_flag(ev, "ema_trend_bullish"),
                 ),
             )
             inserted += cur.rowcount or 0
