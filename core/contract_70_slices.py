@@ -29,6 +29,68 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from core.watcher import wilson_interval
 
+
+def _sidak_family_z(num_tests: int, family_confidence: float = 0.95) -> float:
+    """Two-sided-safe z for a one-sided Wilson bound under ``num_tests`` searches.
+
+    The slice search evaluates MANY candidate slices at once (dozens of symbols
+    across ~20 dimension sets = hundreds of simultaneous hypotheses). Judging
+    each at a fixed 95% Wilson bound invites a look-elsewhere false positive:
+    with k independent tests the chance that at least one lucky slice clears the
+    bar by chance is 1 - 0.95**k, which is ~1 near k=60. That would let the
+    forward-proof registry freeze a SPURIOUS 70+ candidate — a truthfulness
+    violation.
+
+    Correction: hold the FAMILY-wide confidence at ``family_confidence`` via the
+    Šidák adjustment, so the per-slice confidence rises with the number of
+    tests: per_test = family_confidence ** (1/k). The Wilson lower bound is then
+    computed at that stricter per-test level. This only ever TIGHTENS the bar
+    (z grows with k); it can never make a weak slice qualify.
+    """
+    import math
+
+    k = max(1, int(num_tests))
+    fc = min(0.999999, max(0.5, float(family_confidence)))
+    per_test = fc ** (1.0 / k)          # Šidák per-comparison confidence
+    alpha = 1.0 - per_test              # per-test two-tailed alpha
+    # One-sided lower bound uses alpha/2 on the normal quantile, matching the
+    # z=1.96 (=Phi^{-1}(0.975)) convention wilson_interval uses at 95%.
+    p = 1.0 - alpha / 2.0
+    # Acklam-style rational approximation of the normal inverse CDF (no scipy).
+    return _norm_ppf(p)
+
+
+def _norm_ppf(p: float) -> float:
+    """Inverse standard-normal CDF (Acklam approximation). Good to ~1e-9."""
+    import math
+
+    if p <= 0.0:
+        return -math.inf
+    if p >= 1.0:
+        return math.inf
+    a = [-3.969683028665376e+01, 2.209460984245205e+02, -2.759285104469687e+02,
+         1.383577518672690e+02, -3.066479806614716e+01, 2.506628277459239e+00]
+    b = [-5.447609879822406e+01, 1.615858368580409e+02, -1.556989798598866e+02,
+         6.680131188771972e+01, -1.328068155288572e+01]
+    c = [-7.784894002430293e-03, -3.223964580411365e-01, -2.400758277161838e+00,
+         -2.549732539343734e+00, 4.374664141464968e+00, 2.938163982698783e+00]
+    d = [7.784695709041462e-03, 3.224671290700398e-01, 2.445134137142996e+00,
+         3.754408661907416e+00]
+    plow = 0.02425
+    phigh = 1.0 - plow
+    if p < plow:
+        q = math.sqrt(-2.0 * math.log(p))
+        return (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / \
+               ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1.0)
+    if p > phigh:
+        q = math.sqrt(-2.0 * math.log(1.0 - p))
+        return -(((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / \
+                ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1.0)
+    q = p - 0.5
+    r = q * q
+    return (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q / \
+           (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1.0)
+
 # Same bin edges the Watcher reports so a probability-band slice lines up exactly
 # with the calibration table the operator already sees.
 _PROB_BUCKETS: Tuple[Tuple[str, float, float], ...] = (
@@ -211,13 +273,32 @@ def find_qualified_slices(
     min_n_i = max(1, int(min_n))
     min_wl = max(0.0, min(1.0, float(min_wilson_low)))
 
-    qualified: List[Dict[str, Any]] = []
-    best_per_dim: List[Dict[str, Any]] = []
+    # Pass 1: enumerate every eligible slice across all dimension sets so we know
+    # the FAMILY size (how many simultaneous 70+ hypotheses are being tested).
+    per_set: List[Tuple[Sequence[str], List[Dict[str, Any]], List[Dict[str, Any]]]] = []
+    family_size = 0
     for dims in dimension_sets:
         slices = summarize_slices(rows, dims=dims, target=target_f)
         eligible = [s for s in slices if s["n"] >= min_n_i]
+        family_size += len(eligible)
+        per_set.append((dims, slices, eligible))
+
+    # Šidák-corrected z holds the family-wide false-positive rate at 5% no matter
+    # how many slices are searched. This only tightens the bar as the search
+    # widens — it can never let a weak slice qualify.
+    family_z = _sidak_family_z(family_size, family_confidence=0.95)
+
+    qualified: List[Dict[str, Any]] = []
+    best_per_dim: List[Dict[str, Any]] = []
+    for dims, slices, eligible in per_set:
         for s in eligible:
-            if s["wilson_low"] >= min_wl:
+            ci_fw = wilson_interval(int(s["wins"]), int(s["n"]), z=family_z)
+            s["family_wilson_low"] = ci_fw["low"]
+            s["family_z"] = round(family_z, 4)
+            s["family_size"] = family_size
+            # Qualification now requires the FAMILY-WIDE lower bound to clear the
+            # bar, not the naive single-test 95% bound.
+            if ci_fw["low"] >= min_wl:
                 qualified.append(s)
         if eligible:
             best = eligible[0]
@@ -229,12 +310,16 @@ def find_qualified_slices(
         if best is not None:
             best_per_dim.append(best)
 
-    qualified.sort(key=lambda s: (s["wilson_low"], s["n"]), reverse=True)
+    qualified.sort(key=lambda s: (s.get("family_wilson_low", s["wilson_low"]), s["n"]), reverse=True)
     return {
         "ok": True,
         "target": target_f,
         "min_n": min_n_i,
         "min_wilson_low": min_wl,
+        "family_size": family_size,
+        "family_z": round(family_z, 4),
+        "family_confidence": 0.95,
+        "multiple_comparisons_correction": "sidak",
         "resolved_n": sum(1 for r in rows if str(r.get("outcome") or "").upper() in ("WIN", "LOSS", "EXPIRED")),
         "qualified_count": len(qualified),
         "qualified": qualified,
@@ -242,8 +327,11 @@ def find_qualified_slices(
         "status": "qualified_slice_found" if qualified else "no_qualified_slice",
         "note": (
             "A qualified slice is a CANDIDATE to pre-register for a forward-only "
-            "proof; it is not a 70+ claim. 70+ is proven only when future "
-            "out-of-sample outcomes for the frozen slice clear the Wilson bar."
+            "proof; it is not a 70+ claim. Qualification uses a Sidak "
+            "multiple-comparisons-corrected Wilson lower bound (family_z) so a "
+            "spurious slice cannot pass just because many were searched. 70+ is "
+            "proven only when future out-of-sample outcomes for the frozen slice "
+            "clear the Wilson bar."
         ),
     }
 

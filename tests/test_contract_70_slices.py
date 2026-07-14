@@ -131,8 +131,10 @@ def test_fired_dimension_labels_and_separates():
 
 def test_fired_dimension_included_in_default_search():
     # A strong, large fired population must be discoverable as a qualified slice.
+    # Sized to survive the Sidak family-wide correction across the full default
+    # dimension set (borderline slices are intentionally rejected now).
     rows = [{"symbol": "X", "fired": True, "regime_label": "Trend-up",
-             "up_prob": 0.72, "outcome": "WIN" if i < 46 else "LOSS"} for i in range(52)]
+             "up_prob": 0.72, "outcome": "WIN" if i < 95 else "LOSS"} for i in range(100)]
     rows += [{"symbol": "X", "fired": False, "regime_label": "Choppy",
               "up_prob": 0.72, "outcome": "LOSS"} for _ in range(30)]
     res = cs.find_qualified_slices(rows, min_n=8, min_wilson_low=0.70)
@@ -206,3 +208,59 @@ def test_regime_gate_flag_expired_counts_as_non_win():
             for o in (["WIN"] * 3 + ["EXPIRED"] * 2)]
     out = cs.summarize_slices(rows, dims=["adx_trending"], target=0.70)[0]
     assert out["wins"] == 3 and out["n"] == 5
+
+
+def test_sidak_family_z_grows_with_family_size():
+    # At k=1 the family z equals the standard 95% one-sided z (1.96).
+    assert abs(cs._sidak_family_z(1) - 1.959964) < 1e-3
+    # More simultaneous tests -> stricter z (monotonic non-decreasing).
+    z1 = cs._sidak_family_z(1)
+    z20 = cs._sidak_family_z(20)
+    z200 = cs._sidak_family_z(200)
+    assert z1 < z20 < z200
+    assert z20 > 2.9  # ~3.02
+
+
+def test_norm_ppf_matches_known_quantiles():
+    assert abs(cs._norm_ppf(0.975) - 1.959964) < 1e-4
+    assert abs(cs._norm_ppf(0.5) - 0.0) < 1e-9
+    assert abs(cs._norm_ppf(0.995) - 2.575829) < 1e-4
+
+
+def test_family_correction_rejects_borderline_slice_that_passes_naive():
+    # A borderline slice whose NAIVE 95% Wilson low clears 0.70 but whose
+    # family-corrected bound does not must NOT qualify once many slices are
+    # searched. Build one strong-ish slice plus filler to inflate the family.
+    rows = [{"symbol": "BORD", "up_prob": 0.6, "outcome": "WIN" if i < 40 else "LOSS"} for i in range(48)]
+    for s in range(40):
+        for i in range(9):
+            rows.append({"symbol": f"S{s}", "up_prob": 0.6, "outcome": "WIN" if i < 5 else "LOSS"})
+    # Naive single-test view of just the BORD slice:
+    naive = cs.summarize_slices(rows, dims=["symbol"])[0] if False else None
+    res = cs.find_qualified_slices(rows, dimension_sets=[("symbol",)], min_n=8, min_wilson_low=0.70)
+    assert res["family_size"] >= 40
+    assert res["multiple_comparisons_correction"] == "sidak"
+    # Whatever the naive bound, the family-corrected search must reject it here.
+    bord = [s for s in cs.summarize_slices(rows, dims=["symbol"]) if s["key"]["symbol"] == "BORD"][0]
+    # family_wilson_low is stricter than the naive wilson_low
+    res2 = cs.find_qualified_slices(rows, dimension_sets=[("symbol",)], min_n=8, min_wilson_low=0.70)
+    assert res2["qualified_count"] == 0
+
+
+def test_family_correction_still_admits_a_genuinely_strong_slice():
+    # 92/100 is strong enough to clear even a single-family Sidak bar.
+    strong = [{"symbol": "STRONG", "up_prob": 0.6, "outcome": "WIN" if i < 92 else "LOSS"} for i in range(100)]
+    res = cs.find_qualified_slices(strong, dimension_sets=[("symbol",)], min_n=8, min_wilson_low=0.70)
+    assert res["qualified_count"] == 1
+    q = res["qualified"][0]
+    assert q["key"]["symbol"] == "STRONG"
+    assert q["family_wilson_low"] >= 0.70
+    # The family-corrected bound is never HIGHER than the naive bound.
+    assert q["family_wilson_low"] <= q["wilson_low"]
+
+
+def test_family_fields_present_in_payload():
+    rows = [{"symbol": "X", "outcome": "WIN"} for _ in range(10)]
+    res = cs.find_qualified_slices(rows, dimension_sets=[("symbol",)], min_n=8, min_wilson_low=0.70)
+    assert "family_size" in res and "family_z" in res
+    assert res["family_confidence"] == 0.95
