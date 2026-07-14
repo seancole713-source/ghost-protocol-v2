@@ -115,6 +115,59 @@ def evaluate_forward(
     return status
 
 
+def evaluate_forward_slices(
+    rows: Sequence[Dict[str, Any]],
+    *,
+    registered_slices: Sequence[Dict[str, Any]],
+    registered_at_ts: int,
+    target: float = 0.70,
+) -> Dict[str, Any]:
+    """Pooled forward-only 70+ status over frozen slice definitions.
+
+    Unlike the legacy symbol-universe evaluator, this counts rows that match a
+    frozen slice spec (for example ``symbol=BILL`` AND ``regime=Trend-down``)
+    and resolved strictly after registration. It never widens missing fields:
+    if a future row lacks the slice dimension, it is ignored rather than counted.
+    """
+    from core.contract_70_slices import row_matches_slice
+
+    cutoff = int(registered_at_ts or 0)
+    specs = [s for s in (registered_slices or []) if isinstance(s, dict)]
+    n = 0
+    wins = 0
+    used: Dict[str, Dict[str, Any]] = {}
+    for r in rows:
+        try:
+            ets = int(r.get("eval_ts") or 0)
+        except Exception:
+            ets = 0
+        if ets <= cutoff:
+            continue
+        outcome = str(r.get("outcome") or "").upper()
+        if outcome not in ("WIN", "LOSS"):
+            continue
+        matched_spec = None
+        for spec in specs:
+            if row_matches_slice(r, spec):
+                matched_spec = spec
+                break
+        if matched_spec is None:
+            continue
+        n += 1
+        key = json.dumps({"dims": matched_spec.get("dims") or [], "key": matched_spec.get("key") or {}}, sort_keys=True)
+        g = used.setdefault(key, {"slice": {"dims": matched_spec.get("dims") or [], "key": matched_spec.get("key") or {}}, "n": 0, "wins": 0})
+        g["n"] += 1
+        if outcome == "WIN":
+            wins += 1
+            g["wins"] += 1
+    status = contract_win_test_status(wins=wins, n=n, target=target)
+    status["basis"] = "forward_only_registered_slices"
+    status["registered_slices"] = [{"dims": s.get("dims") or [], "key": s.get("key") or {}} for s in specs]
+    status["registered_at_ts"] = cutoff
+    status["slices_used"] = [v for _, v in sorted(used.items())]
+    return status
+
+
 def register_universe(
     symbols: Sequence[str],
     *,
@@ -136,6 +189,74 @@ def register_universe(
         "min_n": int(min_n),
         "min_wilson_low": float(min_wilson_low),
         "prob_floor": 0.70,
+        "target": 0.70,
+    }
+    from core.db import db_conn, ensure_ghost_state
+
+    def _write(c):
+        ensure_ghost_state(c)
+        c.execute(
+            "INSERT INTO ghost_state(key,val) VALUES(%s,%s) "
+            "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
+            (_REGISTRY_KEY, json.dumps(payload)),
+        )
+
+    if cur is not None:
+        _write(cur)
+    else:
+        with db_conn() as conn:
+            _write(conn.cursor())
+            conn.commit()
+    return payload
+
+
+def register_slices(
+    slices: Sequence[Dict[str, Any]],
+    *,
+    min_n: int,
+    min_wilson_low: float,
+    now_ts: Optional[int] = None,
+    cur=None,
+) -> Dict[str, Any]:
+    """Persist frozen slice definitions in ghost_state for forward proof.
+
+    This is the slice-aware counterpart to ``register_universe``. It preserves
+    the anti-look-ahead contract by recording the exact slice dimensions and the
+    registration timestamp; future evaluation counts only rows that match those
+    frozen dimensions and resolve after this timestamp. It writes only
+    ``ghost_state`` and never changes model, gate, wallet, or broker state.
+    """
+    ts = int(now_ts if now_ts is not None else time.time())
+    clean: List[Dict[str, Any]] = []
+    seen = set()
+    for item in slices or []:
+        if not isinstance(item, dict):
+            continue
+        dims = [str(d) for d in (item.get("dims") or []) if str(d)]
+        key_in = item.get("key") or {}
+        if not dims or not isinstance(key_in, dict):
+            continue
+        key = {str(k): v for k, v in key_in.items() if str(k) in dims}
+        # Do not widen incomplete slice specs. A frozen slice must provide a
+        # value for every dimension it asks future rows to match.
+        if set(key.keys()) != set(dims):
+            continue
+        spec = {"dims": dims, "key": key}
+        sig = json.dumps(spec, sort_keys=True)
+        if sig in seen:
+            continue
+        seen.add(sig)
+        clean.append(spec)
+    payload = {
+        "registered_at_ts": ts,
+        "mode": "slices",
+        "slices": clean,
+        # Convenience only: legacy UIs can still show the symbol subset, but
+        # forward scoring uses the exact frozen slice specs above.
+        "symbols": sorted({str((s.get("key") or {}).get("symbol")).upper()
+                           for s in clean if (s.get("key") or {}).get("symbol")}),
+        "min_n": int(min_n),
+        "min_wilson_low": float(min_wilson_low),
         "target": 0.70,
     }
     from core.db import db_conn, ensure_ghost_state

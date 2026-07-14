@@ -99,3 +99,73 @@ def test_register_and_load_roundtrip_uses_ghost_state_only(monkeypatch):
 
     loaded = reg.load_registry()
     assert loaded["registered_at_ts"] == 42
+
+
+def test_evaluate_forward_slices_ignores_pre_registration_and_nonmatching_rows():
+    rows = [
+        {"symbol": "GOOD", "regime_label": "Trend-up", "up_prob": 0.72, "eval_ts": 900, "outcome": "WIN"},
+        {"symbol": "GOOD", "regime_label": "Trend-up", "up_prob": 0.72, "eval_ts": 1000, "outcome": "WIN"},
+        {"symbol": "GOOD", "regime_label": "Trend-up", "up_prob": 0.72, "eval_ts": 1100, "outcome": "WIN"},
+        {"symbol": "GOOD", "regime_label": "Trend-up", "up_prob": 0.72, "eval_ts": 1200, "outcome": "LOSS"},
+        {"symbol": "GOOD", "regime_label": "Choppy", "up_prob": 0.72, "eval_ts": 1300, "outcome": "WIN"},
+        {"symbol": "OTHER", "regime_label": "Trend-up", "up_prob": 0.72, "eval_ts": 1400, "outcome": "WIN"},
+        {"symbol": "GOOD", "regime_label": "Trend-up", "up_prob": 0.65, "eval_ts": 1500, "outcome": "WIN"},
+    ]
+    spec = {"dims": ["symbol", "regime_label", "up_prob_bucket"],
+            "key": {"symbol": "GOOD", "regime_label": "Trend-up", "up_prob_bucket": "70+"}}
+    out = reg.evaluate_forward_slices(rows, registered_slices=[spec], registered_at_ts=1000)
+    assert out["basis"] == "forward_only_registered_slices"
+    assert out["n"] == 2
+    assert out["wins"] == 1
+    assert out["registered_slices"] == [spec]
+    assert out["slices_used"][0]["slice"] == spec
+
+
+def test_evaluate_forward_slices_small_sample_not_wilson_proven():
+    rows = [{"symbol": "GOOD", "regime_label": "Trend-up", "up_prob": 0.8,
+             "eval_ts": 1100 + i, "outcome": "WIN"} for i in range(3)]
+    spec = {"dims": ["symbol", "regime_label"],
+            "key": {"symbol": "GOOD", "regime_label": "Trend-up"}}
+    out = reg.evaluate_forward_slices(rows, registered_slices=[spec], registered_at_ts=1000)
+    assert out["win_rate"] == 1.0
+    assert out["raw_pass"] is True
+    assert out["wilson_pass"] is False
+    assert out["status"] == "raw_70_unproven"
+
+
+def test_register_slices_roundtrip_uses_ghost_state_only(monkeypatch):
+    writes = []
+    payload = {"registered_at_ts": 42, "mode": "slices",
+               "slices": [{"dims": ["symbol"], "key": {"symbol": "GOOD"}}],
+               "min_n": 8, "min_wilson_low": 0.7, "target": 0.7}
+
+    class _Cur:
+        def execute(self, sql, params=None):
+            writes.append((sql, params))
+        def fetchone(self):
+            import json
+            return (json.dumps(payload),)
+
+    class _Conn:
+        def cursor(self): return _Cur()
+        def commit(self): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    import core.db as db
+    monkeypatch.setattr(db, "db_conn", lambda: _Conn())
+    monkeypatch.setattr(db, "ensure_ghost_state", lambda c=None: None)
+
+    out = reg.register_slices(
+        [{"dims": ["symbol"], "key": {"symbol": "GOOD"}},
+         {"dims": ["symbol"], "key": {"symbol": "GOOD"}}],
+        min_n=8, min_wilson_low=0.7, now_ts=42,
+    )
+    assert out["mode"] == "slices"
+    assert out["slices"] == [{"dims": ["symbol"], "key": {"symbol": "GOOD"}}]
+    joined = "\n".join(sql for sql, _ in writes)
+    assert "ghost_state" in joined
+    assert "predictions" not in joined
+    assert "ghost_paper_trades" not in joined
+    loaded = reg.load_registry()
+    assert loaded["mode"] == "slices"

@@ -305,9 +305,24 @@ def watcher_summary(*, days: int = 30, limit: int = 5000) -> Dict[str, Any]:
     # 70+ claim can never be back-fit to the selection window. Absent a
     # registry, report that no forward proof exists yet — never fake one.
     try:
-        from core.contract_70_registry import evaluate_forward, load_registry
+        from core.contract_70_registry import evaluate_forward, evaluate_forward_slices, load_registry
         _reg = load_registry()  # opens its own connection; cur is closed here
-        if _reg and _reg.get("symbols"):
+        if _reg and _reg.get("mode") == "slices" and _reg.get("slices"):
+            try:
+                from core.contract_70_slices import load_resolved_contract_rows_since
+                fwd_rows = load_resolved_contract_rows_since(
+                    since_ts=int(_reg.get("registered_at_ts") or 0),
+                    limit=50000,
+                )
+            except Exception:
+                fwd_rows = rows
+            fwd = evaluate_forward_slices(
+                fwd_rows,
+                registered_slices=_reg.get("slices") or [],
+                registered_at_ts=int(_reg.get("registered_at_ts") or 0),
+                target=float(_reg.get("target") or 0.70),
+            )
+        elif _reg and _reg.get("symbols"):
             fwd = evaluate_forward(
                 rows,
                 registered_symbols=_reg.get("symbols") or [],
