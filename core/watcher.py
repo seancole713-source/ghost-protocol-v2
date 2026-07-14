@@ -179,6 +179,46 @@ def contract_win_test_status(*, wins: int, n: int, target: float = 0.70) -> Dict
     }
 
 
+def contract_70_symbol_breakdown(rows: Sequence[Dict[str, Any]], *, target: float = 0.70) -> List[Dict[str, Any]]:
+    """Per-symbol breakdown for rows in the 70+ confidence bucket.
+
+    Read-only diagnosis for the 70+ mission: which symbols are dragging the
+    high-confidence bucket below target, and which are actually carrying it.
+    This is not a selector by itself — it is evidence for the next pre-registered
+    filter or retrain decision.
+    """
+    grouped: Dict[str, Dict[str, int]] = {}
+    for r in rows:
+        try:
+            p = float(r.get("prob"))
+        except Exception:
+            continue
+        if p < 0.70:
+            continue
+        sym = str(r.get("symbol") or "UNKNOWN").upper()
+        g = grouped.setdefault(sym, {"n": 0, "wins": 0})
+        g["n"] += 1
+        if bool(r.get("win")):
+            g["wins"] += 1
+    out = []
+    for sym, g in grouped.items():
+        n = int(g["n"])
+        wins = int(g["wins"])
+        wr = wins / n if n else None
+        ci = wilson_interval(wins, n) if n else None
+        out.append({
+            "symbol": sym,
+            "n": n,
+            "wins": wins,
+            "win_rate": round(wr, 4) if wr is not None else None,
+            "wilson_low": (ci or {}).get("low") if ci else None,
+            "raw_pass": bool(wr is not None and wr >= target),
+            "wilson_pass": bool(ci and ci.get("low", 0) >= target),
+        })
+    out.sort(key=lambda x: (x["win_rate"] if x["win_rate"] is not None else -1, -x["n"], x["symbol"]))
+    return out
+
+
 def summarize_shadow_outcomes(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     """Summarize ghost_shadow_outcomes-like rows for Watcher endpoint/tests."""
     resolved = []
@@ -199,6 +239,8 @@ def summarize_shadow_outcomes(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     except Exception:
         target_wr = 0.70
     brier = brier_score(resolved, prob_key="prob", outcome_key="win")
+    contract_70 = contract_win_test_status(wins=high70_wins, n=len(high70), target=target_wr)
+    contract_70["symbols"] = contract_70_symbol_breakdown(resolved, target=target_wr)
     return {
         "resolved_n": len(resolved),
         "high_confidence": {
@@ -210,7 +252,7 @@ def summarize_shadow_outcomes(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         },
         "brier": brier,
         "bins": bins,
-        "contract_70": contract_win_test_status(wins=high70_wins, n=len(high70), target=target_wr),
+        "contract_70": contract_70,
         "verdict": watcher_verdict(high_win_rate=high_wr, high_n=len(high), brier=brier),
     }
 
