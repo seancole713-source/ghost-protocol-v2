@@ -24,9 +24,14 @@
       "stream": "ext://sys.stdout"
     }
   },
+  "filters": {
+    "peaceful_access": {
+      "()": "core.access_log_filters.PeacefulAccessFilter"
+    }
+  },
   "loggers": {
     "uvicorn": {"handlers": ["default"], "level": "INFO", "propagate": false},
     "uvicorn.error": {"handlers": ["default"], "level": "INFO", "propagate": false},
-    "uvicorn.access": {"handlers": ["access"], "level": "INFO", "propagate": false}
+    "uvicorn.access": {"handlers": ["access"], "level": "INFO", "propagate": false, "filters": ["peaceful_access"]}
   }
 }

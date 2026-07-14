@@ -177,6 +177,10 @@ def test_console_has_peaceful_polling_controls():
     assert "queueLoadAll" in text
     assert "visibilitychange" in text
     assert "_lastHiddenLoad" in text
+    assert "function ghostBuild" in text
+    assert "function maybeReloadForBuild" in text
+    assert "ghost_console_reloaded_for_" in text
+    assert "maybeReloadForBuild(r[0])" in text
 
 
 def test_console_routes_serve_new_and_legacy_pages():
@@ -193,6 +197,9 @@ def test_console_routes_serve_new_and_legacy_pages():
     assert "Prediction command center" in picks.text
     assert "Ghost Picks" in legacy.text
     assert "WOLF Command Center" in cockpit.text
+    assert root.headers["cache-control"].startswith("no-store")
+    assert picks.headers["cache-control"].startswith("no-store")
+    assert 'name="ghost-build"' in picks.text
 
 
 def test_super_ghost_snapshot_endpoint_bundles_console_payload(monkeypatch):
