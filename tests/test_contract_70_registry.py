@@ -181,3 +181,45 @@ def test_evaluate_forward_counts_expired_as_resolved_non_win():
     assert out["n"] == 2
     assert out["wins"] == 1
     assert out["win_rate"] == 0.5
+
+
+def test_register_slices_preserves_selection_evidence_for_audit(monkeypatch):
+    writes = []
+
+    class _Cur:
+        def execute(self, sql, params=None):
+            writes.append((sql, params))
+        def fetchone(self): return None
+
+    import core.db as db
+    monkeypatch.setattr(db, "ensure_ghost_state", lambda c=None: None)
+
+    selected = {
+        "dims": ["symbol", "regime_label"],
+        "key": {"symbol": "BILL", "regime_label": "Trend-down"},
+        "n": 60,
+        "wins": 52,
+        "win_rate": 0.8667,
+        "wilson_low": 0.755,
+        "wilson_high": 0.935,
+        "raw_pass": True,
+        "wilson_pass": True,
+        "family_wilson_low": 0.711,
+        "family_size": 276,
+        "family_z": 3.7375,
+        "family_confidence": 0.95,
+        "multiple_comparisons_correction": "sidak",
+        "rows": ["must_not_be_persisted"],
+    }
+    payload = reg.register_slices([selected], min_n=8, min_wilson_low=0.7, now_ts=42, cur=_Cur())
+    ev = payload["slices"][0]["selection_evidence"]
+    assert ev["n"] == 60
+    assert ev["wins"] == 52
+    assert ev["family_wilson_low"] == 0.711
+    assert ev["family_size"] == 276
+    assert ev["multiple_comparisons_correction"] == "sidak"
+    assert "rows" not in ev
+    joined = "\n".join(sql for sql, _ in writes)
+    assert "ghost_state" in joined
+    assert "predictions" not in joined
+    assert "ghost_paper_trades" not in joined
