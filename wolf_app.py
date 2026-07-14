@@ -3199,6 +3199,7 @@ from api.routes_ghost_system import (  # noqa: E402,F401 — facade re-exports
     watcher_summary_endpoint,
     watcher_snapshots_endpoint,
     watcher_contract_70_register_endpoint,
+    watcher_contract_70_slices_endpoint,
     shadow_stats_endpoint,
     squeeze_daily_log_endpoint,
     squeeze_picks_endpoint,
