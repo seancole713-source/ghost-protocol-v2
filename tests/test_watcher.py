@@ -1,5 +1,11 @@
 """PR #153: Watcher read-only calibration observer."""
-from core.watcher import brier_score, calibration_bins, summarize_shadow_outcomes, watcher_verdict
+from core.watcher import (
+    brier_score,
+    calibration_bins,
+    contract_win_test_status,
+    summarize_shadow_outcomes,
+    watcher_verdict,
+)
 
 
 def test_watcher_calibration_bins_and_brier():
@@ -34,6 +40,31 @@ def test_watcher_summary_shadow_outcomes_high_confidence():
     assert out["high_confidence"]["n"] == 87
     assert 0.61 <= out["high_confidence"]["win_rate"] <= 0.63
     assert out["verdict"]["status"] == "real_but_not_70"
+    assert out["contract_70"]["threshold"] == 0.70
+    assert out["contract_70"]["raw_pass"] is False
+
+
+def test_contract_70_status_shows_distance_to_raw_and_wilson_pass():
+    # Mirrors the live shape: 21/37 in the 70+ bucket is not 70. It needs 17
+    # straight wins for raw 70+ and many more for Wilson-proven 70+.
+    out = contract_win_test_status(wins=21, n=37, target=0.70)
+    assert out["win_rate"] == 0.5676
+    assert out["raw_pass"] is False
+    assert out["wilson_pass"] is False
+    assert out["additional_consecutive_wins_needed_raw"] == 17
+    assert out["additional_consecutive_wins_needed_wilson"] > 17
+    assert out["status"] == "not_70"
+
+
+def test_contract_70_status_distinguishes_raw_from_statistically_proven():
+    raw_only = contract_win_test_status(wins=70, n=100, target=0.70)
+    assert raw_only["raw_pass"] is True
+    assert raw_only["wilson_pass"] is False
+    assert raw_only["status"] == "raw_70_unproven"
+    proven = contract_win_test_status(wins=85, n=100, target=0.70)
+    assert proven["raw_pass"] is True
+    assert proven["wilson_pass"] is True
+    assert proven["status"] == "passed_wilson"
 
 
 def test_watcher_endpoint_routes(monkeypatch):
