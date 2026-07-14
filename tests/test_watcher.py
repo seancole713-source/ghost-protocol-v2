@@ -157,3 +157,95 @@ def test_watcher_snapshots_endpoint_routes(monkeypatch):
     r = TestClient(APP).get("/api/watcher/snapshots?limit=3")
     assert r.status_code == 200
     assert r.json()["rows"][0]["limit"] == 3
+
+
+def test_contract_70_register_route_is_strictly_gated(monkeypatch):
+    from fastapi.testclient import TestClient
+    from wolf_app import APP
+
+    monkeypatch.setattr("wolf_app._cron_ok", lambda secret, strict=False: False)
+    monkeypatch.setattr("wolf_app._admin_token_valid", lambda tok: False)
+
+    r = TestClient(APP).post("/api/watcher/contract-70/register")
+    assert r.status_code == 403
+
+
+def test_contract_70_register_route_refuses_weaker_criteria(monkeypatch):
+    from fastapi.testclient import TestClient
+    from wolf_app import APP
+
+    monkeypatch.setattr("wolf_app._cron_ok", lambda secret, strict=False: secret == "ok" and strict is True)
+    monkeypatch.setattr("wolf_app._admin_token_valid", lambda tok: False)
+    c = TestClient(APP)
+
+    r = c.post("/api/watcher/contract-70/register?min_n=7", headers={"x-cron-secret": "ok"})
+    assert r.status_code == 422
+    assert "min_n" in r.json()["detail"]
+
+    r2 = c.post("/api/watcher/contract-70/register?min_wilson_low=0.69", headers={"x-cron-secret": "ok"})
+    assert r2.status_code == 422
+    assert "min_wilson_low" in r2.json()["detail"]
+
+
+def test_contract_70_register_route_no_qualified_symbols_does_not_write(monkeypatch):
+    from fastapi.testclient import TestClient
+    from wolf_app import APP
+
+    calls = []
+    monkeypatch.setattr("wolf_app._cron_ok", lambda secret, strict=False: secret == "ok" and strict is True)
+    monkeypatch.setattr("wolf_app._admin_token_valid", lambda tok: False)
+    monkeypatch.setattr("core.watcher.watcher_summary", lambda days=30, limit=5000: {
+        "ok": True,
+        "shadow_calibration": {
+            "contract_70": {
+                "symbols": [
+                    {"symbol": "YMM", "n": 4, "wins": 4, "wilson_low": 0.5101},
+                    {"symbol": "XPO", "n": 7, "wins": 5, "wilson_low": 0.3589},
+                ]
+            }
+        },
+    })
+    monkeypatch.setattr(
+        "core.contract_70_registry.register_universe",
+        lambda *a, **k: calls.append((a, k)) or {"registered_at_ts": 1, "symbols": ["SHOULD_NOT_WRITE"]},
+    )
+
+    r = TestClient(APP).post("/api/watcher/contract-70/register", headers={"x-cron-secret": "ok"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["registered"] is False
+    assert body["status"] == "no_qualified_symbols"
+    assert calls == []
+
+
+def test_contract_70_register_route_registers_only_wilson_proven_symbols(monkeypatch):
+    from fastapi.testclient import TestClient
+    from wolf_app import APP
+
+    calls = []
+    monkeypatch.setattr("wolf_app._cron_ok", lambda secret, strict=False: secret == "ok" and strict is True)
+    monkeypatch.setattr("wolf_app._admin_token_valid", lambda tok: False)
+    monkeypatch.setattr("core.watcher.watcher_summary", lambda days=30, limit=5000: {
+        "ok": True,
+        "shadow_calibration": {
+            "contract_70": {
+                "symbols": [
+                    {"symbol": "BAD", "n": 30, "wins": 12, "wilson_low": 0.24},
+                    {"symbol": "GOOD", "n": 20, "wins": 18, "wilson_low": 0.72},
+                ]
+            }
+        },
+    })
+
+    def _fake_register(symbols, *, min_n, min_wilson_low, **kwargs):
+        calls.append({"symbols": list(symbols), "min_n": min_n, "min_wilson_low": min_wilson_low})
+        return {"registered_at_ts": 42, "symbols": list(symbols), "min_n": min_n, "min_wilson_low": min_wilson_low}
+
+    monkeypatch.setattr("core.contract_70_registry.register_universe", _fake_register)
+
+    r = TestClient(APP).post("/api/watcher/contract-70/register", headers={"x-cron-secret": "ok"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["registered"] is True
+    assert body["symbols"] == ["GOOD"]
+    assert calls == [{"symbols": ["GOOD"], "min_n": 8, "min_wilson_low": 0.7}]

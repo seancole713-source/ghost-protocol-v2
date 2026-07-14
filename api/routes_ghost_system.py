@@ -241,6 +241,92 @@ def watcher_snapshots_endpoint(limit: int = 20):
         return JSONResponse({"ok": False, "read_only": True, "error": str(e)[:200]}, status_code=500)
 
 
+@router.post("/api/watcher/contract-70/register")
+def watcher_contract_70_register_endpoint(
+    request: Request,
+    x_cron_secret: str = Header(default=""),
+    min_n: int = 8,
+    min_wilson_low: float = 0.70,
+    days: int = 30,
+    limit: int = 5000,
+):
+    """Pre-register a forward-only 70+ proof universe.
+
+    This endpoint is intentionally conservative:
+
+    * admin/cron gated;
+    * writes only the frozen universe row in ``ghost_state``;
+    * refuses criteria weaker than the 70+ contract defaults;
+    * does not auto-register an empty/cherry-picked universe; and
+    * never changes model gates, picks, broker state, or paper-wallet state.
+    """
+    from wolf_app import _ADMIN_COOKIE, _admin_token_valid, _cron_ok  # late import — shared state + monkeypatch-safe
+    tok = request.cookies.get(_ADMIN_COOKIE, "")
+    if not (_cron_ok(x_cron_secret, strict=True) or _admin_token_valid(tok)):
+        raise HTTPException(status_code=403, detail="admin login or cron secret required")
+
+    try:
+        min_n_i = int(min_n)
+        min_wilson_f = float(min_wilson_low)
+    except Exception:
+        raise HTTPException(status_code=422, detail="invalid contract-70 registration criteria")
+    if min_n_i < 8:
+        raise HTTPException(status_code=422, detail="min_n cannot be weaker than 8 for contract-70 registration")
+    if min_wilson_f < 0.70:
+        raise HTTPException(status_code=422, detail="min_wilson_low cannot be weaker than 0.70")
+    if min_wilson_f > 1.0:
+        raise HTTPException(status_code=422, detail="min_wilson_low cannot exceed 1.0")
+
+    days_i = max(1, min(365, int(days or 30)))
+    limit_i = max(1, min(20000, int(limit or 5000)))
+    try:
+        from core.contract_70_registry import register_universe, select_candidate_universe
+        from core.watcher import watcher_summary
+
+        summary = watcher_summary(days=days_i, limit=limit_i)
+        contract = ((summary.get("shadow_calibration") or {}).get("contract_70") or {})
+        symbols = contract.get("symbols") or []
+        picked = select_candidate_universe(
+            symbols,
+            min_n=min_n_i,
+            min_wilson_low=min_wilson_f,
+        )
+        criteria = {
+            "min_n": min_n_i,
+            "min_wilson_low": round(min_wilson_f, 4),
+            "target": 0.70,
+            "prob_floor": 0.70,
+            "days": days_i,
+            "limit": limit_i,
+        }
+        if not picked:
+            return {
+                "ok": True,
+                "registered": False,
+                "status": "no_qualified_symbols",
+                "criteria": criteria,
+                "candidate_count": 0,
+                "available_symbols": symbols,
+                "note": "No symbol currently has enough own 70+ evidence with Wilson lower bound >= the registration bar; forward proof was not started.",
+            }
+
+        payload = register_universe(picked, min_n=min_n_i, min_wilson_low=min_wilson_f)
+        return {
+            "ok": True,
+            "registered": True,
+            "status": "registered",
+            "criteria": criteria,
+            "candidate_count": len(picked),
+            "symbols": picked,
+            "registry": payload,
+            "note": "Forward proof started. Only future resolved 70+ rows for the frozen universe count.",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        return JSONResponse({"ok": False, "registered": False, "error": str(e)[:200]}, status_code=500)
+
+
 @router.get("/api/shadow-stats")
 def shadow_stats_endpoint(days: int = 30):
     """Per-symbol virtual hit-rate scoreboard (shadow scoring). Read-only.
