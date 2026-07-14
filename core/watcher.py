@@ -114,6 +114,71 @@ def watcher_verdict(*, high_win_rate: Optional[float], high_n: int, brier: Optio
     return {"status": "inverted_or_broken", "headline": f"High-confidence calls are running {high_win_rate*100:.1f}% — worse than chance; do not trust."}
 
 
+def _additional_wins_needed(wins: int, n: int, target: float, *, wilson: bool) -> Optional[int]:
+    """How many consecutive future wins are needed to clear ``target``.
+
+    Pure planning math for the operator: no optimism, no mutation. If ``wilson``
+    is true, the Wilson LOWER bound must clear the target; otherwise the raw
+    win rate must clear it. Consecutive wins is the best-case path, so any
+    future loss increases the true requirement.
+    """
+    if target <= 0:
+        return 0
+    if target >= 1:
+        return None
+    wins_i = int(wins or 0)
+    n_i = int(n or 0)
+    for extra in range(0, 10000):
+        nn = n_i + extra
+        ww = wins_i + extra
+        if nn <= 0:
+            continue
+        if wilson:
+            if wilson_interval(ww, nn)["low"] >= target:
+                return extra
+        elif (ww / nn) >= target:
+            return extra
+    return None
+
+
+def contract_win_test_status(*, wins: int, n: int, target: float = 0.70) -> Dict[str, Any]:
+    """70+ confidence bucket contract status.
+
+    The raw rate answers "is the bucket currently 70%+ observed?" The Wilson
+    lower bound answers the stricter question "is 70% statistically proven?"
+    Both are shown because the operator asked for 70+; Ghost should never hide
+    whether the bar is merely observed or actually proven.
+    """
+    n_i = int(n or 0)
+    w_i = int(wins or 0)
+    wr = (w_i / n_i) if n_i else None
+    ci = wilson_interval(w_i, n_i) if n_i else {"p": 0.0, "low": 0.0, "high": 0.0}
+    target_f = max(0.0, min(1.0, float(target or 0.70)))
+    raw_pass = bool(wr is not None and wr >= target_f)
+    wilson_pass = bool(n_i > 0 and ci["low"] >= target_f)
+    if wilson_pass:
+        status = "passed_wilson"
+    elif raw_pass:
+        status = "raw_70_unproven"
+    else:
+        status = "not_70"
+    return {
+        "threshold": 0.70,
+        "target_win_rate": round(target_f, 4),
+        "n": n_i,
+        "wins": w_i,
+        "win_rate": round(wr, 4) if wr is not None else None,
+        "wilson": ci if n_i else None,
+        "raw_pass": raw_pass,
+        "wilson_pass": wilson_pass,
+        "status": status,
+        "additional_consecutive_wins_needed_raw": _additional_wins_needed(w_i, n_i, target_f, wilson=False),
+        "additional_consecutive_wins_needed_wilson": _additional_wins_needed(w_i, n_i, target_f, wilson=True),
+        "note": ("Consecutive-wins counts are best-case; any future loss raises the requirement. "
+                 "Wilson_pass is the statistically-proven 70+ bar."),
+    }
+
+
 def summarize_shadow_outcomes(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     """Summarize ghost_shadow_outcomes-like rows for Watcher endpoint/tests."""
     resolved = []
@@ -126,6 +191,13 @@ def summarize_shadow_outcomes(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     high = [r for r in resolved if r.get("prob") is not None and float(r.get("prob")) >= 0.55]
     high_wins = sum(1 for r in high if r["win"])
     high_wr = high_wins / len(high) if high else None
+    high70 = [r for r in resolved if r.get("prob") is not None and float(r.get("prob")) >= 0.70]
+    high70_wins = sum(1 for r in high70 if r["win"])
+    try:
+        from core.accuracy_contract import active_contract
+        target_wr = float(active_contract().target_win_rate)
+    except Exception:
+        target_wr = 0.70
     brier = brier_score(resolved, prob_key="prob", outcome_key="win")
     return {
         "resolved_n": len(resolved),
@@ -138,6 +210,7 @@ def summarize_shadow_outcomes(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         },
         "brier": brier,
         "bins": bins,
+        "contract_70": contract_win_test_status(wins=high70_wins, n=len(high70), target=target_wr),
         "verdict": watcher_verdict(high_win_rate=high_wr, high_n=len(high), brier=brier),
     }
 
