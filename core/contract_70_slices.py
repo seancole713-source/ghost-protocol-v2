@@ -55,6 +55,14 @@ def up_prob_bucket(p: Any) -> Optional[str]:
 def _dim_value(row: Dict[str, Any], dim: str) -> Any:
     if dim == "up_prob_bucket":
         return up_prob_bucket(row.get("up_prob"))
+    if dim == "fired":
+        # Ghost's real conviction: did the pick clear EVERY gate (regime,
+        # precision, meta, overconfidence)? A stable label keeps the slice key
+        # human-readable and JSON-safe.
+        fv = row.get("fired")
+        if fv is None:
+            return None
+        return "fired" if bool(fv) else "unfired"
     v = row.get(dim)
     if v is None:
         return None
@@ -127,9 +135,13 @@ DEFAULT_DIMENSION_SETS: Tuple[Tuple[str, ...], ...] = (
     ("symbol",),
     ("regime_label",),
     ("up_prob_bucket",),
+    ("fired",),
     ("symbol", "regime_label"),
     ("regime_label", "up_prob_bucket"),
     ("symbol", "up_prob_bucket"),
+    ("fired", "regime_label"),
+    ("fired", "up_prob_bucket"),
+    ("fired", "symbol"),
 )
 
 
@@ -235,7 +247,7 @@ def load_resolved_contract_rows(*, days: int = 120, limit: int = 20000) -> List[
             cur = conn.cursor()
             cur.execute(
                 """
-                SELECT so.symbol, so.eval_ts, so.up_prob, so.outcome,
+                SELECT so.symbol, so.eval_ts, so.up_prob, so.outcome, so.fired,
                        COALESCE(
                          so.regime_label,
                          (SELECT pe.regime_label FROM ghost_perf_symbol_evals pe
@@ -256,7 +268,8 @@ def load_resolved_contract_rows(*, days: int = 120, limit: int = 20000) -> List[
                     "eval_ts": r[1],
                     "up_prob": r[2],
                     "outcome": r[3],
-                    "regime_label": r[4],
+                    "fired": r[4],
+                    "regime_label": r[5],
                 })
     except Exception:
         return []
@@ -278,7 +291,7 @@ def load_resolved_contract_rows_since(*, since_ts: int, limit: int = 50000) -> L
             cur = conn.cursor()
             cur.execute(
                 """
-                SELECT so.symbol, so.eval_ts, so.up_prob, so.outcome,
+                SELECT so.symbol, so.eval_ts, so.up_prob, so.outcome, so.fired,
                        COALESCE(
                          so.regime_label,
                          (SELECT pe.regime_label FROM ghost_perf_symbol_evals pe
@@ -299,7 +312,8 @@ def load_resolved_contract_rows_since(*, since_ts: int, limit: int = 50000) -> L
                     "eval_ts": r[1],
                     "up_prob": r[2],
                     "outcome": r[3],
-                    "regime_label": r[4],
+                    "fired": r[4],
+                    "regime_label": r[5],
                 })
     except Exception:
         return []

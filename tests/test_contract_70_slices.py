@@ -111,3 +111,44 @@ def test_slices_endpoint_routes(monkeypatch):
     assert body["read_only"] is True
     assert body["seen"]["days"] == 30
     assert body["seen"]["min_n"] == 9
+
+
+def test_fired_dimension_labels_and_separates():
+    # 'fired' is Ghost's real conviction: cleared every gate vs did not.
+    assert cs._dim_value({"fired": True}, "fired") == "fired"
+    assert cs._dim_value({"fired": False}, "fired") == "unfired"
+    assert cs._dim_value({"fired": None}, "fired") is None
+
+    rows = [{"symbol": "X", "fired": True, "outcome": "WIN" if i < 16 else "LOSS"} for i in range(20)]
+    rows += [{"symbol": "X", "fired": False, "outcome": "WIN" if i < 4 else "LOSS"} for i in range(20)]
+    out = cs.summarize_slices(rows, dims=["fired"], target=0.70)
+    by = {tuple(s["key"].values())[0]: s for s in out}
+    assert by["fired"]["wins"] == 16 and by["fired"]["n"] == 20
+    assert by["unfired"]["wins"] == 4 and by["unfired"]["n"] == 20
+    # Strongest-first ordering surfaces the fired population.
+    assert out[0]["key"]["fired"] == "fired"
+
+
+def test_fired_dimension_included_in_default_search():
+    # A strong, large fired population must be discoverable as a qualified slice.
+    rows = [{"symbol": "X", "fired": True, "regime_label": "Trend-up",
+             "up_prob": 0.72, "outcome": "WIN" if i < 46 else "LOSS"} for i in range(52)]
+    rows += [{"symbol": "X", "fired": False, "regime_label": "Choppy",
+              "up_prob": 0.72, "outcome": "LOSS"} for _ in range(30)]
+    res = cs.find_qualified_slices(rows, min_n=8, min_wilson_low=0.70)
+    assert res["status"] == "qualified_slice_found"
+    keys = [q["key"] for q in res["qualified"]]
+    assert any(k.get("fired") == "fired" for k in keys)
+
+
+def test_fired_dimension_missing_value_skips_row():
+    rows = [
+        {"symbol": "A", "fired": None, "outcome": "WIN"},
+        {"symbol": "A", "fired": True, "outcome": "WIN"},
+        {"symbol": "A", "fired": True, "outcome": "LOSS"},
+    ]
+    out = cs.summarize_slices(rows, dims=["fired"], target=0.70)
+    # The None-fired row must not create an slice nor dilute the fired slice.
+    assert len(out) == 1
+    assert out[0]["key"]["fired"] == "fired"
+    assert out[0]["n"] == 2
