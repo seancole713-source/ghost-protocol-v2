@@ -95,6 +95,32 @@ def test_watcher_endpoint_routes(monkeypatch):
     assert r.json()["days"] == 7
 
 
+def test_watcher_summary_reports_forward_proof_absent_when_no_registry(monkeypatch):
+    import core.watcher as w
+
+    class _Cur:
+        def execute(self, sql, params=None):
+            self._last = sql
+        def fetchall(self):
+            return []
+        def fetchone(self):
+            return None
+
+    class _Conn:
+        def cursor(self): return _Cur()
+        def commit(self): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    import core.db as db
+    monkeypatch.setattr(db, "db_conn", lambda: _Conn())
+    monkeypatch.setattr(db, "ensure_ghost_state", lambda c=None: None)
+    out = w.watcher_summary(days=7)
+    fwd = out["shadow_calibration"].get("contract_70_forward")
+    assert fwd is not None
+    assert fwd["status"] == "no_registry"
+
+
 def test_watcher_snapshot_writes_only_notebook_table(monkeypatch):
     import core.watcher as w
     calls = []

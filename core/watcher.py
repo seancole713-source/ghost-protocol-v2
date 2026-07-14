@@ -300,6 +300,27 @@ def watcher_summary(*, days: int = 30, limit: int = 5000) -> Dict[str, Any]:
             skip_rows = []
 
     shadow = summarize_shadow_outcomes(rows)
+    # Forward-only 70+ proof (read-only): if a candidate universe has been
+    # pre-registered, score ONLY outcomes resolved after registration so the
+    # 70+ claim can never be back-fit to the selection window. Absent a
+    # registry, report that no forward proof exists yet — never fake one.
+    try:
+        from core.contract_70_registry import evaluate_forward, load_registry
+        _reg = load_registry()  # opens its own connection; cur is closed here
+        if _reg and _reg.get("symbols"):
+            fwd = evaluate_forward(
+                rows,
+                registered_symbols=_reg.get("symbols") or [],
+                registered_at_ts=int(_reg.get("registered_at_ts") or 0),
+                prob_floor=float(_reg.get("prob_floor") or 0.70),
+                target=float(_reg.get("target") or 0.70),
+            )
+        else:
+            fwd = {"status": "no_registry",
+                   "note": "No pre-registered 70+ universe yet; forward proof not started."}
+        shadow["contract_70_forward"] = fwd
+    except Exception:
+        note_suppressed()
     brains: List[Dict[str, Any]] = []
     try:
         from core.db import db_conn as _db_conn
