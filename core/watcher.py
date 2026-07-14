@@ -224,7 +224,7 @@ def summarize_shadow_outcomes(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     resolved = []
     for r in rows:
         outcome = str(r.get("outcome") or "").upper()
-        if outcome not in ("WIN", "LOSS"):
+        if outcome not in ("WIN", "LOSS", "EXPIRED"):
             continue
         resolved.append({"prob": r.get("up_prob"), "win": outcome == "WIN", "symbol": r.get("symbol")})
     bins = calibration_bins(resolved, prob_key="prob", outcome_key="win")
@@ -269,7 +269,7 @@ def watcher_summary(*, days: int = 30, limit: int = 5000) -> Dict[str, Any]:
                 """
                 SELECT symbol, eval_ts, up_prob, outcome, pnl_pct
                 FROM ghost_shadow_outcomes
-                WHERE eval_ts >= %s AND outcome IN ('WIN','LOSS')
+                WHERE eval_ts >= %s AND outcome IN ('WIN','LOSS','EXPIRED')
                 ORDER BY eval_ts DESC
                 LIMIT %s
                 """,

@@ -95,7 +95,7 @@ def evaluate_forward(
         if ets <= cutoff:
             continue  # forward-only: skip anything from the selection window
         outcome = str(r.get("outcome") or "").upper()
-        if outcome not in ("WIN", "LOSS"):
+        if outcome not in ("WIN", "LOSS", "EXPIRED"):
             continue
         n += 1
         g = used_symbols.setdefault(sym, {"n": 0, "wins": 0})
@@ -144,7 +144,7 @@ def evaluate_forward_slices(
         if ets <= cutoff:
             continue
         outcome = str(r.get("outcome") or "").upper()
-        if outcome not in ("WIN", "LOSS"):
+        if outcome not in ("WIN", "LOSS", "EXPIRED"):
             continue
         matched_spec = None
         for spec in specs:

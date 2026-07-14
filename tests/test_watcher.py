@@ -377,3 +377,18 @@ def test_watcher_summary_scores_registered_slice_forward(monkeypatch):
     assert fwd["registered_slices"] == [{"dims": ["symbol"], "key": {"symbol": "BILL"}}]
     assert fwd["n"] == 3
     assert fwd["wins"] == 2
+
+
+def test_watcher_contract_70_counts_expired_as_non_win():
+    from core.watcher import summarize_shadow_outcomes
+    rows = [
+        {"symbol": "BILL", "up_prob": 0.75, "outcome": "WIN"},
+        {"symbol": "BILL", "up_prob": 0.75, "outcome": "LOSS"},
+        {"symbol": "BILL", "up_prob": 0.75, "outcome": "EXPIRED"},
+    ]
+    out = summarize_shadow_outcomes(rows)
+    c = out["contract_70"]
+    assert c["n"] == 3
+    assert c["wins"] == 1
+    assert c["win_rate"] == round(1 / 3, 4)
+    assert c["symbols"][0]["n"] == 3
