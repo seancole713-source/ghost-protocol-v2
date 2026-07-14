@@ -2,6 +2,7 @@
 from core.watcher import (
     brier_score,
     calibration_bins,
+    contract_70_symbol_breakdown,
     contract_win_test_status,
     summarize_shadow_outcomes,
     watcher_verdict,
@@ -65,6 +66,20 @@ def test_contract_70_status_distinguishes_raw_from_statistically_proven():
     assert proven["raw_pass"] is True
     assert proven["wilson_pass"] is True
     assert proven["status"] == "passed_wilson"
+
+
+def test_contract_70_symbol_breakdown_identifies_drag_and_carriers():
+    rows = [
+        {"symbol": "BAD", "prob": 0.75, "win": False},
+        {"symbol": "BAD", "prob": 0.80, "win": False},
+        {"symbol": "GOOD", "prob": 0.72, "win": True},
+        {"symbol": "GOOD", "prob": 0.91, "win": True},
+        {"symbol": "LOW", "prob": 0.69, "win": False},  # below 70+, ignored
+    ]
+    out = contract_70_symbol_breakdown(rows, target=0.70)
+    assert [r["symbol"] for r in out] == ["BAD", "GOOD"]
+    assert out[0]["win_rate"] == 0.0
+    assert out[1]["win_rate"] == 1.0
 
 
 def test_watcher_endpoint_routes(monkeypatch):
