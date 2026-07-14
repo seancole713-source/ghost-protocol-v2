@@ -133,6 +133,32 @@ DEFAULT_DIMENSION_SETS: Tuple[Tuple[str, ...], ...] = (
 )
 
 
+def row_matches_slice(row: Dict[str, Any], slice_spec: Dict[str, Any]) -> bool:
+    """Return True when ``row`` matches one registered slice definition.
+
+    ``slice_spec`` uses the same shape emitted by :func:`summarize_slices`:
+    ``{"dims": [...], "key": {dim: value}}``. Matching is strict and
+    deterministic; unknown/missing dimensions return False rather than widening
+    the slice accidentally.
+    """
+    dims = slice_spec.get("dims") or []
+    key = slice_spec.get("key") or {}
+    if not isinstance(dims, (list, tuple)) or not isinstance(key, dict):
+        return False
+    if not dims:
+        return False
+    for dim in dims:
+        if dim not in key:
+            return False
+        row_val = _dim_value(row, str(dim))
+        want = key.get(dim)
+        if row_val is None:
+            return False
+        if str(row_val) != str(want):
+            return False
+    return True
+
+
 def find_qualified_slices(
     rows: Sequence[Dict[str, Any]],
     *,
@@ -172,6 +198,7 @@ def find_qualified_slices(
 
     qualified.sort(key=lambda s: (s["wilson_low"], s["n"]), reverse=True)
     return {
+        "ok": True,
         "target": target_f,
         "min_n": min_n_i,
         "min_wilson_low": min_wl,
@@ -222,6 +249,49 @@ def load_resolved_contract_rows(*, days: int = 120, limit: int = 20000) -> List[
                 LIMIT %s
                 """,
                 (cutoff, lim),
+            )
+            for r in cur.fetchall():
+                rows.append({
+                    "symbol": r[0],
+                    "eval_ts": r[1],
+                    "up_prob": r[2],
+                    "outcome": r[3],
+                    "regime_label": r[4],
+                })
+    except Exception:
+        return []
+    return rows
+
+
+def load_resolved_contract_rows_since(*, since_ts: int, limit: int = 50000) -> List[Dict[str, Any]]:
+    """Read resolved contract outcomes strictly after ``since_ts``.
+
+    This is used by the forward-proof evaluator so a registry created today can
+    keep accumulating rows beyond the Watcher's display window.
+    """
+    from core.db import db_conn
+
+    lim = max(1, min(50000, int(limit)))
+    rows: List[Dict[str, Any]] = []
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT so.symbol, so.eval_ts, so.up_prob, so.outcome,
+                       COALESCE(
+                         so.regime_label,
+                         (SELECT pe.regime_label FROM ghost_perf_symbol_evals pe
+                          WHERE pe.symbol = so.symbol AND pe.eval_ts = so.eval_ts
+                            AND pe.regime_label IS NOT NULL
+                          LIMIT 1)
+                       ) AS regime_label
+                FROM ghost_shadow_outcomes so
+                WHERE so.eval_ts > %s AND so.outcome IN ('WIN','LOSS')
+                ORDER BY so.eval_ts ASC
+                LIMIT %s
+                """,
+                (int(since_ts or 0), lim),
             )
             for r in cur.fetchall():
                 rows.append({

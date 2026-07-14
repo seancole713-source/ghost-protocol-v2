@@ -249,6 +249,7 @@ def watcher_contract_70_register_endpoint(
     min_wilson_low: float = 0.70,
     days: int = 30,
     limit: int = 5000,
+    mode: str = "slice",
 ):
     """Pre-register a forward-only 70+ proof universe.
 
@@ -257,7 +258,8 @@ def watcher_contract_70_register_endpoint(
     * admin/cron gated;
     * writes only the frozen universe row in ``ghost_state``;
     * refuses criteria weaker than the 70+ contract defaults;
-    * does not auto-register an empty/cherry-picked universe; and
+    * does not auto-register an empty/cherry-picked universe;
+    * can freeze either a qualified slice (default) or legacy symbol universe; and
     * never changes model gates, picks, broker state, or paper-wallet state.
     """
     from wolf_app import _ADMIN_COOKIE, _admin_token_valid, _cron_ok  # late import — shared state + monkeypatch-safe
@@ -278,8 +280,51 @@ def watcher_contract_70_register_endpoint(
         raise HTTPException(status_code=422, detail="min_wilson_low cannot exceed 1.0")
 
     days_i = max(1, min(365, int(days or 30)))
-    limit_i = max(1, min(20000, int(limit or 5000)))
+    limit_i = max(1, min(50000, int(limit or 5000)))
+    mode_i = str(mode or "slice").strip().lower()
+    if mode_i not in ("slice", "slices", "symbol", "symbols", "universe"):
+        raise HTTPException(status_code=422, detail="mode must be slice or symbol")
     try:
+        criteria = {
+            "min_n": min_n_i,
+            "min_wilson_low": round(min_wilson_f, 4),
+            "target": 0.70,
+            "prob_floor": 0.70,
+            "days": days_i,
+            "limit": limit_i,
+            "mode": "slice" if mode_i in ("slice", "slices") else "symbol",
+        }
+        if mode_i in ("slice", "slices"):
+            from core.contract_70_registry import register_slices
+            from core.contract_70_slices import contract_70_slice_search
+
+            search = contract_70_slice_search(days=days_i, min_n=min_n_i, min_wilson_low=min_wilson_f, limit=limit_i)
+            qualified = search.get("qualified") or []
+            if not qualified:
+                return {
+                    "ok": True,
+                    "registered": False,
+                    "status": "no_qualified_slice",
+                    "criteria": criteria,
+                    "candidate_count": 0,
+                    "best_per_dimension": search.get("best_per_dimension") or [],
+                    "note": "No slice currently has enough resolved evidence with Wilson lower bound >= the registration bar; forward proof was not started.",
+                }
+            # Register the strongest proven slice only. Freezing all overlapping
+            # qualified slices would double-count future rows and blur the proof.
+            picked = [qualified[0]]
+            payload = register_slices(picked, min_n=min_n_i, min_wilson_low=min_wilson_f)
+            return {
+                "ok": True,
+                "registered": True,
+                "status": "registered_slice",
+                "criteria": criteria,
+                "candidate_count": len(picked),
+                "slices": [{"dims": s.get("dims") or [], "key": s.get("key") or {}} for s in picked],
+                "registry": payload,
+                "note": "Forward proof started. Only future resolved rows matching the frozen slice count.",
+            }
+
         from core.contract_70_registry import register_universe, select_candidate_universe
         from core.watcher import watcher_summary
 
@@ -291,14 +336,6 @@ def watcher_contract_70_register_endpoint(
             min_n=min_n_i,
             min_wilson_low=min_wilson_f,
         )
-        criteria = {
-            "min_n": min_n_i,
-            "min_wilson_low": round(min_wilson_f, 4),
-            "target": 0.70,
-            "prob_floor": 0.70,
-            "days": days_i,
-            "limit": limit_i,
-        }
         if not picked:
             return {
                 "ok": True,
@@ -314,7 +351,7 @@ def watcher_contract_70_register_endpoint(
         return {
             "ok": True,
             "registered": True,
-            "status": "registered",
+            "status": "registered_symbols",
             "criteria": criteria,
             "candidate_count": len(picked),
             "symbols": picked,

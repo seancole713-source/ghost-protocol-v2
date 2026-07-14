@@ -210,7 +210,7 @@ def test_contract_70_register_route_no_qualified_symbols_does_not_write(monkeypa
         lambda *a, **k: calls.append((a, k)) or {"registered_at_ts": 1, "symbols": ["SHOULD_NOT_WRITE"]},
     )
 
-    r = TestClient(APP).post("/api/watcher/contract-70/register", headers={"x-cron-secret": "ok"})
+    r = TestClient(APP).post("/api/watcher/contract-70/register?mode=symbol", headers={"x-cron-secret": "ok"})
     assert r.status_code == 200
     body = r.json()
     assert body["registered"] is False
@@ -243,9 +243,137 @@ def test_contract_70_register_route_registers_only_wilson_proven_symbols(monkeyp
 
     monkeypatch.setattr("core.contract_70_registry.register_universe", _fake_register)
 
-    r = TestClient(APP).post("/api/watcher/contract-70/register", headers={"x-cron-secret": "ok"})
+    r = TestClient(APP).post("/api/watcher/contract-70/register?mode=symbol", headers={"x-cron-secret": "ok"})
     assert r.status_code == 200
     body = r.json()
     assert body["registered"] is True
     assert body["symbols"] == ["GOOD"]
     assert calls == [{"symbols": ["GOOD"], "min_n": 8, "min_wilson_low": 0.7}]
+
+
+def test_contract_70_register_route_slice_mode_no_qualified_does_not_write(monkeypatch):
+    from fastapi.testclient import TestClient
+    from wolf_app import APP
+
+    calls = []
+    monkeypatch.setattr("wolf_app._cron_ok", lambda secret, strict=False: secret == "ok" and strict is True)
+    monkeypatch.setattr("wolf_app._admin_token_valid", lambda tok: False)
+    monkeypatch.setattr("core.contract_70_slices.contract_70_slice_search", lambda **kw: {
+        "ok": True,
+        "qualified": [],
+        "best_per_dimension": [{"dims": ["symbol"], "key": {"symbol": "BILL"}, "n": 22, "wins": 18, "wilson_low": 0.6148}],
+    })
+    monkeypatch.setattr(
+        "core.contract_70_registry.register_slices",
+        lambda *a, **k: calls.append((a, k)) or {"mode": "slices"},
+    )
+
+    r = TestClient(APP).post("/api/watcher/contract-70/register", headers={"x-cron-secret": "ok"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["registered"] is False
+    assert body["status"] == "no_qualified_slice"
+    assert body["best_per_dimension"][0]["key"]["symbol"] == "BILL"
+    assert calls == []
+
+
+def test_contract_70_register_route_slice_mode_registers_strongest_slice(monkeypatch):
+    from fastapi.testclient import TestClient
+    from wolf_app import APP
+
+    calls = []
+    strong = {"dims": ["symbol", "regime_label"], "key": {"symbol": "BILL", "regime_label": "Trend-down"},
+              "n": 60, "wins": 52, "wilson_low": 0.75}
+    weaker = {"dims": ["symbol"], "key": {"symbol": "BILL"}, "n": 60, "wins": 51, "wilson_low": 0.73}
+    monkeypatch.setattr("wolf_app._cron_ok", lambda secret, strict=False: secret == "ok" and strict is True)
+    monkeypatch.setattr("wolf_app._admin_token_valid", lambda tok: False)
+    monkeypatch.setattr("core.contract_70_slices.contract_70_slice_search", lambda **kw: {
+        "ok": True,
+        "qualified": [strong, weaker],
+        "best_per_dimension": [strong],
+    })
+
+    def _fake_register(slices, *, min_n, min_wilson_low, **kwargs):
+        calls.append({"slices": list(slices), "min_n": min_n, "min_wilson_low": min_wilson_low})
+        return {"mode": "slices", "slices": [{"dims": strong["dims"], "key": strong["key"]}], "registered_at_ts": 42}
+
+    monkeypatch.setattr("core.contract_70_registry.register_slices", _fake_register)
+
+    r = TestClient(APP).post("/api/watcher/contract-70/register", headers={"x-cron-secret": "ok"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["registered"] is True
+    assert body["status"] == "registered_slice"
+    assert body["slices"] == [{"dims": strong["dims"], "key": strong["key"]}]
+    assert calls == [{"slices": [strong], "min_n": 8, "min_wilson_low": 0.7}]
+
+
+def test_contract_70_register_route_legacy_symbol_mode_still_works(monkeypatch):
+    from fastapi.testclient import TestClient
+    from wolf_app import APP
+
+    calls = []
+    monkeypatch.setattr("wolf_app._cron_ok", lambda secret, strict=False: secret == "ok" and strict is True)
+    monkeypatch.setattr("wolf_app._admin_token_valid", lambda tok: False)
+    monkeypatch.setattr("core.watcher.watcher_summary", lambda days=30, limit=5000: {
+        "ok": True,
+        "shadow_calibration": {"contract_70": {"symbols": [
+            {"symbol": "GOOD", "n": 20, "wins": 18, "wilson_low": 0.72},
+        ]}},
+    })
+    monkeypatch.setattr(
+        "core.contract_70_registry.register_universe",
+        lambda symbols, *, min_n, min_wilson_low: calls.append((list(symbols), min_n, min_wilson_low)) or {"symbols": list(symbols)},
+    )
+
+    r = TestClient(APP).post("/api/watcher/contract-70/register?mode=symbol", headers={"x-cron-secret": "ok"})
+    assert r.status_code == 200
+    assert r.json()["status"] == "registered_symbols"
+    assert calls == [(["GOOD"], 8, 0.7)]
+
+
+def test_watcher_summary_scores_registered_slice_forward(monkeypatch):
+    import core.watcher as w
+    import core.db as db
+    import core.contract_70_registry as reg
+    import core.contract_70_slices as slices
+
+    class _Cur:
+        def execute(self, sql, params=None):
+            self._last = sql
+        def fetchall(self):
+            if "FROM ghost_shadow_outcomes" in self._last:
+                return [
+                    ("BILL", 1000, 0.75, "WIN", 1.2),
+                    ("BILL", 1100, 0.75, "WIN", 1.2),
+                    ("BILL", 1200, 0.75, "LOSS", -1.0),
+                ]
+            return []
+        def fetchone(self): return None
+
+    class _Conn:
+        def cursor(self): return _Cur()
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(db, "db_conn", lambda: _Conn())
+    monkeypatch.setattr(db, "ensure_ghost_state", lambda c=None: None)
+    monkeypatch.setattr(reg, "load_registry", lambda: {
+        "mode": "slices",
+        "registered_at_ts": 1050,
+        "slices": [{"dims": ["symbol"], "key": {"symbol": "BILL"}}],
+        "target": 0.70,
+    })
+    monkeypatch.setattr(slices, "load_resolved_contract_rows_since", lambda since_ts, limit=50000: [
+        {"symbol": "BILL", "eval_ts": 1100, "up_prob": 0.75, "outcome": "WIN", "regime_label": "Trend-down"},
+        {"symbol": "BILL", "eval_ts": 1200, "up_prob": 0.75, "outcome": "LOSS", "regime_label": "Trend-down"},
+        {"symbol": "BILL", "eval_ts": 1300, "up_prob": 0.60, "outcome": "WIN", "regime_label": "Trend-down"},
+        {"symbol": "OTHER", "eval_ts": 1400, "up_prob": 0.75, "outcome": "WIN", "regime_label": "Trend-down"},
+    ])
+
+    out = w.watcher_summary(days=7)
+    fwd = out["shadow_calibration"]["contract_70_forward"]
+    assert fwd["basis"] == "forward_only_registered_slices"
+    assert fwd["registered_slices"] == [{"dims": ["symbol"], "key": {"symbol": "BILL"}}]
+    assert fwd["n"] == 3
+    assert fwd["wins"] == 2
