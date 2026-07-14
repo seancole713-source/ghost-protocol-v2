@@ -242,7 +242,18 @@ def register_slices(
         if set(key.keys()) != set(dims):
             continue
         spec = {"dims": dims, "key": key}
-        sig = json.dumps(spec, sort_keys=True)
+        # Preserve the evidence that justified registration so a future audit can
+        # prove WHY this exact slice was frozen, even after data/code changes.
+        # Only copy scalar/statistical fields; never copy raw rows or secrets.
+        evidence_fields = (
+            "n", "wins", "win_rate", "wilson_low", "wilson_high", "raw_pass", "wilson_pass",
+            "family_wilson_low", "family_size", "family_z", "family_confidence",
+            "multiple_comparisons_correction",
+        )
+        evidence = {k: item.get(k) for k in evidence_fields if k in item}
+        if evidence:
+            spec["selection_evidence"] = evidence
+        sig = json.dumps({"dims": spec["dims"], "key": spec["key"]}, sort_keys=True)
         if sig in seen:
             continue
         seen.add(sig)
