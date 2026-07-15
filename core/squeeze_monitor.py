@@ -65,6 +65,22 @@ REPRICE_ALERT_PCT = float(os.getenv("SQUEEZE_REPRICE_ALERT_PCT", "1.5"))
 _last_alert: Dict[str, float] = {}
 _short_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 _SHORT_CACHE_TTL = 86400
+
+# --- Multi-symbol Alpaca bar batching (squeeze breaker-cascade fix) ---------
+# The per-symbol scan made ~2 Alpaca bar calls per symbol (30d 1Day for avg
+# volume + session 5Min for session volume/VWAP). Across the full watchlist
+# that overran Alpaca's 150-call/60s cap, tripped the *primary* breaker, and
+# cascaded all price/volume traffic onto yfinance (15/min), which then blew
+# too. Alpaca's /v2/stocks/bars endpoint accepts a multi-symbol `symbols=`
+# list, so one paginated request covers the whole universe. _batch_fetch_bars()
+# prewarms this scan-local store before the per-symbol loop; _fetch_volumes()
+# reads from it and falls back to the original per-symbol path on any miss, so
+# behavior is preserved when batching is disabled or a symbol is absent.
+SQUEEZE_BATCH_BARS = os.getenv("SQUEEZE_BATCH_BARS", "1").strip().lower() in (
+    "1", "true", "yes", "on",
+)
+_BATCH_SYMBOLS_PER_REQ = int(os.getenv("SQUEEZE_BATCH_SYMBOLS_PER_REQ", "50"))
+_batch_bars: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
 _last_scan_report: Dict[str, Any] = {
     "ok": False,
     "message": "No scan completed yet",
@@ -458,6 +474,14 @@ async def _run_watchlist_scan() -> None:
     workers = int(os.getenv("SQUEEZE_FETCH_WORKERS", "1"))
     # Inter-symbol delay for sequential fetches
     fetch_delay = float(os.getenv("SQUEEZE_FETCH_DELAY_S", "0.3"))
+    # Prewarm the whole watchlist's bars in a couple of multi-symbol requests so
+    # the per-symbol loop reads from cache instead of hammering Alpaca (which
+    # tripped the shared breaker and cascaded price traffic onto yfinance).
+    try:
+        _batch_fetch_bars(symbols)
+    except Exception as exc:
+        LOGGER.debug("[SqueezeMonitor] batch prewarm failed, per-symbol fallback: %s", exc)
+        _batch_bars.clear()
     with ThreadPoolExecutor(max_workers=workers) as pool:
         tasks = {
             sym: loop.run_in_executor(pool, _sync_fetch_metrics, sym) for sym in symbols
@@ -475,6 +499,8 @@ async def _run_watchlist_scan() -> None:
             # Inter-symbol delay to prevent API rate-limit storms
             if fetch_delay > 0:
                 await asyncio.sleep(fetch_delay)
+    # Scan complete — drop the prewarmed bars so nothing reads them stale.
+    _batch_bars.clear()
 
     short_ctx_map: Dict[str, Dict[str, Any]] = {}
     for symbol in symbols:
@@ -741,9 +767,143 @@ def _vwap_from_bars(bars: List[Dict[str, Any]]) -> Optional[float]:
     return round(num / den, 4) if den > 0 else None
 
 
+def _volumes_from_bars(
+    daily_bars: List[Dict[str, Any]],
+    intraday_bars: List[Dict[str, Any]],
+) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+    """(avg_daily_volume, session_volume, session_vwap) from raw bars.
+
+    Identical arithmetic to the per-symbol path in _fetch_volumes: 20-day
+    average daily volume, summed session volume, and volume-weighted VWAP.
+    """
+    avg_vol = session_vol = vwap = None
+    vols = [float(b.get("v", 0)) for b in (daily_bars or [])[-20:] if b.get("v")]
+    if vols:
+        avg_vol = sum(vols) / len(vols)
+    if intraday_bars:
+        session_vol = sum(float(b.get("v", 0)) for b in intraday_bars if b.get("v"))
+        vwap = _vwap_from_bars(intraday_bars)
+    return avg_vol, session_vol, vwap
+
+
+def _alpaca_multi_bars(
+    symbols: List[str],
+    *,
+    timeframe: str,
+    start: str,
+    end: str,
+    page_limit: int = 10000,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Bars for many symbols in one paginated multi-symbol Alpaca request.
+
+    Returns {SYMBOL: [bars...]}. Empty dict on total failure (caller then falls
+    back to the per-symbol path). Same feed-priority + 429 accounting as the
+    per-symbol fetch.
+    """
+    import requests
+    from core.prices import _alpaca_bar_feeds, _note_alpaca_feed_status
+
+    headers = _alpaca_headers()
+    if not headers or not symbols:
+        return {}
+    syms = ",".join(s.upper() for s in symbols)
+    for feed in _alpaca_bar_feeds():
+        out: Dict[str, List[Dict[str, Any]]] = {}
+        page_token = None
+        ok = False
+        try:
+            while True:
+                url = (
+                    f"https://data.alpaca.markets/v2/stocks/bars"
+                    f"?symbols={syms}&timeframe={timeframe}"
+                    f"&start={start}&end={end}&limit={page_limit}&feed={feed}"
+                )
+                if page_token:
+                    url += f"&page_token={page_token}"
+                r = requests.get(url, headers=headers, timeout=_TIMEOUT)
+                if r.status_code != 200:
+                    _note_alpaca_feed_status(feed, r.status_code)
+                    ok = False
+                    break
+                data = r.json()
+                for sym, bars in (data.get("bars") or {}).items():
+                    out.setdefault(sym.upper(), []).extend(bars or [])
+                ok = True
+                page_token = data.get("next_page_token")
+                if not page_token:
+                    break
+        except Exception as exc:
+            LOGGER.debug("[SqueezeMonitor] multi-bars %s feed=%s: %s", timeframe, feed, exc)
+            ok = False
+        if ok and out:
+            return out
+    return {}
+
+
+def _batch_fetch_bars(symbols: List[str]) -> None:
+    """Prewarm the scan-local bar store for the whole watchlist.
+
+    Populates _batch_bars[SYMBOL] = {"daily": [...], "intraday": [...]} using
+    two paginated multi-symbol Alpaca requests (30d 1Day + session 5Min)
+    instead of ~2 calls per symbol. Best-effort: a symbol missing from the
+    store just triggers the per-symbol fallback in _fetch_volumes.
+    """
+    _batch_bars.clear()
+    if not SQUEEZE_BATCH_BARS or not symbols:
+        return
+    if not _alpaca_headers():
+        return
+    now_utc = datetime.now(timezone.utc)
+    try:
+        from zoneinfo import ZoneInfo
+        ct = ZoneInfo(SESSION_TZ)
+    except Exception:
+        ct = None
+    if ct:
+        day_start = datetime.now(ct).replace(
+            hour=PREMARKET_START_MIN // 60,
+            minute=PREMARKET_START_MIN % 60,
+            second=0, microsecond=0,
+        ).astimezone(timezone.utc)
+    else:
+        day_start = now_utc.replace(hour=9, minute=0, second=0, microsecond=0)
+    daily_start = (now_utc - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    intraday_start = day_start.strftime("%Y-%m-%dT%H:%M:%SZ")
+    end_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    daily: Dict[str, List[Dict[str, Any]]] = {}
+    intraday: Dict[str, List[Dict[str, Any]]] = {}
+    for i in range(0, len(symbols), _BATCH_SYMBOLS_PER_REQ):
+        chunk = symbols[i:i + _BATCH_SYMBOLS_PER_REQ]
+        daily.update(_alpaca_multi_bars(chunk, timeframe="1Day", start=daily_start, end=end_str))
+        intraday.update(_alpaca_multi_bars(chunk, timeframe="5Min", start=intraday_start, end=end_str))
+    for sym in symbols:
+        u = sym.upper()
+        d = daily.get(u)
+        it = intraday.get(u)
+        if d or it:
+            _batch_bars[u] = {"daily": d or [], "intraday": it or []}
+    LOGGER.info(
+        "[SqueezeMonitor] batch bars: %d/%d symbols prewarmed "
+        "(2 multi-symbol reqs/chunk vs ~%d per-symbol calls)",
+        len(_batch_bars), len(symbols), len(symbols) * 2,
+    )
+
+
 def _fetch_volumes(symbol: str) -> Tuple[Optional[float], Optional[float], Optional[float]]:
     """Return (avg_daily_volume, session_volume_so_far, session_vwap)."""
     sym = symbol.upper()
+    # Fast path: bars prewarmed by _batch_fetch_bars for this scan. Falls
+    # through to the per-symbol fetch below on miss or unusable batch data.
+    _cached = _batch_bars.get(sym)
+    if _cached is not None:
+        b_avg, b_sess, b_vwap = _volumes_from_bars(
+            _cached.get("daily", []), _cached.get("intraday", []),
+        )
+        if b_avg and b_avg > 0:
+            if not b_sess or b_sess <= 0:
+                b_sess = b_avg * 0.4
+            return b_avg, b_sess, b_vwap
     headers = _alpaca_headers()
     if headers:
         try:
