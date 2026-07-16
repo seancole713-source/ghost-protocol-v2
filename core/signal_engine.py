@@ -123,6 +123,14 @@ def _min_train_rows() -> int:
     return max(1, int(os.getenv("MIN_TRAIN_ROWS", "20")))
 
 
+def _v3_research_tier_enabled() -> bool:
+    """Store gate-failing models as tier=research so shadow evals keep an
+    up_prob source while the fleet has no proven models to mint (operator-
+    approved 2026-07-16). Research models are hard-blocked from firing in
+    _evaluate_lane and never overwrite a proven serveable model."""
+    return os.getenv("V3_RESEARCH_TIER", "1") == "1"
+
+
 
 
 
@@ -1393,8 +1401,9 @@ def _train_one_direction(rows, symbol, direction, active_cols, peer_rows, peers_
             "min_wf_edge": min_wf_edge,
         },
     }
-    if not passes:
+    if not passes and not _v3_research_tier_enabled():
         return False, detail, None, None
+    tier = "proven" if passes else "research"
     raw_model_bytes = pickle.dumps(final_model)
     model_sha256 = hashlib.sha256(raw_model_bytes).hexdigest()
     model_payload_bytes = len(raw_model_bytes)
@@ -1402,6 +1411,7 @@ def _train_one_direction(rows, symbol, direction, active_cols, peer_rows, peers_
     meta = json.dumps({
         "feature_cols": active_cols, "accuracy": accuracy,
         "natural_rate": natural_rate, "edge": edge,
+        "tier": tier, "gate_fail_reason": fail_reason,
         "trained_at": time.time(), "n_samples": len(rows),
         "engine_version": "v3.2_tp_sl_daily",
         "direction": direction,
@@ -1440,6 +1450,44 @@ def _train_one_direction(rows, symbol, direction, active_cols, peer_rows, peers_
     return True, detail, model_bytes, meta
 
 
+def _research_overwrite_allowed(symbol, direction) -> bool:
+    """A research-tier model may only fill an empty slot or replace a model
+    that is itself research-tier or no longer serveable. It must NEVER clobber
+    a proven, still-serveable model."""
+    try:
+        from core.db import db_conn
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT value FROM ghost_v3_model WHERE key=%s",
+                        (f"meta_{symbol}_{direction.lower()}",))
+            row = cur.fetchone()
+        if not row or not row[0]:
+            return True
+        m = json.loads(row[0])
+        if m.get("tier") == "research":
+            return True
+        return model_serve_guard(m) is not None  # stored model already unserveable
+    except Exception as e:
+        LOGGER.warning("research overwrite check %s/%s failed (refusing store): %s",
+                       symbol, direction, str(e)[:80])
+        return False  # fail closed: never risk clobbering a proven model
+
+
+def _store_direction_model(symbol, direction, model_bytes, meta_json) -> None:
+    from core.db import db_conn
+    d = direction.lower()
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("CREATE TABLE IF NOT EXISTS ghost_v3_model "
+                    "(key TEXT PRIMARY KEY, value TEXT, updated_at BIGINT)")
+        cur.execute("INSERT INTO ghost_v3_model(key,value,updated_at) VALUES(%s,%s,%s) "
+                    "ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at",
+                    (f"model_{symbol}_{d}", model_bytes, int(time.time())))
+        cur.execute("INSERT INTO ghost_v3_model(key,value,updated_at) VALUES(%s,%s,%s) "
+                    "ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at",
+                    (f"meta_{symbol}_{d}", meta_json, int(time.time())))
+
+
 def train_and_validate(symbols_and_types):
     try:
         import pickle, base64
@@ -1447,6 +1495,7 @@ def train_and_validate(symbols_and_types):
     except ImportError as e:
         LOGGER.error("Missing dep: "+str(e)); return None, 0.0, False
     total_passed = 0
+    research_stored = 0
     details: list = []
     # Pooled gate-slice OOS predictions across every trained symbol — feeds the
     # cross-symbol precision operating point (per-symbol slices are too thin).
@@ -1501,19 +1550,15 @@ def train_and_validate(symbols_and_types):
                 up_passed, up_detail, up_model_bytes, up_meta = _train_one_direction(
                     up_rows, symbol, "UP", active_cols,
                     peer_pools.get("UP") or [], peers_used, pool_info)
-                if up_passed and up_model_bytes:
-                    with db_conn() as conn:
-                        cur = conn.cursor()
-                        cur.execute("CREATE TABLE IF NOT EXISTS ghost_v3_model "
-                                    "(key TEXT PRIMARY KEY, value TEXT, updated_at BIGINT)")
-                        cur.execute("INSERT INTO ghost_v3_model(key,value,updated_at) VALUES(%s,%s,%s) "
-                                    "ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at",
-                                    (f"model_{symbol}_up", up_model_bytes, int(time.time())))
-                        cur.execute("INSERT INTO ghost_v3_model(key,value,updated_at) VALUES(%s,%s,%s) "
-                                    "ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at",
-                                    (f"meta_{symbol}_up", up_meta, int(time.time())))
+                if up_model_bytes and (up_passed or _research_overwrite_allowed(symbol, "UP")):
+                    _store_direction_model(symbol, "UP", up_model_bytes, up_meta)
                     invalidate_model_cache(symbol)
-                    total_passed += 1
+                    if up_passed:
+                        total_passed += 1
+                    else:
+                        research_stored += 1
+                        if isinstance(up_detail, dict):
+                            up_detail["research_stored"] = True
             # Train DOWN model
             down_passed = False
             down_detail = {}
@@ -1521,19 +1566,15 @@ def train_and_validate(symbols_and_types):
                 down_passed, down_detail, down_model_bytes, down_meta = _train_one_direction(
                     down_rows, symbol, "DOWN", active_cols,
                     peer_pools.get("DOWN") or [], peers_used, pool_info)
-                if down_passed and down_model_bytes:
-                    with db_conn() as conn:
-                        cur = conn.cursor()
-                        cur.execute("CREATE TABLE IF NOT EXISTS ghost_v3_model "
-                                    "(key TEXT PRIMARY KEY, value TEXT, updated_at BIGINT)")
-                        cur.execute("INSERT INTO ghost_v3_model(key,value,updated_at) VALUES(%s,%s,%s) "
-                                    "ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at",
-                                    (f"model_{symbol}_down", down_model_bytes, int(time.time())))
-                        cur.execute("INSERT INTO ghost_v3_model(key,value,updated_at) VALUES(%s,%s,%s) "
-                                    "ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at",
-                                    (f"meta_{symbol}_down", down_meta, int(time.time())))
+                if down_model_bytes and (down_passed or _research_overwrite_allowed(symbol, "DOWN")):
+                    _store_direction_model(symbol, "DOWN", down_model_bytes, down_meta)
                     invalidate_model_cache(symbol)
-                    total_passed += 1
+                    if down_passed:
+                        total_passed += 1
+                    else:
+                        research_stored += 1
+                        if isinstance(down_detail, dict):
+                            down_detail["research_stored"] = True
             # Pool gate-slice OOS predictions for the global operating point
             # (only from models that passed quality gates and were persisted),
             # then drop the bulky arrays from the persisted detail blob.
@@ -1562,7 +1603,8 @@ def train_and_validate(symbols_and_types):
             details.append(symbol_detail)
         if symbol_delay > 0 and idx + 1 < len(symbols_and_types):
             time.sleep(symbol_delay)
-    LOGGER.info(f"v3.2 training: {total_passed}/{len(symbols_and_types)*2} direction-models passed")
+    LOGGER.info(f"v3.2 training: {total_passed}/{len(symbols_and_types)*2} direction-models passed"
+                + (f" (+{research_stored} research-tier stored for shadow evidence)" if research_stored else ""))
     # Cross-symbol precision operating point: pooled gate-slice OOS predictions
     # give the statistical power per-symbol slices lack. Only meaningful on
     # multi-symbol sweeps; single-symbol retrains keep the existing thresholds.
@@ -1946,6 +1988,11 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
     def _evaluate_lane(direction, prob, meta):
         """Meta + probability gates for one direction lane. Regime gates are
         BUY-only, so only the UP lane can be regime-blocked."""
+        # Research-tier hard block (belt-and-braces): these models exist ONLY
+        # to give shadow evals an up_prob source; they can never emit a real
+        # signal, regardless of what any floor arithmetic below would say.
+        if str(meta.get("tier") or "") == "research":
+            return None, "research_tier"
         if direction == "UP" and regime_block:
             return None, "regime_gate"
         lane_edge = meta.get('edge', 0)
@@ -2169,6 +2216,7 @@ def get_model_status():
                     "precision_ok": bool((m.get("precision_gate") or {}).get("ok", False)),
                     "fire_threshold": (m.get("precision_gate") or {}).get("threshold"),
                     "serveable": reject is None,
+                    "tier": m.get("tier", "proven"),
                 }
                 if reject:
                     summary["serve_reject"] = reject
@@ -2187,6 +2235,8 @@ def get_model_status():
                 block = None
                 if reject is not None:
                     block = f"not_serveable:{reject}"
+                elif m.get("tier") == "research":
+                    block = "research_tier"
                 elif direction == "DOWN" and not _v3_down_signals_enabled():
                     block = "down_lane_disabled"
                 elif edge_f < _v3_min_edge() - 0.001:
@@ -2244,13 +2294,16 @@ def get_model_status():
                 "models_stored": len(stored),
                 "fleet_summary": {
                     "serveable": sum(1 for v in stored.values() if v.get("serveable")),
+                    "serveable_research": sum(1 for v in stored.values()
+                                              if v.get("serveable") and v.get("tier") == "research"),
                     "fireable_now": len(fireable),
                     "fireable_models": fireable,
                     "precision_ok": sum(1 for v in stored.values() if v.get("precision_ok")),
                     "base_rate_riders": len(riders),
                     "proven_skill": sum(1 for v in stored.values() if v.get("proven_skill")),
                     "note": ("fireable_now is the only 'ready' number — serveable means "
-                             "the pickle loads, precision_ok alone can ride base rates"),
+                             "the pickle loads, precision_ok alone can ride base rates; "
+                             "serveable_research models feed shadow evals and can never fire"),
                 },
                 "missing_v3": missing_v3,
                 "symbols": symbols,
