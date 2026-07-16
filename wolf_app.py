@@ -1419,6 +1419,19 @@ async def lifespan(app: FastAPI):
     from core.squeeze_outcomes import run_squeeze_eod_job as _squeeze_eod_job
 
     scheduler.register("squeeze_eod", _squeeze_eod_job, interval_s=3600)
+    # Forward clock on options evidence: one point-in-time chain snapshot per
+    # symbol per trading day (self-gates to the 13:00-15:00 CT window and
+    # once/day inside the job). Historical options data is paywalled — this
+    # accrues the honest history a future options-feature test needs.
+    from core.options_snapshots import run_options_snapshot_job as _options_snap_job
+
+    def _options_snapshots_job():
+        try:
+            _options_snap_job()
+        except Exception as _e:
+            LOGGER.warning("options snapshot job failed: %s", str(_e)[:80])
+
+    scheduler.register("options_snapshots", _options_snapshots_job, interval_s=3600)
     # PR #84: Super Ghost Truth Ledger — resolve logged predictions vs realized
     # price at 1/5/20-day horizons so accuracy + if-followed stats accrue.
     from core.super_ghost_ledger import run_resolver_job as _super_ghost_resolver

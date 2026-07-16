@@ -65,6 +65,49 @@ def ghost_contract_endpoint():
         return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
 
 
+@router.get("/api/ghost/options/snapshots")
+def ghost_options_snapshots_endpoint(symbol: str = "", days: int = 30, limit: int = 500):
+    """Read-only daily point-in-time options snapshot history."""
+    try:
+        from core.options_snapshots import get_snapshots
+
+        return get_snapshots(symbol or None, days=max(1, min(365, int(days))),
+                             limit=max(1, min(5000, int(limit))))
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
+@router.post("/api/ghost/options/snapshot-run")
+def ghost_options_snapshot_run_endpoint(request: Request,
+                                        x_cron_secret: str = Header(default="")):
+    """Manual snapshot trigger (ops/backfill) — admin/cron gated."""
+    from wolf_app import _ADMIN_COOKIE, _admin_token_valid, _cron_ok  # late import — shared state
+    tok = request.cookies.get(_ADMIN_COOKIE, "")
+    if not (_cron_ok(x_cron_secret, strict=True) or _admin_token_valid(tok)):
+        raise HTTPException(status_code=403, detail="admin login or cron secret required")
+    try:
+        from core.options_snapshots import record_snapshots
+
+        return record_snapshots()
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
+@router.get("/api/ghost/contract/70-verdict")
+def ghost_contract_70_verdict_endpoint(days: int = 90):
+    """Pre-registered contract-70 verdict — read-only honesty layer.
+
+    Same precedent as the 80%-claim falsification gate: criteria registered
+    before the outcome; changes the claim, never the firing behavior.
+    """
+    try:
+        from core.contract_70_verdict import contract_70_verdict
+
+        return contract_70_verdict(days=max(7, min(365, int(days))))
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
 @router.get("/api/ghost/doctrine")
 def ghost_doctrine_spec_endpoint():
     """Static Ghost Doctrine specification — 6-step thinking layer (PR #129)."""
