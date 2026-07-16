@@ -126,8 +126,14 @@ def snapshot_symbol(symbol: str) -> Optional[Dict[str, Any]]:
 
 
 def record_snapshots(symbols: Optional[List[str]] = None, *,
-                     delay_s: float = 1.0, max_symbols: int = 150) -> Dict[str, Any]:
-    """Snapshot the watchlist and upsert one row per (symbol, snap_date)."""
+                     delay_s: float = 4.0, max_symbols: int = 150) -> Dict[str, Any]:
+    """Snapshot the watchlist and upsert one row per (symbol, snap_date).
+
+    delay_s default 4.0: the yfinance breaker rate-limits to ~15 calls per
+    minute window — the first live run (2026-07-16) at 1s spacing tripped it
+    after 14 symbols and the remaining 86 were blocked. When the breaker
+    opens mid-run we stop early and report the remainder as skipped_breaker
+    (its 600s cooldown outlasts the rest of the loop anyway)."""
     from core.db import db_conn
     if symbols is None:
         from config.symbols import OFFICIAL_WATCHLIST
@@ -136,10 +142,20 @@ def record_snapshots(symbols: Optional[List[str]] = None, *,
     stored = 0
     empty = 0
     failed = 0
+    skipped_breaker = 0
     with db_conn() as conn:
         cur = conn.cursor()
         cur.execute(TABLE_DDL)
     for i, sym in enumerate(symbols):
+        try:
+            from core.yfinance_client import _gate
+            if not _gate():
+                skipped_breaker = len(symbols) - i
+                LOGGER.warning("options snapshots: yfinance breaker open at "
+                               "symbol %d/%d — stopping early", i + 1, len(symbols))
+                break
+        except Exception:
+            pass
         snap = snapshot_symbol(sym)
         if snap is None:
             failed += 1
@@ -179,7 +195,8 @@ def record_snapshots(symbols: Optional[List[str]] = None, *,
         if delay_s > 0 and i + 1 < len(symbols):
             time.sleep(delay_s)
     out = {"ok": True, "requested": len(symbols), "stored": stored,
-           "empty_chain": empty, "failed": failed, "snap_date": _ct_today()}
+           "empty_chain": empty, "failed": failed,
+           "skipped_breaker": skipped_breaker, "snap_date": _ct_today()}
     LOGGER.info("options snapshots: %s", out)
     return out
 
