@@ -65,6 +65,21 @@ def ghost_contract_endpoint():
         return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
 
 
+@router.get("/api/ghost/contract/70-verdict")
+def ghost_contract_70_verdict_endpoint(days: int = 90):
+    """Pre-registered contract-70 verdict — read-only honesty layer.
+
+    Same precedent as the 80%-claim falsification gate: criteria registered
+    before the outcome; changes the claim, never the firing behavior.
+    """
+    try:
+        from core.contract_70_verdict import contract_70_verdict
+
+        return contract_70_verdict(days=max(7, min(365, int(days))))
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
 @router.get("/api/ghost/doctrine")
 def ghost_doctrine_spec_endpoint():
     """Static Ghost Doctrine specification — 6-step thinking layer (PR #129)."""

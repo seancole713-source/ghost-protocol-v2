@@ -32,5 +32,21 @@ def ghost_contract() -> Dict[str, Any]:
             "reason": "Pre-registered gate: N≥30 resolved picks with WR<70% and 95% CI excludes 80%.",
             "replacement": "Track live win rate, expectancy, and Brier on the pick journal — no fixed accuracy marketing.",
         },
+        "contract_70": {
+            "claim": "70%+ Wilson-proven win rate on the up_prob≥0.70 bucket",
+            "status": "UNPROVEN_AT_CURRENT_DATA",
+            "preregistered_at": "2026-07-16",
+            "basis": (
+                "Three offline feature/geometry levers measured null on the "
+                "out-of-time harness; live ranking flat across confidence "
+                "buckets; 0 family-corrected qualifying slices."
+            ),
+            "verdict_endpoint": "/api/ghost/contract/70-verdict",
+            "note": (
+                "Pre-registered falsification and revival criteria live in "
+                "core/contract_70_verdict.py. Gates stay strict regardless — "
+                "this block changes the claim, never the firing behavior."
+            ),
+        },
         "operator_note": "Silence on v3 lane is expected when regime/objective gates bind. Squeeze lane is independent.",
     }
