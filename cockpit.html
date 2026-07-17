@@ -766,6 +766,7 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
       <span class="sep">·</span> Direction edge <b id="mvr-rib-de">&#8212;</b>
       <span class="sep">·</span> Scanning <b>43</b>
     </div>
+    <div id="mvr-contract-banner" style="margin-bottom:18px"></div>
     <div id="mvr-tiers"><div class="mvr-empty">Loading squeeze radar&#8230;</div></div>
     <div class="mvr-seclabel">Your Open Picks</div>
     <div class="mvr-card" id="mvr-picks"><div class="mvr-empty">Loading&#8230;</div></div>
@@ -4028,8 +4029,8 @@ function _renderPjVerdict(m, v){
 }
 
 async function loadGhostContract(){
-  var el = document.getElementById('ghost-contract-banner');
-  if(!el) return;
+  var targets = ['mvr-contract-banner', 'ghost-contract-banner'].map(function(id){return document.getElementById(id)}).filter(Boolean);
+  if(!targets.length) return;
   var data = await fetch('/api/ghost/contract').then(function(r){return r.json()}).catch(function(){return null});
   if(!data || data.ok !== true) return;
   var lanes = data.lanes || {};
@@ -4037,12 +4038,13 @@ async function loadGhostContract(){
   var sq = lanes.squeeze_radar || {};
   var c70 = data.contract_70 || {};
   var c70Unproven = c70.status === 'UNPROVEN_AT_CURRENT_DATA';
-  el.innerHTML = '<div style="border:1px solid rgba(139,92,246,.35);background:rgba(139,92,246,.06);padding:10px 14px;border-radius:6px">'
+  var html = '<div style="border:1px solid rgba(139,92,246,.35);background:rgba(139,92,246,.06);padding:10px 14px;border-radius:6px">'
     + '<div style="font-weight:700;color:#c4b5fd;font-size:12px;letter-spacing:.04em">' + (data.headline || 'Ghost product contract') + '</div>'
     + '<div class="truth-note" style="margin-top:6px"><b>' + (v3.label||'v3') + ':</b> ' + (v3.philosophy||'') + ' &nbsp;|&nbsp; <b>' + (sq.label||'squeeze') + ':</b> ' + (sq.philosophy||'') + '</div>'
     + (c70.status ? '<div class="truth-note" style="margin-top:6px;color:' + (c70Unproven?'#f5a623':'#1ec77d') + '"><b>Contract 70: ' + (c70Unproven?'unproven at current data':_mvrEsc(c70.status)) + '.</b> Evidence claim only, not a promise. Strict firing gates are unchanged; zero fireable picks remains correct while proof or kill conditions block release.</div>' : '')
     + (data.north_star_retired ? '<div class="truth-note" style="margin-top:4px;color:#8b96a8">Legacy 80% claim retired — journal tracks live outcomes only.</div>' : '')
     + '</div>';
+  targets.forEach(function(el){el.innerHTML = html});
 }
 
 async function loadDoctrine(){

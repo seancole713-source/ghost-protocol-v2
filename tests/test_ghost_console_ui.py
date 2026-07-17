@@ -113,6 +113,10 @@ def test_console_and_cockpit_surface_contract_70_as_unproven_evidence():
     assert 'id="contract70Banner"' in console
     assert "function loadContract70" in console
     assert "/api/ghost/contract" in console
+    assert 'id="mvr-contract-banner"' in cockpit
+    assert "['mvr-contract-banner', 'ghost-contract-banner']" in cockpit
+    movers = cockpit[cockpit.index('<section id="movers-board"'):cockpit.index('<!-- ═══════════ END CLEAN MOVERS BOARD')]
+    assert 'id="mvr-contract-banner"' in movers
     for text in (console, cockpit):
         assert "UNPROVEN_AT_CURRENT_DATA" in text
         assert "unproven at current data" in text
