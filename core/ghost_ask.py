@@ -99,12 +99,12 @@ def build_ask_context(include_portfolio: bool = False) -> Dict[str, Any]:
 
     try:
         from core.db import db_conn
-        from core.prediction_filters import V32_ERA_MIN_ID as _V32_MIN
+        from core.prediction_filters import V32_ERA_MIN_ID as _V32_MIN, RESOLVED_FOR_WINRATE_WHERE
         with db_conn() as conn:
             cur = conn.cursor()
             cur.execute(
                 "SELECT outcome FROM predictions WHERE symbol='WOLF' AND id >= %s "
-                "AND outcome IN ('WIN','LOSS') ORDER BY resolved_at DESC NULLS LAST, id DESC",
+                "AND " + RESOLVED_FOR_WINRATE_WHERE + " ORDER BY resolved_at DESC NULLS LAST, id DESC",
                 (_V32_MIN,),
             )
             outs = [r[0] for r in cur.fetchall()]
@@ -131,7 +131,7 @@ def build_ask_context(include_portfolio: bool = False) -> Dict[str, Any]:
                 }
             cur.execute(
                 "SELECT id, direction, confidence, outcome, pnl_pct, resolved_at FROM predictions "
-                "WHERE symbol='WOLF' AND id >= %s AND outcome IN ('WIN','LOSS') "
+                "WHERE symbol='WOLF' AND id >= %s AND " + RESOLVED_FOR_WINRATE_WHERE + " "
                 "ORDER BY resolved_at DESC NULLS LAST LIMIT 5",
                 (_V32_MIN,),
             )

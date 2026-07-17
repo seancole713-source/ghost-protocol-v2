@@ -28,6 +28,21 @@ NON_RESEARCH_WHERE = (
     "(scores->>'research_pick' IS NULL OR scores->>'research_pick' != 'true')"
 )
 
+# Win-rate denominators (2026-07-17, sibling of the contract-70 EXPIRED fix):
+# 'EXPIRED' on predictions has two populations sharing one label —
+#   (a) GENUINE full-term expiries written by the reconciler
+#       (resolve_open_prediction → EXPIRED, pnl_pct computed at market), and
+#   (b) ADMINISTRATIVE voids (db.py duplicate cleaner, portfolio purge) which
+#       never set pnl_pct.
+# A pick that ran its full hold window without hitting the target is NOT a
+# win; excluding it from the denominator inflates every gate-facing win rate.
+# pnl_pct IS NOT NULL is the discriminator (the reconciler always computes it;
+# admin writers never do). Voids stay excluded — they were never real trades.
+RESOLVED_FOR_WINRATE_WHERE = (
+    "(outcome IN ('WIN','LOSS') "
+    "OR (outcome='EXPIRED' AND pnl_pct IS NOT NULL))"
+)
+
 
 def non_research_where(alias: str = "") -> str:
     """NON_RESEARCH_WHERE with an optional table alias (e.g. "p") for joined

@@ -121,7 +121,9 @@ def live_bin_stats(lo: float, hi: float) -> Tuple[int, int]:
             SELECT COUNT(*) AS samples,
                    SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) AS wins
             FROM ghost_shadow_outcomes
-            WHERE outcome IN ('WIN','LOSS') AND up_prob >= %s AND up_prob < %s
+            -- EXPIRED = ran the hold window without hitting TP/SL: a non-win.
+            -- Same correction as contract-70 (2026-07-14); this site was missed.
+            WHERE outcome IN ('WIN','LOSS','EXPIRED') AND up_prob >= %s AND up_prob < %s
             """,
             (lo, hi),
         )
