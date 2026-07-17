@@ -230,8 +230,33 @@ def get_snapshots(symbol: Optional[str] = None, *, days: int = 30,
     return {"ok": True, "days": int(days), "count": len(rows), "rows": rows}
 
 
+_CLAIM_STALE_S = 1800  # a "running" claim older than this is a crashed run
+
+
+def _write_claim(status: str, stored: int = 0) -> None:
+    import json as _json
+    from core.db import db_conn
+    val = _json.dumps({"date": _ct_today(), "status": status,
+                       "stored": int(stored), "ts": int(time.time())})
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO ghost_state(key,val) VALUES(%s,%s) "
+            "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
+            (STATE_KEY_LAST_DATE, val),
+        )
+
+
 def run_options_snapshot_job() -> Dict[str, Any]:
-    """Scheduler entry — self-gating: CT weekday, snapshot window, once/day."""
+    """Scheduler entry — self-gating: CT weekday, snapshot window, once/day.
+
+    A day is only marked done when the run STORED something. A run that
+    stored 0 (breaker open, provider outage) leaves the day re-claimable on
+    the next tick inside the window — the 2026-07-16 manual run stored 0/100
+    behind an open breaker, and a claim-on-start design would have silently
+    lost the whole day. A 'running' claim guards against double-runs and
+    goes stale after 30 minutes (crashed run)."""
+    import json as _json
     now = _ct_now()
     if now.weekday() >= 5:
         return {"ok": True, "skipped": "weekend"}
@@ -245,15 +270,27 @@ def run_options_snapshot_job() -> Dict[str, Any]:
             cur.execute("SELECT val FROM ghost_state WHERE key=%s",
                         (STATE_KEY_LAST_DATE,))
             row = cur.fetchone()
-            if row and row[0] == today:
+        claim = None
+        if row and row[0]:
+            try:
+                claim = _json.loads(row[0])
+            except Exception:
+                # Legacy plain-date value (pre status-claim): treat as done.
+                if row[0] == today:
+                    return {"ok": True, "skipped": "already_ran_today"}
+        if isinstance(claim, dict) and claim.get("date") == today:
+            if claim.get("status") == "done" and int(claim.get("stored") or 0) > 0:
                 return {"ok": True, "skipped": "already_ran_today"}
-            # Claim the day BEFORE the multi-minute fetch loop so an
-            # overlapping scheduler tick cannot double-run.
-            cur.execute(
-                "INSERT INTO ghost_state(key,val) VALUES(%s,%s) "
-                "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
-                (STATE_KEY_LAST_DATE, today),
-            )
+            if (claim.get("status") == "running"
+                    and int(time.time()) - int(claim.get("ts") or 0) < _CLAIM_STALE_S):
+                return {"ok": True, "skipped": "run_in_progress"}
+            # else: failed (stored=0) or stale running claim — retry the day.
+        _write_claim("running")
     except Exception as exc:
         return {"ok": False, "error": "state check failed: " + str(exc)[:120]}
-    return record_snapshots()
+    out = record_snapshots()
+    try:
+        _write_claim("done", stored=int(out.get("stored") or 0))
+    except Exception:
+        LOGGER.warning("options snapshots: done-claim write failed")
+    return out

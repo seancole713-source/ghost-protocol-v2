@@ -14,7 +14,7 @@ from core.quiet import note_suppressed
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Tuple
 from core.db import db_conn, ensure_ghost_state
-from core.prediction_filters import NON_RESEARCH_WHERE, V32_ERA_MIN_ID
+from core.prediction_filters import NON_RESEARCH_WHERE, RESOLVED_FOR_WINRATE_WHERE, V32_ERA_MIN_ID
 from core.vol_targets import base_vol_pct, stop_pct_from_vol
 try:
     from core.prices import get_price
@@ -727,7 +727,7 @@ def _objective_symbol_stats(symbol: str, direction: str) -> Dict[str, Any]:
             FROM predictions
             WHERE symbol=%s
               AND direction = ANY(%s)
-              AND outcome IN ('WIN','LOSS')
+              AND """ + RESOLVED_FOR_WINRATE_WHERE + """
               AND COALESCE(resolved_at, predicted_at, run_at, 0) >= %s
               AND """ + NON_RESEARCH_WHERE + """
             """,
@@ -816,7 +816,7 @@ def _objective_recent_v2_stats(window_days: int) -> Dict[str, Any]:
             SELECT COUNT(*), COALESCE(SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END), 0)
             FROM predictions
             WHERE direction IN ('UP','BUY')
-              AND outcome IN ('WIN','LOSS')
+              AND """ + RESOLVED_FOR_WINRATE_WHERE + """
               AND COALESCE(resolved_at, predicted_at, run_at, 0) >= %s
               AND """ + NON_RESEARCH_WHERE + """
             """,
@@ -977,7 +977,7 @@ def _legacy_signal(symbol, current_price):
         with db_conn() as _ac:
             _c = _ac.cursor()
             _c.execute(
-                "SELECT COUNT(*), SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) FROM predictions WHERE symbol=%s AND outcome IN ('WIN','LOSS') AND direction='UP' AND id >= " + str(V32_ERA_MIN_ID),
+                "SELECT COUNT(*), SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) FROM predictions WHERE symbol=%s AND " + RESOLVED_FOR_WINRATE_WHERE + " AND direction='UP' AND id >= " + str(V32_ERA_MIN_ID),
                 (symbol,))
             _r = _c.fetchone()
             if _r and _r[0] and _r[0] >= 20:
@@ -997,7 +997,7 @@ def _legacy_signal(symbol, current_price):
             cur = conn.cursor()
             # v2 resolved picks
             cur.execute(
-                "SELECT direction, CASE WHEN outcome='WIN' THEN 1 ELSE 0 END FROM predictions WHERE symbol=%s AND outcome IN ('WIN','LOSS') ORDER BY id DESC LIMIT 50",
+                "SELECT direction, CASE WHEN outcome='WIN' THEN 1 ELSE 0 END FROM predictions WHERE symbol=%s AND " + RESOLVED_FOR_WINRATE_WHERE + " ORDER BY id DESC LIMIT 50",
                 (symbol,))
             v2_rows = cur.fetchall()
             # Legacy ghost_prediction_outcomes
@@ -1735,7 +1735,7 @@ def get_objective_status() -> Dict[str, Any]:
             SELECT COUNT(*), COALESCE(SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END), 0)
             FROM predictions
             WHERE direction IN ('UP','BUY')
-              AND outcome IN ('WIN','LOSS')
+              AND """ + RESOLVED_FOR_WINRATE_WHERE + """
               AND COALESCE(resolved_at, predicted_at, run_at, 0) >= %s
             """,
             (cutoff,),
@@ -1761,7 +1761,7 @@ def get_objective_status() -> Dict[str, Any]:
                    COALESCE(SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END),0)::INT AS wins
             FROM predictions
             WHERE direction IN ('UP','BUY')
-              AND outcome IN ('WIN','LOSS')
+              AND """ + RESOLVED_FOR_WINRATE_WHERE + """
               AND COALESCE(resolved_at, predicted_at, run_at, 0) >= %s
             GROUP BY symbol
             HAVING COUNT(*) >= %s
@@ -1858,7 +1858,7 @@ def get_objective_daily_report(days: int = 14) -> Dict[str, Any]:
               COALESCE(SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END), 0)::INT AS wins
             FROM predictions
             WHERE direction IN ('UP','BUY')
-              AND outcome IN ('WIN','LOSS')
+              AND """ + RESOLVED_FOR_WINRATE_WHERE + """
               AND COALESCE(resolved_at, predicted_at, run_at, 0) >= %s
             GROUP BY 1
             ORDER BY 1 ASC
