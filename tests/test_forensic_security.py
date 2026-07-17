@@ -15,7 +15,6 @@ Findings verified against main@ace0998 by the security/route-auth audit:
   P0    stats-era watermark 223438 hardcoded in 6 places.
 """
 import inspect
-import os
 
 
 # ── P2-1: the PII gate is a real parameter, not a swallowed exception ────

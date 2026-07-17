@@ -868,7 +868,7 @@ def run_health_audit(
     pass_count = total_checks - fail_count
     coverage_pct = min(100.0, round((total_checks / float(BASELINE_MONITORING_DIMENSIONS)) * 100.0, 1))
     unresolved = fail_count
-    resolved = autofix_resolved
+    resolved_count = autofix_resolved
     status = "PASS" if fail_count == 0 else "FAIL"
     elapsed_ms = _safe_perf(started)
 
@@ -879,11 +879,11 @@ def run_health_audit(
             "pass_count": pass_count,
             "fail_count": fail_count,
             "autofix_attempted": autofix_attempted,
-            "autofix_resolved": resolved,
+            "autofix_resolved": resolved_count,
             "elapsed_ms": elapsed_ms,
         },
         "coverage_pct": coverage_pct,
-        "resolved_count": resolved,
+        "resolved_count": resolved_count,
         "unresolved_count": unresolved,
         "findings": findings,
         "timestamp": int(time.time()),

@@ -1,7 +1,6 @@
 """tests/test_ghost_doctrine.py — Ghost Doctrine 6-step thinking layer (PR #129)."""
 from __future__ import annotations
 
-import json
 import os
 import pytest
 
@@ -140,7 +139,6 @@ class TestBuildDoctrine:
 
     def test_read_only_tripwire(self):
         """Module source contains no INSERT/UPDATE/DELETE/log_prediction."""
-        import os
         path = os.path.join(os.path.dirname(__file__), "..", "core", "ghost_doctrine.py")
         with open(path) as f:
             src = f.read()
@@ -169,7 +167,6 @@ class TestDoctrineRoutes:
 
 class TestDoctrineUITripwires:
     def test_console_has_doctrine_section(self):
-        import os
         path = os.path.join(os.path.dirname(__file__), "..", "ghost_console.html")
         with open(path) as f:
             src = f.read()
@@ -185,7 +182,6 @@ class TestDoctrineUITripwires:
         assert "mypick-doctrine-" in src
 
     def test_cockpit_has_doctrine_section(self):
-        import os
         path = os.path.join(os.path.dirname(__file__), "..", "cockpit.html")
         with open(path) as f:
             src = f.read()

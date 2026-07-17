@@ -29,8 +29,10 @@ class TestPreregistration:
     def test_preregistration_needs_no_db(self, monkeypatch):
         """Static record must never touch the database."""
         import core.db as db
-        def boom(*a, **k):
+
+        def boom(*args, **kwargs):
             raise AssertionError("preregistration touched the DB")
+
         monkeypatch.setattr(db, "db_conn", boom)
         assert v.preregistration()["verdict_version"] == "1.0"
 
@@ -48,13 +50,13 @@ def _rows(wins: int, losses: int, prob: float = 0.75):
 
 class TestVerdict:
     def _patch(self, monkeypatch, rows, forward=None):
-        monkeypatch.setattr(v, "_load_resolved_rows", lambda d, l: rows)
+        monkeypatch.setattr(v, "_load_resolved_rows", lambda _days, _limit: rows)
         monkeypatch.setattr(
             v, "_forward_proof_status",
             lambda r: forward or {"registered": False, "revival_met": False})
 
     def test_insufficient_evidence_when_db_unreadable(self, monkeypatch):
-        monkeypatch.setattr(v, "_load_resolved_rows", lambda d, l: None)
+        monkeypatch.setattr(v, "_load_resolved_rows", lambda _days, _limit: None)
         out = v.contract_70_verdict()
         assert out["ok"] is True
         assert out["status"] == "INSUFFICIENT_EVIDENCE"
@@ -148,7 +150,7 @@ class TestRoute:
         assert "/api/ghost/contract/70-verdict" in paths
 
     def test_verdict_route_returns_ok(self, monkeypatch):
-        monkeypatch.setattr(v, "_load_resolved_rows", lambda d, l: None)
+        monkeypatch.setattr(v, "_load_resolved_rows", lambda _days, _limit: None)
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
         from api.routes_ghost_system import router

@@ -8,7 +8,6 @@ No proof, no fire.
 import time
 
 import numpy as np
-import pytest
 
 import core.signal_engine as _se
 from core.precision_gate import (

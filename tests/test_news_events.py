@@ -2,7 +2,6 @@
 import time
 
 import core.news_events as ne
-import core.super_ghost_shadow as sgs
 from core.news_defense import decide_defense
 from core.news_events import article_dedupe_key, classify_text, event_dedupe_key
 from core.super_ghost_shadow import SHADOW_MODELS, news_event_shadow, run_shadow_models

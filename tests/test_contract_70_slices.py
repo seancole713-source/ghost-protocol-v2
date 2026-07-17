@@ -235,14 +235,10 @@ def test_family_correction_rejects_borderline_slice_that_passes_naive():
     for s in range(40):
         for i in range(9):
             rows.append({"symbol": f"S{s}", "up_prob": 0.6, "outcome": "WIN" if i < 5 else "LOSS"})
-    # Naive single-test view of just the BORD slice:
-    naive = cs.summarize_slices(rows, dims=["symbol"])[0] if False else None
     res = cs.find_qualified_slices(rows, dimension_sets=[("symbol",)], min_n=8, min_wilson_low=0.70)
     assert res["family_size"] >= 40
     assert res["multiple_comparisons_correction"] == "sidak"
     # Whatever the naive bound, the family-corrected search must reject it here.
-    bord = [s for s in cs.summarize_slices(rows, dims=["symbol"]) if s["key"]["symbol"] == "BORD"][0]
-    # family_wilson_low is stricter than the naive wilson_low
     res2 = cs.find_qualified_slices(rows, dimension_sets=[("symbol",)], min_n=8, min_wilson_low=0.70)
     assert res2["qualified_count"] == 0
 

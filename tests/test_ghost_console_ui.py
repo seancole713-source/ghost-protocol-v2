@@ -12,6 +12,7 @@ import wolf_app
 
 ROOT = Path(__file__).resolve().parent.parent
 HTML = ROOT / "ghost_console.html"
+COCKPIT_HTML = ROOT / "cockpit.html"
 
 
 def _html() -> str:
@@ -104,6 +105,20 @@ def test_console_surfaces_post_falsification_state_outside_health_tab():
     assert "Post-falsification mode: old 80% claim abandoned." in text
     assert "Truth gate active" in text
     assert "stays NO EDGE until coverage, risk, and truth-ledger gates" in text
+
+
+def test_console_and_cockpit_surface_contract_70_as_unproven_evidence():
+    console = _html()
+    cockpit = COCKPIT_HTML.read_text(encoding="utf-8")
+    assert 'id="contract70Banner"' in console
+    assert "function loadContract70" in console
+    assert "/api/ghost/contract" in console
+    for text in (console, cockpit):
+        assert "UNPROVEN_AT_CURRENT_DATA" in text
+        assert "unproven at current data" in text
+        assert "Evidence claim" in text or "evidence claim" in text
+        assert "firing gates" in text
+        assert "zero fireable picks" in text
 
 
 def test_console_fetches_required_existing_and_new_apis():

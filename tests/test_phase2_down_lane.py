@@ -13,7 +13,6 @@ Covers the five defects found in the Phase 2 review:
 import time
 
 import numpy as np
-import pytest
 
 import core.signal_engine as _se
 

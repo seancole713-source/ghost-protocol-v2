@@ -1,7 +1,5 @@
 """GHOST_ACCURACY_CONTRACT — unified 70%+ accuracy knobs."""
-import os
 
-import pytest
 
 
 def test_contract_70_clamps_weak_env_overrides(monkeypatch):

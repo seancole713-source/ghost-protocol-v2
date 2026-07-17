@@ -43,7 +43,8 @@ def test_momentum_v2_holds_on_overextended_run(monkeypatch):
 
 def test_momentum_v2_registered_without_mutating_v1(monkeypatch):
     monkeypatch.setattr(mom, "compute_momentum_v2", lambda s, **k: {"available": False, "version": "v2", "reason": "test"})
-    import core.seasonality as seas, core.news_events as ne
+    import core.seasonality as seas
+    import core.news_events as ne
     monkeypatch.setattr(seas, "seasonal_window_stats", lambda s, **k: {"available": False, "reason": "t"})
     monkeypatch.setattr(ne, "news_available", lambda **k: False)
     ids = [m.model_id for m in SHADOW_MODELS]
