@@ -1770,7 +1770,7 @@ async def _value_error_handler(request: Request, exc: ValueError):
 import collections as _collections
 
 _RL_LOCK = threading.Lock()
-_RL_HITS = _collections.defaultdict(_collections.deque)  # ip -> deque[ts]
+_RL_HITS = _collections.defaultdict(_collections.deque)  # bucket -> deque[ts]
 _RL_EXEMPT_PREFIXES = ("/api/admin", "/api/cron", "/api/v3/train")
 _RL_EXEMPT_PATHS = ("/api/health",)
 
@@ -1778,10 +1778,42 @@ _RL_EXEMPT_PATHS = ("/api/health",)
 def _rate_limit_cfg():
     enabled = os.getenv("RATE_LIMIT_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
     try:
-        rpm = max(1, int(os.getenv("RATE_LIMIT_RPM", "300")))
+        # Legacy catch-all budget (kept for backward compatibility).
+        rpm_default = max(1, int(os.getenv("RATE_LIMIT_RPM", "300")))
     except Exception:
-        rpm = 120
-    return enabled, rpm
+        rpm_default = 120
+    try:
+        # Read-heavy cockpit/dashboard traffic can legitimately burst.
+        rpm_get = max(1, int(os.getenv("RATE_LIMIT_RPM_GET", "1200")))
+    except Exception:
+        rpm_get = max(rpm_default, 600)
+    try:
+        # Keep writes tighter than GET to reduce abuse blast radius.
+        rpm_write = max(1, int(os.getenv("RATE_LIMIT_RPM_WRITE", str(rpm_default))))
+    except Exception:
+        rpm_write = rpm_default
+    return enabled, rpm_default, rpm_get, rpm_write
+
+
+def _rate_limit_budget(request: Request, rpm_default: int, rpm_get: int, rpm_write: int) -> int:
+    method = (request.method or "").upper()
+    path = request.url.path or ""
+    if method == "GET":
+        # Hot-path read endpoints polled by cockpit and E2E probes.
+        if path.startswith("/api/") and (
+            path.startswith("/api/cockpit")
+            or path.startswith("/api/stats")
+            or path.startswith("/api/v2/recent")
+            or path.startswith("/api/news")
+            or path.startswith("/api/price/")
+            or path.startswith("/api/objective")
+            or path.startswith("/api/wolf/")
+        ):
+            return max(rpm_get, rpm_default)
+        return rpm_default
+    if method in ("POST", "PUT", "PATCH", "DELETE"):
+        return min(rpm_write, rpm_default)
+    return rpm_default
 
 
 def _client_ip(request: Request) -> str:
@@ -1798,18 +1830,22 @@ def _client_ip(request: Request) -> str:
 
 @APP.middleware("http")
 async def _rate_limit_mw(request: Request, call_next):
-    enabled, rpm = _rate_limit_cfg()
+    enabled, rpm_default, rpm_get, rpm_write = _rate_limit_cfg()
     path = request.url.path
     if (enabled and request.method != "OPTIONS" and path.startswith("/api/")
             and not path.startswith(_RL_EXEMPT_PREFIXES) and path not in _RL_EXEMPT_PATHS):
         ip = _client_ip(request)
+        budget = _rate_limit_budget(request, rpm_default, rpm_get, rpm_write)
+        # Separate counters by class so read bursts don't starve writes.
+        method_class = "read" if request.method.upper() == "GET" else "write"
+        bucket = f"{ip}:{method_class}"
         now = time.time()
         with _RL_LOCK:
-            dq = _RL_HITS[ip]
+            dq = _RL_HITS[bucket]
             cutoff = now - 60
             while dq and dq[0] < cutoff:
                 dq.popleft()
-            if len(dq) >= rpm:
+            if len(dq) >= budget:
                 retry = int(60 - (now - dq[0])) + 1
                 return JSONResponse(
                     {"ok": False, "error": "rate_limited", "retry_after_s": retry},
