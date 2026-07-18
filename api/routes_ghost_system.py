@@ -77,6 +77,29 @@ def ghost_options_snapshots_endpoint(symbol: str = "", days: int = 30, limit: in
         return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
 
 
+@router.get("/api/ghost/options/readiness")
+def ghost_options_readiness_endpoint(days: int = 60):
+    """Accrual health for the options forward-clock — catches silent failure."""
+    try:
+        from core.options_edge import options_pcr_readiness
+
+        return options_pcr_readiness(days=max(1, min(365, int(days))))
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
+@router.get("/api/ghost/options/edge-test")
+def ghost_options_edge_test_endpoint(days: int = 60):
+    """PCR-edge verdict (read-only): does put/call ratio separate winners?
+    Provisional until sufficient_data=true. Changes no gate."""
+    try:
+        from core.options_edge import options_pcr_edge
+
+        return options_pcr_edge(days=max(1, min(365, int(days))))
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
 @router.post("/api/ghost/options/snapshot-run")
 def ghost_options_snapshot_run_endpoint(request: Request,
                                         x_cron_secret: str = Header(default="")):
