@@ -135,4 +135,45 @@ test.describe("Mission Control audit fixes", () => {
       expect(realErrs, `JS errors in ${pageFile}: ${realErrs.join(" | ")}`).toEqual([]);
     });
   }
+
+  // Regression guard: the inline-style extraction moved #port-form's hide from
+  // style="display:none" to class="hidden-flex", but toggleAddPos() read the
+  // inline style — so the first click HID the already-hidden form and #p-sym
+  // never became fillable (the cockpit.flows CI smoke timed out here).
+  test("cockpit: add-position toggle reveals the fillable form", async ({ page }) => {
+    await page.route("**/*", async (route) => {
+      const u = new URL(route.request().url());
+      if (/\.(js|css|html|ico|png|svg)$/.test(u.pathname)) return route.continue();
+      if (u.pathname.startsWith("/api/") || u.pathname.startsWith("/admin/")) {
+        return route.fulfill({ json: { ok: true } });
+      }
+      return route.continue();
+    });
+    await page.goto("/cockpit.html", { waitUntil: "domcontentloaded" });
+    // Drive the handler directly — the static-served page's layout leaves the
+    // deep-in-page button non-actionable for Playwright's hit-test, but the fix
+    // is in toggleAddPos()'s LOGIC, which we verify deterministically. (The real
+    // cockpit.flows smoke against production exercises the click path.)
+    // Assert on the class + own computed display (the actual fix). Pixel
+    // visibility of #p-sym additionally depends on the portfolio-section
+    // ancestor having live data, which the static harness lacks — the real
+    // cockpit.flows smoke against production covers the full click→fill path.
+    const result = await page.evaluate(() => {
+      const f = document.getElementById("port-form")!;
+      const snap = () => ({ hidden: f.classList.contains("hidden-flex"), disp: getComputedStyle(f).display });
+      const before = snap();
+      (window as any).toggleAddPos();
+      const afterOpen = snap();
+      (window as any).toggleAddPos();
+      const afterClose = snap();
+      return { before, afterOpen, afterClose };
+    });
+    // Starts hidden.
+    expect(result.before).toEqual({ hidden: true, disp: "none" });
+    // One toggle → shown (the bug left it hidden here).
+    expect(result.afterOpen.hidden).toBe(false);
+    expect(result.afterOpen.disp).not.toBe("none");
+    // Second toggle → hidden again.
+    expect(result.afterClose).toEqual({ hidden: true, disp: "none" });
+  });
 });
