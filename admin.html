@@ -1256,7 +1256,11 @@ async function adminLogout(){
 
 /* ─── Mission Control board (PR #115) ─── */
 function mcTile(label, value, cls, sub){
-  return '<div class="mc-tile ' + (cls||'') + '"><div class="mc-label">' + label + '</div><div class="mc-value">' + value + '</div>' + (sub ? '<div class="mc-sub">' + sub + '</div>' : '') + '</div>';
+  // Escape here (single source of truth) so no tile can inject via backend
+  // text. Callers must pass RAW strings, not pre-escaped — escHtml is not
+  // idempotent, so double-escaping would render literal &amp;.
+  var e = (typeof escHtml === 'function') ? escHtml : function(x){return x;};
+  return '<div class="mc-tile ' + (cls||'') + '"><div class="mc-label">' + e(label) + '</div><div class="mc-value">' + e(String(value)) + '</div>' + (sub ? '<div class="mc-sub">' + e(String(sub)) + '</div>' : '') + '</div>';
 }
 
 async function loadMissionControl(){
@@ -1282,26 +1286,46 @@ async function loadMissionControl(){
     var hCls = score == null ? '' : (score >= 80 ? 'mc-ok' : score >= 50 ? 'mc-warn' : 'mc-bad');
     var hIssues = (health.issues||[]).length, hWarns = (health.warnings||[]).length;
     tiles.push(mcTile('System health', score != null ? score + '/100' : '—', hCls,
-      escHtml(health.status||'') + (hIssues ? ' · ' + hIssues + ' issue(s)' : '') + (hWarns ? ' · ' + hWarns + ' warning(s)' : '')));
+      (health.status||'') + (hIssues ? ' · ' + hIssues + ' issue(s)' : '') + (hWarns ? ' · ' + hWarns + ' warning(s)' : '')));
 
-    /* v3 engine */
+    /* v3 engine — headline the number that decides trading: fireable_now.
+       Total stored models is misleading now that research-tier models (proven
+       false, kept only to feed shadow evals) inflate the count; green must mean
+       "can fire", not "is trained". */
+    var fleet = v3.fleet_summary || {};
+    var fireable = fleet.fireable_now;
+    var serveable = fleet.serveable;
+    var research = fleet.serveable_research;
     var models = v3.models != null ? v3.models : Object.keys(v3.symbols||{}).length;
-    tiles.push(mcTile('v3 engine', v3.trained ? models + ' model' + (models===1?'':'s') : 'not trained',
-      v3.trained ? 'mc-ok' : 'mc-warn',
-      v3.mean_acc != null ? 'mean acc ' + (v3.mean_acc*100).toFixed(1) + '%' : ''));
+    var v3Head, v3Cls, v3Sub;
+    if(!v3.trained){
+      v3Head = 'not trained'; v3Cls = 'mc-warn'; v3Sub = '';
+    } else if(fireable != null){
+      v3Head = fireable + ' fireable';
+      v3Cls = fireable > 0 ? 'mc-ok' : 'mc-warn';
+      v3Sub = (serveable != null ? serveable + ' serveable' : models + ' models')
+        + (research ? ' · ' + research + ' research' : '')
+        + (v3.mean_acc != null ? ' · acc ' + (v3.mean_acc*100).toFixed(1) + '%' : '');
+    } else {
+      /* Older payloads without fleet_summary: fall back to the model count but
+         never colour it green — trained != ready to fire. */
+      v3Head = models + ' model' + (models===1?'':'s'); v3Cls = 'mc-warn';
+      v3Sub = v3.mean_acc != null ? 'mean acc ' + (v3.mean_acc*100).toFixed(1) + '%' : '';
+    }
+    tiles.push(mcTile('v3 engine', v3Head, v3Cls, v3Sub));
 
     /* Kill / pause */
     var ep = kill.engine_pause || {};
     var killCls = ep.paused ? 'mc-bad' : (kill.any_triggered ? 'mc-warn' : 'mc-ok');
     tiles.push(mcTile('Kill switch', ep.paused ? 'PAUSED' : (kill.any_triggered ? 'TRIPPED' : 'clear'), killCls,
-      ep.paused ? escHtml((ep.reason||'').slice(0,60)) : ((kill.resolved_available!=null?kill.resolved_available:'—') + ' resolved picks')));
+      ep.paused ? (ep.reason||'').slice(0,60) : ((kill.resolved_available!=null?kill.resolved_available:'—') + ' resolved picks')));
 
     /* Research mode */
     var rCls = research.research_active ? 'mc-warn' : 'mc-ok';
     tiles.push(mcTile('Research mode', research.research_active ? 'ACTIVE' : 'off', research.ok===false ? '' : rCls,
       research.ok===false ? 'unavailable' :
       (research.research_active
-        ? escHtml(research.research_reason||'') + ' · ' + (research.remaining!=null?research.remaining:'—') + ' to exit'
+        ? (research.research_reason||'') + ' · ' + (research.remaining!=null?research.remaining:'—') + ' to exit'
         : (research.resolved_picks!=null?research.resolved_picks:'—') + ' resolved · graduated')));
 
     /* Breakers */
@@ -1309,12 +1333,12 @@ async function loadMissionControl(){
     var bOpen = bNames.filter(function(n){return (brk.breakers[n].state||'closed') !== 'closed';});
     tiles.push(mcTile('Breakers', bNames.length ? (bNames.length - bOpen.length) + '/' + bNames.length + ' closed' : '—',
       bOpen.length === 0 ? 'mc-ok' : (bOpen.length <= 1 ? 'mc-warn' : 'mc-bad'),
-      bOpen.length ? 'open: ' + bOpen.map(escHtml).join(', ') : 'all nominal'));
+      bOpen.length ? 'open: ' + bOpen.join(', ') : 'all nominal'));
 
     /* Degraded mode */
     var isDeg = !!deg.degraded;
     tiles.push(mcTile('Degraded mode', isDeg ? 'DEGRADED' : 'nominal', isDeg ? 'mc-warn' : 'mc-ok',
-      isDeg ? escHtml((deg.reasons||[]).join(', ').slice(0,70)) : ''));
+      isDeg ? (deg.reasons||[]).join(', ').slice(0,70) : ''));
 
     /* Squeeze radar */
     tiles.push(mcTile('Squeeze radar', sq.radar_active ? 'LIVE' : 'paused', sq.radar_active ? 'mc-ok' : '',
@@ -1332,7 +1356,7 @@ async function loadMissionControl(){
     var upd = document.getElementById('mc-updated');
     if(upd) upd.textContent = 'Updated ' + new Date().toLocaleTimeString() + ' · auto-refreshes every 60s';
   }catch(e){
-    board.innerHTML = mcTile('Mission Control', 'error', 'mc-bad', escHtml(String(e)));
+    board.innerHTML = mcTile('Mission Control', 'error', 'mc-bad', String(e));
   }
 }
 
@@ -1516,7 +1540,16 @@ setTimeout(function(){ loadFeatureDrift(); loadOptionsFlow(); }, 200);
 setTimeout(function(){ loadGateHistory(); loadKillStatus(); loadPnl(); }, 400);
 setTimeout(function(){ loadSuperGhost(); loadResearchStatus(); }, 600);
 setTimeout(function(){ loadLineage(); loadAuditLog(); }, 800);
-function _mcTick(fn, ms){ setInterval(function(){ if(!document.hidden) fn(); }, ms); }
+function _mcTick(fn, ms){
+  // Skip a tick if the previous run is still in flight (an 8-endpoint batch on
+  // a slow link can exceed the interval) and while the tab is hidden.
+  var busy = false;
+  setInterval(function(){
+    if(document.hidden || busy) return;
+    busy = true;
+    Promise.resolve(fn()).finally(function(){ busy = false; });
+  }, ms);
+}
 _mcTick(loadMissionControl, 60000);
 _mcTick(loadPnl, 120000);
 _mcTick(loadGateHistory, 120000);

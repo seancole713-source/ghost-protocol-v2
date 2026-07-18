@@ -21,10 +21,15 @@ function fmtUsd(v){if(v==null||v===''||isNaN(Number(v))||Number(v)<=0)return '�
 
 /* ─── Safe JSON fetch ─── */
 function _fetchJson(url, fallback){
-  return fetch(url).then(function(r){
+  // Bound the wait: a hung endpoint must not stall a Promise.all dashboard
+  // batch until the browser's multi-minute default. Abort at 8s -> fallback.
+  var ctl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+  var timer = ctl ? setTimeout(function(){ ctl.abort(); }, 8000) : null;
+  return fetch(url, ctl ? {signal: ctl.signal} : undefined).then(function(r){
     if(!r.ok) return fallback || {ok:false, error:'HTTP '+r.status};
     return r.json();
-  }).catch(function(){ return fallback || {ok:false, error:'network error'}; });
+  }).catch(function(){ return fallback || {ok:false, error:'network error'}; })
+    .finally(function(){ if(timer) clearTimeout(timer); });
 }
 
 /* ─── Deploy meta ─── */

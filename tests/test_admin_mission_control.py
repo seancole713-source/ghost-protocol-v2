@@ -78,3 +78,42 @@ def test_admin_polling_pauses_when_tab_hidden():
 def test_admin_watchlist_count_is_100():
     from config.symbols import OFFICIAL_WATCHLIST
     assert len(OFFICIAL_WATCHLIST) == 100
+
+
+# ── Mission Control honesty + robustness fixes (forensic audit 2026-07-18) ──
+
+def test_v3_tile_headlines_fireable_not_total_models():
+    """MC-1: the v3 tile must headline fireable_now, not the stored-model count.
+    After the research tier, total models is inflated by unfireable research
+    models; green must mean 'can fire', not merely 'is trained'."""
+    assert "fleet_summary" in ADMIN
+    assert "fireable_now" in ADMIN
+    assert "fireable" in ADMIN and "serveable_research" in ADMIN
+    # Green class must be gated on fireable > 0, never on v3.trained alone.
+    assert "fireable > 0 ? 'mc-ok' : 'mc-warn'" in ADMIN
+    # The old always-green-when-trained headline is gone.
+    assert "v3.trained ? models + ' model'" not in ADMIN
+
+
+def test_mctile_escapes_internally_and_callers_pass_raw():
+    """MC-3: escaping is centralized in mcTile; callers must NOT double-escape."""
+    # mcTile escapes value + sub itself.
+    assert "e(String(value))" in ADMIN and "e(String(sub))" in ADMIN
+    # The previously double-escaping caller sites now pass raw strings.
+    assert "escHtml(health.status" not in ADMIN
+    assert "bOpen.map(escHtml)" not in ADMIN
+    assert "'mc-bad', escHtml(String(e))" not in ADMIN
+
+
+def test_mctick_has_inflight_overlap_guard():
+    """MC-4: the 60s refresh must skip a tick while the prior run is in flight."""
+    assert "busy" in ADMIN
+    assert "Promise.resolve(fn())" in ADMIN
+
+
+def test_fetchjson_has_abort_timeout():
+    """MC-2: _fetchJson must bound the wait so a hung endpoint can't stall a
+    Promise.all dashboard batch."""
+    GHOST_JS = (ROOT / "static" / "ghost.js").read_text(encoding="utf-8")
+    assert "AbortController" in GHOST_JS
+    assert "setTimeout" in GHOST_JS and "abort()" in GHOST_JS
