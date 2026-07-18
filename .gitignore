@@ -21,3 +21,6 @@ test-results/
 
 # OS
 .DS_Store
+
+# Editor / IDE local config
+.vscode/

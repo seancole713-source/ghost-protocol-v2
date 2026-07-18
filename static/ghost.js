@@ -21,10 +21,15 @@ function fmtUsd(v){if(v==null||v===''||isNaN(Number(v))||Number(v)<=0)return '�
 
 /* ─── Safe JSON fetch ─── */
 function _fetchJson(url, fallback){
-  return fetch(url).then(function(r){
+  // Bound the wait: a hung endpoint must not stall a Promise.all dashboard
+  // batch until the browser's multi-minute default. Abort at 8s -> fallback.
+  var ctl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+  var timer = ctl ? setTimeout(function(){ ctl.abort(); }, 8000) : null;
+  return fetch(url, ctl ? {signal: ctl.signal} : undefined).then(function(r){
     if(!r.ok) return fallback || {ok:false, error:'HTTP '+r.status};
     return r.json();
-  }).catch(function(){ return fallback || {ok:false, error:'network error'}; });
+  }).catch(function(){ return fallback || {ok:false, error:'network error'}; })
+    .finally(function(){ if(timer) clearTimeout(timer); });
 }
 
 /* ─── Deploy meta ─── */
@@ -87,9 +92,9 @@ function gateBadge(pass){
 /* ─── Outcome badge ─── */
 function _outcomeBadge(o){
   var map = {WIN:['#1ec77d','WIN'], LOSS:['#ff4d4f','LOSS'], EXPIRED:['#8b96a8','EXP'], WITHDRAWN:['#ffb84d','WDR']};
-  if(!o) return '<span style="color:#f5a623;font-weight:600">OPEN</span>';
+  if(!o) return '<span class="outcome-open">OPEN</span>';
   var x = map[o] || ['#8b96a8', o];
-  return '<span style="color:' + x[0] + ';font-weight:700">' + x[1] + '</span>';
+  return '<span class="outcome-resolved" data-style-color="' + x[0] + '">' + x[1] + '</span>';
 }
 
 /* ─── P&L percent ─── */

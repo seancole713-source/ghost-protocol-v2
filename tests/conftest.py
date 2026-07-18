@@ -36,6 +36,22 @@ def _clear_module_caches():
             wa._LOGIN_ATTEMPTS.clear()
         except Exception:
             pass
+    # Circuit-breaker singletons are module-global; a test that trips one
+    # (record_failure) leaks OPEN state into any later test that reads the
+    # breaker without patching it — e.g. options_snapshots.record_snapshots now
+    # consults _yfinance_cb.allow() and stops early when it is open. Reset all
+    # breakers to CLOSED before each test so order can never change outcomes.
+    cb = sys.modules.get("core.circuit_breaker")
+    if cb is not None:
+        try:
+            for _name in dir(cb):
+                _obj = getattr(cb, _name)
+                # Instances only — the CircuitBreaker CLASS also has .reset and
+                # the field, but calling it unbound would throw and abort the loop.
+                if isinstance(_obj, cb.CircuitBreaker):
+                    _obj.reset()
+        except Exception:
+            pass
     yield
 
 

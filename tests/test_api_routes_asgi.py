@@ -157,6 +157,24 @@ def test_rate_limit_disabled_passes_through(monkeypatch):
     assert all(c != 429 for c in codes)
 
 
+def test_rate_limit_get_write_budgets_are_separate(monkeypatch):
+    """Boosted GET budgets on hot read paths must not weaken write throttles."""
+    monkeypatch.setenv("RATE_LIMIT_ENABLED", "1")
+    monkeypatch.setenv("RATE_LIMIT_RPM", "2")
+    monkeypatch.setenv("RATE_LIMIT_RPM_GET", "5")
+    monkeypatch.setenv("RATE_LIMIT_RPM_WRITE", "2")
+    wolf_app._RL_HITS.clear()
+    with _client_with_test_mode(monkeypatch) as client:
+        read_codes = [client.get("/api/cockpit/live").status_code for _ in range(3)]
+        # /api/portfolio is auth-gated; we only care that write-throttle still trips.
+        write_codes = [
+            client.post("/api/portfolio", json={"symbol": "WOLF", "qty": 1, "buy_price": 1.0}).status_code
+            for _ in range(3)
+        ]
+    assert all(c != 429 for c in read_codes)
+    assert write_codes[-1] == 429
+
+
 def test_version_and_seo_routes(monkeypatch):
     """audit v2 #1/#2/#3: /version, /robots.txt, /sitemap.xml exist (were 404)."""
     with _client_with_test_mode(monkeypatch) as client:

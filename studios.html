@@ -65,6 +65,20 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
 @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
 @media(max-width:768px){.studio-grid{grid-template-columns:1fr}}
 </style>
+<style>
+.fs11{font-size:11px}
+.fs12{font-size:12px}
+.fs14{font-size:14px}
+.mt32{margin-top:32px}
+.mb12{margin-bottom:12px}
+.overflow-x{overflow-x:auto}
+.h200{height:200px}
+.muted{color:var(--muted)}
+.recon-title{font-weight:700;letter-spacing:1px;color:var(--muted);margin-bottom:12px}
+.fs11-muted-mb8{font-size:11px;color:var(--muted);margin-bottom:8px}
+.fs11-muted-mt8{font-size:11px;color:var(--muted);margin-top:8px}
+.fs12-muted{font-size:12px;color:var(--muted)}
+</style>
 </head>
 <body>
 <div class="main">
@@ -73,15 +87,15 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
     <div class="header-right">
       <span id="recon-badge" class="recon-badge">⟳</span>
       <span class="month-badge" id="month-badge"></span>
-      <span id="updated-at" style="font-size:11px;color:var(--muted)"></span>
+      <span id="updated-at" class="fs11 muted"></span>
     </div>
   </div>
 
   <div class="studio-grid" id="studio-grid"></div>
 
-  <section style="margin-top:32px">
-    <h3 style="font-size:14px;font-weight:700;letter-spacing:1px;color:var(--muted);margin-bottom:12px">RECONCILIATION</h3>
-    <div style="overflow-x:auto">
+  <section class="mt32">
+    <h3 class="fs14 recon-title">RECONCILIATION</h3>
+    <div class="overflow-x">
       <table class="recon-table" id="recon-table"></table>
     </div>
   </section>
@@ -94,10 +108,22 @@ const SOURCE_COLORS = {'peerspace':'#ec4899','giggster':'#f59e0b','direct':'#4ad
 function fmt$(n){return n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}
 function fmtPct(n){return n.toFixed(1)+'%'}
 function fmtChange(n){return n>=0?'↑ '+Math.abs(n)+'%':'↓ '+Math.abs(n)+'%'}
+function _applyDataStyles(el){
+  if(!el) return;
+  el.querySelectorAll('[data-style-background]').forEach(function(e){
+    e.style.background = e.getAttribute('data-style-background');
+  });
+  el.querySelectorAll('[data-style-width]').forEach(function(e){
+    e.style.width = e.getAttribute('data-style-width');
+  });
+  el.querySelectorAll('[data-style-color]').forEach(function(e){
+    e.style.color = e.getAttribute('data-style-color');
+  });
+}
 
 function renderSkeleton(){
   document.getElementById('studio-grid').innerHTML = [1,2,3].map(()=>`
-    <div class="studio-card"><div class="skeleton" style="height:200px"></div></div>
+    <div class="studio-card"><div class="skeleton h200"></div></div>
   `).join('');
 }
 
@@ -122,20 +148,20 @@ function renderStudios(data){
 
     const sourcesHtml = Object.entries(s.sources).map(([k,v])=>{
       const color = SOURCE_COLORS[k]||SOURCE_COLORS.other;
-      return `<span><span class="source-dot" style="background:${color}"></span>${v}% ${k}</span>`;
+      return `<span><span class="source-dot" data-style-background="${color}"></span>${v}% ${k}</span>`;
     }).join(' ');
 
     const sourceBarHtml = Object.entries(s.sources).map(([k,v])=>{
       const color = SOURCE_COLORS[k]||SOURCE_COLORS.other;
-      return `<div class="source-seg" style="width:${v}%;background:${color}"></div>`;
+      return `<div class="source-seg" data-style-width="${v}%" data-style-background="${color}"></div>`;
     }).join('');
 
     const bookingsHtml = s.bookings.slice(0,8).map(b=>`
       <div class="booking-row">
         <span>${b.date} · ${b.source}</span>
-        <span>${b.hours}hr · $${fmt$(b.gross)} · <span style="color:${b.status==='collected'?'var(--green)':'var(--muted)'}">${b.status}</span></span>
+        <span>${b.hours}hr · $${fmt$(b.gross)} · <span data-style-color="${b.status==='collected'?'var(--green)':'var(--muted)'}">${b.status}</span></span>
       </div>
-    `).join('') || '<div style="color:var(--muted);font-size:12px">No bookings yet</div>';
+    `).join('') || '<div class="fs12-muted">No bookings yet</div>';
 
     return `
     <div class="studio-card ${cls}">
@@ -177,7 +203,7 @@ function renderStudios(data){
         </div>
       </div>
 
-      <div style="font-size:11px;color:var(--muted);margin-bottom:8px">
+      <div class="fs11-muted-mb8">
         Full-month: ${fm.bookings} · $${fmt$(fm.gross)} gross · $${fmt$(fm.net)} net · ${fm.hours} HR · +$${fmt$(fm.pending_gross)} pending
       </div>
 
@@ -191,7 +217,7 @@ function renderStudios(data){
       <div class="tab-content active" id="overview-${s.name.replace(/ /g,'')}">
         <div class="source-bar">${sourceBarHtml}</div>
         <div class="source-legend">${sourcesHtml}</div>
-        <div style="margin-top:8px;font-size:11px;color:var(--muted)">
+        <div class="fs11-muted-mt8">
           Status: ${Object.entries(s.statuses).map(([k,v])=>v+' '+k).join(' · ')}
         </div>
       </div>
@@ -220,6 +246,7 @@ function renderStudios(data){
       </div>
     </div>`;
   }).join('');
+  _applyDataStyles(grid);
 
   // Reconciliation table
   document.getElementById('recon-table').innerHTML = `

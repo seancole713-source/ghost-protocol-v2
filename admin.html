@@ -27,13 +27,45 @@ body{background:radial-gradient(1100px 520px at 50% -8%,#1a0f14 0%,#0a0a0a 58%) 
 .mc-tile.mc-warn .mc-value{color:#fbbf24}
 .mc-tile.mc-bad .mc-value{color:#ff4d4f}
 .mc-updated{font-size:11px;color:#888;margin-bottom:18px}
+.flex-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.flex-row-between{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+.mt8{margin-top:8px}
+.mt10{margin-top:10px}
+.link-accent{color:#fbbf24}
+.link-purple{font-size:12px;color:#8b5cf6;margin-left:8px}
+.no-wrap{white-space:nowrap}
+.admin-textarea{width:100%;margin-top:10px;background:#0a0a0a;border:1px solid #2a2a2a;color:#ccc;border-radius:8px;padding:10px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px}
+.admin-select{background:#0a0a0a;border:1px solid #2a2a2a;color:#ccc;border-radius:8px;padding:8px 10px}
+.mt3{margin-top:3px}
+.mt4{margin-top:4px}
+.mt6{margin-top:6px}
+.mt8{margin-top:8px}
+.mt10{margin-top:10px}
+.mt12{margin-top:12px}
+.mb2{margin-bottom:2px}
+.mb4{margin-bottom:4px}
+.mb6{margin-bottom:6px}
+.mb8{margin-bottom:8px}
+.ml14{margin-left:14px}
+.fs10{font-size:10px}
+.fs11{font-size:11px}
+.fs12{font-size:12px}
+.fs20{font-size:20px}
+.lh17{line-height:1.7}
+.text-white{color:#fff}
+.text-gray-64748b{color:#64748b}
+.text-gray-8b96a8{color:#8b96a8}
+.text-gray-888{color:#888}
+.text-gray-999{color:#999}
+.text-orange{color:#f59e0b}
+.alert-panel{border-left:4px solid #ff4d4f;background:rgba(255,77,79,.08);padding:8px 12px;border-radius:6px;margin-bottom:8px}
 </style>
 </head>
 <body>
 
 <div class="topbar">
   <div class="logo">&#128123; GHOST <span>ADMIN</span></div>
-  <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+  <div class="flex-row">
     <span id="deploy-badge" class="deploy-badge" title="Running deploy">deploy …</span>
     <span id="badge-admin" class="badge-admin">PR … OPERATOR CONSOLE</span>
   </div>
@@ -41,12 +73,12 @@ body{background:radial-gradient(1100px 520px at 50% -8%,#1a0f14 0%,#0a0a0a 58%) 
 
 <div class="main">
 
-<div class="note" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+<div class="note flex-row-between">
   <span><b>Operator-only view.</b> Cookie-authenticated (signed in with <code>CRON_SECRET</code>).
-  Investor cockpit at <a href="/cockpit" style="color:#fbbf24">/cockpit</a> &mdash; no admin
+  Investor cockpit at <a href="/cockpit" class="link-accent">/cockpit</a> &mdash; no admin
   controls there. Mutating actions below still require the cron secret in the
   <code>x-cron-secret</code> field.</span>
-  <button class="secondary" id="btn-signout" style="white-space:nowrap" onclick="adminLogout()">Sign out</button>
+  <button class="secondary no-wrap" id="btn-signout" onclick="adminLogout()">Sign out</button>
 </div>
 
 <!-- ─── Mission Control board (PR #115) ─── -->
@@ -68,7 +100,7 @@ body{background:radial-gradient(1100px 520px at 50% -8%,#1a0f14 0%,#0a0a0a 58%) 
     <button class="secondary" onclick="checkVersion()">Check Version</button>
   </div>
   <div id="train-result" class="result"></div>
-  <div id="data-sources-result" style="margin-top:8px"></div>
+  <div id="data-sources-result" class="mt8"></div>
 </div>
 
 <!-- ─── News import ─── -->
@@ -81,7 +113,7 @@ body{background:radial-gradient(1100px 520px at 50% -8%,#1a0f14 0%,#0a0a0a 58%) 
     <button class="secondary" onclick="showNewsFormat()">Show Format</button>
     <button onclick="importNewsJson()">Import News</button>
   </div>
-  <textarea id="news-json" rows="8" style="width:100%;margin-top:10px;background:#0a0a0a;border:1px solid #2a2a2a;color:#ccc;border-radius:8px;padding:10px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px" placeholder='{"version":1,"articles":[{"symbol":"ABCL","title":"..."}]}'></textarea>
+  <textarea id="news-json" class="admin-textarea" rows="8" placeholder='{"version":1,"articles":[{"symbol":"ABCL","title":"..."}]}'></textarea>
   <div id="news-import-result" class="result"></div>
 </div>
 
@@ -106,9 +138,9 @@ body{background:radial-gradient(1100px 520px at 50% -8%,#1a0f14 0%,#0a0a0a 58%) 
   <div class="row">
     <button class="secondary" onclick="loadSqueezeStatus()">Refresh</button>
     <button class="secondary" onclick="forceSqueezeScan()">Force scan now</button>
-    <a href="/cockpit#squeeze-picks-section" style="font-size:12px;color:#8b5cf6;margin-left:8px">Open cockpit panel &rarr;</a>
+    <a href="/cockpit#squeeze-picks-section" class="link-purple">Open cockpit panel &rarr;</a>
   </div>
-  <div id="squeeze-status" style="margin-top:10px"><div class="kv">Loading&#8230;</div></div>
+  <div id="squeeze-status" class="mt10"><div class="kv">Loading&#8230;</div></div>
 </div>
 <div class="card">
   <h3>Squeeze daily log</h3>
@@ -116,9 +148,9 @@ body{background:radial-gradient(1100px 520px at 50% -8%,#1a0f14 0%,#0a0a0a 58%) 
   <div class="row">
     <button class="secondary" onclick="loadSqueezeDailyLog()">Refresh log</button>
     <button class="secondary" onclick="forceSqueezeResolve()">Resolve pending now</button>
-    <a href="/cockpit#squeeze-daily-log-section" style="font-size:12px;color:#8b5cf6;margin-left:8px">Open cockpit log &rarr;</a>
+    <a href="/cockpit#squeeze-daily-log-section" class="link-purple">Open cockpit log &rarr;</a>
   </div>
-  <div id="squeeze-daily-log" style="margin-top:10px"><div class="kv">Loading&#8230;</div></div>
+  <div id="squeeze-daily-log" class="mt10"><div class="kv">Loading&#8230;</div></div>
 </div>
 
 <!-- ─── Phase 1+2 blueprint modules ─── -->
@@ -129,19 +161,19 @@ body{background:radial-gradient(1100px 520px at 50% -8%,#1a0f14 0%,#0a0a0a 58%) 
   <div class="row">
     <button class="secondary" onclick="loadBlueprintStatus()">Refresh</button>
   </div>
-  <div id="blueprint-status" style="margin-top:10px"><div class="kv">Loading&#8230;</div></div>
+  <div id="blueprint-status" class="mt10"><div class="kv">Loading&#8230;</div></div>
 </div>
 <div class="card">
   <h3>Feature drift (WOLF)</h3>
   <div class="desc">Z-shift alerts when recent feature snapshots diverge from baseline (<code>GHOST_FEATURE_DRIFT</code>).</div>
   <div class="row"><button class="secondary" onclick="loadFeatureDrift()">Refresh</button></div>
-  <div id="feature-drift" style="margin-top:10px"><div class="kv">Loading&#8230;</div></div>
+  <div id="feature-drift" class="mt10"><div class="kv">Loading&#8230;</div></div>
 </div>
 <div class="card">
   <h3>Options flow (WOLF)</h3>
   <div class="desc">Nearest-expiry put/call volume ratio via yfinance — best-effort, may be empty on thin chains.</div>
   <div class="row"><button class="secondary" onclick="loadOptionsFlow()">Refresh</button></div>
-  <div id="options-flow" style="margin-top:10px"><div class="kv">Loading&#8230;</div></div>
+  <div id="options-flow" class="mt10"><div class="kv">Loading&#8230;</div></div>
 </div>
 
 <!-- ─── Super Ghost brains (PR #115) ─── -->
@@ -150,14 +182,14 @@ body{background:radial-gradient(1100px 520px at 50% -8%,#1a0f14 0%,#0a0a0a 58%) 
   <h3>Truth Ledger &middot; resolved accuracy</h3>
   <div class="desc">Every logged Super Ghost prediction vs realized outcome. <code>win_rate_wilson_low</code> is the small-sample 95% floor &mdash; trust it over raw win rate at low N.</div>
   <div class="row">
-    <select id="sg-horizon" aria-label="Prediction horizon" style="background:#0a0a0a;border:1px solid #2a2a2a;color:#ccc;border-radius:8px;padding:8px 10px">
+    <select id="sg-horizon" class="admin-select" aria-label="Prediction horizon">
       <option value="1">1-day horizon</option>
       <option value="5" selected>5-day horizon</option>
       <option value="20">20-day horizon</option>
     </select>
     <button class="secondary" onclick="loadSuperGhost()">Refresh</button>
   </div>
-  <div id="sg-accuracy" style="margin-top:10px"><div class="kv">Loading&#8230;</div></div>
+  <div id="sg-accuracy" class="mt10"><div class="kv">Loading&#8230;</div></div>
 </div>
 <div class="grid">
   <div class="card">
@@ -190,7 +222,7 @@ body{background:radial-gradient(1100px 520px at 50% -8%,#1a0f14 0%,#0a0a0a 58%) 
     <button class="secondary" onclick="sgAction('learn','/api/wolf/super-ghost/learn')">Run Learning</button>
     <button class="secondary" onclick="sgAction('precision','/api/wolf/super-ghost/precision/score')">Score Precision</button>
   </div>
-  <div class="row" style="margin-top:8px">
+  <div class="row mt8">
     <button class="secondary" onclick="sgAction('range','/api/wolf/super-ghost/range-calibration/rebuild')">Rebuild Range Cal</button>
     <button class="secondary" onclick="sgAction('regime','/api/wolf/super-ghost/regime-calibration/rebuild')">Rebuild Regime Cal</button>
     <button class="secondary" onclick="sgAction('shadow','/api/wolf/super-ghost/shadow/resolve')">Resolve Shadows</button>
@@ -204,7 +236,7 @@ body{background:radial-gradient(1100px 520px at 50% -8%,#1a0f14 0%,#0a0a0a 58%) 
   <h3>Research mode status</h3>
   <div class="desc">When resolved picks are scarce, Ghost lowers the floors and emits capped <b>research picks</b> (learning fuel, clearly labeled). Exits automatically once enough picks resolve.</div>
   <div class="row"><button class="secondary" onclick="loadResearchStatus()">Refresh</button></div>
-  <div id="research-status" style="margin-top:10px"><div class="kv">Loading&#8230;</div></div>
+  <div id="research-status" class="mt10"><div class="kv">Loading&#8230;</div></div>
 </div>
 
 <!-- ─── Circuit breakers (PR #69) ─── -->
@@ -216,7 +248,7 @@ body{background:radial-gradient(1100px 520px at 50% -8%,#1a0f14 0%,#0a0a0a 58%) 
     <button class="secondary" onclick="loadCircuitBreakers()">Refresh</button>
     <button onclick="resetBreakers()">Reset All Breakers</button>
   </div>
-  <div id="breakers-status" style="margin-top:10px"><div class="kv">Loading&#8230;</div></div>
+  <div id="breakers-status" class="mt10"><div class="kv">Loading&#8230;</div></div>
 </div>
 
 <!-- ─── Infrastructure ─── -->
@@ -226,13 +258,13 @@ body{background:radial-gradient(1100px 520px at 50% -8%,#1a0f14 0%,#0a0a0a 58%) 
     <h3>Latency SLO</h3>
     <div class="desc">p50 / p95 / p99 response times. Training endpoints excluded from tail tracking.</div>
     <div class="row"><button class="secondary" onclick="loadLatency()">Refresh</button></div>
-    <div id="latency-status" style="margin-top:10px"><div class="kv">Loading&#8230;</div></div>
+    <div id="latency-status" class="mt10"><div class="kv">Loading&#8230;</div></div>
   </div>
   <div class="card">
     <h3>Degraded Mode</h3>
     <div class="desc">Which subsystems are in degraded/fallback mode. Green = all nominal.</div>
     <div class="row"><button class="secondary" onclick="loadDegraded()">Refresh</button></div>
-    <div id="degraded-status" style="margin-top:10px"><div class="kv">Loading&#8230;</div></div>
+    <div id="degraded-status" class="mt10"><div class="kv">Loading&#8230;</div></div>
   </div>
 </div>
 
@@ -245,7 +277,7 @@ body{background:radial-gradient(1100px 520px at 50% -8%,#1a0f14 0%,#0a0a0a 58%) 
     <button class="secondary" onclick="loadDeadLetter()">Refresh</button>
     <button class="secondary" onclick="replayDeadLetter()">Replay All</button>
   </div>
-  <div id="dead-letter" style="margin-top:10px"><div class="kv">Loading&#8230;</div></div>
+  <div id="dead-letter" class="mt10"><div class="kv">Loading&#8230;</div></div>
 </div>
 
 <!-- ─── Maintenance / purges ─── -->
@@ -258,7 +290,7 @@ body{background:radial-gradient(1100px 520px at 50% -8%,#1a0f14 0%,#0a0a0a 58%) 
     <button class="secondary" onclick="purgeGhostPortfolio(false)">Purge Ghost Portfolio</button>
     <button class="secondary" onclick="purgeGhostPortfolio(true)">Dry-Run Ghost Portfolio</button>
   </div>
-  <div class="row" style="margin-top:8px">
+  <div class="row mt8">
     <button class="secondary" onclick="purgeTestPredictions(true)">Dry-Run Test Predictions</button>
     <button class="secondary" onclick="purgeTestPredictions(false)">Purge Test Predictions</button>
   </div>
@@ -273,28 +305,28 @@ body{background:radial-gradient(1100px 520px at 50% -8%,#1a0f14 0%,#0a0a0a 58%) 
   <div class="row">
     <button class="secondary" onclick="loadGateStatus()">Refresh Now</button>
   </div>
-  <div id="gate-status" style="margin-top:10px"><div class="kv">Loading&#8230;</div></div>
+  <div id="gate-status" class="mt10"><div class="kv">Loading&#8230;</div></div>
 </div>
 
 <div class="card">
   <h3>Per-Cycle Gate History</h3>
   <div class="desc">Last 50 prediction cycles — did any clear the gates (<b>would_fire</b>), and which gate was binding when none did. Recorded automatically each cycle; no need to watch live. Newest first.</div>
   <div class="row"><button class="secondary" onclick="loadGateHistory()">Refresh</button></div>
-  <div id="gate-history" style="margin-top:10px"><div class="kv">Loading&#8230;</div></div>
+  <div id="gate-history" class="mt10"><div class="kv">Loading&#8230;</div></div>
 </div>
 
 <div class="card">
   <h3>Realized P&amp;L</h3>
   <div class="desc">Aggregate of the per-pick entry/exit ledger: sequential-compounding equity curve, profit factor, max drawdown, expectancy. Resolved v3.2-era picks only. Bankroll/stake via <code>GHOST_PNL_BANKROLL</code> / <code>GHOST_PNL_STAKE_FRACTION</code>.</div>
   <div class="row"><button class="secondary" onclick="loadPnl()">Refresh</button></div>
-  <div id="pnl" style="margin-top:10px"><div class="kv">Loading&#8230;</div></div>
+  <div id="pnl" class="mt10"><div class="kv">Loading&#8230;</div></div>
 </div>
 
 <div class="card">
   <h3>Kill Conditions</h3>
   <div class="desc">Env-tunable safety thresholds evaluated over the rolling <b>resolved pick journal</b> (live fired picks). The <code>brier</code> row is <b>not</b> model holdout <code>gate_brier</code> from retrain — compare holdout metrics in the Daily Forecast scorecard or <code>/api/v3/train/last</code>. Inert (<b>insufficient</b>) until the window fills. Read-only here; enforcement is separate.</div>
   <div class="row"><button class="secondary" onclick="loadKillStatus()">Refresh</button></div>
-  <div id="kill-status" style="margin-top:10px"><div class="kv">Loading&#8230;</div></div>
+  <div id="kill-status" class="mt10"><div class="kv">Loading&#8230;</div></div>
 </div>
 
 <!-- ─── Engine quality ─── -->
@@ -336,14 +368,14 @@ body{background:radial-gradient(1100px 520px at 50% -8%,#1a0f14 0%,#0a0a0a 58%) 
   <h3>Model Training Lineage</h3>
   <div class="desc">History of training runs (accuracy / edge / pass) across retrains. Newest first.</div>
   <div class="row"><button class="secondary" onclick="loadLineage()">Refresh</button></div>
-  <div id="lineage-history" style="margin-top:10px"><div class="kv">Loading&#8230;</div></div>
+  <div id="lineage-history" class="mt10"><div class="kv">Loading&#8230;</div></div>
 </div>
 
 <div class="card">
   <h3>Admin Action Log</h3>
   <div class="desc">Operator actions (purges, training, engine resume). Cookie-gated audit trail. Newest first.</div>
   <div class="row"><button class="secondary" onclick="loadAuditLog()">Refresh</button></div>
-  <div id="audit-log" style="margin-top:10px"><div class="kv">Loading&#8230;</div></div>
+  <div id="audit-log" class="mt10"><div class="kv">Loading&#8230;</div></div>
 </div>
 
 </div>
@@ -413,11 +445,11 @@ async function trainSync(){
 
 function renderTrainDetails(td){
   if(!td||!td.symbols||!td.symbols.length)return '';
-  var html='<div style="margin-top:10px"><div class="kv"><b>Per-symbol detail</b></div>';
+  var html='<div class="mt10"><div class="kv"><b>Per-symbol detail</b></div>';
   td.symbols.forEach(function(s){
     var cls=s.passed?'ok':'fail';
     var icon=s.passed?'&#10003;':'&#10007;';
-    html+='<div style="font-size:12px;line-height:1.7;margin-top:6px">'
+    html+='<div class="fs12 lh17 mt6">'
       +'<span class="'+cls+'">'+icon+'</span> <b>'+escHtml(s.symbol)+'</b> · passed='+s.passed
       +(s.fail_reason?' · fail: <span class="fail">'+escHtml(s.fail_reason)+'</span>':'')
       +'</div>';
@@ -430,8 +462,8 @@ function renderTrainDetails(td){
         ['wf_folds',s.wf_fold_count,s.thresholds&&s.thresholds.min_wf_folds],
         ['wf_acc_mean',(s.wf_acc_mean!=null?(s.wf_acc_mean*100).toFixed(1)+'%':'—'),(s.thresholds&&s.thresholds.min_wf_acc_mean!=null?(s.thresholds.min_wf_acc_mean*100).toFixed(1)+'%':'—')],
       ];
-      html+='<table class="tbl" style="margin-left:14px"><tr>'+rows.map(function(m){
-        return '<td style="color:#888">'+m[0]+'</td><td style="color:#fff"><b>'+escHtml(String(m[1]))+'</b></td><td style="color:#999">need&ge; '+escHtml(String(m[2]))+'</td>';
+      html+='<table class="tbl ml14"><tr>'+rows.map(function(m){
+        return '<td class="text-gray-888">'+m[0]+'</td><td class="text-white"><b>'+escHtml(String(m[1]))+'</b></td><td class="text-gray-999">need&ge; '+escHtml(String(m[2]))+'</td>';
       }).join('</tr><tr>')+'</tr></table>';
     }
   });
@@ -465,7 +497,7 @@ async function refreshStatus(){
       if(last.error)bits.push('error='+escHtml(String(last.error).slice(0,200)));
       if(last.models_before!=null&&last.models_after!=null)bits.push('models '+last.models_before+'&rarr;'+last.models_after);
       if(last.ts)bits.push('started '+fmtTimeAgo(last.ts));
-      detail='<div class="kv" style="margin-top:6px"><b>Last train</b> · '+bits.join(' · ')+'</div>';
+      detail='<div class="kv mt6"><b>Last train</b> · '+bits.join(' · ')+'</div>';
     }
     var sysLine='';
     var sys=v3&&v3.system;
@@ -475,7 +507,7 @@ async function refreshStatus(){
       if(sys.issues&&sys.issues.length)sb.push('issues: '+sys.issues.map(escHtml).join(', '));
       if(sys.engine&&sys.engine.last_cycle&&sys.engine.last_cycle.age_min!=null)sb.push('last cycle '+sys.engine.last_cycle.age_min+'m ago');
       if(sys.pnl&&sys.pnl.realized_pnl_usd!=null)sb.push('P&L $'+sys.pnl.realized_pnl_usd);
-      sysLine='<div class="kv" style="margin-top:6px"><b>System</b> · '+sb.join(' · ')+'</div>';
+      sysLine='<div class="kv mt6"><b>System</b> · '+sb.join(' · ')+'</div>';
     }
     r.innerHTML=headline+detail+sysLine;
     document.getElementById('t-models-slot').innerHTML=renderModelTable(v3);
@@ -497,11 +529,11 @@ async function testDataSources(){
     rows.forEach(function(rw){
       var cls=rw.ok?'ok':'fail',icon=rw.ok?'&#10003;':'&#10007;';
       var detail=rw.ok?('first='+(rw.first_ts||'—')+' last='+(rw.last_ts||'—')):escHtml(rw.error||'—');
-      html+='<tr><td><b>'+escHtml(rw.source)+'</b></td><td><span class="'+cls+'">'+icon+'</span></td><td>'+(rw.bars||0)+'</td><td>'+(rw.elapsed_ms!=null?rw.elapsed_ms+'ms':'—')+'</td><td style="font-size:11px">'+detail+'</td></tr>';
+      html+='<tr><td><b>'+escHtml(rw.source)+'</b></td><td><span class="'+cls+'">'+icon+'</span></td><td>'+(rw.bars||0)+'</td><td>'+(rw.elapsed_ms!=null?rw.elapsed_ms+'ms':'—')+'</td><td class="fs11">'+detail+'</td></tr>';
     });
     html+='</tbody></table>';
     var summary=working.length?('<span class="ok">&#10003;</span> '+working.length+' working: '+working.join(', ')):'<span class="fail">&#10007;</span> all probed sources broken';
-    r.innerHTML='<div class="kv" style="margin-bottom:6px">'+summary+'</div>'+html;
+    r.innerHTML='<div class="kv mb6">'+summary+'</div>'+html;
   }catch(e){r.innerHTML='<div class="kv"><span class="fail">&#10007;</span> '+escHtml(String(e))+'</div>'}
   finally{setBtns(false)}
 }
@@ -553,7 +585,7 @@ async function importNewsJson(){
     if(resp.status===403){r.innerHTML='<span class="fail">&#10007;</span> 403 — cron secret wrong';return;}
     if(out.ok){
       r.innerHTML='<span class="ok">&#10003;</span> Imported <b>'+(out.inserted||0)+'</b> · updated <b>'+(out.updated||0)+'</b> · skipped <b>'+(out.skipped||0)+'</b>'
-        +(out.errors&&out.errors.length?'<div class="kv" style="margin-top:6px">'+escHtml(out.errors.join(' · '))+'</div>':'');
+        +(out.errors&&out.errors.length?'<div class="kv mt6">'+escHtml(out.errors.join(' · '))+'</div>':'');
     }else{r.innerHTML='<span class="fail">&#10007;</span> '+escHtml((out&&out.error)||('HTTP '+resp.status));}
   }catch(e){r.innerHTML='<span class="fail">&#10007;</span> '+escHtml(String(e));}
 }
@@ -572,7 +604,7 @@ async function purgeNonWolf(){
       var d=b.deleted||[],k=b.kept||[];
       var icon=d.length?'<span class="ok">&#10003;</span>':'<span class="warn">&#x21BB;</span>';
       r.innerHTML=icon+' Purged <b>'+d.length+'</b> non-WOLF model(s) · kept <b>'+k.length+'</b>'
-        +(d.length?'<div class="kv" style="margin-top:6px">Deleted: '+escHtml(d.join(', '))+'</div>':'')
+        +(d.length?'<div class="kv mt6">Deleted: '+escHtml(d.join(', '))+'</div>':'')
         +(k.length?'<div class="kv">Kept: '+escHtml(k.join(', '))+'</div>':'');
     }else r.innerHTML='<span class="fail">&#10007;</span> '+escHtml((b&&b.error)||('HTTP '+resp.status));
   }catch(e){r.innerHTML='<span class="fail">&#10007;</span> '+escHtml(String(e))}
@@ -595,8 +627,8 @@ async function fireSignalCron(){
       var icon=sentList.length?'<span class="ok">&#10003;</span>':skipped?'<span class="warn">&#x21BB;</span>':'<span class="warn">&#x23F3;</span>';
       r.innerHTML=icon+' Cron ran at '+fmtTsIso(b.ran_at)
         +(sentList.length?' · sent <b>'+sentList.length+'</b> alert(s)':' · 0 alerts sent')
-        +(skipped?' <span style="color:#888">('+escHtml(skipped)+')</span>':'')
-        +(sentList.length?'<div class="kv" style="margin-top:6px">'+sentList.map(function(s){return '#'+s.prediction_id+' '+escHtml(s.direction)+' @ $'+(s.entry_price!=null?s.entry_price.toFixed(2):'—')+' · conf='+(s.confidence!=null?Math.round(s.confidence*100)+'%':'—')}).join('<br>')+'</div>':'');
+        +(skipped?' <span class="text-gray-888">('+escHtml(skipped)+')</span>':'')
+        +(sentList.length?'<div class="kv mt6">'+sentList.map(function(s){return '#'+s.prediction_id+' '+escHtml(s.direction)+' @ $'+(s.entry_price!=null?s.entry_price.toFixed(2):'—')+' · conf='+(s.confidence!=null?Math.round(s.confidence*100)+'%':'—')}).join('<br>')+'</div>':'');
     }else{r.innerHTML='<span class="fail">&#10007;</span> '+escHtml((b&&b.error)||('HTTP '+resp.status));}
   }catch(e){r.innerHTML='<span class="fail">&#10007;</span> '+escHtml(String(e))}
   finally{setBtns(false)}
@@ -617,7 +649,7 @@ async function purgeGhostPortfolio(dry){
       var icon=which.length?'<span class="ok">&#10003;</span>':'<span class="warn">&#x21BB;</span>';
       var verb=dry?'Would delete':'Deleted';
       r.innerHTML=icon+' '+verb+' <b>'+which.length+'</b> ghost row(s) · kept <b>'+kept+'</b> real positions'
-        +(which.length?'<div class="kv" style="margin-top:6px">'+which.map(function(x){return '#'+x.id+' '+escHtml(x.symbol)}).join(', ')+'</div>':'');
+        +(which.length?'<div class="kv mt6">'+which.map(function(x){return '#'+x.id+' '+escHtml(x.symbol)}).join(', ')+'</div>':'');
     }else r.innerHTML='<span class="fail">&#10007;</span> '+escHtml((b&&b.error)||('HTTP '+resp.status));
   }catch(e){r.innerHTML='<span class="fail">&#10007;</span> '+escHtml(String(e))}
   finally{setBtns(false)}
@@ -638,7 +670,7 @@ async function purgeTestPredictions(dry){
       var verb=dry?'Would delete':'Deleted';
       var n=dry?b.total_matched:b.deleted;
       r.innerHTML=icon+' '+verb+' <b>'+(n||0)+'</b> test prediction row(s)'
-        +(matched.length?'<div class="kv" style="margin-top:6px">'+matched.map(function(x){return escHtml(x.symbol)+' &times;'+x.count}).join(', ')+'</div>':'');
+        +(matched.length?'<div class="kv mt6">'+matched.map(function(x){return escHtml(x.symbol)+' &times;'+x.count}).join(', ')+'</div>':'');
     }else r.innerHTML='<span class="fail">&#10007;</span> '+escHtml((b&&b.error)||('HTTP '+resp.status));
   }catch(e){r.innerHTML='<span class="fail">&#10007;</span> '+escHtml(String(e))}
   finally{setBtns(false)}
@@ -680,7 +712,7 @@ function renderCoverage(cov){
   var c=cov.coverage||{},m=cov.maintenance||{},loaded=c.loaded_models!=null?c.loaded_models:0,floor=c.min_models_floor!=null?c.min_models_floor:0,below=!!c.below_floor;
   b.textContent=loaded+' / '+floor;b.className='big '+(below?'warn':'pass');
   var cdMin=m.cooldown_remaining_s!=null?Math.ceil(m.cooldown_remaining_s/60):null;
-  k.innerHTML='<b>Auto-retrain</b> '+(m.enabled?'enabled':'disabled')+(m.running?' <span style="color:#f59e0b">(running)</span>':'')+'<br>'
+  k.innerHTML='<b>Auto-retrain</b> '+(m.enabled?'enabled':'disabled')+(m.running?' <span class="text-orange">(running)</span>':'')+'<br>'
     +'<b>Last retrain</b> '+(m.last_retrain_ts?fmtTsIso(m.last_retrain_ts):'never')+'<br>'
     +'<b>Cooldown</b> '+(cdMin!=null&&cdMin>0?cdMin+' min left':'clear');
 }
@@ -717,9 +749,9 @@ function renderTelegram(tg){
   if(nRecent>0){
     var alerts=tg.recent_alerts.map(function(a){
       var dir=a.direction||'—',conf=a.confidence!=null?Math.round(a.confidence*100)+'%':'—';
-      return '<div style="font-size:11px;color:#888;margin-top:3px"><b>#'+a.prediction_id+'</b> '+escHtml(dir)+' @ $'+(a.entry_price!=null?a.entry_price.toFixed(2):'—')+' &rarr; $'+(a.target_price!=null?a.target_price.toFixed(2):'—')+' · conf='+conf+' · '+(a.sent_at?fmtTimeAgo(a.sent_at):'—')+'</div>';
+      return '<div class="fs11 text-gray-888 mt3"><b>#'+a.prediction_id+'</b> '+escHtml(dir)+' @ $'+(a.entry_price!=null?a.entry_price.toFixed(2):'—')+' &rarr; $'+(a.target_price!=null?a.target_price.toFixed(2):'—')+' · conf='+conf+' · '+(a.sent_at?fmtTimeAgo(a.sent_at):'—')+'</div>';
     }).join('');
-    lines.push('<div style="margin-top:6px"><b>Recent alerts</b>'+alerts+'</div>');
+    lines.push('<div class="mt6"><b>Recent alerts</b>'+alerts+'</div>');
   }
   k.innerHTML=lines.join('<br>');
 }
@@ -771,7 +803,7 @@ async function loadGateStatus(){
         + (lp.regime && lp.regime.label ? ' &middot; regime <b>' + escHtml(lp.regime.label) + '</b>' : '') + '</td></tr>';
       if(lp.up_prob_needed_to_fire != null){
         probHtml += '<tr><td>up_prob needed to fire</td><td>' + lp.up_prob_needed_to_fire.toFixed(4)
-          + ' <span style="color:#8b96a8">(binding conf '
+          + ' <span class="text-gray-8b96a8">(binding conf '
           + (lp.binding_confidence_threshold != null ? (lp.binding_confidence_threshold*100).toFixed(0)+'%' : '—') + ')</span></td></tr>';
         var gap = lp.up_prob_gap;
         if(gap != null){
@@ -783,10 +815,10 @@ async function loadGateStatus(){
       }
       probHtml += '</tbody></table>';
     } else if(lp.reason){
-      probHtml += '<div class="kv"><span style="color:#8b96a8">up_prob not computed — a gate fired before the model ran (<code>'
+      probHtml += '<div class="kv"><span class="text-gray-8b96a8">up_prob not computed — a gate fired before the model ran (<code>'
         + escHtml(lp.reason) + '</code>)</span></div>';
     }
-    html += '<div class="kv" style="margin-top:10px"><b>Latest model prediction (WOLF)</b></div>';
+    html += '<div class="kv mt10"><b>Latest model prediction (WOLF)</b></div>';
     if(lp.error){
       html += '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml(lp.error) + '</div>';
     } else if(!lp.model_emitted){
@@ -828,20 +860,20 @@ async function loadGateHistory(){
         var bgap = nm.bootstrap_gap != null ? nm.bootstrap_gap : (Number(nm.confidence) - Number(nm.bootstrap_min_conf));
         var sb = (nm.symbol ? escHtml(nm.symbol)+' ' : '') + 'conf=' + Number(nm.confidence).toFixed(4) + '/' + Number(nm.bootstrap_min_conf).toFixed(2);
         sb += ' <span class="' + (bgap >= 0 ? 'ok' : 'warn') + '">' + (bgap >= 0 ? '+' : '') + bgap.toFixed(4) + '</span>';
-        sb += ' <span style="color:#8b96a8;font-size:10px">bootstrap min</span>';
-        if(nm.up_prob != null && nm.min_win_proba != null){sb += '<div style="font-size:10px;color:#888">prob cleared: p=' + nm.up_prob + '/' + nm.min_win_proba + '</div>';}
+        sb += ' <span class="text-gray-8b96a8 fs10">bootstrap min</span>';
+        if(nm.up_prob != null && nm.min_win_proba != null){sb += '<div class="fs10 text-gray-888">prob cleared: p=' + nm.up_prob + '/' + nm.min_win_proba + '</div>';}
         return sb;
       }
       var s = (nm.symbol ? escHtml(nm.symbol)+' ' : '') + 'p=' + nm.up_prob;
-      if(nm.min_win_proba !== null && nm.min_win_proba !== undefined){s += '<span style="color:#8b96a8">/' + nm.min_win_proba + '</span>';}
+      if(nm.min_win_proba !== null && nm.min_win_proba !== undefined){s += '<span class="text-gray-8b96a8">/' + nm.min_win_proba + '</span>';}
       if(nm.prob_gap !== null && nm.prob_gap !== undefined){var cls = nm.prob_gap >= 0 ? 'ok' : 'warn';s += ' <span class="' + cls + '">' + (nm.prob_gap >= 0 ? '+' : '') + nm.prob_gap + '</span>';}
-      if(nm.conf_gap !== null && nm.conf_gap !== undefined){s += ' <span style="color:#8b96a8" title="confidence vs floor">conf ' + (nm.conf_gap>=0?'+':'') + nm.conf_gap + '</span>';}
-      if(nm.bootstrap_gap !== null && nm.bootstrap_gap !== undefined){s += ' <span style="color:#8b96a8" title="confidence vs bootstrap min">boot ' + (nm.bootstrap_gap>=0?'+':'') + nm.bootstrap_gap + '</span>';}
+      if(nm.conf_gap !== null && nm.conf_gap !== undefined){s += ' <span class="text-gray-8b96a8" title="confidence vs floor">conf ' + (nm.conf_gap>=0?'+':'') + nm.conf_gap + '</span>';}
+      if(nm.bootstrap_gap !== null && nm.bootstrap_gap !== undefined){s += ' <span class="text-gray-8b96a8" title="confidence vs bootstrap min">boot ' + (nm.bootstrap_gap>=0?'+':'') + nm.bootstrap_gap + '</span>';}
       return s;
     }
     var cn = g.closest_near_miss;
     var closestStr = cn ? (' &middot; closest: ' + fmtNear(cn)) : '';
-    var summary = '<div class="kv" style="margin-bottom:8px"><b>' + g.fired_count + '</b> of <b>' + g.count + '</b> recent cycles cleared all gates &middot; binding gates: ' + bindingStr + closestStr + '</div>';
+    var summary = '<div class="kv mb8"><b>' + g.fired_count + '</b> of <b>' + g.count + '</b> recent cycles cleared all gates &middot; binding gates: ' + bindingStr + closestStr + '</div>';
     var rows = hist.map(function(h){
       var fired = h.would_fire;
       var icon = fired ? '<span class="ok">&#10003; would fire</span>' : '<span class="warn">&#x23F3; no</span>';
@@ -865,7 +897,7 @@ async function loadPnl(){
     function pct(v){ return (v>=0?'+':'') + (v===null||v===undefined?'—':v) + '%'; }
     var pnlCls = g.realized_pnl_usd >= 0 ? 'ok' : 'fail';
     var pf = (g.profit_factor === null) ? '—' : (g.profit_factor === 'Infinity' || g.profit_factor === Infinity ? '∞' : g.profit_factor);
-    el.innerHTML = '<div class="kv" style="margin-bottom:8px"><b class="' + pnlCls + '">' + money(g.realized_pnl_usd) + '</b> realized (<span class="' + pnlCls + '">' + pct(g.total_return_pct) + '</span> on $' + g.bankroll + ', stake ' + (g.stake_fraction*100) + '%) &middot; equity <b>$' + g.final_equity + '</b></div>'
+    el.innerHTML = '<div class="kv mb8"><b class="' + pnlCls + '">' + money(g.realized_pnl_usd) + '</b> realized (<span class="' + pnlCls + '">' + pct(g.total_return_pct) + '</span> on $' + g.bankroll + ', stake ' + (g.stake_fraction*100) + '%) &middot; equity <b>$' + g.final_equity + '</b></div>'
       + '<table class="tbl"><tbody>'
       + '<tr><td>Trades</td><td><b>' + g.count + '</b> (' + g.wins + 'W / ' + g.losses + 'L / ' + g.expired + 'X)</td></tr>'
       + '<tr><td>Win rate</td><td>' + (g.win_rate===null?'—':(g.win_rate*100).toFixed(1)+'%') + '</td></tr>'
@@ -896,16 +928,16 @@ async function loadKillStatus(){
   try{
     var g = await _fetchJson('/api/wolf/kill-status');
     if(!g || g.ok === false){el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml((g&&g.error)||'unavailable') + '</div>';return}
-    var head = '<div class="kv" style="margin-bottom:8px">'
+    var head = '<div class="kv mb8">'
       + (g.enabled ? '<span class="ok">&#10003; enabled</span>' : '<span class="warn">disabled (KILL_SWITCH_ENABLED=0)</span>')
       + ' &middot; ' + (g.any_triggered ? '<span class="fail"><b>&#9888; condition triggered</b></span>' : '<span class="ok">all clear</span>')
       + ' &middot; ' + g.resolved_available + ' resolved picks available</div>';
     var ep = g.engine_pause || {};
     if(ep.paused){
       var ar = ep.auto_resume_at ? (' &middot; auto-resume ' + new Date(ep.auto_resume_at*1000).toLocaleString()) : ' &middot; manual resume required';
-      head += '<div class="kv" style="border-left:4px solid #ff4d4f;background:rgba(255,77,79,.08);padding:8px 12px;border-radius:6px;margin-bottom:8px">'
+      head += '<div class="kv alert-panel">'
         + '<span class="fail"><b>&#9209; ENGINE PAUSED</b></span> &middot; ' + escHtml(ep.reason || '') + ar
-        + '<br><button class="secondary" style="margin-top:6px" onclick="resumeEngine()">Resume engine</button></div>';
+        + '<br><button class="secondary mt6" onclick="resumeEngine()">Resume engine</button></div>';
     }
     function badge(s){
       if(s === 'red')   return '<span class="fail">&#10007; TRIPPED</span>';
@@ -914,14 +946,14 @@ async function loadKillStatus(){
     }
     var rows = (g.conditions || []).map(function(c){
       var cur = (c.current === null || c.current === undefined) ? '—' : c.current;
-      var nm = c.name === 'brier' ? 'brier <span style="color:#8b96a8;font-size:10px">(live picks)</span>' : escHtml(c.name);
-      return '<tr><td><b>' + nm + '</b><br><span style="color:#8b96a8;font-size:11px">' + escHtml(c.action) + '</span></td>'
-        + '<td>' + cur + ' <span style="color:#8b96a8">' + escHtml(c.comparator) + ' ' + c.threshold + '</span></td>'
+      var nm = c.name === 'brier' ? 'brier <span class="text-gray-8b96a8 fs10">(live picks)</span>' : escHtml(c.name);
+      return '<tr><td><b>' + nm + '</b><br><span class="text-gray-8b96a8 fs11">' + escHtml(c.action) + '</span></td>'
+        + '<td>' + cur + ' <span class="text-gray-8b96a8">' + escHtml(c.comparator) + ' ' + c.threshold + '</span></td>'
         + '<td>' + c.samples + '/' + c.window + '</td>'
         + '<td>' + badge(c.status) + '</td></tr>';
     }).join('');
     el.innerHTML = head + '<table class="tbl"><thead><tr><th>Condition</th><th>Current vs threshold</th><th>Samples/window</th><th>Status</th></tr></thead><tbody>' + rows + '</tbody></table>'
-      + (g.pool && g.pool.ready ? '<div class="kv" style="margin-top:8px">DB pool max ' + escHtml(String(g.pool.max)) + '</div>' : '');
+      + (g.pool && g.pool.ready ? '<div class="kv mt8">DB pool max ' + escHtml(String(g.pool.max)) + '</div>' : '');
   }catch(e){el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml(String(e)) + '</div>'}
 }
 
@@ -940,8 +972,8 @@ async function loadSqueezeStatus(){
     if(!g || g.ok === false){el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml((g&&g.error)||'unavailable') + '</div>';return}
     var scanStr = fmtSqScanCt(g.last_scan_ts);
     var radarTxt = g.radar_active ? 'LIVE' : ('PAUSED · resumes ' + escHtml(g.radar_resume_ct || '3:00 AM CT'));
-    var head = '<div class="big ' + (g.radar_active ? 'pass' : 'warn') + '" style="font-size:20px">' + radarTxt + '</div>'
-      + '<div class="kv" style="margin-top:8px"><b>' + escHtml(g.now_ct || '—') + '</b> · ' + escHtml(g.market_session || '—')
+    var head = '<div class="big ' + (g.radar_active ? 'pass' : 'warn') + ' fs20">' + radarTxt + '</div>'
+      + '<div class="kv mt8"><b>' + escHtml(g.now_ct || '—') + '</b> · ' + escHtml(g.market_session || '—')
       + ' · last scan <b>' + escHtml(scanStr) + '</b>'
       + (g.fetch_ok != null ? ' · priced <b>' + g.fetch_ok + '/' + (g.symbols || 43) + '</b>' : '')
       + (g.fetch_failed_symbols && g.fetch_failed_symbols.length ? ' · <span class="warn" title="symbols with no price data this scan">fail: ' + g.fetch_failed_symbols.map(escHtml).join(', ') + '</span>' : '')
@@ -953,17 +985,17 @@ async function loadSqueezeStatus(){
     var alerts = (g.alert_history || []).slice(0, 8);
     var alertBlock = '';
     if(alerts.length){
-      alertBlock = '<div class="kv" style="margin:12px 0 6px"><b>Telegram squeeze alerts this session</b></div>'
+      alertBlock = '<div class="kv mt12 mb6"><b>Telegram squeeze alerts this session</b></div>'
         + '<table class="tbl"><thead><tr><th>Stock</th><th>Buy</th><th>Sell</th><th>Score</th><th>P(+3%)</th><th>Peak</th><th>When</th></tr></thead><tbody>'
         + alerts.map(function(p){
           var prob = p.probabilities && p.probabilities.p_continue_3pct_60m != null ? Math.round(p.probabilities.p_continue_3pct_60m) + '%' : '—';
           return '<tr><td><b>' + escHtml(p.symbol) + '</b></td><td>' + fmtUsd(p.buy) + '</td><td>' + fmtUsd(p.sell) + '</td><td>' + (p.squeeze_score != null ? Math.round(p.squeeze_score) : '—') + '</td><td>' + prob + '</td><td>+' + (p.peak_move_pct != null ? Number(p.peak_move_pct).toFixed(1) : '—') + '%</td><td>' + fmtTimeAgo(p.alerted_at || g.last_scan_ts) + '</td></tr>';
         }).join('') + '</tbody></table>';
-    } else {alertBlock = '<div class="kv" style="margin-top:10px;color:#999">No squeeze Telegram alerts this session yet.</div>';}
+    } else {alertBlock = '<div class="kv mt10 text-gray-999">No squeeze Telegram alerts this session yet.</div>';}
     var leaders = (g.leaders || []).slice(0, 5);
     var leaderBlock = '';
     if(leaders.length){
-      leaderBlock = '<div class="kv" style="margin:12px 0 6px"><b>Top movers (scorecard)</b></div>'
+      leaderBlock = '<div class="kv mt12 mb6"><b>Top movers (scorecard)</b></div>'
         + '<table class="tbl"><thead><tr><th>Stock</th><th>Buy</th><th>Sell</th><th>Score</th><th>RVOL</th><th>Peak</th></tr></thead><tbody>'
         + leaders.map(function(p){return '<tr><td><b>' + escHtml(p.symbol) + '</b></td><td>' + fmtUsd(p.buy) + '</td><td>' + fmtUsd(p.sell) + '</td><td>' + (p.squeeze_score != null ? Math.round(p.squeeze_score) : '—') + '</td><td>' + (p.rvol != null ? Number(p.rvol).toFixed(1) + '×' : '—') + '</td><td>+' + (p.peak_move_pct != null ? Number(p.peak_move_pct).toFixed(1) : '—') + '%</td></tr>';}).join('') + '</tbody></table>';
     }
@@ -982,7 +1014,7 @@ async function loadSqueezeDailyLog(){
     var days = g.days || [];
     var today = g.today_ct || '—';
     var head = '<div class="kv">Today <b>' + escHtml(today) + '</b> · ' + days.length + ' day(s) in ledger · ' + (g.note ? escHtml(g.note) : '') + '</div>';
-    if(!days.length){el.innerHTML = head + '<div class="kv" style="margin-top:10px;color:#999">No squeeze predictions logged yet.</div>';return}
+    if(!days.length){el.innerHTML = head + '<div class="kv mt10 text-gray-999">No squeeze predictions logged yet.</div>';return}
     var summaryRows = days.slice(0, 10).map(function(d){
       return '<tr><td><b>' + escHtml(d.session_date) + '</b></td><td>' + d.count + '</td><td>' + d.telegram + '</td><td>' + (d.resolved ? (d.wins + 'W / ' + d.losses + 'L') : '—') + '</td><td>' + (d.pending || '—') + '</td></tr>';
     }).join('');
@@ -990,11 +1022,11 @@ async function loadSqueezeDailyLog(){
     var detail = (g.rows || []).filter(function(r){ return r.session_date === focus; }).slice(0, 12);
     var detailBlock = '';
     if(detail.length){
-      detailBlock = '<div class="kv" style="margin:12px 0 6px"><b>Latest day detail · ' + escHtml(focus) + '</b></div>'
+      detailBlock = '<div class="kv mt12 mb6"><b>Latest day detail · ' + escHtml(focus) + '</b></div>'
         + '<table class="tbl"><thead><tr><th>Stock</th><th>Buy</th><th>Sell</th><th>Close</th><th>Outcome</th><th>Close P&amp;L</th></tr></thead><tbody>'
-        + detail.map(function(r){return '<tr><td><b>' + escHtml(r.symbol) + '</b><br><span style="color:#999;font-size:11px">' + escHtml(r.source || '') + '</span></td><td>' + fmtUsd(r.buy) + '</td><td>' + fmtUsd(r.sell) + '</td><td>' + fmtUsd(r.session_close) + '</td><td>' + escHtml(r.outcome || 'pending') + '</td><td>' + (r.close_pnl_pct != null ? (r.close_pnl_pct >= 0 ? '+' : '') + Number(r.close_pnl_pct).toFixed(2) + '%' : '—') + '</td></tr>';}).join('') + '</tbody></table>';
+        + detail.map(function(r){return '<tr><td><b>' + escHtml(r.symbol) + '</b><br><span class="text-gray-999 fs11">' + escHtml(r.source || '') + '</span></td><td>' + fmtUsd(r.buy) + '</td><td>' + fmtUsd(r.sell) + '</td><td>' + fmtUsd(r.session_close) + '</td><td>' + escHtml(r.outcome || 'pending') + '</td><td>' + (r.close_pnl_pct != null ? (r.close_pnl_pct >= 0 ? '+' : '') + Number(r.close_pnl_pct).toFixed(2) + '%' : '—') + '</td></tr>';}).join('') + '</tbody></table>';
     }
-    el.innerHTML = head + '<div class="kv" style="margin:12px 0 6px"><b>Daily summaries</b></div>'
+    el.innerHTML = head + '<div class="kv mt12 mb6"><b>Daily summaries</b></div>'
       + '<table class="tbl"><thead><tr><th>Date</th><th>Rows</th><th>Telegram</th><th>W/L</th><th>Pending</th></tr></thead><tbody>' + summaryRows + '</tbody></table>' + detailBlock;
   }catch(e){el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml(String(e)) + '</div>'}
 }
@@ -1084,7 +1116,7 @@ async function loadCircuitBreakers(){
       var rate = b.rate_limit_max_calls ? (b.recent_calls != null ? b.recent_calls : 0) + '/' + b.rate_limit_max_calls : '—';
       var totals = (b.total_successes||0) + ' ok / ' + (b.total_failures||0) + ' fail';
       var lastFail = b.last_failure_ts ? fmtTimeAgo(b.last_failure_ts) : '—';
-      return '<tr><td><b>' + escHtml(b.name || n) + '</b></td><td>' + stateBadge(b.state) + '</td><td>' + (b.failure_count||0) + '/' + (b.threshold||5) + '</td><td>' + cd + '</td><td>' + rate + '</td><td style="font-size:11px;color:#888">' + totals + '</td><td style="font-size:11px;color:#888">' + lastFail + '</td></tr>';
+      return '<tr><td><b>' + escHtml(b.name || n) + '</b></td><td>' + stateBadge(b.state) + '</td><td>' + (b.failure_count||0) + '/' + (b.threshold||5) + '</td><td>' + cd + '</td><td>' + rate + '</td><td class="fs11 text-gray-888">' + totals + '</td><td class="fs11 text-gray-888">' + lastFail + '</td></tr>';
     }).join('');
     el.innerHTML = '<table class="tbl"><thead><tr><th>API</th><th>State</th><th>Fails/Thresh</th><th>Cooldown</th><th>Rate window</th><th>Lifetime</th><th>Last fail</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }catch(e){el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml(String(e)) + '</div>'}
@@ -1115,11 +1147,11 @@ async function loadLatency(){
       + ' · <b>p95</b> ' + (o.p95_ms != null ? o.p95_ms + 'ms' : '—')
       + ' · <b>p99</b> ' + (o.p99_ms != null ? o.p99_ms + 'ms' : '—')
       + ' · <b>samples</b> ' + (o.samples != null ? o.samples : (o.sample_count || 0))
-      + (g.excluded_prefixes ? '<br><span style="color:#64748b">Excluded: ' + escHtml(g.excluded_prefixes.join(', ')) + '</span>' : '')
+      + (g.excluded_prefixes ? '<br><span class="text-gray-64748b">Excluded: ' + escHtml(g.excluded_prefixes.join(', ')) + '</span>' : '')
       + '</div>';
     var slow = g.slowest_routes || [];
     if(slow.length){
-      html += '<div class="kv" style="margin:8px 0 4px"><b>Slowest routes (p95)</b></div>'
+      html += '<div class="kv mt8 mb4"><b>Slowest routes (p95)</b></div>'
         + '<table class="tbl"><thead><tr><th>Route</th><th>p50</th><th>p95</th><th>N</th></tr></thead><tbody>'
         + slow.map(function(s){return '<tr><td><code>' + escHtml(s.path||'—') + '</code></td><td>' + (s.p50_ms!=null?s.p50_ms+'ms':'—') + '</td><td>' + (s.p95_ms!=null?s.p95_ms+'ms':'—') + '</td><td>' + (s.samples!=null?s.samples:'—') + '</td></tr>';}).join('')
         + '</tbody></table>';
@@ -1145,7 +1177,7 @@ async function loadDegraded(){
       + (g.since ? ' since ' + fmtTimeAgo(g.since) : '')
       + ' · ' + (g.open_circuits||0) + ' circuits open'
       + (g.conf_bump ? ' · confidence floor raised +' + g.conf_bump : '')
-      + ((g.reasons||[]).length ? '<br><span style="color:#888">' + g.reasons.map(escHtml).join(' · ') + '</span>' : '')
+      + ((g.reasons||[]).length ? '<br><span class="text-gray-888">' + g.reasons.map(escHtml).join(' · ') + '</span>' : '')
       + '</div>';
   }catch(e){el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml(String(e)) + '</div>'}
 }
@@ -1224,7 +1256,11 @@ async function adminLogout(){
 
 /* ─── Mission Control board (PR #115) ─── */
 function mcTile(label, value, cls, sub){
-  return '<div class="mc-tile ' + (cls||'') + '"><div class="mc-label">' + label + '</div><div class="mc-value">' + value + '</div>' + (sub ? '<div class="mc-sub">' + sub + '</div>' : '') + '</div>';
+  // Escape here (single source of truth) so no tile can inject via backend
+  // text. Callers must pass RAW strings, not pre-escaped — escHtml is not
+  // idempotent, so double-escaping would render literal &amp;.
+  var e = (typeof escHtml === 'function') ? escHtml : function(x){return x;};
+  return '<div class="mc-tile ' + (cls||'') + '"><div class="mc-label">' + e(label) + '</div><div class="mc-value">' + e(String(value)) + '</div>' + (sub ? '<div class="mc-sub">' + e(String(sub)) + '</div>' : '') + '</div>';
 }
 
 async function loadMissionControl(){
@@ -1250,26 +1286,46 @@ async function loadMissionControl(){
     var hCls = score == null ? '' : (score >= 80 ? 'mc-ok' : score >= 50 ? 'mc-warn' : 'mc-bad');
     var hIssues = (health.issues||[]).length, hWarns = (health.warnings||[]).length;
     tiles.push(mcTile('System health', score != null ? score + '/100' : '—', hCls,
-      escHtml(health.status||'') + (hIssues ? ' · ' + hIssues + ' issue(s)' : '') + (hWarns ? ' · ' + hWarns + ' warning(s)' : '')));
+      (health.status||'') + (hIssues ? ' · ' + hIssues + ' issue(s)' : '') + (hWarns ? ' · ' + hWarns + ' warning(s)' : '')));
 
-    /* v3 engine */
+    /* v3 engine — headline the number that decides trading: fireable_now.
+       Total stored models is misleading now that research-tier models (proven
+       false, kept only to feed shadow evals) inflate the count; green must mean
+       "can fire", not "is trained". */
+    var fleet = v3.fleet_summary || {};
+    var fireable = fleet.fireable_now;
+    var serveable = fleet.serveable;
+    var research = fleet.serveable_research;
     var models = v3.models != null ? v3.models : Object.keys(v3.symbols||{}).length;
-    tiles.push(mcTile('v3 engine', v3.trained ? models + ' model' + (models===1?'':'s') : 'not trained',
-      v3.trained ? 'mc-ok' : 'mc-warn',
-      v3.mean_acc != null ? 'mean acc ' + (v3.mean_acc*100).toFixed(1) + '%' : ''));
+    var v3Head, v3Cls, v3Sub;
+    if(!v3.trained){
+      v3Head = 'not trained'; v3Cls = 'mc-warn'; v3Sub = '';
+    } else if(fireable != null){
+      v3Head = fireable + ' fireable';
+      v3Cls = fireable > 0 ? 'mc-ok' : 'mc-warn';
+      v3Sub = (serveable != null ? serveable + ' serveable' : models + ' models')
+        + (research ? ' · ' + research + ' research' : '')
+        + (v3.mean_acc != null ? ' · acc ' + (v3.mean_acc*100).toFixed(1) + '%' : '');
+    } else {
+      /* Older payloads without fleet_summary: fall back to the model count but
+         never colour it green — trained != ready to fire. */
+      v3Head = models + ' model' + (models===1?'':'s'); v3Cls = 'mc-warn';
+      v3Sub = v3.mean_acc != null ? 'mean acc ' + (v3.mean_acc*100).toFixed(1) + '%' : '';
+    }
+    tiles.push(mcTile('v3 engine', v3Head, v3Cls, v3Sub));
 
     /* Kill / pause */
     var ep = kill.engine_pause || {};
     var killCls = ep.paused ? 'mc-bad' : (kill.any_triggered ? 'mc-warn' : 'mc-ok');
     tiles.push(mcTile('Kill switch', ep.paused ? 'PAUSED' : (kill.any_triggered ? 'TRIPPED' : 'clear'), killCls,
-      ep.paused ? escHtml((ep.reason||'').slice(0,60)) : ((kill.resolved_available!=null?kill.resolved_available:'—') + ' resolved picks')));
+      ep.paused ? (ep.reason||'').slice(0,60) : ((kill.resolved_available!=null?kill.resolved_available:'—') + ' resolved picks')));
 
     /* Research mode */
     var rCls = research.research_active ? 'mc-warn' : 'mc-ok';
     tiles.push(mcTile('Research mode', research.research_active ? 'ACTIVE' : 'off', research.ok===false ? '' : rCls,
       research.ok===false ? 'unavailable' :
       (research.research_active
-        ? escHtml(research.research_reason||'') + ' · ' + (research.remaining!=null?research.remaining:'—') + ' to exit'
+        ? (research.research_reason||'') + ' · ' + (research.remaining!=null?research.remaining:'—') + ' to exit'
         : (research.resolved_picks!=null?research.resolved_picks:'—') + ' resolved · graduated')));
 
     /* Breakers */
@@ -1277,12 +1333,12 @@ async function loadMissionControl(){
     var bOpen = bNames.filter(function(n){return (brk.breakers[n].state||'closed') !== 'closed';});
     tiles.push(mcTile('Breakers', bNames.length ? (bNames.length - bOpen.length) + '/' + bNames.length + ' closed' : '—',
       bOpen.length === 0 ? 'mc-ok' : (bOpen.length <= 1 ? 'mc-warn' : 'mc-bad'),
-      bOpen.length ? 'open: ' + bOpen.map(escHtml).join(', ') : 'all nominal'));
+      bOpen.length ? 'open: ' + bOpen.join(', ') : 'all nominal'));
 
     /* Degraded mode */
     var isDeg = !!deg.degraded;
     tiles.push(mcTile('Degraded mode', isDeg ? 'DEGRADED' : 'nominal', isDeg ? 'mc-warn' : 'mc-ok',
-      isDeg ? escHtml((deg.reasons||[]).join(', ').slice(0,70)) : ''));
+      isDeg ? (deg.reasons||[]).join(', ').slice(0,70) : ''));
 
     /* Squeeze radar */
     tiles.push(mcTile('Squeeze radar', sq.radar_active ? 'LIVE' : 'paused', sq.radar_active ? 'mc-ok' : '',
@@ -1300,7 +1356,7 @@ async function loadMissionControl(){
     var upd = document.getElementById('mc-updated');
     if(upd) upd.textContent = 'Updated ' + new Date().toLocaleTimeString() + ' · auto-refreshes every 60s';
   }catch(e){
-    board.innerHTML = mcTile('Mission Control', 'error', 'mc-bad', escHtml(String(e)));
+    board.innerHTML = mcTile('Mission Control', 'error', 'mc-bad', String(e));
   }
 }
 
@@ -1321,7 +1377,7 @@ async function loadSgAccuracy(h){
     if(!g || g.ok === false){el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml((g&&g.error)||'unavailable') + '</div>';return}
     if(g.enabled === false){el.innerHTML = '<div class="kv">Truth Ledger disabled.</div>';return}
     var o = g.overall || {};
-    var head = '<div class="kv" style="margin-bottom:8px"><b>' + (g.total_logged||0) + '</b> logged · <b>' + (g.resolved_at_horizon||0) + '</b> resolved at ' + escHtml(String(g.horizon_days||h)) + 'd'
+    var head = '<div class="kv mb8"><b>' + (g.total_logged||0) + '</b> logged · <b>' + (g.resolved_at_horizon||0) + '</b> resolved at ' + escHtml(String(g.horizon_days||h)) + 'd'
       + (o.win_rate != null ? ' · win rate <b>' + (o.win_rate*100).toFixed(1) + '%</b>' : '')
       + (o.win_rate_wilson_low != null ? ' · wilson floor <b>' + (o.win_rate_wilson_low*100).toFixed(1) + '%</b>' : '')
       + (o.avg_return_pct != null ? ' · avg return <b>' + (o.avg_return_pct>=0?'+':'') + o.avg_return_pct + '%</b>' : '')
@@ -1333,10 +1389,10 @@ async function loadSgAccuracy(h){
         var b = obj[k];
         return '<tr><td><b>' + escHtml(k) + '</b></td><td>' + (b.n||0) + '</td><td>' + (b.win_rate!=null?(b.win_rate*100).toFixed(0)+'%':'—') + '</td><td>' + (b.avg_return_pct!=null?(b.avg_return_pct>=0?'+':'')+b.avg_return_pct+'%':'—') + '</td></tr>';
       }).join('');
-      return '<div class="kv" style="margin:10px 0 4px"><b>' + title + '</b></div><table class="tbl"><thead><tr><th></th><th>N</th><th>WR</th><th>Avg ret</th></tr></thead><tbody>' + rows + '</tbody></table>';
+      return '<div class="kv mt10 mb4"><b>' + title + '</b></div><table class="tbl"><thead><tr><th></th><th>N</th><th>WR</th><th>Avg ret</th></tr></thead><tbody>' + rows + '</tbody></table>';
     }
     if(!g.resolved_at_horizon){
-      el.innerHTML = head + '<div class="kv" style="color:#999">No resolved predictions at this horizon yet — cold start.</div>';
+      el.innerHTML = head + '<div class="kv text-gray-999">No resolved predictions at this horizon yet — cold start.</div>';
       return;
     }
     el.innerHTML = head + bucketTable('By direction', g.by_direction) + bucketTable('By confidence tier', g.by_confidence_tier) + bucketTable('By regime', g.by_regime);
@@ -1350,18 +1406,18 @@ async function loadSgLearning(h){
     var g = await _fetchJson('/api/wolf/super-ghost/learning?horizon=' + h + '&limit=5');
     if(!g || g.ok === false){el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml((g&&g.error)||'unavailable') + '</div>';return}
     var profiles = g.profiles || [], lessons = g.lessons || [];
-    if(!profiles.length && !lessons.length){el.innerHTML = '<div class="kv" style="color:#999">Cold start — no learning profiles yet. Populates as ledger predictions resolve.</div>';return}
+    if(!profiles.length && !lessons.length){el.innerHTML = '<div class="kv text-gray-999">Cold start — no learning profiles yet. Populates as ledger predictions resolve.</div>';return}
     var html = '';
     if(profiles.length){
       html += '<table class="tbl"><thead><tr><th>Sym</th><th>Dir</th><th>N</th><th>WR</th><th>Status</th></tr></thead><tbody>'
         + profiles.slice(0,5).map(function(p){
-          return '<tr><td><b>' + escHtml(p.symbol) + '</b></td><td>' + escHtml(p.direction||'—') + '</td><td>' + (p.sample_count||0) + '</td><td>' + (p.direction_win_rate!=null?(p.direction_win_rate*100).toFixed(0)+'%':'—') + '</td><td style="font-size:11px">' + escHtml(p.learning_status||'—') + '</td></tr>';
+          return '<tr><td><b>' + escHtml(p.symbol) + '</b></td><td>' + escHtml(p.direction||'—') + '</td><td>' + (p.sample_count||0) + '</td><td>' + (p.direction_win_rate!=null?(p.direction_win_rate*100).toFixed(0)+'%':'—') + '</td><td class="fs11">' + escHtml(p.learning_status||'—') + '</td></tr>';
         }).join('') + '</tbody></table>';
     }
     if(lessons.length){
-      html += '<div class="kv" style="margin:8px 0 2px"><b>Recent lessons</b></div>'
+      html += '<div class="kv mt8 mb2"><b>Recent lessons</b></div>'
         + lessons.slice(0,3).map(function(l){
-          return '<div style="font-size:11px;color:#888;margin-top:4px"><b>' + escHtml(l.symbol||'') + '</b> · ' + escHtml(l.mistake_type||'') + ' — ' + escHtml((l.lesson||'').slice(0,90)) + '</div>';
+          return '<div class="fs11 text-gray-888 mt4"><b>' + escHtml(l.symbol||'') + '</b> · ' + escHtml(l.mistake_type||'') + ' — ' + escHtml((l.lesson||'').slice(0,90)) + '</div>';
         }).join('');
     }
     el.innerHTML = html;
@@ -1374,11 +1430,11 @@ async function loadSgTopPick(h){
   try{
     var g = await _fetchJson('/api/wolf/super-ghost/top-pick-gate?symbol=WOLF&horizon=' + h);
     if(!g || g.ok === false){el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml((g&&g.error)||'unavailable') + '</div>';return}
-    var head = '<div class="kv" style="margin-bottom:6px">' + (g.eligible ? '<span class="ok"><b>&#10003; ELIGIBLE</b></span>' : '<span class="warn"><b>&#128274; ' + escHtml(g.decision||'LOCKED') + '</b></span>') + '</div>';
+    var head = '<div class="kv mb6">' + (g.eligible ? '<span class="ok"><b>&#10003; ELIGIBLE</b></span>' : '<span class="warn"><b>&#128274; ' + escHtml(g.decision||'LOCKED') + '</b></span>') + '</div>';
     var rows = (g.checks||[]).map(function(c){
       var cur = c.current;
       if(cur !== null && typeof cur === 'object') cur = Object.keys(cur).map(function(k){return k + '=' + cur[k];}).join(' ');
-      return '<tr><td style="font-size:11px"><code>' + escHtml(c.key) + '</code></td><td>' + (c.passed ? '<span class="ok">&#10003;</span>' : '<span class="fail">&#10007;</span>') + '</td><td style="font-size:11px">' + escHtml(String(cur!=null?cur:'—')) + ' <span style="color:#999">(' + escHtml(String(c.required||'')) + ')</span></td></tr>';
+      return '<tr><td class="fs11"><code>' + escHtml(c.key) + '</code></td><td>' + (c.passed ? '<span class="ok">&#10003;</span>' : '<span class="fail">&#10007;</span>') + '</td><td class="fs11">' + escHtml(String(cur!=null?cur:'—')) + ' <span class="text-gray-999">(' + escHtml(String(c.required||'')) + ')</span></td></tr>';
     }).join('');
     el.innerHTML = head + '<table class="tbl"><thead><tr><th>Check</th><th></th><th>Current (need)</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }catch(e){el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml(String(e)) + '</div>'}
@@ -1394,11 +1450,11 @@ async function loadSgShadow(){
     if(!profiles.length){
       var manifest = g.manifest || {};
       var models = manifest.models || [];
-      el.innerHTML = '<div class="kv" style="color:#999">Cold start — ' + (models.length||0) + ' shadow brain(s) registered, none scored yet. Scores populate as parent ledger predictions resolve.</div>';
+      el.innerHTML = '<div class="kv text-gray-999">Cold start — ' + (models.length||0) + ' shadow brain(s) registered, none scored yet. Scores populate as parent ledger predictions resolve.</div>';
       return;
     }
     var rows = profiles.slice(0,12).map(function(p){
-      return '<tr><td><b>' + escHtml(p.model_id||'—') + '</b><br><span style="color:#999;font-size:10px">' + escHtml(p.model_family||'') + '</span></td><td>' + (p.horizon_days||'—') + 'd</td><td>' + (p.sample_count||0) + '</td><td>' + (p.win_rate!=null?(p.win_rate*100).toFixed(0)+'%':'—') + '</td><td>' + (p.profit_factor!=null?p.profit_factor:'—') + '</td><td>' + (p.net_return_pct!=null?(p.net_return_pct>=0?'+':'')+p.net_return_pct+'%':'—') + '</td><td style="font-size:11px">' + escHtml(p.status||'—') + '</td></tr>';
+      return '<tr><td><b>' + escHtml(p.model_id||'—') + '</b><br><span class="text-gray-999 fs10">' + escHtml(p.model_family||'') + '</span></td><td>' + (p.horizon_days||'—') + 'd</td><td>' + (p.sample_count||0) + '</td><td>' + (p.win_rate!=null?(p.win_rate*100).toFixed(0)+'%':'—') + '</td><td>' + (p.profit_factor!=null?p.profit_factor:'—') + '</td><td>' + (p.net_return_pct!=null?(p.net_return_pct>=0?'+':'')+p.net_return_pct+'%':'—') + '</td><td class="fs11">' + escHtml(p.status||'—') + '</td></tr>';
     }).join('');
     el.innerHTML = '<table class="tbl"><thead><tr><th>Model</th><th>Hz</th><th>N</th><th>WR</th><th>PF</th><th>Net</th><th>Status</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }catch(e){el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml(String(e)) + '</div>'}
@@ -1411,10 +1467,10 @@ async function loadSgPromotion(){
     var g = await _fetchJson('/api/wolf/super-ghost/promotion?limit=8');
     if(!g || g.ok === false){el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml((g&&g.error)||'unavailable') + '</div>';return}
     var reviews = g.reviews || [];
-    if(!reviews.length){el.innerHTML = '<div class="kv" style="color:#999">No promotion reviews yet — candidates must earn shadow evidence first.</div>';return}
+    if(!reviews.length){el.innerHTML = '<div class="kv text-gray-999">No promotion reviews yet — candidates must earn shadow evidence first.</div>';return}
     var rows = reviews.map(function(r){
       var dCls = r.approved_for_promotion ? 'ok' : (r.decision === 'RETIRE_CANDIDATE' ? 'fail' : 'warn');
-      return '<tr><td>' + fmtTimeAgo(r.created_at) + '</td><td><b>' + escHtml(r.candidate_id||'—') + '</b></td><td><span class="' + dCls + '">' + escHtml(r.decision||'—') + '</span></td><td>' + (r.sample_count||0) + '</td><td style="font-size:11px;color:#888">' + escHtml((r.reason||'').slice(0,80)) + '</td></tr>';
+      return '<tr><td>' + fmtTimeAgo(r.created_at) + '</td><td><b>' + escHtml(r.candidate_id||'—') + '</b></td><td><span class="' + dCls + '">' + escHtml(r.decision||'—') + '</span></td><td>' + (r.sample_count||0) + '</td><td class="fs11 text-gray-888">' + escHtml((r.reason||'').slice(0,80)) + '</td></tr>';
     }).join('');
     el.innerHTML = '<table class="tbl"><thead><tr><th>When</th><th>Candidate</th><th>Decision</th><th>N</th><th>Reason</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }catch(e){el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml(String(e)) + '</div>'}
@@ -1450,11 +1506,11 @@ async function loadResearchStatus(){
   try{
     var g = await _fetchJson('/api/research/status');
     if(!g || g.ok === false){el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml((g&&g.error)||'unavailable') + '</div>';return}
-    var head = '<div class="kv" style="margin-bottom:8px">'
+    var head = '<div class="kv mb8">'
       + (g.research_active
         ? '<span class="warn"><b>&#9679; RESEARCH MODE ACTIVE</b></span> · reason: <code>' + escHtml(g.research_reason||'—') + '</code>'
         : '<span class="ok"><b>&#10003; graduated</b></span> — normal gated mode')
-      + (g.research_enabled ? '' : ' · <span style="color:#999">(feature disabled via env)</span>')
+      + (g.research_enabled ? '' : ' · <span class="text-gray-999">(feature disabled via env)</span>')
       + '</div>';
     el.innerHTML = head + '<table class="tbl"><tbody>'
       + '<tr><td>Resolved picks</td><td><b>' + (g.resolved_picks!=null?g.resolved_picks:'—') + '</b> / ' + (g.min_for_exit!=null?g.min_for_exit:'—') + ' needed to exit'
@@ -1484,7 +1540,16 @@ setTimeout(function(){ loadFeatureDrift(); loadOptionsFlow(); }, 200);
 setTimeout(function(){ loadGateHistory(); loadKillStatus(); loadPnl(); }, 400);
 setTimeout(function(){ loadSuperGhost(); loadResearchStatus(); }, 600);
 setTimeout(function(){ loadLineage(); loadAuditLog(); }, 800);
-function _mcTick(fn, ms){ setInterval(function(){ if(!document.hidden) fn(); }, ms); }
+function _mcTick(fn, ms){
+  // Skip a tick if the previous run is still in flight (an 8-endpoint batch on
+  // a slow link can exceed the interval) and while the tab is hidden.
+  var busy = false;
+  setInterval(function(){
+    if(document.hidden || busy) return;
+    busy = true;
+    Promise.resolve(fn()).finally(function(){ busy = false; });
+  }, ms);
+}
 _mcTick(loadMissionControl, 60000);
 _mcTick(loadPnl, 120000);
 _mcTick(loadGateHistory, 120000);
