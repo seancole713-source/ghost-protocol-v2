@@ -3542,8 +3542,13 @@ function toggleAddPos(){
   var f = document.getElementById('port-form');
   var b = document.getElementById('add-pos-toggle');
   if(!f) return;
-  var open = f.style.display !== 'none';
-  f.style.display = open ? 'none' : '';
+  // Hidden state is the CSS class `hidden-flex` (was inline style="display:none"
+  // before the inline-style extraction). Toggle the class, not the inline
+  // style — reading f.style.display returns '' for a class-hidden element,
+  // which flipped this handler's logic and hid the form on first click.
+  var open = !f.classList.contains('hidden-flex');
+  if(open){ f.classList.add('hidden-flex'); }
+  else { f.classList.remove('hidden-flex'); }
   if(b) b.textContent = open ? '+ Add a Position' : '− Hide';
   if(!open){ var s = document.getElementById('p-sym'); if(s) s.focus(); }
 }
