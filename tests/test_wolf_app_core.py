@@ -930,6 +930,15 @@ def test_fetch_ohlcv_retries_after_empty_response(monkeypatch):
 
     monkeypatch.setattr("requests.get", fake_get)
     monkeypatch.setattr(_se.time, "sleep", lambda _s: None)
+    # Hermetic: the Alpaca 1-bar retry result is below min-bars, so _fetch_ohlcv
+    # falls through Polygon→yfinance→Stooq. Those tiers do NOT go through the
+    # mocked requests.get (yfinance uses its own client), so without blocking
+    # them this test makes a LIVE network fetch and returns real WOLF bars —
+    # it only "passed" when a prior test left the yfinance breaker tripped
+    # (masking the fallthrough). Block them so we test the Alpaca retry alone.
+    monkeypatch.setattr(_se, "_try_polygon_ohlcv", lambda *a, **k: None)
+    monkeypatch.setattr(_se, "_try_yfinance_ohlcv", lambda *a, **k: None)
+    monkeypatch.setattr(_se, "_try_stooq_ohlcv", lambda *a, **k: None)
     rows = _se._fetch_ohlcv("WOLF", "stock", period="1y")
     assert rows is not None
     assert len(rows) == 1
