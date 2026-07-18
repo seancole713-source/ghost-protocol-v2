@@ -184,10 +184,9 @@ class TestCollectorBreakerStop:
 
         import core.circuit_breaker as cb
         monkeypatch.setattr(db, "db_conn", lambda: _C())
-        # Early-stop only when BOTH option sources are blocked (Alpaca primary,
-        # yfinance fallback) — so block both.
-        monkeypatch.setattr(yfc, "_gate", lambda: False)
-        monkeypatch.setattr(cb._alpaca_cb, "allow", lambda: False)
+        # Early-stop when the DEDICATED options breaker is open (isolated from
+        # the shared price-feed _alpaca_cb).
+        monkeypatch.setattr(cb._alpaca_options_cb, "allow", lambda: False)
         calls = []
         monkeypatch.setattr(osnap, "snapshot_symbol",
                             lambda s: calls.append(s))
