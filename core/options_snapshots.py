@@ -139,12 +139,15 @@ def aggregate_alpaca_options(snapshots: Dict[str, Any]) -> Dict[str, Any]:
 
 def _alpaca_options_snapshot(symbol: str) -> Optional[Dict[str, Any]]:
     """One breaker-gated Alpaca options-snapshot fetch for the front-month
-    window. None = blocked/failed (caller falls back)."""
+    window. Returns {} for no-listed-options; None for a per-symbol miss
+    (rate-limited/errored this run — retried next run).
+
+    NO circuit breaker: the options endpoint is healthy (verified 26/26 raw);
+    the misses come from Alpaca's ACCOUNT rate limit shared with the live
+    price feed. A breaker gate just made the sweep give up early. Instead we
+    retry a 429 in-place a couple of times with backoff, then move on."""
     import os
     from datetime import timedelta
-    from core.circuit_breaker import _alpaca_options_cb as _cb
-    if not _cb.allow():
-        return None
     key = os.getenv("ALPACA_KEY_ID", "")
     sec = os.getenv("ALPACA_SECRET_KEY", "")
     if not (key and sec):
@@ -157,29 +160,20 @@ def _alpaca_options_snapshot(symbol: str) -> Optional[Dict[str, Any]]:
             "expiration_date_gte": today.isoformat(),
             "expiration_date_lte": (today + timedelta(days=_OPT_EXPIRY_WINDOW_DAYS)).isoformat(),
         }
-        r = requests.get(
-            f"{_ALPACA_OPTIONS_BASE}/{symbol.upper()}",
-            headers={"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": sec},
-            params=params, timeout=15,
-        )
-        if r.status_code != 200:
-            # 404/no-options is a valid "no chain", not a breaker failure.
+        url = f"{_ALPACA_OPTIONS_BASE}/{symbol.upper()}"
+        hdr = {"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": sec}
+        for attempt in range(3):
+            r = requests.get(url, headers=hdr, params=params, timeout=15)
+            if r.status_code == 200:
+                return (r.json() or {}).get("snapshots") or {}
             if r.status_code in (403, 404):
-                _cb.record_success()
-                return {}
-            # 429 = rate limit: a soft, expected throttle on a 100-symbol sweep,
-            # NOT a provider outage. Counting it as a breaker failure tripped the
-            # breaker ~26 symbols in and skipped the rest. Back off briefly and
-            # skip this symbol without poisoning the breaker.
-            if r.status_code == 429:
-                time.sleep(1.0)
-                return None
-            _cb.record_failure()
+                return {}   # no listed options — a valid empty row
+            if r.status_code == 429 and attempt < 2:
+                time.sleep(1.0 + attempt)   # account rate limit — back off, retry
+                continue
             return None
-        _cb.record_success()
-        return (r.json() or {}).get("snapshots") or {}
+        return None
     except Exception as exc:
-        _cb.record_failure()
         LOGGER.debug("alpaca options %s: %s", symbol, str(exc)[:80])
         return None
 
@@ -226,17 +220,9 @@ def record_snapshots(symbols: Optional[List[str]] = None, *,
         cur = conn.cursor()
         cur.execute(TABLE_DDL)
     for i, sym in enumerate(symbols):
-        try:
-            from core.circuit_breaker import _alpaca_options_cb as _cb
-            # Stop early only if the dedicated options breaker is open (a real
-            # options-endpoint outage) — not the shared price-feed breaker.
-            if not _cb.allow():
-                skipped_breaker = len(symbols) - i
-                LOGGER.warning("options snapshots: both option sources blocked at "
-                               "symbol %d/%d — stopping early", i + 1, len(symbols))
-                break
-        except Exception:
-            pass
+        # No early-stop: the options endpoint is healthy; per-symbol misses are
+        # Alpaca account-rate-limit throttles that resolve for later symbols and
+        # get retried next run. Attempt every symbol so the run stores all it can.
         snap = snapshot_symbol(sym)
         if snap is None:
             failed += 1

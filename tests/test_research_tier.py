@@ -171,9 +171,10 @@ class TestTrainerTierTag:
 # ── Options collector breaker fix (same PR) ──────────────────────────
 
 class TestCollectorBreakerStop:
-    def test_breaker_open_stops_early_with_honest_count(self, monkeypatch):
+    def test_run_attempts_every_symbol_despite_misses(self, monkeypatch):
+        """No early-stop: a per-symbol miss (rate-limit) must not abort the run;
+        the loop attempts all symbols and stores the ones that succeed."""
         import core.options_snapshots as osnap
-        import core.yfinance_client as yfc
         import core.db as db
 
         class _C:
@@ -182,17 +183,24 @@ class TestCollectorBreakerStop:
             def __enter__(self): return self
             def __exit__(self, *a): return False
 
-        import core.circuit_breaker as cb
         monkeypatch.setattr(db, "db_conn", lambda: _C())
-        # Early-stop when the DEDICATED options breaker is open (isolated from
-        # the shared price-feed _alpaca_cb).
-        monkeypatch.setattr(cb._alpaca_options_cb, "allow", lambda: False)
-        calls = []
-        monkeypatch.setattr(osnap, "snapshot_symbol",
-                            lambda s: calls.append(s))
+        attempted = []
+
+        def fake_snap(s):
+            attempted.append(s)
+            # B is a transient rate-limit miss; A and C succeed.
+            if s == "B":
+                return None
+            return {"symbol": s, "snap_date": "2026-07-18", "ts": 1,
+                    "nearest_expiry": None, "underlying": None,
+                    "call_volume": 10, "put_volume": 5, "call_oi": None,
+                    "put_oi": None, "pcr_volume": 0.5, "pcr_oi": None,
+                    "atm_iv_call": None, "atm_iv_put": None, "available": True}
+
+        monkeypatch.setattr(osnap, "snapshot_symbol", fake_snap)
         out = osnap.record_snapshots(["A", "B", "C"], delay_s=0)
-        assert out["skipped_breaker"] == 3
-        assert out["stored"] == 0 and calls == []
+        assert attempted == ["A", "B", "C"]      # never bailed early
+        assert out["stored"] == 2 and out["failed"] == 1
 
     def test_delay_default_is_modest_for_alpaca(self):
         # Alpaca (primary source) has no yfinance-style 15/min cap, so the
