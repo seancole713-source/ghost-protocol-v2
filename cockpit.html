@@ -622,7 +622,7 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
 .tbl td{padding:10px;border-bottom:1px solid #1a1a1a;color:#ccc;vertical-align:top}
 .tbl tr:last-child td{border-bottom:none}
 .tbl code{font-size:10px;word-break:break-word;white-space:normal;display:inline-block;max-width:100%}
-#sh-list,#pl-open,#pl-resolved,#pl-cycles,#pl-cycle-detail,.pj-list{overflow-x:auto;-webkit-overflow-scrolling:touch}
+#sh-list,#pl-open,#pl-resolved,#pl-cycles,#pl-cycle-detail,.pj-list{overflow-x:auto}
 
 /* ─── Mobile layout (phones) ─── */
 @media (max-width:640px){
@@ -750,6 +750,107 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
     .mvr-stat .s{font-size:10px;color:#777;margin-top:2px}
     .mvr-note{margin-top:12px;font-size:11.5px;color:#888;line-height:1.5}
     .mvr-note b{color:#fbbf24}
+    .mb10{margin-bottom:10px}
+    .mb12{margin-bottom:12px}
+    .mb18{margin-bottom:18px}
+    .mt8{margin-top:8px}
+    .mt10{margin-top:10px}
+    .mt12{margin-top:12px}
+    .center{text-align:center}
+    .flex-col{display:flex;flex-direction:column;gap:8px}
+    .flex-wrap{display:flex;flex-wrap:wrap;gap:10px}
+    .hidden-flex{display:none}
+    .ml-auto{margin-left:auto}
+    .text-333{color:#333}
+    .text-888{color:#888}
+    .text-fbbf24{color:#fbbf24}
+    .text-ff6b6b{color:#ff6b6b}
+    .text-c4b5fd{color:#c4b5fd}
+    .text-cbd5e1{color:#cbd5e1}
+    .fs11{font-size:11px}
+    .fs10{font-size:10px}
+    .weight400{font-weight:400}
+    .sec-sm{margin:16px 0 8px;font-size:9px}
+    .pick-journal-link{color:#c4b5fd}
+    .leg-swatch-win{background:#22c55e;width:10px;height:10px;border-radius:50%}
+    .leg-swatch-loss{background:#ff3b3b;width:10px;height:10px;border-radius:50%}
+    .leg-swatch-expired{background:#6b7280;width:10px;height:10px;border-radius:50%}
+    .pred-empty-overlay{max-width:340px;padding:24px}
+    .pred-empty-ico{font-size:40px;opacity:.5;margin-bottom:10px}
+    .pred-empty-title{color:#cbd5e1;font-size:15px}
+    .pred-empty-copy{color:#6b7280;font-size:12px;margin-top:8px;line-height:1.7}
+    .pred-empty-kicker{margin-top:14px;font-size:11px;color:#8b5cf6;font-weight:700;letter-spacing:.5px}
+    .callout-meta{font-size:11px;color:#999;align-self:center;margin-left:6px}
+    .vol-ratio-alert{color:#fbbf24;font-weight:800}
+    .text-64748b-11{color:#64748b;font-size:11px}
+    .text-64748b-10{color:#64748b;font-size:10px}
+    .text-475569-10{color:#475569;font-size:10px}
+    .text-e2e8f0{color:#e2e8f0}
+    .text-4ade80-10{color:#4ade80;font-size:10px}
+    .text-f87171-10{color:#f87171;font-size:10px}
+    .text-7dd3fc{color:#7dd3fc}
+    .text-a78bfa{color:#a78bfa}
+    .text-fbbf24-strong{color:#fbbf24;font-weight:800}
+    .df-cbd{color:#cbd5e1}
+    .df-swatch-red{background:#ef4444}
+    .df-swatch-green{background:#22c55e;opacity:.85}
+    /* ─── JS template utility classes ─── */
+    .text-86efac{color:#86efac}
+    .text-ccc{color:#ccc}
+    .text-999{color:#999}
+    .text-94a3b8{color:#94a3b8}
+    .text-808080{color:#808080}
+    .text-f5a623{color:#f5a623}
+    .text-1ec77d{color:#1ec77d}
+    .text-8b96a8{color:#8b96a8}
+    .text-aaa{color:#aaa}
+    .text-c4b5fd{color:#c4b5fd}
+    .text-e2e8f0-fw800{color:#e2e8f0;font-weight:800}
+    .text-fbbf24-fw800{color:#fbbf24;font-weight:800}
+    .fs10-c64748b{font-size:10px;color:#64748b}
+    .fs10-c888{font-size:10px;color:#888}
+    .fs10-c8b96a8{font-size:10px;color:#8b96a8}
+    .fs10-c8b96a8-ls{font-size:10px;color:#8b96a8;letter-spacing:.05em}
+    .fs10-c64748b-mt2{font-size:10px;color:#64748b;margin-top:2px}
+    .fs10-c888-mt2{font-size:10px;color:#888;margin-top:2px}
+    .fs11-c64748b{font-size:11px;color:#64748b}
+    .fs11-c999{font-size:11px;color:#999}
+    .fs11-cf5a623{font-size:11px;color:#f5a623}
+    .fs11-c8b96a8{font-size:11px;color:#8b96a8}
+    .fs12-c8b96a8{font-size:12px;color:#8b96a8;margin:0 0 8px}
+    .fs13-fw600-caaa{font-size:13px;font-weight:600;color:#aaa}
+    .fs13{font-size:13px}
+    .fs15-fw700-mt2{font-size:15px;font-weight:700;margin-top:2px}
+    .fw700-c4b5fd-fs12-ls{font-weight:700;color:#c4b5fd;font-size:12px;letter-spacing:.04em}
+    .mt4{margin-top:4px}
+    .mt6{margin-top:6px}
+    .mt10-mw220{margin-top:10px;max-width:220px}
+    .mt24{margin-top:24px}
+    .ml8-fs11-p38{margin-left:8px;font-size:11px;padding:3px 8px}
+    .m4-0-8{margin:4px 0 8px}
+    .pb12{padding-bottom:12px}
+    .tac-m8-0-4{text-align:center;margin:8px 0 4px}
+    .gc1-1{grid-column:1/-1}
+    .flex1-tac-lh34-c999-fs11{flex:1;text-align:center;line-height:34px;color:#999;font-size:11px}
+    .flex1-mw90{flex:1;min-width:90px}
+    .w62-c8b96a8{width:62px;color:#8b96a8}
+    .w42-fw700{width:42px;font-weight:700}
+    .w46{width:46px}
+    .flex1-c8b96a8{flex:1;color:#8b96a8}
+    .w64-tar{width:64px;text-align:right}
+    .w46-tar{width:46px;text-align:right}
+    .pj-row{display:flex;align-items:center;gap:10px;padding:8px 6px;border-bottom:1px solid rgba(255,255,255,.05);font-size:12px}
+    .pj-summary{display:flex;flex-wrap:wrap;gap:14px;background:rgba(255,255,255,.02);padding:12px 14px;border-radius:6px}
+    .mvr-filter-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+    .mvr-card-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px}
+    .mvr-card{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:12px}
+    .mvr-card-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+    .ghost-contract-box{border:1px solid rgba(139,92,246,.35);background:rgba(139,92,246,.06);padding:10px 14px;border-radius:6px}
+    .mt4-c8b96a8{margin-top:4px;color:#8b96a8}
+    .sq-section-label{font-size:10px;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:16px 0 6px}
+    .sq-section-label2{font-size:10px;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:16px 0 6px}
+    .truth-banner-box{background:rgba(255,255,255,.03);padding:10px 14px;border-radius:6px}
+    .truth-banner-label{font-weight:700;letter-spacing:.04em;font-size:12px}
     @media(max-width:560px){.mvr-grid{grid-template-columns:repeat(2,1fr)}.mvr-h1{font-size:20px}}
   </style>
   <section id="movers-board" class="mvr">
@@ -766,7 +867,7 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
       <span class="sep">·</span> Direction edge <b id="mvr-rib-de">&#8212;</b>
       <span class="sep">·</span> Scanning <b>43</b>
     </div>
-    <div id="mvr-contract-banner" style="margin-bottom:18px"></div>
+    <div id="mvr-contract-banner" class="mb18"></div>
     <div id="mvr-tiers"><div class="mvr-empty">Loading squeeze radar&#8230;</div></div>
     <div class="mvr-seclabel">Your Open Picks</div>
     <div class="mvr-card" id="mvr-picks"><div class="mvr-empty">Loading&#8230;</div></div>
@@ -817,9 +918,9 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
         <div class="hero-ticker">NYSE: WOLF · WOLFSPEED</div>
         <div class="hero-price" id="hero-price">—</div>
         <div class="hero-change" id="hero-change">—</div>
-        <div class="hero-truth-strip" id="hero-truth-strip" style="display:none"></div>
+        <div class="hero-truth-strip hidden-flex" id="hero-truth-strip"></div>
         <div class="hero-ah" id="hero-ah"></div>
-        <div id="engine-badge" class="engine-badge live" style="display:none"></div>
+        <div id="engine-badge" class="engine-badge live hidden-flex"></div>
       </div>
       <div class="hero-right">
         <span class="auto-status" id="auto-status" title="Cockpit auto-refreshes; pauses when the tab is hidden"><span class="auto-dot"></span>Auto</span>
@@ -857,7 +958,7 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
         </div>
         <div class="sq-meta" id="sql-meta">Loading…</div>
       </div>
-      <div id="sql-day-chips" class="tp-chips" style="margin-bottom:10px"></div>
+      <div id="sql-day-chips" class="tp-chips mb10"></div>
       <div id="sql-table-wrap"><div class="sq-empty">Loading squeeze daily log…</div></div>
       <div class="sq-foot" id="sql-foot">WIN = session high reached sell target · LOSS = session low hit stop · close P&amp;L vs buy at alert</div>
     </div>
@@ -905,7 +1006,7 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
           <div class="tp-chips" id="tp-chips"></div>
         </div>
       </div>
-      <div class="dp-quality" id="dp-quality" style="display:none"></div>
+      <div class="dp-quality hidden-flex" id="dp-quality"></div>
       <div class="dp-table-wrap" id="dp-table-wrap">
         <div class="dp-empty">Loading daily prediction…</div>
       </div>
@@ -950,13 +1051,13 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
       </div>
       <div id="df-overlay-wrap" class="df-overlay-wrap">
         <div class="df-overlay-pane">
-          <div class="df-pane-h" style="color:#cbd5e1">Overlay comparison <span class="df-pane-tag">actual vs predicted</span></div>
+          <div class="df-pane-h df-cbd">Overlay comparison <span class="df-pane-tag">actual vs predicted</span></div>
           <div class="df-overlay-note" id="df-overlay-note">Solid lines are actual. Dashed lines are Ghost predictions.</div>
           <div class="df-canvas-wrap df-line-wrap"><canvas id="df-overlay-chart"></canvas></div>
           <div class="df-canvas-wrap df-bar-wrap" id="df-overlay-bar-wrap"><canvas id="df-overlay-bar-chart"></canvas></div>
-          <div class="df-bar-legend" id="df-overlay-bar-legend" style="display:none">
-            <span><i class="df-bar-swatch" style="background:#ef4444"></i>Actual open / peak / low / close</span>
-            <span><i class="df-bar-swatch" style="background:#22c55e;opacity:.85"></i>Predicted open / peak / low / close</span>
+          <div class="df-bar-legend hidden-flex" id="df-overlay-bar-legend">
+            <span><i class="df-bar-swatch df-swatch-red"></i>Actual open / peak / low / close</span>
+            <span><i class="df-bar-swatch df-swatch-green"></i>Predicted open / peak / low / close</span>
           </div>
         </div>
       </div>
@@ -965,10 +1066,10 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
   </section>
 
   <!-- ─── Realized equity curve (if you followed every pick) ─── -->
-  <section class="block" id="equity-section" style="display:none">
+  <section class="block hidden-flex" id="equity-section">
     <div class="sec-label">If You Followed Every Pick</div>
     <div class="chart-wrap">
-      <div id="equity-summary" class="kv" style="margin-bottom:12px;color:#888"></div>
+      <div id="equity-summary" class="kv mb12 text-888"></div>
       <div class="chart-canvas-wrap"><canvas id="equity-chart"></canvas></div>
       <div class="chart-legend">
         <span class="leg"><span class="leg-swatch"></span>Equity (sequential compounding, $1k start)</span>
@@ -977,7 +1078,7 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
   </section>
 
   <!-- ─── Pick-outcome donut (design v2) ─── -->
-  <section class="block" id="outcome-section" style="display:none">
+  <section class="block hidden-flex" id="outcome-section">
     <div class="sec-label">Pick Outcomes</div>
     <div class="chart-wrap donut-wrap">
       <div class="donut-box">
@@ -987,18 +1088,18 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
           <div class="donut-total-lbl">resolved</div>
         </div>
       </div>
-      <div id="outcome-legend" class="chart-legend" style="flex-direction:column;gap:8px"></div>
+      <div id="outcome-legend" class="chart-legend flex-col"></div>
     </div>
   </section>
 
   <!-- ─── Short interest / squeeze tile (PR #24 item 11) ─── -->
-  <section class="block" id="short-section" style="display:none">
+  <section class="block hidden-flex" id="short-section">
     <div class="sec-label">Short Interest &middot; Squeeze Context</div>
     <div id="short-tile" class="short-tile"></div>
   </section>
 
   <!-- ─── "Why is WOLF moving?" catalyst timeline (PR #24 item 12) ─── -->
-  <section class="block" id="catalyst-section" style="display:none">
+  <section class="block hidden-flex" id="catalyst-section">
     <div class="sec-label">Why WOLF Is Moving &middot; Catalyst Timeline</div>
     <div id="catalyst-timeline" class="catalyst-timeline"></div>
   </section>
@@ -1014,7 +1115,7 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
   </section>
 
   <!-- ─── Earnings ─── -->
-  <section class="block" id="earnings-section" style="display:none">
+  <section class="block hidden-flex" id="earnings-section">
     <div class="sec-label">Earnings &amp; Revenue</div>
     <div class="earn-row">
       <div class="earn-card">
@@ -1034,7 +1135,7 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
     <div class="analyst-card">
       <h4>Price Targets</h4>
       <div class="target-track" id="target-track"></div>
-      <div id="target-summary" class="truth-note" style="text-align:center;margin-top:8px"></div>
+      <div id="target-summary" class="truth-note center mt8"></div>
     </div>
     <div class="analyst-card">
       <h4>Recommendation Distribution</h4>
@@ -1059,8 +1160,8 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
   <!-- ─── Portfolio ─── -->
   <section class="block" id="portfolio-section">
     <div class="sec-label">My Portfolio</div>
-    <button class="btn-add" id="add-pos-toggle" onclick="toggleAddPos()" style="margin-bottom:12px">+ Add a Position</button>
-    <div class="port-form" id="port-form" style="display:none">
+    <button class="btn-add mb12" id="add-pos-toggle" onclick="toggleAddPos()">+ Add a Position</button>
+    <div class="port-form hidden-flex" id="port-form">
       <h3>Add a Position</h3>
       <div class="form-row">
         <div><label for="p-sym">SYMBOL</label><input id="p-sym" placeholder="WOLF" value="WOLF"></div>
@@ -1094,7 +1195,7 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
   <section class="block" id="v3-pick-section">
     <div class="sec-label" id="v3-pick-label">v3 pick lane</div>
     <div class="v3-pick-sub" id="v3-pick-sub">Silent when gates bind · live pick journal is the scoreboard, not headline accuracy.</div>
-    <div id="v3-squeeze-alerts" style="display:none"></div>
+    <div id="v3-squeeze-alerts" class="hidden-flex"></div>
     <div id="sgrid"><div class="empty"><div class="ico">&#9203;</div>Loading picks…</div></div>
   </section>
 
@@ -1110,7 +1211,7 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
       <div class="chart-canvas-wrap tall">
         <canvas id="pred-chart"></canvas>
       </div>
-      <div id="zone-callouts" style="display:flex;gap:10px;margin-top:10px;flex-wrap:wrap"></div>
+      <div id="zone-callouts" class="flex-wrap mt10"></div>
       <div class="chart-legend">
         <span class="leg"><span class="leg-swatch"></span>WOLF live</span>
         <span class="leg"><span class="leg-swatch band-up"></span>Predicted band (BUY)</span>
@@ -1125,11 +1226,11 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
   <!-- ─── Pick Journal (blueprint module 7 — the credibility ledger) ─── -->
   <section class="block" id="pick-journal-section">
     <div class="sec-label">Pick Journal &middot; live fired picks (not model holdout calibration)</div>
-    <div id="ghost-contract-banner" style="margin-bottom:12px"></div>
-    <div id="pj-verdict" style="margin-bottom:12px"></div>
-    <div id="pj-metrics" style="margin-bottom:12px"></div>
+    <div id="ghost-contract-banner" class="mb12"></div>
+    <div id="pj-verdict" class="mb12"></div>
+    <div id="pj-metrics" class="mb12"></div>
     <div class="pj-list" id="pj-list"><div class="empty"><div class="ico">&#9203;</div>Loading pick journal…</div></div>
-    <div id="pj-more-wrap" style="text-align:center;margin-top:10px;display:none">
+    <div id="pj-more-wrap" class="center mt10 hidden-flex">
       <button class="btn-add" id="pj-more" onclick="loadMorePickJournal()">Load older picks</button>
     </div>
   </section>
@@ -1143,7 +1244,7 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
   <!-- ─── Signal History (roadmap #4c — every engine evaluation) ─── -->
   <section class="block" id="signal-history-section">
     <div class="sec-label">Signal History &middot; every scan</div>
-    <div id="sh-summary" class="kv" style="margin-bottom:10px;color:#888"></div>
+    <div id="sh-summary" class="kv mb10 text-888"></div>
     <div id="sh-list"><div class="empty"><div class="ico">&#9203;</div>Loading signal history…</div></div>
   </section>
 
@@ -1156,12 +1257,12 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
       <button type="button" class="pl-pill" data-days="30" onclick="setPerfLogDays(30)">30 days</button>
     </div>
     <div id="pl-summary" class="pl-kpi"></div>
-    <div id="pl-meta" class="kv" style="margin-bottom:10px;color:#888"></div>
-    <div class="sec-label" style="margin:16px 0 8px;font-size:9px">Open picks</div>
+    <div id="pl-meta" class="kv mb10 text-888"></div>
+    <div class="sec-label sec-sm">Open picks</div>
     <div id="pl-open"><div class="empty"><div class="ico">&#9203;</div>Loading…</div></div>
-    <div class="sec-label" style="margin:16px 0 8px;font-size:9px">Recently resolved</div>
+    <div class="sec-label sec-sm">Recently resolved</div>
     <div id="pl-resolved"><div class="empty"><div class="ico">&#9203;</div>Loading…</div></div>
-    <div class="sec-label" style="margin:16px 0 8px;font-size:9px">Scan cycles <span style="color:#888;font-weight:400">· click row for per-symbol detail</span></div>
+    <div class="sec-label sec-sm">Scan cycles <span class="text-888 weight400">· click row for per-symbol detail</span></div>
     <div id="pl-cycles"><div class="empty"><div class="ico">&#9203;</div>Loading cycles…</div></div>
     <div id="pl-cycle-detail"></div>
   </section>
@@ -1169,10 +1270,10 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
   <!-- ─── Performance Attribution (roadmap #4b — what separates winners) ─── -->
   <section class="block" id="attribution-section">
     <div class="sec-label">Performance Attribution &middot; winners vs losers</div>
-    <div id="attr-summary" class="kv" style="margin-bottom:10px;color:#888"></div>
+    <div id="attr-summary" class="kv mb10 text-888"></div>
     <div id="attr-features"><div class="empty"><div class="ico">&#9203;</div>Loading attribution…</div></div>
-    <div id="attr-regime" style="margin-top:12px"></div>
-    <div id="attr-components" style="margin-top:12px"></div>
+    <div id="attr-regime" class="mt12"></div>
+    <div id="attr-components" class="mt12"></div>
   </section>
 
   <!-- ─── Truth mode (PR #6 panels, collapsible) ─── -->
@@ -1196,8 +1297,8 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
           <div class="truth-kv" id="t-sys-kv"></div>
         </div>
       </div>
-      <p class="truth-note" style="text-align:center;margin-top:10px;font-size:11px">
-        Operator controls (training, calibration, audit, coverage, model lineage, Telegram alerts) moved to <a href="/admin" style="color:#fbbf24">/admin</a> &mdash; secured login.
+      <p class="truth-note center mt10 fs11">
+        Operator controls (training, calibration, audit, coverage, model lineage, Telegram alerts) moved to <a href="/admin" class="text-fbbf24">/admin</a> &mdash; secured login.
       </p>
     </div>
   </section>
@@ -1207,7 +1308,7 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
 <div class="footer">
   <span>Ghost Protocol v2 &middot; WOLF command center</span>
   <span>Open: <b id="f-open">&#8212;</b></span>
-  <span style="margin-left:auto;color:#333">Refresh: 60s · Price feed: Alpaca → Polygon → yfinance → Stooq</span>
+  <span class="ml-auto text-333">Refresh: 60s · Price feed: Alpaca → Polygon → yfinance → Stooq</span>
 </div>
 
 <script src="/static/ghost.js"></script>
@@ -1293,7 +1394,7 @@ function renderOutcomeDonut(recent){
   });
   var leg = document.getElementById('outcome-legend');
   leg.innerHTML = [['Win', w, '#22c55e'], ['Loss', l, '#ff3b3b'], ['Expired', e, '#6b7280']].map(function(x){
-    return '<span class="leg"><span class="leg-swatch" style="background:' + x[2] + ';width:10px;height:10px;border-radius:50%"></span>'
+    return '<span class="leg"><span class="leg-swatch ' + (x[0] === 'Win' ? 'leg-swatch-win' : x[0] === 'Loss' ? 'leg-swatch-loss' : 'leg-swatch-expired') + '"></span>'
       + x[0] + ' · ' + x[1] + ' (' + Math.round(x[1] / total * 100) + '%)</span>';
   }).join('');
 }
@@ -1391,7 +1492,7 @@ function _renderV3PickSectionHead(ctx){
   if(ctx && ctx.postFalsification){
     lbl.textContent = 'v3 pick lane · post-falsification';
     sub.innerHTML = 'Legacy 80% claim retired · gates prefer <b>silence</b> over miscalibrated high-confidence calls. '
-      + 'Track live win rate and expectancy in the <a href="#pick-journal-section" style="color:#c4b5fd">pick journal</a> — not hero confidence labels.';
+      + 'Track live win rate and expectancy in the <a href="#pick-journal-section" class="pick-journal-link">pick journal</a> — not hero confidence labels.';
   } else if(ctx && ctx.watching){
     lbl.textContent = 'v3 pick lane · watching';
     sub.textContent = 'No pick cleared the confidence floor in ' + ctx.watchDays + ' day'
@@ -1530,7 +1631,7 @@ function renderGhostScore(gs, watching, truth){
     var lvl = gsBarLevel(r[1], w);
     return '<div class="gs-bar-row">'
       + '<div class="gs-bar-lbl">' + r[0] + '</div>'
-      + '<div class="gs-bar-track"><div class="gs-bar-fg ' + lvl + '" style="width:' + pct + '%"></div></div>'
+      + '<div class="gs-bar-track"><div class="gs-bar-fg ' + lvl + '" data-style-width="' + pct + '%"></div></div>'
       + '<div class="gs-bar-val">' + (Number(r[1]).toFixed(1)) + ' / ' + w + '</div>'
       + '</div>';
   }).join('');
@@ -1639,11 +1740,11 @@ function renderHero(price, watching, truth){
   // for 7+ days. Post-falsification adds live journal context.
   if(watching && watching.watching){
     ce.className = 'hero-change flat';
-    ce.innerHTML = '<span style="color:#888">WATCHING &mdash; no v3 pick cleared the confidence floor in '
+    ce.innerHTML = '<span class="text-888">WATCHING &mdash; no v3 pick cleared the confidence floor in '
       + watching.days + ' day' + (watching.days === 1 ? '' : 's') + '</span>';
   } else if(truth && truth.postFalsification && truth.liveTotal > 0){
     ce.className = 'hero-change flat';
-    ce.innerHTML = '<span style="color:#888">Truth mode &mdash; live pick WR <b style="color:#ff6b6b">'
+    ce.innerHTML = '<span class="text-888">Truth mode &mdash; live pick WR <b class="text-ff6b6b">'
       + truth.liveWr + '%</b> (' + truth.liveWins + 'W/' + truth.liveLosses + 'L) · model confidence ≠ tradable edge</span>';
   }
   _renderHeroTruthStrip(truth);
@@ -1891,7 +1992,7 @@ function renderPlay(picks, watching, truth){
       + '<div class="lv t"><div class="lv-label">TARGET</div><div class="lv-val">' + fmtPrice(top.target_price) + '</div></div>'
       + '<div class="lv s"><div class="lv-label">STOP</div><div class="lv-val">' + fmtPrice(top.stop_price) + '</div></div>'
       + '</div>'
-      + '<div class="conf-bar"><div class="conf-fill ' + cc + '" style="width:' + (decay.now*100) + '%"></div></div>'
+      + '<div class="conf-bar"><div class="conf-fill ' + cc + '" data-style-width="' + (decay.now*100) + '%"></div></div>'
       + '<div class="conf-meta"><span>' + sl + '</span><span>' + confLabel + '</span></div>'
       + '<div class="decay-line">&#9203; ' + timeLeft(top.expires_at)
       + (decay.atExpiry != null ? ' &middot; decays to <b>' + Math.round(decay.atExpiry*100) + '%</b> by expiry' : '')
@@ -1938,13 +2039,13 @@ function renderPredictionChart(history, predictions){
   if(!points.length && !preds.length){
     canvas.style.display = 'none';
     emptyOverlay.style.display = 'flex';
-    emptyOverlay.innerHTML = '<div style="max-width:340px;padding:24px">'
-      + '<div style="font-size:40px;opacity:.5;margin-bottom:10px">&#128202;</div>'
-      + '<b style="color:#cbd5e1;font-size:15px">No predictions in this window</b>'
-      + '<div style="color:#6b7280;font-size:12px;margin-top:8px;line-height:1.7">'
+    emptyOverlay.innerHTML = '<div class="pred-empty-overlay">'
+      + '<div class="pred-empty-ico">&#128202;</div>'
+      + '<b class="pred-empty-title">No predictions in this window</b>'
+      + '<div class="pred-empty-copy">'
       + 'No WOLF picks were issued in the selected range. The engine scans on a market-aware '
       + 'cadence and fires only when a signal clears the floor.</div>'
-      + '<div style="margin-top:14px;font-size:11px;color:#8b5cf6;font-weight:700;letter-spacing:.5px">'
+      + '<div class="pred-empty-kicker">'
       + 'TRY A WIDER RANGE ABOVE &middot; OR WAIT FOR THE NEXT SCAN</div></div>';
     var z = document.getElementById('zone-callouts');
     if(z) z.innerHTML = '';
@@ -2038,7 +2139,7 @@ function renderPredictionChart(history, predictions){
         + '<span class="zp-val">$'+openPick.buy_target.toFixed(2)+'</span></div>'
         + '<div class="zone-pill sell"><span class="zp-lbl">'+sellLbl+'</span>'
         + '<span class="zp-val">$'+openPick.sell_target.toFixed(2)+'</span></div>'
-        + '<div style="font-size:11px;color:#999;align-self:center;margin-left:6px">'
+      + '<div class="callout-meta">'
         + Math.round((openPick.confidence||0)*100)+'% confident'
         + (openPick.expires_at ? ' · '+timeLeft(openPick.expires_at) : '')
         + '</div>';
@@ -2118,7 +2219,7 @@ function renderStats(s){
   var volRatioCell = '—';
   if(s.volume_ratio != null){
     volRatioCell = s.volume_alert
-      ? '<span style="color:#fbbf24;font-weight:800">' + s.volume_ratio.toFixed(2) + 'x avg</span>'
+      ? '<span class="vol-ratio-alert">' + s.volume_ratio.toFixed(2) + 'x avg</span>'
       : s.volume_ratio.toFixed(2) + 'x avg';
   }
   // Sector cell — short summary
@@ -2237,20 +2338,21 @@ function renderAnalyst(a){
     var range = hi - lo;
     function pct(v){ return Math.max(0, Math.min(100, ((v - lo) / range) * 100)); }
     var html = '<div class="target-line"></div>';
-    html += '<div class="target-marker" style="left:0%"></div>';
-    html += '<div class="target-marker" style="left:100%"></div>';
-    html += '<div class="target-label" style="left:0%">Low<span class="lv">$'+lo.toFixed(2)+'</span></div>';
+    html += '<div class="target-marker" data-style-left="0%"></div>';
+    html += '<div class="target-marker" data-style-left="100%"></div>';
+    html += '<div class="target-label" data-style-left="0%">Low<span class="lv">$'+lo.toFixed(2)+'</span></div>';
     if(avg != null){
       var ap = pct(avg);
-      html += '<div class="target-marker" style="left:'+ap+'%"></div>';
-      html += '<div class="target-label" style="left:'+ap+'%">Avg<span class="lv">$'+avg.toFixed(2)+'</span></div>';
+      html += '<div class="target-marker" data-style-left="'+ap+'%"></div>';
+      html += '<div class="target-label" data-style-left="'+ap+'%">Avg<span class="lv">$'+avg.toFixed(2)+'</span></div>';
     }
-    html += '<div class="target-label" style="left:100%">High<span class="lv">$'+hi.toFixed(2)+'</span></div>';
+    html += '<div class="target-label" data-style-left="100%">High<span class="lv">$'+hi.toFixed(2)+'</span></div>';
     if(cur != null){
       var cp = pct(cur);
-      html += '<div class="target-pin cur" style="left:'+Math.max(0,Math.min(100,cp))+'%">Current $'+cur.toFixed(2)+'</div>';
+      html += '<div class="target-pin cur" data-style-left="'+Math.max(0,Math.min(100,cp))+'%">Current $'+cur.toFixed(2)+'</div>';
     }
     track.innerHTML = html;
+    _applyDataStyles(track);
     summary.textContent = (a.analyst_count != null ? a.analyst_count + ' analysts · ' : '')
       + (avg != null && cur != null ? 'Avg target is ' + (avg > cur ? (((avg-cur)/cur*100).toFixed(1)+'% above') : (((cur-avg)/cur*100).toFixed(1)+'% below')) + ' current price' : '');
   } else {
@@ -2261,7 +2363,7 @@ function renderAnalyst(a){
   var rec = a.recommendations || {};
   var total = (rec.strong_buy||0) + (rec.buy||0) + (rec.hold||0) + (rec.underperform||0) + (rec.sell||0);
   if(total === 0){
-    bar.innerHTML = '<div style="flex:1;text-align:center;line-height:34px;color:#999;font-size:11px">No recommendations</div>';
+    bar.innerHTML = '<div class="flex1-tac-lh34-c999-fs11">No recommendations</div>';
     legend.innerHTML = '';
   } else {
     var segs = [
@@ -2274,13 +2376,13 @@ function renderAnalyst(a){
     bar.innerHTML = segs.map(function(s){
       var w = s[2] / total * 100;
       if(w === 0) return '';
-      return '<div class="rec-seg ' + s[0] + '" style="width:' + w + '%" title="' + s[1] + ': ' + s[2] + '">'
+      return '<div class="rec-seg ' + s[0] + '" data-style-width="' + w + '%" title="' + s[1] + ': ' + s[2] + '">'
         + (w >= 8 ? s[2] : '') + '</div>';
     }).join('');
     legend.innerHTML = segs.map(function(s){
       var w = s[2] / total * 100;
-      return '<div class="ll"><div class="ll-dot" style="background:' + segColor(s[0]) + '"></div>'
-        + s[1] + ' · <b style="color:#ccc">' + s[2] + '</b> (' + w.toFixed(0) + '%)</div>';
+      return '<div class="ll"><div class="ll-dot" data-style-background="' + segColor(s[0]) + '"></div>'
+        + s[1] + ' · <b class="text-ccc">' + s[2] + '</b> (' + w.toFixed(0) + '%)</div>';
     }).join('');
   }
 
@@ -2322,7 +2424,7 @@ function renderNews(n){
   var nw = document.getElementById('news-list');
   var articles = (n && n.articles) || [];
   if(!articles.length){
-    nw.innerHTML = '<div class="info-box">No articles in this category.' + ((n&&n.error)?' <span style="color:#999">('+escHtml(n.error)+')</span>':'') + '</div>';
+    nw.innerHTML = '<div class="info-box">No articles in this category.' + ((n&&n.error)?' <span class="text-999">('+escHtml(n.error)+')</span>':'') + '</div>';
     return;
   }
   nw.innerHTML = articles.slice(0, 20).map(function(a){
@@ -2399,7 +2501,7 @@ function _dfFmtPrice(v){
 
 function _dfPriceBlock(obj, color){
   if(!obj) return '—';
-  return '<div class="df-price-col" style="color:'+color+'">'
+  return '<div class="df-price-col" data-style-color="'+color+'">'
     + '<div><span class="df-price-lbl">Open</span>' + _dfFmtPrice(obj.open) + '</div>'
     + '<div><span class="df-price-lbl">Peak</span>' + _dfFmtPrice(obj.high) + '</div>'
     + '<div><span class="df-price-lbl">Low</span>' + _dfFmtPrice(obj.low) + '</div>'
@@ -2578,12 +2680,12 @@ function _renderDfTable(days){
     var act = d.actual;
     var sc = d.score || {};
     var live = !d.resolved ? '<span class="df-live-tag">LIVE</span>' : '';
-    var meta = '<div style="font-size:10px;color:#64748b;margin-top:4px">forecast ' + escHtml(d.forecast_date || '') + '</div>';
+    var meta = '<div class="text-64748b-10 mt4">forecast ' + escHtml(d.forecast_date || '') + '</div>';
     if(pred.up_prob != null){
-      meta += '<div style="font-size:10px;color:#475569">p=' + pred.up_prob + ' · ' + escHtml(pred.bias || '') + '</div>';
+      meta += '<div class="text-475569-10">p=' + pred.up_prob + ' · ' + escHtml(pred.bias || '') + '</div>';
     }
     return '<tr>'
-      + '<td data-label="Session"><b style="color:#e2e8f0">' + escHtml(d.target_date || '—') + '</b>' + live + meta + '</td>'
+      + '<td data-label="Session"><b class="text-e2e8f0">' + escHtml(d.target_date || '—') + '</b>' + live + meta + '</td>'
       + '<td class="df-num" data-label="Ghost predicted">' + _dfPriceBlock(pred, '#86efac') + '</td>'
       + '<td class="df-num" data-label="Actual">' + (act ? _dfPriceBlock(act, '#fca5a5') : '—') + '</td>'
       + '<td data-label="Open rate">' + _dfRatePill(sc.open_rate != null ? sc.open_rate : sc.open_pct) + '</td>'
@@ -2592,7 +2694,7 @@ function _renderDfTable(days){
       + '<td data-label="Close rate">' + _dfRatePill(sc.close_rate != null ? sc.close_rate : sc.close_pct) + '</td>'
       + '<td data-label="Level closeness">' + (sc.overall_pct != null
         ? '<span class="' + _dfScoreClass(sc.overall_pct) + '">' + sc.overall_pct + '%</span>'
-          + (sc.direction_ok ? ' <span style="color:#4ade80;font-size:10px">dir ✓</span>' : ' <span style="color:#f87171;font-size:10px">dir ✗</span>')
+          + (sc.direction_ok ? ' <span class="text-4ade80-10">dir ✓</span>' : ' <span class="text-f87171-10">dir ✗</span>')
         : '—') + '</td>'
       + '</tr>';
   }).join('');
@@ -2661,13 +2763,13 @@ function _dpFormatDate(iso){
 function _dpPeriodNext(day){
   if(!day) return '—';
   var b = day.target_date || day.predict_date || '';
-  return '<span style="color:#64748b;font-size:11px">Next session</span> · <b style="color:#86efac">' + escHtml(_dpFormatDate(b)) + '</b>';
+  return '<span class="text-64748b-11">Next session</span> · <b class="text-86efac">' + escHtml(_dpFormatDate(b)) + '</b>';
 }
 
 function _dpPeriodMarket(day){
   if(!day) return '—';
   var b = day.target_date || day.market_date || day.forecast_date || 'last session';
-  return '<span style="color:#64748b;font-size:11px">Last full session</span> · ' + escHtml(_dpFormatDate(b));
+  return '<span class="text-64748b-11">Last full session</span> · ' + escHtml(_dpFormatDate(b));
 }
 
 function _dpScorePill(score, pending){
@@ -2745,7 +2847,7 @@ function _dpLiveDate(live){
   var d = live.panel_date || live.market_date;
   var dText = d ? _dpFormatDate(d) : '—';
   var sess = live.session_label || live.session || '';
-  return '<span style="color:#64748b;font-size:11px">' + escHtml(labelText) + '</span> · <b style="color:#7dd3fc">' + escHtml(dText) + '</b>'
+  return '<span class="text-64748b-11">' + escHtml(labelText) + '</span> · <b class="text-7dd3fc">' + escHtml(dText) + '</b>'
     + (sess && sess !== 'Closed' && label === 'today' ? ' · ' + escHtml(sess) : '');
 }
 
@@ -2788,10 +2890,10 @@ function _dpModelMessage(g, sym){
       : r === 'label_type_mismatch' ? 'pre-v3.2 label type'
       : r;
     var fail = g.last_train_fail ? ' Last retrain: <b>' + escHtml(g.last_train_fail) + '</b>.' : '';
-    return '<span style="color:#fbbf24">' + escHtml(sym) + '</span> has a stored model but it is not serveable (<b>' + escHtml(detail) + '</b>).'
-      + fail + ' Run <a href="/admin" style="color:#a78bfa">/admin → Train Now</a> after deploy.';
+    return '<span class="text-fbbf24-strong">' + escHtml(sym) + '</span> has a stored model but it is not serveable (<b>' + escHtml(detail) + '</b>).'
+      + fail + ' Run <a href="/admin" class="text-a78bfa">/admin → Train Now</a> after deploy.';
   }
-  return '<span style="color:#fbbf24">' + escHtml(sym) + '</span> needs a trained v3 model. Train in <a href="/admin" style="color:#a78bfa">/admin</a>.';
+  return '<span class="text-fbbf24-strong">' + escHtml(sym) + '</span> needs a trained v3 model. Train in <a href="/admin" class="text-a78bfa">/admin</a>.';
 }
 
 async function loadTodayPredictionPanel(isCloseRefresh){
@@ -2883,15 +2985,15 @@ function _sqCompLine(p){
 function _sqDriftInner(p){
   if(p == null || p.gap_pct == null || p.live_price == null){
     if(p && p.live_price != null){
-      return _fmtUsd(p.live_price) + '<br><span style="color:#64748b;font-size:10px">no alert yet</span>';
+      return _fmtUsd(p.live_price) + '<br><span class="fs10-c64748b">no alert yet</span>';
     }
-    return '<span style="color:#64748b">—</span>';
+    return '<span class="text-64748b-11">—</span>';
   }
   var st = p.drift_status || 'below';
   var sign = p.gap_pct > 0 ? '+' : '';
   return _fmtUsd(p.live_price)
     + '<br><span class="sq-drift ' + escHtml(st) + '">' + sign + Number(p.gap_pct).toFixed(2) + '% vs alert</span>'
-    + '<br><span style="color:#64748b;font-size:10px">alert ' + _fmtUsd(p.alert_buy || p.buy) + '</span>';
+    + '<br><span class="fs10-c64748b">alert ' + _fmtUsd(p.alert_buy || p.buy) + '</span>';
 }
 
 function _sqDriftCell(p){
@@ -2922,7 +3024,7 @@ function _sqTradeCells(p, withStop){
   var html = '<td class="sq-num">' + _fmtUsd(buy) + '</td>'
     + '<td class="sq-num">' + _fmtUsd(sell) + '</td>';
   if(withStop){
-    html += '<td class="sq-num" style="color:#94a3b8">' + (p.stop != null ? _fmtUsd(p.stop) : '—') + '</td>';
+    html += '<td class="sq-num text-94a3b8">' + (p.stop != null ? _fmtUsd(p.stop) : '—') + '</td>';
   }
   html += '<td class="sq-score">' + _sqScore(p)
     + (_sqCompLine(p) ? '<span class="sq-comp">' + escHtml(_sqCompLine(p)) + '</span>' : '')
@@ -3004,7 +3106,7 @@ function _renderSqueezePicks(data){
       }).join('');
       var alertBlock = '';
       if(sessionAlerts.length){
-        alertBlock = '<div style="font-size:10px;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:16px 0 6px">Telegram alerts this session</div>'
+        alertBlock = '<div class="sq-section-label">Telegram alerts this session</div>'
           + '<table class="sq-table"><thead><tr>'
           + '<th>Stock</th><th>Buy</th><th>Sell</th><th>Live vs alert</th><th>Score</th><th>P(+3% 60m)</th><th>Conf</th><th>Peak</th>'
           + '</tr></thead><tbody>'
@@ -3022,9 +3124,9 @@ function _renderSqueezePicks(data){
       }
       var driftBlock = _sqDriftSummaryBlock(data.live_drift, 'Ghost prediction vs live · Telegram alert buy');
       wrap.innerHTML = driftBlock
-        + '<div class="sq-empty" style="padding-bottom:12px"><b>' + emptyTitle + '</b><br>' + msg + '</div>'
+        + '<div class="sq-empty pb12"><b>' + emptyTitle + '</b><br>' + msg + '</div>'
         + alertBlock
-        + '<div style="font-size:10px;color:#64748b;letter-spacing:1px;text-transform:uppercase;margin:16px 0 6px">'
+        + '<div class="sq-section-label">'
         + (stale ? 'Last session snapshot (not live) · ' : '')
         + 'Top movers · buy / sell now (scorecard v1)</div>'
         + '<table class="sq-table"><thead><tr>'
@@ -3047,7 +3149,7 @@ function _renderSqueezePicks(data){
       + _sqTradeCells(p, true)
       + _sqDriftCell(p)
       + '<td class="sq-conf">' + (p.confidence_pct != null ? p.confidence_pct + '%' : '—') + '</td>'
-      + '<td style="color:#64748b;font-size:11px">RVOL ' + (p.rvol != null ? Number(p.rvol).toFixed(1) + '×' : '—')
+      + '<td class="fs11-c64748b">RVOL ' + (p.rvol != null ? Number(p.rvol).toFixed(1) + '×' : '—')
       + ' · peak +' + (p.peak_move_pct != null ? Number(p.peak_move_pct).toFixed(1) : '—') + '%'
       + (p.above_vwap === true ? ' · above VWAP' : (p.above_vwap === false ? ' · below VWAP' : ''))
       + '</td>'
@@ -3095,7 +3197,7 @@ function _sqPct(n, digits){
 
 function _sqActualLine(row){
   if(row.session_close == null){
-    return '<span style="color:#64748b">Awaiting EOD resolve</span>';
+    return '<span class="text-64748b-11">Awaiting EOD resolve</span>';
   }
   return '<div class="sq-actual">O ' + _fmtUsd(row.session_open)
     + ' · H ' + _fmtUsd(row.session_high)
@@ -3152,22 +3254,22 @@ function _renderSqueezeDailyLog(data, focusDay){
       var closeGap = r.target_gap_pct;
       var gapCls = closeGap == null ? '' : (closeGap >= 0 ? ' sq-gap-pos' : ' sq-gap-neg');
       var liveCell = r.outcome
-        ? '<span style="color:#64748b">—</span>'
-        : (r.live_price != null ? _sqDriftInner(r) : '<span style="color:#64748b">Awaiting quote</span>');
+        ? '<span class="text-64748b-11">—</span>'
+        : (r.live_price != null ? _sqDriftInner(r) : '<span class="text-64748b-11">Awaiting quote</span>');
       return '<tr>'
         + '<td><span class="sq-sym">' + escHtml(r.symbol) + '</span>'
-        + '<div style="font-size:10px;color:#64748b;margin-top:2px">' + escHtml(src) + ' · ' + escHtml(r.kind || '') + '</div></td>'
-        + '<td class="sq-num">' + _fmtUsd(r.buy) + '<br><span style="color:#64748b;font-size:10px">sell ' + _fmtUsd(r.sell) + '</span>'
-        + '<br><span style="color:#64748b;font-size:10px">stop ' + _fmtUsd(r.stop) + '</span></td>'
+        + '<div class="fs10-c64748b-mt2">' + escHtml(src) + ' · ' + escHtml(r.kind || '') + '</div></td>'
+        + '<td class="sq-num">' + _fmtUsd(r.buy) + '<br><span class="fs10-c64748b">sell ' + _fmtUsd(r.sell) + '</span>'
+        + '<br><span class="fs10-c64748b">stop ' + _fmtUsd(r.stop) + '</span></td>'
         + '<td class="sq-num">' + liveCell + '</td>'
         + '<td>' + _sqActualLine(r) + '</td>'
         + '<td>' + _sqOutcomeBadge(r.outcome)
-        + (r.close_pnl_pct != null ? '<div style="margin-top:4px;font-size:10px">Close vs buy: <span class="' + (r.close_pnl_pct >= 0 ? 'sq-gap-pos' : 'sq-gap-neg') + '">' + _sqPct(r.close_pnl_pct, 2) + '</span></div>' : '')
-        + (closeGap != null ? '<div style="font-size:10px;color:#64748b">Close vs sell: <span class="' + gapCls.trim() + '">' + _sqPct(closeGap, 2) + '</span></div>' : '')
+        + (r.close_pnl_pct != null ? '<div class="mt4 fs10">Close vs buy: <span class="' + (r.close_pnl_pct >= 0 ? 'sq-gap-pos' : 'sq-gap-neg') + '">' + _sqPct(r.close_pnl_pct, 2) + '</span></div>' : '')
+        + (closeGap != null ? '<div class="fs10-c64748b">Close vs sell: <span class="' + gapCls.trim() + '">' + _sqPct(closeGap, 2) + '</span></div>' : '')
         + '</td>'
         + '<td class="sq-score">' + (r.squeeze_score != null ? Math.round(r.squeeze_score) : '—')
-        + '<div style="font-size:10px;color:#64748b;margin-top:2px">P(+3%) ' + (r.p_continue_3pct_60m != null ? Math.round(r.p_continue_3pct_60m) + '%' : '—') + '</div></td>'
-        + '<td style="font-size:11px;color:#64748b">RVOL ' + (r.rvol != null ? Number(r.rvol).toFixed(1) + '×' : '—')
+        + '<div class="fs10-c64748b-mt2">P(+3%) ' + (r.p_continue_3pct_60m != null ? Math.round(r.p_continue_3pct_60m) + '%' : '—') + '</div></td>'
+        + '<td class="fs11-c64748b">RVOL ' + (r.rvol != null ? Number(r.rvol).toFixed(1) + '×' : '—')
         + '<br>peak +' + (r.peak_move_pct != null ? Number(r.peak_move_pct).toFixed(1) : '—') + '%'
         + (r.hit_target ? '<br><span class="sq-gap-pos">hit sell</span>' : '')
         + (r.hit_stop ? '<br><span class="sq-gap-neg">hit stop</span>' : '')
@@ -3220,7 +3322,7 @@ async function loadDailyForecastScorecard(){
     await ensureChartJs();
     var g = await _fetchJson('/api/wolf/daily-forecast-scorecard?symbol=' + encodeURIComponent(sym) + '&days=14', {ok:false});
     if(!g || g.ok === false){
-      sumEl.innerHTML = 'Forecast unavailable for <b style="color:#e2e8f0">' + escHtml(sym) + '</b>.';
+      sumEl.innerHTML = 'Forecast unavailable for <b class="text-e2e8f0">' + escHtml(sym) + '</b>.';
       return;
     }
     if(!g.has_model){
@@ -3232,7 +3334,7 @@ async function loadDailyForecastScorecard(){
       return;
     }
     if(g.reason === 'insufficient_bars'){
-      sumEl.innerHTML = '<b style="color:#fbbf24">' + escHtml(sym) + '</b> has a model but price history is too thin for forecasts'
+      sumEl.innerHTML = '<b class="text-fbbf24">' + escHtml(sym) + '</b> has a model but price history is too thin for forecasts'
         + (g.bar_count != null ? ' (' + g.bar_count + ' bars)' : '') + '.';
       _renderDfCharts([]);
       _applyDfViewMode();
@@ -3241,15 +3343,15 @@ async function loadDailyForecastScorecard(){
     }
     var sm = g.summary || {};
     var staleTag = g.data_stale
-      ? ' · <span style="color:#fbbf24">last trade ' + escHtml(g.last_bar_date || '—') + '</span>'
+      ? ' · <span class="text-fbbf24">last trade ' + escHtml(g.last_bar_date || '—') + '</span>'
       : '';
-    sumEl.innerHTML = '<span style="color:#e2e8f0;font-weight:800">' + escHtml(sym) + '</span> · '
+    sumEl.innerHTML = '<span class="text-e2e8f0-fw800">' + escHtml(sym) + '</span> · '
       + (sm.scored_days || 0) + ' scored sessions · '
       + '<span title="Direction hit rate — the trading-relevant number (audit: headline metric)"><b>Direction '
       + (sm.direction_hit_rate_pct != null ? '<span class="' + (sm.direction_hit_rate_pct >= 55 ? 'pos' : (sm.direction_hit_rate_pct < 50 ? 'neg' : '')) + '">' + sm.direction_hit_rate_pct + '%</span>' : '—')
       + '</b></span> · '
       + '<span title="OHLC level-band closeness — telemetry only, NOT prediction accuracy. 96% here beside coin-flip direction means levels were near but calls were wrong.">level closeness '
-      + (sm.avg_overall_pct != null ? (sm.avg_overall_pct + '% <span style="color:#808080">(telemetry)</span>') : '—')
+      + (sm.avg_overall_pct != null ? (sm.avg_overall_pct + '% <span class="text-808080">(telemetry)</span>') : '—')
       + '</span>'
       + (sm.model_accuracy_holdout_pct != null ? ' · holdout classifier ' + sm.model_accuracy_holdout_pct + '%' : '')
       + (sm.calibration_brier != null ? ' · <span title="Model gate-slice Brier at last retrain — not live pick journal">holdout Brier ' + sm.calibration_brier + '</span>' : '')
@@ -3345,7 +3447,7 @@ function renderPortfolioLocked(){
   var pw = document.getElementById('ppositions');
   var gp = document.getElementById('gp-section');
   if(tw) tw.innerHTML = '';
-  if(pw) pw.innerHTML = '<div class="empty"><div class="ico">&#128274;</div>Sign in at <a href="/admin">/admin</a> to view portfolio.<br><button class="btn-add" style="margin-top:10px;max-width:220px" onclick="loadPortfolio()">Load portfolio</button></div>';
+  if(pw) pw.innerHTML = '<div class="empty"><div class="ico">&#128274;</div>Sign in at <a href="/admin">/admin</a> to view portfolio.<br><button class="btn-add mt10-mw220" onclick="loadPortfolio()">Load portfolio</button></div>';
   if(gp) gp.innerHTML = '';
 }
 
@@ -3410,11 +3512,11 @@ async function loadPortfolio(){
     var mySyms = ps.map(function(p){return (p.symbol||'').toUpperCase()});
     var matched = (pd.active||[]).filter(function(p){return mySyms.indexOf((p.symbol||'').toUpperCase()) >= 0});
     if(!matched.length){
-      gp.innerHTML = '<div class="sec-label" style="margin-top:24px">Ghost Predictions on Your Holdings</div>'
+      gp.innerHTML = '<div class="sec-label mt24">Ghost Predictions on Your Holdings</div>'
         + '<div class="info-box">No active Ghost predictions on your holdings.</div>';
       return;
     }
-    gp.innerHTML = '<div class="sec-label" style="margin-top:24px">Ghost Predictions on Your Holdings</div>'
+    gp.innerHTML = '<div class="sec-label mt24">Ghost Predictions on Your Holdings</div>'
       + matched.map(function(p){
         var conf = Math.round((p.confidence||0)*100);
         var ep = p.entry_price||0;
@@ -3424,7 +3526,7 @@ async function loadPortfolio(){
         var pct = ep>0 ? ((tp-ep)/ep*100).toFixed(1) : '?';
         return '<div class="pcard"><div class="pcard-top">'
           + '<div><span class="psym">'+escHtml(p.symbol||'')+'</span>'
-          + '<span class="play-pill '+(dir==='BUY'?'buy':'sell')+'" style="margin-left:8px;font-size:11px;padding:3px 8px">'+dir+'</span></div>'
+          + '<span class="play-pill '+(dir==='BUY'?'buy':'sell')+' ml8-fs11-p38">'+dir+'</span></div>'
           + '<div>'+conf+'% confident · '+hrs+'h left</div></div>'
           + '<div class="pnums">'
           + '<div class="pnum"><div class="pnum-lbl">ENTRY</div><div class="pnum-val">'+fmtPrice(ep)+'</div></div>'
@@ -3661,7 +3763,7 @@ function renderCatalysts(ctx, analyst, news){
       kind: 'earnings',
       when: _edClean,
       body: '<b>Next earnings</b> ' + escHtml(_edClean)
-        + (em.is_earnings_week ? ' <span style="color:#fbbf24">(within 5 trading days)</span>' : ''),
+        + (em.is_earnings_week ? ' <span class="text-fbbf24">(within 5 trading days)</span>' : ''),
     });
   }
   // 2. Latest analyst rating
@@ -3673,7 +3775,7 @@ function renderCatalysts(ctx, analyst, news){
       when: lr.date ? fmtDateShort(lr.date) : 'recent',
       body: '<b>' + escHtml(lr.analyst || 'Analyst') + '</b> '
         + escHtml(lr.action || lr.rating || 'rating') + ' &rarr; ' + escHtml(lr.rating || '—')
-        + (lr.from_rating ? ' <span style="color:#888">(was ' + escHtml(lr.from_rating) + ')</span>' : ''),
+        + (lr.from_rating ? ' <span class="text-888">(was ' + escHtml(lr.from_rating) + ')</span>' : ''),
     });
   }
   // 3. Recent WOLF news (top 5)
@@ -3686,7 +3788,7 @@ function renderCatalysts(ctx, analyst, news){
       body: (a.url
         ? '<a href="' + escHtml(a.url) + '" target="_blank" rel="noopener">' + escHtml(a.title || '') + '</a>'
         : escHtml(a.title || ''))
-        + ' <span style="color:#999">&middot; ' + escHtml(a.source || 'News') + '</span>',
+        + ' <span class="text-999">&middot; ' + escHtml(a.source || 'News') + '</span>',
     });
   });
 
@@ -3710,7 +3812,7 @@ function renderCatalysts(ctx, analyst, news){
         kind: 'opex',
         when: dt.toLocaleDateString('en-US', {month: 'short', day: 'numeric'}),
         body: '<b>' + (quad ? 'Quarterly options expiration (quad witching)' : 'Monthly options expiration')
-          + '</b> <span style="color:#888">&middot; elevated volume &amp; pinning risk</span>',
+          + '</b> <span class="text-888">&middot; elevated volume &amp; pinning risk</span>',
       });
       added++;
     }
@@ -4023,9 +4125,9 @@ function _renderPjVerdict(m, v){
     msg = 'Win rate below the ' + Math.round(f.threshold.win_rate_floor*100) + '% floor with ' + f.samples + ' resolved picks — monitoring before any repositioning.'; }
   else { var need = (f.threshold ? f.threshold.min_samples : 30); var have = (f.samples||0);
     msg = 'Need ' + need + ' resolved high-conviction picks before falsification can judge the legacy claim. Have ' + have + '. Silence until then is the design, not a bug.'; }
-  return '<div style="border-left:4px solid ' + color + ';background:rgba(255,255,255,.03);padding:10px 14px;border-radius:6px">' +
-    '<div style="font-weight:700;letter-spacing:.04em;color:' + color + ';font-size:12px">' + label + '</div>' +
-    '<div class="truth-note" style="margin-top:4px">' + msg + '</div></div>';
+  return '<div class="truth-banner-box" data-style-border-left="4px solid ' + color + '">' +
+    '<div class="truth-banner-label" data-style-color="' + color + '">' + label + '</div>' +
+    '<div class="truth-note mt4">' + msg + '</div></div>';
 }
 
 async function loadGhostContract(){
@@ -4038,11 +4140,11 @@ async function loadGhostContract(){
   var sq = lanes.squeeze_radar || {};
   var c70 = data.contract_70 || {};
   var c70Unproven = c70.status === 'UNPROVEN_AT_CURRENT_DATA';
-  var html = '<div style="border:1px solid rgba(139,92,246,.35);background:rgba(139,92,246,.06);padding:10px 14px;border-radius:6px">'
-    + '<div style="font-weight:700;color:#c4b5fd;font-size:12px;letter-spacing:.04em">' + (data.headline || 'Ghost product contract') + '</div>'
-    + '<div class="truth-note" style="margin-top:6px"><b>' + (v3.label||'v3') + ':</b> ' + (v3.philosophy||'') + ' &nbsp;|&nbsp; <b>' + (sq.label||'squeeze') + ':</b> ' + (sq.philosophy||'') + '</div>'
-    + (c70.status ? '<div class="truth-note" style="margin-top:6px;color:' + (c70Unproven?'#f5a623':'#1ec77d') + '"><b>Contract 70: ' + (c70Unproven?'unproven at current data':_mvrEsc(c70.status)) + '.</b> Evidence claim only, not a promise. Strict firing gates are unchanged; zero fireable picks remains correct while proof or kill conditions block release.</div>' : '')
-    + (data.north_star_retired ? '<div class="truth-note" style="margin-top:4px;color:#8b96a8">Legacy 80% claim retired — journal tracks live outcomes only.</div>' : '')
+  var html = '<div class="ghost-contract-box">'
+    + '<div class="fw700-c4b5fd-fs12-ls">' + (data.headline || 'Ghost product contract') + '</div>'
+    + '<div class="truth-note mt6"><b>' + (v3.label||'v3') + ':</b> ' + (v3.philosophy||'') + ' &nbsp;|&nbsp; <b>' + (sq.label||'squeeze') + ':</b> ' + (sq.philosophy||'') + '</div>'
+    + (c70.status ? '<div class="truth-note mt6" data-style-color="' + (c70Unproven?'#f5a623':'#1ec77d') + '"><b>Contract 70: ' + (c70Unproven?'unproven at current data':_mvrEsc(c70.status)) + '.</b> Evidence claim only, not a promise. Strict firing gates are unchanged; zero fireable picks remains correct while proof or kill conditions block release.</div>' : '')
+    + (data.north_star_retired ? '<div class="truth-note mt4-c8b96a8">Legacy 80% claim retired — journal tracks live outcomes only.</div>' : '')
     + '</div>';
   targets.forEach(function(el){el.innerHTML = html});
 }
@@ -4054,22 +4156,22 @@ async function loadDoctrine(){
     var d = await fetch('/api/ghost/doctrine/WOLF').then(function(r){return r.json()}).catch(function(){return null});
     if(!d || d.ok !== true){ el.innerHTML = '<div class="empty">Doctrine unavailable</div>'; return; }
     var steps = d.steps || [];
-    var html = '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">';
+    var html = '<div class="mvr-filter-row">';
     steps.forEach(function(s){
       var cls = s.status === 'pass' ? 'good' : (s.status === 'hold' ? 'warn' : '');
       html += '<span class="tag' + (cls ? ' ' + cls : '') + '" title="' + _mvrEsc(s.headline||'') + '">' + _mvrEsc(s.label) + '</span>';
     });
-    html += '</div><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px">';
+    html += '</div><div class="mvr-card-grid">';
     steps.forEach(function(s){
       var cls = s.status === 'pass' ? 'good' : (s.status === 'hold' ? 'warn' : '');
-      html += '<div style="background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:12px">';
-      html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><b style="font-size:13px">' + _mvrEsc(s.label) + '</b><span class="tag' + (cls ? ' ' + cls : '') + '" style="font-size:10px">' + _mvrEsc(s.status) + '</span></div>';
-      html += '<p style="font-size:12px;color:#8b96a8;margin:0 0 8px">' + _mvrEsc(s.headline||'') + '</p>';
+      html += '<div class="mvr-card">';
+      html += '<div class="mvr-card-head"><b class="fs13">' + _mvrEsc(s.label) + '</b><span class="tag' + (cls ? ' ' + cls : '') + ' fs10">' + _mvrEsc(s.status) + '</span></div>';
+      html += '<p class="fs12-c8b96a8">' + _mvrEsc(s.headline||'') + '</p>';
       if(s.status === 'insufficient' && s.insufficient_reason){
-        html += '<p style="font-size:11px;color:#f5a623">Insufficient evidence</p>';
+        html += '<p class="fs11-cf5a623">Insufficient evidence</p>';
       }
       (s.evidence||[]).slice(0,4).forEach(function(e){
-        html += '<div class="kv" style="font-size:11px"><span>' + _mvrEsc(e.name) + '</span><b>' + _mvrEsc(e.value!=null?String(e.value):'—') + '</b></div>';
+        html += '<div class="kv fs11"><span>' + _mvrEsc(e.name) + '</span><b>' + _mvrEsc(e.value!=null?String(e.value):'—') + '</b></div>';
       });
       html += '</div>';
     });
@@ -4080,13 +4182,13 @@ async function loadDoctrine(){
 
 function _renderPjMetrics(m){
   if(!m) return '';
-  function cell(lbl, val){ return '<div style="flex:1;min-width:90px"><div style="font-size:10px;color:#8b96a8;letter-spacing:.05em">' + lbl + '</div><div style="font-size:15px;font-weight:700;margin-top:2px">' + val + '</div></div>'; }
+  function cell(lbl, val){ return '<div class="flex1-mw90"><div class="fs10-c8b96a8-ls">' + lbl + '</div><div class="fs15-fw700-mt2">' + val + '</div></div>'; }
   var wr = (m.win_rate === null || m.win_rate === undefined) ? '—' : (m.win_rate*100).toFixed(1) + '%';
-  var ci = m.win_rate_ci95 ? ' <span style="font-size:10px;color:#8b96a8">[' + (m.win_rate_ci95[0]*100).toFixed(0) + '–' + (m.win_rate_ci95[1]*100).toFixed(0) + ']</span>' : '';
+  var ci = m.win_rate_ci95 ? ' <span class="fs10-c8b96a8">[' + (m.win_rate_ci95[0]*100).toFixed(0) + '–' + (m.win_rate_ci95[1]*100).toFixed(0) + ']</span>' : '';
   var br = (m.brier === null || m.brier === undefined) ? '—' : m.brier.toFixed(3);
   var ex = _pjPct(m.expectancy_pct);
-  return '<div style="display:flex;flex-wrap:wrap;gap:14px;background:rgba(255,255,255,.02);padding:12px 14px;border-radius:6px">' +
-    cell('RESOLVED', m.resolved + ' <span style="font-size:10px;color:#8b96a8">(' + m.wins + 'W/' + m.losses + 'L/' + m.expired + 'E)</span>') +
+  return '<div class="pj-summary">' +
+    cell('RESOLVED', m.resolved + ' <span class="fs10-c8b96a8">(' + m.wins + 'W/' + m.losses + 'L/' + m.expired + 'E)</span>') +
     cell('WIN RATE', wr + ci) +
     cell('EXPECTANCY', ex) +
     cell('BRIER (live picks)', br) + '</div>';
@@ -4101,13 +4203,13 @@ function _renderPjList(picks, append){
     var regime = (p.scores && p.scores.regime && p.scores.regime.label) ? p.scores.regime.label : '—';
     var upProb = (p.scores && p.scores.specialists && p.scores.specialists.daily_swing) ? p.scores.specialists.daily_swing.up_prob : null;
     var conf = (p.confidence === null || p.confidence === undefined) ? '—' : (p.confidence*100).toFixed(0) + '%';
-    return '<div style="display:flex;align-items:center;gap:10px;padding:8px 6px;border-bottom:1px solid rgba(255,255,255,.05);font-size:12px">' +
-      '<div style="width:62px;color:#8b96a8">' + _pjDate(p.predicted_at) + '</div>' +
-      '<div style="width:42px;font-weight:700">' + (p.direction||'—') + '</div>' +
-      '<div style="width:46px" title="confidence at issuance">' + conf + '</div>' +
-      '<div style="flex:1;color:#8b96a8" title="regime + model P(up) at issuance">' + regime + (upProb!==null ? ' &middot; p=' + upProb.toFixed(2) : '') + '</div>' +
-      '<div style="width:64px;text-align:right">' + _pjPct(p.pnl_pct) + '</div>' +
-      '<div style="width:46px;text-align:right">' + _outcomeBadge(p.outcome) + '</div></div>';
+    return '<div class="pj-row">' +
+      '<div class="w62-c8b96a8">' + _pjDate(p.predicted_at) + '</div>' +
+      '<div class="w42-fw700">' + (p.direction||'—') + '</div>' +
+      '<div class="w46" title="confidence at issuance">' + conf + '</div>' +
+      '<div class="flex1-c8b96a8" title="regime + model P(up) at issuance">' + regime + (upProb!==null ? ' &middot; p=' + upProb.toFixed(2) : '') + '</div>' +
+      '<div class="w64-tar">' + _pjPct(p.pnl_pct) + '</div>' +
+      '<div class="w46-tar">' + _outcomeBadge(p.outcome) + '</div></div>';
   }).join('');
   if(append) el.insertAdjacentHTML('beforeend', rows); else el.innerHTML = rows;
 }
@@ -4164,7 +4266,7 @@ async function loadAttribution(){
     featEl.innerHTML = '<table class="tbl"><thead><tr><th>Signal</th><th>Win avg</th><th>Loss avg</th><th>Δ (win−loss)</th></tr></thead><tbody>' + frows + '</tbody></table>';
     var reg = fa.by_regime || [];
     regEl.innerHTML = reg.length
-      ? '<div class="sec-label" style="margin:4px 0 8px">Win rate by regime</div><table class="tbl"><tbody>'
+      ? '<div class="sec-label m4-0-8">Win rate by regime</div><table class="tbl"><tbody>'
         + reg.map(function(r){ return '<tr><td><b>' + escHtml(r.regime) + '</b></td><td>' + r.wins + 'W / ' + r.losses + 'L</td><td>' + (r.win_rate_pct == null ? '—' : r.win_rate_pct + '%') + '</td></tr>'; }).join('')
         + '</tbody></table>'
       : '';
@@ -4176,10 +4278,10 @@ async function loadAttribution(){
           + '<td><span class="neg">' + (c.loss_avg == null ? '—' : c.loss_avg) + '</span></td>'
           + '<td>' + _attrDelta(c.delta) + '</td></tr>';
       }).join('');
-      compEl.innerHTML = '<div class="sec-label" style="margin:4px 0 8px">Ghost-score components (win vs loss)</div>'
+      compEl.innerHTML = '<div class="sec-label m4-0-8">Ghost-score components (win vs loss)</div>'
         + '<table class="tbl"><thead><tr><th>Component</th><th>Win avg</th><th>Loss avg</th><th>Δ</th></tr></thead><tbody>' + crows + '</tbody></table>';
     } else {
-      compEl.innerHTML = '<div class="kv" style="color:#999">Ghost-score component attribution accrues as new picks (which journal a component snapshot) resolve.</div>';
+      compEl.innerHTML = '<div class="kv text-999">Ghost-score component attribution accrues as new picks (which journal a component snapshot) resolve.</div>';
     }
   }catch(e){ featEl.innerHTML = '<div class="empty">Attribution error.</div>'; }
 }
@@ -4211,9 +4313,9 @@ function _formatNearMiss(nm, bootstrapDefault){
     var bgap = nm.bootstrap_gap != null ? nm.bootstrap_gap : (conf - boot);
     var s = sym + 'conf=' + conf.toFixed(4) + '/' + boot.toFixed(2);
     s += ' <span class="' + (bgap >= 0 ? 'pos' : 'neg') + '">' + (bgap >= 0 ? '+' : '') + bgap.toFixed(4) + '</span>';
-    s += ' <span style="color:#64748b;font-size:10px">bootstrap min</span>';
+    s += ' <span class="fs10-c64748b">bootstrap min</span>';
     if(nm.up_prob != null && nm.min_win_proba != null){
-      s += '<div style="font-size:10px;color:#888;margin-top:2px">prob gate cleared: p=' + nm.up_prob + '/' + nm.min_win_proba + '</div>';
+      s += '<div class="fs10-c888-mt2">prob gate cleared: p=' + nm.up_prob + '/' + nm.min_win_proba + '</div>';
     }
     return s;
   }
@@ -4274,7 +4376,7 @@ function _renderPlSummary(data){
     + '<div class="k"><div class="l">Picks saved</div><div class="v">' + (cyc.picks_saved || 0) + '</div></div>'
     + '<div class="k"><div class="l">Would-fire cycles</div><div class="v">' + (cyc.would_fire_cycles || 0) + '</div></div>'
     + '<div class="k"><div class="l">Avg scan ms</div><div class="v">' + (cyc.avg_duration_ms ? Math.round(cyc.avg_duration_ms) : '—') + '</div></div>'
-    + '<div class="k" style="grid-column:1/-1"><div class="l">Top binding gates</div><div class="v" style="font-size:13px;font-weight:600;color:#aaa">' + escHtml(bindTxt) + '</div></div>';
+    + '<div class="k gc1-1"><div class="l">Top binding gates</div><div class="v fs13-fw600-caaa">' + escHtml(bindTxt) + '</div></div>';
 }
 
 async function loadPerfCycleDetail(cycleId){
@@ -4323,7 +4425,7 @@ async function loadPerfCycleDetail(cycleId){
     detailEl.innerHTML = head
       + '<table class="tbl"><thead><tr><th>Symbol</th><th>Gate</th><th>P(up)</th><th>Conf</th><th>Regime</th><th>Dir</th></tr></thead><tbody>'
       + rows + '</tbody></table>'
-      + '<div style="text-align:center;margin:8px 0 4px"><button class="btn-add" type="button" onclick="loadPerfCycleDetail(' + cycleId + ')">Close detail</button></div>';
+      + '<div class="tac-m8-0-4"><button class="btn-add" type="button" onclick="loadPerfCycleDetail(' + cycleId + ')">Close detail</button></div>';
   }catch(e){
     detailEl.innerHTML = '<div class="empty">Cycle detail error.</div>';
   }
@@ -4384,9 +4486,9 @@ async function loadPerformanceLog(){
             + '<td data-label="When">' + fmtTimeAgo(c.cycle_ts) + '</td>'
             + '<td data-label="Scanned">' + (c.scanned || 0) + '</td>'
             + '<td data-label="Candidates">' + (c.candidates || 0) + ' / ' + (c.saved || 0)
-            + (c.dedup_blocked ? ' <span style="color:#999">(dedup ' + c.dedup_blocked + ')</span>' : '') + '</td>'
+            + (c.dedup_blocked ? ' <span class="text-999">(dedup ' + c.dedup_blocked + ')</span>' : '') + '</td>'
             + '<td data-label="Binding">' + (c.binding_skip ? '<code>' + escHtml(c.binding_skip) + '</code>' : '—')
-            + (c.paused ? '<div style="font-size:10px;color:#888">' + escHtml(c.pause_reason || 'paused') + '</div>' : '') + '</td>'
+            + (c.paused ? '<div class="fs10-c888">' + escHtml(c.pause_reason || 'paused') + '</div>' : '') + '</td>'
             + '<td data-label="Near miss">' + _plNearMiss(c.near_miss) + '</td></tr>';
         }).join('') + '</tbody></table>';
     }
@@ -4433,13 +4535,13 @@ async function loadSignalHistory(){
       var bind = h.binding_skip || h.top_skip;
       var crossed = h.would_fire
         ? '<span class="pos">&#10003; crossed</span>'
-        : (h.paused ? '<span class="neg" title="That cycle only — not current engine state">&#9209; was paused</span>' : '<span style="color:#888">&#x23F3; no</span>');
+        : (h.paused ? '<span class="neg" title="That cycle only — not current engine state">&#9209; was paused</span>' : '<span class="text-888">&#x23F3; no</span>');
       var gateCell = bind ? '<code>' + escHtml(bind) + '</code>' : '—';
       if(h.paused && h.pause_reason){
-        gateCell += '<div style="font-size:10px;color:#888;margin-top:2px">' + escHtml(h.pause_reason) + '</div>';
+        gateCell += '<div class="fs10-c888-mt2">' + escHtml(h.pause_reason) + '</div>';
       }
       if(h.skip_counts && h.skip_counts.no_v3_model && bind !== 'no_v3_model'){
-        gateCell += '<div style="font-size:10px;color:#888">+' + h.skip_counts.no_v3_model + ' untrained symbols</div>';
+        gateCell += '<div class="fs10-c888">+' + h.skip_counts.no_v3_model + ' untrained symbols</div>';
       }
       return '<tr>'
         + '<td data-label="When">' + fmtTimeAgo(h.ts) + '</td>'
@@ -4478,6 +4580,24 @@ _deferBelowFold(function(){
 });
 /* ═══ Clean Movers Board (facelift v2) — non-destructive overlay ═══ */
 function _mvrEsc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
+function _applyDataStyles(el){
+  if(!el) return;
+  el.querySelectorAll('[data-style-width]').forEach(function(e){
+    e.style.width = e.getAttribute('data-style-width');
+  });
+  el.querySelectorAll('[data-style-left]').forEach(function(e){
+    e.style.left = e.getAttribute('data-style-left');
+  });
+  el.querySelectorAll('[data-style-background]').forEach(function(e){
+    e.style.background = e.getAttribute('data-style-background');
+  });
+  el.querySelectorAll('[data-style-color]').forEach(function(e){
+    e.style.color = e.getAttribute('data-style-color');
+  });
+  el.querySelectorAll('[data-style-border-left]').forEach(function(e){
+    e.style.borderLeft = e.getAttribute('data-style-border-left');
+  });
+}
 function _mvrFmt(n,d){ return (n==null||n===''||isNaN(n))?'—':Number(n).toFixed(d==null?2:d); }
 function _mvrSet(id,txt){ var el=document.getElementById(id); if(el) el.textContent=txt; }
 function _mvrColorVal(id,val,opts){

@@ -127,6 +127,12 @@
     background:rgba(255,255,255,.03);border:1px dashed var(--glass-bd)}
   .meta{text-align:center;font-size:10.5px;color:var(--mut2);margin-top:18px}
 </style>
+<style>
+.center{text-align:center}
+.mt10{margin-top:10px}
+.muted-link{font-size:11px;color:#7b8492;text-decoration:none;letter-spacing:.04em}
+.grn2-bold{color:var(--grn2)}
+</style>
 </head>
 <body>
 <div class="app">
@@ -167,8 +173,8 @@
   </div>
 
   <div class="meta" id="meta">&middot;</div>
-  <div style="text-align:center;margin-top:10px">
-    <a href="/cockpit" style="font-size:11px;color:#7b8492;text-decoration:none;letter-spacing:.04em">Operator? Full dashboard &rarr;</a>
+  <div class="center mt10">
+    <a href="/cockpit" class="muted-link">Operator? Full dashboard &rarr;</a>
   </div>
 
 </div>
@@ -179,6 +185,21 @@ var WINDOW_DAYS = 7;
 
 function _fetchJson(url, fb){ return fetch(url).then(function(r){return r.json();}).catch(function(){return fb;}); }
 function _esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+function _applyDataStyles(el){
+  if(!el) return;
+  el.querySelectorAll('[data-style-background]').forEach(function(e){
+    e.style.background = e.getAttribute('data-style-background');
+  });
+  el.querySelectorAll('[data-style-left]').forEach(function(e){
+    e.style.left = e.getAttribute('data-style-left');
+  });
+  el.querySelectorAll('[data-style-color]').forEach(function(e){
+    e.style.color = e.getAttribute('data-style-color');
+  });
+  el.querySelectorAll('[data-style-box-shadow]').forEach(function(e){
+    e.style.boxShadow = e.getAttribute('data-style-box-shadow');
+  });
+}
 function _f(n,d){ return (n==null||n===''||isNaN(n))?null:Number(n).toFixed(d==null?2:d); }
 function _logoColor(sym){
   var palette=[['#6ee7b7','#34d399'],['#fda4af','#fb7185'],['#fcd34d','#fb923c'],['#c4b5fd','#a78bfa'],['#93c5fd','#60a5fa'],['#67e8f9','#22d3ee']];
@@ -208,6 +229,7 @@ function renderLive(board){
   var marketOpen=!!(board && board.radar_active);
   var resumeCt=(board && board.radar_resume_ct) ? _esc(board.radar_resume_ct) : '';
   host.innerHTML=picks.map(function(p){ return liveCard(p, marketOpen, resumeCt); }).join('');
+  _applyDataStyles(host);
 }
 
 function liveCard(p){
@@ -230,7 +252,7 @@ function liveCard(p){
     } else if(live<buy){
       cls='flat'; dot='var(--mut2)'; plCls='flat'; badge='<span class="badge wait">WAITING TO BUY</span>';
       big='below buy'; sub='not triggered yet';
-      note='&#9203; Don\'t buy yet — wait until it reaches <b style="color:var(--grn2)">$'+_f(buy,2)+'</b>.';
+      note='&#9203; Don\'t buy yet — wait until it reaches <b class="grn2-bold">$'+_f(buy,2)+'</b>.';
     } else {
       var prog=_clamp((live-buy)/((sell-buy)||1)*100,0,100);
       var plv=(live-buy)/buy*100;
@@ -255,7 +277,7 @@ function liveCard(p){
   return ''+
   '<div class="card glass">'+
     '<div class="ctop">'+
-      '<div class="logo" style="background:'+_logoColor(p.symbol)+'">'+_esc(p.symbol.slice(0,3))+'</div>'+
+      '<div class="logo" data-style-background="'+_logoColor(p.symbol)+'">'+_esc(p.symbol.slice(0,3))+'</div>'+
       '<div class="who"><div class="t">'+_esc(p.symbol)+'</div><div class="s">'+(conf!=null?('confidence '+conf+'%'):'squeeze candidate')+'</div></div>'+
       badge+
     '</div>'+
@@ -267,15 +289,15 @@ function liveCard(p){
     '<div class="live '+cls+'">'+
       '<div class="live-hd">'+
         '<div>'+
-          '<div class="live-lbl"><span class="live-dot" style="background:'+dot+';box-shadow:0 0 10px '+dot+'"></span> '+liveLbl+'</div>'+
+          '<div class="live-lbl"><span class="live-dot" data-style-background="'+dot+'" data-style-box-shadow="0 0 10px '+dot+'"></span> '+liveLbl+'</div>'+
           '<div class="live-price">'+priceStr+'</div>'+
         '</div>'+
         '<div class="live-pl pl '+plCls+'">'+big+'<span class="sub">'+sub+'</span></div>'+
       '</div>'+
       '<div class="bar">'+
-        '<span class="tk" style="left:'+buyPct.toFixed(0)+'%">BUY</span>'+
-        '<span class="tk" style="left:100%;color:var(--amb)">SELL</span>'+
-        '<span class="mk" style="left:'+mkPct.toFixed(0)+'%"></span>'+
+        '<span class="tk" data-style-left="'+buyPct.toFixed(0)+'%">BUY</span>'+
+        '<span class="tk" data-style-left="100%" data-style-color="var(--amb)">SELL</span>'+
+        '<span class="mk" data-style-left="'+mkPct.toFixed(0)+'%"></span>'+
       '</div>'+
       '<div class="ends"><span class="lo">stop $'+_f(stop,2)+'</span><span class="hi">target $'+_f(sell,2)+'</span></div>'+
       '<div class="stopnote">'+note+'</div>'+
@@ -308,6 +330,7 @@ function renderDone(log){
     return;
   }
   host.innerHTML=rows.map(doneRow).join('');
+  _applyDataStyles(host);
 }
 
 function doneRow(r){
@@ -319,7 +342,7 @@ function doneRow(r){
   var verb=win?'Sold':'Closed';
   return ''+
   '<div class="done glass">'+
-    '<div class="logo" style="background:'+_logoColor(r.symbol)+'">'+_esc(String(r.symbol).slice(0,3))+'</div>'+
+    '<div class="logo" data-style-background="'+_logoColor(r.symbol)+'">'+_esc(String(r.symbol).slice(0,3))+'</div>'+
     '<div class="who2"><div class="t">'+_esc(r.symbol)+'</div><div class="s">Bought $'+_f(r.buy,2)+' &#8594; '+verb+' $'+exit+'</div></div>'+
     '<div class="res '+cls+'">'+icon+'<span class="sub">'+pnl+'</span></div>'+
   '</div>';
