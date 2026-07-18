@@ -206,6 +206,20 @@ _anthropic_cb = CircuitBreaker(
     cooldown_seconds=int(__import__("os").getenv("CB_ANTHROPIC_COOLDOWN_S", "600")),
 )
 
+# Dedicated breaker for the options-snapshot sweep. It must NOT share the
+# stock-price _alpaca_cb: the live prediction cycle hammers that breaker with
+# ~100 symbol price calls/cycle and can trip it, which was aborting the options
+# sweep at ~22/100 even though the options endpoint itself is fully healthy
+# (verified 26/26 raw success). Its own generous rate window matches a
+# once-daily 100-symbol sweep.
+_alpaca_options_cb = CircuitBreaker(
+    name="alpaca_options",
+    failure_threshold=int(__import__("os").getenv("CB_ALPACA_OPT_THRESHOLD", "8")),
+    cooldown_seconds=int(__import__("os").getenv("CB_ALPACA_OPT_COOLDOWN_S", "300")),
+    rate_limit_window_s=int(__import__("os").getenv("CB_ALPACA_OPT_RATE_WINDOW_S", "60")),
+    rate_limit_max_calls=int(__import__("os").getenv("CB_ALPACA_OPT_RATE_MAX_CALLS", "150")),
+)
+
 
 def all_breaker_status() -> dict:
     """Status of all circuit breakers for /api/diagnostics."""

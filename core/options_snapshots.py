@@ -142,8 +142,8 @@ def _alpaca_options_snapshot(symbol: str) -> Optional[Dict[str, Any]]:
     window. None = blocked/failed (caller falls back)."""
     import os
     from datetime import timedelta
-    from core.circuit_breaker import _alpaca_cb
-    if not _alpaca_cb.allow():
+    from core.circuit_breaker import _alpaca_options_cb as _cb
+    if not _cb.allow():
         return None
     key = os.getenv("ALPACA_KEY_ID", "")
     sec = os.getenv("ALPACA_SECRET_KEY", "")
@@ -165,7 +165,7 @@ def _alpaca_options_snapshot(symbol: str) -> Optional[Dict[str, Any]]:
         if r.status_code != 200:
             # 404/no-options is a valid "no chain", not a breaker failure.
             if r.status_code in (403, 404):
-                _alpaca_cb.record_success()
+                _cb.record_success()
                 return {}
             # 429 = rate limit: a soft, expected throttle on a 100-symbol sweep,
             # NOT a provider outage. Counting it as a breaker failure tripped the
@@ -174,12 +174,12 @@ def _alpaca_options_snapshot(symbol: str) -> Optional[Dict[str, Any]]:
             if r.status_code == 429:
                 time.sleep(1.0)
                 return None
-            _alpaca_cb.record_failure()
+            _cb.record_failure()
             return None
-        _alpaca_cb.record_success()
+        _cb.record_success()
         return (r.json() or {}).get("snapshots") or {}
     except Exception as exc:
-        _alpaca_cb.record_failure()
+        _cb.record_failure()
         LOGGER.debug("alpaca options %s: %s", symbol, str(exc)[:80])
         return None
 
@@ -227,11 +227,10 @@ def record_snapshots(symbols: Optional[List[str]] = None, *,
         cur.execute(TABLE_DDL)
     for i, sym in enumerate(symbols):
         try:
-            from core.circuit_breaker import _alpaca_cb
-            from core.yfinance_client import _gate
-            # Only stop early if BOTH sources are blocked — Alpaca is primary,
-            # yfinance is the fallback.
-            if not _alpaca_cb.allow() and not _gate():
+            from core.circuit_breaker import _alpaca_options_cb as _cb
+            # Stop early only if the dedicated options breaker is open (a real
+            # options-endpoint outage) — not the shared price-feed breaker.
+            if not _cb.allow():
                 skipped_breaker = len(symbols) - i
                 LOGGER.warning("options snapshots: both option sources blocked at "
                                "symbol %d/%d — stopping early", i + 1, len(symbols))
