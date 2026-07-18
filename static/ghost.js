@@ -87,9 +87,9 @@ function gateBadge(pass){
 /* ─── Outcome badge ─── */
 function _outcomeBadge(o){
   var map = {WIN:['#1ec77d','WIN'], LOSS:['#ff4d4f','LOSS'], EXPIRED:['#8b96a8','EXP'], WITHDRAWN:['#ffb84d','WDR']};
-  if(!o) return '<span style="color:#f5a623;font-weight:600">OPEN</span>';
+  if(!o) return '<span class="outcome-open">OPEN</span>';
   var x = map[o] || ['#8b96a8', o];
-  return '<span style="color:' + x[0] + ';font-weight:700">' + x[1] + '</span>';
+  return '<span class="outcome-resolved" data-style-color="' + x[0] + '">' + x[1] + '</span>';
 }
 
 /* ─── P&L percent ─── */
