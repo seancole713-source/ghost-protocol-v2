@@ -167,6 +167,13 @@ def _alpaca_options_snapshot(symbol: str) -> Optional[Dict[str, Any]]:
             if r.status_code in (403, 404):
                 _alpaca_cb.record_success()
                 return {}
+            # 429 = rate limit: a soft, expected throttle on a 100-symbol sweep,
+            # NOT a provider outage. Counting it as a breaker failure tripped the
+            # breaker ~26 symbols in and skipped the rest. Back off briefly and
+            # skip this symbol without poisoning the breaker.
+            if r.status_code == 429:
+                time.sleep(1.0)
+                return None
             _alpaca_cb.record_failure()
             return None
         _alpaca_cb.record_success()
@@ -178,48 +185,23 @@ def _alpaca_options_snapshot(symbol: str) -> Optional[Dict[str, Any]]:
 
 
 def snapshot_symbol(symbol: str) -> Optional[Dict[str, Any]]:
-    """Fetch one symbol's front-month options flow. None = fetch blocked/failed
-    (caller counts it, never silently skips); an EMPTY chain is a valid row.
+    """Fetch one symbol's front-month options flow from Alpaca. None = blocked/
+    rate-limited/failed this run (caller counts it, retries next run); an EMPTY
+    chain (no listed options) is a valid stored row.
 
-    Primary source is Alpaca options snapshots (reliable, breaker-managed, no
-    yfinance rate-limit that capped the first run at 3 symbols). yfinance is a
-    last-resort fallback that also yields ATM IV when it is reachable."""
+    One Alpaca request per symbol — no underlying-price call (PCR-volume needs
+    none) and no yfinance fallback (its ~15/min chain limit yielded only ~3
+    symbols/day, so it was dead weight on the sweep). Underlying/OI/IV are left
+    null; PCR-volume is the reliable flow signal accrued here."""
     sym = (symbol or "").upper()
     if not sym:
         return None
-    base = {"symbol": sym, "snap_date": _ct_today(), "ts": int(time.time())}
     snaps = _alpaca_options_snapshot(sym)
-    if snaps is not None:
-        from core.prices import get_stock_price
-        underlying = None
-        try:
-            underlying = float(get_stock_price(sym) or 0) or None
-        except Exception:
-            underlying = None
-        return {**base, "nearest_expiry": None, "underlying": underlying,
-                **aggregate_alpaca_options(snaps)}
-    # Alpaca blocked (breaker/creds) — best-effort yfinance fallback.
-    try:
-        from core.yfinance_client import yf_ticker
-        t = yf_ticker(sym)
-        if t is None:
-            return None
-        expirations = getattr(t, "options", None)
-        if not expirations:
-            return {**base, "nearest_expiry": None, "underlying": None,
-                    **compute_chain_metrics(None, None, None)}
-        near = expirations[0]
-        chain = t.option_chain(near)
-        underlying = None
-        try:
-            underlying = float(t.fast_info["last_price"])
-        except Exception:
-            underlying = None
-        return {**base, "nearest_expiry": str(near), "underlying": underlying,
-                **compute_chain_metrics(chain.calls, chain.puts, underlying)}
-    except Exception as exc:
-        LOGGER.debug("options snapshot %s failed: %s", sym, str(exc)[:80])
+    if snaps is None:
         return None
+    base = {"symbol": sym, "snap_date": _ct_today(), "ts": int(time.time())}
+    return {**base, "nearest_expiry": None, "underlying": None,
+            **aggregate_alpaca_options(snaps)}
 
 
 def record_snapshots(symbols: Optional[List[str]] = None, *,
