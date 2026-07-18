@@ -15,6 +15,7 @@ available=false rather than being skipped silently.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import Any, Dict, List, Optional
 
@@ -95,19 +96,115 @@ def compute_chain_metrics(calls, puts, underlying: Optional[float]) -> Dict[str,
     }
 
 
+# OCC option symbol: UNDERLYING(1-6) + YYMMDD + C|P + strike*1000 (8 digits).
+_OCC_RE = re.compile(r"^[A-Z]+(\d{6})([CP])(\d{8})$")
+_ALPACA_OPTIONS_BASE = "https://data.alpaca.markets/v1beta1/options/snapshots"
+# Front-month window: liquid flow lives in the near expiries; bound the fetch.
+_OPT_EXPIRY_WINDOW_DAYS = 45
+
+
+def aggregate_alpaca_options(snapshots: Dict[str, Any]) -> Dict[str, Any]:
+    """Pure aggregation of Alpaca option snapshots -> put/call volume + PCR.
+
+    Parses OCC contract symbols; sums daily volume by side. No network, no
+    IV/OI (Alpaca snapshots omit both) — PCR-volume is the reliable flow
+    signal we accrue. Testable without a live call."""
+    cv = pv = 0
+    for sym, snap in (snapshots or {}).items():
+        m = _OCC_RE.match(sym)
+        if not m:
+            continue
+        side = m.group(2)
+        vol = 0
+        try:
+            vol = int((snap.get("dailyBar") or {}).get("v") or 0)
+        except Exception:
+            vol = 0
+        if side == "C":
+            cv += vol
+        else:
+            pv += vol
+    return {
+        "call_volume": cv,
+        "put_volume": pv,
+        "call_oi": None,
+        "put_oi": None,
+        "pcr_volume": round(pv / cv, 4) if cv > 0 else None,
+        "pcr_oi": None,
+        "atm_iv_call": None,   # deferred: needs a BS solver (no IV in Alpaca snapshot)
+        "atm_iv_put": None,
+        "available": bool(cv > 0 or pv > 0),
+    }
+
+
+def _alpaca_options_snapshot(symbol: str) -> Optional[Dict[str, Any]]:
+    """One breaker-gated Alpaca options-snapshot fetch for the front-month
+    window. None = blocked/failed (caller falls back)."""
+    import os
+    from datetime import timedelta
+    from core.circuit_breaker import _alpaca_cb
+    if not _alpaca_cb.allow():
+        return None
+    key = os.getenv("ALPACA_KEY_ID", "")
+    sec = os.getenv("ALPACA_SECRET_KEY", "")
+    if not (key and sec):
+        return None
+    try:
+        import requests
+        today = _ct_now().date()
+        params = {
+            "limit": 1000,
+            "expiration_date_gte": today.isoformat(),
+            "expiration_date_lte": (today + timedelta(days=_OPT_EXPIRY_WINDOW_DAYS)).isoformat(),
+        }
+        r = requests.get(
+            f"{_ALPACA_OPTIONS_BASE}/{symbol.upper()}",
+            headers={"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": sec},
+            params=params, timeout=15,
+        )
+        if r.status_code != 200:
+            # 404/no-options is a valid "no chain", not a breaker failure.
+            if r.status_code in (403, 404):
+                _alpaca_cb.record_success()
+                return {}
+            _alpaca_cb.record_failure()
+            return None
+        _alpaca_cb.record_success()
+        return (r.json() or {}).get("snapshots") or {}
+    except Exception as exc:
+        _alpaca_cb.record_failure()
+        LOGGER.debug("alpaca options %s: %s", symbol, str(exc)[:80])
+        return None
+
+
 def snapshot_symbol(symbol: str) -> Optional[Dict[str, Any]]:
-    """Fetch one symbol's nearest-expiry chain metrics. None = fetch blocked
-    or failed (breaker open, network error); an EMPTY chain is a valid row."""
+    """Fetch one symbol's front-month options flow. None = fetch blocked/failed
+    (caller counts it, never silently skips); an EMPTY chain is a valid row.
+
+    Primary source is Alpaca options snapshots (reliable, breaker-managed, no
+    yfinance rate-limit that capped the first run at 3 symbols). yfinance is a
+    last-resort fallback that also yields ATM IV when it is reachable."""
     sym = (symbol or "").upper()
     if not sym:
         return None
+    base = {"symbol": sym, "snap_date": _ct_today(), "ts": int(time.time())}
+    snaps = _alpaca_options_snapshot(sym)
+    if snaps is not None:
+        from core.prices import get_stock_price
+        underlying = None
+        try:
+            underlying = float(get_stock_price(sym) or 0) or None
+        except Exception:
+            underlying = None
+        return {**base, "nearest_expiry": None, "underlying": underlying,
+                **aggregate_alpaca_options(snaps)}
+    # Alpaca blocked (breaker/creds) — best-effort yfinance fallback.
     try:
         from core.yfinance_client import yf_ticker
         t = yf_ticker(sym)
         if t is None:
             return None
         expirations = getattr(t, "options", None)
-        base = {"symbol": sym, "snap_date": _ct_today(), "ts": int(time.time())}
         if not expirations:
             return {**base, "nearest_expiry": None, "underlying": None,
                     **compute_chain_metrics(None, None, None)}
@@ -126,14 +223,14 @@ def snapshot_symbol(symbol: str) -> Optional[Dict[str, Any]]:
 
 
 def record_snapshots(symbols: Optional[List[str]] = None, *,
-                     delay_s: float = 4.0, max_symbols: int = 150) -> Dict[str, Any]:
+                     delay_s: float = 0.5, max_symbols: int = 150) -> Dict[str, Any]:
     """Snapshot the watchlist and upsert one row per (symbol, snap_date).
 
-    delay_s default 4.0: the yfinance breaker rate-limits to ~15 calls per
-    minute window — the first live run (2026-07-16) at 1s spacing tripped it
-    after 14 symbols and the remaining 86 were blocked. When the breaker
-    opens mid-run we stop early and report the remainder as skipped_breaker
-    (its 600s cooldown outlasts the rest of the loop anyway)."""
+    Primary source is Alpaca options snapshots (one request per symbol, no
+    yfinance rate-limit), so the full watchlist accrues in a single run —
+    unlike the yfinance-only v1 which the breaker capped at ~3 symbols/day.
+    If the Alpaca breaker opens mid-run we stop early and report the remainder
+    as skipped_breaker (its cooldown outlasts the rest of the loop)."""
     from core.db import db_conn
     if symbols is None:
         from config.symbols import OFFICIAL_WATCHLIST
@@ -148,10 +245,13 @@ def record_snapshots(symbols: Optional[List[str]] = None, *,
         cur.execute(TABLE_DDL)
     for i, sym in enumerate(symbols):
         try:
+            from core.circuit_breaker import _alpaca_cb
             from core.yfinance_client import _gate
-            if not _gate():
+            # Only stop early if BOTH sources are blocked — Alpaca is primary,
+            # yfinance is the fallback.
+            if not _alpaca_cb.allow() and not _gate():
                 skipped_breaker = len(symbols) - i
-                LOGGER.warning("options snapshots: yfinance breaker open at "
+                LOGGER.warning("options snapshots: both option sources blocked at "
                                "symbol %d/%d — stopping early", i + 1, len(symbols))
                 break
         except Exception:
