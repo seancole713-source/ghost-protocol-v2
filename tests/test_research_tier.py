@@ -182,8 +182,12 @@ class TestCollectorBreakerStop:
             def __enter__(self): return self
             def __exit__(self, *a): return False
 
+        import core.circuit_breaker as cb
         monkeypatch.setattr(db, "db_conn", lambda: _C())
+        # Early-stop only when BOTH option sources are blocked (Alpaca primary,
+        # yfinance fallback) — so block both.
         monkeypatch.setattr(yfc, "_gate", lambda: False)
+        monkeypatch.setattr(cb._alpaca_cb, "allow", lambda: False)
         calls = []
         monkeypatch.setattr(osnap, "snapshot_symbol",
                             lambda s: calls.append(s))
@@ -191,8 +195,10 @@ class TestCollectorBreakerStop:
         assert out["skipped_breaker"] == 3
         assert out["stored"] == 0 and calls == []
 
-    def test_delay_default_respects_breaker_budget(self):
+    def test_delay_default_is_modest_for_alpaca(self):
+        # Alpaca (primary source) has no yfinance-style 15/min cap, so the
+        # per-symbol delay is small — the whole watchlist accrues in one run.
         import inspect
         import core.options_snapshots as osnap
         sig = inspect.signature(osnap.record_snapshots)
-        assert sig.parameters["delay_s"].default == 4.0
+        assert sig.parameters["delay_s"].default == 0.5

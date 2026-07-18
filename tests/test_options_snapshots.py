@@ -172,3 +172,33 @@ class TestWiring:
         with open(path) as f:
             src = f.read()
         assert 'scheduler.register("options_snapshots"' in src
+
+
+# ── Alpaca options source (2026-07-18: replaced rate-limited yfinance) ──
+
+class TestAlpacaAggregation:
+    def test_pcr_from_occ_symbols(self):
+        from core.options_snapshots import aggregate_alpaca_options
+        snaps = {
+            "AAPL260720C00210000": {"dailyBar": {"v": 100}},
+            "AAPL260720P00210000": {"dailyBar": {"v": 150}},
+            "AAPL260720C00205000": {"dailyBar": {"v": 50}},
+            "AAPL260720C00215000": {"latestQuote": {"ap": 1}},  # no volume
+            "NOT_AN_OCC_SYMBOL": {"dailyBar": {"v": 999}},       # ignored
+        }
+        m = aggregate_alpaca_options(snaps)
+        assert m["call_volume"] == 150 and m["put_volume"] == 150
+        assert m["pcr_volume"] == 1.0 and m["available"] is True
+        # Alpaca snapshots carry no OI/IV — must be explicitly null, not faked.
+        assert m["call_oi"] is None and m["atm_iv_call"] is None
+
+    def test_empty_is_valid_unavailable(self):
+        from core.options_snapshots import aggregate_alpaca_options
+        m = aggregate_alpaca_options({})
+        assert m["available"] is False and m["pcr_volume"] is None
+
+    def test_puts_only_pcr_none_when_no_calls(self):
+        from core.options_snapshots import aggregate_alpaca_options
+        m = aggregate_alpaca_options({"X260720P00100000": {"dailyBar": {"v": 5}}})
+        assert m["put_volume"] == 5 and m["call_volume"] == 0
+        assert m["pcr_volume"] is None and m["available"] is True
