@@ -175,6 +175,23 @@ def test_rate_limit_get_write_budgets_are_separate(monkeypatch):
     assert write_codes[-1] == 429
 
 
+def test_wallet_intraday_endpoint(monkeypatch):
+    import core.paper_wallet as pw
+
+    monkeypatch.setattr(
+        pw,
+        "intraday_snapshot",
+        lambda: {"ok": True, "enabled": True, "diag": {"ready": 1}, "candidates": [{"symbol": "AMC"}]},
+    )
+    with _client_with_test_mode(monkeypatch) as client:
+        r = client.get("/api/wallet/intraday")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["diag"]["ready"] == 1
+    assert body["candidates"][0]["symbol"] == "AMC"
+
+
 def test_version_and_seo_routes(monkeypatch):
     """audit v2 #1/#2/#3: /version, /robots.txt, /sitemap.xml exist (were 404)."""
     with _client_with_test_mode(monkeypatch) as client:

@@ -44,6 +44,17 @@ def _slice_usd() -> float:
     return max(50.0, float(os.getenv("PAPER_TRADE_SLICE_USD", "500")))
 
 
+def _intraday_slice_usd() -> float:
+    """Sniper lane takes bigger swings than the cautious books — 2× the base
+    slice by default. Still fake money; the point is measuring an aggressive
+    style honestly, not pretending caution it doesn't have."""
+    return max(50.0, float(os.getenv("PAPER_INTRADAY_SLICE_USD", "1000")))
+
+
+def _slice_usd_for_book(book: str) -> float:
+    return _intraday_slice_usd() if book == "intraday" else _slice_usd()
+
+
 def _shadow_min_prob() -> float:
     # PR #151: Shadow wallet should not buy below Ghost's own shadow/fireable
     # probability floor by default. Keep env override for controlled experiments.
@@ -58,6 +69,40 @@ def _shadow_skill_min_tp_rate() -> float:
 
 def _shadow_skill_min_resolved() -> int:
     return max(1, int(os.getenv("PAPER_SHADOW_SKILL_MIN_RESOLVED", "10")))
+
+
+def _intraday_enabled() -> bool:
+    return (os.getenv("PAPER_INTRADAY_ENABLED", "1") or "1").strip().lower() in (
+        "1", "on", "true", "yes"
+    )
+
+
+def _intraday_min_confidence() -> int:
+    return max(1, int(os.getenv("PAPER_INTRADAY_MIN_CONFIDENCE", "70")))
+
+
+def _intraday_min_squeeze_score() -> float:
+    return max(0.0, float(os.getenv("PAPER_INTRADAY_MIN_SQUEEZE_SCORE", "55")))
+
+
+def _intraday_min_continue_pct() -> float:
+    return max(0.0, float(os.getenv("PAPER_INTRADAY_MIN_CONTINUE_PCT", "75")))
+
+
+def _intraday_close_ts(now_ts: Optional[int] = None) -> int:
+    """Same-day cash-close expiry for intraday paper entries."""
+    import datetime as _dt
+    from zoneinfo import ZoneInfo
+
+    from core.market_hours import SESSION_TZ
+
+    now = _dt.datetime.now(ZoneInfo(SESSION_TZ)) if now_ts is None else _dt.datetime.fromtimestamp(
+        int(now_ts), ZoneInfo(SESSION_TZ)
+    )
+    close = now.replace(hour=15, minute=0, second=0, microsecond=0)
+    if close <= now:
+        close = close + _dt.timedelta(days=1)
+    return int(close.timestamp())
 
 
 def _wallet_stop_vol_mult() -> float:
@@ -725,6 +770,25 @@ def fresh_bands(symbol: str, entry: float, asset_type: str = "stock",
     return target, stop, expires_at
 
 
+def intraday_entry_bands(entry: float, radar_price: float, radar_target: float,
+                         radar_stop: float):
+    """Re-anchor the radar's bracket onto the live fill price (pure).
+
+    Option B doctrine (PR #145) applied to the sniper lane: the radar computed
+    target/stop from ITS scan price; by fill time the quote has moved. Keeping
+    the radar's RELATIVE geometry but bracketing the buy-now price keeps every
+    entry coherently bracketed. Returns (target, stop) or None when the live
+    price has already crossed the radar bracket — the move played out and
+    chasing it is the stale-signal bug (PR #142) in intraday form.
+    """
+    if entry <= 0 or radar_price <= 0 or radar_target <= 0 or radar_stop <= 0:
+        return None
+    if entry >= radar_target or entry <= radar_stop:
+        return None
+    return (round(entry * (radar_target / radar_price), 4),
+            round(entry * (radar_stop / radar_price), 4))
+
+
 def exit_fill(price: float, target, stop, expires_at, now: int):
     """Pure fill rules (long-only). Returns (exit_price, reason) or None.
 
@@ -749,8 +813,8 @@ def exit_fill(price: float, target, stop, expires_at, now: int):
 
 def _enter(cur, *, book: str, symbol: str, source: str, entry: float,
            target: Optional[float], stop: Optional[float],
-           expires_at: Optional[int]) -> bool:
-    qty = round(_slice_usd() / entry, 4)
+           expires_at: Optional[int], slice_usd: Optional[float] = None) -> bool:
+    qty = round((slice_usd if slice_usd else _slice_usd_for_book(book)) / entry, 4)
     now = int(time.time())
     cur.execute(
         """INSERT INTO ghost_paper_trades
@@ -800,6 +864,168 @@ def _filter_new_symbol_candidates(candidates, open_book_syms):
         held.add(key)
         kept.append((book, source, symbol))
     return kept, skipped
+
+
+def _intraday_squeeze_candidates(board: Dict[str, Any], *, now_ts: Optional[int] = None) -> Dict[str, Any]:
+    """Translate squeeze radar rows into fake-money intraday paper candidates."""
+    picks = list(board.get("picks") or [])
+    diag = {
+        "enabled": _intraday_enabled(),
+        "scan_ok": bool(board.get("scan_ok")),
+        "source_picks": len(picks),
+        "ready": 0,
+        "skip_kind": 0,
+        "skip_confidence": 0,
+        "skip_score": 0,
+        "skip_continuation": 0,
+        "skip_direction": 0,
+        "skip_price": 0,
+        "skip_earnings": 0,
+    }
+    rows = []
+    if not diag["enabled"] or not diag["scan_ok"]:
+        return {"rows": rows, "diag": diag, "close_ts": _intraday_close_ts(now_ts)}
+
+    min_conf = _intraday_min_confidence()
+    min_score = _intraday_min_squeeze_score()
+    min_continue = _intraday_min_continue_pct()
+    close_ts = _intraday_close_ts(now_ts)
+    scan_ts = int(board.get("last_scan_ts") or now_ts or time.time())
+
+    # Earnings guard: an intraday hold on a reporting day is an event bet,
+    # not a trade (see core/earnings_guard.py). Fail-open but visible.
+    blocked_earnings: set = set()
+    diag["earnings_guard_ok"] = True
+    try:
+        from core.earnings_guard import earnings_guard_enabled, upcoming_earnings_symbols
+
+        if earnings_guard_enabled():
+            blocked_earnings, guard_ok = upcoming_earnings_symbols(now_ts)
+            diag["earnings_guard_ok"] = guard_ok
+    except Exception as exc:
+        diag["earnings_guard_ok"] = False
+        LOGGER.debug("earnings guard unavailable: %s", str(exc)[:80])
+
+    scored = []
+    for pick in picks:
+        if not isinstance(pick, dict):
+            continue
+        kind = str(pick.get("kind") or "").strip()
+        if kind not in ("squeeze_active", "squeeze_forming"):
+            diag["skip_kind"] += 1
+            continue
+        try:
+            conf = int(float(pick.get("confidence_pct") or 0))
+            score = float(pick.get("squeeze_score") or 0)
+            price = float(pick.get("price") or 0)
+            target = float(pick.get("sell") or 0)
+            stop = float(pick.get("stop") or 0)
+            probs = pick.get("probabilities") or {}
+            p_continue = float(probs.get("p_continue_3pct_60m") or 0)
+        except Exception:
+            diag["skip_price"] += 1
+            continue
+        if price <= 0 or target <= 0 or stop <= 0:
+            diag["skip_price"] += 1
+            continue
+        if conf < min_conf:
+            diag["skip_confidence"] += 1
+            continue
+        if score < min_score:
+            diag["skip_score"] += 1
+            continue
+        if p_continue < min_continue:
+            diag["skip_continuation"] += 1
+            continue
+        above_vwap = pick.get("above_vwap")
+        if above_vwap is False:
+            diag["skip_direction"] += 1
+            continue
+        short_risk = str(pick.get("short_risk") or "").lower()
+        if kind == "squeeze_forming" and short_risk not in ("high", "extreme"):
+            diag["skip_direction"] += 1
+            continue
+        symbol = str(pick.get("symbol") or "").strip().upper()
+        if not symbol:
+            diag["skip_price"] += 1
+            continue
+        if symbol in blocked_earnings:
+            diag["skip_earnings"] = diag.get("skip_earnings", 0) + 1
+            continue
+        scored.append(
+            (
+                conf,
+                score,
+                (
+                    "intraday",
+                    f"intraday:{symbol}:{kind}:{scan_ts}",
+                    symbol,
+                    price,
+                    target,
+                    stop,
+                    close_ts,
+                ),
+            )
+        )
+        diag["ready"] += 1
+    # Strongest signal first — by confidence/score, NOT share price. (The
+    # original price-descending sort would rank a weak $20 pick over a strong
+    # $5 one whenever capacity truncates the list.)
+    scored.sort(key=lambda item: (-item[0], -item[1]))
+    rows = [item[2] for item in scored]
+    return {"rows": rows, "diag": diag, "close_ts": close_ts}
+
+
+def intraday_snapshot() -> Dict[str, Any]:
+    """Read-only intraday lane view for the wallet/API."""
+    try:
+        from core.squeeze_monitor import get_squeeze_picks
+
+        board = get_squeeze_picks()
+        out = _intraday_squeeze_candidates(board)
+        return {
+            "ok": True,
+            "enabled": _intraday_enabled(),
+            "board": {
+                "scan_ok": bool(board.get("scan_ok")),
+                "radar_active": bool(board.get("radar_active")),
+                "last_scan_ts": board.get("last_scan_ts"),
+                "pick_count": int(board.get("pick_count") or 0),
+                "leader_count": len(board.get("leaders") or []),
+            },
+            "diag": out["diag"],
+            "close_ts": out["close_ts"],
+            "candidates": [
+                {
+                    "book": c[0],
+                    "source": c[1],
+                    "symbol": c[2],
+                    "entry_price": c[3],
+                    "target_price": c[4],
+                    "stop_price": c[5],
+                    "expires_at": c[6],
+                }
+                for c in out["rows"]
+            ],
+        }
+    except Exception as exc:
+        return {"ok": False, "enabled": _intraday_enabled(), "error": str(exc)[:140]}
+
+
+def _wallet_intraday_section() -> Dict[str, Any]:
+    """Top-3 intraday candidates for the wallet summary (read-only, no DB)."""
+    try:
+        snap = intraday_snapshot()
+        candidates = list(snap.get("candidates") or [])[:3]
+        return {
+            "enabled": bool(snap.get("enabled")),
+            "scan_ok": bool((snap.get("board") or {}).get("scan_ok")),
+            "radar_active": bool((snap.get("board") or {}).get("radar_active")),
+            "ready": int((snap.get("diag") or {}).get("ready") or 0),
+            "top": candidates,
+        }
+    except Exception:
+        return {"enabled": _intraday_enabled(), "ready": 0, "top": []}
 
 
 def run_wallet_cycle() -> Dict[str, Any]:
@@ -873,7 +1099,34 @@ def run_wallet_cycle() -> Dict[str, Any]:
                 shadow_rows = [("shadow", f"shadow:{r[0]}", r[1], r[2], r[3], r[4], r[5])
                                for r in cur.fetchall()]
 
-            candidates = gated_rows + shadow_rows
+            intraday_rows = []
+            intraday_diag = {
+                "enabled": _intraday_enabled(),
+                "scan_ok": False,
+                "source_picks": 0,
+                "ready": 0,
+                "skip_kind": 0,
+                "skip_confidence": 0,
+                "skip_score": 0,
+                "skip_continuation": 0,
+                "skip_direction": 0,
+                "skip_price": 0,
+            }
+            if gate.get("open") and _intraday_enabled():
+                try:
+                    from core.squeeze_monitor import get_squeeze_picks
+
+                    intraday = _intraday_squeeze_candidates(get_squeeze_picks(), now_ts=now_ts)
+                    intraday_rows = list(intraday.get("rows") or [])
+                    intraday_diag = dict(intraday.get("diag") or intraday_diag)
+                except Exception as exc:
+                    intraday_diag = {**intraday_diag, "error": str(exc)[:120]}
+
+            candidates = gated_rows + shadow_rows + intraday_rows
+            # Sniper-lane geometry survives the entry loop via this map —
+            # without it every book got fresh_bands() 3-day swing geometry
+            # and "intraday" was intraday in name only.
+            intraday_geo = {r[1]: (r[3], r[4], r[5], r[6]) for r in intraday_rows}
             need_prices = sorted({c[2].upper() for c in candidates})
             cur.execute("SELECT DISTINCT book, symbol FROM ghost_paper_trades WHERE status='open'")
             open_book_rows = cur.fetchall()
@@ -884,6 +1137,8 @@ def run_wallet_cycle() -> Dict[str, Any]:
             # Observability (PR #143): why did candidates not become entries?
             diag = {"gated_candidates": len(gated_rows),
                     "shadow_candidates": len(shadow_rows),
+                    "intraday_candidates": len(intraday_rows),
+                    "intraday_diag": intraday_diag,
                     "entry_window": gate,
                     "skip_no_price": 0, "skip_capacity": 0, "skip_dupe": 0,
                     "skip_open_symbol": 0}
@@ -906,25 +1161,39 @@ def run_wallet_cycle() -> Dict[str, Any]:
             deduped_candidates, skipped_open_symbol = _filter_new_symbol_candidates(
                 [(c[0], c[1], c[2]) for c in candidates], open_book_syms)
             diag["skip_open_symbol"] += skipped_open_symbol
+            diag["skip_stale_intraday"] = 0
             for book, source, sym in deduped_candidates:
                 if source in seen_sources:
                     diag["skip_dupe"] += 1
                     continue
-                if open_count >= _max_open() or cash < _slice_usd():
+                slice_usd = _slice_usd_for_book(book)
+                if open_count >= _max_open() or cash < slice_usd:
                     diag["skip_capacity"] += 1
                     continue
                 entry = prices.get(sym.upper())
                 if not entry or entry <= 0:
                     diag["skip_no_price"] += 1
                     continue
-                # Option B (PR #145): bracket the buy-now price with fresh bands
-                # from Ghost's vol geometry — no stale-band pre-crossing.
-                tgt, stp, exp = fresh_bands(sym, entry)
+                if book == "intraday":
+                    # Sniper lane: radar geometry re-anchored on the live fill,
+                    # same-day close expiry. NOT fresh_bands — that's the 3-day
+                    # swing geometry and using it here made "intraday" a lie.
+                    geo = intraday_geo.get(source)
+                    bands = intraday_entry_bands(entry, geo[0], geo[1], geo[2]) if geo else None
+                    if bands is None:
+                        diag["skip_stale_intraday"] += 1
+                        continue
+                    tgt, stp = bands
+                    exp = int(geo[3])
+                else:
+                    # Option B (PR #145): bracket the buy-now price with fresh
+                    # bands from Ghost's vol geometry — no stale-band pre-crossing.
+                    tgt, stp, exp = fresh_bands(sym, entry)
                 if _enter(cur, book=book, symbol=sym, source=source, entry=entry,
-                          target=tgt, stop=stp, expires_at=exp):
+                          target=tgt, stop=stp, expires_at=exp, slice_usd=slice_usd):
                     entered += 1
                     open_count += 1
-                    cash -= _slice_usd()
+                    cash -= slice_usd
                 else:
                     diag["skip_dupe"] += 1
 
@@ -1078,6 +1347,7 @@ def wallet_summary() -> Dict[str, Any]:
                 "history": history,
                 "daily": daily,
                 "trade_slice_usd": _slice_usd(),
+                "intraday_slice_usd": _intraday_slice_usd(),
                 "shadow_min_prob": _shadow_min_prob(),
                 "shadow_skill_min_tp_rate": _shadow_skill_min_tp_rate(),
                 "shadow_skill_min_resolved": _shadow_skill_min_resolved(),
@@ -1105,6 +1375,7 @@ def wallet_summary() -> Dict[str, Any]:
                 "consistent_money_readiness": consistent_money_readiness(
                     history,
                     _default_vol_pct_readonly() * _wallet_stop_vol_mult()),
+                "intraday": _wallet_intraday_section(),
                 "goal": {
                     "target": goal,
                     "month": cfg.get("goal_month"),

@@ -826,6 +826,13 @@ def get_wallet():
     return wallet_summary()
 
 
+@router.get("/api/wallet/intraday")
+def get_wallet_intraday():
+    """Radar-backed intraday day-trade candidates for the paper wallet."""
+    from core.paper_wallet import intraday_snapshot
+    return intraday_snapshot()
+
+
 @router.post("/api/wallet/config")
 def set_wallet_config(request: Request, x_cron_secret: str = Header(default="")):
     """Reset the paper wallet with a new starting balance. Admin/cron gated."""
