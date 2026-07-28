@@ -1,0 +1,69 @@
+{
+  "experiments": {
+    "geometry_sweep_v1": {
+      "name": "geometry_sweep_v1",
+      "description": "Expanded geometry sweep: 4 target scales \u00d7 5 stop mults \u00d7 3 hold bars \u00d7 24 symbols",
+      "hypothesis": "A broader sweep of target/stop/hold-bar combinations will find at least one config with Wilson-low \u2265 0.70 and serve_pass > 0.",
+      "config": {
+        "symbols": [
+          "WOLF",
+          "AI",
+          "AMC",
+          "ARCT",
+          "ARDT",
+          "BB",
+          "BMBL",
+          "LCID",
+          "XPO",
+          "ITRI",
+          "CLNE",
+          "PLUG",
+          "SNAP",
+          "GME",
+          "NOK",
+          "OPK",
+          "YMM",
+          "PLTK",
+          "CVNA",
+          "SABR",
+          "BILL",
+          "HOOD",
+          "ABCL",
+          "DUOL"
+        ],
+        "target_scales": [
+          0.75,
+          1.0,
+          1.25,
+          1.5
+        ],
+        "stop_mults": [
+          0.4,
+          0.5,
+          0.65,
+          0.85,
+          1.0
+        ],
+        "hold_bars": [
+          3,
+          5,
+          7
+        ],
+        "target_precision": 0.7,
+        "ensemble": false
+      },
+      "target_metrics": [
+        "pooled_wilson_low",
+        "serve_pass",
+        "pooled_ok",
+        "ev_per_trade_pct"
+      ],
+      "status": "running",
+      "registered_at": "2026-07-28T20:44:29.188321+00:00",
+      "started_at": "2026-07-28T20:44:29.188907+00:00",
+      "completed_at": null,
+      "result": null
+    }
+  },
+  "created_at": "2026-07-28T20:43:02.643065+00:00"
+}
