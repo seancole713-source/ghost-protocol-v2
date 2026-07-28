@@ -54,15 +54,19 @@ def _evaluate_calibration_holdout(model, X_gate, y_gate) -> Dict[str, Any]:
             "holdout_acc": 0.0,
             "edge": 0.0,
             "natural_rate": 0.0,
+            "no_skill_accuracy": 0.0,
             "gate_brier": None,
             "reliability_bins": [],
             "gate_n": 0,
         }
     proba = model.predict_proba(X_gate)[:, 1]
     natural_rate = float(np.mean(y_gate))
+    # The honest no-skill accuracy is the majority-class rate.  Comparing only
+    # with positive prevalence overstates edge whenever losses are the majority.
+    no_skill_accuracy = max(natural_rate, 1.0 - natural_rate)
     preds = (proba >= 0.5).astype(int)
     holdout_acc = float(accuracy_score(y_gate, preds))
-    edge = holdout_acc - natural_rate
+    edge = holdout_acc - no_skill_accuracy
     gate_brier = None
     if np.unique(y_gate).size >= 2:
         gate_brier = round(float(brier_score_loss(y_gate, proba)), 4)
@@ -70,6 +74,7 @@ def _evaluate_calibration_holdout(model, X_gate, y_gate) -> Dict[str, Any]:
         "holdout_acc": holdout_acc,
         "edge": edge,
         "natural_rate": natural_rate,
+        "no_skill_accuracy": no_skill_accuracy,
         "gate_brier": gate_brier,
         "reliability_bins": _reliability_bins(y_gate, proba),
         "gate_n": int(len(y_gate)),

@@ -5,24 +5,83 @@ import time
 import core.signal_engine as _se
 
 
-def test_model_serve_guard_rejects_stale_feature_schema():
+def _serveable_meta(**overrides):
     meta = {
-        "label_type": _se.LABEL_TYPE,
-        "label_schema": _se._v3_label_schema(),
-        "feature_schema": "macd_pct_v1+sec0",
-        "trained_at": int(time.time()),
-    }
-    assert _se.model_serve_guard(meta) == "feature_schema_stale"
-
-
-def test_model_serve_guard_accepts_current_schema():
-    meta = {
+        "tier": "proven",
+        "direction": "UP",
+        "model_sha256": "a" * 64,
         "label_type": _se.LABEL_TYPE,
         "label_schema": _se._v3_label_schema(),
         "feature_schema": _se._v3_feature_schema(),
+        "validation_schema": _se._v3_validation_schema(),
+        "label_hold_bars": _se.V3_LABEL_HOLD_BARS,
         "trained_at": int(time.time()),
+        "accuracy": 0.70,
+        "edge": 0.10,
+        "wf_acc_mean": 0.68,
+        "wf_edge_mean": 0.08,
+        "wf_fold_count": 5,
     }
-    assert _se.model_serve_guard(meta) is None
+    meta.update(overrides)
+    return meta
+
+
+def test_model_serve_guard_rejects_stale_feature_schema():
+    assert _se.model_serve_guard(
+        _serveable_meta(feature_schema="macd_pct_v1+sec0")
+    ) == "feature_schema_stale"
+
+
+def test_model_serve_guard_accepts_current_schema():
+    assert _se.model_serve_guard(_serveable_meta(), expected_direction="UP") is None
+
+
+def test_model_serve_guard_rejects_legacy_validation_schema():
+    meta = _serveable_meta()
+    del meta["validation_schema"]
+    assert _se.model_serve_guard(meta) == "validation_schema_stale"
+
+
+def test_model_serve_guard_rejects_future_training_timestamp(monkeypatch):
+    now = 1_800_000_000.0
+    monkeypatch.setattr(_se.time, "time", lambda: now)
+    assert _se.model_serve_guard(
+        _serveable_meta(trained_at=now + 301),
+    ) == "trained_at_future"
+
+
+def test_model_serve_guard_rejects_nonfinite_and_bounded_metrics():
+    for key, bad in (
+        ("accuracy", float("nan")),
+        ("edge", float("inf")),
+        ("wf_acc_mean", 1.01),
+        ("wf_edge_mean", -1.01),
+        ("wf_fold_count", 4.5),
+        ("wf_fold_count", True),
+        ("natural_rate", float("nan")),
+    ):
+        assert _se.model_serve_guard(
+            _serveable_meta(**{key: bad}),
+        ) == "model_metrics_invalid"
+
+
+def test_model_serve_guard_rejects_direction_mismatch():
+    assert _se.model_serve_guard(
+        _serveable_meta(direction="DOWN"), expected_direction="UP",
+    ) == "direction_mismatch"
+
+
+def test_model_serve_guard_requires_exact_hold_horizon():
+    for bad in (True, 3.5, float("nan"), float("inf")):
+        assert _se.model_serve_guard(
+            _serveable_meta(label_hold_bars=bad),
+        ) == "label_hold_bars_stale"
+
+
+def test_research_guard_is_scoring_only():
+    meta = _serveable_meta(tier="research")
+    assert _se.model_serve_guard(meta) == "tier_unproven"
+    assert _se.model_serve_guard(meta, allow_research_scoring=True) is None
 
 
 def test_max_calibration_brier_phase5_floor(monkeypatch):
@@ -61,21 +120,10 @@ def test_block_up_below_sma5_can_disable(monkeypatch):
 
 
 def test_get_model_status_counts_serveable_only(monkeypatch):
-    wolf_meta = {
-        "label_type": _se.LABEL_TYPE,
-        "label_schema": _se._v3_label_schema(),
-        "feature_schema": _se._v3_feature_schema(),
-        "trained_at": int(time.time()),
-        "accuracy": 0.6,
-        "edge": 0.1,
-    }
-    stale_meta = {
-        "label_type": _se.LABEL_TYPE,
-        "label_schema": _se._v3_label_schema(),
-        "feature_schema": "macd_pct_v1+sec0",
-        "trained_at": int(time.time()),
-        "accuracy": 0.5,
-    }
+    wolf_meta = _serveable_meta(accuracy=0.6, edge=0.1)
+    stale_meta = _serveable_meta(
+        feature_schema="macd_pct_v1+sec0", accuracy=0.5,
+    )
     rows = {
         "meta_WOLF": json.dumps(wolf_meta),
         "meta_STALE": json.dumps(stale_meta),

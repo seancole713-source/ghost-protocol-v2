@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -12,22 +13,54 @@ except ImportError:
 
 
 def _date_key(ts: Any) -> str:
-    return str(ts or "")[:10]
+    """Canonical UTC date for ISO or Unix-second provider timestamps."""
+    if isinstance(ts, bool) or ts is None:
+        return ""
+    if isinstance(ts, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(ts), tz=timezone.utc).date().isoformat()
+        except (TypeError, ValueError, OverflowError, OSError):
+            return ""
+    value = str(ts).strip()
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc).date().isoformat()
+    except (TypeError, ValueError, OverflowError):
+        return ""
 
 
-def resolve_tp_sl_bar_path(
+def _daily_bar_available_ts(ts: Any) -> int:
+    """Timestamp when a daily OHLC bar can safely be treated as known.
+
+    Provider timestamps often identify a daily bar at midnight. Its high/low
+    is not observable then, so evidence is anchored no earlier than 21:00 UTC
+    (16:00 America/New_York in standard time; conservative during DST).
+    """
+    from core.feature_schema import feature_asof_unix
+
+    parsed_ts = feature_asof_unix(ts)
+    date_key = _date_key(ts)
+    if not parsed_ts or not date_key:
+        return 0
+    close_floor = int(datetime.strptime(date_key, "%Y-%m-%d").replace(
+        hour=21, tzinfo=timezone.utc,
+    ).timestamp())
+    return max(parsed_ts, close_floor)
+
+
+def resolve_tp_sl_bar_path_detail(
     bars: Sequence[Dict[str, Any]],
     target: float,
     stop: float,
     direction: str = "UP",
     max_bars: Optional[int] = None,
-) -> Optional[str]:
-    """Path simulation on daily OHLC. Conservative same-bar rule: both touched -> LOSS.
-
-    Returns WIN, LOSS, or None if the path is still open within ``max_bars``.
-    """
+) -> Tuple[Optional[str], Optional[int], Optional[int]]:
+    """Return outcome, information-available timestamp, and resolution bar."""
     if target <= 0 or stop <= 0:
-        return None
+        return None, None, None
+
     direction = (direction or "UP").upper()
     n = len(bars) if max_bars is None else min(len(bars), max_bars)
     for j in range(n):
@@ -39,13 +72,24 @@ def resolve_tp_sl_bar_path(
         else:
             hit_stop = hi >= stop
             hit_tgt = lo <= target
-        if hit_stop and hit_tgt:
-            return "LOSS"
-        if hit_stop:
-            return "LOSS"
-        if hit_tgt:
-            return "WIN"
-    return None
+        outcome = "LOSS" if hit_stop else ("WIN" if hit_tgt else None)
+        if outcome:
+            resolution_ts = _daily_bar_available_ts(bars[j].get("ts"))
+            return outcome, (resolution_ts or None), j
+    return None, None, None
+
+
+def resolve_tp_sl_bar_path(
+    bars: Sequence[Dict[str, Any]],
+    target: float,
+    stop: float,
+    direction: str = "UP",
+    max_bars: Optional[int] = None,
+) -> Optional[str]:
+    """Path simulation on daily OHLC. Conservative same-bar rule: both touched -> LOSS."""
+    return resolve_tp_sl_bar_path_detail(
+        bars, target, stop, direction, max_bars,
+    )[0]
 
 
 def resolve_tp_sl_snapshot(
@@ -75,20 +119,83 @@ def forward_bars_after_entry(
     rows: Sequence[Dict[str, Any]],
     predicted_at: int,
     hold_bars: int,
+    *,
+    available_asof: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
-    """Daily bars strictly after the entry calendar day (matches training entry at bar close)."""
+    """Distinct forward daily bars, optionally limited to completed evidence."""
     entry_date = datetime.fromtimestamp(predicted_at, tz=timezone.utc).date()
     out: List[Dict[str, Any]] = []
+    seen_dates = set()
     for row in rows or []:
         try:
             bar_date = datetime.strptime(_date_key(row.get("ts")), "%Y-%m-%d").date()
         except Exception:
             continue
-        if bar_date > entry_date:
-            out.append(row)
+        if bar_date <= entry_date:
+            continue
+        if available_asof is not None:
+            available_ts = _daily_bar_available_ts(row.get("ts"))
+            if not available_ts or available_ts > int(available_asof):
+                continue
+        # The contract is daily bars. Distinct intraday timestamps from one
+        # calendar date cannot manufacture several days of horizon maturity.
+        if bar_date in seen_dates:
+            continue
+        seen_dates.add(bar_date)
+        out.append(row)
         if len(out) >= hold_bars:
             break
     return out
+
+
+def resolve_open_prediction_detail(
+    *,
+    direction: str,
+    target: float,
+    stop: float,
+    predicted_at: int,
+    hold_bars: int,
+    daily_bars: Optional[Sequence[Dict[str, Any]]] = None,
+    snapshot_price: Optional[float] = None,
+    now: Optional[int] = None,
+    expires_at: Optional[int] = None,
+) -> Tuple[Optional[str], Optional[int], Optional[float]]:
+    """Return outcome, evidence timestamp, and evidence exit price.
+
+    Completed daily bars have priority because they preserve the conservative
+    same-bar collision rule. A current snapshot can still prove TP/SL while the
+    daily horizon is incomplete. EXPIRED requires every promised daily bar and
+    uses the final horizon close, never a later reconciliation quote.
+    """
+    required_bars = max(1, int(hold_bars))
+    evidence_now = int(time.time()) if now is None else int(now)
+    bars = daily_bars or []
+    if bars:
+        fwd = forward_bars_after_entry(
+            bars, predicted_at, required_bars, available_asof=evidence_now,
+        )
+        outcome, resolved_at, _bar_idx = resolve_tp_sl_bar_path_detail(
+            fwd, target, stop, direction, max_bars=required_bars,
+        )
+        if outcome:
+            exit_price = target if outcome == "WIN" else stop
+            return outcome, resolved_at, float(exit_price)
+        if len(fwd) >= required_bars:
+            try:
+                horizon_close = float(fwd[required_bars - 1].get("close") or 0)
+            except (TypeError, ValueError, OverflowError):
+                horizon_close = 0.0
+            resolved_at = _daily_bar_available_ts(fwd[required_bars - 1].get("ts"))
+            if resolved_at:
+                return "EXPIRED", resolved_at, (horizon_close or None)
+            return None, None, None
+
+    if snapshot_price is not None:
+        snap = resolve_tp_sl_snapshot(snapshot_price, target, stop, direction)
+        if snap:
+            exit_price = target if snap == "WIN" else stop
+            return snap, evidence_now, float(exit_price)
+    return None, None, None
 
 
 def resolve_open_prediction(
@@ -103,24 +210,18 @@ def resolve_open_prediction(
     now: Optional[int] = None,
     expires_at: Optional[int] = None,
 ) -> Optional[str]:
-    """Resolve an open pick: daily bar-path when OHLC is available, snapshot fallback otherwise."""
-    ts = now if now is not None else int(datetime.now(tz=timezone.utc).timestamp())
-    bars = daily_bars or []
-    if bars:
-        fwd = forward_bars_after_entry(bars, predicted_at, hold_bars)
-        outcome = resolve_tp_sl_bar_path(fwd, target, stop, direction, max_bars=hold_bars)
-        if outcome:
-            return outcome
-        if expires_at and ts > expires_at:
-            return "EXPIRED"
-        return None
-    if snapshot_price is not None:
-        snap = resolve_tp_sl_snapshot(snapshot_price, target, stop, direction)
-        if snap:
-            return snap
-    if expires_at and ts > expires_at:
-        return "EXPIRED"
-    return None
+    """Compatibility outcome API over evidence-detailed resolution."""
+    return resolve_open_prediction_detail(
+        direction=direction,
+        target=target,
+        stop=stop,
+        predicted_at=predicted_at,
+        hold_bars=hold_bars,
+        daily_bars=daily_bars,
+        snapshot_price=snapshot_price,
+        now=now,
+        expires_at=expires_at,
+    )[0]
 
 
 def expires_at_nth_trading_close(from_ts: int, hold_bars: int) -> int:
@@ -174,6 +275,39 @@ def entry_predicted_at(rows: Sequence[Dict[str, Any]], entry_idx: int) -> int:
     return feature_asof_unix(rows[entry_idx].get("ts"))
 
 
+def simulate_tp_sl_label_detail(
+    rows: Sequence[Dict[str, Any]],
+    entry_idx: int,
+    hold_bars: int,
+    vol_pct: float,
+    direction: str = "UP",
+) -> Tuple[Optional[str], Optional[int]]:
+    """Return a completed training outcome and the exact bar when it became known.
+
+    A no-hit path is EXPIRED only after all promised forward bars are present.
+    Incomplete horizons return ``(None, None)`` and cannot enter evidence.
+    """
+    if entry_idx < 0 or entry_idx >= len(rows):
+        return None, None
+    entry = float(rows[entry_idx].get("close") or 0)
+    if entry <= 0:
+        return None, None
+    target, stop = tp_sl_prices_from_vol(entry, vol_pct, direction)
+    if target <= 0 or stop <= 0:
+        return None, None
+    predicted_at = entry_predicted_at(rows, entry_idx)
+    fwd = forward_bars_after_entry(rows, predicted_at, hold_bars)
+    if len(fwd) < max(1, int(hold_bars)):
+        return None, None
+    outcome, resolution_ts, _bar_idx = resolve_tp_sl_bar_path_detail(
+        fwd, target, stop, direction, max_bars=hold_bars,
+    )
+    if outcome:
+        return outcome, resolution_ts
+    expiry_ts = _daily_bar_available_ts(fwd[hold_bars - 1].get("ts"))
+    return "EXPIRED", (expiry_ts or None)
+
+
 def simulate_tp_sl_label(
     rows: Sequence[Dict[str, Any]],
     entry_idx: int,
@@ -181,22 +315,11 @@ def simulate_tp_sl_label(
     vol_pct: float,
     direction: str = "UP",
 ) -> str:
-    """Training label via the same forward-window + bar-path rules as live reconcile.
-
-    Returns WIN, LOSS, or EXPIRED (no TP/SL hit within hold_bars forward daily bars).
-    """
-    if entry_idx < 0 or entry_idx >= len(rows):
-        return "EXPIRED"
-    entry = float(rows[entry_idx].get("close") or 0)
-    if entry <= 0:
-        return "EXPIRED"
-    target, stop = tp_sl_prices_from_vol(entry, vol_pct, direction)
-    if target <= 0 or stop <= 0:
-        return "EXPIRED"
-    predicted_at = entry_predicted_at(rows, entry_idx)
-    fwd = forward_bars_after_entry(rows, predicted_at, hold_bars)
-    outcome = resolve_tp_sl_bar_path(fwd, target, stop, direction, max_bars=hold_bars)
-    return outcome if outcome else "EXPIRED"
+    """Compatibility outcome API; incomplete horizons are explicit, not expiries."""
+    outcome, _resolution_ts = simulate_tp_sl_label_detail(
+        rows, entry_idx, hold_bars, vol_pct, direction,
+    )
+    return outcome or "INCOMPLETE"
 
 
 def simulate_down_tp_sl_label(
@@ -223,23 +346,8 @@ def reconcile_training_label(
     direction: str = "UP",
     now: Optional[int] = None,
 ) -> str:
-    """Resolve a training entry the same way reconcile_outcomes resolves a live pick."""
-    if entry_idx < 0 or entry_idx >= len(rows):
-        return "EXPIRED"
-    entry = float(rows[entry_idx].get("close") or 0)
-    if entry <= 0:
-        return "EXPIRED"
-    target, stop = tp_sl_prices_from_vol(entry, vol_pct, direction)
-    predicted_at = entry_predicted_at(rows, entry_idx)
-    expires_at = expires_at_nth_trading_close(predicted_at, hold_bars)
-    return resolve_open_prediction(
-        direction=direction,
-        target=target,
-        stop=stop,
-        predicted_at=predicted_at,
-        hold_bars=hold_bars,
-        daily_bars=rows,
-        snapshot_price=None,
-        now=now if now is not None else expires_at + 1,
-        expires_at=expires_at,
-    ) or "EXPIRED"
+    """Compatibility wrapper over the canonical completed-label simulator."""
+    outcome, _resolved_at = simulate_tp_sl_label_detail(
+        rows, entry_idx, hold_bars, vol_pct, direction,
+    )
+    return outcome or "INCOMPLETE"

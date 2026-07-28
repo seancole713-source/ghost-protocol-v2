@@ -12,12 +12,21 @@ def _make_rows():
     """Valid model + meta rows for WOLF UP (passes every load_model guard)."""
     payload = pickle.dumps({"stub": "model"})
     meta = {
+        "tier": "proven",
+        "direction": "UP",
         "label_type": _se.LABEL_TYPE,
         "label_schema": _se._v3_label_schema(),
         "feature_schema": _se._v3_feature_schema(),
+        "validation_schema": _se._v3_validation_schema(),
+        "label_hold_bars": _se.V3_LABEL_HOLD_BARS,
         "trained_at": int(time.time()),
         "feature_cols": ["a", "b"],
         "model_sha256": hashlib.sha256(payload).hexdigest(),
+        "accuracy": 0.70,
+        "edge": 0.10,
+        "wf_acc_mean": 0.68,
+        "wf_edge_mean": 0.08,
+        "wf_fold_count": 5,
     }
     return {
         "meta_WOLF_up": json.dumps(meta),

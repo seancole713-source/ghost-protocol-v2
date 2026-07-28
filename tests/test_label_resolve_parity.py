@@ -100,7 +100,7 @@ def test_load_model_rejects_stale_label_schema(monkeypatch):
     import core.db as _db
     import core.signal_engine as _se
 
-    assert _se._v3_label_schema() == tps.LABEL_SCHEMA
+    assert _se._v3_label_schema().startswith(f"{tps.LABEL_SCHEMA}:tp_sl_geometry_v1:")
 
     class _Cur:
         def __init__(self):

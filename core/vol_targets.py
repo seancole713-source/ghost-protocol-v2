@@ -10,10 +10,14 @@ range — telemetry only; pick TP/SL still use base_vol_pct.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import statistics
 from typing import Any, Dict, List, Optional, Sequence
 
+STOCK_DEFAULT_VOL_PCT = 0.020
+NON_STOCK_DEFAULT_VOL_PCT = 0.025
 VOL_MAP = {
     "WOLF": 0.025,
 }
@@ -21,7 +25,11 @@ VOL_MAP = {
 
 def base_vol_pct(symbol: str, asset_type: str) -> float:
     """Default target move fraction (e.g. 0.025 = +2.5%). Same defaults as predict_symbol."""
-    default = 0.020 if (asset_type or "").lower() == "stock" else 0.025
+    default = (
+        STOCK_DEFAULT_VOL_PCT
+        if (asset_type or "").lower() == "stock"
+        else NON_STOCK_DEFAULT_VOL_PCT
+    )
     return float(VOL_MAP.get((symbol or "").upper(), default))
 
 
@@ -43,6 +51,36 @@ def _stop_vol_mult() -> float:
 def stop_pct_from_vol(vol_pct: float) -> float:
     """Stop distance as fraction of entry (vol * V3_STOP_VOL_MULT)."""
     return float(vol_pct) * _stop_vol_mult()
+
+
+def tp_sl_geometry_contract(*, hold_bars: Optional[int] = None) -> Dict[str, Any]:
+    """Canonical label target/stop geometry that participates in model identity."""
+    if hold_bars is None:
+        from core.engine_config import V3_LABEL_HOLD_BARS
+        hold_bars = V3_LABEL_HOLD_BARS
+    return {
+        "contract": "tp_sl_geometry_v1",
+        "direction_formulas": {
+            "DOWN": {"target": "entry*(1-vol)", "stop": "entry*(1+vol*stop_mult)"},
+            "UP": {"target": "entry*(1+vol)", "stop": "entry*(1-vol*stop_mult)"},
+        },
+        "hold_bars": int(hold_bars),
+        "non_stock_default_vol_pct": NON_STOCK_DEFAULT_VOL_PCT,
+        "resolution": "daily_forward_after_entry;stop_first_on_same_bar;expiry_non_win",
+        "stock_default_vol_pct": STOCK_DEFAULT_VOL_PCT,
+        "stop_vol_mult": _stop_vol_mult(),
+        "vol_map": {key: float(VOL_MAP[key]) for key in sorted(VOL_MAP)},
+    }
+
+
+def tp_sl_geometry_schema(*, hold_bars: Optional[int] = None) -> str:
+    payload = json.dumps(
+        tp_sl_geometry_contract(hold_bars=hold_bars),
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    return "tp_sl_geometry_v1:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _forecast_band_lookback() -> int:

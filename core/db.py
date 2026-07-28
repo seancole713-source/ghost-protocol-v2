@@ -148,9 +148,15 @@ def _migrate_schema():
         CREATE INDEX IF NOT EXISTS idx_feature_snapshots_symbol_asof
         ON ghost_feature_snapshots (symbol, feature_asof_ts DESC)
         """,
-        # Expire duplicate open picks (keep highest confidence) before unique index.
+        # Administratively void duplicate open picks (keep highest confidence)
+        # before the unique index. This is not market evidence and must never be
+        # represented as canonical EXPIRED, which requires a complete horizon.
         """
-        UPDATE predictions p SET outcome='EXPIRED', resolved_at=EXTRACT(EPOCH FROM NOW())::BIGINT
+        UPDATE predictions p
+        SET outcome='ADMIN_VOID', resolved_at=EXTRACT(EPOCH FROM NOW())::BIGINT,
+            exit_price=NULL, pnl_pct=NULL,
+            scores=COALESCE(scores, '{}'::jsonb) ||
+                   '{"administrative_reason":"duplicate_open_migration"}'::jsonb
         FROM (
             SELECT id, ROW_NUMBER() OVER (
                 PARTITION BY symbol ORDER BY confidence DESC, predicted_at DESC, id DESC
@@ -208,6 +214,13 @@ def _migrate_schema():
             ensure_squeeze_outcomes_table(cur)
     except Exception as e:
         LOGGER.warning("Squeeze outcomes table: " + str(e)[:80])
+    try:
+        from core.shadow_outcomes import ensure_shadow_table
+        with db_conn() as conn:
+            cur = conn.cursor()
+            ensure_shadow_table(cur)
+    except Exception as e:
+        LOGGER.warning("Shadow outcomes table: " + str(e)[:80])
     try:
         from core.super_ghost_ledger import ensure_ledger_table
         with db_conn() as conn:

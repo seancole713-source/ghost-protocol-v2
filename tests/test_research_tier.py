@@ -31,10 +31,12 @@ def _run_train(monkeypatch, *, passed, research_allowed):
     monkeypatch.setattr(
         se, "_train_one_direction",
         lambda rows, sym, d, cols, peers, used, pool: (passed, {"passed": passed}, "BYTES", meta))
-    monkeypatch.setattr(se, "_research_overwrite_allowed",
-                        lambda sym, d: research_allowed)
-    monkeypatch.setattr(se, "_store_direction_model",
-                        lambda sym, d, b, m: stores.append((sym, d, m)))
+    def store(sym, direction, model_bytes, meta_json):
+        allowed = passed or research_allowed
+        if allowed:
+            stores.append((sym, direction, meta_json))
+        return allowed
+    monkeypatch.setattr(se, "_store_direction_model", store)
     result = se.train_and_validate([("TEST", "stock")])
     return result, stores
 
@@ -61,27 +63,92 @@ class TestStoragePolicy:
         assert ratio == 0.0 and ok is False
 
 
+class _TrainStubModel:
+    def __init__(self, **kwargs): pass
+    def fit(self, X, y, sample_weight=None): return self
+    def predict(self, X):
+        import numpy as np
+        return np.zeros(len(X), dtype=int)
+    def predict_proba(self, X):
+        import numpy as np
+        return np.tile([0.4, 0.6], (len(X), 1))
+
+
+def test_train_one_direction_returns_false_with_research_artifact(monkeypatch):
+    """A trained research artifact must not turn gate failure into success."""
+    import sys
+    import types
+
+    fake_xgb = types.ModuleType("xgboost")
+    fake_xgb.XGBClassifier = _TrainStubModel
+    monkeypatch.setitem(sys.modules, "xgboost", fake_xgb)
+    monkeypatch.setattr(se, "_min_train_rows", lambda: 999)  # deterministic gate failure
+    monkeypatch.setattr(se, "_v3_feature_audit_enabled", lambda: False)
+    monkeypatch.setattr(se, "_v3_ensemble_enabled", lambda: False)
+    monkeypatch.setattr(se, "_maybe_calibrate", lambda model, X, y: (
+        model, {"calibrated": False, "method": None, "ensemble": False},
+    ))
+    monkeypatch.setattr(se, "_evaluate_calibration_holdout", lambda model, X, y: {
+        "holdout_acc": 0.9, "edge": 0.4, "natural_rate": 0.5,
+        "no_skill_accuracy": 0.5, "gate_brier": 0.2,
+        "reliability_bins": [], "gate_n": len(y),
+    })
+    monkeypatch.setattr(se, "_walk_forward_scores", lambda *args, **kwargs: {
+        "fold_count": 5, "acc_mean": 0.9, "acc_min": 0.8,
+        "edge_mean": 0.4, "edge_min": 0.3,
+    })
+    monkeypatch.setattr(se, "_v3_research_tier_enabled", lambda: True)
+    rows = [
+        {"features": {"a": float(i), "feature_asof_ts": 1_700_000_000 + i},
+         "label": i % 2}
+        for i in range(100)
+    ]
+    passed, detail, model_bytes, meta_json = se._train_one_direction(
+        rows, "TEST", "UP", ["a"], [], [],
+        {"enabled": False, "peer_sample_count": 0},
+    )
+    assert passed is False
+    assert detail["passed"] is False
+    assert model_bytes
+    meta = json.loads(meta_json)
+    assert meta["tier"] == "research"
+    assert meta["gate_fail_reason"]
+
+
 # ── Overwrite guard ──────────────────────────────────────────────────
 
 class _Cur:
-    def __init__(self, row): self._row = row
-    def execute(self, sql, params=None): pass
+    def __init__(self, row):
+        self._row = row
+        self.executed = []
+    def execute(self, sql, params=None): self.executed.append((sql, params))
     def fetchone(self): return self._row
 
 
 class _Conn:
-    def __init__(self, row): self._row = row
-    def cursor(self): return _Cur(self._row)
+    def __init__(self, row):
+        self._row = row
+        self.cur = _Cur(row)
+    def cursor(self): return self.cur
     def __enter__(self): return self
     def __exit__(self, *a): return False
 
 
 def _fresh_proven_meta():
     return json.dumps({
-        "tier": "proven", "label_type": se.LABEL_TYPE,
+        "tier": "proven", "direction": "UP",
+        "label_type": se.LABEL_TYPE,
         "label_schema": se._v3_label_schema(),
         "feature_schema": se._v3_feature_schema(),
+        "validation_schema": se._v3_validation_schema(),
+        "label_hold_bars": se.V3_LABEL_HOLD_BARS,
+        "model_sha256": "a" * 64,
         "trained_at": time.time(),
+        "accuracy": 0.70,
+        "edge": 0.10,
+        "wf_acc_mean": 0.68,
+        "wf_edge_mean": 0.08,
+        "wf_fold_count": 5,
     })
 
 
@@ -117,8 +184,110 @@ class TestOverwriteGuard:
         assert se._research_overwrite_allowed("X", "UP") is False
 
 
+class TestAtomicStore:
+    def _patch(self, monkeypatch, row):
+        import core.db as db
+        conn = _Conn(row)
+        monkeypatch.setattr(db, "db_conn", lambda: conn)
+        monkeypatch.setattr(
+            "core.precision_gate.invalidate_global_threshold_cache", lambda: None,
+        )
+        monkeypatch.setattr(
+            "core.precision_gate.invalidate_global_threshold_persistent", lambda cur: None,
+        )
+        return conn
+
+    def test_research_check_happens_after_transaction_lock(self, monkeypatch):
+        conn = self._patch(monkeypatch, None)
+        assert se._store_direction_model(
+            "X", "UP", "BYTES", json.dumps({"tier": "research"}),
+        ) is True
+        statements = [sql for sql, _params in conn.cur.executed]
+        lock_idx = next(i for i, sql in enumerate(statements)
+                        if "pg_advisory_xact_lock" in sql)
+        read_idx = next(i for i, sql in enumerate(statements)
+                        if "SELECT value FROM ghost_v3_model" in sql)
+        write_idx = next(i for i, sql in enumerate(statements)
+                         if "INSERT INTO ghost_v3_model" in sql)
+        assert lock_idx < read_idx < write_idx
+
+    def test_atomic_store_refuses_serveable_proven_incumbent(self, monkeypatch):
+        conn = self._patch(monkeypatch, (_fresh_proven_meta(),))
+        assert se._store_direction_model(
+            "X", "UP", "BYTES", json.dumps({"tier": "research"}),
+        ) is False
+        assert not any("INSERT INTO ghost_v3_model" in sql
+                       for sql, _params in conn.cur.executed)
+
+    def test_proven_writer_also_takes_same_lock(self, monkeypatch):
+        conn = self._patch(monkeypatch, None)
+        assert se._store_direction_model(
+            "X", "UP", "BYTES", json.dumps({"tier": "proven"}),
+        ) is True
+        assert any("pg_advisory_xact_lock" in sql
+                   for sql, _params in conn.cur.executed)
+
+
 # ── Fire-path hard block + status honesty (source tripwires — the
 #    checks live inside closures, same style as the doctrine tripwires) ──
+
+def test_research_artifact_loads_scores_and_never_fires(monkeypatch):
+    import base64
+    import hashlib
+    import pickle
+
+    import core.db as db
+
+    raw = pickle.dumps(_TrainStubModel())
+    meta = json.loads(_fresh_proven_meta())
+    meta.update({
+        "tier": "research", "feature_cols": list(se.FEATURE_COLS),
+        "model_sha256": hashlib.sha256(raw).hexdigest(),
+    })
+    values = {
+        "meta_TEST_up": json.dumps(meta),
+        "model_TEST_up": base64.b64encode(raw).decode("ascii"),
+    }
+
+    class _LoadCur:
+        def execute(self, sql, params=None): self.key = params[0]
+        def fetchone(self):
+            value = values.get(self.key)
+            return (value,) if value is not None else None
+    class _LoadConn:
+        def cursor(self): return _LoadCur()
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+
+    monkeypatch.setattr(db, "db_conn", lambda: _LoadConn())
+    se.invalidate_model_cache("TEST")
+    model, cols, loaded_meta = se.load_model("TEST", "UP")
+    assert model is not None and loaded_meta["tier"] == "research"
+
+    rows = []
+    for i in range(220):
+        px = 100.0 + i * 0.1
+        rows.append({
+            "ts": f"2026-05-{(i % 20) + 1:02d}T21:00:00Z",
+            "open": px, "high": px + 0.5, "low": px - 0.5,
+            "close": px, "volume": 1000 + i,
+        })
+    monkeypatch.setattr(se, "_fetch_ohlcv", lambda *args, **kwargs: rows)
+    original_load = se.load_model
+    monkeypatch.setattr(
+        se, "load_model",
+        lambda symbol, direction="UP": (
+            (model, cols, loaded_meta) if direction == "UP"
+            else (None, None, None)
+        ),
+    )
+    scores = {}
+    signal, reason = se.predict_live_ex("TEST", "stock", scores=scores)
+    assert signal is None and reason == "research_tier"
+    assert scores["up_prob"] == 0.6
+    assert scores["model_identity_by_direction"]["UP"]["model_sha256"] == meta["model_sha256"]
+    monkeypatch.setattr(se, "load_model", original_load)
+
 
 class TestFirePathTripwires:
     def _src(self):

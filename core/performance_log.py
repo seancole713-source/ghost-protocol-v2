@@ -143,13 +143,16 @@ def symbol_eval_from_scan(
 ) -> Dict[str, Any]:
     meta = scores.get("model_meta") if isinstance(scores.get("model_meta"), dict) else {}
     regime = scores.get("regime") if isinstance(scores.get("regime"), dict) else {}
+    score_direction = str(scores.get("winning_direction") or "").upper()
+    if score_direction not in ("UP", "DOWN"):
+        score_direction = None
     return {
         "symbol": symbol,
         "skip_code": skip,
         "fired": pick is not None,
         "saved": False,
         "prediction_id": None,
-        "direction": pick.get("direction") if pick else None,
+        "direction": pick.get("direction") if pick else score_direction,
         "up_prob": scores.get("up_prob"),
         "confidence": scores.get("confidence") or (pick.get("confidence") if pick else None),
         "confidence_floor": scores.get("confidence_floor"),
@@ -652,7 +655,7 @@ def fetch_progress_summary(days: int = 7) -> Dict[str, Any]:
             SELECT id, symbol, direction, confidence, entry_price, target_price, stop_price,
                    predicted_at, expires_at, outcome
             FROM predictions
-            WHERE id >= %s AND outcome IS NULL AND expires_at > extract(epoch from now())
+            WHERE id >= %s AND outcome IS NULL
             ORDER BY predicted_at DESC NULLS LAST, id DESC
             LIMIT 50
             """,

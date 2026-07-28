@@ -1,4 +1,4 @@
-"""Phase 3 — gate-slice feature audit, sign correction, regime peer weighting."""
+"""Phase 3 — train-slice feature audit, sign correction, regime peer weighting."""
 from __future__ import annotations
 
 import os
@@ -46,7 +46,11 @@ def audit_gate_features(
     *,
     min_n: int = 10,
 ) -> List[Dict[str, Any]]:
-    """Per-feature gate-slice correlation with WIN label; flags likely inversions."""
+    """Per-feature selection-slice correlation with WIN label; flags inversions.
+
+    Callers must supply training-only data. Calibration/gate labels are never a
+    valid input for choosing transformations.
+    """
     y_gate = np.asarray(y_gate)
     if len(y_gate) < min_n:
         return []
@@ -70,7 +74,7 @@ def select_inverted_features(
     *,
     min_corr: Optional[float] = None,
 ) -> Set[str]:
-    """Features to negate so higher values align with WIN on the gate slice."""
+    """Features to negate so higher values align with WIN on the selection slice."""
     cutoff = _v3_feature_invert_min_corr() if min_corr is None else float(min_corr)
     return {
         str(row["feature"])

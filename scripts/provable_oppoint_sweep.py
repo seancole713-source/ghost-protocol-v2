@@ -53,6 +53,8 @@ def run_symbol(sym, cols):
     gap=fm.predict_proba(Xg)[:,1] if len(Xg) else []
     pg=select_fire_threshold(cap,yca,gap,yg,TARGET)
     return {"gate_probs":[float(p) for p in gap], "gate_labels":[int(v) for v in yg],
+            "gate_timestamps":[int((r.get("features") or {}).get("feature_asof_ts") or 0)
+                               for r in up_rows[calib_end:]],
             "wf_edge":wf["edge_mean"], "wf_acc":wf["acc_mean"], "acc":ho["holdout_acc"],
             "edge":ho["edge"], "brier":ho.get("gate_brier"), "pg_ok":bool(pg.get("ok")),
             "pg_thr":pg.get("threshold"), "pg_fail":pg.get("fail_reason")}
@@ -69,20 +71,21 @@ def main():
         print("="*100)
         print("{:<6}{:<8}{:<8}{:<9}{:<8}{:<10}{:<12}".format(
             "sym","acc","edge","wf_edge","brier","pg_ok","pg_thr/fail"))
-        pooled_p=[]; pooled_y=[]; per_sym_proven=0; nsym=0
+        pooled_p=[]; pooled_y=[]; pooled_ts=[]; per_sym_proven=0; nsym=0
         for sym in SYMS:
             r=run_symbol(sym,cols)
             if r is None:
                 print(f"{sym:<6} skip"); continue
             nsym+=1
             pooled_p+=r["gate_probs"]; pooled_y+=r["gate_labels"]
+            pooled_ts+=r["gate_timestamps"]
             if r["pg_ok"]: per_sym_proven+=1
             print("{:<6}{:<8}{:<8}{:<9}{:<8}{:<10}{:<12}".format(
                 sym, round(r["acc"],3), round(r["edge"],3), round(r["wf_edge"],3),
                 str(r["brier"]), "YES" if r["pg_ok"] else "no",
                 str(r["pg_thr"]) if r["pg_ok"] else str(r["pg_fail"])[:11]))
         # pooled global operating point (what the live engine falls back to)
-        g=select_global_threshold(pooled_p, pooled_y, TARGET)
+        g=select_global_threshold(pooled_p, pooled_y, TARGET, timestamps=pooled_ts)
         print("-"*100)
         print(f"symbols evaluated: {nsym}   per-symbol precision-gate PROVEN: {per_sym_proven}")
         print(f"pooled gate-slice OOS samples: {len(pooled_y)}")

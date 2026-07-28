@@ -257,6 +257,14 @@ def test_shadow_wallet_defaults_require_prob_floor_and_skill(monkeypatch):
     src = inspect.getsource(pw.run_wallet_cycle)
     assert "COALESCE(s.resolved, 0) >= %s" in src
     assert "COALESCE(s.wins, 0)::float" in src
+    assert "outcome IN ('WIN','LOSS','EXPIRED')" in src
+    assert "o.direction='UP'" in src
+    assert "o.model_prob >= %s" in src
+    for field in (
+        "symbol", "direction", "model_sha256", "feature_schema",
+        "label_schema", "validation_schema", "hold_bars",
+    ):
+        assert f"s.{field} = o.{field}" in src
 
 
 def test_intraday_squeeze_candidates_prefers_stronger_radar(monkeypatch):
@@ -277,7 +285,7 @@ def test_intraday_squeeze_candidates_prefers_stronger_radar(monkeypatch):
                 "squeeze_score": 62.0,
                 "price": 2.22,
                 "sell": 2.39,
-                "stop": 2.04,
+                "stop": 2.14,
                 "above_vwap": True,
                 "probabilities": {"p_continue_3pct_60m": 87.6},
             },
@@ -303,8 +311,29 @@ def test_intraday_squeeze_candidates_prefers_stronger_radar(monkeypatch):
     assert symbol == "AMC"
     assert entry == 2.22
     assert target == 2.39
-    assert stop == 2.04
+    assert stop == 2.14
     assert expires_at > 1_000_000
+
+
+def test_intraday_squeeze_candidates_rejects_bad_geometry(monkeypatch):
+    import core.paper_wallet as pw
+
+    monkeypatch.setenv("PAPER_INTRADAY_MIN_CONFIDENCE", "60")
+    monkeypatch.setenv("PAPER_INTRADAY_MIN_SQUEEZE_SCORE", "40")
+    monkeypatch.setenv("PAPER_INTRADAY_MIN_CONTINUE_PCT", "60")
+    monkeypatch.setenv("PAPER_INTRADAY_MIN_REWARD_RISK", "1.25")
+    monkeypatch.setenv("PAPER_INTRADAY_MAX_STOP_FRACTION", "0.04")
+    board = {"scan_ok": True, "picks": [{
+        "symbol": "SAP", "kind": "squeeze_active", "confidence_pct": 90,
+        "squeeze_score": 75, "price": 170.03, "sell": 176.83,
+        "stop": 145.55, "above_vwap": True,
+        "probabilities": {"p_continue_3pct_60m": 90},
+    }]}
+
+    out = pw._intraday_squeeze_candidates(board, now_ts=1_000_000)
+    assert out["rows"] == []
+    assert out["diag"]["skip_geometry"] == 1
+    assert out["diag"]["ready"] == 0
 
 
 def test_intraday_squeeze_candidates_sorts_strongest_first(monkeypatch):
@@ -336,7 +365,7 @@ def test_intraday_squeeze_candidates_sorts_strongest_first(monkeypatch):
                 "squeeze_score": 71.0,
                 "price": 20.0,
                 "sell": 21.0,
-                "stop": 19.2,
+                "stop": 19.3,
                 "above_vwap": True,
                 "probabilities": {"p_continue_3pct_60m": 95.0},
             },
@@ -900,7 +929,7 @@ def test_intraday_earnings_guard_blocks_reporting_symbol(monkeypatch):
 
     board = {"scan_ok": True, "last_scan_ts": 123, "picks": [{
         "symbol": "AMC", "kind": "squeeze_active", "confidence_pct": 90,
-        "squeeze_score": 70.0, "price": 2.2, "sell": 2.4, "stop": 2.1,
+        "squeeze_score": 70.0, "price": 2.2, "sell": 2.4, "stop": 2.12,
         "above_vwap": True, "probabilities": {"p_continue_3pct_60m": 90.0},
     }]}
     out = pw._intraday_squeeze_candidates(board, now_ts=1_000_000)
@@ -920,8 +949,27 @@ def test_intraday_entry_bands_reanchors_and_rejects_stale():
     assert pw.intraday_entry_bands(10.45, 10.0, 10.40, 9.80) is None
     # Live already through the radar stop → blown → stale, no knife-catch.
     assert pw.intraday_entry_bands(9.70, 10.0, 10.40, 9.80) is None
-    # Garbage in → None, never a crash in the wallet cycle.
+    # Garbage/non-finite input → None, never a poisoned wallet bracket.
     assert pw.intraday_entry_bands(0, 10.0, 10.40, 9.80) is None
+    assert pw.intraday_entry_bands(float("nan"), 10.0, 10.40, 9.80) is None
+    assert pw.intraday_entry_bands(10.0, float("inf"), 10.40, 9.80) is None
+
+
+def test_intraday_squeeze_rejects_non_finite_values(monkeypatch):
+    import core.paper_wallet as pw
+
+    monkeypatch.setenv("PAPER_INTRADAY_MIN_CONFIDENCE", "60")
+    monkeypatch.setenv("PAPER_INTRADAY_MIN_SQUEEZE_SCORE", "40")
+    monkeypatch.setenv("PAPER_INTRADAY_MIN_CONTINUE_PCT", "60")
+    board = {"scan_ok": True, "last_scan_ts": 123, "picks": [{
+        "symbol": "BAD", "kind": "squeeze_active", "confidence_pct": 90,
+        "squeeze_score": float("nan"), "price": 10.0, "sell": 10.4,
+        "stop": 9.8, "above_vwap": True,
+        "probabilities": {"p_continue_3pct_60m": 90.0},
+    }]}
+    out = pw._intraday_squeeze_candidates(board, now_ts=1_000_000)
+    assert out["rows"] == []
+    assert out["diag"]["skip_price"] == 1
 
 
 def test_intraday_slice_is_bigger_and_book_aware(monkeypatch):

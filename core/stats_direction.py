@@ -15,7 +15,8 @@ def compute_stats_by_direction(cur):
                SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) as wins,
                ROUND(AVG(CASE WHEN pnl_pct IS NOT NULL THEN pnl_pct ELSE 0 END)::numeric,2) as avg_pnl
         FROM predictions
-        WHERE outcome IN ('WIN','LOSS','STOP','EXPIRED') AND id >= {V32_ERA_MIN_ID}
+        WHERE outcome IN ('WIN','LOSS','STOP','EXPIRED')
+          AND pnl_pct IS NOT NULL AND id >= {V32_ERA_MIN_ID}
           AND """
         + REAL_TRADE_WHERE
         + " AND "

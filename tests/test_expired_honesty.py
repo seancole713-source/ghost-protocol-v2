@@ -47,6 +47,18 @@ class TestWinrateWhere:
                                 "live_recalibration.py")).read()
         assert "outcome IN ('WIN','LOSS','EXPIRED')" in src
 
+    def test_duplicate_migration_uses_admin_void(self):
+        import inspect
+        import core.db as db
+
+        src = inspect.getsource(db._migrate_schema)
+        assert "outcome='ADMIN_VOID'" in src
+        assert '"administrative_reason":"duplicate_open_migration"' in src
+        migration_block = src.split("Administratively void duplicate open picks", 1)[1]
+        migration_block = migration_block.split("idx_predictions_one_open_symbol", 1)[0]
+        assert "outcome='EXPIRED'" not in migration_block
+        assert "exit_price=NULL, pnl_pct=NULL" in migration_block
+
     def test_fragment_math(self):
         """Simulate the denominator against a mixed population."""
         rows = [

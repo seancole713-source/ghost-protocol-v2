@@ -40,6 +40,20 @@ def test_symbol_eval_from_scan_skip():
     assert ev["confidence"] == 0.51
 
 
+def test_symbol_eval_from_scan_skip_preserves_winning_direction():
+    scores = {"winning_direction": "DOWN", "down_prob": 0.72}
+    ev = perf.symbol_eval_from_scan("WOLF", None, "down_shadow_only", scores, 1700000002)
+    assert ev["fired"] is False
+    assert ev["direction"] == "DOWN"
+
+
+def test_symbol_eval_from_scan_rejects_invalid_score_direction():
+    ev = perf.symbol_eval_from_scan(
+        "WOLF", None, "v3_prob_low", {"winning_direction": "SIDEWAYS"}, 1700000003,
+    )
+    assert ev["direction"] is None
+
+
 def test_log_prediction_cycle_inserts_rows(monkeypatch):
     monkeypatch.setenv("GHOST_PERF_LOG", "on")
     executed = []

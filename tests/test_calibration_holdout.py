@@ -42,3 +42,16 @@ def test_evaluate_calibration_holdout_computes_brier(monkeypatch):
     from core import signal_engine as _se
     assert out["gate_brier"] < _se._v3_max_calibration_brier()
     assert out["reliability_bins"]
+
+
+def test_holdout_edge_uses_majority_class_baseline():
+    class _AlwaysLoss:
+        def predict_proba(self, X):
+            return np.tile([0.9, 0.1], (len(X), 1))
+
+    y = np.array([0] * 8 + [1] * 2)
+    out = _evaluate_calibration_holdout(_AlwaysLoss(), np.zeros((10, 2)), y)
+    assert out["natural_rate"] == pytest.approx(0.2)
+    assert out["no_skill_accuracy"] == pytest.approx(0.8)
+    assert out["holdout_acc"] == pytest.approx(0.8)
+    assert out["edge"] == pytest.approx(0.0)

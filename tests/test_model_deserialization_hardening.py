@@ -36,11 +36,20 @@ class _DbCtx:
 
 def _valid_meta(**extra):
     meta = {
+        "tier": "proven",
+        "direction": "UP",
         "feature_cols": _se.FEATURE_COLS,
         "label_type": _se.LABEL_TYPE,
         "label_schema": _se._v3_label_schema(),
         "feature_schema": _se._v3_feature_schema(),
+        "validation_schema": _se._v3_validation_schema(),
+        "label_hold_bars": _se.V3_LABEL_HOLD_BARS,
         "trained_at": time.time(),
+        "accuracy": 0.70,
+        "edge": 0.10,
+        "wf_acc_mean": 0.68,
+        "wf_edge_mean": 0.08,
+        "wf_fold_count": 5,
     }
     meta.update(extra)
     return meta

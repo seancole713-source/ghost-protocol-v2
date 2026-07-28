@@ -35,10 +35,17 @@ class _Model:
         return np.array([[1.0 - self._p, self._p]])
 
 
-_META = {"edge": 0.3, "accuracy": 0.66, "wf_acc_mean": 0.64,
+_META = {"tier": "proven", "direction": "UP",
+         "model_sha256": "a" * 64,
+         "label_schema": _se._v3_label_schema(),
+         "validation_schema": _se._v3_validation_schema(),
+         "label_hold_bars": _se.V3_LABEL_HOLD_BARS,
+         "edge": 0.3, "accuracy": 0.66, "wf_acc_mean": 0.64,
          "wf_edge_mean": 0.2, "wf_fold_count": 4, "trained_at": time.time(),
          # Phase 3: a model may only fire above its proven-precision threshold.
-         "precision_gate": {"ok": True, "threshold": 0.55, "target": 0.70}}
+         "precision_gate": {"ok": True, "threshold": 0.55, "target": 0.70,
+                            "calib": {"support": 20, "wins": 20},
+                            "gate": {"support": 20, "wins": 20}}}
 
 
 def _patch_gates(monkeypatch):
@@ -57,10 +64,13 @@ def _patch_gates(monkeypatch):
 
 def _patch_models(monkeypatch, up_p=None, down_p=None):
     def _lm(sym, direction="UP"):
+        meta = dict(_META)
+        meta["direction"] = direction
+        meta["model_sha256"] = "b" * 64 if direction == "DOWN" else "a" * 64
         if direction == "UP" and up_p is not None:
-            return _Model(up_p), _se.FEATURE_COLS, dict(_META)
+            return _Model(up_p), _se.FEATURE_COLS, meta
         if direction == "DOWN" and down_p is not None:
-            return _Model(down_p), _se.FEATURE_COLS, dict(_META)
+            return _Model(down_p), _se.FEATURE_COLS, meta
         return None, None, None
     monkeypatch.setattr(_se, "load_model", _lm)
     monkeypatch.setattr(_se, "_fetch_ohlcv",
@@ -224,7 +234,10 @@ def test_purge_keeps_wolf_directional_models(monkeypatch):
     # ZOMBIE is off-watchlist -> purged by raw key stem. WOLF_up normalizes to
     # WOLF (on watchlist, tp_sl_daily label) -> kept.
     assert purged == 1
-    assert deleted == [("model_ZOMBIE_up", "meta_ZOMBIE_up")]
+    assert deleted == [
+        ("model_ZOMBIE_up", "meta_ZOMBIE_up"),
+        ("v3_global_fire_threshold_v2",),
+    ]
 
 
 def test_delete_model_non_wolf_only_keeps_wolf_directional(monkeypatch):
@@ -262,6 +275,9 @@ def test_delete_model_non_wolf_only_keeps_wolf_directional(monkeypatch):
     import asyncio
     out = asyncio.run(wolf_app.delete_model(x_cron_secret="x", non_wolf_only=True))
     assert out["ok"] is True
-    assert deleted == [("model_NVDA_up", "meta_NVDA_up")]
+    assert deleted == [
+        ("model_NVDA_up", "meta_NVDA_up"),
+        ("v3_global_fire_threshold_v2",),
+    ]
     kept = " ".join(out["kept"])
     assert "WOLF_up" in kept and "WOLF_down" in kept

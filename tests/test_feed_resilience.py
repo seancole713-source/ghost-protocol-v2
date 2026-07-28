@@ -75,15 +75,26 @@ def _fresh_cache(monkeypatch):
     monkeypatch.setenv("V3_OHLCV_FETCH_RETRIES", "1")
 
 
+def _valid_bar(close=1.0):
+    return {
+        "ts": "2026-06-03T00:00:00Z",
+        "open": close,
+        "high": close,
+        "low": close,
+        "close": close,
+        "volume": 1.0,
+    }
+
+
 def test_ohlcv_success_cached_within_ttl(monkeypatch):
     _fresh_cache(monkeypatch)
     monkeypatch.setenv("V3_OHLCV_CACHE_TTL_S", "900")
     calls = []
     monkeypatch.setattr(se, "_fetch_ohlcv_once",
-                        lambda *a, **k: calls.append(1) or [{"close": 1.0}])
+                        lambda *a, **k: calls.append(1) or [_valid_bar()])
     r1 = se._fetch_ohlcv("STUB", "stock", period="3m")
     r2 = se._fetch_ohlcv("STUB", "stock", period="3m")
-    assert r1 == r2 == [{"close": 1.0}]
+    assert r1 == r2 == [_valid_bar()]
     assert len(calls) == 1, "second call within TTL must hit the cache"
 
 
@@ -105,7 +116,7 @@ def test_ohlcv_ttl_zero_disables_success_cache(monkeypatch):
     monkeypatch.setenv("V3_OHLCV_CACHE_TTL_S", "0")
     calls = []
     monkeypatch.setattr(se, "_fetch_ohlcv_once",
-                        lambda *a, **k: calls.append(1) or [{"close": 1.0}])
+                        lambda *a, **k: calls.append(1) or [_valid_bar()])
     se._fetch_ohlcv("STUB", "stock", period="3m")
     se._fetch_ohlcv("STUB", "stock", period="3m")
     assert len(calls) == 2, "TTL=0 entries expire immediately"
@@ -124,7 +135,7 @@ def test_ohlcv_concurrent_callers_fetch_once(monkeypatch):
         calls.append(1)
         started.set()
         release.wait(timeout=5)
-        return [{"close": 2.0}]
+        return [_valid_bar(2.0)]
 
     monkeypatch.setattr(se, "_fetch_ohlcv_once", slow_fetch)
     results = []
@@ -141,4 +152,4 @@ def test_ohlcv_concurrent_callers_fetch_once(monkeypatch):
     t1.join(timeout=5)
     t2.join(timeout=5)
     assert len(calls) == 1, "concurrent identical fetches must dedupe"
-    assert results == [[{"close": 2.0}], [{"close": 2.0}]]
+    assert results == [[_valid_bar(2.0)], [_valid_bar(2.0)]]

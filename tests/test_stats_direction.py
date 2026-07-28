@@ -35,3 +35,7 @@ def test_compute_stats_by_direction_maps_up_to_buy_and_rest_to_sell():
     assert out["by_direction"]["SELL"]["losses"] == 17
     assert out["by_direction"]["SELL"]["win_rate_pct"] == 15.0
     assert out["by_direction"]["SELL"]["avg_pnl"] == -0.75
+
+    sql = cur.executed[0][0]
+    assert "pnl_pct IS NOT NULL" in sql
+    assert "ADMIN_VOID" not in sql

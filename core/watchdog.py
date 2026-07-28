@@ -9,7 +9,7 @@ import time, logging, os
 from core.quiet import note_suppressed
 from core.db import db_conn
 from core.prices import get_price
-from core.tp_sl_resolve import label_hold_bars, resolve_open_prediction
+from core.tp_sl_resolve import label_hold_bars, resolve_open_prediction_detail
 
 LOGGER = logging.getLogger("ghost.watchdog")
 
@@ -37,7 +37,7 @@ def run_watchdog():
             except Exception:
                 note_suppressed()
             price = get_price(symbol)
-            hit = resolve_open_prediction(
+            hit, resolved_at, evidence_price = resolve_open_prediction_detail(
                 direction=direction,
                 target=float(target),
                 stop=float(stop),
@@ -48,15 +48,18 @@ def run_watchdog():
                 now=now,
                 expires_at=int(expires_at) if expires_at else None,
             )
-            if hit not in ("WIN", "LOSS"):
+            if hit not in ("WIN", "LOSS") or not resolved_at:
                 continue
             from core.pnl import resolution_exit
-            exit_price, pnl = resolution_exit(hit, direction, entry, target, stop, price if price else entry)
+            exit_price, pnl = resolution_exit(
+                hit, direction, entry, target, stop,
+                evidence_price if evidence_price is not None else entry,
+            )
             with db_conn() as conn:
                 cur = conn.cursor()
                 cur.execute(
                     "UPDATE predictions SET outcome=%s,exit_price=%s,pnl_pct=%s,resolved_at=%s WHERE id=%s AND outcome IS NULL",
-                    (hit, exit_price, pnl, now, pred_id))
+                    (hit, exit_price, pnl, int(resolved_at), pred_id))
                 updated = cur.rowcount
             if not updated:
                 continue  # Already resolved by reconciler

@@ -374,7 +374,9 @@ def _v3_feature_schema() -> str:
     macd = "macd_pct_v1" if _v3_pool_training_enabled() else "macd_raw_v0"
     sector = "sec1" if _v3_sector_feature_enabled() else "sec0"
     audit = "fa1" if _v3_feature_audit_enabled() else "fa0"
-    return f"{macd}+{sector}+{audit}"
+    from core.fundamental_features import enabled as _fundamental_features_enabled
+    fundamentals = "fund1" if _fundamental_features_enabled() else "fund0"
+    return f"{macd}+{sector}+{audit}+{fundamentals}"
 
 
 def _v3_feature_audit_enabled() -> bool:
@@ -383,15 +385,17 @@ def _v3_feature_audit_enabled() -> bool:
 
 
 def _v3_wf_purge() -> int:
-    """Bars to purge between each walk-forward train block and its test block.
+    """Effective purge between train and later evidence slices.
 
-    The triple-barrier label looks ahead V3_LABEL_HOLD_BARS bars, so the last
-    few training samples before a test block carry outcomes that resolve inside
-    the test period — naive walk-forward leaks that future into training. Purging
-    hold_bars samples at the boundary removes the overlap (López de Prado purged
-    CV). Defaults to the label horizon; set V3_WF_PURGE=0 to disable.
+    Triple-barrier labels are unavailable until as many as
+    ``V3_LABEL_HOLD_BARS`` later bars have completed. The purge can be
+    tightened, never weakened below that horizon.
     """
-    return max(0, int(os.getenv("V3_WF_PURGE", str(V3_LABEL_HOLD_BARS))))
+    try:
+        configured = int(os.getenv("V3_WF_PURGE", str(V3_LABEL_HOLD_BARS)))
+    except (TypeError, ValueError):
+        configured = V3_LABEL_HOLD_BARS
+    return max(int(V3_LABEL_HOLD_BARS), configured)
 
 
 def _v3_max_calibration_brier() -> float:

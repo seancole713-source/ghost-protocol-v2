@@ -33,6 +33,32 @@ def test_forward_bars_skip_entry_day():
     assert tps._date_key(fwd[0]["ts"]) == "2026-06-03"
 
 
+def test_forward_bars_accept_unix_second_timestamps():
+    entry_ts = int(datetime(2026, 6, 2, 15, 0, tzinfo=timezone.utc).timestamp())
+    rows = [
+        {"ts": int(datetime(2026, 6, day, tzinfo=timezone.utc).timestamp()),
+         "high": 11, "low": 9}
+        for day in (2, 3, 4)
+    ]
+    fwd = tps.forward_bars_after_entry(rows, entry_ts, hold_bars=2)
+    assert [tps._date_key(row["ts"]) for row in fwd] == ["2026-06-03", "2026-06-04"]
+
+
+def test_forward_bars_dedup_same_calendar_date():
+    """Several intraday timestamps on one date count as ONE daily bar."""
+    ts = int(datetime(2026, 6, 2, 15, 0, tzinfo=timezone.utc).timestamp())
+    rows = [
+        {"ts": "2026-06-03T09:30:00Z", "high": 11, "low": 9},
+        {"ts": "2026-06-03T10:00:00Z", "high": 11, "low": 9},
+        {"ts": "2026-06-03T16:00:00Z", "high": 11, "low": 9},
+        {"ts": "2026-06-04T00:00:00Z", "high": 11, "low": 9},
+    ]
+    fwd = tps.forward_bars_after_entry(rows, ts, hold_bars=3)
+    assert len(fwd) == 2
+    assert tps._date_key(fwd[0]["ts"]) == "2026-06-03"
+    assert tps._date_key(fwd[1]["ts"]) == "2026-06-04"
+
+
 def test_resolve_open_prediction_expired_after_hold_window():
     ts = int(datetime(2026, 6, 2, 15, 0, tzinfo=timezone.utc).timestamp())
     rows = [
@@ -52,6 +78,108 @@ def test_resolve_open_prediction_expired_after_hold_window():
         expires_at=ts + 86400 * 5,
     )
     assert out == "EXPIRED"
+
+
+def test_resolve_open_prediction_ignores_partial_current_daily_bar():
+    ts = int(datetime(2026, 6, 2, 15, 0, tzinfo=timezone.utc).timestamp())
+    before_close = int(datetime(2026, 6, 5, 18, 0, tzinfo=timezone.utc).timestamp())
+    rows = [
+        {"ts": f"2026-06-0{day}T00:00:00Z", "high": 10.2, "low": 10.0}
+        for day in (3, 4, 5)
+    ]
+    assert tps.resolve_open_prediction(
+        direction="UP", target=11.0, stop=9.0, predicted_at=ts,
+        hold_bars=3, daily_bars=rows, now=before_close,
+    ) is None
+    after_close = int(datetime(2026, 6, 5, 22, 0, tzinfo=timezone.utc).timestamp())
+    assert tps.resolve_open_prediction(
+        direction="UP", target=11.0, stop=9.0, predicted_at=ts,
+        hold_bars=3, daily_bars=rows, now=after_close,
+    ) == "EXPIRED"
+
+
+def test_resolve_open_prediction_does_not_expire_incomplete_bar_horizon():
+    ts = int(datetime(2026, 6, 2, 15, 0, tzinfo=timezone.utc).timestamp())
+    rows = [
+        {"ts": "2026-06-03T00:00:00Z", "high": 10.2, "low": 10.0},
+        {"ts": "2026-06-04T00:00:00Z", "high": 10.2, "low": 10.0},
+    ]
+    out = tps.resolve_open_prediction(
+        direction="UP",
+        target=11.0,
+        stop=9.0,
+        predicted_at=ts,
+        hold_bars=3,
+        daily_bars=rows,
+        now=ts + 86400 * 10,
+        expires_at=ts + 86400 * 5,
+    )
+    assert out is None
+
+
+def test_snapshot_resolves_while_daily_horizon_is_incomplete():
+    ts = int(datetime(2026, 6, 2, 15, 0, tzinfo=timezone.utc).timestamp())
+    now = int(datetime(2026, 6, 4, 18, 0, tzinfo=timezone.utc).timestamp())
+    rows = [
+        {"ts": "2026-06-03T00:00:00Z", "high": 10.2, "low": 10.0, "close": 10.1},
+        {"ts": "2026-06-04T00:00:00Z", "high": 11.5, "low": 10.0, "close": 11.2},
+    ]
+    outcome, resolved_at, exit_price = tps.resolve_open_prediction_detail(
+        direction="UP", target=11.0, stop=9.0, predicted_at=ts,
+        hold_bars=3, daily_bars=rows, snapshot_price=11.2, now=now,
+    )
+    assert (outcome, resolved_at, exit_price) == ("WIN", now, 11.0)
+
+
+def test_delayed_expiry_uses_horizon_close_and_timestamp():
+    ts = int(datetime(2026, 6, 2, 15, 0, tzinfo=timezone.utc).timestamp())
+    rows = [
+        {"ts": f"2026-06-0{day}T00:00:00Z", "high": 10.2,
+         "low": 10.0, "close": close}
+        for day, close in ((3, 10.1), (4, 10.15), (5, 10.05))
+    ]
+    outcome, resolved_at, exit_price = tps.resolve_open_prediction_detail(
+        direction="UP", target=11.0, stop=9.0, predicted_at=ts,
+        hold_bars=3, daily_bars=rows,
+        snapshot_price=12.0,
+        now=int(datetime(2026, 6, 8, 21, 0, tzinfo=timezone.utc).timestamp()),
+    )
+    assert outcome == "EXPIRED"
+    assert resolved_at == int(
+        datetime(2026, 6, 5, 21, 0, tzinfo=timezone.utc).timestamp()
+    )
+    assert exit_price == 10.05
+
+
+def test_simulated_label_resolution_timestamp_is_exact():
+    rows = [
+        {"ts": "2026-06-02T00:00:00Z", "close": 100.0, "high": 100.0, "low": 100.0},
+        {"ts": "2026-06-03T00:00:00Z", "close": 100.0, "high": 100.5, "low": 99.5},
+        {"ts": "2026-06-04T00:00:00Z", "close": 100.0, "high": 103.0, "low": 99.5},
+        {"ts": "2026-06-05T00:00:00Z", "close": 100.0, "high": 100.5, "low": 99.5},
+    ]
+    outcome, resolved_ts = tps.simulate_tp_sl_label_detail(
+        rows, 0, hold_bars=3, vol_pct=0.02,
+    )
+    assert outcome == "WIN"
+    assert resolved_ts == int(
+        datetime(2026, 6, 4, 21, 0, tzinfo=timezone.utc).timestamp()
+    )
+
+
+def test_expiry_resolution_timestamp_is_daily_close_not_midnight():
+    rows = [
+        {"ts": f"2026-06-0{day}T00:00:00Z", "close": 100.0,
+         "high": 100.5, "low": 99.5}
+        for day in (2, 3, 4, 5)
+    ]
+    outcome, resolved_ts = tps.simulate_tp_sl_label_detail(
+        rows, 0, hold_bars=3, vol_pct=0.02,
+    )
+    assert outcome == "EXPIRED"
+    assert resolved_ts == int(
+        datetime(2026, 6, 5, 21, 0, tzinfo=timezone.utc).timestamp()
+    )
 
 
 def test_holdout_slices_do_not_overlap():
@@ -87,7 +215,12 @@ def test_feature_asof_on_live_features(monkeypatch):
 
     meta = {"edge": 0.2, "accuracy": 0.6, "wf_acc_mean": 0.6, "wf_edge_mean": 0.1,
             "wf_fold_count": 3, "trained_at": time.time(),
-            "precision_gate": {"ok": True, "threshold": 0.55, "target": 0.70}}
+            "model_sha256": "a" * 64, "label_schema": _se._v3_label_schema(),
+            "validation_schema": _se._v3_validation_schema(),
+            "label_hold_bars": _se.V3_LABEL_HOLD_BARS,
+            "precision_gate": {"ok": True, "threshold": 0.55, "target": 0.70,
+                               "calib": {"support": 20, "wins": 20},
+                               "gate": {"support": 20, "wins": 20}}}
     monkeypatch.setattr(_se, "load_model", lambda s, direction="UP": (_M(), _se.FEATURE_COLS, meta))
     monkeypatch.setenv("GHOST_ACCURACY_CONTRACT", "legacy")
     # Hermetic: kill the live premarket overlay (time-of-day flake — real
@@ -125,7 +258,12 @@ def test_confidence_equals_up_prob(monkeypatch):
 
     meta = {"edge": 0.3, "accuracy": 0.66, "wf_acc_mean": 0.64,
             "wf_edge_mean": 0.2, "wf_fold_count": 4, "trained_at": time.time(),
-            "precision_gate": {"ok": True, "threshold": 0.55, "target": 0.70}}
+            "model_sha256": "a" * 64, "label_schema": _se._v3_label_schema(),
+            "validation_schema": _se._v3_validation_schema(),
+            "label_hold_bars": _se.V3_LABEL_HOLD_BARS,
+            "precision_gate": {"ok": True, "threshold": 0.55, "target": 0.70,
+                               "calib": {"support": 20, "wins": 20},
+                               "gate": {"support": 20, "wins": 20}}}
     monkeypatch.setattr(_se, "load_model", lambda s, direction="UP": (_M(), _se.FEATURE_COLS, meta))
     monkeypatch.setenv("GHOST_ACCURACY_CONTRACT", "legacy")
     # Hermetic: kill the live premarket overlay (time-of-day flake — real

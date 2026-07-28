@@ -996,6 +996,26 @@ def test_backtest_symbol_returns_empty_when_under_min_bars(monkeypatch):
     assert down_rows == []
 
 
+def test_backtest_symbol_includes_expiry_as_non_win(monkeypatch):
+    import datetime as _dt
+    import core.signal_engine as _se
+
+    base = _dt.date(2026, 1, 1)
+    rows = [{
+        "ts": (base + _dt.timedelta(days=i)).isoformat(),
+        "open": 100.0, "high": 100.1, "low": 99.9, "close": 100.0,
+        "volume": 100000,
+    } for i in range(100)]
+    monkeypatch.setattr(_se, "_fetch_ohlcv", lambda symbol, asset_type: rows)
+    monkeypatch.setenv("MIN_BACKTEST_BARS", "10")
+    monkeypatch.setenv("V3_BACKTEST_WINDOW", "60")
+
+    up_rows, down_rows = _se.backtest_symbol("WOLF", "stock")
+    assert up_rows and down_rows
+    assert all(row["outcome"] == "EXPIRED" and row["label"] == 0 for row in up_rows)
+    assert all(row["outcome"] == "EXPIRED" and row["label"] == 0 for row in down_rows)
+
+
 def test_backtest_symbol_window_governs_sample_count(monkeypatch):
     """Smaller window must produce more labeled samples on the same input."""
     import core.signal_engine as _se
@@ -1935,10 +1955,41 @@ def test_walk_forward_respects_env_min_train_override(monkeypatch):
     assert out["fold_count"] == 0
 
 
-def test_walk_forward_pools_peers_into_training_only(monkeypatch):
-    """W1: peers expand each fold's TRAINING set (with a matching sample_weight
-    vector); the test window stays target-only. Verifies the gate validates the
-    deployed pooled model, not a WOLF-only one."""
+def test_wf_purge_cannot_be_weakened_below_label_horizon(monkeypatch):
+    import core.signal_engine as _se
+
+    hold = int(_se.V3_LABEL_HOLD_BARS)
+    for configured in ("0", "-5", "not-an-int"):
+        monkeypatch.setenv("V3_WF_PURGE", configured)
+        assert _se._v3_wf_purge() == hold
+    monkeypatch.setenv("V3_WF_PURGE", str(hold + 4))
+    assert _se._v3_wf_purge() == hold + 4
+
+
+def test_normalize_daily_ohlcv_sorts_and_rejects_invalid_evidence():
+    import core.signal_engine as _se
+
+    valid = [
+        {"ts": "2026-06-04T00:00:00Z", "open": 10, "high": 11,
+         "low": 9, "close": 10.5, "volume": 100},
+        {"ts": "2026-06-03T00:00:00Z", "open": 9, "high": 10,
+         "low": 8, "close": 9.5, "volume": 90},
+    ]
+    normalized = _se._normalize_daily_ohlcv(valid)
+    assert [row["ts"][:10] for row in normalized] == ["2026-06-03", "2026-06-04"]
+
+    invalid_mutations = [
+        [valid[0], dict(valid[0])],
+        [dict(valid[0], high=float("nan"))],
+        [dict(valid[0], low=12)],
+        [dict(valid[0], volume=-1)],
+        [dict(valid[0], ts="bad")],
+    ]
+    assert all(_se._normalize_daily_ohlcv(rows) is None for rows in invalid_mutations)
+
+
+def test_walk_forward_pools_only_peers_available_by_fold_cutoff(monkeypatch):
+    """Peer rows after each fold's target training cutoff must not leak in."""
     import core.signal_engine as _se
     import numpy as np
     import sys
@@ -1970,12 +2021,81 @@ def test_walk_forward_pools_peers_into_training_only(monkeypatch):
     y = np.array([0, 1] * 63 + [0])
     X_peer = np.ones((40, 3))
     y_peer = np.array([0, 1] * 20)
-    out = _se._walk_forward_scores(X, y, X_peer, y_peer, 3.0)
+    target_ts = np.arange(1000, 1127)
+    # Twenty historical peers are always eligible; twenty future peers must
+    # not enter any fold whose target training cutoff is before 2000.
+    peer_ts = np.array(list(range(900, 920)) + list(range(2000, 2020)))
+    peer_label_ts = peer_ts.copy()
+    out = _se._walk_forward_scores(
+        X, y, X_peer, y_peer, 3.0, target_ts=target_ts, peer_ts=peer_ts,
+        peer_label_ts=peer_label_ts,
+    )
     assert out["fold_count"] >= 3
     assert seen, "model.fit was never called"
     for n_train, n_sw in seen:
-        assert n_sw == n_train          # one weight per training row
-        assert n_train >= 60 + 40       # WOLF prefix (>=min_train) + 40 pooled peers
+        assert n_sw == n_train
+        assert 80 <= n_train <= 125     # target prefix + exactly 20 eligible peers
+
+
+def test_walk_forward_selects_inversions_per_fold(monkeypatch):
+    """Each fold audits only its target training prefix, never one global map."""
+    import core.signal_engine as _se
+    import core.feature_audit as _fa
+    import numpy as np
+
+    _install_fake_xgboost(monkeypatch)
+    seen_lengths = []
+
+    def _audit(X, y, cols, **kwargs):
+        seen_lengths.append(len(y))
+        return []
+
+    monkeypatch.setattr(_fa, "audit_gate_features", _audit)
+    X = np.zeros((127, 3))
+    y = np.array([0, 1] * 63 + [0])
+    out = _se._walk_forward_scores(X, y, feature_cols=["a", "b", "c"])
+    assert out["fold_count"] >= 3
+    assert len(seen_lengths) == out["fold_count"]
+    assert seen_lengths == sorted(seen_lengths)
+    assert max(seen_lengths) < len(y)
+
+
+def test_walk_forward_rejects_unknown_peer_timestamps(monkeypatch):
+    """Missing/zero peer timestamps are not treated as ancient history."""
+    import core.signal_engine as _se
+    import numpy as np
+    import sys
+    import types
+
+    seen = []
+
+    class _Capture:
+        def __init__(self, **kwargs): pass
+        def fit(self, X, y, sample_weight=None):
+            seen.append(len(X))
+            return self
+        def predict(self, X):
+            return np.zeros(len(X))
+
+    fake_xgb = types.ModuleType("xgboost")
+    fake_xgb.XGBClassifier = _Capture
+    monkeypatch.setitem(sys.modules, "xgboost", fake_xgb)
+    fake_sklearn = types.ModuleType("sklearn")
+    fake_metrics = types.ModuleType("sklearn.metrics")
+    fake_metrics.accuracy_score = lambda a, b: 0.6
+    fake_sklearn.metrics = fake_metrics
+    monkeypatch.setitem(sys.modules, "sklearn", fake_sklearn)
+    monkeypatch.setitem(sys.modules, "sklearn.metrics", fake_metrics)
+
+    X = np.zeros((127, 3))
+    y = np.array([0, 1] * 63 + [0])
+    out = _se._walk_forward_scores(
+        X, y, np.ones((2, 3)), np.array([1, 0]), 3.0,
+        target_ts=np.arange(1000, 1127), peer_ts=np.array([0, -1]),
+    )
+    assert out["fold_count"] >= 3
+    assert seen
+    assert all(n <= 105 for n in seen)  # target rows only; no unknown peers
 
 
 # ── PR #22: ops polish (purge non-WOLF / telegram status / freshness) ───
@@ -3044,9 +3164,16 @@ def test_predict_live_ex_journals_full_feature_vector(monkeypatch):
 
     class _M:
         def predict_proba(self, X): return _np.array([[0.1, 0.9]])
-    meta = {"edge": 0.3, "accuracy": 0.66, "wf_acc_mean": 0.64,
+    meta = {"tier": "proven", "direction": "UP",
+            "model_sha256": "a" * 64,
+            "label_schema": _se._v3_label_schema(),
+            "validation_schema": _se._v3_validation_schema(),
+            "label_hold_bars": _se.V3_LABEL_HOLD_BARS,
+            "edge": 0.3, "accuracy": 0.66, "wf_acc_mean": 0.64,
             "wf_edge_mean": 0.2, "wf_fold_count": 4, "trained_at": time.time(),
-            "precision_gate": {"ok": True, "threshold": 0.55, "target": 0.70}}
+            "precision_gate": {"ok": True, "threshold": 0.55, "target": 0.70,
+                               "calib": {"support": 20, "wins": 20},
+                               "gate": {"support": 20, "wins": 20}}}
     monkeypatch.setattr(_se, "load_model", lambda s, direction="UP": (_M(), _se.FEATURE_COLS, meta))
     monkeypatch.setenv("GHOST_ACCURACY_CONTRACT", "legacy")
     # Hermetic: kill the live premarket overlay so the real symbol price can't
@@ -3066,6 +3193,71 @@ def test_predict_live_ex_journals_full_feature_vector(monkeypatch):
     for k in ("rsi", "macd_hist", "pct_b", "atr_pct", "volume_ratio",
               "mom_4h", "adx", "obv_slope", "stoch_k"):
         assert k in fv, "missing journaled feature: " + k
+
+
+def test_predict_live_ex_applies_direction_specific_inversions(monkeypatch):
+    """UP and DOWN serving matrices use only their own persisted sign map."""
+    import core.signal_engine as _se
+    import numpy as _np
+
+    rows = []
+    for i in range(220):
+        px = 100.0 + i * 0.4
+        rows.append({"ts": "2026-05-20T%02d:00:00Z" % (i % 24),
+                     "open": px - 0.2, "high": px + 0.5, "low": px - 0.5,
+                     "close": px, "volume": 1000 + i * 5})
+    monkeypatch.setattr(
+        _se, "_fetch_ohlcv",
+        lambda s, a, period="5d", interval="1h": rows,
+    )
+
+    seen = {}
+
+    class _CaptureModel:
+        def __init__(self, direction, p):
+            self.direction = direction
+            self.p = p
+
+        def predict_proba(self, X):
+            seen[self.direction] = _np.array(X, copy=True)
+            return _np.array([[1.0 - self.p, self.p]])
+
+    base_meta = {
+        "tier": "proven", "direction": "UP",
+        "model_sha256": "a" * 64,
+        "label_schema": _se._v3_label_schema(),
+        "validation_schema": _se._v3_validation_schema(),
+        "label_hold_bars": _se.V3_LABEL_HOLD_BARS,
+        "edge": 0.3, "accuracy": 0.66, "wf_acc_mean": 0.64,
+        "wf_edge_mean": 0.2, "wf_fold_count": 4, "trained_at": time.time(),
+        "precision_gate": {"ok": True, "threshold": 0.55, "target": 0.70,
+                           "calib": {"support": 20, "wins": 20},
+                           "gate": {"support": 20, "wins": 20}},
+    }
+
+    def _load(_symbol, direction="UP"):
+        meta = dict(base_meta)
+        meta["direction"] = direction
+        meta["model_sha256"] = "b" * 64 if direction == "DOWN" else "a" * 64
+        meta["feature_inversions"] = ["rsi"] if direction == "UP" else ["macd_hist"]
+        return _CaptureModel(direction, 0.9 if direction == "UP" else 0.1), ["rsi", "macd_hist"], meta
+
+    monkeypatch.setattr(_se, "load_model", _load)
+    monkeypatch.setenv("GHOST_ACCURACY_CONTRACT", "legacy")
+    monkeypatch.setenv("GHOST_PREMARKET_SCAN", "0")
+    monkeypatch.setenv("V3_PROVEN_SKILL_GATE", "0")
+    monkeypatch.setenv("V3_OVERCONFIDENCE_GATE", "0")
+    for k, v in {"V3_MIN_WIN_PROBA": "0.55", "V3_MIN_EDGE": "0.0",
+                 "V3_MIN_HOLDOUT_ACC": "0.0", "V3_MIN_WF_ACC_MEAN": "0.0"}.items():
+        monkeypatch.setenv(k, v)
+
+    scores = {}
+    sig, _ = _se.predict_live_ex("WOLF", "stock", scores=scores)
+    assert sig is not None
+    assert seen["UP"][0, 0] == pytest.approx(-seen["DOWN"][0, 0])
+    assert seen["UP"][0, 1] == pytest.approx(-seen["DOWN"][0, 1])
+    assert seen["UP"][0, 0] != 0
+    assert seen["UP"][0, 1] != 0
 
 
 def test_pick_journal_flattens_indicators(monkeypatch):
@@ -4095,6 +4287,63 @@ def test_assemble_pooled_training_no_peers_returns_target():
     assert list(sw) == [2.5, 2.5]
 
 
+def test_assemble_pooled_training_bounds_and_transforms_peers():
+    import numpy as np
+    import core.signal_engine as _se
+
+    X_train = np.array([[-1.0]])
+    y_train = np.array([1])
+    peer_rows = [
+        {"features": {"a": 2.0, "feature_asof_ts": 100}, "label": 0, "label_resolved_ts": 200},
+        {"features": {"a": 3.0, "feature_asof_ts": 300}, "label": 1, "label_resolved_ts": 400},
+    ]
+    X, y, _ = _se._assemble_pooled_training(
+        X_train, y_train, peer_rows, ["a"], 1.0,
+        invert_cols={"a"}, max_asof_ts=200,
+    )
+    assert list(y) == [1, 0]
+    assert list(X[:, 0]) == [-1.0, -2.0]
+    assert peer_rows[0]["features"]["a"] == 2.0  # no shared-row mutation
+
+
+def test_assemble_pooled_training_excludes_malformed_peer_chronology():
+    import numpy as np
+    import core.signal_engine as _se
+
+    peers = [
+        {"features": {"a": 2.0, "feature_asof_ts": "bad"}, "label": 0, "label_resolved_ts": 100},
+        {"features": {"a": 3.0, "feature_asof_ts": float("nan")}, "label": 1, "label_resolved_ts": 100},
+        {"features": {"a": 4.0, "feature_asof_ts": float("inf")}, "label": 1, "label_resolved_ts": 100},
+        {"features": {"a": 5.0, "feature_asof_ts": 150}, "label": 0, "label_resolved_ts": 200},
+        {"features": {"a": 6.0, "feature_asof_ts": 250}, "label": 1, "label_resolved_ts": 300},
+    ]
+    X, y, sw = _se._assemble_pooled_training(
+        np.array([[1.0]]), np.array([1]), peers, ["a"], 2.0,
+        max_asof_ts=200,
+    )
+    assert list(X[:, 0]) == [1.0, 5.0]
+    assert list(y) == [1, 0]
+    assert list(sw) == [2.0, 1.0]
+
+
+def test_assemble_pooled_training_includes_exact_cutoff_only():
+    import numpy as np
+    import core.signal_engine as _se
+
+    peers = [
+        {"features": {"a": 2.0, "feature_asof_ts": 200},
+         "label": 1, "label_resolved_ts": 200},
+        {"features": {"a": 3.0, "feature_asof_ts": 200},
+         "label": 0, "label_resolved_ts": 201},
+    ]
+    X, y, _ = _se._assemble_pooled_training(
+        np.array([[1.0]]), np.array([0]), peers, ["a"], 1.0,
+        max_asof_ts=200,
+    )
+    assert list(X[:, 0]) == [1.0, 2.0]
+    assert list(y) == [0, 1]
+
+
 def test_peer_symbols_parsing(monkeypatch):
     import core.signal_engine as _se
     monkeypatch.delenv("PEER_SYMBOLS", raising=False)
@@ -4139,15 +4388,18 @@ def test_collect_peer_rows_pools_are_direction_separated(monkeypatch):
     assert all(r["side"] == "down" for r in pooled["DOWN"])
 
 
-def test_feature_schema_tracks_pool_and_sector_flags(monkeypatch):
+def test_feature_schema_tracks_pool_sector_and_fundamental_flags(monkeypatch):
     import core.signal_engine as _se
+    monkeypatch.setenv("V3_FUNDAMENTAL_FEATURES", "off")
     monkeypatch.setenv("V3_SECTOR_FEATURE", "off")
     monkeypatch.setenv("V3_POOL_TRAINING", "on")
-    assert _se._v3_feature_schema() == "macd_pct_v1+sec0+fa1"
+    assert _se._v3_feature_schema() == "macd_pct_v1+sec0+fa1+fund0"
     monkeypatch.setenv("V3_POOL_TRAINING", "off")
-    assert _se._v3_feature_schema() == "macd_raw_v0+sec0+fa1"
+    assert _se._v3_feature_schema() == "macd_raw_v0+sec0+fa1+fund0"
     monkeypatch.setenv("V3_SECTOR_FEATURE", "on")
-    assert _se._v3_feature_schema() == "macd_raw_v0+sec1+fa1"
+    assert _se._v3_feature_schema() == "macd_raw_v0+sec1+fa1+fund0"
+    monkeypatch.setenv("V3_FUNDAMENTAL_FEATURES", "on")
+    assert _se._v3_feature_schema() == "macd_raw_v0+sec1+fa1+fund1"
 
 
 def test_active_feature_cols_appends_sector_only_when_on(monkeypatch):

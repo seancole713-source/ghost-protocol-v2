@@ -129,6 +129,10 @@ def run_symbol(sym, cols):
     edge = float(ho["edge"] or 0)
     return {"gate_probs": [float(p) for p in gap],
             "gate_labels": [int(v) for v in yg],
+            "gate_timestamps": [
+                int((r.get("features") or {}).get("feature_asof_ts") or 0)
+                for r in up_rows[calib_end:]
+            ],
             "acc": acc, "edge": edge,
             "natural_rate": float(np.mean(y)) if n else None,
             "pg_ok": bool(pg.get("ok")), "pg_thr": pg.get("threshold"),
@@ -161,7 +165,7 @@ def main():
         _patch_target_scale(ts)
         target_pct = 0.02 * ts          # generic stock; WOLF slightly wider
         stop_pct = target_pct * sm
-        pooled_p, pooled_y = [], []
+        pooled_p, pooled_y, pooled_ts = [], [], []
         per_sym_ok = 0
         serve_pass_ct = 0
         nsym = 0
@@ -176,11 +180,14 @@ def main():
             nsym += 1
             pooled_p += r["gate_probs"]
             pooled_y += r["gate_labels"]
+            pooled_ts += r["gate_timestamps"]
             if r["pg_ok"]:
                 per_sym_ok += 1
             if r.get("serve_pass"):
                 serve_pass_ct += 1
-        g = select_global_threshold(pooled_p, pooled_y, TARGET)
+        g = select_global_threshold(
+            pooled_p, pooled_y, TARGET, timestamps=pooled_ts,
+        )
         row = {"target_scale": ts, "stop_mult": sm,
                "target_pct": round(target_pct, 4), "stop_pct": round(stop_pct, 4),
                "symbols": nsym, "per_symbol_proven": per_sym_ok,

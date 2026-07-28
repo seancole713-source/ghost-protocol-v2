@@ -18,7 +18,11 @@ def _meta(acc=0.70, nat=0.60, edge=0.10, wf_edge=0.05, wf_acc=0.65, folds=5,
         "wf_acc_min": 0.5, "wf_edge_min": 0.0, "n_samples": 300,
         "engine_version": "v3.2", "label_type": "tp_sl_daily",
         "label_schema": "tp_sl_fwd_v1", "feature_schema": "x",
-        "precision_gate": {"ok": precision_ok, "threshold": 0.6},
+        "precision_gate": {
+            "ok": precision_ok, "threshold": 0.6, "target": 0.70,
+            "calib": {"support": 100, "wins": 80},
+            "gate": {"support": 100, "wins": 80},
+        },
     }
 
 
@@ -49,7 +53,7 @@ def _status_with(monkeypatch, metas):
             return False
     import core.db as db
     monkeypatch.setattr(db, "db_conn", lambda: _Conn())
-    monkeypatch.setattr(se, "model_serve_guard", lambda m: None)
+    monkeypatch.setattr(se, "model_serve_guard", lambda m, **kwargs: None)
     monkeypatch.setattr(se, "get_last_train_gate_summary", lambda: {})
     # Most PR #135 tests isolate the static meta/precision checks; PR #155
     # proven-skill status mirroring has its own explicit test below.
@@ -135,7 +139,7 @@ def test_status_mirrors_runtime_proven_skill_gate(monkeypatch):
             return False
     import core.db as db
     monkeypatch.setattr(db, "db_conn", lambda: _Conn())
-    monkeypatch.setattr(se, "model_serve_guard", lambda m: None)
+    monkeypatch.setattr(se, "model_serve_guard", lambda m, **kwargs: None)
     monkeypatch.setattr(se, "get_last_train_gate_summary", lambda: {})
     monkeypatch.setenv("V3_PROVEN_SKILL_GATE", "1")
     # Fake cursor has no shadow outcome rows; status must fail closed and avoid

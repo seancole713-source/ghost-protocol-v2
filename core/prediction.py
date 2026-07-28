@@ -1897,8 +1897,8 @@ def get_objective_daily_report(days: int = 14) -> Dict[str, Any]:
 
 
 def reconcile_outcomes():
-    """Check open v2 predictions. Bar-path TP/SL first (v3.2 label parity), snapshot fallback."""
-    from core.tp_sl_resolve import label_hold_bars, resolve_open_prediction
+    """Check open v2 predictions using exact evidence time and exit price."""
+    from core.tp_sl_resolve import label_hold_bars, resolve_open_prediction_detail
 
     resolved = 0
     now = int(time.time())
@@ -1922,7 +1922,7 @@ def reconcile_outcomes():
         except Exception as _fe:
             LOGGER.debug("reconcile bar fetch %s: %s", symbol, str(_fe)[:80])
         price = get_price(symbol)
-        outcome = resolve_open_prediction(
+        outcome, resolved_at, evidence_price = resolve_open_prediction_detail(
             direction=direction,
             target=float(target),
             stop=float(stop),
@@ -1933,16 +1933,18 @@ def reconcile_outcomes():
             now=now,
             expires_at=int(expires_at) if expires_at else None,
         )
-        if not outcome:
+        if not outcome or not resolved_at:
             continue
         from core.pnl import resolution_exit
         exit_price, pnl = resolution_exit(
-            outcome, direction, entry, target, stop, price if price else entry)
+            outcome, direction, entry, target, stop,
+            evidence_price if evidence_price is not None else entry,
+        )
         with db_conn() as conn:
             cur = conn.cursor()
             cur.execute(
                 "UPDATE predictions SET outcome=%s,exit_price=%s,pnl_pct=%s,resolved_at=%s WHERE id=%s AND outcome IS NULL",
-                (outcome, exit_price, pnl, now, pred_id))
+                (outcome, exit_price, pnl, int(resolved_at), pred_id))
             if cur.rowcount == 0:
                 continue  # already resolved by another path
         resolved += 1

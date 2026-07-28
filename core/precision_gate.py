@@ -21,16 +21,37 @@ Env knobs (read at call time so ops can retune without deploy):
   V3_PRECISION_TARGET            default 0.70
   V3_PRECISION_MIN_SUPPORT       min calib-slice picks at threshold (default 10)
   V3_PRECISION_GATE_MIN_SUPPORT  min gate-slice picks at threshold (default 5)
-  V3_PRECISION_GATE_SLACK        allowed gate-slice shortfall vs target (default 0.05)
+
+Proof is strict: the untouched gate slice's 95% Wilson lower bound must clear
+V3_PRECISION_TARGET. Small raw win rates are never presented as proof.
 """
 import logging
 import math
+import numbers
 import os
+import re
 import threading
 from typing import Any, Dict, Optional, Sequence
 from core.db import ensure_ghost_state
 
 LOGGER = logging.getLogger("ghost.precision_gate")
+
+
+def _exact_int(value: Any) -> Optional[int]:
+    """Parse persisted JSON counts without truncating fractional evidence."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, numbers.Integral):
+        return int(value)
+    if isinstance(value, numbers.Real):
+        numeric = float(value)
+        return int(numeric) if math.isfinite(numeric) and numeric.is_integer() else None
+    if isinstance(value, str) and re.fullmatch(r"[+-]?\d+", value.strip()):
+        try:
+            return int(value.strip())
+        except (TypeError, ValueError, OverflowError):
+            return None
+    return None
 
 
 def precision_gate_enabled() -> bool:
@@ -50,13 +71,6 @@ def _min_support_calib() -> int:
 
 def _min_support_gate() -> int:
     return max(1, int(os.getenv("V3_PRECISION_GATE_MIN_SUPPORT", "5")))
-
-
-def _gate_slack() -> float:
-    try:
-        return max(0.0, float(os.getenv("V3_PRECISION_GATE_SLACK", "0.05")))
-    except Exception:
-        return 0.05
 
 
 def wilson_lower_bound(wins: int, n: int, z: float = 1.96) -> float:
@@ -102,12 +116,17 @@ def threshold_search(
         if is_first_occurrence:
             precision = wins / support
             if precision >= target:
+                raw_wilson = wilson_lower_bound(wins, support)
                 best = {
-                    "threshold": round(p, 4),
+                    # Preserve exact values used for admission. Display-rounded
+                    # values are telemetry only and must never turn a statistical
+                    # failure into a pass at the contract boundary.
+                    "threshold": float(p),
                     "precision": round(precision, 4),
                     "support": support,
                     "wins": wins,
-                    "wilson_low": round(wilson_lower_bound(wins, support), 4),
+                    "wilson_low": round(raw_wilson, 4),
+                    "_wilson_low_raw": raw_wilson,
                 }
                 break
         wins -= pairs[i][1]
@@ -119,12 +138,53 @@ def _slice_stats(probs, labels, threshold: float) -> Dict[str, Any]:
     picked = [(float(p), int(bool(l))) for p, l in zip(probs, labels) if float(p) >= threshold]
     support = len(picked)
     wins = sum(l for _, l in picked)
+    raw_wilson = wilson_lower_bound(wins, support) if support else None
     return {
         "support": support,
         "wins": wins,
         "precision": round(wins / support, 4) if support else None,
-        "wilson_low": round(wilson_lower_bound(wins, support), 4) if support else None,
+        "wilson_low": round(raw_wilson, 4) if raw_wilson is not None else None,
+        "_wilson_low_raw": raw_wilson,
     }
+
+
+def validate_fire_proof(proof: Any) -> bool:
+    """Revalidate persisted symbol proof from exact integer evidence.
+
+    Persisted booleans and rounded Wilson telemetry are not authority. A proof
+    remains serveable only when its support/win counts reproduce admission under
+    the current (never weaker) runtime contract.
+    """
+    if not isinstance(proof, dict) or proof.get("ok") is not True:
+        return False
+    try:
+        threshold = float(proof["threshold"])
+        stored_target = float(proof["target"])
+        calib = proof["calib"]
+        gate = proof["gate"]
+        calib_support = _exact_int(calib["support"])
+        calib_wins = _exact_int(calib["wins"])
+        gate_support = _exact_int(gate["support"])
+        gate_wins = _exact_int(gate["wins"])
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
+    numeric = (threshold, stored_target)
+    if not all(math.isfinite(value) for value in numeric):
+        return False
+    if not 0.0 <= threshold <= 1.0 or not 0.5 <= stored_target <= 0.95:
+        return False
+    if any(value is None for value in (
+        calib_support, calib_wins, gate_support, gate_wins,
+    )):
+        return False
+    target = max(stored_target, precision_target())
+    if calib_support < _min_support_calib() or not 0 <= calib_wins <= calib_support:
+        return False
+    if gate_support < _min_support_gate() or not 0 <= gate_wins <= gate_support:
+        return False
+    if calib_wins / calib_support < target:
+        return False
+    return wilson_lower_bound(gate_wins, gate_support) >= target
 
 
 def select_fire_threshold(
@@ -158,10 +218,9 @@ def select_fire_threshold(
     if gate_stats["support"] < min_gate:
         out["fail_reason"] = f"gate_support<{min_gate} ({gate_stats['support']})"
         return out
-    floor = tgt - _gate_slack()
-    if (gate_stats["precision"] or 0.0) < floor:
+    if (gate_stats["_wilson_low_raw"] or 0.0) < tgt:
         out["fail_reason"] = (
-            f"gate_precision<{floor:.2f} ({gate_stats['precision']})"
+            f"gate_wilson_low<{tgt:.2f} ({gate_stats['wilson_low']})"
         )
         return out
     out["ok"] = True
@@ -174,74 +233,171 @@ def _global_min_support() -> int:
     return max(1, int(os.getenv("V3_PRECISION_GLOBAL_MIN_SUPPORT", "30")))
 
 
-def _global_wilson_slack() -> float:
-    try:
-        return max(0.0, float(os.getenv("V3_PRECISION_GLOBAL_WILSON_SLACK", "0.05")))
-    except Exception:
-        return 0.05
-
-
 def global_fallback_enabled() -> bool:
     return (os.getenv("V3_PRECISION_GLOBAL", "on") or "on").strip().lower() not in (
         "0", "off", "false", "no",
     )
 
 
-_GLOBAL_STATE_KEY = "v3_global_fire_threshold"
+_GLOBAL_PROOF_SCHEMA = "chronological_embargo_v2"
+_GLOBAL_STATE_KEY = "v3_global_fire_threshold_v2"
 _GLOBAL_CACHE: Dict[str, Any] = {"ts": 0.0, "val": None}
 _GLOBAL_CACHE_TTL_S = 300
 _GLOBAL_CACHE_LOCK = threading.Lock()
+
+
+def _required_global_embargo_seconds() -> int:
+    """Conservative calendar embargo derived from the active daily-bar horizon.
+
+    Each forward trading bar is budgeted three calendar days (weekends and
+    common exchange holidays). Operators may only tighten this via env; a lower
+    override cannot weaken the label-horizon floor.
+    """
+    from core.engine_config import V3_LABEL_HOLD_BARS
+    derived = max(1, int(V3_LABEL_HOLD_BARS)) * 3 * 86400
+    try:
+        configured = int(os.getenv("V3_GLOBAL_PROOF_EMBARGO_SECONDS", str(derived)))
+    except (TypeError, ValueError):
+        configured = derived
+    return max(derived, configured)
 
 
 def select_global_threshold(
     probs: Sequence[float],
     labels: Sequence[int],
     target: Optional[float] = None,
+    *,
+    timestamps: Optional[Sequence[int]] = None,
+    embargo_seconds: int = 0,
 ) -> Dict[str, Any]:
-    """Pooled cross-symbol operating point for one direction.
+    """Select on older timestamp groups and certify on an embargoed newer set.
 
-    Per-symbol gate slices (~56 rows) rarely have the statistical power to
-    prove a 70% operating point even where one exists. Pooling every stored
-    model's untouched gate-slice predictions (calibrated probabilities are
-    comparable across symbols) gives thousands of OOS samples. The pooled
-    threshold must clear the target on raw precision AND keep its Wilson
-    lower bound within slack of the target — a bar per-symbol slices can't
-    fake with luck.
+    New live proof requires valid timestamps. The split never divides equal
+    timestamps, and validation begins strictly after the requested embargo.
     """
     tgt = precision_target() if target is None else float(target)
-    out: Dict[str, Any] = {"ok": False, "target": round(tgt, 4),
-                           "pool_n": int(min(len(probs), len(labels)))}
-    candidate = threshold_search(probs, labels, tgt, _global_min_support())
+    n = int(len(probs))
+    out: Dict[str, Any] = {
+        "ok": False, "target": round(tgt, 4), "pool_n": n,
+        "proof_schema": _GLOBAL_PROOF_SCHEMA,
+    }
+    if timestamps is None or n == 0:
+        out["fail_reason"] = "pooled_timestamps_required"
+        return out
+    if len(labels) != n or len(timestamps) != n:
+        out["fail_reason"] = "pooled_record_lengths_mismatch"
+        return out
+    records = []
+    try:
+        for i in range(n):
+            ts_value = timestamps[i]
+            if isinstance(ts_value, bool):
+                raise ValueError("invalid pooled timestamp")
+            ts_raw = float(ts_value)
+            prob = float(probs[i])
+            label_raw = labels[i]
+            if (
+                not math.isfinite(ts_raw) or ts_raw <= 0 or not ts_raw.is_integer()
+                or not math.isfinite(prob) or not 0.0 <= prob <= 1.0
+                or label_raw not in (0, 1, False, True)
+            ):
+                raise ValueError("invalid pooled record")
+            records.append((int(ts_raw), prob, int(label_raw)))
+    except (TypeError, ValueError, OverflowError):
+        out["fail_reason"] = "pooled_timestamps_invalid"
+        return out
+    records.sort(key=lambda row: row[0])
+    min_support = _global_min_support()
+    if n < 2 * min_support:
+        out["fail_reason"] = f"pooled_split_support<{min_support}"
+        return out
+    unique_ts = sorted({row[0] for row in records})
+    if len(unique_ts) < 2:
+        out["fail_reason"] = "pooled_distinct_timestamps<2"
+        return out
+    split_ts = unique_ts[len(unique_ts) // 2]
+    selection = [row for row in records if row[0] < split_ts]
+    validation = [
+        row for row in records
+        if row[0] >= split_ts and row[0] > selection[-1][0] + max(0, int(embargo_seconds))
+    ] if selection else []
+    if len(selection) < min_support or len(validation) < min_support:
+        out["fail_reason"] = f"pooled_split_support<{min_support}"
+        return out
+    candidate = threshold_search(
+        [r[1] for r in selection], [r[2] for r in selection], tgt, min_support,
+    )
     if candidate is None:
-        out["fail_reason"] = "no_pooled_operating_point"
+        out["fail_reason"] = "no_pooled_selection_operating_point"
         return out
-    wilson_floor = tgt - _global_wilson_slack()
-    if candidate["wilson_low"] < wilson_floor:
+    threshold = float(candidate["threshold"])
+    validation = _slice_stats(
+        [r[1] for r in validation], [r[2] for r in validation], threshold,
+    )
+    out["selection"] = candidate
+    out["validation"] = validation
+    out["threshold"] = threshold
+    if validation["support"] < min_support:
+        out["fail_reason"] = f"pooled_validation_support<{min_support} ({validation['support']})"
+        return out
+    if (validation["_wilson_low_raw"] or 0.0) < tgt:
         out["fail_reason"] = (
-            f"pooled_wilson_low<{wilson_floor:.2f} ({candidate['wilson_low']})"
+            f"pooled_validation_wilson_low<{tgt:.2f} ({validation['wilson_low']})"
         )
-        out["candidate"] = candidate
         return out
-    out.update(candidate)
-    out["ok"] = True
+    out.update({
+        "precision": validation["precision"],
+        "support": validation["support"],
+        "wins": validation["wins"],
+        "wilson_low": validation["wilson_low"],
+        "ok": True,
+    })
     return out
 
 
-def store_global_thresholds(pools: Dict[str, Dict[str, Sequence]]) -> Dict[str, Any]:
-    """Compute + persist pooled thresholds per direction from a training sweep.
+def store_global_thresholds(
+    pools: Dict[str, Dict[str, Sequence]], *, validation_schema: str,
+    label_schema: str, feature_schema: str,
+) -> Dict[str, Any]:
+    """Compute + persist pooled thresholds from one exact model generation.
 
-    pools = {"UP": {"probs": [...], "labels": [...]}, "DOWN": {...}}
-    Persisted to ghost_state so predict-time lanes can fall back to the
-    globally-proven operating point when a symbol's own gate is unproven.
+    Each chronological record is ``(timestamp, probability, label, model_sha)``.
+    Proof is bound to the active semantic schemas and to the participating model
+    hashes, so a replacement/non-participant cannot inherit stale evidence.
     """
     import json as _json
     import time as _time
-    result: Dict[str, Any] = {"ts": int(_time.time())}
+    from core.engine_config import V3_LABEL_HOLD_BARS
+    result: Dict[str, Any] = {
+        "ts": int(_time.time()), "proof_schema": _GLOBAL_PROOF_SCHEMA,
+        "target": round(precision_target(), 4),
+        "validation_schema": str(validation_schema),
+        "label_schema": str(label_schema),
+        "feature_schema": str(feature_schema),
+        "label_hold_bars": int(V3_LABEL_HOLD_BARS),
+    }
+    embargo_seconds = _required_global_embargo_seconds()
+    result["embargo_seconds"] = embargo_seconds
     for direction in ("UP", "DOWN"):
         pool = pools.get(direction) or {}
-        result[direction] = select_global_threshold(
-            pool.get("probs") or [], pool.get("labels") or [],
+        raw_records = pool.get("records") or []
+        valid_shape = bool(raw_records) and all(
+            isinstance(row, (list, tuple)) and len(row) == 4
+            for row in raw_records
         )
+        records = sorted(raw_records, key=lambda row: row[0]) if valid_shape else []
+        probs = [row[1] for row in records]
+        labels = [row[2] for row in records]
+        timestamps = [row[0] for row in records]
+        model_hashes = sorted({str(row[3]) for row in records if str(row[3])})
+        entry = select_global_threshold(
+            probs, labels, timestamps=timestamps, embargo_seconds=embargo_seconds,
+        )
+        entry["model_sha256s"] = model_hashes
+        if not valid_shape:
+            entry["ok"] = False
+            entry["fail_reason"] = "pooled_record_shape_invalid"
+        result[direction] = entry
     try:
         from core.db import db_conn
         with db_conn() as conn:
@@ -266,8 +422,10 @@ def store_global_thresholds(pools: Dict[str, Dict[str, Sequence]]) -> Dict[str, 
     return result
 
 
-def load_global_threshold(direction: str) -> Optional[Dict[str, Any]]:
-    """Cached read of the pooled operating point for one direction (or None)."""
+def load_global_threshold(
+    direction: str, *, model_sha256: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Read pooled proof only for a participating current model generation."""
     import json as _json
     import time as _time
     with _GLOBAL_CACHE_LOCK:
@@ -289,11 +447,72 @@ def load_global_threshold(direction: str) -> Optional[Dict[str, Any]]:
         with _GLOBAL_CACHE_LOCK:
             _GLOBAL_CACHE["ts"] = _time.time()
             _GLOBAL_CACHE["val"] = blob
-    entry = blob.get((direction or "").upper()) if isinstance(blob, dict) else None
-    return entry if isinstance(entry, dict) else None
+    from core.engine_config import V3_LABEL_HOLD_BARS, _v3_feature_schema
+    from core.signal_engine import _v3_label_schema, _v3_validation_schema
+    required_embargo = _required_global_embargo_seconds()
+    try:
+        if not isinstance(blob, dict):
+            return None
+        stored_target = float(blob.get("target"))
+        stored_embargo = _exact_int(blob.get("embargo_seconds"))
+        stored_hold = _exact_int(blob.get("label_hold_bars"))
+        current_target = precision_target()
+        if not math.isfinite(stored_target):
+            return None
+        if (
+            blob.get("proof_schema") != _GLOBAL_PROOF_SCHEMA
+            or stored_target < current_target
+            or stored_embargo is None or stored_embargo < required_embargo
+            or blob.get("validation_schema") != _v3_validation_schema()
+            or blob.get("label_schema") != _v3_label_schema()
+            or blob.get("feature_schema") != _v3_feature_schema()
+            or stored_hold != int(V3_LABEL_HOLD_BARS)
+        ):
+            return None
+        entry = blob.get((direction or "").upper())
+        if not isinstance(entry, dict):
+            return None
+        member_hashes = entry.get("model_sha256s")
+        threshold = float(entry.get("threshold"))
+        entry_target = float(entry.get("target"))
+        support = _exact_int(entry.get("support"))
+        wins = _exact_int(entry.get("wins"))
+        if (
+            entry.get("ok") is not True
+            or entry.get("proof_schema") != _GLOBAL_PROOF_SCHEMA
+            or not model_sha256
+            or not isinstance(member_hashes, list)
+            or str(model_sha256) not in member_hashes
+            or not all(math.isfinite(v) for v in (threshold, entry_target))
+            or not 0.0 <= threshold <= 1.0
+            or entry_target != stored_target
+            or entry_target < current_target
+            or support is None or wins is None
+            or support < _global_min_support()
+            or wins < 0 or wins > support
+        ):
+            return None
+        required_target = max(current_target, stored_target, entry_target)
+        raw_wilson = wilson_lower_bound(wins, support)
+        if raw_wilson + 1e-12 < required_target:
+            return None
+        # Rounded persisted Wilson telemetry is not proof authority. Return a
+        # normalized copy so downstream diagnostics cannot repeat stale data.
+        validated = dict(entry)
+        validated["wilson_low"] = round(raw_wilson, 4)
+        return validated
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def invalidate_global_threshold_persistent(cur) -> None:
+    """Delete pooled proof using the caller's model-mutation transaction."""
+    ensure_ghost_state(cur)
+    cur.execute("DELETE FROM ghost_state WHERE key = %s", (_GLOBAL_STATE_KEY,))
 
 
 def invalidate_global_threshold_cache() -> None:
+    """Clear process-local proof only after its DB transaction committed."""
     with _GLOBAL_CACHE_LOCK:
         _GLOBAL_CACHE["ts"] = 0.0
         _GLOBAL_CACHE["val"] = None

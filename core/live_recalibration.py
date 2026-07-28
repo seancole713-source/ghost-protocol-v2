@@ -111,8 +111,40 @@ def recalibrate(prob: float, samples: int, wins: int,
     return out
 
 
-def live_bin_stats(lo: float, hi: float) -> Tuple[int, int]:
-    """Resolved (samples, wins) from live shadow outcomes inside one bin."""
+def _exact_identity(
+    *, direction: str, model_sha256: str, feature_schema: str,
+    label_schema: str, validation_schema: str, hold_bars: int,
+) -> Optional[Tuple[str, str, str, str, str, int]]:
+    lane = str(direction or "").upper()
+    if lane != "UP":
+        return None
+    if isinstance(hold_bars, bool):
+        return None
+    try:
+        hold_numeric = float(hold_bars)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not hold_numeric.is_integer() or hold_numeric < 1:
+        return None
+    strings = (model_sha256, feature_schema, label_schema, validation_schema)
+    if not all(isinstance(value, str) and value for value in strings):
+        return None
+    return (lane, *strings, int(hold_numeric))
+
+
+def live_bin_stats(
+    lo: float, hi: float, *, direction: str, model_sha256: str,
+    feature_schema: str, label_schema: str, validation_schema: str,
+    hold_bars: int,
+) -> Tuple[int, int]:
+    """Resolved exact-generation (samples, wins) inside one model-prob bin."""
+    identity = _exact_identity(
+        direction=direction, model_sha256=model_sha256,
+        feature_schema=feature_schema, label_schema=label_schema,
+        validation_schema=validation_schema, hold_bars=hold_bars,
+    )
+    if identity is None:
+        raise ValueError("recalibration_identity_missing")
     from core.db import db_conn
     with db_conn() as conn:
         cur = conn.cursor()
@@ -121,30 +153,45 @@ def live_bin_stats(lo: float, hi: float) -> Tuple[int, int]:
             SELECT COUNT(*) AS samples,
                    SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) AS wins
             FROM ghost_shadow_outcomes
-            -- EXPIRED = ran the hold window without hitting TP/SL: a non-win.
-            -- Same correction as contract-70 (2026-07-14); this site was missed.
-            WHERE outcome IN ('WIN','LOSS','EXPIRED') AND up_prob >= %s AND up_prob < %s
+            WHERE outcome IN ('WIN','LOSS','EXPIRED')
+              AND model_prob >= %s AND model_prob < %s
+              AND direction=%s AND model_sha256=%s AND feature_schema=%s
+              AND label_schema=%s AND validation_schema=%s AND hold_bars=%s
             """,
-            (lo, hi),
+            (lo, hi, *identity),
         )
         row = cur.fetchone()
     return int((row and row[0]) or 0), int((row and row[1]) or 0)
 
 
-def live_recalibrated_prob(prob: float, direction: str = "UP") -> Dict[str, Any]:
-    """Orchestrator: bin lookup + DB stats + shrink. Never raises."""
+def live_recalibrated_prob(
+    prob: float, *, direction: str, model_sha256: str,
+    feature_schema: str, label_schema: str, validation_schema: str,
+    hold_bars: int,
+) -> Dict[str, Any]:
+    """Exact-generation bin lookup + shrink. Never raises."""
     p = float(prob or 0.0)
     if not enabled():
         return {"applied": False, "prob_raw": round(p, 4),
                 "prob_adjusted": round(p, 4), "disabled": True}
-    if (direction or "UP").upper() != "UP":
-        # ghost_shadow_outcomes tracks up_prob/long geometry only; do not
-        # cross-apply to the DOWN lane.
+    if str(direction or "").upper() != "UP":
         return {"applied": False, "prob_raw": round(p, 4),
                 "prob_adjusted": round(p, 4), "note": "down_lane_unsupported"}
+    identity = _exact_identity(
+        direction=direction, model_sha256=model_sha256,
+        feature_schema=feature_schema, label_schema=label_schema,
+        validation_schema=validation_schema, hold_bars=hold_bars,
+    )
+    if identity is None:
+        return {"applied": False, "prob_raw": round(p, 4),
+                "prob_adjusted": round(p, 4), "note": "identity_missing"}
     lo, hi = bin_for(p)
     try:
-        n, w = live_bin_stats(lo, hi)
+        n, w = live_bin_stats(
+            lo, hi, direction=direction, model_sha256=model_sha256,
+            feature_schema=feature_schema, label_schema=label_schema,
+            validation_schema=validation_schema, hold_bars=hold_bars,
+        )
     except Exception as exc:
         return {"applied": False, "prob_raw": round(p, 4),
                 "prob_adjusted": round(p, 4),

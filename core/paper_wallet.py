@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import time
 from typing import Any, Dict, List, Optional
@@ -87,6 +88,14 @@ def _intraday_min_squeeze_score() -> float:
 
 def _intraday_min_continue_pct() -> float:
     return max(0.0, float(os.getenv("PAPER_INTRADAY_MIN_CONTINUE_PCT", "75")))
+
+
+def _intraday_min_reward_risk() -> float:
+    return max(0.0, float(os.getenv("PAPER_INTRADAY_MIN_REWARD_RISK", "1.25")))
+
+
+def _intraday_max_stop_fraction() -> float:
+    return max(0.001, float(os.getenv("PAPER_INTRADAY_MAX_STOP_FRACTION", "0.04")))
 
 
 def _intraday_close_ts(now_ts: Optional[int] = None) -> int:
@@ -781,12 +790,18 @@ def intraday_entry_bands(entry: float, radar_price: float, radar_target: float,
     price has already crossed the radar bracket — the move played out and
     chasing it is the stale-signal bug (PR #142) in intraday form.
     """
+    values = (entry, radar_price, radar_target, radar_stop)
+    if not all(isinstance(v, (int, float)) and math.isfinite(float(v)) for v in values):
+        return None
     if entry <= 0 or radar_price <= 0 or radar_target <= 0 or radar_stop <= 0:
         return None
     if entry >= radar_target or entry <= radar_stop:
         return None
-    return (round(entry * (radar_target / radar_price), 4),
-            round(entry * (radar_stop / radar_price), 4))
+    target = entry * (radar_target / radar_price)
+    stop = entry * (radar_stop / radar_price)
+    if not math.isfinite(target) or not math.isfinite(stop):
+        return None
+    return round(target, 4), round(stop, 4)
 
 
 def exit_fill(price: float, target, stop, expires_at, now: int):
@@ -880,6 +895,7 @@ def _intraday_squeeze_candidates(board: Dict[str, Any], *, now_ts: Optional[int]
         "skip_continuation": 0,
         "skip_direction": 0,
         "skip_price": 0,
+        "skip_geometry": 0,
         "skip_earnings": 0,
     }
     rows = []
@@ -889,6 +905,10 @@ def _intraday_squeeze_candidates(board: Dict[str, Any], *, now_ts: Optional[int]
     min_conf = _intraday_min_confidence()
     min_score = _intraday_min_squeeze_score()
     min_continue = _intraday_min_continue_pct()
+    min_reward_risk = _intraday_min_reward_risk()
+    max_stop_fraction = _intraday_max_stop_fraction()
+    diag["min_reward_risk"] = min_reward_risk
+    diag["max_stop_fraction"] = max_stop_fraction
     close_ts = _intraday_close_ts(now_ts)
     scan_ts = int(board.get("last_scan_ts") or now_ts or time.time())
 
@@ -925,8 +945,22 @@ def _intraday_squeeze_candidates(board: Dict[str, Any], *, now_ts: Optional[int]
         except Exception:
             diag["skip_price"] += 1
             continue
+        if not all(math.isfinite(v) for v in (conf, score, price, target, stop, p_continue)):
+            diag["skip_price"] += 1
+            continue
         if price <= 0 or target <= 0 or stop <= 0:
             diag["skip_price"] += 1
+            continue
+        reward = target - price
+        risk = price - stop
+        stop_fraction = risk / price
+        if (
+            not all(math.isfinite(v) for v in (reward, risk, stop_fraction))
+            or target <= price or stop >= price or risk <= 0
+            or reward / risk < min_reward_risk
+            or stop_fraction > max_stop_fraction
+        ):
+            diag["skip_geometry"] += 1
             continue
         if conf < min_conf:
             diag["skip_confidence"] += 1
@@ -1076,21 +1110,35 @@ def run_wallet_cycle() -> Dict[str, Any]:
                 cur.execute(
                     """
                     WITH skill AS (
-                        SELECT symbol,
-                               SUM(CASE WHEN outcome IN ('WIN','LOSS') THEN 1 ELSE 0 END) AS resolved,
+                        SELECT symbol, direction, model_sha256, feature_schema,
+                               label_schema, validation_schema, hold_bars,
+                               SUM(CASE WHEN outcome IN ('WIN','LOSS','EXPIRED') THEN 1 ELSE 0 END) AS resolved,
                                SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) AS wins
                         FROM ghost_shadow_outcomes
-                        WHERE outcome IS NOT NULL
-                        GROUP BY symbol
+                        WHERE outcome IN ('WIN','LOSS','EXPIRED')
+                          AND direction='UP'
+                          AND model_sha256 IS NOT NULL
+                          AND feature_schema IS NOT NULL
+                          AND label_schema IS NOT NULL
+                          AND validation_schema IS NOT NULL
+                          AND hold_bars IS NOT NULL
+                        GROUP BY symbol, direction, model_sha256, feature_schema,
+                                 label_schema, validation_schema, hold_bars
                     )
                     SELECT o.id, o.symbol, o.entry_price, o.target_price, o.stop_price, o.expires_at,
                            COALESCE(s.resolved, 0) AS resolved,
                            COALESCE(s.wins, 0) AS wins
                     FROM ghost_shadow_outcomes o
-                    LEFT JOIN skill s ON s.symbol = o.symbol
+                    JOIN skill s ON s.symbol = o.symbol AND s.direction = o.direction
+                      AND s.model_sha256 = o.model_sha256
+                      AND s.feature_schema = o.feature_schema
+                      AND s.label_schema = o.label_schema
+                      AND s.validation_schema = o.validation_schema
+                      AND s.hold_bars = o.hold_bars
                     WHERE o.outcome IS NULL
+                      AND o.direction='UP'
                       AND o.expires_at > %s
-                      AND o.up_prob >= %s
+                      AND o.model_prob >= %s
                       AND COALESCE(s.resolved, 0) >= %s
                       AND (COALESCE(s.wins, 0)::float / NULLIF(s.resolved, 0)) >= %s
                     ORDER BY o.eval_ts DESC LIMIT 20

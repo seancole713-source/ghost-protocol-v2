@@ -151,9 +151,14 @@ async def delete_model(x_cron_secret: str = Header(None), non_wolf_only: bool = 
                         kept.append(f"{raw}(acc={round(acc*100,1)}%)")
                 except Exception:
                     pass
+            if deleted:
+                from core.precision_gate import invalidate_global_threshold_persistent
+                invalidate_global_threshold_persistent(cur)
         if deleted:
             try:
+                from core.precision_gate import invalidate_global_threshold_cache
                 from core.signal_engine import invalidate_model_cache
+                invalidate_global_threshold_cache()
                 invalidate_model_cache()
             except Exception:
                 pass

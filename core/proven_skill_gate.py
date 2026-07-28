@@ -59,25 +59,41 @@ def review(symbol: str, *, resolved: int, wins: int, avg_pnl_pct: Optional[float
     return out
 
 
-def symbol_review(symbol: str) -> Dict[str, Any]:
-    """Read the live shadow-outcome track record for one symbol and decide."""
+def symbol_review(
+    symbol: str, *, direction: str, model_sha256: str, feature_schema: str,
+    label_schema: str, validation_schema: str, hold_bars: int,
+) -> Dict[str, Any]:
+    """Review only evidence from the exact current lane/model generation."""
     if not enabled():
         return {"ok": True, "disabled": True, "symbol": (symbol or "").upper()}
     from core.db import db_conn
     sym = (symbol or "").upper()
+    lane = (direction or "").upper()
+    try:
+        horizon = int(hold_bars)
+    except (TypeError, ValueError, OverflowError):
+        horizon = 0
+    if lane not in ("UP", "DOWN") or horizon < 1 or not all((
+        model_sha256, feature_schema, label_schema, validation_schema,
+    )):
+        return {"ok": False, "symbol": sym, "fail_reason": "skill_identity_missing"}
     try:
         with db_conn() as conn:
             cur = conn.cursor()
             cur.execute(
                 """
                 SELECT
-                  SUM(CASE WHEN outcome IN ('WIN','LOSS') THEN 1 ELSE 0 END) AS resolved,
+                  SUM(CASE WHEN outcome IN ('WIN','LOSS','EXPIRED') THEN 1 ELSE 0 END) AS resolved,
                   SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) AS wins,
-                  AVG(CASE WHEN outcome IN ('WIN','LOSS') THEN pnl_pct ELSE NULL END) AS avg_pnl
+                  AVG(CASE WHEN outcome IN ('WIN','LOSS','EXPIRED') THEN pnl_pct ELSE NULL END) AS avg_pnl
                 FROM ghost_shadow_outcomes
-                WHERE symbol=%s AND outcome IS NOT NULL
+                WHERE symbol=%s AND direction=%s AND model_sha256=%s
+                  AND feature_schema=%s AND label_schema=%s
+                  AND validation_schema=%s AND hold_bars=%s
+                  AND outcome IN ('WIN','LOSS','EXPIRED')
                 """,
-                (sym,),
+                (sym, lane, model_sha256, feature_schema, label_schema,
+                 validation_schema, horizon),
             )
             row = cur.fetchone()
     except Exception as exc:
@@ -144,14 +160,26 @@ def calibration_review(*, prob: float, samples: int, wins: int) -> Dict[str, Any
     return out
 
 
-def global_calibration_review(prob: float) -> Dict[str, Any]:
-    """Read live shadow outcomes for the current high-probability bucket."""
+def global_calibration_review(
+    prob: float, *, direction: str, model_sha256: str, feature_schema: str,
+    label_schema: str, validation_schema: str, hold_bars: int,
+) -> Dict[str, Any]:
+    """Read high-probability evidence for the exact current model identity."""
     p = float(prob or 0.0)
     if not overconfidence_enabled():
         return {"ok": True, "disabled": True, "prob": round(p, 4)}
     thr = overconfidence_threshold()
     if p < thr:
         return calibration_review(prob=p, samples=0, wins=0)
+    lane = (direction or "").upper()
+    try:
+        horizon = int(hold_bars)
+    except (TypeError, ValueError, OverflowError):
+        horizon = 0
+    if lane not in ("UP", "DOWN") or horizon < 1 or not all((
+        model_sha256, feature_schema, label_schema, validation_schema,
+    )):
+        return {"ok": False, "prob": round(p, 4), "fail_reason": "calibration_identity_missing"}
     from core.db import db_conn
     try:
         with db_conn() as conn:
@@ -161,9 +189,12 @@ def global_calibration_review(prob: float) -> Dict[str, Any]:
                 SELECT COUNT(*) AS samples,
                        SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) AS wins
                 FROM ghost_shadow_outcomes
-                WHERE outcome IN ('WIN','LOSS') AND up_prob >= %s
+                WHERE outcome IN ('WIN','LOSS','EXPIRED') AND model_prob >= %s
+                  AND direction=%s AND model_sha256=%s AND feature_schema=%s
+                  AND label_schema=%s AND validation_schema=%s AND hold_bars=%s
                 """,
-                (thr,),
+                (thr, lane, model_sha256, feature_schema, label_schema,
+                 validation_schema, horizon),
             )
             row = cur.fetchone()
     except Exception as exc:

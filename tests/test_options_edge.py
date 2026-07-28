@@ -12,9 +12,9 @@ import core.options_edge as oe
 def _rows(spec):
     """spec: list of (pcr, n_win, n_loss) -> paired-row dicts."""
     out = []
-    for pcr, w, l in spec:
-        out += [{"pcr": pcr, "outcome": "WIN"} for _ in range(w)]
-        out += [{"pcr": pcr, "outcome": "LOSS"} for _ in range(l)]
+    for pcr, wins, losses in spec:
+        out += [{"pcr": pcr, "outcome": "WIN"} for _ in range(wins)]
+        out += [{"pcr": pcr, "outcome": "LOSS"} for _ in range(losses)]
     return out
 
 

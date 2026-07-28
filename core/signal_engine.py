@@ -11,7 +11,7 @@ UPGRADES (2026-03-30) from GitHub research:
 v3.2: Training labels match live paper trades — WIN = hit vol-based target before stop
 within N daily bars (see V3_LABEL_HOLD_BARS), same TP/SL math as core.vol_targets.
 """
-import os, time, logging, json, threading
+import os, time, logging, json, threading, math
 from core.quiet import note_suppressed
 import numpy as np
 from typing import Any, Dict, List, Optional
@@ -97,18 +97,23 @@ LOGGER = logging.getLogger("ghost.signal_v3")
 LOGGER.info("[signal_engine] MODULE_LOADED PR17_DIAG ohlcv_chain=sip|iex|polygon|yfinance|stooq")
 
 LABEL_TYPE = "tp_sl_daily"
+VALIDATION_SCHEMA = "honest_oos_v3"  # compatibility export; use call-time helper below
+
+
+def _v3_validation_schema() -> str:
+    """Validation identity including effective split and purge semantics."""
+    return (
+        f"{VALIDATION_SCHEMA}:train={_v3_split_train_frac():.12g}"
+        f":calib={_v3_split_calib_frac():.12g}:purge={_v3_wf_purge()}"
+    )
+
+
 # Phase 5: calendar forward bars + shared resolve path (see core.tp_sl_resolve.LABEL_SCHEMA).
 def _v3_label_schema() -> str:
-    """Label schema id — includes TP/SL geometry so a stop-width change
-    (V3_STOP_VOL_MULT) invalidates every stored model and forces retrains.
-    Serving a model trained on different geometry would silently break the
-    precision-gate contract."""
+    """Active deterministic label contract including all TP/SL geometry."""
     from core.tp_sl_resolve import LABEL_SCHEMA
-    from core.vol_targets import _stop_vol_mult
-    m = _stop_vol_mult()
-    if abs(m - 0.65) < 1e-9:
-        return LABEL_SCHEMA
-    return f"{LABEL_SCHEMA}_sm{m:g}"
+    from core.vol_targets import tp_sl_geometry_schema
+    return f"{LABEL_SCHEMA}:{tp_sl_geometry_schema(hold_bars=V3_LABEL_HOLD_BARS)}"
 
 # Daily bars only: approximate 48h stock hold with this many forward bars (24h each).
 
@@ -375,17 +380,20 @@ def _wf_fold_bounds(n, min_train, test_size, step, purge,
     return bounds
 
 
-def _walk_forward_scores(X, y, X_peer=None, y_peer=None, wolf_weight=1.0):
+def _walk_forward_scores(
+    X, y, X_peer=None, y_peer=None, wolf_weight=1.0, *,
+    target_ts=None, peer_ts=None, peer_label_ts=None, feature_cols=None,
+):
     """
     Rolling walk-forward validation over time-ordered samples.
     Returns dict with fold_count / mean and minimum fold scores.
 
     W1: when peer samples (X_peer/y_peer) are supplied, each fold pools them
     into its TRAINING set (up-weighting the target via wolf_weight) while the
-    TEST window stays target-only. This makes the walk-forward validate the
-    same peer-pooled model that actually ships, and gives each thin target fold
-    far more training data — instead of validating a WOLF-only model the engine
-    never deploys. With X_peer=None it behaves exactly as the WOLF-only version.
+    TEST window stays target-only. When target_ts/peer_ts are supplied, peer
+    rows are bounded to the fold's training cutoff; future peer history never
+    leaks into an earlier fold. With X_peer=None it behaves exactly as the
+    target-only version.
 
     PR #21: train-window and test-window floors are env-tunable so the
     function actually produces folds for small datasets. WOLF's 127
@@ -421,22 +429,71 @@ def _walk_forward_scores(X, y, X_peer=None, y_peer=None, wolf_weight=1.0):
     bounds = _wf_fold_bounds(n, min_train, test_size, step, purge,
                              min_train_floor, test_size_floor)
     has_peers = X_peer is not None and len(X_peer) > 0
+    peer_ts_arr = np.asarray(peer_ts, dtype=object) if peer_ts is not None else None
+    peer_label_ts_arr = np.asarray(peer_label_ts, dtype=object) if peer_label_ts is not None else None
+    target_ts_arr = np.asarray(target_ts, dtype=object) if target_ts is not None else None
+    if peer_ts_arr is not None and len(peer_ts_arr) != len(X_peer):
+        raise ValueError("peer_ts must align with X_peer")
+    if peer_label_ts_arr is not None and len(peer_label_ts_arr) != len(X_peer):
+        raise ValueError("peer_label_ts must align with X_peer")
+    if target_ts_arr is not None and len(target_ts_arr) != len(X):
+        raise ValueError("target_ts must align with X")
     folds = []
     for train_end, test_start, test_end in bounds:
         X_train, y_train = X[:train_end], y[:train_end]
         X_test, y_test = X[test_start:test_end], y[test_start:test_end]
+        fold_X_peer, fold_y_peer = None, None
+        if has_peers:
+            if (
+                target_ts_arr is not None and peer_ts_arr is not None
+                and peer_label_ts_arr is not None
+            ):
+                cutoff = _valid_asof_ts(target_ts_arr[train_end - 1])
+                peer_mask = np.array([
+                    cutoff > 0
+                    and 0 < _valid_asof_ts(feature_ts) <= cutoff
+                    and 0 < _valid_asof_ts(label_ts) <= cutoff
+                    for feature_ts, label_ts in zip(peer_ts_arr, peer_label_ts_arr)
+                ])
+                fold_X_peer, fold_y_peer = X_peer[peer_mask], y_peer[peer_mask]
+            else:
+                # Unknown chronology is not evidence. Exclude all peers rather
+                # than treating future rows as available to historical folds.
+                fold_X_peer = X_peer[:0]
+                fold_y_peer = y_peer[:0]
+
+        # Sign selection is model selection. Recompute it inside each fold from
+        # that fold's target training labels only; later target labels and peer
+        # labels must not influence an earlier out-of-time score.
+        if feature_cols and _v3_feature_audit_enabled() and len(X_train) >= 10:
+            from core.feature_audit import (
+                apply_inversions_to_matrix,
+                audit_gate_features,
+                select_inverted_features,
+            )
+            fold_audit = audit_gate_features(X_train, y_train, feature_cols)
+            fold_inversions = select_inverted_features(fold_audit)
+            X_train = apply_inversions_to_matrix(X_train, feature_cols, fold_inversions)
+            X_test = apply_inversions_to_matrix(X_test, feature_cols, fold_inversions)
+            if fold_X_peer is not None:
+                fold_X_peer = apply_inversions_to_matrix(
+                    fold_X_peer, feature_cols, fold_inversions,
+                )
+
         sample_weight = None
         if has_peers:
             sample_weight = np.concatenate([
-                np.full(train_end, float(wolf_weight)), np.ones(len(X_peer))
+                np.full(train_end, float(wolf_weight)), np.ones(len(fold_X_peer))
             ])
-            X_train = np.vstack([X_train, X_peer])
-            y_train = np.concatenate([y_train, y_peer])
+            if len(fold_X_peer):
+                X_train = np.vstack([X_train, fold_X_peer])
+                y_train = np.concatenate([y_train, fold_y_peer])
         pos_ct = int(np.sum(y_train))
         neg_ct = int(len(y_train) - pos_ct)
         if pos_ct <= 0:
             continue
         natural_rate = float(np.mean(y_test))
+        no_skill_accuracy = max(natural_rate, 1.0 - natural_rate)
         model = XGBClassifier(
             n_estimators=200,
             max_depth=4,
@@ -450,7 +507,12 @@ def _walk_forward_scores(X, y, X_peer=None, y_peer=None, wolf_weight=1.0):
         )
         model.fit(X_train, y_train, sample_weight=sample_weight)
         acc = float(accuracy_score(y_test, model.predict(X_test)))
-        folds.append({"acc": acc, "nat": natural_rate, "edge": acc - natural_rate})
+        folds.append({
+            "acc": acc,
+            "nat": natural_rate,
+            "no_skill": no_skill_accuracy,
+            "edge": acc - no_skill_accuracy,
+        })
 
     if not folds:
         return {"fold_count": 0, "acc_mean": 0.0, "acc_min": 0.0, "edge_mean": 0.0, "edge_min": 0.0}
@@ -629,15 +691,46 @@ def _block_up_below_sma5(symbol, asset_type, current_price):
     return cur < sma, sma, cur
 
 
-def _fetch_ohlcv(symbol, asset_type, period=None, interval='1d'):
-    """Fetch daily OHLCV with TTL cache, negative cache, and in-flight dedupe.
+def _normalize_daily_ohlcv(rows) -> Optional[List[Dict[str, Any]]]:
+    """Canonicalize provider bars or reject the response as invalid evidence.
 
-    Entries are (expires_at, rows). Successes cache for V3_OHLCV_CACHE_TTL_S
-    (900s) so intraday resolution stays fresh but repeat fetches collapse.
-    Failures cache for V3_OHLCV_NEG_CACHE_TTL_S (600s) so a dead symbol can't
-    hammer every feed tier on every resolver pass. A per-key lock serializes
-    concurrent callers so only one runs the fetch chain per symbol.
+    Provider order is not chronology. Bars are sorted by parsed timestamp, but
+    duplicate timestamps and impossible/non-finite OHLCV reject the complete
+    response because silently dropping a bar changes label horizons.
     """
+    from core.feature_schema import feature_asof_unix
+
+    normalized = []
+    seen = set()
+    try:
+        for raw in rows or []:
+            ts = _valid_asof_ts(feature_asof_unix(raw.get("ts")))
+            o = float(raw.get("open"))
+            hi = float(raw.get("high"))
+            lo = float(raw.get("low"))
+            close = float(raw.get("close"))
+            volume = float(raw.get("volume", 0) or 0)
+            values = (o, hi, lo, close, volume)
+            if (
+                ts <= 0 or ts in seen
+                or not all(np.isfinite(v) for v in values)
+                or min(o, hi, lo, close) <= 0 or volume < 0
+                or lo > min(o, close) or hi < max(o, close) or lo > hi
+            ):
+                return None
+            seen.add(ts)
+            normalized.append({
+                "ts": raw.get("ts"), "open": o, "high": hi,
+                "low": lo, "close": close, "volume": volume,
+            })
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        return None
+    normalized.sort(key=lambda row: feature_asof_unix(row["ts"]))
+    return normalized or None
+
+
+def _fetch_ohlcv(symbol, asset_type, period=None, interval='1d'):
+    """Fetch canonical daily OHLCV with caching and in-flight dedupe."""
     period = period or _v3_ohlcv_period()
     sym = (symbol or "").upper()
     atype = (asset_type or "stock").strip().lower()
@@ -662,11 +755,14 @@ def _fetch_ohlcv(symbol, asset_type, period=None, interval='1d'):
             return rows
         retries = _v3_ohlcv_fetch_retries()
         for attempt in range(retries):
-            rows = _fetch_ohlcv_once(symbol, asset_type, period, interval)
+            raw_rows = _fetch_ohlcv_once(symbol, asset_type, period, interval)
+            rows = _normalize_daily_ohlcv(raw_rows) if raw_rows else None
             if rows:
                 with _OHLCV_CACHE_LOCK:
                     _OHLCV_CACHE[cache_key] = (time.time() + _ohlcv_cache_ttl_s(), rows)
                 return rows
+            if raw_rows:
+                LOGGER.warning("_fetch_ohlcv %s: rejected malformed OHLCV response", sym)
             if attempt + 1 < retries:
                 delay = 0.5 * (2 ** attempt)
                 LOGGER.info(
@@ -987,14 +1083,28 @@ def backtest_symbol(symbol, asset_type):
                     from core.fundamental_features import get_fundamental_features_for_date
                     features.update(get_fundamental_features_for_date(symbol, bar_date))
         except Exception:
-            note_suppressed()  # UP label
-        up_outcome = _simulate_up_tp_sl(rows, i, V3_LABEL_HOLD_BARS, vol_pct)
-        if up_outcome != "EXPIRED":
-            labeled_up.append({"features": dict(features), "label": 1 if up_outcome == "WIN" else 0, "outcome": up_outcome, "direction": "UP"})
-        # DOWN label (Phase 2): same bar, opposite direction
-        down_outcome = _simulate_down_tp_sl(rows, i, V3_LABEL_HOLD_BARS, vol_pct)
-        if down_outcome != "EXPIRED":
-            labeled_down.append({"features": dict(features), "label": 1 if down_outcome == "WIN" else 0, "outcome": down_outcome, "direction": "DOWN"})
+            note_suppressed()
+        from core.tp_sl_resolve import simulate_tp_sl_label_detail
+        up_outcome, up_resolved_ts = simulate_tp_sl_label_detail(
+            rows, i, V3_LABEL_HOLD_BARS, vol_pct, "UP",
+        )
+        down_outcome, down_resolved_ts = simulate_tp_sl_label_detail(
+            rows, i, V3_LABEL_HOLD_BARS, vol_pct, "DOWN",
+        )
+        # Only completed horizons are evidence. Store label availability
+        # separately from feature availability for point-in-time peer filters.
+        if up_outcome and up_resolved_ts:
+            labeled_up.append({
+                "features": dict(features), "label": 1 if up_outcome == "WIN" else 0,
+                "outcome": up_outcome, "direction": "UP",
+                "label_resolved_ts": int(up_resolved_ts),
+            })
+        if down_outcome and down_resolved_ts:
+            labeled_down.append({
+                "features": dict(features), "label": 1 if down_outcome == "WIN" else 0,
+                "outcome": down_outcome, "direction": "DOWN",
+                "label_resolved_ts": int(down_resolved_ts),
+            })
     up_wins = sum(1 for r in labeled_up if r["label"] == 1)
     down_wins = sum(1 for r in labeled_down if r["label"] == 1)
     LOGGER.info(
@@ -1110,22 +1220,51 @@ def _persist_train_details(details_list) -> None:
 
 
 
+def _valid_asof_ts(value: Any) -> int:
+    """Return an exact positive Unix-second timestamp, else invalid evidence."""
+    if isinstance(value, (bool, np.bool_)):
+        return 0
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    if not np.isfinite(parsed) or parsed <= 0 or not parsed.is_integer():
+        return 0
+    return int(parsed)
+
+
 def _assemble_pooled_training(
     X_train, y_train, peer_rows, feature_cols, wolf_weight, target_train_rows=None,
+    *, invert_cols=None, max_asof_ts=None,
 ):
-    """Stack the target's training slice with peer samples for pooled fitting (W1).
+    """Stack the target's training slice with point-in-time peer samples (W1).
 
     Returns (X_pooled, y_pooled, sample_weight). Target rows keep wolf_weight;
     peer rows get regime-aware weights (Phase 3) so mismatched vol/momentum/%B
-    peers contribute less. Pure/numpy so it's unit-testable without xgboost.
+    peers contribute less. Optional ``max_asof_ts`` requires both peer features
+    and peer labels to have been available by the target cutoff. ``invert_cols``
+    applies the same learned sign map without mutating shared rows.
     """
     from core.feature_audit import peer_regime_weight, regime_profile
 
     wolf_sw = np.full(len(X_train), float(wolf_weight))
+    if max_asof_ts is not None:
+        cutoff = _valid_asof_ts(max_asof_ts)
+        peer_rows = [
+            r for r in peer_rows
+            if (
+                0 < _valid_asof_ts((r.get("features") or {}).get("feature_asof_ts")) <= cutoff
+                and 0 < _valid_asof_ts(r.get("label_resolved_ts")) <= cutoff
+            )
+        ] if cutoff else []
     if not peer_rows:
         return X_train, y_train, wolf_sw
     profile = regime_profile(target_train_rows or []) if target_train_rows else {}
-    Xp = np.array([[r["features"].get(c, 0.0) for c in feature_cols] for r in peer_rows])
+    inverted = set(invert_cols or [])
+    Xp = np.array([[
+        -float(r["features"].get(c, 0.0)) if c in inverted else r["features"].get(c, 0.0)
+        for c in feature_cols
+    ] for r in peer_rows])
     yp = np.array([r["label"] for r in peer_rows])
     peer_sw = np.array([
         peer_regime_weight(profile, r.get("features") or {})
@@ -1204,41 +1343,52 @@ def _train_one_direction(rows, symbol, direction, active_cols, peer_rows, peers_
     wins_ct = int(np.sum([r["label"] for r in rows]))
     min_wins = _v3_min_tp_sl_wins()
     train_end, calib_end = _v3_holdout_slices(len(rows))
+    train_fit_end, calib_fit_end = _purged_holdout_bounds(
+        len(rows), train_end, calib_end, _v3_wf_purge())
     feature_audit: List[Dict[str, Any]] = []
     invert_cols: set = set()
-    if _v3_feature_audit_enabled() and (len(rows) - calib_end) >= 10:
-        from core.feature_audit import (
-            apply_inversions_to_features,
-            audit_gate_features,
-            select_inverted_features,
-        )
-        gate_preview = rows[calib_end:]
-        X_gate_preview = np.array([
-            [r["features"].get(c, 0.0) for c in active_cols] for r in gate_preview
+    if _v3_feature_audit_enabled() and train_fit_end >= 10:
+        from core.feature_audit import audit_gate_features, select_inverted_features
+
+        # Choosing a sign map is model selection, so it may inspect only the
+        # purged training slice. Calibration and gate labels remain untouched.
+        X_audit_train = np.array([
+            [r["features"].get(c, 0.0) for c in active_cols]
+            for r in rows[:train_fit_end]
         ])
-        y_gate_preview = np.array([r["label"] for r in gate_preview])
+        y_audit_train = np.array([r["label"] for r in rows[:train_fit_end]])
         feature_audit = audit_gate_features(
-            X_gate_preview, y_gate_preview, active_cols,
+            X_audit_train, y_audit_train, active_cols,
         )
         invert_cols = select_inverted_features(feature_audit)
-        if invert_cols:
-            for r in rows:
-                apply_inversions_to_features(r["features"], invert_cols)
-    X = np.array([[r["features"].get(c, 0.0) for c in active_cols] for r in rows])
+
+    def _feature_vector(row):
+        features = row["features"]
+        return [
+            -float(features.get(c, 0.0)) if c in invert_cols else features.get(c, 0.0)
+            for c in active_cols
+        ]
+
+    # Do not mutate shared row dictionaries: target, peer, and live inference
+    # all receive the same persisted transform exactly once.
+    X = np.array([_feature_vector(r) for r in rows])
     y = np.array([r["label"] for r in rows])
-    train_end, calib_end = _v3_holdout_slices(len(X))
     # Leakage guard: labels look ahead V3_LABEL_HOLD_BARS bars, so drop the
     # purge-tail of the train and calib slices — otherwise the precision gate's
     # "proven OOS" threshold is chosen/validated on partially-seen futures.
-    train_fit_end, calib_fit_end = _purged_holdout_bounds(
-        len(X), train_end, calib_end, _v3_wf_purge())
     X_train, y_train = X[:train_fit_end], y[:train_fit_end]
     X_calib, y_calib = X[train_end:calib_fit_end], y[train_end:calib_fit_end]
     X_gate, y_gate = X[calib_end:], y[calib_end:]
     natural_rate = float(np.mean(y_gate)) if len(y_gate) else 0.0
+    target_asof = np.asarray([
+        _valid_asof_ts((r.get("features") or {}).get("feature_asof_ts"))
+        for r in rows
+    ])
+    train_cutoff = _valid_asof_ts(target_asof[train_fit_end - 1]) if train_fit_end else 0
     X_fit, y_fit, sample_weight = _assemble_pooled_training(
         X_train, y_train, peer_rows, active_cols, _v3_wolf_sample_weight(),
-        target_train_rows=rows[:train_fit_end],
+        target_train_rows=rows[:train_fit_end], invert_cols=invert_cols,
+        max_asof_ts=train_cutoff,
     )
     pos_ct = int(np.sum(y_fit))
     neg_ct = int(len(y_fit) - pos_ct)
@@ -1316,16 +1466,43 @@ def _train_one_direction(rows, symbol, direction, active_cols, peer_rows, peers_
     # Gate-slice OOS predictions feed the pooled cross-symbol operating point
     # (see core.precision_gate.store_global_thresholds). Popped from detail by
     # train_and_validate before persisting.
+    gate_resolved_asof = np.asarray([
+        _valid_asof_ts(r.get("label_resolved_ts")) for r in rows[calib_end:]
+    ])
     _gate_oos = {
-        "probs": [round(float(p), 4) for p in gate_probs_pg],
+        # Proof membership is defined by the exact model output; rounding here
+        # can move records across the certified threshold. Chronology is bound
+        # to when the forward label became knowable, never prediction time.
+        "probs": [float(p) for p in gate_probs_pg],
         "labels": [int(v) for v in y_gate],
+        "timestamps": [int(v) for v in gate_resolved_asof],
     }
+    # Walk-forward starts from raw matrices and derives a separate sign map in
+    # each fold. Reusing the final model's training-period map would let later
+    # labels influence earlier folds.
+    X_wf_raw = np.array([
+        [r["features"].get(c, 0.0) for c in active_cols] for r in rows
+    ])
     if peer_rows:
-        X_peer_wf = np.array([[r["features"].get(c, 0.0) for c in active_cols] for r in peer_rows])
+        peer_asof = np.asarray([
+            _valid_asof_ts((r.get("features") or {}).get("feature_asof_ts"))
+            for r in peer_rows
+        ])
+        peer_label_asof = np.asarray([
+            _valid_asof_ts(r.get("label_resolved_ts")) for r in peer_rows
+        ])
+        X_peer_wf = np.array([
+            [r["features"].get(c, 0.0) for c in active_cols]
+            for r in peer_rows
+        ])
         y_peer_wf = np.array([r["label"] for r in peer_rows])
-        wf = _walk_forward_scores(X, y, X_peer_wf, y_peer_wf, _v3_wolf_sample_weight())
+        wf = _walk_forward_scores(
+            X_wf_raw, y, X_peer_wf, y_peer_wf, _v3_wolf_sample_weight(),
+            target_ts=target_asof, peer_ts=peer_asof,
+            peer_label_ts=peer_label_asof, feature_cols=active_cols,
+        )
     else:
-        wf = _walk_forward_scores(X, y)
+        wf = _walk_forward_scores(X_wf_raw, y, feature_cols=active_cols)
     min_wf_acc = _v3_min_wf_acc_mean()
     min_wf_folds = _v3_min_wf_folds()
     wf_slack = _v3_wf_acc_min_slack()
@@ -1371,6 +1548,7 @@ def _train_one_direction(rows, symbol, direction, active_cols, peer_rows, peers_
         "n_samples": n_samples,
         "wins_ct": wins_ct,
         "natural_rate": round(natural_rate, 4),
+        "no_skill_accuracy": round(float(holdout.get("no_skill_accuracy", 0.0)), 4),
         "holdout_acc": round(accuracy, 4),
         "edge": round(edge, 4),
         "calibration": calib_info,
@@ -1410,7 +1588,10 @@ def _train_one_direction(rows, symbol, direction, active_cols, peer_rows, peers_
     model_bytes = base64.b64encode(raw_model_bytes).decode('ascii')
     meta = json.dumps({
         "feature_cols": active_cols, "accuracy": accuracy,
-        "natural_rate": natural_rate, "edge": edge,
+        "natural_rate": natural_rate,
+        "no_skill_accuracy": float(holdout.get("no_skill_accuracy", 0.0)),
+        "validation_schema": _v3_validation_schema(),
+        "edge": edge,
         "tier": tier, "gate_fail_reason": fail_reason,
         "trained_at": time.time(), "n_samples": len(rows),
         "engine_version": "v3.2_tp_sl_daily",
@@ -1447,7 +1628,9 @@ def _train_one_direction(rows, symbol, direction, active_cols, peer_rows, peers_
         "model_sha256": model_sha256,
         "model_payload_bytes": model_payload_bytes,
     })
-    return True, detail, model_bytes, meta
+    # Research-tier bytes may be stored for shadow evidence, but they did not
+    # pass validation and must never count as proven or enter global proof.
+    return passes, detail, model_bytes, meta
 
 
 def _research_overwrite_allowed(symbol, direction) -> bool:
@@ -1473,19 +1656,74 @@ def _research_overwrite_allowed(symbol, direction) -> bool:
         return False  # fail closed: never risk clobbering a proven model
 
 
-def _store_direction_model(symbol, direction, model_bytes, meta_json) -> None:
+def _store_direction_model(symbol, direction, model_bytes, meta_json) -> bool:
+    """Atomically authorize and store one directional model generation.
+
+    Every writer takes the same transaction-scoped database lock. Research
+    authorization is re-evaluated after that lock, so another process cannot
+    install a proven model between the incumbent check and the two-row UPSERT.
+    """
     from core.db import db_conn
-    d = direction.lower()
+    from core.precision_gate import (
+        invalidate_global_threshold_cache,
+        invalidate_global_threshold_persistent,
+    )
+
+    try:
+        incoming_meta = json.loads(meta_json)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        LOGGER.warning("model store %s/%s refused: invalid metadata", symbol, direction)
+        return False
+    incoming_tier = str(incoming_meta.get("tier") or "").lower()
+    if incoming_tier not in ("proven", "research"):
+        LOGGER.warning("model store %s/%s refused: invalid tier", symbol, direction)
+        return False
+
+    symbol_key = str(symbol or "").upper()
+    direction_key = str(direction or "").upper()
+    d = direction_key.lower()
+    stored = False
     with db_conn() as conn:
         cur = conn.cursor()
         cur.execute("CREATE TABLE IF NOT EXISTS ghost_v3_model "
                     "(key TEXT PRIMARY KEY, value TEXT, updated_at BIGINT)")
+        cur.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(%s))",
+            (f"ghost_v3_model:{symbol_key}:{direction_key}",),
+        )
+        if incoming_tier == "research":
+            cur.execute(
+                "SELECT value FROM ghost_v3_model WHERE key=%s",
+                (f"meta_{symbol_key}_{d}",),
+            )
+            incumbent = cur.fetchone()
+            if incumbent and incumbent[0]:
+                try:
+                    incumbent_meta = json.loads(incumbent[0])
+                    replaceable = (
+                        incumbent_meta.get("tier") == "research"
+                        or model_serve_guard(incumbent_meta) is not None
+                    )
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    replaceable = False
+                if not replaceable:
+                    LOGGER.info(
+                        "research model %s/%s refused: proven generation retained",
+                        symbol_key, direction_key,
+                    )
+                    return False
+        updated_at = int(time.time())
         cur.execute("INSERT INTO ghost_v3_model(key,value,updated_at) VALUES(%s,%s,%s) "
                     "ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at",
-                    (f"model_{symbol}_{d}", model_bytes, int(time.time())))
+                    (f"model_{symbol_key}_{d}", model_bytes, updated_at))
         cur.execute("INSERT INTO ghost_v3_model(key,value,updated_at) VALUES(%s,%s,%s) "
                     "ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at",
-                    (f"meta_{symbol}_{d}", meta_json, int(time.time())))
+                    (f"meta_{symbol_key}_{d}", meta_json, updated_at))
+        invalidate_global_threshold_persistent(cur)
+        stored = True
+    if stored:
+        invalidate_global_threshold_cache()
+    return stored
 
 
 def train_and_validate(symbols_and_types):
@@ -1499,8 +1737,10 @@ def train_and_validate(symbols_and_types):
     details: list = []
     # Pooled gate-slice OOS predictions across every trained symbol — feeds the
     # cross-symbol precision operating point (per-symbol slices are too thin).
-    _global_pools = {"UP": {"probs": [], "labels": []},
-                     "DOWN": {"probs": [], "labels": []}}
+    _global_pools = {
+        "UP": {"records": []},
+        "DOWN": {"records": []},
+    }
     clear_ohlcv_cache()
     symbol_delay = _v3_train_symbol_delay_sec()
     for idx, (symbol, asset_type) in enumerate(symbols_and_types):
@@ -1550,8 +1790,11 @@ def train_and_validate(symbols_and_types):
                 up_passed, up_detail, up_model_bytes, up_meta = _train_one_direction(
                     up_rows, symbol, "UP", active_cols,
                     peer_pools.get("UP") or [], peers_used, pool_info)
-                if up_model_bytes and (up_passed or _research_overwrite_allowed(symbol, "UP")):
-                    _store_direction_model(symbol, "UP", up_model_bytes, up_meta)
+                up_stored = bool(
+                    up_model_bytes
+                    and _store_direction_model(symbol, "UP", up_model_bytes, up_meta)
+                )
+                if up_stored:
                     invalidate_model_cache(symbol)
                     if up_passed:
                         total_passed += 1
@@ -1566,8 +1809,11 @@ def train_and_validate(symbols_and_types):
                 down_passed, down_detail, down_model_bytes, down_meta = _train_one_direction(
                     down_rows, symbol, "DOWN", active_cols,
                     peer_pools.get("DOWN") or [], peers_used, pool_info)
-                if down_model_bytes and (down_passed or _research_overwrite_allowed(symbol, "DOWN")):
-                    _store_direction_model(symbol, "DOWN", down_model_bytes, down_meta)
+                down_stored = bool(
+                    down_model_bytes
+                    and _store_direction_model(symbol, "DOWN", down_model_bytes, down_meta)
+                )
+                if down_stored:
                     invalidate_model_cache(symbol)
                     if down_passed:
                         total_passed += 1
@@ -1578,12 +1824,21 @@ def train_and_validate(symbols_and_types):
             # Pool gate-slice OOS predictions for the global operating point
             # (only from models that passed quality gates and were persisted),
             # then drop the bulky arrays from the persisted detail blob.
-            for _dirname, _det, _ok in (("UP", up_detail, up_passed),
-                                        ("DOWN", down_detail, down_passed)):
+            for _dirname, _det, _ok, _meta_json in (
+                ("UP", up_detail, up_passed, up_meta if up_n >= min_rows else None),
+                ("DOWN", down_detail, down_passed, down_meta if down_n >= min_rows else None),
+            ):
                 _oos = _det.pop("gate_oos", None) if isinstance(_det, dict) else None
-                if _ok and _oos and _oos.get("probs"):
-                    _global_pools[_dirname]["probs"].extend(_oos["probs"])
-                    _global_pools[_dirname]["labels"].extend(_oos["labels"])
+                if _ok and _oos and _oos.get("probs") and _meta_json:
+                    _meta = json.loads(_meta_json)
+                    _model_sha = str(_meta.get("model_sha256") or "")
+                    timestamps = _oos.get("timestamps") or [0] * len(_oos["probs"])
+                    _global_pools[_dirname]["records"].extend(
+                        (int(ts), float(prob), int(label), _model_sha)
+                        for ts, prob, label in zip(
+                            timestamps, _oos["probs"], _oos["labels"]
+                        )
+                    )
             # Build combined detail
             symbol_detail.update({
                 "passed": up_passed or down_passed,
@@ -1611,25 +1866,115 @@ def train_and_validate(symbols_and_types):
     if len(symbols_and_types) >= 5:
         try:
             from core.precision_gate import store_global_thresholds
-            store_global_thresholds(_global_pools)
+            store_global_thresholds(
+                _global_pools,
+                validation_schema=_v3_validation_schema(),
+                label_schema=_v3_label_schema(),
+                feature_schema=_v3_feature_schema(),
+            )
         except Exception as _gt_e:
             LOGGER.warning("global precision threshold update failed: %s", str(_gt_e)[:120])
     _persist_train_details(details)
     return None, total_passed / max(len(symbols_and_types) * 2, 1), total_passed > 0
 
 
-def model_serve_guard(meta: Optional[Dict[str, Any]]) -> Optional[str]:
-    """Return a reject code if meta fails load_model guards; None if serveable."""
+def _exact_nonnegative_int(value: Any) -> Optional[int]:
+    """Parse metadata counters without accepting booleans or truncation."""
+    if isinstance(value, bool):
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(numeric) or numeric < 0 or not numeric.is_integer():
+        return None
+    return int(numeric)
+
+
+def _model_metric_values(meta: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Return bounded finite serving metrics, or None for malformed metadata."""
+    values: Dict[str, Any] = {}
+    bounds = {
+        "accuracy": (0.0, 1.0),
+        "edge": (-1.0, 1.0),
+        "wf_acc_mean": (0.0, 1.0),
+        "wf_edge_mean": (-1.0, 1.0),
+    }
+    for key, (lower, upper) in bounds.items():
+        if isinstance(meta.get(key), bool):
+            return None
+        try:
+            value = float(meta[key])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return None
+        if not math.isfinite(value) or not lower <= value <= upper:
+            return None
+        values[key] = value
+    folds = _exact_nonnegative_int(meta.get("wf_fold_count"))
+    if folds is None:
+        return None
+    values["wf_fold_count"] = folds
+    for key in ("natural_rate", "no_skill_accuracy"):
+        if key not in meta:
+            continue
+        if isinstance(meta.get(key), bool):
+            return None
+        try:
+            value = float(meta[key])
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+            return None
+        values[key] = value
+    return values
+
+
+def model_serve_guard(
+    meta: Optional[Dict[str, Any]], *, expected_direction: Optional[str] = None,
+    allow_research_scoring: bool = False,
+) -> Optional[str]:
+    """Return a reject code if model metadata is incomplete or stale.
+
+    Research artifacts may be loaded only to emit shadow probabilities; the
+    independent lane gate still blocks them from ever producing a live signal.
+    """
     if not meta or not isinstance(meta, dict):
         return "missing_meta"
+    tier = str(meta.get("tier") or "")
+    if tier != "proven" and not (allow_research_scoring and tier == "research"):
+        return "tier_unproven"
+    direction = str(meta.get("direction") or "").upper()
+    if direction not in ("UP", "DOWN"):
+        return "direction_missing"
+    if expected_direction and direction != str(expected_direction).upper():
+        return "direction_mismatch"
+    model_sha = str(meta.get("model_sha256") or "").strip().lower()
+    if len(model_sha) != 64 or any(ch not in "0123456789abcdef" for ch in model_sha):
+        return "model_sha256_invalid"
     if meta.get("label_type") != LABEL_TYPE:
         return "label_type_mismatch"
     if meta.get("label_schema") != _v3_label_schema():
         return "label_schema_stale"
     if meta.get("feature_schema") != _v3_feature_schema():
         return "feature_schema_stale"
-    if time.time() - meta.get("trained_at", 0) > 14 * 86400:
+    if meta.get("validation_schema") != _v3_validation_schema():
+        return "validation_schema_stale"
+    try:
+        hold_bars = _exact_nonnegative_int(meta.get("label_hold_bars"))
+        if hold_bars is None or hold_bars != int(V3_LABEL_HOLD_BARS):
+            return "label_hold_bars_stale"
+        trained_at = float(meta.get("trained_at"))
+    except (TypeError, ValueError, OverflowError):
+        return "metadata_numeric_invalid"
+    now = time.time()
+    if not math.isfinite(trained_at) or trained_at <= 0:
+        return "metadata_numeric_invalid"
+    if trained_at > now + 300:
+        return "trained_at_future"
+    if now - trained_at > 14 * 86400:
         return "model_expired"
+    if _model_metric_values(meta) is None:
+        return "model_metrics_invalid"
     return None
 
 
@@ -1651,7 +1996,9 @@ def load_model(symbol=None, direction="UP"):
             model, feature_cols, meta, cached_at = hit
             if time.time() - cached_at < ttl:
                 # Serve guard re-check: a model cached fresh can expire mid-TTL.
-                if meta is not None and model_serve_guard(meta):
+                if meta is not None and model_serve_guard(
+                    meta, expected_direction=direction, allow_research_scoring=True,
+                ):
                     return None, None, None
                 return model, feature_cols, meta
     model, feature_cols, meta = _load_model_uncached(symbol, direction)
@@ -1684,7 +2031,9 @@ def _load_model_uncached(symbol, direction="UP"):
                 if not mrow:
                     return None, None, None
             meta = json.loads(mrow[0])
-            reject = model_serve_guard(meta)
+            reject = model_serve_guard(
+                meta, expected_direction=direction, allow_research_scoring=True,
+            )
             if reject:
                 LOGGER.info("load_model %s/%s: rejected (%s)", symbol, direction, reject)
                 return None, None, None
@@ -1738,10 +2087,6 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
     if up_model is None and down_model is None:
         return None, "no_model"
 
-    # Use UP feature cols as canonical (both directions share the same schema)
-    feature_cols = up_feature_cols or down_feature_cols or FEATURE_COLS
-    meta = up_meta or down_meta or {}
-
     rows = _fetch_ohlcv(symbol, asset_type, period='5d', interval='1h')
     if not rows or len(rows) < 30:
         return None, "intraday_data"
@@ -1767,7 +2112,9 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
 
     features = _calculate_features(rows)
     from core.feature_schema import attach_feature_asof
-    attach_feature_asof(features, rows[-1].get("ts") if rows else None)
+    attach_feature_asof(
+        features, rows[-1].get("ts") if rows else None, default_now=True,
+    )
 
     # P2 (audit): cross-sectional rank features — percentile within watchlist
     try:
@@ -1886,27 +2233,34 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
                 )
                 regime_block = True
 
-    invert_cols = meta.get("feature_inversions") or []
-    if invert_cols:
-        from core.feature_audit import apply_inversions_to_features
-        apply_inversions_to_features(features, invert_cols)
-        if scores is not None and isinstance(scores.get("features"), dict):
-            apply_inversions_to_features(scores["features"], invert_cols)
-
-    X = np.array([[features.get(c, 0.0) for c in feature_cols]])
+    # UP and DOWN are independently trained and may persist different sign
+    # maps. Apply each lane's own map without mutating the raw journal vector.
+    from core.feature_audit import apply_inversions_to_features
+    up_features = apply_inversions_to_features(
+        dict(features), (up_meta or {}).get("feature_inversions") or [],
+    )
+    down_features = apply_inversions_to_features(
+        dict(features), (down_meta or {}).get("feature_inversions") or [],
+    )
+    X_up = np.array([[
+        up_features.get(c, 0.0) for c in (up_feature_cols or FEATURE_COLS)
+    ]])
+    X_down = np.array([[
+        down_features.get(c, 0.0) for c in (down_feature_cols or FEATURE_COLS)
+    ]])
 
     # Phase 2: score both UP and DOWN models, pick the stronger signal
     up_prob = None
     down_prob = None
     if up_model is not None:
         try:
-            up_proba = up_model.predict_proba(X)[0]
+            up_proba = up_model.predict_proba(X_up)[0]
             up_prob = float(up_proba[1])
         except Exception:
             note_suppressed()
     if down_model is not None:
         try:
-            down_proba = down_model.predict_proba(X)[0]
+            down_proba = down_model.predict_proba(X_down)[0]
             down_prob = float(down_proba[1])
         except Exception:
             note_suppressed()
@@ -1952,11 +2306,24 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
     # return — so /api/wolf/gate-status can show where probabilities landed.
     if scores is not None:
         fires = primary_prob > min_p
-        scores["up_prob"] = round(up_prob, 4) if up_prob is not None else None
-        scores["down_prob"] = round(down_prob, 4) if down_prob is not None else None
+        # Persist exact classifier probabilities because they define membership
+        # in certified threshold populations. Round only presentation fields.
+        scores["up_prob"] = float(up_prob) if up_prob is not None else None
+        scores["down_prob"] = float(down_prob) if down_prob is not None else None
         scores["winning_direction"] = journal_direction
-        scores["win_prob"] = round(primary_prob, 4)
+        scores["win_prob"] = float(primary_prob)
         scores["down_signals_enabled"] = _v3_down_signals_enabled()
+        scores["model_identity_by_direction"] = {
+            direction: {
+                "model_sha256": meta.get("model_sha256"),
+                "feature_schema": meta.get("feature_schema"),
+                "label_schema": meta.get("label_schema"),
+                "validation_schema": meta.get("validation_schema"),
+                "hold_bars": meta.get("label_hold_bars"),
+            }
+            for direction, meta in (("UP", up_meta or {}), ("DOWN", down_meta or {}))
+            if meta
+        }
         scores["specialists"] = {
             "daily_swing": {
                 "model": "xgboost_v3",
@@ -1995,13 +2362,23 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
             return None, "research_tier"
         if direction == "UP" and regime_block:
             return None, "regime_gate"
-        lane_edge = meta.get('edge', 0)
-        lane_wf_acc = float(meta.get("wf_acc_mean", meta.get("accuracy", 0)))
-        lane_wf_edge = float(meta.get("wf_edge_mean", meta.get("edge", 0)))
-        lane_folds = int(meta.get("wf_fold_count", 0))
+        metric_values = _model_metric_values(meta)
+        if metric_values is None:
+            return None, "meta_invalid"
+        try:
+            lane_prob = float(prob)
+        except (TypeError, ValueError, OverflowError):
+            return None, "prob_invalid"
+        if not math.isfinite(lane_prob) or not 0.0 <= lane_prob <= 1.0:
+            return None, "prob_invalid"
+        lane_edge = metric_values["edge"]
+        lane_wf_acc = metric_values["wf_acc_mean"]
+        lane_wf_edge = metric_values["wf_edge_mean"]
+        lane_folds = metric_values["wf_fold_count"]
+        lane_accuracy = metric_values["accuracy"]
         if lane_edge < min_edge - 0.001:
             return None, "meta_gate"
-        if meta.get('accuracy', 0) < min_acc - 0.001:
+        if lane_accuracy < min_acc - 0.001:
             return None, "meta_gate"
         if lane_folds > 0 and (lane_wf_acc < min_wf_acc - 0.001 or lane_wf_edge < min_edge - 0.001):
             return None, "meta_gate"
@@ -2012,6 +2389,7 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
             global_fallback_enabled,
             load_global_threshold,
             precision_gate_enabled,
+            validate_fire_proof,
         )
         enforce_precision = precision_gate_enabled() and (
             not research_mode or not research_bypasses_precision_gate()
@@ -2019,23 +2397,34 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
         if enforce_precision:
             pg = meta.get("precision_gate") or {}
             source = "symbol"
-            if not pg.get("ok") and global_fallback_enabled():
-                g = load_global_threshold(direction)
+            if not validate_fire_proof(pg) and global_fallback_enabled():
+                g = load_global_threshold(
+                    direction, model_sha256=meta.get("model_sha256"),
+                )
                 if g and g.get("ok"):
                     pg = g
                     source = "global_pool"
+            proof_ok = source == "global_pool" or validate_fire_proof(pg)
             if scores is not None:
                 scores["precision_gate_" + direction.lower()] = {
-                    "ok": bool(pg.get("ok")),
+                    "ok": proof_ok,
                     "threshold": pg.get("threshold"),
                     "target": pg.get("target"),
-                    "source": source if pg.get("ok") else None,
+                    "source": source if proof_ok else None,
                     "fail_reason": pg.get("fail_reason"),
                 }
-            if not pg.get("ok"):
+            if not proof_ok:
                 return None, "precision_unproven"
-            eff_min_p = max(min_p, float(pg.get("threshold", min_p)))
-        if prob > eff_min_p:
+            try:
+                proof_threshold = float(pg["threshold"])
+            except (KeyError, TypeError, ValueError, OverflowError):
+                return None, "precision_unproven"
+            if not math.isfinite(proof_threshold):
+                return None, "precision_unproven"
+            eff_min_p = max(min_p, proof_threshold)
+        if lane_prob >= eff_min_p:
+            # Use the same inclusive boundary as certification (prob >= t), so
+            # the served picks are exactly members of the proven population.
             # PR #155: proven-skill blocker. Even a model with a calibrated
             # threshold can be a base-rate rider or symbol-specific
             # overconfidence (GME/NOK/XPO class). Only once the model would
@@ -2048,7 +2437,15 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
             if not research_mode:
                 try:
                     from core.proven_skill_gate import global_calibration_review, symbol_review
-                    skill = symbol_review(symbol)
+                    identity = {
+                        "direction": direction,
+                        "model_sha256": meta.get("model_sha256"),
+                        "feature_schema": meta.get("feature_schema"),
+                        "label_schema": meta.get("label_schema"),
+                        "validation_schema": meta.get("validation_schema"),
+                        "hold_bars": meta.get("label_hold_bars"),
+                    }
+                    skill = symbol_review(symbol, **identity)
                 except Exception as _skill_e:
                     skill = {"ok": False, "symbol": symbol, "fail_reason": "skill_exception",
                              "error": str(_skill_e)[:120]}
@@ -2057,7 +2454,7 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
                 if not skill.get("ok"):
                     return None, "skill_unproven"
                 try:
-                    cal_gate = global_calibration_review(float(prob))
+                    cal_gate = global_calibration_review(lane_prob, **identity)
                 except Exception as _cal_e:
                     cal_gate = {"ok": False, "fail_reason": "calibration_exception",
                                 "error": str(_cal_e)[:120]}
@@ -2074,24 +2471,30 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
                 # stay unadjusted or the loop would eat its own output.
                 try:
                     from core.live_recalibration import live_recalibrated_prob
-                    recal = live_recalibrated_prob(float(prob), direction=direction)
+                    recal = live_recalibrated_prob(lane_prob, **identity)
                 except Exception as _recal_e:
-                    recal = {"applied": False, "prob_raw": float(prob),
-                             "prob_adjusted": float(prob),
+                    recal = {"applied": False, "prob_raw": lane_prob,
+                             "prob_adjusted": lane_prob,
                              "error": str(_recal_e)[:120]}
                 if scores is not None:
                     scores["live_recalibration_" + direction.lower()] = recal
-                prob_adj = float(recal.get("prob_adjusted", prob) or prob)
-                if prob_adj <= eff_min_p:
+                adjusted = recal.get("prob_adjusted")
+                try:
+                    prob_adj = float(lane_prob if adjusted is None else adjusted)
+                except (TypeError, ValueError, OverflowError):
+                    return None, "live_recal_prob_invalid"
+                if not math.isfinite(prob_adj) or not 0.0 <= prob_adj <= 1.0:
+                    return None, "live_recal_prob_invalid"
+                if prob_adj < eff_min_p:
                     return None, "live_recal_prob_low"
-                prob = prob_adj
+                lane_prob = prob_adj
             q_hat = meta.get("conformal_q_hat")
             if q_hat is not None and float(q_hat) > 0:
                 from core.conformal_calibration import conformal_confidence
                 conf = conformal_confidence(
-                    prob, float(q_hat), float(meta.get('accuracy', min_acc)), float(min_p))
+                    lane_prob, float(q_hat), lane_accuracy, float(min_p))
             else:
-                conf = round(min(0.98, max(0.0, prob)), 3)
+                conf = round(min(0.98, max(0.0, lane_prob)), 3)
             if scores is not None:
                 scores["confidence"] = conf
                 if q_hat is not None:
@@ -2143,11 +2546,47 @@ def get_model_status():
             symbols = {}
             stored = {}
             skill_cache = {}
-            def _status_skill_review(symbol_name: str) -> dict:
-                """Mirror runtime proven-skill gate using this endpoint's DB cursor."""
+
+            def _status_float(value: Any, default: float = 0.0) -> float:
+                try:
+                    parsed = float(value)
+                except (TypeError, ValueError, OverflowError):
+                    return default
+                return parsed if math.isfinite(parsed) else default
+
+            def _status_precision_review(lane: str, meta: dict) -> dict:
+                """Use the same exact proof and global fallback as runtime."""
+                from core.precision_gate import (
+                    global_fallback_enabled, load_global_threshold,
+                    precision_gate_enabled, validate_fire_proof,
+                )
+                if not precision_gate_enabled():
+                    return {"ok": True, "disabled": True, "source": "disabled"}
+                proof = meta.get("precision_gate") or {}
+                if validate_fire_proof(proof):
+                    return {**proof, "ok": True, "source": "symbol"}
+                if global_fallback_enabled():
+                    pooled = load_global_threshold(
+                        lane, model_sha256=meta.get("model_sha256"),
+                    )
+                    if pooled and pooled.get("ok") is True:
+                        return {**pooled, "ok": True, "source": "global_pool"}
+                return {
+                    "ok": False,
+                    "source": None,
+                    "fail_reason": proof.get("fail_reason") or "proof_invalid",
+                }
+
+            def _status_skill_review(symbol_name: str, lane: str, meta: dict) -> dict:
+                """Mirror the identity-bound runtime proven-skill gate."""
                 sym_u = (symbol_name or "").upper()
-                if sym_u in skill_cache:
-                    return skill_cache[sym_u]
+                identity = (
+                    sym_u, lane, meta.get("model_sha256"),
+                    meta.get("feature_schema"), meta.get("label_schema"),
+                    meta.get("validation_schema"), meta.get("label_hold_bars"),
+                )
+                if identity in skill_cache:
+                    return skill_cache[identity]
                 try:
                     from core.proven_skill_gate import enabled as _skill_enabled, review as _skill_review
                     if not _skill_enabled():
@@ -2156,13 +2595,16 @@ def get_model_status():
                         cur.execute(
                             """
                             SELECT
-                              SUM(CASE WHEN outcome IN ('WIN','LOSS') THEN 1 ELSE 0 END) AS resolved,
+                              SUM(CASE WHEN outcome IN ('WIN','LOSS','EXPIRED') THEN 1 ELSE 0 END) AS resolved,
                               SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) AS wins,
-                              AVG(CASE WHEN outcome IN ('WIN','LOSS') THEN pnl_pct ELSE NULL END) AS avg_pnl
+                              AVG(CASE WHEN outcome IN ('WIN','LOSS','EXPIRED') THEN pnl_pct ELSE NULL END) AS avg_pnl
                             FROM ghost_shadow_outcomes
-                            WHERE symbol=%s AND outcome IS NOT NULL
+                            WHERE symbol=%s AND direction=%s AND model_sha256=%s
+                              AND feature_schema=%s AND label_schema=%s
+                              AND validation_schema=%s AND hold_bars=%s
+                              AND outcome IN ('WIN','LOSS','EXPIRED')
                             """,
-                            (sym_u,),
+                            identity,
                         )
                         row = cur.fetchone()
                         out = _skill_review(
@@ -2174,7 +2616,7 @@ def get_model_status():
                 except Exception as _skill_e:
                     out = {"ok": False, "symbol": sym_u, "fail_reason": "skill_unavailable",
                            "error": str(_skill_e)[:120]}
-                skill_cache[sym_u] = out
+                skill_cache[identity] = out
                 return out
             for key, val in rows:
                 raw_key = key.replace('meta_', '')
@@ -2190,18 +2632,24 @@ def get_model_status():
                     sym = raw_key
                     direction = "UP"  # legacy models are UP-only
                 m = json.loads(val)
-                reject = model_serve_guard(m)
+                reject = model_serve_guard(m, expected_direction=direction)
                 if raw_key not in model_keys:
                     reject = reject or "missing_pickle"
+                precision_review = _status_precision_review(direction, m)
+                nat_display = _status_float(m.get("natural_rate"))
+                no_skill_display = _status_float(
+                    m.get("no_skill_accuracy"), max(nat_display, 1.0 - nat_display),
+                )
                 summary = {
                     "direction": direction,
-                    "accuracy": round(m.get("accuracy",0)*100,1),
-                    "natural_rate": round(m.get("natural_rate",0)*100,1),
-                    "edge": round(m.get("edge",0)*100,1),
-                    "wf_acc_mean": round(m.get("wf_acc_mean",0)*100,1),
-                    "wf_acc_min": round(m.get("wf_acc_min",0)*100,1),
-                    "wf_edge_mean": round(m.get("wf_edge_mean",0)*100,1),
-                    "wf_edge_min": round(m.get("wf_edge_min",0)*100,1),
+                    "accuracy": round(_status_float(m.get("accuracy"))*100,1),
+                    "natural_rate": round(nat_display*100,1),
+                    "no_skill_accuracy": round(no_skill_display*100, 1),
+                    "edge": round(_status_float(m.get("edge"))*100,1),
+                    "wf_acc_mean": round(_status_float(m.get("wf_acc_mean"))*100,1),
+                    "wf_acc_min": round(_status_float(m.get("wf_acc_min"))*100,1),
+                    "wf_edge_mean": round(_status_float(m.get("wf_edge_mean"))*100,1),
+                    "wf_edge_min": round(_status_float(m.get("wf_edge_min"))*100,1),
                     "wf_fold_count": m.get("wf_fold_count",0),
                     "n_samples": m.get("n_samples",0),
                     "engine": m.get("engine_version","v3.0"),
@@ -2213,8 +2661,9 @@ def get_model_status():
                     "ensemble_members": m.get("ensemble_members"),
                     "conformal_ok": bool(m.get("conformal_ok", False)),
                     "conformal_q_hat": m.get("conformal_q_hat"),
-                    "precision_ok": bool((m.get("precision_gate") or {}).get("ok", False)),
-                    "fire_threshold": (m.get("precision_gate") or {}).get("threshold"),
+                    "precision_ok": precision_review.get("ok") is True,
+                    "precision_source": precision_review.get("source"),
+                    "fire_threshold": precision_review.get("threshold"),
                     "serveable": reject is None,
                     "tier": m.get("tier", "proven"),
                 }
@@ -2226,12 +2675,16 @@ def get_model_status():
                 # chain (_evaluate_lane): the model could fire if the tape
                 # cooperates. The audit found 11 precision_ok models displayed
                 # while 0 could actually fire — that gap must be visible.
-                acc_f = float(m.get("accuracy", 0) or 0)
-                nat_f = float(m.get("natural_rate", 0) or 0)
-                edge_f = float(m.get("edge", 0) or 0)
-                wf_edge_f = float(m.get("wf_edge_mean", m.get("edge", 0)) or 0)
-                wf_acc_f = float(m.get("wf_acc_mean", m.get("accuracy", 0)) or 0)
-                folds = int(m.get("wf_fold_count", 0) or 0)
+                metric_values = _model_metric_values(m)
+                acc_f = (metric_values or {}).get("accuracy", 0.0)
+                nat_f = _status_float(m.get("natural_rate"))
+                no_skill_f = _status_float(
+                    m.get("no_skill_accuracy"), max(nat_f, 1.0 - nat_f),
+                )
+                edge_f = (metric_values or {}).get("edge", 0.0)
+                wf_edge_f = (metric_values or {}).get("wf_edge_mean", 0.0)
+                wf_acc_f = (metric_values or {}).get("wf_acc_mean", 0.0)
+                folds = (metric_values or {}).get("wf_fold_count", 0)
                 block = None
                 if reject is not None:
                     block = f"not_serveable:{reject}"
@@ -2254,16 +2707,17 @@ def get_model_status():
                     # If runtime would block an otherwise-valid UP model because
                     # the symbol lacks forward shadow skill, status must not call
                     # it fireable_now. DOWN is shadow-disabled by default above.
-                    skill = _status_skill_review(sym) if direction == "UP" else {"ok": True}
+                    skill = _status_skill_review(sym, direction, m)
                     summary["proven_skill_gate"] = skill
                     if not skill.get("ok"):
                         block = "skill_unproven"
                 summary["fireable_now"] = block is None
                 if block:
                     summary["fire_block_reason"] = block
-                # accuracy ~= natural_rate means a constant guess would score
-                # the same — the model added nothing (base-rate rider).
-                summary["base_rate_rider"] = bool(acc_f <= nat_f + 0.02)
+                # Accuracy near majority-class no-skill performance means a
+                # constant guess would score the same (base-rate rider).
+                summary["no_skill_accuracy"] = round(no_skill_f * 100, 1)
+                summary["base_rate_rider"] = bool(acc_f <= no_skill_f + 0.02)
                 # skill = beats base rate in-sample AND out-of-time.
                 summary["proven_skill"] = bool(edge_f > 0 and wf_edge_f > 0)
                 stored[raw_key] = summary

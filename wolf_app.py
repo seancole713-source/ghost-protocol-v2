@@ -553,9 +553,14 @@ def _purge_v3_stale_or_weak():
                         purged += 1
                 except Exception:
                     pass
+            if purged:
+                from core.precision_gate import invalidate_global_threshold_persistent
+                invalidate_global_threshold_persistent(cur)
         if purged:
             try:
+                from core.precision_gate import invalidate_global_threshold_cache
                 from core.signal_engine import invalidate_model_cache
+                invalidate_global_threshold_cache()
                 invalidate_model_cache()
             except Exception:
                 pass
