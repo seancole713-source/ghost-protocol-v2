@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import time
+import numpy as np
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -329,6 +330,52 @@ def simulate_cross_sectional_label(
         return None, None
     median = sorted(all_rets)[len(all_rets) // 2]
     return ("WIN" if ret > median else "LOSS"), None
+
+
+def simulate_volatility_label(
+    rows: Sequence[Dict[str, Any]],
+    entry_idx: int,
+    hold_bars: int,
+    lookback_bars: int = 10,
+) -> Tuple[Optional[str], Optional[int]]:
+    """Volatility regime label: WIN if forward vol > trailing vol, else LOSS.
+
+    Predicts whether the next hold_bars days will be more volatile than the
+    past lookback_bars days. Volatility clusters (GARCH effect), making this
+    more predictable than direction. Natural win rate is ~55-65% due to
+    volatility persistence.
+
+    Returns (outcome, resolution_ts) or (None, None) for incomplete horizons.
+    """
+    if entry_idx < lookback_bars or entry_idx >= len(rows):
+        return None, None
+    # Trailing vol: std of daily returns over lookback
+    trailing_closes = [float(rows[j].get("close") or 0) for j in range(entry_idx - lookback_bars, entry_idx + 1)]
+    if min(trailing_closes) <= 0:
+        return None, None
+    trailing_rets = [(trailing_closes[i+1] - trailing_closes[i]) / trailing_closes[i] for i in range(len(trailing_closes) - 1)]
+    if len(trailing_rets) < 3:
+        return None, None
+    trailing_vol = float(np.std(trailing_rets))
+    if trailing_vol <= 0:
+        return None, None
+    # Forward vol: std of daily returns over hold_bars
+    predicted_at = entry_predicted_at(rows, entry_idx)
+    fwd = forward_bars_after_entry(rows, predicted_at, hold_bars)
+    if len(fwd) < max(1, int(hold_bars)):
+        return None, None
+    fwd_closes = [float(rows[entry_idx].get("close") or 0)] + [float(b.get("close") or 0) for b in fwd]
+    if min(fwd_closes) <= 0:
+        return None, None
+    fwd_rets = [(fwd_closes[i+1] - fwd_closes[i]) / fwd_closes[i] for i in range(len(fwd_closes) - 1)]
+    if len(fwd_rets) < 2:
+        return None, None
+    fwd_vol = float(np.std(fwd_rets))
+    if fwd_vol <= 0:
+        return None, None
+    outcome = "WIN" if fwd_vol > trailing_vol else "LOSS"
+    resolution_ts = _daily_bar_available_ts(fwd[hold_bars - 1].get("ts"))
+    return outcome, (resolution_ts or None)
 
 
 def simulate_tp_sl_label_detail(

@@ -124,6 +124,8 @@ def _v3_label_schema() -> str:
         return f"direction_v1:hold={V3_LABEL_HOLD_BARS}"
     if label_type == "cross_sectional":
         return f"cross_sectional_v1:hold={V3_LABEL_HOLD_BARS}"
+    if label_type == "volatility":
+        return f"volatility_v1:hold={V3_LABEL_HOLD_BARS}"
     from core.vol_targets import tp_sl_geometry_schema
     return f"{LABEL_SCHEMA}:{tp_sl_geometry_schema(hold_bars=V3_LABEL_HOLD_BARS)}"
 
@@ -1158,9 +1160,14 @@ def backtest_symbol(symbol, asset_type):
                     features.update(intra)
         except Exception:
             note_suppressed()
-        from core.tp_sl_resolve import simulate_tp_sl_label_detail, simulate_direction_label, entry_predicted_at, forward_bars_after_entry
+        from core.tp_sl_resolve import simulate_tp_sl_label_detail, simulate_direction_label, simulate_volatility_label, entry_predicted_at, forward_bars_after_entry
         label_type = _v3_label_type()
-        if label_type == "cross_sectional":
+        if label_type == "volatility":
+            up_outcome, up_resolved_ts = simulate_volatility_label(
+                rows, i, V3_LABEL_HOLD_BARS,
+            )
+            down_outcome = None; down_resolved_ts = None
+        elif label_type == "cross_sectional":
             # Cross-sectional mode: store forward return for later median-split.
             # Labels are computed in train_and_validate after all symbols are collected.
             entry_close = float(rows[i].get("close") or 0)
@@ -2008,6 +2015,96 @@ def _train_cross_sectional(symbols_and_types):
     return model, accuracy, passed
 
 
+def _train_volatility(symbols_and_types):
+    """Volatility regime training: per-symbol models predicting vol expansion.
+    
+    Volatility clusters (GARCH effect) — it's more predictable than direction.
+    Each symbol gets its own model predicting whether forward vol exceeds
+    trailing vol. Natural win rate is ~55-65% due to vol persistence.
+    """
+    from xgboost import XGBClassifier
+    import pickle, base64, hashlib
+    
+    clear_ohlcv_cache()
+    symbol_delay = _v3_train_symbol_delay_sec()
+    active_cols = _active_feature_cols()
+    total_passed = 0
+    
+    for idx, (symbol, asset_type) in enumerate(symbols_and_types):
+        try:
+            up_rows, _ = backtest_symbol(symbol, asset_type)
+            if len(up_rows) < _min_train_rows():
+                continue
+            
+            X = np.array([[r["features"].get(c, 0.0) for c in active_cols] for r in up_rows])
+            y = np.array([r["label"] for r in up_rows])
+            
+            n = len(X)
+            train_end, calib_end = _v3_holdout_slices(n)
+            train_fit_end, calib_fit_end = _purged_holdout_bounds(n, train_end, calib_end, _v3_wf_purge())
+            
+            X_train, y_train = X[:train_fit_end], y[:train_fit_end]
+            X_gate, y_gate = X[calib_end:], y[calib_end:]
+            
+            if len(X_gate) < 5:
+                continue
+            
+            pos_ct = int(np.sum(y_train))
+            neg_ct = len(y_train) - pos_ct
+            spw = (neg_ct / pos_ct) if pos_ct > 0 else 1.0
+            
+            model = XGBClassifier(
+                n_estimators=200, max_depth=4, learning_rate=0.03,
+                subsample=0.8, colsample_bytree=0.7, min_child_weight=3,
+                scale_pos_weight=min(25.0, max(1.0, float(spw))),
+                eval_metric='logloss', random_state=42,
+            )
+            model.fit(X_train, y_train)
+            
+            from core.engine_calibration import _evaluate_calibration_holdout
+            holdout = _evaluate_calibration_holdout(model, X_gate, y_gate)
+            accuracy = float(holdout["holdout_acc"])
+            edge = float(holdout["edge"])
+            natural_rate = float(holdout["natural_rate"])
+            
+            LOGGER.info(
+                f"VOL RETRAIN [{symbol}]: n={n} acc={accuracy*100:.1f}% "
+                f"edge={edge*100:.1f}% natural={natural_rate*100:.1f}%"
+            )
+            
+            if accuracy >= _v3_min_holdout_acc() and edge >= _v3_min_edge():
+                model_bytes = base64.b64encode(pickle.dumps(model)).decode("utf-8")
+                model_sha = hashlib.sha256(model_bytes.encode()).hexdigest()
+                meta = {
+                    "trained_at": int(time.time()),
+                    "model_sha256": model_sha,
+                    "feature_schema": _v3_feature_schema(),
+                    "label_schema": _v3_label_schema(),
+                    "validation_schema": _v3_validation_schema(),
+                    "label_hold_bars": V3_LABEL_HOLD_BARS,
+                    "label_type": "volatility",
+                    "accuracy": round(accuracy, 4),
+                    "edge": round(edge, 4),
+                    "natural_rate": round(natural_rate, 4),
+                    "n_samples": n,
+                    "engine_version": "v3.2",
+                    "tier": "proven",
+                    "ensemble": False,
+                    "conformal_ok": False,
+                    "precision_gate": {"ok": False, "note": "volatility_regime"},
+                }
+                meta_json = json.dumps(meta)
+                _store_direction_model(symbol, "UP", model_bytes, meta_json)
+                total_passed += 1
+        except Exception as e:
+            LOGGER.warning("Vol training %s: %s", symbol, str(e)[:80])
+        if symbol_delay > 0 and idx + 1 < len(symbols_and_types):
+            time.sleep(symbol_delay)
+    
+    LOGGER.info(f"Vol training: {total_passed}/{len(symbols_and_types)} models passed")
+    return None, total_passed / max(len(symbols_and_types), 1), total_passed > 0
+
+
 def train_and_validate(symbols_and_types):
     try:
         import pickle, base64
@@ -2016,6 +2113,10 @@ def train_and_validate(symbols_and_types):
         LOGGER.error("Missing dep: "+str(e)); return None, 0.0, False
     
     label_type = _v3_label_type()
+    
+    # ── Volatility mode: per-symbol vol regime prediction ──────────
+    if label_type == "volatility":
+        return _train_volatility(symbols_and_types)
     
     # ── Cross-sectional mode: one pooled model ─────────────────────
     if label_type == "cross_sectional":

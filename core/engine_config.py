@@ -13,19 +13,20 @@ V3_LABEL_HOLD_BARS = max(1, int(os.getenv("V3_LABEL_HOLD_BARS", "3")))
 
 
 def _v3_label_type() -> str:
-    """Label type: 'tp_sl', 'direction', or 'cross_sectional'.
+    """Label type: 'tp_sl', 'direction', 'cross_sectional', or 'volatility'.
 
-    'cross_sectional' predicts whether a stock's forward return ranks above
-    the cross-sectional median — a relative prediction, not absolute.
-    Much easier than predicting absolute direction because the model only
-    needs to learn relative ordering, not absolute magnitude.
-    Env: V3_LABEL_TYPE=tp_sl|direction|cross_sectional (default tp_sl).
+    'volatility' predicts whether forward realized vol exceeds trailing vol —
+    a regime-change prediction, not a directional one. Volatility clusters
+    (GARCH effect), making it more predictable than direction.
+    Env: V3_LABEL_TYPE=tp_sl|direction|cross_sectional|volatility (default tp_sl).
     """
     raw = (os.getenv("V3_LABEL_TYPE", "tp_sl") or "tp_sl").strip().lower()
     if raw in ("direction", "dir", "simple"):
         return "direction"
     if raw in ("cross_sectional", "cs", "cross", "relative"):
         return "cross_sectional"
+    if raw in ("volatility", "vol", "vol_regime"):
+        return "volatility"
     return "tp_sl"
 
 
