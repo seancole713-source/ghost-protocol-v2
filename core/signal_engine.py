@@ -1886,20 +1886,16 @@ def _train_cross_sectional(symbols_and_types):
     spw = (neg_ct / pos_ct) if pos_ct > 0 else 1.0
     
     model = XGBClassifier(
-        n_estimators=500, max_depth=6, learning_rate=0.02,
-        subsample=0.7, colsample_bytree=0.6, min_child_weight=5,
-        gamma=0.1, reg_alpha=0.1, reg_lambda=1.0,
+        n_estimators=300, max_depth=5, learning_rate=0.02,
+        subsample=0.8, colsample_bytree=0.7, min_child_weight=3,
         scale_pos_weight=min(25.0, max(1.0, float(spw))),
         eval_metric='logloss', random_state=42,
     )
     model.fit(X_train, y_train)
     
-    # Calibrate on the calib slice
-    from core.engine_calibration import _maybe_calibrate, _evaluate_calibration_holdout
-    final_model, calib_info = _maybe_calibrate(model, X_calib, y_calib)
-    
-    # Evaluate on gate slice
-    holdout = _evaluate_calibration_holdout(final_model, X_gate, y_gate)
+    # Evaluate directly — calibration destroys edge on near-50% problems
+    from core.engine_calibration import _evaluate_calibration_holdout
+    holdout = _evaluate_calibration_holdout(model, X_gate, y_gate)
     accuracy = float(holdout["holdout_acc"])
     edge = float(holdout["edge"])
     natural_rate = float(holdout["natural_rate"])
