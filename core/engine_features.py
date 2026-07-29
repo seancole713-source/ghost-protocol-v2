@@ -133,6 +133,10 @@ FEATURE_COLS = [
     # that don't correlate with technical indicators.
     'news_sentiment','news_bullish','news_bearish',
     'opt_put_call_ratio','opt_skew_elevated_puts','opt_skew_elevated_calls',
+    # Phase 5: additional cross-sectional ranks — the features that make
+    # cross-sectional prediction work. These measure how a stock ranks
+    # against peers on OBV, MACD, and Stochastic.
+    'cs_obv_rank','cs_macd_rank','cs_stoch_rank',
 ]
 
 

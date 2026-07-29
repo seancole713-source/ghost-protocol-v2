@@ -1869,6 +1869,52 @@ def _train_cross_sectional(symbols_and_types):
     LOGGER.info("CS training: %d rows across %d symbols, %d dates", 
                 len(labeled), len(symbols_and_types), len(by_date))
     
+    # Phase 2.5: compute cross-sectional ranks per date
+    # These are the features that make cross-sectional prediction work —
+    # they measure how a stock ranks against peers on each metric.
+    for dk, date_rows in by_date.items():
+        if len(date_rows) < 3:
+            continue
+        peers = [r["features"] for r in date_rows]
+        for r in date_rows:
+            f = r["features"]
+            # RSI rank
+            rsi_vals = [p.get("rsi") for p in peers if p.get("rsi") is not None]
+            if rsi_vals and f.get("rsi") is not None:
+                f["cs_rsi_rank"] = round(sum(1 for v in rsi_vals if v < f["rsi"]) / max(len(rsi_vals), 1), 4)
+            # Volume rank
+            vol_vals = [p.get("volume_ratio") for p in peers if p.get("volume_ratio") is not None]
+            if vol_vals and f.get("volume_ratio") is not None:
+                f["cs_volume_rank"] = round(sum(1 for v in vol_vals if v < f["volume_ratio"]) / max(len(vol_vals), 1), 4)
+            # Momentum rank
+            mom_vals = [p.get("mom_4h") for p in peers if p.get("mom_4h") is not None]
+            if mom_vals and f.get("mom_4h") is not None:
+                f["cs_momentum_rank"] = round(sum(1 for v in mom_vals if v < f["mom_4h"]) / max(len(mom_vals), 1), 4)
+            # Price-in-range rank
+            pir_vals = [p.get("price_in_range") for p in peers if p.get("price_in_range") is not None]
+            if pir_vals and f.get("price_in_range") is not None:
+                f["cs_sma_distance_rank"] = round(sum(1 for v in pir_vals if v < f["price_in_range"]) / max(len(pir_vals), 1), 4)
+            # ATR rank
+            atr_vals = [p.get("atr_pct") for p in peers if p.get("atr_pct") is not None]
+            if atr_vals and f.get("atr_pct") is not None:
+                f["cs_atr_rank"] = round(sum(1 for v in atr_vals if v < f["atr_pct"]) / max(len(atr_vals), 1), 4)
+            # ADX rank
+            adx_vals = [p.get("adx") for p in peers if p.get("adx") is not None]
+            if adx_vals and f.get("adx") is not None:
+                f["cs_adx_rank"] = round(sum(1 for v in adx_vals if v < f["adx"]) / max(len(adx_vals), 1), 4)
+            # OBV slope rank
+            obv_vals = [p.get("obv_slope") for p in peers if p.get("obv_slope") is not None]
+            if obv_vals and f.get("obv_slope") is not None:
+                f["cs_obv_rank"] = round(sum(1 for v in obv_vals if v < f["obv_slope"]) / max(len(obv_vals), 1), 4)
+            # MACD rank
+            macd_vals = [p.get("macd_hist") for p in peers if p.get("macd_hist") is not None]
+            if macd_vals and f.get("macd_hist") is not None:
+                f["cs_macd_rank"] = round(sum(1 for v in macd_vals if v < f["macd_hist"]) / max(len(macd_vals), 1), 4)
+            # Stochastic K rank
+            stoch_vals = [p.get("stoch_k") for p in peers if p.get("stoch_k") is not None]
+            if stoch_vals and f.get("stoch_k") is not None:
+                f["cs_stoch_rank"] = round(sum(1 for v in stoch_vals if v < f["stoch_k"]) / max(len(stoch_vals), 1), 4)
+    
     # Phase 3: build feature matrix
     X = np.array([[r["features"].get(c, 0.0) for c in active_cols] for r in labeled])
     y = np.array([r["label"] for r in labeled])
