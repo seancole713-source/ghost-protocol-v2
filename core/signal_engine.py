@@ -350,6 +350,10 @@ def _active_feature_cols() -> list:
         for c in ('opt_put_call_ratio','opt_skew_elevated_puts','opt_skew_elevated_calls'):
             if c not in prune:
                 cols.append(c)
+    from core.engine_config import _v3_intraday_features_enabled
+    if _v3_intraday_features_enabled():
+        from core.intraday_features import INTRADAY_FEATURE_NAMES
+        cols.extend(c for c in INTRADAY_FEATURE_NAMES if c not in prune)
     return cols
 
 
@@ -1138,6 +1142,20 @@ def backtest_symbol(symbol, asset_type):
                         features['opt_skew_elevated_calls'] = 1 if skew == 'elevated_calls' else 0
                 except Exception:
                     pass
+        except Exception:
+            note_suppressed()
+        # Phase 5: intraday microstructure features from 1-hour bars
+        try:
+            from core.engine_config import _v3_intraday_features_enabled
+            if _v3_intraday_features_enabled():
+                hourly = _fetch_ohlcv(symbol, asset_type, period="5d", interval="1h")
+                if hourly and len(hourly) >= 6:
+                    prev_close = None
+                    if len(rows) >= 2:
+                        prev_close = float(rows[-2].get("close") or 0)
+                    from core.intraday_features import compute_intraday_features
+                    intra = compute_intraday_features(hourly, prev_close=prev_close)
+                    features.update(intra)
         except Exception:
             note_suppressed()
         from core.tp_sl_resolve import simulate_tp_sl_label_detail, simulate_direction_label, entry_predicted_at, forward_bars_after_entry

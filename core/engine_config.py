@@ -395,7 +395,21 @@ def _v3_feature_schema() -> str:
     fundamentals = "fund1" if _fundamental_features_enabled() else "fund0"
     news = "news1" if _v3_news_features_enabled() else "news0"
     options = "opt1" if _v3_options_features_enabled() else "opt0"
-    return f"{macd}+{sector}+{audit}+{fundamentals}+{news}+{options}"
+    intraday = "intra1" if _v3_intraday_features_enabled() else "intra0"
+    return f"{macd}+{sector}+{audit}+{fundamentals}+{news}+{options}+{intraday}"
+
+
+def _v3_intraday_features_enabled() -> bool:
+    """Whether to add intraday microstructure features to the model.
+
+    Off by default. Adds VWAP deviation, intraday range, gap fill, volume
+    trend, hourly momentum, and volatility signature from 1-hour bars.
+    These are orthogonal to daily technical indicators.
+    Env: V3_INTRADAY_FEATURES=on|off
+    """
+    return (os.getenv("V3_INTRADAY_FEATURES", "off") or "off").strip().lower() in (
+        "1", "on", "true", "yes",
+    )
 
 
 def _v3_news_features_enabled() -> bool:

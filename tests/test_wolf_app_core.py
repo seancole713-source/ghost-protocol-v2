@@ -4395,17 +4395,20 @@ def test_feature_schema_tracks_pool_sector_and_fundamental_flags(monkeypatch):
     monkeypatch.setenv("V3_POOL_TRAINING", "on")
     monkeypatch.setenv("V3_NEWS_FEATURES", "off")
     monkeypatch.setenv("V3_OPTIONS_FEATURES", "off")
-    assert _se._v3_feature_schema() == "macd_pct_v1+sec0+fa1+fund0+news0+opt0"
+    monkeypatch.setenv("V3_INTRADAY_FEATURES", "off")
+    assert _se._v3_feature_schema() == "macd_pct_v1+sec0+fa1+fund0+news0+opt0+intra0"
     monkeypatch.setenv("V3_POOL_TRAINING", "off")
-    assert _se._v3_feature_schema() == "macd_raw_v0+sec0+fa1+fund0+news0+opt0"
+    assert _se._v3_feature_schema() == "macd_raw_v0+sec0+fa1+fund0+news0+opt0+intra0"
     monkeypatch.setenv("V3_SECTOR_FEATURE", "on")
-    assert _se._v3_feature_schema() == "macd_raw_v0+sec1+fa1+fund0+news0+opt0"
+    assert _se._v3_feature_schema() == "macd_raw_v0+sec1+fa1+fund0+news0+opt0+intra0"
     monkeypatch.setenv("V3_FUNDAMENTAL_FEATURES", "on")
-    assert _se._v3_feature_schema() == "macd_raw_v0+sec1+fa1+fund1+news0+opt0"
+    assert _se._v3_feature_schema() == "macd_raw_v0+sec1+fa1+fund1+news0+opt0+intra0"
     monkeypatch.setenv("V3_NEWS_FEATURES", "on")
-    assert _se._v3_feature_schema() == "macd_raw_v0+sec1+fa1+fund1+news1+opt0"
+    assert _se._v3_feature_schema() == "macd_raw_v0+sec1+fa1+fund1+news1+opt0+intra0"
     monkeypatch.setenv("V3_OPTIONS_FEATURES", "on")
-    assert _se._v3_feature_schema() == "macd_raw_v0+sec1+fa1+fund1+news1+opt1"
+    assert _se._v3_feature_schema() == "macd_raw_v0+sec1+fa1+fund1+news1+opt1+intra0"
+    monkeypatch.setenv("V3_INTRADAY_FEATURES", "on")
+    assert _se._v3_feature_schema() == "macd_raw_v0+sec1+fa1+fund1+news1+opt1+intra1"
 
 
 def test_active_feature_cols_appends_sector_only_when_on(monkeypatch):

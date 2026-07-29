@@ -137,6 +137,11 @@ FEATURE_COLS = [
     # cross-sectional prediction work. These measure how a stock ranks
     # against peers on OBV, MACD, and Stochastic.
     'cs_obv_rank','cs_macd_rank','cs_stoch_rank',
+    # Phase 5 (PR #171): intraday microstructure features — VWAP, range,
+    # gap fill, volume trend, hourly momentum, volatility signature.
+    # Orthogonal to daily technical indicators.
+    'intra_vwap_deviation','intra_range_pct','intra_gap_fill_pct',
+    'intra_volume_trend','intra_hourly_momentum','intra_vol_signature',
 ]
 
 
