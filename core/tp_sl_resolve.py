@@ -305,6 +305,32 @@ def simulate_direction_label(
     return outcome, (resolution_ts or None)
 
 
+def simulate_cross_sectional_label(
+    symbol_forward_returns: Dict[str, float],
+    symbol: str,
+) -> Tuple[Optional[str], Optional[int]]:
+    """Cross-sectional label: WIN if this symbol's forward return ranks above
+    the cross-sectional median, LOSS otherwise.
+
+    This is a RELATIVE prediction — the model learns which stocks will
+    outperform their peers, not whether any individual stock will go up.
+    Natural win rate is exactly 50% by construction (median split).
+    Any edge above 50% is real predictive power about relative strength.
+
+    Returns (outcome, None) — resolution timestamp is not applicable since
+    the label is derived from the cross-section, not a single bar path.
+    """
+    sym = (symbol or "").upper()
+    ret = symbol_forward_returns.get(sym)
+    if ret is None:
+        return None, None
+    all_rets = [v for v in symbol_forward_returns.values() if v is not None]
+    if len(all_rets) < 3:
+        return None, None
+    median = sorted(all_rets)[len(all_rets) // 2]
+    return ("WIN" if ret > median else "LOSS"), None
+
+
 def simulate_tp_sl_label_detail(
     rows: Sequence[Dict[str, Any]],
     entry_idx: int,

@@ -13,16 +13,19 @@ V3_LABEL_HOLD_BARS = max(1, int(os.getenv("V3_LABEL_HOLD_BARS", "3")))
 
 
 def _v3_label_type() -> str:
-    """Label type: 'tp_sl' (path-dependent TP/SL) or 'direction' (simple up/down).
+    """Label type: 'tp_sl', 'direction', or 'cross_sectional'.
 
-    'direction' predicts whether close[N] > close[0] after hold_bars — no path
-    dependency, no TP/SL geometry. Much higher signal-to-noise ratio because
-    the model doesn't need to predict the path, just the endpoint.
-    Env: V3_LABEL_TYPE=tp_sl|direction (default tp_sl).
+    'cross_sectional' predicts whether a stock's forward return ranks above
+    the cross-sectional median — a relative prediction, not absolute.
+    Much easier than predicting absolute direction because the model only
+    needs to learn relative ordering, not absolute magnitude.
+    Env: V3_LABEL_TYPE=tp_sl|direction|cross_sectional (default tp_sl).
     """
     raw = (os.getenv("V3_LABEL_TYPE", "tp_sl") or "tp_sl").strip().lower()
     if raw in ("direction", "dir", "simple"):
         return "direction"
+    if raw in ("cross_sectional", "cs", "cross", "relative"):
+        return "cross_sectional"
     return "tp_sl"
 
 

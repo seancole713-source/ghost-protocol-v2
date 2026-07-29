@@ -122,6 +122,8 @@ def _v3_label_schema() -> str:
     label_type = _v3_label_type()
     if label_type == "direction":
         return f"direction_v1:hold={V3_LABEL_HOLD_BARS}"
+    if label_type == "cross_sectional":
+        return f"cross_sectional_v1:hold={V3_LABEL_HOLD_BARS}"
     from core.vol_targets import tp_sl_geometry_schema
     return f"{LABEL_SCHEMA}:{tp_sl_geometry_schema(hold_bars=V3_LABEL_HOLD_BARS)}"
 
@@ -1138,9 +1140,29 @@ def backtest_symbol(symbol, asset_type):
                     pass
         except Exception:
             note_suppressed()
-        from core.tp_sl_resolve import simulate_tp_sl_label_detail, simulate_direction_label
+        from core.tp_sl_resolve import simulate_tp_sl_label_detail, simulate_direction_label, entry_predicted_at, forward_bars_after_entry
         label_type = _v3_label_type()
-        if label_type == "direction":
+        if label_type == "cross_sectional":
+            # Cross-sectional mode: store forward return for later median-split.
+            # Labels are computed in train_and_validate after all symbols are collected.
+            entry_close = float(rows[i].get("close") or 0)
+            if entry_close > 0:
+                predicted_at = entry_predicted_at(rows, i)
+                fwd = forward_bars_after_entry(rows, predicted_at, V3_LABEL_HOLD_BARS)
+                if len(fwd) >= V3_LABEL_HOLD_BARS:
+                    final_close = float(fwd[V3_LABEL_HOLD_BARS - 1].get("close") or 0)
+                    if final_close > 0:
+                        fwd_return = (final_close - entry_close) / entry_close
+                        labeled_up.append({
+                            "features": dict(features), "label": 0,  # placeholder, set later
+                            "outcome": "PENDING", "direction": "UP",
+                            "label_resolved_ts": int(time.time()),
+                            "_fwd_return": fwd_return,
+                            "_date_key": str(rows[i].get("ts", ""))[:10],
+                        })
+            up_outcome = None; up_resolved_ts = None
+            down_outcome = None; down_resolved_ts = None
+        elif label_type == "direction":
             up_outcome, up_resolved_ts = simulate_direction_label(
                 rows, i, V3_LABEL_HOLD_BARS,
             )
@@ -1789,17 +1811,161 @@ def _store_direction_model(symbol, direction, model_bytes, meta_json) -> bool:
     return stored
 
 
+def _train_cross_sectional(symbols_and_types):
+    """Cross-sectional training: one pooled model predicting relative rank.
+    
+    Collects all symbols' forward returns, computes per-date median splits,
+    trains one XGBoost model on the pooled data. Natural win rate is exactly
+    50% by construction — any edge is real predictive power.
+    """
+    from xgboost import XGBClassifier
+    import pickle, base64, hashlib
+    from collections import defaultdict
+    
+    clear_ohlcv_cache()
+    symbol_delay = _v3_train_symbol_delay_sec()
+    active_cols = _active_feature_cols()
+    
+    # Phase 1: collect all rows with forward returns
+    all_rows = []
+    for idx, (symbol, asset_type) in enumerate(symbols_and_types):
+        try:
+            up_rows, _ = backtest_symbol(symbol, asset_type)
+            for r in up_rows:
+                if r.get("_fwd_return") is not None:
+                    r["_symbol"] = symbol
+                    all_rows.append(r)
+        except Exception as e:
+            LOGGER.warning("CS backtest %s: %s", symbol, str(e)[:80])
+        if symbol_delay > 0 and idx + 1 < len(symbols_and_types):
+            time.sleep(symbol_delay)
+    
+    if len(all_rows) < _min_train_rows():
+        LOGGER.warning("CS training: only %d rows, need %d", len(all_rows), _min_train_rows())
+        return None, 0.0, False
+    
+    # Phase 2: compute per-date median forward returns and assign labels
+    by_date = defaultdict(list)
+    for r in all_rows:
+        dk = r.get("_date_key", "")
+        if dk:
+            by_date[dk].append(r)
+    
+    for dk, date_rows in by_date.items():
+        rets = [r["_fwd_return"] for r in date_rows]
+        if len(rets) < 3:
+            continue
+        median = sorted(rets)[len(rets) // 2]
+        for r in date_rows:
+            r["label"] = 1 if r["_fwd_return"] > median else 0
+            r["outcome"] = "WIN" if r["label"] == 1 else "LOSS"
+    
+    # Filter to only labeled rows
+    labeled = [r for r in all_rows if r.get("outcome") in ("WIN", "LOSS")]
+    if len(labeled) < _min_train_rows():
+        LOGGER.warning("CS training: only %d labeled rows", len(labeled))
+        return None, 0.0, False
+    
+    LOGGER.info("CS training: %d rows across %d symbols, %d dates", 
+                len(labeled), len(symbols_and_types), len(by_date))
+    
+    # Phase 3: build feature matrix
+    X = np.array([[r["features"].get(c, 0.0) for c in active_cols] for r in labeled])
+    y = np.array([r["label"] for r in labeled])
+    
+    n = len(X)
+    train_end, calib_end = _v3_holdout_slices(n)
+    train_fit_end, calib_fit_end = _purged_holdout_bounds(n, train_end, calib_end, _v3_wf_purge())
+    
+    X_train, y_train = X[:train_fit_end], y[:train_fit_end]
+    X_calib, y_calib = X[train_end:calib_fit_end], y[train_end:calib_fit_end]
+    X_gate, y_gate = X[calib_end:], y[calib_end:]
+    
+    pos_ct = int(np.sum(y_train))
+    neg_ct = len(y_train) - pos_ct
+    spw = (neg_ct / pos_ct) if pos_ct > 0 else 1.0
+    
+    model = XGBClassifier(
+        n_estimators=200, max_depth=4, learning_rate=0.03,
+        subsample=0.8, colsample_bytree=0.7, min_child_weight=3,
+        scale_pos_weight=min(25.0, max(1.0, float(spw))),
+        eval_metric='logloss', random_state=42,
+    )
+    model.fit(X_train, y_train)
+    
+    # Evaluate
+    from core.engine_calibration import _evaluate_calibration_holdout
+    holdout = _evaluate_calibration_holdout(model, X_gate, y_gate)
+    accuracy = float(holdout["holdout_acc"])
+    edge = float(holdout["edge"])
+    natural_rate = float(holdout["natural_rate"])
+    
+    LOGGER.info(
+        f"CS RETRAIN: n={n} acc={accuracy*100:.1f}% edge={edge*100:.1f}% "
+        f"natural={natural_rate*100:.1f}% train={len(X_train)} calib={len(X_calib)} gate={len(X_gate)}"
+    )
+    
+    # Store as a single pooled model
+    model_bytes = base64.b64encode(pickle.dumps(model)).decode("utf-8")
+    model_sha = hashlib.sha256(model_bytes.encode()).hexdigest()
+    
+    meta = {
+        "trained_at": int(time.time()),
+        "model_sha256": model_sha,
+        "feature_schema": _v3_feature_schema(),
+        "label_schema": _v3_label_schema(),
+        "validation_schema": _v3_validation_schema(),
+        "label_hold_bars": V3_LABEL_HOLD_BARS,
+        "label_type": "cross_sectional",
+        "accuracy": round(accuracy, 4),
+        "edge": round(edge, 4),
+        "natural_rate": round(natural_rate, 4),
+        "n_samples": n,
+        "engine_version": "v3.2",
+        "tier": "proven" if (accuracy >= _v3_min_holdout_acc() and edge >= _v3_min_edge()) else "research",
+        "ensemble": False,
+        "conformal_ok": False,
+        "precision_gate": {"ok": False, "note": "cross_sectional_pooled"},
+    }
+    meta_json = json.dumps(meta)
+    
+    passed = accuracy >= _v3_min_holdout_acc() and edge >= _v3_min_edge()
+    
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("CREATE TABLE IF NOT EXISTS ghost_v3_model "
+                    "(key TEXT PRIMARY KEY, value TEXT, updated_at BIGINT)")
+        cur.execute(
+            "INSERT INTO ghost_v3_model(key,value,updated_at) VALUES(%s,%s,%s) "
+            "ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at",
+            ("model_cs_pooled", model_bytes, int(time.time())),
+        )
+        cur.execute(
+            "INSERT INTO ghost_v3_model(key,value,updated_at) VALUES(%s,%s,%s) "
+            "ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at",
+            ("meta_cs_pooled", meta_json, int(time.time())),
+        )
+    
+    return model, accuracy, passed
+
+
 def train_and_validate(symbols_and_types):
     try:
         import pickle, base64
         from core.db import db_conn
     except ImportError as e:
         LOGGER.error("Missing dep: "+str(e)); return None, 0.0, False
+    
+    label_type = _v3_label_type()
+    
+    # ── Cross-sectional mode: one pooled model ─────────────────────
+    if label_type == "cross_sectional":
+        return _train_cross_sectional(symbols_and_types)
+    
+    # ── Per-symbol mode (tp_sl or direction) ───────────────────────
     total_passed = 0
     research_stored = 0
     details: list = []
-    # Pooled gate-slice OOS predictions across every trained symbol — feeds the
-    # cross-symbol precision operating point (per-symbol slices are too thin).
     _global_pools = {
         "UP": {"records": []},
         "DOWN": {"records": []},
