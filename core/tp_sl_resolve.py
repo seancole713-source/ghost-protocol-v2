@@ -275,6 +275,36 @@ def entry_predicted_at(rows: Sequence[Dict[str, Any]], entry_idx: int) -> int:
     return feature_asof_unix(rows[entry_idx].get("ts"))
 
 
+def simulate_direction_label(
+    rows: Sequence[Dict[str, Any]],
+    entry_idx: int,
+    hold_bars: int,
+) -> Tuple[Optional[str], Optional[int]]:
+    """Simple direction label: WIN if close[N] > close[0], else LOSS.
+
+    No path dependency, no TP/SL geometry. The model predicts whether the
+    price will be higher after hold_bars days. Natural rate is ~50% for a
+    random walk — any edge above 50% is real predictive power.
+
+    Returns (outcome, resolution_ts) or (None, None) for incomplete horizons.
+    """
+    if entry_idx < 0 or entry_idx >= len(rows):
+        return None, None
+    entry = float(rows[entry_idx].get("close") or 0)
+    if entry <= 0:
+        return None, None
+    predicted_at = entry_predicted_at(rows, entry_idx)
+    fwd = forward_bars_after_entry(rows, predicted_at, hold_bars)
+    if len(fwd) < max(1, int(hold_bars)):
+        return None, None
+    final_close = float(fwd[hold_bars - 1].get("close") or 0)
+    if final_close <= 0:
+        return None, None
+    outcome = "WIN" if final_close > entry else "LOSS"
+    resolution_ts = _daily_bar_available_ts(fwd[hold_bars - 1].get("ts"))
+    return outcome, (resolution_ts or None)
+
+
 def simulate_tp_sl_label_detail(
     rows: Sequence[Dict[str, Any]],
     entry_idx: int,

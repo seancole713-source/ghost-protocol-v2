@@ -12,6 +12,20 @@ LOGGER = logging.getLogger("ghost.engine_config")
 V3_LABEL_HOLD_BARS = max(1, int(os.getenv("V3_LABEL_HOLD_BARS", "3")))
 
 
+def _v3_label_type() -> str:
+    """Label type: 'tp_sl' (path-dependent TP/SL) or 'direction' (simple up/down).
+
+    'direction' predicts whether close[N] > close[0] after hold_bars — no path
+    dependency, no TP/SL geometry. Much higher signal-to-noise ratio because
+    the model doesn't need to predict the path, just the endpoint.
+    Env: V3_LABEL_TYPE=tp_sl|direction (default tp_sl).
+    """
+    raw = (os.getenv("V3_LABEL_TYPE", "tp_sl") or "tp_sl").strip().lower()
+    if raw in ("direction", "dir", "simple"):
+        return "direction"
+    return "tp_sl"
+
+
 def _min_backtest_bars() -> int:
     """Min OHLCV rows from the feed before backtest_symbol bothers to label (was 100)."""
     return max(1, int(os.getenv("MIN_BACKTEST_BARS", "50")))
@@ -376,7 +390,33 @@ def _v3_feature_schema() -> str:
     audit = "fa1" if _v3_feature_audit_enabled() else "fa0"
     from core.fundamental_features import enabled as _fundamental_features_enabled
     fundamentals = "fund1" if _fundamental_features_enabled() else "fund0"
-    return f"{macd}+{sector}+{audit}+{fundamentals}"
+    news = "news1" if _v3_news_features_enabled() else "news0"
+    options = "opt1" if _v3_options_features_enabled() else "opt0"
+    return f"{macd}+{sector}+{audit}+{fundamentals}+{news}+{options}"
+
+
+def _v3_news_features_enabled() -> bool:
+    """Whether to add news sentiment features to the model.
+
+    Off by default. Adds point-in-time lexicon-based sentiment scores from
+    recent news headlines. Toggling changes feature_schema and forces retrain.
+    Env: V3_NEWS_FEATURES=on|off
+    """
+    return (os.getenv("V3_NEWS_FEATURES", "off") or "off").strip().lower() in (
+        "1", "on", "true", "yes",
+    )
+
+
+def _v3_options_features_enabled() -> bool:
+    """Whether to add options flow features to the model.
+
+    Off by default. Adds put/call volume ratio and skew hint from nearest
+    expiration options chain. Toggling changes feature_schema and forces retrain.
+    Env: V3_OPTIONS_FEATURES=on|off
+    """
+    return (os.getenv("V3_OPTIONS_FEATURES", "off") or "off").strip().lower() in (
+        "1", "on", "true", "yes",
+    )
 
 
 def _v3_feature_audit_enabled() -> bool:

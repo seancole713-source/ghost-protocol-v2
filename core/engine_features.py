@@ -129,6 +129,10 @@ FEATURE_COLS = [
     'macro_smh_vs_spy','macro_vix_regime',
     'cs_rsi_rank','cs_volume_rank','cs_momentum_rank','cs_sma_distance_rank',
     'cs_atr_rank','cs_adx_rank','cs_short_float_rank','cs_sector_corr',
+    # Phase 4 (PR #170): news sentiment + options flow — orthogonal data sources
+    # that don't correlate with technical indicators.
+    'news_sentiment','news_bullish','news_bearish',
+    'opt_put_call_ratio','opt_skew_elevated_puts','opt_skew_elevated_calls',
 ]
 
 

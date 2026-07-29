@@ -97,7 +97,14 @@ LOGGER = logging.getLogger("ghost.signal_v3")
 LOGGER.info("[signal_engine] MODULE_LOADED PR17_DIAG ohlcv_chain=sip|iex|polygon|yfinance|stooq")
 
 LABEL_TYPE = "tp_sl_daily"
+LABEL_TYPE_DIRECTION = "direction_daily"
 VALIDATION_SCHEMA = "honest_oos_v3"  # compatibility export; use call-time helper below
+
+
+def _v3_label_type() -> str:
+    """Active label type — re-exported from engine_config for schema identity."""
+    from core.engine_config import _v3_label_type as _lt
+    return _lt()
 
 
 def _v3_validation_schema() -> str:
@@ -110,8 +117,11 @@ def _v3_validation_schema() -> str:
 
 # Phase 5: calendar forward bars + shared resolve path (see core.tp_sl_resolve.LABEL_SCHEMA).
 def _v3_label_schema() -> str:
-    """Active deterministic label contract including all TP/SL geometry."""
+    """Active deterministic label contract including label type and geometry."""
     from core.tp_sl_resolve import LABEL_SCHEMA
+    label_type = _v3_label_type()
+    if label_type == "direction":
+        return f"direction_v1:hold={V3_LABEL_HOLD_BARS}"
     from core.vol_targets import tp_sl_geometry_schema
     return f"{LABEL_SCHEMA}:{tp_sl_geometry_schema(hold_bars=V3_LABEL_HOLD_BARS)}"
 
@@ -328,6 +338,16 @@ def _active_feature_cols() -> list:
     from core.fundamental_features import enabled as _fund_enabled
     if _fund_enabled():
         cols.extend(c for c in FUNDAMENTAL_FEATURE_NAMES if c not in prune)
+    # Phase 4: news sentiment + options flow features (off by default)
+    from core.engine_config import _v3_news_features_enabled, _v3_options_features_enabled
+    if _v3_news_features_enabled():
+        for c in ('news_sentiment','news_bullish','news_bearish'):
+            if c not in prune:
+                cols.append(c)
+    if _v3_options_features_enabled():
+        for c in ('opt_put_call_ratio','opt_skew_elevated_puts','opt_skew_elevated_calls'):
+            if c not in prune:
+                cols.append(c)
     return cols
 
 
@@ -1084,13 +1104,56 @@ def backtest_symbol(symbol, asset_type):
                     features.update(get_fundamental_features_for_date(symbol, bar_date))
         except Exception:
             note_suppressed()
-        from core.tp_sl_resolve import simulate_tp_sl_label_detail
-        up_outcome, up_resolved_ts = simulate_tp_sl_label_detail(
-            rows, i, V3_LABEL_HOLD_BARS, vol_pct, "UP",
-        )
-        down_outcome, down_resolved_ts = simulate_tp_sl_label_detail(
-            rows, i, V3_LABEL_HOLD_BARS, vol_pct, "DOWN",
-        )
+        # Phase 4: point-in-time news sentiment + options flow features
+        try:
+            from core.engine_config import _v3_news_features_enabled, _v3_options_features_enabled
+            if _v3_news_features_enabled():
+                features['news_sentiment'] = 0.0
+                features['news_bullish'] = 0
+                features['news_bearish'] = 0
+                try:
+                    from core.news_sentiment import fetch_news_sentiment
+                    ns = fetch_news_sentiment(symbol, limit=5)
+                    if ns.get('ok'):
+                        features['news_sentiment'] = float(ns.get('sentiment_score', 0.0))
+                        label = str(ns.get('sentiment_label', '')).upper()
+                        features['news_bullish'] = 1 if label == 'BULLISH' else 0
+                        features['news_bearish'] = 1 if label == 'BEARISH' else 0
+                except Exception:
+                    pass
+            if _v3_options_features_enabled():
+                features['opt_put_call_ratio'] = 1.0
+                features['opt_skew_elevated_puts'] = 0
+                features['opt_skew_elevated_calls'] = 0
+                try:
+                    from core.options_flow import probe_options_flow
+                    opts = probe_options_flow(symbol)
+                    if opts.get('ok') and opts.get('available'):
+                        pcr = opts.get('put_call_volume_ratio')
+                        features['opt_put_call_ratio'] = float(pcr) if pcr is not None else 1.0
+                        skew = str(opts.get('skew_hint', ''))
+                        features['opt_skew_elevated_puts'] = 1 if skew == 'elevated_puts' else 0
+                        features['opt_skew_elevated_calls'] = 1 if skew == 'elevated_calls' else 0
+                except Exception:
+                    pass
+        except Exception:
+            note_suppressed()
+        from core.tp_sl_resolve import simulate_tp_sl_label_detail, simulate_direction_label
+        label_type = _v3_label_type()
+        if label_type == "direction":
+            up_outcome, up_resolved_ts = simulate_direction_label(
+                rows, i, V3_LABEL_HOLD_BARS,
+            )
+            down_outcome, down_resolved_ts = simulate_direction_label(
+                rows, i, V3_LABEL_HOLD_BARS,
+            )
+        else:
+            up_outcome, up_resolved_ts = simulate_tp_sl_label_detail(
+                rows, i, V3_LABEL_HOLD_BARS, vol_pct, "UP",
+            )
+            down_outcome, down_resolved_ts = simulate_tp_sl_label_detail(
+                rows, i, V3_LABEL_HOLD_BARS, vol_pct, "DOWN",
+            )
         # Only completed horizons are evidence. Store label availability
         # separately from feature availability for point-in-time peer filters.
         if up_outcome and up_resolved_ts:
