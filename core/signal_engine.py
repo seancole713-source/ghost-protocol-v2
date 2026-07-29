@@ -1814,9 +1814,11 @@ def _store_direction_model(symbol, direction, model_bytes, meta_json) -> bool:
 def _train_cross_sectional(symbols_and_types):
     """Cross-sectional training: one pooled model predicting relative rank.
     
-    Collects all symbols' forward returns, computes per-date median splits,
-    trains one XGBoost model on the pooled data. Natural win rate is exactly
-    50% by construction — any edge is real predictive power.
+    Collects all symbols' forward returns, computes per-date quartile splits
+    (top 25% = WIN, bottom 25% = LOSS, middle 50% = skipped), and trains
+    one XGBoost model using ONLY cross-sectional percentile-rank features.
+    Natural win rate is exactly 50% by construction — any edge is real
+    predictive power.
     """
     from xgboost import XGBClassifier
     import pickle, base64, hashlib
@@ -1844,80 +1846,72 @@ def _train_cross_sectional(symbols_and_types):
         LOGGER.warning("CS training: only %d rows, need %d", len(all_rows), _min_train_rows())
         return None, 0.0, False
     
-    # Phase 2: compute per-date median forward returns and assign labels
+    # Phase 2: group by date, compute quartile labels + full cross-sectional ranks
     by_date = defaultdict(list)
     for r in all_rows:
         dk = r.get("_date_key", "")
         if dk:
             by_date[dk].append(r)
     
+    # Build the list of features to rank (all numeric features in the feature dict)
+    _RANK_FEATURES = [
+        'rsi','macd_hist','pct_b','volume_ratio','mom_4h','mom_8h','mom_24h',
+        'price_in_range','ema20_vs_ema50','adx','atr_pct','obv_slope',
+        'stoch_k','stoch_d',
+    ]
+    
     for dk, date_rows in by_date.items():
         rets = [r["_fwd_return"] for r in date_rows]
-        if len(rets) < 3:
+        n_syms = len(rets)
+        if n_syms < 5:
             continue
-        median = sorted(rets)[len(rets) // 2]
+        
+        # Quartile split: top 25% = WIN, bottom 25% = LOSS, middle 50% = skip
+        sorted_rets = sorted(rets)
+        p25_idx = n_syms // 4
+        p75_idx = (3 * n_syms) // 4
+        p25 = sorted_rets[p25_idx]
+        p75 = sorted_rets[p75_idx]
+        
         for r in date_rows:
-            r["label"] = 1 if r["_fwd_return"] > median else 0
-            r["outcome"] = "WIN" if r["label"] == 1 else "LOSS"
+            ret = r["_fwd_return"]
+            if ret > p75:
+                r["label"] = 1; r["outcome"] = "WIN"
+            elif ret < p25:
+                r["label"] = 0; r["outcome"] = "LOSS"
+            # middle 50%: skipped (no label)
+        
+        # Compute percentile ranks for ALL features against peers on this date
+        peers = [r["features"] for r in date_rows]
+        for r in date_rows:
+            f = r["features"]
+            for feat in _RANK_FEATURES:
+                vals = [p.get(feat) for p in peers if p.get(feat) is not None]
+                my_val = f.get(feat)
+                if vals and my_val is not None and len(vals) >= 3:
+                    f[f"cs_{feat}_rank"] = round(
+                        sum(1 for v in vals if v < my_val) / len(vals), 4)
     
-    # Filter to only labeled rows
+    # Filter to only labeled rows (quartile extremes)
     labeled = [r for r in all_rows if r.get("outcome") in ("WIN", "LOSS")]
     if len(labeled) < _min_train_rows():
         LOGGER.warning("CS training: only %d labeled rows", len(labeled))
         return None, 0.0, False
     
-    LOGGER.info("CS training: %d rows across %d symbols, %d dates", 
+    LOGGER.info("CS training: %d rows across %d symbols, %d dates (quartile split)", 
                 len(labeled), len(symbols_and_types), len(by_date))
     
-    # Phase 2.5: compute cross-sectional ranks per date
-    # These are the features that make cross-sectional prediction work —
-    # they measure how a stock ranks against peers on each metric.
-    for dk, date_rows in by_date.items():
-        if len(date_rows) < 3:
-            continue
-        peers = [r["features"] for r in date_rows]
-        for r in date_rows:
-            f = r["features"]
-            # RSI rank
-            rsi_vals = [p.get("rsi") for p in peers if p.get("rsi") is not None]
-            if rsi_vals and f.get("rsi") is not None:
-                f["cs_rsi_rank"] = round(sum(1 for v in rsi_vals if v < f["rsi"]) / max(len(rsi_vals), 1), 4)
-            # Volume rank
-            vol_vals = [p.get("volume_ratio") for p in peers if p.get("volume_ratio") is not None]
-            if vol_vals and f.get("volume_ratio") is not None:
-                f["cs_volume_rank"] = round(sum(1 for v in vol_vals if v < f["volume_ratio"]) / max(len(vol_vals), 1), 4)
-            # Momentum rank
-            mom_vals = [p.get("mom_4h") for p in peers if p.get("mom_4h") is not None]
-            if mom_vals and f.get("mom_4h") is not None:
-                f["cs_momentum_rank"] = round(sum(1 for v in mom_vals if v < f["mom_4h"]) / max(len(mom_vals), 1), 4)
-            # Price-in-range rank
-            pir_vals = [p.get("price_in_range") for p in peers if p.get("price_in_range") is not None]
-            if pir_vals and f.get("price_in_range") is not None:
-                f["cs_sma_distance_rank"] = round(sum(1 for v in pir_vals if v < f["price_in_range"]) / max(len(pir_vals), 1), 4)
-            # ATR rank
-            atr_vals = [p.get("atr_pct") for p in peers if p.get("atr_pct") is not None]
-            if atr_vals and f.get("atr_pct") is not None:
-                f["cs_atr_rank"] = round(sum(1 for v in atr_vals if v < f["atr_pct"]) / max(len(atr_vals), 1), 4)
-            # ADX rank
-            adx_vals = [p.get("adx") for p in peers if p.get("adx") is not None]
-            if adx_vals and f.get("adx") is not None:
-                f["cs_adx_rank"] = round(sum(1 for v in adx_vals if v < f["adx"]) / max(len(adx_vals), 1), 4)
-            # OBV slope rank
-            obv_vals = [p.get("obv_slope") for p in peers if p.get("obv_slope") is not None]
-            if obv_vals and f.get("obv_slope") is not None:
-                f["cs_obv_rank"] = round(sum(1 for v in obv_vals if v < f["obv_slope"]) / max(len(obv_vals), 1), 4)
-            # MACD rank
-            macd_vals = [p.get("macd_hist") for p in peers if p.get("macd_hist") is not None]
-            if macd_vals and f.get("macd_hist") is not None:
-                f["cs_macd_rank"] = round(sum(1 for v in macd_vals if v < f["macd_hist"]) / max(len(macd_vals), 1), 4)
-            # Stochastic K rank
-            stoch_vals = [p.get("stoch_k") for p in peers if p.get("stoch_k") is not None]
-            if stoch_vals and f.get("stoch_k") is not None:
-                f["cs_stoch_rank"] = round(sum(1 for v in stoch_vals if v < f["stoch_k"]) / max(len(stoch_vals), 1), 4)
+    # Phase 3: build feature matrix using ONLY cross-sectional rank features
+    # Drop absolute features — the model must learn from relative ranks
+    cs_cols = [c for c in active_cols if c.startswith("cs_") or c.startswith("macro_")]
+    if not cs_cols:
+        cs_cols = active_cols  # fallback if no cs_ features exist
     
-    # Phase 3: build feature matrix
-    X = np.array([[r["features"].get(c, 0.0) for c in active_cols] for r in labeled])
+    X = np.array([[r["features"].get(c, 0.0) for c in cs_cols] for r in labeled])
     y = np.array([r["label"] for r in labeled])
+    
+    LOGGER.info("CS features: %d cross-sectional rank features (from %d total)", 
+                len(cs_cols), len(active_cols))
     
     n = len(X)
     train_end, calib_end = _v3_holdout_slices(n)
@@ -1948,7 +1942,8 @@ def _train_cross_sectional(symbols_and_types):
     
     LOGGER.info(
         f"CS RETRAIN: n={n} acc={accuracy*100:.1f}% edge={edge*100:.1f}% "
-        f"natural={natural_rate*100:.1f}% train={len(X_train)} calib={len(X_calib)} gate={len(X_gate)}"
+        f"natural={natural_rate*100:.1f}% train={len(X_train)} calib={len(X_calib)} gate={len(X_gate)} "
+        f"features={len(cs_cols)}"
     )
     
     # Store as a single pooled model
