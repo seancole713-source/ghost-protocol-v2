@@ -5,7 +5,8 @@ marks it resolved and sends immediate Telegram alert.
 Separate from reconcile_outcomes() which runs every 15 min
 and does NOT send alerts.
 """
-import time, logging, os
+import logging
+import time
 from core.quiet import note_suppressed
 from core.db import db_conn
 from core.prices import get_price
@@ -25,7 +26,7 @@ def run_watchdog():
                 "SELECT id,symbol,direction,entry_price,target_price,stop_price,asset_type,confidence,"
                 " predicted_at,expires_at"
                 " FROM predictions WHERE outcome IS NULL AND predicted_at IS NOT NULL"
-                " AND entry_price > 0.52 AND target_price IS NOT NULL AND stop_price IS NOT NULL"
+                " AND entry_price > 0 AND target_price IS NOT NULL AND stop_price IS NOT NULL"
                 " LIMIT 60"
             )
             open_picks = cur.fetchall()

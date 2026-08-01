@@ -58,6 +58,17 @@ def test_forward_bars_dedup_same_calendar_date():
     assert tps._date_key(fwd[0]["ts"]) == "2026-06-03"
     assert tps._date_key(fwd[1]["ts"]) == "2026-06-04"
 
+def test_direction_label_respects_down_lane():
+    from core.tp_sl_resolve import simulate_direction_label
+
+    rows = [
+        {"ts": "2026-06-01T00:00:00Z", "close": 10.0},
+        {"ts": "2026-06-02T00:00:00Z", "close": 9.0},
+    ]
+
+    assert simulate_direction_label(rows, 0, 1, "UP")[0] == "LOSS"
+    assert simulate_direction_label(rows, 0, 1, "DOWN")[0] == "WIN"
+
 
 def test_resolve_open_prediction_expired_after_hold_window():
     ts = int(datetime(2026, 6, 2, 15, 0, tzinfo=timezone.utc).timestamp())

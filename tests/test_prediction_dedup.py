@@ -1,6 +1,26 @@
 """Dedup guards for run_prediction_cycle save path."""
 import time
 
+def test_pick_geometry_requires_finite_directional_brackets():
+    from core.prediction import _valid_pick_geometry
+
+    assert _valid_pick_geometry({
+        "direction": "UP", "entry_price": 10, "target_price": 11,
+        "stop_price": 9,
+    })
+    assert _valid_pick_geometry({
+        "direction": "DOWN", "entry_price": 10, "target_price": 9,
+        "stop_price": 11,
+    })
+    assert not _valid_pick_geometry({
+        "direction": "UP", "entry_price": 10, "target_price": 9,
+        "stop_price": 11,
+    })
+    assert not _valid_pick_geometry({
+        "direction": "UP", "entry_price": float("nan"), "target_price": 11,
+        "stop_price": 9,
+    })
+
 
 def test_symbol_has_open_pick_true():
     from core.prediction import _symbol_has_open_pick

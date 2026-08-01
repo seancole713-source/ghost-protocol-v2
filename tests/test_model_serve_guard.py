@@ -83,6 +83,31 @@ def test_research_guard_is_scoring_only():
     assert _se.model_serve_guard(meta) == "tier_unproven"
     assert _se.model_serve_guard(meta, allow_research_scoring=True) is None
 
+def test_live_trainer_rejects_research_label_modes(monkeypatch):
+    seen = []
+    monkeypatch.setenv("V3_LABEL_TYPE", "volatility")
+    monkeypatch.setattr(_se, "_persist_train_details", lambda details: seen.extend(details))
+
+    model, accuracy, passed = _se.train_and_validate([])
+
+    assert (model, accuracy, passed) == (None, 0.0, False)
+    assert seen[0]["stage"] == "contract_guard"
+    assert "research-only" in seen[0]["fail_reason"]
+
+def test_live_trainer_rejects_non_point_in_time_features(monkeypatch):
+    seen = []
+    monkeypatch.setenv("V3_LABEL_TYPE", "tp_sl")
+    monkeypatch.setenv("V3_NEWS_FEATURES", "on")
+    monkeypatch.setenv("V3_OPTIONS_FEATURES", "off")
+    monkeypatch.setenv("V3_INTRADAY_FEATURES", "off")
+    monkeypatch.setattr(_se, "_persist_train_details", lambda details: seen.extend(details))
+
+    model, accuracy, passed = _se.train_and_validate([])
+
+    assert (model, accuracy, passed) == (None, 0.0, False)
+    assert seen[0]["stage"] == "feature_contract_guard"
+    assert "news" in seen[0]["fail_reason"]
+
 
 def test_max_calibration_brier_phase5_floor(monkeypatch):
     monkeypatch.setenv("V3_MAX_CALIBRATION_BRIER", "0.24")

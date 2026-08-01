@@ -97,6 +97,41 @@ def test_ohlcv_success_cached_within_ttl(monkeypatch):
     assert r1 == r2 == [_valid_bar()]
     assert len(calls) == 1, "second call within TTL must hit the cache"
 
+def test_ohlcv_cache_isolated_by_interval(monkeypatch):
+    _fresh_cache(monkeypatch)
+    monkeypatch.setenv("V3_OHLCV_CACHE_TTL_S", "900")
+    calls = []
+
+    def fetch(*args, **kwargs):
+        calls.append(kwargs.get("interval", args[3] if len(args) > 3 else None))
+        return [_valid_bar()]
+
+    monkeypatch.setattr(se, "_fetch_ohlcv_once", fetch)
+    se._fetch_ohlcv("STUB", "stock", period="5d", interval="1d")
+    se._fetch_ohlcv("STUB", "stock", period="5d", interval="1h")
+
+    assert calls == ["1d", "1h"]
+
+def test_alpaca_fetch_honors_requested_timeframe(monkeypatch):
+    monkeypatch.setenv("ALPACA_KEY_ID", "key")
+    monkeypatch.setenv("ALPACA_SECRET_KEY", "secret")
+    urls = []
+
+    class Response:
+        status_code = 200
+
+        def json(self):
+            return {"bars": [{
+                "t": "2026-06-03T15:00:00Z", "o": 1, "h": 1,
+                "l": 1, "c": 1, "v": 1,
+            }]}
+
+    import requests
+    monkeypatch.setattr(requests, "get", lambda url, **kwargs: urls.append(url) or Response())
+    se._fetch_ohlcv_once("STUB", "stock", period="5d", interval="1h")
+
+    assert "timeframe=1Hour" in urls[0]
+
 
 def test_ohlcv_failure_negative_cached(monkeypatch):
     """A symbol failing every tier must not re-run the chain on every call —

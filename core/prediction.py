@@ -9,7 +9,11 @@ Rules:
   - Confidence floor 0.80 by default (MIN_ALERT_CONFIDENCE)
   - Features logged on every prediction for future ML training
 """
-import os, time, logging, json
+import json
+import logging
+import math
+import os
+import time
 from core.quiet import note_suppressed
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Tuple
@@ -25,6 +29,24 @@ LOGGER = logging.getLogger("ghost.prediction")
 
 # Serialize prediction saves across concurrent cycles (market scan + cron overlap).
 _PREDICTION_SAVE_LOCK_ID = 8723491
+
+
+def _valid_pick_geometry(pick: Dict[str, Any]) -> bool:
+    """Return whether a candidate has finite, positive, direction-safe prices."""
+    direction = str(pick.get("direction") or "").upper()
+    if direction not in ("UP", "DOWN"):
+        return False
+    try:
+        entry = float(pick.get("entry_price"))
+        target = float(pick.get("target_price"))
+        stop = float(pick.get("stop_price"))
+    except (TypeError, ValueError, OverflowError):
+        return False
+    if not all(math.isfinite(value) and value > 0 for value in (entry, target, stop)):
+        return False
+    if direction == "UP":
+        return stop < entry < target
+    return target < entry < stop
 
 def _confidence_floor() -> float:
     from core.accuracy_contract import resolve_float
@@ -1522,6 +1544,9 @@ def run_prediction_cycle(with_diag: bool = False):
                 # from polluting the journal even if they slip past the scan filter.
                 if sym not in _WATCHLIST_SET:
                     LOGGER.info("WATCHLIST-GUARD: skipping non-watchlist symbol " + sym)
+                    continue
+                if not _valid_pick_geometry(pick):
+                    LOGGER.error("PICK-GEOMETRY: refusing invalid candidate %s", sym)
                     continue
                 if _symbol_has_open_pick(cur, sym, now_ts):
                     LOGGER.info("DEDUP: skipping " + sym)

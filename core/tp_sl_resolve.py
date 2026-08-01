@@ -280,8 +280,9 @@ def simulate_direction_label(
     rows: Sequence[Dict[str, Any]],
     entry_idx: int,
     hold_bars: int,
+    direction: str = "UP",
 ) -> Tuple[Optional[str], Optional[int]]:
-    """Simple direction label: WIN if close[N] > close[0], else LOSS.
+    """Simple direction label for an explicit UP or DOWN research lane.
 
     No path dependency, no TP/SL geometry. The model predicts whether the
     price will be higher after hold_bars days. Natural rate is ~50% for a
@@ -301,7 +302,11 @@ def simulate_direction_label(
     final_close = float(fwd[hold_bars - 1].get("close") or 0)
     if final_close <= 0:
         return None, None
-    outcome = "WIN" if final_close > entry else "LOSS"
+    lane = str(direction or "").upper()
+    if lane not in ("UP", "DOWN"):
+        return None, None
+    won = final_close > entry if lane == "UP" else final_close < entry
+    outcome = "WIN" if won else "LOSS"
     resolution_ts = _daily_bar_available_ts(fwd[hold_bars - 1].get("ts"))
     return outcome, (resolution_ts or None)
 

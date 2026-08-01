@@ -97,6 +97,7 @@ LOGGER = logging.getLogger("ghost.signal_v3")
 LOGGER.info("[signal_engine] MODULE_LOADED PR17_DIAG ohlcv_chain=sip|iex|polygon|yfinance|stooq")
 
 LABEL_TYPE = "tp_sl_daily"
+LIVE_LABEL_MODE = "tp_sl"
 LABEL_TYPE_DIRECTION = "direction_daily"
 VALIDATION_SCHEMA = "honest_oos_v3"  # compatibility export; use call-time helper below
 
@@ -594,7 +595,7 @@ def _fetch_sector_series(period='1y'):
 
 
 def _fetch_ohlcv_once(symbol, asset_type, period='1y', interval='1d'):
-    """Fetch daily OHLCV bars from Alpaca.
+    """Fetch OHLCV bars from Alpaca at the requested interval.
 
     PR #14 diag: emits "_fetch_ohlcv ENTERED" at the top so we can confirm
     in Railway logs whether the function is being called at all. If you see
@@ -617,7 +618,17 @@ def _fetch_ohlcv_once(symbol, asset_type, period='1y', interval='1d'):
     if not key or not secret:
         return None
     headers = {"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret}
-    days_map = {'3m': 90, '6m': 180, '1y': 365, '2y': 730, '5y': 1825}
+    days_map = {
+        '5d': 5, '10d': 10, '1mo': 31, '3m': 90, '6m': 180,
+        '1y': 365, '2y': 730, '5y': 1825,
+    }
+    timeframe_map = {
+        '1d': '1Day', '1h': '1Hour', '30m': '30Min',
+        '15m': '15Min', '5m': '5Min', '1m': '1Min',
+    }
+    timeframe = timeframe_map.get(str(interval or '1d').lower())
+    if timeframe is None:
+        raise ValueError(f"unsupported OHLCV interval: {interval}")
     lookback_days = days_map.get(period, 365)
     end_dt = datetime.now(timezone.utc)
     start_dt = end_dt - timedelta(days=lookback_days)
@@ -626,9 +637,11 @@ def _fetch_ohlcv_once(symbol, asset_type, period='1y', interval='1d'):
 
     def _try_feed(feed):
         try:
-            url = (f"https://data.alpaca.markets/v2/stocks/{symbol.upper()}/bars"
-                   f"?timeframe=1Day&limit=10000&feed={feed}"
-                   f"&start={start_str}&end={end_str}")
+            url = (
+                f"https://data.alpaca.markets/v2/stocks/{symbol.upper()}/bars"
+                f"?timeframe={timeframe}&limit=10000&feed={feed}"
+                f"&start={start_str}&end={end_str}"
+            )
             r = _req.get(url, headers=headers, timeout=30)
             if r.status_code != 200:
                 LOGGER.info(f"Alpaca feed={feed} {symbol}: HTTP {r.status_code}")
@@ -758,11 +771,11 @@ def _normalize_daily_ohlcv(rows) -> Optional[List[Dict[str, Any]]]:
 
 
 def _fetch_ohlcv(symbol, asset_type, period=None, interval='1d'):
-    """Fetch canonical daily OHLCV with caching and in-flight dedupe."""
+    """Fetch canonical OHLCV with interval-aware caching and in-flight dedupe."""
     period = period or _v3_ohlcv_period()
     sym = (symbol or "").upper()
     atype = (asset_type or "stock").strip().lower()
-    cache_key = (sym, atype, period)
+    cache_key = (sym, atype, period, str(interval or '1d').lower())
 
     def _cached():
         with _OHLCV_CACHE_LOCK:
@@ -1112,54 +1125,6 @@ def backtest_symbol(symbol, asset_type):
                     features.update(get_fundamental_features_for_date(symbol, bar_date))
         except Exception:
             note_suppressed()
-        # Phase 4: point-in-time news sentiment + options flow features
-        try:
-            from core.engine_config import _v3_news_features_enabled, _v3_options_features_enabled
-            if _v3_news_features_enabled():
-                features['news_sentiment'] = 0.0
-                features['news_bullish'] = 0
-                features['news_bearish'] = 0
-                try:
-                    from core.news_sentiment import fetch_news_sentiment
-                    ns = fetch_news_sentiment(symbol, limit=5)
-                    if ns.get('ok'):
-                        features['news_sentiment'] = float(ns.get('sentiment_score', 0.0))
-                        label = str(ns.get('sentiment_label', '')).upper()
-                        features['news_bullish'] = 1 if label == 'BULLISH' else 0
-                        features['news_bearish'] = 1 if label == 'BEARISH' else 0
-                except Exception:
-                    pass
-            if _v3_options_features_enabled():
-                features['opt_put_call_ratio'] = 1.0
-                features['opt_skew_elevated_puts'] = 0
-                features['opt_skew_elevated_calls'] = 0
-                try:
-                    from core.options_flow import probe_options_flow
-                    opts = probe_options_flow(symbol)
-                    if opts.get('ok') and opts.get('available'):
-                        pcr = opts.get('put_call_volume_ratio')
-                        features['opt_put_call_ratio'] = float(pcr) if pcr is not None else 1.0
-                        skew = str(opts.get('skew_hint', ''))
-                        features['opt_skew_elevated_puts'] = 1 if skew == 'elevated_puts' else 0
-                        features['opt_skew_elevated_calls'] = 1 if skew == 'elevated_calls' else 0
-                except Exception:
-                    pass
-        except Exception:
-            note_suppressed()
-        # Phase 5: intraday microstructure features from 1-hour bars
-        try:
-            from core.engine_config import _v3_intraday_features_enabled
-            if _v3_intraday_features_enabled():
-                hourly = _fetch_ohlcv(symbol, asset_type, period="5d", interval="1h")
-                if hourly and len(hourly) >= 6:
-                    prev_close = None
-                    if len(rows) >= 2:
-                        prev_close = float(rows[-2].get("close") or 0)
-                    from core.intraday_features import compute_intraday_features
-                    intra = compute_intraday_features(hourly, prev_close=prev_close)
-                    features.update(intra)
-        except Exception:
-            note_suppressed()
         from core.tp_sl_resolve import simulate_tp_sl_label_detail, simulate_direction_label, simulate_volatility_label, entry_predicted_at, forward_bars_after_entry
         label_type = _v3_label_type()
         if label_type == "volatility":
@@ -1189,10 +1154,10 @@ def backtest_symbol(symbol, asset_type):
             down_outcome = None; down_resolved_ts = None
         elif label_type == "direction":
             up_outcome, up_resolved_ts = simulate_direction_label(
-                rows, i, V3_LABEL_HOLD_BARS,
+                rows, i, V3_LABEL_HOLD_BARS, "UP",
             )
             down_outcome, down_resolved_ts = simulate_direction_label(
-                rows, i, V3_LABEL_HOLD_BARS,
+                rows, i, V3_LABEL_HOLD_BARS, "DOWN",
             )
         else:
             up_outcome, up_resolved_ts = simulate_tp_sl_label_detail(
@@ -1837,7 +1802,7 @@ def _store_direction_model(symbol, direction, model_bytes, meta_json) -> bool:
 
 
 def _train_cross_sectional(symbols_and_types):
-    """Cross-sectional training: one pooled model predicting relative rank.
+    """Run a read-only cross-sectional research experiment.
     
     Collects all symbols' forward returns, computes per-date quartile splits
     (top 25% = WIN, bottom 25% = LOSS, middle 50% = skipped), and trains
@@ -1846,7 +1811,6 @@ def _train_cross_sectional(symbols_and_types):
     predictive power.
     """
     from xgboost import XGBClassifier
-    import pickle, base64, hashlib
     from collections import defaultdict
     
     clear_ohlcv_cache()
@@ -1943,7 +1907,6 @@ def _train_cross_sectional(symbols_and_types):
     train_fit_end, calib_fit_end = _purged_holdout_bounds(n, train_end, calib_end, _v3_wf_purge())
     
     X_train, y_train = X[:train_fit_end], y[:train_fit_end]
-    X_calib, y_calib = X[train_end:calib_fit_end], y[train_end:calib_fit_end]
     X_gate, y_gate = X[calib_end:], y[calib_end:]
     
     pos_ct = int(np.sum(y_train))
@@ -1967,68 +1930,29 @@ def _train_cross_sectional(symbols_and_types):
     
     LOGGER.info(
         f"CS RETRAIN: n={n} acc={accuracy*100:.1f}% edge={edge*100:.1f}% "
-        f"natural={natural_rate*100:.1f}% train={len(X_train)} calib={len(X_calib)} gate={len(X_gate)} "
+        f"natural={natural_rate*100:.1f}% train={len(X_train)} "
+        f"calib={max(0, calib_fit_end - train_end)} gate={len(X_gate)} "
         f"features={len(cs_cols)}"
     )
     
-    # Store as a single pooled model
-    model_bytes = base64.b64encode(pickle.dumps(model)).decode("utf-8")
-    model_sha = hashlib.sha256(model_bytes.encode()).hexdigest()
-    
-    meta = {
-        "trained_at": int(time.time()),
-        "model_sha256": model_sha,
-        "feature_schema": _v3_feature_schema(),
-        "label_schema": _v3_label_schema(),
-        "validation_schema": _v3_validation_schema(),
-        "label_hold_bars": V3_LABEL_HOLD_BARS,
-        "label_type": "cross_sectional",
-        "accuracy": round(accuracy, 4),
-        "edge": round(edge, 4),
-        "natural_rate": round(natural_rate, 4),
-        "n_samples": n,
-        "engine_version": "v3.2",
-        "tier": "proven" if (accuracy >= _v3_min_holdout_acc() and edge >= _v3_min_edge()) else "research",
-        "ensemble": False,
-        "conformal_ok": False,
-        "precision_gate": {"ok": False, "note": "cross_sectional_pooled"},
-    }
-    meta_json = json.dumps(meta)
-    
-    passed = accuracy >= _v3_min_holdout_acc() and edge >= _v3_min_edge()
-    
-    with db_conn() as conn:
-        cur = conn.cursor()
-        cur.execute("CREATE TABLE IF NOT EXISTS ghost_v3_model "
-                    "(key TEXT PRIMARY KEY, value TEXT, updated_at BIGINT)")
-        cur.execute(
-            "INSERT INTO ghost_v3_model(key,value,updated_at) VALUES(%s,%s,%s) "
-            "ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at",
-            ("model_cs_pooled", model_bytes, int(time.time())),
-        )
-        cur.execute(
-            "INSERT INTO ghost_v3_model(key,value,updated_at) VALUES(%s,%s,%s) "
-            "ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at",
-            ("meta_cs_pooled", meta_json, int(time.time())),
-        )
-    
-    return model, accuracy, passed
+    # Research modes deliberately never write ghost_v3_model. Their target and
+    # evidence contracts are not compatible with the directional TP/SL lane.
+    return model, accuracy, False
 
 
 def _train_volatility(symbols_and_types):
-    """Volatility regime training: per-symbol models predicting vol expansion.
+    """Run a read-only volatility-regime research experiment.
     
     Volatility clusters (GARCH effect) — it's more predictable than direction.
     Each symbol gets its own model predicting whether forward vol exceeds
     trailing vol. Natural win rate is ~55-65% due to vol persistence.
     """
     from xgboost import XGBClassifier
-    import pickle, base64, hashlib
     
     clear_ohlcv_cache()
     symbol_delay = _v3_train_symbol_delay_sec()
     active_cols = _active_feature_cols()
-    total_passed = 0
+    research_candidates = 0
     
     for idx, (symbol, asset_type) in enumerate(symbols_and_types):
         try:
@@ -2073,54 +1997,63 @@ def _train_volatility(symbols_and_types):
             )
             
             if accuracy >= _v3_min_holdout_acc() and edge >= _v3_min_edge():
-                model_bytes = base64.b64encode(pickle.dumps(model)).decode("utf-8")
-                model_sha = hashlib.sha256(model_bytes.encode()).hexdigest()
-                meta = {
-                    "trained_at": int(time.time()),
-                    "model_sha256": model_sha,
-                    "feature_schema": _v3_feature_schema(),
-                    "label_schema": _v3_label_schema(),
-                    "validation_schema": _v3_validation_schema(),
-                    "label_hold_bars": V3_LABEL_HOLD_BARS,
-                    "label_type": "volatility",
-                    "accuracy": round(accuracy, 4),
-                    "edge": round(edge, 4),
-                    "natural_rate": round(natural_rate, 4),
-                    "n_samples": n,
-                    "engine_version": "v3.2",
-                    "tier": "proven",
-                    "ensemble": False,
-                    "conformal_ok": False,
-                    "precision_gate": {"ok": False, "note": "volatility_regime"},
-                }
-                meta_json = json.dumps(meta)
-                _store_direction_model(symbol, "UP", model_bytes, meta_json)
-                total_passed += 1
+                research_candidates += 1
         except Exception as e:
             LOGGER.warning("Vol training %s: %s", symbol, str(e)[:80])
         if symbol_delay > 0 and idx + 1 < len(symbols_and_types):
             time.sleep(symbol_delay)
     
-    LOGGER.info(f"Vol training: {total_passed}/{len(symbols_and_types)} models passed")
-    return None, total_passed / max(len(symbols_and_types), 1), total_passed > 0
+    LOGGER.info(
+        "Volatility research: %s/%s candidates cleared exploratory floors; "
+        "no live models stored",
+        research_candidates,
+        len(symbols_and_types),
+    )
+    return None, research_candidates / max(len(symbols_and_types), 1), False
 
 
 def train_and_validate(symbols_and_types):
-    try:
-        import pickle, base64
-        from core.db import db_conn
-    except ImportError as e:
-        LOGGER.error("Missing dep: "+str(e)); return None, 0.0, False
-    
     label_type = _v3_label_type()
-    
-    # ── Volatility mode: per-symbol vol regime prediction ──────────
-    if label_type == "volatility":
-        return _train_volatility(symbols_and_types)
-    
-    # ── Cross-sectional mode: one pooled model ─────────────────────
-    if label_type == "cross_sectional":
-        return _train_cross_sectional(symbols_and_types)
+    if label_type != LIVE_LABEL_MODE:
+        reason = (
+            f"label mode {label_type!r} is research-only; live training requires "
+            f"V3_LABEL_TYPE={LIVE_LABEL_MODE}"
+        )
+        LOGGER.error(reason)
+        _persist_train_details([{
+            "symbol": "__SYSTEM__",
+            "passed": False,
+            "stage": "contract_guard",
+            "fail_reason": reason,
+        }])
+        return None, 0.0, False
+
+    from core.engine_config import (
+        _v3_intraday_features_enabled,
+        _v3_news_features_enabled,
+        _v3_options_features_enabled,
+    )
+    unsupported_features = [
+        name for name, enabled in (
+            ("news", _v3_news_features_enabled()),
+            ("options", _v3_options_features_enabled()),
+            ("intraday", _v3_intraday_features_enabled()),
+        )
+        if enabled
+    ]
+    if unsupported_features:
+        reason = (
+            "live training refused non-point-in-time feature groups: "
+            + ", ".join(unsupported_features)
+        )
+        LOGGER.error(reason)
+        _persist_train_details([{
+            "symbol": "__SYSTEM__",
+            "passed": False,
+            "stage": "feature_contract_guard",
+            "fail_reason": reason,
+        }])
+        return None, 0.0, False
     
     # ── Per-symbol mode (tp_sl or direction) ───────────────────────
     total_passed = 0
@@ -2476,7 +2409,9 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
     if up_model is None and down_model is None:
         return None, "no_model"
 
-    rows = _fetch_ohlcv(symbol, asset_type, period='5d', interval='1h')
+    # The deployed classifier is trained on daily bars. Keep serving on the
+    # same frequency; intraday specialists must use their own model contract.
+    rows = _fetch_ohlcv(symbol, asset_type, period='1y', interval='1d')
     if not rows or len(rows) < 30:
         return None, "intraday_data"
 
@@ -2507,7 +2442,7 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
 
     # P2 (audit): cross-sectional rank features — percentile within watchlist
     try:
-        from core.cross_sectional import compute_cross_sectional, CS_FEATURE_NAMES
+        from core.cross_sectional import compute_cross_sectional
         _all_sym_feats = getattr(predict_live_ex, '_last_scan_features', None)
         if _all_sym_feats and symbol in _all_sym_feats:
             cs = compute_cross_sectional(symbol, features, _all_sym_feats)
@@ -2516,7 +2451,7 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
     except Exception:
         note_suppressed()  # P3 (audit): macro regime features — VIX, yield curve, Fed rate, etc.
     try:
-        from core.macro_regime import get_macro_features, MACRO_FEATURE_NAMES
+        from core.macro_regime import get_macro_features
         macro = get_macro_features()
         for k, v in macro.items():
             features[k] = v
