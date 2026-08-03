@@ -1,0 +1,153 @@
+"""core/research_training.py — production-parity candidate training.
+
+Trains models using the same backtest_symbol, purged splits, walk-forward
+validation, calibration, ensemble, precision-gate, feature audit, and model
+serialization as production. Writes only immutable research artifacts — never
+touches ghost_v3_model, live predictions, shadow outcomes, wallets, or
+performance logs.
+
+The training function returns a candidate bundle (model bytes, metadata,
+proof) that the caller decides whether to register as a research artifact.
+"""
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+import logging
+import pickle
+import time
+from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
+
+LOGGER = logging.getLogger("ghost.research_training")
+
+
+def train_research_candidate(
+    symbol: str,
+    direction: str = "UP",
+    *,
+    asset_type: str = "stock",
+) -> Optional[Dict[str, Any]]:
+    """Train one candidate model using the production pipeline.
+
+    Returns a candidate bundle with model_bytes, model_sha256, artifact_sha,
+    metadata, and proof — or None if training fails any gate.
+
+    This function does NOT write to any database. The caller is responsible
+    for registering the artifact and persisting the model payload.
+    """
+    from core.signal_engine import (
+        backtest_symbol,
+        _active_feature_cols,
+        _train_one_direction,
+    )
+
+    direction = direction.upper()
+    if direction not in ("UP", "DOWN"):
+        LOGGER.warning("Invalid direction: %s", direction)
+        return None
+
+    # 1. Backtest to get labeled rows
+    up_rows, down_rows = backtest_symbol(symbol, asset_type)
+    rows = up_rows if direction == "UP" else down_rows
+    if not rows or len(rows) < 50:
+        LOGGER.warning("Insufficient rows for %s/%s: %s", symbol, direction, len(rows) if rows else 0)
+        return None
+
+    # 2. Get active feature columns
+    active_cols = _active_feature_cols()
+    if not active_cols:
+        LOGGER.warning("No active feature columns")
+        return None
+
+    # 3. Train using the production pipeline
+    try:
+        passed, detail, model_bytes, meta_json = _train_one_direction(
+            rows, symbol, direction, active_cols, [], False, {},
+        )
+    except Exception as e:
+        LOGGER.warning("Training failed for %s/%s: %s", symbol, direction, str(e)[:120])
+        return None
+
+    if not passed:
+        LOGGER.info("Training gate failed for %s/%s: %s",
+                     symbol, direction, detail.get("fail_reason", "unknown"))
+        return None
+
+    # 4. Compute model SHA-256 from raw bytes
+    model_sha256 = hashlib.sha256(model_bytes).hexdigest()
+
+    # 5. Parse metadata
+    meta = json.loads(meta_json) if isinstance(meta_json, str) else meta_json
+    feature_order = tuple(meta.get("feature_cols", active_cols))
+
+    # 6. Compute artifact package SHA
+    from core.research_artifacts import compute_artifact_sha
+    from core.signal_engine import (
+        _v3_feature_schema,
+        _v3_label_schema,
+        _v3_validation_schema,
+        V3_LABEL_HOLD_BARS,
+    )
+
+    precision_info = detail.get("precision_gate", {})
+    artifact_sha = compute_artifact_sha(
+        model_sha256=model_sha256,
+        contract_id="tp_sl_swing/v1",
+        direction=direction,
+        policy_lineage_id=f"{symbol}/{direction}",
+        policy_lineage_version=1,
+        feature_order=feature_order,
+        feature_schema=_v3_feature_schema(),
+        label_schema=_v3_label_schema(),
+        validation_schema=_v3_validation_schema(),
+        hold_bars=V3_LABEL_HOLD_BARS,
+        calibration_proof=precision_info if precision_info else None,
+        gate_proof=detail.get("holdout", {}),
+    )
+
+    # 7. Build candidate bundle
+    return {
+        "symbol": symbol,
+        "direction": direction,
+        "model_bytes": model_bytes,
+        "model_sha256": model_sha256,
+        "artifact_sha": artifact_sha,
+        "feature_order": feature_order,
+        "feature_schema": _v3_feature_schema(),
+        "label_schema": _v3_label_schema(),
+        "validation_schema": _v3_validation_schema(),
+        "hold_bars": V3_LABEL_HOLD_BARS,
+        "meta": meta,
+        "detail": detail,
+        "precision_gate": precision_info,
+        "holdout": detail.get("holdout", {}),
+        "trained_at": int(time.time()),
+    }
+
+
+def serialize_model_bytes(model) -> bytes:
+    """Serialize a fitted model to bytes using pickle protocol 5."""
+    return pickle.dumps(model, protocol=5)
+
+
+def encode_model_base64(model_bytes: bytes) -> str:
+    """Base64-encode model bytes for storage (matches production format)."""
+    return base64.b64encode(model_bytes).decode("ascii")
+
+
+def decode_model_base64(encoded: str) -> bytes:
+    """Base64-decode a stored model payload with validation."""
+    import binascii
+    try:
+        return base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as e:
+        raise ValueError(f"Invalid base64 model payload: {e}") from e
+
+
+def verify_model_sha256(model_bytes: bytes, expected_sha256: str) -> bool:
+    """Verify that raw model bytes match the expected SHA-256."""
+    actual = hashlib.sha256(model_bytes).hexdigest()
+    return actual == expected_sha256

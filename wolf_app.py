@@ -1514,6 +1514,32 @@ async def lifespan(app: FastAPI):
             LOGGER.warning("watcher snapshot job failed: %s", str(_e)[:100])
 
     scheduler.register("watcher", _watcher_job, interval_s=900)
+    # Research platform: isolated scoring and resolution (Phase 5-7).
+    # Writes only ghost_research_* tables. Never touches live models or picks.
+    from core.research_runner import run_research_cycle as _research_cycle
+
+    def _research_runner_job():
+        try:
+            _research_cycle()
+        except Exception as _e:
+            LOGGER.warning("research runner job failed: %s", str(_e)[:80])
+
+    scheduler.register("research_runner", _research_runner_job, interval_s=3600)
+    # Research outbox processor: idempotent post-resolution activation trigger.
+    from core.research_ledger import get_outbox_pending, mark_outbox_processed, mark_outbox_failed
+
+    def _research_outbox_job():
+        try:
+            pending = get_outbox_pending(limit=20)
+            for row in pending:
+                try:
+                    mark_outbox_processed(row["id"])
+                except Exception as _oe:
+                    mark_outbox_failed(row["id"], str(_oe)[:200])
+        except Exception as _e:
+            LOGGER.warning("research outbox job failed: %s", str(_e)[:80])
+
+    scheduler.register("research_outbox", _research_outbox_job, interval_s=60)
     # Daily report notebook — append-only observability snapshots answering
     # "what is Ghost doing and why?" Writes only ghost_daily_report_logs.
     from core.daily_report import snapshot_daily_report as _daily_report_snapshot
@@ -1975,6 +2001,13 @@ try:
     LOGGER.info("[INIT] Ghost MCP OAuth discovery loaded")
 except Exception as _oauth:
     LOGGER.warning(f"[INIT] MCP OAuth routes unavailable: {_oauth}")
+
+try:
+    from api.research_endpoints import router as research_router
+    APP.include_router(research_router)
+    LOGGER.info("[INIT] Research platform endpoints loaded at /api/research")
+except Exception as _re:
+    LOGGER.warning(f"[INIT] Research endpoints unavailable: {_re}")
 
 
 

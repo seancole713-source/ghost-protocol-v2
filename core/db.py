@@ -279,6 +279,13 @@ def _migrate_schema():
     except Exception as e:
         LOGGER.warning("Super Ghost data brain tables: " + str(e)[:80])
     try:
+        from core.research_schema import ensure_research_schema
+        with db_conn() as conn:
+            cur = conn.cursor()
+            ensure_research_schema(cur)
+    except Exception as e:
+        LOGGER.warning("Research schema: " + str(e)[:80])
+    try:
         from core.super_ghost_precision import ensure_precision_tables
         with db_conn() as conn:
             cur = conn.cursor()
