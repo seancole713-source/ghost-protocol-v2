@@ -289,25 +289,34 @@ async def research_platform_health():
                 health["tables"][table] = bool(row and row[0])
 
             # Pending prediction count
-            cur.execute(
-                "SELECT COUNT(*) FROM ghost_research_predictions p "
-                "LEFT JOIN ghost_research_resolutions r ON r.prediction_id = p.id "
-                "WHERE r.prediction_id IS NULL"
-            )
-            row = cur.fetchone()
-            health["stats"]["pending_predictions"] = int(row[0]) if row else 0
+            try:
+                cur.execute(
+                    "SELECT COUNT(*) FROM ghost_research_predictions p "
+                    "LEFT JOIN ghost_research_resolutions r ON r.prediction_id = p.id "
+                    "WHERE r.prediction_id IS NULL"
+                )
+                row = cur.fetchone()
+                health["stats"]["pending_predictions"] = int(row[0]) if row else 0
+            except Exception:
+                health["stats"]["pending_predictions"] = "table_not_ready"
 
             # Total resolved
-            cur.execute("SELECT COUNT(*) FROM ghost_research_resolutions")
-            row = cur.fetchone()
-            health["stats"]["total_resolved"] = int(row[0]) if row else 0
+            try:
+                cur.execute("SELECT COUNT(*) FROM ghost_research_resolutions")
+                row = cur.fetchone()
+                health["stats"]["total_resolved"] = int(row[0]) if row else 0
+            except Exception:
+                health["stats"]["total_resolved"] = "table_not_ready"
 
             # Active artifacts
-            cur.execute(
-                "SELECT COUNT(*) FROM ghost_research_artifacts WHERE status='ACTIVE'"
-            )
-            row = cur.fetchone()
-            health["stats"]["active_artifacts"] = int(row[0]) if row else 0
+            try:
+                cur.execute(
+                    "SELECT COUNT(*) FROM ghost_research_artifacts WHERE status='ACTIVE'"
+                )
+                row = cur.fetchone()
+                health["stats"]["active_artifacts"] = int(row[0]) if row else 0
+            except Exception:
+                health["stats"]["active_artifacts"] = "table_not_ready"
 
         return JSONResponse(content=health)
     except Exception as e:
