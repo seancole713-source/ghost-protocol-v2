@@ -78,7 +78,8 @@ def dispatch_message(message: JsonRpcMessage) -> Optional[JsonRpcResponse]:
         if not name or not isinstance(name, str):
             return _err(msg_id, -32602, "params.name required")
         try:
-            content = invoke_tool(name)
+            arguments = params.get("arguments") if isinstance(params.get("arguments"), dict) else {}
+            content = invoke_tool(name, arguments)
             text = json.dumps(content, default=str)
         except KeyError:
             return _err(msg_id, -32602, f"Unknown tool: {name}")

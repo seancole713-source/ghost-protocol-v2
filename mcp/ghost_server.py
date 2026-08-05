@@ -2,12 +2,18 @@
 
 The HTTP client layer is structurally GET-only: ``GhostMcpGetClient`` exposes
 only ``get()``; there are no post/put/delete methods.
+
+Phase 2 adds research-platform tools with typed input schemas and argument
+support so agents can inspect contracts, artifacts, proof status, activation
+history, and platform health.
 """
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, FrozenSet, Mapping
+from typing import Any, Callable, Dict, FrozenSet, List, Mapping, Optional
 
 ALLOWED_HTTP_METHOD = "GET"
+
+# ── Phase 1: operational tools (parameterless) ─────────────────────────────
 
 TOOL_TO_PATH: Mapping[str, str] = {
     "ghost_context": "/api/wolf/ask/context",
@@ -19,6 +25,108 @@ TOOL_TO_PATH: Mapping[str, str] = {
     "ghost_picks": "/api/picks",
     "ghost_symbol_universe": "/api/admin/symbol-universe",
     "ghost_shadow_stats": "/api/shadow-stats",
+}
+
+# ── Phase 2: research platform tools (with typed arguments) ────────────────
+
+RESEARCH_TOOLS: Mapping[str, Dict[str, Any]] = {
+    "ghost_research_contracts": {
+        "description": "List all registered research contracts with their proof targets, output domains, and lifecycle status.",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    "ghost_research_contract": {
+        "description": "Get one research contract by name and version, including full outcome domain, allowed sources, and proof configuration.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Contract name (e.g. tp_sl_swing)"},
+                "version": {"type": "string", "description": "Contract version (e.g. v1)", "default": "v1"},
+            },
+            "required": ["name"],
+            "additionalProperties": False,
+        },
+    },
+    "ghost_research_artifacts": {
+        "description": "List research artifacts (trained model packages), optionally filtered by contract_id and status. Each artifact includes its SHA-256 identity, training manifest, calibration proof, and gate proof.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "contract_id": {"type": "string", "description": "Filter by contract ID", "default": ""},
+                "status": {"type": "string", "description": "Filter by status (ACTIVE, SUPERSEDED, RETIRED)", "default": "ACTIVE"},
+                "limit": {"type": "integer", "description": "Max results", "default": 50},
+            },
+            "additionalProperties": False,
+        },
+    },
+    "ghost_research_artifact": {
+        "description": "Get one research artifact by its SHA-256 hash, including full lifecycle event history.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "artifact_sha": {"type": "string", "description": "SHA-256 hash of the artifact"},
+            },
+            "required": ["artifact_sha"],
+            "additionalProperties": False,
+        },
+    },
+    "ghost_research_proof": {
+        "description": "Get the forward proof status for a contract/artifact pair. Returns the fixed-50 confirmatory protocol results: actionable predictions, wins, losses, Wilson lower bound, secondary gate status, and whether the 70% precision threshold is met.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "contract_id": {"type": "string", "description": "Contract ID (e.g. tp_sl_swing_v1)"},
+                "artifact_sha": {"type": "string", "description": "SHA-256 hash of the artifact"},
+            },
+            "required": ["contract_id", "artifact_sha"],
+            "additionalProperties": False,
+        },
+    },
+    "ghost_research_predictions": {
+        "description": "List research predictions from the ledger, optionally filtered by contract, artifact, and resolution status.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "contract_id": {"type": "string", "description": "Filter by contract ID", "default": ""},
+                "artifact_sha": {"type": "string", "description": "Filter by artifact SHA", "default": ""},
+                "resolved": {"type": "boolean", "description": "Show resolved (true) or pending (false)", "default": True},
+                "limit": {"type": "integer", "description": "Max results", "default": 100},
+            },
+            "additionalProperties": False,
+        },
+    },
+    "ghost_research_activation_history": {
+        "description": "Get activation event history — when artifacts were activated, rolled back, or superseded. Optionally filtered by symbol and direction.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "description": "Filter by symbol (e.g. WOLF)", "default": ""},
+                "direction": {"type": "string", "description": "Filter by direction (UP/DOWN)", "default": ""},
+                "limit": {"type": "integer", "description": "Max results", "default": 50},
+            },
+            "additionalProperties": False,
+        },
+    },
+    "ghost_research_evidence_lease": {
+        "description": "Get the current evidence lease status for an artifact — whether old proven research can temporarily serve predictions while a new model is being validated.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "artifact_sha": {"type": "string", "description": "SHA-256 hash of the artifact"},
+                "symbol": {"type": "string", "description": "Symbol (e.g. WOLF)", "default": "WOLF"},
+                "direction": {"type": "string", "description": "Direction (UP/DOWN)", "default": "UP"},
+            },
+            "required": ["artifact_sha"],
+            "additionalProperties": False,
+        },
+    },
+    "ghost_research_health": {
+        "description": "Research platform health check — verifies all research tables exist, reports pending/invalid prediction rates, and lease state.",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    "ghost_research_status": {
+        "description": "Current research mode status — whether research picks are enabled, how many have been resolved, daily cap, stall status, and confidence floor.",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
 }
 
 ALLOWED_GET_PATHS: FrozenSet[str] = frozenset(TOOL_TO_PATH.values())
@@ -112,18 +220,257 @@ _PATH_HANDLERS: Mapping[str, Callable[[], Any]] = {
 _CLIENT = GhostMcpGetClient()
 
 
-def list_tools() -> list[Dict[str, str]]:
-    return [
-        {
+# ── Phase 2: research tool handlers ────────────────────────────────────────
+
+def _research_contracts(_args: Dict[str, Any]) -> Dict[str, Any]:
+    from core.research_contracts import list_contracts as _list
+    contracts = _list()
+    return {
+        "ok": True,
+        "contracts": [
+            {
+                "name": c.name,
+                "version": c.version,
+                "contract_id": c.contract_id(),
+                "description": c.description,
+                "output_domain": sorted(c.output_domain),
+                "horizon_bars": c.horizon_bars,
+                "live_eligible": c.live_eligible,
+                "lifecycle": c.lifecycle,
+                "resolver_id": c.resolver_id,
+                "proof": {
+                    "target_wilson_low": c.proof.target_wilson_low,
+                    "min_support": c.proof.min_support,
+                    "precision_applicable": c.proof.precision_applicable,
+                },
+            }
+            for c in contracts
+        ],
+    }
+
+
+def _research_contract(args: Dict[str, Any]) -> Dict[str, Any]:
+    from core.research_contracts import get_contract
+    name = args["name"]
+    version = args.get("version", "v1")
+    c = get_contract(name, version)
+    if not c:
+        return {"ok": False, "error": f"Contract not found: {name}/{version}"}
+    return {
+        "ok": True,
+        "contract": {
+            "name": c.name,
+            "version": c.version,
+            "contract_id": c.contract_id(),
+            "description": c.description,
+            "output_domain": sorted(c.output_domain),
+            "horizon_bars": c.horizon_bars,
+            "live_eligible": c.live_eligible,
+            "lifecycle": c.lifecycle,
+            "resolver_id": c.resolver_id,
+            "proof": {
+                "target_wilson_low": c.proof.target_wilson_low,
+                "min_support": c.proof.min_support,
+                "precision_applicable": c.proof.precision_applicable,
+            },
+        },
+    }
+
+
+def _research_artifacts(args: Dict[str, Any]) -> Dict[str, Any]:
+    from core.research_artifacts import list_artifacts
+    contract_id = args.get("contract_id") or None
+    status = args.get("status", "ACTIVE")
+    limit = int(args.get("limit", 50))
+    artifacts = list_artifacts(contract_id=contract_id, status=status)
+    return {
+        "ok": True,
+        "artifacts": [
+            {k: v for k, v in a.items() if k != "payload_bytes"}
+            for a in artifacts[:limit]
+        ],
+        "count": min(len(artifacts), limit),
+        "total": len(artifacts),
+    }
+
+
+def _research_artifact(args: Dict[str, Any]) -> Dict[str, Any]:
+    from core.research_artifacts import get_artifact, get_lifecycle_events
+    artifact_sha = args["artifact_sha"]
+    artifact = get_artifact(artifact_sha)
+    if not artifact:
+        return {"ok": False, "error": "Artifact not found"}
+    events = get_lifecycle_events(artifact_sha)
+    return {
+        "ok": True,
+        "artifact": {k: v for k, v in artifact.items() if k != "payload_bytes"},
+        "lifecycle_events": events,
+    }
+
+
+def _research_proof(args: Dict[str, Any]) -> Dict[str, Any]:
+    from core.research_forward import get_active_registrations, evaluate_forward_proof
+    from core.binomial_stats import V2_CONFIRMATORY_N, V2_MIN_WINS
+    contract_id = args["contract_id"]
+    artifact_sha = args["artifact_sha"]
+    registrations = get_active_registrations(status=None)
+    matching_reg = None
+    for reg in registrations:
+        if reg.get("contract_id") == contract_id and reg.get("artifact_sha") == artifact_sha:
+            matching_reg = reg
+            break
+    if not matching_reg:
+        return {
+            "ok": True,
+            "proof": None,
+            "note": "No forward registration found for this contract/artifact pair. Register a forward experiment first.",
+            "threshold": {
+                "confirmatory_n": V2_CONFIRMATORY_N,
+                "min_wins": V2_MIN_WINS,
+                "target_wilson_low": 0.70,
+            },
+        }
+    proof = evaluate_forward_proof(matching_reg["registration_id"])
+    return {
+        "ok": True,
+        "proof": proof,
+        "threshold": {
+            "confirmatory_n": V2_CONFIRMATORY_N,
+            "min_wins": V2_MIN_WINS,
+            "target_wilson_low": 0.70,
+        },
+    }
+
+
+def _research_predictions(args: Dict[str, Any]) -> Dict[str, Any]:
+    from core.research_ledger import get_resolved_predictions, get_pending_predictions
+    contract_id = args.get("contract_id") or None
+    artifact_sha = args.get("artifact_sha") or None
+    resolved = args.get("resolved", True)
+    limit = int(args.get("limit", 100))
+    if resolved:
+        rows = get_resolved_predictions(
+            contract_id=contract_id, artifact_sha=artifact_sha, limit=limit,
+        )
+    else:
+        rows = get_pending_predictions(contract_id=contract_id, limit=limit)
+    return {"ok": True, "predictions": rows, "count": len(rows), "resolved": resolved}
+
+
+def _research_activation_history(args: Dict[str, Any]) -> Dict[str, Any]:
+    from core.research_activation import get_activation_history
+    symbol = args.get("symbol") or None
+    direction = args.get("direction") or None
+    limit = int(args.get("limit", 50))
+    history = get_activation_history(symbol=symbol, direction=direction, limit=limit)
+    return {"ok": True, "events": history, "count": len(history)}
+
+
+def _research_evidence_lease(args: Dict[str, Any]) -> Dict[str, Any]:
+    from core.research_activation import compute_evidence_lease
+    artifact_sha = args["artifact_sha"]
+    symbol = args.get("symbol", "WOLF").upper()
+    direction = args.get("direction", "UP").upper()
+    lease = compute_evidence_lease(
+        artifact_sha=artifact_sha, symbol=symbol, direction=direction,
+    )
+    return {"ok": True, "lease": lease}
+
+
+def _research_health(_args: Dict[str, Any]) -> Dict[str, Any]:
+    from core.db import db_conn
+    health: Dict[str, Any] = {"ok": False, "tables": {}, "stats": {}}
+    all_tables_present = True
+    with db_conn() as conn:
+        cur = conn.cursor()
+        for table in (
+            "ghost_research_artifacts",
+            "ghost_research_predictions",
+            "ghost_research_resolutions",
+            "ghost_research_registrations",
+            "ghost_research_activation_log",
+        ):
+            cur.execute(
+                "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name=%s)",
+                (table,),
+            )
+            row = cur.fetchone()
+            present = bool(row and row[0])
+            health["tables"][table] = present
+            if not present:
+                all_tables_present = False
+        try:
+            cur.execute(
+                "SELECT COUNT(*) FROM ghost_research_predictions p "
+                "LEFT JOIN ghost_research_resolutions r ON r.prediction_id = p.id "
+                "WHERE r.prediction_id IS NULL"
+            )
+            row = cur.fetchone()
+            health["stats"]["pending_predictions"] = int(row[0]) if row else 0
+        except Exception:
+            health["stats"]["pending_predictions"] = "table_not_ready"
+            all_tables_present = False
+        try:
+            cur.execute("SELECT COUNT(*) FROM ghost_research_resolutions")
+            row = cur.fetchone()
+            health["stats"]["total_resolved"] = int(row[0]) if row else 0
+        except Exception:
+            health["stats"]["total_resolved"] = "table_not_ready"
+        try:
+            cur.execute(
+                "SELECT COUNT(*) FROM ghost_research_artifacts WHERE status='ACTIVE'"
+            )
+            row = cur.fetchone()
+            health["stats"]["active_artifacts"] = int(row[0]) if row else 0
+        except Exception:
+            health["stats"]["active_artifacts"] = "table_not_ready"
+    health["ok"] = all_tables_present
+    return health
+
+
+def _research_status(_args: Dict[str, Any]) -> Dict[str, Any]:
+    from core.prediction import research_mode_state
+    state = research_mode_state()
+    return {"ok": True, **state}
+
+
+_RESEARCH_HANDLERS: Mapping[str, Callable[[Dict[str, Any]], Any]] = {
+    "ghost_research_contracts": _research_contracts,
+    "ghost_research_contract": _research_contract,
+    "ghost_research_artifacts": _research_artifacts,
+    "ghost_research_artifact": _research_artifact,
+    "ghost_research_proof": _research_proof,
+    "ghost_research_predictions": _research_predictions,
+    "ghost_research_activation_history": _research_activation_history,
+    "ghost_research_evidence_lease": _research_evidence_lease,
+    "ghost_research_health": _research_health,
+    "ghost_research_status": _research_status,
+}
+
+
+# ── tool listing & invocation ───────────────────────────────────────────────
+
+
+def list_tools() -> list[Dict[str, Any]]:
+    tools: list[Dict[str, Any]] = []
+    for name, path in TOOL_TO_PATH.items():
+        tools.append({
             "name": name,
             "description": f"GET {path} — read-only Ghost state",
             "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
-        }
-        for name, path in TOOL_TO_PATH.items()
-    ]
+        })
+    for name, meta in RESEARCH_TOOLS.items():
+        tools.append({
+            "name": name,
+            "description": meta["description"],
+            "inputSchema": meta["inputSchema"],
+        })
+    return tools
 
 
-def invoke_tool(name: str) -> Any:
-    if name not in TOOL_TO_PATH:
-        raise KeyError(f"Unknown MCP tool: {name!r}")
-    return _CLIENT.get(TOOL_TO_PATH[name])
+def invoke_tool(name: str, arguments: Optional[Dict[str, Any]] = None) -> Any:
+    if name in TOOL_TO_PATH:
+        return _CLIENT.get(TOOL_TO_PATH[name])
+    if name in _RESEARCH_HANDLERS:
+        return _RESEARCH_HANDLERS[name](arguments or {})
+    raise KeyError(f"Unknown MCP tool: {name!r}")
