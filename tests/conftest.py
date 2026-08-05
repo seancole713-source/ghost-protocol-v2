@@ -7,6 +7,66 @@ import pytest
 os.environ.setdefault("GHOST_ALLOW_ENV_WATCHLIST", "1")
 
 
+def _integration_enabled():
+    return bool(os.getenv("TEST_DATABASE_URL")) and os.getenv(
+        "GHOST_INTEGRATION_TESTS", "0",
+    ) in ("1", "true", "TRUE")
+
+
+if _integration_enabled():
+    # prediction_filters freezes its SQL fragments at import time.
+    os.environ.setdefault("WATCHLIST_FILTER_ENABLED", "0")
+
+
+@pytest.fixture(scope="session")
+def _integration_database_session():
+    if not _integration_enabled():
+        pytest.skip(
+            "Integration DB tests disabled. Set TEST_DATABASE_URL and "
+            "GHOST_INTEGRATION_TESTS=1.",
+        )
+
+    from core import db as core_db
+
+    test_dsn = os.environ["TEST_DATABASE_URL"]
+    previous_dsn = os.environ.get("DATABASE_URL")
+    try:
+        if core_db._pool:
+            core_db._pool.closeall()
+    except Exception:
+        pass
+    core_db._pool = None
+    os.environ["DATABASE_URL"] = test_dsn
+    core_db.init_db()
+    try:
+        yield
+    finally:
+        try:
+            if core_db._pool:
+                core_db._pool.closeall()
+        finally:
+            core_db._pool = None
+            if previous_dsn is None:
+                os.environ.pop("DATABASE_URL", None)
+            else:
+                os.environ["DATABASE_URL"] = previous_dsn
+
+
+@pytest.fixture(autouse=True)
+def _integration_database_for_marked_test(request, monkeypatch):
+    if request.node.get_closest_marker("integration") is not None:
+        request.getfixturevalue("_integration_database_session")
+        monkeypatch.setenv("GHOST_TEST_MODE", "1")
+        monkeypatch.setenv("GHOST_MCP_TOKEN", "itest-token")
+        monkeypatch.setenv("WATCHLIST_FILTER_ENABLED", "0")
+    yield
+
+
+@pytest.fixture
+def integration_db(request):
+    request.getfixturevalue("_integration_database_session")
+
+
 @pytest.fixture(autouse=True)
 def _clear_module_caches():
     """Module-level caches (model cache, login throttle) must not leak state

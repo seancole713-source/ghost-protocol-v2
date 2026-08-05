@@ -224,7 +224,7 @@ def _kill_symbol_universe() -> List[str]:
 _ENGINE_PAUSE_KEYS = (
     "engine_paused", "engine_pause_reason", "engine_pause_ts",
     "engine_pause_auto_resume_at", "engine_pause_alerted",
-    "engine_pause_grace_until",
+    "engine_pause_grace_until", "engine_pause_latched",
 )
 
 
@@ -257,6 +257,7 @@ def _parse_engine_pause_state(st: Dict[str, Any]) -> Dict[str, Any]:
         "reason": st.get("engine_pause_reason") or "",
         "since": int(st["engine_pause_ts"]) if st.get("engine_pause_ts") else None,
         "auto_resume_at": int(auto) if auto else None,
+        "latched": st.get("engine_pause_latched") == "1",
     }
 
 
@@ -464,6 +465,8 @@ def enforce_kill_conditions() -> Dict[str, Any]:
     if not tripped:
         prev = engine_pause_state()
         if prev.get("paused"):
+            if prev.get("latched"):
+                return prev
             _clear_engine_pause()
             LOGGER.info("Kill conditions cleared — engine auto-resumed")
             return {"paused": False, "cleared": True}
@@ -508,6 +511,13 @@ def enforce_kill_conditions() -> Dict[str, Any]:
                     "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val", (str(auto_resume_at),))
             else:
                 cur.execute("DELETE FROM ghost_state WHERE key='engine_pause_auto_resume_at'")
+            if cooldown_only:
+                cur.execute("DELETE FROM ghost_state WHERE key='engine_pause_latched'")
+            else:
+                cur.execute(
+                    "INSERT INTO ghost_state(key,val) VALUES('engine_pause_latched','1') "
+                    "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val"
+                )
     except Exception as e:
         LOGGER.error("engine pause write failed: " + str(e)[:80])
 
@@ -735,6 +745,12 @@ def _direction_aliases(direction: str) -> Tuple[str, ...]:
     return ("DOWN", "SELL")
 
 
+def _relation_exists(cur, relation: str) -> bool:
+    cur.execute("SELECT to_regclass(%s)", (relation,))
+    row = cur.fetchone()
+    return bool(row and row[0])
+
+
 def _objective_symbol_stats(symbol: str, direction: str) -> Dict[str, Any]:
     """
     Blend recent v2 outcomes + legacy outcomes to estimate direction precision.
@@ -757,18 +773,20 @@ def _objective_symbol_stats(symbol: str, direction: str) -> Dict[str, Any]:
         )
         v2_total, v2_wins = cur.fetchone() or (0, 0)
 
-        cur.execute(
-            """
-            SELECT COUNT(*), COALESCE(SUM(CASE WHEN hit_direction=1 THEN 1 ELSE 0 END), 0)
-            FROM ghost_prediction_outcomes
-            WHERE symbol=%s
-              AND predicted_direction = %s
-              AND hit_direction IN (0,1)
-              AND EXTRACT(EPOCH FROM created_at)::BIGINT >= %s
-            """,
-            (symbol, "UP" if aliases[0] in ("UP", "BUY") else "DOWN", cutoff),
-        )
-        gpo_total, gpo_wins = cur.fetchone() or (0, 0)
+        gpo_total, gpo_wins = 0, 0
+        if _relation_exists(cur, "ghost_prediction_outcomes"):
+            cur.execute(
+                """
+                SELECT COUNT(*), COALESCE(SUM(CASE WHEN hit_direction=1 THEN 1 ELSE 0 END), 0)
+                FROM ghost_prediction_outcomes
+                WHERE symbol=%s
+                  AND predicted_direction = %s
+                  AND hit_direction IN (0,1)
+                  AND EXTRACT(EPOCH FROM created_at)::BIGINT >= %s
+                """,
+                (symbol, "UP" if aliases[0] in ("UP", "BUY") else "DOWN", cutoff),
+            )
+            gpo_total, gpo_wins = cur.fetchone() or (0, 0)
 
     v2_total = int(v2_total or 0)
     v2_wins = int(v2_wins or 0)
@@ -1023,13 +1041,14 @@ def _legacy_signal(symbol, current_price):
                 (symbol,))
             v2_rows = cur.fetchall()
             # Legacy ghost_prediction_outcomes
-            cur.execute("""
-                SELECT predicted_direction, hit_direction
-                FROM ghost_prediction_outcomes
-                WHERE symbol = %s AND hit_direction IN (0, 1)
-                ORDER BY id DESC LIMIT 100
-            """, (symbol,))
-            rows = cur.fetchall()
+            if _relation_exists(cur, "ghost_prediction_outcomes"):
+                cur.execute("""
+                    SELECT predicted_direction, hit_direction
+                    FROM ghost_prediction_outcomes
+                    WHERE symbol = %s AND hit_direction IN (0, 1)
+                    ORDER BY id DESC LIMIT 100
+                """, (symbol,))
+                rows = cur.fetchall()
     except Exception as e:
         LOGGER.warning("signal query failed for " + symbol + ": " + str(e))
         return None
@@ -1041,13 +1060,16 @@ def _legacy_signal(symbol, current_price):
             try:
                 with db_conn() as conn2:
                     cur2 = conn2.cursor()
-                    cur2.execute(
-                        "SELECT COUNT(*), SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) FROM ghost_prediction_outcomes WHERE symbol=%s AND hit_direction IN (0,1)",
-                        (symbol,))
-                    r = cur2.fetchone()
-                    gpo_total = r[0] or 0
-                    gpo_wins  = r[1] or 0
-                    gpo_wr = gpo_wins / gpo_total if gpo_total > 0 else 0
+                    if _relation_exists(cur2, "ghost_prediction_outcomes"):
+                        cur2.execute(
+                            "SELECT COUNT(*), SUM(CASE WHEN hit_direction=1 THEN 1 ELSE 0 END) FROM ghost_prediction_outcomes WHERE symbol=%s AND hit_direction IN (0,1)",
+                            (symbol,))
+                        r = cur2.fetchone()
+                        gpo_total = r[0] or 0
+                        gpo_wins = r[1] or 0
+                        gpo_wr = gpo_wins / gpo_total if gpo_total > 0 else 0
+                    else:
+                        gpo_wr = 0
             except Exception:
                 gpo_wr = 0
             if gpo_wr <= 0.60:
@@ -1767,17 +1789,19 @@ def get_objective_status() -> Dict[str, Any]:
         )
         v2_total, v2_wins = cur.fetchone() or (0, 0)
 
-        cur.execute(
-            """
-            SELECT COUNT(*), COALESCE(SUM(CASE WHEN hit_direction=1 THEN 1 ELSE 0 END), 0)
-            FROM ghost_prediction_outcomes
-            WHERE predicted_direction='UP'
-              AND hit_direction IN (0,1)
-              AND EXTRACT(EPOCH FROM created_at)::BIGINT >= %s
-            """,
-            (cutoff,),
-        )
-        gpo_total, gpo_wins = cur.fetchone() or (0, 0)
+        gpo_total, gpo_wins = 0, 0
+        if _relation_exists(cur, "ghost_prediction_outcomes"):
+            cur.execute(
+                """
+                SELECT COUNT(*), COALESCE(SUM(CASE WHEN hit_direction=1 THEN 1 ELSE 0 END), 0)
+                FROM ghost_prediction_outcomes
+                WHERE predicted_direction='UP'
+                  AND hit_direction IN (0,1)
+                  AND EXTRACT(EPOCH FROM created_at)::BIGINT >= %s
+                """,
+                (cutoff,),
+            )
+            gpo_total, gpo_wins = cur.fetchone() or (0, 0)
 
         cur.execute(
             """

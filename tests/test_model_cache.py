@@ -65,6 +65,40 @@ class _CountingDb:
         return _Ctx()
 
 
+class _ActivationDb(_CountingDb):
+    def __init__(self, rows, activation_row):
+        super().__init__(rows)
+        self.activation_row = activation_row
+
+    def make_ctx(self):
+        db = self
+
+        class _Cur:
+            def execute(self, sql, params=None):
+                db.selects += 1
+                self._activation_query = "ghost_research_activation_log" in sql
+                self._key = params[0] if params and not self._activation_query else None
+
+            def fetchone(self):
+                if self._activation_query:
+                    return db.activation_row
+                val = db.rows.get(self._key)
+                return (val,) if val is not None else None
+
+        class _Conn:
+            def cursor(self):
+                return _Cur()
+
+        class _Ctx:
+            def __enter__(self):
+                return _Conn()
+
+            def __exit__(self, *a):
+                return False
+
+        return _Ctx()
+
+
 def _patch_db(monkeypatch, db):
     import core.db as _db
     monkeypatch.setattr(_db, "db_conn", lambda: db.make_ctx())
@@ -136,3 +170,45 @@ def test_cached_model_still_respects_serve_guard(monkeypatch):
     meta1["trained_at"] = int(time.time()) - 15 * 86400
     m2, _, _ = _se.load_model("WOLF", "UP")
     assert m2 is None
+
+
+def test_cached_activated_model_requires_latest_activation_event(monkeypatch):
+    monkeypatch.setenv("V3_MODEL_CACHE_TTL_S", "3600")
+    rows = _make_rows()
+    now = int(time.time())
+    artifact_sha = "b" * 64
+    registration_id = "registration"
+    lease_expires_at = now + 3600
+    proof = {
+        "registration_id": registration_id,
+        "wins": 42,
+        "n": 50,
+        "status": "PROVEN",
+        "persisted_status": "PROVEN",
+        "closed_at_ts": now - 120,
+        "all_secondary_pass": True,
+    }
+    meta = json.loads(rows["meta_WOLF_up"])
+    meta.update({
+        "trained_at": now - 30 * 86400,
+        "activation_artifact_sha": artifact_sha,
+        "activated_at": now - 60,
+        "activation_lease_expires_at": lease_expires_at,
+        "activation_proof": proof,
+    })
+    rows["meta_WOLF_up"] = json.dumps(meta)
+    activation_row = (
+        "ACTIVATED", artifact_sha, registration_id, lease_expires_at,
+        now - 60, proof,
+    )
+    db = _ActivationDb(rows, activation_row)
+    _patch_db(monkeypatch, db)
+
+    _se.invalidate_model_cache()
+    model, _, _ = _se.load_model("WOLF", "UP")
+    assert model is not None
+
+    db.activation_row = (
+        "ROLLED_BACK", artifact_sha, None, None, now, None,
+    )
+    assert _se.load_model("WOLF", "UP") == (None, None, None)

@@ -17,9 +17,7 @@ import json
 import logging
 import pickle
 import time
-from typing import Any, Dict, List, Optional, Tuple
-
-import numpy as np
+from typing import Any, Dict, Optional
 
 LOGGER = logging.getLogger("ghost.research_training")
 
@@ -77,14 +75,18 @@ def train_research_candidate(
         return None
 
     # 4. Compute model SHA-256 from raw bytes
-    model_sha256 = hashlib.sha256(model_bytes).hexdigest()
+    # model_bytes is a base64-encoded string from _train_one_direction.
+    # Hash the raw bytes, not the base64 string.
+    raw_model_bytes = base64.b64decode(model_bytes, validate=True)
+    model_sha256 = hashlib.sha256(raw_model_bytes).hexdigest()
 
     # 5. Parse metadata
     meta = json.loads(meta_json) if isinstance(meta_json, str) else meta_json
     feature_order = tuple(meta.get("feature_cols", active_cols))
 
-    # 6. Compute artifact package SHA
+    # 6. Compute artifact package SHA using the canonical contract ID
     from core.research_artifacts import compute_artifact_sha
+    from core.research_contracts import get_contract
     from core.signal_engine import (
         _v3_feature_schema,
         _v3_label_schema,
@@ -92,10 +94,38 @@ def train_research_candidate(
         V3_LABEL_HOLD_BARS,
     )
 
-    precision_info = detail.get("precision_gate", {})
+    # Resolve the canonical contract SHA for tp_sl_swing/v1
+    contract = get_contract("tp_sl_swing", "v1")
+    contract_id = contract.contract_id() if contract else "tp_sl_swing/v1"
+    try:
+        trained_at = int(float(meta["trained_at"]))
+    except (KeyError, TypeError, ValueError, OverflowError):
+        trained_at = int(time.time())
+
+    calibration = detail.get("calibration")
+    if not isinstance(calibration, dict):
+        calibration = {}
+    precision_info = calibration.get("precision_gate")
+    if not isinstance(precision_info, dict):
+        precision_info = {}
+    feature_inversions = sorted({
+        str(value) for value in (meta.get("feature_inversions") or ())
+        if str(value) in feature_order
+    })
+    gate_proof = {
+        key: detail.get(key)
+        for key in (
+            "holdout_acc", "edge", "natural_rate", "no_skill_accuracy",
+            "wf_fold_count", "wf_acc_mean", "wf_acc_min",
+            "wf_edge_mean", "wf_edge_min",
+        )
+    }
+    gate_proof["gate_brier"] = calibration.get("gate_brier")
+    gate_proof["gate_n"] = calibration.get("gate_n")
+    gate_proof["feature_inversions"] = feature_inversions
     artifact_sha = compute_artifact_sha(
         model_sha256=model_sha256,
-        contract_id="tp_sl_swing/v1",
+        contract_id=contract_id,
         direction=direction,
         policy_lineage_id=f"{symbol}/{direction}",
         policy_lineage_version=1,
@@ -104,8 +134,10 @@ def train_research_candidate(
         label_schema=_v3_label_schema(),
         validation_schema=_v3_validation_schema(),
         hold_bars=V3_LABEL_HOLD_BARS,
-        calibration_proof=precision_info if precision_info else None,
-        gate_proof=detail.get("holdout", {}),
+        calibration_proof=precision_info,
+        gate_proof=gate_proof,
+        symbol_scope=(symbol.upper(),),
+        trained_at=trained_at,
     )
 
     # 7. Build candidate bundle
@@ -122,9 +154,10 @@ def train_research_candidate(
         "hold_bars": V3_LABEL_HOLD_BARS,
         "meta": meta,
         "detail": detail,
+        "calibration_proof": precision_info,
         "precision_gate": precision_info,
-        "holdout": detail.get("holdout", {}),
-        "trained_at": int(time.time()),
+        "holdout": gate_proof,
+        "trained_at": trained_at,
     }
 
 

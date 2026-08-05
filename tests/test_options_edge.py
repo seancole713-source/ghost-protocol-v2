@@ -18,6 +18,17 @@ def _rows(spec):
     return out
 
 
+def _directional_rows(direction, pcr, wins, losses, *, trade_date="2026-07-28"):
+    common = {
+        "direction": direction, "pcr": pcr, "trade_date": trade_date,
+        "symbol": "STUB", "model_sha256": "a" * 64,
+        "feature_schema": "feature-v1", "label_schema": "label-v1",
+        "validation_schema": "validation-v1", "hold_bars": 5,
+    }
+    return ([{**common, "outcome": "WIN"} for _ in range(wins)]
+            + [{**common, "outcome": "LOSS"} for _ in range(losses)])
+
+
 class TestBucketing:
     def test_bucket_boundaries(self):
         assert oe._bucket_for(0.4) == "<0.5"
@@ -59,13 +70,83 @@ class TestSummarize:
         b = next(x for x in r["buckets"] if x["pcr_bucket"] == "<0.5")
         assert b["n"] == 20 and b["wins"] == 10  # expired in denominator, not a win
 
+    def test_directional_family_is_fixed_and_does_not_pool_directions(self):
+        rows = _directional_rows("UP", 0.4, 90, 10)
+        rows += _directional_rows("DOWN", 0.4, 10, 90)
+        result = oe.summarize_directional_pcr_edge(rows)
+
+        assert result["family_size"] == 10
+        by_cell = {
+            (cell["direction"], cell["pcr_bucket"]): cell
+            for cell in result["cells"]
+        }
+        assert by_cell[("UP", "<0.5")]["win_rate"] == 0.9
+        assert by_cell[("DOWN", "<0.5")]["win_rate"] == 0.1
+
+    def test_directional_candidate_is_not_labeled_forward_proof(self):
+        result = oe.summarize_directional_pcr_edge(
+            _directional_rows("UP", 0.4, 190, 10)
+        )
+
+        assert result["status"] == "QUALIFIED_DISCOVERY_CANDIDATE"
+        assert "forward" in result["note"]
+        assert "proof" in result["note"]
+
+    def test_mixed_model_generations_cannot_qualify(self):
+        rows = _directional_rows("UP", 0.4, 190, 10)
+        for row in rows[100:]:
+            row["model_sha256"] = "b" * 64
+
+        result = oe.summarize_directional_pcr_edge(rows)
+        cell = next(
+            item for item in result["cells"]
+            if item["direction"] == "UP" and item["pcr_bucket"] == "<0.5"
+        )
+
+        assert cell["family_wilson_low"] >= 0.70
+        assert cell["distinct_model_generations"] == 2
+        assert cell["identity_homogeneous"] is False
+        assert cell["qualified_discovery_candidate"] is False
+        assert result["status"] == "NO_QUALIFIED_DIRECTIONAL_CELL"
+
 
 class TestLiveWrappers:
+    def test_loader_excludes_snapshots_recorded_after_evaluation(self, monkeypatch):
+        executed = {}
+
+        class _Cursor:
+            def execute(self, sql, params=None):
+                executed["sql"] = sql
+                executed["params"] = params
+
+            def fetchall(self):
+                return []
+
+        class _Connection:
+            def cursor(self):
+                return _Cursor()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        monkeypatch.setattr("core.db.db_conn", lambda: _Connection())
+
+        assert oe.load_paired_rows() == []
+        assert "ts <= s.eval_ts" in executed["sql"]
+        assert "JOIN LATERAL" in executed["sql"]
+        assert "EXTRACT(ISODOW" in executed["sql"]
+        assert "s.model_sha256 IS NOT NULL" in executed["sql"]
+        assert executed["params"][0] == oe.MAX_SNAPSHOT_AGE_S
+
     def test_edge_insufficient_when_thin(self, monkeypatch):
         monkeypatch.setattr(oe, "load_paired_rows",
                             lambda days=60, limit=50000: _rows([(0.4, 5, 5)]))
         monkeypatch.setattr(oe, "options_pcr_readiness",
-                            lambda days=60: {"distinct_days": 1, "paired_with_outcomes": 10})
+                            lambda days=60: {"paired_distinct_days": 1,
+                                             "paired_with_outcomes": 10})
         out = oe.options_pcr_edge()
         assert out["sufficient_data"] is False   # provisional until data accrues
         assert out["result"]["total_paired"] == 10

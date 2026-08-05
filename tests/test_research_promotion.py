@@ -3,7 +3,6 @@ import pytest
 from core.research_promotion import (
     review_promotion,
     PromotionReview,
-    DEFAULT_REQUIREMENTS,
 )
 
 

@@ -8,6 +8,8 @@ explicit activation.
 from __future__ import annotations
 
 import hashlib
+import base64
+import binascii
 import json
 import logging
 import time
@@ -42,12 +44,24 @@ class ArtifactMeta:
     retirement_reason: str = ""
 
     def __post_init__(self):
-        if not self.artifact_sha or len(self.artifact_sha) != 64:
+        if (
+            len(self.artifact_sha) != 64
+            or any(ch not in "0123456789abcdef" for ch in self.artifact_sha.lower())
+        ):
             raise ValueError("artifact_sha must be a 64-char hex string")
         if not self.contract_id:
             raise ValueError("contract_id is required")
         if self.policy_lineage_version < 1:
             raise ValueError("policy_lineage_version must be >= 1")
+        scope = {
+            str(symbol).strip().upper()
+            for symbol in self.symbol_scope
+            if str(symbol).strip()
+        }
+        if not scope:
+            raise ValueError("symbol_scope is required")
+        if "__UNIVERSE__" in scope and scope != {"__UNIVERSE__"}:
+            raise ValueError("__UNIVERSE__ must be the only symbol_scope value")
 
 
 @dataclass(frozen=True)
@@ -67,6 +81,7 @@ def ensure_research_artifact_tables(cur) -> None:
     cur.execute("""
         CREATE TABLE IF NOT EXISTS ghost_research_artifacts (
             artifact_sha TEXT PRIMARY KEY,
+            model_sha256 TEXT NOT NULL DEFAULT '',
             contract_id TEXT NOT NULL,
             policy_lineage_id TEXT NOT NULL,
             policy_lineage_version INT NOT NULL,
@@ -88,6 +103,10 @@ def ensure_research_artifact_tables(cur) -> None:
             retirement_reason TEXT DEFAULT ''
         )
     """)
+    cur.execute(
+        "ALTER TABLE ghost_research_artifacts "
+        "ADD COLUMN IF NOT EXISTS model_sha256 TEXT NOT NULL DEFAULT ''"
+    )
     cur.execute("""
         CREATE TABLE IF NOT EXISTS ghost_research_artifact_events (
             id SERIAL PRIMARY KEY,
@@ -136,19 +155,42 @@ def register_artifact(
 
 def _register_artifact_impl(cur, meta: ArtifactMeta, payload_bytes: str) -> bool:
     now = int(time.time())
+    trained_at = meta.trained_at or now
+    model_sha256 = compute_payload_model_sha256(payload_bytes) if payload_bytes else ""
+    if payload_bytes:
+        expected_artifact_sha = compute_artifact_sha(
+            model_sha256=model_sha256,
+            contract_id=meta.contract_id,
+            direction=_single_output(meta.output_domain),
+            policy_lineage_id=meta.policy_lineage_id,
+            policy_lineage_version=meta.policy_lineage_version,
+            feature_order=meta.feature_order,
+            feature_schema=meta.feature_schema,
+            label_schema=meta.evidence_schema,
+            validation_schema=meta.validation_schema,
+            hold_bars=meta.horizon_bars,
+            training_manifest_sha=meta.training_manifest_sha,
+            calibration_proof=meta.calibration_proof,
+            gate_proof=meta.gate_proof,
+            symbol_scope=meta.symbol_scope,
+            trained_at=trained_at,
+        )
+        if expected_artifact_sha != meta.artifact_sha:
+            raise ValueError("artifact_sha_package_mismatch")
     cur.execute(
         """
         INSERT INTO ghost_research_artifacts
-            (artifact_sha, contract_id, policy_lineage_id, policy_lineage_version,
+            (artifact_sha, model_sha256, contract_id, policy_lineage_id, policy_lineage_version,
              symbol_scope, output_domain, feature_schema, evidence_schema,
              validation_schema, horizon_bars, training_manifest_sha,
              calibration_proof, gate_proof, feature_order, payload_bytes,
              created_at, trained_at, status)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         ON CONFLICT (artifact_sha) DO NOTHING
         """,
         (
             meta.artifact_sha,
+            model_sha256,
             meta.contract_id,
             meta.policy_lineage_id,
             meta.policy_lineage_version,
@@ -164,7 +206,7 @@ def _register_artifact_impl(cur, meta: ArtifactMeta, payload_bytes: str) -> bool
             json.dumps(list(meta.feature_order)),
             payload_bytes or None,
             now,
-            meta.trained_at or now,
+            trained_at,
             meta.status,
         ),
     )
@@ -241,7 +283,7 @@ def get_artifact(artifact_sha: str, cur=None) -> Optional[Dict[str, Any]]:
 def _get_artifact_impl(cur, artifact_sha: str) -> Optional[Dict[str, Any]]:
     cur.execute(
         """
-        SELECT artifact_sha, contract_id, policy_lineage_id, policy_lineage_version,
+        SELECT artifact_sha, model_sha256, contract_id, policy_lineage_id, policy_lineage_version,
                symbol_scope, output_domain, feature_schema, evidence_schema,
                validation_schema, horizon_bars, training_manifest_sha,
                calibration_proof, gate_proof, feature_order, payload_bytes,
@@ -256,25 +298,26 @@ def _get_artifact_impl(cur, artifact_sha: str) -> Optional[Dict[str, Any]]:
         return None
     return {
         "artifact_sha": row[0],
-        "contract_id": row[1],
-        "policy_lineage_id": row[2],
-        "policy_lineage_version": row[3],
-        "symbol_scope": tuple(json.loads(row[4]) if isinstance(row[4], str) else row[4]),
-        "output_domain": tuple(json.loads(row[5]) if isinstance(row[5], str) else row[5]),
-        "feature_schema": row[6],
-        "evidence_schema": row[7],
-        "validation_schema": row[8],
-        "horizon_bars": row[9],
-        "training_manifest_sha": row[10],
-        "calibration_proof": _coerce_json(row[11]),
-        "gate_proof": _coerce_json(row[12]),
-        "feature_order": tuple(json.loads(row[13]) if isinstance(row[13], str) else row[13]),
-        "payload_bytes": row[14],
-        "created_at": row[15],
-        "trained_at": row[16],
-        "status": row[17],
-        "retired_at": row[18],
-        "retirement_reason": row[19],
+        "model_sha256": row[1] or "",
+        "contract_id": row[2],
+        "policy_lineage_id": row[3],
+        "policy_lineage_version": row[4],
+        "symbol_scope": tuple(json.loads(row[5]) if isinstance(row[5], str) else row[5]),
+        "output_domain": tuple(json.loads(row[6]) if isinstance(row[6], str) else row[6]),
+        "feature_schema": row[7],
+        "evidence_schema": row[8],
+        "validation_schema": row[9],
+        "horizon_bars": row[10],
+        "training_manifest_sha": row[11],
+        "calibration_proof": _coerce_json(row[12]),
+        "gate_proof": _coerce_json(row[13]),
+        "feature_order": tuple(json.loads(row[14]) if isinstance(row[14], str) else row[14]),
+        "payload_bytes": row[15],
+        "created_at": row[16],
+        "trained_at": row[17],
+        "status": row[18],
+        "retired_at": row[19],
+        "retirement_reason": row[20],
     }
 
 
@@ -392,6 +435,8 @@ def compute_artifact_sha(
     training_manifest_sha: str = "",
     calibration_proof: Optional[Dict[str, Any]] = None,
     gate_proof: Optional[Dict[str, Any]] = None,
+    symbol_scope: Tuple[str, ...] = (),
+    trained_at: int = 0,
 ) -> str:
     """Deterministic artifact package SHA from its complete identity.
 
@@ -411,6 +456,8 @@ def compute_artifact_sha(
         "validation_schema": validation_schema,
         "hold_bars": hold_bars,
         "training_manifest_sha": training_manifest_sha,
+        "symbol_scope": sorted({str(symbol).strip().upper() for symbol in symbol_scope}),
+        "trained_at": int(trained_at),
     }
     if calibration_proof:
         canonical["calibration_proof"] = calibration_proof
@@ -421,6 +468,53 @@ def compute_artifact_sha(
     ).hexdigest()
 
 
+def artifact_integrity_error(artifact: Any) -> Optional[str]:
+    """Return an error when a persisted artifact no longer matches its package SHA."""
+    if not isinstance(artifact, dict):
+        return "artifact_missing"
+    payload = artifact.get("payload_bytes")
+    if not isinstance(payload, str) or not payload:
+        return "artifact_payload_missing"
+    try:
+        payload_model_sha = compute_payload_model_sha256(payload)
+    except ValueError:
+        return "artifact_payload_invalid"
+    model_sha = str(artifact.get("model_sha256") or "").lower()
+    if payload_model_sha != model_sha:
+        return "artifact_model_sha_mismatch"
+    try:
+        direction = _single_output(artifact.get("output_domain") or ())
+        expected_artifact_sha = compute_artifact_sha(
+            model_sha256=model_sha,
+            contract_id=str(artifact["contract_id"]),
+            direction=direction,
+            policy_lineage_id=str(artifact["policy_lineage_id"]),
+            policy_lineage_version=int(artifact["policy_lineage_version"]),
+            feature_order=tuple(artifact.get("feature_order") or ()),
+            feature_schema=str(artifact["feature_schema"]),
+            label_schema=str(artifact["evidence_schema"]),
+            validation_schema=str(artifact["validation_schema"]),
+            hold_bars=int(artifact["horizon_bars"]),
+            training_manifest_sha=str(artifact.get("training_manifest_sha") or ""),
+            calibration_proof=artifact.get("calibration_proof"),
+            gate_proof=artifact.get("gate_proof"),
+            symbol_scope=tuple(artifact.get("symbol_scope") or ()),
+            trained_at=int(artifact["trained_at"]),
+        )
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return "artifact_identity_invalid"
+    if expected_artifact_sha != str(artifact.get("artifact_sha") or ""):
+        return "artifact_sha_package_mismatch"
+    return None
+
+
+def _single_output(output_domain: Any) -> str:
+    outputs = {str(output).strip().upper() for output in output_domain}
+    if len(outputs) != 1:
+        raise ValueError("artifact output_domain must contain exactly one output")
+    return next(iter(outputs))
+
+
 def compute_model_sha256(raw_model_bytes: bytes) -> str:
     """SHA-256 of the raw deserialized model bytes.
 
@@ -428,3 +522,14 @@ def compute_model_sha256(raw_model_bytes: bytes) -> str:
     after base64 decoding the stored payload.
     """
     return hashlib.sha256(raw_model_bytes).hexdigest()
+
+
+def compute_payload_model_sha256(payload_bytes: str) -> str:
+    """SHA-256 of the raw model represented by a strict base64 payload."""
+    if not isinstance(payload_bytes, str) or not payload_bytes:
+        raise ValueError("model payload must be a non-empty base64 string")
+    try:
+        raw_model_bytes = base64.b64decode(payload_bytes, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError(f"invalid base64 model payload: {exc}") from exc
+    return compute_model_sha256(raw_model_bytes)

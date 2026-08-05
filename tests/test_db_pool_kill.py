@@ -6,7 +6,7 @@ def test_pool_stats_after_init(monkeypatch):
     import core.db as db
 
     monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@localhost/test")
-    db._pool = None
+    monkeypatch.setattr(db, "_pool", None)
     monkeypatch.setattr(
         db,
         "psycopg2",
@@ -42,7 +42,7 @@ def test_get_conn_retries_on_pool_error(monkeypatch):
         def putconn(self, _conn):
             pass
 
-    db._pool = FakePool()
+    monkeypatch.setattr(db, "_pool", FakePool())
     monkeypatch.setattr(db.time, "sleep", lambda _s: None)
     conn = db.get_conn()
     assert conn is not None

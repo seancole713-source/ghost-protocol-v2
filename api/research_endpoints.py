@@ -11,7 +11,7 @@ carry explicit notes that they are not trading signals.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 
 from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
@@ -181,17 +181,71 @@ async def list_research_predictions(
 
 @router.get("/proof/{contract_id}/{artifact_sha}")
 async def get_research_proof(contract_id: str, artifact_sha: str):
-    """Forward proof status for a contract/artifact pair."""
+    """Forward proof status for a contract/artifact pair.
+
+    Uses the v2 forward proof engine (core/research_forward.py) which
+    enforces the fixed 50-outcome confirmatory protocol with all secondary
+    gates. Falls back to the legacy proof engine if no forward registration
+    exists.
+    """
     try:
+        from core.research_forward import get_active_registrations, evaluate_forward_proof
+        from core.binomial_stats import V2_CONFIRMATORY_N, V2_MIN_WINS
+
+        # Find the forward registration for this contract/artifact pair
+        registrations = get_active_registrations(status=None)  # all statuses
+        matching_reg = None
+        for reg in registrations:
+            if reg.get("contract_id") == contract_id and reg.get("artifact_sha") == artifact_sha:
+                matching_reg = reg
+                break
+
+        if matching_reg:
+            proof = evaluate_forward_proof(matching_reg["registration_id"])
+            return JSONResponse(content={
+                "ok": True,
+                "contract_id": contract_id,
+                "artifact_sha": artifact_sha,
+                "registration": matching_reg,
+                "proof": {
+                    "total_predictions": proof.get("total_predictions", 0),
+                    "actionable": proof.get("n", 0),
+                    "wins": proof.get("wins", 0),
+                    "losses": proof.get("losses", 0),
+                    "expired": proof.get("expired", 0),
+                    "data_invalid": proof.get("data_invalid", 0),
+                    "win_rate": proof.get("win_rate"),
+                    "wilson": proof.get("wilson", {}),
+                    "secondary_gates": proof.get("secondary_gates", {}),
+                    "all_secondary_pass": proof.get("all_secondary_pass", False),
+                    "status": proof.get("status"),
+                    "persisted_status": proof.get("persisted_status"),
+                    "blocked_prediction_id": proof.get("blocked_prediction_id"),
+                    "freeze_ts": proof.get("freeze_ts"),
+                    "target_n": proof.get("target_n", V2_CONFIRMATORY_N),
+                    "target_wins": V2_MIN_WINS,
+                    "remaining": proof.get("remaining", 0),
+                    "note": proof.get("note", ""),
+                },
+            })
+
+        # Fallback: no forward registration found, use legacy proof engine
         from core.research_proof import get_forward_registration, compute_proof
         from core.research_ledger import get_resolved_predictions
+        from core.binomial_stats import wilson_lower_bound
 
         reg = get_forward_registration(contract_id, artifact_sha)
         resolved = get_resolved_predictions(
             contract_id=contract_id, artifact_sha=artifact_sha, limit=500,
         )
 
-        proof = compute_proof(resolved, min_support=10, expired_is_non_win=True)
+        proof = compute_proof(resolved, min_support=V2_CONFIRMATORY_N, expired_is_non_win=True)
+        exact_low = wilson_lower_bound(proof.wins, proof.actionable) if proof.actionable > 0 else 0.0
+        legacy_threshold_met = (
+            proof.actionable >= V2_CONFIRMATORY_N
+            and proof.wins >= V2_MIN_WINS
+            and exact_low >= 0.70
+        )
 
         return JSONResponse(content={
             "ok": True,
@@ -206,13 +260,24 @@ async def get_research_proof(contract_id: str, artifact_sha: str):
                 "expired": proof.expired,
                 "data_invalid": proof.data_invalid,
                 "win_rate": proof.win_rate,
-                "wilson": proof.wilson,
+                "wilson": {
+                    "point": proof.wilson.get("point"),
+                    "low": proof.wilson.get("low"),
+                    "high": proof.wilson.get("high"),
+                    "exact_low": round(exact_low, 6),
+                },
                 "brier": proof.brier,
                 "coverage": proof.coverage,
                 "invalid_rate": proof.invalid_rate,
-                "proven": proof.proven,
+                "proven": False,
+                "status": "UNVERIFIED_LEGACY",
+                "legacy_threshold_met": legacy_threshold_met,
                 "target": proof.target,
             },
+            "note": (
+                "Legacy aggregate diagnostics only. Without a fixed50/v2 "
+                "registration, this evidence cannot establish protocol proof."
+            ),
         })
     except Exception as e:
         return JSONResponse(content={"ok": False, "error": str(e)[:200]})
@@ -265,7 +330,8 @@ async def research_platform_health():
     """Platform health: table presence, pending/invalid rates, lease state."""
     try:
         from core.db import db_conn
-        health: Dict[str, Any] = {"ok": True, "tables": {}, "stats": {}}
+        health: Dict[str, Any] = {"ok": False, "tables": {}, "stats": {}}
+        all_tables_present = True
 
         with db_conn() as conn:
             cur = conn.cursor()
@@ -275,18 +341,18 @@ async def research_platform_health():
                 "ghost_research_artifacts",
                 "ghost_research_predictions",
                 "ghost_research_resolutions",
-                "ghost_research_dataset_manifests",
-                "ghost_research_dataset_samples",
-                "ghost_research_forward_registrations",
-                "ghost_research_activation_events",
-                "ghost_research_activation_predecessors",
+                "ghost_research_registrations",
+                "ghost_research_activation_log",
             ):
                 cur.execute(
                     "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name=%s)",
                     (table,),
                 )
                 row = cur.fetchone()
-                health["tables"][table] = bool(row and row[0])
+                present = bool(row and row[0])
+                health["tables"][table] = present
+                if not present:
+                    all_tables_present = False
 
             # Pending prediction count
             try:
@@ -299,6 +365,7 @@ async def research_platform_health():
                 health["stats"]["pending_predictions"] = int(row[0]) if row else 0
             except Exception:
                 health["stats"]["pending_predictions"] = "table_not_ready"
+                all_tables_present = False
 
             # Total resolved
             try:
@@ -318,6 +385,7 @@ async def research_platform_health():
             except Exception:
                 health["stats"]["active_artifacts"] = "table_not_ready"
 
+        health["ok"] = all_tables_present
         return JSONResponse(content=health)
     except Exception as e:
         return JSONResponse(content={"ok": False, "error": str(e)[:200]})

@@ -1,5 +1,7 @@
 """Tests for shadow scoring (core.shadow_outcomes) — pure helpers, no DB."""
 import json
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from core.shadow_outcomes import (
     PROB_FLOOR,
@@ -44,6 +46,20 @@ def test_pick_daily_first_separate_days_kept():
         {"symbol": "STUB", "eval_ts": 1781000000 + 3 * 86400},
     ]
     assert len(pick_daily_first(evals)) == 2
+
+
+def test_pick_daily_first_rejects_weekend_evaluations():
+    central = ZoneInfo("America/Chicago")
+    evals = [
+        {"symbol": "STUB", "eval_ts": int(datetime(2026, 8, 1, 12, tzinfo=central).timestamp())},
+        {"symbol": "STUB", "eval_ts": int(datetime(2026, 8, 2, 12, tzinfo=central).timestamp())},
+        {"symbol": "STUB", "eval_ts": int(datetime(2026, 8, 3, 12, tzinfo=central).timestamp())},
+    ]
+
+    out = pick_daily_first(evals)
+
+    assert len(out) == 1
+    assert out[0]["eval_ts"] == evals[2]["eval_ts"]
 
 
 def test_pick_daily_first_keeps_same_day_model_generations():

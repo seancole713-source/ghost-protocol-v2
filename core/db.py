@@ -100,6 +100,26 @@ def _ensure_tables():
                 val TEXT
             )
         """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS ghost_v3_model (
+                key TEXT PRIMARY KEY,
+                value TEXT,
+                updated_at BIGINT
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS user_portfolio (
+                id SERIAL PRIMARY KEY,
+                symbol TEXT NOT NULL,
+                asset_type TEXT DEFAULT 'stock',
+                quantity FLOAT NOT NULL,
+                buy_price FLOAT NOT NULL,
+                buy_date TEXT DEFAULT '',
+                notes TEXT DEFAULT '',
+                manual_price FLOAT DEFAULT NULL,
+                created_at BIGINT DEFAULT EXTRACT(EPOCH FROM NOW())::BIGINT
+            )
+        """)
         LOGGER.info("Tables verified")
 
 
@@ -129,8 +149,30 @@ def _migrate_schema():
         "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS predicted_at BIGINT",
         "UPDATE predictions SET predicted_at = run_at WHERE predicted_at IS NULL AND run_at IS NOT NULL",
         "ALTER TABLE predictions ALTER COLUMN run_at DROP NOT NULL",
-        "ALTER TABLE predictions ALTER COLUMN method DROP NOT NULL",
-        "ALTER TABLE predictions ALTER COLUMN horizon_h DROP NOT NULL",
+        """
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = current_schema()
+                  AND table_name = 'predictions' AND column_name = 'method'
+            ) THEN
+                ALTER TABLE predictions ALTER COLUMN method DROP NOT NULL;
+            END IF;
+        END $$
+        """,
+        """
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = current_schema()
+                  AND table_name = 'predictions' AND column_name = 'horizon_h'
+            ) THEN
+                ALTER TABLE predictions ALTER COLUMN horizon_h DROP NOT NULL;
+            END IF;
+        END $$
+        """,
         "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS features JSONB",
         "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS scores JSONB",
         # Phase 3 gate: point-in-time feature snapshots (12-col ingestion prep).

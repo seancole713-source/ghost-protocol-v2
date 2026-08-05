@@ -1,6 +1,4 @@
 """Tests for core/research_point_in_time.py — point-in-time dataset validation."""
-import math
-import time
 import pytest
 from core.research_point_in_time import (
     SourceObservation,

@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Optional, Sequence
 
 LOGGER = logging.getLogger("ghost.research_resolvers")
 
@@ -55,6 +55,60 @@ def get_resolver(resolver_id: str, resolver_version: str) -> Optional[ResolverFn
     return _RESOLVER_REGISTRY.get(f"{resolver_id}@{resolver_version}")
 
 
+def resolve_pending_tp_sl_prediction(
+    prediction: Dict[str, Any],
+    *,
+    daily_bars: Optional[Sequence[Dict[str, Any]]] = None,
+    now: Optional[int] = None,
+) -> Optional[ResearchResolution]:
+    """Resolve one pending TP/SL row from its geometry frozen at issuance."""
+    import time as _time
+
+    try:
+        issued_ts = int(prediction.get("issued_ts") or 0)
+    except (TypeError, ValueError, OverflowError):
+        issued_ts = 0
+    evidence_now = max(int(now or _time.time()), issued_ts + 1)
+    context = prediction.get("context")
+    if not isinstance(context, dict):
+        context = {}
+    try:
+        entry_price = float(context["entry_price"])
+        target_price = float(context["target_price"])
+        stop_price = float(context["stop_price"])
+        hold_bars = int(context["hold_bars"])
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return ResearchResolution(
+            outcome="DATA_INVALID",
+            observed_value=None,
+            resolved_ts=evidence_now,
+            available_ts=evidence_now,
+            reason="missing_frozen_tp_sl_context",
+        )
+    if issued_ts <= 0 or hold_bars < 1:
+        return ResearchResolution(
+            outcome="DATA_INVALID",
+            observed_value=None,
+            resolved_ts=evidence_now,
+            available_ts=evidence_now,
+            reason="invalid_frozen_tp_sl_context",
+        )
+    resolver = get_resolver("tp_sl_bar_path/v1", "1.0.0")
+    if resolver is None:
+        return None
+    return resolver(
+        symbol=str(prediction.get("symbol") or "").upper(),
+        direction=str(prediction.get("direction") or "").upper(),
+        entry_price=entry_price,
+        target_price=target_price,
+        stop_price=stop_price,
+        predicted_at=issued_ts,
+        hold_bars=hold_bars,
+        daily_bars=daily_bars,
+        now=evidence_now,
+    )
+
+
 # ── TP/SL bar-path resolver ─────────────────────────────────────────────────
 
 def resolve_tp_sl_swing(
@@ -77,7 +131,6 @@ def resolve_tp_sl_swing(
     """
     from core.tp_sl_resolve import (
         resolve_open_prediction_detail,
-        forward_bars_after_entry,
     )
 
     direction = (direction or "UP").upper()
@@ -161,8 +214,9 @@ def resolve_intraday_continuation(
             continue
         if bar_ts > predicted_at:
             if entry_bar is None:
-                entry_bar = bar
-            elif exit_bar is None and bar_ts > entry_bar.get("_parsed_ts", 0) + 3600:
+                entry_bar = dict(bar)
+                entry_bar["_parsed_ts"] = bar_ts
+            elif exit_bar is None and bar_ts >= entry_bar["_parsed_ts"] + 3600:
                 exit_bar = bar
                 break
 

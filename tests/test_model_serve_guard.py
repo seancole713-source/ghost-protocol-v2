@@ -36,6 +36,50 @@ def test_model_serve_guard_accepts_current_schema():
     assert _se.model_serve_guard(_serveable_meta(), expected_direction="UP") is None
 
 
+def test_model_serve_guard_accepts_old_proven_artifact_inside_activation_lease(monkeypatch):
+    now = 1_800_000_000
+    monkeypatch.setattr(_se.time, "time", lambda: now)
+    meta = _serveable_meta(
+        trained_at=now - 30 * 86400,
+        activation_artifact_sha="b" * 64,
+        activated_at=now - 60,
+        activation_lease_expires_at=now + 3600,
+        activation_proof={
+            "registration_id": "registration",
+            "wins": 42,
+            "n": 50,
+            "status": "PROVEN",
+            "persisted_status": "PROVEN",
+            "closed_at_ts": now - 120,
+            "all_secondary_pass": True,
+        },
+    )
+
+    assert _se.model_serve_guard(meta, expected_direction="UP") is None
+
+
+def test_model_serve_guard_rejects_expired_activation_lease(monkeypatch):
+    now = 1_800_000_000
+    monkeypatch.setattr(_se.time, "time", lambda: now)
+    meta = _serveable_meta(
+        trained_at=now - 30 * 86400,
+        activation_artifact_sha="b" * 64,
+        activated_at=now - 3600,
+        activation_lease_expires_at=now,
+        activation_proof={
+            "registration_id": "registration",
+            "wins": 42,
+            "n": 50,
+            "status": "PROVEN",
+            "persisted_status": "PROVEN",
+            "closed_at_ts": now - 7200,
+            "all_secondary_pass": True,
+        },
+    )
+
+    assert _se.model_serve_guard(meta) == "activation_lease_expired"
+
+
 def test_model_serve_guard_rejects_legacy_validation_schema():
     meta = _serveable_meta()
     del meta["validation_schema"]

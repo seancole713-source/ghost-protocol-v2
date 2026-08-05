@@ -28,11 +28,14 @@ PCR_BUCKETS: Tuple[Tuple[str, float, float], ...] = (
     ("1.0-1.5", 1.0, 1.5),
     (">=1.5", 1.5, float("inf")),
 )
+PCR_DIRECTIONS: Tuple[str, ...] = ("UP", "DOWN")
 
 # Enough paired evidence to trust a bucket Wilson bound at all.
 READY_MIN_PAIRED = 200
 READY_MIN_DAYS = 8
 TARGET = 0.70
+MAX_SNAPSHOT_AGE_S = 4 * 86400
+DIRECTIONAL_FAMILY_SIZE = len(PCR_BUCKETS) * len(PCR_DIRECTIONS)
 
 
 def _bucket_for(pcr: float) -> Optional[str]:
@@ -43,8 +46,11 @@ def _bucket_for(pcr: float) -> Optional[str]:
 
 
 def load_paired_rows(days: int = 60, limit: int = 50000) -> Optional[List[Dict[str, Any]]]:
-    """Resolved shadow outcomes joined to the point-in-time PCR for that
-    (symbol, trade_date). None means the read failed; [] means no pairs yet."""
+    """Resolved outcomes joined to the latest PCR available at evaluation.
+
+    None means the read failed; [] means no pairs yet. The age bound admits a
+    prior trading session across a weekend without treating stale flow as live.
+    """
     try:
         from core.db import db_conn
         cutoff = int(time.time()) - max(1, min(365, int(days))) * 86400
@@ -52,21 +58,43 @@ def load_paired_rows(days: int = 60, limit: int = 50000) -> Optional[List[Dict[s
             cur = conn.cursor()
             cur.execute(
                 """
-                SELECT s.symbol, s.trade_date, s.outcome, s.up_prob, o.pcr_volume
+                                SELECT s.symbol, s.trade_date, s.outcome, s.up_prob, o.pcr_volume,
+                                             s.eval_ts, o.snap_date, o.ts, s.direction, s.model_prob,
+                                             s.model_sha256, s.feature_schema, s.label_schema,
+                                             s.validation_schema, s.hold_bars
                 FROM ghost_shadow_outcomes s
-                JOIN ghost_options_snapshots o
-                  ON o.symbol = s.symbol AND o.snap_date = s.trade_date
+                                JOIN LATERAL (
+                                        SELECT snap_date, ts, pcr_volume
+                                        FROM ghost_options_snapshots
+                                        WHERE symbol = s.symbol
+                                            AND available = TRUE
+                                            AND pcr_volume IS NOT NULL
+                                            AND ts <= s.eval_ts
+                                            AND ts >= s.eval_ts - %s
+                                        ORDER BY ts DESC
+                                        LIMIT 1
+                                ) o ON TRUE
                 WHERE s.eval_ts >= %s
                   AND s.outcome IN ('WIN','LOSS','EXPIRED')
-                  AND o.pcr_volume IS NOT NULL
+                                    AND s.direction IN ('UP','DOWN')
+                                    AND s.model_sha256 IS NOT NULL
+                                    AND s.feature_schema IS NOT NULL
+                                    AND s.label_schema IS NOT NULL
+                                    AND s.validation_schema IS NOT NULL
+                                    AND s.hold_bars IS NOT NULL
+                                    AND EXTRACT(ISODOW FROM s.trade_date::date) BETWEEN 1 AND 5
                 ORDER BY s.eval_ts DESC
                 LIMIT %s
                 """,
-                (cutoff, max(1, min(200000, int(limit)))),
+                                (MAX_SNAPSHOT_AGE_S, cutoff, max(1, min(200000, int(limit)))),
             )
             return [
                 {"symbol": r[0], "trade_date": r[1], "outcome": r[2],
-                 "up_prob": r[3], "pcr": float(r[4])}
+                                 "up_prob": r[3], "pcr": float(r[4]), "eval_ts": int(r[5]),
+                                 "snapshot_date": r[6], "snapshot_ts": int(r[7]),
+                                 "direction": r[8], "model_prob": r[9], "model_sha256": r[10],
+                                 "feature_schema": r[11], "label_schema": r[12],
+                                 "validation_schema": r[13], "hold_bars": r[14]}
                 for r in cur.fetchall()
             ]
     except Exception as e:
@@ -129,6 +157,105 @@ def summarize_pcr_edge(rows: Sequence[Dict[str, Any]], *, target: float = TARGET
     }
 
 
+def summarize_directional_pcr_edge(
+    rows: Sequence[Dict[str, Any]], *, target: float = TARGET,
+) -> Dict[str, Any]:
+    """Score the frozen 2-direction x 5-PCR-bucket discovery family."""
+    from core.contract_70_slices import _sidak_family_z
+    from core.watcher import wilson_interval
+
+    cells: Dict[Tuple[str, str], Dict[str, Any]] = {
+        (direction, label): {
+            "n": 0, "wins": 0, "dates": {}, "symbols": set(), "identities": set(),
+        }
+        for direction in PCR_DIRECTIONS
+        for label, _, _ in PCR_BUCKETS
+    }
+    skipped = 0
+    for row in rows:
+        direction = str(row.get("direction") or "").upper()
+        bucket = _bucket_for(float(row.get("pcr") or -1))
+        if direction not in PCR_DIRECTIONS or bucket is None:
+            skipped += 1
+            continue
+        cell = cells[(direction, bucket)]
+        cell["n"] += 1
+        if str(row.get("outcome") or "").upper() == "WIN":
+            cell["wins"] += 1
+        date_key = str(row.get("trade_date") or "")
+        cell["dates"][date_key] = cell["dates"].get(date_key, 0) + 1
+        cell["symbols"].add(str(row.get("symbol") or "").upper())
+        identity = (
+            str(row.get("model_sha256") or ""),
+            str(row.get("feature_schema") or ""),
+            str(row.get("label_schema") or ""),
+            str(row.get("validation_schema") or ""),
+            row.get("hold_bars"),
+        )
+        if all(value not in (None, "") for value in identity):
+            cell["identities"].add(identity)
+
+    family_z = _sidak_family_z(DIRECTIONAL_FAMILY_SIZE)
+    out_cells = []
+    qualified = []
+    for direction in PCR_DIRECTIONS:
+        for label, _, _ in PCR_BUCKETS:
+            cell = cells[(direction, label)]
+            n = int(cell["n"])
+            wins = int(cell["wins"])
+            win_rate = wins / n if n else None
+            standard = wilson_interval(wins, n) if n else None
+            corrected = wilson_interval(wins, n, z=family_z) if n else None
+            family_low = corrected["low"] if corrected else None
+            identity_count = len(cell["identities"])
+            identity_homogeneous = identity_count == 1
+            qualifies = bool(
+                family_low is not None
+                and family_low >= target
+                and identity_homogeneous
+            )
+            payload = {
+                "direction": direction,
+                "pcr_bucket": label,
+                "n": n,
+                "wins": wins,
+                "win_rate": round(win_rate, 4) if win_rate is not None else None,
+                "wilson_low": round(standard["low"], 4) if standard else None,
+                "family_wilson_low": round(family_low, 4) if family_low is not None else None,
+                "qualified_discovery_candidate": qualifies,
+                "distinct_dates": len(cell["dates"]),
+                "max_date_concentration": (
+                    round(max(cell["dates"].values()) / n, 4) if n else None
+                ),
+                "distinct_symbols": len(cell["symbols"] - {""}),
+                "distinct_model_generations": identity_count,
+                "identity_homogeneous": identity_homogeneous,
+            }
+            out_cells.append(payload)
+            if qualifies:
+                qualified.append({"direction": direction, "pcr_bucket": label})
+
+    total_paired = sum(int(cell["n"]) for cell in cells.values())
+    return {
+        "cells": out_cells,
+        "family_size": DIRECTIONAL_FAMILY_SIZE,
+        "family_z": round(family_z, 4),
+        "multiple_comparisons_correction": "sidak",
+        "total_paired": total_paired,
+        "skipped_missing_direction_or_pcr": skipped,
+        "qualified_discovery_cells": qualified,
+        "status": (
+            "QUALIFIED_DISCOVERY_CANDIDATE" if qualified else
+            "NO_QUALIFIED_DIRECTIONAL_CELL" if total_paired else "NO_DATA"
+        ),
+        "note": (
+            "A qualified cell must contain one exact model generation and is "
+            "eligible only for a new exact-artifact forward registration. It is "
+            "not a 70% proof or an activation decision."
+        ),
+    }
+
+
 def options_pcr_edge(days: int = 60) -> Dict[str, Any]:
     """Live PCR-edge verdict. Read-only; honest 'insufficient' until data accrues."""
     rows = load_paired_rows(days)
@@ -136,21 +263,27 @@ def options_pcr_edge(days: int = 60) -> Dict[str, Any]:
         return {"ok": True, "status": "READ_FAILED", "read_only": True}
     ready = options_pcr_readiness(days)
     res = summarize_pcr_edge(rows)
-    sufficient = (res["total_paired"] >= READY_MIN_PAIRED
-                  and ready.get("distinct_days", 0) >= READY_MIN_DAYS)
+    directional = summarize_directional_pcr_edge(rows)
+    sufficient = (directional["total_paired"] >= READY_MIN_PAIRED
+                  and ready.get("paired_distinct_days", 0) >= READY_MIN_DAYS)
     return {
         "ok": True,
         "read_only": True,
         "days": int(days),
         "ts": int(time.time()),
         "sufficient_data": sufficient,
+        "status": (
+            directional["status"] if sufficient else "INSUFFICIENT_DATA"
+        ),
         "readiness": ready,
         "result": res,
+        "directional_result": directional,
         "note": (
             "Verdict is provisional until sufficient_data=true "
             f"(>= {READY_MIN_PAIRED} paired obs across >= {READY_MIN_DAYS} days). "
-            "EXPIRED counts as a non-win. This tests whether PCR separates "
-            "winners; it does not loosen any gate."
+            "EXPIRED counts as a non-win. Direction x PCR is a frozen 10-cell "
+            "Sidak-corrected discovery family; any candidate still requires a "
+            "new exact-artifact fixed-50 forward proof. No gate is loosened."
         ),
     }
 
@@ -176,19 +309,46 @@ def options_pcr_readiness(days: int = 60) -> Dict[str, Any]:
                 (cutoff,),
             )
             recent = [{"date": r[0], "rows": int(r[1])} for r in cur.fetchall()]
+            cur.execute(
+                """
+                SELECT COUNT(*), COUNT(DISTINCT trade_date)
+                FROM ghost_shadow_outcomes
+                WHERE eval_ts >= %s
+                  AND outcome IN ('WIN','LOSS','EXPIRED')
+                  AND direction IN ('UP','DOWN')
+                  AND model_sha256 IS NOT NULL
+                  AND feature_schema IS NOT NULL
+                  AND label_schema IS NOT NULL
+                  AND validation_schema IS NOT NULL
+                  AND hold_bars IS NOT NULL
+                  AND EXTRACT(ISODOW FROM trade_date::date) BETWEEN 1 AND 5
+                """,
+                (cutoff,),
+            )
+            eligible_outcomes, eligible_days = cur.fetchone()
     except Exception as e:
         return {"ok": False, "error": str(e)[:120]}
     paired = load_paired_rows(days) or []
+    paired_days = len({str(row.get("trade_date")) for row in paired})
     return {
         "ok": True,
         "total_snapshot_rows": int(total or 0),
         "distinct_days": int(days_ct or 0),
+        "paired_distinct_days": paired_days,
         "distinct_symbols": int(syms or 0),
         "recent_days": recent,
         "paired_with_outcomes": len(paired),
-        "ready_to_test": bool(len(paired) >= READY_MIN_PAIRED and (days_ct or 0) >= READY_MIN_DAYS),
+        "eligible_outcomes": int(eligible_outcomes or 0),
+        "eligible_distinct_days": int(eligible_days or 0),
+        "pairing_coverage": (
+            round(len(paired) / int(eligible_outcomes), 4)
+            if eligible_outcomes else None
+        ),
+        "ready_to_test": bool(
+            len(paired) >= READY_MIN_PAIRED and paired_days >= READY_MIN_DAYS
+        ),
         "need": {
             "min_paired": READY_MIN_PAIRED, "min_days": READY_MIN_DAYS,
-            "paired_so_far": len(paired), "days_so_far": int(days_ct or 0),
+            "paired_so_far": len(paired), "days_so_far": paired_days,
         },
     }

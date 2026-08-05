@@ -1,4 +1,4 @@
-import os
+import logging
 import time
 import uuid
 
@@ -7,41 +7,6 @@ from fastapi.testclient import TestClient
 
 import wolf_app
 from core import db as core_db
-
-
-def _integration_enabled():
-    return bool(os.getenv("TEST_DATABASE_URL")) and os.getenv("GHOST_INTEGRATION_TESTS", "0") in ("1", "true", "TRUE")
-
-
-@pytest.fixture
-def integration_db(monkeypatch):
-    if not _integration_enabled():
-        pytest.skip("Integration DB tests disabled. Set TEST_DATABASE_URL and GHOST_INTEGRATION_TESTS=1.")
-
-    test_dsn = os.getenv("TEST_DATABASE_URL")
-    monkeypatch.setenv("DATABASE_URL", test_dsn)
-    monkeypatch.setenv("GHOST_TEST_MODE", "1")
-    monkeypatch.setenv("GHOST_MCP_TOKEN", "itest-token")
-    monkeypatch.setenv("WATCHLIST_FILTER_ENABLED", "0")  # PR #76: tests seed non-watchlist symbols
-
-    # Reset any stale pool before initializing against explicit test DB.
-    try:
-        if core_db._pool:
-            core_db._pool.closeall()
-    except Exception:
-        pass
-    core_db._pool = None
-    core_db.init_db()
-
-    try:
-        yield
-    finally:
-        try:
-            if core_db._pool:
-                core_db._pool.closeall()
-        except Exception:
-            pass
-        core_db._pool = None
 
 
 def _seed_prediction(symbol, outcome, predicted_at, resolved_at=None, expires_at=None):
@@ -155,3 +120,95 @@ def test_integration_cockpit_context_matches_stats_and_activity(integration_db):
         assert ctx_body["activity"]["open_predictions"] >= 1
     finally:
         _delete_seeded(prefix)
+
+
+@pytest.mark.integration
+def test_clean_database_treats_absent_legacy_outcomes_as_zero(integration_db):
+    from core.prediction import (
+        _legacy_signal,
+        _objective_symbol_stats,
+        get_objective_status,
+    )
+
+    with core_db.db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT to_regclass('ghost_prediction_outcomes')")
+        assert cur.fetchone()[0] is None
+
+    symbol_stats = _objective_symbol_stats("WOLF", "UP")
+    objective = get_objective_status()
+
+    assert symbol_stats["gpo_total"] == 0
+    assert symbol_stats["gpo_wins"] == 0
+    assert objective["legacy_recent"]["total"] == 0
+    assert _legacy_signal("WOLF", 100.0) is None
+
+
+@pytest.mark.integration
+def test_clean_database_migration_has_no_missing_legacy_column_warning(
+    integration_db,
+    caplog,
+):
+    with core_db.db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema=current_schema()
+              AND table_name='predictions'
+              AND column_name IN ('method', 'horizon_h')
+            """
+        )
+        assert cur.fetchall() == []
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="ghost.db"):
+        core_db._migrate_schema()
+
+    assert not [
+        record.message for record in caplog.records
+        if record.name == "ghost.db" and record.message.startswith("Migration:")
+    ]
+
+
+@pytest.mark.integration
+def test_present_legacy_outcomes_count_hit_direction_as_win(integration_db):
+    from core.prediction import _objective_symbol_stats, get_objective_status
+
+    with core_db.db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE ghost_prediction_outcomes (
+                id SERIAL PRIMARY KEY,
+                symbol TEXT NOT NULL,
+                predicted_direction TEXT NOT NULL,
+                hit_direction INTEGER,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        cur.execute(
+            """
+            INSERT INTO ghost_prediction_outcomes
+                (symbol, predicted_direction, hit_direction)
+            VALUES ('WOLF', 'UP', 1), ('WOLF', 'UP', 0)
+            """
+        )
+
+    try:
+        symbol_stats = _objective_symbol_stats("WOLF", "UP")
+        objective = get_objective_status()
+
+        assert (symbol_stats["gpo_wins"], symbol_stats["gpo_total"]) == (1, 2)
+        assert objective["legacy_recent"] == {
+            "wins": 1,
+            "losses": 1,
+            "total": 2,
+            "win_rate_pct": 50.0,
+        }
+    finally:
+        with core_db.db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("DROP TABLE IF EXISTS ghost_prediction_outcomes")

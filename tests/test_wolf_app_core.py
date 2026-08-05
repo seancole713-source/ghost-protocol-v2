@@ -3024,6 +3024,7 @@ def test_predict_ex_captures_near_miss_on_floor_skip(monkeypatch):
     import core.prediction as _pred
     import core.signal_engine as _se
     monkeypatch.setattr(_pred, "get_price", lambda s, a=None: 100.0)
+    monkeypatch.setattr(_pred, "RESEARCH_PICK_ENABLED", False)
 
     def _ple(s, a, scores=None, research_mode=False):
         if scores is not None:

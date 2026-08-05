@@ -4,10 +4,9 @@ import time
 import pytest
 from core.research_activation import (
     ensure_activation_tables,
-    compute_evidence_lease,
     can_activate,
-    activate_artifact,
     rollback_if_degraded,
+    review_active_leases,
     get_activation_history,
     _lease_window_s,
     _lease_min_observations,
@@ -57,6 +56,10 @@ def test_can_activate_rejects_non_live_contract(monkeypatch):
             "payload_bytes": "test",
         },
     )
+    monkeypatch.setattr(
+        "core.research_artifacts.artifact_integrity_error",
+        lambda artifact: None,
+    )
 
     # Pass a fake cursor to bypass DB connection
     eligible, reason, _ = can_activate(
@@ -102,7 +105,52 @@ def test_rollback_not_activated_artifact(monkeypatch):
 
     result = rollback_if_degraded(symbol="WOLF", direction="UP", cur=_FakeCur())
     assert result["action"] == "none"
-    assert "not_an_activated" in result["reason"]
+    assert result["reason"] == "no_current_activation"
+
+
+def test_review_active_leases_checks_only_latest_activations(monkeypatch):
+    lanes = [("AAPL", "UP"), ("WOLF", "DOWN")]
+
+    class _Cur:
+        def execute(self, sql, params=None):
+            assert "DISTINCT ON (symbol, direction)" in sql
+
+        def fetchall(self):
+            return lanes
+
+    class _Conn:
+        def cursor(self):
+            return _Cur()
+
+    class _DbCtx:
+        def __enter__(self):
+            return _Conn()
+
+        def __exit__(self, *args):
+            return False
+
+    import core.db as db
+    monkeypatch.setattr(db, "db_conn", _DbCtx)
+    seen = []
+
+    def _review(*, symbol, direction):
+        seen.append((symbol, direction))
+        if symbol == "AAPL":
+            return {"action": "none", "reason": "lease_active_collecting"}
+        return {
+            "ok": True,
+            "restored_artifact_sha": "a" * 64,
+            "reason": "activation_lease_expired",
+        }
+
+    monkeypatch.setattr("core.research_activation.rollback_if_degraded", _review)
+
+    result = review_active_leases()
+
+    assert seen == lanes
+    assert result["reviewed"] == 2
+    assert result["rolled_back"] == 1
+    assert result["failed"] == 0
 
 
 # ── activation history ─────────────────────────────────────────────────────

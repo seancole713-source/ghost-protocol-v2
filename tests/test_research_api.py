@@ -1,5 +1,4 @@
 """Tests for api/research_endpoints.py — read-only research API."""
-import json
 import pytest
 from fastapi.testclient import TestClient
 import wolf_app
@@ -86,6 +85,37 @@ def test_get_proof_not_found(client):
     data = r.json()
     assert data["ok"] is True
     assert data["registration"] is None
+
+
+def test_legacy_diagnostics_never_claim_protocol_proof(client, monkeypatch):
+    import core.research_forward as forward
+    import core.research_ledger as ledger
+    import core.research_proof as legacy
+
+    monkeypatch.setattr(forward, "get_active_registrations", lambda status=None: [])
+    monkeypatch.setattr(
+        legacy, "get_forward_registration",
+        lambda contract_id, artifact_sha: None,
+    )
+    monkeypatch.setattr(
+        ledger,
+        "get_resolved_predictions",
+        lambda **kwargs: [
+            {
+                "contract_id": "abc",
+                "artifact_sha": "a" * 64,
+                "outcome": "WIN",
+                "calibrated_prob": 0.99,
+            }
+            for _ in range(50)
+        ],
+    )
+
+    data = client.get("/api/research/proof/abc/" + "a" * 64).json()
+
+    assert data["proof"]["legacy_threshold_met"] is True
+    assert data["proof"]["proven"] is False
+    assert data["proof"]["status"] == "UNVERIFIED_LEGACY"
 
 
 # ── activation endpoints ───────────────────────────────────────────────────

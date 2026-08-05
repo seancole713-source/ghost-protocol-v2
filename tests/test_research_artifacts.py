@@ -1,6 +1,6 @@
 """Tests for core/research_artifacts.py — immutable artifact registry."""
-import json
-import time
+import hashlib
+
 import pytest
 from core.research_artifacts import (
     ArtifactMeta,
@@ -47,6 +47,13 @@ def test_artifact_meta_valid():
 def test_artifact_meta_rejects_invalid_sha():
     with pytest.raises(ValueError, match="artifact_sha"):
         _make_meta(artifact_sha="short")
+
+
+def test_meta_rejects_ambiguous_symbol_scope():
+    with pytest.raises(ValueError, match="symbol_scope is required"):
+        _make_meta(symbol_scope=())
+    with pytest.raises(ValueError, match="only symbol_scope value"):
+        _make_meta(symbol_scope=("__UNIVERSE__", "WOLF"))
 
 
 def test_artifact_meta_rejects_empty_contract_id():
@@ -100,7 +107,8 @@ def test_compute_artifact_sha_schema_change_changes_identity():
 
 
 def test_compute_model_sha256():
-    from core.research_artifacts import compute_model_sha256
+    import base64
+    from core.research_artifacts import compute_model_sha256, compute_payload_model_sha256
     raw = b"test model bytes"
     sha = compute_model_sha256(raw)
     assert len(sha) == 64
@@ -108,32 +116,81 @@ def test_compute_model_sha256():
     assert compute_model_sha256(raw) == sha
     # Different bytes = different hash
     assert compute_model_sha256(b"different") != sha
+    payload = base64.b64encode(raw).decode("ascii")
+    assert compute_payload_model_sha256(payload) == sha
+
+
+def test_payload_model_sha256_rejects_non_base64_text():
+    from core.research_artifacts import compute_payload_model_sha256
+
+    with pytest.raises(ValueError, match="invalid base64"):
+        compute_payload_model_sha256("not a model payload")
+
+
+def test_register_rejects_mislabeled_payload_package():
+    import base64
+
+    class _NeverCalledCursor:
+        def execute(self, sql, params=None):
+            raise AssertionError("invalid package must be rejected before SQL")
+
+    payload = base64.b64encode(b"real model").decode("ascii")
+    with pytest.raises(ValueError, match="artifact_sha_package_mismatch"):
+        register_artifact(
+            _make_meta(output_domain=("UP",), trained_at=1_700_000_000),
+            payload,
+            cur=_NeverCalledCursor(),
+        )
 
 
 # ── DB integration tests ───────────────────────────────────────────────────
 
 @pytest.mark.integration
 def test_register_and_get_artifact():
+    import base64
     from core.db import db_conn
-    meta = _make_meta(artifact_sha=compute_artifact_sha("test_payload", "abc", "l1", 1, ("rsi",)))
+    raw = b"test_payload"
+    payload = base64.b64encode(raw).decode("ascii")
+    trained_at = 1_700_000_000
+    meta = _make_meta(
+        artifact_sha=compute_artifact_sha(
+            model_sha256=hashlib.sha256(raw).hexdigest(),
+            contract_id="abc123",
+            direction="UP",
+            policy_lineage_id="lineage_1",
+            policy_lineage_version=1,
+            feature_order=("rsi", "macd"),
+            feature_schema="test_v1",
+            label_schema="test_evidence_v1",
+            validation_schema="test_validation_v1",
+            hold_bars=3,
+            training_manifest_sha="b" * 64,
+            calibration_proof={"ok": True, "threshold": 0.55},
+            gate_proof={"ok": True, "wilson_low": 0.72},
+            symbol_scope=("WOLF",),
+            trained_at=trained_at,
+        ),
+        output_domain=("UP",),
+        trained_at=trained_at,
+    )
     with db_conn() as conn:
         cur = conn.cursor()
         ensure_research_artifact_tables(cur)
-        assert register_artifact(meta, "test_payload", cur=cur)
+        assert register_artifact(meta, payload, cur=cur)
         conn.commit()
 
     with db_conn() as conn:
         cur = conn.cursor()
         loaded = get_artifact(meta.artifact_sha, cur=cur)
         assert loaded is not None
-        assert loaded["contract_id"] == "abc"
+        assert loaded["contract_id"] == "abc123"
         assert loaded["status"] == "ACTIVE"
 
 
 @pytest.mark.integration
 def test_register_idempotent():
     from core.db import db_conn
-    meta = _make_meta(artifact_sha=compute_artifact_sha("idem", "abc", "l1", 1, ("rsi",)))
+    meta = _make_meta(artifact_sha=compute_artifact_sha("idem", "abc", "l1", 1, ("rsi",), feature_order=("rsi",)))
     with db_conn() as conn:
         cur = conn.cursor()
         ensure_research_artifact_tables(cur)
@@ -145,7 +202,7 @@ def test_register_idempotent():
 @pytest.mark.integration
 def test_retire_artifact():
     from core.db import db_conn
-    meta = _make_meta(artifact_sha=compute_artifact_sha("retire_test", "abc", "l1", 1, ("rsi",)))
+    meta = _make_meta(artifact_sha=compute_artifact_sha("retire_test", "abc", "l1", 1, ("rsi",), feature_order=("rsi",)))
     with db_conn() as conn:
         cur = conn.cursor()
         ensure_research_artifact_tables(cur)
@@ -167,7 +224,7 @@ def test_retire_artifact():
 @pytest.mark.integration
 def test_lifecycle_events():
     from core.db import db_conn
-    meta = _make_meta(artifact_sha=compute_artifact_sha("events_test", "abc", "l1", 1, ("rsi",)))
+    meta = _make_meta(artifact_sha=compute_artifact_sha("events_test", "abc", "l1", 1, ("rsi",), feature_order=("rsi",)))
     with db_conn() as conn:
         cur = conn.cursor()
         ensure_research_artifact_tables(cur)
@@ -186,9 +243,9 @@ def test_lifecycle_events():
 @pytest.mark.integration
 def test_list_artifacts_filtered():
     from core.db import db_conn
-    meta1 = _make_meta(artifact_sha=compute_artifact_sha("list1", "contract_a", "l1", 1, ("rsi",)),
-                       contract_id="contract_a")
-    meta2 = _make_meta(artifact_sha=compute_artifact_sha("list2", "contract_b", "l2", 1, ("rsi",)),
+    meta1 = _make_meta(artifact_sha=compute_artifact_sha("list1", "contract_a", "l1", 1, ("rsi",), feature_order=("rsi",)),
+                           contract_id="contract_a")
+    meta2 = _make_meta(artifact_sha=compute_artifact_sha("list2", "contract_b", "l2", 1, ("rsi",), feature_order=("rsi",)),
                        contract_id="contract_b")
     with db_conn() as conn:
         cur = conn.cursor()

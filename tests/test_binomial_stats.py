@@ -8,6 +8,7 @@ from core.binomial_stats import (
     V2_TARGET,
     block_bootstrap_lower_bound,
     exact_wilson_display,
+    moving_block_bootstrap_lower_bound,
     v2_confirmatory_futile,
     v2_confirmatory_pass,
     v2_confirmatory_status,
@@ -141,6 +142,24 @@ class TestBlockBootstrap:
         low = block_bootstrap_lower_bound(42, 50, block_size=5, seed=42)
         # Block bootstrap is conservative; may be below exact Wilson
         assert 0.0 <= low <= 1.0
+
+    def test_sequence_bootstrap_uses_actual_order(self):
+        spread = [1, 1, 1, 1, 1, 0] * 8 + [1, 1]
+        clustered = [1] * 42 + [0] * 8
+        spread_low = moving_block_bootstrap_lower_bound(
+            spread, n_bootstrap=2000, block_size=5, seed=42,
+        )
+        clustered_low = moving_block_bootstrap_lower_bound(
+            clustered, n_bootstrap=2000, block_size=5, seed=42,
+        )
+        assert spread_low >= clustered_low
+
+    def test_sequence_bootstrap_perfect_sample(self):
+        assert moving_block_bootstrap_lower_bound([1] * 50) == 1.0
+
+    def test_sequence_bootstrap_rejects_non_binary_values(self):
+        with pytest.raises(ValueError, match="only 0/1"):
+            moving_block_bootstrap_lower_bound([1, 0, 2, 1, 0])
 
 
 class TestVerificationTable:

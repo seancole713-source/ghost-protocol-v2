@@ -11,7 +11,6 @@ from core.research_contracts import (
     list_contracts,
     is_live_compatible,
     live_compatible_contract,
-    _REGISTRY,
 )
 
 

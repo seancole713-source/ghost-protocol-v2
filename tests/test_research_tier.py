@@ -220,12 +220,89 @@ class TestAtomicStore:
                        for sql, _params in conn.cur.executed)
 
     def test_proven_writer_also_takes_same_lock(self, monkeypatch):
+        from core.research_activation import _lock_name
+
         conn = self._patch(monkeypatch, None)
         assert se._store_direction_model(
             "X", "UP", "BYTES", json.dumps({"tier": "proven"}),
         ) is True
         assert any("pg_advisory_xact_lock" in sql
                    for sql, _params in conn.cur.executed)
+        lock_params = next(
+            params for sql, params in conn.cur.executed
+            if "pg_advisory_xact_lock" in sql
+        )
+        assert lock_params == (_lock_name("X", "UP"),)
+        assert not any("FROM ghost_research_activation_log" in sql
+                       for sql, _params in conn.cur.executed)
+
+    def test_proven_retrain_supersedes_active_lease(self, monkeypatch):
+        import core.db as db
+
+        class _LeaseCursor:
+            def __init__(self):
+                self.executed = []
+                self.latest_event = ("ACTIVATED", "a" * 64)
+                self.predecessor_exists = True
+
+            def execute(self, sql, params=None):
+                normalized = " ".join(sql.split())
+                self.executed.append((normalized, params))
+                if normalized.startswith("SELECT to_regclass"):
+                    self._row = (
+                        "ghost_research_activation_log",
+                        "ghost_research_activation_predecessors",
+                    )
+                elif normalized.startswith("SELECT event_type, artifact_sha"):
+                    self._row = self.latest_event
+                elif normalized.startswith("INSERT INTO ghost_research_activation_log"):
+                    self.latest_event = (params[0], params[3])
+                    self._row = None
+                elif normalized.startswith(
+                    "DELETE FROM ghost_research_activation_predecessors"
+                ):
+                    self.predecessor_exists = False
+                    self._row = None
+                else:
+                    self._row = None
+
+            def fetchone(self):
+                return self._row
+
+        class _LeaseConnection:
+            def __init__(self):
+                self.cur = _LeaseCursor()
+
+            def cursor(self):
+                return self.cur
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        conn = _LeaseConnection()
+        monkeypatch.setattr(db, "db_conn", lambda: conn)
+        monkeypatch.setattr(
+            "core.precision_gate.invalidate_global_threshold_cache", lambda: None,
+        )
+        monkeypatch.setattr(
+            "core.precision_gate.invalidate_global_threshold_persistent",
+            lambda cur: None,
+        )
+
+        assert se._store_direction_model(
+            "X", "UP", "BYTES", json.dumps({"tier": "proven"}),
+        ) is True
+
+        assert conn.cur.latest_event == ("SUPERSEDED", "a" * 64)
+        assert conn.cur.predecessor_exists is False
+        event_params = next(
+            params for sql, params in conn.cur.executed
+            if sql.startswith("INSERT INTO ghost_research_activation_log")
+        )
+        assert event_params[4] == "ordinary_proven_model_retrained"
 
 
 # ── Fire-path hard block + status honesty (source tripwires — the

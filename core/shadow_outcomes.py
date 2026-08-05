@@ -131,6 +131,13 @@ def _ct_date(ts: int) -> str:
         return datetime.fromtimestamp(int(ts), timezone.utc).strftime("%Y-%m-%d")
 
 
+def _is_ct_weekday(ts: int) -> bool:
+    try:
+        return datetime.fromisoformat(_ct_date(int(ts))).weekday() < 5
+    except (TypeError, ValueError, OverflowError, OSError):
+        return False
+
+
 def pick_daily_first(evals: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Earliest daily eval per exact symbol/model generation.
 
@@ -143,6 +150,8 @@ def pick_daily_first(evals: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         ts = ev.get("eval_ts")
         sym = str(ev.get("symbol") or "").upper()
         if not sym or not ts:
+            continue
+        if not _is_ct_weekday(int(ts)):
             continue
         identity = _shadow_identity(ev)
         generation = (

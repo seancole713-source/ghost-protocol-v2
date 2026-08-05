@@ -12,7 +12,7 @@ new claims route through the v2 protocol.
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Sequence, Tuple
 
 
 # ── v2 confirmatory protocol constants ──────────────────────────────────────
@@ -213,6 +213,51 @@ def block_bootstrap_lower_bound(
     block_rates.sort()
     idx = int((1.0 - confidence) * len(block_rates))
     return max(0.0, block_rates[idx])
+
+
+def moving_block_bootstrap_lower_bound(
+    outcomes: Sequence[int],
+    *,
+    n_bootstrap: int = 10000,
+    block_size: int = 5,
+    confidence: float = 0.95,
+    seed: int = 42,
+) -> float:
+    """Empirical lower bound from the actual chronological win sequence.
+
+    Overlapping contiguous blocks preserve the observed short-range temporal
+    dependence. Bootstrap samples concatenate randomly selected blocks and
+    trim to the original sequence length before computing their win rate.
+    """
+    values = [int(value) for value in outcomes]
+    if any(value not in (0, 1) for value in values):
+        raise ValueError("outcomes must contain only 0/1 values")
+    if n_bootstrap < 1:
+        raise ValueError("n_bootstrap must be >= 1")
+    if block_size < 1:
+        raise ValueError("block_size must be >= 1")
+    if not 0.0 < confidence < 1.0:
+        raise ValueError("confidence must be between 0 and 1")
+    n = len(values)
+    if n < block_size:
+        return 0.0
+
+    import random as _random
+
+    circular = values + values[:block_size - 1]
+    blocks = [circular[start:start + block_size] for start in range(n)]
+    rng = _random.Random(seed)
+    rates: list[float] = []
+    for _ in range(n_bootstrap):
+        sampled: list[int] = []
+        while len(sampled) < n:
+            sampled.extend(blocks[rng.randrange(len(blocks))])
+        rates.append(sum(sampled[:n]) / n)
+
+    rates.sort()
+    lower_tail = 1.0 - confidence
+    index = min(len(rates) - 1, max(0, int(lower_tail * len(rates))))
+    return rates[index]
 
 
 # ── Precomputed verification table ─────────────────────────────────────────

@@ -1787,6 +1787,48 @@ def _store_direction_model(symbol, direction, model_bytes, meta_json) -> bool:
                         symbol_key, direction_key,
                     )
                     return False
+        elif incoming_meta.get("activation_proof") is None:
+            cur.execute(
+                "SELECT to_regclass(%s), to_regclass(%s)",
+                (
+                    "ghost_research_activation_log",
+                    "ghost_research_activation_predecessors",
+                ),
+            )
+            research_tables = cur.fetchone()
+            activation_log_exists = bool(research_tables and research_tables[0])
+            predecessor_table_exists = bool(
+                research_tables and research_tables[1]
+            )
+        else:
+            activation_log_exists = False
+            predecessor_table_exists = False
+        if incoming_tier == "proven" and activation_log_exists:
+            cur.execute(
+                """SELECT event_type, artifact_sha
+                   FROM ghost_research_activation_log
+                   WHERE symbol = %s AND direction = %s
+                   ORDER BY id DESC LIMIT 1""",
+                (symbol_key, direction_key),
+            )
+            activation_event = cur.fetchone()
+            if activation_event and activation_event[0] == "ACTIVATED":
+                superseded_sha = str(activation_event[1])
+                cur.execute(
+                    """INSERT INTO ghost_research_activation_log
+                       (event_type, symbol, direction, artifact_sha, reason, created_at)
+                       VALUES (%s,%s,%s,%s,%s,%s)""",
+                    (
+                        "SUPERSEDED", symbol_key, direction_key, superseded_sha,
+                        "ordinary_proven_model_retrained", int(time.time()),
+                    ),
+                )
+                if predecessor_table_exists:
+                    cur.execute(
+                        """DELETE FROM ghost_research_activation_predecessors
+                           WHERE symbol = %s AND direction = %s""",
+                        (symbol_key, direction_key),
+                    )
         updated_at = int(time.time())
         cur.execute("INSERT INTO ghost_v3_model(key,value,updated_at) VALUES(%s,%s,%s) "
                     "ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value,updated_at=EXCLUDED.updated_at",
@@ -2251,6 +2293,42 @@ def _model_metric_values(meta: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return values
 
 
+def _activation_lease_reject(meta: Dict[str, Any], now: float) -> Optional[str]:
+    proof = meta.get("activation_proof")
+    artifact_sha = str(meta.get("activation_artifact_sha") or "").lower()
+    if proof is None and not artifact_sha:
+        return None
+    if not isinstance(proof, dict):
+        return "activation_proof_invalid"
+    if len(artifact_sha) != 64 or any(ch not in "0123456789abcdef" for ch in artifact_sha):
+        return "activation_artifact_invalid"
+    from core.binomial_stats import v2_confirmatory_pass
+    wins = _exact_nonnegative_int(proof.get("wins"))
+    support = _exact_nonnegative_int(proof.get("n"))
+    if wins is None or support is None or not v2_confirmatory_pass(wins, support):
+        return "activation_proof_invalid"
+    if (
+        proof.get("status") != "PROVEN"
+        or proof.get("persisted_status") != "PROVEN"
+        or proof.get("all_secondary_pass") is not True
+        or not proof.get("registration_id")
+    ):
+        return "activation_proof_invalid"
+    closed_at = _exact_nonnegative_int(proof.get("closed_at_ts"))
+    activated_at = _exact_nonnegative_int(meta.get("activated_at"))
+    lease_expires = _exact_nonnegative_int(meta.get("activation_lease_expires_at"))
+    if closed_at is None or activated_at is None or lease_expires is None:
+        return "activation_lease_invalid"
+    if closed_at > activated_at or activated_at > now + 300:
+        return "activation_lease_invalid"
+    from core.research_activation import ACTIVATION_LEASE_MAX_S
+    if lease_expires <= activated_at or lease_expires > activated_at + ACTIVATION_LEASE_MAX_S:
+        return "activation_lease_invalid"
+    if lease_expires <= now:
+        return "activation_lease_expired"
+    return None
+
+
 def model_serve_guard(
     meta: Optional[Dict[str, Any]], *, expected_direction: Optional[str] = None,
     allow_research_scoring: bool = False,
@@ -2293,11 +2371,78 @@ def model_serve_guard(
         return "metadata_numeric_invalid"
     if trained_at > now + 300:
         return "trained_at_future"
-    if now - trained_at > 14 * 86400:
+    activation_reject = _activation_lease_reject(meta, now)
+    if activation_reject:
+        return activation_reject
+    if now - trained_at > 14 * 86400 and meta.get("activation_proof") is None:
         return "model_expired"
     if _model_metric_values(meta) is None:
         return "model_metrics_invalid"
     return None
+
+
+def _persisted_activation_matches(
+    cur, meta: Dict[str, Any], symbol: str, direction: str,
+) -> bool:
+    if meta.get("activation_proof") is None:
+        return True
+    cur.execute(
+        """SELECT event_type, artifact_sha, registration_id, lease_expires_at,
+                  created_at, proof_snapshot
+           FROM ghost_research_activation_log
+           WHERE symbol = %s AND direction = %s
+           ORDER BY id DESC LIMIT 1""",
+        (str(symbol).upper(), str(direction).upper()),
+    )
+    row = cur.fetchone()
+    if not row:
+        return False
+    proof_snapshot = row[5]
+    if isinstance(proof_snapshot, str):
+        try:
+            proof_snapshot = json.loads(proof_snapshot)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return False
+    activation_proof = meta.get("activation_proof")
+    if not isinstance(proof_snapshot, dict) or not isinstance(activation_proof, dict):
+        return False
+    try:
+        exact_fields_match = (
+            row[0] == "ACTIVATED"
+            and str(row[1]) == str(meta.get("activation_artifact_sha"))
+            and str(row[2]) == str(activation_proof.get("registration_id"))
+            and int(row[3]) == int(meta.get("activation_lease_expires_at"))
+            and int(row[4]) == int(meta.get("activated_at"))
+        )
+    except (TypeError, ValueError, OverflowError):
+        return False
+    proof_fields_match = all(
+        proof_snapshot.get(key) == activation_proof.get(key)
+        for key in (
+            "registration_id", "wins", "n", "status", "persisted_status",
+            "closed_at_ts", "all_secondary_pass",
+        )
+    )
+    return exact_fields_match and proof_fields_match
+
+
+def _cached_activation_matches(
+    meta: Dict[str, Any], symbol: str, direction: str,
+) -> bool:
+    if meta.get("activation_proof") is None:
+        return True
+    try:
+        from core.db import db_conn
+        with db_conn() as conn:
+            return _persisted_activation_matches(
+                conn.cursor(), meta, symbol, direction,
+            )
+    except Exception as exc:
+        LOGGER.warning(
+            "load_model %s/%s: activation log validation failed: %s",
+            symbol, direction, str(exc)[:80],
+        )
+        return False
 
 
 def load_model(symbol=None, direction="UP"):
@@ -2320,6 +2465,10 @@ def load_model(symbol=None, direction="UP"):
                 # Serve guard re-check: a model cached fresh can expire mid-TTL.
                 if meta is not None and model_serve_guard(
                     meta, expected_direction=direction, allow_research_scoring=True,
+                ):
+                    return None, None, None
+                if meta is not None and not _cached_activation_matches(
+                    meta, symbol, direction,
                 ):
                     return None, None, None
                 return model, feature_cols, meta
@@ -2358,6 +2507,12 @@ def _load_model_uncached(symbol, direction="UP"):
             )
             if reject:
                 LOGGER.info("load_model %s/%s: rejected (%s)", symbol, direction, reject)
+                return None, None, None
+            if not _persisted_activation_matches(cur, meta, symbol, direction):
+                LOGGER.info(
+                    "load_model %s/%s: rejected (activation_log_mismatch)",
+                    symbol, direction,
+                )
                 return None, None, None
             cur.execute("SELECT value FROM ghost_v3_model WHERE key=%s", (model_key,))
             row = cur.fetchone()

@@ -1,10 +1,8 @@
 """Tests for core/research_selector.py — abstaining specialist selector."""
-import math
 import pytest
 from core.research_selector import (
     GateResult,
     SpecialistCandidate,
-    SelectorDecision,
     gate_output_domain,
     gate_finite_prob,
     gate_threshold,

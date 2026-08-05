@@ -1525,7 +1525,7 @@ async def lifespan(app: FastAPI):
             LOGGER.warning("research runner job failed: %s", str(_e)[:80])
 
     scheduler.register("research_runner", _research_runner_job, interval_s=3600)
-    # Research outbox processor: idempotent post-resolution activation trigger.
+    # Research outbox processor: evaluates forward proof and triggers activation.
     from core.research_ledger import get_outbox_pending, mark_outbox_processed, mark_outbox_failed
 
     def _research_outbox_job():
@@ -1533,6 +1533,38 @@ async def lifespan(app: FastAPI):
             pending = get_outbox_pending(limit=20)
             for row in pending:
                 try:
+                    # Look up the prediction to get its artifact and symbol
+                    from core.db import db_conn
+                    with db_conn() as _conn:
+                        _c = _conn.cursor()
+                        _c.execute(
+                            "SELECT artifact_sha, symbol, direction, contract_id"
+                            " FROM ghost_research_predictions WHERE id = %s",
+                            (row["prediction_id"],),
+                        )
+                        pred_row = _c.fetchone()
+                    if not pred_row:
+                        mark_outbox_processed(row["id"])
+                        continue
+                    pred_artifact_sha = pred_row[0]
+                    pred_symbol = pred_row[1]
+                    pred_direction = pred_row[2]
+
+                    # Find the forward registration for this artifact
+                    from core.research_forward import update_forward_proof_status, get_active_registrations
+                    from core.research_activation import activate_artifact, auto_activation_enabled
+                    registrations = get_active_registrations(status="COLLECTING")
+                    for reg in registrations:
+                        if reg.get("artifact_sha") != pred_artifact_sha:
+                            continue
+                        proof = update_forward_proof_status(reg["registration_id"])
+                        if proof.get("status") == "PROVEN" and auto_activation_enabled():
+                            activate_artifact(
+                                symbol=pred_symbol,
+                                direction=pred_direction,
+                                artifact_sha=pred_artifact_sha,
+                                registration_id=reg["registration_id"],
+                            )
                     mark_outbox_processed(row["id"])
                 except Exception as _oe:
                     mark_outbox_failed(row["id"], str(_oe)[:200])
@@ -1540,6 +1572,66 @@ async def lifespan(app: FastAPI):
             LOGGER.warning("research outbox job failed: %s", str(_e)[:80])
 
     scheduler.register("research_outbox", _research_outbox_job, interval_s=60)
+    # Activation lease maintenance remains enabled even when new automatic
+    # activations are disabled, so an existing lease can still expire safely.
+    def _research_activation_lease_job():
+        try:
+            from core.research_activation import review_active_leases
+            result = review_active_leases()
+            if result.get("failed"):
+                raise RuntimeError(
+                    f"{result['failed']} activation lease review(s) failed"
+                )
+        except Exception as _e:
+            LOGGER.warning("research activation lease job failed: %s", str(_e)[:80])
+            raise
+
+    scheduler.register(
+        "research_activation_lease",
+        _research_activation_lease_job,
+        interval_s=300,
+    )
+    # Research resolver: resolves pending research predictions using the
+    # same TP/SL resolver as production. Writes only ghost_research_* tables.
+    from core.research_ledger import get_pending_predictions
+    from core.research_resolvers import resolve_pending_tp_sl_prediction
+
+    def _research_resolver_job():
+        try:
+            pending = get_pending_predictions(limit=50)
+            if not pending:
+                return
+            for pred in pending:
+                try:
+                    from core.research_ledger import resolve_research_prediction
+                    from core.signal_engine import _fetch_ohlcv
+                    context = pred.get("context") or {}
+                    asset_type = str(context.get("asset_type") or "stock")
+                    daily_bars = _fetch_ohlcv(
+                        pred["symbol"], asset_type, period="1y", interval="1d",
+                    )
+                    result = resolve_pending_tp_sl_prediction(
+                        pred,
+                        daily_bars=daily_bars,
+                    )
+                    if result:
+                        resolve_research_prediction(
+                            prediction_id=pred["id"],
+                            resolver_id="tp_sl_bar_path/v1",
+                            resolver_version="1.0.0",
+                            outcome=result.outcome,
+                            observed_value=result.observed_value,
+                            resolved_ts=result.resolved_ts,
+                            evidence_available_ts=result.available_ts,
+                            evidence_payload=result.evidence,
+                            reason=result.reason,
+                        )
+                except Exception as _re:
+                    LOGGER.debug("research resolver skip for pred %s: %s", pred["id"], str(_re)[:80])
+        except Exception as _e:
+            LOGGER.warning("research resolver job failed: %s", str(_e)[:80])
+
+    scheduler.register("research_resolver", _research_resolver_job, interval_s=900)
     # Daily report notebook — append-only observability snapshots answering
     # "what is Ghost doing and why?" Writes only ghost_daily_report_logs.
     from core.daily_report import snapshot_daily_report as _daily_report_snapshot

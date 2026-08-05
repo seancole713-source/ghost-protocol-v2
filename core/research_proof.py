@@ -14,7 +14,7 @@ import logging
 import math
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 LOGGER = logging.getLogger("ghost.research_proof")
 
@@ -251,6 +251,10 @@ def get_forward_registration(
 
 
 def _get_forward_impl(cur, contract_id, artifact_sha) -> Optional[Dict[str, Any]]:
+    cur.execute("SELECT to_regclass(%s)", ("ghost_research_forward_registrations",))
+    table_row = cur.fetchone()
+    if not table_row or not table_row[0]:
+        return None
     cur.execute(
         """
         SELECT contract_id, artifact_sha, registered_at_ts, universe_symbols,

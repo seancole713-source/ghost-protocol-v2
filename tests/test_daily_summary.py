@@ -1,15 +1,24 @@
 """roadmap #3b — daily summary aggregation + endpoint. Separate test file."""
 import json
+import os
 import time
+
+import pytz
 
 import wolf_app
 
 
 def _gate_hist_today():
     now = int(time.time())
+    tz = pytz.timezone(os.getenv("GHOST_TZ", "America/Chicago"))
+    day_start = int(
+        __import__("datetime").datetime.now(tz)
+        .replace(hour=0, minute=0, second=0, microsecond=0)
+        .timestamp()
+    )
     return json.dumps([
-        {"ts": now - 100, "candidates": 1, "saved": 1, "would_fire": True},
-        {"ts": now - 200, "candidates": 0, "saved": 0, "would_fire": False},
+        {"ts": max(now - 100, day_start), "candidates": 1, "saved": 1, "would_fire": True},
+        {"ts": max(now - 200, day_start), "candidates": 0, "saved": 0, "would_fire": False},
         {"ts": now - 99 * 86400, "candidates": 5, "saved": 5, "would_fire": True},  # old, excluded
     ])
 

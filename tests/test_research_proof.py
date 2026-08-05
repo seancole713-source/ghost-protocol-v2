@@ -1,5 +1,4 @@
 """Tests for core/research_proof.py — forward proof engine."""
-import json
 import pytest
 from core.research_proof import (
     wilson_interval,

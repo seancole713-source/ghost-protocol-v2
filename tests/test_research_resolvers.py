@@ -1,6 +1,4 @@
 """Tests for core/research_resolvers.py — task-specific outcome resolvers."""
-import math
-import time
 import pytest
 from core.research_resolvers import (
     ResearchResolution,
@@ -9,8 +7,8 @@ from core.research_resolvers import (
     resolve_volatility_expansion,
     resolve_cross_sectional_ranking,
     resolve_event_reaction,
+    resolve_pending_tp_sl_prediction,
     get_resolver,
-    _RESOLVER_REGISTRY,
 )
 
 
@@ -55,13 +53,13 @@ def test_get_resolver_missing():
 def _daily_bars(prices, base_ts=1_720_000_000):
     """Build daily OHLC bars from a list of (high, low, close) tuples."""
     bars = []
-    for i, (h, l, c) in enumerate(prices):
+    for i, (high, low, close) in enumerate(prices):
         bars.append({
             "ts": base_ts + i * 86400,
-            "open": c,
-            "high": h,
-            "low": l,
-            "close": c,
+            "open": close,
+            "high": high,
+            "low": low,
+            "close": close,
         })
     return bars
 
@@ -136,14 +134,49 @@ def test_tp_sl_swing_down_direction():
     assert result.outcome == "WIN"
 
 
+def test_pending_tp_sl_prediction_uses_frozen_geometry():
+    issued_ts = 1_720_000_000
+    bars = _daily_bars([(111, 99, 108)], base_ts=issued_ts + 86400)
+    result = resolve_pending_tp_sl_prediction(
+        {
+            "symbol": "WOLF",
+            "direction": "UP",
+            "issued_ts": issued_ts,
+            "context": {
+                "entry_price": 100,
+                "target_price": 110,
+                "stop_price": 95,
+                "hold_bars": 1,
+            },
+        },
+        daily_bars=bars,
+        now=issued_ts + 2 * 86400,
+    )
+    assert result is not None
+    assert result.outcome == "WIN"
+    assert result.evidence["target_price"] == 110
+
+
+def test_pending_tp_sl_prediction_marks_missing_geometry_invalid():
+    issued_ts = 1_720_000_000
+    result = resolve_pending_tp_sl_prediction(
+        {"symbol": "WOLF", "direction": "UP", "issued_ts": issued_ts},
+        now=issued_ts,
+    )
+    assert result is not None
+    assert result.outcome == "DATA_INVALID"
+    assert result.resolved_ts > issued_ts
+    assert result.reason == "missing_frozen_tp_sl_context"
+
+
 # ── intraday continuation resolver ──────────────────────────────────────────
 
 def _hourly_bars(prices, base_ts=1_720_000_000):
     bars = []
-    for i, (h, l, c) in enumerate(prices):
+    for i, (high, low, close) in enumerate(prices):
         bars.append({
             "ts": base_ts + i * 3600,
-            "open": c, "high": h, "low": l, "close": c,
+            "open": close, "high": high, "low": low, "close": close,
         })
     return bars
 

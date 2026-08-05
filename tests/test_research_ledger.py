@@ -1,5 +1,4 @@
 """Tests for core/research_ledger.py — isolated research evidence ledger."""
-import json
 import time
 import pytest
 from core.research_ledger import (
@@ -42,23 +41,12 @@ def test_log_and_resolve_prediction():
     with db_conn() as conn:
         cur = conn.cursor()
         ensure_research_schema(cur)
-        # Need contracts and artifacts for FK constraints
-        cur.execute(
-            "INSERT INTO ghost_research_contracts (contract_sha, name, version, label_type, live_compatible, definition, created_at) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
-            ("csha1", "tp_sl_swing", "v1", "tp_sl", True, '{}', now),
-        )
-        cur.execute(
-            "INSERT INTO ghost_research_artifacts (artifact_sha, model_sha256, contract_sha, direction, lineage_version, feature_names, label_schema, validation_schema, hold_bars, metadata, created_at) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
-            ("a" * 64, "b" * 64, "csha1", "UP", "1", '{"rsi"}', "v1", "v1", 3, '{}', now),
-        )
         conn.commit()
 
     with db_conn() as conn:
         cur = conn.cursor()
         pred_id = log_research_prediction(
-            contract_sha="csha1",
+            contract_id="csha1",
             artifact_sha="a" * 64,
             policy_lineage_id="lineage_1",
             symbol="WOLF",
@@ -106,27 +94,17 @@ def test_log_prediction_idempotent():
     with db_conn() as conn:
         cur = conn.cursor()
         ensure_research_schema(cur)
-        cur.execute(
-            "INSERT INTO ghost_research_contracts (contract_sha, name, version, label_type, live_compatible, definition, created_at) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
-            ("csha2", "tp_sl_swing", "v1", "tp_sl", True, '{}', now),
-        )
-        cur.execute(
-            "INSERT INTO ghost_research_artifacts (artifact_sha, model_sha256, contract_sha, direction, lineage_version, feature_names, label_schema, validation_schema, hold_bars, metadata, created_at) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
-            ("b" * 64, "c" * 64, "csha2", "UP", "1", '{"rsi"}', "v1", "v1", 3, '{}', now),
-        )
         conn.commit()
 
     with db_conn() as conn:
         cur = conn.cursor()
         id1 = log_research_prediction(
-            contract_sha="csha2", artifact_sha="b" * 64,
+            contract_id="csha2", artifact_sha="b" * 64,
             policy_lineage_id="l1", symbol="WOLF", direction="UP",
             issued_ts=now, feature_available_ts=now, output="UP", cur=cur,
         )
         id2 = log_research_prediction(
-            contract_sha="csha2", artifact_sha="b" * 64,
+            contract_id="csha2", artifact_sha="b" * 64,
             policy_lineage_id="l1", symbol="WOLF", direction="UP",
             issued_ts=now, feature_available_ts=now, output="UP", cur=cur,
         )
@@ -142,22 +120,12 @@ def test_resolution_idempotent():
     with db_conn() as conn:
         cur = conn.cursor()
         ensure_research_schema(cur)
-        cur.execute(
-            "INSERT INTO ghost_research_contracts (contract_sha, name, version, label_type, live_compatible, definition, created_at) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
-            ("csha3", "tp_sl_swing", "v1", "tp_sl", True, '{}', now),
-        )
-        cur.execute(
-            "INSERT INTO ghost_research_artifacts (artifact_sha, model_sha256, contract_sha, direction, lineage_version, feature_names, label_schema, validation_schema, hold_bars, metadata, created_at) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
-            ("c" * 64, "d" * 64, "csha3", "UP", "1", '{"rsi"}', "v1", "v1", 3, '{}', now),
-        )
         conn.commit()
 
     with db_conn() as conn:
         cur = conn.cursor()
         pred_id = log_research_prediction(
-            contract_sha="csha3", artifact_sha="c" * 64,
+            contract_id="csha3", artifact_sha="c" * 64,
             policy_lineage_id="l1", symbol="WOLF", direction="UP",
             issued_ts=now, feature_available_ts=now, output="UP", cur=cur,
         )
@@ -167,11 +135,13 @@ def test_resolution_idempotent():
         cur = conn.cursor()
         assert resolve_research_prediction(
             prediction_id=pred_id, resolver_id="r1", resolver_version="1.0",
-            outcome="WIN", cur=cur,
+            outcome="WIN", resolved_ts=now + 1,
+            evidence_available_ts=now + 1, cur=cur,
         )
         assert not resolve_research_prediction(
             prediction_id=pred_id, resolver_id="r1", resolver_version="1.0",
-            outcome="LOSS", cur=cur,
+            outcome="LOSS", resolved_ts=now + 1,
+            evidence_available_ts=now + 1, cur=cur,
         )
         conn.commit()
 
@@ -184,43 +154,34 @@ def test_get_pending_and_resolved():
     with db_conn() as conn:
         cur = conn.cursor()
         ensure_research_schema(cur)
-        cur.execute(
-            "INSERT INTO ghost_research_contracts (contract_sha, name, version, label_type, live_compatible, definition, created_at) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
-            ("csha4", "tp_sl_swing", "v1", "tp_sl", True, '{}', now),
-        )
-        cur.execute(
-            "INSERT INTO ghost_research_artifacts (artifact_sha, model_sha256, contract_sha, direction, lineage_version, feature_names, label_schema, validation_schema, hold_bars, metadata, created_at) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
-            ("d" * 64, "e" * 64, "csha4", "UP", "1", '{"rsi"}', "v1", "v1", 3, '{}', now),
-        )
         conn.commit()
 
     with db_conn() as conn:
         cur = conn.cursor()
         p1 = log_research_prediction(
-            contract_sha="csha4", artifact_sha="d" * 64,
+            contract_id="csha4", artifact_sha="d" * 64,
             policy_lineage_id="l1", symbol="WOLF", direction="UP",
             issued_ts=now, feature_available_ts=now, output="UP", cur=cur,
         )
         p2 = log_research_prediction(
-            contract_sha="csha4", artifact_sha="d" * 64,
+            contract_id="csha4", artifact_sha="d" * 64,
             policy_lineage_id="l1", symbol="WOLF", direction="UP",
             issued_ts=now + 1, feature_available_ts=now + 1, output="DOWN", cur=cur,
         )
         resolve_research_prediction(
             prediction_id=p1, resolver_id="r1", resolver_version="1.0",
-            outcome="WIN", cur=cur,
+            outcome="WIN", resolved_ts=now + 2,
+            evidence_available_ts=now + 2, cur=cur,
         )
         conn.commit()
 
     with db_conn() as conn:
         cur = conn.cursor()
-        pending = get_pending_predictions(contract_sha="csha4", cur=cur)
+        pending = get_pending_predictions(contract_id="csha4", cur=cur)
         assert len(pending) == 1
         assert pending[0]["id"] == p2
 
-        resolved = get_resolved_predictions(contract_sha="csha4", cur=cur)
+        resolved = get_resolved_predictions(contract_id="csha4", cur=cur)
         assert len(resolved) == 1
         assert resolved[0]["id"] == p1
         assert resolved[0]["outcome"] == "WIN"
@@ -234,28 +195,19 @@ def test_outbox_lifecycle():
     with db_conn() as conn:
         cur = conn.cursor()
         ensure_research_schema(cur)
-        cur.execute(
-            "INSERT INTO ghost_research_contracts (contract_sha, name, version, label_type, live_compatible, definition, created_at) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
-            ("csha5", "tp_sl_swing", "v1", "tp_sl", True, '{}', now),
-        )
-        cur.execute(
-            "INSERT INTO ghost_research_artifacts (artifact_sha, model_sha256, contract_sha, direction, lineage_version, feature_names, label_schema, validation_schema, hold_bars, metadata, created_at) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
-            ("e" * 64, "f" * 64, "csha5", "UP", "1", '{"rsi"}', "v1", "v1", 3, '{}', now),
-        )
         conn.commit()
 
     with db_conn() as conn:
         cur = conn.cursor()
         pred_id = log_research_prediction(
-            contract_sha="csha5", artifact_sha="e" * 64,
+            contract_id="csha5", artifact_sha="e" * 64,
             policy_lineage_id="l1", symbol="WOLF", direction="UP",
             issued_ts=now, feature_available_ts=now, output="UP", cur=cur,
         )
         resolve_research_prediction(
             prediction_id=pred_id, resolver_id="r1", resolver_version="1.0",
-            outcome="WIN", cur=cur,
+            outcome="WIN", resolved_ts=now + 1,
+            evidence_available_ts=now + 1, cur=cur,
         )
         conn.commit()
 
