@@ -39,8 +39,10 @@ def train_research_candidate(
     from core.signal_engine import (
         backtest_symbol,
         _active_feature_cols,
+        _collect_peer_rows,
         _train_one_direction,
     )
+    from core.engine_config import _v3_pool_training_enabled, _v3_wolf_sample_weight
 
     direction = direction.upper()
     if direction not in ("UP", "DOWN"):
@@ -60,10 +62,27 @@ def train_research_candidate(
         LOGGER.warning("No active feature columns")
         return None
 
-    # 3. Train using the production pipeline
+    # 3. Build the same direction-specific peer pool as production. The
+    # no-pooling discovery variant reaches this path through its env override.
+    pool_enabled = _v3_pool_training_enabled()
+    peer_pools: Dict[str, list] = {"UP": [], "DOWN": []}
+    peers_used = []
+    if pool_enabled:
+        peer_pools, peers_used = _collect_peer_rows(symbol)
+    peer_rows = peer_pools.get(direction) or []
+    pool_info = {
+        "enabled": pool_enabled,
+        "peer_sample_count": len(peer_rows),
+        "peer_sample_count_down": len(peer_pools.get("DOWN") or []),
+        "peers": peers_used,
+        "wolf_sample_weight": _v3_wolf_sample_weight(),
+    }
+
+    # 4. Train using the production pipeline
     try:
         passed, detail, model_bytes, meta_json = _train_one_direction(
-            rows, symbol, direction, active_cols, [], False, {},
+            rows, symbol, direction, active_cols,
+            peer_rows, peers_used, pool_info,
         )
     except Exception as e:
         LOGGER.warning("Training failed for %s/%s: %s", symbol, direction, str(e)[:120])
@@ -74,19 +93,19 @@ def train_research_candidate(
                      symbol, direction, detail.get("fail_reason", "unknown"))
         return None
 
-    # 4. Compute model SHA-256 from raw bytes
+    # 5. Compute model SHA-256 from raw bytes
     # model_bytes is a base64-encoded string from _train_one_direction.
     # Hash the raw bytes, not the base64 string.
     raw_model_bytes = base64.b64decode(model_bytes, validate=True)
     model_sha256 = hashlib.sha256(raw_model_bytes).hexdigest()
 
-    # 5. Parse metadata
+    # 6. Parse metadata
     meta = json.loads(meta_json) if isinstance(meta_json, str) else meta_json
     feature_order = tuple(meta.get("feature_cols", active_cols))
 
-    # 6. Compute artifact package SHA using the canonical contract ID
+    # 7. Compute artifact package SHA using the canonical contract ID
     from core.research_artifacts import compute_artifact_sha
-    from core.research_contracts import live_compatible_contract
+    from core.research_contracts import CURRENT_LIVE_CONTRACT_VERSION, get_contract
     from core.signal_engine import (
         _v3_feature_schema,
         _v3_label_schema,
@@ -94,10 +113,23 @@ def train_research_candidate(
         V3_LABEL_HOLD_BARS,
     )
 
-    contract = live_compatible_contract()
+    # Bind every variant to the preregistered task identity. A transient
+    # feature-schema override may make the candidate incompatible with that
+    # contract; discovery records and rejects that condition below rather than
+    # silently changing contract identity mid-family.
+    contract = get_contract("tp_sl_swing", CURRENT_LIVE_CONTRACT_VERSION)
     if contract is None:
-        raise RuntimeError("no_live_compatible_research_contract")
+        raise RuntimeError("current_research_contract_not_registered")
     contract_id = contract.contract_id()
+    feature_schema = _v3_feature_schema()
+    label_schema = _v3_label_schema()
+    validation_schema = _v3_validation_schema()
+    contract_compatible = (
+        feature_schema == contract.feature_schema
+        and label_schema == contract.evidence_schema
+        and validation_schema == contract.validation_schema
+        and V3_LABEL_HOLD_BARS == contract.horizon_bars
+    )
     try:
         trained_at = int(float(meta["trained_at"]))
     except (KeyError, TypeError, ValueError, OverflowError):
@@ -131,9 +163,9 @@ def train_research_candidate(
         policy_lineage_id=f"{symbol}/{direction}",
         policy_lineage_version=1,
         feature_order=feature_order,
-        feature_schema=_v3_feature_schema(),
-        label_schema=_v3_label_schema(),
-        validation_schema=_v3_validation_schema(),
+        feature_schema=feature_schema,
+        label_schema=label_schema,
+        validation_schema=validation_schema,
         hold_bars=V3_LABEL_HOLD_BARS,
         calibration_proof=precision_info,
         gate_proof=gate_proof,
@@ -141,7 +173,7 @@ def train_research_candidate(
         trained_at=trained_at,
     )
 
-    # 7. Build candidate bundle
+    # 8. Build candidate bundle
     return {
         "symbol": symbol,
         "direction": direction,
@@ -149,10 +181,11 @@ def train_research_candidate(
         "model_sha256": model_sha256,
         "artifact_sha": artifact_sha,
         "feature_order": feature_order,
-        "feature_schema": _v3_feature_schema(),
-        "label_schema": _v3_label_schema(),
-        "validation_schema": _v3_validation_schema(),
+        "feature_schema": feature_schema,
+        "label_schema": label_schema,
+        "validation_schema": validation_schema,
         "hold_bars": V3_LABEL_HOLD_BARS,
+        "contract_compatible": contract_compatible,
         "meta": meta,
         "detail": detail,
         "calibration_proof": precision_info,

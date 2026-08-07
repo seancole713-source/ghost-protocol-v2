@@ -38,6 +38,7 @@ def test_candidate_preserves_production_precision_and_gate_metrics(monkeypatch):
         lambda symbol, asset_type: ([{"row": index} for index in range(50)], []),
     )
     monkeypatch.setattr(signal_engine, "_active_feature_cols", lambda: ["rsi", "macd"])
+    monkeypatch.setenv("V3_POOL_TRAINING", "off")
     monkeypatch.setattr(
         signal_engine,
         "_train_one_direction",
@@ -47,6 +48,7 @@ def test_candidate_preserves_production_precision_and_gate_metrics(monkeypatch):
     candidate = train_research_candidate("WOLF", "UP")
 
     assert candidate is not None
+    assert candidate["contract_compatible"] is False
     assert candidate["precision_gate"] == {"ok": True, "threshold": 0.72}
     assert candidate["calibration_proof"] == {
         "ok": True,
@@ -66,6 +68,49 @@ def test_candidate_preserves_production_precision_and_gate_metrics(monkeypatch):
         "gate_n": None,
         "feature_inversions": ["macd"],
     }
+
+
+def test_candidate_threads_production_pool_metadata(monkeypatch):
+    import core.signal_engine as signal_engine
+
+    raw_model = pickle.dumps({"model": "pooled"}, protocol=5)
+    encoded_model = base64.b64encode(raw_model).decode("ascii")
+    captured = {}
+
+    monkeypatch.setenv("V3_POOL_TRAINING", "on")
+    monkeypatch.setattr(
+        signal_engine,
+        "backtest_symbol",
+        lambda symbol, asset_type: ([{"row": index} for index in range(50)], []),
+    )
+    monkeypatch.setattr(signal_engine, "_active_feature_cols", lambda: ["rsi"])
+    monkeypatch.setattr(
+        signal_engine,
+        "_collect_peer_rows",
+        lambda symbol: ({"UP": [{"peer": 1}], "DOWN": []}, [{"symbol": "PEER", "n": 1}]),
+    )
+
+    def fake_train(rows, symbol, direction, active_cols, peer_rows, peers_used, pool_info):
+        captured.update(
+            peer_rows=peer_rows,
+            peers_used=peers_used,
+            pool_info=pool_info,
+        )
+        detail = {
+            "holdout_acc": 0.8,
+            "wf_edge_mean": 0.1,
+            "wf_fold_count": 5,
+            "calibration": {"precision_gate": {}},
+        }
+        return True, detail, encoded_model, json.dumps({"feature_cols": ["rsi"]})
+
+    monkeypatch.setattr(signal_engine, "_train_one_direction", fake_train)
+
+    assert train_research_candidate("WOLF", "UP") is not None
+    assert captured["peer_rows"] == [{"peer": 1}]
+    assert captured["peers_used"] == [{"symbol": "PEER", "n": 1}]
+    assert captured["pool_info"]["enabled"] is True
+    assert captured["pool_info"]["peer_sample_count"] == 1
 
 
 def test_discovery_gates_use_normalized_candidate_metrics():
@@ -97,6 +142,34 @@ def test_discovery_gates_use_normalized_candidate_metrics():
     assert values["wf_edge"] == 0.09
     assert values["wf_folds"] == 5
     assert values["precision_gate"] == 0.8389
+
+
+def test_discovery_rejects_contract_incompatible_candidate():
+    from scripts.research_discovery import evaluate_candidate_gates
+
+    candidate = {
+        "contract_compatible": False,
+        "holdout": {
+            "holdout_acc": 0.90,
+            "wf_edge_mean": 0.30,
+            "wf_fold_count": 5,
+            "gate_brier": 0.10,
+            "natural_rate": 0.50,
+        },
+        "precision_gate": {
+            "ok": True,
+            "target": 0.70,
+            "threshold": 0.8,
+            "calib": {"wins": 20, "support": 20},
+            "gate": {"wins": 20, "support": 20, "wilson_low": 0.84},
+        },
+    }
+
+    result = evaluate_candidate_gates(candidate)
+
+    assert result["passed"] is False
+    gate = next(g for g in result["gates"] if g["name"] == "contract_compatible")
+    assert gate["passed"] is False
 
 
 def test_discovery_recomputes_precision_proof_and_selects_one_finalist():

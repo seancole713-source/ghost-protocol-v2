@@ -124,6 +124,17 @@ def evaluate_candidate_gates(
     precision = candidate.get("precision_gate", {})
     precision_gate = precision.get("gate", {}) if isinstance(precision, dict) else {}
 
+    # Feature/label/horizon overrides cannot inherit the live contract merely
+    # because the model performs well. They require an explicit new contract.
+    contract_compatible = bool(candidate.get("contract_compatible", True))
+    gates.append({
+        "name": "contract_compatible",
+        "passed": contract_compatible,
+        "value": contract_compatible,
+        "threshold": True,
+        "reason": "" if contract_compatible else "candidate schema differs from frozen live contract",
+    })
+
     # 1. Holdout accuracy
     acc = float(holdout.get("holdout_acc", 0))
     gates.append({
