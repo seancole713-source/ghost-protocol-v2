@@ -172,6 +172,17 @@ def test_discovery_rejects_contract_incompatible_candidate():
     assert gate["passed"] is False
 
 
+def test_discovery_preflight_rejects_transient_schema_change(monkeypatch):
+    from scripts.research_discovery import _frozen_contract_compatibility
+
+    monkeypatch.setenv("V3_POOL_TRAINING", "off")
+
+    compatible, reason = _frozen_contract_compatibility()
+
+    assert compatible is False
+    assert "feature_schema" in reason
+
+
 def test_discovery_recomputes_precision_proof_and_selects_one_finalist():
     from scripts.research_discovery import (
         evaluate_candidate_gates,

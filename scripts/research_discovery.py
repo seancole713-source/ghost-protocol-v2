@@ -244,6 +244,33 @@ def _gate_value(candidate: Dict[str, Any], gate_name: str) -> float:
     return 0.0
 
 
+def _frozen_contract_compatibility() -> tuple[bool, str]:
+    """Check transient variant settings against the preregistered live task."""
+    from core.research_contracts import CURRENT_LIVE_CONTRACT_VERSION, get_contract
+    from core.signal_engine import (
+        V3_LABEL_HOLD_BARS,
+        _v3_feature_schema,
+        _v3_label_schema,
+        _v3_validation_schema,
+    )
+
+    contract = get_contract("tp_sl_swing", CURRENT_LIVE_CONTRACT_VERSION)
+    if contract is None:
+        return False, "current_contract_not_registered"
+    mismatches = []
+    if _v3_feature_schema() != contract.feature_schema:
+        mismatches.append("feature_schema")
+    if _v3_label_schema() != contract.evidence_schema:
+        mismatches.append("evidence_schema")
+    if _v3_validation_schema() != contract.validation_schema:
+        mismatches.append("validation_schema")
+    if V3_LABEL_HOLD_BARS != contract.horizon_bars:
+        mismatches.append("horizon_bars")
+    if mismatches:
+        return False, "frozen_contract_mismatch:" + ",".join(mismatches)
+    return True, "compatible"
+
+
 def select_forward_finalists(
     passing_candidates: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
@@ -307,6 +334,20 @@ def run_discovery(
         previous_env = _apply_env(variant.get("env_overrides", {}))
 
         variant_results: List[Dict[str, Any]] = []
+        compatible, compatibility_reason = _frozen_contract_compatibility()
+        if not compatible:
+            print(f"  SKIP: {compatibility_reason}", flush=True)
+            results.append({
+                "variant": variant["name"],
+                "type": "production",
+                "description": variant["description"],
+                "candidates": [],
+                "passed_count": 0,
+                "total_count": 0,
+                "skipped": compatibility_reason,
+            })
+            _restore_env(previous_env)
+            continue
         for sym in symbols:
             try:
                 candidate = train_research_candidate(sym, direction)
@@ -365,6 +406,23 @@ def run_discovery(
         se.base_vol_pct = scaled_vol
 
         variant_results = []
+        compatible, compatibility_reason = _frozen_contract_compatibility()
+        if not compatible:
+            print(f"  SKIP: {compatibility_reason}", flush=True)
+            results.append({
+                "variant": variant["name"],
+                "type": "geometry",
+                "target_scale": variant["target_scale"],
+                "stop_mult": variant["stop_mult"],
+                "candidates": [],
+                "passed_count": 0,
+                "total_count": 0,
+                "skipped": compatibility_reason,
+            })
+            vt.base_vol_pct = orig_base
+            se.base_vol_pct = orig_engine_base
+            _restore_env(previous_env)
+            continue
         for sym in symbols:
             try:
                 candidate = train_research_candidate(sym, direction)
