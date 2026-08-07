@@ -99,6 +99,7 @@ def test_log_prediction_cycle_inserts_rows(monkeypatch):
     )
     assert cycle_id == 99
     sqls = " ".join(s[0] for s in executed)
+    assert "pg_advisory_xact_lock" in sqls
     assert "ghost_perf_cycles" in sqls
     assert "ghost_perf_symbol_evals" in sqls
     assert "ghost_perf_events" in sqls

@@ -13,10 +13,14 @@ import json
 import logging
 import math
 import os
+import threading
 import time
 from core.quiet import note_suppressed
 from datetime import datetime, timezone
+from functools import wraps
 from typing import Optional, List, Dict, Any, Tuple
+from config.symbols import OFFICIAL_WATCHLIST as _OFFICIAL_WATCHLIST
+from config.symbols import _env_stock_symbols
 from core.db import db_conn, ensure_ghost_state
 from core.prediction_filters import NON_RESEARCH_WHERE, RESOLVED_FOR_WINRATE_WHERE, V32_ERA_MIN_ID
 from core.vol_targets import base_vol_pct, stop_pct_from_vol
@@ -29,6 +33,31 @@ LOGGER = logging.getLogger("ghost.prediction")
 
 # Serialize prediction saves across concurrent cycles (market scan + cron overlap).
 _PREDICTION_SAVE_LOCK_ID = 8723491
+_PREDICTION_CYCLE_LOCK = threading.Lock()
+
+
+def _serialize_prediction_cycle(fn):
+    """Prevent duplicate scans from racing before they reach the save lock."""
+    @wraps(fn)
+    def wrapped(with_diag: bool = False):
+        if not _PREDICTION_CYCLE_LOCK.acquire(blocking=False):
+            LOGGER.warning("Prediction cycle skipped: another cycle is still running")
+            if with_diag:
+                return [], {
+                    "symbols_scanned": 0,
+                    "candidates": 0,
+                    "saved": 0,
+                    "dedup_blocked": 0,
+                    "skip_counts": {"cycle_in_progress": 1},
+                    "top_reason_code": "cycle_in_progress",
+                    "top_reason_label": "another prediction cycle is still running",
+                }
+            return []
+        try:
+            return fn(with_diag=with_diag)
+        finally:
+            _PREDICTION_CYCLE_LOCK.release()
+    return wrapped
 
 
 def _valid_pick_geometry(pick: Dict[str, Any]) -> bool:
@@ -85,9 +114,6 @@ FALSIFICATION_THRESHOLD: Dict[str, float] = {
     "north_star": 0.80,     # ... and 95% CI upper-bound below this => abandon the 80% claim
     "ci_level": 0.95,
 }
-
-# Symbol universe — official watchlist (config/symbols.py); env override in tests only.
-from config.symbols import _env_stock_symbols
 
 CRYPTO_SYMBOLS: List[str] = []
 STOCK_SYMBOLS: List[str] = _env_stock_symbols() or ["WOLF"]
@@ -579,7 +605,6 @@ def _watchlist_scan_enabled() -> bool:
 
 EXCLUDE = set(s for s in os.getenv("EXCLUDE_SYMBOLS","").split(",") if s.strip())
 # PR #76: write-side watchlist guard — only OFFICIAL_WATCHLIST symbols may be saved.
-from config.symbols import OFFICIAL_WATCHLIST as _OFFICIAL_WATCHLIST
 _WATCHLIST_SET = frozenset(_OFFICIAL_WATCHLIST)
 _OBJECTIVE_RUNTIME_MODE_CACHE: Dict[str, Any] = {"mode": None, "ts": 0.0}
 
@@ -1025,7 +1050,8 @@ def _legacy_signal(symbol, current_price):
                 if _wr < 0.15:
                     LOGGER.info("T22 SKIP " + symbol + " poor WR: " + str(round(_wr*100,1)) + "% on " + str(_r[0]) + " picks")
                     return None
-    except Exception: pass
+    except Exception:
+        pass
     """
     Core signal logic. Returns (direction, confidence) or None.
     Uses v2 resolved picks + legacy ghost_prediction_outcomes as fallback.
@@ -1326,11 +1352,16 @@ def _predict_symbol_ex(symbol, asset_type, regime, scores_out=None):
         FEATURE_ASOF_KEY:   int(feature_asof if feature_asof is not None else feature_asof_unix(now)),
     }
 
-    if confidence >= 0.90:   pos_pct = 5.0
-    elif confidence >= 0.85: pos_pct = 4.0
-    elif confidence >= 0.80: pos_pct = 3.0
-    elif confidence >= 0.75: pos_pct = 2.0
-    else:                    pos_pct = 1.0
+    if confidence >= 0.90:
+        pos_pct = 5.0
+    elif confidence >= 0.85:
+        pos_pct = 4.0
+    elif confidence >= 0.80:
+        pos_pct = 3.0
+    elif confidence >= 0.75:
+        pos_pct = 2.0
+    else:
+        pos_pct = 1.0
     # Journal a ghost-score component snapshot (roadmap #4b/B) so true component
     # attribution accrues going forward. Best-effort — never blocks a pick.
     try:
@@ -1414,6 +1445,7 @@ def _symbol_has_open_pick(cur, symbol: str, now_ts: int = None) -> bool:
     return cur.fetchone() is not None
 
 
+@_serialize_prediction_cycle
 def run_prediction_cycle(with_diag: bool = False):
     """Run predictions. Returns list of saved picks. Does NOT send Telegram.
 

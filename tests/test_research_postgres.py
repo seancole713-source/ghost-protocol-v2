@@ -453,7 +453,7 @@ def test_proven_artifact_activation_lease_and_rollback_lifecycle(monkeypatch):
 
     with _isolated_schema("research_activation") as (conn, _schema):
         proof_start = int(time.time()) - 60 * 86400
-        contract = get_contract("tp_sl_swing", "v1")
+        contract = get_contract("tp_sl_swing", "v2")
         assert contract is not None
         contract_id = contract.contract_id()
         precision_proof = {

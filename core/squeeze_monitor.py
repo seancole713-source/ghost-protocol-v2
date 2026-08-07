@@ -24,6 +24,15 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+from core.market_hours import (
+    PREMARKET_START_MIN,
+    RTH_CLOSE_MIN,
+    RTH_MINUTES,
+    RTH_OPEN_MIN,
+    SESSION_TZ,
+    session_hm,
+)
+
 LOGGER = logging.getLogger("ghost.squeeze")
 
 CHECK_INTERVAL_SEC = int(os.getenv("SQUEEZE_MONITOR_INTERVAL", "60"))
@@ -49,14 +58,6 @@ FORMING_VOL_MULT = float(os.getenv("SQUEEZE_FORMING_VOL_MULT", "2.0"))
 TP_PCT_ACTIVE = float(os.getenv("SQUEEZE_TP_PCT_ACTIVE", "4.0"))
 TP_PCT_FORMING = float(os.getenv("SQUEEZE_TP_PCT_FORMING", "2.5"))
 
-from core.market_hours import (
-    PREMARKET_START_MIN,
-    RTH_CLOSE_MIN,
-    RTH_MINUTES,
-    RTH_OPEN_MIN,
-    SESSION_TZ,
-    session_hm,
-)
 _TIMEOUT = float(os.getenv("PRICE_PROVIDER_TIMEOUT_S", "8.0"))
 
 COOLDOWN_SEC = int(os.getenv("SQUEEZE_ALERT_COOLDOWN", "7200"))
@@ -378,7 +379,9 @@ async def prewarm_short_cache() -> None:
         if not is_us_extended_hours():
             return
         try:
-            _short_context(sym)
+            # Keep the blocking vendor client off the event loop. Await one at
+            # a time so a slow provider cannot leak an unbounded thread fan-out.
+            await asyncio.to_thread(_short_context, sym)
         except Exception as exc:
             LOGGER.debug("[SqueezeMonitor] prewarm %s: %s", sym, exc)
         await asyncio.sleep(delay)
@@ -482,23 +485,36 @@ async def _run_watchlist_scan() -> None:
     except Exception as exc:
         LOGGER.debug("[SqueezeMonitor] batch prewarm failed, per-symbol fallback: %s", exc)
         _batch_bars.clear()
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        tasks = {
-            sym: loop.run_in_executor(pool, _sync_fetch_metrics, sym) for sym in symbols
-        }
-        metrics_map: Dict[str, Optional[Dict[str, Any]]] = {}
-        for sym, task in tasks.items():
+    # A successful batch prewarm contains every field the radar needs. Only
+    # batch misses use the slow per-symbol provider chain.
+    metrics_map: Dict[str, Optional[Dict[str, Any]]] = {}
+    fallback_symbols: List[str] = []
+    for sym in symbols:
+        metrics = _metrics_from_batch_bars(sym)
+        if metrics is None:
+            fallback_symbols.append(sym)
+        else:
+            metrics_map[sym] = metrics
+    pool = ThreadPoolExecutor(max_workers=workers)
+    try:
+        for sym in fallback_symbols:
+            task = loop.run_in_executor(pool, _sync_fetch_metrics, sym)
             try:
                 metrics_map[sym] = await asyncio.wait_for(task, timeout=fetch_timeout)
             except asyncio.TimeoutError:
                 LOGGER.warning("[SqueezeMonitor] fetch timeout %s (%.0fs)", sym, fetch_timeout)
                 metrics_map[sym] = None
+                # The underlying vendor thread cannot be cancelled. Do not
+                # queue the rest of the universe behind the same stuck worker.
+                break
             except Exception as exc:
                 LOGGER.debug("[SqueezeMonitor] fetch %s: %s", sym, exc)
                 metrics_map[sym] = None
             # Inter-symbol delay to prevent API rate-limit storms
             if fetch_delay > 0:
                 await asyncio.sleep(fetch_delay)
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
     # Scan complete — drop the prewarmed bars so nothing reads them stale.
     _batch_bars.clear()
 
@@ -525,13 +541,13 @@ async def _run_watchlist_scan() -> None:
         kind = evaluate_squeeze_signal(peak_pct, current_pct, rvol, short_risk=None)
         short_ctx: Dict[str, Any] = {}
         if not kind and prefilter_candidate(peak_pct, current_pct, rvol):
-            short_ctx = _short_context(symbol)
+            short_ctx = _cached_short_context(symbol)
             short_ctx_map[symbol] = short_ctx
             kind = evaluate_squeeze_signal(
                 peak_pct, current_pct, rvol, short_risk=short_ctx.get("squeeze_risk"),
             )
         elif kind:
-            short_ctx = _short_context(symbol)
+            short_ctx = _cached_short_context(symbol)
             short_ctx_map[symbol] = short_ctx
 
         if kind:
@@ -570,7 +586,7 @@ async def _run_watchlist_scan() -> None:
         if not metrics:
             enriched.append(leader)
             continue
-        short_ctx = short_ctx_map.get(sym) or _short_context(sym)
+        short_ctx = short_ctx_map.get(sym) or _cached_short_context(sym)
         enriched.append(
             build_scorecard_row(
                 sym,
@@ -649,6 +665,18 @@ def _short_context(symbol: str) -> Dict[str, Any]:
     out["squeeze_risk"] = _squeeze_risk_tag(out["short_float_pct"], out["days_to_cover"])
     _short_cache[sym] = (time.time(), out)
     return out
+
+
+def _cached_short_context(symbol: str) -> Dict[str, Any]:
+    """Return only already-warmed short data; never block the live scan."""
+    cached = _short_cache.get(symbol.upper())
+    if cached and (time.time() - cached[0]) < _SHORT_CACHE_TTL:
+        return dict(cached[1])
+    return {
+        "short_float_pct": None,
+        "days_to_cover": None,
+        "squeeze_risk": None,
+    }
 
 
 def _yf_short_enabled() -> bool:
@@ -757,11 +785,11 @@ def _vwap_from_bars(bars: List[Dict[str, Any]]) -> Optional[float]:
         if v <= 0:
             continue
         h = float(b.get("h", 0) or 0)
-        l = float(b.get("l", 0) or 0)
+        low = float(b.get("l", 0) or 0)
         c = float(b.get("c", 0) or 0)
-        if h <= 0 and l <= 0 and c <= 0:
+        if h <= 0 and low <= 0 and c <= 0:
             continue
-        tp = (h + l + c) / 3.0
+        tp = (h + low + c) / 3.0
         num += tp * v
         den += v
     return round(num / den, 4) if den > 0 else None
@@ -784,6 +812,41 @@ def _volumes_from_bars(
         session_vol = sum(float(b.get("v", 0)) for b in intraday_bars if b.get("v"))
         vwap = _vwap_from_bars(intraday_bars)
     return avg_vol, session_vol, vwap
+
+
+def _metrics_from_batch_bars(symbol: str) -> Optional[Dict[str, Any]]:
+    """Build the complete radar snapshot from prewarmed Alpaca bars."""
+    cached = _batch_bars.get(symbol.upper())
+    if not cached:
+        return None
+    daily = list(cached.get("daily") or [])
+    intraday = list(cached.get("intraday") or [])
+    if not daily or not intraday:
+        return None
+    try:
+        price = float(intraday[-1].get("c") or 0.0)
+        session_high = max(float(bar.get("h") or 0.0) for bar in intraday)
+        if len(daily) >= 2:
+            prior_close = float(daily[-2].get("c") or 0.0)
+        else:
+            prior_close = float(daily[-1].get("o") or 0.0)
+        avg_vol, session_vol, vwap = _volumes_from_bars(daily, intraday)
+        if min(price, session_high, prior_close) <= 0 or not avg_vol or avg_vol <= 0:
+            return None
+        if not session_vol or session_vol <= 0:
+            session_vol = avg_vol * 0.4
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return {
+        "price": price,
+        "prior_close": prior_close,
+        "session_high": session_high,
+        "session_volume": float(session_vol),
+        "avg_daily_volume": float(avg_vol),
+        "vwap": vwap,
+        "peak_move_pct": (session_high - prior_close) / prior_close * 100,
+        "current_move_pct": (price - prior_close) / prior_close * 100,
+    }
 
 
 def _alpaca_multi_bars(

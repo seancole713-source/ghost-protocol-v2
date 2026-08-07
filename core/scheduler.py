@@ -5,9 +5,11 @@ One scheduler. All tasks registered here. No duplicates.
 P2-2 (audit): per-task timeout via asyncio.wait_for prevents one slow task
 from stalling all background jobs.
 """
-import asyncio, logging, time
-from typing import Callable, Dict, List, Optional
+import asyncio
+import logging
+import time
 from dataclasses import dataclass, field
+from typing import Callable, Dict, List, Optional
 
 LOGGER = logging.getLogger("ghost.scheduler")
 
@@ -71,12 +73,23 @@ async def _loop():
 async def _run_task(task: Task):
     """Run a single task with timeout, catch errors, update metadata."""
     task.running = True
+    is_async = asyncio.iscoroutinefunction(task.fn)
+    executor_future = None
     try:
         task.last_run = time.time()
-        coro = task.fn() if asyncio.iscoroutinefunction(task.fn) else asyncio.get_event_loop().run_in_executor(None, task.fn)
+        if is_async:
+            coro = task.fn()
+        else:
+            executor_future = asyncio.get_running_loop().run_in_executor(None, task.fn)
+            coro = executor_future
         timeout = task.timeout_s if task.timeout_s and task.timeout_s > 0 else None
         if timeout:
-            await asyncio.wait_for(coro, timeout=timeout)
+            # A thread-pool future cannot be cancelled once the function has
+            # started. Shield it so a timeout remains an alert, while keeping
+            # task.running true until the real worker exits. Otherwise the next
+            # scheduler tick can overlap a still-running database writer.
+            awaited = coro if is_async else asyncio.shield(coro)
+            await asyncio.wait_for(awaited, timeout=timeout)
         else:
             await coro
         task.run_count += 1
@@ -85,6 +98,18 @@ async def _run_task(task: Task):
         task.timeout_count += 1
         task.last_error = f"timeout after {task.timeout_s}s"
         LOGGER.error(f"Task {task.name} TIMEOUT after {task.timeout_s}s (timeout #{task.timeout_count})")
+        if executor_future is not None:
+            try:
+                await executor_future
+                task.run_count += 1
+                LOGGER.warning(
+                    "Task %s completed after timeout; overlap remained blocked",
+                    task.name,
+                )
+            except Exception as exc:
+                task.error_count += 1
+                task.last_error = str(exc)[:200]
+                LOGGER.error("Task %s failed after timeout: %s", task.name, exc)
     except Exception as e:
         task.error_count += 1
         task.last_error = str(e)[:200]

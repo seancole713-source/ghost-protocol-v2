@@ -25,6 +25,45 @@ def test_volumes_from_bars_handles_empty():
     assert sm._volumes_from_bars([], []) == (None, None, None)
 
 
+def test_metrics_from_batch_bars_avoids_per_symbol_quote_path(monkeypatch):
+    monkeypatch.setattr(
+        sm,
+        "_batch_bars",
+        {
+            "AAPL": {
+                "daily": [
+                    {"o": 98, "c": 100, "v": 1000},
+                    {"o": 100, "c": 102, "v": 1200},
+                ],
+                "intraday": [
+                    {"c": 104, "h": 105, "l": 103, "v": 100},
+                    {"c": 106, "h": 107, "l": 105, "v": 200},
+                ],
+            }
+        },
+    )
+
+    metrics = sm._metrics_from_batch_bars("aapl")
+
+    assert metrics is not None
+    assert metrics["price"] == 106
+    assert metrics["prior_close"] == 100
+    assert metrics["session_high"] == 107
+    assert metrics["session_volume"] == 300
+    assert metrics["current_move_pct"] == 6
+
+
+def test_cached_short_context_never_fetches(monkeypatch):
+    monkeypatch.setattr(sm, "_short_cache", {})
+    monkeypatch.setattr(
+        sm,
+        "_short_context",
+        lambda _symbol: (_ for _ in ()).throw(AssertionError("network path called")),
+    )
+
+    assert sm._cached_short_context("AAPL")["squeeze_risk"] is None
+
+
 def test_fetch_volumes_uses_batch_store_without_network(monkeypatch):
     # If _fetch_volumes touches the network when a batch entry exists, fail loud.
     def _boom():

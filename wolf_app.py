@@ -1405,14 +1405,14 @@ async def lifespan(app: FastAPI):
     from core import scheduler
     from core.prediction import reconcile_outcomes
     from core.news import run_news_cycle
-    scheduler.register("morning_card", _morning_card_job, interval_s=86400)
+    scheduler.register("morning_card", _morning_card_job, interval_s=86400, timeout_s=600)
     # Market-hours scan loop (roadmap #3a): tick at the market interval; the job
     # self-gates to SCAN_INTERVAL_MARKET_MIN / SCAN_INTERVAL_OFFHOURS_MIN.
     try:
         _scan_tick = max(300, int(os.getenv("SCAN_INTERVAL_MARKET_MIN", "30")) * 60)
     except Exception:
         _scan_tick = 1800
-    scheduler.register("market_scan", _market_scan_job, interval_s=_scan_tick)
+    scheduler.register("market_scan", _market_scan_job, interval_s=_scan_tick, timeout_s=600)
     # Watchdog: real-time hit alerts every 5 minutes
     from core.watchdog import run_watchdog
     scheduler.register("watchdog", run_watchdog, interval_s=300)

@@ -86,7 +86,7 @@ def train_research_candidate(
 
     # 6. Compute artifact package SHA using the canonical contract ID
     from core.research_artifacts import compute_artifact_sha
-    from core.research_contracts import get_contract
+    from core.research_contracts import live_compatible_contract
     from core.signal_engine import (
         _v3_feature_schema,
         _v3_label_schema,
@@ -94,9 +94,10 @@ def train_research_candidate(
         V3_LABEL_HOLD_BARS,
     )
 
-    # Resolve the canonical contract SHA for tp_sl_swing/v1
-    contract = get_contract("tp_sl_swing", "v1")
-    contract_id = contract.contract_id() if contract else "tp_sl_swing/v1"
+    contract = live_compatible_contract()
+    if contract is None:
+        raise RuntimeError("no_live_compatible_research_contract")
+    contract_id = contract.contract_id()
     try:
         trained_at = int(float(meta["trained_at"]))
     except (KeyError, TypeError, ValueError, OverflowError):

@@ -416,9 +416,11 @@ def run_discovery(
     if finalists:
         from core.research_artifacts import ArtifactMeta, register_artifact
         from core.research_forward import register_forward_experiment
-        from core.research_contracts import get_contract
-        contract = get_contract("tp_sl_swing", "v1")
-        contract_id = contract.contract_id() if contract else "tp_sl_swing/v1"
+        from core.research_contracts import live_compatible_contract
+        contract = live_compatible_contract()
+        if contract is None:
+            raise RuntimeError("no_live_compatible_research_contract")
+        contract_id = contract.contract_id()
         for f in finalists:
             try:
                 # Use the stored candidate bundle from the sweep — do NOT retrain

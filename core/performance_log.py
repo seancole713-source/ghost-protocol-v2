@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional
 LOGGER = logging.getLogger("ghost.performance_log")
 
 _RETENTION_DAYS = max(7, int(os.getenv("GHOST_PERF_RETENTION_DAYS", "90")))
+_PERF_CYCLE_LOCK_ID = 8723492
 
 
 def perf_log_enabled() -> bool:
@@ -141,9 +142,11 @@ def symbol_eval_from_scan(
     scores: Dict[str, Any],
     eval_ts: int,
 ) -> Dict[str, Any]:
-    meta = scores.get("model_meta") if isinstance(scores.get("model_meta"), dict) else {}
-    regime = scores.get("regime") if isinstance(scores.get("regime"), dict) else {}
-    score_direction = str(scores.get("winning_direction") or "").upper()
+    raw_meta = scores.get("model_meta")
+    raw_regime = scores.get("regime")
+    meta: Dict[str, Any] = raw_meta if isinstance(raw_meta, dict) else {}
+    regime: Dict[str, Any] = raw_regime if isinstance(raw_regime, dict) else {}
+    score_direction: Optional[str] = str(scores.get("winning_direction") or "").upper()
     if score_direction not in ("UP", "DOWN"):
         score_direction = None
     return {
@@ -193,6 +196,10 @@ def log_prediction_cycle(
     """Persist one cycle + symbol evals. Returns cycle_id."""
     if not perf_log_enabled():
         return None
+    # Serialize the parent/child/event transaction across app replicas. Full
+    # prediction cycles are process-guarded, but this lock is the database-level
+    # backstop that prevents concurrent performance writers from deadlocking.
+    cur.execute("SELECT pg_advisory_xact_lock(%s)", (_PERF_CYCLE_LOCK_ID,))
     ensure_perf_tables(cur)
     now = int(time.time())
     cur.execute(

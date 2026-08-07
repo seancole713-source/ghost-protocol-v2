@@ -13,10 +13,11 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
 LOGGER = logging.getLogger("ghost.research_contracts")
+CURRENT_LIVE_CONTRACT_VERSION = "v2"
 
 # ── frozen spec types ──────────────────────────────────────────────────────
 
@@ -190,9 +191,13 @@ def is_live_compatible(contract: PredictionContract) -> bool:
       - output domain is exactly {"UP", "DOWN"}
       - schemas match current live configuration
     """
+    if contract.lifecycle != "ACTIVE":
+        return False
     if not contract.live_eligible:
         return False
     if contract.name != "tp_sl_swing":
+        return False
+    if contract.version != CURRENT_LIVE_CONTRACT_VERSION:
         return False
     if contract.output_domain != frozenset({"UP", "DOWN"}):
         return False
@@ -227,8 +232,8 @@ def live_compatible_contract() -> Optional[PredictionContract]:
 
 # ── v1 contract definitions ────────────────────────────────────────────────
 
-def _register_v1_contracts() -> None:
-    """Register the five v1 research contracts. Idempotent."""
+def _register_contracts() -> None:
+    """Register frozen historical contracts and the current live contract."""
     from core.signal_engine import (
         _v3_feature_schema,
         _v3_label_schema,
@@ -246,6 +251,37 @@ def _register_v1_contracts() -> None:
             "chronological touch wins; same-bar target+stop collision is LOSS; "
             "no touch after complete horizon is EXPIRED. Precision denominator "
             "is WIN vs non-WIN (LOSS + EXPIRED)."
+        ),
+        output_domain=frozenset({"UP", "DOWN"}),
+        outcome_domain=OutcomeSpec(
+            terminal_outcomes=frozenset({"WIN", "LOSS", "EXPIRED"}),
+            expired_is_non_win=True,
+        ),
+        horizon_bars=V3_LABEL_HOLD_BARS,
+        feature_schema=_v3_feature_schema(),
+        evidence_schema=_v3_label_schema(),
+        validation_schema=_v3_validation_schema(),
+        resolver_id="tp_sl_bar_path/v1",
+        resolver_version="1.0.0",
+        proof=ProofSpec(target_wilson_low=0.70, min_support=20, min_forward_support=10),
+        allowed_sources=(
+            SourceSpec("daily_ohlcv", required=True, max_staleness_s=86400),
+        ),
+        live_eligible=True,
+        lifecycle="RETIRED",
+    ))
+
+    # v2 binds the prose to the exact frozen machine horizon. The resolver
+    # algorithm is unchanged, so its independently versioned ID remains v1.
+    register_contract(PredictionContract(
+        name="tp_sl_swing",
+        version=CURRENT_LIVE_CONTRACT_VERSION,
+        description=(
+            "Directional TP/SL swing prediction. UP or DOWN with volatility-"
+            f"derived target/stop geometry. {V3_LABEL_HOLD_BARS} completed daily "
+            "bars. First chronological touch wins; same-bar target+stop "
+            "collision is LOSS; no touch after the complete horizon is EXPIRED. "
+            "Precision denominator is WIN vs non-WIN (LOSS + EXPIRED)."
         ),
         output_domain=frozenset({"UP", "DOWN"}),
         outcome_domain=OutcomeSpec(
@@ -379,8 +415,8 @@ def _register_v1_contracts() -> None:
         live_eligible=False,
     ))
 
-    LOGGER.info("v1 research contracts registered (%d total)", len(_REGISTRY))
+    LOGGER.info("research contracts registered (%d total)", len(_REGISTRY))
 
 
 # Auto-register on import
-_register_v1_contracts()
+_register_contracts()

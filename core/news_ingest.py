@@ -24,6 +24,15 @@ from core.news_events import ensure_news_tables, store_article_and_events
 LOGGER = logging.getLogger("ghost.news_ingest")
 
 _TIMEOUT = float(os.getenv("NEWS_INGEST_TIMEOUT_S", "15"))
+_finnhub_symbol_cursor = 0
+
+
+class _FinnhubRateLimited(RuntimeError):
+    pass
+
+
+class _FinnhubHTTPError(RuntimeError):
+    pass
 
 
 def ingest_enabled() -> bool:
@@ -76,9 +85,10 @@ def _fetch_finnhub(symbol: str, since_ts: int) -> List[Dict[str, Any]]:
         params={"symbol": symbol, "from": frm, "to": to, "token": token},
         timeout=_TIMEOUT,
     )
+    if r.status_code == 429:
+        raise _FinnhubRateLimited(f"finnhub news {symbol} HTTP 429")
     if r.status_code != 200:
-        LOGGER.warning("finnhub news %s HTTP %s", symbol, r.status_code)
-        return []
+        raise _FinnhubHTTPError(f"finnhub news {symbol} HTTP {r.status_code}")
     out = []
     for a in (r.json() or [])[:50]:
         published = int(a.get("datetime") or 0)
@@ -92,6 +102,23 @@ def _fetch_finnhub(symbol: str, since_ts: int) -> List[Dict[str, Any]]:
             "raw": {"category": a.get("category")},
         })
     return out
+
+
+def _next_finnhub_batch(symbols: List[str]) -> List[str]:
+    """Rotate a bounded Finnhub subset; Alpaca still covers the full list."""
+    global _finnhub_symbol_cursor
+    if not symbols:
+        return []
+    batch_size = max(
+        0,
+        min(len(symbols), int(os.getenv("NEWS_INGEST_FINNHUB_SYMBOLS_PER_CYCLE", "8"))),
+    )
+    if batch_size == 0:
+        return []
+    start = _finnhub_symbol_cursor % len(symbols)
+    selected = [symbols[(start + offset) % len(symbols)] for offset in range(batch_size)]
+    _finnhub_symbol_cursor = (start + batch_size) % len(symbols)
+    return selected
 
 
 def run_news_ingest_cycle(symbols: List[str] | None = None,
@@ -117,18 +144,33 @@ def run_news_ingest_cycle(symbols: List[str] | None = None,
 
     fh_total = 0
     fh_errors = 0
-    for sym in symbols:
+    fh_rate_limited = False
+    finnhub_symbols = _next_finnhub_batch(symbols)
+    fh_attempted = 0
+    for sym in finnhub_symbols:
+        fh_attempted += 1
         try:
             got = _fetch_finnhub(sym, since)
             articles += got
             fh_total += len(got)
+        except _FinnhubRateLimited as exc:
+            fh_errors += 1
+            fh_rate_limited = True
+            LOGGER.warning("%s; stopping Finnhub polling for this cycle", exc)
+            break
         except Exception as exc:
             fh_errors += 1
             if fh_errors <= 2:
                 LOGGER.warning("finnhub news %s failed: %s", sym, str(exc)[:100])
         time.sleep(float(os.getenv("NEWS_INGEST_SYMBOL_DELAY_S", "0.25")))
-    provider_status["finnhub"] = {"ok": fh_errors < len(symbols), "articles": fh_total,
-                                  "symbol_errors": fh_errors}
+    provider_status["finnhub"] = {
+        "ok": not fh_rate_limited and fh_errors < max(1, fh_attempted),
+        "articles": fh_total,
+        "symbol_errors": fh_errors,
+        "symbols_attempted": fh_attempted,
+        "symbols_budgeted": len(finnhub_symbols),
+        "rate_limited": fh_rate_limited,
+    }
 
     stored_articles = stored_events = 0
     try:

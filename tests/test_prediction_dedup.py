@@ -1,6 +1,19 @@
 """Dedup guards for run_prediction_cycle save path."""
 import time
 
+
+def test_prediction_cycle_overlap_returns_explicit_skip():
+    import core.prediction as pred
+
+    assert pred._PREDICTION_CYCLE_LOCK.acquire(blocking=False)
+    try:
+        saved, diag = pred.run_prediction_cycle(with_diag=True)
+    finally:
+        pred._PREDICTION_CYCLE_LOCK.release()
+
+    assert saved == []
+    assert diag["top_reason_code"] == "cycle_in_progress"
+
 def test_pick_geometry_requires_finite_directional_brackets():
     from core.prediction import _valid_pick_geometry
 
