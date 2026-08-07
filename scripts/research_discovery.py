@@ -350,8 +350,26 @@ def run_discovery(
             continue
         for sym in symbols:
             try:
-                candidate = train_research_candidate(sym, direction)
+                candidate = train_research_candidate(sym, direction, include_failed=True)
                 if candidate:
+                    if not candidate.get("training_passed", True):
+                        detail = candidate.get("detail") or {}
+                        variant_results.append({
+                            "symbol": sym,
+                            "artifact_sha": "",
+                            "model_sha256": "",
+                            "passed": False,
+                            "gates": detail.get("gates") or [],
+                            "holdout_acc": candidate["holdout"].get("holdout_acc"),
+                            "wf_edge": candidate["holdout"].get("wf_edge_mean"),
+                            "precision_ok": candidate["precision_gate"].get("ok"),
+                            "fail_reason": candidate.get("fail_reason"),
+                        })
+                        print(
+                            f"  {sym}: FAIL {candidate.get('fail_reason')}",
+                            flush=True,
+                        )
+                        continue
                     gates = evaluate_candidate_gates(candidate, family_size)
                     variant_results.append({
                         "symbol": sym,
@@ -387,78 +405,21 @@ def run_discovery(
     for variant in GEOMETRY_VARIANTS:
         print(f"\n--- {variant['name']}: target_scale={variant['target_scale']} "
               f"stop_mult={variant['stop_mult']} ---", flush=True)
-        previous_env = _apply_env({
-            "V3_STOP_VOL_MULT": str(variant["stop_mult"]),
-        })
-
-        # Patch target scale
-        import core.vol_targets as vt
-        import core.signal_engine as se
-        orig_base = vt.base_vol_pct
-        orig_engine_base = se.base_vol_pct
-
-        target_scale = float(variant["target_scale"])
-
-        def scaled_vol(symbol, asset_type, scale: float = target_scale):
-            return orig_base(symbol, asset_type) * scale
-
-        vt.base_vol_pct = scaled_vol
-        se.base_vol_pct = scaled_vol
-
-        variant_results = []
-        compatible, compatibility_reason = _frozen_contract_compatibility()
-        if not compatible:
-            print(f"  SKIP: {compatibility_reason}", flush=True)
-            results.append({
-                "variant": variant["name"],
-                "type": "geometry",
-                "target_scale": variant["target_scale"],
-                "stop_mult": variant["stop_mult"],
-                "candidates": [],
-                "passed_count": 0,
-                "total_count": 0,
-                "skipped": compatibility_reason,
-            })
-            vt.base_vol_pct = orig_base
-            se.base_vol_pct = orig_engine_base
-            _restore_env(previous_env)
-            continue
-        for sym in symbols:
-            try:
-                candidate = train_research_candidate(sym, direction)
-                if candidate:
-                    gates = evaluate_candidate_gates(candidate, family_size)
-                    variant_results.append({
-                        "symbol": sym,
-                        "artifact_sha": candidate["artifact_sha"],
-                        "model_sha256": candidate["model_sha256"],
-                        "passed": gates["passed"],
-                        "gates": gates["gates"],
-                        "holdout_acc": candidate["holdout"].get("holdout_acc"),
-                        "wf_edge": candidate["holdout"].get("wf_edge_mean"),
-                        "_candidate_bundle": candidate,
-                    })
-                    status = "PASS" if gates["passed"] else "FAIL"
-                    print(f"  {sym}: {status}", flush=True)
-                else:
-                    print(f"  {sym}: NO CANDIDATE", flush=True)
-            except Exception as e:
-                print(f"  {sym}: ERROR {str(e)[:80]}", flush=True)
-
+        # Geometry remains in the preregistered family and Sidak denominator,
+        # but it is known before outcomes to define a different prediction
+        # task. It requires a new contract and cannot activate as v2.
+        compatibility_reason = "new_contract_required:target_stop_geometry"
+        print(f"  SKIP: {compatibility_reason}", flush=True)
         results.append({
             "variant": variant["name"],
             "type": "geometry",
             "target_scale": variant["target_scale"],
             "stop_mult": variant["stop_mult"],
-            "candidates": variant_results,
-            "passed_count": sum(1 for r in variant_results if r["passed"]),
-            "total_count": len(variant_results),
+            "candidates": [],
+            "passed_count": 0,
+            "total_count": 0,
+            "skipped": compatibility_reason,
         })
-
-        # Restore
-        vt.base_vol_pct = orig_base
-        se.base_vol_pct = orig_engine_base
-        _restore_env(previous_env)
 
     # ── Select finalist ─────────────────────────────────────────────────
     passing_candidates: List[Dict[str, Any]] = []

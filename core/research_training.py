@@ -27,6 +27,7 @@ def train_research_candidate(
     direction: str = "UP",
     *,
     asset_type: str = "stock",
+    include_failed: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """Train one candidate model using the production pipeline.
 
@@ -91,6 +92,29 @@ def train_research_candidate(
     if not passed:
         LOGGER.info("Training gate failed for %s/%s: %s",
                      symbol, direction, detail.get("fail_reason", "unknown"))
+        if include_failed:
+            calibration = detail.get("calibration")
+            precision_gate = (
+                calibration.get("precision_gate", {})
+                if isinstance(calibration, dict)
+                else {}
+            )
+            return {
+                "symbol": symbol,
+                "direction": direction,
+                "training_passed": False,
+                "fail_reason": detail.get("fail_reason", "unknown"),
+                "detail": detail,
+                "precision_gate": precision_gate,
+                "holdout": {
+                    key: detail.get(key)
+                    for key in (
+                        "holdout_acc", "edge", "natural_rate", "no_skill_accuracy",
+                        "wf_fold_count", "wf_acc_mean", "wf_acc_min",
+                        "wf_edge_mean", "wf_edge_min",
+                    )
+                },
+            }
         return None
 
     # 5. Compute model SHA-256 from raw bytes
@@ -177,6 +201,7 @@ def train_research_candidate(
     return {
         "symbol": symbol,
         "direction": direction,
+        "training_passed": True,
         "model_bytes": model_bytes,
         "model_sha256": model_sha256,
         "artifact_sha": artifact_sha,

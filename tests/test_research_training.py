@@ -113,6 +113,39 @@ def test_candidate_threads_production_pool_metadata(monkeypatch):
     assert captured["pool_info"]["peer_sample_count"] == 1
 
 
+def test_candidate_can_return_failed_gate_diagnostics(monkeypatch):
+    import core.signal_engine as signal_engine
+
+    detail = {
+        "fail_reason": "wf_edge_mean < 5.0% (-1.0%)",
+        "holdout_acc": 0.61,
+        "edge": 0.02,
+        "wf_edge_mean": -0.01,
+        "wf_fold_count": 5,
+        "calibration": {"precision_gate": {"ok": False}},
+        "gates": [{"name": "wf_edge_mean", "passed": False}],
+    }
+    monkeypatch.setenv("V3_POOL_TRAINING", "off")
+    monkeypatch.setattr(
+        signal_engine,
+        "backtest_symbol",
+        lambda symbol, asset_type: ([{"row": index} for index in range(50)], []),
+    )
+    monkeypatch.setattr(signal_engine, "_active_feature_cols", lambda: ["rsi"])
+    monkeypatch.setattr(
+        signal_engine,
+        "_train_one_direction",
+        lambda *args, **kwargs: (False, detail, None, None),
+    )
+
+    candidate = train_research_candidate("WOLF", "UP", include_failed=True)
+
+    assert candidate is not None
+    assert candidate["training_passed"] is False
+    assert candidate["fail_reason"].startswith("wf_edge_mean")
+    assert candidate["precision_gate"] == {"ok": False}
+
+
 def test_discovery_gates_use_normalized_candidate_metrics():
     from scripts.research_discovery import evaluate_candidate_gates
 
@@ -305,7 +338,7 @@ def test_discovery_registers_one_finalist_with_family_evidence(monkeypatch, tmp_
         "trained_at": 1_700_000_000,
     }
     monkeypatch.setattr(
-        training, "train_research_candidate", lambda symbol, direction: dict(candidate),
+        training, "train_research_candidate", lambda symbol, direction, **kwargs: dict(candidate),
     )
     monkeypatch.setattr(artifacts, "register_artifact", lambda meta, payload_bytes: True)
     registrations = []
@@ -376,7 +409,7 @@ def test_discovery_reports_finalist_persistence_failure(monkeypatch, tmp_path):
         "trained_at": 1_700_000_000,
     }
     monkeypatch.setattr(
-        training, "train_research_candidate", lambda symbol, direction: dict(candidate),
+        training, "train_research_candidate", lambda symbol, direction, **kwargs: dict(candidate),
     )
     monkeypatch.setattr(
         artifacts, "register_artifact", lambda meta, payload_bytes: True,
