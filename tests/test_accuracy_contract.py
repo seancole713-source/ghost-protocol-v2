@@ -11,7 +11,7 @@ def test_contract_70_clamps_weak_env_overrides(monkeypatch):
 
     assert resolve_float("V3_MIN_HOLDOUT_ACC", "min_holdout_acc") == 0.60
     assert resolve_float("V3_MIN_WF_ACC_MEAN", "min_wf_acc_mean") == 0.60
-    assert resolve_float("KILL_WINRATE_FLOOR", "kill_winrate_floor") == 0.70
+    assert resolve_float("KILL_WINRATE_FLOOR", "kill_winrate_floor") == 0.45  # P3 audit: kill = provably worse than coin-flip
 
 
 def test_legacy_contract_allows_weak_env(monkeypatch):

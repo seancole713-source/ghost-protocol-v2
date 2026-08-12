@@ -344,7 +344,16 @@ def evaluate_kill_conditions(*, include_pause: bool = False, since_ts: int = 0) 
     wr_wins = sum(1 for _c, o, _p in wr_rows if o == "WIN")
     wr = (wr_wins / wr_n) if wr_n else None
     wr_enough = wr_n >= cfg["winrate_window"]
-    wr_trig = bool(wr_enough and wr is not None and wr < cfg["winrate_floor"])
+    # P3 audit: require statistical significance before pausing.
+    # A 10% WR on 30 samples has a 95% Wilson upper bound of ~24% —
+    # not enough evidence to kill the engine. Only pause when the
+    # Wilson upper bound is below the floor (i.e., we're confident
+    # the true WR is below threshold, not just unlucky).
+    wr_trig = False
+    if wr_enough and wr is not None and wr < cfg["winrate_floor"]:
+        from core.binomial_stats import wilson_upper_bound
+        wilson_upper = wilson_upper_bound(wr_wins, wr_n, z=1.96)
+        wr_trig = wilson_upper < cfg["winrate_floor"]
     conds.append({
         "name": "win_rate", "action": "auto_pause", "window": cfg["winrate_window"],
         "samples": wr_n, "current": round(wr, 4) if wr is not None else None,
@@ -1180,6 +1189,19 @@ def _predict_symbol_ex(symbol, asset_type, regime, scores_out=None):
     if not price or price <= 0:
         return None, "no_price"
     score_vector = scores_out if scores_out is not None else {}
+    # P3 audit: earnings guard — skip symbols reporting earnings today.
+    # An intraday or daily hold that rides into an after-close earnings report
+    # becomes an event bet, not a prediction. Fail-open: if Finnhub is down,
+    # we log and proceed (the guard is a seatbelt, not an engine interlock).
+    try:
+        from core.earnings_guard import earnings_guard_enabled, upcoming_earnings_symbols
+        if earnings_guard_enabled():
+            blocked, guard_ok = upcoming_earnings_symbols()
+            if sym in blocked:
+                score_vector["earnings_blocked"] = True
+                return None, "earnings_today"
+    except Exception:
+        note_suppressed()
     # Scan price at evaluation — shadow scoring uses it as the virtual entry
     # for silenced evals (core.shadow_outcomes).
     score_vector["price"] = round(float(price), 6)

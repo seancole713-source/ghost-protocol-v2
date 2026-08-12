@@ -518,7 +518,7 @@ def _evaluate_price_action(symbol: str, snapshot: Dict[str, Any], items: Dict[st
     else:
         _add_unknown(items, "moving_averages", "Not enough history for EMA20/50 evaluation.", "price_history")
 
-    # 14 support / resistance
+    # 14 support / resistance — enhanced with intraday rejection detection (P3 audit)
     lows = [r["low"] if r.get("low") is not None else r["close"] for r in rows[-60:] if r.get("close") is not None]
     highs = [r["high"] if r.get("high") is not None else r["close"] for r in rows[-60:] if r.get("close") is not None]
     support = max([x for x in lows if current and x < current], default=None) if lows else None
@@ -527,13 +527,42 @@ def _evaluate_price_action(symbol: str, snapshot: Dict[str, Any], items: Dict[st
         support = min(lows)
     if resistance is None and highs:
         resistance = max(highs)
-    out.update({"support": _safe_round(support, 4), "resistance": _safe_round(resistance, 4)})
+    # Intraday rejection detection: check if today's high approached resistance
+    # but price closed below it (rejection pattern). This is what ChatGPT spotted
+    # on SPCE — $3.33–$3.36 tested and rejected.
+    rejection_detected = False
+    rejection_evidence = ""
+    try:
+        today_rows = [r for r in rows[-1:] if r.get("close") is not None]
+        if today_rows and resistance and current:
+            today_high = today_rows[0].get("high")
+            today_open = today_rows[0].get("open")
+            if today_high and resistance > 0:
+                # Price approached within 2% of resistance
+                approach_pct = (today_high - resistance) / resistance
+                if -0.02 <= approach_pct <= 0.01:
+                    # High touched or nearly touched resistance
+                    if current < resistance * 0.99:
+                        # Closed below resistance = rejection
+                        rejection_detected = True
+                        rejection_evidence = (
+                            f"Intraday rejection: high ${today_high:.2f} tested "
+                            f"resistance ${resistance:.2f} but closed at ${current:.2f} "
+                            f"({(current/resistance - 1)*100:+.1f}% below)"
+                        )
+    except Exception:
+        note_suppressed()
+    out.update({"support": _safe_round(support, 4), "resistance": _safe_round(resistance, 4),
+                "rejection_detected": rejection_detected})
     if current and support and resistance and current > 0:
         down = abs(current - support) / current
         up = abs(resistance - current) / current
         rr = up / max(down, 0.001)
         sc = 0.9 if rr >= 2 else (0.2 if rr >= 1 else -0.6)
-        _add_item(items, "support_resistance", score=sc, value={"support": round(support, 4), "resistance": round(resistance, 4), "upside_to_resistance_pct": _pct(up), "downside_to_support_pct": _pct(down)}, evidence=f"Nearest support/resistance implies R:R ~{rr:.2f}:1", source="price_history")
+        # Downgrade if rejection detected — resistance was confirmed, not broken
+        if rejection_detected:
+            sc = min(sc, -0.3)
+        _add_item(items, "support_resistance", score=sc, value={"support": round(support, 4), "resistance": round(resistance, 4), "upside_to_resistance_pct": _pct(up), "downside_to_support_pct": _pct(down), "rejection_detected": rejection_detected}, evidence=rejection_evidence if rejection_detected else f"Nearest support/resistance implies R:R ~{rr:.2f}:1", source="price_history")
     else:
         _add_unknown(items, "support_resistance", "Support/resistance cannot be computed without enough price data.", "price_history")
     return out

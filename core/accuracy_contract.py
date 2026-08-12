@@ -49,7 +49,7 @@ CONTRACTS: Dict[str, ContractSpec] = {
         objective_mode="balanced",
         objective_bootstrap_min_conf=0.85,
         objective_min_samples=12,
-        kill_winrate_floor=0.70,
+        kill_winrate_floor=0.45,  # P3 audit: kill = provably worse than coin-flip, not "below target"
         min_alert_confidence=0.80,
         research_bypass_precision=True,  # P3 audit: allow research picks to accumulate evidence
     ),
