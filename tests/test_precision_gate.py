@@ -261,7 +261,9 @@ def test_research_mode_bypasses_precision_gate_under_legacy(monkeypatch):
     assert sig is not None and sig[0] == "UP"
 
 
-def test_research_mode_blocked_when_contract_70(monkeypatch):
+def test_research_mode_allowed_when_contract_70(monkeypatch):
+    """P3 audit: research bypass is now enabled under the 70 contract so
+    research-mode picks can fire even without a proven precision gate."""
     monkeypatch.setenv("GHOST_ACCURACY_CONTRACT", "70")
     monkeypatch.delenv("V3_PRECISION_GATE", raising=False)
     meta = {"edge": 0.3, "accuracy": 0.66, "wf_acc_mean": 0.70,
@@ -274,8 +276,9 @@ def test_research_mode_blocked_when_contract_70(monkeypatch):
     monkeypatch.setattr(_se, "_fetch_ohlcv",
                         lambda s, a, period="5d", interval="1h": _uptrend_rows())
     sig, reason = _se.predict_live_ex("WOLF", "stock", research_mode=True)
-    assert sig is None
-    assert reason == "precision_unproven"
+    # Research bypass is now enabled — precision gate should NOT block
+    assert sig is not None
+    assert reason is None
 
 
 def test_env_off_switch_restores_legacy_behavior(monkeypatch):

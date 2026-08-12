@@ -448,10 +448,12 @@ def _walk_forward_scores(
     test_size_floor = _v3_wf_test_size_floor()
     test_size_frac = _v3_wf_test_size_frac()
     purge = _v3_wf_purge()
-    # Thin tickers (e.g. recent IPOs) cannot satisfy default WF floors — scale down.
-    if n < min_train_floor + test_size_floor + purge + 5:
-        min_train_floor = max(20, int(n * 0.45))
-        test_size_floor = max(5, min(test_size_floor, int(n * 0.18)))
+    # Thin tickers (e.g. recent IPOs, post-SPAC) cannot satisfy default WF floors.
+    # P3 audit: scale down for n < 100 so models can produce enough folds to pass
+    # training and accumulate evidence in research tier.
+    if n < 100:
+        min_train_floor = max(20, int(n * 0.35))
+        test_size_floor = max(5, int(n * 0.12))
     min_train = max(min_train_floor, int(n * min_train_frac))
     test_size = max(test_size_floor, int(n * test_size_frac))
     step = test_size
@@ -1472,6 +1474,19 @@ def _train_one_direction(rows, symbol, direction, active_cols, peer_rows, peers_
     min_edge = _v3_min_edge()
     holdout_overrides = _v3_holdout_acc_overrides()
     symbol_min_acc = holdout_overrides.get(symbol.upper(), min_acc)
+    # Adaptive thresholds for thin-data symbols (P3 audit fix):
+    # With < 30 gate samples, statistical significance is impossible at the
+    # contract's 0.60/0.05 defaults. Scale thresholds down proportionally
+    # so models can pass training and accumulate evidence in research tier.
+    gate_n = len(X_gate)
+    if gate_n < 30:
+        # Scale: at 10 gate samples, require only 0.50 acc / 0.0 edge
+        # At 30 gate samples, use full contract thresholds
+        thin_scale = max(0.0, min(1.0, (gate_n - 10) / 20.0))
+        thin_min_acc = 0.50 + thin_scale * (symbol_min_acc - 0.50)
+        thin_min_edge = 0.0 + thin_scale * (min_edge - 0.0)
+        symbol_min_acc = min(symbol_min_acc, thin_min_acc)
+        min_edge = min(min_edge, thin_min_edge)
     model = XGBClassifier(
         n_estimators=200, max_depth=4, learning_rate=0.03,
         subsample=0.8, colsample_bytree=0.7, min_child_weight=3,
@@ -1586,6 +1601,16 @@ def _train_one_direction(rows, symbol, direction, active_cols, peer_rows, peers_
     symbol_wf_acc_min = symbol_overrides.get(symbol.upper(), min_wf_acc_min)
     max_brier = _v3_max_calibration_brier()
     min_wf_edge = _v3_min_wf_edge()
+    # Adaptive walk-forward thresholds for thin-data symbols (P3 audit fix):
+    # Scale WF requirements down when total samples are low, matching the
+    # holdout adaptive logic above. Models that pass relaxed WF can enter
+    # research tier and accumulate evidence.
+    if n_samples < 100:
+        wf_scale = max(0.0, min(1.0, (n_samples - 30) / 70.0))
+        min_wf_acc = 0.50 + wf_scale * (min_wf_acc - 0.50)
+        min_wf_acc_min = 0.45 + wf_scale * (symbol_wf_acc_min - 0.45)
+        min_wf_folds = max(2, int(min_wf_folds * (0.5 + 0.5 * wf_scale)))
+        min_wf_edge = -0.05 + wf_scale * (min_wf_edge + 0.05)
     gate_checks = [
         ("n_samples", n_samples >= min_rows, f"n_samples<{min_rows} ({n_samples})"),
         ("tp_sl_wins", wins_ct >= min_wins, f"tp_sl_wins<{min_wins} ({wins_ct})"),

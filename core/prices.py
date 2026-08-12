@@ -301,13 +301,21 @@ def get_extended_session(symbol: str) -> Dict[str, Any]:
     from core.circuit_breaker import _yfinance_cb
     try:
         if not _yfinance_cb.allow():
-            return {}
-        import yfinance as yf
-        fi = yf.Ticker(sym).fast_info
-        prev_close = getattr(fi, "previous_close", None) or getattr(fi, "previousClose", None)
-        pre_market = getattr(fi, "pre_market_price", None) or getattr(fi, "preMarketPrice", None)
-        post_market = getattr(fi, "post_market_price", None) or getattr(fi, "postMarketPrice", None)
-        _yfinance_cb.record_success()
+            # yfinance breaker open — fall back to persistent prev_close cache
+            cached = _prev_close_cache.get(sym)
+            if cached:
+                ts, val = cached
+                if time.time() - ts < _PREV_CLOSE_TTL_S and val > 0:
+                    prev_close = val
+            if prev_close is None:
+                return {}
+        else:
+            import yfinance as yf
+            fi = yf.Ticker(sym).fast_info
+            prev_close = getattr(fi, "previous_close", None) or getattr(fi, "previousClose", None)
+            pre_market = getattr(fi, "pre_market_price", None) or getattr(fi, "preMarketPrice", None)
+            post_market = getattr(fi, "post_market_price", None) or getattr(fi, "postMarketPrice", None)
+            _yfinance_cb.record_success()
     except Exception:
         _yfinance_cb.record_failure()
     try:
@@ -726,12 +734,18 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
 
 
 def get_vix():
+    """VIX spot — gated by yfinance circuit breaker (P3 audit fix)."""
+    from core.circuit_breaker import _yfinance_cb
+    if not _yfinance_cb.allow():
+        return None
     try:
         import yfinance as yf
         h = yf.Ticker("^VIX").history(period="1d")
         if not h.empty:
+            _yfinance_cb.record_success()
             return float(h["Close"].iloc[-1])
     except Exception:
+        _yfinance_cb.record_failure()
         note_suppressed()
     return None
 

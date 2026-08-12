@@ -22,11 +22,13 @@ def test_legacy_contract_allows_weak_env(monkeypatch):
     assert resolve_float("V3_MIN_HOLDOUT_ACC", "min_holdout_acc") == 0.38
 
 
-def test_research_bypass_disabled_under_70_contract(monkeypatch):
+def test_research_bypass_enabled_under_70_contract(monkeypatch):
+    """P3 audit: research bypass is now enabled under the 70 contract so
+    models can fire research picks and accumulate precision-gate evidence."""
     monkeypatch.setenv("GHOST_ACCURACY_CONTRACT", "70")
     from core.accuracy_contract import research_bypasses_precision_gate
 
-    assert research_bypasses_precision_gate() is False
+    assert research_bypasses_precision_gate() is True
 
 
 def test_research_bypass_enabled_under_legacy(monkeypatch):

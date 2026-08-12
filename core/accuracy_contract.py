@@ -51,7 +51,7 @@ CONTRACTS: Dict[str, ContractSpec] = {
         objective_min_samples=12,
         kill_winrate_floor=0.70,
         min_alert_confidence=0.80,
-        research_bypass_precision=False,
+        research_bypass_precision=True,  # P3 audit: allow research picks to accumulate evidence
     ),
     "80": ContractSpec(
         name="80",

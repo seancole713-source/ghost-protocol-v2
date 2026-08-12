@@ -177,7 +177,7 @@ _yfinance_cb = CircuitBreaker(
     failure_threshold=int(__import__("os").getenv("CB_YFINANCE_THRESHOLD", "5")),
     cooldown_seconds=int(__import__("os").getenv("CB_YFINANCE_COOLDOWN_S", "600")),
     rate_limit_window_s=int(__import__("os").getenv("CB_YFINANCE_RATE_WINDOW_S", "60")),
-    rate_limit_max_calls=int(__import__("os").getenv("CB_YFINANCE_RATE_MAX_CALLS", "15")),
+    rate_limit_max_calls=int(__import__("os").getenv("CB_YFINANCE_RATE_MAX_CALLS", "30")),
 )
 
 _finnhub_cb = CircuitBreaker(
