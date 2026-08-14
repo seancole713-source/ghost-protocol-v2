@@ -2676,6 +2676,11 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
         scores["schema"] = 1
         if premarket_ctx:
             scores["extended_session"] = premarket_ctx
+            try:
+                from core.catalyst_scoring import score_premarket_quality
+                scores["premarket_quality"] = score_premarket_quality(premarket_ctx)
+            except Exception:
+                note_suppressed()
         scores["regime"] = {
             "label": regime_label,
             "above_ema200": int(above_ema200),

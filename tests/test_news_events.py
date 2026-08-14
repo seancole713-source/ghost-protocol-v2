@@ -33,6 +33,29 @@ def test_guidance_and_earnings():
     assert "earnings_miss" in _types("Acme misses estimates as sales slow")
 
 
+def test_timeline_delay_classification():
+    assert "timeline_delay" in _types(
+        "Acme delays commercial launch and pushes back production timeline")
+    evs = classify_text("Acme delivery milestone slips to 2027 after program delay")
+    assert any(e["event_type"] == "timeline_delay" and e["direction_hint"] == "bearish"
+               and e["materiality"] >= 0.75 for e in evs)
+
+
+def test_universal_event_scoring_flags_timeline_delay():
+    from core.catalyst_scoring import score_events
+
+    out = score_events([
+        {"event_type": "earnings_beat", "direction_hint": "bullish", "materiality": 0.7,
+         "source_reliability": 0.9, "confirmation_status": "reported"},
+        {"event_type": "timeline_delay", "direction_hint": "bearish", "materiality": 0.8,
+         "source_reliability": 0.9, "confirmation_status": "reported"},
+    ])
+    assert out["available"] is True
+    assert out["timeline_delay_detected"] is True
+    assert out["guidance_momentum_score"] < 0
+    assert out["catalyst_score"] < 0
+
+
 def test_mna_rumor_vs_confirmed():
     rumor = classify_text("Report: BILL exploring sale amid activist pressure")
     conf = classify_text("BILL signs merger agreement to be acquired at $55/share")

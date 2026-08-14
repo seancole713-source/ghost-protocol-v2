@@ -58,6 +58,16 @@ _RULES: List[tuple] = [
         r"(raises|boosts|lifts|hikes) .{0,30}(guidance|outlook|forecast)",
         r"guidance .{0,20}raised",
     ]),
+    # Timeline / milestone deterioration (the SPCE lesson): a company can be
+    # improving financially while its commercialization/launch/production
+    # timeline slips. Deterministic, bearish, and separate from guidance_cut so
+    # the model can learn "financial improvement != bullish setup".
+    ("timeline_delay", "bearish", 0.80, [
+        r"(delay|delays|delayed|pushes back|pushed back|postpone\w*) .{0,40}(launch|rollout|commercial\w*|production|delivery|deliveries|timeline|schedule|program|service|flights?)",
+        r"(launch|rollout|commercial\w*|production|delivery|deliveries|service|flights?) .{0,30}(delay\w*|postpone\w*|pushed back|slips? to|now expected)",
+        r"(behind|slips?) .{0,20}schedule",
+        r"(misses|missed) .{0,20}(deadline|milestone|target date)",
+    ]),
     ("earnings_miss", "bearish", 0.75, [
         r"miss\w* .{0,25}(estimates|expectations)", r"earnings miss",
         r"falls short of .{0,20}estimates",

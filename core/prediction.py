@@ -1206,6 +1206,21 @@ def _predict_symbol_ex(symbol, asset_type, regime, scores_out=None):
     # for silenced evals (core.shadow_outcomes).
     score_vector["price"] = round(float(price), 6)
 
+    # Universal all-stock context layer (SPCE lesson generalized): structured
+    # event/guidance/timeline risk is captured for every symbol and later used
+    # as a brake-only confidence adjustment. It never boosts confidence until
+    # outcome data proves positive edge.
+    try:
+        from core.catalyst_scoring import fetch_event_context
+        _event_ctx = fetch_event_context(sym, asof_ts=int(time.time()))
+        score_vector["universal_event_context"] = {
+            k: v for k, v in _event_ctx.items()
+            if k not in ("events",)
+        }
+    except Exception:
+        note_suppressed()
+        _event_ctx = {}
+
     # Research pick mode: check BEFORE calling predict_live_ex so the lowered
     # min_win_proba threshold takes effect inside the v3 model.
     # Activates when:
@@ -1357,7 +1372,23 @@ def _predict_symbol_ex(symbol, asset_type, regime, scores_out=None):
         if abs(sent) > 0.1:
             LOGGER.info("[SENTIMENT] " + symbol + " news=" + str(round(sent,2)) + " adj=" + str(adj) + " conf=" + str(confidence))
     except Exception:
-        note_suppressed()  # Build feature vector — stored in DB for future ML training
+        note_suppressed()
+
+    # Universal context brake — applies the same SPCE lesson to every ticker:
+    # premarket green, generic good news, or improving financials do not raise a
+    # pick. Structured event/timeline/guidance risk can only reduce confidence.
+    try:
+        from core.catalyst_scoring import universal_context_brake
+        _pm_quality = score_vector.get("premarket_quality") if isinstance(score_vector, dict) else None
+        _ctx_brake = universal_context_brake(direction, _event_ctx if isinstance(_event_ctx, dict) else {}, _pm_quality if isinstance(_pm_quality, dict) else {})
+        score_vector["universal_context_brake"] = _ctx_brake
+        if _ctx_brake < 0:
+            confidence = round(max(_floor, min(0.98, confidence + _ctx_brake)), 3)
+            LOGGER.info("[CONTEXT] %s brake=%s conf=%s", symbol, _ctx_brake, confidence)
+    except Exception:
+        note_suppressed()
+
+    # Build feature vector — stored in DB for future ML training
     now_dt = datetime.now(timezone.utc)
     from core.feature_schema import FEATURE_ASOF_KEY, feature_asof_unix
     v3_feats = score_vector.get("features") if isinstance(score_vector, dict) else {}
@@ -1373,6 +1404,18 @@ def _predict_symbol_ex(symbol, asset_type, regime, scores_out=None):
         "price_4h_pct":     price_4h_pct,
         FEATURE_ASOF_KEY:   int(feature_asof if feature_asof is not None else feature_asof_unix(now)),
     }
+    try:
+        _pm_quality = score_vector.get("premarket_quality") if isinstance(score_vector, dict) else {}
+        features.update({
+            "event_context_score": round(float((_event_ctx or {}).get("score") or 0.0), 3),
+            "guidance_momentum_score": round(float((_event_ctx or {}).get("guidance_momentum_score") or 0.0), 3),
+            "catalyst_context_score": round(float((_event_ctx or {}).get("catalyst_score") or 0.0), 3),
+            "timeline_delay_detected": 1 if bool((_event_ctx or {}).get("timeline_delay_detected")) else 0,
+            "premarket_quality_score": round(float((_pm_quality or {}).get("score") or 0.0), 3),
+            "universal_context_brake": round(float(score_vector.get("universal_context_brake") or 0.0), 3),
+        })
+    except Exception:
+        note_suppressed()
 
     if confidence >= 0.90:
         pos_pct = 5.0

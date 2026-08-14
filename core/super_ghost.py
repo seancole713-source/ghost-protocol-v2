@@ -359,23 +359,82 @@ def _evaluate_company(symbol: str, snapshot: Dict[str, Any], items: Dict[str, Di
     else:
         _add_unknown(items, "revenue_growth", "YoY revenue growth unavailable.", "earnings")
 
-    # 3 guidance
+    # 3 guidance — structured event-aware. Guidance/timeline deterioration can
+    # offset improving EPS/revenue; "company improving" is not automatically a
+    # bullish stock setup.
     guidance = str(earnings.get("guidance") or snapshot.get("guidance") or "")
     guidance_blob = (guidance + " " + blob).lower()
     gscore, ghit, bhit = _keyword_score(guidance_blob, _GUIDANCE_BULL, _GUIDANCE_BEAR)
-    if guidance or ghit or bhit:
+    event_ctx: Dict[str, Any] = {}
+    try:
+        from core.catalyst_scoring import fetch_event_context, score_headline_fallback
+        event_ctx = fetch_event_context(symbol)
+        if not event_ctx.get("available") and articles:
+            event_ctx = score_headline_fallback(articles)
+    except Exception:
+        note_suppressed()
+        event_ctx = {}
+    event_guidance = _f(event_ctx.get("guidance_momentum_score"))
+    if event_guidance is not None and (event_ctx.get("available") or abs(event_guidance) > 0):
+        combined = _clamp((event_guidance * 1.8) + (gscore * 0.7), -2.0, 2.0)
+        top_events = event_ctx.get("top_events") or []
+        evidence = "Structured guidance/events evaluated"
+        if event_ctx.get("timeline_delay_detected"):
+            evidence += "; timeline/commercialization delay detected"
+        elif ghit or bhit:
+            evidence += "; guidance terms: +" + ",".join(ghit) + " -" + ",".join(bhit)
+        _add_item(
+            items,
+            "guidance",
+            score=combined,
+            value={
+                "bullish_terms": ghit,
+                "bearish_terms": bhit,
+                "guidance_momentum_score": event_guidance,
+                "timeline_delay_detected": bool(event_ctx.get("timeline_delay_detected")),
+                "event_count": event_ctx.get("event_count", 0),
+                "top_events": top_events[:3],
+            },
+            evidence=evidence,
+            source="structured_events/guidance",
+            confidence=0.78 if event_ctx.get("available") else 0.65,
+        )
+    elif guidance or ghit or bhit:
         _add_item(items, "guidance", score=gscore * 1.5, value={"bullish_terms": ghit, "bearish_terms": bhit}, evidence=("Guidance/news terms: +" + ",".join(ghit) + " -" + ",".join(bhit)).strip(), source="guidance/news", confidence=0.65)
     else:
         _add_unknown(items, "guidance", "No explicit forward-guidance signal found in earnings/news snapshot.", "guidance/news")
 
-    # 4 press/news catalysts
+    # 4 press/news catalysts — structured event-aware with headline fallback.
     cscore, bull_hits, bear_hits = _keyword_score(blob, _CATALYST_BULL + _BULL_WORDS, _CATALYST_BEAR + _BEAR_WORDS)
     sentiments = [_f(a.get("sentiment") or a.get("sentiment_score")) for a in articles]
     sentiments = [s for s in sentiments if s is not None]
     if sentiments:
         avg_sent = sum(sentiments) / len(sentiments)
         cscore = (cscore + avg_sent) / 2.0
-    if articles:
+    event_catalyst = _f(event_ctx.get("catalyst_score"))
+    if event_catalyst is not None and (event_ctx.get("available") or abs(event_catalyst) > 0):
+        combined = _clamp((event_catalyst * 1.7) + (cscore * 0.5), -2.0, 2.0)
+        _add_item(
+            items,
+            "news_catalysts",
+            score=combined,
+            value={
+                "articles_scanned": len(articles),
+                "bullish_terms": bull_hits,
+                "bearish_terms": bear_hits,
+                "avg_sentiment": _safe_round(sum(sentiments) / len(sentiments), 3) if sentiments else None,
+                "event_score": _safe_round(event_ctx.get("score"), 3),
+                "catalyst_score": event_catalyst,
+                "timeline_delay_detected": bool(event_ctx.get("timeline_delay_detected")),
+                "bearish_material_events": event_ctx.get("bearish_material_events", 0),
+                "bullish_material_events": event_ctx.get("bullish_material_events", 0),
+                "top_events": (event_ctx.get("top_events") or [])[:5],
+            },
+            evidence="Structured catalyst events evaluated" + ("; timeline delay risk present" if event_ctx.get("timeline_delay_detected") else ""),
+            source=str(event_ctx.get("source") or "structured_events"),
+            confidence=0.80 if event_ctx.get("available") else 0.62,
+        )
+    elif articles:
         top_titles = [str(a.get("title") or a.get("headline") or "")[:120] for a in articles[:5]]
         _add_item(items, "news_catalysts", score=cscore * 1.7, value={"articles_scanned": len(articles), "bullish_terms": bull_hits, "bearish_terms": bear_hits, "avg_sentiment": _safe_round(sum(sentiments) / len(sentiments), 3) if sentiments else None}, evidence="; ".join([t for t in top_titles if t]) or "News scanned", source="news")
     else:

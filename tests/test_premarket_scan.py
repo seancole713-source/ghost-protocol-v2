@@ -44,3 +44,34 @@ def test_premarket_scan_gap_respects_opt_out(monkeypatch):
     monkeypatch.setattr("core.market_hours.is_us_rth", lambda now=None: False)
     _, is_market = wolf_app._market_scan_gap_s(None)
     assert is_market is False
+
+
+def test_premarket_quality_is_brake_first_without_volume():
+    from core.catalyst_scoring import score_premarket_quality
+
+    constructive = score_premarket_quality({
+        "session": "premarket",
+        "previous_close": 10.0,
+        "session_price": 10.4,
+        "live_price": 10.38,
+        "gap_pct": 4.0,
+    })
+    chase = score_premarket_quality({
+        "session": "premarket",
+        "previous_close": 10.0,
+        "session_price": 11.4,
+        "live_price": 11.05,
+        "gap_pct": 14.0,
+    })
+    failed = score_premarket_quality({
+        "session": "premarket",
+        "previous_close": 10.0,
+        "session_price": 10.5,
+        "live_price": 9.95,
+        "gap_pct": 5.0,
+    })
+    assert constructive["available"] is True
+    assert constructive["score"] > 0
+    assert constructive["confidence"] < 0.6
+    assert chase["score"] < constructive["score"]
+    assert failed["score"] < 0

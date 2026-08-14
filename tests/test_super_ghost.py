@@ -118,6 +118,36 @@ def test_super_ghost_full_snapshot_scores_all_25_points():
     assert "Super Ghost Brain" in report["ai_brain"]["name"]
 
 
+def test_super_ghost_timeline_delay_offsets_financial_improvement(monkeypatch):
+    snap = _sample_snapshot()
+    snap["news"] = [
+        {"title": "WOLF beats estimates but delays commercial launch and pushes back production timeline",
+         "symbols": ["WOLF"], "sentiment": 0.1},
+    ]
+
+    monkeypatch.setattr("core.catalyst_scoring.fetch_event_context", lambda *a, **k: {
+        "available": True,
+        "event_count": 2,
+        "score": -0.42,
+        "guidance_momentum_score": -0.62,
+        "catalyst_score": -0.42,
+        "timeline_delay_detected": True,
+        "bearish_material_events": 1,
+        "bullish_material_events": 1,
+        "top_events": [
+            {"event_type": "timeline_delay", "effect": -0.62, "evidence": "delays commercial launch"},
+            {"event_type": "earnings_beat", "effect": 0.20, "evidence": "beats estimates"},
+        ],
+    })
+    report = build_super_ghost("WOLF", snapshot=snap)
+    by_key = {item["key"]: item for item in report["checklist"]}
+    assert by_key["eps"]["score"] > 0
+    assert by_key["revenue_growth"]["score"] > 0
+    assert by_key["guidance"]["score"] < 0
+    assert by_key["news_catalysts"]["score"] < 0
+    assert by_key["guidance"]["value"]["timeline_delay_detected"] is True
+
+
 def test_super_ghost_never_fakes_unknown_data():
     report = build_super_ghost("WOLF", snapshot={"symbol": "WOLF"})
     assert report["ok"] is True
