@@ -763,10 +763,15 @@ function renderConfidence(conf){
   if(!buckets.length||!buckets.some(function(b){return (b.total||0)>0})){
     slot.innerHTML='<p class="kv">No resolved picks in window yet'+(conf.start_ts?' since '+fmtTsIso(conf.start_ts):'')+'.</p>';return;
   }
-  var h='<table class="tbl"><thead><tr><th>Bucket</th><th>N</th><th>W / L</th><th>Win rate</th></tr></thead><tbody>';
+  var hc=conf.high_confidence||{};
+  var note=conf.denominator_note||'Fired WIN/LOSS only; Contract 70 proof uses /api/ghost/contract/70-verdict.';
+  var h='<p class="kv"><b>≥70 confidence verdict:</b> '+escHtml(hc.verdict||'diagnostic')+' · raw '+(hc.win_rate_pct!=null?hc.win_rate_pct+'%':'—')+' · Wilson 95% '+(hc.wilson_low_pct!=null?hc.wilson_low_pct+'%':'—')+'–'+(hc.wilson_high_pct!=null?hc.wilson_high_pct+'%':'—')+' · '+(hc.proven_70?'70% proven':'70% not proven')+'</p>';
+  h+='<p class="desc">'+escHtml(note)+' Raw bucket win rate is calibration only, never a 70% proof claim unless Wilson lower bound clears 70%.</p>';
+  h+='<table class="tbl"><thead><tr><th>Bucket</th><th>N</th><th>W / L</th><th>Win rate</th><th>Wilson 95%</th><th>70 proof</th></tr></thead><tbody>';
   buckets.forEach(function(b){
     var tot=b.total||0,wr=b.win_rate_pct!=null?b.win_rate_pct:0;
-    h+='<tr><td><b>'+escHtml(b.label)+'</b></td><td>'+tot+'</td><td>'+(b.wins||0)+' / '+(b.losses||0)+'</td><td>'+(tot===0?'—':wr+'%')+'</td></tr>';
+    var wl=b.wilson_low_pct!=null?b.wilson_low_pct:null, wh=b.wilson_high_pct!=null?b.wilson_high_pct:null;
+    h+='<tr><td><b>'+escHtml(b.label)+'</b></td><td>'+tot+'</td><td>'+(b.wins||0)+' / '+(b.losses||0)+'</td><td>'+(tot===0?'—':wr+'%')+'</td><td>'+(tot===0?'—':wl+'–'+wh+'%')+'</td><td>'+(b.proven_70?'<span class="ok">PROVEN</span>':'<span class="warn">not proven</span>')+'</td></tr>';
   });
   h+='</tbody></table>';
   slot.innerHTML=h;

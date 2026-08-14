@@ -1853,15 +1853,18 @@ function renderPerf(stats, conf, recent){
     var pct = totalN > 0 ? (b.total / totalN * 100) : 0;
     if(pct === 0) return;
     var wr = b.win_rate_pct || 0;
-    var cls = wr >= 70 ? 'good' : wr >= 55 ? 'mid' : 'bad';
+    var wl = b.wilson_low_pct != null ? b.wilson_low_pct : null;
+    var proven = !!b.proven_70;
+    var cls = proven ? 'good' : (wl != null && wl >= 55 ? 'mid' : 'bad');
     var seg = document.createElement('div');
     seg.className = 'perf-mini-seg ' + cls;
     seg.style.width = pct + '%';
-    seg.title = b.label + ': ' + b.wins + 'W/' + b.losses + 'L (' + wr + '%)';
+    seg.title = b.label + ': ' + b.wins + 'W/' + b.losses + 'L raw ' + wr + '% · Wilson low ' + (wl==null?'—':wl+'%') + (proven?' · 70% proven':' · 70% not proven');
     calBar.appendChild(seg);
   });
   var top = conf.buckets.slice().sort(function(a,b){return (b.total||0)-(a.total||0)})[0];
-  calSub.textContent = top ? 'Live picks · mode: ' + top.label + ' bucket' : '';
+  var hc = conf.high_confidence || {};
+  calSub.textContent = top ? 'Live picks · mode: ' + top.label + ' bucket · ≥70 conf verdict: ' + (hc.verdict || 'diagnostic') : '';
 }
 
 /* ─── Today's v3 pick ─── */
@@ -4139,16 +4142,25 @@ async function loadGhostContract(){
   var targets = ['mvr-contract-banner', 'ghost-contract-banner'].map(function(id){return document.getElementById(id)}).filter(Boolean);
   if(!targets.length) return;
   var data = await fetch('/api/ghost/contract').then(function(r){return r.json()}).catch(function(){return null});
+  var verdict = await fetch('/api/ghost/contract/70-verdict').then(function(r){return r.json()}).catch(function(){return null});
   if(!data || data.ok !== true) return;
   var lanes = data.lanes || {};
   var v3 = lanes.v3_picks || {};
   var sq = lanes.squeeze_radar || {};
-  var c70 = data.contract_70 || {};
-  var c70Unproven = c70.status === 'UNPROVEN_AT_CURRENT_DATA';
+  var c70 = (verdict && verdict.ok !== false) ? verdict : (data.contract_70 || {});
+  var status = c70.status || c70.verdict || '';
+  var proven = status === 'PROVEN' || status === 'PROVEN_AT_CURRENT_DATA';
+  var falsified = status === 'FALSIFIED_AT_CURRENT_DATA' || status === 'ABANDON_70_CLAIM';
+  var pending = status === 'UNPROVEN_AT_CURRENT_DATA' || (!proven && !falsified);
+  var color = falsified ? '#ff5470' : (proven ? '#1ec77d' : '#f5a623');
+  var statusText = falsified ? 'falsified at current data' : (proven ? 'proven at current data' : (pending ? 'unproven at current data' : status));
+  var wr = c70.win_rate_pct != null ? c70.win_rate_pct : (c70.win_rate != null ? Math.round(Number(c70.win_rate)*1000)/10 : null);
+  var wl = c70.wilson_low_pct != null ? c70.wilson_low_pct : (c70.wilson_low != null ? Math.round(Number(c70.wilson_low)*1000)/10 : null);
+  var evidence = (wr != null || wl != null) ? ' Raw ' + (wr==null?'—':wr+'%') + ' · Wilson low ' + (wl==null?'—':wl+'%') + '.' : '';
   var html = '<div class="ghost-contract-box">'
     + '<div class="fw700-c4b5fd-fs12-ls">' + (data.headline || 'Ghost product contract') + '</div>'
     + '<div class="truth-note mt6"><b>' + (v3.label||'v3') + ':</b> ' + (v3.philosophy||'') + ' &nbsp;|&nbsp; <b>' + (sq.label||'squeeze') + ':</b> ' + (sq.philosophy||'') + '</div>'
-    + (c70.status ? '<div class="truth-note mt6" data-style-color="' + (c70Unproven?'#f5a623':'#1ec77d') + '"><b>Contract 70: ' + (c70Unproven?'unproven at current data':_mvrEsc(c70.status)) + '.</b> Evidence claim only, not a promise. Strict firing gates are unchanged; zero fireable picks remains correct while proof or kill conditions block release.</div>' : '')
+    + (status ? '<div class="truth-note mt6" data-style-color="' + color + '"><b>Contract 70: ' + _mvrEsc(statusText) + '.</b>' + _mvrEsc(evidence) + ' Evidence claim only, not a promise. Strict firing gates are unchanged; zero fireable picks remains correct while proof or kill conditions block release.</div>' : '')
     + (data.north_star_retired ? '<div class="truth-note mt4-c8b96a8">Legacy 80% claim retired — journal tracks live outcomes only.</div>' : '')
     + '</div>';
   targets.forEach(function(el){el.innerHTML = html});

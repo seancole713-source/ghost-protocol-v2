@@ -297,23 +297,29 @@ def test_confidence_buckets_empty_db_returns_zeroed_shape(monkeypatch):
     assert out["start_ts"] == 0
     assert len(out["buckets"]) == 5
     assert [b["label"] for b in out["buckets"]] == ["<60", "60-70", "70-80", "80-90", "90+"]
+    assert "EXPIRED" in out["denominator_note"]
+    assert out["high_confidence"]["proven_70"] is False
+    assert out["high_confidence"]["verdict"] == "no_high_confidence_picks"
     for b in out["buckets"]:
         assert b["wins"] == 0
         assert b["losses"] == 0
         assert b["total"] == 0
         assert b["win_rate_pct"] == 0.0
+        assert b["wilson_low_pct"] == 0.0
+        assert b["wilson_high_pct"] == 0.0
+        assert b["proven_70"] is False
 
 
 def test_confidence_buckets_computes_per_bucket_winrate(monkeypatch):
-    """Distinct W/L per bucket → win_rate_pct computed independently per band."""
+    """Distinct W/L per bucket → raw rates plus Wilson honesty diagnostics."""
     monkeypatch.setattr(wolf_app, "_v32_stats_start_ts", lambda cur: 1775347200)
     # One fetchall per bucket, in declared order: <60, 60-70, 70-80, 80-90, 90+
     cur = QueueCursor(fetchall_values=[
         [("WIN", 1), ("LOSS", 3)],   # <60:    1W/3L  = 25%
         [("WIN", 5), ("LOSS", 5)],   # 60-70:  5W/5L  = 50%
-        [("WIN", 7), ("LOSS", 3)],   # 70-80:  7W/3L  = 70%
-        [("WIN", 8), ("LOSS", 2)],   # 80-90:  8W/2L  = 80%
-        [("WIN", 9), ("LOSS", 1)],   # 90+:    9W/1L  = 90%
+        [("WIN", 7), ("LOSS", 3)],   # 70-80:  7W/3L  = 70% raw, not proven
+        [("WIN", 8), ("LOSS", 2)],   # 80-90:  8W/2L  = 80% raw, not proven
+        [("WIN", 9), ("LOSS", 1)],   # 90+:    9W/1L  = 90% raw, not proven
     ])
     _patch_db_conn_with_cursor(monkeypatch, cur)
     out = wolf_app.get_stats_confidence_buckets()
@@ -323,6 +329,15 @@ def test_confidence_buckets_computes_per_bucket_winrate(monkeypatch):
     assert rates == {"<60": 25.0, "60-70": 50.0, "70-80": 70.0, "80-90": 80.0, "90+": 90.0}
     totals = {b["label"]: b["total"] for b in out["buckets"]}
     assert totals == {"<60": 4, "60-70": 10, "70-80": 10, "80-90": 10, "90+": 10}
+    seventy_bucket = next(b for b in out["buckets"] if b["label"] == "70-80")
+    assert seventy_bucket["wilson_low_pct"] < 70.0
+    assert seventy_bucket["proven_70"] is False
+    assert out["high_confidence"]["wins"] == 24
+    assert out["high_confidence"]["total"] == 30
+    assert out["high_confidence"]["win_rate_pct"] == 80.0
+    assert out["high_confidence"]["wilson_low_pct"] < 70.0
+    assert out["high_confidence"]["proven_70"] is False
+    assert out["high_confidence"]["verdict"] == "unproven_70"
 
 
 # ════════════════════════════════════════════════════════════════════════

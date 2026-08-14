@@ -57,6 +57,11 @@ class Settings(BaseSettings):
     OBJECTIVE_LOOKBACK_DAYS: int = 150
     
     # ── Kill Conditions ─────────────────────────────────────────────────
+    # This settings default is an operator target/floor knob. Runtime Contract-70
+    # may clamp or override it (currently to a fail-closed/futility floor around
+    # 45%) via core.accuracy_contract.resolve_float. Do not interpret this value
+    # as proof that Ghost is 70% accurate; proof is Wilson-backed at
+    # /api/ghost/contract/70-verdict.
     KILL_SWITCH_ENABLED: str = "1"
     KILL_WINRATE_FLOOR: float = 0.70
     KILL_WINRATE_WINDOW: int = 30

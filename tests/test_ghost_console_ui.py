@@ -92,9 +92,8 @@ def test_console_contains_pool_management_and_top_pick_gate():
     assert "poolAdd" in text
     assert "Remove" in text
     assert "Top Picks locked" in text
-    assert "≥70%" in text or "&ge;70%" in text
-    assert "proven directional win rate" in text
-    assert "at least 5 completed predictions" in text
+    assert "Wilson-backed 70%" in text
+    assert "Raw 70%+ win rate alone is not proof" in text
     assert "Current completed predictions" in text
 
 
@@ -107,19 +106,23 @@ def test_console_surfaces_post_falsification_state_outside_health_tab():
     assert "stays NO EDGE until coverage, risk, and truth-ledger gates" in text
 
 
-def test_console_and_cockpit_surface_contract_70_as_unproven_evidence():
+def test_console_and_cockpit_surface_contract_70_verdict_honestly():
     console = _html()
     cockpit = COCKPIT_HTML.read_text(encoding="utf-8")
     assert 'id="contract70Banner"' in console
     assert "function loadContract70" in console
-    assert "/api/ghost/contract" in console
+    assert "/api/ghost/contract/70-verdict" in console
     assert 'id="mvr-contract-banner"' in cockpit
     assert "['mvr-contract-banner', 'ghost-contract-banner']" in cockpit
+    assert "/api/ghost/contract/70-verdict" in cockpit
     movers = cockpit[cockpit.index('<section id="movers-board"'):cockpit.index('<!-- ═══════════ END CLEAN MOVERS BOARD')]
     assert 'id="mvr-contract-banner"' in movers
     for text in (console, cockpit):
         assert "UNPROVEN_AT_CURRENT_DATA" in text
+        assert "FALSIFIED_AT_CURRENT_DATA" in text
         assert "unproven at current data" in text
+        assert "falsified at current data" in text
+        assert "Wilson low" in text
         assert "Evidence claim" in text or "evidence claim" in text
         assert "firing gates" in text
         assert "zero fireable picks" in text

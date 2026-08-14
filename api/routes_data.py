@@ -234,8 +234,25 @@ def get_stats_confidence_buckets():
     Public read-only — same convention as /api/stats and /api/stats/v32.
     Diagnostic for confidence calibration: if a high bucket wins at chance
     rate, confidence carries no signal and the engine needs recalibration.
+
+    Honesty upgrade (2026-08-14): each bucket now carries a 95% Wilson lower
+    and upper bound plus a `proven_70` flag (Wilson lower bound >= 0.70). Raw
+    win rate on a small sample must NOT be read as proof. An aggregate
+    `high_confidence` block (>=70% confidence) reports whether the labeled-70%
+    picks actually clear a 70% win rate with statistical confidence — the single
+    honest answer to "is Ghost at 70%?". Denominator is fired WIN/LOSS only;
+    EXPIRED/withdrawn picks are excluded here (see /api/ghost/contract/70-verdict
+    for the contract proof that counts EXPIRED as non-wins).
     """
     from wolf_app import _v32_stats_start_ts, db_conn  # late import — shared state + monkeypatch-safe
+    try:
+        from core.binomial_stats import wilson_lower_bound, wilson_upper_bound
+    except Exception:  # pragma: no cover - defensive
+        def wilson_lower_bound(w, n, z=1.96):  # type: ignore
+            return (w / n) if n else 0.0
+
+        def wilson_upper_bound(w, n, z=1.96):  # type: ignore
+            return (w / n) if n else 0.0
     buckets_spec = [
         ("<60", 0.00, 0.60),
         ("60-70", 0.60, 0.70),
@@ -248,6 +265,8 @@ def get_stats_confidence_buckets():
             cur = conn.cursor()
             v32_start_ts = _v32_stats_start_ts(cur)
             out = []
+            hi_wins = 0
+            hi_total = 0
             for label, lo, hi in buckets_spec:
                 if v32_start_ts > 0:
                     cur.execute(
@@ -271,6 +290,11 @@ def get_stats_confidence_buckets():
                 w = rows.get("WIN", 0)
                 l = rows.get("LOSS", 0)
                 tot = w + l
+                w_low = round(wilson_lower_bound(w, tot) * 100, 1) if tot else 0.0
+                w_high = round(wilson_upper_bound(w, tot) * 100, 1) if tot else 0.0
+                if lo >= 0.70:
+                    hi_wins += w
+                    hi_total += tot
                 out.append({
                     "label": label,
                     "min": lo,
@@ -279,8 +303,46 @@ def get_stats_confidence_buckets():
                     "losses": l,
                     "total": tot,
                     "win_rate_pct": round(w / tot * 100, 1) if tot else 0.0,
+                    "wilson_low_pct": w_low,
+                    "wilson_high_pct": w_high,
+                    "proven_70": bool(tot and wilson_lower_bound(w, tot) >= 0.70),
                 })
-        return {"ok": True, "start_ts": v32_start_ts, "buckets": out}
+        hi_low = wilson_lower_bound(hi_wins, hi_total) if hi_total else 0.0
+        hi_high = wilson_upper_bound(hi_wins, hi_total) if hi_total else 0.0
+        proven_70 = bool(hi_total and hi_low >= 0.70)
+        # Honest verdict on the labeled-70% population.
+        if hi_total == 0:
+            verdict = "no_high_confidence_picks"
+        elif proven_70:
+            verdict = "proven_70"
+        elif hi_high < 0.70:
+            verdict = "rejects_70"  # even the upper CI bound is below 70%
+        else:
+            verdict = "unproven_70"  # cannot confirm or reject yet
+        return {
+            "ok": True,
+            "start_ts": v32_start_ts,
+            "buckets": out,
+            "denominator_note": (
+                "Fired WIN/LOSS only. EXPIRED, withdrawn, and other terminal "
+                "non-wins are excluded here; the contract proof at "
+                "/api/ghost/contract/70-verdict counts EXPIRED as non-wins."
+            ),
+            "high_confidence": {
+                "label": ">=70% confidence",
+                "wins": hi_wins,
+                "total": hi_total,
+                "win_rate_pct": round(hi_wins / hi_total * 100, 1) if hi_total else 0.0,
+                "wilson_low_pct": round(hi_low * 100, 1),
+                "wilson_high_pct": round(hi_high * 100, 1),
+                "proven_70": proven_70,
+                "verdict": verdict,
+                "note": (
+                    "Is Ghost at 70%? Only 'proven_70' (Wilson lower bound >= 70%) "
+                    "supports a 70% accuracy claim. Raw win rate alone does not."
+                ),
+            },
+        }
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
 

@@ -12,6 +12,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Optional
 
+from core.binomial_stats import wilson_lower_bound
+
 LOGGER = logging.getLogger("ghost.super_ghost_top_picks")
 
 MIN_COMPLETED = 5
@@ -55,9 +57,20 @@ def evaluate_top_pick_gate(symbol: str, *, horizon: int = 5) -> Dict[str, Any]:
 
     overall = (acc or {}).get("overall") or {}
     completed = int(overall.get("n") or (acc or {}).get("resolved_at_horizon") or 0)
+    wins = int(overall.get("wins") or 0)
     wr = _f(overall.get("win_rate"))
+    wilson_low = _f(overall.get("win_rate_wilson_low"))
+    if wilson_low is None and completed > 0:
+        wilson_low = round(wilson_lower_bound(wins, completed), 4)
+    direction_proven = wilson_low is not None and wilson_low >= MIN_DIRECTION_WIN_RATE
     add_check("completed_predictions", completed >= MIN_COMPLETED, completed, f">={MIN_COMPLETED}", "Enough resolved predictions exist to evaluate the symbol.")
-    add_check("direction_win_rate", wr is not None and wr >= MIN_DIRECTION_WIN_RATE, wr, f">={MIN_DIRECTION_WIN_RATE}", "Directional win-rate must be proven; correct DOWN calls count when price falls.")
+    add_check(
+        "direction_wilson_proof",
+        direction_proven,
+        {"win_rate": wr, "wilson_low": wilson_low, "wins": wins, "n": completed},
+        f"Wilson lower >= {MIN_DIRECTION_WIN_RATE}",
+        "Directional win-rate must be Wilson-proven; raw small-sample 70%+ does not unlock Top Picks.",
+    )
 
     # Precision proof from Precision Brain.
     try:
@@ -122,6 +135,9 @@ def evaluate_top_pick_gate(symbol: str, *, horizon: int = 5) -> Dict[str, Any]:
         "metrics": {
             "completed_predictions": completed,
             "direction_win_rate": wr,
+            "direction_wins": wins,
+            "direction_wilson_low": wilson_low,
+            "direction_wilson_proven": direction_proven,
             "precision_score": pscore,
             "precision_samples": psamples,
             "range_calibration_ready": range_ready,
