@@ -240,19 +240,27 @@ def get_stats_confidence_buckets():
     win rate on a small sample must NOT be read as proof. An aggregate
     `high_confidence` block (>=70% confidence) reports whether the labeled-70%
     picks actually clear a 70% win rate with statistical confidence — the single
-    honest answer to "is Ghost at 70%?". Denominator is fired WIN/LOSS only;
+    honest answer to "is Ghost at 70%?". Denominator is real, non-research,
+    official-watchlist stock picks with fired WIN/LOSS outcomes only;
     EXPIRED/withdrawn picks are excluded here (see /api/ghost/contract/70-verdict
     for the contract proof that counts EXPIRED as non-wins).
     """
-    from wolf_app import _v32_stats_start_ts, db_conn  # late import — shared state + monkeypatch-safe
+    from wolf_app import (  # late import — shared state + monkeypatch-safe
+        NON_RESEARCH_WHERE,
+        REAL_TRADE_WHERE,
+        _v32_stats_start_ts,
+        db_conn,
+    )
     try:
         from core.binomial_stats import wilson_lower_bound, wilson_upper_bound
-    except Exception:  # pragma: no cover - defensive
-        def wilson_lower_bound(w, n, z=1.96):  # type: ignore
-            return (w / n) if n else 0.0
-
-        def wilson_upper_bound(w, n, z=1.96):  # type: ignore
-            return (w / n) if n else 0.0
+    except Exception:
+        # Statistical proof must fail closed. Raw accuracy is never a valid
+        # substitute for a Wilson interval.
+        return JSONResponse(
+            {"ok": False, "error": "Wilson statistics unavailable; 70% proof withheld"},
+            status_code=503,
+        )
+    credibility_where = REAL_TRADE_WHERE + " AND " + NON_RESEARCH_WHERE
     buckets_spec = [
         ("<60", 0.00, 0.60),
         ("60-70", 0.60, 0.70),
@@ -274,6 +282,7 @@ def get_stats_confidence_buckets():
                         "WHERE outcome IN ('WIN','LOSS') "
                         "AND predicted_at IS NOT NULL AND predicted_at >= %s "
                         "AND confidence >= %s AND confidence < %s "
+                        "AND " + credibility_where + " "
                         "GROUP BY outcome",
                         (v32_start_ts, lo, hi),
                     )
@@ -283,29 +292,30 @@ def get_stats_confidence_buckets():
                         "WHERE outcome IN ('WIN','LOSS') "
                         "AND predicted_at IS NOT NULL "
                         "AND confidence >= %s AND confidence < %s "
+                        "AND " + credibility_where + " "
                         "GROUP BY outcome",
                         (lo, hi),
                     )
                 rows = {r[0]: r[1] for r in cur.fetchall()}
-                w = rows.get("WIN", 0)
-                l = rows.get("LOSS", 0)
-                tot = w + l
-                w_low = round(wilson_lower_bound(w, tot) * 100, 1) if tot else 0.0
-                w_high = round(wilson_upper_bound(w, tot) * 100, 1) if tot else 0.0
+                wins = rows.get("WIN", 0)
+                losses = rows.get("LOSS", 0)
+                total = wins + losses
+                w_low = round(wilson_lower_bound(wins, total) * 100, 1) if total else 0.0
+                w_high = round(wilson_upper_bound(wins, total) * 100, 1) if total else 0.0
                 if lo >= 0.70:
-                    hi_wins += w
-                    hi_total += tot
+                    hi_wins += wins
+                    hi_total += total
                 out.append({
                     "label": label,
                     "min": lo,
                     "max": hi,
-                    "wins": w,
-                    "losses": l,
-                    "total": tot,
-                    "win_rate_pct": round(w / tot * 100, 1) if tot else 0.0,
+                    "wins": wins,
+                    "losses": losses,
+                    "total": total,
+                    "win_rate_pct": round(wins / total * 100, 1) if total else 0.0,
                     "wilson_low_pct": w_low,
                     "wilson_high_pct": w_high,
-                    "proven_70": bool(tot and wilson_lower_bound(w, tot) >= 0.70),
+                    "proven_70": bool(total and wilson_lower_bound(wins, total) >= 0.70),
                 })
         hi_low = wilson_lower_bound(hi_wins, hi_total) if hi_total else 0.0
         hi_high = wilson_upper_bound(hi_wins, hi_total) if hi_total else 0.0
@@ -324,8 +334,10 @@ def get_stats_confidence_buckets():
             "start_ts": v32_start_ts,
             "buckets": out,
             "denominator_note": (
-                "Fired WIN/LOSS only. EXPIRED, withdrawn, and other terminal "
-                "non-wins are excluded here; the contract proof at "
+                "Real fired stock WIN/LOSS only; research picks, non-stock rows, "
+                "and symbols outside the official watchlist are excluded. EXPIRED, "
+                "withdrawn, and other terminal non-wins are also excluded here; "
+                "the contract proof at "
                 "/api/ghost/contract/70-verdict counts EXPIRED as non-wins."
             ),
             "high_confidence": {

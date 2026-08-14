@@ -4143,19 +4143,24 @@ async function loadGhostContract(){
   if(!targets.length) return;
   var data = await fetch('/api/ghost/contract').then(function(r){return r.json()}).catch(function(){return null});
   var verdict = await fetch('/api/ghost/contract/70-verdict').then(function(r){return r.json()}).catch(function(){return null});
-  if(!data || data.ok !== true) return;
+  var dataOk = data && data.ok === true;
+  var verdictOk = verdict && verdict.ok === true;
+  if(!dataOk && !verdictOk) return;
+  data = dataOk ? data : {};
   var lanes = data.lanes || {};
   var v3 = lanes.v3_picks || {};
   var sq = lanes.squeeze_radar || {};
-  var c70 = (verdict && verdict.ok !== false) ? verdict : (data.contract_70 || {});
+  var c70 = verdictOk ? verdict : (data.contract_70 || {});
+  var live = c70.live || {};
+  var wilson = live.wilson || {};
   var status = c70.status || c70.verdict || '';
   var proven = status === 'PROVEN' || status === 'PROVEN_AT_CURRENT_DATA';
   var falsified = status === 'FALSIFIED_AT_CURRENT_DATA' || status === 'ABANDON_70_CLAIM';
   var pending = status === 'UNPROVEN_AT_CURRENT_DATA' || (!proven && !falsified);
   var color = falsified ? '#ff5470' : (proven ? '#1ec77d' : '#f5a623');
   var statusText = falsified ? 'falsified at current data' : (proven ? 'proven at current data' : (pending ? 'unproven at current data' : status));
-  var wr = c70.win_rate_pct != null ? c70.win_rate_pct : (c70.win_rate != null ? Math.round(Number(c70.win_rate)*1000)/10 : null);
-  var wl = c70.wilson_low_pct != null ? c70.wilson_low_pct : (c70.wilson_low != null ? Math.round(Number(c70.wilson_low)*1000)/10 : null);
+  var wr = c70.win_rate_pct != null ? c70.win_rate_pct : (c70.win_rate != null ? Math.round(Number(c70.win_rate)*1000)/10 : (live.win_rate != null ? Math.round(Number(live.win_rate)*1000)/10 : null));
+  var wl = c70.wilson_low_pct != null ? c70.wilson_low_pct : (c70.wilson_low != null ? Math.round(Number(c70.wilson_low)*1000)/10 : (wilson.low != null ? Math.round(Number(wilson.low)*1000)/10 : null));
   var evidence = (wr != null || wl != null) ? ' Raw ' + (wr==null?'—':wr+'%') + ' · Wilson low ' + (wl==null?'—':wl+'%') + '.' : '';
   var html = '<div class="ghost-contract-box">'
     + '<div class="fw700-c4b5fd-fs12-ls">' + (data.headline || 'Ghost product contract') + '</div>'

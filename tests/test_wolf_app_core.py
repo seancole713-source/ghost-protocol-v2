@@ -1,3 +1,4 @@
+import builtins
 import json
 import time
 
@@ -298,6 +299,7 @@ def test_confidence_buckets_empty_db_returns_zeroed_shape(monkeypatch):
     assert len(out["buckets"]) == 5
     assert [b["label"] for b in out["buckets"]] == ["<60", "60-70", "70-80", "80-90", "90+"]
     assert "EXPIRED" in out["denominator_note"]
+    assert "research picks" in out["denominator_note"]
     assert out["high_confidence"]["proven_70"] is False
     assert out["high_confidence"]["verdict"] == "no_high_confidence_picks"
     for b in out["buckets"]:
@@ -338,6 +340,31 @@ def test_confidence_buckets_computes_per_bucket_winrate(monkeypatch):
     assert out["high_confidence"]["wilson_low_pct"] < 70.0
     assert out["high_confidence"]["proven_70"] is False
     assert out["high_confidence"]["verdict"] == "unproven_70"
+
+    from core.prediction_filters import NON_RESEARCH_WHERE, REAL_TRADE_WHERE
+
+    assert len(cur.executed) == 5
+    for sql, _ in cur.executed:
+        assert REAL_TRADE_WHERE in sql
+        assert NON_RESEARCH_WHERE in sql
+
+
+def test_confidence_buckets_fail_closed_without_wilson_stats(monkeypatch):
+    """An import failure must never degrade statistical proof to raw accuracy."""
+    real_import = builtins.__import__
+
+    def fail_wilson_import(name, *args, **kwargs):
+        if name == "core.binomial_stats":
+            raise ImportError("simulated missing statistics module")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fail_wilson_import)
+    out = wolf_app.get_stats_confidence_buckets()
+
+    assert out.status_code == 503
+    payload = json.loads(out.body)
+    assert payload["ok"] is False
+    assert "proof withheld" in payload["error"]
 
 
 # ════════════════════════════════════════════════════════════════════════

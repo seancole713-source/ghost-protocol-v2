@@ -97,6 +97,15 @@ def test_console_contains_pool_management_and_top_pick_gate():
     assert "Current completed predictions" in text
 
 
+def test_console_top_pick_fallback_is_authoritative_and_fail_closed():
+    text = _html()
+    gate = text[text.index("function topGate()") : text.index("function renderTopGate()")]
+    assert "g.ok===true&&Array.isArray(g.checks)" in gate
+    assert "return {ok:false" in gate
+    assert "Authoritative Top Pick gate unavailable; locked fail-closed." in gate
+    assert "var ok=" not in gate
+
+
 def test_console_surfaces_post_falsification_state_outside_health_tab():
     text = _html()
     assert "id=\"killBanner\"" in text
@@ -126,6 +135,16 @@ def test_console_and_cockpit_surface_contract_70_verdict_honestly():
         assert "Evidence claim" in text or "evidence claim" in text
         assert "firing gates" in text
         assert "zero fireable picks" in text
+    console_loader = console[console.index("async function loadContract70") : console.index("function renderOverview")]
+    cockpit_loader = cockpit[cockpit.index("async function loadGhostContract") : cockpit.index("async function loadDoctrine")]
+    assert "var live=c.live||{}" in console_loader
+    assert "var wilson=live.wilson||{}" in console_loader
+    assert "live.win_rate" in console_loader
+    assert "wilson.low" in console_loader
+    assert "var live = c70.live || {};" in cockpit_loader
+    assert "var wilson = live.wilson || {};" in cockpit_loader
+    assert "live.win_rate" in cockpit_loader
+    assert "wilson.low" in cockpit_loader
 
 
 def test_console_fetches_required_existing_and_new_apis():
