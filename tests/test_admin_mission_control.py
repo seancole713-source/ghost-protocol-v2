@@ -75,9 +75,9 @@ def test_admin_polling_pauses_when_tab_hidden():
     assert "document.hidden" in ADMIN
 
 
-def test_admin_watchlist_count_is_100():
+def test_admin_watchlist_count_is_104():
     from config.symbols import OFFICIAL_WATCHLIST
-    assert len(OFFICIAL_WATCHLIST) == 100
+    assert len(OFFICIAL_WATCHLIST) == 104
 
 
 # ── Mission Control honesty + robustness fixes (forensic audit 2026-07-18) ──

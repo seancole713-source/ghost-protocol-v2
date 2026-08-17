@@ -6,11 +6,12 @@ from config.symbols import (
 )
 
 
-def test_official_watchlist_has_100_symbols():
-    # 74 + 26 liquid mega/large caps (PR #164) — universe width is the
+def test_official_watchlist_has_104_symbols():
+    # 74 + 26 liquid mega/large caps (PR #164) + 4 momentum/explosion names
+    # (TRU, OGC, SATS, ALAB — 2026-08-17) — universe width is the
     # shadow-evidence rate (one row per symbol per day).
-    assert len(OFFICIAL_WATCHLIST) == 100
-    assert len(set(OFFICIAL_WATCHLIST)) == 100
+    assert len(OFFICIAL_WATCHLIST) == 104
+    assert len(set(OFFICIAL_WATCHLIST)) == 104
 
 
 def test_official_watchlist_excludes_delisted_rdfn():

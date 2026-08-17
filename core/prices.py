@@ -65,6 +65,14 @@ def _note_alpaca_feed_status(feed_name: str, status_code: int) -> None:
 _prev_close_cache: Dict[str, Tuple[float, float]] = {}
 _PREV_CLOSE_TTL_S = int(os.getenv("PREV_CLOSE_TTL_S", "86400"))  # 24h
 
+# Price sanity guard: reject phantom quotes (wrong security / stale feed) that
+# diverge wildly from an independent source. Catches the MU/SNDK class of bug
+# where Alpaca IEX serves a foreign-listed twin at ~10x the real price. The
+# cross-check is bounded by a per-symbol TTL so it never hammers yfinance.
+PRICE_SANITY_DIVERGENCE_PCT = float(os.getenv("PRICE_SANITY_DIVERGENCE_PCT", "50.0"))
+PRICE_SANITY_CROSS_CHECK_TTL_S = int(os.getenv("PRICE_SANITY_CROSS_CHECK_TTL_S", "900"))
+_cross_check_cache: Dict[str, Tuple[float, float]] = {}
+
 def _load_prev_close_cache():
     """Load persisted prev_close values from ghost_state on module init."""
     try:
@@ -126,6 +134,59 @@ def _cache_get(symbol):
 
 def _cache_set(symbol, price):
     _mem_cache[symbol] = (price, time.time())
+
+
+def _reject_phantom(symbol, price):
+    """Reject phantom quotes (wrong security / stale feed) before they corrupt
+    features, entries, and models.
+
+    A single feed returning a ~10x-off price (e.g. Alpaca IEX serving a
+    foreign-listed twin for MU/SNDK) must not enter the cache. We cross-check
+    against an independent source (yfinance) and reject when the candidate
+    diverges by more than PRICE_SANITY_DIVERGENCE_PCT. The cross-check is
+    bounded by a per-symbol TTL and gated by the yfinance circuit breaker, so
+    it is cheap in the common case and fail-open when yfinance is down.
+
+    Returns (price_or_None, rejected_bool).
+    """
+    if not price:
+        return None, False
+    try:
+        p = float(price)
+    except (TypeError, ValueError):
+        return None, False
+    if p <= 0:
+        return None, False
+
+    # Bound cross-check frequency: reuse a recent reference price per symbol.
+    ref = None
+    cc = _cross_check_cache.get(symbol)
+    if cc and time.time() - cc[0] < PRICE_SANITY_CROSS_CHECK_TTL_S:
+        ref = cc[1]
+    else:
+        try:
+            from core.circuit_breaker import _yfinance_cb
+            if _yfinance_cb.allow():
+                import yfinance as yf
+                fi = yf.Ticker(symbol).fast_info
+                ref = getattr(fi, "last_price", None) or getattr(fi, "previous_close", None)
+                if ref and float(ref) > 0:
+                    ref = float(ref)
+                    _cross_check_cache[symbol] = (time.time(), ref)
+                    _yfinance_cb.record_success()
+        except Exception:
+            note_suppressed()
+
+    if not ref or float(ref) <= 0:
+        return p, False  # fail-open: no independent reference available
+    ref = float(ref)
+    if abs(p - ref) / ref * 100.0 > PRICE_SANITY_DIVERGENCE_PCT:
+        LOGGER.warning(
+            "price sanity %s: rejecting phantom %.2f (independent ref %.2f)",
+            symbol, p, ref,
+        )
+        return None, True
+    return p, False
 
 
 def _alpaca(symbol):
@@ -267,7 +328,10 @@ def get_stock_price(symbol, *, with_staleness: bool = False):
     cached = _cache_get(symbol)
     if cached:
         return (cached, False) if with_staleness else cached
-    price = _alpaca(symbol) or _yfinance(symbol)
+    price = _alpaca(symbol)
+    price, _rej = _reject_phantom(symbol, price)
+    if not price:
+        price = _yfinance(symbol)
     if not price:
         price = _iex_spot(symbol)
     if price:
@@ -706,6 +770,8 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
         _save_prev_close_cache()
 
     chg_abs = chg_pct = None
+    if last_price:
+        last_price, _rej = _reject_phantom(sym, last_price)
     if last_price and prev_close and prev_close > 0:
         chg_abs = round(last_price - prev_close, 4)
         chg_pct = round(chg_abs / prev_close * 100, 3)

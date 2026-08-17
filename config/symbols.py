@@ -18,22 +18,24 @@ _WATCHLIST_SKIP = frozenset({"GHOST", "TEST"})
 # Official live watchlist — Ghost scans and forecasts these symbols only.
 # Sourced from investor watchlist (mobile app screenshots, Jun 2026).
 OFFICIAL_WATCHLIST: Tuple[str, ...] = (
-    "AAPL", "ABCL", "ABNB", "ACDC", "ADBE", "AI", "AMC", "AMD", "AMZN", "APGE",
+    "AAPL", "ABCL", "ABNB", "ACDC", "ADBE", "AI", "ALAB", "AMC", "AMD", "AMZN", "APGE",
     "ARCT", "ARDT", "AVGO", "BA", "BABA", "BB", "BBWI", "BILL", "BMBL", "BROS",
     "BTGO", "CAT", "CLNE", "COIN", "COST", "CRM", "CVNA", "DASH", "DELL", "DIS",
     "DJT", "DOMO", "DUOL", "FLNC", "GE", "GME", "GOOG", "GOOGL", "GS", "HIMS",
     "HOOD", "HTZ", "INTC", "IQ", "ITRI", "JACK", "JPM", "KC", "LCID", "LLY",
     "LMND", "LU", "LULU", "MA", "META", "MRVL", "MSFT", "MTZ", "MU", "NAVN",
-    "NFLX", "NKE", "NOK", "NVDA", "ODD", "OLLI", "OPK", "OPTU", "ORCL", "PFE",
+    "NFLX", "NKE", "NOK", "NVDA", "ODD", "OGC", "OLLI", "OPK", "OPTU", "ORCL", "PFE",
     "PLTK", "PLTR", "PLUG", "PYPL", "QCOM", "RIG", "RIOT", "RKT", "SABR", "SAP",
-    "SHOP", "SNAP", "SOUN", "SPCE", "STUB", "SW", "TAL", "TGTX", "TLRY", "TME",
-    "TSLA", "TXN", "UBER", "V", "W", "WMT", "WOLF", "XOM", "XPO", "YMM",
-    # 100 symbols (RDFN excluded — delisted into RKT 2025-07). +30 mega-cap/growth
+    "SATS", "SHOP", "SNAP", "SOUN", "SPCE", "STUB", "SW", "TAL", "TGTX", "TLRY",
+    "TME", "TRU", "TSLA", "TXN", "UBER", "V", "W", "WMT", "WOLF", "XOM", "XPO", "YMM",
+    # 104 symbols (RDFN excluded — delisted into RKT 2025-07). +30 mega-cap/growth
     # names added 2026-07-08 per operator. +26 liquid mega/large caps added
     # 2026-07-10 (PR #164, autonomous mission): shadow evidence is capped at one
     # row per symbol per trading day, so universe width IS the forward-proof
     # rate — ~74/day max -> ~100/day max. Large caps also showed the cleanest
     # label structure in the 2026-07-10 geometry sweeps.
+    # +4 momentum/explosion names (TRU, OGC, SATS, ALAB) added 2026-08-17 per
+    # operator EXPLOSION (1-2 week) strategy request. Prices verified plausible.
     # SNDK excluded (feed showed implausible ~$1600); SpaceX skipped (private).
 )
 OFFICIAL_WATCHLIST_CSV = ",".join(OFFICIAL_WATCHLIST)
