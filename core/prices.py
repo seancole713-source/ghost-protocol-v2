@@ -71,6 +71,11 @@ _PREV_CLOSE_TTL_S = int(os.getenv("PREV_CLOSE_TTL_S", "86400"))  # 24h
 # cross-check is bounded by a per-symbol TTL so it never hammers yfinance.
 PRICE_SANITY_DIVERGENCE_PCT = float(os.getenv("PRICE_SANITY_DIVERGENCE_PCT", "50.0"))
 PRICE_SANITY_CROSS_CHECK_TTL_S = int(os.getenv("PRICE_SANITY_CROSS_CHECK_TTL_S", "900"))
+# Fail-closed mode: when no independent reference is available (yfinance down
+# or breaker open), reject the candidate instead of trusting a single feed.
+# Default off (fail-open) so a yfinance outage never starves pricing; enable
+# for strict phantom protection on names with a known-bad feed.
+PRICE_SANITY_FAIL_CLOSED = os.getenv("PRICE_SANITY_FAIL_CLOSED", "0").strip().lower() in ("1", "true", "yes", "on")
 _cross_check_cache: Dict[str, Tuple[float, float]] = {}
 
 def _load_prev_close_cache():
@@ -178,6 +183,12 @@ def _reject_phantom(symbol, price):
             note_suppressed()
 
     if not ref or float(ref) <= 0:
+        if PRICE_SANITY_FAIL_CLOSED:
+            LOGGER.warning(
+                "price sanity %s: no independent reference, fail-closed — rejecting %.2f",
+                symbol, p,
+            )
+            return None, True
         return p, False  # fail-open: no independent reference available
     ref = float(ref)
     if abs(p - ref) / ref * 100.0 > PRICE_SANITY_DIVERGENCE_PCT:

@@ -30,10 +30,21 @@ def test_reject_phantom_accepts_close_price(monkeypatch):
 def test_reject_phantom_fail_open_without_reference(monkeypatch):
     px._cross_check_cache.clear()
     monkeypatch.setattr(px, "_cross_check_cache", {})
+    monkeypatch.setattr(px, "PRICE_SANITY_FAIL_CLOSED", False)
     # No independent reference available → fail-open (return the price).
     out, rejected = px._reject_phantom("WOLF", 31.81)
     assert out == 31.81
     assert rejected is False
+
+
+def test_reject_phantom_fail_closed_without_reference(monkeypatch):
+    px._cross_check_cache.clear()
+    monkeypatch.setattr(px, "_cross_check_cache", {})
+    monkeypatch.setattr(px, "PRICE_SANITY_FAIL_CLOSED", True)
+    # No independent reference available → fail-closed (reject the price).
+    out, rejected = px._reject_phantom("MU", 993.42)
+    assert out is None
+    assert rejected is True
 
 
 def test_reject_phantom_handles_garbage(monkeypatch):
