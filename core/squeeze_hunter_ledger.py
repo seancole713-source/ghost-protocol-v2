@@ -52,7 +52,12 @@ def _jsonb(v: Any) -> Optional[str]:
 
 
 def ensure_hunter_tables(cur) -> None:
-    """Create the Hunter evaluation + resolution tables. Idempotent."""
+    """Create the Hunter evaluation + resolution tables. Idempotent.
+
+    Includes ALTER TABLE migrations so a table created by an earlier commit
+    (before reference_price / the extra resolution columns existed) is upgraded
+    in place — CREATE TABLE IF NOT EXISTS alone does NOT add missing columns.
+    """
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS ghost_squeeze_hunter_evaluations (
@@ -79,6 +84,12 @@ def ensure_hunter_tables(cur) -> None:
         )
         """
     )
+    # P0 migration: add reference_price to a table created before this column
+    # existed (commit 60c38fd). CREATE TABLE IF NOT EXISTS does not alter it.
+    cur.execute(
+        "ALTER TABLE ghost_squeeze_hunter_evaluations "
+        "ADD COLUMN IF NOT EXISTS reference_price FLOAT"
+    )
     cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_hunter_eval_symbol_time "
         "ON ghost_squeeze_hunter_evaluations (symbol, issued_ts DESC)"
@@ -94,12 +105,28 @@ def ensure_hunter_tables(cur) -> None:
             return_5d_pct FLOAT,
             return_14d_pct FLOAT,
             hit_plus_20 BOOLEAN,
+            hit_plus_50 BOOLEAN,
+            hit_plus_100 BOOLEAN,
             hit_minus_20 BOOLEAN,
+            max_favorable_pct FLOAT,
+            max_adverse_pct FLOAT,
             reason VARCHAR(200),
             created_at BIGINT NOT NULL
         )
         """
     )
+    # P0 migration: add the extra forecast labels + excursion columns to a
+    # resolution table created before they existed.
+    for col, typ in (
+        ("hit_plus_50", "BOOLEAN"),
+        ("hit_plus_100", "BOOLEAN"),
+        ("max_favorable_pct", "FLOAT"),
+        ("max_adverse_pct", "FLOAT"),
+    ):
+        cur.execute(
+            f"ALTER TABLE ghost_squeeze_hunter_resolutions "
+            f"ADD COLUMN IF NOT EXISTS {col} {typ}"
+        )
     cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_hunter_res_eval "
         "ON ghost_squeeze_hunter_resolutions (evaluation_id)"
@@ -180,7 +207,11 @@ def resolve_hunter_evaluation(
     return_5d_pct: Optional[float] = None,
     return_14d_pct: Optional[float] = None,
     hit_plus_20: Optional[bool] = None,
+    hit_plus_50: Optional[bool] = None,
+    hit_plus_100: Optional[bool] = None,
     hit_minus_20: Optional[bool] = None,
+    max_favorable_pct: Optional[float] = None,
+    max_adverse_pct: Optional[float] = None,
     resolved_ts: Optional[int] = None,
     evidence_available_ts: Optional[int] = None,
     reason: str = "",
@@ -202,14 +233,16 @@ def resolve_hunter_evaluation(
             INSERT INTO ghost_squeeze_hunter_resolutions
                 (evaluation_id, resolved_ts, evidence_available_ts,
                  return_1d_pct, return_5d_pct, return_14d_pct,
-                 hit_plus_20, hit_minus_20, reason, created_at)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                 hit_plus_20, hit_plus_50, hit_plus_100, hit_minus_20,
+                 max_favorable_pct, max_adverse_pct, reason, created_at)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON CONFLICT (evaluation_id) DO NOTHING
             """,
             (
                 evaluation_id, rts, eats,
                 return_1d_pct, return_5d_pct, return_14d_pct,
-                hit_plus_20, hit_minus_20, reason, now,
+                hit_plus_20, hit_plus_50, hit_plus_100, hit_minus_20,
+                max_favorable_pct, max_adverse_pct, reason, now,
             ),
         )
         return c.rowcount > 0
@@ -316,60 +349,86 @@ def _bar_epoch(bar: Dict[str, Any]) -> Optional[int]:
         return None
 
 
+def _session_date(ts: int) -> Optional[str]:
+    """Exchange-session date (America/Chicago) for a timestamp.
+
+    Used instead of a fixed 6-hour offset so day-zero/day-one alignment does
+    not depend on the data provider's bar timestamp convention.
+    """
+    try:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        from core.market_hours import SESSION_TZ
+        return datetime.fromtimestamp(int(ts), ZoneInfo(SESSION_TZ)).date().isoformat()
+    except Exception:
+        return None
+
+
 def _bars_after(series: list, issued_ts: int) -> list:
-    """Trading-day bars strictly after the evaluation timestamp, in order."""
+    """Trading-day bars strictly after the evaluation's session date, in order.
+
+    Day-zero = the session date the evaluation was issued on. Forward bars are
+    bars whose session date is strictly later. This is provider-independent:
+    it keys on the exchange session date, not a raw timestamp offset.
+    """
+    eval_date = _session_date(issued_ts)
+    if eval_date is None:
+        return []
     out = []
     for b in series:
         e = _bar_epoch(b)
         if e is None:
             continue
-        if e > issued_ts + 6 * 3600:
+        bd = _session_date(e)
+        if bd is None:
+            continue
+        if bd > eval_date:
             out.append(b)
     return out
 
 
 def _resolve_one(eval_id: int, symbol: str, issued_ts: int, ref: Optional[float],
                  series: list, now: int) -> Optional[Dict[str, Any]]:
-    """Compute 1/5/14-day returns + hit_plus_20/hit_minus_20 for one evaluation."""
+    """Compute a FULL 1/5/14-day resolution for one evaluation.
+
+    Returns None (no resolution yet) unless all 14 forward bars are available,
+    so a partial resolution is never written and later runs are not blocked by
+    a prematurely-inserted row. hit_plus_20/50/100 and hit_minus_20 are only
+    asserted once the full 14-day window has elapsed.
+    """
     if ref is None or ref <= 0:
         return None
     fwd = _bars_after(series, issued_ts)
-    if not fwd:
-        return None
+    if len(fwd) < 14:
+        return None  # not enough forward bars yet — wait for a later run
 
     def _ret_at(idx: int) -> Optional[float]:
-        if len(fwd) > idx:
-            px = fwd[idx].get("close")
-            if px is not None:
-                return round((float(px) - ref) / ref * 100.0, 3)
+        px = fwd[idx].get("close")
+        if px is not None:
+            return round((float(px) - ref) / ref * 100.0, 3)
         return None
 
     r1 = _ret_at(0)
     r5 = _ret_at(4)
     r14 = _ret_at(13)
 
-    # hit_plus_20 / hit_minus_20: did the price reach +20% / -20% from ref at
-    # any point within the 14-day window (using high/low)?
-    hit_plus_20 = None
-    hit_minus_20 = None
     window = fwd[:14]
-    if window:
-        highs = [float(b["high"]) for b in window if b.get("high") is not None]
-        lows = [float(b["low"]) for b in window if b.get("low") is not None]
-        if highs:
-            hit_plus_20 = max(highs) >= ref * 1.20
-        if lows:
-            hit_minus_20 = min(lows) <= ref * 0.80
+    highs = [float(b["high"]) for b in window if b.get("high") is not None]
+    lows = [float(b["low"]) for b in window if b.get("low") is not None]
+    max_fav = round((max(highs) - ref) / ref * 100.0, 3) if highs else None
+    max_adv = round((min(lows) - ref) / ref * 100.0, 3) if lows else None
 
-    # Only resolve a horizon once enough bars exist; otherwise leave it null so
-    # a later run can fill it in.
     return {
         "evaluation_id": eval_id,
         "return_1d_pct": r1,
         "return_5d_pct": r5,
         "return_14d_pct": r14,
-        "hit_plus_20": hit_plus_20,
-        "hit_minus_20": hit_minus_20,
+        "hit_plus_20": (max_fav is not None and max_fav >= 20.0),
+        "hit_plus_50": (max_fav is not None and max_fav >= 50.0),
+        "hit_plus_100": (max_fav is not None and max_fav >= 100.0),
+        "hit_minus_20": (max_adv is not None and max_adv <= -20.0),
+        "max_favorable_pct": max_fav,
+        "max_adverse_pct": max_adv,
         "resolved_ts": now,
         "evidence_available_ts": now,
     }
@@ -378,12 +437,14 @@ def _resolve_one(eval_id: int, symbol: str, issued_ts: int, ref: Optional[float]
 def resolve_hunter_predictions(*, limit: int = 200, now: Optional[int] = None) -> Dict[str, Any]:
     """Resolve unresolved Hunter evaluations against realized prices.
 
-    Mirrors super_ghost_ledger.resolve_predictions: groups by symbol, fetches
-    each price series once, and writes resolutions idempotently. Returns a
-    summary. This is the scheduler hook for the Hunter's learning loop.
+    Only writes a resolution once all 14 forward bars exist (no partial rows).
+    Evaluations with a missing reference price or no historical data are marked
+    terminal so they never block the queue. Groups by symbol (one price fetch
+    per symbol). Returns a summary.
     """
     now = int(now or _now())
     resolved = 0
+    terminal = 0
     try:
         from core.db import db_conn
         with db_conn() as conn:
@@ -409,20 +470,44 @@ def resolve_hunter_predictions(*, limit: int = 200, now: Optional[int] = None) -
 
             for sym, recs in by_symbol.items():
                 series = _ohlc_series(sym, period="3mo")
-                if not series:
-                    continue
                 for rec in recs:
+                    # Terminal: no reference price → can never resolve.
+                    if rec["reference_price"] is None or rec["reference_price"] <= 0:
+                        resolve_hunter_evaluation(
+                            evaluation_id=rec["id"],
+                            reason="missing_reference_price",
+                            resolved_ts=now,
+                            evidence_available_ts=now,
+                            cur=cur,
+                        )
+                        terminal += 1
+                        continue
+                    # Terminal: no historical data → can never resolve.
+                    if not series:
+                        resolve_hunter_evaluation(
+                            evaluation_id=rec["id"],
+                            reason="historical_data_unavailable",
+                            resolved_ts=now,
+                            evidence_available_ts=now,
+                            cur=cur,
+                        )
+                        terminal += 1
+                        continue
                     upd = _resolve_one(rec["id"], sym, rec["issued_ts"],
                                        rec["reference_price"], series, now)
                     if not upd:
-                        continue
+                        continue  # not enough forward bars yet
                     inserted = resolve_hunter_evaluation(
                         evaluation_id=upd["evaluation_id"],
                         return_1d_pct=upd["return_1d_pct"],
                         return_5d_pct=upd["return_5d_pct"],
                         return_14d_pct=upd["return_14d_pct"],
                         hit_plus_20=upd["hit_plus_20"],
+                        hit_plus_50=upd["hit_plus_50"],
+                        hit_plus_100=upd["hit_plus_100"],
                         hit_minus_20=upd["hit_minus_20"],
+                        max_favorable_pct=upd["max_favorable_pct"],
+                        max_adverse_pct=upd["max_adverse_pct"],
                         resolved_ts=upd["resolved_ts"],
                         evidence_available_ts=upd["evidence_available_ts"],
                         cur=cur,
@@ -432,6 +517,6 @@ def resolve_hunter_predictions(*, limit: int = 200, now: Optional[int] = None) -
             conn.commit()
     except Exception as exc:
         LOGGER.warning("resolve_hunter_predictions: %s", str(exc)[:160])
-        return {"ok": False, "error": str(exc)[:160], "resolved": 0}
-    return {"ok": True, "resolved": resolved}
+        return {"ok": False, "error": str(exc)[:160], "resolved": 0, "terminal": 0}
+    return {"ok": True, "resolved": resolved, "terminal": terminal}
 

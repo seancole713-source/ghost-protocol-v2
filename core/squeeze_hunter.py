@@ -417,12 +417,17 @@ def _options_to_trigger(flow: Dict[str, Any]) -> Dict[str, Any]:
     return {"call_volume_score": _clamp(score), "options_available": True}
 
 
-def fetch_explosion_report(symbol: str) -> Dict[str, Any]:
+def fetch_explosion_report(symbol: str, *, persist: bool = False) -> Dict[str, Any]:
     """Assemble a full explosion report for one symbol from free data sources.
 
     Best-effort: every source is optional and failures degrade to neutral
     (0/None) rather than raising. This is read-only intelligence — it never
     fires a pick or loosens any gate.
+
+    `persist` defaults to False so public GET traffic does NOT write calibration
+    samples. Only a preregistered scheduler (one evaluation per symbol/scoring
+    version/market-time slot) should set persist=True; otherwise repeated page
+    loads would inflate sample size and invalidate Wilson bounds.
     """
     sym = (symbol or "").strip().upper()
     if not sym:
@@ -516,15 +521,16 @@ def fetch_explosion_report(symbol: str) -> Dict[str, Any]:
             # Breakout: price above prior close (a real reference), NOT today's
             # high (which is ~0 by construction and never signals a breakout).
             breakout_pct = max(0.0, (price - prev) / prev * 100.0)
-        # Reference price for later outcome resolution (the price at evaluation
-        # time, falling back to prior close).
-        reference_price = price if price else prev
+        # Reference price for later outcome resolution. Only a live point-in-time
+        # quote is a valid anchor — previous close is a DIFFERENT economic
+        # timestamp (a stock already up 15% premarket would get a wrong anchor).
+        # A missing live quote makes the evaluation unresolvable, not fallback.
+        reference_price = price if price else None
         confirm_ctx["breakout_pct"] = breakout_pct
         if "rvol" not in confirm_ctx:
             confirm_ctx["rvol"] = rvol
     except Exception:
         reference_price = None
-        pass
 
     # score_trigger() reads rvol and breakout_pct from trigger_ctx — place them
     # there too, or the trigger score's RVOL/breakout terms are always 0.
@@ -560,21 +566,23 @@ def fetch_explosion_report(symbol: str) -> Dict[str, Any]:
     report["trigger_ctx"] = trigger_ctx
     report["confirm_ctx"] = confirm_ctx
 
-    # Persist a point-in-time audit trail (append-only, idempotent). This is
-    # what makes the Hunter *measurable* later — it records exactly what data
-    # was available at evaluation time. Best-effort: never blocks the report.
-    try:
-        from core.squeeze_hunter_ledger import log_hunter_evaluation
-        report["evaluation_id"] = log_hunter_evaluation(
-            symbol=sym,
-            report=report,
-            short_ctx=short_ctx,
-            trigger_ctx=trigger_ctx,
-            confirm_ctx=confirm_ctx,
-            reference_price=reference_price,
-        )
-    except Exception:
-        report["evaluation_id"] = None
+    # Persist a point-in-time audit trail ONLY when explicitly requested by a
+    # preregistered scheduler. Public GET traffic must stay read-only so it
+    # cannot inflate the calibration sample with correlated near-duplicates.
+    report["evaluation_id"] = None
+    if persist:
+        try:
+            from core.squeeze_hunter_ledger import log_hunter_evaluation
+            report["evaluation_id"] = log_hunter_evaluation(
+                symbol=sym,
+                report=report,
+                short_ctx=short_ctx,
+                trigger_ctx=trigger_ctx,
+                confirm_ctx=confirm_ctx,
+                reference_price=reference_price,
+            )
+        except Exception:
+            report["evaluation_id"] = None
     return report
 
 

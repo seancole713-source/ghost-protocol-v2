@@ -1,5 +1,26 @@
 """Tests for core/squeeze_hunter_ledger.py — point-in-time audit trail."""
+from datetime import datetime, timezone
+
 from core import squeeze_hunter_ledger as hl
+
+
+def _noon_utc(day_offset: int) -> int:
+    """A noon-UTC timestamp `day_offset` days after 2026-08-01 (noon UTC).
+
+    Noon UTC = 06:00 CT, safely inside a single exchange session day, so each
+    +1 day lands on a distinct session date regardless of provider convention.
+    """
+    base = datetime(2026, 8, 1, 12, 0, 0, tzinfo=timezone.utc)
+    return int((base.timestamp()) + day_offset * 86400)
+
+
+def _series(n: int) -> list:
+    """n daily bars, one per session day, starting the day after day 0."""
+    return [
+        {"ts": _noon_utc(i + 1), "open": 100, "high": 100 + (i + 1),
+         "low": 90, "close": 100 + (i + 1)}
+        for i in range(n)
+    ]
 
 
 class _FakeCursor:
@@ -86,40 +107,65 @@ def test_scoring_version_is_stable():
     assert hl.HUNTER_HORIZONS == (1, 5, 14)
 
 
+def test_ensure_hunter_tables_runs_migrations():
+    """P0: ensure_hunter_tables must ALTER existing tables, not just CREATE."""
+    cur = _FakeCursor()
+    hl.ensure_hunter_tables(cur)
+    sqls = " ".join(cur.executed)
+    assert "ALTER TABLE ghost_squeeze_hunter_evaluations ADD COLUMN IF NOT EXISTS reference_price" in sqls
+    assert "ALTER TABLE ghost_squeeze_hunter_resolutions ADD COLUMN IF NOT EXISTS hit_plus_50" in sqls
+    assert "ALTER TABLE ghost_squeeze_hunter_resolutions ADD COLUMN IF NOT EXISTS hit_plus_100" in sqls
+    assert "ALTER TABLE ghost_squeeze_hunter_resolutions ADD COLUMN IF NOT EXISTS max_favorable_pct" in sqls
+
+
 def test_resolve_one_computes_returns():
-    """Pure resolution: 1/5/14-day returns + hit_plus_20/hit_minus_20."""
-    series = [
-        {"ts": 1000 + 86400 * (i + 1), "open": 100, "high": 100 + (i + 1), "low": 90, "close": 100 + (i + 1)}
-        for i in range(20)
-    ]
+    """Pure resolution: 1/5/14-day returns + hit thresholds + excursions."""
+    series = _series(20)
     # ref = 100; day 1 close = 101 (+1%), day 5 close = 105 (+5%), day 14 close = 114 (+14%).
-    out = hl._resolve_one(1, "HTZ", 1000, 100.0, series, now=1000 + 86400 * 20)
+    out = hl._resolve_one(1, "HTZ", _noon_utc(0), 100.0, series, now=_noon_utc(20))
     assert out["return_1d_pct"] == 1.0
     assert out["return_5d_pct"] == 5.0
     assert out["return_14d_pct"] == 14.0
-    # No bar reached +20% (max high = 100+20 = 120, not > 120).
+    # No bar reached +20% (max high in 14-bar window = 100+14 = 114, < 120).
     assert out["hit_plus_20"] is False
+    assert out["hit_plus_50"] is False
+    assert out["hit_plus_100"] is False
     assert out["hit_minus_20"] is False
+    assert out["max_favorable_pct"] == 14.0
+    assert out["max_adverse_pct"] == -10.0
 
 
 def test_resolve_one_hit_plus_20():
     series = [
-        {"ts": 1000 + 86400 * (i + 1), "open": 100, "high": 100 + i * 10, "low": 90, "close": 100}
+        {"ts": _noon_utc(i + 1), "open": 100, "high": 100 + i * 10, "low": 90, "close": 100}
         for i in range(20)
     ]
-    out = hl._resolve_one(1, "HTZ", 1000, 100.0, series, now=1000 + 86400 * 20)
+    out = hl._resolve_one(1, "HTZ", _noon_utc(0), 100.0, series, now=_noon_utc(20))
     assert out["hit_plus_20"] is True  # high reaches 100+190 = 290 > 120
+    assert out["hit_plus_50"] is True
+    assert out["hit_plus_100"] is True
+
+
+def test_resolve_one_waits_for_full_window():
+    """P1: a partial window must NOT produce a resolution (no premature labels)."""
+    series = _series(3)  # only 3 forward bars
+    out = hl._resolve_one(1, "HTZ", _noon_utc(0), 100.0, series, now=_noon_utc(3))
+    assert out is None
 
 
 def test_resolve_one_no_reference():
-    assert hl._resolve_one(1, "HTZ", 1000, None, [], now=2000) is None
+    assert hl._resolve_one(1, "HTZ", _noon_utc(0), None, [], now=_noon_utc(20)) is None
 
 
-def test_bars_after_filters_by_timestamp():
-    series = [
-        {"ts": 1000, "open": 1, "high": 1, "low": 1, "close": 1},       # before
-        {"ts": 1000 + 86400, "open": 2, "high": 2, "low": 2, "close": 2},  # after
-    ]
-    out = hl._bars_after(series, 1000)
-    assert len(out) == 1
-    assert out[0]["close"] == 2
+def test_bars_after_uses_session_dates():
+    """P1: day-zero/day-one alignment must be provider-independent."""
+    # A bar timestamped 00:00 UTC the next day is still the SAME session date
+    # as an eval at 22:00 UTC the prior day (both map to the same CT date).
+    eval_ts = int(datetime(2026, 8, 1, 22, 0, 0, tzinfo=timezone.utc).timestamp())
+    bar_ts = int(datetime(2026, 8, 2, 0, 0, 0, tzinfo=timezone.utc).timestamp())
+    series = [{"ts": bar_ts, "open": 1, "high": 1, "low": 1, "close": 1}]
+    out = hl._bars_after(series, eval_ts)
+    # 22:00 UTC Aug 1 = 17:00 CT Aug 1; 00:00 UTC Aug 2 = 19:00 CT Aug 1 → same
+    # session date, so this bar is NOT a forward bar.
+    assert out == []
+
