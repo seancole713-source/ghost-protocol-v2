@@ -111,3 +111,49 @@ def test_fuel_reads_free_fields():
     })
     # SI 30 + dtc 16 + float 15 + inst 7 + change 3 = 71
     assert fuel == 71.0
+
+
+# ── Review-fix regressions ─────────────────────────────────────────────────
+
+def test_catalyst_unavailable_maps_to_zero_not_fifty():
+    """P1: missing catalyst data must NOT fabricate a neutral 50/100 signal."""
+    out = sh._catalyst_to_trigger({"available": False})
+    assert out["catalyst_score"] == 0.0
+    assert out["earnings_surprise"] == 0.0
+    assert out["catalyst_available"] is False
+
+
+def test_momentum_without_fuel_is_not_squeeze():
+    """P2: high price/RVOL with zero fuel must NOT be labeled Stage 4 Squeeze."""
+    s = sh.classify_stage(
+        fuel=0, trigger=0, confirmation=0,
+        move_pct=10, rvol=4.0, breakout_pct=6,
+    )
+    assert s["stage"] != "squeeze"
+
+
+def test_squeeze_requires_fuel():
+    """Squeeze stage requires short-interest fuel (spec §5)."""
+    s = sh.classify_stage(
+        fuel=60, trigger=60, confirmation=60,
+        move_pct=10, rvol=4.0, breakout_pct=6,
+    )
+    assert s["stage"] == "squeeze"
+
+
+def test_projection_is_not_calibrated():
+    """P2: projection must be flagged as NOT statistically calibrated."""
+    proj = sh.explosion_projection(80.0)
+    assert proj["calibrated"] is False
+    assert "NOT statistically calibrated" in proj["disclaimer"]
+
+
+def test_market_environment_uses_vix():
+    """P2: market environment must reflect real VIX, not a constant 50."""
+    assert sh.market_environment_score({"label": "risk_off_high_volatility"}) == 20.0
+    assert sh.market_environment_score({"label": "calm_risk_on"}) == 80.0
+    assert sh.market_environment_score({"label": "risk_on"}) == 80.0
+    assert sh.market_environment_score({"label": "mixed"}) == 55.0
+    assert sh.market_environment_score({"label": "risk_off"}) == 35.0
+    assert sh.market_environment_score(None) == 50.0
+    assert sh.market_environment_score({"label": "unknown"}) == 50.0

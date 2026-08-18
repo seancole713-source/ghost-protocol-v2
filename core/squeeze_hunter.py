@@ -237,6 +237,9 @@ def classify_stage(
     move = _f(move_pct)
     rv = _f(rvol)
     brk = _f(breakout_pct)
+    fuel_s = _f(fuel)
+    trigger_s = _f(trigger)
+    confirm_s = _f(confirmation)
 
     # Reversal: profit taking / short re-entry / liquidity collapse.
     if momentum_declining and move < 0:
@@ -247,17 +250,18 @@ def classify_stage(
     # Expansion: sustained momentum, high volume, already well above resistance.
     if move >= 20 and rv >= 3.0 and brk >= 10:
         return _stage("expansion")
-    # Squeeze: short covering + momentum acceleration (breakout + big volume).
-    if brk >= 5 and rv >= 3.0 and move >= 8:
+    # Squeeze: short covering + momentum acceleration. Requires short-interest
+    # FUEL — momentum alone is NOT a squeeze (spec §5).
+    if fuel_s >= 40 and brk >= 5 and rv >= 3.0 and move >= 8:
         return _stage("squeeze")
-    # Confirmation: breakout + abnormal volume.
-    if brk >= 2 and rv >= 2.0:
+    # Confirmation: breakout + abnormal volume (confirmation score present).
+    if confirm_s >= 40 and brk >= 2 and rv >= 2.0:
         return _stage("confirmation")
-    # Ignition: price beginning to move + volume increasing.
-    if move >= 2 and rv >= 1.5:
+    # Ignition: price beginning to move + volume increasing (trigger present).
+    if trigger_s >= 30 and move >= 2 and rv >= 1.5:
         return _stage("ignition")
     # Setup: fuel present, no move yet.
-    if fuel >= 40:
+    if fuel_s >= 40:
         return _stage("setup")
     # Default: not enough fuel or movement to be a squeeze candidate.
     return {
@@ -286,10 +290,11 @@ def explosion_score(factors: Optional[Dict[str, Any]]) -> float:
 
 
 def explosion_projection(score: float) -> Dict[str, Any]:
-    """Heuristic (NOT ML) probability projection for a 1-14 day move.
+    """Heuristic (NOT statistically calibrated) probability projection.
 
-    Honest language: these are calibrated estimates for planning, not
-    guarantees. A high score implies asymmetry, not a certain double.
+    These are fixed linear formulas with NO outcome data, holdout validation,
+    sample count, or confidence interval. They are directional heuristics for
+    planning only — they must not be read as calibrated probabilities.
     """
     s = _f(score) / 100.0
     p20 = _clamp((0.10 + 0.60 * s) * 100.0, 5.0, 90.0)
@@ -301,11 +306,13 @@ def explosion_projection(score: float) -> Dict[str, Any]:
         "p_plus_50_pct": round(p50, 1),
         "p_plus_100_pct": round(p100, 1),
         "p_minus_20_pct": round(pneg20, 1),
+        "calibrated": False,
         "disclaimer": (
             "This is NOT guaranteed to double. High short interest can produce "
             "violent moves in either direction, and squeeze conditions can "
-            "disappear rapidly. These are heuristic estimates for planning, "
-            "not ML-trained forecasts."
+            "disappear rapidly. These percentages are heuristic estimates, NOT "
+            "statistically calibrated probabilities — they have no outcome data, "
+            "holdout validation, or confidence interval behind them."
         ),
     }
 
@@ -363,8 +370,18 @@ def build_explosion_report(
 
 # ── FETCH LAYER (best-effort, free data only) ─────────────────────────────
 def _catalyst_to_trigger(catalyst_ctx: Dict[str, Any]) -> Dict[str, Any]:
-    """Map catalyst_scoring output to a 0-100 catalyst + earnings surprise."""
+    """Map catalyst_scoring output to a 0-100 catalyst + earnings surprise.
+
+    Unavailable catalyst data maps to 0 (NOT 50): missing evidence must not
+    fabricate a neutral-positive signal.
+    """
     c = catalyst_ctx or {}
+    if not c.get("available"):
+        return {
+            "catalyst_score": 0.0,
+            "earnings_surprise": 0.0,
+            "catalyst_available": False,
+        }
     catalyst_score = _f(c.get("catalyst_score"))  # -1..1
     guidance = _f(c.get("guidance_momentum_score"))  # -1..1
     # Map -1..1 to 0..100 (50 = neutral).
@@ -373,7 +390,7 @@ def _catalyst_to_trigger(catalyst_ctx: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "catalyst_score": catalyst_0_100,
         "earnings_surprise": earnings_0_100,
-        "catalyst_available": bool(c.get("available")),
+        "catalyst_available": True,
     }
 
 
@@ -457,31 +474,48 @@ def fetch_explosion_report(symbol: str) -> Dict[str, Any]:
     except Exception:
         trigger_ctx.update({"call_volume_score": 0.0, "options_available": False})
 
-    # Confirmation + move/rvol: intraday session.
+    # Confirmation + move/rvol: prefer the squeeze radar's live metrics
+    # (rvol, vwap, above_vwap) when the symbol is an active radar pick; fall
+    # back to the intraday session for move/breakout vs prior close.
     confirm_ctx: Dict[str, Any] = {}
     move_pct = 0.0
     rvol = 0.0
     breakout_pct = 0.0
     try:
+        from core.squeeze_monitor import get_squeeze_picks
+        board = get_squeeze_picks() or {}
+        picks = board.get("picks") or []
+        pick = next((p for p in picks if (p.get("symbol") or "").upper() == sym), None)
+        if pick:
+            rvol = _f(pick.get("rvol"))
+            vwap = pick.get("vwap")
+            price = _f(pick.get("price"))
+            if vwap is not None and price:
+                confirm_ctx["above_vwap"] = price >= _f(vwap)
+            move_pct = _f(pick.get("peak_move_pct"))
+            confirm_ctx["rvol"] = rvol
+    except Exception:
+        pass
+
+    try:
         from core.prices import get_intraday_session
         sess = get_intraday_session(sym) or {}
         price = _f(sess.get("price"))
         prev = _f(sess.get("previous_close"))
-        high = _f(sess.get("today_high"))
         if price and prev and prev > 0:
-            move_pct = (price - prev) / prev * 100.0
-        if price and high and high > 0:
-            breakout_pct = max(0.0, (price - high) / high * 100.0)
-        confirm_ctx["above_vwap"] = None
+            if move_pct == 0.0:
+                move_pct = (price - prev) / prev * 100.0
+            # Breakout: price above prior close (a real reference), NOT today's
+            # high (which is ~0 by construction and never signals a breakout).
+            breakout_pct = max(0.0, (price - prev) / prev * 100.0)
         confirm_ctx["breakout_pct"] = breakout_pct
-        confirm_ctx["rvol"] = rvol
+        if "rvol" not in confirm_ctx:
+            confirm_ctx["rvol"] = rvol
     except Exception:
         pass
 
     # Factors for the explosion score.
     fuel = score_fuel(short_ctx)
-    trigger = score_trigger(trigger_ctx)
-    confirmation = score_confirmation(confirm_ctx)
     env_score = market_environment_score(_fetch_market_regime())
     factors = {
         "short_squeeze_potential": fuel,
@@ -547,12 +581,24 @@ def market_environment_score(regime: Optional[Dict[str, Any]] = None) -> float:
 
 
 def _fetch_market_regime() -> Optional[Dict[str, Any]]:
-    """Best-effort broad market regime for the explosion factor."""
+    """Best-effort broad market regime from VIX (free, real signal).
+
+    VIX is the cheapest honest proxy for risk-on/risk-off: high VIX = risk-off
+    (unfavorable for explosive moves), low VIX = calm risk-on.
+    """
     try:
-        from core.super_ghost import detect_market_regime
-        # detect_market_regime expects scored market-context items; without a
-        # full checklist we fall back to a neutral regime rather than fabricate.
-        return detect_market_regime({})
+        from core.prices import get_vix
+        vix = get_vix()
+        if vix is None:
+            return None
+        vix = _f(vix)
+        if vix >= 25:
+            return {"label": "risk_off_high_volatility", "risk_state": "risk_off", "vix": vix}
+        if vix < 15:
+            return {"label": "calm_risk_on", "risk_state": "risk_on", "vix": vix}
+        if vix < 20:
+            return {"label": "risk_on", "risk_state": "risk_on", "vix": vix}
+        return {"label": "mixed", "risk_state": "neutral", "vix": vix}
     except Exception:
         return None
 

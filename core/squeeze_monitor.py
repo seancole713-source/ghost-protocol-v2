@@ -691,7 +691,13 @@ def _short_context(symbol: str) -> Dict[str, Any]:
                 _yfinance_cb.record_failure()
                 LOGGER.debug("[SqueezeMonitor] yfinance short %s: %s", sym, exc)
     if out["short_float_pct"] is None and out["days_to_cover"] is None:
-        out = _short_context_from_finviz(sym)
+        # Merge Finviz fallback into the existing dict — do NOT replace it, or
+        # we discard the free yfinance fuel fields (float_shares, institutional
+        # ownership, shares short, SI change) that were already populated.
+        fv = _short_context_from_finviz(sym)
+        for k, v in fv.items():
+            if v is not None:
+                out[k] = v
     out["squeeze_risk"] = _squeeze_risk_tag(out["short_float_pct"], out["days_to_cover"])
     _short_cache[sym] = (time.time(), out)
     return out
