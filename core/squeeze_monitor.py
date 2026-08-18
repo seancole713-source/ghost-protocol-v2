@@ -642,6 +642,13 @@ def _short_context(symbol: str) -> Dict[str, Any]:
         "short_float_pct": None,
         "days_to_cover": None,
         "squeeze_risk": None,
+        # Squeeze Hunter fuel fields (free yfinance data).
+        "shares_short": None,
+        "shares_short_prior_month": None,
+        "short_interest_change_pct": None,
+        "float_shares": None,
+        "shares_outstanding": None,
+        "institutional_ownership_pct": None,
     }
     if _yf_short_enabled():
         from core.circuit_breaker import _yfinance_cb
@@ -656,6 +663,29 @@ def _short_context(symbol: str) -> Dict[str, Any]:
                     out["short_float_pct"] = round(float(sf) * 100, 2)
                 if dtc is not None:
                     out["days_to_cover"] = round(float(dtc), 2)
+                # Squeeze Hunter fuel fields (free).
+                ss = info.get("sharesShort")
+                ssp = info.get("sharesShortPriorMonth")
+                if ss is not None:
+                    out["shares_short"] = int(ss)
+                if ssp is not None:
+                    out["shares_short_prior_month"] = int(ssp)
+                if ss is not None and ssp:
+                    try:
+                        out["short_interest_change_pct"] = round(
+                            (float(ss) - float(ssp)) / float(ssp) * 100, 2
+                        )
+                    except (TypeError, ValueError, ZeroDivisionError):
+                        out["short_interest_change_pct"] = None
+                fs = info.get("floatShares")
+                so = info.get("sharesOutstanding")
+                if fs is not None:
+                    out["float_shares"] = int(fs)
+                if so is not None:
+                    out["shares_outstanding"] = int(so)
+                inst = info.get("heldPercentInstitutions")
+                if inst is not None:
+                    out["institutional_ownership_pct"] = round(float(inst) * 100, 2)
                 _yfinance_cb.record_success()
             except Exception as exc:
                 _yfinance_cb.record_failure()

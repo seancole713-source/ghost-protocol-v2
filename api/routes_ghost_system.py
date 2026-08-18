@@ -485,6 +485,26 @@ def squeeze_daily_log_endpoint(
         return JSONResponse({"ok": False, "error": str(e)[:200], "rows": []}, status_code=500)
 
 
+@router.get("/api/squeeze/hunter/{symbol}")
+def squeeze_hunter_endpoint(symbol: str):
+    """GHOST SQUEEZE HUNTER — fuel/trigger/confirmation + pressure score +
+    7-stage lifecycle + explosion projection for one symbol.
+
+    Read-only intelligence. Never fires a pick or loosens any gate. Uses free
+    data only (yfinance short/float/institutional, catalyst scoring, options
+    flow, intraday session). Borrow fee / utilization / shares-available are
+    intentionally absent (require a paid source) and are not fabricated.
+    """
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        return JSONResponse({"ok": False, "error": "symbol required"}, status_code=400)
+    try:
+        from core.squeeze_hunter import fetch_explosion_report
+        return fetch_explosion_report(sym)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
 @router.get("/api/squeeze/picks")
 def squeeze_picks_endpoint():
     """Live short-squeeze picks — same fields as Telegram alerts (buy/sell/confidence)."""
