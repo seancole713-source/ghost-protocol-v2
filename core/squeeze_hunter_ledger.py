@@ -55,8 +55,9 @@ def ensure_hunter_tables(cur) -> None:
     """Create the Hunter evaluation + resolution tables. Idempotent.
 
     Includes ALTER TABLE migrations so a table created by an earlier commit
-    (before reference_price / the extra resolution columns existed) is upgraded
-    in place — CREATE TABLE IF NOT EXISTS alone does NOT add missing columns.
+    (before reference_price / session_date / the extra resolution columns
+    existed) is upgraded in place — CREATE TABLE IF NOT EXISTS alone does NOT
+    add missing columns.
     """
     cur.execute(
         """
@@ -64,9 +65,11 @@ def ensure_hunter_tables(cur) -> None:
             id SERIAL PRIMARY KEY,
             symbol VARCHAR(20) NOT NULL,
             scoring_version VARCHAR(16) NOT NULL,
+            session_date VARCHAR(10),
             issued_ts BIGINT NOT NULL,
             feature_available_ts BIGINT,
             reference_price FLOAT,
+            reference_price_ts BIGINT,
             fuel_score FLOAT,
             trigger_score FLOAT,
             confirmation_score FLOAT,
@@ -79,16 +82,34 @@ def ensure_hunter_tables(cur) -> None:
             confirm_ctx JSONB,
             factors JSONB,
             projection JSONB,
-            created_at BIGINT NOT NULL,
-            UNIQUE (symbol, scoring_version, issued_ts)
+            created_at BIGINT NOT NULL
         )
         """
     )
-    # P0 migration: add reference_price to a table created before this column
-    # existed (commit 60c38fd). CREATE TABLE IF NOT EXISTS does not alter it.
+    # Migrations for columns added after the table first shipped (commit 60c38fd).
     cur.execute(
         "ALTER TABLE ghost_squeeze_hunter_evaluations "
         "ADD COLUMN IF NOT EXISTS reference_price FLOAT"
+    )
+    cur.execute(
+        "ALTER TABLE ghost_squeeze_hunter_evaluations "
+        "ADD COLUMN IF NOT EXISTS session_date VARCHAR(10)"
+    )
+    cur.execute(
+        "ALTER TABLE ghost_squeeze_hunter_evaluations "
+        "ADD COLUMN IF NOT EXISTS reference_price_ts BIGINT"
+    )
+    # Idempotency key: one evaluation per symbol per scoring version per
+    # exchange session date. The old (symbol, scoring_version, issued_ts)
+    # unique constraint is dropped so the honest issued_ts (actual time) does
+    # not collide with the stable session_date key.
+    cur.execute(
+        "ALTER TABLE ghost_squeeze_hunter_evaluations "
+        "DROP CONSTRAINT IF EXISTS ghost_squeeze_hunter_evaluations_symbol_scoring_version_issued_ts_key"
+    )
+    cur.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_hunter_eval_symbol_session "
+        "ON ghost_squeeze_hunter_evaluations (symbol, scoring_version, session_date)"
     )
     cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_hunter_eval_symbol_time "
@@ -141,37 +162,48 @@ def log_hunter_evaluation(
     trigger_ctx: Optional[Dict[str, Any]] = None,
     confirm_ctx: Optional[Dict[str, Any]] = None,
     reference_price: Optional[float] = None,
+    reference_price_ts: Optional[int] = None,
+    session_date: Optional[str] = None,
     issued_ts: Optional[int] = None,
     feature_available_ts: Optional[int] = None,
     cur=None,
 ) -> Optional[int]:
     """Append one immutable Hunter evaluation. Returns row id or None.
 
-    Idempotent by (symbol, scoring_version, issued_ts). Never raises into the
-    caller — a persistence failure must not break the read-only report.
+    Idempotent by (symbol, scoring_version, session_date). `issued_ts` is the
+    ACTUAL issuance time (honest), while `session_date` is the stable exchange
+    session date used for the idempotency key. Never raises into the caller.
+
+    Returns None (and does NOT insert) when reference_price is missing — a
+    sample without a valid point-in-time quote is not a calibration sample and
+    must not occupy the idempotency key.
     """
     sym = (symbol or "").strip().upper()
     if not sym:
         return None
+    if reference_price is None or reference_price <= 0:
+        return None  # invalid sample — do not persist
     ts = int(issued_ts or _now())
     fav = int(feature_available_ts) if feature_available_ts else ts
+    rpts = int(reference_price_ts) if reference_price_ts else ts
+    sdate = session_date or _session_date_key(ts)
 
     def _impl(c) -> Optional[int]:
         c.execute(
             """
             INSERT INTO ghost_squeeze_hunter_evaluations
-                (symbol, scoring_version, issued_ts, feature_available_ts,
-                 reference_price,
+                (symbol, scoring_version, session_date, issued_ts, feature_available_ts,
+                 reference_price, reference_price_ts,
                  fuel_score, trigger_score, confirmation_score,
                  squeeze_pressure_score, pressure_band, stage, explosion_score,
                  short_ctx, trigger_ctx, confirm_ctx, factors, projection, created_at)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,%s)
-            ON CONFLICT (symbol, scoring_version, issued_ts) DO NOTHING
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,%s)
+            ON CONFLICT (symbol, scoring_version, session_date) DO NOTHING
             RETURNING id
             """,
             (
-                sym, HUNTER_SCORING_VERSION, ts, fav,
-                reference_price,
+                sym, HUNTER_SCORING_VERSION, sdate, ts, fav,
+                reference_price, rpts,
                 report.get("fuel_score"), report.get("trigger_score"),
                 report.get("confirmation_score"),
                 report.get("squeeze_pressure_score"),
@@ -263,8 +295,24 @@ def resolve_hunter_evaluation(
 
 
 def recent_evaluations(symbol: Optional[str] = None, limit: int = 50) -> Dict[str, Any]:
-    """Read recent Hunter evaluations (with resolutions) for inspection."""
+    """Read recent Hunter evaluations (with full resolution evidence)."""
     lim = max(1, min(200, int(limit)))
+    cols = (
+        "e.id, e.symbol, e.scoring_version, e.session_date, e.issued_ts, "
+        "e.feature_available_ts, e.reference_price, e.reference_price_ts, "
+        "e.fuel_score, e.trigger_score, e.confirmation_score, "
+        "e.squeeze_pressure_score, e.pressure_band, e.stage, e.explosion_score, "
+        "r.return_1d_pct, r.return_5d_pct, r.return_14d_pct, "
+        "r.hit_plus_20, r.hit_plus_50, r.hit_plus_100, r.hit_minus_20, "
+        "r.max_favorable_pct, r.max_adverse_pct, r.reason"
+    )
+    keys = ("id", "symbol", "scoring_version", "session_date", "issued_ts",
+            "feature_available_ts", "reference_price", "reference_price_ts",
+            "fuel_score", "trigger_score", "confirmation_score",
+            "squeeze_pressure_score", "pressure_band", "stage", "explosion_score",
+            "return_1d_pct", "return_5d_pct", "return_14d_pct",
+            "hit_plus_20", "hit_plus_50", "hit_plus_100", "hit_minus_20",
+            "max_favorable_pct", "max_adverse_pct", "reason")
     try:
         from core.db import db_conn
         with db_conn() as conn:
@@ -272,11 +320,8 @@ def recent_evaluations(symbol: Optional[str] = None, limit: int = 50) -> Dict[st
             ensure_hunter_tables(cur)
             if symbol:
                 cur.execute(
-                    """
-                    SELECT e.id, e.symbol, e.scoring_version, e.issued_ts,
-                           e.fuel_score, e.trigger_score, e.confirmation_score,
-                           e.squeeze_pressure_score, e.pressure_band, e.stage,
-                           e.explosion_score, r.return_14d_pct, r.hit_plus_20, r.hit_minus_20
+                    f"""
+                    SELECT {cols}
                     FROM ghost_squeeze_hunter_evaluations e
                     LEFT JOIN ghost_squeeze_hunter_resolutions r ON r.evaluation_id = e.id
                     WHERE e.symbol = %s
@@ -286,11 +331,8 @@ def recent_evaluations(symbol: Optional[str] = None, limit: int = 50) -> Dict[st
                 )
             else:
                 cur.execute(
-                    """
-                    SELECT e.id, e.symbol, e.scoring_version, e.issued_ts,
-                           e.fuel_score, e.trigger_score, e.confirmation_score,
-                           e.squeeze_pressure_score, e.pressure_band, e.stage,
-                           e.explosion_score, r.return_14d_pct, r.hit_plus_20, r.hit_minus_20
+                    f"""
+                    SELECT {cols}
                     FROM ghost_squeeze_hunter_evaluations e
                     LEFT JOIN ghost_squeeze_hunter_resolutions r ON r.evaluation_id = e.id
                     ORDER BY e.issued_ts DESC LIMIT %s
@@ -298,10 +340,6 @@ def recent_evaluations(symbol: Optional[str] = None, limit: int = 50) -> Dict[st
                     (lim,),
                 )
             rows = cur.fetchall()
-        keys = ("id", "symbol", "scoring_version", "issued_ts",
-                "fuel_score", "trigger_score", "confirmation_score",
-                "squeeze_pressure_score", "pressure_band", "stage",
-                "explosion_score", "return_14d_pct", "hit_plus_20", "hit_minus_20")
         return {"ok": True, "rows": [dict(zip(keys, r)) for r in rows]}
     except Exception as exc:
         LOGGER.warning("recent_evaluations: %s", str(exc)[:160])
@@ -364,22 +402,42 @@ def _session_date(ts: int) -> Optional[str]:
         return None
 
 
+def _bar_session_date(bar: Dict[str, Any]) -> Optional[str]:
+    """The exchange session date for a daily bar, from its DATE LABEL.
+
+    Daily bars from Stooq are normalized to midnight UTC ("YYYY-MM-DDT00:00:00Z"),
+    which timezone-converts to the PREVIOUS day in America/Chicago. The date
+    label is the canonical session date, so we read it directly instead of
+    converting the midnight timestamp. Falls back to _session_date for bars
+    that carry a real intraday timestamp.
+    """
+    ts = bar.get("ts")
+    if isinstance(ts, str):
+        # A date-only or midnight-UTC daily label: the YYYY-MM-DD prefix IS the
+        # session date. Do not timezone-shift it.
+        s = ts.strip()
+        if len(s) >= 10 and s[4] == "-" and s[7] == "-":
+            return s[:10]
+    e = _bar_epoch(bar)
+    if e is None:
+        return None
+    return _session_date(e)
+
+
 def _bars_after(series: list, issued_ts: int) -> list:
     """Trading-day bars strictly after the evaluation's session date, in order.
 
     Day-zero = the session date the evaluation was issued on. Forward bars are
-    bars whose session date is strictly later. This is provider-independent:
-    it keys on the exchange session date, not a raw timestamp offset.
+    bars whose session date (from the bar's date label) is strictly later.
+    This is provider-independent: it keys on the exchange session date, not a
+    raw timestamp offset or a timezone-shifted midnight label.
     """
     eval_date = _session_date(issued_ts)
     if eval_date is None:
         return []
     out = []
     for b in series:
-        e = _bar_epoch(b)
-        if e is None:
-            continue
-        bd = _session_date(e)
+        bd = _bar_session_date(b)
         if bd is None:
             continue
         if bd > eval_date:
@@ -482,16 +540,23 @@ def resolve_hunter_predictions(*, limit: int = 200, now: Optional[int] = None) -
                         )
                         terminal += 1
                         continue
-                    # Terminal: no historical data → can never resolve.
+                    # Transient vs permanent history failure. An empty series
+                    # right now is usually a provider outage / rate limit / breaker
+                    # — NOT terminal. Only mark terminal once the full 14-day
+                    # horizon PLUS a grace period has elapsed and we still have
+                    # no bars (then it is genuinely unresolvable, e.g. delisted).
                     if not series:
-                        resolve_hunter_evaluation(
-                            evaluation_id=rec["id"],
-                            reason="historical_data_unavailable",
-                            resolved_ts=now,
-                            evidence_available_ts=now,
-                            cur=cur,
-                        )
-                        terminal += 1
+                        horizon_elapsed = now - rec["issued_ts"] >= (14 + 5) * 86400
+                        if horizon_elapsed:
+                            resolve_hunter_evaluation(
+                                evaluation_id=rec["id"],
+                                reason="history_permanently_unavailable",
+                                resolved_ts=now,
+                                evidence_available_ts=now,
+                                cur=cur,
+                            )
+                            terminal += 1
+                        # else: transient — skip, retry on a later run.
                         continue
                     upd = _resolve_one(rec["id"], sym, rec["issued_ts"],
                                        rec["reference_price"], series, now)
@@ -541,46 +606,83 @@ def _session_date_key(now_ts: Optional[int] = None) -> Optional[str]:
         return None
 
 
+# Fixed sampling window: issue only after the cash close (15:00 CT) and before
+# 16:00 CT, so every day's sample is drawn from the same post-close population.
+# This freezes the sampling time so a restart at 3 AM vs noon does not produce
+# fundamentally different prediction populations under the same session_date.
+_SAMPLE_WINDOW_START_MIN = 15 * 60 + 5   # 15:05 CT
+_SAMPLE_WINDOW_END_MIN = 16 * 60         # 16:00 CT
+
+
+def _in_sampling_window(now_ts: Optional[int] = None) -> bool:
+    """True only during the frozen post-close sampling window (15:05–16:00 CT)."""
+    try:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        from core.market_hours import SESSION_TZ
+        ts = int(now_ts or _now())
+        dt = datetime.fromtimestamp(ts, ZoneInfo(SESSION_TZ))
+        hm = dt.hour * 60 + dt.minute
+        return _SAMPLE_WINDOW_START_MIN <= hm < _SAMPLE_WINDOW_END_MIN
+    except Exception:
+        return False
+
+
 def issue_hunter_samples(*, symbols: Optional[list] = None, now_ts: Optional[int] = None) -> Dict[str, Any]:
     """Preregistered sampler: write ONE evaluation per symbol per session date.
 
-    This is the ONLY path that should persist Hunter evaluations. It pins a
-    stable issued_ts (session-date midnight) so the (symbol, scoring_version,
-    issued_ts) idempotency key is deterministic — repeated scheduler runs
-    within the same session date do not create duplicate/correlated samples.
-    One sample per symbol per day avoids the intraday correlation that would
-    inflate sample size and invalidate Wilson bounds.
+    This is the ONLY path that should persist Hunter evaluations. It issues
+    only during the frozen post-close window (15:05–16:00 CT) so every day's
+    sample is drawn from the same population. It uses the ACTUAL issuance time
+    (honest `issued_ts`) and the stable `session_date` for the idempotency key.
+    Samples with a missing reference price are NOT persisted (counted as
+    `invalid_reference`, not `inserted`).
     """
     date_key = _session_date_key(now_ts)
     if date_key is None:
-        return {"ok": True, "issued": 0, "session_date": None, "note": "market closed or weekend"}
+        return {"ok": True, "attempted": 0, "inserted": 0, "session_date": None,
+                "note": "market closed or weekend"}
+    if not _in_sampling_window(now_ts):
+        return {"ok": True, "attempted": 0, "inserted": 0, "session_date": date_key,
+                "note": "outside the frozen 15:05-16:00 CT sampling window"}
     if symbols is None:
         try:
             from config.symbols import watchlist_symbols
             symbols = sorted(watchlist_symbols())
         except Exception:
             symbols = []
-    # Pin a stable issuance timestamp for the whole session date (midnight CT),
-    # so every symbol shares the same idempotency anchor and re-runs are no-ops.
-    try:
-        from datetime import datetime
-        from zoneinfo import ZoneInfo
-        from core.market_hours import SESSION_TZ
-        dt = datetime.fromtimestamp(int(now_ts or _now()), ZoneInfo(SESSION_TZ))
-        slot_ts = int(dt.replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
-    except Exception:
-        slot_ts = int(now_ts or _now())
+    now = int(now_ts or _now())
 
-    issued = 0
-    errors = 0
+    attempted = 0
+    inserted = 0
+    duplicate = 0
+    invalid_reference = 0
+    persistence_failed = 0
     for sym in symbols:
+        attempted += 1
         try:
             from core.squeeze_hunter import fetch_explosion_report
-            fetch_explosion_report(sym, persist=True, issued_ts=slot_ts)
-            issued += 1
+            rep = fetch_explosion_report(sym, persist=True, issued_ts=now)
+            eid = rep.get("evaluation_id")
+            if eid is not None:
+                inserted += 1
+            else:
+                # Distinguish "no reference price" from "duplicate / failed".
+                if rep.get("reference_price") is None:
+                    invalid_reference += 1
+                else:
+                    duplicate += 1
         except Exception:
-            errors += 1
-    return {"ok": True, "issued": issued, "errors": errors, "session_date": date_key}
+            persistence_failed += 1
+    return {
+        "ok": True,
+        "attempted": attempted,
+        "inserted": inserted,
+        "duplicate": duplicate,
+        "invalid_reference": invalid_reference,
+        "persistence_failed": persistence_failed,
+        "session_date": date_key,
+    }
 
 
 

@@ -52,11 +52,26 @@ def test_log_hunter_evaluation_inserts(monkeypatch):
         short_ctx={"short_float_pct": 34.0},
         trigger_ctx={"catalyst_score": 90.0},
         confirm_ctx={"breakout_pct": 5.0},
+        reference_price=100.0,
         issued_ts=1000,
         cur=cur,
     )
     assert rid == 1
     assert any("INSERT INTO ghost_squeeze_hunter_evaluations" in s for s in cur.executed)
+
+
+def test_log_hunter_evaluation_skips_missing_reference(monkeypatch):
+    """P0: a sample with no reference price must NOT be persisted."""
+    cur = _FakeCursor(fetchone_result=(1,))
+    rid = hl.log_hunter_evaluation(
+        symbol="HTZ",
+        report={"fuel_score": 70.0},
+        reference_price=None,
+        issued_ts=1000,
+        cur=cur,
+    )
+    assert rid is None
+    assert not any("INSERT INTO ghost_squeeze_hunter_evaluations" in s for s in cur.executed)
 
 
 def test_log_hunter_evaluation_idempotent(monkeypatch):
@@ -65,6 +80,7 @@ def test_log_hunter_evaluation_idempotent(monkeypatch):
     rid = hl.log_hunter_evaluation(
         symbol="HTZ",
         report={"fuel_score": 70.0},
+        reference_price=100.0,
         issued_ts=1000,
         cur=cur,
     )
@@ -77,7 +93,8 @@ def test_log_hunter_evaluation_never_raises(monkeypatch):
         def execute(self, sql, params=None):
             raise RuntimeError("db down")
 
-    rid = hl.log_hunter_evaluation(symbol="HTZ", report={"fuel_score": 1.0}, cur=Boom())
+    rid = hl.log_hunter_evaluation(symbol="HTZ", report={"fuel_score": 1.0},
+                                   reference_price=100.0, cur=Boom())
     assert rid is None
 
 
@@ -175,23 +192,53 @@ def test_issue_hunter_samples_skips_weekend(monkeypatch):
     # 2026-08-01 is a Saturday.
     sat = int(datetime(2026, 8, 1, 12, 0, 0, tzinfo=timezone.utc).timestamp())
     out = hl.issue_hunter_samples(symbols=["HTZ"], now_ts=sat)
-    assert out["issued"] == 0
+    assert out["attempted"] == 0
     assert out["session_date"] is None
 
 
 def test_issue_hunter_samples_issues_on_trading_day(monkeypatch):
-    """One evaluation per symbol per session date, with a stable issued_ts."""
+    """One evaluation per symbol per session date, with honest issued_ts."""
+    calls = []
+    monkeypatch.setattr(
+        "core.squeeze_hunter.fetch_explosion_report",
+        lambda sym, persist=False, issued_ts=None: calls.append((sym, persist, issued_ts)) or {"evaluation_id": 1, "reference_price": 100.0},
+    )
+    # 2026-08-03 is a Monday (trading day). 20:05 UTC = 15:05 CT (post-close,
+    # inside the frozen sampling window).
+    mon = int(datetime(2026, 8, 3, 20, 5, 0, tzinfo=timezone.utc).timestamp())
+    out = hl.issue_hunter_samples(symbols=["HTZ", "WOLF"], now_ts=mon)
+    assert out["attempted"] == 2
+    assert out["inserted"] == 2
+    assert out["session_date"] == "2026-08-03"
+    # Both calls used persist=True and the ACTUAL issuance time (not midnight).
+    assert all(c[1] is True for c in calls)
+    assert calls[0][2] == mon
+
+
+def test_issue_hunter_samples_skips_outside_window(monkeypatch):
+    """P1: no samples issued outside the frozen 15:05-16:00 CT window."""
     calls = []
     monkeypatch.setattr(
         "core.squeeze_hunter.fetch_explosion_report",
         lambda sym, persist=False, issued_ts=None: calls.append((sym, persist, issued_ts)),
     )
-    # 2026-08-03 is a Monday (trading day), noon UTC = 06:00 CT (premarket).
+    # 2026-08-03 noon UTC = 06:00 CT (premarket) — outside the window.
     mon = int(datetime(2026, 8, 3, 12, 0, 0, tzinfo=timezone.utc).timestamp())
-    out = hl.issue_hunter_samples(symbols=["HTZ", "WOLF"], now_ts=mon)
-    assert out["issued"] == 2
-    assert out["session_date"] == "2026-08-03"
-    # Both calls used persist=True and the SAME stable issued_ts (idempotent).
-    assert all(c[1] is True for c in calls)
-    assert calls[0][2] == calls[1][2]
+    out = hl.issue_hunter_samples(symbols=["HTZ"], now_ts=mon)
+    assert out["attempted"] == 0
+    assert out["inserted"] == 0
+    assert "sampling window" in out["note"]
+
+
+def test_issue_hunter_samples_counts_invalid_reference(monkeypatch):
+    """P2: a missing reference price is counted as invalid_reference, not inserted."""
+    monkeypatch.setattr(
+        "core.squeeze_hunter.fetch_explosion_report",
+        lambda sym, persist=False, issued_ts=None: {"evaluation_id": None, "reference_price": None},
+    )
+    mon = int(datetime(2026, 8, 3, 20, 5, 0, tzinfo=timezone.utc).timestamp())
+    out = hl.issue_hunter_samples(symbols=["HTZ"], now_ts=mon)
+    assert out["attempted"] == 1
+    assert out["inserted"] == 0
+    assert out["invalid_reference"] == 1
 

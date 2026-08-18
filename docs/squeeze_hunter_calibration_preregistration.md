@@ -65,7 +65,21 @@ optionally per explosion-score decile once sample size permits:
 | Gate | Threshold |
 |------|-----------|
 | Minimum resolved evaluations | `n ≥ 100` |
+| Minimum unique session dates | `≥ 20` distinct `session_date` values |
+| Minimum temporal span | `≥ 60` calendar days between first and last `issued_ts` |
+| Minimum distinct symbols | `≥ 30` distinct symbols |
 | Minimum per-label hits | `hits ≥ 10` (else that label stays "insufficient data") |
+
+**Independence caveat:** `n ≥ 100` does NOT imply 100 independent observations.
+Symbols sampled on the same session date share a market regime, and adjacent
+daily samples have overlapping 14-day outcome windows. Wilson bounds computed
+as if the rows were independent Bernoulli trials would be overconfident.
+Therefore:
+
+- Uncertainty is reported with a **clustered / block bootstrap** (blocks = session
+  dates), not the naive binomial Wilson interval.
+- Per-sector concentration is capped (no single sector > 40% of the sample).
+- Walk-forward folds are **purged** (see §7).
 
 Until these are met, the projection remains `calibrated: false` and the UI must
 continue to show the heuristic disclaimer.
@@ -75,32 +89,46 @@ continue to show the heuristic disclaimer.
 1. **Reliability diagram** — bin by explosion score, plot realized hit rate vs
    predicted probability.
 2. **Brier score** — mean squared error between predicted probability and
-   realized binary outcome, per label.
-3. **Isotonic / Platt recalibration** — fit a monotonic mapping from heuristic
-   score → calibrated probability on a **training split only**.
+   realized binary outcome, per label. The baseline is BOTH the heuristic
+   projection AND a constant base-rate forecast (the overall realized hit rate);
+   the calibrated model must beat both.
+3. **Isotonic regression** — the recalibration model is FROZEN as isotonic
+   regression (not "Isotonic / Platt" chosen after seeing outcomes). Fit a
+   monotonic mapping from heuristic score → calibrated probability on a
+   **training split only**.
 4. **Wilson 95% lower bound** — reported alongside every calibrated probability
-   so small-sample uncertainty is never hidden.
+   within its local bin (defined by the reliability-diagram bins), so
+   small-sample uncertainty is never hidden.
 
 ## 7. Holdout rules (no leakage)
 
-- **Walk-forward only.** A calibration fit uses only evaluations whose
-  `issued_ts` precedes the evaluation being scored.
+- **Purged walk-forward.** A calibration fit for a target evaluation uses only
+  training rows satisfying BOTH:
+  - `training.evidence_available_ts <= target.issued_ts` (the training outcome
+    was actually known before the target was issued), AND
+  - a **14-trading-day embargo**: `training.issued_ts <= target.issued_ts - 14
+    trading days`, because adjacent daily samples have overlapping outcome
+    windows and would otherwise leak the target's own outcome.
 - **No lookahead.** The resolver's `evidence_available_ts` must be ≥ the
   evaluation's `issued_ts`; a resolution can never use information that was not
   available at issuance.
 - **Frozen scoring version.** A calibration is tied to `HUNTER_SCORING_VERSION`.
   A scoring change bumps the version and starts a fresh, empty calibration
   sample — old rows are never re-read as if from the new model.
+- **Holdout split.** The final holdout is a contiguous trailing block of session
+  dates (≥ 20% of the sample), never touched during any fit or model selection.
 
 ## 8. Promotion gate (when a calibrated probability may replace the heuristic)
 
 A calibrated probability may be published **only** when ALL of:
 
-1. `n ≥ 100` resolved evaluations for that label.
-2. Brier score improves over the heuristic baseline (measured on the same
-   holdout).
+1. All §5 minimum-support gates are met (including unique dates, span, symbols,
+   and sector concentration).
+2. Brier score improves over BOTH the heuristic baseline and the constant
+   base-rate forecast, measured on the untouched holdout.
 3. The Wilson lower bound of the calibrated hit rate is reported and the
-   calibration is not overconfident (reliability slope within ±0.15 of identity).
+   calibration is not overconfident (reliability slope within ±0.15 of identity,
+   with a defined confidence interval).
 
 Otherwise the heuristic projection stays, with `calibrated: false`.
 
@@ -112,8 +140,18 @@ Otherwise the heuristic projection stays, with `calibrated: false`.
 - Does **not** turn the heuristic into a "guaranteed" probability — even a
   calibrated probability is an estimate with a confidence interval.
 
-## 10. Status
+## 10. Sampling time (frozen)
 
-- **Issuance:** active (one evaluation per symbol per session date).
+Issuance happens **only** during the post-close window **15:05–16:00 CT**, so
+every day's sample is drawn from the same population (after the cash close,
+before after-hours drift). A restart at 3 AM vs noon does not change the
+population. Market holidays and early closes are excluded via the exchange
+calendar; a missed window is skipped (no catch-up issuance) to avoid mixing
+populations.
+
+## 11. Status
+
+- **Issuance:** active (one evaluation per symbol per session date, 15:05–16:00 CT).
 - **Resolution:** active (14-day window, terminal reasons for unresolvable rows).
-- **Calibration:** **NOT STARTED** — waiting for `n ≥ 100` resolved evaluations.
+- **Calibration:** **NOT STARTED** — waiting for the §5 minimum-support gates.
+

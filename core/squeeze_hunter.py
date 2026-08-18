@@ -530,11 +530,13 @@ def fetch_explosion_report(symbol: str, *, persist: bool = False, issued_ts: Opt
         # timestamp (a stock already up 15% premarket would get a wrong anchor).
         # A missing live quote makes the evaluation unresolvable, not fallback.
         reference_price = price if price else None
+        reference_price_ts = _f(sess.get("as_of_ts")) or None
         confirm_ctx["breakout_pct"] = breakout_pct
         if "rvol" not in confirm_ctx:
             confirm_ctx["rvol"] = rvol
     except Exception:
         reference_price = None
+        reference_price_ts = None
 
     # score_trigger() reads rvol and breakout_pct from trigger_ctx — place them
     # there too, or the trigger score's RVOL/breakout terms are always 0.
@@ -569,6 +571,7 @@ def fetch_explosion_report(symbol: str, *, persist: bool = False, issued_ts: Opt
     report["short_ctx"] = short_ctx
     report["trigger_ctx"] = trigger_ctx
     report["confirm_ctx"] = confirm_ctx
+    report["reference_price"] = reference_price
 
     # Persist a point-in-time audit trail ONLY when explicitly requested by a
     # preregistered scheduler. Public GET traffic must stay read-only so it
@@ -584,6 +587,7 @@ def fetch_explosion_report(symbol: str, *, persist: bool = False, issued_ts: Opt
                 trigger_ctx=trigger_ctx,
                 confirm_ctx=confirm_ctx,
                 reference_price=reference_price,
+                reference_price_ts=reference_price_ts,
                 issued_ts=issued_ts,
             )
         except Exception:
