@@ -157,9 +157,16 @@ def score_trigger(trigger_ctx: Optional[Dict[str, Any]]) -> float:
     rvol = _f(ctx.get("rvol"))
     call_volume = _f(ctx.get("call_volume_score"))  # 0-100
     breakout = _f(ctx.get("breakout_pct"))
+    # Catalyst freshness: a stale/far-future catalyst must not count like a
+    # fresh one. When a timing score is present, it scales the catalyst term.
+    timing = _f(ctx.get("catalyst_timing_score"))
 
     pts = 0.0
-    pts += min(30.0, catalyst * 0.3)
+    # Catalyst term: freshness-weighted when timing is available.
+    if timing > 0:
+        pts += min(30.0, timing * 0.3)
+    else:
+        pts += min(30.0, catalyst * 0.3)
     pts += min(25.0, earnings * 0.25)
     pts += min(15.0, max(0.0, premarket_gap) * 1.5)
     pts += min(15.0, max(0.0, rvol - 1.0) * 3.0)
@@ -416,8 +423,17 @@ def fetch_explosion_report(symbol: str) -> Dict[str, Any]:
         from core.catalyst_scoring import fetch_event_context
         cat = fetch_event_context(sym)
         trigger_ctx.update(_catalyst_to_trigger(cat))
+        # Catalyst freshness: age-weight the catalyst so stale/far-future
+        # catalysts don't dominate a 1-14 day read (SPCE lesson).
+        try:
+            from core.catalyst_freshness import catalyst_timing_score
+            timing = catalyst_timing_score(cat.get("events") or [])
+            trigger_ctx["catalyst_timing_score"] = timing.get("score", 0.0)
+            trigger_ctx["catalyst_timing"] = timing.get("best")
+        except Exception:
+            trigger_ctx["catalyst_timing_score"] = 0.0
     except Exception:
-        trigger_ctx.update({"catalyst_score": 0.0, "earnings_surprise": 0.0, "catalyst_available": False})
+        trigger_ctx.update({"catalyst_score": 0.0, "earnings_surprise": 0.0, "catalyst_available": False, "catalyst_timing_score": 0.0})
 
     try:
         from core.prices import get_extended_session
