@@ -435,6 +435,14 @@ def fetch_explosion_report(symbol: str) -> Dict[str, Any]:
     except Exception:
         trigger_ctx.update({"catalyst_score": 0.0, "earnings_surprise": 0.0, "catalyst_available": False, "catalyst_timing_score": 0.0})
 
+    # Earnings surprise: actual vs expected (relative, not absolute sign).
+    try:
+        from core.earnings_surprise import earnings_surprise_to_trigger
+        earn = earnings_surprise_to_trigger(sym)
+        trigger_ctx.update(earn)
+    except Exception:
+        trigger_ctx.update({"earnings_surprise": 0.0, "earnings_available": False})
+
     try:
         from core.prices import get_extended_session
         sess = get_extended_session(sym) or {}
