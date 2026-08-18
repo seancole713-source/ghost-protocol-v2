@@ -355,4 +355,11 @@ def _migrate_schema():
             ensure_daily_report_tables(cur)
     except Exception as e:
         LOGGER.warning("Daily report log tables: " + str(e)[:80])
+    try:
+        from core.squeeze_hunter_ledger import ensure_hunter_tables
+        with db_conn() as conn:
+            cur = conn.cursor()
+            ensure_hunter_tables(cur)
+    except Exception as e:
+        LOGGER.warning("Squeeze Hunter ledger tables: " + str(e)[:80])
     LOGGER.info("Schema migration complete")

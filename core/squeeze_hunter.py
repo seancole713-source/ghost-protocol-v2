@@ -555,6 +555,21 @@ def fetch_explosion_report(symbol: str) -> Dict[str, Any]:
     report["short_ctx"] = short_ctx
     report["trigger_ctx"] = trigger_ctx
     report["confirm_ctx"] = confirm_ctx
+
+    # Persist a point-in-time audit trail (append-only, idempotent). This is
+    # what makes the Hunter *measurable* later — it records exactly what data
+    # was available at evaluation time. Best-effort: never blocks the report.
+    try:
+        from core.squeeze_hunter_ledger import log_hunter_evaluation
+        report["evaluation_id"] = log_hunter_evaluation(
+            symbol=sym,
+            report=report,
+            short_ctx=short_ctx,
+            trigger_ctx=trigger_ctx,
+            confirm_ctx=confirm_ctx,
+        )
+    except Exception:
+        report["evaluation_id"] = None
     return report
 
 

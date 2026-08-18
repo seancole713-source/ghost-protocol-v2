@@ -501,6 +501,21 @@ def squeeze_hunter_scan_endpoint(limit: int = 20):
         return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
 
 
+@router.get("/api/squeeze/hunter/ledger")
+def squeeze_hunter_ledger_endpoint(symbol: str = "", limit: int = 50):
+    """Read the Squeeze Hunter's point-in-time audit trail.
+
+    Append-only evaluations + resolutions. This is the raw evidence a future
+    calibration step consumes — it does NOT itself claim any accuracy.
+    """
+    try:
+        from core.squeeze_hunter_ledger import recent_evaluations
+        return recent_evaluations(symbol=(symbol or "").strip().upper() or None,
+                                  limit=max(1, min(200, int(limit))))
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200], "rows": []}, status_code=500)
+
+
 @router.get("/api/squeeze/hunter/{symbol}")
 def squeeze_hunter_endpoint(symbol: str):
     """GHOST SQUEEZE HUNTER — fuel/trigger/confirmation + pressure score +
