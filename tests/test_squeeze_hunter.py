@@ -119,8 +119,20 @@ def test_catalyst_unavailable_maps_to_zero_not_fifty():
     """P1: missing catalyst data must NOT fabricate a neutral 50/100 signal."""
     out = sh._catalyst_to_trigger({"available": False})
     assert out["catalyst_score"] == 0.0
-    assert out["earnings_surprise"] == 0.0
+    assert out["guidance_score"] == 0.0
     assert out["catalyst_available"] is False
+
+
+def test_guidance_not_mislabeled_as_earnings_surprise():
+    """P2: guidance must be reported under guidance_score, not earnings_surprise."""
+    out = sh._catalyst_to_trigger({
+        "available": True,
+        "catalyst_score": 0.5,
+        "guidance_momentum_score": 0.2,
+    })
+    assert "guidance_score" in out
+    assert "earnings_surprise" not in out
+    assert out["guidance_score"] == 60.0  # 50 + 0.2*50
 
 
 def test_momentum_without_fuel_is_not_squeeze():

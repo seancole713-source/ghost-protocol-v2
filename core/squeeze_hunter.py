@@ -370,26 +370,28 @@ def build_explosion_report(
 
 # ── FETCH LAYER (best-effort, free data only) ─────────────────────────────
 def _catalyst_to_trigger(catalyst_ctx: Dict[str, Any]) -> Dict[str, Any]:
-    """Map catalyst_scoring output to a 0-100 catalyst + earnings surprise.
+    """Map catalyst_scoring output to a 0-100 catalyst + guidance score.
 
     Unavailable catalyst data maps to 0 (NOT 50): missing evidence must not
-    fabricate a neutral-positive signal.
+    fabricate a neutral-positive signal. Guidance is reported under its own
+    honest key (guidance_score), NOT mislabeled as earnings_surprise — the
+    real earnings surprise is computed separately from actual-vs-expected EPS.
     """
     c = catalyst_ctx or {}
     if not c.get("available"):
         return {
             "catalyst_score": 0.0,
-            "earnings_surprise": 0.0,
+            "guidance_score": 0.0,
             "catalyst_available": False,
         }
     catalyst_score = _f(c.get("catalyst_score"))  # -1..1
     guidance = _f(c.get("guidance_momentum_score"))  # -1..1
     # Map -1..1 to 0..100 (50 = neutral).
     catalyst_0_100 = _clamp(50.0 + catalyst_score * 50.0)
-    earnings_0_100 = _clamp(50.0 + guidance * 50.0)
+    guidance_0_100 = _clamp(50.0 + guidance * 50.0)
     return {
         "catalyst_score": catalyst_0_100,
-        "earnings_surprise": earnings_0_100,
+        "guidance_score": guidance_0_100,
         "catalyst_available": True,
     }
 
@@ -463,7 +465,13 @@ def fetch_explosion_report(symbol: str) -> Dict[str, Any]:
     try:
         from core.prices import get_extended_session
         sess = get_extended_session(sym) or {}
-        trigger_ctx["premarket_gap_pct"] = _f(sess.get("gap_pct"))
+        # Only treat gap_pct as a PREMARKET gap when we are actually in the
+        # premarket session. During RTH/after-hours, gap_pct is the session
+        # move vs prior close and would double-count price movement.
+        if str(sess.get("session") or "").lower() == "premarket":
+            trigger_ctx["premarket_gap_pct"] = _f(sess.get("gap_pct"))
+        else:
+            trigger_ctx["premarket_gap_pct"] = 0.0
     except Exception:
         trigger_ctx["premarket_gap_pct"] = 0.0
 
@@ -513,6 +521,11 @@ def fetch_explosion_report(symbol: str) -> Dict[str, Any]:
             confirm_ctx["rvol"] = rvol
     except Exception:
         pass
+
+    # score_trigger() reads rvol and breakout_pct from trigger_ctx — place them
+    # there too, or the trigger score's RVOL/breakout terms are always 0.
+    trigger_ctx["rvol"] = rvol
+    trigger_ctx["breakout_pct"] = breakout_pct
 
     # Factors for the explosion score.
     fuel = score_fuel(short_ctx)
