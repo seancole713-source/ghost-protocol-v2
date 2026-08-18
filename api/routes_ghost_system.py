@@ -516,6 +516,19 @@ def squeeze_hunter_ledger_endpoint(symbol: str = "", limit: int = 50):
         return JSONResponse({"ok": False, "error": str(e)[:200], "rows": []}, status_code=500)
 
 
+@router.post("/api/squeeze/hunter/resolve")
+def squeeze_hunter_resolve_endpoint(x_cron_secret: str = Header(default="")):
+    """Manually resolve pending Hunter evaluations (ops/backfill). Cron-gated."""
+    from wolf_app import _cron_ok  # late import — shared state + monkeypatch-safe
+    if not _cron_ok(x_cron_secret):
+        raise HTTPException(status_code=403)
+    try:
+        from core.squeeze_hunter_ledger import resolve_hunter_predictions
+        return resolve_hunter_predictions(limit=200)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
 @router.get("/api/squeeze/hunter/{symbol}")
 def squeeze_hunter_endpoint(symbol: str):
     """GHOST SQUEEZE HUNTER — fuel/trigger/confirmation + pressure score +

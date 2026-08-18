@@ -1449,6 +1449,18 @@ async def lifespan(app: FastAPI):
 
     scheduler.register("super_ghost_ledger", _super_ghost_ledger_job, interval_s=3600)
     scheduler.register("reconcile", reconcile_outcomes, interval_s=900)
+    # Squeeze Hunter resolver: resolve Hunter evaluations vs realized 1/5/14-day
+    # returns so the audit trail accrues outcomes (the raw evidence for a future
+    # Wilson/Brier calibration step). Writes only ghost_squeeze_hunter_* tables.
+    from core.squeeze_hunter_ledger import resolve_hunter_predictions as _hunter_resolver
+
+    def _hunter_resolver_job():
+        try:
+            _hunter_resolver(limit=200)
+        except Exception as _e:
+            LOGGER.warning("squeeze hunter resolver job failed: %s", str(_e)[:80])
+
+    scheduler.register("squeeze_hunter_resolver", _hunter_resolver_job, interval_s=3600)
     # T19: Auto-refresh portfolio stock prices every 15 min
     from core.portfolio_routes import auto_refresh_portfolio_prices
     scheduler.register("portfolio_price_refresh", auto_refresh_portfolio_prices, interval_s=900)

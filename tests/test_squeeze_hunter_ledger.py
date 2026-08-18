@@ -84,3 +84,42 @@ def test_resolve_hunter_evaluation_idempotent(monkeypatch):
 def test_scoring_version_is_stable():
     assert hl.HUNTER_SCORING_VERSION == "1"
     assert hl.HUNTER_HORIZONS == (1, 5, 14)
+
+
+def test_resolve_one_computes_returns():
+    """Pure resolution: 1/5/14-day returns + hit_plus_20/hit_minus_20."""
+    series = [
+        {"ts": 1000 + 86400 * (i + 1), "open": 100, "high": 100 + (i + 1), "low": 90, "close": 100 + (i + 1)}
+        for i in range(20)
+    ]
+    # ref = 100; day 1 close = 101 (+1%), day 5 close = 105 (+5%), day 14 close = 114 (+14%).
+    out = hl._resolve_one(1, "HTZ", 1000, 100.0, series, now=1000 + 86400 * 20)
+    assert out["return_1d_pct"] == 1.0
+    assert out["return_5d_pct"] == 5.0
+    assert out["return_14d_pct"] == 14.0
+    # No bar reached +20% (max high = 100+20 = 120, not > 120).
+    assert out["hit_plus_20"] is False
+    assert out["hit_minus_20"] is False
+
+
+def test_resolve_one_hit_plus_20():
+    series = [
+        {"ts": 1000 + 86400 * (i + 1), "open": 100, "high": 100 + i * 10, "low": 90, "close": 100}
+        for i in range(20)
+    ]
+    out = hl._resolve_one(1, "HTZ", 1000, 100.0, series, now=1000 + 86400 * 20)
+    assert out["hit_plus_20"] is True  # high reaches 100+190 = 290 > 120
+
+
+def test_resolve_one_no_reference():
+    assert hl._resolve_one(1, "HTZ", 1000, None, [], now=2000) is None
+
+
+def test_bars_after_filters_by_timestamp():
+    series = [
+        {"ts": 1000, "open": 1, "high": 1, "low": 1, "close": 1},       # before
+        {"ts": 1000 + 86400, "open": 2, "high": 2, "low": 2, "close": 2},  # after
+    ]
+    out = hl._bars_after(series, 1000)
+    assert len(out) == 1
+    assert out[0]["close"] == 2

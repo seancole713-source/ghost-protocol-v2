@@ -516,10 +516,14 @@ def fetch_explosion_report(symbol: str) -> Dict[str, Any]:
             # Breakout: price above prior close (a real reference), NOT today's
             # high (which is ~0 by construction and never signals a breakout).
             breakout_pct = max(0.0, (price - prev) / prev * 100.0)
+        # Reference price for later outcome resolution (the price at evaluation
+        # time, falling back to prior close).
+        reference_price = price if price else prev
         confirm_ctx["breakout_pct"] = breakout_pct
         if "rvol" not in confirm_ctx:
             confirm_ctx["rvol"] = rvol
     except Exception:
+        reference_price = None
         pass
 
     # score_trigger() reads rvol and breakout_pct from trigger_ctx — place them
@@ -567,6 +571,7 @@ def fetch_explosion_report(symbol: str) -> Dict[str, Any]:
             short_ctx=short_ctx,
             trigger_ctx=trigger_ctx,
             confirm_ctx=confirm_ctx,
+            reference_price=reference_price,
         )
     except Exception:
         report["evaluation_id"] = None
