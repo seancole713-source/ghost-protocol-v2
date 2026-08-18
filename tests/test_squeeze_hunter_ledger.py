@@ -169,3 +169,29 @@ def test_bars_after_uses_session_dates():
     # session date, so this bar is NOT a forward bar.
     assert out == []
 
+
+def test_issue_hunter_samples_skips_weekend(monkeypatch):
+    """No samples issued on a weekend."""
+    # 2026-08-01 is a Saturday.
+    sat = int(datetime(2026, 8, 1, 12, 0, 0, tzinfo=timezone.utc).timestamp())
+    out = hl.issue_hunter_samples(symbols=["HTZ"], now_ts=sat)
+    assert out["issued"] == 0
+    assert out["session_date"] is None
+
+
+def test_issue_hunter_samples_issues_on_trading_day(monkeypatch):
+    """One evaluation per symbol per session date, with a stable issued_ts."""
+    calls = []
+    monkeypatch.setattr(
+        "core.squeeze_hunter.fetch_explosion_report",
+        lambda sym, persist=False, issued_ts=None: calls.append((sym, persist, issued_ts)),
+    )
+    # 2026-08-03 is a Monday (trading day), noon UTC = 06:00 CT (premarket).
+    mon = int(datetime(2026, 8, 3, 12, 0, 0, tzinfo=timezone.utc).timestamp())
+    out = hl.issue_hunter_samples(symbols=["HTZ", "WOLF"], now_ts=mon)
+    assert out["issued"] == 2
+    assert out["session_date"] == "2026-08-03"
+    # Both calls used persist=True and the SAME stable issued_ts (idempotent).
+    assert all(c[1] is True for c in calls)
+    assert calls[0][2] == calls[1][2]
+

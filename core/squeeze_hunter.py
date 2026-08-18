@@ -417,7 +417,7 @@ def _options_to_trigger(flow: Dict[str, Any]) -> Dict[str, Any]:
     return {"call_volume_score": _clamp(score), "options_available": True}
 
 
-def fetch_explosion_report(symbol: str, *, persist: bool = False) -> Dict[str, Any]:
+def fetch_explosion_report(symbol: str, *, persist: bool = False, issued_ts: Optional[int] = None) -> Dict[str, Any]:
     """Assemble a full explosion report for one symbol from free data sources.
 
     Best-effort: every source is optional and failures degrade to neutral
@@ -428,6 +428,10 @@ def fetch_explosion_report(symbol: str, *, persist: bool = False) -> Dict[str, A
     samples. Only a preregistered scheduler (one evaluation per symbol/scoring
     version/market-time slot) should set persist=True; otherwise repeated page
     loads would inflate sample size and invalidate Wilson bounds.
+
+    `issued_ts` lets the scheduler pin a stable issuance timestamp so the
+    idempotency key (symbol, scoring_version, issued_ts) is deterministic per
+    market-time slot rather than per-call.
     """
     sym = (symbol or "").strip().upper()
     if not sym:
@@ -580,6 +584,7 @@ def fetch_explosion_report(symbol: str, *, persist: bool = False) -> Dict[str, A
                 trigger_ctx=trigger_ctx,
                 confirm_ctx=confirm_ctx,
                 reference_price=reference_price,
+                issued_ts=issued_ts,
             )
         except Exception:
             report["evaluation_id"] = None

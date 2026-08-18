@@ -1461,6 +1461,18 @@ async def lifespan(app: FastAPI):
             LOGGER.warning("squeeze hunter resolver job failed: %s", str(_e)[:80])
 
     scheduler.register("squeeze_hunter_resolver", _hunter_resolver_job, interval_s=3600)
+    # Squeeze Hunter issuance: preregistered sampler writes ONE evaluation per
+    # symbol per session date (idempotent). This is the only path that persists
+    # Hunter evaluations — public GET traffic stays read-only.
+    from core.squeeze_hunter_ledger import issue_hunter_samples as _hunter_issue
+
+    def _hunter_issue_job():
+        try:
+            _hunter_issue()
+        except Exception as _e:
+            LOGGER.warning("squeeze hunter issuance job failed: %s", str(_e)[:80])
+
+    scheduler.register("squeeze_hunter_issue", _hunter_issue_job, interval_s=3600)
     # T19: Auto-refresh portfolio stock prices every 15 min
     from core.portfolio_routes import auto_refresh_portfolio_prices
     scheduler.register("portfolio_price_refresh", auto_refresh_portfolio_prices, interval_s=900)

@@ -520,3 +520,67 @@ def resolve_hunter_predictions(*, limit: int = 200, now: Optional[int] = None) -
         return {"ok": False, "error": str(exc)[:160], "resolved": 0, "terminal": 0}
     return {"ok": True, "resolved": resolved, "terminal": terminal}
 
+
+# ── Scheduled issuance (preregistered sampler) ─────────────────────────────
+
+def _session_date_key(now_ts: Optional[int] = None) -> Optional[str]:
+    """The exchange session date (America/Chicago) if it's a trading day.
+
+    Returns None on weekends / market-closed so no samples are issued then.
+    """
+    try:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        from core.market_hours import SESSION_TZ, is_us_extended_hours
+        ts = int(now_ts or _now())
+        dt = datetime.fromtimestamp(ts, ZoneInfo(SESSION_TZ))
+        if not is_us_extended_hours(dt):
+            return None
+        return dt.date().isoformat()
+    except Exception:
+        return None
+
+
+def issue_hunter_samples(*, symbols: Optional[list] = None, now_ts: Optional[int] = None) -> Dict[str, Any]:
+    """Preregistered sampler: write ONE evaluation per symbol per session date.
+
+    This is the ONLY path that should persist Hunter evaluations. It pins a
+    stable issued_ts (session-date midnight) so the (symbol, scoring_version,
+    issued_ts) idempotency key is deterministic — repeated scheduler runs
+    within the same session date do not create duplicate/correlated samples.
+    One sample per symbol per day avoids the intraday correlation that would
+    inflate sample size and invalidate Wilson bounds.
+    """
+    date_key = _session_date_key(now_ts)
+    if date_key is None:
+        return {"ok": True, "issued": 0, "session_date": None, "note": "market closed or weekend"}
+    if symbols is None:
+        try:
+            from config.symbols import watchlist_symbols
+            symbols = sorted(watchlist_symbols())
+        except Exception:
+            symbols = []
+    # Pin a stable issuance timestamp for the whole session date (midnight CT),
+    # so every symbol shares the same idempotency anchor and re-runs are no-ops.
+    try:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        from core.market_hours import SESSION_TZ
+        dt = datetime.fromtimestamp(int(now_ts or _now()), ZoneInfo(SESSION_TZ))
+        slot_ts = int(dt.replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+    except Exception:
+        slot_ts = int(now_ts or _now())
+
+    issued = 0
+    errors = 0
+    for sym in symbols:
+        try:
+            from core.squeeze_hunter import fetch_explosion_report
+            fetch_explosion_report(sym, persist=True, issued_ts=slot_ts)
+            issued += 1
+        except Exception:
+            errors += 1
+    return {"ok": True, "issued": issued, "errors": errors, "session_date": date_key}
+
+
+
