@@ -485,6 +485,22 @@ def squeeze_daily_log_endpoint(
         return JSONResponse({"ok": False, "error": str(e)[:200], "rows": []}, status_code=500)
 
 
+@router.get("/api/squeeze/hunter/scan")
+def squeeze_hunter_scan_endpoint(limit: int = 20):
+    """GHOST SQUEEZE HUNTER — rank the whole watchlist by explosion score.
+
+    Read-only intelligence. Scores every watchlist symbol (fuel/trigger/
+    confirmation + pressure + stage + explosion) and returns the top
+    candidates sorted by explosion score. Best-effort; failures degrade to
+    low/neutral reports. Not a full-market scan (watchlist only, rate-limited).
+    """
+    try:
+        from core.squeeze_hunter import scan_watchlist
+        return scan_watchlist(limit=max(1, min(100, int(limit))))
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
 @router.get("/api/squeeze/hunter/{symbol}")
 def squeeze_hunter_endpoint(symbol: str):
     """GHOST SQUEEZE HUNTER — fuel/trigger/confirmation + pressure score +

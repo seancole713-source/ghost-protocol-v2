@@ -458,6 +458,7 @@ def fetch_explosion_report(symbol: str) -> Dict[str, Any]:
     fuel = score_fuel(short_ctx)
     trigger = score_trigger(trigger_ctx)
     confirmation = score_confirmation(confirm_ctx)
+    env_score = market_environment_score(_fetch_market_regime())
     factors = {
         "short_squeeze_potential": fuel,
         "catalyst": _f(trigger_ctx.get("catalyst_score")),
@@ -466,7 +467,7 @@ def fetch_explosion_report(symbol: str) -> Dict[str, Any]:
         "technical_breakout": _clamp(max(0.0, breakout_pct) * 10.0),
         "options_activity": _f(trigger_ctx.get("call_volume_score")),
         "float_structure": _float_structure_score(short_ctx),
-        "market_environment": 50.0,  # neutral placeholder; regime not wired here
+        "market_environment": env_score,
     }
 
     report = build_explosion_report(
@@ -498,3 +499,79 @@ def _float_structure_score(short_ctx: Dict[str, Any]) -> float:
     if fs < 200_000_000:
         return 40.0
     return 10.0
+
+
+def market_environment_score(regime: Optional[Dict[str, Any]] = None) -> float:
+    """0-100 market-environment factor from the broad regime.
+
+    Risk-on / calm tape is more favorable for explosive moves; risk-off /
+    high-volatility tape is less. Unknown regime = neutral 50.
+    """
+    r = regime or {}
+    label = str(r.get("label") or r.get("risk_state") or "").lower()
+    if not label or label == "unknown":
+        return 50.0
+    if label in ("calm_risk_on", "risk_on"):
+        return 80.0
+    if label == "mixed":
+        return 55.0
+    if label == "risk_off":
+        return 35.0
+    if label == "risk_off_high_volatility":
+        return 20.0
+    return 50.0
+
+
+def _fetch_market_regime() -> Optional[Dict[str, Any]]:
+    """Best-effort broad market regime for the explosion factor."""
+    try:
+        from core.super_ghost import detect_market_regime
+        # detect_market_regime expects scored market-context items; without a
+        # full checklist we fall back to a neutral regime rather than fabricate.
+        return detect_market_regime({})
+    except Exception:
+        return None
+
+
+def scan_watchlist(symbols: Optional[list] = None, limit: int = 20) -> Dict[str, Any]:
+    """Score the whole watchlist and return top explosion candidates.
+
+    Read-only intelligence. Each symbol is fetched best-effort; failures
+    degrade to a low/neutral report rather than raising. Sorted by explosion
+    score descending. This is NOT a full-market scan — it uses the configured
+    watchlist (104 symbols) to stay within rate limits.
+    """
+    if symbols is None:
+        try:
+            from config.symbols import watchlist_symbols
+            symbols = sorted(watchlist_symbols())
+        except Exception:
+            symbols = []
+    regime = _fetch_market_regime()
+    env_score = market_environment_score(regime)
+
+    rows: list = []
+    errors: list = []
+    for sym in symbols:
+        try:
+            rep = fetch_explosion_report(sym)
+            # Override the neutral market-environment factor with the real one.
+            if rep.get("ok"):
+                factors = dict(rep.get("factors") or {})
+                factors["market_environment"] = env_score
+                rep["factors"] = factors
+                rep["explosion_score"] = explosion_score(factors)
+                rep["projection"] = explosion_projection(rep["explosion_score"])
+            rows.append(rep)
+        except Exception as exc:
+            errors.append({"symbol": sym, "error": str(exc)[:120]})
+
+    rows.sort(key=lambda r: _f(r.get("explosion_score")), reverse=True)
+    return {
+        "ok": True,
+        "scanned": len(rows),
+        "errors": errors,
+        "market_environment_score": env_score,
+        "regime": regime,
+        "candidates": rows[:limit],
+    }
