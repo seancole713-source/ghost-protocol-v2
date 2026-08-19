@@ -224,6 +224,16 @@ def test_console_has_peaceful_polling_controls():
     assert "maybeReloadForBuild(r[0])" in text
 
 
+def test_console_renders_evidence_conflicts_and_full_interrogation():
+    text = _html()
+    assert "/api/bull-run/checklist/YMM" in text
+    assert "d.data_conflicts||[]" in text
+    assert "Unresolved data conflicts" in text
+    assert "No averaging or silent overwrite" in text
+    assert "40-question pre-trade interrogation" in text
+    assert "q.answer==null?'—'" in text
+
+
 def test_console_routes_serve_new_and_legacy_pages():
     client = TestClient(wolf_app.APP)
     root = client.get("/")

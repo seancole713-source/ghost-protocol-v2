@@ -21,6 +21,10 @@ from core.bull_run_checklist import (
     build_ymm_12_checklist,
     fetch_auto_evidence,
 )
+from core.evidence_integrity import (
+    conflict_records,
+    merge_evidence_sets,
+)
 
 
 LOGGER = logging.getLogger("ghost.bull_run_ledger")
@@ -54,6 +58,46 @@ _RESOLUTION_DATES = (
     "2026-08-24",
     "2026-08-25",
 )
+_TRAINING_CONFLICT_CAPTURED_AT = int(
+    datetime(2026, 8, 19, 8, 13, 5, tzinfo=ZoneInfo("UTC")).timestamp()
+)
+
+
+def _training_quote_conflict() -> Dict[str, Dict[str, Any]]:
+    """Return the immutable AI-vs-Ghost quote discrepancy captured on event day."""
+    base = {
+        "expected_value": 8.80,
+        "reporting_period": "2026-08-19 premarket",
+        "currency": "USD",
+        "unit": "USD per share",
+        "basis": "market_quote",
+        "status": "UNVERIFIED",
+        "confidence_status": "UNVERIFIED",
+    }
+    external = {
+        **base,
+        "value": 9.04,
+        "actual_value": 9.04,
+        "source": "external_ai_conversation_claim",
+        "source_timestamp": None,
+        "observation_timestamp": None,
+        "calculation_methodology": "AI narrative claimed a premarket quote; original provider and observation time unavailable",
+        "provenance": "external_ai_claim",
+    }
+    ghost = {
+        **base,
+        "value": 8.79,
+        "actual_value": 8.79,
+        "source": "ghost_production_market_session_alpaca_observation",
+        "source_timestamp": None,
+        "observation_timestamp": None,
+        "calculation_methodology": "Ghost production market-session response observed during comparison; provider timestamp not preserved in the comparison record",
+        "provenance": "ghost_comparison_observation",
+    }
+    return merge_evidence_sets({"premarket_price": external}, {"premarket_price": ghost})
+
+
+_TRAINING_QUOTE_CONFLICT = _training_quote_conflict()
 
 
 def _now() -> int:
@@ -118,6 +162,56 @@ def ensure_bull_run_tables(cur) -> None:
     cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_bull_run_snapshots_scenario_phase "
         "ON ghost_bull_run_scenario_snapshots (scenario_id, phase, captured_at DESC)"
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ghost_bull_run_evidence_claims (
+            id BIGSERIAL PRIMARY KEY,
+            claim_id VARCHAR(64) NOT NULL UNIQUE,
+            scenario_id VARCHAR(100) NOT NULL,
+            scoring_version VARCHAR(100) NOT NULL,
+            symbol VARCHAR(20) NOT NULL,
+            signal_key VARCHAR(100) NOT NULL,
+            source TEXT,
+            source_timestamp BIGINT,
+            observation_timestamp BIGINT,
+            actual_value_json JSONB,
+            status VARCHAR(40) NOT NULL,
+            claim_json JSONB NOT NULL,
+            captured_at BIGINT NOT NULL,
+            created_at BIGINT NOT NULL
+        )
+        """
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_bull_run_claims_signal_time "
+        "ON ghost_bull_run_evidence_claims (scenario_id, scoring_version, signal_key, captured_at ASC)"
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ghost_bull_run_evidence_conflicts (
+            id BIGSERIAL PRIMARY KEY,
+            conflict_id VARCHAR(64) NOT NULL UNIQUE,
+            scenario_id VARCHAR(100) NOT NULL,
+            scoring_version VARCHAR(100) NOT NULL,
+            symbol VARCHAR(20) NOT NULL,
+            signal_key VARCHAR(100) NOT NULL,
+            status VARCHAR(40) NOT NULL,
+            resolution_status VARCHAR(40) NOT NULL,
+            conflict_json JSONB NOT NULL,
+            captured_at BIGINT NOT NULL,
+            created_at BIGINT NOT NULL
+        )
+        """
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_bull_run_conflicts_signal_time "
+        "ON ghost_bull_run_evidence_conflicts (scenario_id, scoring_version, signal_key, captured_at ASC)"
+    )
+    _persist_evidence_cur(
+        cur,
+        _TRAINING_QUOTE_CONFLICT,
+        captured_at=_TRAINING_CONFLICT_CAPTURED_AT,
     )
     cur.execute(
         "ALTER TABLE ghost_bull_run_scenario_snapshots "
@@ -222,38 +316,104 @@ def _effective_source_status(
     return status
 
 
+def _claim_id(signal_key: str, claim: Dict[str, Any]) -> str:
+    return hashlib.sha256(
+        f"{SCENARIO['scenario_id']}|{SCENARIO['scoring_version']}|{signal_key}|{_jsonb(claim)}".encode()
+    ).hexdigest()
+
+
+def _persist_evidence_cur(
+    cur,
+    evidence: Dict[str, Dict[str, Any]],
+    *,
+    captured_at: int,
+) -> None:
+    for signal_key, record in (evidence or {}).items():
+        if not isinstance(record, dict):
+            continue
+        nested = record.get("claims")
+        rows = nested if isinstance(nested, list) else [record]
+        for claim in rows:
+            if not isinstance(claim, dict):
+                continue
+            claim_id = _claim_id(signal_key, claim)
+            cur.execute(
+                """
+                INSERT INTO ghost_bull_run_evidence_claims (
+                    claim_id, scenario_id, scoring_version, symbol, signal_key,
+                    source, source_timestamp, observation_timestamp,
+                    actual_value_json, status, claim_json, captured_at, created_at
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s::jsonb,%s,%s)
+                ON CONFLICT (claim_id) DO NOTHING
+                """,
+                (
+                    claim_id, SCENARIO["scenario_id"], SCENARIO["scoring_version"],
+                    SCENARIO["symbol"], signal_key, claim.get("source"),
+                    claim.get("source_timestamp", claim.get("as_of_ts")),
+                    claim.get("observation_timestamp"),
+                    _jsonb(claim.get("actual_value", claim.get("value"))),
+                    str(claim.get("status") or claim.get("confidence_status") or "UNVERIFIED"),
+                    _jsonb(claim), captured_at, _now(),
+                ),
+            )
+    for conflict in conflict_records(evidence):
+        cur.execute(
+            """
+            INSERT INTO ghost_bull_run_evidence_conflicts (
+                conflict_id, scenario_id, scoring_version, symbol, signal_key,
+                status, resolution_status, conflict_json, captured_at, created_at
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s)
+            ON CONFLICT (conflict_id) DO NOTHING
+            """,
+            (
+                conflict["conflict_id"], SCENARIO["scenario_id"], SCENARIO["scoring_version"],
+                SCENARIO["symbol"], conflict["signal_key"], conflict["status"],
+                conflict["resolution_status"], _jsonb(conflict), captured_at, _now(),
+            ),
+        )
+
+
 def _load_preserved_evidence_cur(cur) -> Dict[str, Dict[str, Any]]:
     cur.execute(
         """
-        SELECT observed_evidence_json
-        FROM ghost_bull_run_scenario_snapshots
+        SELECT signal_key, claim_json
+        FROM ghost_bull_run_evidence_claims
         WHERE scenario_id = %s AND scoring_version = %s
         ORDER BY captured_at ASC, id ASC
         """,
         (SCENARIO["scenario_id"], SCENARIO["scoring_version"]),
     )
-    preserved: Dict[str, Dict[str, Any]] = {}
-    for row in cur.fetchall() or []:
-        evidence = _coerce_json(row[0]) or {}
-        if not isinstance(evidence, dict):
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    claim_rows = cur.fetchall() or []
+    for signal_key, raw_claim in claim_rows:
+        if signal_key not in _STICKY_KEYS and signal_key not in _OPERATOR_KEYS:
             continue
-        for key, record in evidence.items():
-            if key not in _STICKY_KEYS and key not in _OPERATOR_KEYS:
+        claim = _coerce_json(raw_claim)
+        if isinstance(claim, dict):
+            grouped.setdefault(signal_key, []).append(claim)
+    if not claim_rows:
+        # Compatibility for deployments created before the append-only claims table.
+        # Historical snapshot claims remain non-confirming unless their own stored
+        # evidence chain satisfies the current integrity contract.
+        cur.execute(
+            """
+            SELECT observed_evidence_json
+            FROM ghost_bull_run_scenario_snapshots
+            WHERE scenario_id = %s AND scoring_version = %s
+            ORDER BY captured_at ASC, id ASC
+            """,
+            (SCENARIO["scenario_id"], SCENARIO["scoring_version"]),
+        )
+        for row in cur.fetchall() or []:
+            evidence = _coerce_json(row[0]) or {}
+            if not isinstance(evidence, dict):
                 continue
-            if not isinstance(record, dict):
-                continue
-            try:
-                candidate_ts = int(record["as_of_ts"])
-            except (KeyError, TypeError, ValueError):
-                continue
-            current = preserved.get(key)
-            try:
-                current_ts = int(current["as_of_ts"]) if current else -1
-            except (KeyError, TypeError, ValueError):
-                current_ts = -1
-            if candidate_ts > current_ts:
-                preserved[key] = record
-    return preserved
+            for signal_key, claim in evidence.items():
+                if (
+                    signal_key in _STICKY_KEYS or signal_key in _OPERATOR_KEYS
+                ) and isinstance(claim, dict):
+                    grouped.setdefault(signal_key, []).append(claim)
+    return merge_evidence_sets(*({key: claim} for key, rows in grouped.items() for claim in rows))
 
 
 def load_preserved_evidence() -> Dict[str, Dict[str, Any]]:
@@ -345,7 +505,7 @@ def capture_snapshot(
     source_status: Dict[str, Any] = {}
     if fetch_evidence:
         auto_evidence, source_status = fetch_auto_evidence(SCENARIO["symbol"])
-    observed = {**auto_evidence, **(operator_evidence or {})}
+    observed = merge_evidence_sets(auto_evidence, operator_evidence or {})
     ready, requirement = _phase_ready(selected_phase, observed)
     status = observation_status or ("observed" if ready else "data_unavailable")
     if status == "missed_no_observation":
@@ -362,7 +522,9 @@ def capture_snapshot(
 
     def _write(c) -> Dict[str, Any]:
         preserved = _load_preserved_evidence_cur(c)
-        effective = {**preserved, **observed}
+        effective = merge_evidence_sets(preserved, observed)
+        _persist_evidence_cur(c, observed, captured_at=captured_at)
+        _persist_evidence_cur(c, effective, captured_at=captured_at)
         effective_sources = _effective_source_status(
             source_status,
             effective,
@@ -447,7 +609,7 @@ def current_scenario_report(
         raise UnsupportedScenarioError(f"No registered bull-run scenario for {symbol}")
     auto, sources = fetch_auto_evidence(SCENARIO["symbol"])
     preserved = load_preserved_evidence()
-    effective = {**preserved, **auto, **(operator_evidence or {})}
+    effective = merge_evidence_sets(preserved, auto, operator_evidence or {})
     sources = _effective_source_status(sources, effective, preserved_keys=list(preserved))
     return build_ymm_12_checklist(evidence=effective, source_status=sources)
 
@@ -487,6 +649,28 @@ def recent_snapshots(*, limit: int = 50) -> Dict[str, Any]:
                 (SCENARIO["scenario_id"], SCENARIO["scoring_version"]),
             )
             resolution_row = cur.fetchone()
+            cur.execute(
+                """
+                SELECT claim_id, signal_key, source, source_timestamp,
+                       observation_timestamp, status, claim_json, captured_at
+                FROM ghost_bull_run_evidence_claims
+                WHERE scenario_id = %s AND scoring_version = %s
+                ORDER BY captured_at ASC, id ASC
+                """,
+                (SCENARIO["scenario_id"], SCENARIO["scoring_version"]),
+            )
+            claim_rows = cur.fetchall() or []
+            cur.execute(
+                """
+                SELECT conflict_id, signal_key, status, resolution_status,
+                       conflict_json, captured_at
+                FROM ghost_bull_run_evidence_conflicts
+                WHERE scenario_id = %s AND scoring_version = %s
+                ORDER BY captured_at ASC, id ASC
+                """,
+                (SCENARIO["scenario_id"], SCENARIO["scoring_version"]),
+            )
+            conflict_rows = cur.fetchall() or []
         keys = (
             "id", "scenario_id", "scoring_version", "symbol", "phase", "slot_key",
             "scheduled_for_ts", "captured_at", "observed_price", "observed_price_ts",
@@ -511,7 +695,30 @@ def recent_snapshots(*, limit: int = 50) -> Dict[str, Any]:
                 ),
                 resolution_row,
             ))
-        return {"ok": True, "scenario": SCENARIO, "rows": payload, "resolution": resolution}
+        claims = []
+        for row in claim_rows:
+            item = dict(zip(
+                ("claim_id", "signal_key", "source", "source_timestamp", "observation_timestamp", "status", "claim", "captured_at"),
+                row,
+            ))
+            item["claim"] = _coerce_json(item["claim"])
+            claims.append(item)
+        conflicts = []
+        for row in conflict_rows:
+            item = dict(zip(
+                ("conflict_id", "signal_key", "status", "resolution_status", "conflict", "captured_at"),
+                row,
+            ))
+            item["conflict"] = _coerce_json(item["conflict"])
+            conflicts.append(item)
+        return {
+            "ok": True,
+            "scenario": SCENARIO,
+            "rows": payload,
+            "resolution": resolution,
+            "evidence_claims": claims,
+            "data_conflicts": conflicts,
+        }
     except Exception as exc:
         LOGGER.exception("recent bull-run snapshots")
         raise BullRunDatabaseError("database_unavailable") from exc

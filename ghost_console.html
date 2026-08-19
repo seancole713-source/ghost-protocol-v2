@@ -94,6 +94,7 @@ button,input,select{font:inherit} button{cursor:pointer}.hidden{display:none!imp
       <button data-section="week"><span class="dot"></span>This week</button>
       <button data-section="tracker"><span class="dot"></span>Live mirror</button>
       <button data-section="hunter"><span class="dot"></span>Squeeze Hunter</button>
+      <button data-section="evidence"><span class="dot"></span>YMM evidence</button>
       <button data-section="doctrine"><span class="dot"></span>Doctrine</button>
       <button data-section="health"><span class="dot"></span>Health</button>
     </nav>
@@ -130,6 +131,7 @@ button,input,select{font:inherit} button{cursor:pointer}.hidden{display:none!imp
       <button data-section="week">This week</button>
       <button data-section="tracker">Live tracker</button>
       <button data-section="hunter">Squeeze Hunter</button>
+      <button data-section="evidence">YMM evidence</button>
       <button data-section="doctrine">Doctrine</button>
       <button data-section="health">Health</button>
     </div>
@@ -161,6 +163,7 @@ button,input,select{font:inherit} button{cursor:pointer}.hidden{display:none!imp
     <section class="section" id="section-week"><div class="grid"><div class="panel glass col-12"><div class="panel-title"><div><h3>This week predictions</h3><p>5-day ledger accuracy and if-followed stats are the weekly scoreboard.</p></div></div><div id="weekList"></div></div></div></section>
     <section class="section" id="section-tracker"><div class="grid"><div class="panel glass col-12"><div class="panel-title"><div><h3>Live market mirror</h3><p>Live market price is mirrored against predicted open/reference, predicted low/stop, and target/high side by side.</p></div></div><div id="trackerList"></div></div></div></section>
     <section class="section" id="section-hunter"><div class="grid"><div class="panel glass col-12"><div class="panel-title"><div><h3>🚨 Squeeze Hunter</h3><p>Find the next Hertz before Hertz happens. Ranks the watchlist by explosion score (fuel × trigger × confirmation). Read-only intelligence — never fires a pick. High short interest alone never produces a high score.</p><p><strong>Uncalibrated heuristic — these percentages are not statistically calibrated probabilities.</strong></p></div><span class="tag warn">not advice</span></div><div id="hunterList"><div class="empty">Loading squeeze hunter…</div></div></div></div></section>
+    <section class="section" id="section-evidence"><div class="grid"><div class="panel glass col-12"><div class="panel-title"><div><h3>YMM evidence integrity</h3><p>Only complete, independently confirmed evidence may turn a signal green or red. AI and operator narratives remain unverified claims.</p></div><span class="tag warn" id="ymmTradeAction">NO TRADE</span></div><div id="ymmEvidence"><div class="empty">Loading point-in-time evidence…</div></div></div></div></section>
     <section class="section" id="section-mypicks"><div class="grid"><div class="panel glass col-12"><div class="panel-title"><div><h3>My picks</h3><p>Your personal, server-synced watchlist — the stocks you actually hold. Every pick gets Ghost's full system read; open a card for the complete report.</p></div><div class="pool-form mypick-form"><input id="myPickInput" placeholder="AAPL" maxlength="8"><button class="btn primary" id="myPickAdd">Add</button></div></div><div id="myPicksList"><div class="empty">Loading your picks…</div></div></div></div></section>
     <section class="section" id="section-doctrine"><div class="grid"><div class="panel glass col-12"><div class="panel-title"><h3>Ghost Doctrine · Clarity → Decision → Direction → Alignment → Consistency → Results</h3></div><div id="doctrineBox"><div class="empty">Loading doctrine…</div></div></div></div></section>
 
@@ -221,7 +224,24 @@ function loadPool(){try{var v=JSON.parse(localStorage.getItem('ghost_console_poo
 function savePool(){localStorage.setItem('ghost_console_pool',JSON.stringify(state.pool))}
 function cleanSym(v){return String(v||'').toUpperCase().replace(/[^A-Z0-9.\-]/g,'').slice(0,8)}
 function toast(msg){var el=$('toast');el.textContent=msg;el.classList.add('show');setTimeout(function(){el.classList.remove('show')},2600)}
-function switchSection(id){document.querySelectorAll('.section').forEach(function(s){s.classList.toggle('active',s.id==='section-'+id)});document.querySelectorAll('[data-section]').forEach(function(b){b.classList.toggle('active',b.getAttribute('data-section')===id)});window.scrollTo({top:0,behavior:'smooth'});if(id==='hunter')loadHunter()}
+function switchSection(id){document.querySelectorAll('.section').forEach(function(s){s.classList.toggle('active',s.id==='section-'+id)});document.querySelectorAll('[data-section]').forEach(function(b){b.classList.toggle('active',b.getAttribute('data-section')===id)});window.scrollTo({top:0,behavior:'smooth'});if(id==='hunter')loadHunter();if(id==='evidence')loadYmmEvidence()}
+async function loadYmmEvidence(){
+  var box=$('ymmEvidence');if(!box)return;
+  box.innerHTML='<div class="empty">Loading point-in-time evidence…</div>';
+  var d=await fetchJson('/api/bull-run/checklist/YMM',{ok:false});
+  if(!d||d.ok!==true){box.innerHTML='<div class="empty">Evidence unavailable. STATUS: UNVERIFIED</div>';return}
+  var action=d.trade_action||'NO_TRADE';
+  $('ymmTradeAction').textContent=String(action).replace('_',' ');
+  $('ymmTradeAction').className='tag '+(action==='NO_TRADE'?'warn':'good');
+  var checks=d.checks||[];
+  var conflicts=d.data_conflicts||[];
+  var interrogation=(d.pre_trade_interrogation||{}).questions||[];
+  var summary='<div class="metric-grid mt0-mb16"><div class="metric"><div class="label">Core verified</div><div class="value">'+esc((d.pre_trade_interrogation||{}).core_conditions_verified||0)+'/40</div></div><div class="metric"><div class="label">Conflicts</div><div class="value">'+esc(conflicts.length)+'</div></div><div class="metric"><div class="label">Missing evidence</div><div class="value">'+esc(d.missing_evidence||0)+'</div></div><div class="metric"><div class="label">Decision</div><div class="value">'+esc(d.decision||'NO TRADE')+'</div></div></div>';
+  var conflictHtml=conflicts.length?'<div class="panel-title"><div><h3>Unresolved data conflicts</h3><p>Claims are preserved independently. No averaging or silent overwrite.</p></div><span class="tag bad">NON-SCORING</span></div>'+conflicts.map(function(c){return '<article class="prediction-card"><div class="ticker">'+esc(c.record_type||'DATA_CONFLICT')+'</div><div class="kv"><span>CLAIM A</span><b>'+esc(c.value_a==null?'—':c.value_a)+' · '+esc(c.source_a||'—')+'</b></div><div class="kv"><span>CLAIM B</span><b>'+esc(c.value_b==null?'—':c.value_b)+' · '+esc(c.source_b||'—')+'</b></div><div class="kv"><span>STATUS</span><b>'+esc(c.resolution_status||'UNRESOLVED')+'</b></div></article>'}).join(''):'';
+  var checksHtml=checks.map(function(c){var e=c.evidence_summary||{};var confirmed=e.status==='CONFIRMED';var cls=confirmed?'good':(e.status==='VERIFIED_CONFLICT'?'bad':'warn');return '<article class="prediction-card"><div class="pc-head"><div><div class="ticker">'+esc(c.label)+'</div><div class="pc-tags"><span class="tag '+cls+'">'+(confirmed?'🟢 CONFIRMED':esc(e.status||'UNVERIFIED'))+'</span></div></div></div><div class="kv"><span>ACTUAL</span><b>'+esc(e.actual==null?'—':e.actual)+'</b></div><div class="kv"><span>CONSENSUS</span><b>'+esc(e.consensus==null?'—':e.consensus)+'</b></div><div class="kv"><span>DELTA</span><b>'+esc(e.delta==null?'—':e.delta)+'</b></div><div class="kv"><span>SOURCE</span><b>'+esc(e.source||'—')+'</b></div><div class="kv"><span>STATUS</span><b>'+esc(e.status||'UNVERIFIED')+'</b></div></article>'}).join('');
+  var questionsHtml='<div class="panel-title"><div><h3>40-question pre-trade interrogation</h3><p>Unknown answers remain unresolved and force NO TRADE.</p></div><span class="tag warn">'+esc(action.replace('_',' '))+'</span></div>'+interrogation.map(function(q){return '<div class="kv"><span>'+esc(q.number)+'. '+esc(q.question)+'</span><b>'+esc(q.answer==null?'—':(q.answer?'YES':'NO'))+' · '+esc(q.status||'UNVERIFIED')+'</b></div>'}).join('');
+  box.innerHTML=summary+conflictHtml+checksHtml+questionsHtml;
+}
 async function loadHunter(){var el=$('hunterList');if(!el)return;if(state.data.hunter&&state.data.hunter.candidates&&state.data.hunter.candidates.length){renderHunter();return}el.innerHTML='<div class="empty">Scanning watchlist for explosion candidates…</div>';var d=await fetchJson('/api/squeeze/hunter/scan?limit=20',{ok:false,candidates:[]});state.data.hunter=d;renderHunter()}
 function _wMoney(v,signed){if(v==null)return '—';var sign=v<0?'−':(signed?'+':'');return sign+'$'+Math.abs(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}
 function _wCls(v){return v>0?'pos':(v<0?'neg':'')}

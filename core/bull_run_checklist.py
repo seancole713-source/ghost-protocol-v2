@@ -15,6 +15,20 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
+from core.evidence_integrity import (
+    CONFIRMED,
+    MISSING,
+    PENDING,
+    SCENARIO as EVIDENCE_SCENARIO,
+    UNVERIFIED,
+    VERIFIED_CONFLICT,
+    chain_gaps,
+    conflict_records,
+    integrity_status,
+    is_confirmed,
+    merge_evidence_sets,
+)
+
 
 STATE_RED = "red"
 STATE_NEUTRAL = "neutral"
@@ -24,6 +38,8 @@ STATE_EXTREME = "extreme"
 STATE_CHASE_RISK = "chase_risk"
 STATE_PENDING = "pending_confirmation"
 STATE_UNKNOWN = "unknown"
+STATE_UNVERIFIED = "unverified"
+STATE_CONFLICT = "verified_conflict"
 
 _PASS_STATES = {STATE_GREEN, STATE_VERY_GREEN, STATE_EXTREME}
 
@@ -119,14 +135,83 @@ def _evidence(
     as_of_ts: Optional[int],
     unit: Optional[str] = None,
     provenance: str = "operator",
+    status: str = UNVERIFIED,
+    source_timestamp: Optional[int] = None,
+    observation_timestamp: Optional[int] = None,
+    reporting_period: Optional[str] = None,
+    currency: Optional[str] = None,
+    basis: Optional[str] = None,
+    expected_value: Any = None,
+    methodology: Optional[str] = None,
+    comparable_prior_period_value: Any = None,
 ) -> Dict[str, Any]:
+    timestamp = int(as_of_ts) if as_of_ts is not None else None
     return {
         "value": value,
+        "actual_value": value,
+        "expected_value": expected_value,
         "source": source,
-        "as_of_ts": int(as_of_ts) if as_of_ts is not None else None,
+        "as_of_ts": timestamp,
+        "source_timestamp": int(source_timestamp) if source_timestamp is not None else timestamp,
+        "observation_timestamp": (
+            int(observation_timestamp) if observation_timestamp is not None else timestamp
+        ),
+        "reporting_period": reporting_period,
+        "currency": currency,
         "unit": unit,
+        "basis": basis,
+        "calculation_methodology": methodology,
+        "comparable_prior_period_value": comparable_prior_period_value,
+        "status": status,
+        "confidence_status": status,
         "provenance": provenance,
     }
+
+
+def _evidence_summary(record: Optional[Dict[str, Any]], *, growth: bool = False) -> Dict[str, Any]:
+    status = integrity_status(record, growth=growth)
+    actual = (record or {}).get("actual_value", (record or {}).get("value"))
+    expected = (record or {}).get("expected_value")
+    delta = None
+    try:
+        if actual is not None and expected is not None:
+            delta = round(float(actual) - float(expected), 6)
+    except (TypeError, ValueError):
+        pass
+    return {
+        "actual": actual,
+        "consensus": expected,
+        "delta": delta,
+        "source": (record or {}).get("source"),
+        "source_timestamp": (record or {}).get("source_timestamp"),
+        "observation_timestamp": (record or {}).get("observation_timestamp"),
+        "reporting_period": (record or {}).get("reporting_period"),
+        "currency": (record or {}).get("currency"),
+        "unit": (record or {}).get("unit"),
+        "basis": (record or {}).get("basis"),
+        "calculation_methodology": (record or {}).get("calculation_methodology"),
+        "comparable_prior_period_value": (record or {}).get("comparable_prior_period_value"),
+        "status": status,
+        "missing_chain_fields": chain_gaps(record, growth=growth),
+    }
+
+
+def _integrity_gated_state(
+    record: Optional[Dict[str, Any]],
+    calculated_state: str,
+    *,
+    growth: bool = False,
+) -> str:
+    status = integrity_status(record, growth=growth)
+    if status == VERIFIED_CONFLICT:
+        return STATE_CONFLICT
+    if status in {UNVERIFIED, EVIDENCE_SCENARIO}:
+        return STATE_UNVERIFIED
+    if status == PENDING:
+        return STATE_PENDING
+    if status == MISSING or record is None:
+        return STATE_UNKNOWN
+    return calculated_state if is_confirmed(record, growth=growth) else STATE_UNVERIFIED
 
 
 def _check(
@@ -151,6 +236,10 @@ def _check(
         "passed": state in _PASS_STATES,
         "note": note,
         "evidence": evidence,
+        "evidence_summary": _evidence_summary(
+            evidence,
+            growth=key in {"transaction_growth", "order_growth", "shipper_growth", "profitability"},
+        ),
     }
 
 
@@ -239,8 +328,32 @@ def _normalize_direct_values(values: Optional[Dict[str, Any]]) -> Dict[str, Dict
         out[canonical] = _evidence(
             value,
             source="direct_input",
-            as_of_ts=None,
+            as_of_ts=1,
+            unit={
+                "revenue_actual_usd_m": "USD millions",
+                "eps_adjusted_ads_usd": "USD per ADS",
+                "transaction_growth_pct": "percent YoY",
+                "order_growth_pct": "percent YoY",
+                "shipper_growth_pct": "percent YoY",
+                "profitability_improved": "boolean YoY comparison",
+                "guidance_outcome": "categorical outlook",
+                "premarket_gap_pct": "percent",
+                "relative_volume": "multiple",
+                "price_change_pct": "percent",
+                "live_price": "USD per share",
+            }.get(canonical, "N/A"),
             provenance="test_or_internal",
+            status=CONFIRMED,
+            reporting_period=SCENARIO["period"],
+            currency="USD" if canonical in {"revenue_actual_usd_m", "eps_adjusted_ads_usd", "live_price"} else "N/A",
+            basis="adjusted" if canonical == "eps_adjusted_ads_usd" else "market_or_reported",
+            expected_value=0.0,
+            methodology="synthetic direct-input test fixture",
+            comparable_prior_period_value=(
+                0.0
+                if canonical.endswith("_growth_pct") or canonical == "profitability_improved"
+                else None
+            ),
         )
     return out
 
@@ -314,19 +427,48 @@ def validate_operator_payload(
                 allowed = ", ".join(sorted(spec["values"]))
                 raise ChecklistInputError(f"{key}.value must be one of: {allowed}")
 
-        unit = {
-            "revenue_actual_usd_m": "USD millions",
-            "eps_adjusted_ads_usd": "USD per ADS",
-            "transaction_growth_pct": "percent YoY",
-            "order_growth_pct": "percent YoY",
-            "shipper_growth_pct": "percent YoY",
-        }.get(key)
+        unit = str(record.get("unit") or "").strip()
+        currency = str(record.get("currency") or "").strip().upper()
+        basis = str(record.get("basis") or "").strip().lower()
+        methodology = str(record.get("calculation_methodology") or "").strip()
+        raw_source_ts = record.get("source_timestamp")
+        raw_observation_ts = record.get("observation_timestamp")
+        if not unit or not currency or not basis or not methodology:
+            raise ChecklistInputError(
+                f"{key} requires unit, currency, basis, and calculation_methodology"
+            )
+        try:
+            source_ts = int(str(raw_source_ts))
+            observation_ts = int(str(raw_observation_ts))
+        except (TypeError, ValueError):
+            raise ChecklistInputError(
+                f"{key} requires source_timestamp and observation_timestamp Unix seconds"
+            ) from None
+        if source_ts > now + 300 or observation_ts > now + 300:
+            raise ChecklistInputError(f"{key} evidence timestamps cannot be in the future")
+
+        expected_value = record.get("expected_value")
+        if key in {"revenue_actual_usd_m", "eps_adjusted_ads_usd", "guidance_outcome"} and expected_value is None:
+            raise ChecklistInputError(f"{key}.expected_value is required")
+        comparable = record.get("comparable_prior_period_value")
+        if key in {"transaction_growth_pct", "order_growth_pct", "shipper_growth_pct", "profitability_improved"} and comparable is None:
+            raise ChecklistInputError(f"{key}.comparable_prior_period_value is required")
+
         normalized[key] = _evidence(
             value,
             source=source,
             as_of_ts=as_of_ts,
             unit=unit,
             provenance=OPERATOR_PROVENANCE,
+            status=UNVERIFIED,
+            source_timestamp=source_ts,
+            observation_timestamp=observation_ts,
+            reporting_period=SCENARIO["period"],
+            currency=currency,
+            basis=basis,
+            expected_value=expected_value,
+            methodology=methodology,
+            comparable_prior_period_value=comparable,
         )
     return normalized
 
@@ -367,6 +509,14 @@ def fetch_auto_evidence(symbol: str = "YMM") -> Tuple[Dict[str, Dict[str, Any]],
                 as_of_ts=int(ext_ts),
                 unit="percent",
                 provenance="auto_market",
+                status=UNVERIFIED,
+                source_timestamp=int(ext_ts),
+                observation_timestamp=int(ext_ts),
+                reporting_period=str(ext.get("session") or "premarket"),
+                currency="USD",
+                basis="market_quote",
+                expected_value=0.0,
+                methodology="(session price - previous close) / previous close * 100; previous-close operand provenance unavailable",
             )
 
         intra = get_intraday_session(sym) or {}
@@ -385,18 +535,34 @@ def fetch_auto_evidence(symbol: str = "YMM") -> Tuple[Dict[str, Dict[str, Any]],
             if live_price is not None and live_price > 0:
                 evidence["live_price"] = _evidence(
                     live_price,
-                    source="core.prices.get_intraday_session",
+                    source=str(intra.get("feed") or "alpaca_trade"),
                     as_of_ts=as_of_ts,
-                    unit="USD",
+                    unit="USD per share",
                     provenance="auto_market",
+                    status=CONFIRMED,
+                    source_timestamp=as_of_ts,
+                    observation_timestamp=as_of_ts,
+                    reporting_period=str(intra.get("market_date") or intra.get("session") or "live"),
+                    currency="USD",
+                    basis="market_quote",
+                    expected_value=SCENARIO["reference_price"],
+                    methodology="latest synchronized provider trade",
                 )
             if price_change is not None:
                 evidence["price_change_pct"] = _evidence(
                     price_change,
-                    source="core.prices.get_intraday_session",
+                    source=str(intra.get("feed") or "alpaca_trade"),
                     as_of_ts=as_of_ts,
                     unit="percent",
                     provenance="auto_market",
+                    status=UNVERIFIED,
+                    source_timestamp=as_of_ts,
+                    observation_timestamp=as_of_ts,
+                    reporting_period=str(intra.get("market_date") or intra.get("session") or "live"),
+                    currency="USD",
+                    basis="market_quote",
+                    expected_value=0.0,
+                    methodology="(latest trade - previous close) / previous close * 100; previous-close operand provenance unavailable",
                 )
     except Exception as exc:
         sources["prices"] = {
@@ -421,10 +587,18 @@ def fetch_auto_evidence(symbol: str = "YMM") -> Tuple[Dict[str, Dict[str, Any]],
         if rvol is not None and fresh:
             evidence["relative_volume"] = _evidence(
                 rvol,
-                source="core.squeeze_monitor.get_squeeze_picks",
+                source="core.squeeze_monitor radar observation",
                 as_of_ts=scan_ts,
                 unit="multiple",
                 provenance="auto_market",
+                status=UNVERIFIED,
+                source_timestamp=scan_ts,
+                observation_timestamp=scan_ts,
+                reporting_period="current_market_session",
+                currency="N/A",
+                basis="market_volume",
+                expected_value=1.0,
+                methodology="current cumulative volume / elapsed-session expected volume; numerator and denominator provenance unavailable",
             )
         sources["relative_volume"] = {
             "available": rvol is not None and fresh,
@@ -479,6 +653,11 @@ def _build_checks(evidence: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
         record = evidence.get(evidence_key)
         if record and not record.get("unit"):
             record = {**record, "unit": unit}
+        state = _integrity_gated_state(
+            record,
+            state,
+            growth=evidence_key in {"transaction_growth_pct", "order_growth_pct", "shipper_growth_pct"},
+        )
         checks.append(_check(
             key=key,
             label=label,
@@ -492,10 +671,14 @@ def _build_checks(evidence: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
 
     profitability = evidence.get("profitability_improved")
     profitability_value = (profitability or {}).get("value")
-    profitability_state = (
-        STATE_UNKNOWN if profitability is None
-        else STATE_GREEN if profitability_value is True
-        else STATE_RED
+    profitability_state = _integrity_gated_state(
+        profitability,
+        (
+            STATE_UNKNOWN if profitability is None
+            else STATE_GREEN if profitability_value is True
+            else STATE_RED
+        ),
+        growth=True,
     )
     checks.append(_check(
         key="profitability",
@@ -513,7 +696,10 @@ def _build_checks(evidence: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
         label="Guidance",
         category="forward_outlook",
         group="guidance",
-        state=_guidance_state((guidance or {}).get("value")),
+        state=_integrity_gated_state(
+            guidance,
+            _guidance_state((guidance or {}).get("value")),
+        ),
         evidence=guidance,
         note="Maintained=GREEN; raised=VERY GREEN; raised with acceleration=EXTREME; cut/withdrawn=RED.",
         critical=True,
@@ -525,13 +711,18 @@ def _build_checks(evidence: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
         label="Premarket reaction",
         category="market_confirmation",
         group="premarket_reaction",
-        state=_premarket_state(num("premarket_gap_pct")),
+        state=_integrity_gated_state(gap, _premarket_state(num("premarket_gap_pct"))),
         evidence=gap,
         note="+3%=GREEN; +5%=VERY GREEN; +10%=EXTREME; +20% or more is chase risk and does not pass.",
     ))
 
     rvol = evidence.get("relative_volume")
+    price_change_record = evidence.get("price_change_pct")
     volume_state, volume_note = _volume_state(num("relative_volume"), num("price_change_pct"))
+    volume_state = _integrity_gated_state(rvol, volume_state)
+    if is_confirmed(rvol) and not is_confirmed(price_change_record):
+        volume_state = _integrity_gated_state(price_change_record, STATE_PENDING)
+        volume_note = "Relative volume cannot confirm direction until synchronized price-change evidence is confirmed."
     checks.append(_check(
         key="relative_volume",
         label="Relative volume with price confirmation",
@@ -551,6 +742,8 @@ def _build_checks(evidence: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
     ):
         if live_price is None:
             state = STATE_UNKNOWN
+        elif not is_confirmed(live):
+            state = _integrity_gated_state(live, STATE_PENDING)
         elif live_price < level:
             state = STATE_NEUTRAL
         elif volume_state not in _PASS_STATES:
@@ -587,7 +780,7 @@ def _group_summary(checks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         fundamental_status = "confirmed"
     elif fundamental_reds:
         fundamental_status = "rejected"
-    elif any(item["state"] == STATE_UNKNOWN for item in fundamentals):
+    elif any(item["state"] in {STATE_UNKNOWN, STATE_UNVERIFIED, STATE_CONFLICT} for item in fundamentals):
         fundamental_status = "pending"
     else:
         fundamental_status = "not_confirmed"
@@ -598,13 +791,13 @@ def _group_summary(checks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             return "confirmed"
         if item["state"] in {STATE_RED, STATE_CHASE_RISK}:
             return "rejected"
-        if item["state"] in {STATE_UNKNOWN, STATE_PENDING}:
+        if item["state"] in {STATE_UNKNOWN, STATE_PENDING, STATE_UNVERIFIED, STATE_CONFLICT}:
             return "pending"
         return "not_confirmed"
 
     path_rows = [by_key[key] for key in ("breakout_950", "breakout_1000", "breakout_1100")]
     path_status = "confirmed" if any(item["passed"] for item in path_rows) else (
-        "pending" if any(item["state"] in {STATE_UNKNOWN, STATE_PENDING} for item in path_rows)
+        "pending" if any(item["state"] in {STATE_UNKNOWN, STATE_PENDING, STATE_UNVERIFIED, STATE_CONFLICT} for item in path_rows)
         else "not_confirmed"
     )
     return [
@@ -636,8 +829,10 @@ def _decision(checks: List[Dict[str, Any]], groups: List[Dict[str, Any]]) -> Dic
     confirmed = sum(bool(item["passed"]) for item in checks)
     known = sum(item["state"] != STATE_UNKNOWN for item in checks)
     unknown = len(checks) - known
-    pending = sum(item["state"] == STATE_PENDING for item in checks)
+    pending = sum(item["state"] in {STATE_PENDING, STATE_UNVERIFIED, STATE_CONFLICT} for item in checks)
     red = sum(item["state"] == STATE_RED for item in checks)
+    evidence_conflicts = sum(item["state"] == STATE_CONFLICT for item in checks)
+    missing_evidence = sum(item["state"] in {STATE_UNKNOWN, STATE_UNVERIFIED} for item in checks)
     independent_confirmed = sum(item["status"] == "confirmed" for item in groups)
     market_confirmed = sum(
         item["status"] == "confirmed"
@@ -648,7 +843,7 @@ def _decision(checks: List[Dict[str, Any]], groups: List[Dict[str, Any]]) -> Dic
     critical_rejected = [item["key"] for item in critical if item["state"] == STATE_RED]
     critical_pending = [
         item["key"] for item in critical
-        if item["state"] in {STATE_UNKNOWN, STATE_PENDING, STATE_NEUTRAL}
+        if item["state"] in {STATE_UNKNOWN, STATE_PENDING, STATE_NEUTRAL, STATE_UNVERIFIED, STATE_CONFLICT}
     ]
     chase_risk = by_key["premarket_gap"]["state"] == STATE_CHASE_RISK
 
@@ -672,7 +867,10 @@ def _decision(checks: List[Dict[str, Any]], groups: List[Dict[str, Any]]) -> Dic
         and known >= 7
     )
 
-    if known == 0:
+    if evidence_conflicts:
+        decision = "no_trade"
+        label = "NO TRADE — unresolved evidence conflicts block scoring."
+    elif known == 0:
         decision = "data_unavailable"
         label = "Market and event evidence unavailable; no directional conclusion."
     elif critical_rejected or chase_risk:
@@ -700,6 +898,9 @@ def _decision(checks: List[Dict[str, Any]], groups: List[Dict[str, Any]]) -> Dic
         "unknown": unknown,
         "pending": pending,
         "red": red,
+        "evidence_conflicts": evidence_conflicts,
+        "missing_evidence": missing_evidence,
+        "trade_action": "NO_TRADE" if evidence_conflicts or critical_pending or critical_rejected or chase_risk or known == 0 else "RESEARCH_ONLY",
         "raw_box_band": raw_band,
         "independent_confirmations": independent_confirmed,
         "independent_confirmation_total": len(groups),
@@ -711,6 +912,118 @@ def _decision(checks: List[Dict[str, Any]], groups: List[Dict[str, Any]]) -> Dic
     }
 
 
+_INTERROGATION_QUESTIONS: Tuple[Tuple[str, str, Tuple[str, ...]], ...] = (
+    ("market_data", "Is the quote from an identified provider?", ("premarket_gap",)),
+    ("market_data", "Is the provider timestamp present?", ("premarket_gap",)),
+    ("market_data", "Is observation time distinct from ingestion time?", ("premarket_gap",)),
+    ("market_data", "Is the previous close synchronized?", ("premarket_gap",)),
+    ("market_data", "Is currency identified?", ("premarket_gap",)),
+    ("market_data", "Is price unit identified?", ("premarket_gap",)),
+    ("market_data", "Is the premarket gap calculation documented?", ("premarket_gap",)),
+    ("market_data", "Is the live price independently confirmed?", ("breakout_950",)),
+    ("market_data", "Is relative volume fresh?", ("relative_volume",)),
+    ("market_data", "Does price direction confirm volume?", ("relative_volume",)),
+    ("earnings", "Is official Q2 revenue actual confirmed?", ("revenue_beat",)),
+    ("earnings", "Is revenue consensus timestamped and sourced?", ("revenue_beat",)),
+    ("earnings", "Is the revenue beat calculation reproducible?", ("revenue_beat",)),
+    ("earnings", "Is official adjusted EPS actual confirmed?", ("eps_beat",)),
+    ("earnings", "Is adjusted EPS consensus sourced?", ("eps_beat",)),
+    ("earnings", "Are GAAP and adjusted bases kept separate?", ("eps_beat",)),
+    ("earnings", "Is the reporting period exactly 2026-Q2?", ("revenue_beat", "eps_beat")),
+    ("earnings", "Is the source publication time captured?", ("revenue_beat", "eps_beat")),
+    ("business_performance", "Is transaction-service growth confirmed?", ("transaction_growth",)),
+    ("business_performance", "Is transaction growth calculated against a comparable period?", ("transaction_growth",)),
+    ("business_performance", "Is order growth confirmed?", ("order_growth",)),
+    ("business_performance", "Is order growth calculated against a comparable period?", ("order_growth",)),
+    ("business_performance", "Is shipper growth confirmed?", ("shipper_growth",)),
+    ("business_performance", "Is shipper growth calculated against a comparable period?", ("shipper_growth",)),
+    ("business_performance", "Is profitability improvement confirmed on a consistent basis?", ("profitability",)),
+    ("business_performance", "Are non-comparable business metrics excluded?", ("profitability",)),
+    ("forward_outlook", "Is official Q3 guidance confirmed?", ("guidance",)),
+    ("forward_outlook", "Is guidance consensus sourced and timestamped?", ("guidance",)),
+    ("forward_outlook", "Is guidance currency and basis explicit?", ("guidance",)),
+    ("forward_outlook", "Is guidance change versus prior outlook reproducible?", ("guidance",)),
+    ("market_reaction", "Is premarket reaction confirmed after the release?", ("premarket_gap",)),
+    ("market_reaction", "Is live volume at least 2x while price advances?", ("relative_volume",)),
+    ("market_reaction", "Has $9.50 cleared with volume confirmation?", ("breakout_950",)),
+    ("market_reaction", "Has $10.00 cleared with volume confirmation?", ("breakout_1000",)),
+    ("market_reaction", "Has $11.00 cleared with at least 3x volume?", ("breakout_1100",)),
+    ("historical_comparison", "Are four prior earnings events available point-in-time?", ()),
+    ("historical_comparison", "Are prior-event metrics methodologically comparable?", ()),
+    ("historical_comparison", "Is historical similarity explicitly uncalibrated?", ()),
+    ("risk", "Are all data conflicts resolved?", ()),
+    ("risk", "Is an explicit invalidation and NO TRADE path present?", ()),
+)
+
+
+def _pre_trade_interrogation(
+    checks: List[Dict[str, Any]],
+    decision: Dict[str, Any],
+    conflicts: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    by_key = {item["key"]: item for item in checks}
+    questions: List[Dict[str, Any]] = []
+    for number, (category, question, keys) in enumerate(_INTERROGATION_QUESTIONS, 1):
+        rows = [by_key[key] for key in keys if key in by_key]
+        if number == 39:
+            status, answer = (CONFIRMED, True) if not conflicts else (VERIFIED_CONFLICT, False)
+        elif number == 40:
+            status, answer = CONFIRMED, True
+        elif not rows:
+            status, answer = MISSING, None
+        elif any(item["evidence_summary"]["status"] == VERIFIED_CONFLICT for item in rows):
+            status, answer = VERIFIED_CONFLICT, None
+        elif all(item["evidence_summary"]["status"] == CONFIRMED for item in rows):
+            status, answer = CONFIRMED, all(item["passed"] for item in rows)
+        elif any(item["evidence_summary"]["status"] == PENDING for item in rows):
+            status, answer = PENDING, None
+        else:
+            status, answer = UNVERIFIED, None
+        questions.append({
+            "number": number,
+            "category": category,
+            "question": question,
+            "answer": answer,
+            "status": status,
+            "signal_keys": list(keys),
+            "sources": sorted({
+                item["evidence_summary"].get("source") for item in rows
+                if item["evidence_summary"].get("source")
+            }),
+            "missing_chain_fields": sorted({
+                field for item in rows for field in item["evidence_summary"].get("missing_chain_fields", [])
+            }),
+        })
+    verified = sum(item["status"] == CONFIRMED for item in questions)
+    missing = sum(item["status"] in {MISSING, UNVERIFIED, PENDING} for item in questions)
+    market_confirmed = decision.get("market_confirmations", 0)
+    return {
+        "question_count": len(questions),
+        "questions": questions,
+        "core_conditions_verified": verified,
+        "historical_similarity": {
+            "status": MISSING,
+            "events_required": 4,
+            "events_verified": 0,
+            "calibrated": False,
+        },
+        "market_confirmation": {
+            "confirmed_groups": market_confirmed,
+            "status": CONFIRMED if market_confirmed >= 2 else UNVERIFIED,
+        },
+        "invalidation": "Unresolved critical evidence, any DATA_CONFLICT, weak price reaction, or unconfirmed volume => NO TRADE.",
+        "scenarios": {
+            "base": "Target not confirmed until critical earnings and market evidence are confirmed.",
+            "bull": "Requires confirmed earnings/guidance plus at least two independent market confirmations.",
+            "extreme": "Requires confirmed extreme fundamentals, synchronized reaction, and advancing volume; chase risk still blocks entry.",
+        },
+        "confidence": {"available": False, "calibrated": False, "reason": "No validated probability calibration."},
+        "conflict_count": len(conflicts),
+        "missing_evidence_count": missing,
+        "trade_action": decision.get("trade_action", "NO_TRADE"),
+    }
+
+
 def build_ymm_12_checklist(
     values: Optional[Dict[str, Any]] = None,
     *,
@@ -719,6 +1032,7 @@ def build_ymm_12_checklist(
 ) -> Dict[str, Any]:
     """Pure scenario evaluation from direct values or normalized evidence."""
     normalized = dict(evidence or _normalize_direct_values(values))
+    conflicts = conflict_records(normalized)
     checks = _build_checks(normalized)
     groups = _group_summary(checks)
     decision = _decision(checks, groups)
@@ -741,6 +1055,8 @@ def build_ymm_12_checklist(
         **decision,
         "groups": groups,
         "checks": checks,
+        "data_conflicts": conflicts,
+        "pre_trade_interrogation": _pre_trade_interrogation(checks, decision, conflicts),
         "source_status": source_status or {},
         "disclaimer": (
             "Uncalibrated scenario checklist, not a probability or trading instruction. "
@@ -756,7 +1072,7 @@ def auto_fill_ymm_12(
 ) -> Dict[str, Any]:
     """Merge safe live-market evidence with validated post-release evidence."""
     auto_evidence, sources = fetch_auto_evidence(symbol)
-    merged = {**auto_evidence, **(operator_evidence or {})}
+    merged = merge_evidence_sets(auto_evidence, operator_evidence or {})
     return build_ymm_12_checklist(evidence=merged, source_status=sources)
 
 

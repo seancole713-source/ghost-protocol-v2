@@ -42,13 +42,33 @@ def _record(value, *, unit=None):
 
 
 def _payload(**values):
+    growth_keys = {
+        "transaction_growth_pct", "order_growth_pct", "shipper_growth_pct",
+        "profitability_improved",
+    }
+    consensus_keys = {"revenue_actual_usd_m", "eps_adjusted_ads_usd", "guidance_outcome"}
+    evidence = {}
+    for key, value in values.items():
+        record = {
+            "value": value,
+            "source": SOURCE,
+            "as_of_ts": AFTER_RELEASE,
+            "source_timestamp": AFTER_RELEASE,
+            "observation_timestamp": AFTER_RELEASE,
+            "unit": "USD millions" if key == "revenue_actual_usd_m" else "reported unit",
+            "currency": "USD" if key in {"revenue_actual_usd_m", "eps_adjusted_ads_usd"} else "N/A",
+            "basis": "adjusted" if key == "eps_adjusted_ads_usd" else "reported",
+            "calculation_methodology": "operator-transcribed claim; pending independent reconciliation",
+        }
+        if key in consensus_keys:
+            record["expected_value"] = 0.0
+        if key in growth_keys:
+            record["comparable_prior_period_value"] = 0.0
+        evidence[key] = record
     return {
         "scenario_id": bc.SCENARIO["scenario_id"],
         "period": bc.SCENARIO["period"],
-        "evidence": {
-            key: {"value": value, "source": SOURCE, "as_of_ts": AFTER_RELEASE}
-            for key, value in values.items()
-        },
+        "evidence": evidence,
     }
 
 
@@ -117,6 +137,21 @@ def test_breakout_requires_advancing_volume_confirmation():
     breakouts = [c for c in out["checks"] if c["group"] == "price_path"]
     assert volume["state"] == "red"
     assert all(c["state"] == "pending_confirmation" for c in breakouts)
+
+
+def test_confirmed_rvol_requires_confirmed_price_direction():
+    records = bc._normalize_direct_values({
+        "live_price": 11.10,
+        "relative_volume": 5.0,
+        "price_change_pct": 8.0,
+    })
+    records["price_change_pct"]["status"] = "UNVERIFIED"
+    records["price_change_pct"]["confidence_status"] = "UNVERIFIED"
+    out = bc.build_ymm_12_checklist(evidence=records)
+    volume = next(c for c in out["checks"] if c["key"] == "relative_volume")
+    assert volume["state"] == "unverified"
+    assert volume["passed"] is False
+    assert "price-change evidence is confirmed" in volume["note"]
 
 
 def test_threshold_gaps_and_strict_growth_are_honest():
@@ -226,6 +261,10 @@ def test_auto_fetch_never_uses_latest_quarter_earnings(monkeypatch):
     assert "revenue_actual_usd_m" not in evidence
     assert "eps_adjusted_ads_usd" not in evidence
     assert sources["earnings"]["reason"] == "event_safe_post_release_evidence_required"
+    assert evidence["premarket_gap_pct"]["status"] == "UNVERIFIED"
+    assert evidence["price_change_pct"]["status"] == "UNVERIFIED"
+    assert evidence["relative_volume"]["status"] == "UNVERIFIED"
+    assert evidence["live_price"]["status"] == "CONFIRMED"
 
 
 def test_stale_rvol_snapshot_is_not_used(monkeypatch):
@@ -278,7 +317,7 @@ def test_get_route_returns_honest_unavailable_state(monkeypatch):
     assert body["symbol"] == "YMM"
 
 
-def test_post_route_accepts_valid_sourced_operator_evidence(monkeypatch):
+def test_post_route_keeps_operator_claims_unverified_and_non_scoring(monkeypatch):
     monkeypatch.setattr(bc, "_now", lambda: AFTER_RELEASE + 60)
     auto = {
         "premarket_gap_pct": _record(8.0, unit="percent"),
@@ -300,8 +339,17 @@ def test_post_route_accepts_valid_sourced_operator_evidence(monkeypatch):
     response = _client().post("/api/bull-run/checklist/YMM/evaluate", json=payload)
     assert response.status_code == 200
     body = response.json()
-    assert body["decision"] == "strong"
-    assert body["confirmed"] == 12
+    assert body["decision"] != "strong"
+    assert body["confirmed"] == 0
+    assert body["trade_action"] == "NO_TRADE"
+    assert all(
+        item["evidence_summary"]["status"] != "CONFIRMED"
+        for item in body["checks"]
+        if item["key"] in {
+            "revenue_beat", "eps_beat", "transaction_growth", "order_growth",
+            "shipper_growth", "profitability", "guidance",
+        }
+    )
 
 
 def test_post_route_rejects_ambiguous_operator_input(monkeypatch):

@@ -24,12 +24,23 @@ def _ct_ts(date_key: str, hour: int, minute: int) -> int:
     ).timestamp())
 
 
-def _record(value, *, ts=None, provenance="auto_market"):
+def _record(value, *, ts=None, provenance="auto_market", status="CONFIRMED", unit="reported unit"):
+    observed_at = ts or _ct_ts("2026-08-19", 8, 45)
     return {
         "value": value,
+        "actual_value": value,
+        "expected_value": 0.0,
         "source": "test",
-        "as_of_ts": ts or _ct_ts("2026-08-19", 8, 45),
-        "unit": None,
+        "as_of_ts": observed_at,
+        "source_timestamp": observed_at,
+        "observation_timestamp": observed_at,
+        "reporting_period": "2026-Q2",
+        "currency": "N/A",
+        "unit": unit,
+        "basis": "reported",
+        "calculation_methodology": "test fixture",
+        "status": status,
+        "confidence_status": status,
         "provenance": provenance,
     }
 
@@ -80,6 +91,28 @@ def test_ensure_tables_creates_snapshot_and_resolution_ledgers():
     assert "CREATE TABLE IF NOT EXISTS ghost_bull_run_scenario_snapshots" in sql
     assert "UNIQUE (scenario_id, scoring_version, slot_key)" in sql
     assert "CREATE TABLE IF NOT EXISTS ghost_bull_run_scenario_resolutions" in sql
+    assert "CREATE TABLE IF NOT EXISTS ghost_bull_run_evidence_claims" in sql
+    assert "CREATE TABLE IF NOT EXISTS ghost_bull_run_evidence_conflicts" in sql
+
+
+def test_startup_migration_persists_quote_training_conflict_idempotently():
+    cur = _Cursor()
+    bl.ensure_bull_run_tables(cur)
+    claim_inserts = [
+        params for sql, params in zip(cur.executed, cur.params)
+        if "INSERT INTO ghost_bull_run_evidence_claims" in sql
+    ]
+    conflict_inserts = [
+        params for sql, params in zip(cur.executed, cur.params)
+        if "INSERT INTO ghost_bull_run_evidence_conflicts" in sql
+    ]
+    assert sorted(params[8] for params in claim_inserts) == ["8.79", "9.04"]
+    assert all(params[9] == "UNVERIFIED" for params in claim_inserts)
+    assert len(conflict_inserts) == 1
+    conflict = json.loads(conflict_inserts[0][7])
+    assert conflict["record_type"] == "DATA_CONFLICT"
+    assert conflict["resolution_status"] == "UNRESOLVED"
+    assert {conflict["value_a"], conflict["value_b"]} == {8.79, 9.04}
 
 
 def test_capture_phase_persists_data_unavailable(monkeypatch):
@@ -137,9 +170,11 @@ def test_premarket_and_operator_evidence_are_sticky():
     }
     transient = {"live_price": _record(9.80), "relative_volume": _record(3.0)}
     cur = _Cursor(fetchall_rows=[
-        (json.dumps(premarket),),
-        (json.dumps(operator),),
-        (json.dumps(transient),),
+        ("premarket_gap_pct", json.dumps(premarket["premarket_gap_pct"])),
+        ("guidance_outcome", json.dumps(operator["guidance_outcome"])),
+        ("revenue_actual_usd_m", json.dumps(operator["revenue_actual_usd_m"])),
+        ("live_price", json.dumps(transient["live_price"])),
+        ("relative_volume", json.dumps(transient["relative_volume"])),
     ])
     preserved = bl._load_preserved_evidence_cur(cur)
     assert preserved["premarket_gap_pct"]["value"] == 8.0
@@ -149,22 +184,37 @@ def test_premarket_and_operator_evidence_are_sticky():
     assert "relative_volume" not in preserved
 
 
-def test_preserved_evidence_uses_greatest_valid_as_of_timestamp():
+def test_preserved_evidence_conflicts_instead_of_latest_value_winning():
     newer = _record("raised", ts=_ct_ts("2026-08-19", 7, 0), provenance=bc.OPERATOR_PROVENANCE)
     older_inserted_later = _record(
         "maintained",
         ts=_ct_ts("2026-08-19", 6, 30),
         provenance=bc.OPERATOR_PROVENANCE,
     )
-    invalid = dict(newer)
-    invalid.pop("as_of_ts")
     cur = _Cursor(fetchall_rows=[
-        (json.dumps({"guidance_outcome": newer}),),
-        (json.dumps({"guidance_outcome": older_inserted_later}),),
-        (json.dumps({"guidance_outcome": invalid}),),
+        ("guidance_outcome", json.dumps(newer)),
+        ("guidance_outcome", json.dumps(older_inserted_later)),
     ])
     preserved = bl._load_preserved_evidence_cur(cur)
-    assert preserved["guidance_outcome"]["value"] == "raised"
+    assert preserved["guidance_outcome"]["status"] == "VERIFIED_CONFLICT"
+    assert len(preserved["guidance_outcome"]["claims"]) == 2
+    assert len(preserved["guidance_outcome"]["data_conflict"]) == 1
+
+
+def test_preserved_evidence_falls_back_to_legacy_snapshots():
+    legacy_gap = _record(8.0, status="UNVERIFIED")
+
+    class LegacyCursor(_Cursor):
+        def fetchall(self):
+            if "FROM ghost_bull_run_evidence_claims" in self.executed[-1]:
+                return []
+            return [(json.dumps({"premarket_gap_pct": legacy_gap}),)]
+
+    cur = LegacyCursor()
+    preserved = bl._load_preserved_evidence_cur(cur)
+    assert preserved["premarket_gap_pct"]["value"] == 8.0
+    assert preserved["premarket_gap_pct"]["status"] == "UNVERIFIED"
+    assert "FROM ghost_bull_run_scenario_snapshots" in cur.executed[-1]
 
 
 def test_current_report_merges_preserved_premarket(monkeypatch):
@@ -358,6 +408,13 @@ def test_operator_snapshot_route_persists_validated_evidence(monkeypatch):
                 "value": "raised",
                 "source": "https://ir.fulltruckalliance.com/2026-08-19-Full-Truck-Alliance-Q2-Results",
                 "as_of_ts": bc._EVENT_EVIDENCE_NOT_BEFORE_TS + 300,
+                "source_timestamp": bc._EVENT_EVIDENCE_NOT_BEFORE_TS + 300,
+                "observation_timestamp": bc._EVENT_EVIDENCE_NOT_BEFORE_TS + 300,
+                "unit": "categorical outlook",
+                "currency": "N/A",
+                "basis": "reported",
+                "calculation_methodology": "operator-transcribed claim",
+                "expected_value": "maintained",
             }
         },
     }
