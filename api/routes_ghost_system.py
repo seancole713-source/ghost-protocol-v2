@@ -501,6 +501,26 @@ def squeeze_hunter_scan_endpoint(limit: int = 20):
         return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
 
 
+@router.get("/api/bull-run/checklist/{symbol}")
+def bull_run_checklist_endpoint(symbol: str):
+    """Evidence-gated bull-run checklist (e.g. YMM $12).
+
+    Read-only intelligence. Auto-fills the auto-computable checks (revenue/EPS
+    surprise, premarket gap, relative volume, breakout levels) from free data;
+    company-specific KPIs (transaction/order/shipper growth, profitability,
+    guidance) are left UNKNOWN and must be supplied by the operator — they are
+    never fabricated. Missing evidence never counts toward the target.
+    """
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        return JSONResponse({"ok": False, "error": "symbol required"}, status_code=400)
+    try:
+        from core.bull_run_checklist import auto_fill_ymm_12
+        return auto_fill_ymm_12(sym)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
 @router.get("/api/squeeze/hunter/ledger")
 def squeeze_hunter_ledger_endpoint(symbol: str = "", limit: int = 50):
     """Read the Squeeze Hunter's point-in-time audit trail.
