@@ -58,8 +58,9 @@ _RESOLUTION_DATES = (
     "2026-08-24",
     "2026-08-25",
 )
+# Receipt time of the comparison request, not either provider's observation time.
 _TRAINING_CONFLICT_CAPTURED_AT = int(
-    datetime(2026, 8, 19, 8, 13, 5, tzinfo=ZoneInfo("UTC")).timestamp()
+    datetime(2026, 8, 19, 13, 13, 5, tzinfo=ZoneInfo("UTC")).timestamp()
 )
 
 

@@ -1,7 +1,7 @@
 """Tests for immutable bull-run scenario snapshots and outcome resolution."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 from zoneinfo import ZoneInfo
 
@@ -106,9 +106,15 @@ def test_startup_migration_persists_quote_training_conflict_idempotently():
         params for sql, params in zip(cur.executed, cur.params)
         if "INSERT INTO ghost_bull_run_evidence_conflicts" in sql
     ]
+    expected_receipt_ts = int(
+        datetime(2026, 8, 19, 13, 13, 5, tzinfo=timezone.utc).timestamp()
+    )
+    assert bl._TRAINING_CONFLICT_CAPTURED_AT == expected_receipt_ts
     assert sorted(params[8] for params in claim_inserts) == ["8.79", "9.04"]
+    assert all(params[11] == expected_receipt_ts for params in claim_inserts)
     assert all(params[9] == "UNVERIFIED" for params in claim_inserts)
     assert len(conflict_inserts) == 1
+    assert conflict_inserts[0][8] == expected_receipt_ts
     conflict = json.loads(conflict_inserts[0][7])
     assert conflict["record_type"] == "DATA_CONFLICT"
     assert conflict["resolution_status"] == "UNRESOLVED"
