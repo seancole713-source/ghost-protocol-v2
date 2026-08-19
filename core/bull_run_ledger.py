@@ -22,6 +22,7 @@ from core.bull_run_checklist import (
     fetch_auto_evidence,
 )
 from core.evidence_integrity import (
+    claims,
     conflict_records,
     merge_evidence_sets,
 )
@@ -209,6 +210,31 @@ def ensure_bull_run_tables(cur) -> None:
         "CREATE INDEX IF NOT EXISTS idx_bull_run_conflicts_signal_time "
         "ON ghost_bull_run_evidence_conflicts (scenario_id, scoring_version, signal_key, captured_at ASC)"
     )
+    # The training claims are immutable; captured_at is receipt metadata and may
+    # be corrected when stronger session evidence establishes the UTC instant.
+    training_claim_ids = [
+        _claim_id("premarket_price", claim)
+        for claim in claims(_TRAINING_QUOTE_CONFLICT["premarket_price"])
+    ]
+    cur.execute(
+        "UPDATE ghost_bull_run_evidence_claims SET captured_at = %s "
+        "WHERE claim_id = ANY(%s) AND captured_at <> %s",
+        (
+            _TRAINING_CONFLICT_CAPTURED_AT,
+            training_claim_ids,
+            _TRAINING_CONFLICT_CAPTURED_AT,
+        ),
+    )
+    for conflict in conflict_records(_TRAINING_QUOTE_CONFLICT):
+        cur.execute(
+            "UPDATE ghost_bull_run_evidence_conflicts SET captured_at = %s "
+            "WHERE conflict_id = %s AND captured_at <> %s",
+            (
+                _TRAINING_CONFLICT_CAPTURED_AT,
+                conflict["conflict_id"],
+                _TRAINING_CONFLICT_CAPTURED_AT,
+            ),
+        )
     _persist_evidence_cur(
         cur,
         _TRAINING_QUOTE_CONFLICT,

@@ -109,7 +109,22 @@ def test_startup_migration_persists_quote_training_conflict_idempotently():
     expected_receipt_ts = int(
         datetime(2026, 8, 19, 13, 13, 5, tzinfo=timezone.utc).timestamp()
     )
+    claim_corrections = [
+        params for sql, params in zip(cur.executed, cur.params)
+        if "UPDATE ghost_bull_run_evidence_claims SET captured_at" in sql
+    ]
+    conflict_corrections = [
+        params for sql, params in zip(cur.executed, cur.params)
+        if "UPDATE ghost_bull_run_evidence_conflicts SET captured_at" in sql
+    ]
     assert bl._TRAINING_CONFLICT_CAPTURED_AT == expected_receipt_ts
+    assert len(claim_corrections) == 1
+    assert claim_corrections[0][0] == expected_receipt_ts
+    assert len(claim_corrections[0][1]) == 2
+    assert claim_corrections[0][2] == expected_receipt_ts
+    assert len(conflict_corrections) == 1
+    assert conflict_corrections[0][0] == expected_receipt_ts
+    assert conflict_corrections[0][2] == expected_receipt_ts
     assert sorted(params[8] for params in claim_inserts) == ["8.79", "9.04"]
     assert all(params[11] == expected_receipt_ts for params in claim_inserts)
     assert all(params[9] == "UNVERIFIED" for params in claim_inserts)
