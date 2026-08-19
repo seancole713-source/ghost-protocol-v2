@@ -154,6 +154,33 @@ def ensure_hunter_tables(cur) -> None:
     )
 
 
+def purge_invalid_hunter_samples(cur) -> int:
+    """One-time cleanup of invalid samples written by the pre-fix issuance path.
+
+    Commit 628f98e persisted evaluations with no reference price and marked them
+    terminal (`missing_reference_price`). Those are not calibration samples and
+    must not pollute future calibration queries. Idempotent — deletes nothing
+    once the invalid rows are gone. Returns the number of evaluation rows
+    deleted. Called once at startup (core.db._migrate_schema), not per-request.
+    """
+    cur.execute(
+        """
+        DELETE FROM ghost_squeeze_hunter_resolutions
+        WHERE evaluation_id IN (
+            SELECT id FROM ghost_squeeze_hunter_evaluations
+            WHERE reference_price IS NULL OR reference_price <= 0
+        )
+        """
+    )
+    cur.execute(
+        """
+        DELETE FROM ghost_squeeze_hunter_evaluations
+        WHERE reference_price IS NULL OR reference_price <= 0
+        """
+    )
+    return cur.rowcount
+
+
 def log_hunter_evaluation(
     *,
     symbol: str,

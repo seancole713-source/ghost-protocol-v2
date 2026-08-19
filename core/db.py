@@ -356,10 +356,14 @@ def _migrate_schema():
     except Exception as e:
         LOGGER.warning("Daily report log tables: " + str(e)[:80])
     try:
-        from core.squeeze_hunter_ledger import ensure_hunter_tables
+        from core.squeeze_hunter_ledger import ensure_hunter_tables, purge_invalid_hunter_samples
         with db_conn() as conn:
             cur = conn.cursor()
             ensure_hunter_tables(cur)
+            purged = purge_invalid_hunter_samples(cur)
+            conn.commit()
+            if purged:
+                LOGGER.info("Squeeze Hunter: purged %s invalid (no-reference) samples", purged)
     except Exception as e:
         LOGGER.warning("Squeeze Hunter ledger tables: " + str(e)[:80])
     LOGGER.info("Schema migration complete")

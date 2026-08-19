@@ -135,6 +135,18 @@ def test_ensure_hunter_tables_runs_migrations():
     assert "ALTER TABLE ghost_squeeze_hunter_resolutions ADD COLUMN IF NOT EXISTS max_favorable_pct" in sqls
 
 
+def test_purge_invalid_hunter_samples():
+    """P0: purge deletes invalid (no-reference) evaluations + their resolutions."""
+    cur = _FakeCursor()
+    cur.rowcount = 104
+    n = hl.purge_invalid_hunter_samples(cur)
+    assert n == 104
+    sqls = " ".join(cur.executed)
+    assert "DELETE FROM ghost_squeeze_hunter_resolutions" in sqls
+    assert "DELETE FROM ghost_squeeze_hunter_evaluations" in sqls
+    assert "reference_price IS NULL OR reference_price <= 0" in sqls
+
+
 def test_resolve_one_computes_returns():
     """Pure resolution: 1/5/14-day returns + hit thresholds + excursions."""
     series = _series(20)
