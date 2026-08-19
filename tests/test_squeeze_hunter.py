@@ -275,6 +275,31 @@ def test_unknown_market_environment_adds_no_score_credit():
     assert sh.explosion_score(factors) == 0.0
 
 
+def test_hunter_qualification_requires_squeeze_fuel_and_independent_evidence():
+    momentum_only = {
+        "stage": "confirmation",
+        "fuel_score": 0,
+        "trigger_score": 20,
+        "confirmation_score": 70,
+    }
+    fuel_only = {
+        "stage": "setup",
+        "fuel_score": 55,
+        "trigger_score": 0,
+        "confirmation_score": 0,
+    }
+    complete_setup = {
+        "stage": "setup",
+        "fuel_score": 55,
+        "trigger_score": 20,
+        "confirmation_score": 0,
+    }
+
+    assert sh.qualifies_hunter_setup(momentum_only) is False
+    assert sh.qualifies_hunter_setup(fuel_only) is False
+    assert sh.qualifies_hunter_setup(complete_setup) is True
+
+
 def test_scheduled_scan_uses_cached_batched_inputs(monkeypatch):
     calls = []
 
