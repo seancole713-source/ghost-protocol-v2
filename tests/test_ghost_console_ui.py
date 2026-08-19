@@ -126,7 +126,9 @@ def test_console_hunter_accessibility_and_mobile_layout():
     assert 'id="hunterList" role="status" aria-live="polite"' in text
     assert "aria-current" in text
     assert "prefers-reduced-motion:reduce" in text
-    assert "@media(max-width:700px){.metric-grid-3col{grid-template-columns:1fr}" in text
+    assert "@media(max-width:700px){html{scroll-behavior:auto}" in text
+    assert "scroll-snap-type:none" in text
+    assert ".app{grid-template-columns:minmax(0,1fr);width:100%;max-width:100%}" in text
     assert 'label class="sr-only" for="poolInput"' in text
 
 
