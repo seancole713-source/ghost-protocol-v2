@@ -1,282 +1,772 @@
-"""core/bull_run_checklist.py — evidence-gated bull-run checklist.
+"""Evidence-gated YMM earnings bull-case checklist.
 
-Encodes the SPCE/YMM lesson directly: a large price target (e.g. YMM $12, a
-+36% move) is NOT justified by one good number. It requires MULTIPLE
-independent confirmations — revenue beat, EPS beat, growth acceleration,
-profitability, guidance, premarket reaction, volume, and staged breakouts.
+The checklist is a scenario monitor, not a probability model. It keeps the
+operator's twelve visible boxes while preventing correlated observations from
+being counted as independent evidence. Production inputs carry explicit units,
+event identity, period, source, and availability timestamps.
 
-This is a deterministic, evidence-gated engine:
-
-  - Each check is a pure function of an input value vs. thresholds.
-  - A check is GREEN / VERY GREEN / EXTREME / RED / UNKNOWN (missing data).
-  - UNKNOWN is NOT a pass — missing evidence never counts toward the target.
-  - The composite is a count of confirmed boxes mapped to a decision band.
-
-Two kinds of evidence:
-  - AUTO: revenue/EPS surprise, premarket gap, relative volume, price vs
-    breakout levels — fetched from free data sources.
-  - OPERATOR: company-specific KPIs (transaction-service growth, fulfilled
-    orders, active shippers, profitability, guidance) — these are not in
-    standard free feeds and must be supplied explicitly. They are NEVER
-    fabricated; if absent they are UNKNOWN and do not count.
-
-Read-only intelligence. Never fires a pick or loosens any gate.
+Read-only intelligence. It never fires a pick or changes a trading gate.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+import math
+import time
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
-# ── Check states ───────────────────────────────────────────────────────────
-# A check resolves to one of these. UNKNOWN (missing data) never counts as a pass.
+
 STATE_RED = "red"
+STATE_NEUTRAL = "neutral"
 STATE_GREEN = "green"
 STATE_VERY_GREEN = "very_green"
 STATE_EXTREME = "extreme"
+STATE_CHASE_RISK = "chase_risk"
+STATE_PENDING = "pending_confirmation"
 STATE_UNKNOWN = "unknown"
 
-# States that count as a "confirmed box" toward the target.
 _PASS_STATES = {STATE_GREEN, STATE_VERY_GREEN, STATE_EXTREME}
 
+SCENARIO: Dict[str, Any] = {
+    "scenario_id": "YMM_2026_Q2_12_5D",
+    "scoring_version": "ymm_earnings_bull_case_v2",
+    "symbol": "YMM",
+    "period": "2026-Q2",
+    "event_date": "2026-08-19",
+    "target_price": 12.0,
+    "reference_price": 8.80,
+    "reference_price_date": "2026-08-18",
+    "target_horizon_trading_days": 5,
+    "threshold_source": "operator_spec_2026-08-18",
+    "calibrated": False,
+    "event_source": (
+        "https://ir.fulltruckalliance.com/2026-08-05-Full-Truck-Alliance-Co-Ltd-"
+        "to-Announce-Second-Quarter-2026-Financial-Results-on-Wednesday%2C-August-19%2C-2026"
+    ),
+}
 
-def _f(v: Any) -> Optional[float]:
+_EVENT_EVIDENCE_NOT_BEFORE_TS = int(
+    # Freeze an earliest plausible premarket release window. This blocks prior-
+    # quarter values submitted after midnight but before the scheduled event.
+    datetime(2026, 8, 19, 8, 0, tzinfo=timezone.utc).timestamp()
+)
+_RVOL_MAX_AGE_S = 20 * 60
+_OPERATOR_EVIDENCE_MAX_AGE_S = 24 * 60 * 60
+OPERATOR_PROVENANCE = "operator_submitted_unverified_official_url"
+_OFFICIAL_EVIDENCE_HOSTS = {
+    "ir.fulltruckalliance.com",
+    "sec.gov",
+    "www.sec.gov",
+}
+
+# Explicit production input names prevent raw statement values from being
+# mistaken for USD millions or GAAP EPS from being mixed with adjusted ADS EPS.
+_OPERATOR_INPUTS: Dict[str, Dict[str, Any]] = {
+    "revenue_actual_usd_m": {"kind": "number", "min": 0.0, "max": 5_000.0},
+    "eps_adjusted_ads_usd": {"kind": "number", "min": -10.0, "max": 10.0},
+    "transaction_growth_pct": {"kind": "number", "min": -100.0, "max": 1_000.0},
+    "order_growth_pct": {"kind": "number", "min": -100.0, "max": 1_000.0},
+    "shipper_growth_pct": {"kind": "number", "min": -100.0, "max": 1_000.0},
+    "profitability_improved": {"kind": "bool"},
+    "guidance_outcome": {
+        "kind": "enum",
+        "values": {"withdrawn", "cut", "maintained", "raised", "raised_accelerating"},
+    },
+}
+
+_VALUE_ALIASES = {
+    "revenue_beat": "revenue_actual_usd_m",
+    "eps_beat": "eps_adjusted_ads_usd",
+    "transaction_growth": "transaction_growth_pct",
+    "order_growth": "order_growth_pct",
+    "shipper_growth": "shipper_growth_pct",
+    "profitability": "profitability_improved",
+    "guidance": "guidance_outcome",
+    "premarket_gap": "premarket_gap_pct",
+    "relative_volume": "relative_volume",
+    "breakout_950": "live_price",
+    "breakout_1000": "live_price",
+    "breakout_1100": "live_price",
+}
+
+
+class ChecklistInputError(ValueError):
+    """Raised when supplied scenario evidence is invalid or ambiguous."""
+
+
+class UnsupportedScenarioError(ValueError):
+    """Raised when a symbol has no registered bull-case scenario."""
+
+
+def _now() -> int:
+    return int(time.time())
+
+
+def _f(value: Any) -> Optional[float]:
+    if value is None or isinstance(value, bool):
+        return None
     try:
-        if v is None:
-            return None
-        out = float(v)
-        return out if out == out and out not in (float("inf"), float("-inf")) else None
+        out = float(value)
     except (TypeError, ValueError):
         return None
+    return out if math.isfinite(out) else None
 
 
-def _state_for(value: Optional[float], thresholds: Dict[str, float]) -> str:
-    """Map a value to a state using ordered thresholds.
+def _evidence(
+    value: Any,
+    *,
+    source: str,
+    as_of_ts: Optional[int],
+    unit: Optional[str] = None,
+    provenance: str = "operator",
+) -> Dict[str, Any]:
+    return {
+        "value": value,
+        "source": source,
+        "as_of_ts": int(as_of_ts) if as_of_ts is not None else None,
+        "unit": unit,
+        "provenance": provenance,
+    }
 
-    thresholds maps state -> minimum value (inclusive). States are checked in
-    descending order of strength: extreme, very_green, green, red. A value
-    below the green threshold is RED; a missing value is UNKNOWN.
-    """
-    if value is None:
-        return STATE_UNKNOWN
-    # Descending strength order.
-    order = [STATE_EXTREME, STATE_VERY_GREEN, STATE_GREEN]
-    for st in order:
-        if st in thresholds and value >= thresholds[st]:
-            return st
-    return STATE_RED
 
-
-# ── Generic checklist ──────────────────────────────────────────────────────
-
-def evaluate_check(
+def _check(
     *,
     key: str,
     label: str,
-    value: Optional[float],
-    thresholds: Dict[str, float],
-    note: str = "",
+    category: str,
+    group: str,
+    state: str,
+    evidence: Optional[Dict[str, Any]],
+    note: str,
+    critical: bool = False,
 ) -> Dict[str, Any]:
-    """Evaluate one check. Returns {key, label, value, state, passed, note}."""
-    state = _state_for(value, thresholds)
     return {
         "key": key,
         "label": label,
-        "value": value,
+        "category": category,
+        "group": group,
+        "critical": critical,
+        "value": evidence.get("value") if evidence else None,
         "state": state,
         "passed": state in _PASS_STATES,
         "note": note,
+        "evidence": evidence,
     }
 
 
-def evaluate_checklist(checks: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Aggregate a list of check results into a summary.
+def _numeric_state(
+    value: Optional[float],
+    *,
+    green: float,
+    very_green: Optional[float] = None,
+    extreme: Optional[float] = None,
+    red_below: Optional[float] = None,
+    strict: bool = False,
+) -> str:
+    """Grade a numeric value while preserving neutral bands.
 
-    Returns {confirmed, total, unknown, checks, decision, decision_label}.
+    ``strict=True`` implements language such as ``>30%``. It intentionally does
+    not turn every value below the green threshold red unless a red boundary was
+    explicitly specified.
     """
-    confirmed = sum(1 for c in checks if c.get("passed"))
-    total = len(checks)
-    unknown = sum(1 for c in checks if c.get("state") == STATE_UNKNOWN)
-    decision, label = _decision(confirmed, total)
-    return {
-        "confirmed": confirmed,
-        "total": total,
-        "unknown": unknown,
-        "decision": decision,
-        "decision_label": label,
-        "checks": checks,
+    if value is None:
+        return STATE_UNKNOWN
+    if red_below is not None and value < red_below:
+        return STATE_RED
+
+    passes = (lambda x, threshold: x > threshold) if strict else (lambda x, threshold: x >= threshold)
+    if extreme is not None and passes(value, extreme):
+        return STATE_EXTREME
+    if very_green is not None and passes(value, very_green):
+        return STATE_VERY_GREEN
+    if passes(value, green):
+        return STATE_GREEN
+    return STATE_NEUTRAL
+
+
+def _guidance_state(value: Any) -> str:
+    mapping = {
+        "withdrawn": STATE_RED,
+        "cut": STATE_RED,
+        "maintained": STATE_GREEN,
+        "raised": STATE_VERY_GREEN,
+        "raised_accelerating": STATE_EXTREME,
     }
+    return mapping.get(str(value or "").strip().lower(), STATE_UNKNOWN)
 
 
-def _decision(confirmed: int, total: int) -> tuple:
-    """Map confirmed-box count to a decision band (operator spec).
-
-    - 8+ confirmed → strong bullish setup (target becomes realistic).
-    - 5-7 → moderate (a lower zone is more realistic).
-    - 0-4 → do not assume the target.
-    """
-    if confirmed >= 8:
-        return "strong", "Strong bullish setup — target is a realistic bull case"
-    if confirmed >= 5:
-        return "moderate", "Moderately bullish — a lower zone is more realistic"
-    return "weak", "Do not assume the target — insufficient confirmation"
-
-
-# ── YMM $12 preset ─────────────────────────────────────────────────────────
-
-# Thresholds are the operator's own numbers from the YMM $12 checklist.
-# Each maps state -> minimum value (inclusive). Missing value = UNKNOWN.
-YMM_12_CHECKS = [
-    {
-        "key": "revenue_beat",
-        "label": "Revenue beat",
-        "thresholds": {"green": 470.0, "very_green": 480.0},
-        "note": "Expected ~$463M. GREEN $470M+, VERY GREEN $480M+, RED <$455M.",
-    },
-    {
-        "key": "eps_beat",
-        "label": "EPS beat",
-        "thresholds": {"green": 0.20, "very_green": 0.22},
-        "note": "Expected ~$0.19. GREEN $0.20-0.21, VERY GREEN $0.22+, RED <$0.18.",
-    },
-    {
-        "key": "transaction_growth",
-        "label": "Transaction-service growth",
-        "thresholds": {"green": 30.0, "very_green": 35.0, "extreme": 40.0},
-        "note": "YoY %. GREEN >30%, VERY GREEN >35-40%, EXTREME >40%.",
-    },
-    {
-        "key": "order_growth",
-        "label": "Order growth",
-        "thresholds": {"green": 10.0, "very_green": 15.0, "extreme": 20.0},
-        "note": "YoY %. GREEN >10%, VERY GREEN >15%, EXTREME >20%.",
-    },
-    {
-        "key": "shipper_growth",
-        "label": "Shipper growth",
-        "thresholds": {"green": 10.0, "very_green": 15.0},
-        "note": "YoY %. GREEN >10%, VERY GREEN >15%.",
-    },
-    {
-        "key": "profitability",
-        "label": "Profitability improves",
-        "thresholds": {"green": 1.0},
-        "note": "1 = adjusted net income grows YoY / margin improves; 0 = deteriorates.",
-    },
-    {
-        "key": "guidance",
-        "label": "Guidance",
-        "thresholds": {"green": 1.0, "very_green": 2.0, "extreme": 3.0},
-        "note": "1=maintains, 2=raises, 3=raises + accelerating volume/revenue.",
-    },
-    {
-        "key": "premarket_gap",
-        "label": "Premarket reaction",
-        "thresholds": {"green": 3.0, "very_green": 5.0, "extreme": 10.0},
-        "note": "Gap %. GREEN +3-5%, VERY GREEN +5-10%, EXTREME +10-15%. +20%+ = chase risk.",
-    },
-    {
-        "key": "relative_volume",
-        "label": "Relative volume",
-        "thresholds": {"green": 2.0, "very_green": 3.0, "extreme": 5.0},
-        "note": "2x interesting, 3x strong, 5x+ major confirmation. Must accompany price advance.",
-    },
-    {
-        "key": "breakout_950",
-        "label": "$9.50 breakout",
-        "thresholds": {"green": 9.50},
-        "note": "Price clears $9.50 with volume.",
-    },
-    {
-        "key": "breakout_1000",
-        "label": "$10 breakout",
-        "thresholds": {"green": 10.0},
-        "note": "Price clears $10.",
-    },
-    {
-        "key": "breakout_1100",
-        "label": "$11 breakout",
-        "thresholds": {"green": 11.0},
-        "note": "Price clears $11 with accelerating volume.",
-    },
-]
+def _premarket_state(value: Optional[float]) -> str:
+    if value is None:
+        return STATE_UNKNOWN
+    if value >= 20.0:
+        return STATE_CHASE_RISK
+    if value >= 10.0:
+        return STATE_EXTREME
+    if value >= 5.0:
+        return STATE_VERY_GREEN
+    if value >= 3.0:
+        return STATE_GREEN
+    if value < 0.0:
+        return STATE_RED
+    return STATE_NEUTRAL
 
 
-def build_ymm_12_checklist(values: Optional[Dict[str, Optional[float]]] = None) -> Dict[str, Any]:
-    """Evaluate the YMM $12 bull-run checklist against supplied values.
-
-    `values` maps check key -> numeric value. Missing keys are UNKNOWN (do not
-    count). This is pure and deterministic — no I/O, no fabrication.
-    """
-    v = values or {}
-    checks = []
-    for spec in YMM_12_CHECKS:
-        checks.append(evaluate_check(
-            key=spec["key"],
-            label=spec["label"],
-            value=_f(v.get(spec["key"])),
-            thresholds=spec["thresholds"],
-            note=spec["note"],
-        ))
-    summary = evaluate_checklist(checks)
-    summary["symbol"] = "YMM"
-    summary["target"] = 12.0
-    summary["target_label"] = "$12"
-    summary["disclaimer"] = (
-        "This is a scenario checklist, not a guarantee. A large move requires "
-        "multiple independent confirmations; missing evidence never counts "
-        "toward the target."
+def _volume_state(rvol: Optional[float], price_change_pct: Optional[float]) -> Tuple[str, str]:
+    if rvol is None:
+        return STATE_UNKNOWN, "Relative volume unavailable."
+    if price_change_pct is None:
+        return STATE_PENDING, "Price direction is required before volume can confirm the move."
+    if price_change_pct <= 0:
+        if rvol >= 2.0:
+            return STATE_RED, "Abnormal volume with non-advancing price is distribution, not confirmation."
+        return STATE_NEUTRAL, "Volume is not confirming an advancing move."
+    return (
+        _numeric_state(rvol, green=2.0, very_green=3.0, extreme=5.0),
+        "RVOL counts only while price is advancing.",
     )
-    return summary
 
 
-# ── Auto-fetch layer (free data only) ──────────────────────────────────────
+def _normalize_direct_values(values: Optional[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Compatibility adapter for pure callers and tests; production uses records."""
+    out: Dict[str, Dict[str, Any]] = {}
+    raw = values or {}
+    for key, value in raw.items():
+        canonical = _VALUE_ALIASES.get(key, key)
+        if canonical in ("profitability_improved",) and value in (0, 1):
+            value = bool(value)
+        if canonical == "guidance_outcome" and isinstance(value, (int, float)):
+            value = {1: "maintained", 2: "raised", 3: "raised_accelerating"}.get(int(value))
+        out[canonical] = _evidence(
+            value,
+            source="direct_input",
+            as_of_ts=None,
+            provenance="test_or_internal",
+        )
+    return out
 
-def auto_fill_ymm_12(symbol: str = "YMM") -> Dict[str, Any]:
-    """Auto-populate the auto-computable checks from free data sources.
 
-    Fills: revenue_beat, eps_beat (from earnings surprise), premarket_gap,
-    relative_volume, and breakout levels (from live price). The company-specific
-    KPIs (transaction/order/shipper growth, profitability, guidance) are left
-    UNKNOWN — they must be supplied by the operator and are never fabricated.
-    """
-    values: Dict[str, Optional[float]] = {}
+def validate_operator_payload(
+    symbol: str,
+    payload: Dict[str, Any],
+    *,
+    now_ts: Optional[int] = None,
+) -> Dict[str, Dict[str, Any]]:
+    """Validate explicitly sourced post-release operator evidence."""
+    sym = str(symbol or "").strip().upper()
+    if sym != SCENARIO["symbol"]:
+        raise UnsupportedScenarioError(f"No registered bull-run scenario for {sym or 'blank symbol'}")
+    if not isinstance(payload, dict):
+        raise ChecklistInputError("JSON object required")
+    if payload.get("scenario_id") != SCENARIO["scenario_id"]:
+        raise ChecklistInputError(f"scenario_id must be {SCENARIO['scenario_id']}")
+    if payload.get("period") != SCENARIO["period"]:
+        raise ChecklistInputError(f"period must be {SCENARIO['period']}")
 
-    # Earnings: revenue + EPS actual vs expected.
-    try:
-        from core.earnings_surprise import get_earnings_surprise
-        earn = get_earnings_surprise(symbol)
-        if earn.get("available"):
-            if earn.get("revenue_actual") is not None:
-                values["revenue_beat"] = earn["revenue_actual"]
-            if earn.get("eps_actual") is not None:
-                values["eps_beat"] = earn["eps_actual"]
-    except Exception:
-        pass
+    records = payload.get("evidence")
+    if not isinstance(records, dict) or not records:
+        raise ChecklistInputError("evidence must be a non-empty object")
+    unknown = sorted(set(records) - set(_OPERATOR_INPUTS))
+    if unknown:
+        raise ChecklistInputError(f"unsupported evidence keys: {', '.join(unknown)}")
 
-    # Premarket gap + live price (for breakout levels).
+    now = int(now_ts or _now())
+    normalized: Dict[str, Dict[str, Any]] = {}
+    for key, record in records.items():
+        if not isinstance(record, dict):
+            raise ChecklistInputError(f"{key} must include value, source, and as_of_ts")
+        source = str(record.get("source") or "").strip()
+        if not source.startswith(("https://", "http://")):
+            raise ChecklistInputError(f"{key}.source must be an http(s) evidence URL")
+        source_host = (urlparse(source).hostname or "").lower()
+        if source_host not in _OFFICIAL_EVIDENCE_HOSTS:
+            raise ChecklistInputError(f"{key}.source must be an official FTA IR or SEC URL")
+        if source_host == "ir.fulltruckalliance.com" and "/2026-08-19-" not in source:
+            raise ChecklistInputError(f"{key}.source must identify the 2026-08-19 results release")
+        raw_as_of_ts = record.get("as_of_ts")
+        try:
+            if raw_as_of_ts is None or isinstance(raw_as_of_ts, bool):
+                raise ValueError
+            as_of_ts = int(str(raw_as_of_ts))
+        except (TypeError, ValueError):
+            raise ChecklistInputError(f"{key}.as_of_ts must be Unix seconds") from None
+        if as_of_ts < _EVENT_EVIDENCE_NOT_BEFORE_TS:
+            raise ChecklistInputError(f"{key} predates the {SCENARIO['period']} release window")
+        if as_of_ts > now + 300:
+            raise ChecklistInputError(f"{key}.as_of_ts cannot be in the future")
+        if now - as_of_ts > _OPERATOR_EVIDENCE_MAX_AGE_S:
+            raise ChecklistInputError(f"{key}.as_of_ts is stale")
+
+        spec = _OPERATOR_INPUTS[key]
+        value = record.get("value")
+        if spec["kind"] == "number":
+            numeric = _f(value)
+            if numeric is None or not (spec["min"] <= numeric <= spec["max"]):
+                raise ChecklistInputError(
+                    f"{key}.value must be between {spec['min']} and {spec['max']} in the declared unit"
+                )
+            value = numeric
+        elif spec["kind"] == "bool":
+            if not isinstance(value, bool):
+                raise ChecklistInputError(f"{key}.value must be true or false")
+        elif spec["kind"] == "enum":
+            value = str(value or "").strip().lower()
+            if value not in spec["values"]:
+                allowed = ", ".join(sorted(spec["values"]))
+                raise ChecklistInputError(f"{key}.value must be one of: {allowed}")
+
+        unit = {
+            "revenue_actual_usd_m": "USD millions",
+            "eps_adjusted_ads_usd": "USD per ADS",
+            "transaction_growth_pct": "percent YoY",
+            "order_growth_pct": "percent YoY",
+            "shipper_growth_pct": "percent YoY",
+        }.get(key)
+        normalized[key] = _evidence(
+            value,
+            source=source,
+            as_of_ts=as_of_ts,
+            unit=unit,
+            provenance=OPERATOR_PROVENANCE,
+        )
+    return normalized
+
+
+def fetch_auto_evidence(symbol: str = "YMM") -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Any]]:
+    """Fetch only event-safe market evidence; earnings remain operator-sourced."""
+    sym = str(symbol or "").strip().upper()
+    if sym != SCENARIO["symbol"]:
+        raise UnsupportedScenarioError(f"No registered bull-run scenario for {sym or 'blank symbol'}")
+
+    evidence: Dict[str, Dict[str, Any]] = {}
+    sources: Dict[str, Any] = {
+        "earnings": {
+            "available": False,
+            "reason": "event_safe_post_release_evidence_required",
+            "note": "Latest-quarter free feeds are not period/currency/basis safe for this scenario.",
+        }
+    }
+
     try:
         from core.prices import get_extended_session, get_intraday_session
-        sess = get_extended_session(symbol) or {}
-        if str(sess.get("session") or "").lower() == "premarket":
-            values["premarket_gap"] = _f(sess.get("gap_pct"))
-        intra = get_intraday_session(symbol) or {}
-        price = _f(intra.get("price"))
-        if price:
-            # Breakout checks: the price itself is the value vs the level.
-            values["breakout_950"] = price
-            values["breakout_1000"] = price
-            values["breakout_1100"] = price
-    except Exception:
-        pass
 
-    # Relative volume: from the squeeze radar if the symbol is an active pick.
+        ext = get_extended_session(sym) or {}
+        sources["extended_session"] = {
+            "available": bool(ext),
+            "session": ext.get("session"),
+            "as_of_ts": ext.get("price_as_of_ts"),
+        }
+        ext_ts = ext.get("price_as_of_ts")
+        if (
+            str(ext.get("session") or "").lower() == "premarket"
+            and _f(ext.get("gap_pct")) is not None
+            and ext_ts is not None
+        ):
+            evidence["premarket_gap_pct"] = _evidence(
+                _f(ext.get("gap_pct")),
+                source="core.prices.get_extended_session",
+                as_of_ts=int(ext_ts),
+                unit="percent",
+                provenance="auto_market",
+            )
+
+        intra = get_intraday_session(sym) or {}
+        stale = bool(intra.get("data_stale"))
+        sources["intraday_session"] = {
+            "available": bool(intra) and not stale,
+            "stale": stale,
+            "feed": intra.get("feed"),
+            "as_of_ts": intra.get("price_as_of_ts"),
+        }
+        price_ts = intra.get("price_as_of_ts")
+        if intra and not stale and price_ts is not None:
+            as_of_ts = int(price_ts)
+            live_price = _f(intra.get("price"))
+            price_change = _f(intra.get("change_pct"))
+            if live_price is not None and live_price > 0:
+                evidence["live_price"] = _evidence(
+                    live_price,
+                    source="core.prices.get_intraday_session",
+                    as_of_ts=as_of_ts,
+                    unit="USD",
+                    provenance="auto_market",
+                )
+            if price_change is not None:
+                evidence["price_change_pct"] = _evidence(
+                    price_change,
+                    source="core.prices.get_intraday_session",
+                    as_of_ts=as_of_ts,
+                    unit="percent",
+                    provenance="auto_market",
+                )
+    except Exception as exc:
+        sources["prices"] = {
+            "available": False,
+            "reason": type(exc).__name__,
+        }
+
     try:
         from core.squeeze_monitor import get_squeeze_picks
-        board = get_squeeze_picks() or {}
-        picks = board.get("picks") or []
-        pick = next((p for p in picks if (p.get("symbol") or "").upper() == symbol.upper()), None)
-        if pick and pick.get("rvol") is not None:
-            values["relative_volume"] = _f(pick.get("rvol"))
-    except Exception:
-        pass
 
-    return build_ymm_12_checklist(values)
+        board = get_squeeze_picks() or {}
+        rows = list(board.get("picks") or []) + list(board.get("leaders") or [])
+        row = next((item for item in rows if str(item.get("symbol") or "").upper() == sym), None)
+        rvol = _f((row or {}).get("rvol"))
+        raw_scan_ts = (row or {}).get("as_of_ts") or board.get("last_scan_ts")
+        scan_ts = int(raw_scan_ts) if raw_scan_ts is not None else None
+        fresh = bool(
+            scan_ts is not None
+            and 0 <= _now() - scan_ts <= _RVOL_MAX_AGE_S
+            and not board.get("snapshot_stale")
+        )
+        if rvol is not None and fresh:
+            evidence["relative_volume"] = _evidence(
+                rvol,
+                source="core.squeeze_monitor.get_squeeze_picks",
+                as_of_ts=scan_ts,
+                unit="multiple",
+                provenance="auto_market",
+            )
+        sources["relative_volume"] = {
+            "available": rvol is not None and fresh,
+            "as_of_ts": scan_ts,
+            "reason": (
+                None if rvol is not None and fresh
+                else "stale_radar_snapshot" if rvol is not None
+                else "symbol_not_in_latest_radar"
+            ),
+        }
+    except Exception as exc:
+        sources["relative_volume"] = {
+            "available": False,
+            "reason": type(exc).__name__,
+        }
+    return evidence, sources
+
+
+def _build_checks(evidence: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def num(key: str) -> Optional[float]:
+        return _f((evidence.get(key) or {}).get("value"))
+
+    checks: List[Dict[str, Any]] = []
+    specs = (
+        (
+            "revenue_beat", "Revenue result", "revenue_actual_usd_m", "USD millions",
+            _numeric_state(num("revenue_actual_usd_m"), green=470.0, very_green=480.0, red_below=455.0),
+            "RED below $455M; neutral $455M-$469.99M; GREEN $470M+; VERY GREEN $480M+.", True,
+        ),
+        (
+            "eps_beat", "Adjusted EPS result", "eps_adjusted_ads_usd", "USD per ADS",
+            _numeric_state(num("eps_adjusted_ads_usd"), green=0.20, very_green=0.22, red_below=0.18),
+            "RED below $0.18; neutral $0.18-$0.19; GREEN $0.20+; VERY GREEN $0.22+.", True,
+        ),
+        (
+            "transaction_growth", "Transaction-service growth", "transaction_growth_pct", "percent YoY",
+            _numeric_state(num("transaction_growth_pct"), green=30.0, very_green=35.0, extreme=40.0, strict=True),
+            "GREEN >30%; VERY GREEN >35%; EXTREME >40%.", False,
+        ),
+        (
+            "order_growth", "Order growth", "order_growth_pct", "percent YoY",
+            _numeric_state(num("order_growth_pct"), green=10.0, very_green=15.0, extreme=20.0, strict=True),
+            "GREEN >10%; VERY GREEN >15%; EXTREME >20%.", False,
+        ),
+        (
+            "shipper_growth", "Shipper growth", "shipper_growth_pct", "percent YoY",
+            _numeric_state(num("shipper_growth_pct"), green=10.0, very_green=15.0, strict=True),
+            "GREEN >10%; VERY GREEN >15%.", False,
+        ),
+    )
+    for key, label, evidence_key, unit, state, note, critical in specs:
+        record = evidence.get(evidence_key)
+        if record and not record.get("unit"):
+            record = {**record, "unit": unit}
+        checks.append(_check(
+            key=key,
+            label=label,
+            category="fundamentals",
+            group="fundamentals",
+            state=state,
+            evidence=record,
+            note=note,
+            critical=critical,
+        ))
+
+    profitability = evidence.get("profitability_improved")
+    profitability_value = (profitability or {}).get("value")
+    profitability_state = (
+        STATE_UNKNOWN if profitability is None
+        else STATE_GREEN if profitability_value is True
+        else STATE_RED
+    )
+    checks.append(_check(
+        key="profitability",
+        label="Profitability improves",
+        category="fundamentals",
+        group="fundamentals",
+        state=profitability_state,
+        evidence=profitability,
+        note="Requires explicit YoY adjusted-income or operating-margin confirmation.",
+    ))
+
+    guidance = evidence.get("guidance_outcome")
+    checks.append(_check(
+        key="guidance",
+        label="Guidance",
+        category="forward_outlook",
+        group="guidance",
+        state=_guidance_state((guidance or {}).get("value")),
+        evidence=guidance,
+        note="Maintained=GREEN; raised=VERY GREEN; raised with acceleration=EXTREME; cut/withdrawn=RED.",
+        critical=True,
+    ))
+
+    gap = evidence.get("premarket_gap_pct")
+    checks.append(_check(
+        key="premarket_gap",
+        label="Premarket reaction",
+        category="market_confirmation",
+        group="premarket_reaction",
+        state=_premarket_state(num("premarket_gap_pct")),
+        evidence=gap,
+        note="+3%=GREEN; +5%=VERY GREEN; +10%=EXTREME; +20% or more is chase risk and does not pass.",
+    ))
+
+    rvol = evidence.get("relative_volume")
+    volume_state, volume_note = _volume_state(num("relative_volume"), num("price_change_pct"))
+    checks.append(_check(
+        key="relative_volume",
+        label="Relative volume with price confirmation",
+        category="market_confirmation",
+        group="volume_price_confirmation",
+        state=volume_state,
+        evidence=rvol,
+        note=volume_note,
+    ))
+
+    live = evidence.get("live_price")
+    live_price = num("live_price")
+    for key, label, level, min_volume_state in (
+        ("breakout_950", "$9.50 breakout", 9.50, STATE_GREEN),
+        ("breakout_1000", "$10 breakout", 10.0, STATE_GREEN),
+        ("breakout_1100", "$11 breakout", 11.0, STATE_VERY_GREEN),
+    ):
+        if live_price is None:
+            state = STATE_UNKNOWN
+        elif live_price < level:
+            state = STATE_NEUTRAL
+        elif volume_state not in _PASS_STATES:
+            state = STATE_PENDING
+        elif min_volume_state == STATE_VERY_GREEN and volume_state == STATE_GREEN:
+            state = STATE_PENDING
+        else:
+            state = STATE_GREEN
+        checks.append(_check(
+            key=key,
+            label=label,
+            category="price_progression",
+            group="price_path",
+            state=state,
+            evidence=live,
+            note=(
+                f"Price must clear ${level:.2f} with "
+                + ("RVOL >=3x and advancing price." if level == 11.0 else "RVOL >=2x and advancing price.")
+            ),
+        ))
+    return checks
+
+
+def _group_summary(checks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    by_key = {item["key"]: item for item in checks}
+    fundamental_keys = {
+        "revenue_beat", "eps_beat", "transaction_growth", "order_growth",
+        "shipper_growth", "profitability",
+    }
+    fundamentals = [by_key[key] for key in fundamental_keys]
+    fundamental_passes = sum(bool(item["passed"]) for item in fundamentals)
+    fundamental_reds = sum(item["state"] == STATE_RED for item in fundamentals)
+    if by_key["revenue_beat"]["passed"] and by_key["eps_beat"]["passed"] and fundamental_passes >= 4:
+        fundamental_status = "confirmed"
+    elif fundamental_reds:
+        fundamental_status = "rejected"
+    elif any(item["state"] == STATE_UNKNOWN for item in fundamentals):
+        fundamental_status = "pending"
+    else:
+        fundamental_status = "not_confirmed"
+
+    def single_group(key: str) -> str:
+        item = by_key[key]
+        if item["passed"]:
+            return "confirmed"
+        if item["state"] in {STATE_RED, STATE_CHASE_RISK}:
+            return "rejected"
+        if item["state"] in {STATE_UNKNOWN, STATE_PENDING}:
+            return "pending"
+        return "not_confirmed"
+
+    path_rows = [by_key[key] for key in ("breakout_950", "breakout_1000", "breakout_1100")]
+    path_status = "confirmed" if any(item["passed"] for item in path_rows) else (
+        "pending" if any(item["state"] in {STATE_UNKNOWN, STATE_PENDING} for item in path_rows)
+        else "not_confirmed"
+    )
+    return [
+        {
+            "key": "fundamentals",
+            "status": fundamental_status,
+            "confirmed_checks": fundamental_passes,
+            "required_checks": 4,
+            "note": "Revenue and EPS plus at least two additional fundamental checks are required.",
+        },
+        {"key": "guidance", "status": single_group("guidance"), "confirmation_credit": 1},
+        {"key": "premarket_reaction", "status": single_group("premarket_gap"), "confirmation_credit": 1},
+        {
+            "key": "volume_price_confirmation",
+            "status": single_group("relative_volume"),
+            "confirmation_credit": 1,
+        },
+        {
+            "key": "price_path",
+            "status": path_status,
+            "confirmation_credit": 1,
+            "note": "The three nested breakout boxes contribute at most one independent confirmation.",
+        },
+    ]
+
+
+def _decision(checks: List[Dict[str, Any]], groups: List[Dict[str, Any]]) -> Dict[str, Any]:
+    by_key = {item["key"]: item for item in checks}
+    confirmed = sum(bool(item["passed"]) for item in checks)
+    known = sum(item["state"] != STATE_UNKNOWN for item in checks)
+    unknown = len(checks) - known
+    pending = sum(item["state"] == STATE_PENDING for item in checks)
+    red = sum(item["state"] == STATE_RED for item in checks)
+    independent_confirmed = sum(item["status"] == "confirmed" for item in groups)
+    market_confirmed = sum(
+        item["status"] == "confirmed"
+        for item in groups
+        if item["key"] in {"premarket_reaction", "volume_price_confirmation", "price_path"}
+    )
+    critical = [by_key[key] for key in ("revenue_beat", "eps_beat", "guidance")]
+    critical_rejected = [item["key"] for item in critical if item["state"] == STATE_RED]
+    critical_pending = [
+        item["key"] for item in critical
+        if item["state"] in {STATE_UNKNOWN, STATE_PENDING, STATE_NEUTRAL}
+    ]
+    chase_risk = by_key["premarket_gap"]["state"] == STATE_CHASE_RISK
+
+    raw_band = "strong" if confirmed >= 8 else "moderate" if confirmed >= 5 else "weak"
+    fundamental_group = next(item for item in groups if item["key"] == "fundamentals")
+    strong = (
+        confirmed >= 8
+        and not critical_rejected
+        and not critical_pending
+        and not chase_risk
+        and fundamental_group["status"] == "confirmed"
+        and independent_confirmed >= 4
+        and market_confirmed >= 2
+    )
+    moderate = (
+        confirmed >= 5
+        and not critical_rejected
+        and not critical_pending
+        and not chase_risk
+        and independent_confirmed >= 2
+        and known >= 7
+    )
+
+    if known == 0:
+        decision = "data_unavailable"
+        label = "Market and event evidence unavailable; no directional conclusion."
+    elif critical_rejected or chase_risk:
+        decision = "weak"
+        label = "Critical evidence rejects the $12 bull-case setup."
+    elif strong:
+        decision = "strong"
+        label = "Strong heuristic confirmation; target probability remains uncalibrated."
+    elif moderate:
+        decision = "moderate"
+        label = "Moderate evidence; the $12 target is not confirmed."
+    elif critical_pending or unknown or pending:
+        decision = "pending_evidence"
+        label = "Required evidence is still pending or unavailable."
+    else:
+        decision = "weak"
+        label = "Observed evidence does not confirm the $12 bull case."
+
+    return {
+        "decision": decision,
+        "decision_label": label,
+        "confirmed": confirmed,
+        "total": len(checks),
+        "known": known,
+        "unknown": unknown,
+        "pending": pending,
+        "red": red,
+        "raw_box_band": raw_band,
+        "independent_confirmations": independent_confirmed,
+        "independent_confirmation_total": len(groups),
+        "market_confirmations": market_confirmed,
+        "critical_rejected": critical_rejected,
+        "critical_pending": critical_pending,
+        "chase_risk": chase_risk,
+        "proven_probability": False,
+    }
+
+
+def build_ymm_12_checklist(
+    values: Optional[Dict[str, Any]] = None,
+    *,
+    evidence: Optional[Dict[str, Dict[str, Any]]] = None,
+    source_status: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Pure scenario evaluation from direct values or normalized evidence."""
+    normalized = dict(evidence or _normalize_direct_values(values))
+    checks = _build_checks(normalized)
+    groups = _group_summary(checks)
+    decision = _decision(checks, groups)
+    required_return = (SCENARIO["target_price"] / SCENARIO["reference_price"] - 1.0) * 100.0
+    data_status = (
+        "DATA_UNAVAILABLE" if decision["known"] == 0
+        else "PARTIAL" if decision["unknown"] or decision["pending"]
+        else "AVAILABLE"
+    )
+    return {
+        "ok": True,
+        "symbol": SCENARIO["symbol"],
+        "scenario": {
+            **SCENARIO,
+            "required_return_pct": round(required_return, 2),
+        },
+        "target": SCENARIO["target_price"],
+        "target_label": f"${SCENARIO['target_price']:g}",
+        "data_status": data_status,
+        **decision,
+        "groups": groups,
+        "checks": checks,
+        "source_status": source_status or {},
+        "disclaimer": (
+            "Uncalibrated scenario checklist, not a probability or trading instruction. "
+            "Nested price milestones contribute only one independent confirmation."
+        ),
+    }
+
+
+def auto_fill_ymm_12(
+    symbol: str = "YMM",
+    *,
+    operator_evidence: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """Merge safe live-market evidence with validated post-release evidence."""
+    auto_evidence, sources = fetch_auto_evidence(symbol)
+    merged = {**auto_evidence, **(operator_evidence or {})}
+    return build_ymm_12_checklist(evidence=merged, source_status=sources)
+
+
+__all__ = [
+    "ChecklistInputError",
+    "OPERATOR_PROVENANCE",
+    "UnsupportedScenarioError",
+    "SCENARIO",
+    "auto_fill_ymm_12",
+    "build_ymm_12_checklist",
+    "fetch_auto_evidence",
+    "validate_operator_payload",
+]

@@ -160,6 +160,49 @@ def test_projection_is_not_calibrated():
     assert "NOT statistically calibrated" in proj["disclaimer"]
 
 
+def test_reference_quote_requires_true_observation_timestamp():
+    out = sh.validate_reference_quote(
+        {"price": 12.5, "session": "afterhours", "market_date": "2026-08-03"},
+        issued_ts=1_000,
+    )
+    assert out["valid"] is False
+    assert "missing_price_timestamp" in out["reasons"]
+
+
+def test_reference_quote_accepts_fresh_post_close_observation():
+    out = sh.validate_reference_quote(
+        {
+            "price": 12.5,
+            "price_as_of_ts": 990,
+            "session": "afterhours",
+            "market_date": "2026-08-03",
+            "data_stale": False,
+            "cache_age_s": 10,
+        },
+        issued_ts=1_000,
+    )
+    assert out["valid"] is True
+    assert out["price"] == 12.5
+    assert out["price_as_of_ts"] == 990
+
+
+def test_reference_quote_rejects_stale_or_incompatible_session():
+    out = sh.validate_reference_quote(
+        {
+            "price": 12.5,
+            "price_as_of_ts": 1_000,
+            "session": "premarket",
+            "market_date": "2026-08-03",
+            "data_stale": True,
+        },
+        issued_ts=3_000,
+    )
+    assert out["valid"] is False
+    assert "stale_price" in out["reasons"]
+    assert "provider_marked_stale" in out["reasons"]
+    assert "incompatible_session" in out["reasons"]
+
+
 def test_market_environment_uses_vix():
     """P2: market environment must reflect real VIX, not a constant 50."""
     assert sh.market_environment_score({"label": "risk_off_high_volatility"}) == 20.0

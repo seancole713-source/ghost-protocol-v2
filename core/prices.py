@@ -200,33 +200,59 @@ def _reject_phantom(symbol, price):
     return p, False
 
 
-def _alpaca(symbol):
-    """Real-time stock price from Alpaca — free tier, works on Railway."""
-    # P1-3: circuit breaker gate
-    if not _alpaca_cb.allow():
+def _timestamp_to_epoch(raw) -> Optional[int]:
+    """Normalize provider timestamps to Unix seconds without inventing a time."""
+    if raw is None:
         return None
+    try:
+        if hasattr(raw, "timestamp"):
+            return int(raw.timestamp())
+        if isinstance(raw, (int, float)):
+            value = float(raw)
+            if value > 1e15:
+                value /= 1e9
+            elif value > 1e12:
+                value /= 1e3
+            return int(value)
+        import datetime as _dt
+
+        parsed = _dt.datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=_dt.timezone.utc)
+        return int(parsed.timestamp())
+    except Exception:
+        return None
+
+
+def _alpaca_trade_quote(symbol) -> Tuple[Optional[float], Optional[int]]:
+    """Return Alpaca's latest trade price and provider observation timestamp."""
+    if not _alpaca_cb.allow():
+        return None, None
     try:
         key = os.getenv("ALPACA_KEY_ID", "")
         secret = os.getenv("ALPACA_SECRET_KEY", "")
         if not key or not secret:
-            return None
+            return None, None
         r = requests.get(
             f"https://data.alpaca.markets/v2/stocks/{symbol.upper()}/trades/latest",
             headers={"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret},
             timeout=TIMEOUT,
         )
         if r.status_code == 200:
+            trade = r.json()["trade"]
             _alpaca_cb.record_success()
-            return float(r.json()["trade"]["p"])
-        # 403 = SIP not authorized on free tier (expected, not a real failure)
-        # 404 = no trades for symbol (expected for delisted/thin symbols)
-        # Only count 5xx and 429 as real failures
+            return float(trade["p"]), _timestamp_to_epoch(trade.get("t"))
         if r.status_code >= 500 or r.status_code == 429:
             _alpaca_cb.record_failure()
-        # 4xx (except 429) = client error, not an outage — don't count
     except Exception:
         _alpaca_cb.record_failure()
-    return None
+    return None, None
+
+
+def _alpaca(symbol):
+    """Real-time Alpaca price; retained as a float-only compatibility API."""
+    price, _price_as_of_ts = _alpaca_trade_quote(symbol)
+    return price
 
 
 def _yfinance(symbol):
@@ -369,7 +395,8 @@ def get_extended_session(symbol: str) -> Dict[str, Any]:
     sym = (symbol or "").strip().upper()
     if not sym:
         return {}
-    live = get_stock_price(sym)
+    live_quote, price_as_of_ts = _alpaca_trade_quote(sym)
+    live = live_quote if live_quote is not None else get_stock_price(sym)
     prev_close = None
     pre_market = None
     post_market = None
@@ -430,6 +457,8 @@ def get_extended_session(symbol: str) -> Dict[str, Any]:
         "gap_pct": gap_pct,
         "pre_market_price": round(float(pre_market), 4) if pre_market else None,
         "post_market_price": round(float(post_market), 4) if post_market else None,
+        "price_as_of_ts": price_as_of_ts,
+        "requested_at_ts": int(time.time()),
         "ts": int(time.time()),
     }
 
@@ -575,9 +604,10 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
     if cached and (time.time() - cached[0]) < INTRADAY_QUOTE_TTL_S:
         out = dict(cached[1])
         # Always refresh price + change on cache hit when we can get a live trade.
-        trade = _alpaca(sym)
+        trade, trade_ts = _alpaca_trade_quote(sym)
         if trade:
             out["price"] = round(float(trade), 4)
+            out["price_as_of_ts"] = trade_ts
         # Compute change_pct whenever we have both price and prev_close,
         # even if the live trade fetch failed (breaker may be open).
         if out.get("price") and out.get("previous_close") and out["previous_close"] > 0:
@@ -609,7 +639,7 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
                 cache_age_s = int(time.time() - cached[0])
                 out["data_stale"] = cache_age_s > (INTRADAY_QUOTE_TTL_S / 2)
                 out["cache_age_s"] = cache_age_s
-                out["as_of_ts"] = int(time.time())
+                out["requested_at_ts"] = int(time.time())
                 return out
 
     try:
@@ -637,6 +667,7 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
         session, session_label = "closed", "Closed"
 
     today_open = today_high = today_low = last_price = prev_close = None
+    price_as_of_ts = None
     rth_open = rth_high = rth_low = rth_close = None
     feed = None
 
@@ -724,9 +755,10 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
     if today_open is None and rth_open is not None:
         today_open, today_high, today_low = rth_open, rth_high, rth_low
 
-    trade = _alpaca(sym)
+    trade, trade_ts = _alpaca_trade_quote(sym)
     if trade:
         last_price = round(float(trade), 4)
+        price_as_of_ts = trade_ts
         feed = feed or "alpaca_trade"
 
     if today_open is None or today_high is None:
@@ -742,6 +774,7 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
                     yf_last = round(float(h["Close"].iloc[-1]), 4)
                     if not last_price:
                         last_price = yf_last
+                        price_as_of_ts = _timestamp_to_epoch(h.index[-1])
                     feed = feed or "yfinance_5m"
                 _yfinance_cb.record_success()
             except Exception:
@@ -787,9 +820,12 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
         chg_abs = round(last_price - prev_close, 4)
         chg_pct = round(chg_abs / prev_close * 100, 3)
 
+    request_ts = int(time.time())
     out = {
         "symbol": sym,
-        "as_of_ts": int(time.time()),
+        "as_of_ts": request_ts,
+        "requested_at_ts": request_ts,
+        "price_as_of_ts": price_as_of_ts,
         "session": session,
         "session_label": session_label,
         "market_date": market_date,

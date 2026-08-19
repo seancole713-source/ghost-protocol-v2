@@ -7,7 +7,7 @@ wolf_app re-exports every endpoint name for backward compatibility.
 """
 import os, sys, time, json, logging, threading, hmac, math, asyncio, base64  # noqa: F401,E401
 
-from fastapi import APIRouter, Header, HTTPException, Request, Depends  # noqa: F401
+from fastapi import APIRouter, Body, Header, HTTPException, Request, Depends  # noqa: F401
 from fastapi.responses import JSONResponse, HTMLResponse, Response, PlainTextResponse  # noqa: F401
 
 router = APIRouter()
@@ -503,22 +503,142 @@ def squeeze_hunter_scan_endpoint(limit: int = 20):
 
 @router.get("/api/bull-run/checklist/{symbol}")
 def bull_run_checklist_endpoint(symbol: str):
-    """Evidence-gated bull-run checklist (e.g. YMM $12).
+    """Live, read-only evidence for a registered bull-run scenario.
 
-    Read-only intelligence. Auto-fills the auto-computable checks (revenue/EPS
-    surprise, premarket gap, relative volume, breakout levels) from free data;
-    company-specific KPIs (transaction/order/shipper growth, profitability,
-    guidance) are left UNKNOWN and must be supplied by the operator — they are
-    never fabricated. Missing evidence never counts toward the target.
+    Only event-safe market observations are auto-filled. Earnings values remain
+    pending until period-, unit-, source-, and timestamp-validated evidence is
+    submitted to the evaluate endpoint.
     """
     sym = (symbol or "").strip().upper()
     if not sym:
         return JSONResponse({"ok": False, "error": "symbol required"}, status_code=400)
     try:
-        from core.bull_run_checklist import auto_fill_ymm_12
-        return auto_fill_ymm_12(sym)
-    except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+        from core.bull_run_checklist import UnsupportedScenarioError
+        from core.bull_run_ledger import BullRunDatabaseError, current_scenario_report
+        return current_scenario_report(sym)
+    except UnsupportedScenarioError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=404)
+    except BullRunDatabaseError:
+        return JSONResponse({"ok": False, "error": "database_unavailable"}, status_code=503)
+    except Exception:
+        return JSONResponse({"ok": False, "error": "service_unavailable"}, status_code=503)
+
+
+@router.post("/api/bull-run/checklist/{symbol}/evaluate")
+def bull_run_checklist_evaluate_endpoint(
+    symbol: str,
+    payload: dict = Body(...),
+):
+    """Evaluate sourced operator evidence without persisting or trading on it."""
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        return JSONResponse({"ok": False, "error": "symbol required"}, status_code=400)
+    try:
+        from core.bull_run_checklist import (
+            ChecklistInputError,
+            UnsupportedScenarioError,
+            validate_operator_payload,
+        )
+        from core.bull_run_ledger import BullRunDatabaseError, current_scenario_report
+
+        evidence = validate_operator_payload(sym, payload)
+        return current_scenario_report(sym, operator_evidence=evidence)
+    except UnsupportedScenarioError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=404)
+    except ChecklistInputError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+    except BullRunDatabaseError:
+        return JSONResponse({"ok": False, "error": "database_unavailable"}, status_code=503)
+    except Exception:
+        return JSONResponse({"ok": False, "error": "service_unavailable"}, status_code=503)
+
+
+@router.post("/api/bull-run/checklist/{symbol}/snapshot")
+def bull_run_checklist_snapshot_endpoint(
+    symbol: str,
+    request: Request,
+    payload: dict = Body(...),
+    x_cron_secret: str = Header(default=""),
+):
+    """Persist validated operator evidence as an immutable audit snapshot."""
+    from wolf_app import _ADMIN_COOKIE, _admin_token_valid, _cron_ok
+
+    if not (
+        _cron_ok(x_cron_secret, strict=True)
+        or _admin_token_valid(request.cookies.get(_ADMIN_COOKIE, ""))
+    ):
+        raise HTTPException(status_code=404)
+    sym = (symbol or "").strip().upper()
+    try:
+        from core.bull_run_checklist import (
+            ChecklistInputError,
+            UnsupportedScenarioError,
+            validate_operator_payload,
+        )
+        from core.bull_run_ledger import BullRunDatabaseError, capture_snapshot
+
+        evidence = validate_operator_payload(sym, payload)
+        return capture_snapshot(operator_evidence=evidence)
+    except UnsupportedScenarioError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=404)
+    except ChecklistInputError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+    except BullRunDatabaseError:
+        return JSONResponse({"ok": False, "error": "database_unavailable"}, status_code=503)
+    except Exception:
+        return JSONResponse({"ok": False, "error": "service_unavailable"}, status_code=503)
+
+
+@router.get("/api/bull-run/checklist/{symbol}/ledger")
+def bull_run_checklist_ledger_endpoint(symbol: str, limit: int = 50):
+    """Read the immutable scenario timeline and eventual five-day outcome."""
+    if (symbol or "").strip().upper() != "YMM":
+        return JSONResponse({"ok": False, "error": "No registered bull-run scenario"}, status_code=404)
+    try:
+        from core.bull_run_ledger import recent_snapshots
+
+        result = recent_snapshots(limit=max(1, min(200, int(limit))))
+        if not result.get("ok", False):
+            return JSONResponse({"ok": False, "error": "database_unavailable", "rows": []}, status_code=503)
+        return result
+    except Exception:
+        return JSONResponse({"ok": False, "error": "database_unavailable", "rows": []}, status_code=503)
+
+
+@router.post("/api/bull-run/checklist/snapshot-run")
+def bull_run_checklist_snapshot_run_endpoint(x_cron_secret: str = Header(default="")):
+    """Cron-gated manual run of the preregistered phase sampler."""
+    from wolf_app import _cron_ok
+
+    if not _cron_ok(x_cron_secret, strict=True):
+        raise HTTPException(status_code=403)
+    from core.bull_run_ledger import run_snapshot_job
+
+    try:
+        result = run_snapshot_job()
+        if not result.get("ok", False):
+            return JSONResponse({"ok": False, "error": "service_unavailable"}, status_code=503)
+        return result
+    except Exception:
+        return JSONResponse({"ok": False, "error": "database_unavailable"}, status_code=503)
+
+
+@router.post("/api/bull-run/checklist/resolve")
+def bull_run_checklist_resolve_endpoint(x_cron_secret: str = Header(default="")):
+    """Cron-gated five-trading-day outcome resolver."""
+    from wolf_app import _cron_ok
+
+    if not _cron_ok(x_cron_secret, strict=True):
+        raise HTTPException(status_code=403)
+    from core.bull_run_ledger import resolve_scenario
+
+    try:
+        result = resolve_scenario()
+        if not result.get("ok", False):
+            return JSONResponse({"ok": False, "error": "service_unavailable"}, status_code=503)
+        return result
+    except Exception:
+        return JSONResponse({"ok": False, "error": "database_unavailable"}, status_code=503)
 
 
 @router.get("/api/squeeze/hunter/ledger")
@@ -530,23 +650,29 @@ def squeeze_hunter_ledger_endpoint(symbol: str = "", limit: int = 50):
     """
     try:
         from core.squeeze_hunter_ledger import recent_evaluations
-        return recent_evaluations(symbol=(symbol or "").strip().upper() or None,
-                                  limit=max(1, min(200, int(limit))))
-    except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)[:200], "rows": []}, status_code=500)
+        result = recent_evaluations(symbol=(symbol or "").strip().upper() or None,
+                                    limit=max(1, min(200, int(limit))))
+        if not result.get("ok", False):
+            return JSONResponse({"ok": False, "error": "database_unavailable", "rows": []}, status_code=503)
+        return result
+    except Exception:
+        return JSONResponse({"ok": False, "error": "database_unavailable", "rows": []}, status_code=503)
 
 
 @router.post("/api/squeeze/hunter/resolve")
 def squeeze_hunter_resolve_endpoint(x_cron_secret: str = Header(default="")):
     """Manually resolve pending Hunter evaluations (ops/backfill). Cron-gated."""
     from wolf_app import _cron_ok  # late import — shared state + monkeypatch-safe
-    if not _cron_ok(x_cron_secret):
+    if not _cron_ok(x_cron_secret, strict=True):
         raise HTTPException(status_code=403)
     try:
         from core.squeeze_hunter_ledger import resolve_hunter_predictions
-        return resolve_hunter_predictions(limit=200)
-    except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+        result = resolve_hunter_predictions(limit=200)
+        if not result.get("ok", False):
+            return JSONResponse({"ok": False, "error": "database_unavailable"}, status_code=503)
+        return result
+    except Exception:
+        return JSONResponse({"ok": False, "error": "database_unavailable"}, status_code=503)
 
 
 @router.get("/api/squeeze/hunter/{symbol}")

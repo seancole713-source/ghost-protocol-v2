@@ -53,6 +53,8 @@ def test_log_hunter_evaluation_inserts(monkeypatch):
         trigger_ctx={"catalyst_score": 90.0},
         confirm_ctx={"breakout_pct": 5.0},
         reference_price=100.0,
+        reference_price_ts=1000,
+        session_date="1970-01-01",
         issued_ts=1000,
         cur=cur,
     )
@@ -81,10 +83,37 @@ def test_log_hunter_evaluation_idempotent(monkeypatch):
         symbol="HTZ",
         report={"fuel_score": 70.0},
         reference_price=100.0,
+        reference_price_ts=1000,
+        session_date="1970-01-01",
         issued_ts=1000,
         cur=cur,
     )
     assert rid is None
+
+
+def test_persist_hunter_evaluation_distinguishes_database_failure(monkeypatch):
+    class Boom:
+        def execute(self, sql, params=None):
+            raise RuntimeError("db down")
+
+    out = hl.persist_hunter_evaluation(
+        symbol="HTZ",
+        report={"fuel_score": 1.0},
+        reference_price=100.0,
+        reference_price_ts=1000,
+        session_date="1970-01-01",
+        issued_ts=1000,
+        cur=Boom(),
+    )
+    assert out == {"status": "database_unavailable", "evaluation_id": None}
+
+
+def test_persist_hunter_evaluation_rejects_missing_timestamp():
+    out = hl.persist_hunter_evaluation(
+        symbol="HTZ", report={}, reference_price=100.0,
+        reference_price_ts=None, session_date="1970-01-01",
+    )
+    assert out["status"] == "invalid_reference"
 
 
 def test_log_hunter_evaluation_never_raises(monkeypatch):
@@ -94,7 +123,8 @@ def test_log_hunter_evaluation_never_raises(monkeypatch):
             raise RuntimeError("db down")
 
     rid = hl.log_hunter_evaluation(symbol="HTZ", report={"fuel_score": 1.0},
-                                   reference_price=100.0, cur=Boom())
+                                   reference_price=100.0, reference_price_ts=1000,
+                                   session_date="1970-01-01", cur=Boom())
     assert rid is None
 
 
@@ -145,6 +175,18 @@ def test_purge_invalid_hunter_samples():
     assert "DELETE FROM ghost_squeeze_hunter_resolutions" in sqls
     assert "DELETE FROM ghost_squeeze_hunter_evaluations" in sqls
     assert "reference_price IS NULL OR reference_price <= 0" in sqls
+    assert "reference_price_ts IS NULL OR session_date IS NULL" in sqls
+
+
+def test_enforce_hunter_constraints_sets_session_date_not_null():
+    """P0: session_date must be enforced NOT NULL after invalid rows are purged."""
+    cur = _FakeCursor()
+    hl.enforce_hunter_constraints(cur)
+    sqls = " ".join(cur.executed)
+    assert (
+        "ALTER TABLE ghost_squeeze_hunter_evaluations "
+        "ALTER COLUMN session_date SET NOT NULL" in sqls
+    )
 
 
 def test_resolve_one_computes_returns():
@@ -213,7 +255,11 @@ def test_issue_hunter_samples_issues_on_trading_day(monkeypatch):
     calls = []
     monkeypatch.setattr(
         "core.squeeze_hunter.fetch_explosion_report",
-        lambda sym, persist=False, issued_ts=None: calls.append((sym, persist, issued_ts)) or {"evaluation_id": 1, "reference_price": 100.0},
+        lambda sym, persist=False, issued_ts=None: calls.append((sym, persist, issued_ts)) or {
+            "evaluation_id": 1,
+            "reference_price": 100.0,
+            "persistence": {"status": "inserted", "evaluation_id": 1},
+        },
     )
     # 2026-08-03 is a Monday (trading day). 20:05 UTC = 15:05 CT (post-close,
     # inside the frozen sampling window).
@@ -246,7 +292,11 @@ def test_issue_hunter_samples_counts_invalid_reference(monkeypatch):
     """P2: a missing reference price is counted as invalid_reference, not inserted."""
     monkeypatch.setattr(
         "core.squeeze_hunter.fetch_explosion_report",
-        lambda sym, persist=False, issued_ts=None: {"evaluation_id": None, "reference_price": None},
+        lambda sym, persist=False, issued_ts=None: {
+            "evaluation_id": None,
+            "reference_price": None,
+            "persistence": {"status": "invalid_reference", "evaluation_id": None},
+        },
     )
     mon = int(datetime(2026, 8, 3, 20, 5, 0, tzinfo=timezone.utc).timestamp())
     out = hl.issue_hunter_samples(symbols=["HTZ"], now_ts=mon)

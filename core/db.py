@@ -356,14 +356,26 @@ def _migrate_schema():
     except Exception as e:
         LOGGER.warning("Daily report log tables: " + str(e)[:80])
     try:
-        from core.squeeze_hunter_ledger import ensure_hunter_tables, purge_invalid_hunter_samples
+        from core.squeeze_hunter_ledger import (
+            enforce_hunter_constraints,
+            ensure_hunter_tables,
+            purge_invalid_hunter_samples,
+        )
         with db_conn() as conn:
             cur = conn.cursor()
             ensure_hunter_tables(cur)
             purged = purge_invalid_hunter_samples(cur)
+            enforce_hunter_constraints(cur)
             conn.commit()
             if purged:
-                LOGGER.info("Squeeze Hunter: purged %s invalid (no-reference) samples", purged)
+                LOGGER.info("Squeeze Hunter: purged %s invalid calibration samples", purged)
     except Exception as e:
         LOGGER.warning("Squeeze Hunter ledger tables: " + str(e)[:80])
+    try:
+        from core.bull_run_ledger import ensure_bull_run_tables
+        with db_conn() as conn:
+            cur = conn.cursor()
+            ensure_bull_run_tables(cur)
+    except Exception as e:
+        LOGGER.warning("Bull-run scenario ledger tables: " + str(e)[:80])
     LOGGER.info("Schema migration complete")

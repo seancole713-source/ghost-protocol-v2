@@ -1,4 +1,6 @@
 """RTH intraday OHLC aggregation from Alpaca-style bars."""
+from datetime import datetime, timezone
+
 from core.market_hours import RTH_CLOSE_MIN, RTH_OPEN_MIN, SESSION_TZ
 from core.prices import _ohlc_from_bars
 
@@ -28,6 +30,52 @@ def test_ohlc_from_bars_rth_window():
     assert rth_o == 4.55
     assert rth_h == 4.56
     assert rth_l == 4.13
+
+
+def test_alpaca_trade_quote_parses_provider_timestamp(monkeypatch):
+    from core import prices as px
+
+    class Response:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"trade": {"p": 12.34, "t": "2026-08-19T14:45:30.123456Z"}}
+
+    monkeypatch.setenv("ALPACA_KEY_ID", "key")
+    monkeypatch.setenv("ALPACA_SECRET_KEY", "secret")
+    monkeypatch.setattr(px._alpaca_cb, "allow", lambda: True)
+    monkeypatch.setattr(px._alpaca_cb, "record_success", lambda: None)
+    monkeypatch.setattr(px.requests, "get", lambda *_args, **_kwargs: Response())
+    price, observed_at = px._alpaca_trade_quote("YMM")
+    assert price == 12.34
+    assert observed_at == int(datetime(2026, 8, 19, 14, 45, 30, tzinfo=timezone.utc).timestamp())
+    assert px._alpaca("YMM") == 12.34
+
+
+def test_intraday_cache_preserves_observation_timestamp(monkeypatch):
+    import time as _time
+    from core import prices as px
+
+    px._intraday_cache.clear()
+    observed_at = int(_time.time()) - 120
+    px._intraday_cache["WOLF"] = (
+        _time.time(),
+        {
+            "symbol": "WOLF",
+            "price": 20.0,
+            "price_as_of_ts": observed_at,
+            "today_open": 19.5,
+            "today_high": 20.5,
+            "today_low": 19.0,
+            "previous_close": 19.8,
+        },
+    )
+    monkeypatch.setattr(px, "_alpaca_trade_quote", lambda _symbol: (None, None))
+    out = px.get_intraday_session("WOLF")
+    assert out["price_as_of_ts"] == observed_at
+    assert out["requested_at_ts"] >= observed_at
+    px._intraday_cache.clear()
 
 
 def test_intraday_cache_skips_when_ohlc_missing(monkeypatch):

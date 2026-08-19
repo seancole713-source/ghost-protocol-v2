@@ -65,7 +65,7 @@ def ensure_hunter_tables(cur) -> None:
             id SERIAL PRIMARY KEY,
             symbol VARCHAR(20) NOT NULL,
             scoring_version VARCHAR(16) NOT NULL,
-            session_date VARCHAR(10),
+            session_date VARCHAR(10) NOT NULL,
             issued_ts BIGINT NOT NULL,
             feature_available_ts BIGINT,
             reference_price FLOAT,
@@ -154,31 +154,115 @@ def ensure_hunter_tables(cur) -> None:
     )
 
 
-def purge_invalid_hunter_samples(cur) -> int:
-    """One-time cleanup of invalid samples written by the pre-fix issuance path.
-
-    Commit 628f98e persisted evaluations with no reference price and marked them
-    terminal (`missing_reference_price`). Those are not calibration samples and
-    must not pollute future calibration queries. Idempotent — deletes nothing
-    once the invalid rows are gone. Returns the number of evaluation rows
-    deleted. Called once at startup (core.db._migrate_schema), not per-request.
-    """
+def enforce_hunter_constraints(cur) -> None:
+    """Apply strict invariants after invalid legacy rows have been purged."""
     cur.execute(
-        """
+        "ALTER TABLE ghost_squeeze_hunter_evaluations "
+        "ALTER COLUMN session_date SET NOT NULL"
+    )
+
+
+def purge_invalid_hunter_samples(cur) -> int:
+    """One-time cleanup of structurally invalid pre-enforcement samples.
+
+    Older issuance paths could persist rows without a valid reference price,
+    provider observation timestamp, or exchange session date. Such rows are not
+    prospective calibration samples and must be removed before the startup
+    migration applies strict constraints. Idempotent once cleanup is complete.
+    """
+    invalid_where = (
+        "reference_price IS NULL OR reference_price <= 0 "
+        "OR reference_price_ts IS NULL OR session_date IS NULL"
+    )
+    cur.execute(
+        f"""
         DELETE FROM ghost_squeeze_hunter_resolutions
         WHERE evaluation_id IN (
             SELECT id FROM ghost_squeeze_hunter_evaluations
-            WHERE reference_price IS NULL OR reference_price <= 0
+            WHERE {invalid_where}
         )
         """
     )
     cur.execute(
-        """
+        f"""
         DELETE FROM ghost_squeeze_hunter_evaluations
-        WHERE reference_price IS NULL OR reference_price <= 0
+        WHERE {invalid_where}
         """
     )
     return cur.rowcount
+
+
+def persist_hunter_evaluation(
+    *,
+    symbol: str,
+    report: Dict[str, Any],
+    short_ctx: Optional[Dict[str, Any]] = None,
+    trigger_ctx: Optional[Dict[str, Any]] = None,
+    confirm_ctx: Optional[Dict[str, Any]] = None,
+    reference_price: Optional[float] = None,
+    reference_price_ts: Optional[int] = None,
+    session_date: Optional[str] = None,
+    issued_ts: Optional[int] = None,
+    feature_available_ts: Optional[int] = None,
+    cur=None,
+) -> Dict[str, Any]:
+    """Persist one immutable sample with an explicit, non-ambiguous result."""
+    sym = (symbol or "").strip().upper()
+    if (
+        not sym
+        or reference_price is None
+        or reference_price <= 0
+        or reference_price_ts is None
+        or not session_date
+    ):
+        return {"status": "invalid_reference", "evaluation_id": None}
+    ts = int(issued_ts or _now())
+    fav = int(feature_available_ts) if feature_available_ts is not None else int(reference_price_ts)
+    rpts = int(reference_price_ts)
+
+    def _impl(c) -> Dict[str, Any]:
+        c.execute(
+            """
+            INSERT INTO ghost_squeeze_hunter_evaluations
+                (symbol, scoring_version, session_date, issued_ts, feature_available_ts,
+                 reference_price, reference_price_ts,
+                 fuel_score, trigger_score, confirmation_score,
+                 squeeze_pressure_score, pressure_band, stage, explosion_score,
+                 short_ctx, trigger_ctx, confirm_ctx, factors, projection, created_at)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,%s)
+            ON CONFLICT (symbol, scoring_version, session_date) DO NOTHING
+            RETURNING id
+            """,
+            (
+                sym, HUNTER_SCORING_VERSION, session_date, ts, fav,
+                reference_price, rpts,
+                report.get("fuel_score"), report.get("trigger_score"),
+                report.get("confirmation_score"),
+                report.get("squeeze_pressure_score"),
+                report.get("pressure_band"), report.get("stage"),
+                report.get("explosion_score"),
+                _jsonb(short_ctx), _jsonb(trigger_ctx), _jsonb(confirm_ctx),
+                _jsonb(report.get("factors")), _jsonb(report.get("projection")),
+                _now(),
+            ),
+        )
+        row = c.fetchone()
+        if row:
+            return {"status": "inserted", "evaluation_id": int(row[0])}
+        return {"status": "duplicate", "evaluation_id": None}
+
+    try:
+        if cur is not None:
+            return _impl(cur)
+        from core.db import db_conn
+        with db_conn() as conn:
+            c = conn.cursor()
+            result = _impl(c)
+            conn.commit()
+            return result
+    except Exception as exc:
+        LOGGER.warning("persist_hunter_evaluation %s: %s", sym, str(exc)[:160])
+        return {"status": "database_unavailable", "evaluation_id": None}
 
 
 def log_hunter_evaluation(
@@ -195,68 +279,21 @@ def log_hunter_evaluation(
     feature_available_ts: Optional[int] = None,
     cur=None,
 ) -> Optional[int]:
-    """Append one immutable Hunter evaluation. Returns row id or None.
-
-    Idempotent by (symbol, scoring_version, session_date). `issued_ts` is the
-    ACTUAL issuance time (honest), while `session_date` is the stable exchange
-    session date used for the idempotency key. Never raises into the caller.
-
-    Returns None (and does NOT insert) when reference_price is missing — a
-    sample without a valid point-in-time quote is not a calibration sample and
-    must not occupy the idempotency key.
-    """
-    sym = (symbol or "").strip().upper()
-    if not sym:
-        return None
-    if reference_price is None or reference_price <= 0:
-        return None  # invalid sample — do not persist
-    ts = int(issued_ts or _now())
-    fav = int(feature_available_ts) if feature_available_ts else ts
-    rpts = int(reference_price_ts) if reference_price_ts else ts
-    sdate = session_date or _session_date_key(ts)
-
-    def _impl(c) -> Optional[int]:
-        c.execute(
-            """
-            INSERT INTO ghost_squeeze_hunter_evaluations
-                (symbol, scoring_version, session_date, issued_ts, feature_available_ts,
-                 reference_price, reference_price_ts,
-                 fuel_score, trigger_score, confirmation_score,
-                 squeeze_pressure_score, pressure_band, stage, explosion_score,
-                 short_ctx, trigger_ctx, confirm_ctx, factors, projection, created_at)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,%s)
-            ON CONFLICT (symbol, scoring_version, session_date) DO NOTHING
-            RETURNING id
-            """,
-            (
-                sym, HUNTER_SCORING_VERSION, sdate, ts, fav,
-                reference_price, rpts,
-                report.get("fuel_score"), report.get("trigger_score"),
-                report.get("confirmation_score"),
-                report.get("squeeze_pressure_score"),
-                report.get("pressure_band"), report.get("stage"),
-                report.get("explosion_score"),
-                _jsonb(short_ctx), _jsonb(trigger_ctx), _jsonb(confirm_ctx),
-                _jsonb(report.get("factors")), _jsonb(report.get("projection")),
-                _now(),
-            ),
-        )
-        row = c.fetchone()
-        return int(row[0]) if row else None
-
-    try:
-        if cur is not None:
-            return _impl(cur)
-        from core.db import db_conn
-        with db_conn() as conn:
-            c = conn.cursor()
-            ensure_hunter_tables(c)
-            rid = _impl(c)
-            conn.commit()
-            return rid
-    except Exception as exc:
-        LOGGER.warning("log_hunter_evaluation %s: %s", sym, str(exc)[:160])
-        return None
+    """Compatibility wrapper returning an inserted row id or ``None``."""
+    result = persist_hunter_evaluation(
+        symbol=symbol,
+        report=report,
+        short_ctx=short_ctx,
+        trigger_ctx=trigger_ctx,
+        confirm_ctx=confirm_ctx,
+        reference_price=reference_price,
+        reference_price_ts=reference_price_ts,
+        session_date=session_date,
+        issued_ts=issued_ts,
+        feature_available_ts=feature_available_ts,
+        cur=cur,
+    )
+    return result.get("evaluation_id")
 
 
 def resolve_hunter_evaluation(
@@ -312,7 +349,6 @@ def resolve_hunter_evaluation(
         from core.db import db_conn
         with db_conn() as conn:
             c = conn.cursor()
-            ensure_hunter_tables(c)
             inserted = _impl(c)
             conn.commit()
             return inserted
@@ -344,7 +380,6 @@ def recent_evaluations(symbol: Optional[str] = None, limit: int = 50) -> Dict[st
         from core.db import db_conn
         with db_conn() as conn:
             cur = conn.cursor()
-            ensure_hunter_tables(cur)
             if symbol:
                 cur.execute(
                     f"""
@@ -370,7 +405,7 @@ def recent_evaluations(symbol: Optional[str] = None, limit: int = 50) -> Dict[st
         return {"ok": True, "rows": [dict(zip(keys, r)) for r in rows]}
     except Exception as exc:
         LOGGER.warning("recent_evaluations: %s", str(exc)[:160])
-        return {"ok": False, "error": str(exc)[:160], "rows": []}
+        return {"ok": False, "error": "database_unavailable", "rows": []}
 
 
 # ── Resolver job ───────────────────────────────────────────────────────────
@@ -534,7 +569,6 @@ def resolve_hunter_predictions(*, limit: int = 200, now: Optional[int] = None) -
         from core.db import db_conn
         with db_conn() as conn:
             cur = conn.cursor()
-            ensure_hunter_tables(cur)
             cur.execute(
                 """
                 SELECT e.id, e.symbol, e.issued_ts, e.reference_price
@@ -609,7 +643,7 @@ def resolve_hunter_predictions(*, limit: int = 200, now: Optional[int] = None) -
             conn.commit()
     except Exception as exc:
         LOGGER.warning("resolve_hunter_predictions: %s", str(exc)[:160])
-        return {"ok": False, "error": str(exc)[:160], "resolved": 0, "terminal": 0}
+        return {"ok": False, "error": "database_unavailable", "resolved": 0, "terminal": 0}
     return {"ok": True, "resolved": resolved, "terminal": terminal}
 
 
@@ -690,19 +724,19 @@ def issue_hunter_samples(*, symbols: Optional[list] = None, now_ts: Optional[int
         try:
             from core.squeeze_hunter import fetch_explosion_report
             rep = fetch_explosion_report(sym, persist=True, issued_ts=now)
-            eid = rep.get("evaluation_id")
-            if eid is not None:
+            status = (rep.get("persistence") or {}).get("status")
+            if status == "inserted":
                 inserted += 1
+            elif status == "duplicate":
+                duplicate += 1
+            elif status == "invalid_reference":
+                invalid_reference += 1
             else:
-                # Distinguish "no reference price" from "duplicate / failed".
-                if rep.get("reference_price") is None:
-                    invalid_reference += 1
-                else:
-                    duplicate += 1
+                persistence_failed += 1
         except Exception:
             persistence_failed += 1
     return {
-        "ok": True,
+        "ok": persistence_failed == 0,
         "attempted": attempted,
         "inserted": inserted,
         "duplicate": duplicate,

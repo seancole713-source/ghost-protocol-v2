@@ -1455,24 +1455,47 @@ async def lifespan(app: FastAPI):
     from core.squeeze_hunter_ledger import resolve_hunter_predictions as _hunter_resolver
 
     def _hunter_resolver_job():
-        try:
-            _hunter_resolver(limit=200)
-        except Exception as _e:
-            LOGGER.warning("squeeze hunter resolver job failed: %s", str(_e)[:80])
+        result = _hunter_resolver(limit=200)
+        if not isinstance(result, dict) or not result.get("ok", False):
+            raise RuntimeError(f"squeeze hunter resolver failed: {result}")
+        return result
 
     scheduler.register("squeeze_hunter_resolver", _hunter_resolver_job, interval_s=3600)
     # Squeeze Hunter issuance: preregistered sampler writes ONE evaluation per
     # symbol per session date (idempotent). This is the only path that persists
-    # Hunter evaluations — public GET traffic stays read-only.
+    # Hunter evaluations — public GET traffic stays read-only. Runs every 15 min
+    # so the frozen 15:05-16:00 CT sampling window is never missed by an hourly
+    # tick landing outside it.
     from core.squeeze_hunter_ledger import issue_hunter_samples as _hunter_issue
 
     def _hunter_issue_job():
-        try:
-            _hunter_issue()
-        except Exception as _e:
-            LOGGER.warning("squeeze hunter issuance job failed: %s", str(_e)[:80])
+        result = _hunter_issue()
+        if not isinstance(result, dict) or not result.get("ok", False):
+            raise RuntimeError(f"squeeze hunter issuance failed: {result}")
+        return result
 
-    scheduler.register("squeeze_hunter_issue", _hunter_issue_job, interval_s=3600)
+    scheduler.register("squeeze_hunter_issue", _hunter_issue_job, interval_s=900)
+    # One-off YMM earnings scenario: immutable snapshots at preregistered event
+    # phases plus a five-session outcome resolver. Both are shadow-only.
+    from core.bull_run_ledger import (
+        resolve_scenario as _bull_run_resolver,
+        run_snapshot_job as _bull_run_snapshot,
+    )
+
+    def _bull_run_snapshot_job():
+        result = _bull_run_snapshot()
+        if not isinstance(result, dict) or not result.get("ok", False):
+            raise RuntimeError(f"bull-run snapshot failed: {result}")
+        return result
+
+    def _bull_run_resolver_job():
+        result = _bull_run_resolver()
+        if not isinstance(result, dict) or not result.get("ok", False):
+            raise RuntimeError(f"bull-run resolver failed: {result}")
+        return result
+
+    scheduler.register("bull_run_snapshot", _bull_run_snapshot_job, interval_s=900)
+    scheduler.register("bull_run_resolver", _bull_run_resolver_job, interval_s=3600)
     # T19: Auto-refresh portfolio stock prices every 15 min
     from core.portfolio_routes import auto_refresh_portfolio_prices
     scheduler.register("portfolio_price_refresh", auto_refresh_portfolio_prices, interval_s=900)

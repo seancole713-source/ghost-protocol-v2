@@ -178,8 +178,9 @@ def test_snapshot_daily_report_writes_only_report_log(monkeypatch):
 
 def test_snapshot_prune_uses_retention_cutoff(monkeypatch):
     cur = _patch_db(monkeypatch)
+    generated_ts = int(time.time())
     monkeypatch.setattr(dr, "build_daily_report", lambda day=None: {
-        "ok": True, "date": "2026-07-08", "generated_ts": 1783524000,
+        "ok": True, "date": "2026-07-08", "generated_ts": generated_ts,
         "identity": {}, "decisions": {}, "wallet": {}, "calibration": {}, "narrative": [],
     })
     monkeypatch.setattr(dr, "_LOG_RETENTION_DAYS", 30)
@@ -189,7 +190,7 @@ def test_snapshot_prune_uses_retention_cutoff(monkeypatch):
     assert delete_params, "prune DELETE must fire"
     cutoff = delete_params[0][0]
     # cutoff = now - 30d; allow slack because now=time.time() at call.
-    assert cutoff < 1783524000
+    assert cutoff < generated_ts
     assert abs((int(time.time()) - 30 * 86400) - cutoff) < 5
 
 

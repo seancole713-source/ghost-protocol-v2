@@ -25,6 +25,8 @@ Honesty contract:
 """
 from __future__ import annotations
 
+import math
+import time
 from typing import Any, Dict, Optional
 
 # ── Pressure bands (operator spec §2) ──────────────────────────────────────
@@ -369,6 +371,60 @@ def build_explosion_report(
 
 
 # ── FETCH LAYER (best-effort, free data only) ─────────────────────────────
+_REFERENCE_MAX_AGE_S = 20 * 60
+_REFERENCE_FUTURE_SKEW_S = 60
+_REFERENCE_ISSUANCE_SKEW_S = 5 * 60
+
+
+def validate_reference_quote(
+    session: Optional[Dict[str, Any]],
+    *,
+    issued_ts: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Validate a prospective outcome anchor without substituting request time."""
+    sess = session or {}
+    now = int(issued_ts or time.time())
+    reasons = []
+    try:
+        price = float(sess.get("price"))
+        if not math.isfinite(price) or price <= 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        price = None
+        reasons.append("invalid_price")
+    try:
+        observed_at = int(sess.get("price_as_of_ts"))
+    except (TypeError, ValueError):
+        observed_at = None
+        reasons.append("missing_price_timestamp")
+    if observed_at is not None:
+        age = now - observed_at
+        if age < -_REFERENCE_FUTURE_SKEW_S:
+            reasons.append("future_price_timestamp")
+        elif age > _REFERENCE_MAX_AGE_S:
+            reasons.append("stale_price")
+        if abs(age) > _REFERENCE_ISSUANCE_SKEW_S:
+            reasons.append("issuance_price_skew")
+    if bool(sess.get("data_stale")):
+        reasons.append("provider_marked_stale")
+    market_date = str(sess.get("market_date") or "")
+    session_name = str(sess.get("session") or "").lower()
+    if not market_date:
+        reasons.append("missing_market_date")
+    if session_name not in {"rth", "afterhours"}:
+        reasons.append("incompatible_session")
+    return {
+        "valid": not reasons,
+        "reasons": reasons,
+        "price": price if not reasons else None,
+        "price_as_of_ts": observed_at if not reasons else None,
+        "issued_ts": now,
+        "session": session_name or None,
+        "market_date": market_date or None,
+        "cache_age_s": sess.get("cache_age_s"),
+    }
+
+
 def _catalyst_to_trigger(catalyst_ctx: Dict[str, Any]) -> Dict[str, Any]:
     """Map catalyst_scoring output to a 0-100 catalyst + guidance score.
 
@@ -514,9 +570,14 @@ def fetch_explosion_report(symbol: str, *, persist: bool = False, issued_ts: Opt
     except Exception:
         pass
 
+    reference_price = None
+    reference_price_ts = None
+    reference_validation = validate_reference_quote({}, issued_ts=issued_ts)
     try:
         from core.prices import get_intraday_session
         sess = get_intraday_session(sym) or {}
+        validation_ts = int(issued_ts or time.time())
+        reference_validation = validate_reference_quote(sess, issued_ts=validation_ts)
         price = _f(sess.get("price"))
         prev = _f(sess.get("previous_close"))
         if price and prev and prev > 0:
@@ -529,14 +590,15 @@ def fetch_explosion_report(symbol: str, *, persist: bool = False, issued_ts: Opt
         # quote is a valid anchor — previous close is a DIFFERENT economic
         # timestamp (a stock already up 15% premarket would get a wrong anchor).
         # A missing live quote makes the evaluation unresolvable, not fallback.
-        reference_price = price if price else None
-        reference_price_ts = _f(sess.get("as_of_ts")) or None
+        reference_price = reference_validation.get("price")
+        reference_price_ts = reference_validation.get("price_as_of_ts")
         confirm_ctx["breakout_pct"] = breakout_pct
         if "rvol" not in confirm_ctx:
             confirm_ctx["rvol"] = rvol
     except Exception:
         reference_price = None
         reference_price_ts = None
+        reference_validation = validate_reference_quote({}, issued_ts=issued_ts)
 
     # score_trigger() reads rvol and breakout_pct from trigger_ctx — place them
     # there too, or the trigger score's RVOL/breakout terms are always 0.
@@ -572,15 +634,18 @@ def fetch_explosion_report(symbol: str, *, persist: bool = False, issued_ts: Opt
     report["trigger_ctx"] = trigger_ctx
     report["confirm_ctx"] = confirm_ctx
     report["reference_price"] = reference_price
+    report["reference_price_ts"] = reference_price_ts
+    report["reference_validation"] = reference_validation
 
     # Persist a point-in-time audit trail ONLY when explicitly requested by a
     # preregistered scheduler. Public GET traffic must stay read-only so it
     # cannot inflate the calibration sample with correlated near-duplicates.
     report["evaluation_id"] = None
+    report["persistence"] = {"status": "not_requested", "evaluation_id": None}
     if persist:
         try:
-            from core.squeeze_hunter_ledger import log_hunter_evaluation
-            report["evaluation_id"] = log_hunter_evaluation(
+            from core.squeeze_hunter_ledger import persist_hunter_evaluation
+            persistence = persist_hunter_evaluation(
                 symbol=sym,
                 report=report,
                 short_ctx=short_ctx,
@@ -588,10 +653,14 @@ def fetch_explosion_report(symbol: str, *, persist: bool = False, issued_ts: Opt
                 confirm_ctx=confirm_ctx,
                 reference_price=reference_price,
                 reference_price_ts=reference_price_ts,
+                session_date=reference_validation.get("market_date"),
                 issued_ts=issued_ts,
+                feature_available_ts=reference_price_ts,
             )
         except Exception:
-            report["evaluation_id"] = None
+            persistence = {"status": "database_unavailable", "evaluation_id": None}
+        report["persistence"] = persistence
+        report["evaluation_id"] = persistence.get("evaluation_id")
     return report
 
 
