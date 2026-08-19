@@ -696,6 +696,24 @@ def _in_sampling_window(now_ts: Optional[int] = None) -> bool:
         return False
 
 
+def _existing_session_symbols(session_date: str) -> set[str]:
+    """Read persisted keys before vendor work so retries only fetch missing rows."""
+    try:
+        from core.db import db_conn
+
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT symbol FROM ghost_squeeze_hunter_evaluations "
+                "WHERE scoring_version=%s AND session_date=%s",
+                (HUNTER_SCORING_VERSION, session_date),
+            )
+            return {str(row[0]).upper() for row in (cur.fetchall() or []) if row and row[0]}
+    except Exception as exc:
+        LOGGER.debug("Hunter issuance preflight unavailable: %s", str(exc)[:120])
+        return set()
+
+
 def issue_hunter_samples(*, symbols: Optional[list] = None, now_ts: Optional[int] = None) -> Dict[str, Any]:
     """Preregistered sampler: write ONE evaluation per symbol per session date.
 
@@ -720,6 +738,7 @@ def issue_hunter_samples(*, symbols: Optional[list] = None, now_ts: Optional[int
         except Exception:
             symbols = []
     now = int(now_ts or _now())
+    existing = _existing_session_symbols(date_key)
 
     attempted = 0
     inserted = 0
@@ -727,6 +746,10 @@ def issue_hunter_samples(*, symbols: Optional[list] = None, now_ts: Optional[int
     invalid_reference = 0
     persistence_failed = 0
     for sym in symbols:
+        sym = str(sym).strip().upper()
+        if sym in existing:
+            duplicate += 1
+            continue
         attempted += 1
         try:
             from core.squeeze_hunter import fetch_explosion_report
@@ -744,6 +767,7 @@ def issue_hunter_samples(*, symbols: Optional[list] = None, now_ts: Optional[int
             persistence_failed += 1
     return {
         "ok": persistence_failed == 0,
+        "requested": len(symbols),
         "attempted": attempted,
         "inserted": inserted,
         "duplicate": duplicate,
@@ -751,6 +775,4 @@ def issue_hunter_samples(*, symbols: Optional[list] = None, now_ts: Optional[int
         "persistence_failed": persistence_failed,
         "session_date": date_key,
     }
-
-
 

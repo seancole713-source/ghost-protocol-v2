@@ -95,14 +95,39 @@ def test_console_contains_hunter_evidence_gated_planning_levels():
         "STATUS: UNVERIFIED",
         "Planning only — not a fired Ghost pick",
         "No price can guarantee the best profit",
-        "No stale or previous-close fallback is used",
+        "Ghost does not substitute stale or previous-close prices",
+        "Outcome calibration pending",
+        "no probabilities published",
     ):
         assert phrase in text
     renderer = text[text.index("function renderHunter()") : text.index("function renderWeekly")]
-    assert "plan.status==='available'&&plan.evidence_status==='CONFIRMED'" in renderer
-    assert "plan.entry_price" in renderer
-    assert "plan.target_price" in renderer
-    assert "plan.stop_price" in renderer
+    plan_renderer = text[text.index("function renderHunterPlan") : text.index("function renderHunterRow")]
+    assert "plan.status==='available'&&plan.evidence_status==='CONFIRMED'" in plan_renderer
+    assert "plan.entry_price" in plan_renderer
+    assert "plan.target_price" in plan_renderer
+    assert "plan.stop_price" in plan_renderer
+    assert "p_plus_20_pct" not in renderer
+    assert "p_plus_50_pct" not in renderer
+    assert "Math.min(8,watch.length)" in renderer
+
+
+def test_console_hunter_uses_cached_snapshot_and_preserves_state():
+    text = _html()
+    assert "/api/squeeze/hunter/board?limit=20" in text
+    assert "Scanning watchlist for explosion candidates" not in text
+    assert "var hunterSnapshot=state.data.hunter||null" in text
+    assert "hunter:hunterSnapshot" in text
+    assert "request timed out" in text
+    assert "status_code=r.status" in text
+
+
+def test_console_hunter_accessibility_and_mobile_layout():
+    text = _html()
+    assert 'id="hunterList" role="status" aria-live="polite"' in text
+    assert "aria-current" in text
+    assert "prefers-reduced-motion:reduce" in text
+    assert "@media(max-width:700px){.metric-grid-3col{grid-template-columns:1fr}" in text
+    assert 'label class="sr-only" for="poolInput"' in text
 
 
 def test_console_contains_pool_management_and_top_pick_gate():
@@ -254,7 +279,8 @@ def test_console_renders_evidence_conflicts_and_full_interrogation():
     assert "q.answer==null?'—'" in text
 
 
-def test_console_routes_serve_new_and_legacy_pages():
+def test_console_routes_serve_new_and_legacy_pages(monkeypatch):
+    monkeypatch.delenv("RAILWAY_GIT_COMMIT_SHA", raising=False)
     client = TestClient(wolf_app.APP)
     root = client.get("/")
     picks = client.get("/picks")
@@ -271,6 +297,7 @@ def test_console_routes_serve_new_and_legacy_pages():
     assert root.headers["cache-control"].startswith("no-store")
     assert picks.headers["cache-control"].startswith("no-store")
     assert 'name="ghost-build"' in picks.text
+    assert 'content="pr-130"' in picks.text
 
 
 def test_super_ghost_snapshot_endpoint_bundles_console_payload(monkeypatch):
@@ -306,8 +333,8 @@ def test_super_ghost_snapshot_endpoint_bundles_console_payload(monkeypatch):
 def test_hunter_symbol_route_returns_plan_without_persisting(monkeypatch):
     calls = []
 
-    def _report(symbol, *, persist=False, issued_ts=None):
-        calls.append((symbol, persist, issued_ts))
+    def _report(symbol):
+        calls.append(symbol)
         return {
             "ok": True,
             "symbol": symbol,
@@ -320,24 +347,39 @@ def test_hunter_symbol_route_returns_plan_without_persisting(monkeypatch):
             },
         }
 
-    monkeypatch.setattr("core.squeeze_hunter.fetch_explosion_report", _report)
+    monkeypatch.setattr("core.squeeze_hunter.get_hunter_symbol_snapshot", _report)
     response = TestClient(wolf_app.APP).get("/api/squeeze/hunter/HTZ")
     assert response.status_code == 200
     assert response.json()["planning_levels"]["entry_price"] == 100.0
-    assert calls == [("HTZ", False, None)]
+    assert calls == ["HTZ"]
 
 
 def test_hunter_scan_route_stays_read_only(monkeypatch):
     calls = []
 
-    def _scan(symbols=None, limit=20):
-        calls.append((symbols, limit))
+    def _snapshot(limit=20):
+        calls.append(limit)
         return {"ok": True, "candidates": []}
 
-    monkeypatch.setattr("core.squeeze_hunter.scan_watchlist", _scan)
-    response = TestClient(wolf_app.APP).get("/api/squeeze/hunter/scan?limit=7")
+    monkeypatch.setattr("core.squeeze_hunter.get_hunter_snapshot", _snapshot)
+    response = TestClient(wolf_app.APP).get("/api/squeeze/hunter/board?limit=7")
     assert response.status_code == 200
-    assert calls == [(None, 7)]
+    assert calls == [7]
+
+
+def test_hunter_refresh_route_is_cron_gated(monkeypatch):
+    monkeypatch.setattr(wolf_app, "_cron_ok", lambda *args, **kwargs: False)
+    denied = TestClient(wolf_app.APP).post("/api/squeeze/hunter/refresh")
+    assert denied.status_code == 403
+
+    monkeypatch.setattr(wolf_app, "_cron_ok", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        "core.squeeze_hunter.refresh_hunter_snapshot",
+        lambda limit=20: {"ok": True, "status": "ready", "candidates": []},
+    )
+    allowed = TestClient(wolf_app.APP).post("/api/squeeze/hunter/refresh")
+    assert allowed.status_code == 200
+    assert allowed.json()["status"] == "ready"
 
 
 def test_console_inline_javascript_has_required_functions():

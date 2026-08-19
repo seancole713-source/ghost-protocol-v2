@@ -143,6 +143,41 @@ _FINVIZ_HEADERS = {
 }
 
 
+def _finviz_snapshot_value(html: str, label: str) -> Optional[str]:
+    """Return the text from the snapshot cell immediately following ``label``.
+
+    Finviz wraps some values in ``<a>``/``<b>`` tags. Matching a later plain
+    ``<td>`` can silently capture an unrelated field (including the share
+    price), so the parser is deliberately constrained to the adjacent cell.
+    """
+    match = re.search(
+        rf"<td[^>]*>\s*{re.escape(label)}\s*</td>\s*<td[^>]*>(.*?)</td>",
+        html or "",
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        return None
+    text = re.sub(r"<[^>]+>", "", match.group(1))
+    text = text.replace("&nbsp;", " ").strip()
+    return text or None
+
+
+def _bounded_number(raw: Optional[str], *, minimum: float, maximum: float) -> Optional[float]:
+    """Parse a vendor number only when it is finite and economically plausible."""
+    if not raw:
+        return None
+    match = re.search(r"-?[\d,.]+", raw)
+    if not match:
+        return None
+    try:
+        value = float(match.group(0).replace(",", ""))
+    except ValueError:
+        return None
+    if value != value or not minimum <= value <= maximum:
+        return None
+    return value
+
+
 def _fetch_finviz(ticker: str) -> dict:
     """
     Scrape Finviz quote page for short interest, earnings date.
@@ -160,23 +195,21 @@ def _fetch_finviz(ticker: str) -> dict:
         resp.raise_for_status()
         html = resp.text
 
-        # Short Float %
-        m = re.search(r"Short Float.*?<td[^>]*>([\d.]+)%</td>", html, re.DOTALL)
-        if not m:
-            # Alternative pattern
-            m = re.search(r'Short Float</td>\s*<td[^>]*>([\d.]+)%', html, re.DOTALL)
-        if m:
-            result["short_float"] = float(m.group(1))
+        short_float = _bounded_number(
+            _finviz_snapshot_value(html, "Short Float"), minimum=0.0, maximum=100.0,
+        )
+        if short_float is not None:
+            result["short_float"] = short_float
 
-        # Days to Cover
-        m = re.search(r"Short Ratio.*?<td[^>]*>([\d.]+)</td>", html, re.DOTALL)
-        if m:
-            result["days_to_cover"] = float(m.group(1))
+        days_to_cover = _bounded_number(
+            _finviz_snapshot_value(html, "Short Ratio"), minimum=0.0, maximum=60.0,
+        )
+        if days_to_cover is not None:
+            result["days_to_cover"] = days_to_cover
 
-        # Earnings Date — finviz shows "Earnings" row with date
-        m = re.search(r"Earnings</td>\s*<td[^>]*>([^<]+)</td>", html, re.DOTALL)
-        if m:
-            result["earnings_date"] = m.group(1).strip()
+        earnings_date = _finviz_snapshot_value(html, "Earnings")
+        if earnings_date:
+            result["earnings_date"] = earnings_date
 
         LOGGER.debug(f"Finviz {ticker}: {result}")
         _cache_set(f"finviz:{ticker}", result)
@@ -697,4 +730,3 @@ def _get_catalyst_news_score(direction: str) -> tuple[float, list[str]]:
         f"bear={strong_bear}, adj={adj:+.3f}"
     )
     return adj, reasons
-

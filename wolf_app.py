@@ -23,7 +23,7 @@ logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 # missing from Railway logs after a deploy, the container is stale (the
 # Procfile boot echo is the shell-level twin of this check).
 LOGGER.info(
-    "[wolf_app] BOOT_BANNER PR129_DOCTRINE_LAYER "
+    "[wolf_app] BOOT_BANNER PR130_HUNTER_TRUTH_UI "
     "DEPLOY_VERSION=%s GIT_SHA=%s DEPLOY_ID=%s",
     os.getenv("DEPLOY_VERSION", "unset"),
     os.getenv("RAILWAY_GIT_COMMIT_SHA", "unset"),
@@ -1449,6 +1449,18 @@ async def lifespan(app: FastAPI):
 
     scheduler.register("super_ghost_ledger", _super_ghost_ledger_job, interval_s=3600)
     scheduler.register("reconcile", reconcile_outcomes, interval_s=900)
+    # Public Hunter reads are snapshot-only. This single-flight scheduler is the
+    # sole producer, using batched bars and cached optional evidence so a page
+    # view can never exhaust shared market-data provider limits.
+    from core.squeeze_hunter import refresh_hunter_snapshot as _hunter_refresh
+
+    def _hunter_snapshot_job():
+        result = _hunter_refresh(limit=20)
+        if not isinstance(result, dict) or not result.get("ok", False):
+            raise RuntimeError(f"squeeze hunter snapshot failed: {result}")
+        return result
+
+    scheduler.register("squeeze_hunter_snapshot", _hunter_snapshot_job, interval_s=900, timeout_s=300)
     # Squeeze Hunter resolver: resolve Hunter evaluations vs realized 1/5/14-day
     # returns so the audit trail accrues outcomes (the raw evidence for a future
     # Wilson/Brier calibration step). Writes only ghost_squeeze_hunter_* tables.
@@ -2791,12 +2803,12 @@ def _serve_html_page(filename: str) -> HTMLResponse:
     with open(_path, encoding="utf-8") as _f:
         html = _f.read()
     meta = _deploy_meta()
-    short = meta.get("git_sha_short") or "dev"
+    short = meta.get("build_id") or meta.get("git_sha_short") or "dev"
     stamp = f'<meta name="ghost-build" content="{short}">'
-    if 'name="ghost-build"' not in html:
+    import re as _re
+    if not _re.search(r'<meta\s+name="ghost-build"', html):
         html = html.replace("<head>", "<head>\n  " + stamp, 1)
     else:
-        import re as _re
         html = _re.sub(
             r'<meta name="ghost-build" content="[^"]*">',
             stamp,
@@ -3325,7 +3337,7 @@ def _record_v3_train_state(**fields) -> None:
 
 # PR #19 deploy-version constant. Bump on every "did Railway pick up
 # the new code?" PR so /api/_version reveals the truth in one curl.
-_RUNNING_PR_VERSION = 129
+_RUNNING_PR_VERSION = 130
 
 
 def _deploy_meta() -> dict:
@@ -3335,6 +3347,7 @@ def _deploy_meta() -> dict:
     meta = {
         "git_sha": sha,
         "git_sha_short": short,
+        "build_id": short if short != "unset" else f"pr-{_RUNNING_PR_VERSION}",
         "deploy_id": os.getenv("RAILWAY_DEPLOYMENT_ID", "unset"),
         "deploy_version_env": os.getenv("DEPLOY_VERSION", "unset"),
         "app_version": APP_VERSION,

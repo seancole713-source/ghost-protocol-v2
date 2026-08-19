@@ -258,6 +258,7 @@ def test_issue_hunter_samples_skips_weekend(monkeypatch):
 def test_issue_hunter_samples_issues_on_trading_day(monkeypatch):
     """One evaluation per symbol per session date, with honest issued_ts."""
     calls = []
+    monkeypatch.setattr(hl, "_existing_session_symbols", lambda session_date: set())
     monkeypatch.setattr(
         "core.squeeze_hunter.fetch_explosion_report",
         lambda sym, persist=False, issued_ts=None: calls.append((sym, persist, issued_ts)) or {
@@ -295,6 +296,7 @@ def test_issue_hunter_samples_skips_outside_window(monkeypatch):
 
 def test_issue_hunter_samples_counts_invalid_reference(monkeypatch):
     """P2: a missing reference price is counted as invalid_reference, not inserted."""
+    monkeypatch.setattr(hl, "_existing_session_symbols", lambda session_date: set())
     monkeypatch.setattr(
         "core.squeeze_hunter.fetch_explosion_report",
         lambda sym, persist=False, issued_ts=None: {
@@ -309,3 +311,19 @@ def test_issue_hunter_samples_counts_invalid_reference(monkeypatch):
     assert out["inserted"] == 0
     assert out["invalid_reference"] == 1
 
+
+def test_issue_hunter_samples_skips_already_persisted_before_fetch(monkeypatch):
+    calls = []
+    monkeypatch.setattr(hl, "_existing_session_symbols", lambda session_date: {"HTZ"})
+    monkeypatch.setattr(
+        "core.squeeze_hunter.fetch_explosion_report",
+        lambda sym, persist=False, issued_ts=None: calls.append(sym),
+    )
+    mon = int(datetime(2026, 8, 3, 20, 5, 0, tzinfo=timezone.utc).timestamp())
+
+    out = hl.issue_hunter_samples(symbols=["HTZ"], now_ts=mon)
+
+    assert out["requested"] == 1
+    assert out["attempted"] == 0
+    assert out["duplicate"] == 1
+    assert calls == []

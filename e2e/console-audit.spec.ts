@@ -227,6 +227,102 @@ test.describe("Console display audit", () => {
     }
   });
 
+  test("Squeeze Hunter uses a cached board and separates non-setups", async ({ page }) => {
+    const hunterRequests: string[] = [];
+    await page.route("**/api/squeeze/hunter/board?*", async (route) => {
+      hunterRequests.push(route.request().url());
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: true,
+          status: "ready",
+          scanned: 104,
+          qualified_count: 0,
+          generated_at_ts: Math.floor(Date.now() / 1000),
+          snapshot_age_s: 2,
+          snapshot_stale: false,
+          market_environment_score: null,
+          regime: null,
+          data_health: {
+            market_metrics: 100,
+            short_interest: 40,
+            confirmed_quotes: 0,
+            symbols: 104,
+            degraded: true,
+          },
+          candidates: [],
+          watchlist: [{
+            ok: true,
+            symbol: "MRVL",
+            qualified: false,
+            stage: "none",
+            stage_label: "No squeeze setup",
+            pressure_band: "low",
+            pressure_label: "Low squeeze potential",
+            fuel_score: 8,
+            trigger_score: 10,
+            confirmation_score: 14,
+            squeeze_pressure_score: 11,
+            explosion_score: 12,
+            evidence_coverage: { available: 2, total: 6 },
+            planning_levels: {
+              status: "unavailable",
+              evidence_status: "UNVERIFIED",
+              reasons: ["snapshot_quote_not_independently_verified"],
+            },
+          }],
+        }),
+      });
+    });
+
+    await page.goto("/picks", { waitUntil: "domcontentloaded" });
+    await switchTab(page, "hunter");
+
+    await expect(page.locator("#hunterList")).toContainText("0 qualified setups");
+    await expect(page.locator("#hunterList")).toContainText("Watchlist observations");
+    await expect(page.locator("#hunterList")).toContainText("MRVL");
+    await expect(page.locator("#hunterList")).not.toContainText("+20%");
+    expect(hunterRequests).toHaveLength(1);
+  });
+
+  test("Squeeze Hunter survives the main console refresh", async ({ page }) => {
+    await page.route("**/api/squeeze/hunter/board?*", async (route) => {
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: true,
+          scanned: 1,
+          qualified_count: 0,
+          generated_at_ts: Math.floor(Date.now() / 1000),
+          snapshot_age_s: 1,
+          snapshot_stale: false,
+          data_health: { market_metrics: 1, short_interest: 1, symbols: 1, degraded: false },
+          candidates: [],
+          watchlist: [{
+            ok: true,
+            symbol: "HTZ",
+            stage: "none",
+            pressure_band: "low",
+            pressure_label: "Low squeeze potential",
+            fuel_score: 10,
+            trigger_score: 5,
+            confirmation_score: 0,
+            explosion_score: 4,
+            evidence_coverage: { available: 2, total: 6 },
+            planning_levels: { status: "unavailable", evidence_status: "UNVERIFIED" },
+          }],
+        }),
+      });
+    });
+
+    await page.goto("/picks", { waitUntil: "domcontentloaded" });
+    await switchTab(page, "hunter");
+    await expect(page.locator("#hunterList")).toContainText("HTZ");
+    await page.locator("#refreshBtn").click();
+    await expect(page.locator("#hunterList")).toContainText("HTZ");
+    await expect(page.locator("#hunterList")).not.toContainText("No explosion candidates yet");
+  });
+
   test("Health section — all checks render with status labels", async ({ page }) => {
     await page.goto("/picks", { waitUntil: "domcontentloaded" });
     await expect(page.locator("#healthPill")).toContainText("Ghost online", { timeout: 30_000 });

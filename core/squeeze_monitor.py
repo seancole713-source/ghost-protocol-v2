@@ -82,6 +82,7 @@ SQUEEZE_BATCH_BARS = os.getenv("SQUEEZE_BATCH_BARS", "1").strip().lower() in (
 )
 _BATCH_SYMBOLS_PER_REQ = int(os.getenv("SQUEEZE_BATCH_SYMBOLS_PER_REQ", "50"))
 _batch_bars: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
+_batch_bars_lock = __import__("threading").Lock()
 _last_scan_report: Dict[str, Any] = {
     "ok": False,
     "message": "No scan completed yet",
@@ -480,21 +481,15 @@ async def _run_watchlist_scan() -> None:
     # Prewarm the whole watchlist's bars in a couple of multi-symbol requests so
     # the per-symbol loop reads from cache instead of hammering Alpaca (which
     # tripped the shared breaker and cascaded price traffic onto yfinance).
+    # A successful batch prewarm contains every field the radar needs. The
+    # helper owns and clears the shared batch store before any async fallback,
+    # preventing Hunter and radar refreshes from corrupting each other's data.
+    metrics_map: Dict[str, Optional[Dict[str, Any]]] = {}
     try:
-        _batch_fetch_bars(symbols)
+        metrics_map.update(batched_market_metrics(symbols))
     except Exception as exc:
         LOGGER.debug("[SqueezeMonitor] batch prewarm failed, per-symbol fallback: %s", exc)
-        _batch_bars.clear()
-    # A successful batch prewarm contains every field the radar needs. Only
-    # batch misses use the slow per-symbol provider chain.
-    metrics_map: Dict[str, Optional[Dict[str, Any]]] = {}
-    fallback_symbols: List[str] = []
-    for sym in symbols:
-        metrics = _metrics_from_batch_bars(sym)
-        if metrics is None:
-            fallback_symbols.append(sym)
-        else:
-            metrics_map[sym] = metrics
+    fallback_symbols = [sym for sym in symbols if sym not in metrics_map]
     pool = ThreadPoolExecutor(max_workers=workers)
     try:
         for sym in fallback_symbols:
@@ -515,9 +510,6 @@ async def _run_watchlist_scan() -> None:
                 await asyncio.sleep(fetch_delay)
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
-    # Scan complete — drop the prewarmed bars so nothing reads them stale.
-    _batch_bars.clear()
-
     short_ctx_map: Dict[str, Dict[str, Any]] = {}
     for symbol in symbols:
         metrics = metrics_map.get(symbol)
@@ -660,9 +652,13 @@ def _short_context(symbol: str) -> Dict[str, Any]:
                 sf = info.get("shortPercentOfFloat")
                 dtc = info.get("shortRatio")
                 if sf is not None:
-                    out["short_float_pct"] = round(float(sf) * 100, 2)
+                    value = float(sf) * 100
+                    if 0 <= value <= 100:
+                        out["short_float_pct"] = round(value, 2)
                 if dtc is not None:
-                    out["days_to_cover"] = round(float(dtc), 2)
+                    value = float(dtc)
+                    if 0 <= value <= 60:
+                        out["days_to_cover"] = round(value, 2)
                 # Squeeze Hunter fuel fields (free).
                 ss = info.get("sharesShort")
                 ssp = info.get("sharesShortPriorMonth")
@@ -698,7 +694,11 @@ def _short_context(symbol: str) -> Dict[str, Any]:
         for k, v in fv.items():
             if v is not None:
                 out[k] = v
-    out["squeeze_risk"] = _squeeze_risk_tag(out["short_float_pct"], out["days_to_cover"])
+    out["squeeze_risk"] = (
+        _squeeze_risk_tag(out["short_float_pct"], out["days_to_cover"])
+        if out["short_float_pct"] is not None or out["days_to_cover"] is not None
+        else None
+    )
     _short_cache[sym] = (time.time(), out)
     return out
 
@@ -883,6 +883,20 @@ def _metrics_from_batch_bars(symbol: str) -> Optional[Dict[str, Any]]:
         "peak_move_pct": (session_high - prior_close) / prior_close * 100,
         "current_move_pct": (price - prior_close) / prior_close * 100,
     }
+
+
+def batched_market_metrics(symbols: List[str]) -> Dict[str, Dict[str, Any]]:
+    """Return an isolated batch snapshot without leaking shared scan state."""
+    with _batch_bars_lock:
+        try:
+            _batch_fetch_bars(symbols)
+            return {
+                symbol: metrics
+                for symbol in symbols
+                if (metrics := _metrics_from_batch_bars(symbol)) is not None
+            }
+        finally:
+            _batch_bars.clear()
 
 
 def _alpaca_multi_bars(

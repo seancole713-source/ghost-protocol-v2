@@ -25,9 +25,15 @@ Honesty contract:
 """
 from __future__ import annotations
 
+import json
+import logging
 import math
+import os
+import threading
 import time
 from typing import Any, Dict, Optional
+
+LOGGER = logging.getLogger("ghost.squeeze_hunter")
 
 # ── Pressure bands (operator spec §2) ──────────────────────────────────────
 PRESSURE_BANDS = (
@@ -262,8 +268,9 @@ def classify_stage(
     # Ignition: price beginning to move + volume increasing (trigger present).
     if trigger_s >= 30 and move >= 2 and rv >= 1.5:
         return _stage("ignition")
-    # Setup: fuel present, no move yet.
-    if fuel_s >= 40:
+    # Setup: fuel plus an independent catalyst/trigger. Fuel alone is only a
+    # watchlist observation, never a qualified setup.
+    if fuel_s >= 40 and trigger_s >= 15:
         return _stage("setup")
     # Default: not enough fuel or movement to be a squeeze candidate.
     return {
@@ -309,6 +316,8 @@ def explosion_projection(score: float) -> Dict[str, Any]:
         "p_plus_100_pct": round(p100, 1),
         "p_minus_20_pct": round(pneg20, 1),
         "calibrated": False,
+        "display_as_probability": False,
+        "publication_status": "research_only_unpublished",
         "disclaimer": (
             "This is NOT guaranteed to double. High short interest can produce "
             "violent moves in either direction, and squeeze conditions can "
@@ -317,6 +326,23 @@ def explosion_projection(score: float) -> Dict[str, Any]:
             "holdout validation, or confidence interval behind them."
         ),
     }
+
+
+def public_hunter_report(report: Dict[str, Any]) -> Dict[str, Any]:
+    """Remove unpublished heuristic percentages from a public Hunter response."""
+    public = dict(report or {})
+    projection = dict(public.get("projection") or {})
+    for key in tuple(projection):
+        if key.startswith("p_") and key.endswith("_pct"):
+            projection.pop(key, None)
+    projection.update({
+        "calibrated": False,
+        "display_as_probability": False,
+        "publication_status": "withheld_pending_calibration",
+        "message": "Outcome percentages are withheld until holdout calibration is proven.",
+    })
+    public["projection"] = projection
+    return public
 
 
 def build_explosion_report(
@@ -537,7 +563,15 @@ def _options_to_trigger(flow: Dict[str, Any]) -> Dict[str, Any]:
     return {"call_volume_score": _clamp(score), "options_available": True}
 
 
-def fetch_explosion_report(symbol: str, *, persist: bool = False, issued_ts: Optional[int] = None) -> Dict[str, Any]:
+def fetch_explosion_report(
+    symbol: str,
+    *,
+    persist: bool = False,
+    issued_ts: Optional[int] = None,
+    cached_only: bool = False,
+    market_metrics: Optional[Dict[str, Any]] = None,
+    market_regime: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """Assemble a full explosion report for one symbol from free data sources.
 
     Best-effort: every source is optional and failures degrade to neutral
@@ -549,19 +583,26 @@ def fetch_explosion_report(symbol: str, *, persist: bool = False, issued_ts: Opt
     version/market-time slot) should set persist=True; otherwise repeated page
     loads would inflate sample size and invalidate Wilson bounds.
 
-    `issued_ts` lets the scheduler pin a stable issuance timestamp so the
-    idempotency key (symbol, scoring_version, issued_ts) is deterministic per
-    market-time slot rather than per-call.
+    `cached_only` is used by the scheduled board refresh. It reads already
+    warmed short data and batched market bars, and deliberately skips per-symbol
+    yfinance/options calls. Public GET traffic never invokes this fetch path.
     """
     sym = (symbol or "").strip().upper()
     if not sym:
         return {"ok": False, "error": "symbol required"}
 
-    # Fuel: short context (yfinance + finviz fallback).
+    # Fuel: interactive/sampler requests may fetch; board refreshes only consume
+    # the already-warmed cache so one scan cannot stampede external providers.
     short_ctx: Dict[str, Any] = {}
     try:
-        from core.squeeze_monitor import _short_context
-        short_ctx = _short_context(sym) or {}
+        if cached_only:
+            from core.squeeze_monitor import _cached_short_context
+
+            short_ctx = _cached_short_context(sym) or {}
+        else:
+            from core.squeeze_monitor import _short_context
+
+            short_ctx = _short_context(sym) or {}
     except Exception:
         short_ctx = {}
 
@@ -583,86 +624,99 @@ def fetch_explosion_report(symbol: str, *, persist: bool = False, issued_ts: Opt
     except Exception:
         trigger_ctx.update({"catalyst_score": 0.0, "earnings_surprise": 0.0, "catalyst_available": False, "catalyst_timing_score": 0.0})
 
-    # Earnings surprise: actual vs expected (relative, not absolute sign).
-    try:
-        from core.earnings_surprise import earnings_surprise_to_trigger
-        earn = earnings_surprise_to_trigger(sym)
-        trigger_ctx.update(earn)
-    except Exception:
+    # Earnings and options are vendor-heavy. The scheduled board stays
+    # conservative when they are not already part of a persisted evidence feed.
+    if cached_only:
         trigger_ctx.update({"earnings_surprise": 0.0, "earnings_available": False})
+    else:
+        try:
+            from core.earnings_surprise import earnings_surprise_to_trigger
 
-    try:
-        from core.prices import get_extended_session
-        sess = get_extended_session(sym) or {}
-        # Only treat gap_pct as a PREMARKET gap when we are actually in the
-        # premarket session. During RTH/after-hours, gap_pct is the session
-        # move vs prior close and would double-count price movement.
-        if str(sess.get("session") or "").lower() == "premarket":
-            trigger_ctx["premarket_gap_pct"] = _f(sess.get("gap_pct"))
-        else:
-            trigger_ctx["premarket_gap_pct"] = 0.0
-    except Exception:
-        trigger_ctx["premarket_gap_pct"] = 0.0
+            trigger_ctx.update(earnings_surprise_to_trigger(sym))
+        except Exception:
+            trigger_ctx.update({"earnings_surprise": 0.0, "earnings_available": False})
 
-    try:
-        from core.options_flow import probe_options_flow
-        flow = probe_options_flow(sym)
-        trigger_ctx.update(_options_to_trigger(flow))
-    except Exception:
+    if cached_only:
         trigger_ctx.update({"call_volume_score": 0.0, "options_available": False})
+    else:
+        try:
+            from core.options_flow import probe_options_flow
 
-    # Confirmation + move/rvol: prefer the squeeze radar's live metrics
-    # (rvol, vwap, above_vwap) when the symbol is an active radar pick; fall
-    # back to the intraday session for move/breakout vs prior close.
+            flow = probe_options_flow(sym)
+            trigger_ctx.update(_options_to_trigger(flow))
+        except Exception:
+            trigger_ctx.update({"call_volume_score": 0.0, "options_available": False})
+
+    # Confirmation + move/RVOL. Scheduled snapshots pass metrics built from a
+    # handful of batched Alpaca bar requests. Interactive/sampler requests use
+    # the full point-in-time session helper.
     confirm_ctx: Dict[str, Any] = {}
     move_pct = 0.0
     rvol = 0.0
     breakout_pct = 0.0
-    try:
-        from core.squeeze_monitor import get_squeeze_picks
-        board = get_squeeze_picks() or {}
-        picks = board.get("picks") or []
-        pick = next((p for p in picks if (p.get("symbol") or "").upper() == sym), None)
-        if pick:
-            rvol = _f(pick.get("rvol"))
-            vwap = pick.get("vwap")
-            price = _f(pick.get("price"))
-            if vwap is not None and price:
-                confirm_ctx["above_vwap"] = price >= _f(vwap)
-            move_pct = _f(pick.get("peak_move_pct"))
-            confirm_ctx["rvol"] = rvol
-    except Exception:
-        pass
-
     reference_price = None
     reference_price_ts = None
     reference_validation = validate_reference_quote({}, issued_ts=issued_ts)
-    try:
-        from core.prices import get_intraday_session
-        sess = get_intraday_session(sym) or {}
-        validation_ts = int(issued_ts or time.time())
-        reference_validation = validate_reference_quote(sess, issued_ts=validation_ts)
-        price = _f(sess.get("price"))
-        prev = _f(sess.get("previous_close"))
-        if price and prev and prev > 0:
-            if move_pct == 0.0:
-                move_pct = (price - prev) / prev * 100.0
-            # Breakout: price above prior close (a real reference), NOT today's
-            # high (which is ~0 by construction and never signals a breakout).
-            breakout_pct = max(0.0, (price - prev) / prev * 100.0)
-        # Reference price for later outcome resolution. Only a live point-in-time
-        # quote is a valid anchor — previous close is a DIFFERENT economic
-        # timestamp (a stock already up 15% premarket would get a wrong anchor).
-        # A missing live quote makes the evaluation unresolvable, not fallback.
-        reference_price = reference_validation.get("price")
-        reference_price_ts = reference_validation.get("price_as_of_ts")
-        confirm_ctx["breakout_pct"] = breakout_pct
-        if "rvol" not in confirm_ctx:
-            confirm_ctx["rvol"] = rvol
-    except Exception:
-        reference_price = None
-        reference_price_ts = None
-        reference_validation = validate_reference_quote({}, issued_ts=issued_ts)
+    if market_metrics is not None:
+        metrics = market_metrics or {}
+        rvol = _f(metrics.get("rvol"))
+        move_pct = _f(metrics.get("peak_move_pct") or metrics.get("current_move_pct"))
+        breakout_pct = max(0.0, _f(metrics.get("current_move_pct")))
+        price = _f(metrics.get("price"))
+        vwap = metrics.get("vwap")
+        if vwap is not None and price:
+            confirm_ctx["above_vwap"] = price >= _f(vwap)
+        confirm_ctx.update({"rvol": rvol, "breakout_pct": breakout_pct})
+        session_name = str(metrics.get("session") or "").lower()
+        trigger_ctx["premarket_gap_pct"] = (
+            _f(metrics.get("current_move_pct")) if session_name == "premarket" else 0.0
+        )
+        reference_validation = {
+            **reference_validation,
+            "reasons": ["snapshot_quote_not_independently_verified"],
+            "session": session_name or None,
+            "market_date": metrics.get("market_date"),
+        }
+    else:
+        try:
+            from core.squeeze_monitor import get_squeeze_picks
+
+            board = get_squeeze_picks() or {}
+            picks = board.get("picks") or []
+            pick = next((p for p in picks if (p.get("symbol") or "").upper() == sym), None)
+            if pick:
+                rvol = _f(pick.get("rvol"))
+                vwap = pick.get("vwap")
+                price = _f(pick.get("price"))
+                if vwap is not None and price:
+                    confirm_ctx["above_vwap"] = price >= _f(vwap)
+                move_pct = _f(pick.get("peak_move_pct"))
+        except Exception:
+            pass
+
+        try:
+            from core.prices import get_intraday_session
+
+            sess = get_intraday_session(sym) or {}
+            validation_ts = int(issued_ts or time.time())
+            reference_validation = validate_reference_quote(sess, issued_ts=validation_ts)
+            price = _f(sess.get("price"))
+            prev = _f(sess.get("previous_close"))
+            if price and prev and prev > 0:
+                if move_pct == 0.0:
+                    move_pct = (price - prev) / prev * 100.0
+                breakout_pct = max(0.0, (price - prev) / prev * 100.0)
+            reference_price = reference_validation.get("price")
+            reference_price_ts = reference_validation.get("price_as_of_ts")
+            confirm_ctx.update({"rvol": rvol, "breakout_pct": breakout_pct})
+            trigger_ctx["premarket_gap_pct"] = (
+                _f(sess.get("change_pct"))
+                if str(sess.get("session") or "").lower() == "premarket"
+                else 0.0
+            )
+        except Exception:
+            reference_validation = validate_reference_quote({}, issued_ts=issued_ts)
+            trigger_ctx["premarket_gap_pct"] = 0.0
 
     # score_trigger() reads rvol and breakout_pct from trigger_ctx — place them
     # there too, or the trigger score's RVOL/breakout terms are always 0.
@@ -671,7 +725,9 @@ def fetch_explosion_report(symbol: str, *, persist: bool = False, issued_ts: Opt
 
     # Factors for the explosion score.
     fuel = score_fuel(short_ctx)
-    env_score = market_environment_score(_fetch_market_regime())
+    env_score = market_environment_score(
+        market_regime if cached_only else _fetch_market_regime(),
+    )
     factors = {
         "short_squeeze_potential": fuel,
         "catalyst": _f(trigger_ctx.get("catalyst_score")),
@@ -697,6 +753,27 @@ def fetch_explosion_report(symbol: str, *, persist: bool = False, issued_ts: Opt
     report["short_ctx"] = short_ctx
     report["trigger_ctx"] = trigger_ctx
     report["confirm_ctx"] = confirm_ctx
+    evidence = {
+        "short_interest": any(
+            short_ctx.get(key) is not None
+            for key in ("short_float_pct", "days_to_cover")
+        ),
+        "catalyst": trigger_ctx.get("catalyst_available") is True,
+        "earnings": trigger_ctx.get("earnings_available") is True,
+        "options": trigger_ctx.get("options_available") is True,
+        "market_metrics": bool(market_metrics) or any(
+            _f(confirm_ctx.get(key)) > 0 for key in ("rvol", "breakout_pct")
+        ),
+        "market_regime": env_score is not None,
+    }
+    available_count = sum(1 for value in evidence.values() if value)
+    report["evidence_coverage"] = {
+        "available": available_count,
+        "total": len(evidence),
+        "ratio": round(available_count / len(evidence), 3),
+        "sources": evidence,
+    }
+    report["qualified"] = report.get("stage") != "none"
     report["reference_price"] = reference_price
     report["reference_price_ts"] = reference_price_ts
     report["reference_validation"] = reference_validation
@@ -743,16 +820,17 @@ def _float_structure_score(short_ctx: Dict[str, Any]) -> float:
     return 10.0
 
 
-def market_environment_score(regime: Optional[Dict[str, Any]] = None) -> float:
+def market_environment_score(regime: Optional[Dict[str, Any]] = None) -> Optional[float]:
     """0-100 market-environment factor from the broad regime.
 
     Risk-on / calm tape is more favorable for explosive moves; risk-off /
-    high-volatility tape is less. Unknown regime = neutral 50.
+    high-volatility tape is less. Unknown evidence stays unknown and contributes
+    zero to the conservative composite instead of receiving phantom credit.
     """
     r = regime or {}
     label = str(r.get("label") or r.get("risk_state") or "").lower()
     if not label or label == "unknown":
-        return 50.0
+        return None
     if label in ("calm_risk_on", "risk_on"):
         return 80.0
     if label == "mixed":
@@ -761,7 +839,7 @@ def market_environment_score(regime: Optional[Dict[str, Any]] = None) -> float:
         return 35.0
     if label == "risk_off_high_volatility":
         return 20.0
-    return 50.0
+    return None
 
 
 def _fetch_market_regime() -> Optional[Dict[str, Any]]:
@@ -787,45 +865,236 @@ def _fetch_market_regime() -> Optional[Dict[str, Any]]:
         return None
 
 
-def scan_watchlist(symbols: Optional[list] = None, limit: int = 20) -> Dict[str, Any]:
-    """Score the whole watchlist and return top explosion candidates.
+_HUNTER_SNAPSHOT_TTL_S = int(os.getenv("HUNTER_SNAPSHOT_TTL_S", "1800"))
+_HUNTER_SNAPSHOT_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(__file__)), "data", "squeeze_hunter_snapshot.json",
+)
+_HUNTER_SNAPSHOT_LOCK = threading.Lock()
+_hunter_snapshot: Dict[str, Any] = {}
 
-    Read-only intelligence. Each symbol is fetched best-effort; failures
-    degrade to a low/neutral report rather than raising. Sorted by explosion
-    score descending. This is NOT a full-market scan — it uses the configured
-    watchlist (104 symbols) to stay within rate limits.
+
+def _batched_market_context(symbols: list[str]) -> Dict[str, Dict[str, Any]]:
+    """Build market context with bounded Alpaca batch calls, never per-symbol I/O."""
+    try:
+        from core.market_hours import is_us_premarket, is_us_rth, session_hm
+        from core.squeeze_monitor import (
+            batched_market_metrics,
+            compute_rvol,
+            rth_elapsed_fraction,
+        )
+
+        batch = batched_market_metrics(symbols)
+        elapsed = rth_elapsed_fraction()
+        now_ct = session_hm()[0]
+        session_name = "rth" if is_us_rth() else (
+            "premarket" if is_us_premarket() else "afterhours"
+        )
+        out: Dict[str, Dict[str, Any]] = {}
+        for symbol in symbols:
+            metrics = batch.get(symbol)
+            if not metrics:
+                continue
+            out[symbol] = {
+                **metrics,
+                "rvol": compute_rvol(
+                    metrics["session_volume"], metrics["avg_daily_volume"], elapsed,
+                ),
+                "session": session_name,
+                "market_date": now_ct.date().isoformat(),
+            }
+        return out
+    except Exception as exc:
+        LOGGER.warning("Hunter batch market context unavailable: %s", str(exc)[:120])
+        return {}
+
+
+def scan_watchlist(symbols: Optional[list] = None, limit: int = 20) -> Dict[str, Any]:
+    """Build a conservative Hunter board without per-symbol vendor calls.
+
+    This function is for the scheduler only. The public endpoint reads the last
+    completed snapshot through :func:`get_hunter_snapshot`.
     """
+    started = time.time()
     if symbols is None:
         try:
-            from config.symbols import watchlist_symbols
-            symbols = sorted(watchlist_symbols())
+            from config.symbols import get_edge_set
+
+            # Match the actively monitored research universe. The larger UI
+            # watchlist contains symbols whose short context is intentionally
+            # not prewarmed, which would make rankings mostly unknown data.
+            symbols = sorted(get_edge_set())
         except Exception:
             symbols = []
+    symbols = [str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()]
     regime = _fetch_market_regime()
     env_score = market_environment_score(regime)
+    market_context = _batched_market_context(symbols)
 
     rows: list = []
     errors: list = []
     for sym in symbols:
         try:
-            rep = fetch_explosion_report(sym)
-            # Override the neutral market-environment factor with the real one.
-            if rep.get("ok"):
-                factors = dict(rep.get("factors") or {})
-                factors["market_environment"] = env_score
-                rep["factors"] = factors
-                rep["explosion_score"] = explosion_score(factors)
-                rep["projection"] = explosion_projection(rep["explosion_score"])
-            rows.append(rep)
+            rep = fetch_explosion_report(
+                sym,
+                cached_only=True,
+                market_metrics=market_context.get(sym, {}),
+                market_regime=regime,
+            )
+            rows.append(public_hunter_report(rep))
         except Exception as exc:
             errors.append({"symbol": sym, "error": str(exc)[:120]})
 
     rows.sort(key=lambda r: _f(r.get("explosion_score")), reverse=True)
+    qualified = [row for row in rows if row.get("qualified") is True]
+    observations = [row for row in rows if row.get("qualified") is not True]
+    short_coverage = sum(
+        1 for row in rows
+        if ((row.get("evidence_coverage") or {}).get("sources") or {}).get("short_interest")
+    )
+    confirmed_quotes = sum(
+        1 for row in rows
+        if (row.get("planning_levels") or {}).get("evidence_status") == "CONFIRMED"
+    )
     return {
         "ok": True,
+        "status": "ready",
         "scanned": len(rows),
+        "returned": min(limit, len(qualified)) + min(limit, len(observations)),
+        "qualified_count": len(qualified),
         "errors": errors,
         "market_environment_score": env_score,
         "regime": regime,
-        "candidates": rows[:limit],
+        "candidates": qualified[:limit],
+        "watchlist": observations[:limit],
+        "_rows": rows,
+        "data_health": {
+            "market_metrics": len(market_context),
+            "short_interest": short_coverage,
+            "confirmed_quotes": confirmed_quotes,
+            "symbols": len(rows),
+            "degraded": bool(
+                rows and (
+                    len(market_context) < len(rows) * 0.8
+                    or short_coverage < len(rows) * 0.5
+                )
+            ),
+        },
+        "duration_ms": int((time.time() - started) * 1000),
     }
+
+
+def _persist_hunter_snapshot(snapshot: Dict[str, Any]) -> None:
+    try:
+        os.makedirs(os.path.dirname(_HUNTER_SNAPSHOT_PATH), exist_ok=True)
+        tmp = f"{_HUNTER_SNAPSHOT_PATH}.tmp"
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump(snapshot, handle, separators=(",", ":"))
+        os.replace(tmp, _HUNTER_SNAPSHOT_PATH)
+    except Exception as exc:
+        LOGGER.debug("Hunter snapshot persist failed: %s", str(exc)[:120])
+
+
+def _load_hunter_snapshot() -> None:
+    global _hunter_snapshot
+    if _hunter_snapshot or not os.path.isfile(_HUNTER_SNAPSHOT_PATH):
+        return
+    try:
+        with open(_HUNTER_SNAPSHOT_PATH, encoding="utf-8") as handle:
+            loaded = json.load(handle)
+        if isinstance(loaded, dict) and loaded.get("generated_at_ts"):
+            _hunter_snapshot = loaded
+    except Exception as exc:
+        LOGGER.debug("Hunter snapshot load failed: %s", str(exc)[:120])
+
+
+def get_hunter_snapshot(limit: int = 20) -> Dict[str, Any]:
+    """Return the last complete board immediately; never call a market provider."""
+    _load_hunter_snapshot()
+    if not _hunter_snapshot:
+        return {
+            "ok": False,
+            "status": "warming",
+            "message": "Hunter board is warming; no completed snapshot is available yet.",
+            "candidates": [],
+            "watchlist": [],
+        }
+    payload = json.loads(json.dumps({
+        key: value for key, value in _hunter_snapshot.items() if key != "_rows"
+    }))
+    age_s = max(0, int(time.time()) - int(payload.get("generated_at_ts") or 0))
+    payload["snapshot_age_s"] = age_s
+    payload["snapshot_stale"] = age_s > _HUNTER_SNAPSHOT_TTL_S
+    payload["candidates"] = list(payload.get("candidates") or [])[:limit]
+    payload["watchlist"] = list(payload.get("watchlist") or [])[:limit]
+    return payload
+
+
+def get_hunter_symbol_snapshot(symbol: str) -> Dict[str, Any]:
+    """Return one symbol from the completed board without provider I/O."""
+    sym = (symbol or "").strip().upper()
+    _load_hunter_snapshot()
+    rows = list(_hunter_snapshot.get("_rows") or [])
+    if not rows:
+        rows = list(_hunter_snapshot.get("candidates") or []) + list(
+            _hunter_snapshot.get("watchlist") or [],
+        )
+    row = next((item for item in rows if item.get("symbol") == sym), None)
+    if row is None:
+        return {
+            "ok": False,
+            "status": "not_in_snapshot" if _hunter_snapshot else "warming",
+            "symbol": sym,
+            "error": "No completed Hunter snapshot is available for this symbol.",
+        }
+    result = json.loads(json.dumps(row))
+    generated = int(_hunter_snapshot.get("generated_at_ts") or 0)
+    result["generated_at_ts"] = generated or None
+    result["snapshot_age_s"] = max(0, int(time.time()) - generated) if generated else None
+    result["snapshot_stale"] = bool(
+        generated and int(time.time()) - generated > _HUNTER_SNAPSHOT_TTL_S
+    )
+    return result
+
+
+def refresh_hunter_snapshot(*, symbols: Optional[list] = None, limit: int = 20) -> Dict[str, Any]:
+    """Single-flight scheduled refresh for the public Hunter board."""
+    global _hunter_snapshot
+    if symbols is None:
+        try:
+            from core.market_hours import is_us_extended_hours, session_hm
+
+            if not is_us_extended_hours():
+                current = get_hunter_snapshot(limit=limit)
+                if current.get("ok"):
+                    current["refresh_skipped"] = "market_closed"
+                    return current
+                return {
+                    "ok": True,
+                    "status": "waiting_for_market",
+                    "message": "Hunter refresh waits for US extended market hours.",
+                    "candidates": [],
+                    "watchlist": [],
+                }
+            now_ct = session_hm()[0]
+            hm = now_ct.hour * 60 + now_ct.minute
+            if 15 * 60 + 5 <= hm < 16 * 60:
+                current = get_hunter_snapshot(limit=limit)
+                if current.get("ok"):
+                    current["refresh_skipped"] = "calibration_issuance_window"
+                    return current
+        except Exception:
+            pass
+    if not _HUNTER_SNAPSHOT_LOCK.acquire(blocking=False):
+        current = get_hunter_snapshot(limit=limit)
+        current["refresh_in_progress"] = True
+        return current
+    try:
+        snapshot = scan_watchlist(symbols=symbols, limit=limit)
+        snapshot["generated_at_ts"] = int(time.time())
+        snapshot["snapshot_age_s"] = 0
+        snapshot["snapshot_stale"] = False
+        _hunter_snapshot = snapshot
+        _persist_hunter_snapshot(snapshot)
+        return get_hunter_snapshot(limit=limit)
+    finally:
+        _HUNTER_SNAPSHOT_LOCK.release()

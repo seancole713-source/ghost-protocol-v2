@@ -485,20 +485,31 @@ def squeeze_daily_log_endpoint(
         return JSONResponse({"ok": False, "error": str(e)[:200], "rows": []}, status_code=500)
 
 
-@router.get("/api/squeeze/hunter/scan")
+@router.get("/api/squeeze/hunter/board")
+@router.get("/api/squeeze/hunter/scan", deprecated=True)
 def squeeze_hunter_scan_endpoint(limit: int = 20):
-    """GHOST SQUEEZE HUNTER — rank the whole watchlist by explosion score.
-
-    Read-only intelligence. Scores every watchlist symbol (fuel/trigger/
-    confirmation + pressure + stage + explosion) and returns the top
-    candidates sorted by explosion score. Best-effort; failures degrade to
-    low/neutral reports. Not a full-market scan (watchlist only, rate-limited).
-    """
+    """Return the last completed Hunter board without calling market vendors."""
     try:
-        from core.squeeze_hunter import scan_watchlist
-        return scan_watchlist(limit=max(1, min(100, int(limit))))
+        from core.squeeze_hunter import get_hunter_snapshot
+
+        return get_hunter_snapshot(limit=max(1, min(100, int(limit))))
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
+@router.post("/api/squeeze/hunter/refresh")
+def squeeze_hunter_refresh_endpoint(x_cron_secret: str = Header(default="")):
+    """Cron-gated board refresh; public traffic cannot trigger provider work."""
+    from wolf_app import _cron_ok
+
+    if not _cron_ok(x_cron_secret, strict=True):
+        raise HTTPException(status_code=403)
+    try:
+        from core.squeeze_hunter import refresh_hunter_snapshot
+
+        return refresh_hunter_snapshot(limit=20)
+    except Exception:
+        return JSONResponse({"ok": False, "error": "refresh_failed"}, status_code=503)
 
 
 @router.get("/api/bull-run/checklist/{symbol}")
@@ -680,17 +691,19 @@ def squeeze_hunter_endpoint(symbol: str):
     """GHOST SQUEEZE HUNTER — fuel/trigger/confirmation + pressure score +
     7-stage lifecycle + explosion projection for one symbol.
 
-    Read-only intelligence. Never fires a pick or loosens any gate. Uses free
-    data only (yfinance short/float/institutional, catalyst scoring, options
-    flow, intraday session). Borrow fee / utilization / shares-available are
-    intentionally absent (require a paid source) and are not fabricated.
+    Read-only intelligence from the completed scheduled snapshot. Public
+    requests never call market providers or persist calibration samples.
     """
     sym = (symbol or "").strip().upper()
     if not sym:
         return JSONResponse({"ok": False, "error": "symbol required"}, status_code=400)
     try:
-        from core.squeeze_hunter import fetch_explosion_report
-        return fetch_explosion_report(sym)
+        from core.squeeze_hunter import get_hunter_symbol_snapshot
+
+        result = get_hunter_symbol_snapshot(sym)
+        if not result.get("ok", False):
+            return JSONResponse(result, status_code=404 if result.get("status") == "not_in_snapshot" else 503)
+        return result
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
 

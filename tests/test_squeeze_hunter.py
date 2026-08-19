@@ -60,12 +60,18 @@ def test_stage_classification_order():
     )
     assert s["stage"] == "reversal"
 
-    # Setup: fuel present, no move.
+    # Fuel alone is not a setup; an independent trigger is required.
+    s = sh.classify_stage(
+        fuel=60, trigger=20, confirmation=0,
+        move_pct=0, rvol=1.0, breakout_pct=0,
+    )
+    assert s["stage"] == "setup"
+
     s = sh.classify_stage(
         fuel=60, trigger=0, confirmation=0,
         move_pct=0, rvol=1.0, breakout_pct=0,
     )
-    assert s["stage"] == "setup"
+    assert s["stage"] == "none"
 
     # None: no fuel, no move.
     s = sh.classify_stage(
@@ -160,6 +166,14 @@ def test_projection_is_not_calibrated():
     assert "NOT statistically calibrated" in proj["disclaimer"]
 
 
+def test_public_report_withholds_uncalibrated_percentages():
+    public = sh.public_hunter_report({"projection": sh.explosion_projection(80.0)})
+
+    assert public["projection"]["calibrated"] is False
+    assert public["projection"]["publication_status"] == "withheld_pending_calibration"
+    assert not any(key.endswith("_pct") for key in public["projection"])
+
+
 def test_reference_quote_requires_true_observation_timestamp():
     out = sh.validate_reference_quote(
         {"price": 12.5, "session": "afterhours", "market_date": "2026-08-03"},
@@ -250,5 +264,90 @@ def test_market_environment_uses_vix():
     assert sh.market_environment_score({"label": "risk_on"}) == 80.0
     assert sh.market_environment_score({"label": "mixed"}) == 55.0
     assert sh.market_environment_score({"label": "risk_off"}) == 35.0
-    assert sh.market_environment_score(None) == 50.0
-    assert sh.market_environment_score({"label": "unknown"}) == 50.0
+    assert sh.market_environment_score(None) is None
+    assert sh.market_environment_score({"label": "unknown"}) is None
+
+
+def test_unknown_market_environment_adds_no_score_credit():
+    factors = {name: 0.0 for name in sh.EXPLOSION_FACTORS}
+    factors["market_environment"] = sh.market_environment_score(None)
+
+    assert sh.explosion_score(factors) == 0.0
+
+
+def test_scheduled_scan_uses_cached_batched_inputs(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(
+        sh,
+        "_batched_market_context",
+        lambda symbols: {"HTZ": {"price": 10, "rvol": 3, "current_move_pct": 5}},
+    )
+    monkeypatch.setattr(sh, "_fetch_market_regime", lambda: None)
+
+    def _report(symbol, **kwargs):
+        calls.append((symbol, kwargs))
+        return {
+            "ok": True,
+            "symbol": symbol,
+            "qualified": False,
+            "stage": "none",
+            "explosion_score": 12.0,
+            "planning_levels": {"evidence_status": "UNVERIFIED"},
+            "evidence_coverage": {
+                "sources": {"short_interest": False},
+            },
+        }
+
+    monkeypatch.setattr(sh, "fetch_explosion_report", _report)
+    result = sh.scan_watchlist(symbols=["HTZ"], limit=5)
+
+    assert result["ok"] is True
+    assert result["candidates"] == []
+    assert result["watchlist"][0]["symbol"] == "HTZ"
+    assert calls[0][1]["cached_only"] is True
+    assert calls[0][1]["market_metrics"]["rvol"] == 3
+
+
+def test_snapshot_reader_never_rebuilds(monkeypatch):
+    monkeypatch.setattr(
+        sh,
+        "_hunter_snapshot",
+        {
+            "ok": True,
+            "generated_at_ts": int(sh.time.time()),
+            "candidates": [{"symbol": "A"}, {"symbol": "B"}],
+            "watchlist": [{"symbol": "C"}],
+        },
+    )
+    monkeypatch.setattr(
+        sh,
+        "scan_watchlist",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not scan")),
+    )
+
+    result = sh.get_hunter_snapshot(limit=1)
+
+    assert result["candidates"] == [{"symbol": "A"}]
+    assert result["watchlist"] == [{"symbol": "C"}]
+    assert result["snapshot_stale"] is False
+
+
+def test_symbol_snapshot_reads_private_board_rows(monkeypatch):
+    monkeypatch.setattr(
+        sh,
+        "_hunter_snapshot",
+        {
+            "ok": True,
+            "generated_at_ts": int(sh.time.time()),
+            "_rows": [{"ok": True, "symbol": "HTZ", "explosion_score": 55}],
+            "candidates": [],
+            "watchlist": [],
+        },
+    )
+
+    result = sh.get_hunter_symbol_snapshot("htz")
+
+    assert result["ok"] is True
+    assert result["symbol"] == "HTZ"
+    assert result["snapshot_age_s"] >= 0
