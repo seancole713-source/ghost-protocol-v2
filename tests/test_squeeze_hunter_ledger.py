@@ -48,7 +48,9 @@ def test_log_hunter_evaluation_inserts(monkeypatch):
         symbol="HTZ",
         report={"fuel_score": 70.0, "trigger_score": 80.0, "confirmation_score": 60.0,
                 "squeeze_pressure_score": 72.0, "pressure_band": "high", "stage": "squeeze",
-                "explosion_score": 88.0, "factors": {}, "projection": {}},
+                "explosion_score": 88.0, "factors": {}, "projection": {},
+                "planning_levels": {"status": "available", "entry_price": 100.0,
+                                    "target_price": 102.0, "stop_price": 98.7}},
         short_ctx={"short_float_pct": 34.0},
         trigger_ctx={"catalyst_score": 90.0},
         confirm_ctx={"breakout_pct": 5.0},
@@ -60,6 +62,8 @@ def test_log_hunter_evaluation_inserts(monkeypatch):
     )
     assert rid == 1
     assert any("INSERT INTO ghost_squeeze_hunter_evaluations" in s for s in cur.executed)
+    insert_sql = next(s for s in cur.executed if "INSERT INTO ghost_squeeze_hunter_evaluations" in s)
+    assert "planning_levels" in insert_sql
 
 
 def test_log_hunter_evaluation_skips_missing_reference(monkeypatch):
@@ -160,6 +164,7 @@ def test_ensure_hunter_tables_runs_migrations():
     hl.ensure_hunter_tables(cur)
     sqls = " ".join(cur.executed)
     assert "ALTER TABLE ghost_squeeze_hunter_evaluations ADD COLUMN IF NOT EXISTS reference_price" in sqls
+    assert "ALTER TABLE ghost_squeeze_hunter_evaluations ADD COLUMN IF NOT EXISTS planning_levels JSONB" in sqls
     assert "ALTER TABLE ghost_squeeze_hunter_resolutions ADD COLUMN IF NOT EXISTS hit_plus_50" in sqls
     assert "ALTER TABLE ghost_squeeze_hunter_resolutions ADD COLUMN IF NOT EXISTS hit_plus_100" in sqls
     assert "ALTER TABLE ghost_squeeze_hunter_resolutions ADD COLUMN IF NOT EXISTS max_favorable_pct" in sqls

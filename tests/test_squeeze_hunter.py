@@ -203,6 +203,46 @@ def test_reference_quote_rejects_stale_or_incompatible_session():
     assert "incompatible_session" in out["reasons"]
 
 
+def test_hunter_planning_levels_require_confirmed_quote():
+    validation = sh.validate_reference_quote(
+        {
+            "price": 100.0,
+            "price_as_of_ts": 990,
+            "session": "rth",
+            "market_date": "2026-08-03",
+            "data_stale": False,
+        },
+        issued_ts=1_000,
+    )
+    plan = sh.build_hunter_planning_levels("HTZ", validation)
+    assert plan["status"] == "available"
+    assert plan["evidence_status"] == "CONFIRMED"
+    assert plan["stop_price"] < plan["entry_price"] < plan["target_price"]
+    assert plan["entry_price"] == 100.0
+    assert plan["as_of_ts"] == 990
+    assert plan["purpose"] == "planning_only"
+    assert "not a fired Ghost pick" in plan["disclaimer"]
+
+
+def test_hunter_planning_levels_fail_closed_without_quote():
+    validation = sh.validate_reference_quote(
+        {
+            "price": 100.0,
+            "price_as_of_ts": 1_000,
+            "session": "premarket",
+            "market_date": "2026-08-03",
+        },
+        issued_ts=1_000,
+    )
+    plan = sh.build_hunter_planning_levels("HTZ", validation)
+    assert plan["status"] == "unavailable"
+    assert plan["evidence_status"] == "UNVERIFIED"
+    assert plan["entry_price"] is None
+    assert plan["target_price"] is None
+    assert plan["stop_price"] is None
+    assert "incompatible_session" in plan["reasons"]
+
+
 def test_market_environment_uses_vix():
     """P2: market environment must reflect real VIX, not a constant 50."""
     assert sh.market_environment_score({"label": "risk_off_high_volatility"}) == 20.0

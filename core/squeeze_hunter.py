@@ -374,6 +374,7 @@ def build_explosion_report(
 _REFERENCE_MAX_AGE_S = 20 * 60
 _REFERENCE_FUTURE_SKEW_S = 60
 _REFERENCE_ISSUANCE_SKEW_S = 5 * 60
+HUNTER_PLAN_VERSION = "1"
 
 
 def validate_reference_quote(
@@ -422,6 +423,69 @@ def validate_reference_quote(
         "session": session_name or None,
         "market_date": market_date or None,
         "cache_age_s": sess.get("cache_age_s"),
+    }
+
+
+def build_hunter_planning_levels(
+    symbol: str,
+    reference_validation: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Build planning-only entry/target/stop levels from confirmed quote evidence.
+
+    The entry is the validated point-in-time quote, not a promised fill. Missing,
+    stale, untimestamped, or session-incompatible evidence fails closed: no
+    target or stop is emitted. Geometry reuses the canonical stock TP/SL helper
+    so Hunter does not invent a second risk formula.
+    """
+    validation = reference_validation or {}
+    reasons = list(validation.get("reasons") or [])
+    unavailable = {
+        "status": "unavailable",
+        "evidence_status": "UNVERIFIED",
+        "plan_version": HUNTER_PLAN_VERSION,
+        "purpose": "planning_only",
+        "entry_price": None,
+        "target_price": None,
+        "stop_price": None,
+        "target_pct": None,
+        "stop_pct": None,
+        "as_of_ts": validation.get("price_as_of_ts"),
+        "session": validation.get("session"),
+        "market_date": validation.get("market_date"),
+        "reasons": reasons or ["unverified_reference_quote"],
+        "disclaimer": (
+            "Planning only — not a fired Ghost pick or guaranteed fill. "
+            "No price can guarantee the best profit."
+        ),
+    }
+    if validation.get("valid") is not True:
+        return unavailable
+
+    try:
+        entry = float(validation.get("price"))
+        if not math.isfinite(entry) or entry <= 0:
+            return {**unavailable, "reasons": ["invalid_price"]}
+        from core.tp_sl_resolve import tp_sl_prices_from_vol
+        from core.vol_targets import base_vol_pct, stop_pct_from_vol
+
+        vol_pct = float(base_vol_pct(symbol, "stock"))
+        target, stop = tp_sl_prices_from_vol(entry, vol_pct, "UP")
+        stop_pct = float(stop_pct_from_vol(vol_pct))
+        if not all(math.isfinite(v) for v in (target, stop)) or not stop < entry < target:
+            return {**unavailable, "reasons": ["invalid_plan_geometry"]}
+    except Exception:
+        return {**unavailable, "reasons": ["planning_geometry_unavailable"]}
+
+    return {
+        **unavailable,
+        "status": "available",
+        "evidence_status": "CONFIRMED",
+        "entry_price": round(entry, 4),
+        "target_price": round(target, 4),
+        "stop_price": round(stop, 4),
+        "target_pct": round(vol_pct * 100.0, 2),
+        "stop_pct": round(stop_pct * 100.0, 2),
+        "reasons": [],
     }
 
 
@@ -636,6 +700,7 @@ def fetch_explosion_report(symbol: str, *, persist: bool = False, issued_ts: Opt
     report["reference_price"] = reference_price
     report["reference_price_ts"] = reference_price_ts
     report["reference_validation"] = reference_validation
+    report["planning_levels"] = build_hunter_planning_levels(sym, reference_validation)
 
     # Persist a point-in-time audit trail ONLY when explicitly requested by a
     # preregistered scheduler. Public GET traffic must stay read-only so it

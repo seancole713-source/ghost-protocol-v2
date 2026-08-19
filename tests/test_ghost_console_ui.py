@@ -85,6 +85,26 @@ def test_console_contains_live_market_mirror_and_score_language():
     assert "m3row" in text and "live_open" in text and "live_low" in text and "live_high" in text
 
 
+def test_console_contains_hunter_evidence_gated_planning_levels():
+    text = _html()
+    for phrase in (
+        "Entry reference",
+        "Target objective",
+        "Stop / invalidation",
+        "CONFIRMED QUOTE",
+        "STATUS: UNVERIFIED",
+        "Planning only — not a fired Ghost pick",
+        "No price can guarantee the best profit",
+        "No stale or previous-close fallback is used",
+    ):
+        assert phrase in text
+    renderer = text[text.index("function renderHunter()") : text.index("function renderWeekly")]
+    assert "plan.status==='available'&&plan.evidence_status==='CONFIRMED'" in renderer
+    assert "plan.entry_price" in renderer
+    assert "plan.target_price" in renderer
+    assert "plan.stop_price" in renderer
+
+
 def test_console_contains_pool_management_and_top_pick_gate():
     text = _html()
     assert "Prediction pool" in text
@@ -281,6 +301,43 @@ def test_super_ghost_snapshot_endpoint_bundles_console_payload(monkeypatch):
                 "sgPrecision", "sgRange", "sgRegimeCal", "sgLab", "sgFeatures",
                 "sgShadow", "sgPromo", "sgStoreAudit", "sgDataBrain", "doctrine"):
         assert key in d
+
+
+def test_hunter_symbol_route_returns_plan_without_persisting(monkeypatch):
+    calls = []
+
+    def _report(symbol, *, persist=False, issued_ts=None):
+        calls.append((symbol, persist, issued_ts))
+        return {
+            "ok": True,
+            "symbol": symbol,
+            "planning_levels": {
+                "status": "available",
+                "evidence_status": "CONFIRMED",
+                "entry_price": 100.0,
+                "target_price": 102.0,
+                "stop_price": 98.7,
+            },
+        }
+
+    monkeypatch.setattr("core.squeeze_hunter.fetch_explosion_report", _report)
+    response = TestClient(wolf_app.APP).get("/api/squeeze/hunter/HTZ")
+    assert response.status_code == 200
+    assert response.json()["planning_levels"]["entry_price"] == 100.0
+    assert calls == [("HTZ", False, None)]
+
+
+def test_hunter_scan_route_stays_read_only(monkeypatch):
+    calls = []
+
+    def _scan(symbols=None, limit=20):
+        calls.append((symbols, limit))
+        return {"ok": True, "candidates": []}
+
+    monkeypatch.setattr("core.squeeze_hunter.scan_watchlist", _scan)
+    response = TestClient(wolf_app.APP).get("/api/squeeze/hunter/scan?limit=7")
+    assert response.status_code == 200
+    assert calls == [(None, 7)]
 
 
 def test_console_inline_javascript_has_required_functions():

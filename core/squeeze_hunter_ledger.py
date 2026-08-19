@@ -82,6 +82,7 @@ def ensure_hunter_tables(cur) -> None:
             confirm_ctx JSONB,
             factors JSONB,
             projection JSONB,
+            planning_levels JSONB,
             created_at BIGINT NOT NULL
         )
         """
@@ -98,6 +99,10 @@ def ensure_hunter_tables(cur) -> None:
     cur.execute(
         "ALTER TABLE ghost_squeeze_hunter_evaluations "
         "ADD COLUMN IF NOT EXISTS reference_price_ts BIGINT"
+    )
+    cur.execute(
+        "ALTER TABLE ghost_squeeze_hunter_evaluations "
+        "ADD COLUMN IF NOT EXISTS planning_levels JSONB"
     )
     # Idempotency key: one evaluation per symbol per scoring version per
     # exchange session date. The old (symbol, scoring_version, issued_ts)
@@ -228,8 +233,9 @@ def persist_hunter_evaluation(
                  reference_price, reference_price_ts,
                  fuel_score, trigger_score, confirmation_score,
                  squeeze_pressure_score, pressure_band, stage, explosion_score,
-                 short_ctx, trigger_ctx, confirm_ctx, factors, projection, created_at)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,%s)
+                 short_ctx, trigger_ctx, confirm_ctx, factors, projection,
+                 planning_levels, created_at)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,%s)
             ON CONFLICT (symbol, scoring_version, session_date) DO NOTHING
             RETURNING id
             """,
@@ -243,7 +249,7 @@ def persist_hunter_evaluation(
                 report.get("explosion_score"),
                 _jsonb(short_ctx), _jsonb(trigger_ctx), _jsonb(confirm_ctx),
                 _jsonb(report.get("factors")), _jsonb(report.get("projection")),
-                _now(),
+                _jsonb(report.get("planning_levels")), _now(),
             ),
         )
         row = c.fetchone()
@@ -365,6 +371,7 @@ def recent_evaluations(symbol: Optional[str] = None, limit: int = 50) -> Dict[st
         "e.feature_available_ts, e.reference_price, e.reference_price_ts, "
         "e.fuel_score, e.trigger_score, e.confirmation_score, "
         "e.squeeze_pressure_score, e.pressure_band, e.stage, e.explosion_score, "
+        "e.planning_levels, "
         "r.return_1d_pct, r.return_5d_pct, r.return_14d_pct, "
         "r.hit_plus_20, r.hit_plus_50, r.hit_plus_100, r.hit_minus_20, "
         "r.max_favorable_pct, r.max_adverse_pct, r.reason"
@@ -373,7 +380,7 @@ def recent_evaluations(symbol: Optional[str] = None, limit: int = 50) -> Dict[st
             "feature_available_ts", "reference_price", "reference_price_ts",
             "fuel_score", "trigger_score", "confirmation_score",
             "squeeze_pressure_score", "pressure_band", "stage", "explosion_score",
-            "return_1d_pct", "return_5d_pct", "return_14d_pct",
+            "planning_levels", "return_1d_pct", "return_5d_pct", "return_14d_pct",
             "hit_plus_20", "hit_plus_50", "hit_plus_100", "hit_minus_20",
             "max_favorable_pct", "max_adverse_pct", "reason")
     try:
