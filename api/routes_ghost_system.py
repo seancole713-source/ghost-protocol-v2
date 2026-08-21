@@ -652,6 +652,88 @@ def bull_run_checklist_resolve_endpoint(x_cron_secret: str = Header(default=""))
         return JSONResponse({"ok": False, "error": "database_unavailable"}, status_code=503)
 
 
+@router.get("/api/ghost/checklist/spec")
+def checklist_spec_endpoint():
+    """Static description of every checklist box and veto — for the UI and docs."""
+    try:
+        from core.catalyst_checklist import checklist_spec
+        return checklist_spec()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "spec_unavailable"}, status_code=503)
+
+
+@router.get("/api/ghost/checklist/{symbol}")
+def checklist_endpoint(symbol: str, direction: str = "UP"):
+    """Today's checklist read for one symbol/direction, with calibrated confidence.
+
+    score_pct is checklist completeness, never a probability by itself.
+    confidence_pct is filled in only once that completeness band has enough
+    resolved history behind it (min_band_samples); until then it is null and
+    the UI must render the plain-English explanation instead, never fall back
+    to displaying score_pct as if it were confidence.
+    """
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        return JSONResponse({"ok": False, "error": "symbol required"}, status_code=400)
+    direction = (direction or "UP").strip().upper()
+    if direction not in ("UP", "DOWN"):
+        return JSONResponse({"ok": False, "error": "direction must be UP or DOWN"}, status_code=400)
+    try:
+        from core.catalyst_checklist import evaluate_checklist
+        from core.checklist_calibration import build_calibration, confidence_for
+        from core.checklist_evidence import collect_evidence, sources_for
+        from core.checklist_ledger import resolved_samples_for_calibration
+
+        evidence = collect_evidence(sym)
+        report = evaluate_checklist(sym, direction, evidence)
+        evidence_sources = sources_for(evidence)
+        for box in report.get("groups", []):
+            for member in box.get("boxes", []):
+                member["source"] = evidence_sources.get(member.get("signal"))
+
+        try:
+            samples = resolved_samples_for_calibration()
+            calibration = build_calibration(samples)
+        except Exception:
+            calibration = None  # DB unavailable — still return the checklist itself
+
+        confidence = confidence_for(report["score_pct"], calibration)
+        report["confidence"] = confidence
+        report["evidence"] = evidence
+        return {"ok": True, "symbol": sym, **report}
+    except Exception:
+        LOGGER = logging.getLogger("ghost.api.checklist")
+        LOGGER.exception("checklist_endpoint failed for %s", sym)
+        return JSONResponse({"ok": False, "error": "checklist_unavailable"}, status_code=503)
+
+
+@router.get("/api/ghost/checklist/{symbol}/calibration")
+def checklist_calibration_endpoint(symbol: str):
+    """The full completeness -> realized-win-rate table (System tab)."""
+    try:
+        from core.checklist_calibration import build_calibration, calibration_gap
+        from core.checklist_ledger import resolved_samples_for_calibration
+
+        samples = resolved_samples_for_calibration()
+        calibration = build_calibration(samples)
+        return {"ok": True, "calibration": calibration, "gap": calibration_gap(calibration)}
+    except Exception:
+        return JSONResponse({"ok": False, "error": "database_unavailable"}, status_code=503)
+
+
+@router.get("/api/ghost/checklist/{symbol}/record")
+def checklist_record_endpoint(symbol: str, limit: int = 20):
+    """Resolved and open checklist history for one symbol — the Record tab."""
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        return JSONResponse({"ok": False, "error": "symbol required"}, status_code=400)
+    try:
+        from core.checklist_ledger import recent_snapshots
+        return {"ok": True, "symbol": sym, "snapshots": recent_snapshots(sym, limit=limit)}
+    except Exception:
+        return JSONResponse({"ok": False, "error": "database_unavailable"}, status_code=503)
+
+
 @router.get("/api/squeeze/hunter/ledger")
 def squeeze_hunter_ledger_endpoint(symbol: str = "", limit: int = 50):
     """Read the Squeeze Hunter's point-in-time audit trail.
