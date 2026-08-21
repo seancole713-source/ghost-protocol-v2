@@ -447,7 +447,6 @@ async function loadSystem(){
     getJson('/api/health'),
     getJson('/api/wolf/kill-status'),
     getJson('/api/system/degraded'),
-    getJson('/api/ghost/checklist/record?limit=1'),
   ]);
   var health = results[0], kill = results[1], degraded = results[2];
 

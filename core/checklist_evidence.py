@@ -220,6 +220,31 @@ def sources_for(evidence: Dict[str, Any]) -> Dict[str, str]:
     return {k: SOURCE_BY_SIGNAL.get(k, "Ghost data feed") for k in evidence}
 
 
+def _default_market_ctx(symbol: str) -> Dict[str, Any]:
+    """Build a market snapshot for one symbol when the caller has none.
+
+    Uses the same cached production sources the squeeze radar already relies
+    on: batched Alpaca bars for price/volume and the short-interest cache for
+    positioning fuel. Without this fallback, the live checklist endpoint
+    (which calls collect_evidence with no ctx) could never fill a
+    positioning/confirmation box and no veto could ever trip -- the
+    already-ran guard would be permanently asleep.
+    """
+    sym = (symbol or "").strip().upper()
+    ctx: Dict[str, Any] = {}
+    from core.squeeze_monitor import _short_context, batched_market_metrics
+
+    metrics = _safe("market_metrics", batched_market_metrics, [sym]) or {}
+    row = metrics.get(sym)
+    if isinstance(row, dict):
+        ctx.update(row)
+    short = _safe("short_context", _short_context, sym) or {}
+    for key in ("short_float_pct", "days_to_cover"):
+        if short.get(key) is not None:
+            ctx[key] = short[key]
+    return ctx
+
+
 def collect_evidence(
     symbol: str,
     *,
@@ -235,6 +260,8 @@ def collect_evidence(
     UNKNOWN, never as a pass.
     """
     sym = (symbol or "").strip().upper()
+    if market_ctx is None:
+        market_ctx = _default_market_ctx(sym)
     evidence: Dict[str, Any] = {}
     evidence.update(_collect_earnings(sym))
     evidence.update(_collect_fundamentals(sym))

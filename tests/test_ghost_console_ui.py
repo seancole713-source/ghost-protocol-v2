@@ -281,17 +281,17 @@ def test_console_renders_evidence_conflicts_and_full_interrogation():
     assert "q.answer==null?'—'" in text
 
 
-def test_console_reachable_at_root_via_redirect_to_picks(monkeypatch):
+def test_console_routing_after_picks_rebuild(monkeypatch):
     """PR #86's console route is superseded: /picks became the simple
-    consumer page in the checklist-confidence rebuild (13 tabs -> 4).
-    / still redirects to /picks (pre-existing, unrelated to that PR), so it
-    now lands on the simple page too. The full operator console remains
-    reachable only via its own file for anyone building tooling against it;
+    consumer page in the checklist-confidence rebuild (13 tabs -> 4), and
+    the full operator console moved to /console so it stays reachable.
+    / still redirects to /picks (pre-existing portfolio_routes behavior);
     /legacy-picks (a PR #86 rollout fallback) is retired -- 404 is correct."""
     monkeypatch.delenv("RAILWAY_GIT_COMMIT_SHA", raising=False)
     client = TestClient(wolf_app.APP)
     root = client.get("/", follow_redirects=False)
     picks = client.get("/picks")
+    console = client.get("/console")
     legacy = client.get("/legacy-picks")
     cockpit = client.get("/cockpit")
     assert root.status_code == 307
@@ -301,6 +301,8 @@ def test_console_reachable_at_root_via_redirect_to_picks(monkeypatch):
     assert cockpit.status_code == 200
     assert "Prediction command center" not in picks.text  # not the old console
     assert "view-today" in picks.text
+    assert console.status_code == 200
+    assert "Prediction command center" in console.text  # operator console lives on
     assert "WOLF Command Center" in cockpit.text
     assert picks.headers["cache-control"].startswith("no-store")
     assert 'name="ghost-build"' in picks.text

@@ -672,6 +672,34 @@ def checklist_global_record_endpoint(limit: int = 30):
         return JSONResponse({"ok": False, "error": "database_unavailable"}, status_code=503)
 
 
+@router.post("/api/ghost/checklist/snapshot-run")
+def checklist_snapshot_run_endpoint(x_cron_secret: str = Header(default="")):
+    """Cron-gated manual trigger for the checklist snapshot job."""
+    from wolf_app import _cron_ok
+
+    if not _cron_ok(x_cron_secret, strict=True):
+        raise HTTPException(status_code=403)
+    try:
+        from core.checklist_ledger import snapshot_open_predictions
+        return snapshot_open_predictions()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "database_unavailable"}, status_code=503)
+
+
+@router.post("/api/ghost/checklist/resolve")
+def checklist_resolve_endpoint(x_cron_secret: str = Header(default="")):
+    """Cron-gated manual trigger for the checklist outcome resolver."""
+    from wolf_app import _cron_ok
+
+    if not _cron_ok(x_cron_secret, strict=True):
+        raise HTTPException(status_code=403)
+    try:
+        from core.checklist_ledger import resolve_open_snapshots
+        return resolve_open_snapshots()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "database_unavailable"}, status_code=503)
+
+
 @router.get("/api/ghost/checklist/{symbol}")
 def checklist_endpoint(symbol: str, direction: str = "UP"):
     """Today's checklist read for one symbol/direction, with calibrated confidence.

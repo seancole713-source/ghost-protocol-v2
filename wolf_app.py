@@ -1508,6 +1508,29 @@ async def lifespan(app: FastAPI):
 
     scheduler.register("bull_run_snapshot", _bull_run_snapshot_job, interval_s=900)
     scheduler.register("bull_run_resolver", _bull_run_resolver_job, interval_s=3600)
+    # Checklist-confidence calibration loop: snapshot every open pick's
+    # checklist at (near) issue time, then copy resolved TP/SL outcomes back
+    # onto the snapshots. Without these two jobs the completeness->win-rate
+    # table never accrues a sample and every card stays "not proven yet".
+    from core.checklist_ledger import (
+        resolve_open_snapshots as _checklist_resolver,
+        snapshot_open_predictions as _checklist_snapshot,
+    )
+
+    def _checklist_snapshot_job():
+        result = _checklist_snapshot()
+        if not isinstance(result, dict) or not result.get("ok", False):
+            raise RuntimeError(f"checklist snapshot failed: {result}")
+        return result
+
+    def _checklist_resolver_job():
+        result = _checklist_resolver()
+        if not isinstance(result, dict) or not result.get("ok", False):
+            raise RuntimeError(f"checklist resolver failed: {result}")
+        return result
+
+    scheduler.register("checklist_snapshot", _checklist_snapshot_job, interval_s=900)
+    scheduler.register("checklist_resolver", _checklist_resolver_job, interval_s=1800)
     # T19: Auto-refresh portfolio stock prices every 15 min
     from core.portfolio_routes import auto_refresh_portfolio_prices
     scheduler.register("portfolio_price_refresh", auto_refresh_portfolio_prices, interval_s=900)
@@ -2830,10 +2853,21 @@ def picks_page():
     Four tabs -- Today / My stocks / Record / System -- reading the
     transparent checklist confidence at /api/ghost/checklist/*, in place of
     the 13-tab operator console this route served through PR #86-#161. The
-    full operator console (cron triggers, admin/contract-70 views, etc.)
-    remains reachable at / for anyone who needs the deeper surface.
+    full operator console moved to /console (/ redirects here via
+    portfolio_routes).
     """
     return _serve_html_page("picks.html")
+
+
+@APP.get("/console", include_in_schema=False)
+def console_page():
+    """Full operator console (13-section Liquid Glass dashboard, PR #86).
+
+    Kept for the operator surface -- cron triggers, contract-70 views,
+    Hunter board -- after /picks became the simple consumer page. Without
+    this route ghost_console.html is unreachable.
+    """
+    return _serve_html_page("ghost_console.html")
 
 
 @APP.get("/studios", include_in_schema=False)
