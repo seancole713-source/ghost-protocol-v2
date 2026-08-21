@@ -1508,6 +1508,20 @@ async def lifespan(app: FastAPI):
 
     scheduler.register("bull_run_snapshot", _bull_run_snapshot_job, interval_s=900)
     scheduler.register("bull_run_resolver", _bull_run_resolver_job, interval_s=3600)
+    # Checklist-confidence calibration loop. Snapshots are frozen synchronously
+    # inside the prediction transaction (no delayed reconstruction), so only the
+    # outcome resolver runs on a schedule: it copies resolved TP/SL outcomes
+    # back onto the immutable snapshots so the completeness->win-rate table
+    # accrues samples prospectively.
+    from core.checklist_ledger import resolve_open_snapshots as _checklist_resolver
+
+    def _checklist_resolver_job():
+        result = _checklist_resolver()
+        if not isinstance(result, dict) or not result.get("ok", False):
+            raise RuntimeError(f"checklist resolver failed: {result}")
+        return result
+
+    scheduler.register("checklist_resolver", _checklist_resolver_job, interval_s=1800)
     # T19: Auto-refresh portfolio stock prices every 15 min
     from core.portfolio_routes import auto_refresh_portfolio_prices
     scheduler.register("portfolio_price_refresh", auto_refresh_portfolio_prices, interval_s=900)
@@ -2823,19 +2837,26 @@ def cockpit():
     return _serve_html_page("cockpit.html")
 
 
-@APP.get("/", include_in_schema=False)
-def root_console():
-    """Unified Liquid Glass prediction console (PR #86)."""
-    return _serve_html_page("ghost_console.html")
-
-
 @APP.get("/picks", include_in_schema=False)
 def picks_page():
-    """Unified Liquid Glass prediction console (PR #86).
+    """Simplified consumer picks page (checklist-confidence rebuild).
 
-    Merges the old Ghost Picks consumer tracker and the operator dashboard into
-    one clean sidebar-based command center. The old picks page remains available
-    at /legacy-picks during rollout.
+    Four tabs -- Today / My stocks / Record / System -- reading the
+    transparent checklist confidence at /api/ghost/checklist/*, in place of
+    the 13-tab operator console this route served through PR #86-#161. The
+    full operator console moved to /console (/ redirects here via
+    portfolio_routes).
+    """
+    return _serve_html_page("picks.html")
+
+
+@APP.get("/console", include_in_schema=False)
+def console_page():
+    """Full operator console (13-section Liquid Glass dashboard, PR #86).
+
+    Kept for the operator surface -- cron triggers, contract-70 views,
+    Hunter board -- after /picks became the simple consumer page. Without
+    this route ghost_console.html is unreachable.
     """
     return _serve_html_page("ghost_console.html")
 
@@ -2866,12 +2887,6 @@ def favicon():
         media_type="image/svg+xml",
         headers={"Cache-Control": "public, max-age=86400"},
     )
-
-
-@APP.get("/legacy-picks", include_in_schema=False)
-def legacy_picks_page():
-    """Legacy Ghost Picks page kept as a rollout fallback for PR #86."""
-    return _serve_html_page("picks.html")
 
 
 # ────────────────────────────────────────────────────────────────

@@ -1510,6 +1510,82 @@ def _symbol_has_open_pick(cur, symbol: str, now_ts: int = None) -> bool:
     return cur.fetchone() is not None
 
 
+def _prepare_checklist_snapshot(pick: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Freeze confirmed checklist evidence at the pick's own decision time."""
+    if (pick.get("asset_type") or "stock") != "stock":
+        return None
+    direction = str(pick.get("direction") or "").upper()
+    if direction not in ("UP", "DOWN"):
+        return None
+    issued_at = int(pick["predicted_at"])
+    scores = pick.get("scores") if isinstance(pick.get("scores"), dict) else {}
+    live_features = scores.get("features") if isinstance(scores.get("features"), dict) else {}
+    market_ctx = {
+        "price": pick.get("entry_price"),
+        "relative_volume": live_features.get("volume_ratio"),
+        "trend_slope_pct": (
+            float(live_features["mom_4h"]) * 100.0
+            if isinstance(live_features.get("mom_4h"), (int, float))
+            else None
+        ),
+        "market_move_pct": (
+            float(live_features["macro_spy_20d_return"]) * 100.0
+            if isinstance(live_features.get("macro_spy_20d_return"), (int, float))
+            else None
+        ),
+        "feature_asof_ts": pick.get("features", {}).get("feature_asof_ts"),
+    }
+    from core.catalyst_checklist import evaluate_checklist
+    from core.checklist_evidence import collect_evidence
+
+    evidence = collect_evidence(
+        str(pick.get("symbol") or ""),
+        asof_ts=issued_at,
+        market_ctx=market_ctx,
+    )
+    return {
+        "issued_at": issued_at,
+        "evidence": evidence,
+        "report": evaluate_checklist(str(pick.get("symbol") or ""), direction, evidence),
+    }
+
+
+def _persist_checklist_snapshot_isolated(
+    cur,
+    *,
+    pick: Dict[str, Any],
+    prediction_id: int,
+    snapshot: Optional[Dict[str, Any]],
+) -> bool:
+    """Persist through a savepoint so checklist failure never loses the pick."""
+    if snapshot is None:
+        return False
+    cur.execute("SAVEPOINT checklist_snapshot")
+    try:
+        from core.checklist_ledger import store_snapshot_with_cursor
+
+        store_snapshot_with_cursor(
+            cur,
+            symbol=pick["symbol"],
+            direction=pick["direction"],
+            report=snapshot["report"],
+            evidence=snapshot["evidence"],
+            issued_at=snapshot["issued_at"],
+            entry_price=pick.get("entry_price"),
+            target_price=pick.get("target_price"),
+            stop_price=pick.get("stop_price"),
+            deadline_ts=pick.get("expires_at"),
+            prediction_id=prediction_id,
+        )
+    except Exception as exc:  # noqa: BLE001 - savepoint deliberately isolates this optional ledger
+        cur.execute("ROLLBACK TO SAVEPOINT checklist_snapshot")
+        LOGGER.warning("checklist snapshot persist skipped for %s: %s", pick.get("symbol"), str(exc)[:120])
+        cur.execute("RELEASE SAVEPOINT checklist_snapshot")
+        return False
+    cur.execute("RELEASE SAVEPOINT checklist_snapshot")
+    return True
+
+
 @_serialize_prediction_cycle
 def run_prediction_cycle(with_diag: bool = False):
     """Run predictions. Returns list of saved picks. Does NOT send Telegram.
@@ -1671,6 +1747,11 @@ def run_prediction_cycle(with_diag: bool = False):
                     LOGGER.info("DEDUP: skipping " + sym)
                     dedup_blocked += 1
                     continue
+                checklist_snapshot = None
+                try:
+                    checklist_snapshot = _prepare_checklist_snapshot(pick)
+                except Exception as _cse:
+                    LOGGER.warning("checklist evidence freeze skipped for %s: %s", sym, str(_cse)[:120])
                 cur.execute(
                     "INSERT INTO predictions (symbol,direction,confidence,entry_price,target_price,stop_price,run_at,predicted_at,expires_at,asset_type,features,scores) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
                     (pick["symbol"], pick["direction"], pick["confidence"], pick["entry_price"],
@@ -1680,6 +1761,12 @@ def run_prediction_cycle(with_diag: bool = False):
                 )
                 pred_id = cur.fetchone()[0]
                 pick["id"] = pred_id
+                _persist_checklist_snapshot_isolated(
+                    cur,
+                    pick=pick,
+                    prediction_id=pred_id,
+                    snapshot=checklist_snapshot,
+                )
                 try:
                     from core.feature_schema import FEATURE_ASOF_KEY, persist_feature_snapshot
                     persist_feature_snapshot(

@@ -372,6 +372,14 @@ def _migrate_schema():
     except Exception as e:
         LOGGER.warning("Squeeze Hunter ledger tables: " + str(e)[:80])
     try:
+        from core.checklist_ledger import ensure_checklist_tables
+        with db_conn() as conn:
+            cur = conn.cursor()
+            ensure_checklist_tables(cur)
+            conn.commit()
+    except Exception as e:
+        LOGGER.warning("Checklist ledger tables: " + str(e)[:80])
+    try:
         from core.bull_run_ledger import ensure_bull_run_tables
         with db_conn() as conn:
             cur = conn.cursor()

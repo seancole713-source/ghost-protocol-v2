@@ -3,374 +3,484 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Ghost Picks</title>
+<title>Ghost</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
 <style>
-  :root{
-    --grey:#22252b;            /* solid dark-grey background */
-    --tx:#f6f8fb; --mut:#aeb6c2; --mut2:#7b8492;
-    --grn:#34d399; --grn2:#6ee7b7; --red:#fb7185; --red2:#fda4af; --amb:#fbbf24;
-    --glass-bd:rgba(255,255,255,0.13);
-    --glass-hi:rgba(255,255,255,0.5);
+:root{
+  --ground:#F6F4F1; --surface:#FFFFFF; --surface-2:#EDE9E4; --sunken:#E4DFD8;
+  --ink:#1A1922; --ink-2:#56535F; --ink-3:#8B8794;
+  --line:#E1DCD5; --line-2:#CFC8BF;
+  --accent:#3E3A8F; --accent-soft:#E6E4F5;
+  --good:#0E7565; --good-soft:#DDEFEB;
+  --bad:#A33D2D; --bad-soft:#F6E3DE;
+  --warn:#8F6410; --warn-soft:#F5EAD3;
+  --shadow:0 1px 2px rgba(26,25,34,.05),0 8px 24px -12px rgba(26,25,34,.18);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ground:#131319; --surface:#1C1C23; --surface-2:#24242D; --sunken:#101015;
+    --ink:#F3F1ED; --ink-2:#A9A6B3; --ink-3:#6F6C7B;
+    --line:#2C2C37; --line-2:#3A3A47;
+    --accent:#9C98F2; --accent-soft:#25243A;
+    --good:#4ECBB3; --good-soft:#12302C;
+    --bad:#E88C77; --bad-soft:#33201B;
+    --warn:#DFAF55; --warn-soft:#302713;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px -12px rgba(0,0,0,.6);
   }
-  *{box-sizing:border-box;margin:0;padding:0}
-  body{
-    font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","Segoe UI",Roboto,sans-serif;
-    color:var(--tx);-webkit-font-smoothing:antialiased;background:var(--grey);
-    min-height:100vh;padding:0 14px 60px;
-  }
-  .app{max-width:432px;margin:0 auto}
+}
+:root[data-theme="dark"]{
+  --ground:#131319; --surface:#1C1C23; --surface-2:#24242D; --sunken:#101015;
+  --ink:#F3F1ED; --ink-2:#A9A6B3; --ink-3:#6F6C7B;
+  --line:#2C2C37; --line-2:#3A3A47;
+  --accent:#9C98F2; --accent-soft:#25243A;
+  --good:#4ECBB3; --good-soft:#12302C;
+  --bad:#E88C77; --bad-soft:#33201B;
+  --warn:#DFAF55; --warn-soft:#302713;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px -12px rgba(0,0,0,.6);
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--ground);color:var(--ink);
+  font-family:"IBM Plex Sans",ui-sans-serif,system-ui,-apple-system,sans-serif;
+  font-size:16px;line-height:1.5;-webkit-font-smoothing:antialiased;
+  min-height:100vh;
+}
+a{color:inherit}
+.wrap{max-width:640px;margin:0 auto;padding:0 0 100px}
 
-  /* Liquid Glass material (frosts content scrolling beneath) */
-  .glass{
-    background:rgba(255,255,255,0.055);
-    -webkit-backdrop-filter:blur(26px) saturate(180%);
-    backdrop-filter:blur(26px) saturate(180%);
-    border:1px solid var(--glass-bd);
-    border-radius:24px;
-    box-shadow:0 10px 36px rgba(0,0,0,.4), inset 0 1px 0 var(--glass-hi), inset 0 -1px 0 rgba(0,0,0,.22);
-    position:relative;
-  }
-  .glass::before{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;
-    background:linear-gradient(180deg,rgba(255,255,255,.13) 0%,rgba(255,255,255,0) 24%)}
+/* header */
+.topbar{position:sticky;top:0;z-index:30;background:var(--ground);border-bottom:1px solid var(--line);
+  padding:14px 18px;display:flex;align-items:center;justify-content:space-between;gap:12px}
+.brand{display:flex;align-items:center;gap:8px}
+.brand b{font-family:"Newsreader",Georgia,serif;font-size:19px;font-weight:600;letter-spacing:-.01em}
+.livedot{display:inline-flex;align-items:center;gap:6px;font-family:"IBM Plex Mono",monospace;font-size:10px;
+  letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3);border:1px solid var(--line);border-radius:999px;padding:5px 9px}
+.livedot i{width:6px;height:6px;border-radius:50%;background:var(--good);display:block}
+.livedot.off i{background:var(--ink-3)}
+.stamp{font-size:11.5px;color:var(--ink-3)}
 
-  /* sticky header */
-  .hdwrap{position:sticky;top:0;z-index:20;padding:16px 4px 12px;
-    background:linear-gradient(180deg,var(--grey) 60%,rgba(34,37,43,0))}
-  .hd{display:flex;align-items:center;justify-content:space-between}
-  .brand{display:flex;align-items:center;gap:9px}
-  .brand .gh{font-size:22px}
-  .brand .nm{font-size:20px;font-weight:800;letter-spacing:-.01em}
-  .brand .nm span{color:#ff5a5f}
-  .trackpill{font-size:10px;font-weight:800;letter-spacing:.05em;color:#0a0c10;padding:6px 11px;border-radius:999px;
-    background:rgba(251,191,36,.92);box-shadow:inset 0 1px 0 rgba(255,255,255,.5)}
-  .hd-right{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
-  .dashbtn{font-size:11px;font-weight:700;letter-spacing:.03em;color:#cdd4de;text-decoration:none;
-    padding:6px 12px;border-radius:999px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.16);
-    -webkit-backdrop-filter:blur(12px);backdrop-filter:blur(12px);white-space:nowrap}
-  .dashbtn:hover{color:#fff;border-color:rgba(255,255,255,.32);background:rgba(255,255,255,.1)}
+/* tabs */
+.tabs{position:sticky;top:53px;z-index:29;background:var(--ground);border-bottom:1px solid var(--line);
+  display:flex;padding:0 18px;gap:4px;overflow-x:auto}
+.tabbtn{font-family:"IBM Plex Sans",sans-serif;font-size:14px;font-weight:500;padding:12px 4px;margin-right:20px;
+  border:none;background:transparent;color:var(--ink-3);cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap}
+.tabbtn[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--accent);font-weight:600}
+.tabbtn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 
-  .seg{display:flex;padding:5px;margin:6px 0 16px;border-radius:20px;gap:4px}
-  .seg button{flex:1;border:none;background:transparent;color:var(--mut);font-size:13.5px;font-weight:700;
-    padding:9px 0;border-radius:15px;cursor:pointer;font-family:inherit;transition:.2s}
-  .seg button.on{color:#0a0c10;background:rgba(255,255,255,.92);box-shadow:0 4px 12px rgba(0,0,0,.3)}
+.view{padding:20px 18px 0;display:flex;flex-direction:column;gap:18px}
+[hidden]{display:none !important}
 
-  .score{display:flex;gap:9px;margin-bottom:8px}
-  .sc{flex:1;padding:13px 6px;text-align:center;border-radius:18px}
-  .sc .n{font-size:22px;font-weight:800;line-height:1}
-  .sc .n.grn{color:var(--grn2)} .sc .n.red{color:var(--red2)} .sc .n.amb{color:var(--amb)}
-  .sc .l{font-size:10px;color:var(--mut);margin-top:6px}
-  .tagline{font-size:12.5px;color:var(--mut);text-align:center;margin:11px 8px 4px;line-height:1.45}
-  .tagline b{color:var(--tx)}
+/* verdict card */
+.verdict{background:var(--surface);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);
+  padding:20px;display:flex;flex-direction:column;gap:12px}
+.verdict .q{font-size:13px;color:var(--ink-3)}
+.verdict .a{font-family:"Newsreader",Georgia,serif;font-size:clamp(36px,10vw,48px);line-height:.98;font-weight:500;
+  letter-spacing:-.02em;margin:0}
+.verdict .a.no{color:var(--ink)}
+.verdict .a.yes{color:var(--good)}
+.verdict .because{font-size:14.5px;color:var(--ink-2);line-height:1.5}
+.verdict .because b{color:var(--ink);font-weight:600}
 
-  .section{font-size:11px;font-weight:800;letter-spacing:1.6px;color:var(--mut);text-transform:uppercase;margin:24px 6px 12px;display:flex;align-items:center;gap:8px}
-  .live-dot{width:8px;height:8px;border-radius:50%;background:var(--grn);box-shadow:0 0 10px var(--grn);animation:pulse 1.5s infinite}
-  @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.82)}}
+.facts{display:flex;flex-direction:column;gap:1px;background:var(--line);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.fact{background:var(--surface);padding:13px 16px;display:flex;flex-direction:column;gap:3px}
+.fact .line{display:flex;align-items:baseline;gap:10px}
+.fact .lbl{font-size:14px;color:var(--ink);flex:1}
+.fact .val{font-family:"IBM Plex Mono",monospace;font-size:14px;font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
+.fact .val.ok{color:var(--good)} .fact .val.no{color:var(--bad)} .fact .val.mid{color:var(--warn)}
+.fact .mean{font-size:12.5px;color:var(--ink-3);line-height:1.45}
 
-  .card{padding:17px;margin-bottom:14px}
-  .ctop{display:flex;align-items:center;gap:11px;margin-bottom:14px}
-  .logo{width:40px;height:40px;border-radius:13px;flex:0 0 auto;display:flex;align-items:center;justify-content:center;
-    font-weight:800;font-size:12px;color:#0a0c10;box-shadow:inset 0 1px 0 rgba(255,255,255,.4)}
-  .who{flex:1;min-width:0}
-  .who .t{font-size:17px;font-weight:800;line-height:1.1}
-  .who .s{font-size:12px;color:var(--mut);margin-top:2px}
-  .badge{font-size:10.5px;font-weight:800;letter-spacing:.04em;padding:5px 10px;border-radius:10px;white-space:nowrap}
-  .badge.play{background:rgba(56,189,248,.18);color:#7dd3fc;border:1px solid rgba(125,211,252,.3)}
-  .badge.wait{background:rgba(255,255,255,.08);color:var(--mut);border:1px solid var(--glass-bd)}
-  .badge.stop{background:rgba(251,113,133,.16);color:var(--red2);border:1px solid rgba(251,113,133,.3)}
+/* alert (same-day squeeze, no confidence claim) */
+.alert{background:var(--warn-soft);border:1px solid var(--line);border-radius:14px;padding:15px 16px;display:flex;flex-direction:column;gap:6px}
+.alert .k{font-family:"IBM Plex Mono",monospace;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--warn);font-weight:600}
+.alert .t{font-size:15px;font-weight:600}
+.alert .d{font-size:13.5px;color:var(--ink-2)}
 
-  .bs{display:flex;align-items:stretch;gap:10px;margin-bottom:13px}
-  .leg{flex:1;padding:12px 14px;border-radius:15px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08)}
-  .leg .k{font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;margin-bottom:5px}
-  .leg .v{font-size:21px;font-weight:800;letter-spacing:-.02em}
-  .leg.buy .k{color:var(--grn2)} .leg.sell .k{color:var(--amb)}
-  .arrow{display:flex;align-items:center;color:var(--mut2);font-size:18px}
+/* pick card */
+.pick{background:var(--surface);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);padding:18px;display:flex;flex-direction:column;gap:16px}
+.pick-top{display:flex;align-items:flex-start;gap:12px}
+.pick-sym{display:flex;flex-direction:column;gap:2px;flex:1}
+.pick-sym b{font-size:24px;font-weight:600;letter-spacing:-.02em;line-height:1}
+.pick-sym span{font-size:12.5px;color:var(--ink-3)}
+.conf{display:flex;flex-direction:column;align-items:flex-end;gap:2px;text-align:right}
+.conf .num{font-family:"IBM Plex Mono",monospace;font-size:22px;font-weight:600;font-variant-numeric:tabular-nums;line-height:1;color:var(--good);letter-spacing:-.02em}
+.conf .num.pending{color:var(--ink-3);font-size:18px}
+.conf .band{font-size:11px;color:var(--ink-3);max-width:120px;line-height:1.35}
 
-  /* live market-rate panel */
-  .live{margin-top:4px;border-radius:17px;padding:14px 15px 13px;
-    background:linear-gradient(180deg,rgba(52,211,153,.10),rgba(0,0,0,.18));border:1px solid rgba(110,231,183,.22);
-    box-shadow:inset 0 1px 0 rgba(255,255,255,.12)}
-  .live.dn{background:linear-gradient(180deg,rgba(251,113,133,.10),rgba(0,0,0,.18));border-color:rgba(251,113,133,.22)}
-  .live.flat{background:linear-gradient(180deg,rgba(255,255,255,.05),rgba(0,0,0,.18));border-color:var(--glass-bd)}
-  .live-hd{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:13px}
-  .live-lbl{display:flex;align-items:center;gap:7px;font-size:10.5px;font-weight:800;letter-spacing:.1em;color:var(--grn2);text-transform:uppercase}
-  .live.dn .live-lbl{color:var(--red2)} .live.flat .live-lbl{color:var(--mut)}
-  .live-price{font-size:26px;font-weight:800;letter-spacing:-.02em;line-height:1;margin-top:6px}
-  .live-price .cur{font-size:15px;color:var(--mut);font-weight:700;margin-right:1px}
-  .live-pl{font-size:13.5px;font-weight:800;text-align:right}
-  .live-pl .sub{font-size:10.5px;color:var(--mut);font-weight:600;display:block;margin-top:2px}
-  .pl.up{color:var(--grn2)} .pl.dn{color:var(--red2)} .pl.flat{color:var(--mut)}
-  .bar{position:relative;height:8px;border-radius:6px;margin:18px 4px 6px;
-    background:linear-gradient(90deg,#5b1620 0%,#3a3010 42%,#10331f 100%);box-shadow:inset 0 1px 2px rgba(0,0,0,.5)}
-  .bar .mk{position:absolute;top:50%;transform:translate(-50%,-50%);width:19px;height:19px;border-radius:50%;
-    background:radial-gradient(circle at 35% 30%,#fff,#dfe7ee);box-shadow:0 0 0 1px rgba(255,255,255,.55),0 4px 12px rgba(0,0,0,.5),0 0 16px rgba(110,231,183,.45)}
-  .bar .tk{position:absolute;top:-16px;font-size:9px;font-weight:800;color:var(--mut);transform:translateX(-50%);letter-spacing:.04em}
-  .ends{display:flex;justify-content:space-between;margin-top:9px;font-size:9.5px;font-weight:700}
-  .ends .lo{color:var(--red2)} .ends .hi{color:var(--amb)}
-  .stopnote{font-size:11.5px;color:var(--mut);margin-top:11px}
-  .stopnote b{color:var(--red2)}
+.levels{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line);border-radius:10px;overflow:hidden;border:1px solid var(--line)}
+.lvl{background:var(--surface);padding:10px 11px;display:flex;flex-direction:column;gap:3px}
+.lvl .k{font-size:10.5px;color:var(--ink-3);line-height:1.3}
+.lvl .v{font-family:"IBM Plex Mono",monospace;font-size:16px;font-weight:600;font-variant-numeric:tabular-nums}
+.lvl.target .v{color:var(--good)} .lvl.stop .v{color:var(--bad)}
 
-  .done{display:flex;align-items:center;gap:12px;padding:13px 15px;margin-bottom:10px;border-radius:17px}
-  .done .logo{width:34px;height:34px;border-radius:10px;font-size:11px}
-  .done .who2{flex:1}
-  .done .who2 .t{font-size:14.5px;font-weight:800}
-  .done .who2 .s{font-size:11.5px;color:var(--mut);margin-top:1px}
-  .res{font-size:15px;font-weight:800;text-align:right}
-  .res .sub{font-size:10.5px;font-weight:700;display:block;margin-top:1px}
-  .res.win{color:var(--grn2)} .res.loss{color:var(--red2)} .res.even{color:var(--mut)}
+.why{display:flex;flex-direction:column;gap:8px}
+.why h4{margin:0;font-size:12.5px;color:var(--ink-3);font-weight:500}
+.why ul{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:7px}
+.why li{font-size:13.5px;color:var(--ink-2);line-height:1.45;padding-left:15px;position:relative}
+.why li::before{content:"";position:absolute;left:0;top:7px;width:5px;height:5px;border-radius:50%;background:var(--good)}
+.why li.fail::before{background:var(--bad)}
+.why li b{color:var(--ink);font-weight:600}
+.why .src{color:var(--ink-3);font-size:12px}
 
-  .foot{margin-top:24px;padding:15px 17px;border-radius:19px;
-    background:linear-gradient(180deg,rgba(251,113,133,.10),rgba(0,0,0,.18));border:1px solid rgba(251,113,133,.22)}
-  .foot .ft{font-size:11px;font-weight:800;letter-spacing:.5px;color:var(--amb);text-transform:uppercase;margin-bottom:6px}
-  .foot p{font-size:12px;color:var(--mut);line-height:1.55}
-  .foot p b{color:var(--tx)}
-  .empty{padding:22px;text-align:center;color:var(--mut2);font-size:13px;border-radius:16px;
-    background:rgba(255,255,255,.03);border:1px dashed var(--glass-bd)}
-  .meta{text-align:center;font-size:10.5px;color:var(--mut2);margin-top:18px}
-</style>
-<style>
-.center{text-align:center}
-.mt10{margin-top:10px}
-.muted-link{font-size:11px;color:#7b8492;text-decoration:none;letter-spacing:.04em}
-.grn2-bold{color:var(--grn2)}
+.veto{background:var(--bad-soft);border-radius:10px;padding:11px 13px;font-size:13px;color:var(--bad);font-weight:500}
+
+/* score tiles */
+.score{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}
+.tile{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:13px 14px;display:flex;flex-direction:column;gap:4px}
+.tile .k{font-size:12.5px;color:var(--ink)}
+.tile .v{font-family:"IBM Plex Mono",monospace;font-size:23px;font-weight:600;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.tile .s{font-size:11.5px;color:var(--ink-3);line-height:1.4}
+.tile.win .v{color:var(--good)} .tile.loss .v{color:var(--bad)}
+
+.ledger{display:flex;flex-direction:column;gap:1px;background:var(--line);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.row{background:var(--surface);padding:13px 14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.row .sym{font-family:"IBM Plex Mono",monospace;font-weight:600;font-size:13.5px;width:52px;flex-shrink:0}
+.row .what{flex:1;min-width:170px;font-size:13px;color:var(--ink-2)}
+.row .what b{color:var(--ink);font-weight:600}
+.pill{font-size:10.5px;padding:3px 7px;border-radius:5px;font-weight:600;flex-shrink:0}
+.pill.ok{background:var(--good-soft);color:var(--good)}
+.pill.no{background:var(--bad-soft);color:var(--bad)}
+.pill.wait{background:var(--surface-2);color:var(--ink-3)}
+
+/* card wrapper section */
+.section{display:flex;flex-direction:column;gap:12px}
+.section h2{margin:0;font-family:"Newsreader",Georgia,serif;font-size:18px;font-weight:500}
+.hint{font-size:13px;color:var(--ink-3);line-height:1.5}
+
+.empty{background:var(--surface);border:1px dashed var(--line-2);border-radius:14px;padding:22px 18px;text-align:center;color:var(--ink-3);font-size:13.5px}
+
+/* system tab */
+.sysrow{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:13px 15px;display:flex;align-items:center;justify-content:space-between;gap:10px}
+.sysrow .k{font-size:14px}
+.sysrow .v{font-family:"IBM Plex Mono",monospace;font-size:13px;font-weight:600}
+.sysrow .v.ok{color:var(--good)} .sysrow .v.no{color:var(--bad)}
+
+.loading{padding:40px 0;text-align:center;color:var(--ink-3);font-size:13.5px}
+.err{background:var(--bad-soft);color:var(--bad);border-radius:10px;padding:12px 14px;font-size:13px}
 </style>
 </head>
 <body>
-<div class="app">
-
-  <div class="hdwrap">
-    <div class="hd">
-      <div class="brand"><span class="gh">&#128123;</span><span class="nm">Ghost <span>Picks</span></span></div>
-      <div class="hd-right">
-        <span class="trackpill">TRACKING &middot; NOT ADVICE</span>
-        <a href="/cockpit" class="dashbtn">&#8862; Full dashboard</a>
-      </div>
+<div class="wrap">
+  <header class="topbar">
+    <div class="brand"><b>Ghost</b></div>
+    <div style="display:flex;align-items:center;gap:8px">
+      <span class="livedot" id="livedot"><i></i><span id="livedot-txt">Loading</span></span>
     </div>
-  </div>
+  </header>
+  <div class="stamp" style="padding:6px 18px 0" id="stamp"></div>
 
-  <div class="seg glass">
-    <button data-days="1">Today</button>
-    <button data-days="7" class="on">This Week</button>
-    <button data-days="30">All</button>
-  </div>
+  <nav class="tabs" role="tablist" aria-label="Ghost sections">
+    <button class="tabbtn" id="tab-today" role="tab" aria-selected="true" aria-controls="view-today">Today</button>
+    <button class="tabbtn" id="tab-mystocks" role="tab" aria-selected="false" aria-controls="view-mystocks">My stocks</button>
+    <button class="tabbtn" id="tab-record" role="tab" aria-selected="false" aria-controls="view-record">Record</button>
+    <button class="tabbtn" id="tab-system" role="tab" aria-selected="false" aria-controls="view-system">System</button>
+  </nav>
 
-  <div class="score">
-    <div class="sc glass"><div class="n" id="s-live">&#8212;</div><div class="l">Live now</div></div>
-    <div class="sc glass"><div class="n grn" id="s-win">&#8212;</div><div class="l">Hit target</div></div>
-    <div class="sc glass"><div class="n red" id="s-loss">&#8212;</div><div class="l">Stopped</div></div>
-    <div class="sc glass"><div class="n amb" id="s-rate">&#8212;</div><div class="l">Right so far</div></div>
-  </div>
-  <div class="tagline">Simple buy/sell ideas — watch the <b>live price</b> play out against each call before you risk a dollar.</div>
-
-  <div class="section"><span class="live-dot"></span> <span id="live-head">Live right now</span></div>
-  <div id="live-list"><div class="empty">Loading live picks&#8230;</div></div>
-
-  <div class="section">Finished</div>
-  <div id="done-list"><div class="empty">Loading&#8230;</div></div>
-
-  <div class="foot glass">
-    <div class="ft">&#9888; Read this first</div>
-    <p id="foot-copy">These are <b>model predictions tracked live</b> — not financial advice. Watch the live price hit (or miss) each call, and watch the scoreboard, before you trust it with real money. This screen exists to <b>prove the predictions</b> first.</p>
-  </div>
-
-  <div class="meta" id="meta">&middot;</div>
-  <div class="center mt10">
-    <a href="/cockpit" class="muted-link">Operator? Full dashboard &rarr;</a>
-  </div>
-
+  <main>
+    <section class="view" id="view-today" role="tabpanel" aria-labelledby="tab-today"><div class="loading">Loading today's read…</div></section>
+    <section class="view" id="view-mystocks" role="tabpanel" aria-labelledby="tab-mystocks" hidden><div class="loading">Loading your stocks…</div></section>
+    <section class="view" id="view-record" role="tabpanel" aria-labelledby="tab-record" hidden><div class="loading">Loading the record…</div></section>
+    <section class="view" id="view-system" role="tabpanel" aria-labelledby="tab-system" hidden><div class="loading">Loading system status…</div></section>
+  </main>
 </div>
 
 <script>
-/* ── Ghost Picks · simple trade tracker (CSP-safe vanilla JS) ── */
-var WINDOW_DAYS = 7;
+(function(){
+'use strict';
 
-function _fetchJson(url, fb){ return fetch(url).then(function(r){return r.json();}).catch(function(){return fb;}); }
-function _esc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
-function _applyDataStyles(el){
-  if(!el) return;
-  el.querySelectorAll('[data-style-background]').forEach(function(e){
-    e.style.background = e.getAttribute('data-style-background');
-  });
-  el.querySelectorAll('[data-style-left]').forEach(function(e){
-    e.style.left = e.getAttribute('data-style-left');
-  });
-  el.querySelectorAll('[data-style-color]').forEach(function(e){
-    e.style.color = e.getAttribute('data-style-color');
-  });
-  el.querySelectorAll('[data-style-box-shadow]').forEach(function(e){
-    e.style.boxShadow = e.getAttribute('data-style-box-shadow');
+function esc(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){
+  return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+}); }
+function fmt(n, d){ if(n==null||isNaN(n)) return '—'; return Number(n).toFixed(d==null?2:d); }
+function fmtPct(n, d){ if(n==null||isNaN(n)) return '—'; return Number(n).toFixed(d==null?1:d)+'%'; }
+function money(n){ if(n==null||isNaN(n)) return '—'; return '$'+Number(n).toFixed(2); }
+
+async function getJson(url){
+  try{
+    var r = await fetch(url, {headers:{'Accept':'application/json'}});
+    if(!r.ok) return {ok:false, status:r.status};
+    var j = await r.json();
+    j.__ok = j.ok !== false;
+    return j;
+  }catch(e){ return {ok:false, __ok:false, error:String(e)}; }
+}
+
+/* ---------------------------------------------------------------- tabs -- */
+var tabs = [
+  {btn:document.getElementById('tab-today'), panel:document.getElementById('view-today'), load:loadToday, loaded:false},
+  {btn:document.getElementById('tab-mystocks'), panel:document.getElementById('view-mystocks'), load:loadMyStocks, loaded:false},
+  {btn:document.getElementById('tab-record'), panel:document.getElementById('view-record'), load:loadRecord, loaded:false},
+  {btn:document.getElementById('tab-system'), panel:document.getElementById('view-system'), load:loadSystem, loaded:false},
+];
+function selectTab(i){
+  tabs.forEach(function(t, j){
+    var on = i===j;
+    t.btn.setAttribute('aria-selected', on ? 'true':'false');
+    t.panel.hidden = !on;
+    if(on && !t.loaded){ t.loaded = true; t.load(); }
   });
 }
-function _f(n,d){ return (n==null||n===''||isNaN(n))?null:Number(n).toFixed(d==null?2:d); }
-function _logoColor(sym){
-  var palette=[['#6ee7b7','#34d399'],['#fda4af','#fb7185'],['#fcd34d','#fb923c'],['#c4b5fd','#a78bfa'],['#93c5fd','#60a5fa'],['#67e8f9','#22d3ee']];
-  var h=0; for(var i=0;i<sym.length;i++){ h=(h*31+sym.charCodeAt(i))>>>0; }
-  var p=palette[h%palette.length];
-  return 'linear-gradient(135deg,'+p[0]+','+p[1]+')';
-}
-function _clamp(v,lo,hi){ return Math.max(lo,Math.min(hi,v)); }
+tabs.forEach(function(t,i){ t.btn.addEventListener('click', function(){ selectTab(i); }); });
 
-function renderLive(board){
-  var host=document.getElementById('live-list');
-  var hd=document.getElementById('live-head');
-  var picks=(board&&board.picks)?board.picks.slice():[];
-  // need a buy price + a usable live or target to be meaningful
-  picks=picks.filter(function(p){ return p&&p.symbol&&p.buy!=null; });
-  picks.sort(function(a,b){ return (b.squeeze_score||0)-(a.squeeze_score||0); });
-  picks=picks.slice(0,10);
-  document.getElementById('s-live').textContent=picks.length;
-  if(!board||board.ok===false||!picks.length){
-    var resume=(board&&board.radar_resume_ct)?(' Radar resumes '+_esc(board.radar_resume_ct)+'.'):'';
-    var act=(board&&board.radar_active===false)?'Market quiet — radar is paused.':'No live picks right now.';
-    host.innerHTML='<div class="empty">'+act+resume+'</div>';
-    hd.textContent='Live right now';
+/* ------------------------------------------------------------- header --- */
+async function loadHeader(){
+  var v = await getJson('/api/_version');
+  var dot = document.getElementById('livedot'), txt = document.getElementById('livedot-txt');
+  if(v.__ok){ dot.classList.remove('off'); txt.textContent = 'Live'; }
+  else { dot.classList.add('off'); txt.textContent = 'Offline'; }
+  document.getElementById('stamp').textContent = new Date().toLocaleString('en-US', {
+    weekday:'long', month:'long', day:'numeric', hour:'numeric', minute:'2-digit'
+  });
+}
+
+/* --------------------------------------------------------- checklist UI - */
+function conditionBadge(box){
+  var cls = box.state === 'pass' ? 'ok' : (box.state === 'fail' ? 'no' : 'wait');
+  var word = box.state === 'pass' ? 'Yes' : (box.state === 'fail' ? 'No' : "Don't know");
+  return '<span class="pill '+cls+'">'+word+'</span>';
+}
+
+function pickCard(sym, direction, entry, target, stop, report){
+  var confBlock;
+  var conf = report && report.confidence;
+  if(conf && conf.confidence_pct != null){
+    confBlock = '<div class="conf"><span class="num">'+fmtPct(conf.confidence_pct,0)+'</span>'
+      + '<span class="band">'+esc(conf.explanation||'')+'</span></div>';
+  } else {
+    confBlock = '<div class="conf"><span class="num pending">Not proven yet</span>'
+      + '<span class="band">'+esc((conf&&conf.explanation)||'Ghost needs more finished calls like this one before it will put a number on it.')+'</span></div>';
+  }
+
+  var levels = '';
+  if(entry!=null || target!=null || stop!=null){
+    levels = '<div class="levels">'
+      + '<div class="lvl"><span class="k">Buy at</span><span class="v">'+money(entry)+'</span></div>'
+      + '<div class="lvl target"><span class="k">Aiming for</span><span class="v">'+money(target)+'</span></div>'
+      + '<div class="lvl stop"><span class="k">Get out if it hits</span><span class="v">'+money(stop)+'</span></div>'
+      + '</div>';
+  }
+
+  var whyItems = '';
+  if(report && report.groups){
+    report.groups.forEach(function(g){
+      g.boxes.forEach(function(b){
+        if(b.state === 'unknown') return;
+        whyItems += '<li class="'+(b.state==='pass'?'':'fail')+'"><b>'+esc(b.label)+'</b>'
+          + (b.source ? ' <span class="src">— '+esc(b.source)+'</span>' : '') + '</li>';
+      });
+    });
+  }
+  var whyBlock = whyItems ? '<div class="why"><h4>What Ghost is seeing</h4><ul>'+whyItems+'</ul></div>' : '';
+
+  var vetoBlock = '';
+  if(report && report.blocked){
+    vetoBlock = '<div class="veto">Blocked: '+esc(report.block_reason||'a risk check failed')+'</div>';
+  }
+
+  var coverage = report ? '<div class="hint">Verified '+fmtPct(report.evidence_coverage_pct,0)+' of what Ghost checks for'
+    + (report.direction_strength_pct!=null ? ' — of that, '+fmtPct(report.direction_strength_pct,0)+' points '+(direction==='UP'?'up':'down') : '')
+    + '.</div>' : '';
+
+  return '<div class="pick">'
+    + '<div class="pick-top"><div class="pick-sym"><b>'+esc(sym)+'</b><span>'+(direction==='UP'?'Betting it goes up':'Betting it goes down')+'</span></div>'
+    + confBlock + '</div>'
+    + levels + coverage + vetoBlock + whyBlock
+    + '</div>';
+}
+
+/* -------------------------------------------------------------- Today --- */
+async function loadToday(){
+  var el = document.getElementById('view-today');
+  var results = await Promise.all([
+    getJson('/api/squeeze/picks'),
+    getJson('/api/picks?limit=5'),
+    getJson('/api/wolf/kill-status'),
+  ]);
+  var squeeze = results[0], picksResp = results[1], kill = results[2];
+
+  var html = '';
+
+  var squeezeAlerts = (squeeze.__ok && Array.isArray(squeeze.picks)) ? squeeze.picks : [];
+  var activePicks = (picksResp.__ok && Array.isArray(picksResp.active)) ? picksResp.active : [];
+
+  var paused = kill.__ok ? !!(kill.engine_pause && kill.engine_pause.paused) : null;
+
+  // Enrich active picks only with their immutable issue-time checklist.
+  var enriched = [];
+  var top = activePicks.slice(0, 3);
+  if(top.length){
+    var checklists = await Promise.all(top.map(function(p){
+      if(p.id == null) return Promise.resolve({__ok:false});
+      return getJson('/api/ghost/checklist/prediction/'+encodeURIComponent(p.id));
+    }));
+    top.forEach(function(p, i){ enriched.push({pick:p, report: checklists[i].__ok ? checklists[i] : null}); });
+  }
+
+  var anyProvenPick = enriched.some(function(e){ return e.report && e.report.confidence && e.report.confidence.confidence_pct != null; });
+  var anySqueeze = squeezeAlerts.length > 0;
+  var found = anyProvenPick || anySqueeze;
+
+  html += '<div class="verdict"><div class="q">Did Ghost find a squeeze today?</div>';
+  if(found){
+    html += '<p class="a yes">'+(found?'Yes.':'No.')+'</p>';
+    html += '<p class="because">'
+      + (anySqueeze ? '<b>'+squeezeAlerts.length+'</b> unusual-volume alert'+(squeezeAlerts.length===1?'':'s')+' right now. ' : '')
+      + (anyProvenPick ? 'At least one pick has a proven confidence number behind it.' : '')
+      + '</p>';
+  } else {
+    html += '<p class="a no">No.</p>';
+    html += '<p class="because">Ghost scanned '+(activePicks.length)+' setup'+(activePicks.length===1?'':'s')+' and none cleared the bar'
+      + (paused ? ', and its own kill switch has it paused right now.' : '.') + '</p>';
+  }
+  if(paused){
+    html += '<div class="facts"><div class="fact"><div class="line"><span class="lbl">How it\'s been doing lately</span><span class="val no">Paused</span></div>'
+      + '<div class="mean">Ghost has been wrong too often recently, so it shut itself off. It won\'t hand you a new pick until that recovers.</div></div></div>';
+  }
+  html += '</div>';
+
+  if(squeezeAlerts.length){
+    html += '<div class="section"><h2>Unusual activity right now</h2>'
+      + '<div class="hint">Same-day moves. These are alerts, not predictions — Ghost does not have a proven confidence number for same-day moves, so none is shown.</div>';
+    squeezeAlerts.slice(0,5).forEach(function(p){
+      var alertSymbol = esc(p.symbol||'');
+      html += '<div class="alert"><div class="k">Worth a look</div>'
+        + '<div class="t">unusual volume on '+alertSymbol+', worth a look.</div></div>';
+    });
+    html += '</div>';
+  }
+
+  if(enriched.length){
+    html += '<div class="section"><h2>Today\'s picks</h2>';
+    enriched.forEach(function(e){
+      html += pickCard(e.pick.symbol, (e.pick.direction||'UP').toUpperCase(), e.pick.entry_price, e.pick.target_price, e.pick.stop_price, e.report);
+    });
+    html += '</div>';
+  }
+
+  if(!squeezeAlerts.length && !enriched.length){
+    html += '<div class="empty">Nothing to show today. Check back after the next scan.</div>';
+  }
+
+  el.innerHTML = html;
+}
+
+/* ----------------------------------------------------------- My stocks - */
+async function loadMyStocks(){
+  var el = document.getElementById('view-mystocks');
+  var resp = await getJson('/api/my-picks');
+  if(!resp.__ok){
+    el.innerHTML = '<div class="err">Couldn\'t load your stocks right now.</div>';
     return;
   }
-  hd.textContent='Live right now · '+picks.length;
-  var marketOpen=!!(board && board.radar_active);
-  var resumeCt=(board && board.radar_resume_ct) ? _esc(board.radar_resume_ct) : '';
-  host.innerHTML=picks.map(function(p){ return liveCard(p, marketOpen, resumeCt); }).join('');
-  _applyDataStyles(host);
+  var picks = Array.isArray(resp.picks) ? resp.picks : [];
+  if(!picks.length){
+    el.innerHTML = '<div class="empty">You haven\'t added any stocks to watch yet.</div>';
+    return;
+  }
+  var checklists = await Promise.all(picks.map(function(p){
+    return getJson('/api/ghost/checklist/'+encodeURIComponent(p.symbol)+'?direction=UP');
+  }));
+  var html = '<div class="section"><h2>Your stocks</h2>';
+  picks.forEach(function(p, i){
+    var report = checklists[i].__ok ? checklists[i] : null;
+    var lp = p.live_price;
+    html += '<div class="pick"><div class="pick-top"><div class="pick-sym"><b>'+esc(p.symbol)+'</b>'
+      + '<span>Live price '+money(lp)+'</span></div>';
+    if(report && report.confidence && report.confidence.confidence_pct != null){
+      html += '<div class="conf"><span class="num">'+fmtPct(report.confidence.confidence_pct,0)+'</span><span class="band">confidence</span></div>';
+    } else {
+      html += '<div class="conf"><span class="num pending">—</span><span class="band">Not proven yet</span></div>';
+    }
+    html += '</div>';
+    if(report){
+      html += '<div class="hint">Verified '+fmtPct(report.evidence_coverage_pct,0)+' of what Ghost checks for'
+        + (report.direction_strength_pct!=null ? ', '+fmtPct(report.direction_strength_pct,0)+' of it points up' : '') + '.</div>';
+    }
+    html += '</div>';
+  });
+  html += '</div>';
+  el.innerHTML = html;
 }
 
-function liveCard(p){
-  var buy=Number(p.buy);
-  var sell=(p.sell!=null)?Number(p.sell):buy*(1+((p.peak_move_pct||2.5)/100));
-  var stop=(p.stop!=null)?Number(p.stop):buy*0.984;
-  var live=(p.live_price!=null)?Number(p.live_price):null;
-  var span=(sell-stop)||1;
-  var buyPct=_clamp((buy-stop)/span*100,2,98);
-  var conf=(p.confidence_pct!=null)?Math.round(p.confidence_pct):null;
+/* -------------------------------------------------------------- Record - */
+async function loadRecord(){
+  var el = document.getElementById('view-record');
+  var results = await Promise.all([
+    getJson('/api/ghost/checklist/record?limit=25'),
+    getJson('/api/wallet'),
+  ]);
+  var rec = results[0], wallet = results[1];
+  var snaps = (rec.__ok && Array.isArray(rec.snapshots)) ? rec.snapshots : [];
 
-  var cls='flat', dot='var(--mut2)', plCls='flat', big='&#8212;', sub='', mkPct=buyPct, badge='<span class="badge wait">WAITING TO BUY</span>', note='';
-  var liveLbl='Live market price';
-  var priceStr=(live!=null?('<span class="cur">$</span>'+_f(live,2)):'no quote');
-  if(live!=null){
-    mkPct=_clamp((live-stop)/span*100,1,99);
-    if(live<=stop){
-      cls='dn'; dot='var(--red)'; plCls='dn'; badge='<span class="badge stop">STOPPED</span>';
-      big='&#9660; '+_f((live-buy)/buy*100,1)+'%'; sub='hit safety exit';
-    } else if(live<buy){
-      cls='flat'; dot='var(--mut2)'; plCls='flat'; badge='<span class="badge wait">WAITING TO BUY</span>';
-      big='below buy'; sub='not triggered yet';
-      note='&#9203; Don\'t buy yet — wait until it reaches <b class="grn2-bold">$'+_f(buy,2)+'</b>.';
-    } else {
-      var prog=_clamp((live-buy)/((sell-buy)||1)*100,0,100);
-      var plv=(live-buy)/buy*100;
-      if(plv>=0){ cls=''; dot='var(--grn)'; plCls='up'; big='&#9650; +'+_f(plv,1)+'%'; }
-      else { cls='dn'; dot='var(--red)'; plCls='dn'; big='&#9660; '+_f(plv,1)+'%'; }
-      sub=prog>=85?'almost at target':(prog>=45?'halfway to target':'in play');
-      badge='<span class="badge play">IN PLAY</span>';
+  var made = snaps.filter(function(s){ return s.outcome === 'WIN'; }).length;
+  var missed = snaps.filter(function(s){ return s.outcome === 'LOSS'; }).length;
+  var expired = snaps.filter(function(s){ return s.outcome === 'EXPIRED'; }).length;
+
+  var html = '<div class="score">'
+    + '<div class="tile win"><span class="k">Made it</span><span class="v">'+made+'</span><span class="s">Reached the price Ghost aimed for</span></div>'
+    + '<div class="tile loss"><span class="k">Stopped out</span><span class="v">'+missed+'</span><span class="s">Reached the get-out price first</span></div>'
+    + '<div class="tile"><span class="k">Expired</span><span class="v">'+expired+'</span><span class="s">Reached neither price in the watch window</span></div>';
+  if(wallet.__ok && wallet.total_value != null){
+    html += '<div class="tile"><span class="k">Practice balance</span><span class="v">'+money(wallet.total_value)+'</span><span class="s">Started at '+money(wallet.starting_balance||10000)+'</span></div>';
+  }
+  html += '</div>';
+
+  if(!snaps.length){
+    html += '<div class="empty">No finished calls yet. Ghost holds each pick for its full watch window before scoring it.</div>';
+  } else {
+    html += '<div class="ledger">';
+    snaps.forEach(function(s){
+      var right = s.outcome === 'WIN';
+      var expiredCall = s.outcome === 'EXPIRED';
+      var detail = right
+        ? 'reached the target at '+money(s.resolved_price)
+        : (expiredCall
+          ? 'reached neither target nor get-out price before the watch window ended at '+money(s.resolved_price)
+          : 'hit the get-out price at '+money(s.resolved_price));
+      var verdict = right ? 'Right.' : (expiredCall ? 'Expired.' : 'Wrong.');
+      var pill = right ? 'Made it' : (expiredCall ? 'Expired' : 'Stopped out');
+      html += '<div class="row"><span class="sym">'+esc(s.symbol)+'</span>'
+        + '<span class="what"><b>'+verdict+'</b> Aimed for '+money(s.target_price)+', '+detail+'.</span>'
+        + '<span class="pill '+(right?'ok':'no')+'">'+pill+'</span></div>';
+    });
+    html += '</div>';
+  }
+  el.innerHTML = html;
+}
+
+/* -------------------------------------------------------------- System - */
+async function loadSystem(){
+  var el = document.getElementById('view-system');
+  var results = await Promise.all([
+    getJson('/api/health'),
+    getJson('/api/wolf/kill-status'),
+    getJson('/api/system/degraded'),
+  ]);
+  var health = results[0], kill = results[1], degraded = results[2];
+
+  var html = '<div class="section"><h2>Is Ghost healthy?</h2>';
+  html += '<div class="sysrow"><span class="k">Overall</span><span class="v '+(health.__ok?'ok':'no')+'">'+(health.__ok?'OK':'Trouble')+'</span></div>';
+  if(kill.__ok){
+    var paused = !!(kill.engine_pause && kill.engine_pause.paused);
+    html += '<div class="sysrow"><span class="k">Making new picks</span><span class="v '+(paused?'no':'ok')+'">'+(paused?'Paused':'Yes')+'</span></div>';
+    if(paused && kill.engine_pause.reason){
+      html += '<div class="hint">Why: '+esc(kill.engine_pause.reason)+'</div>';
     }
   }
-  if(!note){ note='&#128737;&#65039; Auto safety-exit at <b>$'+_f(stop,2)+'</b> if it turns.'; }
-  // Market-closed override: when the radar isn't active, the "live" price is a
-  // stale fallback (== buy), so don't show a misleading "IN PLAY +0.0%". Show a
-  // calm closed state with the resume time instead.
-  if(marketOpen===false){
-    badge='<span class="badge wait">MARKET CLOSED</span>';
-    cls='flat'; dot='var(--mut2)'; plCls='flat'; liveLbl='Market closed';
-    priceStr='&#8212;'; big='&#8212;'; sub=resumeCt?('opens '+resumeCt):'opens at market open';
-    mkPct=buyPct;
-    note='&#9203; Live tracking resumes '+(resumeCt||'when the market opens')+'.';
+  if(degraded.__ok){
+    var isDeg = !!degraded.degraded;
+    html += '<div class="sysrow"><span class="k">Running normally</span><span class="v '+(isDeg?'no':'ok')+'">'+(isDeg?'Degraded':'Yes')+'</span></div>';
   }
-
-  return ''+
-  '<div class="card glass">'+
-    '<div class="ctop">'+
-      '<div class="logo" data-style-background="'+_logoColor(p.symbol)+'">'+_esc(p.symbol.slice(0,3))+'</div>'+
-      '<div class="who"><div class="t">'+_esc(p.symbol)+'</div><div class="s">'+(conf!=null?('confidence '+conf+'%'):'squeeze candidate')+'</div></div>'+
-      badge+
-    '</div>'+
-    '<div class="bs">'+
-      '<div class="leg buy"><div class="k">Buy at</div><div class="v">$'+_f(buy,2)+'</div></div>'+
-      '<div class="arrow">&#8594;</div>'+
-      '<div class="leg sell"><div class="k">Sell at</div><div class="v">$'+_f(sell,2)+'</div></div>'+
-    '</div>'+
-    '<div class="live '+cls+'">'+
-      '<div class="live-hd">'+
-        '<div>'+
-          '<div class="live-lbl"><span class="live-dot" data-style-background="'+dot+'" data-style-box-shadow="0 0 10px '+dot+'"></span> '+liveLbl+'</div>'+
-          '<div class="live-price">'+priceStr+'</div>'+
-        '</div>'+
-        '<div class="live-pl pl '+plCls+'">'+big+'<span class="sub">'+sub+'</span></div>'+
-      '</div>'+
-      '<div class="bar">'+
-        '<span class="tk" data-style-left="'+buyPct.toFixed(0)+'%">BUY</span>'+
-        '<span class="tk" data-style-left="100%" data-style-color="var(--amb)">SELL</span>'+
-        '<span class="mk" data-style-left="'+mkPct.toFixed(0)+'%"></span>'+
-      '</div>'+
-      '<div class="ends"><span class="lo">stop $'+_f(stop,2)+'</span><span class="hi">target $'+_f(sell,2)+'</span></div>'+
-      '<div class="stopnote">'+note+'</div>'+
-    '</div>'+
-  '</div>';
+  html += '</div>';
+  el.innerHTML = html;
 }
 
-function renderDone(log){
-  var host=document.getElementById('done-list');
-  var rows=(log&&log.rows)?log.rows.filter(function(r){ return r&&r.outcome; }):[];
-  // resolved only, newest first, cap 12
-  rows=rows.slice(0,12);
-  var wins=0, losses=0;
-  (log&&log.rows?log.rows:[]).forEach(function(r){
-    if(r.outcome==='WIN') wins++; else if(r.outcome==='LOSS') losses++;
-  });
-  document.getElementById('s-win').textContent=wins;
-  document.getElementById('s-loss').textContent=losses;
-  var resolved=wins+losses;
-  var rate=resolved?Math.round(wins/resolved*100):null;
-  document.getElementById('s-rate').textContent=(rate!=null?(rate+'%'):'&#8212;');
-  document.getElementById('s-rate').innerHTML=(rate!=null?(rate+'%'):'&#8212;');
-  // honest footer line
-  if(rate!=null){
-    var fc=document.getElementById('foot-copy');
-    fc.innerHTML='These are <b>model predictions tracked live</b> — not financial advice. Over this window Ghost is right about <b>'+rate+'%</b> of the time ('+wins+' hit target / '+losses+' stopped). '+(rate<55?'That is <b>not</b> yet good enough to trade with real money — ':'')+'watch the scoreboard before you trust it. This screen exists to <b>prove the predictions</b> first.';
-  }
-  if(!rows.length){
-    host.innerHTML='<div class="empty">No finished picks in this window yet. They\'ll appear here as the day resolves after 3:00 PM CT.</div>';
-    return;
-  }
-  host.innerHTML=rows.map(doneRow).join('');
-  _applyDataStyles(host);
-}
-
-function doneRow(r){
-  var win=r.outcome==='WIN', loss=r.outcome==='LOSS';
-  var cls=win?'win':(loss?'loss':'even');
-  var icon=win?'&#127919; WIN':(loss?'&#128721; LOSS':'&#9878;&#65039; EVEN');
-  var pnl=(r.close_pnl_pct!=null)?((r.close_pnl_pct>=0?'+':'')+_f(r.close_pnl_pct,1)+'%'):'';
-  var exit=(r.session_close!=null)?_f(r.session_close,2):(r.sell!=null?_f(r.sell,2):'—');
-  var verb=win?'Sold':'Closed';
-  return ''+
-  '<div class="done glass">'+
-    '<div class="logo" data-style-background="'+_logoColor(r.symbol)+'">'+_esc(String(r.symbol).slice(0,3))+'</div>'+
-    '<div class="who2"><div class="t">'+_esc(r.symbol)+'</div><div class="s">Bought $'+_f(r.buy,2)+' &#8594; '+verb+' $'+exit+'</div></div>'+
-    '<div class="res '+cls+'">'+icon+'<span class="sub">'+pnl+'</span></div>'+
-  '</div>';
-}
-
-async function loadPicks(){
-  var board=await _fetchJson('/api/squeeze/picks',{ok:false,picks:[]});
-  renderLive(board);
-  var log=await _fetchJson('/api/squeeze/daily-log?days='+WINDOW_DAYS,{ok:false,rows:[]});
-  renderDone(log);
-  var stamp=new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
-  var sess=(board&&board.market_session)?(' · '+_esc(board.market_session)):'';
-  document.getElementById('meta').textContent='Updated '+stamp+sess+' · predictions tracked live, not advice';
-}
-
-// segmented window switch
-Array.prototype.forEach.call(document.querySelectorAll('.seg button'),function(btn){
-  btn.addEventListener('click',function(){
-    Array.prototype.forEach.call(document.querySelectorAll('.seg button'),function(b){ b.classList.remove('on'); });
-    btn.classList.add('on');
-    WINDOW_DAYS=parseInt(btn.getAttribute('data-days'),10)||7;
-    loadPicks();
-  });
-});
-
-loadPicks();
-setInterval(function(){ if(!document.hidden) loadPicks(); }, 60000);
-document.addEventListener('visibilitychange',function(){ if(!document.hidden) loadPicks(); });
+loadHeader();
+selectTab(0);
+setInterval(loadHeader, 60000);
+})();
 </script>
 </body>
 </html>
