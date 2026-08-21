@@ -57,3 +57,27 @@ def test_leadership_change_absent_from_evidence_reads_unknown_not_neutral(monkey
 def test_symbol_endpoint_requires_a_symbol():
     r = _client().get("/api/ghost/checklist/ ")
     assert r.status_code in (400, 404)
+
+
+def test_global_record_route_is_registered_before_symbol_wildcard():
+    """Regression: /api/ghost/checklist/record must resolve to the global
+    record endpoint, not be swallowed by /{symbol} matching 'record' as a
+    ticker. Route order in the source file is what fixes this -- this test
+    asserts the resulting behavior, not the line order itself."""
+    from api.routes_ghost_system import router
+
+    record_routes = [r for r in router.routes if getattr(r, "path", "") == "/api/ghost/checklist/record"]
+    symbol_routes = [r for r in router.routes if getattr(r, "path", "") == "/api/ghost/checklist/{symbol}"]
+    assert record_routes and symbol_routes
+    record_index = router.routes.index(record_routes[0])
+    symbol_index = router.routes.index(symbol_routes[0])
+    assert record_index < symbol_index
+
+
+def test_global_record_endpoint_reachable(monkeypatch):
+    import core.checklist_ledger as ckl
+    monkeypatch.setattr(ckl, "recent_resolved_across_symbols", lambda limit=30: [])
+
+    r = _client().get("/api/ghost/checklist/record")
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "snapshots": []}

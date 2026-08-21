@@ -662,6 +662,16 @@ def checklist_spec_endpoint():
         return JSONResponse({"ok": False, "error": "spec_unavailable"}, status_code=503)
 
 
+@router.get("/api/ghost/checklist/record")
+def checklist_global_record_endpoint(limit: int = 30):
+    """Every symbol's recently resolved calls, newest first — the Record tab."""
+    try:
+        from core.checklist_ledger import recent_resolved_across_symbols
+        return {"ok": True, "snapshots": recent_resolved_across_symbols(limit=limit)}
+    except Exception:
+        return JSONResponse({"ok": False, "error": "database_unavailable"}, status_code=503)
+
+
 @router.get("/api/ghost/checklist/{symbol}")
 def checklist_endpoint(symbol: str, direction: str = "UP"):
     """Today's checklist read for one symbol/direction, with calibrated confidence.

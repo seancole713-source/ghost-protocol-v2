@@ -169,6 +169,33 @@ def resolved_samples_for_calibration(*, min_issued_before: Optional[int] = None)
         return [{"score_pct": row[0], "won": row[1]} for row in cur.fetchall()]
 
 
+def recent_resolved_across_symbols(limit: int = 30) -> List[Dict[str, Any]]:
+    """Every symbol's most recently resolved calls, newest first -- the Record tab."""
+    from core.db import db_conn
+
+    with db_conn() as conn:
+        cur = conn.cursor()
+        ensure_checklist_tables(cur)
+        cur.execute(
+            """
+            SELECT symbol, direction, issued_at, score_pct, entry_price,
+                   target_price, stop_price, outcome, resolved_at,
+                   resolved_price, won, report_json
+              FROM ghost_checklist_snapshots
+             WHERE outcome IS NOT NULL
+             ORDER BY resolved_at DESC
+             LIMIT %s
+            """,
+            (max(1, min(200, int(limit))),),
+        )
+        cols = (
+            "symbol", "direction", "issued_at", "score_pct", "entry_price",
+            "target_price", "stop_price", "outcome", "resolved_at",
+            "resolved_price", "won", "report",
+        )
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
 def recent_snapshots(symbol: str, limit: int = 20) -> List[Dict[str, Any]]:
     """Recent checklist history for one symbol, newest first -- for the Record tab."""
     from core.db import db_conn

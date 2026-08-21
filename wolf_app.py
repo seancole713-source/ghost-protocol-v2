@@ -2823,21 +2823,17 @@ def cockpit():
     return _serve_html_page("cockpit.html")
 
 
-@APP.get("/", include_in_schema=False)
-def root_console():
-    """Unified Liquid Glass prediction console (PR #86)."""
-    return _serve_html_page("ghost_console.html")
-
-
 @APP.get("/picks", include_in_schema=False)
 def picks_page():
-    """Unified Liquid Glass prediction console (PR #86).
+    """Simplified consumer picks page (checklist-confidence rebuild).
 
-    Merges the old Ghost Picks consumer tracker and the operator dashboard into
-    one clean sidebar-based command center. The old picks page remains available
-    at /legacy-picks during rollout.
+    Four tabs -- Today / My stocks / Record / System -- reading the
+    transparent checklist confidence at /api/ghost/checklist/*, in place of
+    the 13-tab operator console this route served through PR #86-#161. The
+    full operator console (cron triggers, admin/contract-70 views, etc.)
+    remains reachable at / for anyone who needs the deeper surface.
     """
-    return _serve_html_page("ghost_console.html")
+    return _serve_html_page("picks.html")
 
 
 @APP.get("/studios", include_in_schema=False)
@@ -2866,12 +2862,6 @@ def favicon():
         media_type="image/svg+xml",
         headers={"Cache-Control": "public, max-age=86400"},
     )
-
-
-@APP.get("/legacy-picks", include_in_schema=False)
-def legacy_picks_page():
-    """Legacy Ghost Picks page kept as a rollout fallback for PR #86."""
-    return _serve_html_page("picks.html")
 
 
 # ────────────────────────────────────────────────────────────────

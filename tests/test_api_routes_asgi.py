@@ -270,10 +270,12 @@ def test_v3_train_route_maps_to_trainer_not_helper():
 
 
 def test_picks_page_route_serves_html(monkeypatch):
-    """The simple consumer trade-tracker page is served at GET /picks and carries
-    its live market-rate panel markup."""
+    """The simple consumer trade-tracker page is served at GET /picks -- and
+    it must be the simple 4-tab page, not the 13-tab operator console
+    (regression coverage for the checklist-confidence UI rebuild)."""
     with _client_with_test_mode(monkeypatch) as client:
         r = client.get("/picks")
     assert r.status_code == 200
-    assert "Ghost" in r.text
-    assert "Live market price" in r.text
+    assert "<title>Ghost</title>" in r.text
+    assert "view-today" in r.text
+    assert "Prediction command center" not in r.text
