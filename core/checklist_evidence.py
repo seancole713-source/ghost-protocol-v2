@@ -18,10 +18,26 @@ against fixed evidence dicts without touching the network or the database.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import logging
-from typing import Any, Dict, Optional
+import math
+import time
+from typing import Any, Dict, Iterable, Optional
+
+from core.evidence_integrity import (
+    CONFIRMED,
+    VERIFIED_CONFLICT,
+    is_confirmed,
+    reconcile_signal,
+)
 
 LOGGER = logging.getLogger("ghost.checklist_evidence")
+
+# Metadata keys are stored in the immutable ledger beside the scalar projection.
+# Scoring code ignores underscore-prefixed keys.
+RECORDS_KEY = "_records"
+CONFLICTS_KEY = "_conflicts"
+UNSUPPORTED_KEY = "_unsupported"
 
 
 def _safe(label: str, fn, *args, **kwargs) -> Any:
@@ -40,7 +56,82 @@ def _num(v: Any) -> Optional[float]:
         out = float(v)
     except (TypeError, ValueError):
         return None
-    return out if out == out else None  # filters NaN
+    return out if math.isfinite(out) else None
+
+
+def _epoch(value: Any) -> Optional[int]:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        pass
+    try:
+        return int(datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp())
+    except (TypeError, ValueError):
+        return None
+
+
+def _record(
+    *,
+    source: str,
+    source_timestamp: Any,
+    observation_timestamp: Any,
+    reporting_period: str,
+    unit: str,
+    basis: str,
+    actual_value: Any,
+    expected_value: Any = "not_applicable",
+    comparable_prior_period_value: Any = None,
+    methodology: str,
+    request_timestamp: int,
+    provenance: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    return {
+        "source": source,
+        "source_timestamp": _epoch(source_timestamp),
+        "observation_timestamp": _epoch(observation_timestamp),
+        "request_timestamp": int(request_timestamp),
+        "reporting_period": reporting_period,
+        "currency": "N/A",
+        "unit": unit,
+        "basis": basis,
+        "expected_value": expected_value,
+        "actual_value": actual_value,
+        "comparable_prior_period_value": comparable_prior_period_value,
+        "calculation_methodology": methodology,
+        "confidence_status": CONFIRMED,
+        "status": CONFIRMED,
+        "provenance": provenance or {},
+    }
+
+
+def _confirmed_projection(
+    signal_key: str,
+    records: Iterable[Dict[str, Any]],
+    *,
+    asof_ts: int,
+    max_age_s: Optional[int] = None,
+) -> tuple[Optional[float], Optional[Dict[str, Any]], list[Dict[str, Any]]]:
+    """Return a scalar only from complete, issue-bounded reconciled records."""
+    bounded = []
+    for record in records:
+        source_ts = _epoch(record.get("source_timestamp"))
+        observation_ts = _epoch(record.get("observation_timestamp"))
+        if source_ts is None or observation_ts is None:
+            bounded.append({**record, "confidence_status": "UNVERIFIED", "status": "UNVERIFIED"})
+            continue
+        if source_ts > asof_ts or observation_ts > asof_ts:
+            bounded.append({**record, "confidence_status": "UNVERIFIED", "status": "UNVERIFIED", "future_of_decision": True})
+            continue
+        if max_age_s is not None and asof_ts - source_ts > max_age_s:
+            bounded.append({**record, "confidence_status": "UNVERIFIED", "status": "UNVERIFIED", "stale_at_decision": True})
+            continue
+        bounded.append(record)
+    reconciled = reconcile_signal(signal_key, bounded)
+    if reconciled is None or not is_confirmed(reconciled):
+        return None, reconciled, bounded
+    return _num(reconciled.get("actual_value", reconciled.get("value"))), reconciled, bounded
 
 
 def _collect_earnings(symbol: str) -> Dict[str, Any]:
@@ -216,8 +307,16 @@ SOURCE_BY_SIGNAL: Dict[str, str] = {
 
 
 def sources_for(evidence: Dict[str, Any]) -> Dict[str, str]:
-    """The source label for every signal actually present in ``evidence``."""
-    return {k: SOURCE_BY_SIGNAL.get(k, "Ghost data feed") for k in evidence}
+    """Return actual record sources, never inferred labels posing as provenance."""
+    records = evidence.get(RECORDS_KEY) if isinstance(evidence, dict) else None
+    if not isinstance(records, dict):
+        return {}
+    out: Dict[str, str] = {}
+    for signal, rows in records.items():
+        sources = sorted({str(r.get("source")) for r in (rows or []) if isinstance(r, dict) and r.get("source")})
+        if sources:
+            out[signal] = ", ".join(sources)
+    return out
 
 
 def _default_market_ctx(symbol: str) -> Dict[str, Any]:
@@ -248,26 +347,73 @@ def _default_market_ctx(symbol: str) -> Dict[str, Any]:
 def collect_evidence(
     symbol: str,
     *,
+    asof_ts: Optional[int] = None,
     market_ctx: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Assemble every signal `catalyst_checklist` knows how to read for one symbol.
+    """Build a point-in-time projection plus the immutable records behind it.
 
-    ``market_ctx`` is an optional pre-fetched snapshot (e.g. from a batched
-    scan) covering price/volume/fuel fields -- pass it when scanning many
-    symbols at once so this stays a pure merge instead of triggering its own
-    network calls per symbol. Any field this function cannot resolve is left
-    out of the returned dict; `catalyst_checklist` treats an absent field as
-    UNKNOWN, never as a pass.
+    Mutable providers that cannot prove when their value was knowable are not
+    queried here. They remain explicitly unsupported until a timestamped source
+    is available; source labels alone are not provenance.
     """
     sym = (symbol or "").strip().upper()
-    if market_ctx is None:
-        market_ctx = _default_market_ctx(sym)
-    evidence: Dict[str, Any] = {}
-    evidence.update(_collect_earnings(sym))
-    evidence.update(_collect_fundamentals(sym))
-    evidence.update(_collect_news(sym))
-    evidence.update(_collect_leadership_change(sym))
-    evidence.update(_collect_squeeze_fuel(sym, market_ctx))
-    evidence.update(_collect_price_action(sym, market_ctx))
-    evidence.update(_collect_context(market_ctx))
+    decision_ts = int(time.time()) if asof_ts is None else int(asof_ts)
+    ctx = _default_market_ctx(sym) if market_ctx is None else dict(market_ctx)
+    source_ts = _epoch(ctx.get("feature_asof_ts"))
+
+    raw: Dict[str, Any] = {}
+    raw.update(_collect_squeeze_fuel(sym, ctx))
+    raw.update(_collect_price_action(sym, ctx))
+    for key in (
+        "relative_volume",
+        "trend_slope_pct",
+        "sector_move_pct",
+        "market_move_pct",
+        "earnings_days_away",
+    ):
+        value = _num(ctx.get(key))
+        if value is not None:
+            raw[key] = value
+
+    evidence: Dict[str, Any] = {
+        "_asof_ts": decision_ts,
+        RECORDS_KEY: {},
+        CONFLICTS_KEY: [],
+        UNSUPPORTED_KEY: [
+            "earnings_surprise_pct",
+            "guidance_direction",
+            "news_sentiment",
+            "leadership_change_sentiment",
+            "revenue_growth_pct",
+            "margin_change_pct",
+            "net_income_growth_pct",
+        ],
+    }
+    for signal, value in raw.items():
+        record = _record(
+            source="prediction_feature_snapshot" if market_ctx is not None else "live_market_snapshot",
+            source_timestamp=source_ts,
+            observation_timestamp=source_ts,
+            reporting_period="issue_time",
+            unit="ratio" if signal == "relative_volume" else ("USD" if signal == "avg_dollar_volume" else "percent"),
+            basis="point_in_time",
+            actual_value=value,
+            methodology=f"Checklist projection for {signal}",
+            request_timestamp=decision_ts,
+            provenance={"symbol": sym, "feature_asof_ts": source_ts},
+        )
+        scalar, reconciled, bounded = _confirmed_projection(
+            signal,
+            [record],
+            asof_ts=decision_ts,
+            max_age_s=24 * 3600,
+        )
+        evidence[RECORDS_KEY][signal] = bounded
+        if scalar is not None:
+            evidence[signal] = scalar
+        elif reconciled and reconciled.get("confidence_status") == VERIFIED_CONFLICT:
+            evidence[CONFLICTS_KEY].append({
+                "signal": signal,
+                "records": reconciled.get("data_conflict") or [],
+            })
     return evidence

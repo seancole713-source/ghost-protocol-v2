@@ -52,6 +52,51 @@ def test_samples_missing_score_or_outcome_are_skipped_not_guessed():
     assert calibration["total_samples"] == 1
 
 
+def test_malformed_truth_values_and_nonfinite_scores_are_rejected():
+    samples = [
+        {"score_pct": 50, "won": True},
+        {"score_pct": 50, "won": 1},
+        {"score_pct": 50, "won": "WIN"},
+        {"score_pct": True, "won": True},
+        {"score_pct": float("nan"), "won": True},
+        {"score_pct": float("inf"), "won": False},
+        {"score_pct": -0.1, "won": False},
+        {"score_pct": 100.1, "won": True},
+    ]
+    calibration = cal.build_calibration(samples)
+    assert calibration["total_samples"] == 1
+    assert calibration["skipped_samples"] == 7
+
+
+def test_boundaries_use_ten_point_bands_including_one_hundred():
+    samples = [
+        {"score_pct": 9.999, "won": True},
+        {"score_pct": 10.0, "won": False},
+        {"score_pct": 99.999, "won": True},
+        {"score_pct": 100.0, "won": False},
+    ]
+    calibration = cal.build_calibration(samples)
+    by_band = {row["band"]: row for row in calibration["bands"]}
+    assert by_band["0-10%"]["n"] == 1
+    assert by_band["10-20%"]["n"] == 1
+    assert by_band["90-100%"]["n"] == 2
+
+
+def test_calibration_preserves_exact_cohort_metadata():
+    cohort = {
+        "checklist_version": "v1",
+        "hold_bars": 3,
+        "outcome_contract": "contract-a",
+        "direction": "DOWN",
+        "symbol": "WOLF",
+        "scope": "symbol",
+    }
+    calibration = cal.build_calibration([], cohort=cohort)
+    assert calibration["cohort"] == cohort
+    cohort["direction"] = "UP"
+    assert calibration["cohort"]["direction"] == "DOWN"
+
+
 def test_calibration_gap_only_reports_proven_bands():
     unproven = [{"score_pct": 20, "won": True}] * 2
     proven = [{"score_pct": 80, "won": i < 20} for i in range(20)]

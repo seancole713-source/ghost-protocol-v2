@@ -18,8 +18,10 @@ Read-only. Nothing here fires a pick or moves a gate.
 """
 from __future__ import annotations
 
+import math
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from core.engine_calibration import _reliability_bins
 from core.precision_gate import wilson_lower_bound
 
 
@@ -46,20 +48,20 @@ def band_label(low: float, high: float) -> str:
     return f"{int(low)}-{int(high)}%"
 
 
-def build_calibration(samples: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
-    """Build the completeness -> realized-win-rate map.
-
-    Each sample needs ``score_pct`` (recorded when the prediction was issued,
-    never recomputed later) and ``won`` (bool). Samples missing either are
-    ignored rather than guessed at.
-    """
-    buckets: Dict[Tuple[float, float], List[bool]] = {}
+def build_calibration(
+    samples: Iterable[Dict[str, Any]],
+    *,
+    cohort: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Build exact-width reliability bins from strict, finite observations."""
+    valid_scores: List[float] = []
+    valid_outcomes: List[bool] = []
     skipped = 0
 
     for row in samples or []:
         score = row.get("score_pct")
         won = row.get("won")
-        if score is None or won is None or isinstance(score, bool):
+        if isinstance(score, bool) or not isinstance(won, bool):
             skipped += 1
             continue
         try:
@@ -67,13 +69,24 @@ def build_calibration(samples: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
         except (TypeError, ValueError):
             skipped += 1
             continue
-        buckets.setdefault(band_for(score), []).append(bool(won))
+        if not math.isfinite(score) or score < 0.0 or score > 100.0:
+            skipped += 1
+            continue
+        valid_scores.append(score / 100.0)
+        valid_outcomes.append(won)
 
     bands: List[Dict[str, Any]] = []
-    for (low, high) in sorted(buckets):
-        outcomes = buckets[(low, high)]
-        n = len(outcomes)
-        wins = sum(1 for o in outcomes if o)
+    reliability = _reliability_bins(valid_outcomes, valid_scores, n_bins=int(100 / BAND_WIDTH))
+    for item in reliability:
+        low = float(item["bin_lo"]) * 100.0
+        high = float(item["bin_hi"]) * 100.0
+        in_band = [
+            outcome
+            for score, outcome in zip(valid_scores, valid_outcomes)
+            if score >= item["bin_lo"] and (score <= item["bin_hi"] if high == 100.0 else score < item["bin_hi"])
+        ]
+        n = len(in_band)
+        wins = sum(1 for outcome in in_band if outcome)
         proven = n >= MIN_BAND_SAMPLES
         bands.append({
             "band": band_label(low, high),
@@ -81,22 +94,22 @@ def build_calibration(samples: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
             "high": high,
             "n": n,
             "wins": wins,
-            "raw_rate_pct": round(100.0 * wins / n, 1) if n else None,
-            # Wilson lower bound: what Ghost can stand behind, not the flattering figure.
-            "proven_rate_pct": round(100.0 * wilson_lower_bound(wins, n), 1) if n else None,
+            "mean_score_pct": round(float(item["mean_pred"]) * 100.0, 1),
+            "raw_rate_pct": round(float(item["observed_rate"]) * 100.0, 1),
+            "proven_rate_pct": round(100.0 * wilson_lower_bound(wins, n), 1),
             "proven": proven,
             "samples_needed": max(0, MIN_BAND_SAMPLES - n),
         })
 
-    total = sum(b["n"] for b in bands)
     return {
         "calibration_version": CALIBRATION_VERSION,
         "band_width": BAND_WIDTH,
         "min_band_samples": MIN_BAND_SAMPLES,
         "bands": bands,
-        "total_samples": total,
+        "total_samples": len(valid_scores),
         "skipped_samples": skipped,
         "any_proven": any(b["proven"] for b in bands),
+        "cohort": dict(cohort or {}),
     }
 
 

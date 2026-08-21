@@ -272,9 +272,11 @@ def _evaluate_box(box: Dict[str, Any], direction: str, evidence: Dict[str, Any])
     else:  # directional -- sign carries the meaning, so it reads both sides
         threshold = box["threshold"]
         if direction == UP:
-            state = PASS if value >= threshold else FAIL
+            # A zero threshold still requires a strictly positive sign; neutral
+            # cannot support both UP and DOWN.
+            state = PASS if (value > 0.0 if threshold == 0 else value >= threshold) else FAIL
         else:
-            state = PASS if value <= -threshold else FAIL
+            state = PASS if (value < 0.0 if threshold == 0 else value <= -threshold) else FAIL
 
     return {
         "key": box["key"],

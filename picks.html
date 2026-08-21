@@ -307,13 +307,13 @@ async function loadToday(){
 
   var paused = kill.__ok ? !!(kill.engine_pause && kill.engine_pause.paused) : null;
 
-  // enrich up to 3 active picks with the honest checklist read
+  // Enrich active picks only with their immutable issue-time checklist.
   var enriched = [];
   var top = activePicks.slice(0, 3);
   if(top.length){
     var checklists = await Promise.all(top.map(function(p){
-      var dir = (p.direction||'UP').toUpperCase()==='DOWN' ? 'DOWN' : 'UP';
-      return getJson('/api/ghost/checklist/'+encodeURIComponent(p.symbol)+'?direction='+dir);
+      if(p.id == null) return Promise.resolve({__ok:false});
+      return getJson('/api/ghost/checklist/prediction/'+encodeURIComponent(p.id));
     }));
     top.forEach(function(p, i){ enriched.push({pick:p, report: checklists[i].__ok ? checklists[i] : null}); });
   }
@@ -344,8 +344,9 @@ async function loadToday(){
     html += '<div class="section"><h2>Unusual activity right now</h2>'
       + '<div class="hint">Same-day moves. These are alerts, not predictions — Ghost does not have a proven confidence number for same-day moves, so none is shown.</div>';
     squeezeAlerts.slice(0,5).forEach(function(p){
-      html += '<div class="alert"><div class="k">Worth a look</div><div class="t">'+esc(p.symbol||'')+'</div>'
-        + '<div class="d">'+esc(p.reason || p.note || 'Far more people are trading it than usual.')+'</div></div>';
+      var alertSymbol = esc(p.symbol||'');
+      html += '<div class="alert"><div class="k">Worth a look</div>'
+        + '<div class="t">unusual volume on '+alertSymbol+', worth a look.</div></div>';
     });
     html += '</div>';
   }
@@ -413,12 +414,14 @@ async function loadRecord(){
   var rec = results[0], wallet = results[1];
   var snaps = (rec.__ok && Array.isArray(rec.snapshots)) ? rec.snapshots : [];
 
-  var made = snaps.filter(function(s){ return s.won === true; }).length;
-  var missed = snaps.filter(function(s){ return s.won === false; }).length;
+  var made = snaps.filter(function(s){ return s.outcome === 'WIN'; }).length;
+  var missed = snaps.filter(function(s){ return s.outcome === 'LOSS'; }).length;
+  var expired = snaps.filter(function(s){ return s.outcome === 'EXPIRED'; }).length;
 
   var html = '<div class="score">'
     + '<div class="tile win"><span class="k">Made it</span><span class="v">'+made+'</span><span class="s">Reached the price Ghost aimed for</span></div>'
-    + '<div class="tile loss"><span class="k">Missed</span><span class="v">'+missed+'</span><span class="s">Fell to the get-out price instead</span></div>';
+    + '<div class="tile loss"><span class="k">Stopped out</span><span class="v">'+missed+'</span><span class="s">Reached the get-out price first</span></div>'
+    + '<div class="tile"><span class="k">Expired</span><span class="v">'+expired+'</span><span class="s">Reached neither price in the watch window</span></div>';
   if(wallet.__ok && wallet.total_value != null){
     html += '<div class="tile"><span class="k">Practice balance</span><span class="v">'+money(wallet.total_value)+'</span><span class="s">Started at '+money(wallet.starting_balance||10000)+'</span></div>';
   }
@@ -429,11 +432,18 @@ async function loadRecord(){
   } else {
     html += '<div class="ledger">';
     snaps.forEach(function(s){
-      var right = s.won === true;
+      var right = s.outcome === 'WIN';
+      var expiredCall = s.outcome === 'EXPIRED';
+      var detail = right
+        ? 'reached the target at '+money(s.resolved_price)
+        : (expiredCall
+          ? 'reached neither target nor get-out price before the watch window ended at '+money(s.resolved_price)
+          : 'hit the get-out price at '+money(s.resolved_price));
+      var verdict = right ? 'Right.' : (expiredCall ? 'Expired.' : 'Wrong.');
+      var pill = right ? 'Made it' : (expiredCall ? 'Expired' : 'Stopped out');
       html += '<div class="row"><span class="sym">'+esc(s.symbol)+'</span>'
-        + '<span class="what">'+(right?'<b>Right.</b> ':'<b>Wrong.</b> ')
-        + 'Aimed for '+money(s.target_price)+', '+(right?'got there':'hit the get-out price')+' at '+money(s.resolved_price)+'.</span>'
-        + '<span class="pill '+(right?'ok':'no')+'">'+(right?'Made it':'Missed')+'</span></div>';
+        + '<span class="what"><b>'+verdict+'</b> Aimed for '+money(s.target_price)+', '+detail+'.</span>'
+        + '<span class="pill '+(right?'ok':'no')+'">'+pill+'</span></div>';
     });
     html += '</div>';
   }

@@ -674,16 +674,15 @@ def checklist_global_record_endpoint(limit: int = 30):
 
 @router.post("/api/ghost/checklist/snapshot-run")
 def checklist_snapshot_run_endpoint(x_cron_secret: str = Header(default="")):
-    """Cron-gated manual trigger for the checklist snapshot job."""
+    """Retired: delayed current-state reconstruction is not issue-time evidence."""
     from wolf_app import _cron_ok
 
     if not _cron_ok(x_cron_secret, strict=True):
         raise HTTPException(status_code=403)
-    try:
-        from core.checklist_ledger import snapshot_open_predictions
-        return snapshot_open_predictions()
-    except Exception:
-        return JSONResponse({"ok": False, "error": "database_unavailable"}, status_code=503)
+    return JSONResponse(
+        {"ok": False, "error": "retired", "reason": "checklists_are_frozen_at_prediction_issuance"},
+        status_code=410,
+    )
 
 
 @router.post("/api/ghost/checklist/resolve")
@@ -696,6 +695,47 @@ def checklist_resolve_endpoint(x_cron_secret: str = Header(default="")):
     try:
         from core.checklist_ledger import resolve_open_snapshots
         return resolve_open_snapshots()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "database_unavailable"}, status_code=503)
+
+
+@router.get("/api/ghost/checklist/prediction/{prediction_id}")
+def checklist_prediction_endpoint(prediction_id: int):
+    """Immutable issue-time checklist for a specific issued prediction."""
+    try:
+        from core.checklist_calibration import build_calibration, confidence_for
+        from core.checklist_ledger import resolved_samples_for_calibration, snapshot_for_prediction
+
+        snapshot = snapshot_for_prediction(prediction_id)
+        if snapshot is None:
+            return JSONResponse({"ok": False, "error": "snapshot_not_found"}, status_code=404)
+        cohort = {
+            "checklist_version": snapshot["checklist_version"],
+            "hold_bars": snapshot["hold_bars"],
+            "outcome_contract": snapshot["outcome_contract"],
+            "direction": snapshot["direction"],
+            "symbol": None,
+            "scope": "global",
+        }
+        samples = resolved_samples_for_calibration(
+            checklist_version=cohort["checklist_version"],
+            hold_bars=cohort["hold_bars"],
+            outcome_contract=cohort["outcome_contract"],
+            direction=cohort["direction"],
+            min_issued_before=snapshot["issued_at"],
+        )
+        calibration = build_calibration(samples, cohort=cohort)
+        report = dict(snapshot.get("report") or {})
+        report["confidence"] = confidence_for(snapshot["score_pct"], calibration)
+        report["confidence"]["cohort"] = cohort
+        return {
+            "ok": True,
+            "snapshot_semantics": "immutable_at_prediction_issuance",
+            "prediction_id": prediction_id,
+            "issued_at": snapshot["issued_at"],
+            "evidence": snapshot.get("evidence") or {},
+            **report,
+        }
     except Exception:
         return JSONResponse({"ok": False, "error": "database_unavailable"}, status_code=503)
 
@@ -730,14 +770,39 @@ def checklist_endpoint(symbol: str, direction: str = "UP"):
                 member["source"] = evidence_sources.get(member.get("signal"))
 
         try:
-            samples = resolved_samples_for_calibration()
-            calibration = build_calibration(samples)
+            from core.checklist_ledger import DEFAULT_OUTCOME_CONTRACT
+
+            cohort = {
+                "checklist_version": report["checklist_version"],
+                "hold_bars": report["hold_bars"],
+                "outcome_contract": DEFAULT_OUTCOME_CONTRACT,
+                "direction": direction,
+                "symbol": None,
+                "scope": "global",
+            }
+            samples = resolved_samples_for_calibration(
+                checklist_version=cohort["checklist_version"],
+                hold_bars=cohort["hold_bars"],
+                outcome_contract=cohort["outcome_contract"],
+                direction=cohort["direction"],
+            )
+            calibration = build_calibration(samples, cohort=cohort)
+            calibration_status = "ok"
         except Exception:
-            calibration = None  # DB unavailable — still return the checklist itself
+            calibration = None  # DB unavailable — still return the live checklist itself
+            calibration_status = "unavailable"
 
         confidence = confidence_for(report["score_pct"], calibration)
+        confidence["cohort"] = (calibration or {}).get("cohort")
+        if calibration is None:
+            # A DB failure must not read as "this band has never resolved."
+            confidence["confidence_pct"] = None
+            confidence["proven"] = False
+            confidence["explanation"] = "Calibration history is temporarily unavailable."
+        confidence["calibration_status"] = calibration_status
         report["confidence"] = confidence
         report["evidence"] = evidence
+        report["snapshot_semantics"] = "live_now_not_issued_snapshot"
         return {"ok": True, "symbol": sym, **report}
     except Exception:
         LOGGER = logging.getLogger("ghost.api.checklist")
@@ -746,14 +811,36 @@ def checklist_endpoint(symbol: str, direction: str = "UP"):
 
 
 @router.get("/api/ghost/checklist/{symbol}/calibration")
-def checklist_calibration_endpoint(symbol: str):
-    """The full completeness -> realized-win-rate table (System tab)."""
+def checklist_calibration_endpoint(symbol: str, direction: str = "UP", scope: str = "global"):
+    """Exact-cohort reliability table; scope is explicitly global or symbol."""
+    sym = (symbol or "").strip().upper()
+    direction = (direction or "UP").strip().upper()
+    scope = (scope or "global").strip().lower()
+    if direction not in ("UP", "DOWN"):
+        return JSONResponse({"ok": False, "error": "direction must be UP or DOWN"}, status_code=400)
+    if scope not in ("global", "symbol"):
+        return JSONResponse({"ok": False, "error": "scope must be global or symbol"}, status_code=400)
     try:
+        from core.catalyst_checklist import CHECKLIST_VERSION, HOLD_BARS
         from core.checklist_calibration import build_calibration, calibration_gap
-        from core.checklist_ledger import resolved_samples_for_calibration
+        from core.checklist_ledger import DEFAULT_OUTCOME_CONTRACT, resolved_samples_for_calibration
 
-        samples = resolved_samples_for_calibration()
-        calibration = build_calibration(samples)
+        cohort = {
+            "checklist_version": CHECKLIST_VERSION,
+            "hold_bars": HOLD_BARS,
+            "outcome_contract": DEFAULT_OUTCOME_CONTRACT,
+            "direction": direction,
+            "symbol": sym if scope == "symbol" else None,
+            "scope": scope,
+        }
+        samples = resolved_samples_for_calibration(
+            checklist_version=CHECKLIST_VERSION,
+            hold_bars=HOLD_BARS,
+            outcome_contract=DEFAULT_OUTCOME_CONTRACT,
+            direction=direction,
+            symbol=cohort["symbol"],
+        )
+        calibration = build_calibration(samples, cohort=cohort)
         return {"ok": True, "calibration": calibration, "gap": calibration_gap(calibration)}
     except Exception:
         return JSONResponse({"ok": False, "error": "database_unavailable"}, status_code=503)

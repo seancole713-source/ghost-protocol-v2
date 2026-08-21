@@ -29,6 +29,19 @@ def test_direction_flips_which_side_of_a_directional_box_passes():
     assert up["score_pct"] > down["score_pct"]
 
 
+def test_zero_is_neutral_and_passes_neither_direction():
+    ev = {"guidance_direction": 0.0}
+    for direction in (cc.UP, cc.DOWN):
+        report = cc.evaluate_checklist("X", direction, ev)
+        box = next(
+            item
+            for group in report["groups"]
+            for item in group["boxes"]
+            if item["signal"] == "guidance_direction"
+        )
+        assert box["state"] == cc.FAIL
+
+
 def test_magnitude_boxes_read_the_same_both_directions():
     """Short interest fuels a squeeze whichever way the call points."""
     ev = dict(short_float_pct=31.0, days_to_cover=5.0)

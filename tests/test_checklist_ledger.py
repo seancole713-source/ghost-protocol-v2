@@ -8,6 +8,14 @@ from __future__ import annotations
 from core import checklist_ledger as ck
 
 
+_COHORT = {
+    "checklist_version": "catalyst_checklist_v1",
+    "hold_bars": 3,
+    "outcome_contract": ck.DEFAULT_OUTCOME_CONTRACT,
+    "direction": "UP",
+}
+
+
 class _Cursor:
     def __init__(self, *, fetchall_rows=None, fetchone_rows=None):
         self.fetchall_rows = list(fetchall_rows or [])
@@ -35,6 +43,8 @@ def test_ensure_tables_creates_snapshot_ledger():
     assert "CREATE TABLE IF NOT EXISTS ghost_checklist_snapshots" in sql
     assert "outcome VARCHAR(16)" in sql
     assert "won BOOLEAN" in sql
+    assert "CREATE INDEX IF NOT EXISTS idx_checklist_snapshots_score_outcome" in sql
+    assert cur.params[3] == (ck.LEGACY_OUTCOME_CONTRACT,)
 
 
 def test_resolved_samples_only_returns_rows_with_a_known_outcome():
@@ -59,13 +69,31 @@ def test_resolved_samples_only_returns_rows_with_a_known_outcome():
     saved = core_db.db_conn
     core_db.db_conn = _FakeDbConn
     try:
-        rows = ck.resolved_samples_for_calibration()
+        rows = ck.resolved_samples_for_calibration(**_COHORT)
     finally:
         core_db.db_conn = saved
 
     assert rows == [{"score_pct": 80.0, "won": True}, {"score_pct": 40.0, "won": False}]
     executed_sql = " ".join(cur.executed)
     assert "outcome IS NOT NULL" in executed_sql
+    assert "checklist_version=%s" in executed_sql
+    assert "hold_bars=%s" in executed_sql
+    assert "outcome_contract=%s" in executed_sql
+    assert "direction=%s" in executed_sql
+
+
+def test_historical_cutoff_requires_sample_and_outcome_before_decision(monkeypatch):
+    ck._bust_calibration_cache()
+    cur = _Cursor(fetchall_rows=[])
+    _with_fake_db(monkeypatch, cur)
+
+    ck.resolved_samples_for_calibration(**_COHORT, min_issued_before=1_766_000_123)
+
+    sql = " ".join(cur.executed)
+    assert "issued_at < %s" in sql
+    assert "resolved_at < %s" in sql
+    query_params = cur.params[-1]
+    assert query_params[-2:] == (1_766_000_123, 1_766_000_123)
 
 
 def test_resolve_snapshot_only_updates_unresolved_rows():
@@ -128,46 +156,65 @@ def _with_fake_db(monkeypatch, cur):
     return fake
 
 
-def test_snapshot_open_predictions_snapshots_each_open_pick(monkeypatch):
-    """The write half of the calibration loop: open predictions with no
-    snapshot get one, linked by prediction_id, with direction normalized."""
-    cur = _Cursor(fetchall_rows=[(7, "YMM", "LONG", 3.89, 6.34, 3.56, 1766000000)])
-    _with_fake_db(monkeypatch, cur)
-
-    import core.checklist_evidence as ce
-    monkeypatch.setattr(ce, "collect_evidence", lambda sym, market_ctx=None: {"relative_volume": 3.0})
-
-    stored = []
-    monkeypatch.setattr(ck, "store_snapshot", lambda **kw: stored.append(kw) or 1)
-
-    out = ck.snapshot_open_predictions()
-    assert out == {"ok": True, "snapshotted": 1, "failed": 0, "scanned": 1}
-    assert stored[0]["prediction_id"] == 7
-    assert stored[0]["direction"] == "UP"  # LONG normalized
-    assert stored[0]["deadline_ts"] == 1766000000
-    # dedupe is in the SQL itself: only rows with no existing snapshot are selected
-    assert "NOT EXISTS" in " ".join(cur.executed)
-
-
-def test_snapshot_open_predictions_isolates_one_symbol_failure(monkeypatch):
-    cur = _Cursor(fetchall_rows=[
-        (1, "AAA", "UP", 1.0, 2.0, 0.5, None),
-        (2, "BBB", "UP", 1.0, 2.0, 0.5, None),
-    ])
-    _with_fake_db(monkeypatch, cur)
-
+def test_snapshot_open_predictions_is_retired_without_database_or_collection(monkeypatch):
+    """Delayed current-state reconstruction must never masquerade as issue-time evidence."""
     import core.checklist_evidence as ce
 
-    def _boom_on_aaa(sym, market_ctx=None):
-        if sym == "AAA":
-            raise RuntimeError("provider down")
-        return {}
-
-    monkeypatch.setattr(ce, "collect_evidence", _boom_on_aaa)
-    monkeypatch.setattr(ck, "store_snapshot", lambda **kw: 1)
-
+    monkeypatch.setattr(
+        ce,
+        "collect_evidence",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not collect")),
+    )
     out = ck.snapshot_open_predictions()
-    assert out["snapshotted"] == 1 and out["failed"] == 1
+    assert out == {
+        "ok": False,
+        "retired": True,
+        "snapshotted": 0,
+        "failed": 0,
+        "scanned": 0,
+        "reason": "checklists_are_frozen_at_prediction_issuance",
+    }
+
+
+def test_store_snapshot_with_cursor_is_insert_only_and_preserves_issue_time(monkeypatch):
+    cur = _Cursor(fetchone_rows=[(91,)])
+    monkeypatch.setattr(ck, "validate_outcome_contract", lambda: None)
+    report = {
+        "checklist_version": "catalyst_checklist_v1",
+        "hold_bars": 3,
+        "score_pct": 40.0,
+        "blocked": False,
+    }
+
+    row_id = ck.store_snapshot_with_cursor(
+        cur,
+        symbol="wolf",
+        direction="up",
+        report=report,
+        evidence={"relative_volume": 3.0},
+        issued_at=1_766_000_123,
+        prediction_id=7,
+    )
+
+    assert row_id == 91
+    sql = " ".join(cur.executed)
+    assert "INSERT INTO ghost_checklist_snapshots" in sql
+    assert "CREATE TABLE" not in sql
+    assert "ALTER TABLE" not in sql
+    params = cur.params[0]
+    assert params[4] == 1_766_000_123
+    assert params[15] == 1_766_000_123
+    assert params[14] == 7
+
+
+def test_outcome_contract_fails_closed_on_horizon_mismatch(monkeypatch):
+    monkeypatch.setattr(ck, "label_hold_bars", lambda: ck.HOLD_BARS + 1)
+    try:
+        ck.validate_outcome_contract()
+    except RuntimeError as exc:
+        assert "contract mismatch" in str(exc)
+    else:
+        raise AssertionError("mismatched hold horizons must fail closed")
 
 
 def test_resolve_open_snapshots_copies_outcomes_and_expired_is_nonwin(monkeypatch):
@@ -194,7 +241,7 @@ def test_calibration_cache_served_then_busted_on_resolve(monkeypatch):
     ck._bust_calibration_cache()
     cur1 = _Cursor(fetchall_rows=[(80.0, True)])
     _with_fake_db(monkeypatch, cur1)
-    first = ck.resolved_samples_for_calibration()
+    first = ck.resolved_samples_for_calibration(**_COHORT)
     assert first == [{"score_pct": 80.0, "won": True}]
 
     # Second read: swap in a cursor that would error if actually queried.
@@ -203,9 +250,9 @@ def test_calibration_cache_served_then_busted_on_resolve(monkeypatch):
             raise AssertionError("cache should have served this read")
 
     _with_fake_db(monkeypatch, _Exploding())
-    assert ck.resolved_samples_for_calibration() == first  # cache hit
+    assert ck.resolved_samples_for_calibration(**_COHORT) == first  # cache hit
 
     ck._bust_calibration_cache()
     cur2 = _Cursor(fetchall_rows=[(80.0, True), (40.0, False)])
     _with_fake_db(monkeypatch, cur2)
-    assert len(ck.resolved_samples_for_calibration()) == 2  # fresh read after bust
+    assert len(ck.resolved_samples_for_calibration(**_COHORT)) == 2  # fresh read after bust

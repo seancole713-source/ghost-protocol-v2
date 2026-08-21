@@ -1508,20 +1508,12 @@ async def lifespan(app: FastAPI):
 
     scheduler.register("bull_run_snapshot", _bull_run_snapshot_job, interval_s=900)
     scheduler.register("bull_run_resolver", _bull_run_resolver_job, interval_s=3600)
-    # Checklist-confidence calibration loop: snapshot every open pick's
-    # checklist at (near) issue time, then copy resolved TP/SL outcomes back
-    # onto the snapshots. Without these two jobs the completeness->win-rate
-    # table never accrues a sample and every card stays "not proven yet".
-    from core.checklist_ledger import (
-        resolve_open_snapshots as _checklist_resolver,
-        snapshot_open_predictions as _checklist_snapshot,
-    )
-
-    def _checklist_snapshot_job():
-        result = _checklist_snapshot()
-        if not isinstance(result, dict) or not result.get("ok", False):
-            raise RuntimeError(f"checklist snapshot failed: {result}")
-        return result
+    # Checklist-confidence calibration loop. Snapshots are frozen synchronously
+    # inside the prediction transaction (no delayed reconstruction), so only the
+    # outcome resolver runs on a schedule: it copies resolved TP/SL outcomes
+    # back onto the immutable snapshots so the completeness->win-rate table
+    # accrues samples prospectively.
+    from core.checklist_ledger import resolve_open_snapshots as _checklist_resolver
 
     def _checklist_resolver_job():
         result = _checklist_resolver()
@@ -1529,7 +1521,6 @@ async def lifespan(app: FastAPI):
             raise RuntimeError(f"checklist resolver failed: {result}")
         return result
 
-    scheduler.register("checklist_snapshot", _checklist_snapshot_job, interval_s=900)
     scheduler.register("checklist_resolver", _checklist_resolver_job, interval_s=1800)
     # T19: Auto-refresh portfolio stock prices every 15 min
     from core.portfolio_routes import auto_refresh_portfolio_prices
