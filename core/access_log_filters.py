@@ -10,6 +10,7 @@ snapshot endpoint still log normally.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Optional, Tuple
 
 
@@ -53,6 +54,24 @@ def _extract_access(record: logging.LogRecord) -> Tuple[Optional[str], Optional[
     return method, path, status
 
 
+_MCP_PATH_TOKEN_RE = re.compile(r"(/mcp/)[^/?#\s]+")
+
+
+def _redact_mcp_path_token(path: str) -> str:
+    """Redact the MCP path token so the secret never lands in access logs."""
+    return _MCP_PATH_TOKEN_RE.sub(r"\1[REDACTED]", path)
+
+
+def _redact_mcp_path_token_in_record(record: logging.LogRecord, path: Optional[str]) -> None:
+    if not path or "/mcp/" not in path:
+        return
+    args = getattr(record, "args", None)
+    if isinstance(args, tuple) and len(args) >= 3:
+        new_args = list(args)
+        new_args[2] = _redact_mcp_path_token(path)
+        record.args = tuple(new_args)
+
+
 class PeacefulAccessFilter(logging.Filter):
     """Suppress harmless stale-console evidence reads, keep important logs.
 
@@ -63,6 +82,7 @@ class PeacefulAccessFilter(logging.Filter):
 
     def filter(self, record: logging.LogRecord) -> bool:  # pragma: no cover - called by logging
         method, path, status = _extract_access(record)
+        _redact_mcp_path_token_in_record(record, path)
         if method != "GET" or status is None or status >= 400:
             return True
         return not any(path.startswith(prefix) for prefix in _NOISY_SUCCESS_GET_PREFIXES)

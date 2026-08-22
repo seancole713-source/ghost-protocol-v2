@@ -1,6 +1,6 @@
 import logging
 
-from core.access_log_filters import PeacefulAccessFilter
+from core.access_log_filters import PeacefulAccessFilter, _redact_mcp_path_token
 
 
 def _record(method, path, status):
@@ -14,6 +14,21 @@ def _record(method, path, status):
         exc_info=None,
     )
     return r
+
+
+def test_redact_mcp_path_token():
+    assert _redact_mcp_path_token("/mcp/secret-token-123") == "/mcp/[REDACTED]"
+    assert _redact_mcp_path_token("/mcp/abc?x=1") == "/mcp/[REDACTED]?x=1"
+    assert _redact_mcp_path_token("/api/picks") == "/api/picks"
+
+
+def test_mcp_path_token_redacted_in_access_log():
+    f = PeacefulAccessFilter()
+    rec = _record("POST", "/mcp/super-secret-token", 200)
+    assert f.filter(rec) is True  # POSTs are always kept
+    # The secret must be scrubbed from the logged path.
+    assert "/mcp/[REDACTED]" in rec.args[2]
+    assert "super-secret-token" not in rec.args[2]
 
 
 def test_peaceful_access_filter_suppresses_old_successful_super_ghost_reads():

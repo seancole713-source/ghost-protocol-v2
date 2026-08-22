@@ -75,9 +75,9 @@ def test_list_symbols_shapes_rows():
 # ── auth gating (route contract) ─────────────────────────────────────────
 
 def test_my_picks_auth_is_env_gated():
-    """PR #146: My picks is public by default (single-operator dashboard, the
-    operator asked to view without /admin login) but every route routes auth
-    through _my_picks_gated so MY_PICKS_REQUIRE_AUTH=1 restores the gate."""
+    """PR #146: My picks read is public by default (single-operator dashboard,
+    the operator asked to view without /admin login) but every route routes auth
+    through _my_picks_gated so MY_PICKS_REQUIRE_AUTH=1 gates the read too."""
     import inspect
     import core.portfolio_routes as pr
     for fn in (pr.get_my_picks, pr.add_my_pick, pr.delete_my_pick):
@@ -88,11 +88,32 @@ def test_my_picks_auth_is_env_gated():
     assert "require_portfolio_auth" in gate_src
 
 
+def test_my_picks_writes_always_gated():
+    """Writes (add/remove) must require auth regardless of the env flag —
+    they mutate the watchlist and trigger super-ghost builds."""
+    import inspect
+    import core.portfolio_routes as pr
+    assert "write=True" in inspect.getsource(pr.add_my_pick)
+    assert "write=True" in inspect.getsource(pr.delete_my_pick)
+    # The read path must NOT force auth (public by default).
+    assert "write=True" not in inspect.getsource(pr.get_my_picks)
+
+
 def test_my_picks_public_by_default(monkeypatch):
-    """With the flag unset, the gate is a no-op — no auth required to view."""
+    """With the flag unset, the READ gate is a no-op — no auth required to view."""
     import core.portfolio_routes as pr
     monkeypatch.delenv("MY_PICKS_REQUIRE_AUTH", raising=False)
     pr._my_picks_gated(object())  # must not raise even with a bogus request
+
+
+def test_my_picks_write_gate_requires_auth(monkeypatch):
+    """write=True forces require_portfolio_auth even with the flag unset."""
+    import core.portfolio_routes as pr
+    monkeypatch.delenv("MY_PICKS_REQUIRE_AUTH", raising=False)
+    called = []
+    monkeypatch.setattr("mcp.security.require_portfolio_auth", lambda req: called.append(req))
+    pr._my_picks_gated(object(), write=True)
+    assert len(called) == 1
 
 
 def test_my_picks_routes_registered():

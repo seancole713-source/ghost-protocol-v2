@@ -9,7 +9,7 @@ import logging
 import os
 from typing import Optional
 
-from fastapi import APIRouter, Header, Query
+from fastapi import APIRouter, Header, Query, Request
 from fastapi.responses import JSONResponse
 
 LOGGER = logging.getLogger("ghost.studios_api")
@@ -39,6 +39,7 @@ def get_studios():
 
 @router.post("/api/studios/bookings")
 def add_studio_booking(
+    request: Request,
     studio_name: str = Query(...),
     booking_date: str = Query(...),
     hours: float = Query(...),
@@ -48,8 +49,16 @@ def add_studio_booking(
     status: str = Query("expected"),
     guest_name: Optional[str] = Query(None),
     notes: Optional[str] = Query(None),
+    x_cron_secret: str = Header(default=""),
 ):
-    """Add a booking — gross/net auto-computed from hours×rate."""
+    """Add a booking — gross/net auto-computed from hours×rate.
+
+    Auth-gated (admin cookie or cron secret): this writes revenue rows that
+    feed the studios dashboard, so it must not be publicly writable.
+    """
+    from wolf_app import _ADMIN_COOKIE, _admin_token_valid, _cron_ok
+    if not (_cron_ok(x_cron_secret) or _admin_token_valid(request.cookies.get(_ADMIN_COOKIE, ""))):
+        return JSONResponse({"ok": False, "error": "Forbidden"}, status_code=403)
     try:
         from core.db import db_conn
         from core.studios import ensure_studios_tables, seed_studios, add_booking

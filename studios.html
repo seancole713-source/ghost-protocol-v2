@@ -108,6 +108,7 @@ const SOURCE_COLORS = {'peerspace':'#ec4899','giggster':'#f59e0b','direct':'#4ad
 function fmt$(n){return n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}
 function fmtPct(n){return n.toFixed(1)+'%'}
 function fmtChange(n){return n>=0?'↑ '+Math.abs(n)+'%':'↓ '+Math.abs(n)+'%'}
+function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
 function _applyDataStyles(el){
   if(!el) return;
   el.querySelectorAll('[data-style-background]').forEach(function(e){
@@ -148,7 +149,7 @@ function renderStudios(data){
 
     const sourcesHtml = Object.entries(s.sources).map(([k,v])=>{
       const color = SOURCE_COLORS[k]||SOURCE_COLORS.other;
-      return `<span><span class="source-dot" data-style-background="${color}"></span>${v}% ${k}</span>`;
+      return `<span><span class="source-dot" data-style-background="${color}"></span>${v}% ${esc(k)}</span>`;
     }).join(' ');
 
     const sourceBarHtml = Object.entries(s.sources).map(([k,v])=>{
@@ -158,8 +159,8 @@ function renderStudios(data){
 
     const bookingsHtml = s.bookings.slice(0,8).map(b=>`
       <div class="booking-row">
-        <span>${b.date} · ${b.source}</span>
-        <span>${b.hours}hr · $${fmt$(b.gross)} · <span data-style-color="${b.status==='collected'?'var(--green)':'var(--muted)'}">${b.status}</span></span>
+        <span>${esc(b.date)} · ${esc(b.source)}</span>
+        <span>${esc(b.hours)}hr · $${fmt$(b.gross)} · <span data-style-color="${b.status==='collected'?'var(--green)':'var(--muted)'}">${esc(b.status)}</span></span>
       </div>
     `).join('') || '<div class="fs12-muted">No bookings yet</div>';
 
@@ -218,7 +219,7 @@ function renderStudios(data){
         <div class="source-bar">${sourceBarHtml}</div>
         <div class="source-legend">${sourcesHtml}</div>
         <div class="fs11-muted-mt8">
-          Status: ${Object.entries(s.statuses).map(([k,v])=>v+' '+k).join(' · ')}
+          Status: ${Object.entries(s.statuses).map(([k,v])=>esc(v)+' '+esc(k)).join(' · ')}
         </div>
       </div>
 
@@ -226,7 +227,7 @@ function renderStudios(data){
         <div class="source-bar">${sourceBarHtml}</div>
         <div class="source-legend">${sourcesHtml}</div>
         ${Object.entries(s.source_counts).map(([k,v])=>`
-          <div class="perf-item"><span class="label">${k}</span><span class="value">${v} bookings</span></div>
+          <div class="perf-item"><span class="label">${esc(k)}</span><span class="value">${v} bookings</span></div>
         `).join('')}
       </div>
 
@@ -253,10 +254,10 @@ function renderStudios(data){
     <tr><th>Studio</th><th>Check</th><th>Expected</th><th>Observed</th><th>Result</th></tr>
     ${data.reconciliation.map(c=>`
       <tr>
-        <td>${c.studio}</td>
-        <td>${c.check}</td>
-        <td>${c.expected||'—'}</td>
-        <td>${c.observed||'—'}</td>
+        <td>${esc(c.studio)}</td>
+        <td>${esc(c.check)}</td>
+        <td>${esc(c.expected||'—')}</td>
+        <td>${esc(c.observed||'—')}</td>
         <td class="${c.pass?'pass':'fail'}">${c.pass?'✓ PASS':'✗ FAIL'}</td>
       </tr>
     `).join('')}

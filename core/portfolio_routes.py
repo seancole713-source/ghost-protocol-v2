@@ -349,15 +349,15 @@ def auto_refresh_portfolio_prices():
 
 
 # ── My Picks — personal server-persisted watchlist (own tab in the console).
-# PR #146: this is a single-operator dashboard and the picks are just ticker
-# symbols (a watchlist, not account/balance data), so viewing and editing no
-# longer require an /admin login — the operator asked to see picks without
-# signing in. Set MY_PICKS_REQUIRE_AUTH=1 to restore the gate if the dashboard
-# is ever exposed multi-tenant.
+# PR #146: viewing is public by default (single-operator dashboard; the operator
+# asked to see picks without signing in). Writes (add/remove) are ALWAYS
+# auth-gated — they mutate the watchlist and trigger super-ghost builds, so an
+# unauthenticated caller must never be able to drive them. Set
+# MY_PICKS_REQUIRE_AUTH=1 to also gate the read path if exposed multi-tenant.
 
-def _my_picks_gated(request: Request) -> None:
+def _my_picks_gated(request: Request, *, write: bool = False) -> None:
     import os
-    if (os.getenv("MY_PICKS_REQUIRE_AUTH", "0") or "0").strip().lower() in ("1", "true", "on", "yes"):
+    if write or (os.getenv("MY_PICKS_REQUIRE_AUTH", "0") or "0").strip().lower() in ("1", "true", "on", "yes"):
         from mcp.security import require_portfolio_auth
         require_portfolio_auth(request)
 
@@ -371,7 +371,7 @@ def get_my_picks(request: Request):
 
 @portfolio_router.post("/api/my-picks")
 async def add_my_pick(request: Request):
-    _my_picks_gated(request)
+    _my_picks_gated(request, write=True)
     from core.my_picks import add_symbol
     d = await request.json()
     with db_conn() as conn:
@@ -383,7 +383,7 @@ async def add_my_pick(request: Request):
 
 @portfolio_router.delete("/api/my-picks/{symbol}")
 def delete_my_pick(symbol: str, request: Request):
-    _my_picks_gated(request)
+    _my_picks_gated(request, write=True)
     from core.my_picks import remove_symbol
     with db_conn() as conn:
         cur = conn.cursor()
