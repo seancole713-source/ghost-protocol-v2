@@ -279,7 +279,6 @@ def resolved_samples_for_calibration(
 
     with db_conn() as conn:
         cur = conn.cursor()
-        ensure_checklist_tables(cur)
         clauses = [
             "outcome IS NOT NULL",
             "checklist_version=%s",
@@ -316,7 +315,6 @@ def snapshot_for_prediction(prediction_id: int) -> Optional[Dict[str, Any]]:
 
     with db_conn() as conn:
         cur = conn.cursor()
-        ensure_checklist_tables(cur)
         cur.execute(
             """
             SELECT id, symbol, direction, checklist_version, outcome_contract,
@@ -348,7 +346,6 @@ def recent_resolved_across_symbols(limit: int = 30) -> List[Dict[str, Any]]:
 
     with db_conn() as conn:
         cur = conn.cursor()
-        ensure_checklist_tables(cur)
         cur.execute(
             """
             SELECT symbol, direction, issued_at, score_pct, entry_price,
@@ -375,7 +372,6 @@ def recent_snapshots(symbol: str, limit: int = 20) -> List[Dict[str, Any]]:
 
     with db_conn() as conn:
         cur = conn.cursor()
-        ensure_checklist_tables(cur)
         cur.execute(
             """
             SELECT id, direction, issued_at, score_pct, blocked, entry_price,

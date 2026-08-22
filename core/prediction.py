@@ -122,6 +122,7 @@ STOCK_SYMBOLS: List[str] = _env_stock_symbols() or ["WOLF"]
 # tallies — e.g. 17× no_v3_model (untrained watchlist symbols) must not mask
 # v3_prob_low on WOLF when the model actually ran and emitted up_prob.
 _SKIP_PRIORITY: List[str] = [
+    "checklist_veto",
     "dedup_blocked",
     "below_confidence_floor",
     "objective_gate",
@@ -140,6 +141,7 @@ _SKIP_PRIORITY: List[str] = [
 ]
 
 _SKIP_LABELS: Dict[str, str] = {
+    "checklist_veto": "checklist veto blocked issuance",
     "dedup_blocked": "dedup (open pick already exists)",
     "below_confidence_floor": "below confidence floor",
     "objective_gate": "objective gate (symbol WR below target)",
@@ -1520,8 +1522,14 @@ def _prepare_checklist_snapshot(pick: Dict[str, Any]) -> Optional[Dict[str, Any]
     issued_at = int(pick["predicted_at"])
     scores = pick.get("scores") if isinstance(pick.get("scores"), dict) else {}
     live_features = scores.get("features") if isinstance(scores.get("features"), dict) else {}
+    extended = scores.get("extended_session") if isinstance(scores.get("extended_session"), dict) else {}
+    extended_price = extended.get("session_price") or extended.get("live_price")
     market_ctx = {
-        "price": pick.get("entry_price"),
+        "price": extended_price or pick.get("entry_price"),
+        "prior_close": extended.get("previous_close"),
+        "session_volume": extended.get("session_volume"),
+        "avg_daily_volume": extended.get("avg_daily_volume"),
+        "peak_move_pct": extended.get("gap_pct"),
         "relative_volume": live_features.get("volume_ratio"),
         "trend_slope_pct": (
             float(live_features["mom_4h"]) * 100.0
@@ -1533,57 +1541,52 @@ def _prepare_checklist_snapshot(pick: Dict[str, Any]) -> Optional[Dict[str, Any]
             if isinstance(live_features.get("macro_spy_20d_return"), (int, float))
             else None
         ),
+        "price_as_of_ts": extended.get("price_as_of_ts"),
         "feature_asof_ts": pick.get("features", {}).get("feature_asof_ts"),
     }
     from core.catalyst_checklist import evaluate_checklist
-    from core.checklist_evidence import collect_evidence
+    from core.checklist_evidence import collect_evidence, sources_for
 
     evidence = collect_evidence(
         str(pick.get("symbol") or ""),
         asof_ts=issued_at,
         market_ctx=market_ctx,
     )
+    report = evaluate_checklist(str(pick.get("symbol") or ""), direction, evidence)
+    evidence_sources = sources_for(evidence)
+    for group in report.get("groups", []):
+        for member in group.get("boxes", []):
+            member["source"] = evidence_sources.get(member.get("signal"))
     return {
         "issued_at": issued_at,
         "evidence": evidence,
-        "report": evaluate_checklist(str(pick.get("symbol") or ""), direction, evidence),
+        "report": report,
     }
 
 
-def _persist_checklist_snapshot_isolated(
+def _persist_checklist_snapshot(
     cur,
     *,
     pick: Dict[str, Any],
     prediction_id: int,
-    snapshot: Optional[Dict[str, Any]],
-) -> bool:
-    """Persist through a savepoint so checklist failure never loses the pick."""
-    if snapshot is None:
-        return False
-    cur.execute("SAVEPOINT checklist_snapshot")
-    try:
-        from core.checklist_ledger import store_snapshot_with_cursor
+    snapshot: Dict[str, Any],
+) -> int:
+    """Persist the mandatory immutable snapshot in the caller's transaction."""
+    from core.checklist_ledger import store_snapshot_with_cursor
 
-        store_snapshot_with_cursor(
-            cur,
-            symbol=pick["symbol"],
-            direction=pick["direction"],
-            report=snapshot["report"],
-            evidence=snapshot["evidence"],
-            issued_at=snapshot["issued_at"],
-            entry_price=pick.get("entry_price"),
-            target_price=pick.get("target_price"),
-            stop_price=pick.get("stop_price"),
-            deadline_ts=pick.get("expires_at"),
-            prediction_id=prediction_id,
-        )
-    except Exception as exc:  # noqa: BLE001 - savepoint deliberately isolates this optional ledger
-        cur.execute("ROLLBACK TO SAVEPOINT checklist_snapshot")
-        LOGGER.warning("checklist snapshot persist skipped for %s: %s", pick.get("symbol"), str(exc)[:120])
-        cur.execute("RELEASE SAVEPOINT checklist_snapshot")
-        return False
-    cur.execute("RELEASE SAVEPOINT checklist_snapshot")
-    return True
+    return store_snapshot_with_cursor(
+        cur,
+        symbol=pick["symbol"],
+        direction=pick["direction"],
+        report=snapshot["report"],
+        evidence=snapshot["evidence"],
+        issued_at=snapshot["issued_at"],
+        entry_price=pick.get("entry_price"),
+        target_price=pick.get("target_price"),
+        stop_price=pick.get("stop_price"),
+        deadline_ts=pick.get("expires_at"),
+        prediction_id=prediction_id,
+    )
 
 
 @_serialize_prediction_cycle
@@ -1717,23 +1720,60 @@ def run_prediction_cycle(with_diag: bool = False):
         LOGGER.warning("risk discipline gate failed: %s", str(_rde)[:80])
     saved = []
     dedup_blocked = 0
+    checklist_vetoed = 0
     withdrawn_picks: List[Dict[str, Any]] = []
     now_ts = int(time.time())
+    # Plan open-pick reviews and collect external prices BEFORE the issuance
+    # transaction. This keeps network I/O out of the locked section and lets
+    # the final safety gate veto the withdrawals atomically.
+    review_plans: List[Dict[str, Any]] = []
+    try:
+        from core.pick_review import (
+            open_pick_review_enabled,
+            plan_open_pick_reviews,
+            resolve_review_prices,
+        )
+        if open_pick_review_enabled():
+            with db_conn() as _rc:
+                _rcur = _rc.cursor()
+                review_plans = plan_open_pick_reviews(_rcur, symbol_evals, all_picks, now_ts)
+            review_plans = resolve_review_prices(review_plans)
+    except Exception as _wre:
+        LOGGER.warning("Open pick review planning failed: %s", str(_wre)[:100])
+        review_plans = []
     with db_conn() as conn:
         cur = conn.cursor()
         # One writer at a time — prevents duplicate open picks when market scan,
         # morning card, and /api/run-predictions overlap in the same second.
         cur.execute("SELECT pg_advisory_xact_lock(%s)", (_PREDICTION_SAVE_LOCK_ID,))
-        if not engine_paused:
+        from core.risk_discipline import strict_issuance_block
+
+        _post_lock_safety = strict_issuance_block(cur)
+        _risk_block = _post_lock_safety
+        if _post_lock_safety.get("blocked"):
+            if top:
+                _suppressed = len(top)
+            _suppress_reason = (
+                "safety_unavailable"
+                if _post_lock_safety.get("unavailable")
+                else "post_lock_safety"
+            )
+            LOGGER.error(
+                "POST-LOCK SAFETY — suppressing %d candidate(s): %s",
+                len(top),
+                "; ".join(_post_lock_safety.get("reasons") or ["unavailable"]),
+            )
+            top = []
+        else:
             try:
-                from core.pick_review import open_pick_review_enabled, notify_withdrawals, review_open_picks
-                if open_pick_review_enabled():
-                    withdrawn_picks = review_open_picks(cur, symbol_evals, all_picks, now_ts)
+                from core.pick_review import apply_open_pick_reviews
+                if review_plans:
+                    withdrawn_picks = apply_open_pick_reviews(cur, review_plans, now_ts)
             except Exception as _wre:
-                LOGGER.warning("Open pick review failed: %s", str(_wre)[:100])
+                LOGGER.warning("Open pick review apply failed: %s", str(_wre)[:100])
         for pick in top:
+            sym = pick["symbol"]
             try:
-                sym = pick["symbol"]
                 # PR #76: write-side watchlist guard — only OFFICIAL_WATCHLIST symbols
                 # may be saved. Prevents mega-cap pollution (PLTR/MSFT/TSLA/etc.)
                 # from polluting the journal even if they slip past the scan filter.
@@ -1747,26 +1787,62 @@ def run_prediction_cycle(with_diag: bool = False):
                     LOGGER.info("DEDUP: skipping " + sym)
                     dedup_blocked += 1
                     continue
-                checklist_snapshot = None
                 try:
                     checklist_snapshot = _prepare_checklist_snapshot(pick)
                 except Exception as _cse:
-                    LOGGER.warning("checklist evidence freeze skipped for %s: %s", sym, str(_cse)[:120])
-                cur.execute(
-                    "INSERT INTO predictions (symbol,direction,confidence,entry_price,target_price,stop_price,run_at,predicted_at,expires_at,asset_type,features,scores) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
-                    (pick["symbol"], pick["direction"], pick["confidence"], pick["entry_price"],
-                     pick["target_price"], pick["stop_price"], pick["predicted_at"],
-                     pick["predicted_at"], pick["expires_at"], pick["asset_type"],
-                     json.dumps(pick.get("features", {})), json.dumps(pick.get("scores", {})))
-                )
-                pred_id = cur.fetchone()[0]
+                    LOGGER.error("checklist evidence freeze failed for %s: %s", sym, str(_cse)[:120])
+                    continue
+                if checklist_snapshot is None:
+                    LOGGER.error("checklist evidence freeze missing for %s", sym)
+                    continue
+                if checklist_snapshot.get("report", {}).get("blocked"):
+                    checklist_vetoed += 1
+                    skip_counts["checklist_veto"] = skip_counts.get("checklist_veto", 0) + 1
+                    LOGGER.warning(
+                        "CHECKLIST VETO — refusing %s: %s",
+                        sym,
+                        checklist_snapshot["report"].get("block_reason") or "blocked",
+                    )
+                    continue
+
+                cur.execute("SAVEPOINT prediction_candidate")
+                try:
+                    cur.execute(
+                        "INSERT INTO predictions (symbol,direction,confidence,entry_price,target_price,stop_price,run_at,predicted_at,expires_at,asset_type,features,scores) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+                        (pick["symbol"], pick["direction"], pick["confidence"], pick["entry_price"],
+                         pick["target_price"], pick["stop_price"], pick["predicted_at"],
+                         pick["predicted_at"], pick["expires_at"], pick["asset_type"],
+                         json.dumps(pick.get("features", {})), json.dumps(pick.get("scores", {})))
+                    )
+                    pred_id = cur.fetchone()[0]
+                    _persist_checklist_snapshot(
+                        cur,
+                        pick=pick,
+                        prediction_id=pred_id,
+                        snapshot=checklist_snapshot,
+                    )
+                except Exception as candidate_exc:  # noqa: BLE001 - rollback prediction and evidence together
+                    cur.execute("ROLLBACK TO SAVEPOINT prediction_candidate")
+                    cur.execute("RELEASE SAVEPOINT prediction_candidate")
+                    try:
+                        import psycopg2
+                        unique_violation = isinstance(candidate_exc, psycopg2.errors.UniqueViolation)
+                    except Exception:
+                        unique_violation = False
+                    if unique_violation:
+                        LOGGER.info("DEDUP: unique index blocked " + sym)
+                        dedup_blocked += 1
+                    else:
+                        LOGGER.error(
+                            "ATOMIC ISSUANCE failed for %s: %s",
+                            sym,
+                            str(candidate_exc)[:160],
+                        )
+                    continue
+                cur.execute("RELEASE SAVEPOINT prediction_candidate")
+
                 pick["id"] = pred_id
-                _persist_checklist_snapshot_isolated(
-                    cur,
-                    pick=pick,
-                    prediction_id=pred_id,
-                    snapshot=checklist_snapshot,
-                )
+                cur.execute("SAVEPOINT feature_snapshot_optional")
                 try:
                     from core.feature_schema import FEATURE_ASOF_KEY, persist_feature_snapshot
                     persist_feature_snapshot(
@@ -1777,19 +1853,16 @@ def run_prediction_cycle(with_diag: bool = False):
                         prediction_id=pred_id,
                     )
                 except Exception as _fse:
+                    cur.execute("ROLLBACK TO SAVEPOINT feature_snapshot_optional")
                     LOGGER.debug("feature snapshot persist skipped: %s", str(_fse)[:80])
+                cur.execute("RELEASE SAVEPOINT feature_snapshot_optional")
                 saved.append(pick)
                 for _ev in symbol_evals:
                     if _ev.get("symbol") == sym:
                         _ev["saved"] = True
                         _ev["prediction_id"] = pred_id
             except Exception as e:
-                import psycopg2
-                if isinstance(e, psycopg2.errors.UniqueViolation):
-                    LOGGER.info("DEDUP: unique index blocked " + pick["symbol"])
-                    dedup_blocked += 1
-                    continue
-                LOGGER.error("INSERT " + pick["symbol"] + ": " + str(e))
+                LOGGER.error("ISSUANCE %s: %s", sym, str(e)[:160])
                 raise
     if withdrawn_picks:
         try:
@@ -1926,6 +1999,7 @@ def run_prediction_cycle(with_diag: bool = False):
         "candidates": len(all_picks),
         "saved": len(saved),
         "dedup_blocked": dedup_blocked,
+        "checklist_vetoed": checklist_vetoed,
         "withdrawn": len(withdrawn_picks),
         "skip_counts": dict(sorted(skip_counts.items(), key=lambda kv: (-kv[1], kv[0]))),
         "regime": regime.get("reason") or "",
@@ -1933,6 +2007,8 @@ def run_prediction_cycle(with_diag: bool = False):
         "circuit_breaker": {"active": _cb_active, "detail": _cb_detail, "floor": _cb_floor},
         "objective_mode": _objective_mode(),
         "objective_mode_auto": auto_mode_state,
+        "risk_block": _risk_block,
+        "suppress_reason": _suppress_reason,
         "top_reason_code": top_reason,
         "top_reason_label": _labels.get(top_reason, top_reason or "unknown"),
     }

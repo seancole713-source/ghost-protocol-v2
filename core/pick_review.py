@@ -132,23 +132,22 @@ def _apply_withdraw(
     stop: float,
     reason: str,
     now_ts: int,
+    market_price: Optional[float] = None,
 ) -> Optional[Dict[str, Any]]:
     from core.pnl import resolution_exit
-    from core.prices import get_price
 
     try:
         from core.performance_log import record_pick_resolution
     except Exception:
         record_pick_resolution = None  # type: ignore
 
-    market = get_price(symbol, "stock")
     exit_price, pnl_pct = resolution_exit(
         "WITHDRAWN",
         direction or "UP",
         float(entry),
         float(target),
         float(stop),
-        float(market) if market else float(entry),
+        float(market_price) if market_price else float(entry),
     )
     cur.execute(
         "UPDATE predictions SET outcome=%s, exit_price=%s, pnl_pct=%s, resolved_at=%s "
@@ -160,6 +159,7 @@ def _apply_withdraw(
 
     # Store withdraw reason in scores JSON for audit (best-effort).
     try:
+        cur.execute("SAVEPOINT withdraw_scores_audit")
         cur.execute("SELECT scores FROM predictions WHERE id=%s", (pred_id,))
         row = cur.fetchone()
         scores = {}
@@ -169,10 +169,17 @@ def _apply_withdraw(
             scores = {}
         scores["withdraw"] = {"reason": reason, "ts": now_ts}
         cur.execute("UPDATE predictions SET scores=%s WHERE id=%s", (json.dumps(scores), pred_id))
+        cur.execute("RELEASE SAVEPOINT withdraw_scores_audit")
     except Exception:
+        try:
+            cur.execute("ROLLBACK TO SAVEPOINT withdraw_scores_audit")
+            cur.execute("RELEASE SAVEPOINT withdraw_scores_audit")
+        except Exception:
+            note_suppressed()
         note_suppressed()
     if record_pick_resolution:
         try:
+            cur.execute("SAVEPOINT withdraw_perf_audit")
             record_pick_resolution(
                 pred_id,
                 symbol,
@@ -180,8 +187,15 @@ def _apply_withdraw(
                 exit_price=exit_price,
                 pnl_pct=pnl_pct,
                 source="pick_review",
+                cur=cur,
             )
+            cur.execute("RELEASE SAVEPOINT withdraw_perf_audit")
         except Exception:
+            try:
+                cur.execute("ROLLBACK TO SAVEPOINT withdraw_perf_audit")
+                cur.execute("RELEASE SAVEPOINT withdraw_perf_audit")
+            except Exception:
+                note_suppressed()
             note_suppressed()
     LOGGER.info(
         "WITHDRAW %s id=%s reason=%s pnl=%.2f%%",
@@ -198,21 +212,20 @@ def _apply_withdraw(
     }
 
 
-def review_open_picks(
+def plan_open_pick_reviews(
     cur,
     symbol_evals: Sequence[Dict[str, Any]],
     all_picks: Sequence[Dict[str, Any]],
     now_ts: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
-    """Withdraw open picks the latest scan no longer supports. Returns withdrawn rows."""
+    """Read open picks and return DB-free withdrawal plans."""
     if not open_pick_review_enabled():
         return []
 
     now_ts = int(time.time()) if now_ts is None else int(now_ts)
     min_age = _withdraw_min_age_s()
     eval_map = _eval_by_symbol(symbol_evals)
-    withdrawn: List[Dict[str, Any]] = []
-
+    plans: List[Dict[str, Any]] = []
     cur.execute(
         """
         SELECT id, symbol, direction, confidence, entry_price, target_price, stop_price, predicted_at
@@ -221,9 +234,7 @@ def review_open_picks(
         """,
         (now_ts,),
     )
-    open_rows = cur.fetchall()
-
-    for row in open_rows:
+    for row in cur.fetchall():
         sym = (row[1] or "").strip().upper()
         ev = eval_map.get(sym)
         if not ev:
@@ -232,23 +243,70 @@ def review_open_picks(
         if min_age > 0 and predicted_at and (now_ts - predicted_at) < min_age:
             continue
         reason = _withdraw_reason(ev, all_picks, row)
-        if not reason:
-            continue
+        if reason:
+            plans.append({
+                "id": int(row[0]),
+                "symbol": sym,
+                "direction": row[2],
+                "entry_price": float(row[4] or 0),
+                "target_price": float(row[5] or 0),
+                "stop_price": float(row[6] or 0),
+                "reason": reason,
+            })
+    return plans
+
+
+def resolve_review_prices(plans: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Collect external prices before the authoritative write transaction."""
+    from core.prices import get_price
+
+    resolved: List[Dict[str, Any]] = []
+    for plan in plans:
+        item = dict(plan)
+        try:
+            item["market_price"] = get_price(item["symbol"], "stock")
+        except Exception as exc:
+            LOGGER.warning("withdraw price failed for %s: %s", item["symbol"], str(exc)[:80])
+            item["market_price"] = None
+        resolved.append(item)
+    return resolved
+
+
+def apply_open_pick_reviews(
+    cur,
+    plans: Sequence[Dict[str, Any]],
+    now_ts: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """Conditionally apply pre-priced plans in the caller's transaction."""
+    now_ts = int(time.time()) if now_ts is None else int(now_ts)
+    withdrawn: List[Dict[str, Any]] = []
+    for plan in plans:
         result = _apply_withdraw(
             cur,
-            int(row[0]),
-            sym,
-            row[2],
-            float(row[4] or 0),
-            float(row[5] or 0),
-            float(row[6] or 0),
-            reason,
+            int(plan["id"]),
+            str(plan["symbol"]),
+            str(plan.get("direction") or "UP"),
+            float(plan.get("entry_price") or 0),
+            float(plan.get("target_price") or 0),
+            float(plan.get("stop_price") or 0),
+            str(plan.get("reason") or "model_withdrawn"),
             now_ts,
+            market_price=plan.get("market_price"),
         )
         if result:
             withdrawn.append(result)
-
     return withdrawn
+
+
+def review_open_picks(
+    cur,
+    symbol_evals: Sequence[Dict[str, Any]],
+    all_picks: Sequence[Dict[str, Any]],
+    now_ts: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """Compatibility wrapper; issuance uses the split-phase API above."""
+    plans = plan_open_pick_reviews(cur, symbol_evals, all_picks, now_ts)
+    return apply_open_pick_reviews(cur, resolve_review_prices(plans), now_ts)
 
 
 def notify_withdrawals(withdrawn: Sequence[Dict[str, Any]]) -> None:

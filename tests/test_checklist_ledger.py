@@ -96,6 +96,27 @@ def test_historical_cutoff_requires_sample_and_outcome_before_decision(monkeypat
     assert query_params[-2:] == (1_766_000_123, 1_766_000_123)
 
 
+def test_read_helpers_are_select_only(monkeypatch):
+    """GET/calibration paths must not run migrations or mutate ledger data."""
+    cases = [
+        (
+            lambda: ck.resolved_samples_for_calibration(
+                **_COHORT, min_issued_before=1_766_000_123,
+            ),
+            _Cursor(fetchall_rows=[]),
+        ),
+        (lambda: ck.snapshot_for_prediction(7), _Cursor(fetchone_rows=[None])),
+        (lambda: ck.recent_resolved_across_symbols(25), _Cursor(fetchall_rows=[])),
+        (lambda: ck.recent_snapshots("WOLF", 20), _Cursor(fetchall_rows=[])),
+    ]
+    for read, cur in cases:
+        ck._bust_calibration_cache()
+        _with_fake_db(monkeypatch, cur)
+        read()
+        assert cur.executed
+        assert all(sql.strip().upper().startswith("SELECT") for sql in cur.executed)
+
+
 def test_resolve_snapshot_only_updates_unresolved_rows():
     """WHERE outcome IS NULL is the no-backfill guard: a resolved row is final."""
     cur = _Cursor()
