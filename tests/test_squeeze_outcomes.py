@@ -22,6 +22,42 @@ def test_squeeze_log_disabled(monkeypatch):
     assert out["enabled"] is False
 
 
+def test_squeeze_daily_log_read_path_issues_select_only(monkeypatch):
+    import core.db as db
+
+    class _Cursor:
+        def __init__(self):
+            self.statements = []
+
+        def execute(self, sql, params=None):
+            self.statements.append(sql.strip())
+
+        def fetchall(self):
+            return []
+
+    class _Connection:
+        def __init__(self, cursor):
+            self._cursor = cursor
+
+        def cursor(self):
+            return self._cursor
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    cursor = _Cursor()
+    monkeypatch.setattr(db, "db_conn", lambda: _Connection(cursor))
+
+    out = squeeze_daily_log(session_date="2026-03-16")
+
+    assert out["ok"] is True
+    assert cursor.statements
+    assert all(statement.upper().startswith("SELECT") for statement in cursor.statements)
+
+
 def test_parse_bar_date_iso_to_et_session():
     assert _parse_bar_date("2026-06-10T20:00:00Z") == "2026-06-10"
 

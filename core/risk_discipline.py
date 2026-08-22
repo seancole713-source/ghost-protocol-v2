@@ -251,7 +251,7 @@ def _today_resolved_stats() -> Dict[str, Any]:
             cur = conn.cursor()
             cur.execute(
                 "SELECT outcome, pnl_pct FROM predictions "
-                "WHERE symbol='WOLF' AND resolved_at >= %s AND outcome IN ('WIN','LOSS') "
+                "WHERE asset_type='stock' AND resolved_at >= %s AND outcome IN ('WIN','LOSS') "
                 "ORDER BY resolved_at ASC",
                 (day_start,),
             )
@@ -345,8 +345,123 @@ def in_open_buffer_window() -> Tuple[bool, str]:
     return in_open_buffer_window_et(buf)
 
 
+def strict_issuance_block(cur) -> Dict[str, Any]:
+    """Final fail-closed trading gate for the serialized issuance transaction.
+
+    Unlike the dashboard helpers, this function uses the caller's cursor, runs
+    no migrations, and treats every unreadable or malformed safety value as a
+    block. Call it immediately after the prediction advisory lock and before
+    any review or issuance side effects.
+    """
+    pause_keys = (
+        "engine_paused",
+        "engine_pause_reason",
+        "engine_pause_ts",
+        "engine_pause_auto_resume_at",
+        "engine_pause_latched",
+    )
+    try:
+        cur.execute(
+            "SELECT key,val FROM ghost_state WHERE key IN ("
+            + ",".join(["%s"] * len(pause_keys))
+            + ")",
+            pause_keys,
+        )
+        pause_values = {str(key): value for key, value in cur.fetchall()}
+
+        def _strict_flag(key: str, default: bool = False) -> bool:
+            raw = pause_values.get(key)
+            if raw is None:
+                return default
+            if raw not in ("0", "1"):
+                raise ValueError(f"malformed {key}")
+            return raw == "1"
+
+        paused = _strict_flag("engine_paused")
+        latched = _strict_flag("engine_pause_latched")
+        auto_resume_at = None
+        raw_auto = pause_values.get("engine_pause_auto_resume_at")
+        if raw_auto not in (None, ""):
+            auto_resume_at = int(raw_auto)
+        if paused and auto_resume_at is not None and int(time.time()) >= auto_resume_at and not latched:
+            cur.execute(
+                "DELETE FROM ghost_state WHERE key IN ("
+                + ",".join(["%s"] * len(pause_keys))
+                + ")",
+                pause_keys,
+            )
+            paused = False
+
+        day_start = _ct_day_start_ts()
+        cur.execute(
+            "SELECT outcome, pnl_pct FROM predictions "
+            "WHERE asset_type='stock' AND resolved_at >= %s AND outcome IN ('WIN','LOSS') "
+            "ORDER BY resolved_at ASC",
+            (day_start,),
+        )
+        trades = [
+            {"outcome": outcome, "pnl_pct": float(pnl or 0)}
+            for outcome, pnl in cur.fetchall()
+        ]
+        cfg = risk_settings()
+        from core.pnl import realized_pnl
+
+        pnl_result = realized_pnl(
+            trades,
+            bankroll=cfg["account_size_usd"],
+            stake_fraction=1.0,
+        )
+        realized_pnl_usd = float(pnl_result.get("realized_pnl_usd") or 0)
+        losses = sum(1 for trade in trades if trade["outcome"] == "LOSS")
+        daily_locked = (
+            realized_pnl_usd <= -float(cfg["daily_loss_limit_usd"])
+            or losses >= int(cfg["daily_max_losses"])
+        )
+        buffer_active, buffer_reason = in_open_buffer_window()
+
+        reasons: List[str] = []
+        if paused:
+            reasons.append(
+                "engine cooldown: "
+                + str(pause_values.get("engine_pause_reason") or "paused")
+            )
+        if daily_locked:
+            reasons.append(
+                "daily loss lock: "
+                f"P&L ${realized_pnl_usd:.2f}, {losses} loss(es)"
+            )
+        if buffer_active:
+            reasons.append(buffer_reason)
+        return {
+            "blocked": bool(paused or daily_locked or buffer_active),
+            "unavailable": False,
+            "reasons": reasons,
+            "engine_pause": {
+                "paused": paused,
+                "reason": pause_values.get("engine_pause_reason") or "",
+                "latched": latched,
+                "auto_resume_at": auto_resume_at,
+            },
+            "daily_loss_lock": {
+                "locked": daily_locked,
+                "realized_pnl_usd": round(realized_pnl_usd, 2),
+                "losses_today": losses,
+            },
+            "open_buffer": {"active": buffer_active, "reason": buffer_reason},
+            "settings": cfg,
+        }
+    except Exception as exc:  # noqa: BLE001 - uncertainty must block issuance
+        LOGGER.error("strict issuance safety unavailable: %s", str(exc)[:120])
+        return {
+            "blocked": True,
+            "unavailable": True,
+            "reasons": ["safety state unavailable"],
+            "error": str(exc)[:160],
+        }
+
+
 def combined_trading_block() -> Dict[str, Any]:
-    """All reasons new picks may be suppressed."""
+    """Best-effort dashboard view of reasons new picks may be suppressed."""
     from core.prediction import engine_pause_state
 
     pause = engine_pause_state()

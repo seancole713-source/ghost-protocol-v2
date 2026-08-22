@@ -704,11 +704,14 @@ def checklist_prediction_endpoint(prediction_id: int):
     """Immutable issue-time checklist for a specific issued prediction."""
     try:
         from core.checklist_calibration import build_calibration, confidence_for
+        from core.checklist_evidence import sources_for
         from core.checklist_ledger import resolved_samples_for_calibration, snapshot_for_prediction
 
         snapshot = snapshot_for_prediction(prediction_id)
         if snapshot is None:
             return JSONResponse({"ok": False, "error": "snapshot_not_found"}, status_code=404)
+        frozen_evidence = snapshot.get("evidence") or {}
+        frozen_sources = sources_for(frozen_evidence)
         cohort = {
             "checklist_version": snapshot["checklist_version"],
             "hold_bars": snapshot["hold_bars"],
@@ -726,6 +729,10 @@ def checklist_prediction_endpoint(prediction_id: int):
         )
         calibration = build_calibration(samples, cohort=cohort)
         report = dict(snapshot.get("report") or {})
+        for group in report.get("groups", []):
+            for member in group.get("boxes", []):
+                if not member.get("source"):
+                    member["source"] = frozen_sources.get(member.get("signal"))
         report["confidence"] = confidence_for(snapshot["score_pct"], calibration)
         report["confidence"]["cohort"] = cohort
         return {
@@ -733,7 +740,7 @@ def checklist_prediction_endpoint(prediction_id: int):
             "snapshot_semantics": "immutable_at_prediction_issuance",
             "prediction_id": prediction_id,
             "issued_at": snapshot["issued_at"],
-            "evidence": snapshot.get("evidence") or {},
+            "evidence": frozen_evidence,
             **report,
         }
     except Exception:

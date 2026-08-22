@@ -342,30 +342,42 @@ def record_pick_resolution(
     exit_price: Optional[float] = None,
     pnl_pct: Optional[float] = None,
     source: str = "reconcile",
+    cur=None,
 ) -> None:
-    """Log pick resolved/expired after predictions row is updated."""
+    """Log a resolution, using the authoritative caller transaction when supplied."""
     if not perf_log_enabled():
+        return
+    event_type = "pick_withdrawn" if outcome == "WITHDRAWN" else (
+        "pick_expired" if outcome == "EXPIRED" else "pick_resolved"
+    )
+    payload = {
+        "outcome": outcome,
+        "exit_price": exit_price,
+        "pnl_pct": pnl_pct,
+        "source": source,
+    }
+    if cur is not None:
+        log_prediction_event(
+            cur,
+            event_type=event_type,
+            event_ts=int(time.time()),
+            prediction_id=int(prediction_id),
+            symbol=symbol,
+            payload=payload,
+        )
         return
     try:
         from core.db import db_conn
 
-        event_type = "pick_withdrawn" if outcome == "WITHDRAWN" else (
-            "pick_expired" if outcome == "EXPIRED" else "pick_resolved"
-        )
         with db_conn() as conn:
-            cur = conn.cursor()
+            local_cur = conn.cursor()
             log_prediction_event(
-                cur,
+                local_cur,
                 event_type=event_type,
                 event_ts=int(time.time()),
                 prediction_id=int(prediction_id),
                 symbol=symbol,
-                payload={
-                    "outcome": outcome,
-                    "exit_price": exit_price,
-                    "pnl_pct": pnl_pct,
-                    "source": source,
-                },
+                payload=payload,
             )
     except Exception as exc:
         LOGGER.warning("perf log resolution skipped: %s", str(exc)[:80])

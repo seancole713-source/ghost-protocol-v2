@@ -359,11 +359,14 @@ def collect_evidence(
     sym = (symbol or "").strip().upper()
     decision_ts = int(time.time()) if asof_ts is None else int(asof_ts)
     ctx = _default_market_ctx(sym) if market_ctx is None else dict(market_ctx)
-    source_ts = _epoch(ctx.get("feature_asof_ts"))
+    feature_source_ts = _epoch(ctx.get("feature_asof_ts"))
+    price_source_ts = _epoch(ctx.get("price_as_of_ts"))
 
     raw: Dict[str, Any] = {}
     raw.update(_collect_squeeze_fuel(sym, ctx))
-    raw.update(_collect_price_action(sym, ctx))
+    price_action = _collect_price_action(sym, ctx)
+    raw.update(price_action)
+    feature_signals = set()
     for key in (
         "relative_volume",
         "trend_slope_pct",
@@ -374,6 +377,7 @@ def collect_evidence(
         value = _num(ctx.get(key))
         if value is not None:
             raw[key] = value
+            feature_signals.add(key)
 
     evidence: Dict[str, Any] = {
         "_asof_ts": decision_ts,
@@ -390,6 +394,11 @@ def collect_evidence(
         ],
     }
     for signal, value in raw.items():
+        source_ts = (
+            price_source_ts
+            if signal in price_action and signal not in feature_signals
+            else feature_source_ts
+        )
         record = _record(
             source="prediction_feature_snapshot" if market_ctx is not None else "live_market_snapshot",
             source_timestamp=source_ts,
@@ -400,7 +409,12 @@ def collect_evidence(
             actual_value=value,
             methodology=f"Checklist projection for {signal}",
             request_timestamp=decision_ts,
-            provenance={"symbol": sym, "feature_asof_ts": source_ts},
+            provenance={
+                "symbol": sym,
+                "source_timestamp": source_ts,
+                "feature_asof_ts": feature_source_ts,
+                "price_as_of_ts": price_source_ts,
+            },
         )
         scalar, reconciled, bounded = _confirmed_projection(
             signal,

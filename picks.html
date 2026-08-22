@@ -200,11 +200,25 @@ function money(n){ if(n==null||isNaN(n)) return '—'; return '$'+Number(n).toFi
 async function getJson(url){
   try{
     var r = await fetch(url, {headers:{'Accept':'application/json'}});
-    if(!r.ok) return {ok:false, status:r.status};
+    if(!r.ok) return {ok:false, __ok:false, status:r.status};
     var j = await r.json();
     j.__ok = j.ok !== false;
     return j;
   }catch(e){ return {ok:false, __ok:false, error:String(e)}; }
+}
+
+function timestampMs(value){
+  if(value == null || value === '') return null;
+  if(typeof value === 'number') return value > 100000000000 ? value : value * 1000;
+  var parsed = Date.parse(value);
+  return isNaN(parsed) ? null : parsed;
+}
+
+var inFlight = {};
+function guardedLoad(key, work){
+  if(inFlight[key]) return inFlight[key];
+  inFlight[key] = Promise.resolve().then(work).finally(function(){ inFlight[key] = null; });
+  return inFlight[key];
 }
 
 /* ---------------------------------------------------------------- tabs -- */
@@ -221,6 +235,9 @@ function selectTab(i){
     t.panel.hidden = !on;
     if(on && !t.loaded){ t.loaded = true; t.load(); }
   });
+}
+function refreshVisibleTab(){
+  tabs.forEach(function(t){ if(!t.panel.hidden) t.load(); });
 }
 tabs.forEach(function(t,i){ t.btn.addEventListener('click', function(){ selectTab(i); }); });
 
@@ -291,7 +308,7 @@ function pickCard(sym, direction, entry, target, stop, report){
 }
 
 /* -------------------------------------------------------------- Today --- */
-async function loadToday(){
+function loadToday(){ return guardedLoad('today', async function(){
   var el = document.getElementById('view-today');
   var results = await Promise.all([
     getJson('/api/squeeze/picks'),
@@ -299,12 +316,17 @@ async function loadToday(){
     getJson('/api/wolf/kill-status'),
   ]);
   var squeeze = results[0], picksResp = results[1], kill = results[2];
-
   var html = '';
 
-  var squeezeAlerts = (squeeze.__ok && Array.isArray(squeeze.picks)) ? squeeze.picks : [];
+  var scanTs = squeeze.__ok ? timestampMs(squeeze.last_scan_ts) : null;
+  var scanAgeMs = scanTs == null ? null : Date.now() - scanTs;
+  var squeezeFresh = !!(
+    squeeze.__ok && squeeze.enabled === true && squeeze.radar_active === true && squeeze.scan_ok === true
+    && squeeze.snapshot_stale !== true && scanTs != null
+    && scanAgeMs >= 0 && scanAgeMs < 300000
+  );
+  var squeezeAlerts = (squeezeFresh && Array.isArray(squeeze.picks)) ? squeeze.picks : [];
   var activePicks = (picksResp.__ok && Array.isArray(picksResp.active)) ? picksResp.active : [];
-
   var paused = kill.__ok ? !!(kill.engine_pause && kill.engine_pause.paused) : null;
 
   // Enrich active picks only with their immutable issue-time checklist.
@@ -318,30 +340,37 @@ async function loadToday(){
     top.forEach(function(p, i){ enriched.push({pick:p, report: checklists[i].__ok ? checklists[i] : null}); });
   }
 
-  var anyProvenPick = enriched.some(function(e){ return e.report && e.report.confidence && e.report.confidence.confidence_pct != null; });
-  var anySqueeze = squeezeAlerts.length > 0;
-  var found = anyProvenPick || anySqueeze;
-
   html += '<div class="verdict"><div class="q">Did Ghost find a squeeze today?</div>';
-  if(found){
-    html += '<p class="a yes">'+(found?'Yes.':'No.')+'</p>';
-    html += '<p class="because">'
-      + (anySqueeze ? '<b>'+squeezeAlerts.length+'</b> unusual-volume alert'+(squeezeAlerts.length===1?'':'s')+' right now. ' : '')
-      + (anyProvenPick ? 'At least one pick has a proven confidence number behind it.' : '')
-      + '</p>';
+  if(squeezeAlerts.length){
+    html += '<p class="a yes">Yes.</p>';
+    html += '<p class="because"><b>'+squeezeAlerts.length+'</b> fresh unusual-volume alert'+(squeezeAlerts.length===1?'':'s')+' from the latest scan.</p>';
   } else {
     html += '<p class="a no">No.</p>';
-    html += '<p class="because">Ghost scanned '+(activePicks.length)+' setup'+(activePicks.length===1?'':'s')+' and none cleared the bar'
-      + (paused ? ', and its own kill switch has it paused right now.' : '.') + '</p>';
+    if(!squeeze.__ok){
+      html += '<p class="because">Squeeze radar status is unavailable. No current alert can be confirmed.</p>';
+    } else if(squeeze.enabled !== true){
+      html += '<p class="because">Squeeze radar is disabled. Cached alerts are not described as current.</p>';
+    } else if(squeeze.radar_active !== true){
+      html += '<p class="because">Squeeze radar is off-session or paused. There is no live scan right now.</p>';
+    } else if(squeeze.scan_ok !== true){
+      html += '<p class="because">The latest squeeze scan failed. No current alert can be confirmed.</p>';
+    } else if(!squeezeFresh){
+      html += '<p class="because">The latest squeeze scan is stale. Cached alerts are not described as current.</p>';
+    } else {
+      html += '<p class="because">The fresh scan found no unusual-volume alerts across '+Number(squeeze.symbols||0)+' symbol'+(Number(squeeze.symbols||0)===1?'':'s')+'.</p>';
+    }
   }
-  if(paused){
-    html += '<div class="facts"><div class="fact"><div class="line"><span class="lbl">How it\'s been doing lately</span><span class="val no">Paused</span></div>'
+  if(paused === null){
+    html += '<div class="facts"><div class="fact"><div class="line"><span class="lbl">New-pick safety</span><span class="val no">Safety status unknown</span></div>'
+      + '<div class="mean">New-pick availability cannot be confirmed.</div></div></div>';
+  } else if(paused){
+    html += '<div class="facts"><div class="fact"><div class="line"><span class="lbl">Making new directional picks</span><span class="val no">Paused</span></div>'
       + '<div class="mean">Ghost has been wrong too often recently, so it shut itself off. It won\'t hand you a new pick until that recovers.</div></div></div>';
   }
   html += '</div>';
 
   if(squeezeAlerts.length){
-    html += '<div class="section"><h2>Unusual activity right now</h2>'
+    html += '<div class="section"><h2>Fresh unusual activity</h2>'
       + '<div class="hint">Same-day moves. These are alerts, not predictions — Ghost does not have a proven confidence number for same-day moves, so none is shown.</div>';
     squeezeAlerts.slice(0,5).forEach(function(p){
       var alertSymbol = esc(p.symbol||'');
@@ -352,7 +381,8 @@ async function loadToday(){
   }
 
   if(enriched.length){
-    html += '<div class="section"><h2>Today\'s picks</h2>';
+    html += '<div class="section"><h2>Active directional picks</h2>'
+      + '<div class="hint">Open calls awaiting their target, get-out price, or watch-window deadline.</div>';
     enriched.forEach(function(e){
       html += pickCard(e.pick.symbol, (e.pick.direction||'UP').toUpperCase(), e.pick.entry_price, e.pick.target_price, e.pick.stop_price, e.report);
     });
@@ -360,10 +390,11 @@ async function loadToday(){
   }
 
   if(!squeezeAlerts.length && !enriched.length){
-    html += '<div class="empty">Nothing to show today. Check back after the next scan.</div>';
+    html += '<div class="empty">No fresh squeeze alerts or active directional picks to show.</div>';
   }
 
   el.innerHTML = html;
+  });
 }
 
 /* ----------------------------------------------------------- My stocks - */
@@ -405,20 +436,26 @@ async function loadMyStocks(){
 }
 
 /* -------------------------------------------------------------- Record - */
-async function loadRecord(){
+function loadRecord(){ return guardedLoad('record', async function(){
   var el = document.getElementById('view-record');
   var results = await Promise.all([
     getJson('/api/ghost/checklist/record?limit=25'),
     getJson('/api/wallet'),
   ]);
   var rec = results[0], wallet = results[1];
-  var snaps = (rec.__ok && Array.isArray(rec.snapshots)) ? rec.snapshots : [];
+  if(!rec.__ok){
+    el.innerHTML = '<div class="err">Couldn\'t load the finished-call record right now.</div>';
+    return;
+  }
+  var snaps = Array.isArray(rec.snapshots) ? rec.snapshots : [];
 
   var made = snaps.filter(function(s){ return s.outcome === 'WIN'; }).length;
   var missed = snaps.filter(function(s){ return s.outcome === 'LOSS'; }).length;
   var expired = snaps.filter(function(s){ return s.outcome === 'EXPIRED'; }).length;
 
-  var html = '<div class="score">'
+  var html = '<div class="section"><h2>Last 25 finished calls</h2>'
+    + '<div class="hint">The counts below cover only the most recent 25 finished calls returned by Ghost.</div></div>'
+    + '<div class="score">'
     + '<div class="tile win"><span class="k">Made it</span><span class="v">'+made+'</span><span class="s">Reached the price Ghost aimed for</span></div>'
     + '<div class="tile loss"><span class="k">Stopped out</span><span class="v">'+missed+'</span><span class="s">Reached the get-out price first</span></div>'
     + '<div class="tile"><span class="k">Expired</span><span class="v">'+expired+'</span><span class="s">Reached neither price in the watch window</span></div>';
@@ -448,10 +485,11 @@ async function loadRecord(){
     html += '</div>';
   }
   el.innerHTML = html;
+  });
 }
 
 /* -------------------------------------------------------------- System - */
-async function loadSystem(){
+function loadSystem(){ return guardedLoad('system', async function(){
   var el = document.getElementById('view-system');
   var results = await Promise.all([
     getJson('/api/health'),
@@ -461,25 +499,34 @@ async function loadSystem(){
   var health = results[0], kill = results[1], degraded = results[2];
 
   var html = '<div class="section"><h2>Is Ghost healthy?</h2>';
-  html += '<div class="sysrow"><span class="k">Overall</span><span class="v '+(health.__ok?'ok':'no')+'">'+(health.__ok?'OK':'Trouble')+'</span></div>';
+  html += '<div class="sysrow"><span class="k">Overall</span><span class="v '+(health.__ok?'ok':'no')+'">'+(health.__ok?'OK':'Unknown — treat as unavailable')+'</span></div>';
   if(kill.__ok){
     var paused = !!(kill.engine_pause && kill.engine_pause.paused);
     html += '<div class="sysrow"><span class="k">Making new picks</span><span class="v '+(paused?'no':'ok')+'">'+(paused?'Paused':'Yes')+'</span></div>';
     if(paused && kill.engine_pause.reason){
       html += '<div class="hint">Why: '+esc(kill.engine_pause.reason)+'</div>';
     }
+  } else {
+    html += '<div class="sysrow"><span class="k">Making new picks</span><span class="v no">Unknown — treat as unavailable</span></div>';
   }
   if(degraded.__ok){
     var isDeg = !!degraded.degraded;
-    html += '<div class="sysrow"><span class="k">Running normally</span><span class="v '+(isDeg?'no':'ok')+'">'+(isDeg?'Degraded':'Yes')+'</span></div>';
+    html += '<div class="sysrow"><span class="k">Running normally</span><span class="v '+(isDeg?'no':'ok')+'">'+(isDeg?'Paused':'Yes')+'</span></div>';
+  } else {
+    html += '<div class="sysrow"><span class="k">Running normally</span><span class="v no">Unknown — treat as unavailable</span></div>';
   }
   html += '</div>';
   el.innerHTML = html;
+  });
 }
 
 loadHeader();
 selectTab(0);
 setInterval(loadHeader, 60000);
+setInterval(refreshVisibleTab, 60000);
+document.addEventListener('visibilitychange', function(){
+  if(!document.hidden){ loadHeader(); refreshVisibleTab(); }
+});
 })();
 </script>
 </body>

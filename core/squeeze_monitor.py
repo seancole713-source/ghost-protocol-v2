@@ -339,7 +339,8 @@ def get_squeeze_picks() -> Dict[str, Any]:
         if alert_buy is not None and item.get("live_price") is not None:
             attach_live_drift(item, alert_buy=float(alert_buy), live_price=item["live_price"])
         enriched_alerts.append(item)
-    radar_active = is_us_extended_hours()
+    enabled = os.getenv("SQUEEZE_MONITOR_ENABLED", "1") == "1"
+    radar_active = enabled and is_us_extended_hours()
     last_ts = st.get("ts")
     return {
         "scan_ok": bool(st.get("ok") and st.get("status") == "complete"),

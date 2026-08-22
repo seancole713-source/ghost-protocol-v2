@@ -427,6 +427,8 @@ def get_extended_session(symbol: str) -> Dict[str, Any]:
         prev_close = None
     session = "closed"
     session_price = live
+    session_price_as_of_ts = price_as_of_ts
+    session_price_source = "alpaca_trade" if live_quote is not None else None
     try:
         now_ct = _now_ct()
         if now_ct.weekday() < 5:
@@ -436,10 +438,14 @@ def get_extended_session(symbol: str) -> Dict[str, Any]:
                 session = "premarket"
                 if pre_market and float(pre_market) > 0:
                     session_price = float(pre_market)
+                    session_price_as_of_ts = None
+                    session_price_source = "yfinance_fast_info"
             elif is_us_after_hours(now_ct):
                 session = "afterhours"
                 if post_market and float(post_market) > 0:
                     session_price = float(post_market)
+                    session_price_as_of_ts = None
+                    session_price_source = "yfinance_fast_info"
     except Exception:
         note_suppressed()
     gap_pct = None
@@ -457,7 +463,8 @@ def get_extended_session(symbol: str) -> Dict[str, Any]:
         "gap_pct": gap_pct,
         "pre_market_price": round(float(pre_market), 4) if pre_market else None,
         "post_market_price": round(float(post_market), 4) if post_market else None,
-        "price_as_of_ts": price_as_of_ts,
+        "price_as_of_ts": session_price_as_of_ts,
+        "price_source": session_price_source,
         "requested_at_ts": int(time.time()),
         "ts": int(time.time()),
     }

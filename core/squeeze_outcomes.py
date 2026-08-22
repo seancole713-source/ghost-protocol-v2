@@ -453,7 +453,6 @@ def squeeze_daily_log(
 
         with db_conn() as conn:
             cur = conn.cursor()
-            ensure_squeeze_outcomes_table(cur)
             if session_date:
                 cur.execute(
                     """

@@ -90,3 +90,21 @@ def test_collect_evidence_scores_only_frozen_feature_timestamp():
     )
     assert evidence["relative_volume"] == 5.0
     assert ce.sources_for(evidence)["relative_volume"] == "prediction_feature_snapshot"
+
+
+def test_price_action_requires_its_own_observation_timestamp():
+    evidence = ce.collect_evidence(
+        "WOLF",
+        asof_ts=1_100,
+        market_ctx={
+            "price": 12.0,
+            "prior_close": 10.0,
+            "feature_asof_ts": 1_000,
+            "price_as_of_ts": None,
+        },
+    )
+
+    assert "move_from_base_pct" not in evidence
+    record = evidence[ce.RECORDS_KEY]["move_from_base_pct"][0]
+    assert record["source_timestamp"] is None
+    assert record["confidence_status"] == "UNVERIFIED"
