@@ -63,8 +63,6 @@ def test_resolved_samples_only_returns_rows_with_a_known_outcome():
         def __exit__(self, *a):
             return False
 
-    import core.checklist_ledger as mod
-    orig = mod.__dict__.get("db_conn")
     import core.db as core_db
     saved = core_db.db_conn
     core_db.db_conn = _FakeDbConn

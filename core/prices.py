@@ -342,17 +342,6 @@ def _iex_spot(symbol):
     return None
 
 
-def _stooq_spot(symbol):
-    """Spot price from Stooq — fifth-tier fallback (PR #77).
-
-    DEPRECATED (2026-07-01): Stooq now requires a JavaScript challenge
-    (Cloudflare-style browser verification) and returns 403/JS-challenge
-    for all server-side requests. This function is kept as a no-op stub
-    to avoid breaking callers; it always returns None.
-    """
-    return None
-
-
 def get_stock_price(symbol, *, with_staleness: bool = False):
     """Return live price from the spot chain: Alpaca → yfinance → Alpaca IEX.
     When with_staleness=True, returns (price, stale_flag).
@@ -623,7 +612,7 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
         # prev_close may be null in cache if yfinance was down on first fetch.
         # Try Polygon/Stooq as non-yfinance fallbacks.
         if not out.get("previous_close"):
-            pc = _polygon_spot(sym) or _stooq_spot(sym)
+            pc = _polygon_spot(sym)
             if pc:
                 out["previous_close"] = round(float(pc), 4)
                 if out.get("price") and out["price"] > 0:
@@ -805,10 +794,6 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
         pc = _polygon_spot(sym)
         if pc:
             prev_close = round(float(pc), 4)
-    if prev_close is None:
-        pc = _stooq_spot(sym)
-        if pc:
-            prev_close = round(float(pc), 4)
 
     # Persistent prev_close cache: when all live feeds are down (market closed,
     # breakers open), fall back to the last known prev_close from earlier today.
@@ -883,13 +868,12 @@ def check_feeds():
     _yf = _yfinance(probe) is not None
     _pg = _polygon_spot(probe) is not None
     _ix = _iex_spot(probe) is not None
-    _sq = _stooq_spot(probe) is not None
     priceable = bool(_al or _yf or _ix)
     r = {
         "alpaca_stock": _al, "yfinance": _yf, "polygon": _pg,
-        "iex": _ix, "stooq": _sq, "probe_symbol": probe, "priceable": priceable,
+        "iex": _ix, "probe_symbol": probe, "priceable": priceable,
     }
-    working = sum(1 for v in (_al, _yf, _pg, _ix, _sq) if v)
-    r["summary"] = (f"{probe} priceable ({working}/5 feeds)" if priceable
-                    else f"{probe} NOT priceable ({working}/5 feeds)")
+    working = sum(1 for v in (_al, _yf, _pg, _ix) if v)
+    r["summary"] = (f"{probe} priceable ({working}/4 feeds)" if priceable
+                    else f"{probe} NOT priceable ({working}/4 feeds)")
     return r

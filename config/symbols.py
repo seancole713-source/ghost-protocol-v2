@@ -40,17 +40,13 @@ OFFICIAL_WATCHLIST: Tuple[str, ...] = (
 )
 OFFICIAL_WATCHLIST_CSV = ",".join(OFFICIAL_WATCHLIST)
 
-# Direction override constant — retained for legacy compatibility; no active strategy
-# currently uses it.
-DIRECTION_FLIP = 'flip'
-
 
 @dataclass(frozen=True)
 class ValidatedStrategy:
     """Configuration for a V3 validated trading strategy."""
     symbol: str
     strategy: str  # 'ghost_inverse' | 'mean_reversion'
-    direction_override: Optional[str]  # 'UP' | 'DOWN' | DIRECTION_FLIP | None
+    direction_override: Optional[str]  # 'UP' | 'DOWN' | None
     hold_hours: int
     backtest_win_rate: float
     backtest_trades: int

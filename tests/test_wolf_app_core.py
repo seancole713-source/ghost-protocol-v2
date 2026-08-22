@@ -2680,7 +2680,6 @@ def test_check_feeds_probes_wolf_by_default(monkeypatch):
     monkeypatch.setattr(_prices, "_yfinance", lambda sym: (probed.append(("yfinance", sym)), 42.0)[1])
     monkeypatch.setattr(_prices, "_polygon_spot", lambda sym: (probed.append(("polygon", sym)), None)[1])
     monkeypatch.setattr(_prices, "_iex_spot", lambda sym: (probed.append(("iex", sym)), None)[1])
-    monkeypatch.setattr(_prices, "_stooq_spot", lambda sym: (probed.append(("stooq", sym)), None)[1])
     monkeypatch.delenv("HEALTH_PROBE_SYMBOL", raising=False)
     r = _prices.check_feeds()
     assert r["probe_symbol"] == "WOLF"
@@ -2688,7 +2687,7 @@ def test_check_feeds_probes_wolf_by_default(monkeypatch):
     assert r["yfinance"] is True
     assert r["priceable"] is True
     assert "WOLF priceable" in r["summary"]
-    assert "1/5" in r["summary"]
+    assert "1/4" in r["summary"]
     assert all(sym == "WOLF" for (_kind, sym) in probed)
 
 
@@ -2699,13 +2698,12 @@ def test_check_feeds_respects_health_probe_symbol_env(monkeypatch):
     monkeypatch.setattr(_prices, "_yfinance", lambda sym: None)
     monkeypatch.setattr(_prices, "_polygon_spot", lambda sym: None)
     monkeypatch.setattr(_prices, "_iex_spot", lambda sym: None)
-    monkeypatch.setattr(_prices, "_stooq_spot", lambda sym: None)
     monkeypatch.setenv("HEALTH_PROBE_SYMBOL", "MSFT")
     r = _prices.check_feeds()
     assert r["probe_symbol"] == "MSFT"
     assert r["alpaca_stock"] is True
     assert r["yfinance"] is False
-    assert "1/5" in r["summary"]
+    assert "1/4" in r["summary"]
     assert "MSFT" in r["summary"]
 
 

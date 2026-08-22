@@ -771,15 +771,19 @@ async def diagnostics(request: Request = None):
         _mc_now = _mcdt.datetime.now(_mc_ct)
         _mc_today = _mc_now.strftime("%Y-%m-%d")
         _mc_last = None
+        _mc_read_failed = False
         try:
             with db_conn() as _mc_conn:
                 _mc_cur = _mc_conn.cursor()
                 _mc_cur.execute("SELECT val FROM ghost_state WHERE key='last_morning_card_date'")
                 _mc_row = _mc_cur.fetchone()
                 _mc_last = _mc_row[0] if _mc_row else None
-        except Exception: pass
+        except Exception:
+            _mc_read_failed = True
         if _mc_now.hour >= 9:
-            if _mc_last == _mc_today:
+            if _mc_read_failed:
+                _warnings.append({"check":"morning_card.today","detail":"Cannot read card state — not counted against health","status":"warning"})
+            elif _mc_last == _mc_today:
                 _passed.append({"check":"morning_card.today","detail":"Card sent today "+_mc_today,"status":"pass"})
             else:
                 _errors.append({"check":"morning_card.today","detail":"No card today ("+_mc_today+") last:"+str(_mc_last),"status":"error"})

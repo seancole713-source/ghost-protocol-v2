@@ -3703,55 +3703,6 @@ function renderTruth(stats, health, v3, dir){
     + '<b>Price feeds</b> ' + escHtml(feeds);
 }
 
-/* ─── Short interest tile (PR #24 item 11) ─── */
-function renderShortInterest(ctx, wstats){
-  var section = document.getElementById('short-section');
-  var tile = document.getElementById('short-tile');
-  if(!section || !tile) return;
-  // PR #25 (item 5): pull short data from /api/wolf/context first (Finviz
-  // scrape via wolf_context.py), fall back to /api/wolf/stats which now
-  // exposes yfinance.info shortPercentOfFloat + shortRatio. Either source
-  // populates the tile so a Finviz outage doesn't blank it.
-  var sf = null, dtc = null;
-  if(ctx && ctx.ok !== false && ctx.short_data){
-    sf = ctx.short_data.short_float;
-    dtc = ctx.short_data.days_to_cover;
-  }
-  if(sf == null && wstats && wstats.ok !== false){
-    if(wstats.short_float != null) sf = wstats.short_float;
-  }
-  if(dtc == null && wstats && wstats.ok !== false){
-    if(wstats.short_days_to_cover != null) dtc = wstats.short_days_to_cover;
-  }
-  if(sf == null && dtc == null){
-    section.style.display = 'none';
-    return;
-  }
-  // Squeeze risk band: short_float ≥ 25% AND days_to_cover ≥ 5 → HIGH
-  // short_float ≥ 15% OR days_to_cover ≥ 3 → MEDIUM
-  // else LOW
-  var risk = 'low';
-  if(sf != null && sf >= 0.25 && dtc != null && dtc >= 5) risk = 'high';
-  else if((sf != null && sf >= 0.15) || (dtc != null && dtc >= 3)) risk = 'medium';
-  var sfPct = sf != null ? (sf * 100).toFixed(2) + '%' : '—';
-  var dtcStr = dtc != null ? dtc.toFixed(2) + ' days' : '—';
-  // Estimate share count if we know float — leave blank otherwise. Many
-  // tickers don't expose float in WolfShortData; tile shows what's available.
-  tile.innerHTML =
-    '<div class="st-block"><div class="st-label">Short Float</div>'
-    +   '<div class="st-val">' + sfPct + '</div>'
-    +   '<div class="st-sub">of public float</div></div>'
-    + '<div class="st-block"><div class="st-label">Days to Cover</div>'
-    +   '<div class="st-val">' + dtcStr + '</div>'
-    +   '<div class="st-sub">at avg daily volume</div></div>'
-    + '<div class="st-block"><div class="st-label">Squeeze Risk</div>'
-    +   '<div class="st-val ' + risk + '">' + risk.toUpperCase() + '</div>'
-    +   '<div class="st-sub">' + (risk === 'high' ? 'High short interest + tight cover days'
-                                : risk === 'medium' ? 'Elevated short pressure'
-                                : 'Below squeeze thresholds') + '</div></div>';
-  section.style.display = '';
-}
-
 /* ─── Catalyst timeline (PR #24 item 12) ─── */
 function renderCatalysts(ctx, analyst, news){
   var section = document.getElementById('catalyst-section');
@@ -3942,7 +3893,6 @@ async function loadCockpitSecondary(ctxPack, watching){
     renderEarnings(earnings);
     renderAnalyst(analyst);
     renderNews(news);
-    renderShortInterest(wolfCtx, wstats);
     renderCatalysts(wolfCtx, analyst, news);
     renderTruth(stats, h, v3, dir);
     renderActivity(activity);

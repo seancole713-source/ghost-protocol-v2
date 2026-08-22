@@ -2202,9 +2202,12 @@ def _auto_purge_bad_models():
                     if acc < MIN_ACC:
                         cur.execute("DELETE FROM ghost_models WHERE id=%s", (rid,))
                         purged += 1
-                except Exception: pass
+                except Exception as _pe:
+                    LOGGER.warning("auto-purge skip model id=%s: %s", rid, str(_pe)[:120])
         return purged
-    except Exception: return 0
+    except Exception as _pe:
+        LOGGER.warning("auto-purge bad models failed: %s", str(_pe)[:120])
+        return 0
 
 
 
