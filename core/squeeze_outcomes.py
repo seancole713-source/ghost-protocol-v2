@@ -368,6 +368,8 @@ def resolve_squeeze_outcomes(session_date: Optional[str] = None) -> int:
     try:
         from core.db import db_conn
 
+        # Phase 1 (read-only): collect pending rows without holding a
+        # transaction across network I/O.
         with db_conn() as conn:
             cur = conn.cursor()
             ensure_squeeze_outcomes_table(cur)
@@ -381,58 +383,68 @@ def resolve_squeeze_outcomes(session_date: Optional[str] = None) -> int:
                 (target,),
             )
             rows = cur.fetchall()
-            now = int(time.time())
-            for rid, sym, buy, sell, stop, alerted_at in rows:
-                if buy is None or sell is None:
-                    continue
-                # Grade against post-alert bars when available (forensic SQ-3);
-                # fall back to the full-day bar only when intraday is missing.
-                ohlc = _post_alert_ohlc(str(sym), target, int(alerted_at or 0))
-                if not ohlc:
-                    ohlc = _session_ohlc(str(sym), target)
-                if not ohlc:
-                    continue
-                meta = _resolve_row(float(buy), float(sell), stop, ohlc)
-                cur.execute(
-                    """
-                    UPDATE ghost_squeeze_outcomes SET
-                        outcome = %s,
-                        session_open = %s,
-                        session_high = %s,
-                        session_low = %s,
-                        session_close = %s,
-                        hit_target = %s,
-                        hit_stop = %s,
-                        hit_3pct = %s,
-                        close_pnl_pct = %s,
-                        target_gap_pct = %s,
-                        precision_score = %s,
-                        precision_grade = %s,
-                        mistake_type = %s,
-                        precision_json = %s::jsonb,
-                        resolved_at = %s
-                    WHERE id = %s
-                    """,
-                    (
-                        meta["outcome"],
-                        meta["session_open"],
-                        meta["session_high"],
-                        meta["session_low"],
-                        meta["session_close"],
-                        meta["hit_target"],
-                        meta["hit_stop"],
-                        meta["hit_3pct"],
-                        meta["close_pnl_pct"],
-                        meta["target_gap_pct"],
-                        meta.get("precision_score"),
-                        meta.get("precision_grade"),
-                        meta.get("mistake_type"),
-                        json.dumps(meta.get("precision") or {}, default=str),
-                        now,
-                        rid,
-                    ),
-                )
-                resolved += 1
+
+        # Phase 2 (network I/O, no transaction): resolve each row's OHLC.
+        # Grade against post-alert bars when available (forensic SQ-3);
+        # fall back to the full-day bar only when intraday is missing.
+        now = int(time.time())
+        resolved_rows = []
+        for rid, sym, buy, sell, stop, alerted_at in rows:
+            if buy is None or sell is None:
+                continue
+            ohlc = _post_alert_ohlc(str(sym), target, int(alerted_at or 0))
+            if not ohlc:
+                ohlc = _session_ohlc(str(sym), target)
+            if not ohlc:
+                continue
+            meta = _resolve_row(float(buy), float(sell), stop, ohlc)
+            resolved_rows.append((rid, meta))
+
+        # Phase 3 (writes only): apply all resolutions in one transaction.
+        if resolved_rows:
+            with db_conn() as conn:
+                cur = conn.cursor()
+                for rid, meta in resolved_rows:
+                    cur.execute(
+                        """
+                        UPDATE ghost_squeeze_outcomes SET
+                            outcome = %s,
+                            session_open = %s,
+                            session_high = %s,
+                            session_low = %s,
+                            session_close = %s,
+                            hit_target = %s,
+                            hit_stop = %s,
+                            hit_3pct = %s,
+                            close_pnl_pct = %s,
+                            target_gap_pct = %s,
+                            precision_score = %s,
+                            precision_grade = %s,
+                            mistake_type = %s,
+                            precision_json = %s::jsonb,
+                            resolved_at = %s
+                        WHERE id = %s
+                        """,
+                        (
+                            meta["outcome"],
+                            meta["session_open"],
+                            meta["session_high"],
+                            meta["session_low"],
+                            meta["session_close"],
+                            meta["hit_target"],
+                            meta["hit_stop"],
+                            meta["hit_3pct"],
+                            meta["close_pnl_pct"],
+                            meta["target_gap_pct"],
+                            meta.get("precision_score"),
+                            meta.get("precision_grade"),
+                            meta.get("mistake_type"),
+                            json.dumps(meta.get("precision") or {}, default=str),
+                            now,
+                            rid,
+                        ),
+                    )
+                    resolved += 1
     except Exception as exc:
         LOGGER.warning("resolve_squeeze_outcomes: %s", str(exc)[:160])
     if resolved:

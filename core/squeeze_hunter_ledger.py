@@ -624,6 +624,8 @@ def resolve_hunter_predictions(*, limit: int = 200, now: Optional[int] = None) -
     terminal = 0
     try:
         from core.db import db_conn
+        # Phase 1 (read-only): collect unresolved rows without holding a
+        # transaction across network I/O.
         with db_conn() as conn:
             cur = conn.cursor()
             cur.execute(
@@ -638,18 +640,24 @@ def resolve_hunter_predictions(*, limit: int = 200, now: Optional[int] = None) -
                 (max(1, min(1000, int(limit))),),
             )
             rows = cur.fetchall()
-            by_symbol: Dict[str, list] = {}
-            for r in rows:
-                rec = {"id": r[0], "symbol": (r[1] or "").upper(),
-                       "issued_ts": r[2], "reference_price": r[3]}
-                by_symbol.setdefault(rec["symbol"], []).append(rec)
+        by_symbol: Dict[str, list] = {}
+        for r in rows:
+            rec = {"id": r[0], "symbol": (r[1] or "").upper(),
+                   "issued_ts": r[2], "reference_price": r[3]}
+            by_symbol.setdefault(rec["symbol"], []).append(rec)
 
+        # Phase 2 (network I/O, no transaction): fetch each symbol's OHLC series.
+        series_by_symbol: Dict[str, list] = {}
+        for sym in by_symbol:
+            series_by_symbol[sym] = _ohlc_series(sym, period="3mo")
+
+        # Phase 3 (writes only): resolve each row with per-row savepoints so
+        # one bad row can't roll back the whole batch (forensic SQ-2).
+        with db_conn() as conn:
+            cur = conn.cursor()
             for sym, recs in by_symbol.items():
-                series = _ohlc_series(sym, period="3mo")
+                series = series_by_symbol.get(sym) or []
                 for rec in recs:
-                    # Per-row savepoint: one bad row must not roll back the
-                    # whole batch (forensic SQ-2). Each resolution commits or
-                    # rolls back independently.
                     cur.execute("SAVEPOINT hunter_resolve_row")
                     try:
                         result = _resolve_one_row(cur, rec, sym, series, now)
