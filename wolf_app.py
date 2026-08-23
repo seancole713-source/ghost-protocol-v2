@@ -222,7 +222,7 @@ def _v32_stats_start_ts(cur):
     return final_ts
 
 
-from core.prediction_filters import CRYPTO_JUNK_WHERE, NON_RESEARCH_WHERE, REAL_TRADE_WHERE, non_research_where, picks_where as _picks_where
+from core.prediction_filters import CRYPTO_JUNK_WHERE, NON_RESEARCH_WHERE, REAL_TRADE_WHERE, RESOLVED_FOR_WINRATE_WHERE, non_research_where, picks_where as _picks_where
 
 
 def _build_symbol_universe_payload() -> dict:
@@ -389,43 +389,46 @@ def _compute_get_stats(cur):
     # Outcome-based stats exclude research picks (low-bar learning probes) so the
     # headline win rate matches what the objective gate / kill switch actually use.
     cur.execute(
-        "SELECT outcome, COUNT(*) FROM predictions WHERE outcome IN ('WIN','LOSS') "
-        "AND predicted_at IS NOT NULL AND " + REAL_TRADE_WHERE
+        "SELECT outcome, COUNT(*) FROM predictions WHERE " + RESOLVED_FOR_WINRATE_WHERE
+        + " AND predicted_at IS NOT NULL AND " + REAL_TRADE_WHERE
         + " AND " + NON_RESEARCH_WHERE + " GROUP BY outcome"
     )
     rows = {r[0]: r[1] for r in cur.fetchall()}
     wins = rows.get("WIN", 0)
     losses = rows.get("LOSS", 0)
-    total = wins + losses
+    expired = rows.get("EXPIRED", 0)
+    total = wins + losses + expired
     cur.execute(
         "SELECT COUNT(*) FROM predictions WHERE outcome IS NULL AND " + REAL_TRADE_WHERE
     )
     open_count = cur.fetchone()[0]
     v32_start_ts = _v32_stats_start_ts(cur)
-    v32_wins = v32_losses = v32_total = 0
-    v32r_wins = v32r_losses = v32r_total = 0
+    v32_wins = v32_losses = v32_expired = v32_total = 0
+    v32r_wins = v32r_losses = v32r_expired = v32r_total = 0
     if v32_start_ts > 0:
         cur.execute(
             "SELECT outcome, COUNT(*) FROM predictions "
-            "WHERE outcome IN ('WIN','LOSS') AND predicted_at IS NOT NULL AND predicted_at >= %s "
+            "WHERE " + RESOLVED_FOR_WINRATE_WHERE + " AND predicted_at IS NOT NULL AND predicted_at >= %s "
             "AND " + REAL_TRADE_WHERE + " AND " + NON_RESEARCH_WHERE + " GROUP BY outcome",
             (v32_start_ts,),
         )
         v32_rows = {r[0]: r[1] for r in cur.fetchall()}
         v32_wins = v32_rows.get("WIN", 0)
         v32_losses = v32_rows.get("LOSS", 0)
-        v32_total = v32_wins + v32_losses
+        v32_expired = v32_rows.get("EXPIRED", 0)
+        v32_total = v32_wins + v32_losses + v32_expired
         # Closes after cutover (matches "Recent Results" feel; can include picks issued before cutover)
         cur.execute(
             "SELECT outcome, COUNT(*) FROM predictions "
-            "WHERE outcome IN ('WIN','LOSS') AND resolved_at IS NOT NULL AND resolved_at >= %s "
+            "WHERE " + RESOLVED_FOR_WINRATE_WHERE + " AND resolved_at IS NOT NULL AND resolved_at >= %s "
             "AND " + REAL_TRADE_WHERE + " AND " + NON_RESEARCH_WHERE + " GROUP BY outcome",
             (v32_start_ts,),
         )
         v32r_rows = {r[0]: r[1] for r in cur.fetchall()}
         v32r_wins = v32r_rows.get("WIN", 0)
         v32r_losses = v32r_rows.get("LOSS", 0)
-        v32r_total = v32r_wins + v32r_losses
+        v32r_expired = v32r_rows.get("EXPIRED", 0)
+        v32r_total = v32r_wins + v32r_losses + v32r_expired
     scan_stocks = [s.strip().upper() for s in os.getenv("STOCK_SYMBOLS", "WOLF").split(",") if s.strip()] or ["WOLF"]
 
     def _wilson_lb95(w: int, n: int) -> float:
@@ -444,6 +447,7 @@ def _compute_get_stats(cur):
         "ok": True,
         "wins": wins,
         "losses": losses,
+        "expired": expired,
         "total": total,
         "win_rate_pct": round(wins / total * 100, 1) if total else 0,
         "win_rate_wilson_lb95_pct": _wilson_lb95(wins, total),
@@ -453,6 +457,7 @@ def _compute_get_stats(cur):
             "start_ts": v32_start_ts,
             "wins": v32_wins,
             "losses": v32_losses,
+            "expired": v32_expired,
             "total": v32_total,
             "win_rate_pct": round(v32_wins / v32_total * 100, 1) if v32_total else 0.0,
         },
@@ -460,6 +465,7 @@ def _compute_get_stats(cur):
             "start_ts": v32_start_ts,
             "wins": v32r_wins,
             "losses": v32r_losses,
+            "expired": v32r_expired,
             "total": v32r_total,
             "win_rate_pct": round(v32r_wins / v32r_total * 100, 1) if v32r_total else 0.0,
         },
@@ -626,20 +632,22 @@ def _daily_min_conf() -> float:
 
 def _wolf_track_record() -> dict:
     """All-time W/L, win rate, last-5 (newest first), and current streak for
-    WOLF v3.2-era resolved picks."""
-    out = {"wins": 0, "losses": 0, "win_rate_pct": 0, "last5": [], "streak": "--"}
+    WOLF v3.2-era resolved picks. Genuine full-term EXPIRED picks (reconciler
+    pnl_pct set) count as non-wins in the denominator, matching the gates."""
+    out = {"wins": 0, "losses": 0, "expired": 0, "win_rate_pct": 0, "last5": [], "streak": "--"}
     try:
         with db_conn() as c:
             cur = c.cursor()
             cur.execute(
                 "SELECT outcome FROM predictions WHERE symbol='WOLF' AND id >= %s "
-                "AND outcome IN ('WIN','LOSS') ORDER BY resolved_at DESC NULLS LAST, id DESC",
+                "AND " + RESOLVED_FOR_WINRATE_WHERE + " ORDER BY resolved_at DESC NULLS LAST, id DESC",
                 (_V32_ERA_MIN_ID,))
             outs = [r[0] for r in cur.fetchall()]
         wins = outs.count("WIN")
         losses = outs.count("LOSS")
-        tot = wins + losses
-        out["wins"], out["losses"] = wins, losses
+        expired = outs.count("EXPIRED")
+        tot = wins + losses + expired
+        out["wins"], out["losses"], out["expired"] = wins, losses, expired
         out["win_rate_pct"] = round(wins / tot * 100, 1) if tot else 0
         out["last5"] = ["W" if o == "WIN" else "L" for o in outs[:5]]
         if outs:
@@ -818,7 +826,7 @@ def _build_daily_summary():
     day_start = int(now_ct.replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
     s = {"date": now_ct.strftime("%Y-%m-%d"), "ts": int(time.time()),
          "scans": 0, "candidates": 0, "saved": 0, "would_fire_cycles": 0,
-         "resolved": {"wins": 0, "losses": 0, "pnl_pct": 0.0}, "engine_paused": False}
+         "resolved": {"wins": 0, "losses": 0, "expired": 0, "pnl_pct": 0.0}, "engine_paused": False}
     try:
         with db_conn() as c:
             cur = c.cursor()
@@ -839,13 +847,15 @@ def _build_daily_summary():
                         s["would_fire_cycles"] += 1
             cur.execute(
                 "SELECT outcome, pnl_pct FROM predictions WHERE symbol='WOLF' "
-                "AND resolved_at >= %s AND outcome IN ('WIN','LOSS') "
+                "AND resolved_at >= %s AND " + RESOLVED_FOR_WINRATE_WHERE + " "
                 "AND " + NON_RESEARCH_WHERE, (day_start,))
             for o, p in cur.fetchall():
                 if o == "WIN":
                     s["resolved"]["wins"] += 1
                 elif o == "LOSS":
                     s["resolved"]["losses"] += 1
+                elif o == "EXPIRED":
+                    s["resolved"]["expired"] = s["resolved"].get("expired", 0) + 1
                 s["resolved"]["pnl_pct"] += float(p or 0)
             s["resolved"]["pnl_pct"] = round(s["resolved"]["pnl_pct"], 3)
     except Exception as e:
@@ -1067,14 +1077,14 @@ def _build_weekly_card_data() -> dict:
     cutoff = now - 7 * 86400
 
     pnl_trades = []
-    wk_wins = wk_losses = 0
+    wk_wins = wk_losses = wk_expired = 0
     prows = []
     try:
         with db_conn() as c:
             cur = c.cursor()
             cur.execute(
                 "SELECT resolved_at,outcome,pnl_pct,entry_price,exit_price FROM predictions "
-                "WHERE symbol='WOLF' AND resolved_at >= %s AND outcome IN ('WIN','LOSS') "
+                "WHERE symbol='WOLF' AND resolved_at >= %s AND " + RESOLVED_FOR_WINRATE_WHERE + " "
                 "AND " + NON_RESEARCH_WHERE + " ORDER BY resolved_at ASC",
                 (cutoff,))
             for r in cur.fetchall():
@@ -1082,6 +1092,8 @@ def _build_weekly_card_data() -> dict:
                     wk_wins += 1
                 elif r[1] == "LOSS":
                     wk_losses += 1
+                elif r[1] == "EXPIRED":
+                    wk_expired += 1
                 if r[2] is not None:
                     pnl_trades.append({"resolved_at": r[0], "outcome": r[1],
                                        "pnl_pct": float(r[2]), "entry_price": r[3], "exit_price": r[4]})
@@ -1122,16 +1134,16 @@ def _build_weekly_card_data() -> dict:
                 pass
 
     tr = _wolf_track_record()
-    wk_tot = wk_wins + wk_losses
+    wk_tot = wk_wins + wk_losses + wk_expired
     start = _dt.datetime.now(tz) - _dt.timedelta(days=6)
     week_range = start.strftime("%b %d") + " - " + _dt.datetime.now(tz).strftime("%b %d")
     retrain = _wolf_retrain_in_days()
     return {
         "week_range": week_range,
-        "followed": {"wins": wk_wins, "losses": wk_losses,
+        "followed": {"wins": wk_wins, "losses": wk_losses, "expired": wk_expired,
                      "win_rate_pct": round(wk_wins / wk_tot * 100, 1) if wk_tot else 0,
                      "pnl_usd": pnl["realized_pnl_usd"]},
-        "alltime": {"win_rate_pct": tr["win_rate_pct"], "wins": tr["wins"], "losses": tr["losses"]},
+        "alltime": {"win_rate_pct": tr["win_rate_pct"], "wins": tr["wins"], "losses": tr["losses"], "expired": tr["expired"]},
         "retrain_in_days": retrain if retrain is not None else "--",
         "top_pick": top,
         "weakest_pick": weak,

@@ -132,10 +132,17 @@ def get_stats():
 @router.get("/api/stats/v32")
 def get_stats_v32():
     """
-    BUY-only WIN/LOSS in the same v3.2 window as /api/stats post_v32
-    (V3_STATS_START_TS or min tp_sl_daily trained_at).
+    BUY-only resolved outcomes in the same v3.2 window as /api/stats post_v32
+    (V3_STATS_START_TS or min tp_sl_daily trained_at). Genuine full-term
+    EXPIRED picks (reconciler pnl_pct set) count as non-wins in the denominator,
+    matching the objective gate / kill switch.
     """
-    from wolf_app import NON_RESEARCH_WHERE, _v32_stats_start_ts, db_conn  # late import — shared state + monkeypatch-safe
+    from wolf_app import (  # late import — shared state + monkeypatch-safe
+        NON_RESEARCH_WHERE,
+        RESOLVED_FOR_WINRATE_WHERE,
+        _v32_stats_start_ts,
+        db_conn,
+    )
     import datetime as _dt
 
     try:
@@ -152,6 +159,7 @@ def get_stats_v32():
                     "since_iso": None,
                     "wins": 0,
                     "losses": 0,
+                    "expired": 0,
                     "total": 0,
                     "win_rate_pct": 0.0,
                     "open_picks": 0,
@@ -163,7 +171,7 @@ def get_stats_v32():
                 SELECT outcome, COUNT(*) FROM predictions
                 WHERE direction IN ('UP','BUY')
                 AND predicted_at IS NOT NULL AND predicted_at >= %s
-                AND outcome IN ('WIN','LOSS')
+                AND """ + RESOLVED_FOR_WINRATE_WHERE + """
                 AND """ + NON_RESEARCH_WHERE + """
                 GROUP BY outcome
                 """,
@@ -172,14 +180,15 @@ def get_stats_v32():
             rows = {r[0]: r[1] for r in cur.fetchall()}
             wins = rows.get("WIN", 0)
             losses = rows.get("LOSS", 0)
-            total = wins + losses
+            expired = rows.get("EXPIRED", 0)
+            total = wins + losses + expired
             wr = round(wins / total * 100, 1) if total else 0
             cur.execute(
                 """
                 SELECT outcome, COUNT(*) FROM predictions
                 WHERE direction IN ('UP','BUY')
                 AND resolved_at IS NOT NULL AND resolved_at >= %s
-                AND outcome IN ('WIN','LOSS')
+                AND """ + RESOLVED_FOR_WINRATE_WHERE + """
                 AND """ + NON_RESEARCH_WHERE + """
                 GROUP BY outcome
                 """,
@@ -188,7 +197,8 @@ def get_stats_v32():
             rrows = {r[0]: r[1] for r in cur.fetchall()}
             rw = rrows.get("WIN", 0)
             rl = rrows.get("LOSS", 0)
-            rt = rw + rl
+            rexp = rrows.get("EXPIRED", 0)
+            rt = rw + rl + rexp
             rwr = round(rw / rt * 100, 1) if rt else 0
             cur.execute(
                 """
@@ -214,10 +224,12 @@ def get_stats_v32():
             "since_iso": since_iso,
             "wins": wins,
             "losses": losses,
+            "expired": expired,
             "total": total,
             "win_rate_pct": wr,
             "resolved_wins": rw,
             "resolved_losses": rl,
+            "resolved_expired": rexp,
             "resolved_total": rt,
             "resolved_win_rate_pct": rwr,
             "open_picks": open_picks,
