@@ -1348,6 +1348,13 @@ async def lifespan(app: FastAPI):
         yield
         return
     init_db()
+    # BG-4/ST-8: elect a single background-work leader across replicas. Railway
+    # deploys can overlap (old instance draining while new boots) and scaling to
+    # >1 replica would otherwise run the scheduler + intraday monitors in every
+    # process. The leader holds a session-level advisory lock for its lifetime;
+    # non-leaders serve HTTP only.
+    from core.leader_lock import try_acquire_leader
+    _is_leader = try_acquire_leader()
     try:
         from core.news_store import ensure_news_tables
         ensure_news_tables()
@@ -1390,29 +1397,36 @@ async def lifespan(app: FastAPI):
 
     # Self-healing: if app restarts within the morning card window (TELEGRAM_DAILY_HOUR
     # .. +4h CT) and last card was >8h ago, fire now. Prevents silent card misses
-    # when Railway restarts during the cron window.
-    try:
-        import datetime as _sdt, pytz as _stz
-        _ct = _stz.timezone("America/Chicago")
-        _now_ct = _sdt.datetime.now(_ct)
-        _hour_ct = _now_ct.hour
+    # when Railway restarts during the cron window. Leader-gated: only the elected
+    # background-work leader may send the recovery card.
+    if _is_leader:
         try:
-            _daily_hour = int(os.getenv("TELEGRAM_DAILY_HOUR", "8"))
-        except Exception:
-            _daily_hour = 8
-        if _daily_hour <= _hour_ct < _daily_hour + 4:  # morning window
-            with db_conn() as _sc:
-                _scur = _sc.cursor()
-                _scur.execute("SELECT val FROM ghost_state WHERE key='last_morning_card_ts'")
-                _row = _scur.fetchone()
-                _last_ts = int(_row[0]) if _row else 0
-                _hours_ago = (time.time() - _last_ts) / 3600
-            if _hours_ago > 8:
-                LOGGER.warning(f"Startup recovery: last card {_hours_ago:.1f}h ago, firing now (hour={_hour_ct} CT)")
-                import asyncio as _aio
-                _aio.get_event_loop().run_in_executor(None, _morning_card_job)
-    except Exception as _se:
-        LOGGER.warning(f"Startup card recovery failed: {_se}")
+            import datetime as _sdt, pytz as _stz
+            _ct = _stz.timezone("America/Chicago")
+            _now_ct = _sdt.datetime.now(_ct)
+            _hour_ct = _now_ct.hour
+            try:
+                _daily_hour = int(os.getenv("TELEGRAM_DAILY_HOUR", "8"))
+            except Exception:
+                _daily_hour = 8
+            if _daily_hour <= _hour_ct < _daily_hour + 4:  # morning window
+                with db_conn() as _sc:
+                    _scur = _sc.cursor()
+                    _scur.execute("SELECT val FROM ghost_state WHERE key='last_morning_card_ts'")
+                    _row = _scur.fetchone()
+                    _last_ts = int(_row[0]) if _row else 0
+                    _hours_ago = (time.time() - _last_ts) / 3600
+                if _hours_ago > 8:
+                    LOGGER.warning(f"Startup recovery: last card {_hours_ago:.1f}h ago, firing now (hour={_hour_ct} CT)")
+                    import asyncio as _aio
+                    _aio.get_event_loop().run_in_executor(None, _morning_card_job)
+        except Exception as _se:
+            LOGGER.warning(f"Startup card recovery failed: {_se}")
+
+    if not _is_leader:
+        LOGGER.info("Not the background-work leader — skipping scheduler + intraday monitors")
+        yield
+        return
 
     from core import scheduler
     from core.prediction import reconcile_outcomes
@@ -1913,6 +1927,8 @@ async def lifespan(app: FastAPI):
     LOGGER.info("Ghost Protocol v2 ready.")
     yield
     scheduler.stop()
+    from core.leader_lock import release_leader
+    release_leader()
 
 # Security (audit): /docs (Swagger UI), /redoc, and the OpenAPI schema are
 # disabled unless DOCS_ENABLED is explicitly truthy. When the schema IS exposed,
