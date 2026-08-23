@@ -65,9 +65,16 @@ class db_conn:
         self.conn = get_conn()
         return self.conn
     def __exit__(self, exc_type, *_):
-        if exc_type: self.conn.rollback()
-        else: self.conn.commit()
-        put_conn(self.conn)
+        # try/finally: a commit/rollback failure must still return the
+        # connection to the pool, or a single bad transaction permanently
+        # leaks a pool slot (forensic AD-2).
+        try:
+            if exc_type:
+                self.conn.rollback()
+            else:
+                self.conn.commit()
+        finally:
+            put_conn(self.conn)
 
 def _ensure_tables():
     """Create tables only if they do not exist. Non-destructive."""

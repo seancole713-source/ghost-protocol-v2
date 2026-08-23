@@ -44,15 +44,17 @@ def _parse_bar_date(ts: str) -> str:
 
 
 def _previous_trading_day(d: date) -> date:
+    from core.market_hours import is_market_holiday
     cur = d - timedelta(days=1)
-    while cur.weekday() >= 5:
+    while cur.weekday() >= 5 or is_market_holiday(cur):
         cur -= timedelta(days=1)
     return cur
 
 
 def _next_trading_day(d: date) -> date:
+    from core.market_hours import is_market_holiday
     cur = d + timedelta(days=1)
-    while cur.weekday() >= 5:
+    while cur.weekday() >= 5 or is_market_holiday(cur):
         cur += timedelta(days=1)
     return cur
 

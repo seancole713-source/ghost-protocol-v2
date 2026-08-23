@@ -8,6 +8,7 @@ from __future__ import annotations
 from core.quiet import note_suppressed
 
 import datetime as _dt
+import os
 from typing import Tuple
 
 SESSION_TZ = "America/Chicago"
@@ -18,6 +19,64 @@ RTH_OPEN_MIN = 8 * 60 + 30            # 8:30 AM CT  (9:30 AM ET)
 RTH_CLOSE_MIN = 15 * 60               # 3:00 PM CT  (4:00 PM ET)
 AFTERHOURS_END_MIN = 19 * 60          # 7:00 PM CT  (8:00 PM ET)
 RTH_MINUTES = RTH_CLOSE_MIN - RTH_OPEN_MIN
+
+# NYSE full-day closures (market closed all day). Half-days close early at
+# 1:00 PM ET (12:00 PM CT). This is a data table, not logic — update annually.
+# Source: NYSE holiday schedule. Env override GHOST_HOLIDAYS (comma-separated
+# YYYY-MM-DD) lets operators add/remove dates without a deploy.
+_NYSE_FULL_DAY_HOLIDAYS = frozenset({
+    "2026-01-01",  # New Year's Day
+    "2026-01-19",  # Martin Luther King Jr. Day
+    "2026-02-16",  # Presidents' Day
+    "2026-04-03",  # Good Friday
+    "2026-05-25",  # Memorial Day
+    "2026-06-19",  # Juneteenth
+    "2026-07-03",  # Independence Day (observed; Jul 4 is a Saturday)
+    "2026-09-07",  # Labor Day
+    "2026-11-26",  # Thanksgiving
+    "2026-12-25",  # Christmas
+})
+
+# NYSE early-close days (RTH ends 12:00 PM CT instead of 3:00 PM CT).
+_NYSE_HALF_DAYS = frozenset({
+    "2026-11-27",  # Day after Thanksgiving
+    "2026-12-24",  # Christmas Eve
+})
+
+_HALF_DAY_CLOSE_MIN = 12 * 60  # 12:00 PM CT
+
+
+def _holiday_overrides() -> "frozenset[str]":
+    raw = os.getenv("GHOST_HOLIDAYS", "")
+    if not raw:
+        return frozenset()
+    return frozenset(s.strip() for s in raw.split(",") if s.strip())
+
+
+def is_market_holiday(d: _dt.date | None = None) -> bool:
+    """True when the NYSE is closed all day (weekend or listed holiday)."""
+    d = d or _now_ct().date()
+    if d.weekday() >= 5:
+        return True
+    iso = d.isoformat()
+    if iso in _holiday_overrides():
+        return True
+    return iso in _NYSE_FULL_DAY_HOLIDAYS
+
+
+def is_half_day(d: _dt.date | None = None) -> bool:
+    """True when the NYSE closes early (12:00 PM CT) on a weekday."""
+    d = d or _now_ct().date()
+    if d.weekday() >= 5:
+        return False
+    return d.isoformat() in _NYSE_HALF_DAYS
+
+
+def _rth_close_for(now: _dt.datetime) -> int:
+    """Effective RTH close minute, honoring half-day early closes."""
+    if is_half_day(now.date()):
+        return _HALF_DAY_CLOSE_MIN
+    return RTH_CLOSE_MIN
 
 
 def _now_ct() -> _dt.datetime:
@@ -43,27 +102,27 @@ def session_hm(now: _dt.datetime | None = None) -> Tuple[_dt.datetime, int]:
 
 
 def is_us_premarket(now: _dt.datetime | None = None) -> bool:
-    """Mon–Fri 3:00 AM – 8:30 AM CT."""
+    """Mon–Fri 3:00 AM – 8:30 AM CT, excluding market holidays."""
     now, hm = session_hm(now)
-    if now.weekday() >= 5:
+    if now.weekday() >= 5 or is_market_holiday(now.date()):
         return False
     return PREMARKET_START_MIN <= hm < RTH_OPEN_MIN
 
 
 def is_us_rth(now: _dt.datetime | None = None) -> bool:
-    """Mon–Fri 8:30 AM – 3:00 PM CT."""
+    """Mon–Fri 8:30 AM – close CT (3:00 PM, or 12:00 PM on half-days)."""
     now, hm = session_hm(now)
-    if now.weekday() >= 5:
+    if now.weekday() >= 5 or is_market_holiday(now.date()):
         return False
-    return RTH_OPEN_MIN <= hm < RTH_CLOSE_MIN
+    return RTH_OPEN_MIN <= hm < _rth_close_for(now)
 
 
 def is_us_after_hours(now: _dt.datetime | None = None) -> bool:
-    """Mon–Fri 3:00 PM – 7:00 PM CT."""
+    """Mon–Fri close – 7:00 PM CT, excluding market holidays."""
     now, hm = session_hm(now)
-    if now.weekday() >= 5:
+    if now.weekday() >= 5 or is_market_holiday(now.date()):
         return False
-    return RTH_CLOSE_MIN <= hm < AFTERHOURS_END_MIN
+    return _rth_close_for(now) <= hm < AFTERHOURS_END_MIN
 
 
 def market_session_label(now: _dt.datetime | None = None) -> str:
@@ -77,9 +136,9 @@ def market_session_label(now: _dt.datetime | None = None) -> str:
 
 
 def is_us_extended_hours(now: _dt.datetime | None = None) -> bool:
-    """Mon–Fri 3:00 AM – 7:00 PM CT."""
+    """Mon–Fri 3:00 AM – 7:00 PM CT, excluding market holidays."""
     now, hm = session_hm(now)
-    if now.weekday() >= 5:
+    if now.weekday() >= 5 or is_market_holiday(now.date()):
         return False
     return PREMARKET_START_MIN <= hm < AFTERHOURS_END_MIN
 

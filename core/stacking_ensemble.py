@@ -73,11 +73,17 @@ _BASE_BUILDERS = {
 def _calibrate_model(model, X_calib, y_calib, method: str = "sigmoid") -> Any:
     """Wrap a fitted classifier with probability calibration."""
     from sklearn.calibration import CalibratedClassifierCV
-    cal = CalibratedClassifierCV(
-        estimator=model,
-        method=method,
-        cv="prefit",
-    )
+    # sklearn ≥1.6 removed cv="prefit" in favor of FrozenEstimator (SE-3/ST-5).
+    try:
+        import sklearn
+        _sklearn_major_minor = tuple(int(x) for x in sklearn.__version__.split(".")[:2])
+    except Exception:
+        _sklearn_major_minor = (0, 0)
+    if _sklearn_major_minor >= (1, 6):
+        from sklearn.frozen import FrozenEstimator
+        cal = CalibratedClassifierCV(estimator=FrozenEstimator(model), method=method)
+    else:
+        cal = CalibratedClassifierCV(estimator=model, method=method, cv="prefit")
     cal.fit(X_calib, y_calib)
     return cal
 

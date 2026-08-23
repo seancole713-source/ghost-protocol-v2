@@ -1435,6 +1435,7 @@ async def lifespan(app: FastAPI):
             _options_snap_job()
         except Exception as _e:
             LOGGER.warning("options snapshot job failed: %s", str(_e)[:80])
+            raise
 
     scheduler.register("options_snapshots", _options_snapshots_job, interval_s=3600)
     # PR #84: Super Ghost Truth Ledger — resolve logged predictions vs realized
@@ -1446,6 +1447,7 @@ async def lifespan(app: FastAPI):
             _super_ghost_resolver()
         except Exception as _e:
             LOGGER.warning("super ghost ledger job failed: %s", str(_e)[:80])
+            raise
 
     scheduler.register("super_ghost_ledger", _super_ghost_ledger_job, interval_s=3600)
     scheduler.register("reconcile", reconcile_outcomes, interval_s=900)
@@ -1532,6 +1534,7 @@ async def lifespan(app: FastAPI):
             run_risk_discipline_cycle(notify=True)
         except Exception as _e:
             LOGGER.warning("risk discipline job failed: %s", str(_e)[:80])
+            raise
 
     scheduler.register("risk_discipline", _risk_discipline_job, interval_s=300)
     scheduler.register("news", run_news_cycle, interval_s=1800)
@@ -1545,12 +1548,14 @@ async def lifespan(app: FastAPI):
             _news_ingest_cycle()
         except Exception as _e:
             LOGGER.warning("news ingest job failed: %s", str(_e)[:100])
+            raise
 
     def _news_defense_job():
         try:
             _news_defense_check()
         except Exception as _e:
             LOGGER.warning("news defense job failed: %s", str(_e)[:100])
+            raise
 
     scheduler.register("news_event_ingest", _news_ingest_job, interval_s=900)
     scheduler.register("news_defense", _news_defense_job, interval_s=300)
@@ -1563,6 +1568,7 @@ async def lifespan(app: FastAPI):
             _paper_wallet_cycle()
         except Exception as _e:
             LOGGER.warning("paper wallet job failed: %s", str(_e)[:100])
+            raise
 
     scheduler.register("paper_wallet", _paper_wallet_job, interval_s=300)
     # Shadow scoring: resolve every silenced model eval as a virtual pick so
@@ -1574,6 +1580,7 @@ async def lifespan(app: FastAPI):
             _shadow_cycle()
         except Exception as _e:
             LOGGER.warning("shadow outcomes job failed: %s", str(_e)[:80])
+            raise
 
     scheduler.register("shadow_outcomes", _shadow_outcomes_job, interval_s=3600)
     # PR #153: Watcher notebook — append-only observability snapshots.
@@ -1585,6 +1592,7 @@ async def lifespan(app: FastAPI):
             _watcher_snapshot(days=30)
         except Exception as _e:
             LOGGER.warning("watcher snapshot job failed: %s", str(_e)[:100])
+            raise
 
     scheduler.register("watcher", _watcher_job, interval_s=900)
     # Research platform: isolated scoring and resolution (Phase 5-7).
@@ -1596,6 +1604,7 @@ async def lifespan(app: FastAPI):
             _research_cycle()
         except Exception as _e:
             LOGGER.warning("research runner job failed: %s", str(_e)[:80])
+            raise
 
     scheduler.register("research_runner", _research_runner_job, interval_s=3600)
     # Research outbox processor: evaluates forward proof and triggers activation.
@@ -1643,6 +1652,7 @@ async def lifespan(app: FastAPI):
                     mark_outbox_failed(row["id"], str(_oe)[:200])
         except Exception as _e:
             LOGGER.warning("research outbox job failed: %s", str(_e)[:80])
+            raise
 
     scheduler.register("research_outbox", _research_outbox_job, interval_s=60)
     # Activation lease maintenance remains enabled even when new automatic
@@ -1703,6 +1713,7 @@ async def lifespan(app: FastAPI):
                     LOGGER.debug("research resolver skip for pred %s: %s", pred["id"], str(_re)[:80])
         except Exception as _e:
             LOGGER.warning("research resolver job failed: %s", str(_e)[:80])
+            raise
 
     scheduler.register("research_resolver", _research_resolver_job, interval_s=900)
     # Daily report notebook — append-only observability snapshots answering
@@ -1714,6 +1725,7 @@ async def lifespan(app: FastAPI):
             _daily_report_snapshot()
         except Exception as _e:
             LOGGER.warning("daily report snapshot job failed: %s", str(_e)[:100])
+            raise
 
     scheduler.register("daily_report", _daily_report_job, interval_s=900)
     # Coverage maintenance: if too few loadable v3 models, run rate-limited retrain.
@@ -1917,6 +1929,7 @@ try:
 
     @APP.exception_handler(_psycopg2.OperationalError)
     @APP.exception_handler(_psycopg2.InterfaceError)
+    @APP.exception_handler(_psycopg2.pool.PoolError)
     async def _db_unavailable_handler(request: Request, exc: Exception):
         LOGGER.error("[db] unavailable on %s: %s", request.url.path, exc)
         return JSONResponse(

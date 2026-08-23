@@ -107,12 +107,28 @@ def _maybe_calibrate(model, X_calib, y_calib):
         method = "sigmoid"
     try:
         from sklearn.calibration import CalibratedClassifierCV
-        calibrated = CalibratedClassifierCV(model, method=method, cv="prefit")
+        # sklearn ≥1.6 removed cv="prefit" in favor of FrozenEstimator. Branch
+        # on the installed version so a dependency bump can never silently
+        # fall back to raw (uncalibrated) probabilities (forensic SE-3/ST-5).
+        try:
+            import sklearn
+            _sklearn_major_minor = tuple(int(x) for x in sklearn.__version__.split(".")[:2])
+        except Exception:
+            _sklearn_major_minor = (0, 0)
+        if _sklearn_major_minor >= (1, 6):
+            from sklearn.frozen import FrozenEstimator
+            calibrated = CalibratedClassifierCV(FrozenEstimator(model), method=method)
+        else:
+            calibrated = CalibratedClassifierCV(model, method=method, cv="prefit")
         calibrated.fit(X_calib, y_calib)
         info.update({"calibrated": True, "method": method})
         return calibrated, info
     except Exception as e:
         info["skip_reason"] = "exception: " + str(e)[:120]
+        LOGGER.error(
+            "v3 calibration FAILED (falling back to raw probabilities): %s",
+            str(e)[:200],
+        )
         return model, info
 
 
