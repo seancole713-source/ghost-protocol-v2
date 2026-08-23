@@ -128,3 +128,32 @@ def _hermetic_premarket(monkeypatch):
     monkeypatch.setenv("GHOST_PREMARKET_SCAN", "0")
     # PR #125: tests run in dev mode — _cron_ok requires explicit GHOST_DEV_MODE=1
     monkeypatch.setenv("GHOST_DEV_MODE", "1")
+
+
+def _assert_pinned_ml_versions():
+    """Tier 3 hygiene: the dev environment must match the pinned production
+    requirements. A silent sklearn/numpy/xgboost bump already bit once
+    (sklearn >=1.6 removed cv="prefit", silently uncalibrating the engine —
+    forensic SE-3/ST-5). Fail fast at collection time instead of letting a
+    drifted interpreter produce subtly wrong results."""
+    import importlib.metadata as _md
+
+    pinned = {
+        "scikit-learn": "1.5.2",
+        "numpy": "1.26.4",
+        "xgboost": "2.1.1",
+    }
+    for dist, want in pinned.items():
+        try:
+            got = _md.version(dist)
+        except _md.PackageNotFoundError:
+            got = None
+        if got != want:
+            raise RuntimeError(
+                f"ML dependency drift: {dist} is {got!r}, expected {want!r}. "
+                "Reinstall from requirements.txt (pip install -r requirements.txt) "
+                "or update this pin deliberately."
+            )
+
+
+_assert_pinned_ml_versions()
