@@ -561,6 +561,56 @@ def _resolve_one(eval_id: int, symbol: str, issued_ts: int, ref: Optional[float]
     }
 
 
+def _resolve_one_row(cur, rec: Dict[str, Any], sym: str, series: list, now: int) -> str:
+    """Resolve a single Hunter evaluation row. Returns 'resolved', 'terminal', or 'skip'."""
+    # Terminal: no reference price → can never resolve.
+    if rec["reference_price"] is None or rec["reference_price"] <= 0:
+        resolve_hunter_evaluation(
+            evaluation_id=rec["id"],
+            reason="missing_reference_price",
+            resolved_ts=now,
+            evidence_available_ts=now,
+            cur=cur,
+        )
+        return "terminal"
+    # Transient vs permanent history failure. An empty series right now is
+    # usually a provider outage / rate limit / breaker — NOT terminal. Only
+    # mark terminal once the full 14-day horizon PLUS a grace period has
+    # elapsed and we still have no bars (then it is genuinely unresolvable).
+    if not series:
+        horizon_elapsed = now - rec["issued_ts"] >= (14 + 5) * 86400
+        if horizon_elapsed:
+            resolve_hunter_evaluation(
+                evaluation_id=rec["id"],
+                reason="history_permanently_unavailable",
+                resolved_ts=now,
+                evidence_available_ts=now,
+                cur=cur,
+            )
+            return "terminal"
+        return "skip"  # transient — retry on a later run
+    upd = _resolve_one(rec["id"], sym, rec["issued_ts"],
+                       rec["reference_price"], series, now)
+    if not upd:
+        return "skip"  # not enough forward bars yet
+    inserted = resolve_hunter_evaluation(
+        evaluation_id=upd["evaluation_id"],
+        return_1d_pct=upd["return_1d_pct"],
+        return_5d_pct=upd["return_5d_pct"],
+        return_14d_pct=upd["return_14d_pct"],
+        hit_plus_20=upd["hit_plus_20"],
+        hit_plus_50=upd["hit_plus_50"],
+        hit_plus_100=upd["hit_plus_100"],
+        hit_minus_20=upd["hit_minus_20"],
+        max_favorable_pct=upd["max_favorable_pct"],
+        max_adverse_pct=upd["max_adverse_pct"],
+        resolved_ts=upd["resolved_ts"],
+        evidence_available_ts=upd["evidence_available_ts"],
+        cur=cur,
+    )
+    return "resolved" if inserted else "skip"
+
+
 def resolve_hunter_predictions(*, limit: int = 200, now: Optional[int] = None) -> Dict[str, Any]:
     """Resolve unresolved Hunter evaluations against realized prices.
 
@@ -597,56 +647,24 @@ def resolve_hunter_predictions(*, limit: int = 200, now: Optional[int] = None) -
             for sym, recs in by_symbol.items():
                 series = _ohlc_series(sym, period="3mo")
                 for rec in recs:
-                    # Terminal: no reference price → can never resolve.
-                    if rec["reference_price"] is None or rec["reference_price"] <= 0:
-                        resolve_hunter_evaluation(
-                            evaluation_id=rec["id"],
-                            reason="missing_reference_price",
-                            resolved_ts=now,
-                            evidence_available_ts=now,
-                            cur=cur,
-                        )
-                        terminal += 1
-                        continue
-                    # Transient vs permanent history failure. An empty series
-                    # right now is usually a provider outage / rate limit / breaker
-                    # — NOT terminal. Only mark terminal once the full 14-day
-                    # horizon PLUS a grace period has elapsed and we still have
-                    # no bars (then it is genuinely unresolvable, e.g. delisted).
-                    if not series:
-                        horizon_elapsed = now - rec["issued_ts"] >= (14 + 5) * 86400
-                        if horizon_elapsed:
-                            resolve_hunter_evaluation(
-                                evaluation_id=rec["id"],
-                                reason="history_permanently_unavailable",
-                                resolved_ts=now,
-                                evidence_available_ts=now,
-                                cur=cur,
-                            )
+                    # Per-row savepoint: one bad row must not roll back the
+                    # whole batch (forensic SQ-2). Each resolution commits or
+                    # rolls back independently.
+                    cur.execute("SAVEPOINT hunter_resolve_row")
+                    try:
+                        result = _resolve_one_row(cur, rec, sym, series, now)
+                        cur.execute("RELEASE SAVEPOINT hunter_resolve_row")
+                        if result == "resolved":
+                            resolved += 1
+                        elif result == "terminal":
                             terminal += 1
-                        # else: transient — skip, retry on a later run.
-                        continue
-                    upd = _resolve_one(rec["id"], sym, rec["issued_ts"],
-                                       rec["reference_price"], series, now)
-                    if not upd:
-                        continue  # not enough forward bars yet
-                    inserted = resolve_hunter_evaluation(
-                        evaluation_id=upd["evaluation_id"],
-                        return_1d_pct=upd["return_1d_pct"],
-                        return_5d_pct=upd["return_5d_pct"],
-                        return_14d_pct=upd["return_14d_pct"],
-                        hit_plus_20=upd["hit_plus_20"],
-                        hit_plus_50=upd["hit_plus_50"],
-                        hit_plus_100=upd["hit_plus_100"],
-                        hit_minus_20=upd["hit_minus_20"],
-                        max_favorable_pct=upd["max_favorable_pct"],
-                        max_adverse_pct=upd["max_adverse_pct"],
-                        resolved_ts=upd["resolved_ts"],
-                        evidence_available_ts=upd["evidence_available_ts"],
-                        cur=cur,
-                    )
-                    if inserted:
-                        resolved += 1
+                    except Exception as _re:
+                        try:
+                            cur.execute("ROLLBACK TO SAVEPOINT hunter_resolve_row")
+                            cur.execute("RELEASE SAVEPOINT hunter_resolve_row")
+                        except Exception:
+                            pass
+                        LOGGER.warning("hunter resolve row %s failed: %s", rec["id"], str(_re)[:120])
             conn.commit()
     except Exception as exc:
         LOGGER.warning("resolve_hunter_predictions: %s", str(exc)[:160])

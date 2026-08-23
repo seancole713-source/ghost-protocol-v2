@@ -118,6 +118,24 @@ def test_super_ghost_full_snapshot_scores_all_25_points():
     assert "Super Ghost Brain" in report["ai_brain"]["name"]
 
 
+def test_synthesized_stop_target_not_scored_as_evidence():
+    """Forensic SC-1: when stop/target are missing and synthesized from price,
+    they must NOT be scored as bullish evidence (unknown never becomes bullish)."""
+    from core.super_ghost import _evaluate_risk
+
+    # Only a current price — no stop_loss/target_price/support/resistance.
+    snapshot = {"current_price": 10.0}
+    price_ctx = {"current_price": 10.0}
+    items = {}
+    _evaluate_risk(snapshot, items, price_ctx)
+
+    # risk_reward, stop_loss, target_price must all be "unknown", not scored.
+    for key in ("risk_reward", "stop_loss", "target_price"):
+        assert key in items, key
+        assert items[key]["status"] == "unknown", (key, items[key]["status"])
+        assert items[key]["available"] is False, key
+
+
 def test_super_ghost_timeline_delay_offsets_financial_improvement(monkeypatch):
     snap = _sample_snapshot()
     snap["news"] = [

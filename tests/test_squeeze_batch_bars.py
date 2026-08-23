@@ -103,6 +103,34 @@ def test_fetch_volumes_batch_present_but_no_volume_falls_through(monkeypatch):
     assert calls["n"] == 1  # fell through to the per-symbol path
 
 
+def test_missing_session_volume_is_not_fabricated(monkeypatch):
+    """Forensic MD-3/SQ-4: a missing session-volume read must become RVOL 0,
+    never a fabricated avg_vol*0.4 spike."""
+    monkeypatch.setattr(
+        sm, "_batch_bars",
+        {"AAPL": {"daily": [{"v": 100}, {"v": 300}], "intraday": []}},
+    )
+    avg_vol, session_vol, vwap = sm._fetch_volumes("aapl")
+    assert avg_vol == 200.0
+    assert session_vol == 0.0  # not 80.0 (the old avg_vol*0.4 fabrication)
+
+
+def test_metrics_from_batch_bars_zero_volume_not_fabricated(monkeypatch):
+    monkeypatch.setattr(
+        sm,
+        "_batch_bars",
+        {
+            "AAPL": {
+                "daily": [{"o": 98, "c": 100, "v": 1000}, {"o": 100, "c": 102, "v": 1200}],
+                "intraday": [{"c": 104, "h": 105, "l": 103, "v": 0}],
+            }
+        },
+    )
+    metrics = sm._metrics_from_batch_bars("aapl")
+    assert metrics is not None
+    assert metrics["session_volume"] == 0.0  # not avg_vol*0.4
+
+
 class _FakeResp:
     def __init__(self, payload):
         self.status_code = 200

@@ -798,7 +798,9 @@ def _sync_fetch_metrics(symbol: str) -> Optional[Dict[str, Any]]:
         if not avg_vol or avg_vol <= 0:
             return _yf_fetch_metrics(sym) if _yf_fallback_enabled() else None
         if not session_vol or session_vol <= 0:
-            session_vol = avg_vol * 0.5
+            # Never fabricate session volume — a missing volume read must not
+            # become a fake RVOL spike (forensic MD-3/SQ-4). Force RVOL to 0.
+            session_vol = 0.0
 
         return {
             "price": last_px,
@@ -871,7 +873,8 @@ def _metrics_from_batch_bars(symbol: str) -> Optional[Dict[str, Any]]:
         if min(price, session_high, prior_close) <= 0 or not avg_vol or avg_vol <= 0:
             return None
         if not session_vol or session_vol <= 0:
-            session_vol = avg_vol * 0.4
+            # Never fabricate session volume (forensic MD-3/SQ-4).
+            session_vol = 0.0
     except (TypeError, ValueError, OverflowError):
         return None
     return {
@@ -1016,7 +1019,7 @@ def _fetch_volumes(symbol: str) -> Tuple[Optional[float], Optional[float], Optio
         )
         if b_avg and b_avg > 0:
             if not b_sess or b_sess <= 0:
-                b_sess = b_avg * 0.4
+                b_sess = 0.0
             return b_avg, b_sess, b_vwap
     headers = _alpaca_headers()
     if headers:
@@ -1076,7 +1079,7 @@ def _fetch_volumes(symbol: str) -> Tuple[Optional[float], Optional[float], Optio
             if avg_vol and session_vol:
                 return avg_vol, session_vol, vwap
             if avg_vol:
-                return avg_vol, avg_vol * 0.4, vwap
+                return avg_vol, 0.0, vwap
         except Exception as exc:
             LOGGER.debug("[SqueezeMonitor] alpaca vol %s: %s", sym, exc)
 

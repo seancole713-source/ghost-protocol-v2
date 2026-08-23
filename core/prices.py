@@ -360,6 +360,7 @@ def get_stock_price(symbol, *, with_staleness: bool = False):
         price = _yfinance(symbol)
     if not price:
         price = _iex_spot(symbol)
+        price, _rej = _reject_phantom(symbol, price)
     if price:
         _cache_set(symbol, price)
         return (price, False) if with_staleness else price
@@ -385,6 +386,8 @@ def get_extended_session(symbol: str) -> Dict[str, Any]:
     if not sym:
         return {}
     live_quote, price_as_of_ts = _alpaca_trade_quote(sym)
+    if live_quote is not None:
+        live_quote, _rej = _reject_phantom(sym, live_quote)
     live = live_quote if live_quote is not None else get_stock_price(sym)
     prev_close = None
     pre_market = None
@@ -602,6 +605,8 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
         # Always refresh price + change on cache hit when we can get a live trade.
         trade, trade_ts = _alpaca_trade_quote(sym)
         if trade:
+            trade, _rej = _reject_phantom(sym, trade)
+        if trade:
             out["price"] = round(float(trade), 4)
             out["price_as_of_ts"] = trade_ts
         # Compute change_pct whenever we have both price and prev_close,
@@ -752,6 +757,8 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
         today_open, today_high, today_low = rth_open, rth_high, rth_low
 
     trade, trade_ts = _alpaca_trade_quote(sym)
+    if trade:
+        trade, _rej = _reject_phantom(sym, trade)
     if trade:
         last_price = round(float(trade), 4)
         price_as_of_ts = trade_ts

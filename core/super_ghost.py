@@ -691,37 +691,42 @@ def _evaluate_risk(snapshot: Dict[str, Any], items: Dict[str, Dict[str, Any]], p
     support = _f(snapshot.get("stop_loss") or price_ctx.get("support"))
     resistance = _f(snapshot.get("target_price") or price_ctx.get("resistance"))
 
-    # Prefer stop below support and target at resistance. If only current exists, use conservative defaults.
+    # Prefer stop below support and target at resistance. If only current exists,
+    # we may synthesize a placeholder — but a synthesized level is NOT evidence
+    # and must never be scored as bullish (forensic SC-1: "unknown never bullish").
     stop = _f(snapshot.get("stop_loss"))
     target = _f(snapshot.get("target_price"))
+    stop_synth = target_synth = False
     if current:
         if stop is None:
             stop = support if support and support < current else current * 0.95
+            stop_synth = stop is not None and support is None
         if target is None:
             target = resistance if resistance and resistance > current else current * 1.10
+            target_synth = target is not None and resistance is None
     rr = None
     if current and stop and target and current > 0 and stop < current and target > current:
         risk = current - stop
         reward = target - current
         rr = reward / max(risk, 0.0001)
 
-    # 20 risk-to-reward
-    if rr is not None:
+    # 20 risk-to-reward — only meaningful when both levels are real.
+    if rr is not None and not (stop_synth or target_synth):
         sc = 1.4 if rr >= 3 else (0.8 if rr >= 2 else (-1.0 if rr < 1 else -0.2))
         _add_item(items, "risk_reward", score=sc, value={"risk_reward_ratio": round(rr, 2)}, evidence=f"Reward/risk {rr:.2f}:1", source="risk")
     else:
-        _add_unknown(items, "risk_reward", "Cannot compute risk/reward without current, stop, and target.", "risk")
+        _add_unknown(items, "risk_reward", "Cannot compute risk/reward without real current, stop, and target.", "risk")
 
-    # 21 stop-loss
-    if current and stop and stop < current:
+    # 21 stop-loss — a synthesized stop is not evidence.
+    if current and stop and stop < current and not stop_synth:
         stop_pct = (current - stop) / current
         sc = 0.7 if 0.015 <= stop_pct <= 0.12 else (-0.5 if stop_pct > 0.20 else 0.0)
         _add_item(items, "stop_loss", score=sc, value={"stop_loss": round(stop, 4), "stop_distance_pct": _pct(stop_pct)}, evidence="Stop below current price defines invalidation", source="risk")
     else:
         _add_unknown(items, "stop_loss", "No valid stop-loss below current price.", "risk")
 
-    # 22 target price
-    if current and target and target > current:
+    # 22 target price — a synthesized target is not evidence.
+    if current and target and target > current and not target_synth:
         upside = (target - current) / current
         sc = 0.8 if upside >= 0.05 else 0.2
         _add_item(items, "target_price", score=sc, value={"target_price": round(target, 4), "target_upside_pct": _pct(upside)}, evidence="Target above current price defined", source="risk")

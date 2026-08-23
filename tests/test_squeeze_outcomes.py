@@ -107,3 +107,22 @@ def test_resolve_row_precision_marks_direction_win_but_target_too_low():
     assert meta["precision_score"] < 75
     assert meta["mistake_type"] in {"target_too_low", "stop_too_wide", "direction_right_low_precision"}
 
+
+def test_post_alert_ohlc_excludes_pre_alert_bars(monkeypatch):
+    """Forensic SQ-3: grading must use only bars at-or-after the alert time,
+    so a pre-alert spike-and-fade high can't auto-grade as a WIN."""
+    import core.squeeze_outcomes as so
+
+    # Bars: 09:30 (pre-alert, high 12.5) and 10:00 (post-alert, high 10.4).
+    bars = [
+        {"ts": "2026-06-10T14:30:00Z", "open": 10.0, "high": 12.5, "low": 9.8, "close": 11.0},
+        {"ts": "2026-06-10T15:00:00Z", "open": 10.2, "high": 10.4, "low": 9.9, "close": 10.1},
+    ]
+    monkeypatch.setattr("core.signal_engine._fetch_ohlcv", lambda *a, **k: bars)
+    # Alert at 14:45 UTC (09:45 CT) — after the first bar, before the second.
+    alerted_at = 1781102700  # 2026-06-10T14:45:00Z
+    ohlc = so._post_alert_ohlc("WOLF", "2026-06-10", alerted_at)
+    assert ohlc is not None
+    assert ohlc["high"] == 10.4  # pre-alert 12.5 high is excluded
+    assert ohlc["open"] == 10.2
+

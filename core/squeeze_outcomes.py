@@ -247,6 +247,62 @@ def _session_ohlc(symbol: str, session_date: str) -> Optional[Dict[str, float]]:
     return None
 
 
+def _bar_epoch(ts: str) -> Optional[int]:
+    """Unix seconds for an ISO bar timestamp, or None if unparseable."""
+    if not ts:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp())
+    except Exception:
+        return None
+
+
+def _post_alert_ohlc(symbol: str, session_date: str, alerted_at: int) -> Optional[Dict[str, float]]:
+    """OHLC from 5-min bars at-or-after the alert time (forensic SQ-3).
+
+    Grading a squeeze alert against the full day's OHLC lets a spike-and-fade
+    alert auto-grade as a WIN because the pre-alert high already reached the
+    target. Grading against only post-alert bars measures what the alert could
+    actually have captured. Returns None when intraday bars are unavailable
+    (caller falls back to the full-day bar, flagged as approximate).
+    """
+    try:
+        from core.signal_engine import _fetch_ohlcv
+
+        bars = _fetch_ohlcv(symbol.upper(), "stock", period="5d", interval="5m") or []
+        post = []
+        for bar in bars:
+            if _parse_bar_date(str(bar.get("ts") or "")) != session_date:
+                continue
+            ts = _bar_epoch(str(bar.get("ts") or ""))
+            if ts is None or ts < int(alerted_at):
+                continue
+            o, h, l, c = bar.get("open"), bar.get("high"), bar.get("low"), bar.get("close")
+            if None in (o, h, l, c):
+                continue
+            post.append((float(o), float(h), float(l), float(c)))
+        if not post:
+            return None
+        opens = [p[0] for p in post if p[0] > 0]
+        highs = [p[1] for p in post if p[1] > 0]
+        lows = [p[2] for p in post if p[2] > 0]
+        closes = [p[3] for p in post if p[3] > 0]
+        if not opens or not highs or not lows or not closes:
+            return None
+        return {
+            "open": round(opens[0], 4),
+            "high": round(max(highs), 4),
+            "low": round(min(lows), 4),
+            "close": round(closes[-1], 4),
+        }
+    except Exception as exc:
+        LOGGER.debug("post_alert_ohlc %s %s: %s", symbol, session_date, str(exc)[:80])
+    return None
+
+
 def _resolve_row(
     buy: float,
     sell: float,
@@ -317,7 +373,7 @@ def resolve_squeeze_outcomes(session_date: Optional[str] = None) -> int:
             ensure_squeeze_outcomes_table(cur)
             cur.execute(
                 """
-                SELECT id, symbol, buy, sell, stop
+                SELECT id, symbol, buy, sell, stop, alerted_at
                 FROM ghost_squeeze_outcomes
                 WHERE session_date = %s AND outcome IS NULL
                 ORDER BY alerted_at ASC
@@ -326,10 +382,14 @@ def resolve_squeeze_outcomes(session_date: Optional[str] = None) -> int:
             )
             rows = cur.fetchall()
             now = int(time.time())
-            for rid, sym, buy, sell, stop in rows:
+            for rid, sym, buy, sell, stop, alerted_at in rows:
                 if buy is None or sell is None:
                     continue
-                ohlc = _session_ohlc(str(sym), target)
+                # Grade against post-alert bars when available (forensic SQ-3);
+                # fall back to the full-day bar only when intraday is missing.
+                ohlc = _post_alert_ohlc(str(sym), target, int(alerted_at or 0))
+                if not ohlc:
+                    ohlc = _session_ohlc(str(sym), target)
                 if not ohlc:
                     continue
                 meta = _resolve_row(float(buy), float(sell), stop, ohlc)
