@@ -49,6 +49,37 @@ The `placeholder`/`stub`/`TODO` matches in source are **documented** markers
 
 ---
 
+## Forensic review follow-through (2026-08-23)
+
+The 8-agent forensic review (PR #161) produced a tiered fix order. All tiers are
+now closed except the two items that are genuine product-semantics decisions
+(SE-2/SC-5) or a deliberate deployment-topology choice (DDL consolidation).
+
+| ID | Category | Root cause | Fix | Verify | Status |
+|----|----------|-----------|-----|--------|--------|
+| Tier 0 | Security | Unauthenticated writes (studios booking), XSS (studios.html), proxy IP trust, MCP token leak | Auth-gate writes; escape HTML; `--proxy-headers`; redact `/mcp/<token>` | `c6b92bd` | VERIFIED |
+| Tier 1 | Measurement | Fabricated session volume, phantom prices, synthesized bullish evidence | RVOL 0 on missing volume; `_reject_phantom` on all price paths; `_evaluate_risk` marks synthesized stop/target `unknown` | `3ea5fcd` | VERIFIED |
+| Tier 2 | Safety rails | No holiday calendar; swallowed scheduler exceptions; connection leak; pool exhaustion; silent sklearn uncalibration | NYSE holiday table; wrappers re-raise; `db_conn` try/finally; PoolError→503; `FrozenEstimator` | `57e5707` | VERIFIED |
+| Tier 3 (loop-txn) | Data/backend | Network I/O held inside DB transactions (squeeze/hunter resolution) | Split read→network→write phases; OHLC fetched before write txn | `1a52b9e` | VERIFIED |
+| SE-4 | Measurement | Display win-rate used `outcome IN ('WIN','LOSS')` while gates used `RESOLVED_FOR_WINRATE_WHERE` (genuine EXPIRED-with-pnl counts as non-win) | Unify display surfaces (`_compute_get_stats`, `_wolf_track_record`, `_build_daily_summary`, `_build_weekly_card_data`, `get_stats_v32`) to `RESOLVED_FOR_WINRATE_WHERE`; add `expired` field; keep `wins`/`losses` pure so health-audit comparison stays valid | `a3cb826` | VERIFIED |
+| BG-4/ST-8 | Resilience | Single-instance scheduler would double-run on overlapping Railway deploys / >1 replica | `core/leader_lock.py`: session-level advisory lock elects one background-work leader; non-leaders serve HTTP only; fail-open | `5c77ec5` | VERIFIED |
+| Tier 3 (pinning) | Tooling | Silent sklearn/numpy/xgboost drift produces subtly wrong results | conftest collection-time version guard + `test_dev_env_pinning.py` | `8330b00` | VERIFIED |
+
+### Deliberately deferred (not defects)
+
+- **SE-2/SC-5** — display calibrated confidence instead of raw `up_prob`, size off
+  realized bin rates. Changes the *product's* confidence semantics; needs an explicit
+  decision on what number to show, not a mechanical swap.
+- **DDL consolidation (alembic)** — 42 modules use self-healing
+  `CREATE TABLE IF NOT EXISTS` (a working, non-destructive design). Introducing a
+  migration framework would replace a proven self-healing pattern with a new
+  failure mode (migration drift) for no functional gain at single-instance scale.
+- **CI-as-deploy-gate** — Railway auto-deploys on push to `main`; gating deploys
+  behind CI would require a Railway config change (no `railway.toml` in-repo) and
+  is an ops decision, not a code defect.
+
+---
+
 ## Verified-clean (audited, no defect)
 
 - All `fetch('/api/...')` endpoints in the five HTML pages resolve to real routes.
