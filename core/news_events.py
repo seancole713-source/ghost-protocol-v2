@@ -189,9 +189,14 @@ def ensure_news_tables(cur) -> None:
             evidence TEXT,
             asof_ts BIGINT NOT NULL,
             extracted_at BIGINT NOT NULL,
-            dedupe_key TEXT UNIQUE NOT NULL
+            dedupe_key TEXT UNIQUE NOT NULL,
+            derived BOOLEAN NOT NULL DEFAULT FALSE,
+            origin_symbol VARCHAR(20)
         )
     """)
+    # Idempotent migration for pre-existing tables lacking the derived columns.
+    cur.execute("ALTER TABLE ghost_news_events ADD COLUMN IF NOT EXISTS derived BOOLEAN NOT NULL DEFAULT FALSE")
+    cur.execute("ALTER TABLE ghost_news_events ADD COLUMN IF NOT EXISTS origin_symbol VARCHAR(20)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_news_events_sym_ts ON ghost_news_events(symbol, asof_ts DESC)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_news_raw_sym_ts ON ghost_news_raw_articles(symbol, published_at DESC)")
 
@@ -242,6 +247,33 @@ def store_article_and_events(cur, art: Dict[str, Any]) -> Dict[str, Any]:
              published_at, now, edk),
         )
         stored += cur.rowcount
+        # Cross-symbol catalyst propagation: a high-materiality sector catalyst
+        # (drug-class readout, FDA action, M&A) reprices peers. Emit derived
+        # signals so the detection tier sees the cohort move, not just the
+        # origin company. Derived signals are advisory (never the trade gate).
+        try:
+            from core.catalyst_graph import propagate_catalyst
+            for d in propagate_catalyst(
+                sym, ev["event_type"], materiality=ev["materiality"],
+                asof_ts=published_at, direction_hint=ev["direction_hint"],
+            ):
+                ddk = event_dedupe_key(d["symbol"], d["event_type"], published_at)
+                cur.execute(
+                    """INSERT INTO ghost_news_events
+                       (article_id, symbol, event_type, direction_hint, materiality,
+                        confidence, confirmation_status, source_reliability, evidence,
+                        asof_ts, extracted_at, dedupe_key, derived, origin_symbol)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                       ON CONFLICT (dedupe_key) DO NOTHING""",
+                    (article_id, d["symbol"], d["event_type"], d["direction_hint"],
+                     d["materiality"], round(d["materiality"] * rel, 3),
+                     ev["confirmation_status"], rel,
+                     f"derived from {sym} {ev['event_type']}",
+                     published_at, now, ddk, True, d["origin_symbol"]),
+                )
+                stored += cur.rowcount
+        except Exception as exc:
+            LOGGER.debug("catalyst propagation %s: %s", sym, str(exc)[:80])
     return {"article_stored": True, "events_stored": stored}
 
 

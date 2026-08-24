@@ -91,6 +91,54 @@ def test_event_dedupe_one_per_type_per_day():
            event_dedupe_key("SPCE", "dilution_or_offering", ts + 90000)
 
 
+# ── cross-symbol catalyst propagation (store_article_and_events) ─────────────
+
+class _PropCursor:
+    """Fake cursor capturing INSERTs into ghost_news_events."""
+
+    def __init__(self):
+        self.inserts = []
+        self.rowcount = 1
+
+    def execute(self, sql, params=None):
+        if "INSERT INTO ghost_news_events" in sql:
+            self.inserts.append((sql, params))
+
+    def fetchone(self):
+        return (1,)  # article insert returns a new id
+
+
+def test_store_article_propagates_fda_approval_to_peers():
+    cur = _PropCursor()
+    out = ne.store_article_and_events(cur, {
+        "provider": "test", "provider_article_id": "1", "symbol": "MRNA",
+        "headline": "FDA approves Moderna's cancer vaccine",
+        "summary": "", "url": "", "source": "reuters",
+        "published_at": 1780000000, "raw": {},
+    })
+    assert out["article_stored"] is True
+    # Direct event + derived peer events (ARCT/BNTX/PFE/NVAX/MRK/BMY).
+    derived = [p for _, p in cur.inserts if p and p[-2] is True]
+    assert derived, "expected derived peer events"
+    peer_syms = {p[1] for p in derived}
+    assert "ARCT" in peer_syms
+    assert "MRNA" not in peer_syms
+    # Every derived event carries its origin symbol.
+    assert all(p[-1] == "MRNA" for p in derived)
+
+
+def test_store_article_no_propagation_for_non_catalyst():
+    cur = _PropCursor()
+    ne.store_article_and_events(cur, {
+        "provider": "test", "provider_article_id": "2", "symbol": "MRNA",
+        "headline": "Moderna opens new office in Austin",
+        "summary": "", "url": "", "source": "reuters",
+        "published_at": 1780000000, "raw": {},
+    })
+    derived = [p for _, p in cur.inserts if p and p[-2] is True]
+    assert derived == []
+
+
 # ── defense policy (pure) ────────────────────────────────────────────────────
 
 def _pick(sym="SPCE", direction="UP", predicted_at=1000):

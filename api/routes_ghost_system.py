@@ -1002,6 +1002,44 @@ def system_breakers_endpoint():
         return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
 
 
+@router.get("/api/symbol/timeline")
+def symbol_timeline_endpoint(symbol: str = "WOLF"):
+    """Unified per-symbol detection timeline (squeeze + observations + news).
+
+    Makes the full detection history visible in one place — the ARCT post-mortem
+    showed the radar caught the move but the UI hid it. Read-only.
+    """
+    try:
+        from core.symbol_timeline import build_symbol_timeline
+        return build_symbol_timeline(symbol)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
+@router.get("/api/explosion/benchmark")
+def explosion_benchmark_endpoint():
+    """Preregistered explosion-event detection benchmark (recall, not precision).
+
+    Reports per-tier recall of +20/30/50/100% events and whether Ghost observed
+    them before +10%/+20%. Read-only; never blocks a pick.
+    """
+    try:
+        from core.explosion_benchmark import benchmark_summary
+        return benchmark_summary()
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
+@router.get("/api/data/quorum")
+def data_quorum_endpoint(symbol: str = "WOLF"):
+    """Multi-provider price quorum with disagreement detection. Read-only."""
+    try:
+        from core.data_quorum import evaluate_quorum
+        return evaluate_quorum(symbol)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+
+
 @router.get("/api/system/degraded")
 def system_degraded_endpoint():
     """Degraded-mode status — open circuit breakers, confidence bump, squeeze interval. P3 audit."""

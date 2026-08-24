@@ -635,6 +635,11 @@ async def _run_watchlist_scan() -> None:
         if not kind and evaluate_watch_signal(peak_pct, current_pct, rvol):
             watch = _record_watch_observation(symbol, peak_pct, current_pct, rvol)
             report["watches"].append(watch)
+            try:
+                from core.explosion_benchmark import record_observation
+                record_observation(symbol, price=metrics.get("price"), kind="watch")
+            except Exception:
+                note_suppressed()
 
         if kind:
             pick = candidate_to_pick(symbol, kind, metrics, rvol, short_ctx)
@@ -643,6 +648,14 @@ async def _run_watchlist_scan() -> None:
                 from core.squeeze_outcomes import record_squeeze_prediction
 
                 record_squeeze_prediction(pick, source="candidate")
+            except Exception:
+                note_suppressed()
+            try:
+                from core.explosion_benchmark import record_observation
+                record_observation(
+                    symbol, price=metrics.get("price"), kind="candidate",
+                    confidence_pct=pick.get("confidence_pct"),
+                )
             except Exception:
                 note_suppressed()
             if _maybe_alert(symbol, kind, metrics, rvol, short_ctx):
@@ -657,6 +670,15 @@ async def _run_watchlist_scan() -> None:
                         {**pick, "alerted_at": alerted_at},
                         source="telegram",
                         alerted_at=alerted_at,
+                    )
+                except Exception:
+                    note_suppressed()
+                try:
+                    from core.explosion_benchmark import record_observation
+                    record_observation(
+                        symbol, price=metrics.get("price"), kind="alert",
+                        confidence_pct=pick.get("confidence_pct"),
+                        observed_at=alerted_at,
                     )
                 except Exception:
                     note_suppressed()

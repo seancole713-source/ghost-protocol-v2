@@ -393,4 +393,11 @@ def _migrate_schema():
             ensure_bull_run_tables(cur)
     except Exception as e:
         LOGGER.warning("Bull-run scenario ledger tables: " + str(e)[:80])
+    try:
+        from core.explosion_benchmark import ensure_benchmark_tables
+        with db_conn() as conn:
+            cur = conn.cursor()
+            ensure_benchmark_tables(cur)
+    except Exception as e:
+        LOGGER.warning("Explosion benchmark tables: " + str(e)[:80])
     LOGGER.info("Schema migration complete")
