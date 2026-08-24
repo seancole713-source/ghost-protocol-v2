@@ -19,6 +19,7 @@ RTH_OPEN_MIN = 8 * 60 + 30            # 8:30 AM CT  (9:30 AM ET)
 RTH_CLOSE_MIN = 15 * 60               # 3:00 PM CT  (4:00 PM ET)
 AFTERHOURS_END_MIN = 19 * 60          # 7:00 PM CT  (8:00 PM ET)
 RTH_MINUTES = RTH_CLOSE_MIN - RTH_OPEN_MIN
+PREMARKET_MINUTES = RTH_OPEN_MIN - PREMARKET_START_MIN  # 330 min (3:00–8:30 AM CT)
 
 # NYSE full-day closures (market closed all day). Half-days close early at
 # 1:00 PM ET (12:00 PM CT). This is a data table, not logic — update annually.

@@ -3,6 +3,7 @@
 from core.squeeze_monitor import (
     compute_rvol,
     evaluate_squeeze_signal,
+    evaluate_watch_signal,
     format_squeeze_alert,
     prefilter_candidate,
     rth_elapsed_fraction,
@@ -21,6 +22,63 @@ def test_rvol_spike_when_volume_front_loaded():
     # 30M vol by 10am (25% session) with 40M avg daily => RVOL >> 1
     rvol = compute_rvol(session_volume=30_000_000, avg_daily_volume=40_000_000, elapsed_frac=0.25)
     assert rvol >= 2.5
+
+
+def test_premarket_rvol_uses_premarket_baseline():
+    # Premarket: 3:00 AM volume must NOT be compared against a near-zero RTH
+    # fraction. With the premarket baseline (5% of daily), a modest premarket
+    # volume reads as a sane RVOL, not 156×.
+    rvol = compute_rvol(
+        session_volume=1_000_000, avg_daily_volume=40_000_000,
+        elapsed_frac=0.1, premarket=True,
+    )
+    # expected = 40M * 0.05 * 0.1 = 200k; 1M / 200k = 5.0
+    assert abs(rvol - 5.0) < 0.01
+
+
+def test_premarket_rvol_not_exploding_at_open():
+    # Same volume, RTH baseline (no premarket flag) would be 1M / (40M*0.1) = 0.25
+    rvol = compute_rvol(
+        session_volume=1_000_000, avg_daily_volume=40_000_000,
+        elapsed_frac=0.1, premarket=False,
+    )
+    assert abs(rvol - 0.25) < 0.01
+
+
+def test_rth_elapsed_fraction_premarket_uses_premarket_minutes():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    ct = ZoneInfo("America/Chicago")
+    # 4:00 AM CT = 60 min into the 330-min premarket session (~18%)
+    pre = datetime(2026, 6, 10, 4, 0, tzinfo=ct)
+    frac = rth_elapsed_fraction(pre)
+    assert 0.15 < frac < 0.25
+
+
+def test_evaluate_watch_signal_high_recall():
+    # A +2.5% move with low RVOL is NOT a trade, but IS a WATCH (detection).
+    assert evaluate_watch_signal(2.5, 2.0, 1.0) is True
+    # A hot RVOL with a small move is also a WATCH.
+    assert evaluate_watch_signal(1.0, 0.5, 2.0) is True
+    # A quiet name is not even a WATCH.
+    assert evaluate_watch_signal(1.0, 0.5, 0.8) is False
+
+
+def test_watch_observation_escalates_on_repetition(monkeypatch):
+    import core.squeeze_monitor as sm
+    sm._watch_observations.clear()
+    # First two observations: not escalated.
+    r1 = sm._record_watch_observation("ARCT", 2.5, 2.0, 1.0)
+    r2 = sm._record_watch_observation("ARCT", 2.6, 2.1, 1.1)
+    assert r1["escalated"] is False
+    assert r2["escalated"] is False
+    assert r2["observations"] == 2
+    # Third independent observation escalates.
+    r3 = sm._record_watch_observation("ARCT", 2.7, 2.2, 1.2)
+    assert r3["escalated"] is True
+    assert r3["observations"] == 3
+    sm._watch_observations.clear()
 
 
 def test_evaluate_squeeze_active():

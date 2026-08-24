@@ -25,6 +25,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from core.market_hours import (
+    PREMARKET_MINUTES,
     PREMARKET_START_MIN,
     RTH_CLOSE_MIN,
     RTH_MINUTES,
@@ -39,6 +40,17 @@ CHECK_INTERVAL_SEC = int(os.getenv("SQUEEZE_MONITOR_INTERVAL", "60"))
 SQUEEZE_PRICE_PCT = float(os.getenv("SQUEEZE_PRICE_PCT", "5.0"))
 SQUEEZE_VOL_MULT = float(os.getenv("SQUEEZE_VOL_MULT", "2.5"))
 FORMING_PRICE_PCT = float(os.getenv("SQUEEZE_FORMING_PRICE_PCT", "3.0"))
+
+# WATCH tier (detection, not approval): a lower bar that flags "something
+# unusual is happening" without implying a trade. High recall lives here; the
+# trade gate (SQUEEZE_PRICE_PCT / SQUEEZE_VOL_MULT + confidence) stays high
+# precision. A WATCH is visible but never a trade signal.
+WATCH_PRICE_PCT = float(os.getenv("SQUEEZE_WATCH_PRICE_PCT", "2.0"))
+WATCH_VOL_MULT = float(os.getenv("SQUEEZE_WATCH_VOL_MULT", "1.5"))
+# Repeated-signal escalation: N independent WATCH observations over this many
+# days promote a symbol to an escalated (human-visible) WATCH.
+WATCH_ESCALATE_COUNT = int(os.getenv("SQUEEZE_WATCH_ESCALATE_COUNT", "3"))
+WATCH_ESCALATE_WINDOW_DAYS = int(os.getenv("SQUEEZE_WATCH_ESCALATE_WINDOW_DAYS", "5"))
 
 
 def _squeeze_risk_tag(short_float_pct, days_to_cover) -> str:
@@ -57,6 +69,12 @@ def _squeeze_risk_tag(short_float_pct, days_to_cover) -> str:
 FORMING_VOL_MULT = float(os.getenv("SQUEEZE_FORMING_VOL_MULT", "2.0"))
 TP_PCT_ACTIVE = float(os.getenv("SQUEEZE_TP_PCT_ACTIVE", "4.0"))
 TP_PCT_FORMING = float(os.getenv("SQUEEZE_TP_PCT_FORMING", "2.5"))
+
+# Premarket volume baseline: premarket volume is a small fraction of RTH volume,
+# so comparing 3:00 AM volume against the RTH daily average inflates RVOL to
+# absurd values (e.g. 156×). A full premarket session is ~this fraction of a
+# full RTH day; RVOL during premarket is measured against that premarket pace.
+PREMARKET_VOL_FRACTION = float(os.getenv("SQUEEZE_PREMARKET_VOL_FRACTION", "0.05"))
 
 _TIMEOUT = float(os.getenv("PRICE_PROVIDER_TIMEOUT_S", "8.0"))
 
@@ -96,6 +114,13 @@ _alert_history: List[Dict[str, Any]] = []
 _ALERT_HISTORY_MAX = 30
 _alert_session_date: Optional[Any] = None
 
+# WATCH-tier escalation state: {SYMBOL: [observation_ts, ...]} across sessions.
+# One weak observation is noise; N independent observations over a few sessions
+# escalate to a human-visible WATCH. In-memory only (resets on redeploy) — the
+# persisted scan report carries the current watch list, and the escalation
+# counter is best-effort visibility, not a trade gate.
+_watch_observations: Dict[str, List[float]] = {}
+
 
 def rth_elapsed_fraction(now: Optional[datetime] = None) -> float:
     """Fraction of regular session elapsed (0..1), minimum 1/390 for RVOL."""
@@ -103,18 +128,28 @@ def rth_elapsed_fraction(now: Optional[datetime] = None) -> float:
     if now_ct.weekday() >= 5:
         return 1.0
     if hm < RTH_OPEN_MIN:
-        return max(1.0 / RTH_MINUTES, (hm - PREMARKET_START_MIN) / RTH_MINUTES)
+        # Premarket: fraction of the premarket session elapsed (3:00–8:30 AM CT),
+        # NOT a fraction of RTH. Using RTH_MINUTES here made the fraction ~0 at
+        # 3:00 AM, so RVOL compared premarket volume against a near-zero expected
+        # volume and exploded to 156× (forensic: premarket RVOL correction).
+        return max(1.0 / PREMARKET_MINUTES, (hm - PREMARKET_START_MIN) / PREMARKET_MINUTES)
     if hm >= RTH_CLOSE_MIN:
         return 1.0
     elapsed = hm - RTH_OPEN_MIN
     return max(elapsed / RTH_MINUTES, 1.0 / RTH_MINUTES)
 
 
-def compute_rvol(session_volume: float, avg_daily_volume: float, elapsed_frac: float) -> float:
-    """Time-adjusted relative volume: vol so far / expected vol by this point in session."""
+def compute_rvol(session_volume: float, avg_daily_volume: float, elapsed_frac: float, *, premarket: bool = False) -> float:
+    """Time-adjusted relative volume: vol so far / expected vol by this point in session.
+
+    During premarket, the expected volume is scaled by PREMARKET_VOL_FRACTION so
+    premarket volume is measured against a premarket pace, not the RTH daily
+    average (which would understate expected volume and inflate RVOL).
+    """
     if avg_daily_volume <= 0 or session_volume <= 0:
         return 0.0
-    expected = avg_daily_volume * max(elapsed_frac, 1.0 / RTH_MINUTES)
+    baseline = avg_daily_volume * PREMARKET_VOL_FRACTION if premarket else avg_daily_volume
+    expected = baseline * max(elapsed_frac, 1.0 / RTH_MINUTES)
     return session_volume / expected if expected > 0 else 0.0
 
 
@@ -148,6 +183,52 @@ def prefilter_candidate(peak_move_pct: float, current_move_pct: float, rvol: flo
     if move < 2.0 or rvol < 1.5:
         return False
     return True
+
+
+def evaluate_watch_signal(
+    peak_move_pct: float,
+    current_move_pct: float,
+    rvol: float,
+) -> bool:
+    """High-recall anomaly detection, independent of the trade gate.
+
+    Returns True when a symbol clears the WATCH bar (unusual move OR volume)
+    but is NOT a trade candidate. This is the "detect everything unusual" tier:
+    a WATCH is visible and escalates on repetition, but never fires a trade.
+    """
+    move = max(peak_move_pct, current_move_pct)
+    return move >= WATCH_PRICE_PCT or rvol >= WATCH_VOL_MULT
+
+
+def _record_watch_observation(
+    symbol: str,
+    peak_move_pct: float,
+    current_move_pct: float,
+    rvol: float,
+) -> Dict[str, Any]:
+    """Record a WATCH observation and return its (possibly escalated) row.
+
+    Repeated independent observations over WATCH_ESCALATE_WINDOW_DAYS escalate
+    the symbol to `escalated=True`, which the UI surfaces as a human-visible
+    WATCH. This is detection visibility, never a trade signal.
+    """
+    sym = symbol.upper()
+    now = time.time()
+    cutoff = now - WATCH_ESCALATE_WINDOW_DAYS * 86400
+    obs = [t for t in _watch_observations.get(sym, []) if t >= cutoff]
+    obs.append(now)
+    _watch_observations[sym] = obs
+    escalated = len(obs) >= WATCH_ESCALATE_COUNT
+    return {
+        "symbol": sym,
+        "peak_move_pct": round(peak_move_pct, 2),
+        "current_move_pct": round(current_move_pct, 2),
+        "rvol": round(rvol, 2),
+        "observations": len(obs),
+        "escalated": escalated,
+        "first_observed_ts": int(obs[0]),
+        "last_observed_ts": int(now),
+    }
 
 
 def get_squeeze_status() -> Dict[str, Any]:
@@ -186,7 +267,7 @@ def _persist_scan_report(report: Dict[str, Any]) -> None:
             for k in (
                 "ok", "ts", "session", "symbols", "fetch_ok", "fetch_fail",
                 "fetch_failed_symbols",
-                "picks", "candidates", "leaders", "duration_ms", "status", "elapsed_frac",
+                "picks", "candidates", "watches", "leaders", "duration_ms", "status", "elapsed_frac",
             )
         }
         with open(_scan_cache_path, "w", encoding="utf-8") as fh:
@@ -321,6 +402,7 @@ def get_squeeze_picks() -> Dict[str, Any]:
     st = dict(_last_scan_report)
     picks = list(st.get("picks") or st.get("candidates") or [])
     leaders = list(st.get("leaders") or [])
+    watches = list(st.get("watches") or [])
     alerts = list(_alert_history)
     picks = enrich_pick_rows(picks, alerts, leaders)
     alert_map = first_alert_buy_map(alerts)
@@ -346,6 +428,8 @@ def get_squeeze_picks() -> Dict[str, Any]:
         "scan_ok": bool(st.get("ok") and st.get("status") == "complete"),
         "picks": picks,
         "pick_count": len(picks),
+        "watches": watches,
+        "watch_count": len(watches),
         "alert_history": enriched_alerts,
         "live_drift": build_live_drift_board(alerts, picks, leaders),
         "last_scan_ts": last_ts,
@@ -455,6 +539,7 @@ async def _run_watchlist_scan() -> None:
     symbols = sorted(get_edge_set())
     loop = asyncio.get_running_loop()
     elapsed = rth_elapsed_fraction()
+    _premarket = is_us_premarket()
     t0 = time.time()
     report: Dict[str, Any] = {
         "ok": True,
@@ -465,6 +550,7 @@ async def _run_watchlist_scan() -> None:
         "fetch_fail": 0,
         "fetch_failed_symbols": [],
         "candidates": [],
+        "watches": [],
         "alerts_sent": 0,
         "duration_ms": 0,
         "elapsed_frac": round(elapsed, 4),
@@ -519,7 +605,7 @@ async def _run_watchlist_scan() -> None:
             report["fetch_failed_symbols"].append(symbol)
             continue
         report["fetch_ok"] += 1
-        rvol = compute_rvol(metrics["session_volume"], metrics["avg_daily_volume"], elapsed)
+        rvol = compute_rvol(metrics["session_volume"], metrics["avg_daily_volume"], elapsed, premarket=_premarket)
         peak_pct = metrics["peak_move_pct"]
         current_pct = metrics["current_move_pct"]
 
@@ -542,6 +628,13 @@ async def _run_watchlist_scan() -> None:
         elif kind:
             short_ctx = _cached_short_context(symbol)
             short_ctx_map[symbol] = short_ctx
+
+        # WATCH tier: high-recall anomaly detection, independent of the trade
+        # gate. A symbol that clears the WATCH bar but is NOT a trade candidate
+        # stays visible as an escalating WATCH (never a trade signal).
+        if not kind and evaluate_watch_signal(peak_pct, current_pct, rvol):
+            watch = _record_watch_observation(symbol, peak_pct, current_pct, rvol)
+            report["watches"].append(watch)
 
         if kind:
             pick = candidate_to_pick(symbol, kind, metrics, rvol, short_ctx)
@@ -1264,15 +1357,23 @@ def _maybe_alert(
         return False
     _last_alert[key] = now
     msg = format_squeeze_alert(symbol, kind, metrics, rvol, short_ctx)
-    _send_telegram(key, msg)
-    return True
+    return _send_telegram(key, msg)
 
 
-def _send_telegram(key: str, message: str) -> None:
+def _send_telegram(key: str, message: str) -> bool:
+    """Send a Telegram alert and return the confirmed delivery status.
+
+    Returns True only when the sender reports success (or alerts are disabled).
+    A failed send returns False so the caller does NOT record a 'telegram'
+    source row — 'alert generated' must not be mistaken for 'alert delivered'
+    (forensic: delivery telemetry).
+    """
     try:
         from core.telegram import send_telegram_message_once
 
         ok = send_telegram_message_once(key, message, cooldown_s=COOLDOWN_SEC)
         LOGGER.info("[SqueezeMonitor] Alert [%s]: %s", key, "OK" if ok else "FAILED")
+        return bool(ok)
     except Exception as exc:
         LOGGER.error("[SqueezeMonitor] Telegram failed [%s]: %s", key, exc)
+        return False
