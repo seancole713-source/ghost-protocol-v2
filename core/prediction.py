@@ -22,7 +22,12 @@ from typing import Optional, List, Dict, Any, Tuple
 from config.symbols import OFFICIAL_WATCHLIST as _OFFICIAL_WATCHLIST
 from config.symbols import _env_stock_symbols
 from core.db import db_conn, ensure_ghost_state
-from core.prediction_filters import NON_RESEARCH_WHERE, RESOLVED_FOR_WINRATE_WHERE, V32_ERA_MIN_ID
+from core.prediction_filters import (
+    NON_RESEARCH_WHERE,
+    REAL_TRADE_WHERE,
+    RESOLVED_FOR_WINRATE_WHERE,
+    V32_ERA_MIN_ID,
+)
 from core.vol_targets import base_vol_pct, stop_pct_from_vol
 try:
     from core.prices import get_price
@@ -315,19 +320,32 @@ _ENGINE_PAUSE_KEYS = (
     "engine_pause_auto_resume_at", "engine_pause_alerted",
     "engine_pause_grace_until", "engine_pause_latched",
 )
+_ENGINE_RESUME_TS_KEY = "engine_pause_resume_ts"
 
 
-def _clear_engine_pause():
-    try:
-        with db_conn() as c:
-            cur = c.cursor()
-            cur.execute(
-                "DELETE FROM ghost_state WHERE key IN ("
-                + ",".join(["%s"] * len(_ENGINE_PAUSE_KEYS)) + ")",
-                _ENGINE_PAUSE_KEYS,
+def _clear_engine_pause() -> None:
+    """Atomically clear persisted pause state and verify the delete.
+
+    Persistence failures propagate so callers cannot report a false resume.
+    """
+    with db_conn() as c:
+        cur = c.cursor()
+        cur.execute(
+            "DELETE FROM ghost_state WHERE key IN ("
+            + ",".join(["%s"] * len(_ENGINE_PAUSE_KEYS)) + ")",
+            _ENGINE_PAUSE_KEYS,
+        )
+        cur.execute(
+            "SELECT key,val FROM ghost_state WHERE key IN ("
+            + ",".join(["%s"] * len(_ENGINE_PAUSE_KEYS)) + ")",
+            _ENGINE_PAUSE_KEYS,
+        )
+        remaining = {k: v for k, v in cur.fetchall()}
+        if remaining:
+            raise RuntimeError(
+                "engine pause clear verification failed: "
+                + ",".join(sorted(remaining))
             )
-    except Exception as e:
-        LOGGER.warning("clear engine pause failed: " + str(e)[:80])
 
 
 def _parse_engine_pause_state(st: Dict[str, Any]) -> Dict[str, Any]:
@@ -366,19 +384,23 @@ def evaluate_kill_conditions(*, include_pause: bool = False, since_ts: int = 0) 
     try:
         with db_conn() as conn:
             cur = conn.cursor()
+            canonical_where = (
+                REAL_TRADE_WHERE + " AND "
+                + RESOLVED_FOR_WINRATE_WHERE + " AND "
+                + NON_RESEARCH_WHERE
+            )
             if since_ts > 0:
                 cur.execute(
                     "SELECT confidence, outcome, pnl_pct FROM predictions "
-                    "WHERE symbol = ANY(%s) AND id >= " + str(V32_ERA_MIN_ID) + " AND outcome IS NOT NULL "
-                    "AND resolved_at >= %s "
-                    "AND " + NON_RESEARCH_WHERE + " "
+                    "WHERE symbol = ANY(%s) AND id >= " + str(V32_ERA_MIN_ID) + " "
+                    "AND " + canonical_where + " AND resolved_at >= %s "
                     "ORDER BY resolved_at DESC NULLS LAST, id DESC LIMIT %s",
                     (symbols, since_ts, need))
             else:
                 cur.execute(
                     "SELECT confidence, outcome, pnl_pct FROM predictions "
-                    "WHERE symbol = ANY(%s) AND id >= " + str(V32_ERA_MIN_ID) + " AND outcome IS NOT NULL "
-                    "AND " + NON_RESEARCH_WHERE + " "
+                    "WHERE symbol = ANY(%s) AND id >= " + str(V32_ERA_MIN_ID) + " "
+                    "AND " + canonical_where + " "
                     "ORDER BY resolved_at DESC NULLS LAST, id DESC LIMIT %s",
                     (symbols, need))
             rows = cur.fetchall()   # newest first
@@ -481,7 +503,9 @@ def evaluate_kill_conditions(*, include_pause: bool = False, since_ts: int = 0) 
 
 def engine_pause_state() -> Dict[str, Any]:
     """Current kill-condition pause state. A cooldown-only pause auto-resumes
-    once its window elapses; harder trips require manual resume."""
+    once its window elapses; harder trips require manual resume. State-read or
+    auto-clear failures fail closed because an unknown safety state is not safe
+    to trade through."""
     try:
         with db_conn() as c:
             cur = c.cursor()
@@ -491,31 +515,71 @@ def engine_pause_state() -> Dict[str, Any]:
                 _ENGINE_PAUSE_KEYS,
             )
             return _parse_engine_pause_state({k: v for k, v in cur.fetchall()})
-    except Exception:
-        return {"paused": False}
+    except Exception as e:
+        LOGGER.error("engine pause state unavailable; failing closed: %s", str(e)[:160])
+        return {
+            "paused": True,
+            "reason": "pause_state_unavailable",
+            "state_error": True,
+            "error": str(e)[:160],
+            "latched": True,
+        }
 
 
 def resume_engine() -> Dict[str, Any]:
-    """Manual resume — clears any kill-condition pause and resets the kill
-    condition window so only outcomes resolved after this point count.
-    Also sets a 24-hour grace period as a safety net."""
-    _clear_engine_pause()
+    """Atomically clear a kill pause and persist a verified 24-hour grace.
+
+    Returns explicit failure if any write or read-back verification fails. The
+    caller must not audit or announce success unless ``resumed`` is true.
+    """
     now = int(time.time())
-    grace_until = now + 86400  # 24-hour grace
+    grace_until = now + 86400
+    verification_keys = _ENGINE_PAUSE_KEYS + (_ENGINE_RESUME_TS_KEY,)
     try:
         with db_conn() as c:
             cur = c.cursor()
             ensure_ghost_state(cur)
             cur.execute(
-                "INSERT INTO ghost_state(key,val) VALUES('engine_pause_grace_until',%s) "
-                "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val", (str(grace_until),))
-            # Store the resume timestamp so kill conditions only look at outcomes after this
+                "DELETE FROM ghost_state WHERE key IN ("
+                + ",".join(["%s"] * len(_ENGINE_PAUSE_KEYS)) + ")",
+                _ENGINE_PAUSE_KEYS,
+            )
+            for key, value in (
+                (_ENGINE_RESUME_TS_KEY, str(now)),
+                ("engine_pause_grace_until", str(grace_until)),
+            ):
+                cur.execute(
+                    "INSERT INTO ghost_state(key,val) VALUES(%s,%s) "
+                    "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
+                    (key, value),
+                )
             cur.execute(
-                "INSERT INTO ghost_state(key,val) VALUES('engine_pause_resume_ts',%s) "
-                "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val", (str(now),))
-    except Exception:
-        note_suppressed()
-    LOGGER.warning("ENGINE RESUMED (manual): kill-condition window reset, grace until %s", grace_until)
+                "SELECT key,val FROM ghost_state WHERE key IN ("
+                + ",".join(["%s"] * len(verification_keys)) + ")",
+                verification_keys,
+            )
+            persisted = {k: v for k, v in cur.fetchall()}
+            uncleared = [
+                key for key in _ENGINE_PAUSE_KEYS
+                if key != "engine_pause_grace_until" and key in persisted
+            ]
+            if uncleared:
+                raise RuntimeError(
+                    "engine pause clear verification failed: "
+                    + ",".join(sorted(uncleared))
+                )
+            if persisted.get(_ENGINE_RESUME_TS_KEY) != str(now):
+                raise RuntimeError("engine resume timestamp verification failed")
+            if persisted.get("engine_pause_grace_until") != str(grace_until):
+                raise RuntimeError("engine grace timestamp verification failed")
+    except Exception as e:
+        LOGGER.error("ENGINE RESUME FAILED: %s", str(e)[:160])
+        return {"ok": False, "resumed": False, "error": str(e)[:200]}
+
+    LOGGER.warning(
+        "ENGINE RESUMED (manual): kill-condition window reset, grace until %s",
+        grace_until,
+    )
     return {"ok": True, "resumed": True, "grace_until": grace_until, "window_reset": True}
 
 
@@ -565,7 +629,11 @@ def enforce_kill_conditions() -> Dict[str, Any]:
         if prev.get("paused"):
             if prev.get("latched"):
                 return prev
-            _clear_engine_pause()
+            try:
+                _clear_engine_pause()
+            except Exception as e:
+                LOGGER.error("engine auto-resume failed: %s", str(e)[:160])
+                return {**prev, "clear_failed": True, "error": str(e)[:160]}
             LOGGER.info("Kill conditions cleared — engine auto-resumed")
             return {"paused": False, "cleared": True}
         return {"paused": False}

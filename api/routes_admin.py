@@ -383,7 +383,13 @@ def admin_resume_engine(x_cron_secret: str = Header(default="")):
     try:
         from core.prediction import resume_engine
         out = resume_engine()
-        _record_admin_action("resume_engine", "kill-condition pause cleared")
+        if not out.get("ok") or not out.get("resumed"):
+            return JSONResponse(
+                {"ok": False, "resumed": False,
+                 "error": str(out.get("error") or "engine resume verification failed")[:200]},
+                status_code=503,
+            )
+        _record_admin_action("resume_engine", "kill-condition pause cleared and verified")
         return out
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
