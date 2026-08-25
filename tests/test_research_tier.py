@@ -135,21 +135,8 @@ class _Conn:
 
 
 def _fresh_proven_meta():
-    return json.dumps({
-        "tier": "proven", "direction": "UP",
-        "label_type": se.LABEL_TYPE,
-        "label_schema": se._v3_label_schema(),
-        "feature_schema": se._v3_feature_schema(),
-        "validation_schema": se._v3_validation_schema(),
-        "label_hold_bars": se.V3_LABEL_HOLD_BARS,
-        "model_sha256": "a" * 64,
-        "trained_at": time.time(),
-        "accuracy": 0.70,
-        "edge": 0.10,
-        "wf_acc_mean": 0.68,
-        "wf_edge_mean": 0.08,
-        "wf_fold_count": 5,
-    })
+    from tests.calibration_fixtures import serveable_meta
+    return json.dumps(serveable_meta())
 
 
 class TestOverwriteGuard:

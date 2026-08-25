@@ -31,10 +31,11 @@ def test_reliability_bins_cover_samples():
 def test_evaluate_calibration_holdout_computes_brier(monkeypatch):
     monkeypatch.setenv("V3_CALIBRATION", "on")
     model, X, y = _fit_tiny_model()
-    Xc, yc = X[:20], y[:20]
-    Xg, yg = X[20:], y[20:]
+    Xc, yc = X[:30], y[:30]
+    Xg, yg = X[30:], y[30:]
+    monkeypatch.setattr("core.engine_config._v3_wf_purge", lambda: 0)
     calibrated, info = _maybe_calibrate(model, Xc, yc)
-    assert info.get("calibrated") is True
+    assert info.get("calibration_status") == "valid"
 
     out = _evaluate_calibration_holdout(calibrated, Xg, yg)
     assert out["gate_n"] == len(yg)

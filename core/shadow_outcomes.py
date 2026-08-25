@@ -93,6 +93,8 @@ def ensure_shadow_table(cur) -> None:
     # cannot prove the current direction/model generation.
     for _col, _type in (
         ("direction", "TEXT"), ("model_prob", "FLOAT"),
+        ("prob_model_raw", "FLOAT"), ("prob_train_calibrated", "FLOAT"),
+        ("prob_live_recalibrated", "FLOAT"), ("confidence_final", "FLOAT"),
         ("model_sha256", "TEXT"), ("feature_schema", "TEXT"),
         ("label_schema", "TEXT"), ("validation_schema", "TEXT"),
         ("hold_bars", "INT"),
@@ -307,7 +309,8 @@ def seed_shadow_rows(days_back: int = 3) -> int:
             # per-row below, so the read must not silently drop DOWN rows.
             cur.execute(
                 "SELECT symbol, eval_ts, up_prob, confidence, skip_code, fired, "
-                "entry_price, target_price, stop_price, scores, regime_label, direction "
+                "entry_price, target_price, stop_price, scores, regime_label, direction, "
+                "prob_model_raw, prob_train_calibrated, prob_live_recalibrated, confidence_final "
                 "FROM ghost_perf_symbol_evals "
                 "WHERE eval_ts >= %s",
                 (cutoff,),
@@ -323,6 +326,8 @@ def seed_shadow_rows(days_back: int = 3) -> int:
                 "skip_code": r[4], "fired": bool(r[5]), "entry_price": r[6],
                 "target_price": r[7], "stop_price": r[8], "scores": r[9],
                 "regime_label": r[10], "direction": r[11],
+                "prob_model_raw": r[12], "prob_train_calibrated": r[13],
+                "prob_live_recalibrated": r[14], "confidence_final": r[15],
             }
             for r in rows
         ]
@@ -360,9 +365,11 @@ def seed_shadow_rows(days_back: int = 3) -> int:
                     (symbol, trade_date, eval_ts, up_prob, confidence, skip_code, fired,
                      entry_price, target_price, stop_price, expires_at, created_at,
                      regime_label, adx_trending, above_ema200, ema_trend_bullish,
-                     direction, model_prob, model_sha256, feature_schema,
+                     direction, model_prob, prob_model_raw, prob_train_calibrated,
+                     prob_live_recalibrated, confidence_final,
+                     model_sha256, feature_schema,
                      label_schema, validation_schema, hold_bars)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT DO NOTHING
                 """,
                 (
@@ -375,7 +382,12 @@ def seed_shadow_rows(days_back: int = 3) -> int:
                     _regime_flag(ev, "adx_trending"),
                     _regime_flag(ev, "above_ema200"),
                     _regime_flag(ev, "ema_trend_bullish"),
-                    direction, identity.get("model_prob"), identity.get("model_sha256"),
+                    direction,
+                    ev.get("prob_train_calibrated") if ev.get("prob_train_calibrated") is not None else identity.get("model_prob"),
+                    ev.get("prob_model_raw"),
+                    ev.get("prob_train_calibrated") if ev.get("prob_train_calibrated") is not None else identity.get("model_prob"),
+                    ev.get("prob_live_recalibrated"), ev.get("confidence_final"),
+                    identity.get("model_sha256"),
                     identity.get("feature_schema"), identity.get("label_schema"),
                     identity.get("validation_schema"), identity.get("hold_bars"),
                 ),

@@ -21,6 +21,28 @@ def _serveable_meta(**overrides):
         "wf_acc_mean": 0.68,
         "wf_edge_mean": 0.08,
         "wf_fold_count": 5,
+        "calibrated": True,
+        "calibration_status": "valid",
+        "calibration_schema": "chronological_bakeoff_v1",
+        "calibration_method": "sigmoid",
+        "calibration_winner": "sigmoid",
+        "calibration_n": 30,
+        "calibration_fit_n": 18,
+        "calibration_purge_n": 2,
+        "calibration_selection_n": 10,
+        "calibration_refit_n": 30,
+        "calibration_candidates": [
+            {"method": "raw_identity", "valid": True, "brier": 0.20,
+             "log_loss": 0.60, "reliability_gap": 0.10},
+            {"method": "sigmoid", "valid": True, "brier": 0.18,
+             "log_loss": 0.55, "reliability_gap": 0.08},
+        ],
+        "gate_n": 20,
+        "gate_brier": 0.20,
+        "conformal_ok": True,
+        "conformal_samples": 10,
+        "conformal_q_hat": 0.20,
+        "conformal_alpha": 0.10,
     }
     meta.update(overrides)
     return meta
@@ -107,6 +129,34 @@ def test_model_serve_guard_rejects_nonfinite_and_bounded_metrics():
         assert _se.model_serve_guard(
             _serveable_meta(**{key: bad}),
         ) == "model_metrics_invalid"
+
+
+def test_model_serve_guard_rejects_invalid_calibration_lifecycle():
+    cases = (
+        ({"calibration_status": "invalid"}, "calibration_status_invalid"),
+        ({"calibration_schema": "legacy"}, "calibration_schema_stale"),
+        ({"calibration_winner": "isotonic"}, "calibration_winner_mismatch"),
+        ({"calibration_selection_n": 9}, "calibration_support_insufficient"),
+        ({"calibration_candidates": []}, "calibration_candidates_missing"),
+        ({"gate_brier": float("nan")}, "gate_brier_invalid"),
+        ({"conformal_samples": 9}, "conformal_invalid"),
+    )
+    for overrides, expected in cases:
+        assert _se.model_serve_guard(_serveable_meta(**overrides)) == expected
+
+
+def test_model_serve_guard_applies_brier_to_raw_identity(monkeypatch):
+    monkeypatch.setenv("V3_MAX_CALIBRATION_BRIER", "0.31")
+    raw = {"method": "raw_identity", "valid": True, "brier": 0.20,
+           "log_loss": 0.60, "reliability_gap": 0.10}
+    meta = _serveable_meta(
+        calibrated=False,
+        calibration_method="raw_identity",
+        calibration_winner="raw_identity",
+        calibration_candidates=[raw],
+        gate_brier=0.31,
+    )
+    assert _se.model_serve_guard(meta) == "gate_brier_failed"
 
 
 def test_model_serve_guard_rejects_direction_mismatch():

@@ -1939,12 +1939,20 @@ def run_prediction_cycle(with_diag: bool = False):
 
                 cur.execute("SAVEPOINT prediction_candidate")
                 try:
+                    _scores = pick.get("scores", {}) if isinstance(pick.get("scores"), dict) else {}
+                    _prob_model_raw = _scores.get("prob_model_raw")
+                    _prob_train_calibrated = _scores.get("prob_train_calibrated")
+                    _prob_live_recalibrated = _scores.get("prob_live_recalibrated")
+                    _confidence_final = _scores.get("confidence_final", pick["confidence"])
                     cur.execute(
-                        "INSERT INTO predictions (symbol,direction,confidence,entry_price,target_price,stop_price,run_at,predicted_at,expires_at,asset_type,features,scores) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
-                        (pick["symbol"], pick["direction"], pick["confidence"], pick["entry_price"],
-                         pick["target_price"], pick["stop_price"], pick["predicted_at"],
-                         pick["predicted_at"], pick["expires_at"], pick["asset_type"],
-                         json.dumps(pick.get("features", {})), json.dumps(pick.get("scores", {})))
+                        "INSERT INTO predictions (symbol,direction,confidence,prob_model_raw,prob_train_calibrated,prob_live_recalibrated,confidence_final,entry_price,target_price,stop_price,run_at,predicted_at,expires_at,asset_type,features,scores) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+                        (pick["symbol"], pick["direction"], pick["confidence"],
+                         _prob_model_raw, _prob_train_calibrated,
+                         _prob_live_recalibrated, _confidence_final,
+                         pick["entry_price"], pick["target_price"], pick["stop_price"],
+                         pick["predicted_at"], pick["predicted_at"], pick["expires_at"],
+                         pick["asset_type"], json.dumps(pick.get("features", {})),
+                         json.dumps(_scores))
                     )
                     pred_id = cur.fetchone()[0]
                     _persist_checklist_snapshot(

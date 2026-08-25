@@ -348,7 +348,8 @@ def test_seed_persists_regime_label_into_durable_column(monkeypatch):
 
     base = 1781000000
     # symbol, eval_ts, up_prob, confidence, skip_code, fired,
-    # entry_price, target_price, stop_price, scores, regime_label
+    # entry_price, target_price, stop_price, scores, regime_label, direction,
+    # prob_model_raw, prob_train_calibrated, prob_live_recalibrated, confidence_final
     scores = {
         "price": 10.0, "up_prob": 0.72, "winning_direction": "UP",
         "model_identity_by_direction": {
@@ -359,7 +360,7 @@ def test_seed_persists_regime_label_into_durable_column(monkeypatch):
     }
     eval_rows = [
         ("WOLF", base, 0.72, 0.72, None, True, 10.0, 10.6, 9.7,
-         scores, "Trend-up", "UP"),
+         scores, "Trend-up", "UP", 0.74, 0.72, 0.70, 0.68),
     ]
     captured = {}
 
@@ -408,8 +409,8 @@ def test_seed_persists_regime_label_into_durable_column(monkeypatch):
     so.seed_shadow_rows(days_back=3)
     assert "regime_label" in captured.get("insert_sql", "")
     assert captured["insert_params"][12] == "Trend-up"
-    assert captured["insert_params"][16:] == (
-        "UP", 0.72, "sha-up", "feature-v1", "label-v1", "validation-v1", 5,
+    assert captured["insert_params"][22:] == (
+        "sha-up", "feature-v1", "label-v1", "validation-v1", 5,
     )
 
 
@@ -477,7 +478,7 @@ def test_seed_query_and_conflict_are_direction_neutral(monkeypatch):
     }
     eval_rows = [
         ("WOLF", base, None, None, "down_shadow_only", False, None, None, None,
-         scores, "Trend-down", "DOWN"),
+         scores, "Trend-down", "DOWN", 0.82, 0.81, None, None),
     ]
     captured = {}
 
@@ -519,8 +520,11 @@ def test_seed_query_and_conflict_are_direction_neutral(monkeypatch):
     assert "up_prob IS NOT NULL" not in captured["select_sql"]
     assert "ON CONFLICT DO NOTHING" in captured["insert_sql"]
     assert "(symbol, trade_date)" not in captured["insert_sql"].split("ON CONFLICT", 1)[1]
-    assert captured["insert_params"][16:] == (
-        "DOWN", 0.81, "sha-down", "feature-v2", "label-v2", "validation-v3", 5,
+    assert captured["insert_params"][16:23] == (
+        "DOWN", 0.81, 0.82, 0.81, None, None, "sha-down",
+    )
+    assert captured["insert_params"][23:] == (
+        "feature-v2", "label-v2", "validation-v3", 5,
     )
 
 
@@ -558,7 +562,9 @@ def test_seed_persists_regime_gate_flags_into_durable_columns(monkeypatch):
     import core.shadow_outcomes as so
 
     base = 1781000000
-    # symbol, eval_ts, up_prob, confidence, skip_code, fired, entry, target, stop, scores, regime_label
+    # symbol, eval_ts, up_prob, confidence, skip_code, fired,
+    # entry_price, target_price, stop_price, scores, regime_label, direction,
+    # probability lifecycle stages
     scores = {
         "price": 10.0, "up_prob": 0.72, "winning_direction": "UP",
         "regime": {"adx_trending": 1, "above_ema200": 0, "ema_trend_bullish": 1},
@@ -570,7 +576,7 @@ def test_seed_persists_regime_gate_flags_into_durable_columns(monkeypatch):
     }
     eval_rows = [
         ("WOLF", base, 0.72, 0.72, None, True, 10.0, 10.6, 9.7,
-         scores, "Trend-up", "UP"),
+         scores, "Trend-up", "UP", 0.74, 0.72, 0.70, 0.68),
     ]
     captured = {}
 

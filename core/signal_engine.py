@@ -383,6 +383,29 @@ class _ProbaEnsemble:
         return self.classes_[np.argmax(self.predict_proba(X), axis=1)]
 
 
+class _ProbabilityPipeline:
+    """Pickle-stable raw + train-calibrated probability pipeline.
+
+    ``predict_proba`` is the served, train-calibrated stage for compatibility
+    with sklearn callers. ``raw_predict_proba`` keeps the immutable base-model
+    output independently available for audit and persistence.
+    """
+
+    def __init__(self, raw_model, served_model, method: str):
+        self.raw_model = raw_model
+        self.served_model = served_model
+        self.method = str(method)
+        self.classes_ = getattr(served_model, "classes_", np.array([0, 1]))
+
+    def raw_predict_proba(self, X):
+        return self.raw_model.predict_proba(X)
+
+    def predict_proba(self, X):
+        return self.served_model.predict_proba(X)
+
+    def predict(self, X):
+        return self.classes_[np.argmax(self.predict_proba(X), axis=1)]
+
 
 
 
@@ -1516,24 +1539,17 @@ def _train_one_direction(rows, symbol, direction, active_cols, peer_rows, peers_
         "gate_n": holdout.get("gate_n", 0),
         "reliability_monotonic": reliability_mono,
     })
-    try:
-        from core.conformal_calibration import calibrate_conformal
-        if len(X_gate) >= 10:
-            gate_probs = final_model.predict_proba(X_gate)[:, 1]
-            conformal = calibrate_conformal(gate_probs, y_gate)
-        else:
-            conformal = {
-                "ok": False,
-                "error": f"Need >=10 gate samples, have {len(X_gate)}",
-                "samples": int(len(X_gate)),
-            }
-    except Exception as _conf_e:
+    # Conformal parameters are selected exclusively on the inner chronological
+    # selection slice inside the bakeoff. The final gate is evaluation-only and
+    # must never configure a probability or confidence transform.
+    conformal = calib_info.get("conformal")
+    if not isinstance(conformal, dict):
         conformal = {
             "ok": False,
-            "error": str(_conf_e)[:120],
-            "samples": int(len(X_gate)),
+            "error": "missing_inner_selection_conformal",
+            "samples": 0,
         }
-    calib_info["conformal"] = conformal
+        calib_info["conformal"] = conformal
     # Phase 3: precision-targeted fire threshold. Chosen on the calib slice,
     # validated on the untouched gate slice. A model without a proven >=target
     # operating point is stored (shadow/research still work) but cannot fire
@@ -1621,14 +1637,46 @@ def _train_one_direction(rows, symbol, direction, active_cols, peer_rows, peers_
         ("wf_edge_mean", wf["edge_mean"] >= min_wf_edge, f"wf_edge_mean < {min_wf_edge*100:.1f}% ({wf['edge_mean']*100:.1f}%)"),
         ("wf_acc_min", wf["acc_min"] >= symbol_wf_acc_min, f"wf_acc_min < {symbol_wf_acc_min*100:.1f}% ({wf['acc_min']*100:.1f}%)"),
     ]
-    if calib_info.get("calibrated") and int(holdout.get("gate_n") or 0) >= 10:
-        brier = calib_info.get("gate_brier")
-        brier_ok = brier is not None and float(brier) < max_brier
-        gate_checks.append((
+    calibration_status = str(calib_info.get("calibration_status") or "")
+    calibration_schema = str(calib_info.get("calibration_schema") or "")
+    calibration_method = str(calib_info.get("method") or "")
+    calibration_lifecycle_ok = (
+        calibration_status == "valid"
+        and calibration_schema == "chronological_bakeoff_v1"
+        and calibration_method in {"raw_identity", "sigmoid", "isotonic"}
+        and int(calib_info.get("calibration_fit_n") or 0) >= 10
+        and int(calib_info.get("calibration_selection_n") or 0) >= 10
+        and int(calib_info.get("refit_n") or 0) == int(len(X_calib))
+        and isinstance(calib_info.get("candidates"), list)
+        and bool(calib_info.get("candidates"))
+    )
+    brier = calib_info.get("gate_brier")
+    try:
+        brier_value = float(brier)
+    except (TypeError, ValueError, OverflowError):
+        brier_value = float("nan")
+    brier_ok = (
+        int(holdout.get("gate_n") or 0) >= 10
+        and math.isfinite(brier_value)
+        and brier_value < max_brier
+    )
+    gate_checks.extend([
+        (
+            "calibration_lifecycle",
+            calibration_lifecycle_ok,
+            "calibration lifecycle valid" if calibration_lifecycle_ok else (
+                f"calibration lifecycle invalid: status={calibration_status or None} "
+                f"schema={calibration_schema or None} method={calibration_method or None}"
+            ),
+        ),
+        (
             "calibration_brier",
             brier_ok,
-            f"gate_brier {brier} >= {max_brier}" if not brier_ok else f"gate_brier {brier} < {max_brier}",
-        ))
+            f"gate_brier {brier} < {max_brier}" if brier_ok else (
+                f"gate_brier {brier} invalid/or >= {max_brier}"
+            ),
+        ),
+    ])
     fail_reason = next((msg for _, ok, msg in gate_checks if not ok), None)
     passes = fail_reason is None
     _pg = calib_info.get("precision_gate") or {}
@@ -1701,8 +1749,23 @@ def _train_one_direction(rows, symbol, direction, active_cols, peer_rows, peers_
         "feature_schema": _v3_feature_schema(),
         "label_hold_bars": V3_LABEL_HOLD_BARS,
         "calibrated": calib_info["calibrated"],
+        "calibration_status": calib_info.get("calibration_status"),
+        "calibration_schema": calib_info.get("calibration_schema"),
         "calibration_method": calib_info.get("method"),
+        "calibration_winner": calib_info.get("winner"),
+        "calibration_n": calib_info.get("n_calib"),
+        "calibration_fit_n": calib_info.get("calibration_fit_n"),
+        "calibration_purge_n": calib_info.get("purge_n"),
+        "calibration_selection_n": calib_info.get("calibration_selection_n"),
+        "calibration_refit_n": calib_info.get("refit_n"),
+        "calibration_candidates": calib_info.get("candidates") or [],
+        "calibration_selection_metrics": calib_info.get("selection_metrics"),
+        "calibration_raw_selection_metrics": calib_info.get("raw_selection_metrics"),
+        "calibration_climatology_selection_metrics": calib_info.get("climatology_selection_metrics"),
+        "calibration_paired_raw_brier_improvement": calib_info.get("paired_raw_brier_improvement"),
+        "calibration_climatology_brier_improvement": calib_info.get("climatology_brier_improvement"),
         "gate_brier": calib_info.get("gate_brier"),
+        "gate_n": calib_info.get("gate_n"),
         "reliability_bins": calib_info.get("reliability_bins") or [],
         "conformal_ok": bool((calib_info.get("conformal") or {}).get("ok", False)),
         "conformal_q_hat": (calib_info.get("conformal") or {}).get("q_hat"),
@@ -2354,6 +2417,75 @@ def _activation_lease_reject(meta: Dict[str, Any], now: float) -> Optional[str]:
     return None
 
 
+def _calibration_lifecycle_reject(meta: Dict[str, Any]) -> Optional[str]:
+    """Validate the exact train-calibration lifecycle for a fireable model."""
+    if meta.get("calibration_status") != "valid":
+        return "calibration_status_invalid"
+    if meta.get("calibration_schema") != "chronological_bakeoff_v1":
+        return "calibration_schema_stale"
+    method = str(meta.get("calibration_method") or "")
+    if method not in {"raw_identity", "sigmoid", "isotonic"}:
+        return "calibration_method_invalid"
+    if str(meta.get("calibration_winner") or "") != method:
+        return "calibration_winner_mismatch"
+    support_fields = (
+        "calibration_n", "calibration_fit_n", "calibration_purge_n",
+        "calibration_selection_n", "calibration_refit_n", "gate_n",
+    )
+    support = {field: _exact_nonnegative_int(meta.get(field)) for field in support_fields}
+    if any(value is None for value in support.values()):
+        return "calibration_support_invalid"
+    if (
+        support["calibration_fit_n"] < 10
+        or support["calibration_selection_n"] < 10
+        or support["gate_n"] < 10
+        or support["calibration_refit_n"] != support["calibration_n"]
+    ):
+        return "calibration_support_insufficient"
+    candidates = meta.get("calibration_candidates")
+    if not isinstance(candidates, list) or not candidates:
+        return "calibration_candidates_missing"
+    candidate_methods = {
+        str(candidate.get("method")) for candidate in candidates
+        if isinstance(candidate, dict) and candidate.get("valid") is True
+    }
+    if method not in candidate_methods or "raw_identity" not in candidate_methods:
+        return "calibration_candidates_invalid"
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            return "calibration_candidates_invalid"
+        if candidate.get("valid") is not True:
+            continue
+        for key in ("brier", "log_loss", "reliability_gap"):
+            try:
+                value = float(candidate.get(key))
+            except (TypeError, ValueError, OverflowError):
+                return "calibration_candidates_invalid"
+            if not math.isfinite(value) or value < 0:
+                return "calibration_candidates_invalid"
+    try:
+        gate_brier = float(meta.get("gate_brier"))
+    except (TypeError, ValueError, OverflowError):
+        return "gate_brier_invalid"
+    if not math.isfinite(gate_brier) or gate_brier < 0:
+        return "gate_brier_invalid"
+    if gate_brier >= _v3_max_calibration_brier():
+        return "gate_brier_failed"
+    conformal_samples = _exact_nonnegative_int(meta.get("conformal_samples"))
+    if meta.get("conformal_ok") is not True or conformal_samples is None or conformal_samples < 10:
+        return "conformal_invalid"
+    try:
+        q_hat = float(meta.get("conformal_q_hat"))
+        alpha = float(meta.get("conformal_alpha"))
+    except (TypeError, ValueError, OverflowError):
+        return "conformal_invalid"
+    if not math.isfinite(q_hat) or not 0 <= q_hat <= 1:
+        return "conformal_invalid"
+    if not math.isfinite(alpha) or not 0 < alpha < 1:
+        return "conformal_invalid"
+    return None
+
+
 def model_serve_guard(
     meta: Optional[Dict[str, Any]], *, expected_direction: Optional[str] = None,
     allow_research_scoring: bool = False,
@@ -2403,6 +2535,14 @@ def model_serve_guard(
         return "model_expired"
     if _model_metric_values(meta) is None:
         return "model_metrics_invalid"
+    # A research-tier artifact may be loaded only for shadow probability
+    # collection. The independent lane hard-block prevents firing. Proven
+    # models, including raw-identity bakeoff winners, must satisfy the complete
+    # chronological lifecycle and unchanged Brier admission contract.
+    if tier == "proven":
+        calibration_reject = _calibration_lifecycle_reject(meta)
+        if calibration_reject:
+            return calibration_reject
     return None
 
 
@@ -2758,19 +2898,28 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
         down_features.get(c, 0.0) for c in (down_feature_cols or FEATURE_COLS)
     ]])
 
-    # Phase 2: score both UP and DOWN models, pick the stronger signal
+    # Score both probability stages explicitly. Persisted pick/watcher aliases
+    # (`up_prob` / `model_prob`) remain TRAIN-calibrated by contract.
+    up_prob_raw = None
+    down_prob_raw = None
     up_prob = None
     down_prob = None
     if up_model is not None:
         try:
-            up_proba = up_model.predict_proba(X_up)[0]
-            up_prob = float(up_proba[1])
+            up_prob = float(up_model.predict_proba(X_up)[0][1])
+            raw_predict = getattr(up_model, "raw_predict_proba", None)
+            up_prob_raw = float(
+                raw_predict(X_up)[0][1] if callable(raw_predict) else up_prob
+            )
         except Exception:
             note_suppressed()
     if down_model is not None:
         try:
-            down_proba = down_model.predict_proba(X_down)[0]
-            down_prob = float(down_proba[1])
+            down_prob = float(down_model.predict_proba(X_down)[0][1])
+            raw_predict = getattr(down_model, "raw_predict_proba", None)
+            down_prob_raw = float(
+                raw_predict(X_down)[0][1] if callable(raw_predict) else down_prob
+            )
         except Exception:
             note_suppressed()
     if up_prob is None and down_prob is None:
@@ -2817,8 +2966,15 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
         fires = primary_prob > min_p
         # Persist exact classifier probabilities because they define membership
         # in certified threshold populations. Round only presentation fields.
+        scores["up_prob_raw"] = float(up_prob_raw) if up_prob_raw is not None else None
+        scores["down_prob_raw"] = float(down_prob_raw) if down_prob_raw is not None else None
         scores["up_prob"] = float(up_prob) if up_prob is not None else None
         scores["down_prob"] = float(down_prob) if down_prob is not None else None
+        primary_raw = up_prob_raw if primary_direction == "UP" else down_prob_raw
+        scores["prob_model_raw"] = float(primary_raw) if primary_raw is not None else None
+        scores["prob_train_calibrated"] = float(primary_prob)
+        scores["prob_live_recalibrated"] = None
+        scores["confidence_final"] = None
         scores["winning_direction"] = journal_direction
         scores["win_prob"] = float(primary_prob)
         scores["down_signals_enabled"] = _v3_down_signals_enabled()
@@ -2962,22 +3118,8 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
                     scores["proven_skill_gate_" + direction.lower()] = skill
                 if not skill.get("ok"):
                     return None, "skill_unproven"
-                try:
-                    cal_gate = global_calibration_review(lane_prob, **identity)
-                except Exception as _cal_e:
-                    cal_gate = {"ok": False, "fail_reason": "calibration_exception",
-                                "error": str(_cal_e)[:120]}
-                if scores is not None:
-                    scores["overconfidence_gate_" + direction.lower()] = cal_gate
-                if not cal_gate.get("ok"):
-                    return None, "calibration_unproven"
-                # PR #162: live per-bin recalibration — shrink the model prob
-                # toward its Watcher bin's realized live win rate before
-                # computing confidence, so a persistently inverted bin lowers
-                # the probability itself instead of relying solely on the
-                # PR #156 block. LIVE fires only: research/shadow probes keep
-                # RAW probs — the evidence stream this layer feeds on must
-                # stay unadjusted or the loop would eat its own output.
+                # Recalibrate before consulting high-probability proof. This is
+                # brake-only and uses exact-generation Watcher evidence.
                 try:
                     from core.live_recalibration import live_recalibrated_prob
                     recal = live_recalibrated_prob(lane_prob, **identity)
@@ -2996,6 +3138,15 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
                     return None, "live_recal_prob_invalid"
                 if prob_adj < eff_min_p:
                     return None, "live_recal_prob_low"
+                try:
+                    cal_gate = global_calibration_review(prob_adj, **identity)
+                except Exception as _cal_e:
+                    cal_gate = {"ok": False, "fail_reason": "calibration_exception",
+                                "error": str(_cal_e)[:120]}
+                if scores is not None:
+                    scores["overconfidence_gate_" + direction.lower()] = cal_gate
+                if not cal_gate.get("ok"):
+                    return None, "calibration_unproven"
                 lane_prob = prob_adj
             q_hat = meta.get("conformal_q_hat")
             if q_hat is not None and float(q_hat) > 0:
@@ -3006,6 +3157,9 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
                 conf = round(min(0.98, max(0.0, lane_prob)), 3)
             if scores is not None:
                 scores["confidence"] = conf
+                scores["prob_train_calibrated"] = float(prob)
+                scores["prob_live_recalibrated"] = float(lane_prob)
+                scores["confidence_final"] = float(conf)
                 if q_hat is not None:
                     scores["conformal_q_hat"] = float(q_hat)
             return (direction, conf), None

@@ -87,6 +87,10 @@ def _ensure_tables():
                 symbol VARCHAR(20) NOT NULL,
                 direction VARCHAR(10) NOT NULL,
                 confidence FLOAT NOT NULL,
+                prob_model_raw FLOAT,
+                prob_train_calibrated FLOAT,
+                prob_live_recalibrated FLOAT,
+                confidence_final FLOAT,
                 entry_price FLOAT,
                 target_price FLOAT,
                 stop_price FLOAT,
@@ -182,6 +186,14 @@ def _migrate_schema():
         """,
         "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS features JSONB",
         "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS scores JSONB",
+        # Explicit probability lifecycle. Historical rows cannot truthfully
+        # reconstruct model/train/live stages; only final confidence is a safe
+        # compatibility backfill from the legacy confidence column.
+        "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS prob_model_raw FLOAT",
+        "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS prob_train_calibrated FLOAT",
+        "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS prob_live_recalibrated FLOAT",
+        "ALTER TABLE predictions ADD COLUMN IF NOT EXISTS confidence_final FLOAT",
+        "UPDATE predictions SET confidence_final=confidence WHERE confidence_final IS NULL",
         # Phase 3 gate: point-in-time feature snapshots (12-col ingestion prep).
         """
         CREATE TABLE IF NOT EXISTS ghost_feature_snapshots (
