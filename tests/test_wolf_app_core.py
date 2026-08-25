@@ -3456,10 +3456,11 @@ def _kill_db(rows, monkeypatch):
 
     class _Cur:
         def execute(self, sql, params=None):
+            self.sql = sql
             self._limit = len(rows)
             if params:
-                # (symbols, limit) for watchlist-aware kill query
-                self._limit = params[1] if len(params) > 1 else params[0]
+                # (..., limit) for watchlist-aware kill query.
+                self._limit = params[-1]
         def fetchall(self):
             return rows[: getattr(self, "_limit", len(rows))]
 
@@ -3471,6 +3472,40 @@ def _kill_db(rows, monkeypatch):
         def __exit__(self, *a): return False
 
     monkeypatch.setattr(_pred, "db_conn", lambda: _DbCtx())
+
+
+def test_kill_conditions_query_uses_canonical_population(monkeypatch):
+    """Kill metrics must only select genuine, non-research, real stock trades."""
+    import core.prediction as _pred
+    from core.prediction_filters import (
+        NON_RESEARCH_WHERE,
+        REAL_TRADE_WHERE,
+        RESOLVED_FOR_WINRATE_WHERE,
+    )
+
+    captured = {}
+
+    class _Cur:
+        def execute(self, sql, params=None):
+            captured["sql"] = sql
+            captured["params"] = params
+        def fetchall(self): return []
+
+    class _Conn:
+        def cursor(self): return _Cur()
+
+    class _DbCtx:
+        def __enter__(self): return _Conn()
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(_pred, "db_conn", lambda: _DbCtx())
+    out = _pred.evaluate_kill_conditions()
+
+    assert out["ok"] is True
+    assert REAL_TRADE_WHERE in captured["sql"]
+    assert RESOLVED_FOR_WINRATE_WHERE in captured["sql"]
+    assert NON_RESEARCH_WHERE in captured["sql"]
+    assert "outcome IS NOT NULL" not in captured["sql"]
 
 
 def test_kill_conditions_inert_during_cold_start(monkeypatch):
@@ -3582,9 +3617,77 @@ def test_enforce_pauses_on_trip_and_manual_resume(monkeypatch):
     assert state["engine_paused"] == "1"
     assert _pred.engine_pause_state()["paused"] is True
 
-    _pred.resume_engine()
+    resumed = _pred.resume_engine()
+    assert resumed["ok"] is True
+    assert resumed["resumed"] is True
     assert _pred.engine_pause_state()["paused"] is False
     assert "engine_paused" not in state
+    assert int(state["engine_pause_resume_ts"]) > 0
+    assert int(state["engine_pause_grace_until"]) > int(state["engine_pause_resume_ts"])
+
+
+def test_resume_engine_fails_closed_when_persistence_fails(monkeypatch):
+    """A failed pause-clear transaction must never report a successful resume."""
+    import core.prediction as _pred
+
+    class _Cur:
+        def execute(self, sql, params=None):
+            if sql.startswith("DELETE FROM ghost_state"):
+                raise RuntimeError("database unavailable")
+        def fetchall(self): return []
+
+    class _Conn:
+        def cursor(self): return _Cur()
+
+    class _DbCtx:
+        def __enter__(self): return _Conn()
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(_pred, "db_conn", lambda: _DbCtx())
+
+    out = _pred.resume_engine()
+
+    assert out["ok"] is False
+    assert out["resumed"] is False
+    assert "database unavailable" in out["error"]
+
+
+def test_engine_pause_state_fails_closed_when_storage_unavailable(monkeypatch):
+    """An unreadable pause store is an unknown safety state, never unpaused."""
+    import core.prediction as _pred
+
+    class _DbCtx:
+        def __enter__(self): raise RuntimeError("database unavailable")
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(_pred, "db_conn", lambda: _DbCtx())
+
+    out = _pred.engine_pause_state()
+
+    assert out["paused"] is True
+    assert out["latched"] is True
+    assert out["state_error"] is True
+    assert out["reason"] == "pause_state_unavailable"
+
+
+def test_admin_resume_endpoint_does_not_audit_failed_resume(monkeypatch):
+    """The admin audit log must not claim success when persistence failed."""
+    import api.routes_admin as admin
+    import core.prediction as _pred
+    import wolf_app
+
+    actions = []
+    monkeypatch.setattr(wolf_app, "_cron_ok", lambda *a, **k: True)
+    monkeypatch.setattr(wolf_app, "_record_admin_action",
+                        lambda action, detail: actions.append((action, detail)))
+    monkeypatch.setattr(_pred, "resume_engine", lambda: {
+        "ok": False, "resumed": False, "error": "database unavailable",
+    })
+
+    response = admin.admin_resume_engine("valid")
+
+    assert response.status_code == 503
+    assert actions == []
 
 
 def test_enforce_cooldown_only_sets_autoresume(monkeypatch):
