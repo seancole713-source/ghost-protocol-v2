@@ -400,4 +400,11 @@ def _migrate_schema():
             ensure_benchmark_tables(cur)
     except Exception as e:
         LOGGER.warning("Explosion benchmark tables: " + str(e)[:80])
+    try:
+        from core.external_context_ledger import ensure_external_context_tables
+        with db_conn() as conn:
+            cur = conn.cursor()
+            ensure_external_context_tables(cur)
+    except Exception as e:
+        LOGGER.warning("External context tables: " + str(e)[:80])
     LOGGER.info("Schema migration complete")

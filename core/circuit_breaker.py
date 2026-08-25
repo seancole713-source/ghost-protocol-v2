@@ -180,6 +180,24 @@ _yfinance_cb = CircuitBreaker(
     rate_limit_max_calls=int(__import__("os").getenv("CB_YFINANCE_RATE_MAX_CALLS", "30")),
 )
 
+# Advisory discovery/context jobs must not consume or open the production price
+# breaker. They have lower call budgets and fail independently.
+_yahoo_screener_cb = CircuitBreaker(
+    name="yahoo_screener",
+    failure_threshold=int(__import__("os").getenv("CB_YAHOO_SCREENER_THRESHOLD", "3")),
+    cooldown_seconds=int(__import__("os").getenv("CB_YAHOO_SCREENER_COOLDOWN_S", "900")),
+    rate_limit_window_s=60,
+    rate_limit_max_calls=4,
+)
+
+_yfinance_market_context_cb = CircuitBreaker(
+    name="yfinance_market_context",
+    failure_threshold=int(__import__("os").getenv("CB_MARKET_CONTEXT_THRESHOLD", "3")),
+    cooldown_seconds=int(__import__("os").getenv("CB_MARKET_CONTEXT_COOLDOWN_S", "900")),
+    rate_limit_window_s=60,
+    rate_limit_max_calls=4,
+)
+
 _finnhub_cb = CircuitBreaker(
     name="finnhub",
     failure_threshold=int(__import__("os").getenv("CB_FINNHUB_THRESHOLD", "5")),
@@ -221,17 +239,21 @@ _alpaca_options_cb = CircuitBreaker(
 )
 
 
+def _managed_breakers():
+    return (
+        _yfinance_cb, _yahoo_screener_cb, _yfinance_market_context_cb,
+        _finnhub_cb, _polygon_cb, _alpaca_cb, _anthropic_cb,
+    )
+
+
 def all_breaker_status() -> dict:
     """Status of all circuit breakers for /api/diagnostics."""
-    return {
-        b.name: b.status()
-        for b in (_yfinance_cb, _finnhub_cb, _polygon_cb, _alpaca_cb, _anthropic_cb)
-    }
+    return {b.name: b.status() for b in _managed_breakers()}
 
 
 def reset_all_breakers() -> dict:
     """Force-close all circuit breakers. Admin recovery tool."""
-    for b in (_yfinance_cb, _finnhub_cb, _polygon_cb, _alpaca_cb, _anthropic_cb):
+    for b in _managed_breakers():
         b.reset()
     return {"ok": True, "message": "All circuit breakers reset to closed"}
 
@@ -240,7 +262,7 @@ def auto_recover_breakers() -> dict:
     """Auto-close any breakers whose cooldown has expired with no recent failures.
     Called from the health check to prevent permanent degraded state."""
     recovered = []
-    for b in (_yfinance_cb, _finnhub_cb, _polygon_cb, _alpaca_cb, _anthropic_cb):
+    for b in _managed_breakers():
         if b.auto_recover():
             recovered.append(b.name)
     if recovered:

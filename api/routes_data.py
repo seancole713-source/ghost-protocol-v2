@@ -10,6 +10,7 @@ import os, sys, time, json, logging, threading, hmac, math, asyncio, base64  # n
 from fastapi import APIRouter, Header, HTTPException, Request, Depends  # noqa: F401
 from fastapi.responses import JSONResponse, HTMLResponse, Response, PlainTextResponse  # noqa: F401
 
+LOGGER = logging.getLogger("ghost.routes_data")
 router = APIRouter()
 
 @router.get("/api/picks")
@@ -557,61 +558,17 @@ def db_probe():
 
 @router.get("/api/research/status")
 def research_status_endpoint():
-    """Public read-only: research pick mode status + resolved count + gate info."""
+    """Public read-only: canonical research-pick mode and gate state."""
     try:
-        from core.prediction import (
-            RESEARCH_PICK_ENABLED, RESEARCH_CONFIDENCE_FLOOR,
-            RESEARCH_MIN_RESOLVED, RESEARCH_DAILY_CAP, RESEARCH_STALL_HOURS,
-        )
-        from core.db import db_conn
-        resolved = 0
-        research_today = 0
-        active = 0
-        recent_fires = 0
-        stalled = False
-        try:
-            with db_conn() as rc:
-                cur = rc.cursor()
-                cur.execute("SELECT COUNT(*) FROM predictions WHERE outcome IS NOT NULL AND asset_type='stock'")
-                resolved = int(cur.fetchone()[0])
-                cur.execute(
-                    "SELECT COUNT(*) FROM predictions WHERE scores->>'research_pick' = 'true' AND predicted_at > %s",
-                    (int(time.time()) - 86400,),
-                )
-                research_today = int(cur.fetchone()[0])
-                cur.execute(
-                    "SELECT COUNT(*) FROM predictions WHERE outcome IS NULL AND expires_at > %s",
-                    (int(time.time()),),
-                )
-                active = int(cur.fetchone()[0])
-                stall_cutoff = int(time.time()) - RESEARCH_STALL_HOURS * 3600
-                cur.execute(
-                    "SELECT COUNT(*) FROM predictions WHERE predicted_at > %s",
-                    (stall_cutoff,),
-                )
-                recent_fires = int(cur.fetchone()[0])
-                stalled = active == 0 and recent_fires == 0 and resolved >= RESEARCH_MIN_RESOLVED
-        except Exception:
-            pass
-        research_active = RESEARCH_PICK_ENABLED and (resolved < RESEARCH_MIN_RESOLVED or stalled)
-        return {
-            "ok": True,
-            "research_enabled": RESEARCH_PICK_ENABLED,
-            "research_active": research_active,
-            "research_reason": "cold_start" if resolved < RESEARCH_MIN_RESOLVED else ("stall" if stalled else None),
-            "resolved_picks": resolved,
-            "min_for_exit": RESEARCH_MIN_RESOLVED,
-            "remaining": max(0, RESEARCH_MIN_RESOLVED - resolved),
-            "confidence_floor": RESEARCH_CONFIDENCE_FLOOR if research_active else None,
-            "research_today": research_today,
-            "research_daily_cap": RESEARCH_DAILY_CAP,
-            "active_picks": active,
-            "recent_fires_24h": recent_fires,
-            "stall_hours": RESEARCH_STALL_HOURS,
-            "stalled": stalled,
-        }
+        from core.prediction import research_mode_state
+
+        return {"ok": True, **research_mode_state()}
     except Exception as e:
-        return {"ok": False, "error": str(e)[:200]}
+        LOGGER.warning("research status unavailable: %s", type(e).__name__)
+        return JSONResponse(
+            {"ok": False, "error": "research_status_unavailable"},
+            status_code=503,
+        )
 
 
 @router.get("/api/debug-signal/{symbol}")

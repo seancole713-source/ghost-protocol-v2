@@ -5,7 +5,8 @@ from fastapi.testclient import TestClient
 
 import wolf_app
 from mcp.ghost_server import ALLOWED_HTTP_METHOD, GhostMcpGetClient
-from mcp.jsonrpc import clear_sessions_for_tests
+from mcp import ghost_server
+from mcp.jsonrpc import clear_sessions_for_tests, dispatch_message
 from mcp.security import verify_mcp_path_token
 
 
@@ -24,6 +25,38 @@ def test_get_only_client_has_no_write_methods():
     assert not hasattr(client, "put")
     assert not hasattr(client, "delete")
 
+
+def test_invoke_research_status_executes_canonical_helper(monkeypatch):
+    expected = {
+        "research_enabled": True,
+        "research_active": True,
+        "research_reason": "cold_start",
+        "resolved_picks": 4,
+    }
+    monkeypatch.setattr("core.prediction.research_mode_state", lambda: expected)
+
+    result = ghost_server.invoke_tool("ghost_research_status", {})
+
+    assert result == {"ok": True, **expected}
+
+def test_jsonrpc_sanitizes_tool_execution_failures(monkeypatch):
+    monkeypatch.setattr(
+        "mcp.jsonrpc.invoke_tool",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("postgres://user:database-secret@internal")
+        ),
+    )
+
+    response = dispatch_message({
+        "jsonrpc": "2.0", "id": 7, "method": "tools/call",
+        "params": {"name": "ghost_research_status", "arguments": {}},
+    })
+
+    assert response == {
+        "jsonrpc": "2.0", "id": 7,
+        "error": {"code": -32000, "message": "tool_unavailable"},
+    }
+    assert "secret" not in json.dumps(response)
 
 def test_verify_mcp_path_token(monkeypatch):
     monkeypatch.setenv("GHOST_MCP_TOKEN", "path-secret-xyz")

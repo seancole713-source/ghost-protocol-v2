@@ -58,6 +58,7 @@ def test_timeline_isolates_one_failed_database_surface(monkeypatch):
         _Cursor(error=RuntimeError("relation missing secret detail")),
         _Cursor(rows=[(2000, 12.0, "watch", 61.0)]),
         _Cursor(rows=[]),
+        _Cursor(rows=[]),
     ])
 
     result = timeline.build_symbol_timeline(" arct ")
@@ -72,17 +73,39 @@ def test_timeline_isolates_one_failed_database_surface(monkeypatch):
     assert "secret" not in str(result)
     assert result["sources"]["observation"]["status"] == "available"
     assert result["sources"]["news"]["status"] == "available"
+    assert result["sources"]["external"]["status"] == "available"
+
+
+def test_timeline_external_discovery_is_advisory_only(monkeypatch):
+    external_row = (
+        3000, 3010, "yahoo_saved_screener", "yahoo", "day_gainers",
+        "fresh", False, True, [], True, False, 1, 22.5, 18.0,
+        2_000_000.0, 500_000.0, 18.0, "day_gainers:ARCT:3000",
+    )
+    _patch_connections(monkeypatch, [
+        _Cursor(), _Cursor(), _Cursor(), _Cursor(rows=[external_row]),
+    ])
+
+    result = timeline.build_symbol_timeline("ARCT")
+
+    assert result["status"] == "complete"
+    assert result["event_count"] == 1
+    event = result["events"][0]
+    assert event["surface"] == "external_discovery"
+    assert event["advisory_only"] is True
+    assert event["decision_eligible"] is False
+    assert event["in_official_watchlist"] is True
 
 
 def test_timeline_empty_success_is_complete(monkeypatch):
-    _patch_connections(monkeypatch, [_Cursor(), _Cursor(), _Cursor()])
+    _patch_connections(monkeypatch, [_Cursor(), _Cursor(), _Cursor(), _Cursor()])
     result = timeline.build_symbol_timeline("WOLF")
     assert result["status"] == "complete"
     assert result["ok"] is True
     assert result["event_count"] == 0
     assert all(
         result["sources"][name]["status"] == "available"
-        for name in ("squeeze", "observation", "news", "current")
+        for name in ("squeeze", "observation", "news", "external", "current")
     )
 
 
@@ -91,6 +114,7 @@ def test_timeline_all_database_surfaces_unavailable(monkeypatch):
         _Cursor(error=RuntimeError("one")),
         _Cursor(error=RuntimeError("two")),
         _Cursor(error=RuntimeError("three")),
+        _Cursor(error=RuntimeError("four")),
     ])
     result = timeline.build_symbol_timeline("WOLF")
     assert result["status"] == "unavailable"

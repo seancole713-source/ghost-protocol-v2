@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import secrets
 from typing import Any, Dict, List, Optional, Union
 
 from mcp.ghost_server import invoke_tool, list_tools
+
+LOGGER = logging.getLogger("ghost.mcp.jsonrpc")
 
 JsonRpcMessage = Dict[str, Any]
 JsonRpcResponse = Dict[str, Any]
@@ -83,8 +86,9 @@ def dispatch_message(message: JsonRpcMessage) -> Optional[JsonRpcResponse]:
             text = json.dumps(content, default=str)
         except KeyError:
             return _err(msg_id, -32602, f"Unknown tool: {name}")
-        except Exception as exc:
-            return _err(msg_id, -32000, str(exc)[:200])
+        except Exception:
+            LOGGER.exception("MCP tool execution failed tool=%s", name)
+            return _err(msg_id, -32000, "tool_unavailable")
         return _ok(msg_id, {"content": [{"type": "text", "text": text}], "isError": False})
 
     return _err(msg_id, -32601, f"Method not found: {method}")

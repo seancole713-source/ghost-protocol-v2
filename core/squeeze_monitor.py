@@ -424,12 +424,30 @@ def get_squeeze_picks() -> Dict[str, Any]:
     enabled = os.getenv("SQUEEZE_MONITOR_ENABLED", "1") == "1"
     radar_active = enabled and is_us_extended_hours()
     last_ts = st.get("ts")
+    try:
+        from core.broad_market_context import get_broad_market_context
+        market_context = get_broad_market_context()
+    except Exception:
+        market_context = {
+            "ok": False, "status": "unavailable", "error": "snapshot_unavailable",
+            "observations": [], "display_only": True, "decision_eligible": False,
+        }
+    try:
+        from core.external_context_ledger import recent_external_discoveries
+        external_discovery = recent_external_discoveries(limit=50)
+    except Exception:
+        external_discovery = {
+            "ok": False, "status": "unavailable", "items": [], "count": 0,
+            "advisory_only": True, "decision_eligible": False,
+        }
     return {
         "scan_ok": bool(st.get("ok") and st.get("status") == "complete"),
         "picks": picks,
         "pick_count": len(picks),
         "watches": watches,
         "watch_count": len(watches),
+        "external_discovery": external_discovery,
+        "broad_market_context": market_context,
         "alert_history": enriched_alerts,
         "live_drift": build_live_drift_board(alerts, picks, leaders),
         "last_scan_ts": last_ts,

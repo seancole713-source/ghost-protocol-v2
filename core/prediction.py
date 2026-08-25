@@ -101,6 +101,67 @@ MIN_SAMPLES      = int(os.getenv("MIN_SAMPLES", "10"))
 EDGE_THRESHOLD   = 0.55
 INVERSE_THRESHOLD = 0.40
 
+
+def research_mode_state(*, now_ts: Optional[int] = None) -> Dict[str, Any]:
+    """Return the canonical research-mode state from one consistent DB read.
+
+    Database failures deliberately propagate. A missing or unavailable ledger
+    is not equivalent to a zero-pick cold start, and callers must report the
+    surface as unavailable rather than fabricate an active research mode.
+    """
+    now = int(time.time()) if now_ts is None else int(now_ts)
+    with db_conn() as conn:
+        cur = conn.cursor()
+        # Only genuine learning outcomes count toward the cold-start exit —
+        # administrative voids (ADMIN_VOID/WITHDRAWN and pnl-less EXPIRED rows)
+        # never resolved into a real WIN/LOSS and must not satisfy the floor.
+        cur.execute(
+            "SELECT COUNT(*) FROM predictions "
+            f"WHERE {RESOLVED_FOR_WINRATE_WHERE} AND asset_type='stock'"
+        )
+        resolved = int(cur.fetchone()[0])
+        cur.execute(
+            "SELECT COUNT(*) FROM predictions "
+            "WHERE scores->>'research_pick' = 'true' AND predicted_at > %s",
+            (now - 86400,),
+        )
+        research_today = int(cur.fetchone()[0])
+        cur.execute(
+            "SELECT COUNT(*) FROM predictions "
+            "WHERE outcome IS NULL AND expires_at > %s",
+            (now,),
+        )
+        active = int(cur.fetchone()[0])
+        cur.execute(
+            "SELECT COUNT(*) FROM predictions WHERE predicted_at > %s",
+            (now - RESEARCH_STALL_HOURS * 3600,),
+        )
+        recent_fires = int(cur.fetchone()[0])
+
+    stalled = active == 0 and recent_fires == 0 and resolved >= RESEARCH_MIN_RESOLVED
+    research_active = RESEARCH_PICK_ENABLED and (
+        resolved < RESEARCH_MIN_RESOLVED or stalled
+    )
+    return {
+        "research_enabled": RESEARCH_PICK_ENABLED,
+        "research_active": research_active,
+        "research_reason": (
+            "cold_start" if resolved < RESEARCH_MIN_RESOLVED
+            else "stall" if stalled else None
+        ),
+        "resolved_picks": resolved,
+        "min_for_exit": RESEARCH_MIN_RESOLVED,
+        "remaining": max(0, RESEARCH_MIN_RESOLVED - resolved),
+        "confidence_floor": RESEARCH_CONFIDENCE_FLOOR if research_active else None,
+        "research_today": research_today,
+        "research_daily_cap": RESEARCH_DAILY_CAP,
+        "active_picks": active,
+        "recent_fires_24h": recent_fires,
+        "stall_hours": RESEARCH_STALL_HOURS,
+        "stalled": stalled,
+    }
+
+
 # Kill condition — honesty-layer falsification gate (blueprint §10).
 # Pre-registered BEFORE the data so the stop is a decision, not a rationalization:
 # once we have >= min_samples resolved high-conviction picks, if the win rate is
@@ -1233,8 +1294,11 @@ def _predict_symbol_ex(symbol, asset_type, regime, scores_out=None):
         try:
             with db_conn() as rc:
                 rc_cur = rc.cursor()
+                # Match research_mode_state: only genuine WIN/LOSS/settled-EXPIRED
+                # outcomes exit cold start; administrative voids do not.
                 rc_cur.execute(
-                    "SELECT COUNT(*) FROM predictions WHERE outcome IS NOT NULL AND asset_type='stock'"
+                    "SELECT COUNT(*) FROM predictions "
+                    f"WHERE {RESOLVED_FOR_WINRATE_WHERE} AND asset_type='stock'"
                 )
                 resolved = int(rc_cur.fetchone()[0])
                 if resolved < RESEARCH_MIN_RESOLVED:

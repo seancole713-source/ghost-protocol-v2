@@ -1,4 +1,4 @@
-import os, sys, time, logging, threading, hmac, secrets as _secrets
+import os, sys, time, logging, threading, hmac, json, secrets as _secrets
 import config.symbols  # noqa: F401 — pin official watchlist before engine imports
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Header, HTTPException, Depends, Request, WebSocket, WebSocketDisconnect
@@ -1771,6 +1771,47 @@ async def lifespan(app: FastAPI):
         _explosion_benchmark_job,
         interval_s=3600,
         timeout_s=600,
+    )
+
+    # Advisory external context — leader-only because this scheduler exists only
+    # after the cross-replica leader gate. HTTP handlers read persisted snapshots.
+    def _external_screener_job():
+        try:
+            from core.external_screener_ingest import run_external_screener_cycle
+            result = run_external_screener_cycle()
+            LOGGER.info(
+                "external screener status=%s inserted=%s",
+                result.get("status"), result.get("inserted", 0),
+            )
+        except Exception as _e:
+            LOGGER.warning("external screener job failed: %s", str(_e)[:120])
+            raise
+
+    scheduler.register(
+        "external_screener",
+        _external_screener_job,
+        interval_s=max(300, int(os.getenv("EXTERNAL_SCREENER_INTERVAL", "900"))),
+        timeout_s=120,
+    )
+
+    def _broad_market_context_job():
+        try:
+            from core.broad_market_context import refresh_broad_market_context
+            result = refresh_broad_market_context()
+            LOGGER.info(
+                "broad market context status=%s valid=%s/%s",
+                result.get("status"), result.get("valid_count", 0),
+                result.get("expected_count", 0),
+            )
+        except Exception as _e:
+            LOGGER.warning("broad market context job failed: %s", str(_e)[:120])
+            raise
+
+    scheduler.register(
+        "broad_market_context",
+        _broad_market_context_job,
+        interval_s=max(300, int(os.getenv("BROAD_MARKET_CONTEXT_INTERVAL", "900"))),
+        timeout_s=180,
     )
 
     # Coverage maintenance: if too few loadable v3 models, run rate-limited retrain.

@@ -84,6 +84,13 @@ def _news_rows(symbol: str, cur) -> List[Dict[str, Any]]:
     ]
 
 
+def _external_rows(symbol: str, cur) -> List[Dict[str, Any]]:
+    """External screener evidence, always advisory and trade-ineligible."""
+    from core.external_context_ledger import external_observations_for_symbol
+
+    return external_observations_for_symbol(symbol, cur)
+
+
 def _read_db_surface(
     symbol: str,
     name: str,
@@ -112,10 +119,12 @@ def build_symbol_timeline(symbol: str) -> Dict[str, Any]:
     squeeze, squeeze_status = _read_db_surface(sym, "squeeze", _squeeze_rows)
     obs, observation_status = _read_db_surface(sym, "observation", _observation_rows)
     news, news_status = _read_db_surface(sym, "news", _news_rows)
+    external, external_status = _read_db_surface(sym, "external", _external_rows)
     sources = {
         "squeeze": squeeze_status,
         "observation": observation_status,
         "news": news_status,
+        "external": external_status,
     }
 
     # Merge into one chronological list (newest first).
@@ -126,6 +135,8 @@ def build_symbol_timeline(symbol: str) -> Dict[str, Any]:
         events.append({"ts": o["ts"], "surface": "observation", **o})
     for n in news:
         events.append({"ts": n["ts"], "surface": "news", **n})
+    for item in external:
+        events.append({"ts": item["ts"], "surface": "external_discovery", **item})
     events.sort(key=lambda e: e.get("ts") or 0, reverse=True)
 
     # Current state from the live scan report.
@@ -154,7 +165,7 @@ def build_symbol_timeline(symbol: str) -> Dict[str, Any]:
             "error": "current_state_unavailable",
         }
 
-    historical = ("squeeze", "observation", "news")
+    historical = ("squeeze", "observation", "news", "external")
     available_historical = sum(
         sources[name]["status"] == "available" for name in historical
     )
@@ -179,5 +190,6 @@ def build_symbol_timeline(symbol: str) -> Dict[str, Any]:
         "sources": sources,
         "failed_sources": failed_sources,
         "note": "Unified detection timeline across squeeze radar, observations, "
-                "and news. Detection history is visible even when no trade fired.",
+                "news, and advisory external discovery. Detection history is "
+                "visible even when no trade fired.",
     }

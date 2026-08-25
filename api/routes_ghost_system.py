@@ -7,7 +7,7 @@ wolf_app re-exports every endpoint name for backward compatibility.
 """
 import os, sys, time, json, logging, threading, hmac, math, asyncio, base64  # noqa: F401,E401
 
-from fastapi import APIRouter, Body, Header, HTTPException, Request, Depends  # noqa: F401
+from fastapi import APIRouter, Body, Header, HTTPException, Query, Request, Depends  # noqa: F401
 from fastapi.responses import JSONResponse, HTMLResponse, Response, PlainTextResponse  # noqa: F401
 
 router = APIRouter()
@@ -1025,6 +1025,43 @@ def symbol_timeline_endpoint(symbol: str = "WOLF"):
             {"ok": False, "status": "error", "error": "timeline_service_error"},
             status_code=500,
         )
+
+
+@router.get("/api/intelligence/external-discovery")
+def external_discovery_snapshot(limit: int = Query(default=50, ge=1, le=200)):
+    """Read persisted advisory discovery; never poll an external provider."""
+    try:
+        from core.external_context_ledger import recent_external_discoveries
+        return recent_external_discoveries(limit=limit)
+    except Exception:
+        logging.getLogger("ghost.api.external_context").exception(
+            "external discovery snapshot unavailable"
+        )
+        return JSONResponse({
+            "ok": False, "status": "unavailable",
+            "error": "external_discovery_unavailable",
+            "advisory_only": True, "decision_eligible": False,
+        }, status_code=503)
+
+
+@router.get("/api/intelligence/broad-market")
+def broad_market_snapshot():
+    """Read the leader-refreshed display-only broad-market snapshot."""
+    try:
+        from core.broad_market_context import get_broad_market_context
+        result = get_broad_market_context()
+        if not result.get("ok"):
+            return JSONResponse(result, status_code=503)
+        return result
+    except Exception:
+        logging.getLogger("ghost.api.external_context").exception(
+            "broad market snapshot unavailable"
+        )
+        return JSONResponse({
+            "ok": False, "status": "unavailable",
+            "error": "broad_market_context_unavailable",
+            "display_only": True, "decision_eligible": False,
+        }, status_code=503)
 
 
 @router.get("/api/explosion/benchmark")
