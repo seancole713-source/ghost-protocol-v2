@@ -167,7 +167,7 @@ def test_global_calibration_uses_neutral_model_probability(monkeypatch):
         label_schema="label", validation_schema="validation", hold_bars=5,
     )
     assert out["ok"] is True
-    assert "model_prob >= %s" in seen["sql"]
+    assert "prob_live_recalibrated >= %s" in seen["sql"]
     assert "up_prob >= %s" not in seen["sql"]
     assert "feature_schema=%s" in seen["sql"]
     assert seen["params"][1:] == (

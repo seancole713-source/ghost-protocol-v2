@@ -105,6 +105,10 @@ def recalibrate(prob: float, samples: int, wins: int,
         out["note"] = "insufficient_bin_evidence"
         return out
     adj = (w + kk * p) / (n + kk)
+    # Brake-only contract: live evidence may reduce an overconfident model but
+    # may never manufacture a higher probability than the train-calibrated
+    # input. Positive shifts remain observable as a no-op.
+    adj = min(p, adj)
     out["applied"] = True
     out["prob_adjusted"] = round(max(0.0, min(1.0, adj)), 4)
     out["shift"] = round(out["prob_adjusted"] - out["prob_raw"], 4)

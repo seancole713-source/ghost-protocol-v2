@@ -71,6 +71,10 @@ def ensure_perf_tables(cur) -> None:
             direction TEXT,
             up_prob FLOAT,
             confidence FLOAT,
+            prob_model_raw FLOAT,
+            prob_train_calibrated FLOAT,
+            prob_live_recalibrated FLOAT,
+            confidence_final FLOAT,
             confidence_floor FLOAT,
             min_win_proba FLOAT,
             entry_price FLOAT,
@@ -84,6 +88,18 @@ def ensure_perf_tables(cur) -> None:
     )
     cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_perf_evals_cycle ON ghost_perf_symbol_evals (cycle_id)"
+    )
+    for column in (
+        "prob_model_raw", "prob_train_calibrated",
+        "prob_live_recalibrated", "confidence_final",
+    ):
+        cur.execute(
+            f"ALTER TABLE ghost_perf_symbol_evals ADD COLUMN IF NOT EXISTS {column} FLOAT"
+        )
+    # confidence is the only stage safely reconstructible for historical rows.
+    cur.execute(
+        "UPDATE ghost_perf_symbol_evals SET confidence_final=confidence "
+        "WHERE confidence_final IS NULL"
     )
     cur.execute(
         """
@@ -158,6 +174,12 @@ def symbol_eval_from_scan(
         "direction": pick.get("direction") if pick else score_direction,
         "up_prob": scores.get("up_prob"),
         "confidence": scores.get("confidence") or (pick.get("confidence") if pick else None),
+        "prob_model_raw": scores.get("prob_model_raw"),
+        "prob_train_calibrated": scores.get("prob_train_calibrated"),
+        "prob_live_recalibrated": scores.get("prob_live_recalibrated"),
+        "confidence_final": (
+            pick.get("confidence") if pick else scores.get("confidence_final", scores.get("confidence"))
+        ),
         "confidence_floor": scores.get("confidence_floor"),
         "min_win_proba": meta.get("min_win_proba"),
         "entry_price": pick.get("entry_price") if pick else None,
@@ -241,9 +263,11 @@ def log_prediction_cycle(
             """
             INSERT INTO ghost_perf_symbol_evals (
                 cycle_id, symbol, skip_code, fired, saved, prediction_id, direction,
-                up_prob, confidence, confidence_floor, min_win_proba,
+                up_prob, confidence, prob_model_raw, prob_train_calibrated,
+                prob_live_recalibrated, confidence_final,
+                confidence_floor, min_win_proba,
                 entry_price, target_price, stop_price, regime_label, scores, eval_ts
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """,
             (
                 cycle_id,
@@ -255,6 +279,10 @@ def log_prediction_cycle(
                 ev.get("direction"),
                 ev.get("up_prob"),
                 ev.get("confidence"),
+                ev.get("prob_model_raw"),
+                ev.get("prob_train_calibrated"),
+                ev.get("prob_live_recalibrated"),
+                ev.get("confidence_final"),
                 ev.get("confidence_floor"),
                 ev.get("min_win_proba"),
                 ev.get("entry_price"),

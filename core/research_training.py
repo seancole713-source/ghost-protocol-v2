@@ -179,6 +179,23 @@ def train_research_candidate(
     }
     gate_proof["gate_brier"] = calibration.get("gate_brier")
     gate_proof["gate_n"] = calibration.get("gate_n")
+    gate_proof["calibrated"] = calibration.get("calibrated")
+    gate_proof["calibration_status"] = calibration.get("calibration_status")
+    gate_proof["calibration_schema"] = calibration.get("calibration_schema")
+    gate_proof["calibration_method"] = calibration.get("method")
+    gate_proof["calibration_winner"] = calibration.get("winner")
+    gate_proof["calibration_n"] = calibration.get("n_calib")
+    gate_proof["calibration_fit_n"] = calibration.get("calibration_fit_n")
+    gate_proof["calibration_purge_n"] = calibration.get("purge_n")
+    gate_proof["calibration_selection_n"] = calibration.get("calibration_selection_n")
+    gate_proof["calibration_refit_n"] = calibration.get("refit_n")
+    gate_proof["calibration_candidates"] = calibration.get("candidates") or []
+    gate_proof["calibration_selection_metrics"] = calibration.get("selection_metrics")
+    gate_proof["calibration_raw_selection_metrics"] = calibration.get("raw_selection_metrics")
+    gate_proof["calibration_climatology_selection_metrics"] = calibration.get("climatology_selection_metrics")
+    gate_proof["calibration_paired_raw_brier_improvement"] = calibration.get("paired_raw_brier_improvement")
+    gate_proof["calibration_climatology_brier_improvement"] = calibration.get("climatology_brier_improvement")
+    gate_proof["conformal"] = calibration.get("conformal") or {}
     gate_proof["feature_inversions"] = feature_inversions
     artifact_sha = compute_artifact_sha(
         model_sha256=model_sha256,

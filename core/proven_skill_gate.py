@@ -189,7 +189,8 @@ def global_calibration_review(
                 SELECT COUNT(*) AS samples,
                        SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) AS wins
                 FROM ghost_shadow_outcomes
-                WHERE outcome IN ('WIN','LOSS','EXPIRED') AND model_prob >= %s
+                WHERE outcome IN ('WIN','LOSS','EXPIRED')
+                  AND prob_live_recalibrated >= %s
                   AND direction=%s AND model_sha256=%s AND feature_schema=%s
                   AND label_schema=%s AND validation_schema=%s AND hold_bars=%s
                 """,

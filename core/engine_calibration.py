@@ -81,66 +81,192 @@ def _evaluate_calibration_holdout(model, X_gate, y_gate) -> Dict[str, Any]:
     }
 
 
-def _maybe_calibrate(model, X_calib, y_calib):
-    """Wrap a fitted base model with prefit probability calibration.
+def _weighted_reliability_gap(y_true, y_prob, n_bins: int = 5) -> float:
+    """Expected calibration error using the same fixed reliability buckets."""
+    bins = _reliability_bins(y_true, y_prob, n_bins=n_bins)
+    total = sum(int(bucket["n"]) for bucket in bins)
+    if total <= 0:
+        return float("inf")
+    return float(sum(
+        int(bucket["n"]) * abs(float(bucket["mean_pred"]) - float(bucket["observed_rate"]))
+        for bucket in bins
+    ) / total)
 
-    The base model was fit on the training slice and never saw X_calib, so the
-    held-out slice is a valid post-hoc calibration set (strictly time-ordered:
-    it is the most recent ~20% of the series). Returns (final_model, info).
 
-    Falls back to the raw model (info["calibrated"]=False) whenever calibration
-    isn't viable — disabled, too few points, or a single-class calib slice — so
-    training never breaks on this. Calibration quality itself is validated live
-    via the confidence-bucket calibration curve, not offline here.
-    """
-    info = {"calibrated": False, "method": None, "n_calib": int(len(X_calib))}
-    if not _v3_calibration_enabled():
-        info["skip_reason"] = "disabled"
-        return model, info
-    if len(X_calib) < 10 or np.unique(y_calib).size < 2:
-        info["skip_reason"] = "insufficient_calib_data"
-        return model, info
-    method = _v3_calibration_method()
-    if method == "auto":
-        method = "isotonic" if len(X_calib) >= 200 else "sigmoid"
-    if method not in ("isotonic", "sigmoid"):
-        method = "sigmoid"
+def _probability_metrics(y_true, y_prob) -> Dict[str, Any]:
+    from sklearn.metrics import brier_score_loss, log_loss
+
+    labels = np.asarray(y_true, dtype=int)
+    probs = np.clip(np.asarray(y_prob, dtype=float), 1e-12, 1.0 - 1e-12)
+    if len(labels) == 0 or not np.all(np.isfinite(probs)):
+        raise ValueError("invalid probability evaluation population")
+    return {
+        "n": int(len(labels)),
+        "brier": float(brier_score_loss(labels, probs)),
+        "log_loss": float(log_loss(labels, probs, labels=[0, 1])),
+        "reliability_gap": _weighted_reliability_gap(labels, probs),
+    }
+
+
+def _fit_prefit_calibrator(model, X, y, method: str):
+    """Fit one post-hoc calibrator without refitting the base estimator."""
+    from sklearn.calibration import CalibratedClassifierCV
     try:
-        from sklearn.calibration import CalibratedClassifierCV
-        # sklearn ≥1.6 removed cv="prefit" in favor of FrozenEstimator. Branch
-        # on the installed version so a dependency bump can never silently
-        # fall back to raw (uncalibrated) probabilities (forensic SE-3/ST-5).
+        import sklearn
+        version = tuple(int(x) for x in sklearn.__version__.split(".")[:2])
+    except Exception:
+        version = (0, 0)
+    if version >= (1, 6):
+        from sklearn.frozen import FrozenEstimator
+        calibrated = CalibratedClassifierCV(FrozenEstimator(model), method=method)
+    else:
+        calibrated = CalibratedClassifierCV(model, method=method, cv="prefit")
+    calibrated.fit(X, y)
+    return calibrated
+
+
+def _pipeline(raw_model, served_model, method: str):
+    from core.signal_engine import _ProbabilityPipeline
+    return _ProbabilityPipeline(raw_model, served_model, method)
+
+
+def _calibrator_bakeoff(model, X_calib, y_calib, *, purge: int = 0):
+    """Chronological raw/sigmoid/isotonic selection and full-slice refit.
+
+    The outer caller owns the untouched final gate. Within the calibration
+    slice, candidates fit on an earlier block and compete on a later selection
+    block separated by a label-horizon purge. The winner is then refit once on
+    the full *outer-purged* calibration slice; the final gate is never consumed
+    here.
+    """
+    n = int(len(X_calib))
+    purge = max(0, int(purge))
+    info: Dict[str, Any] = {
+        "calibrated": False,
+        "calibration_status": "invalid",
+        "calibration_schema": "chronological_bakeoff_v1",
+        "method": None,
+        "n_calib": n,
+        "purge_n": purge,
+        "candidates": [],
+    }
+    if not _v3_calibration_enabled():
+        info.update({"calibration_status": "disabled", "skip_reason": "disabled"})
+        return _pipeline(model, model, "raw_identity"), info
+    labels = np.asarray(y_calib, dtype=int)
+    # Leave at least five untouched selection observations after the inner
+    # purge, and require ten earlier observations to fit stable candidates.
+    fit_end = max(10, int(n * 0.60))
+    selection_start = fit_end + purge
+    if n < 20 + purge or fit_end >= n or n - selection_start < 10:
+        info["skip_reason"] = "insufficient_calibration_support"
+        return _pipeline(model, model, "raw_identity"), info
+    X_fit, y_fit = X_calib[:fit_end], labels[:fit_end]
+    X_select, y_select = X_calib[selection_start:], labels[selection_start:]
+    info.update({
+        "calibration_fit_n": int(len(X_fit)),
+        "calibration_selection_n": int(len(X_select)),
+        "inner_fit_end_index": int(fit_end - 1),
+        "inner_selection_start_index": int(selection_start),
+    })
+    if np.unique(y_fit).size < 2 or np.unique(labels).size < 2:
+        info["skip_reason"] = "single_class_calibration_fit"
+        return _pipeline(model, model, "raw_identity"), info
+
+    raw_select = np.asarray(model.predict_proba(X_select)[:, 1], dtype=float)
+    raw_metrics = _probability_metrics(y_select, raw_select)
+    climatology = np.full(len(y_select), float(np.mean(y_fit)), dtype=float)
+    climatology_metrics = _probability_metrics(y_select, climatology)
+    candidates = []
+    fitted_for_selection: Dict[str, Any] = {"raw_identity": model}
+    for priority, method in enumerate(("raw_identity", "sigmoid", "isotonic")):
         try:
-            import sklearn
-            _sklearn_major_minor = tuple(int(x) for x in sklearn.__version__.split(".")[:2])
-        except Exception:
-            _sklearn_major_minor = (0, 0)
-        if _sklearn_major_minor >= (1, 6):
-            from sklearn.frozen import FrozenEstimator
-            calibrated = CalibratedClassifierCV(FrozenEstimator(model), method=method)
-        else:
-            calibrated = CalibratedClassifierCV(model, method=method, cv="prefit")
-        calibrated.fit(X_calib, y_calib)
-        info.update({"calibrated": True, "method": method})
-        return calibrated, info
-    except Exception as e:
-        info["skip_reason"] = "exception: " + str(e)[:120]
-        LOGGER.error(
-            "v3 calibration FAILED (falling back to raw probabilities): %s",
-            str(e)[:200],
+            candidate = model if method == "raw_identity" else _fit_prefit_calibrator(
+                model, X_fit, y_fit, method,
+            )
+            probs = np.asarray(candidate.predict_proba(X_select)[:, 1], dtype=float)
+            metrics = _probability_metrics(y_select, probs)
+            metrics.update({
+                "method": method,
+                "valid": True,
+                "paired_raw_brier_improvement": float(raw_metrics["brier"] - metrics["brier"]),
+                "climatology_brier_improvement": float(climatology_metrics["brier"] - metrics["brier"]),
+                "priority": priority,
+            })
+            candidates.append(metrics)
+            fitted_for_selection[method] = candidate
+        except Exception as exc:
+            candidates.append({
+                "method": method, "valid": False, "priority": priority,
+                "error": str(exc)[:120],
+            })
+    valid = [candidate for candidate in candidates if candidate.get("valid")]
+    info["candidates"] = candidates
+    info["raw_selection_metrics"] = raw_metrics
+    info["climatology_selection_metrics"] = climatology_metrics
+    if not valid:
+        info["skip_reason"] = "no_valid_calibration_candidate"
+        return _pipeline(model, model, "raw_identity"), info
+    winner = min(valid, key=lambda item: (
+        item["brier"], item["log_loss"], item["reliability_gap"], item["priority"],
+    ))
+    method = str(winner["method"])
+    selection_model = fitted_for_selection[method]
+    selection_probs = np.asarray(selection_model.predict_proba(X_select)[:, 1], dtype=float)
+    try:
+        from core.conformal_calibration import calibrate_conformal
+        conformal = calibrate_conformal(selection_probs, y_select)
+    except Exception as exc:
+        conformal = {
+            "ok": False, "error": str(exc)[:120], "samples": int(len(y_select)),
+        }
+    try:
+        served = model if method == "raw_identity" else _fit_prefit_calibrator(
+            model, X_calib, labels, method,
         )
-        return model, info
+    except Exception as exc:
+        info.update({
+            "skip_reason": "winner_refit_failed: " + str(exc)[:120],
+            "winner": method,
+            "conformal": conformal,
+        })
+        return _pipeline(model, model, "raw_identity"), info
+    info.update({
+        "calibrated": True,
+        "calibration_status": "valid",
+        "method": method,
+        "winner": method,
+        "selection_metrics": {key: value for key, value in winner.items() if key != "priority"},
+        "paired_raw_brier_improvement": winner["paired_raw_brier_improvement"],
+        "climatology_brier_improvement": winner["climatology_brier_improvement"],
+        "conformal": conformal,
+        "refit_n": n,
+    })
+    return _pipeline(model, served, method), info
+
+
+def _maybe_calibrate(model, X_calib, y_calib):
+    """Compatibility facade for the chronological calibrator bakeoff."""
+    from core.engine_config import _v3_wf_purge
+    try:
+        return _calibrator_bakeoff(
+            model, X_calib, y_calib, purge=_v3_wf_purge(),
+        )
+    except Exception as exc:
+        info = {
+            "calibrated": False,
+            "calibration_status": "invalid",
+            "calibration_schema": "chronological_bakeoff_v1",
+            "method": None,
+            "n_calib": int(len(X_calib)),
+            "skip_reason": "exception: " + str(exc)[:120],
+        }
+        LOGGER.error("v3 calibration bakeoff failed closed: %s", str(exc)[:200])
+        return _pipeline(model, model, "raw_identity"), info
 
 
 def _build_ensemble(xgb_model, X_fit, y_fit, sample_weight, X_calib, y_calib):
-    """Soft-voting blend of the fitted XGB model with a RandomForest (W5).
-
-    Each component is individually probability-calibrated on the WOLF holdout,
-    then their probabilities are averaged. Returns (model, calib_info) with the
-    same calib_info shape _maybe_calibrate produces, plus ensemble metadata.
-    Falls back to the calibrated single XGB model if anything goes wrong, so
-    enabling the ensemble can never break a training run.
-    """
+    """Build a raw soft-voting ensemble, then calibrate it as one pipeline."""
     try:
         from sklearn.ensemble import RandomForestClassifier
         rf = RandomForestClassifier(
@@ -148,19 +274,15 @@ def _build_ensemble(xgb_model, X_fit, y_fit, sample_weight, X_calib, y_calib):
             class_weight="balanced", random_state=42,
         )
         rf.fit(X_fit, y_fit, sample_weight=sample_weight)
-        cal_xgb, info_x = _maybe_calibrate(xgb_model, X_calib, y_calib)
-        cal_rf, _info_r = _maybe_calibrate(rf, X_calib, y_calib)
-        ens = _proba_ensemble_cls()([cal_xgb, cal_rf])
-        info = {
-            "calibrated": bool(info_x.get("calibrated", False)),
-            "method": info_x.get("method"),
-            "n_calib": int(len(X_calib)),
+        raw_ensemble = _proba_ensemble_cls()([xgb_model, rf])
+        final_model, info = _maybe_calibrate(raw_ensemble, X_calib, y_calib)
+        info.update({
             "ensemble": True,
             "members": ["xgboost", "random_forest"],
-        }
-        return ens, info
-    except Exception as e:
+        })
+        return final_model, info
+    except Exception as exc:
         final_model, info = _maybe_calibrate(xgb_model, X_calib, y_calib)
         info["ensemble"] = False
-        info["ensemble_skip_reason"] = "exception: " + str(e)[:120]
+        info["ensemble_skip_reason"] = "exception: " + str(exc)[:120]
         return final_model, info

@@ -4688,12 +4688,13 @@ def test_maybe_calibrate_wraps_when_viable(monkeypatch):
     monkeypatch.delenv("V3_CALIBRATION", raising=False)
     monkeypatch.setenv("V3_CALIBRATION_METHOD", "auto")
     model, X, _ = _fit_tiny_model()
-    Xc = X[:20]
-    yc = np.array([i % 2 for i in range(20)])
+    Xc = X[:30]
+    yc = np.array([i % 2 for i in range(30)])
+    monkeypatch.setattr("core.engine_config._v3_wf_purge", lambda: 0)
     final, info = _se._maybe_calibrate(model, Xc, yc)
-    assert info["calibrated"] is True
-    assert info["method"] == "sigmoid"            # auto -> sigmoid for small calib set
-    assert info["n_calib"] == 20
+    assert info["calibration_status"] == "valid"
+    assert info["method"] in {"raw_identity", "sigmoid", "isotonic"}
+    assert info["n_calib"] == 30
     proba = final.predict_proba(X[:1])
     assert proba.shape == (1, 2)
     assert abs(float(proba[0].sum()) - 1.0) < 1e-6
@@ -4709,7 +4710,8 @@ def test_maybe_calibrate_disabled_returns_raw(monkeypatch):
     final, info = _se._maybe_calibrate(sentinel, np.zeros((20, 3)), np.array([i % 2 for i in range(20)]))
     assert info["calibrated"] is False
     assert info["skip_reason"] == "disabled"
-    assert final is sentinel
+    assert final.raw_model is sentinel
+    assert final.served_model is sentinel
 
 
 def test_maybe_calibrate_single_class_calib_falls_back(monkeypatch):
@@ -4719,8 +4721,8 @@ def test_maybe_calibrate_single_class_calib_falls_back(monkeypatch):
     sentinel = object()
     final, info = _se._maybe_calibrate(sentinel, np.zeros((15, 3)), np.zeros(15, dtype=int))
     assert info["calibrated"] is False
-    assert info["skip_reason"] == "insufficient_calib_data"
-    assert final is sentinel
+    assert info["skip_reason"] == "insufficient_calibration_support"
+    assert final.raw_model is sentinel
 
 
 def test_maybe_calibrate_too_few_points_falls_back(monkeypatch):
@@ -4730,8 +4732,8 @@ def test_maybe_calibrate_too_few_points_falls_back(monkeypatch):
     sentinel = object()
     final, info = _se._maybe_calibrate(sentinel, np.zeros((6, 3)), np.array([0, 1, 0, 1, 0, 1]))
     assert info["calibrated"] is False
-    assert info["skip_reason"] == "insufficient_calib_data"
-    assert final is sentinel
+    assert info["skip_reason"] == "insufficient_calibration_support"
+    assert final.raw_model is sentinel
 
 
 def test_has_loadable_v3_model_requires_actual_load(monkeypatch):

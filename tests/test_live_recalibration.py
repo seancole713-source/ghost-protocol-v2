@@ -36,11 +36,12 @@ def test_recalibrate_pulls_inverted_bin_down(monkeypatch):
     assert out["shift"] < -0.15  # pulled hard toward the scoreboard
 
 
-def test_recalibrate_barely_moves_calibrated_bin():
-    # 60-70 bin: 40 resolved, 26 wins (65%) vs 0.64 predicted — healthy.
+def test_recalibrate_never_raises_probability():
+    # Healthy realized performance cannot manufacture a stronger probability.
     out = lr.recalibrate(0.64, samples=40, wins=26, k=25)
     assert out["applied"] is True
-    assert abs(out["prob_adjusted"] - out["prob_raw"]) < 0.01
+    assert out["prob_adjusted"] == out["prob_raw"]
+    assert out["shift"] == 0.0
 
 
 def test_recalibrate_converges_to_realized_rate():
