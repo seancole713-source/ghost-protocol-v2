@@ -70,5 +70,5 @@ def test_registered_with_momentum_v2(monkeypatch):
     assert any(mm.model_id == "momentum_shadow_v1" for mm in SHADOW_MODELS)
     assert any(mm.model_id == "momentum_shadow_v2" for mm in SHADOW_MODELS)
     preds = run_shadow_models(_report())
-    assert len(preds) == 12
+    assert len(preds) == len(SHADOW_MODELS) == 13
     assert any(p["model_id"] == "momentum_shadow_v2" for p in preds)

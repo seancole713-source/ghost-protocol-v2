@@ -193,6 +193,34 @@ def test_get_squeeze_picks_exposes_fetch_failed_symbols(monkeypatch):
     assert board["symbols"] == 43  # mocked passthrough value, not live count
 
 
+def test_watch_quorum_is_bounded_and_advisory_only(monkeypatch):
+    import core.data_quorum as dq
+    import core.squeeze_monitor as sm
+
+    monkeypatch.setenv("SQUEEZE_QUORUM_WATCH_BUDGET", "1")
+    calls = []
+    monkeypatch.setattr(
+        dq,
+        "evaluate_quorum",
+        lambda symbol, use_cache=False: calls.append((symbol, use_cache)) or {
+            "verdict": "disagree", "advisory_only": True,
+        },
+    )
+    watches = [
+        {"symbol": "ARCT", "confidence_pct": 55, "candidate": False},
+        {"symbol": "WOLF", "confidence_pct": 60, "candidate": False},
+    ]
+    before = [{k: v for k, v in watch.items()} for watch in watches]
+    sm._enrich_watches_with_quorum(watches)
+
+    assert calls == [("ARCT", True)]
+    assert watches[0]["quorum"]["verdict"] == "disagree"
+    assert watches[1]["quorum"]["verdict"] == "deferred"
+    for index, watch in enumerate(watches):
+        for field in ("symbol", "confidence_pct", "candidate"):
+            assert watch[field] == before[index][field]
+
+
 def test_squeeze_alert_labels_radar_not_trade():
     msg = format_squeeze_alert(
         "SPCE",

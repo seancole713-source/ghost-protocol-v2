@@ -215,6 +215,16 @@ def test_news_event_observation_rejects_future_event():
     assert obs is None
 
 
+def test_news_event_observation_rejects_peer_derived_event():
+    event = {
+        "asof_ts": _TS, "ingested_at": _TS + 100,
+        "materiality": 1.0, "confidence": 1.0,
+        "event_type": "fda_approval", "direction_hint": "bullish",
+        "derived": True, "origin_symbol": "MRNA", "decision_eligible": False,
+    }
+    assert news_event_observation(event, prediction_ts=_TS + 3600) is None
+
+
 # ── DatasetManifest ────────────────────────────────────────────────────────
 
 def test_build_dataset_manifest():

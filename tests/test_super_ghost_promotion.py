@@ -64,6 +64,23 @@ def test_normalize_metrics_handles_shadow_profile_names():
     assert n["false_positive_rate"] == 0.4
 
 
+def test_legacy_mixed_provenance_news_shadow_cannot_promote(monkeypatch):
+    profile = _metrics(candidate=None)
+    profile.update({"model_id": "news_shadow_v2", "sample_count": 200})
+    monkeypatch.setattr(
+        "core.super_ghost_shadow.shadow_model_profiles",
+        lambda: {"ok": True, "profiles": [profile]},
+    )
+    from core.super_ghost_promotion import run_promotion_review
+
+    out = run_promotion_review(
+        source="shadow", candidate_id="news_shadow_v2", persist=False
+    )
+    assert out["decision"] == "KEEP_SHADOWING"
+    assert out["approved_for_promotion"] is False
+    assert "news_shadow_v3_direct" in out["reason"]
+
+
 def test_promotion_get_endpoint(monkeypatch):
     def fake_reviews(symbol=None, limit=20):
         return {"ok": True, "reviews": [{"candidate_id": "strict_confidence", "decision": "KEEP_SHADOWING"}]}

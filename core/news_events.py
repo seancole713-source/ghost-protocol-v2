@@ -21,7 +21,7 @@ import json
 import logging
 import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 LOGGER = logging.getLogger("ghost.news_events")
 
@@ -128,11 +128,20 @@ def article_dedupe_key(symbol: str, headline: str) -> str:
     return hashlib.sha1(f"{symbol.upper()}|{norm}".encode()).hexdigest()
 
 
-def event_dedupe_key(symbol: str, event_type: str, asof_ts: int) -> str:
-    # One event of a given type per symbol per calendar day: re-worded copies
-    # of the same story must not count as multiple confirmations.
+def event_dedupe_key(
+    symbol: str,
+    event_type: str,
+    asof_ts: int,
+    *,
+    derived: bool = False,
+    origin_symbol: Optional[str] = None,
+) -> str:
+    """Stable v2 event identity that cannot merge direct and peer evidence."""
     day = int(asof_ts) // 86400
-    return hashlib.sha1(f"{symbol.upper()}|{event_type}|{day}".encode()).hexdigest()
+    provenance = f"derived:{(origin_symbol or '').upper()}" if derived else "direct"
+    return hashlib.sha1(
+        f"v2|{symbol.upper()}|{event_type}|{day}|{provenance}".encode()
+    ).hexdigest()
 
 
 def classify_text(headline: str, summary: str = "") -> List[Dict[str, Any]]:
@@ -197,6 +206,22 @@ def ensure_news_tables(cur) -> None:
     # Idempotent migration for pre-existing tables lacking the derived columns.
     cur.execute("ALTER TABLE ghost_news_events ADD COLUMN IF NOT EXISTS derived BOOLEAN NOT NULL DEFAULT FALSE")
     cur.execute("ALTER TABLE ghost_news_events ADD COLUMN IF NOT EXISTS origin_symbol VARCHAR(20)")
+    cur.execute(
+        """DELETE FROM ghost_news_events newer
+           USING ghost_news_events older
+           WHERE newer.id > older.id
+             AND newer.symbol=older.symbol
+             AND newer.event_type=older.event_type
+             AND (newer.asof_ts / 86400)=(older.asof_ts / 86400)
+             AND newer.derived=older.derived
+             AND COALESCE(newer.origin_symbol,'')=COALESCE(older.origin_symbol,'')"""
+    )
+    cur.execute(
+        """CREATE UNIQUE INDEX IF NOT EXISTS idx_news_event_provenance_once
+           ON ghost_news_events
+             (symbol, event_type, ((asof_ts / 86400)), derived,
+              (COALESCE(origin_symbol,'')))"""
+    )
     cur.execute("CREATE INDEX IF NOT EXISTS idx_news_events_sym_ts ON ghost_news_events(symbol, asof_ts DESC)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_news_raw_sym_ts ON ghost_news_raw_articles(symbol, published_at DESC)")
 
@@ -240,7 +265,7 @@ def store_article_and_events(cur, art: Dict[str, Any]) -> Dict[str, Any]:
                 confidence, confirmation_status, source_reliability, evidence,
                 asof_ts, extracted_at, dedupe_key)
                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-               ON CONFLICT (dedupe_key) DO NOTHING""",
+               ON CONFLICT DO NOTHING""",
             (article_id, sym, ev["event_type"], ev["direction_hint"],
              ev["materiality"], round(ev["materiality"] * rel, 3),
              ev["confirmation_status"], rel, ev["evidence"],
@@ -257,14 +282,17 @@ def store_article_and_events(cur, art: Dict[str, Any]) -> Dict[str, Any]:
                 sym, ev["event_type"], materiality=ev["materiality"],
                 asof_ts=published_at, direction_hint=ev["direction_hint"],
             ):
-                ddk = event_dedupe_key(d["symbol"], d["event_type"], published_at)
+                ddk = event_dedupe_key(
+                    d["symbol"], d["event_type"], published_at,
+                    derived=True, origin_symbol=d["origin_symbol"],
+                )
                 cur.execute(
                     """INSERT INTO ghost_news_events
                        (article_id, symbol, event_type, direction_hint, materiality,
                         confidence, confirmation_status, source_reliability, evidence,
                         asof_ts, extracted_at, dedupe_key, derived, origin_symbol)
                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                       ON CONFLICT (dedupe_key) DO NOTHING""",
+                       ON CONFLICT DO NOTHING""",
                     (article_id, d["symbol"], d["event_type"], d["direction_hint"],
                      d["materiality"], round(d["materiality"] * rel, 3),
                      ev["confirmation_status"], rel,
@@ -277,22 +305,37 @@ def store_article_and_events(cur, art: Dict[str, Any]) -> Dict[str, Any]:
     return {"article_stored": True, "events_stored": stored}
 
 
-def recent_events_for_symbol(symbol: str, *, asof_ts: Optional[int] = None,
-                             lookback_s: int = 7 * 86400,
-                             cur=None) -> List[Dict[str, Any]]:
-    """Events for `symbol` with asof_ts in (asof-lookback, asof].
+def recent_events_for_symbol(
+    symbol: str,
+    *,
+    asof_ts: Optional[int] = None,
+    lookback_s: int = 7 * 86400,
+    scope: Literal["direct", "derived", "all"] = "direct",
+    cur=None,
+) -> List[Dict[str, Any]]:
+    """Point-in-time events with explicit provenance scope.
 
-    Point-in-time by construction: pass the decision timestamp as asof_ts and
-    it is impossible to see a later headline. Returns [] on any failure —
-    callers must distinguish that via news_available().
+    Decision callers get direct company events by default. Advisory surfaces
+    must opt into ``scope='derived'`` or ``scope='all'``. Both publication and
+    extraction time must be known by the decision timestamp, preventing
+    historical look-ahead from late ingestion.
     """
+    if scope not in {"direct", "derived", "all"}:
+        raise ValueError("scope must be 'direct', 'derived', or 'all'")
     asof = int(asof_ts or time.time())
-    sql = """SELECT event_type, direction_hint, materiality, confidence,
-                    confirmation_status, source_reliability, evidence, asof_ts
-             FROM ghost_news_events
-             WHERE symbol=%s AND asof_ts > %s AND asof_ts <= %s
-             ORDER BY materiality DESC, asof_ts DESC LIMIT 50"""
-    args = (symbol.upper(), asof - int(lookback_s), asof)
+    provenance_sql = ""
+    if scope == "direct":
+        provenance_sql = " AND derived=FALSE"
+    elif scope == "derived":
+        provenance_sql = " AND derived=TRUE"
+    sql = f"""SELECT event_type, direction_hint, materiality, confidence,
+                     confirmation_status, source_reliability, evidence, asof_ts,
+                     derived, origin_symbol, extracted_at, dedupe_key
+              FROM ghost_news_events
+              WHERE symbol=%s AND asof_ts > %s AND asof_ts <= %s
+                AND extracted_at <= %s{provenance_sql}
+              ORDER BY materiality DESC, asof_ts DESC LIMIT 50"""
+    args = (symbol.upper(), asof - int(lookback_s), asof, asof)
     try:
         if cur is not None:
             cur.execute(sql, args)
@@ -301,15 +344,21 @@ def recent_events_for_symbol(symbol: str, *, asof_ts: Optional[int] = None,
             from core.db import db_conn
             with db_conn() as conn:
                 c = conn.cursor()
-                ensure_news_tables(c)
                 c.execute(sql, args)
                 rows = c.fetchall()
     except Exception as exc:
         LOGGER.warning("recent_events_for_symbol(%s): %s", symbol, str(exc)[:120])
         return []
-    keys = ("event_type", "direction_hint", "materiality", "confidence",
-            "confirmation_status", "source_reliability", "evidence", "asof_ts")
-    return [dict(zip(keys, r)) for r in rows]
+    keys = (
+        "event_type", "direction_hint", "materiality", "confidence",
+        "confirmation_status", "source_reliability", "evidence", "asof_ts",
+        "derived", "origin_symbol", "extracted_at", "dedupe_key",
+    )
+    events = [dict(zip(keys, row)) for row in rows]
+    for event in events:
+        event["advisory_only"] = bool(event["derived"])
+        event["decision_eligible"] = not bool(event["derived"])
+    return events
 
 
 def news_available(*, max_stale_s: int = 24 * 3600, cur=None) -> bool:

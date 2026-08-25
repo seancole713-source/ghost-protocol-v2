@@ -292,7 +292,25 @@ def run_promotion_review(*, symbol: Optional[str] = None, horizon: int = 5, cand
         except Exception as exc:
             return {"ok": False, "error": str(exc)[:160]}
 
-    if not candidate:
+    if src == "shadow" and candidate:
+        model_id = str(candidate.get("model_id") or "")
+        # Legacy news profiles were trained on mixed direct/peer evidence.
+        # Keep them observable, but never allow contaminated evidence to earn
+        # production promotion. The v3 direct ledger starts clean.
+        if model_id in {"news_shadow_v1", "news_shadow_v2"}:
+            review = {
+                "ok": True,
+                "decision": "KEEP_SHADOWING",
+                "approved_for_promotion": False,
+                "requires_more_shadowing": True,
+                "reason": "Legacy news profile is not provenance-clean; use news_shadow_v3_direct.",
+                "candidate_metrics": candidate,
+                "champion_metrics": champion,
+                "requirements": DEFAULT_REQUIREMENTS,
+            }
+        else:
+            review = review_promotion(candidate, champion)
+    elif not candidate:
         review = {
             "ok": True,
             "decision": "INSUFFICIENT_EVIDENCE",

@@ -216,8 +216,16 @@ def _signal_engine_ohlcv(symbol: str, days: int) -> List[Dict[str, Any]]:
     return out[-days:] if len(out) > days else out
 
 
-def get_daily_history(symbol: str, days: int = 400) -> List[Dict[str, Any]]:
+def get_daily_history(
+    symbol: str,
+    days: int = 400,
+    *,
+    force_refresh: bool = False,
+) -> List[Dict[str, Any]]:
     """Best-effort daily OHLCV history (oldest -> newest), Railway-friendly.
+
+    ``force_refresh`` bypasses the process cache for post-close benchmark jobs;
+    it never changes provider ordering or fabricates a completed bar.
 
     Source order:
       1. ``core.signal_engine._fetch_ohlcv`` - the production-proven multi-tier
@@ -235,7 +243,7 @@ def get_daily_history(symbol: str, days: int = 400) -> List[Dict[str, Any]]:
     now = time.time()
     ck = f"{sym}:{days}"
     cached = _history_cache.get(ck)
-    if cached and (now - cached[0]) < _CACHE_TTL_S:
+    if not force_refresh and cached and (now - cached[0]) < _CACHE_TTL_S:
         return [dict(r) for r in cached[1]]
 
     rows = _signal_engine_ohlcv(sym, days)

@@ -1011,9 +1011,20 @@ def symbol_timeline_endpoint(symbol: str = "WOLF"):
     """
     try:
         from core.symbol_timeline import build_symbol_timeline
-        return build_symbol_timeline(symbol)
-    except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+        result = build_symbol_timeline(symbol)
+        if result.get("status") == "unavailable":
+            return JSONResponse(result, status_code=503)
+        return result
+    except ValueError:
+        return JSONResponse(
+            {"ok": False, "status": "invalid_request", "error": "invalid_symbol"},
+            status_code=422,
+        )
+    except Exception:
+        return JSONResponse(
+            {"ok": False, "status": "error", "error": "timeline_service_error"},
+            status_code=500,
+        )
 
 
 @router.get("/api/explosion/benchmark")
@@ -1032,12 +1043,14 @@ def explosion_benchmark_endpoint():
 
 @router.get("/api/data/quorum")
 def data_quorum_endpoint(symbol: str = "WOLF"):
-    """Multi-provider price quorum with disagreement detection. Read-only."""
+    """Cached advisory multi-provider corroboration for one equity symbol."""
     try:
         from core.data_quorum import evaluate_quorum
-        return evaluate_quorum(symbol)
+        return evaluate_quorum(symbol, use_cache=True)
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=422)
     except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=503)
 
 
 @router.get("/api/system/degraded")

@@ -255,31 +255,32 @@ def _alpaca(symbol):
     return price
 
 
-def _yfinance(symbol):
-    # P0-2: circuit breaker — skip yfinance entirely when circuit is open
+def _yfinance_quote(symbol) -> Tuple[Optional[float], Optional[int]]:
+    """Return Yahoo price with a genuine observation timestamp when available.
+
+    ``fast_info.last_price`` does not expose trustworthy market time, so it is
+    returned with ``None``. The history fallback preserves its bar index.
+    """
     if not _yfinance_cb.allow():
-        return None
+        return None, None
     try:
         import yfinance as yf
         tk = yf.Ticker(symbol)
-        # Try live price first via fast_info attributes (market hours)
         try:
             fi = tk.fast_info
             live = getattr(fi, 'last_price', None) or getattr(fi, 'lastPrice', None)
             if live and float(live) > 0:
                 _yfinance_cb.record_success()
-                return float(live)
+                return float(live), None
         except Exception:
-            note_suppressed()  # Fallback: latest close (pre/post market or closed)
+            note_suppressed()
         h = tk.history(period="2d")
         if not h.empty:
             _yfinance_cb.record_success()
-            return float(h["Close"].iloc[-1])
-        # Empty history is expected for delisted/thin symbols — not a failure
-        return None
+            return float(h["Close"].iloc[-1]), _timestamp_to_epoch(h.index[-1])
+        return None, None
     except Exception as e:
         es = str(e)
-        # 429 / rate-limit / connection errors = real outage, count as breaker failure
         if "429" in es or "Too Many Requests" in es or "rate limit" in es.lower():
             LOGGER.warning(f"yfinance {symbol}: RATE LIMITED (429) — counting as breaker failure")
             _yfinance_cb.record_failure()
@@ -287,12 +288,17 @@ def _yfinance(symbol):
             LOGGER.warning(f"yfinance {symbol}: connection/timeout — counting as breaker failure: {e}")
             _yfinance_cb.record_failure()
         elif "Expecting value" in es or "JSON" in es or "json" in es.lower() or "parse" in es.lower():
-            # JSON parse errors (empty response / Yahoo blocking Railway IP) — count as breaker failure
             LOGGER.warning(f"yfinance {symbol}: JSON parse error (empty response) — counting as breaker failure: {e}")
             _yfinance_cb.record_failure()
         else:
             LOGGER.debug(f"yfinance {symbol}: non-critical error: {e}")
-        return None
+        return None, None
+
+
+def _yfinance(symbol):
+    """Yahoo price compatibility wrapper."""
+    price, _observed_at = _yfinance_quote(symbol)
+    return price
 
 
 def _polygon_spot(symbol):
@@ -320,15 +326,13 @@ def _polygon_spot(symbol):
     return None
 
 
-def _iex_spot(symbol):
-    """Spot price from Alpaca IEX feed — fourth-tier fallback (PR #77).
-    Uses the same Alpaca credentials as the primary feed but hits the
-    IEX endpoint which has different rate limits and data sources."""
+def _iex_trade_quote(symbol) -> Tuple[Optional[float], Optional[int]]:
+    """Return Alpaca IEX trade price and provider observation timestamp."""
     try:
         key = os.getenv("ALPACA_KEY_ID", "")
         secret = os.getenv("ALPACA_SECRET_KEY", "")
         if not key or not secret:
-            return None
+            return None, None
         r = requests.get(
             f"https://data.alpaca.markets/v2/stocks/{symbol.upper()}/trades/latest",
             headers={"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret},
@@ -336,10 +340,17 @@ def _iex_spot(symbol):
             timeout=TIMEOUT,
         )
         if r.status_code == 200:
-            return float(r.json()["trade"]["p"])
+            trade = r.json()["trade"]
+            return float(trade["p"]), _timestamp_to_epoch(trade.get("t"))
     except Exception:
         note_suppressed()
-    return None
+    return None, None
+
+
+def _iex_spot(symbol):
+    """Alpaca IEX float-only compatibility wrapper."""
+    price, _observed_at = _iex_trade_quote(symbol)
+    return price
 
 
 def get_stock_price(symbol, *, with_staleness: bool = False):

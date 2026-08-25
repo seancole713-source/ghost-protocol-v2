@@ -683,6 +683,7 @@ async def _run_watchlist_scan() -> None:
                 except Exception:
                     note_suppressed()
     report["picks"] = list(report["candidates"])
+    _enrich_watches_with_quorum(report.get("watches") or [])
     from core.squeeze_scorecard import build_scorecard_row
 
     leaders = report.get("leaders") or []
@@ -717,6 +718,32 @@ async def _run_watchlist_scan() -> None:
         len(report["candidates"]),
         report["duration_ms"],
     )
+
+
+def _enrich_watches_with_quorum(watches: List[Dict[str, Any]]) -> None:
+    """Attach bounded advisory corroboration after all trade decisions are final.
+
+    This post-pass cannot change candidate classification, confidence, alerts,
+    or wallet inputs. Failures remain visible as unavailable metadata.
+    """
+    budget = max(0, int(os.getenv("SQUEEZE_QUORUM_WATCH_BUDGET", "3")))
+    for index, watch in enumerate(watches):
+        if index >= budget:
+            watch["quorum"] = {
+                "verdict": "deferred",
+                "advisory_only": True,
+                "reason": "per_scan_budget",
+            }
+            continue
+        try:
+            from core.data_quorum import evaluate_quorum
+            watch["quorum"] = evaluate_quorum(watch["symbol"], use_cache=True)
+        except Exception as exc:
+            watch["quorum"] = {
+                "verdict": "unavailable",
+                "advisory_only": True,
+                "reason": str(exc)[:100],
+            }
 
 
 def _short_context_from_finviz(symbol: str) -> Dict[str, Any]:
@@ -999,6 +1026,8 @@ def _metrics_from_batch_bars(symbol: str) -> Optional[Dict[str, Any]]:
         "session_volume": float(session_vol),
         "avg_daily_volume": float(avg_vol),
         "vwap": vwap,
+        "price_as_of_ts": intraday[-1].get("t"),
+        "price_source": "alpaca_batch_bar",
         "peak_move_pct": (session_high - prior_close) / prior_close * 100,
         "current_move_pct": (price - prior_close) / prior_close * 100,
     }

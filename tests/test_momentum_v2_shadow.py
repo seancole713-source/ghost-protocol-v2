@@ -51,5 +51,5 @@ def test_momentum_v2_registered_without_mutating_v1(monkeypatch):
     assert "momentum_shadow_v1" in ids
     assert "momentum_shadow_v2" in ids
     preds = run_shadow_models(_report())
-    assert len(preds) == 12
+    assert len(preds) == len(SHADOW_MODELS) == 13
     assert any(p["model_id"] == "momentum_shadow_v2" for p in preds)

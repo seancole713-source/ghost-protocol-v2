@@ -91,6 +91,113 @@ def test_event_dedupe_one_per_type_per_day():
            event_dedupe_key("SPCE", "dilution_or_offering", ts + 90000)
 
 
+def test_event_dedupe_separates_direct_and_derived_provenance():
+    ts = 1783300000
+    direct = event_dedupe_key("ARCT", "fda_approval", ts)
+    from_mrna = event_dedupe_key(
+        "ARCT", "fda_approval", ts, derived=True, origin_symbol="MRNA"
+    )
+    from_bntx = event_dedupe_key(
+        "ARCT", "fda_approval", ts, derived=True, origin_symbol="BNTX"
+    )
+    assert len({direct, from_mrna, from_bntx}) == 3
+
+
+def test_derived_events_cannot_change_scoring_or_defense():
+    from core.catalyst_scoring import score_events
+
+    direct = {
+        "event_type": "earnings_beat", "direction_hint": "bullish",
+        "materiality": 0.7, "source_reliability": 0.9, "asof_ts": 2000,
+    }
+    derived_threat = {
+        "event_type": "going_concern", "direction_hint": "bearish",
+        "materiality": 1.0, "source_reliability": 1.0, "asof_ts": 2000,
+        "derived": True, "origin_symbol": "MRNA", "decision_eligible": False,
+    }
+    baseline = score_events([direct])
+    enriched = score_events([direct, derived_threat])
+    assert enriched["score"] == baseline["score"]
+    assert enriched["event_count"] == baseline["event_count"]
+    assert enriched["advisory_events_excluded"] == 1
+    assert decide_defense(
+        [_pick()], {"SPCE": [derived_threat]}, now_ts=3000
+    ) == []
+
+
+class _RecentCursor:
+    def __init__(self, rows):
+        self.rows = rows
+        self.sql = ""
+        self.args = None
+
+    def execute(self, sql, args=None):
+        self.sql = sql
+        self.args = args
+
+    def fetchall(self):
+        return self.rows
+
+
+def test_recent_events_enforces_extraction_time_and_direct_default():
+    cur = _RecentCursor([])
+    ne.recent_events_for_symbol("ARCT", asof_ts=5000, lookback_s=1000, cur=cur)
+    assert "asof_ts <= %s" in cur.sql
+    assert "extracted_at <= %s" in cur.sql
+    assert "derived=FALSE" in cur.sql
+    assert cur.args == ("ARCT", 4000, 5000, 5000)
+
+
+def test_global_news_api_honors_provenance_scope(monkeypatch):
+    import core.db as db
+    from api.routes_data import get_news_events
+
+    class Cursor:
+        def __init__(self):
+            self.sql = ""
+
+        def execute(self, sql, params=None):
+            self.sql = sql
+
+        def fetchall(self):
+            return []
+
+    class Conn:
+        def __init__(self, cursor):
+            self._cursor = cursor
+
+        def cursor(self):
+            return self._cursor
+
+    class Ctx:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def __enter__(self):
+            return self.conn
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    cursors = []
+
+    def connect():
+        cursor = Cursor()
+        cursors.append(cursor)
+        return Ctx(Conn(cursor))
+
+    monkeypatch.setattr(db, "db_conn", connect)
+    monkeypatch.setattr(ne, "ensure_news_tables", lambda cur: None)
+    monkeypatch.setattr(ne, "news_available", lambda: True)
+
+    direct = get_news_events(scope="direct")
+    assert direct["scope"] == "direct"
+    assert "WHERE derived=FALSE" in cursors[-1].sql
+    derived = get_news_events(scope="derived")
+    assert derived["scope"] == "derived"
+    assert "WHERE derived=TRUE" in cursors[-1].sql
+
+
 # ── cross-symbol catalyst propagation (store_article_and_events) ─────────────
 
 class _PropCursor:
@@ -221,9 +328,10 @@ def test_v2_holds_on_mixed_tape(monkeypatch):
 def test_v1_still_registered_and_frozen_alongside_v2(monkeypatch):
     ids = [m.model_id for m in SHADOW_MODELS]
     assert "news_shadow_v1" in ids and "news_shadow_v2" in ids
+    assert "news_shadow_v3_direct" in ids
     monkeypatch.setattr(ne, "news_available", lambda **k: False)
     import core.seasonality as seas
     monkeypatch.setattr(seas, "seasonal_window_stats",
                         lambda s, **k: {"available": False, "reason": "test"})
     preds = run_shadow_models(_report())
-    assert len(preds) == 12
+    assert len(preds) == len(SHADOW_MODELS) == 13

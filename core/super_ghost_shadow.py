@@ -296,23 +296,19 @@ def contrarian_shadow(report: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
-def news_event_shadow(report: Dict[str, Any]) -> Dict[str, Any]:
-    """news_shadow_v2 (PR #134) — structured-event news brain.
+def _structured_news_shadow(
+    report: Dict[str, Any], *, model_id: str, scope: str
+) -> Dict[str, Any]:
+    """Shared structured-news implementation with an immutable scope policy.
 
-    Reads typed, deduplicated, point-in-time events (core.news_events) instead
-    of v1's thin checklist sentiment. v1 stays registered and FROZEN as the
-    baseline: same model_id + new logic would contaminate its ledger profile,
-    so this ships as a new versioned id and must beat v1 on resolved outcomes.
-
-    Guardrails honored here: decision uses only events with asof_ts <= now
-    (point-in-time by query construction); a dead feed reports "news
-    unavailable" and HOLDs rather than reading silence as bullish.
+    Reads typed, deduplicated point-in-time events. A dead feed reports news
+    unavailable and HOLDs rather than treating silence as bullish.
     """
     sym = (report.get("symbol") or "").upper()
     try:
         from core.news_events import news_available, recent_events_for_symbol
         available = news_available()
-        events = recent_events_for_symbol(sym) if available else []
+        events = recent_events_for_symbol(sym, scope=scope) if available else []
     except Exception as exc:
         available, events = False, []
         LOGGER.debug("news_event_shadow %s: %s", sym, str(exc)[:100])
@@ -342,8 +338,20 @@ def news_event_shadow(report: Dict[str, Any]) -> Dict[str, Any]:
     drivers = [{"available": available, "events": [
         {k: e.get(k) for k in ("event_type", "direction_hint", "materiality",
                                "confirmation_status", "asof_ts")} for e in events[:5]]}]
-    return _base_shadow("news_shadow_v2", "news", direction, conf, report,
+    return _base_shadow(model_id, "news", direction, conf, report,
                         reason=reason, drivers=drivers)
+
+
+def news_event_shadow(report: Dict[str, Any]) -> Dict[str, Any]:
+    """Frozen news_shadow_v2: preserves its historical mixed-provenance ledger."""
+    return _structured_news_shadow(report, model_id="news_shadow_v2", scope="all")
+
+
+def news_event_shadow_direct(report: Dict[str, Any]) -> Dict[str, Any]:
+    """Promotion-eligible v3 ledger using direct target-company events only."""
+    return _structured_news_shadow(
+        report, model_id="news_shadow_v3_direct", scope="direct"
+    )
 
 
 def momentum_shadow(report: Dict[str, Any]) -> Dict[str, Any]:
@@ -489,7 +497,8 @@ SHADOW_MODELS: Tuple[ShadowModel, ...] = (
     ShadowModel("ensemble_shadow_v1", "ensemble", "Committee vote across all specialist shadows.", ensemble_shadow),
     ShadowModel("contrarian_shadow_v1", "contrarian", "Inverse-Ghost: bets against every committed production call (anti-signal hypothesis).", contrarian_shadow),
     ShadowModel("seasonal_shadow_v1", "seasonal", "Calendar-seasonality lean from the symbol's own ~4-year record for the current 5-day window.", seasonal_shadow),
-    ShadowModel("news_shadow_v2", "news", "Structured-event news brain: typed, deduplicated, point-in-time events (v1 frozen as baseline).", news_event_shadow),
+    ShadowModel("news_shadow_v2", "news", "Frozen mixed-provenance structured-event baseline; never promotion eligible.", news_event_shadow),
+    ShadowModel("news_shadow_v3_direct", "news", "Direct-only structured-event brain with provenance-clean promotion ledger.", news_event_shadow_direct),
     ShadowModel("momentum_shadow_v1", "momentum", "Trend/breakout brain: leans UP on confirmed multi-week bullish runs (the ODD-style climb the base engine is blind to).", momentum_shadow),
     ShadowModel("momentum_shadow_v2", "momentum", "Trend-following v2: multi-timeframe run detection with relative-strength, pullback, extension, and regime penalties; shadow-only until proven.", momentum_shadow_v2),
 )

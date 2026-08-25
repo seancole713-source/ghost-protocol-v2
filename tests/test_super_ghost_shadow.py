@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 
 import wolf_app
 from core.super_ghost_shadow import (
+    SHADOW_MODELS,
     run_shadow_models,
     shadow_manifest,
     technical_shadow,
@@ -55,7 +56,7 @@ def test_technical_shadow_reads_price_features():
 
 def test_run_shadow_models_returns_all_specialists():
     preds = run_shadow_models(_report())
-    assert len(preds) == 12  # +momentum v1/v2 (#151/#153)
+    assert len(preds) == len(SHADOW_MODELS) == 13  # includes direct-only news v3
     ids = {p["model_id"] for p in preds}
     assert "ensemble_shadow_v1" in ids
     assert "contrarian_shadow_v1" in ids

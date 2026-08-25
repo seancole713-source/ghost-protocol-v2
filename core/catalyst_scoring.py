@@ -91,8 +91,9 @@ def _event_effect(ev: Dict[str, Any]) -> float:
 
 
 def score_events(events: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
-    """Score point-in-time structured news events for any stock."""
-    rows = [dict(e) for e in (events or []) if isinstance(e, dict)]
+    """Score direct point-in-time events; peer-derived rows are advisory only."""
+    supplied = [dict(e) for e in (events or []) if isinstance(e, dict)]
+    rows = [e for e in supplied if e.get("derived") is not True and e.get("decision_eligible") is not False]
     effects: List[float] = []
     top: List[Dict[str, Any]] = []
     guidance_effects: List[float] = []
@@ -133,6 +134,7 @@ def score_events(events: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
     return {
         "available": bool(rows),
         "event_count": len(rows),
+        "advisory_events_excluded": len(supplied) - len(rows),
         "score": round(net, 3),
         "guidance_momentum_score": round(guidance, 3),
         "catalyst_score": round(catalyst, 3),
@@ -147,7 +149,9 @@ def fetch_event_context(symbol: str, *, asof_ts: Optional[int] = None, lookback_
     """Best-effort point-in-time event scoring. Failures return unavailable."""
     try:
         from core.news_events import recent_events_for_symbol
-        events = recent_events_for_symbol(symbol, asof_ts=asof_ts, lookback_s=lookback_s)
+        events = recent_events_for_symbol(
+            symbol, asof_ts=asof_ts, lookback_s=lookback_s, scope="direct"
+        )
     except Exception as exc:
         return {"available": False, "event_count": 0, "score": 0.0, "reason": str(exc)[:120]}
     scored = score_events(events)

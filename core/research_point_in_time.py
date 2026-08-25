@@ -241,11 +241,13 @@ def news_event_observation(
     source_id: str = "news_events",
     prediction_ts: Optional[int] = None,
 ) -> Optional[SourceObservation]:
-    """Create a SourceObservation from a news event row.
+    """Create a direct-event SourceObservation from a news event row.
 
-    event_ts = asof_ts (article publish time).
-    available_ts = max(asof_ts, ingested_at) — the article must be ingested.
+    Peer-derived rows are advisory context and cannot enter target-symbol
+    decision datasets under the ``news_events`` source identity.
     """
+    if event.get("derived") is True or event.get("decision_eligible") is False:
+        return None
     asof_ts = event.get("asof_ts")
     ingested_at = event.get("ingested_at") or event.get("extracted_at") or asof_ts
 
@@ -268,6 +270,9 @@ def news_event_observation(
         metadata={
             "event_type": event.get("event_type", ""),
             "direction_hint": event.get("direction_hint", ""),
+            "derived": False,
+            "origin_symbol": event.get("origin_symbol"),
+            "provenance_policy": "direct_only_v1",
         },
     )
 

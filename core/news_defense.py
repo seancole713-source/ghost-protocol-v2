@@ -66,6 +66,10 @@ def decide_defense(active_picks: List[Dict[str, Any]],
             continue
         predicted_at = int(pick.get("predicted_at") or 0)
         for ev in events_by_symbol.get(sym, []):
+            # Peer propagation is useful operator context but can never
+            # withdraw, resize, or otherwise control a target-symbol pick.
+            if ev.get("derived") is True or ev.get("decision_eligible") is False:
+                continue
             if ev.get("event_type") not in _BEARISH_ACTIONABLE:
                 continue
             if (ev.get("direction_hint") or "") != "bearish":
@@ -105,7 +109,8 @@ def run_defense_check() -> Dict[str, Any]:
             picks = [dict(zip(("id", "symbol", "direction", "predicted_at"), r))
                      for r in cur.fetchall()]
             events = {p["symbol"].upper(): recent_events_for_symbol(
-                p["symbol"], asof_ts=now, lookback_s=_max_event_age_s(), cur=cur)
+                p["symbol"], asof_ts=now, lookback_s=_max_event_age_s(),
+                scope="direct", cur=cur)
                 for p in picks}
             actions = decide_defense(picks, events, now_ts=now)
             for act in actions:

@@ -391,7 +391,8 @@ def _register_contracts() -> None:
         version="v1",
         description=(
             "Event-driven reaction prediction. POSITIVE or NEGATIVE. "
-            "Deterministic event IDs from ghost_news_events. Entry is first "
+            "Deterministic direct-event IDs from ghost_news_events; peer-derived "
+            "events are advisory-only and excluded. Entry is first executable "
             "executable bar after publication. 3-session symbol return minus "
             "SPY return after a frozen cost/neutral band determines outcome. "
             "Wrong/neutral is LOSS. Unavailable event/feed/bar evidence is "

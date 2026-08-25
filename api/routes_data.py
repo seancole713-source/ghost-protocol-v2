@@ -852,28 +852,43 @@ def trigger_reconcile(x_cron_secret: str = Header(default="")):
 
 
 @router.get("/api/news/events")
-def get_news_events(symbol: str = "", limit: int = 50):
-    """Structured news events (PR #134). Read-only; newest first."""
+def get_news_events(symbol: str = "", limit: int = 50, scope: str = "all"):
+    """Structured news events with explicit direct/derived provenance."""
     from core.news_events import recent_events_for_symbol, news_available
+    if scope not in {"direct", "derived", "all"}:
+        raise HTTPException(status_code=422, detail="scope must be direct, derived, or all")
     lim = max(1, min(200, int(limit)))
     if symbol:
-        events = recent_events_for_symbol(symbol, lookback_s=7 * 86400)[:lim]
-        return {"ok": True, "symbol": symbol.upper(), "available": news_available(),
-                "events": events}
+        events = recent_events_for_symbol(
+            symbol, lookback_s=7 * 86400, scope=scope
+        )[:lim]
+        return {"ok": True, "symbol": symbol.upper(), "scope": scope,
+                "available": news_available(), "events": events}
     from core.db import db_conn
     from core.news_events import ensure_news_tables
     try:
         with db_conn() as conn:
             cur = conn.cursor()
             ensure_news_tables(cur)
+            provenance_sql = ""
+            if scope == "direct":
+                provenance_sql = " WHERE derived=FALSE"
+            elif scope == "derived":
+                provenance_sql = " WHERE derived=TRUE"
             cur.execute(
-                """SELECT symbol, event_type, direction_hint, materiality, confidence,
-                          confirmation_status, evidence, asof_ts
-                   FROM ghost_news_events ORDER BY asof_ts DESC LIMIT %s""", (lim,))
+                f"""SELECT symbol, event_type, direction_hint, materiality, confidence,
+                          confirmation_status, evidence, asof_ts, derived,
+                          origin_symbol, extracted_at, dedupe_key
+                   FROM ghost_news_events{provenance_sql}
+                   ORDER BY asof_ts DESC LIMIT %s""", (lim,))
             keys = ("symbol", "event_type", "direction_hint", "materiality",
-                    "confidence", "confirmation_status", "evidence", "asof_ts")
+                    "confidence", "confirmation_status", "evidence", "asof_ts",
+                    "derived", "origin_symbol", "extracted_at", "dedupe_key")
             events = [dict(zip(keys, r)) for r in cur.fetchall()]
-        return {"ok": True, "available": news_available(), "events": events}
+            for event in events:
+                event["advisory_only"] = bool(event["derived"])
+                event["decision_eligible"] = not bool(event["derived"])
+        return {"ok": True, "scope": scope, "available": news_available(), "events": events}
     except Exception as exc:
         return JSONResponse(status_code=200, content={"ok": False, "error": str(exc)[:120]})
 

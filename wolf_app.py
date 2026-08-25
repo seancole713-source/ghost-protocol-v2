@@ -1754,6 +1754,25 @@ async def lifespan(app: FastAPI):
             raise
 
     scheduler.register("daily_report", _daily_report_job, interval_s=900)
+    # Explosion-event benchmark — resumable detection-recall measurement over
+    # completed daily bars. Self-gates by NYSE session and DB run claim, so it
+    # is safe to poll hourly; it never blocks a pick or loosens a trade gate.
+    from core.explosion_benchmark import run_daily_benchmark_job as _run_benchmark
+
+    def _explosion_benchmark_job():
+        try:
+            _run_benchmark()
+        except Exception as _e:
+            LOGGER.warning("explosion benchmark job failed: %s", str(_e)[:120])
+            raise
+
+    scheduler.register(
+        "explosion_benchmark",
+        _explosion_benchmark_job,
+        interval_s=3600,
+        timeout_s=600,
+    )
+
     # Coverage maintenance: if too few loadable v3 models, run rate-limited retrain.
     scheduler.register(
         "coverage_maintenance",
