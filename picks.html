@@ -4,9 +4,6 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Ghost</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
 <style>
 :root{
   --ground:#F6F4F1; --surface:#FFFFFF; --surface-2:#EDE9E4; --sunken:#E4DFD8;
@@ -155,8 +152,10 @@ a{color:inherit}
 .sysrow{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:13px 15px;display:flex;align-items:center;justify-content:space-between;gap:10px}
 .sysrow .k{font-size:14px}
 .sysrow .v{font-family:"IBM Plex Mono",monospace;font-size:13px;font-weight:600}
-.sysrow .v.ok{color:var(--good)} .sysrow .v.no{color:var(--bad)}
+.sysrow .v.ok{color:var(--good)} .sysrow .v.no{color:var(--bad)} .sysrow .v.mid{color:var(--warn)}
 
+.header-status{display:flex;align-items:center;gap:8px}
+.stamp{padding:6px 18px 0}
 .loading{padding:40px 0;text-align:center;color:var(--ink-3);font-size:13.5px}
 .err{background:var(--bad-soft);color:var(--bad);border-radius:10px;padding:12px 14px;font-size:13px}
 </style>
@@ -165,11 +164,11 @@ a{color:inherit}
 <div class="wrap">
   <header class="topbar">
     <div class="brand"><b>Ghost</b></div>
-    <div style="display:flex;align-items:center;gap:8px">
+    <div class="header-status">
       <span class="livedot" id="livedot"><i></i><span id="livedot-txt">Loading</span></span>
     </div>
   </header>
-  <div class="stamp" style="padding:6px 18px 0" id="stamp"></div>
+  <div class="stamp" id="stamp"></div>
 
   <nav class="tabs" role="tablist" aria-label="Ghost sections">
     <button class="tabbtn" id="tab-today" role="tab" aria-selected="true" aria-controls="view-today">Today</button>
@@ -214,6 +213,16 @@ function timestampMs(value){
   return isNaN(parsed) ? null : parsed;
 }
 
+function pauseExplanation(kill){
+  var conditions = kill && Array.isArray(kill.conditions) ? kill.conditions : [];
+  var brier = conditions.find(function(c){ return c.name === 'brier' && c.triggered === true; });
+  if(brier && brier.current != null && brier.threshold != null){
+    return 'Recent probability calibration is outside Ghost\'s reliability limit (Brier score '
+      + fmt(brier.current, 4) + '; limit ' + fmt(brier.threshold, 2) + ').';
+  }
+  return 'A directional-pick safety check is outside its allowed limit.';
+}
+
 var inFlight = {};
 function guardedLoad(key, work){
   if(inFlight[key]) return inFlight[key];
@@ -245,8 +254,8 @@ tabs.forEach(function(t,i){ t.btn.addEventListener('click', function(){ selectTa
 async function loadHeader(){
   var v = await getJson('/api/_version');
   var dot = document.getElementById('livedot'), txt = document.getElementById('livedot-txt');
-  if(v.__ok){ dot.classList.remove('off'); txt.textContent = 'Live'; }
-  else { dot.classList.add('off'); txt.textContent = 'Offline'; }
+  if(v.__ok){ dot.classList.remove('off'); txt.textContent = 'App online'; }
+  else { dot.classList.add('off'); txt.textContent = 'App offline'; }
   document.getElementById('stamp').textContent = new Date().toLocaleString('en-US', {
     weekday:'long', month:'long', day:'numeric', hour:'numeric', minute:'2-digit'
   });
@@ -361,11 +370,14 @@ function loadToday(){ return guardedLoad('today', async function(){
     }
   }
   if(paused === null){
-    html += '<div class="facts"><div class="fact"><div class="line"><span class="lbl">New-pick safety</span><span class="val no">Safety status unknown</span></div>'
-      + '<div class="mean">New-pick availability cannot be confirmed.</div></div></div>';
+    html += '<div class="facts"><div class="fact"><div class="line"><span class="lbl">Directional-pick safety</span><span class="val no">Status unknown</span></div>'
+      + '<div class="mean">New directional-pick availability cannot be confirmed.</div></div></div>';
   } else if(paused){
-    html += '<div class="facts"><div class="fact"><div class="line"><span class="lbl">Making new directional picks</span><span class="val no">Paused</span></div>'
-      + '<div class="mean">Ghost has been wrong too often recently, so it shut itself off. It won\'t hand you a new pick until that recovers.</div></div></div>';
+    html += '<div class="facts"><div class="fact"><div class="line"><span class="lbl">Official directional-pick issuance</span><span class="val mid">Safety-paused</span></div>'
+      + '<div class="mean">'+esc(pauseExplanation(kill))+' This blocks only new official directional picks. Analysis, squeeze scanning, monitoring, and learning remain active.</div></div></div>';
+  } else {
+    html += '<div class="facts"><div class="fact"><div class="line"><span class="lbl">Official directional-pick issuance</span><span class="val ok">Available</span></div>'
+      + '<div class="mean">No engine-level safety pause is blocking new directional picks.</div></div></div>';
   }
   html += '</div>';
 
@@ -417,8 +429,9 @@ async function loadMyStocks(){
   picks.forEach(function(p, i){
     var report = checklists[i].__ok ? checklists[i] : null;
     var lp = p.live_price;
+    var priceText = lp == null ? 'Live price unavailable' : 'Live price '+money(lp);
     html += '<div class="pick"><div class="pick-top"><div class="pick-sym"><b>'+esc(p.symbol)+'</b>'
-      + '<span>Live price '+money(lp)+'</span></div>';
+      + '<span>'+priceText+'</span></div>';
     if(report && report.confidence && report.confidence.confidence_pct != null){
       html += '<div class="conf"><span class="num">'+fmtPct(report.confidence.confidence_pct,0)+'</span><span class="band">confidence</span></div>';
     } else {
@@ -460,7 +473,7 @@ function loadRecord(){ return guardedLoad('record', async function(){
     + '<div class="tile loss"><span class="k">Stopped out</span><span class="v">'+missed+'</span><span class="s">Reached the get-out price first</span></div>'
     + '<div class="tile"><span class="k">Expired</span><span class="v">'+expired+'</span><span class="s">Reached neither price in the watch window</span></div>';
   if(wallet.__ok && wallet.total_value != null){
-    html += '<div class="tile"><span class="k">Practice balance</span><span class="v">'+money(wallet.total_value)+'</span><span class="s">Started at '+money(wallet.starting_balance||10000)+'</span></div>';
+    html += '<div class="tile"><span class="k">Separate paper wallet</span><span class="v">'+money(wallet.total_value)+'</span><span class="s">Simulated balance, separate from the finished-call count above. Started at '+money(wallet.starting_balance||10000)+'</span></div>';
   }
   html += '</div>';
 
@@ -499,21 +512,21 @@ function loadSystem(){ return guardedLoad('system', async function(){
   var health = results[0], kill = results[1], degraded = results[2];
 
   var html = '<div class="section"><h2>Is Ghost healthy?</h2>';
-  html += '<div class="sysrow"><span class="k">Overall</span><span class="v '+(health.__ok?'ok':'no')+'">'+(health.__ok?'OK':'Unknown — treat as unavailable')+'</span></div>';
+  html += '<div class="sysrow"><span class="k">Core service</span><span class="v '+(health.__ok?'ok':'no')+'">'+(health.__ok?'Healthy':'Unknown — treat as unavailable')+'</span></div>';
   if(kill.__ok){
     var paused = !!(kill.engine_pause && kill.engine_pause.paused);
-    html += '<div class="sysrow"><span class="k">Making new picks</span><span class="v '+(paused?'no':'ok')+'">'+(paused?'Paused':'Yes')+'</span></div>';
-    if(paused && kill.engine_pause.reason){
-      html += '<div class="hint">Why: '+esc(kill.engine_pause.reason)+'</div>';
+    html += '<div class="sysrow"><span class="k">Official directional-pick issuance</span><span class="v '+(paused?'mid':'ok')+'">'+(paused?'Safety-paused':'Available')+'</span></div>';
+    if(paused){
+      html += '<div class="hint">'+esc(pauseExplanation(kill))+' Only new official directional picks are blocked; the rest of Ghost remains active.</div>';
     }
   } else {
-    html += '<div class="sysrow"><span class="k">Making new picks</span><span class="v no">Unknown — treat as unavailable</span></div>';
+    html += '<div class="sysrow"><span class="k">Official directional-pick issuance</span><span class="v no">Unknown — treat as unavailable</span></div>';
   }
   if(degraded.__ok){
     var isDeg = !!degraded.degraded;
-    html += '<div class="sysrow"><span class="k">Running normally</span><span class="v '+(isDeg?'no':'ok')+'">'+(isDeg?'Paused':'Yes')+'</span></div>';
+    html += '<div class="sysrow"><span class="k">Analysis and monitoring</span><span class="v '+(isDeg?'no':'ok')+'">'+(isDeg?'Degraded':'Active')+'</span></div>';
   } else {
-    html += '<div class="sysrow"><span class="k">Running normally</span><span class="v no">Unknown — treat as unavailable</span></div>';
+    html += '<div class="sysrow"><span class="k">Analysis and monitoring</span><span class="v no">Unknown — treat as unavailable</span></div>';
   }
   html += '</div>';
   el.innerHTML = html;

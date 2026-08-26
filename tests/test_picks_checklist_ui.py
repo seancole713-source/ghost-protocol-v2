@@ -34,13 +34,44 @@ def test_squeeze_requires_fresh_successful_active_scan_only():
 
 
 def test_safety_uncertainty_and_refresh_are_visible():
-    assert "Safety status unknown" in PICKS
-    assert "New-pick availability cannot be confirmed" in PICKS
+    assert "Status unknown" in PICKS
+    assert "New directional-pick availability cannot be confirmed" in PICKS
     assert PICKS.count("Unknown — treat as unavailable") >= 3
     assert "setInterval(refreshVisibleTab, 60000)" in PICKS
     assert "visibilitychange" in PICKS
     assert "guardedLoad('today'" in PICKS
     assert "guardedLoad('system'" in PICKS
+
+
+def test_pause_copy_separates_issuance_from_active_analysis():
+    assert "Official directional-pick issuance" in PICKS
+    assert "Safety-paused" in PICKS
+    assert "This blocks only new official directional picks" in PICKS
+    assert "Analysis, squeeze scanning, monitoring, and learning remain active" in PICKS
+    assert "Analysis and monitoring" in PICKS
+    assert "Only new official directional picks are blocked; the rest of Ghost remains active" in PICKS
+    assert "brier->degrade_watching" not in PICKS
+    assert "Ghost has been wrong too often recently, so it shut itself off" not in PICKS
+
+
+def test_pause_reason_and_header_are_user_facing():
+    assert "function pauseExplanation(kill)" in PICKS
+    assert "Recent probability calibration is outside Ghost\\'s reliability limit" in PICKS
+    assert "Brier score" in PICKS
+    assert "App online" in PICKS
+    assert "App offline" in PICKS
+    assert ">Live<" not in PICKS
+
+
+def test_missing_prices_and_wallet_scope_are_explicit():
+    assert "Live price unavailable" in PICKS
+    assert "Separate paper wallet" in PICKS
+    assert "Simulated balance, separate from the finished-call count above" in PICKS
+
+
+def test_external_fonts_are_not_blocked_by_page_csp():
+    assert "fonts.googleapis.com" not in PICKS
+    assert "fonts.gstatic.com" not in PICKS
 
 
 def test_record_scope_is_disclosed():
