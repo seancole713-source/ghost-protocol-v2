@@ -1,7 +1,8 @@
-"""Squeeze ML v2 — logistic blend over scorecard features (Phase 1).
+"""Squeeze research proxy v2 — logistic blend over scorecard features.
 
-Trained coefficients are a calibrated baseline until labeled squeeze outcomes
-accrue in production. Blends with heuristic v1 probabilities (60% ML / 40% heuristic).
+The default coefficients come from squeeze heuristics and domain priors, not
+resolved chronological outcomes. Outputs are unvalidated research estimates
+blended 60/40 with heuristic v1 and must not drive alerts or official issuance.
 """
 from __future__ import annotations
 from core.quiet import note_suppressed
@@ -153,5 +154,11 @@ def model_info() -> Dict[str, Any]:
         "blend_ml_weight": _BLEND_ML,
         "enabled": _enabled(),
         "weights_path": _MODEL_PATH,
-        "note": "Baseline logistic weights until labeled squeeze outcomes accrue.",
+        "validation_status": "unvalidated_proxy",
+        "research_only": True,
+        "decision_eligible": False,
+        "note": (
+            "Domain-prior proxy weights pending chronological outcome validation; "
+            "not calibrated and not alert confidence."
+        ),
     }

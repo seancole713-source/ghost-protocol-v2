@@ -195,6 +195,14 @@ function esc(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, function(
 function fmt(n, d){ if(n==null||isNaN(n)) return '—'; return Number(n).toFixed(d==null?2:d); }
 function fmtPct(n, d){ if(n==null||isNaN(n)) return '—'; return Number(n).toFixed(d==null?1:d)+'%'; }
 function money(n){ if(n==null||isNaN(n)) return '—'; return '$'+Number(n).toFixed(2); }
+function compactNumber(n){
+  if(n==null||isNaN(n)) return '—';
+  var value = Number(n), abs = Math.abs(value);
+  if(abs >= 1000000000) return (value/1000000000).toFixed(1)+'B';
+  if(abs >= 1000000) return (value/1000000).toFixed(1)+'M';
+  if(abs >= 1000) return (value/1000).toFixed(1)+'K';
+  return String(Math.round(value));
+}
 
 async function getJson(url){
   try{
@@ -335,6 +343,18 @@ function loadToday(){ return guardedLoad('today', async function(){
     && scanAgeMs >= 0 && scanAgeMs < 300000
   );
   var squeezeAlerts = (squeezeFresh && Array.isArray(squeeze.picks)) ? squeeze.picks : [];
+  var discovery = (squeeze.__ok && squeeze.external_discovery && squeeze.external_discovery.ok !== false)
+    ? squeeze.external_discovery : null;
+  var externalRows = discovery && Array.isArray(discovery.items) ? discovery.items.filter(function(item){
+    return item && item.advisory_only === true && item.decision_eligible === false;
+  }) : [];
+  externalRows.sort(function(a,b){
+    var freshnessA = a.freshness === 'fresh' ? 1 : 0;
+    var freshnessB = b.freshness === 'fresh' ? 1 : 0;
+    return freshnessB - freshnessA
+      || Number(b.move_pct||0) - Number(a.move_pct||0)
+      || Number(b.external_score||0) - Number(a.external_score||0);
+  });
   var activePicks = (picksResp.__ok && Array.isArray(picksResp.active)) ? picksResp.active : [];
   var paused = kill.__ok ? !!(kill.engine_pause && kill.engine_pause.paused) : null;
 
@@ -401,8 +421,23 @@ function loadToday(){ return guardedLoad('today', async function(){
     html += '</div>';
   }
 
-  if(!squeezeAlerts.length && !enriched.length){
-    html += '<div class="empty">No fresh squeeze alerts or active directional picks to show.</div>';
+  if(externalRows.length){
+    html += '<div class="section"><h2>External market discovery — advisory only</h2>'
+      + '<div class="hint">Display-only gainers and short-interest screens outside Ghost\'s validated candidate pipeline. These names are not scanned as Ghost candidates, cannot trigger alerts or wallet entries, and are not official predictions.</div>';
+    externalRows.slice(0,8).forEach(function(item){
+      var sourceAge = item.source_age_s == null ? 'source time unknown' : Math.max(0,Math.round(Number(item.source_age_s)/60))+' min old';
+      var scope = item.in_official_watchlist === true ? 'already in official watchlist' : 'quarantined outside watchlist';
+      html += '<div class="row"><span class="sym">'+esc(item.symbol||'—')+'</span>'
+        + '<span class="what"><b>'+fmtPct(item.move_pct,1)+' observed move</b> · '+esc(item.screen||'external screen')
+        + ' · volume '+compactNumber(item.volume)+' · '+esc(item.freshness||'unknown')+' ('+esc(sourceAge)+')'
+        + '<br><span class="src">'+esc(item.provider||'external source')+' · '+esc(scope)+' · decision eligible: no</span></span>'
+        + '<span class="pill wait">Advisory</span></div>';
+    });
+    html += '</div>';
+  }
+
+  if(!squeezeAlerts.length && !enriched.length && !externalRows.length){
+    html += '<div class="empty">No fresh squeeze alerts, active directional picks, or external discoveries to show.</div>';
   }
 
   el.innerHTML = html;

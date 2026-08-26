@@ -738,15 +738,37 @@ async def _run_watchlist_scan() -> None:
     )
 
 
+def _watch_quorum_priority(watch: Dict[str, Any]) -> tuple[float, float, int, str]:
+    """Rank advisory WATCH corroboration without changing WATCH list order."""
+    move = max(
+        float(watch.get("peak_move_pct") or 0.0),
+        float(watch.get("current_move_pct") or 0.0),
+    )
+    rvol = float(watch.get("rvol") or 0.0)
+    move_strength = move / max(WATCH_PRICE_PCT, 0.01)
+    volume_strength = rvol / max(WATCH_VOL_MULT, 0.01)
+    anomaly_strength = max(move_strength, volume_strength)
+    return (
+        0.0 if watch.get("escalated") is True else 1.0,
+        -anomaly_strength,
+        -int(watch.get("observations") or 0),
+        str(watch.get("symbol") or ""),
+    )
+
+
 def _enrich_watches_with_quorum(watches: List[Dict[str, Any]]) -> None:
     """Attach bounded advisory corroboration after all trade decisions are final.
 
-    This post-pass cannot change candidate classification, confidence, alerts,
-    or wallet inputs. Failures remain visible as unavailable metadata.
+    The strongest anomalies receive the bounded verification budget instead of
+    whichever symbols sort first alphabetically. Results are attached in place,
+    preserving display order and never changing classification, confidence,
+    alerts, or wallet inputs.
     """
     budget = max(0, int(os.getenv("SQUEEZE_QUORUM_WATCH_BUDGET", "3")))
-    for index, watch in enumerate(watches):
-        if index >= budget:
+    prioritized = sorted(watches, key=_watch_quorum_priority)
+    selected = prioritized[:budget]
+    for watch in watches:
+        if not any(watch is selected_watch for selected_watch in selected):
             watch["quorum"] = {
                 "verdict": "deferred",
                 "advisory_only": True,

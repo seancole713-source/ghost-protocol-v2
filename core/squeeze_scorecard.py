@@ -1,7 +1,8 @@
-"""Squeeze scorecard — setup / trigger / confirmation + heuristic probability targets.
+"""Squeeze scorecard — setup / trigger / confirmation + research estimates.
 
-Heuristic v1 (not ML-trained): weighted factors aligned with short-squeeze screeners.
-Probabilities are calibrated estimates for radar display, not guaranteed forecasts.
+Heuristic v1 (not outcome-trained): weighted factors aligned with short-squeeze
+screeners. Probability-like outputs are unvalidated research estimates for
+radar planning, not calibrated forecasts or alert confidence.
 """
 from __future__ import annotations
 
@@ -124,6 +125,14 @@ def build_scorecard_row(
     if vwap_f and vwap_f > 0:
         above_vwap = price >= vwap_f
 
+    short_data = short_ctx or {}
+    short_fields = [
+        field
+        for field in ("short_float_pct", "days_to_cover")
+        if short_data.get(field) is not None
+    ]
+    short_status = "available" if short_fields else "unknown"
+
     setup = score_setup(short_ctx)
     trigger = score_trigger(metrics["peak_move_pct"], metrics["current_move_pct"], has_catalyst=has_catalyst)
     confirm = score_confirmation(rvol, above_vwap)
@@ -175,9 +184,13 @@ def build_scorecard_row(
         "confirm_score": confirm,
         "probabilities": probs,
         "probability_model": ml_meta.get("model", "heuristic_v1"),
-        "short_float_pct": (short_ctx or {}).get("short_float_pct"),
-        "days_to_cover": (short_ctx or {}).get("days_to_cover"),
-        "short_risk": (short_ctx or {}).get("squeeze_risk"),
+        "probability_status": ml_meta.get("validation_status", "research_only"),
+        "probabilities_decision_eligible": False,
+        "short_float_pct": short_data.get("short_float_pct"),
+        "days_to_cover": short_data.get("days_to_cover"),
+        "short_risk": short_data.get("squeeze_risk"),
+        "short_interest_status": short_status,
+        "short_interest_fields_observed": short_fields,
     }
     if kind:
         row["kind"] = kind
@@ -206,7 +219,12 @@ def scorecard_legend() -> Dict[str, Any]:
             "confirm": "Time-adjusted RVOL + price vs session VWAP (participation)",
         },
         "squeeze_score": "35% setup + 25% trigger + 40% confirmation (0–100)",
-        "probabilities_note": "Heuristic estimates for planning — not ML-trained forecasts.",
+        "probabilities_note": (
+            "Unvalidated research estimates for planning only — not calibrated "
+            "forecasts, alert confidence, or decision-eligible trade signals."
+        ),
+        "probability_status": ml.get("validation_status", "research_only"),
+        "probabilities_decision_eligible": False,
         "probability_labels": {
             "p_continue_3pct_60m": "P(+3% next ~60 min)",
             "p_vwap_hold": "P(pullback holds VWAP)",

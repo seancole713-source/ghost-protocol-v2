@@ -3084,6 +3084,40 @@ def test_predict_ex_captures_near_miss_on_floor_skip(monkeypatch):
     assert sv["confidence_floor"] == 0.80
 
 
+@pytest.mark.parametrize(
+    ("engine_reason", "expected_skip"),
+    [
+        ("research_tier", "v3_research_tier"),
+        ("skill_unproven", "v3_skill_unproven"),
+        ("calibration_unproven", "v3_calibration_unproven"),
+        ("live_recal_prob_low", "v3_live_recal_prob_low"),
+        ("live_recal_prob_invalid", "v3_live_recal_prob_invalid"),
+        ("prob_invalid", "v3_prob_invalid"),
+        ("unexpected_future_gate", "v3_no_signal"),
+    ],
+)
+def test_predict_ex_preserves_specific_v3_block_reason(
+    monkeypatch, engine_reason, expected_skip,
+):
+    """Operational diagnostics must not collapse proof/calibration failures."""
+    import core.prediction as _pred
+    import core.signal_engine as _se
+
+    monkeypatch.setattr(_pred, "get_price", lambda s, a=None: 100.0)
+    monkeypatch.setattr(_pred, "RESEARCH_PICK_ENABLED", False)
+    monkeypatch.setattr(
+        _se, "predict_live_ex",
+        lambda s, a, scores=None, research_mode=False: (None, engine_reason),
+    )
+
+    pick, skip = _pred._predict_symbol_ex(
+        "WOLF", "stock", {"confidence_floor_override": 0.80}, scores_out={},
+    )
+
+    assert pick is None
+    assert skip == expected_skip
+
+
 def test_gate_history_aggregates_closest_near_miss(monkeypatch):
     """closest_near_miss = the highest-up_prob near miss across the window,
     with prob_gap relative to its threshold surfaced."""

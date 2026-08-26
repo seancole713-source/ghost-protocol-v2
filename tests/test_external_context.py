@@ -48,6 +48,8 @@ def test_external_symbol_is_quarantined_without_expanding_watchlist():
     assert row["validation_valid"] is True
     assert row["in_official_watchlist"] is False
     assert row["quarantined"] is True
+    assert row["advisory_only"] is True
+    assert row["decision_eligible"] is False
     assert tuple(OFFICIAL_WATCHLIST) == before
 
 

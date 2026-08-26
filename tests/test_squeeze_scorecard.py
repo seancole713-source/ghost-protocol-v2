@@ -77,10 +77,81 @@ def test_build_scorecard_row_fields():
     assert row["squeeze_score"] > 0
     assert row["probabilities"]["p_continue_3pct_60m"] > 0
     assert row["probability_model"] in ("squeeze_ml_v2", "heuristic_v1")
+    assert row["probability_status"] in ("unvalidated_proxy", "research_only")
+    assert row["probabilities_decision_eligible"] is False
+    assert row["short_interest_status"] == "available"
+    assert row["short_interest_fields_observed"] == [
+        "short_float_pct", "days_to_cover",
+    ]
     assert row["above_vwap"] is True
+
+
+def test_missing_short_interest_is_unknown_and_scores_zero():
+    metrics = {
+        "price": 10.0,
+        "prior_close": 9.5,
+        "session_high": 10.5,
+        "peak_move_pct": 5.0,
+        "current_move_pct": 4.0,
+        "vwap": 9.9,
+    }
+
+    row = build_scorecard_row("MISS", metrics, 2.0, {})
+
+    assert row["setup_score"] == 0
+    assert row["short_interest_status"] == "unknown"
+    assert row["short_interest_fields_observed"] == []
+    assert row["short_float_pct"] is None
+    assert row["days_to_cover"] is None
+
+
+def test_observed_zero_short_interest_is_available_not_missing():
+    metrics = {
+        "price": 10.0,
+        "prior_close": 9.5,
+        "session_high": 10.5,
+        "peak_move_pct": 5.0,
+        "current_move_pct": 4.0,
+        "vwap": 9.9,
+    }
+
+    row = build_scorecard_row(
+        "ZERO", metrics, 2.0,
+        {"short_float_pct": 0.0, "days_to_cover": 0.0},
+    )
+
+    assert row["setup_score"] == 0
+    assert row["short_interest_status"] == "available"
+    assert row["short_interest_fields_observed"] == [
+        "short_float_pct", "days_to_cover",
+    ]
+
+
+def test_partial_short_interest_lists_only_observed_fields():
+    metrics = {
+        "price": 10.0,
+        "prior_close": 9.5,
+        "session_high": 10.5,
+        "peak_move_pct": 5.0,
+        "current_move_pct": 4.0,
+        "vwap": None,
+    }
+
+    row = build_scorecard_row(
+        "PART", metrics, 2.0,
+        {"short_float_pct": None, "days_to_cover": 2.5},
+    )
+
+    assert row["short_interest_status"] == "available"
+    assert row["short_interest_fields_observed"] == ["days_to_cover"]
+    assert row["short_float_pct"] is None
 
 
 def test_scorecard_legend_has_ct_session():
     leg = scorecard_legend()
     assert leg["timezone"] == "America/Chicago"
     assert "cash" in leg["session"]
+    assert leg["probability_status"] in ("unvalidated_proxy", "research_only")
+    assert leg["probabilities_decision_eligible"] is False
+    assert "not calibrated" in leg["probabilities_note"]
+    assert "alert confidence" in leg["probabilities_note"]

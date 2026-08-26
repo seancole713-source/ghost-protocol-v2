@@ -196,6 +196,12 @@ _SKIP_PRIORITY: List[str] = [
     "v3_regime_gate",
     "v3_meta_gate",
     "v3_precision_unproven",
+    "v3_skill_unproven",
+    "v3_calibration_unproven",
+    "v3_live_recal_prob_low",
+    "v3_live_recal_prob_invalid",
+    "v3_research_tier",
+    "v3_prob_invalid",
     "v3_prob_low",
     "v3_intraday_data",
     "v3_engine_error",
@@ -215,6 +221,12 @@ _SKIP_LABELS: Dict[str, str] = {
     "v3_regime_gate": "v3 live regime gate blocked BUY",
     "v3_meta_gate": "v3 model metadata failed live thresholds",
     "v3_precision_unproven": "v3 model has no proven >=target-precision operating point (retrain needed)",
+    "v3_skill_unproven": "v3 model lacks sufficient exact-generation forward skill evidence",
+    "v3_calibration_unproven": "v3 model lacks sufficient exact-generation forward calibration evidence",
+    "v3_live_recal_prob_low": "v3 live-recalibrated probability fell below the proven threshold",
+    "v3_live_recal_prob_invalid": "v3 live recalibration returned an invalid probability",
+    "v3_research_tier": "v3 research-tier model is shadow-only and cannot issue official picks",
+    "v3_prob_invalid": "v3 model returned an invalid probability",
     "v3_prob_low": "v3 model prob below BUY floor",
     "v3_intraday_data": "v3 intraday bars missing/short",
     "v3_engine_error": "v3 engine error",
@@ -1398,21 +1410,23 @@ def _predict_symbol_ex(symbol, asset_type, regime, scores_out=None):
         return None, "v3_engine_error"
 
     if not signal:
-        if v3_reason == "no_model":
-            return None, "no_v3_model"
-        if v3_reason == "regime_gate":
-            return None, "v3_regime_gate"
-        if v3_reason == "intraday_data":
-            return None, "v3_intraday_data"
-        if v3_reason == "meta_gate":
-            return None, "v3_meta_gate"
-        if v3_reason == "precision_unproven":
-            return None, "v3_precision_unproven"
-        if v3_reason == "prob_low":
-            return None, "v3_prob_low"
-        if v3_reason == "down_shadow_only":
-            return None, "sell_blocked"
-        return None, "v3_no_signal"
+        reason_map = {
+            "no_model": "no_v3_model",
+            "regime_gate": "v3_regime_gate",
+            "intraday_data": "v3_intraday_data",
+            "meta_gate": "v3_meta_gate",
+            "meta_invalid": "v3_meta_gate",
+            "precision_unproven": "v3_precision_unproven",
+            "skill_unproven": "v3_skill_unproven",
+            "calibration_unproven": "v3_calibration_unproven",
+            "live_recal_prob_low": "v3_live_recal_prob_low",
+            "live_recal_prob_invalid": "v3_live_recal_prob_invalid",
+            "research_tier": "v3_research_tier",
+            "prob_invalid": "v3_prob_invalid",
+            "prob_low": "v3_prob_low",
+            "down_shadow_only": "sell_blocked",
+        }
+        return None, reason_map.get(v3_reason, "v3_no_signal")
     direction, confidence = signal
 
     _floor = regime.get('confidence_floor_override', _confidence_floor()) if isinstance(regime, dict) else _confidence_floor()

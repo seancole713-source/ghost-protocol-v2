@@ -193,7 +193,7 @@ def test_get_squeeze_picks_exposes_fetch_failed_symbols(monkeypatch):
     assert board["symbols"] == 43  # mocked passthrough value, not live count
 
 
-def test_watch_quorum_is_bounded_and_advisory_only(monkeypatch):
+def test_watch_quorum_prioritizes_strongest_anomaly_and_preserves_order(monkeypatch):
     import core.data_quorum as dq
     import core.squeeze_monitor as sm
 
@@ -207,18 +207,87 @@ def test_watch_quorum_is_bounded_and_advisory_only(monkeypatch):
         },
     )
     watches = [
-        {"symbol": "ARCT", "confidence_pct": 55, "candidate": False},
-        {"symbol": "WOLF", "confidence_pct": 60, "candidate": False},
+        {
+            "symbol": "ARCT", "peak_move_pct": 2.1, "current_move_pct": 1.0,
+            "rvol": 1.1, "observations": 1, "escalated": False,
+            "confidence_pct": 55, "candidate": False,
+        },
+        {
+            "symbol": "WOLF", "peak_move_pct": 6.0, "current_move_pct": 5.0,
+            "rvol": 1.2, "observations": 2, "escalated": False,
+            "confidence_pct": 60, "candidate": False,
+        },
     ]
     before = [{k: v for k, v in watch.items()} for watch in watches]
     sm._enrich_watches_with_quorum(watches)
 
-    assert calls == [("ARCT", True)]
-    assert watches[0]["quorum"]["verdict"] == "disagree"
-    assert watches[1]["quorum"]["verdict"] == "deferred"
+    assert calls == [("WOLF", True)]
+    assert [watch["symbol"] for watch in watches] == ["ARCT", "WOLF"]
+    assert watches[0]["quorum"] == {
+        "verdict": "deferred", "advisory_only": True,
+        "reason": "per_scan_budget",
+    }
+    assert watches[1]["quorum"]["verdict"] == "disagree"
     for index, watch in enumerate(watches):
-        for field in ("symbol", "confidence_pct", "candidate"):
+        for field in (
+            "symbol", "peak_move_pct", "current_move_pct", "rvol",
+            "observations", "escalated", "confidence_pct", "candidate",
+        ):
             assert watch[field] == before[index][field]
+
+
+def test_watch_quorum_prioritizes_escalation_before_raw_strength(monkeypatch):
+    import core.data_quorum as dq
+    import core.squeeze_monitor as sm
+
+    monkeypatch.setenv("SQUEEZE_QUORUM_WATCH_BUDGET", "1")
+    calls = []
+    monkeypatch.setattr(
+        dq,
+        "evaluate_quorum",
+        lambda symbol, use_cache=False: calls.append(symbol) or {
+            "verdict": "agree", "advisory_only": True,
+        },
+    )
+    watches = [
+        {
+            "symbol": "STRONG", "peak_move_pct": 8.0, "current_move_pct": 7.0,
+            "rvol": 4.0, "observations": 1, "escalated": False,
+        },
+        {
+            "symbol": "REPEAT", "peak_move_pct": 2.1, "current_move_pct": 1.0,
+            "rvol": 1.1, "observations": 3, "escalated": True,
+        },
+    ]
+
+    sm._enrich_watches_with_quorum(watches)
+
+    assert calls == ["REPEAT"]
+    assert watches[0]["quorum"]["reason"] == "per_scan_budget"
+    assert watches[1]["quorum"]["verdict"] == "agree"
+
+
+def test_watch_quorum_tie_breaks_by_symbol_ascending(monkeypatch):
+    import core.data_quorum as dq
+    import core.squeeze_monitor as sm
+
+    monkeypatch.setenv("SQUEEZE_QUORUM_WATCH_BUDGET", "1")
+    calls = []
+    monkeypatch.setattr(
+        dq, "evaluate_quorum",
+        lambda symbol, use_cache=False: calls.append(symbol) or {
+            "verdict": "agree", "advisory_only": True,
+        },
+    )
+    watches = [
+        {"symbol": "ZETA", "peak_move_pct": 4.0, "rvol": 2.0},
+        {"symbol": "ALFA", "peak_move_pct": 4.0, "rvol": 2.0},
+    ]
+
+    sm._enrich_watches_with_quorum(watches)
+
+    assert calls == ["ALFA"]
+    assert [watch["symbol"] for watch in watches] == ["ZETA", "ALFA"]
 
 
 def test_squeeze_alert_labels_radar_not_trade():

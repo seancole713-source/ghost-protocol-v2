@@ -74,6 +74,19 @@ def test_external_fonts_are_not_blocked_by_page_csp():
     assert "fonts.gstatic.com" not in PICKS
 
 
+def test_external_discovery_is_visible_but_never_called_a_prediction():
+    today_source = PICKS[PICKS.index("function loadToday") : PICKS.index("async function loadMyStocks")]
+    assert "squeeze.external_discovery" in today_source
+    assert "External market discovery — advisory only" in today_source
+    assert "not scanned as Ghost candidates" in today_source
+    assert "cannot trigger alerts or wallet entries" in today_source
+    assert "decision eligible: no" in today_source
+    assert "item.advisory_only === true" in today_source
+    assert "item.decision_eligible === false" in today_source
+    assert "externalRows.sort" in today_source
+    assert "Number(b.move_pct||0) - Number(a.move_pct||0)" in today_source
+
+
 def test_record_scope_is_disclosed():
     assert "Last 25 finished calls" in PICKS
     assert "most recent 25 finished calls" in PICKS
