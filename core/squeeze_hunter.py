@@ -345,19 +345,6 @@ def public_hunter_report(report: Dict[str, Any]) -> Dict[str, Any]:
     return public
 
 
-def qualifies_hunter_setup(report: Dict[str, Any]) -> bool:
-    """Require squeeze fuel plus independent evidence before qualification."""
-    stage = str(report.get("stage") or "none")
-    fuel = _f(report.get("fuel_score"))
-    trigger = _f(report.get("trigger_score"))
-    confirmation = _f(report.get("confirmation_score"))
-    return (
-        stage != "none"
-        and fuel >= 40.0
-        and (trigger >= 15.0 or confirmation >= 40.0)
-    )
-
-
 def build_explosion_report(
     *,
     symbol: str,
@@ -786,7 +773,7 @@ def fetch_explosion_report(
         "ratio": round(available_count / len(evidence), 3),
         "sources": evidence,
     }
-    report["qualified"] = qualifies_hunter_setup(report)
+    report["qualified"] = report.get("stage") != "none"
     report["reference_price"] = reference_price
     report["reference_price_ts"] = reference_price_ts
     report["reference_validation"] = reference_validation
