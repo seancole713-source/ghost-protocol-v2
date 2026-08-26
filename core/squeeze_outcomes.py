@@ -156,7 +156,14 @@ def record_squeeze_prediction(
     if not squeeze_log_enabled():
         return None
     sym = (pick.get("symbol") or "").upper()
-    if not sym:
+    from config.symbols import V3_WHITELIST_STOCKS
+
+    if (
+        not sym
+        or sym not in V3_WHITELIST_STOCKS
+        or pick.get("advisory_only") is True
+        or pick.get("decision_eligible") is False
+    ):
         return None
     ts = int(alerted_at or pick.get("alerted_at") or time.time())
     session_date = _ct_date(ts)

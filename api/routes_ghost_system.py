@@ -1044,6 +1044,26 @@ def external_discovery_snapshot(limit: int = Query(default=50, ge=1, le=200)):
         }, status_code=503)
 
 
+@router.get("/api/intelligence/external-radar")
+def external_radar_snapshot():
+    """Read batch-enriched external observations; never poll providers."""
+    try:
+        from core.external_context_ledger import latest_external_radar_snapshot
+        result = latest_external_radar_snapshot()
+        if result.get("status") == "unavailable":
+            return JSONResponse(result, status_code=503)
+        return result
+    except Exception:
+        logging.getLogger("ghost.api.external_context").exception(
+            "external radar snapshot unavailable"
+        )
+        return JSONResponse({
+            "ok": False, "status": "unavailable", "items": [],
+            "error": "external_radar_unavailable",
+            "advisory_only": True, "decision_eligible": False,
+        }, status_code=503)
+
+
 @router.get("/api/intelligence/broad-market")
 def broad_market_snapshot():
     """Read the leader-refreshed display-only broad-market snapshot."""

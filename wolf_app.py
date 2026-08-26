@@ -1783,6 +1783,15 @@ async def lifespan(app: FastAPI):
                 "external screener status=%s inserted=%s",
                 result.get("status"), result.get("inserted", 0),
             )
+            # Enrich only after the immutable discoveries have been persisted.
+            # This batch-only lane remains separate from candidates and alerts.
+            from core.external_radar import run_external_radar_cycle
+            radar = run_external_radar_cycle()
+            LOGGER.info(
+                "external radar status=%s observed=%s/%s",
+                radar.get("status"), radar.get("observed_count", 0),
+                radar.get("selected_count", 0),
+            )
         except Exception as _e:
             LOGGER.warning("external screener job failed: %s", str(_e)[:120])
             raise

@@ -22,6 +22,19 @@ def test_squeeze_log_disabled(monkeypatch):
     assert out["enabled"] is False
 
 
+def test_squeeze_outcome_rejects_external_advisory_before_db(monkeypatch):
+    import core.db as db
+
+    monkeypatch.setattr(
+        db, "db_conn",
+        lambda: (_ for _ in ()).throw(AssertionError("database should not be touched")),
+    )
+    assert record_squeeze_prediction({
+        "symbol": "ARCT", "buy": 20, "sell": 22,
+        "advisory_only": True, "decision_eligible": False,
+    }) is None
+
+
 def test_squeeze_daily_log_read_path_issues_select_only(monkeypatch):
     import core.db as db
 

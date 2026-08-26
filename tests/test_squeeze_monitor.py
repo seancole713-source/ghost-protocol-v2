@@ -319,6 +319,33 @@ def test_squeeze_maybe_alert_suppresses_low_conf(monkeypatch):
     assert sent == []
 
 
+def test_candidate_to_pick_rejects_external_advisory_row(monkeypatch):
+    import pytest
+    import core.squeeze_monitor as sm
+
+    metrics = {
+        "price": 20.0, "session_high": 22.0, "peak_move_pct": 10.0,
+        "current_move_pct": 8.0, "prior_close": 20.0,
+        "advisory_only": True, "decision_eligible": False,
+    }
+    with pytest.raises(ValueError, match="official squeeze candidate required"):
+        sm.candidate_to_pick("ARCT", "squeeze_active", metrics, 3.0, {})
+
+
+def test_maybe_alert_rejects_external_advisory_row(monkeypatch):
+    import core.squeeze_monitor as sm
+
+    sent = []
+    monkeypatch.setattr(sm, "_send_telegram", lambda key, msg: sent.append((key, msg)))
+    assert sm._maybe_alert(
+        "ARCT", "squeeze_active",
+        {"price": 20.0, "session_high": 22.0, "peak_move_pct": 10.0,
+         "advisory_only": True, "decision_eligible": False},
+        3.0, {"squeeze_risk": "extreme"},
+    ) is False
+    assert sent == []
+
+
 def test_squeeze_alert_key_changes_only_on_material_reprice():
     import core.squeeze_monitor as sm
     monkeypatch_pct = sm.REPRICE_ALERT_PCT

@@ -346,14 +346,21 @@ function loadToday(){ return guardedLoad('today', async function(){
   var discovery = (squeeze.__ok && squeeze.external_discovery && squeeze.external_discovery.ok !== false)
     ? squeeze.external_discovery : null;
   var externalRows = discovery && Array.isArray(discovery.items) ? discovery.items.filter(function(item){
-    return item && item.advisory_only === true && item.decision_eligible === false;
+    return item && item.advisory_only === true && item.decision_eligible === false && item.freshness === 'fresh';
   }) : [];
   externalRows.sort(function(a,b){
-    var freshnessA = a.freshness === 'fresh' ? 1 : 0;
-    var freshnessB = b.freshness === 'fresh' ? 1 : 0;
-    return freshnessB - freshnessA
-      || Number(b.move_pct||0) - Number(a.move_pct||0)
+    return Number(b.move_pct||0) - Number(a.move_pct||0)
       || Number(b.external_score||0) - Number(a.external_score||0);
+  });
+  var externalRadar = (squeeze.__ok && squeeze.external_radar
+    && squeeze.external_radar.ok === true
+    && ['empty','complete','partial'].indexOf(squeeze.external_radar.status) >= 0)
+    ? squeeze.external_radar : null;
+  var externalRadarRows = externalRadar && Array.isArray(externalRadar.items) ? externalRadar.items.filter(function(item){
+    return item && item.advisory_only === true && item.decision_eligible === false;
+  }) : [];
+  externalRadarRows.sort(function(a,b){
+    return Number(b.observed_peak_move_pct||-9999) - Number(a.observed_peak_move_pct||-9999);
   });
   var activePicks = (picksResp.__ok && Array.isArray(picksResp.active)) ? picksResp.active : [];
   var paused = kill.__ok ? !!(kill.engine_pause && kill.engine_pause.paused) : null;
@@ -421,23 +428,41 @@ function loadToday(){ return guardedLoad('today', async function(){
     html += '</div>';
   }
 
+  if(externalRadarRows.length){
+    html += '<div class="section"><h2>Externally discovered activity — observed by Ghost</h2>'
+      + '<div class="hint">Batch market observations made only after an external provider surfaced the symbol. Advisory only: not a prediction, candidate, alert, trade recommendation, or evidence Ghost found the move before it began.</div>';
+    externalRadarRows.slice(0,8).forEach(function(item){
+      var origins = Array.isArray(item.origins) ? item.origins : [];
+      var screens = origins.map(function(origin){ return origin.screen; }).filter(Boolean).join(', ') || 'external source';
+      var observed = item.market_status === 'available';
+      var metric = observed
+        ? fmtPct(item.observed_current_move_pct,1)+' current · '+fmtPct(item.observed_peak_move_pct,1)+' session peak · RVOL '+Number(item.observed_rvol||0).toFixed(1)+'×'
+        : 'Market metrics unavailable: '+esc(item.missing_reason||'batch data missing');
+      html += '<div class="row"><span class="sym">'+esc(item.symbol||'—')+'</span>'
+        + '<span class="what"><b>'+metric+'</b> · '+esc(screens)
+        + '<br><span class="src">'+esc(item.market_provider||'batch market source')+' · decision eligible: no</span></span>'
+        + '<span class="pill wait">Observed after discovery</span></div>';
+    });
+    html += '</div>';
+  }
+
   if(externalRows.length){
-    html += '<div class="section"><h2>External market discovery — advisory only</h2>'
-      + '<div class="hint">Display-only gainers and short-interest screens outside Ghost\'s validated candidate pipeline. These names are not scanned as Ghost candidates, cannot trigger alerts or wallet entries, and are not official predictions.</div>';
+    html += '<div class="section"><h2>External source coverage — advisory only</h2>'
+      + '<div class="hint">Fresh provider rows awaiting or complementing Ghost\'s separate batch observation lane. These names cannot trigger candidates, alerts, outcomes, or wallet entries.</div>';
     externalRows.slice(0,8).forEach(function(item){
       var sourceAge = item.source_age_s == null ? 'source time unknown' : Math.max(0,Math.round(Number(item.source_age_s)/60))+' min old';
       var scope = item.in_official_watchlist === true ? 'already in official watchlist' : 'quarantined outside watchlist';
       html += '<div class="row"><span class="sym">'+esc(item.symbol||'—')+'</span>'
-        + '<span class="what"><b>'+fmtPct(item.move_pct,1)+' observed move</b> · '+esc(item.screen||'external screen')
-        + ' · volume '+compactNumber(item.volume)+' · '+esc(item.freshness||'unknown')+' ('+esc(sourceAge)+')'
+        + '<span class="what"><b>'+fmtPct(item.move_pct,1)+' provider-observed move</b> · '+esc(item.screen||'external screen')
+        + ' · volume '+compactNumber(item.volume)+' · '+esc(sourceAge)
         + '<br><span class="src">'+esc(item.provider||'external source')+' · '+esc(scope)+' · decision eligible: no</span></span>'
         + '<span class="pill wait">Advisory</span></div>';
     });
     html += '</div>';
   }
 
-  if(!squeezeAlerts.length && !enriched.length && !externalRows.length){
-    html += '<div class="empty">No fresh squeeze alerts, active directional picks, or external discoveries to show.</div>';
+  if(!squeezeAlerts.length && !enriched.length && !externalRows.length && !externalRadarRows.length){
+    html += '<div class="empty">No fresh squeeze alerts, active directional picks, or external observations to show.</div>';
   }
 
   el.innerHTML = html;

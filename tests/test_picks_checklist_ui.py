@@ -77,14 +77,19 @@ def test_external_fonts_are_not_blocked_by_page_csp():
 def test_external_discovery_is_visible_but_never_called_a_prediction():
     today_source = PICKS[PICKS.index("function loadToday") : PICKS.index("async function loadMyStocks")]
     assert "squeeze.external_discovery" in today_source
-    assert "External market discovery — advisory only" in today_source
-    assert "not scanned as Ghost candidates" in today_source
-    assert "cannot trigger alerts or wallet entries" in today_source
+    assert "squeeze.external_radar" in today_source
+    assert "Externally discovered activity — observed by Ghost" in today_source
+    assert "External source coverage — advisory only" in today_source
+    assert "not a prediction, candidate, alert, trade recommendation" in today_source
+    assert "cannot trigger candidates, alerts, outcomes, or wallet entries" in today_source
     assert "decision eligible: no" in today_source
     assert "item.advisory_only === true" in today_source
     assert "item.decision_eligible === false" in today_source
     assert "externalRows.sort" in today_source
+    assert "externalRadarRows.sort" in today_source
     assert "Number(b.move_pct||0) - Number(a.move_pct||0)" in today_source
+    for prohibited in ("confidence_pct", "item.buy", "item.sell", "item.stop"):
+        assert prohibited not in today_source[today_source.index("if(externalRadarRows.length)") : today_source.index("if(externalRows.length)")]
 
 
 def test_record_scope_is_disclosed():

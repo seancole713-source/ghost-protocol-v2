@@ -376,7 +376,15 @@ def candidate_to_pick(
     rvol: float,
     short_ctx: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """Telegram-aligned pick row for cockpit + API (includes scorecard + probability targets)."""
+    """Telegram-aligned official-radar row; advisory/nonofficial input is rejected."""
+    from config.symbols import V3_WHITELIST_STOCKS
+
+    if (
+        symbol.upper() not in V3_WHITELIST_STOCKS
+        or metrics.get("advisory_only") is True
+        or metrics.get("decision_eligible") is False
+    ):
+        raise ValueError("official squeeze candidate required")
     from core.squeeze_scorecard import build_scorecard_row
 
     row = build_scorecard_row(symbol, metrics, rvol, short_ctx, kind=kind)
@@ -440,6 +448,14 @@ def get_squeeze_picks() -> Dict[str, Any]:
             "ok": False, "status": "unavailable", "items": [], "count": 0,
             "advisory_only": True, "decision_eligible": False,
         }
+    try:
+        from core.external_context_ledger import latest_external_radar_snapshot
+        external_radar = latest_external_radar_snapshot()
+    except Exception:
+        external_radar = {
+            "ok": False, "status": "unavailable", "items": [],
+            "advisory_only": True, "decision_eligible": False,
+        }
     return {
         "scan_ok": bool(st.get("ok") and st.get("status") == "complete"),
         "picks": picks,
@@ -447,6 +463,7 @@ def get_squeeze_picks() -> Dict[str, Any]:
         "watches": watches,
         "watch_count": len(watches),
         "external_discovery": external_discovery,
+        "external_radar": external_radar,
         "broad_market_context": market_context,
         "alert_history": enriched_alerts,
         "live_drift": build_live_drift_board(alerts, picks, leaders),
@@ -1407,6 +1424,15 @@ def _maybe_alert(
     rvol: float,
     short_ctx: Dict[str, Any],
 ) -> bool:
+    from config.symbols import V3_WHITELIST_STOCKS
+
+    if (
+        symbol.upper() not in V3_WHITELIST_STOCKS
+        or metrics.get("advisory_only") is True
+        or metrics.get("decision_eligible") is False
+    ):
+        LOGGER.warning("[SqueezeMonitor] reject nonofficial/advisory alert %s", symbol)
+        return False
     buy, sell = squeeze_trade_levels(metrics["price"], metrics["session_high"], kind)
     conf = squeeze_confidence(
         metrics["peak_move_pct"],

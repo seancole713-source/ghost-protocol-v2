@@ -83,6 +83,60 @@ def ensure_external_context_tables(cur) -> None:
     )
     cur.execute(
         """
+        CREATE TABLE IF NOT EXISTS ghost_external_radar_snapshots (
+            id BIGSERIAL PRIMARY KEY,
+            run_id TEXT NOT NULL UNIQUE,
+            observed_at BIGINT NOT NULL,
+            status TEXT NOT NULL,
+            selected_count INT NOT NULL,
+            observed_count INT NOT NULL,
+            missing_count INT NOT NULL,
+            batch_failed BOOLEAN NOT NULL DEFAULT FALSE,
+            note TEXT NOT NULL,
+            advisory_only BOOLEAN NOT NULL DEFAULT TRUE,
+            decision_eligible BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at BIGINT NOT NULL
+        )
+        """
+    )
+    cur.execute(
+        """CREATE INDEX IF NOT EXISTS idx_external_radar_snapshots_observed
+           ON ghost_external_radar_snapshots(observed_at DESC)"""
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ghost_external_radar_observations (
+            id BIGSERIAL PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            symbol VARCHAR(20) NOT NULL,
+            first_seen_ts BIGINT,
+            origins JSONB NOT NULL,
+            market_provider TEXT NOT NULL,
+            market_data_as_of TEXT,
+            market_status TEXT NOT NULL,
+            missing_reason TEXT,
+            observed_price DOUBLE PRECISION,
+            prior_close DOUBLE PRECISION,
+            session_high DOUBLE PRECISION,
+            observed_current_move_pct DOUBLE PRECISION,
+            observed_peak_move_pct DOUBLE PRECISION,
+            session_volume DOUBLE PRECISION,
+            avg_daily_volume DOUBLE PRECISION,
+            observed_rvol DOUBLE PRECISION,
+            payload_sha256 CHAR(64) NOT NULL,
+            advisory_only BOOLEAN NOT NULL DEFAULT TRUE,
+            decision_eligible BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at BIGINT NOT NULL,
+            UNIQUE(run_id, symbol)
+        )
+        """
+    )
+    cur.execute(
+        """CREATE INDEX IF NOT EXISTS idx_external_radar_obs_run_symbol
+           ON ghost_external_radar_observations(run_id, symbol)"""
+    )
+    cur.execute(
+        """
         CREATE TABLE IF NOT EXISTS ghost_market_context_snapshots (
             id BIGSERIAL PRIMARY KEY,
             snapshot_id TEXT NOT NULL UNIQUE,
@@ -318,10 +372,137 @@ def recent_external_discoveries(*, limit: int = 50) -> Dict[str, Any]:
             "decision_eligible": False}
 
 
+def store_external_radar_snapshot(run: Dict[str, Any], items: List[Dict[str, Any]], *, cur=None) -> bool:
+    """Persist one immutable advisory dynamic-radar run and its observations."""
+    run_id = str(run["run_id"])
+    created_at = int(run.get("observed_at") or time.time())
+
+    def _write(cursor) -> bool:
+        cursor.execute(
+            """INSERT INTO ghost_external_radar_snapshots (
+                   run_id, observed_at, status, selected_count, observed_count,
+                   missing_count, batch_failed, note, advisory_only,
+                   decision_eligible, created_at
+               ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,TRUE,FALSE,%s)
+               ON CONFLICT (run_id) DO NOTHING RETURNING id""",
+            (
+                run_id, created_at, run.get("status") or "unknown",
+                int(run.get("selected_count") or 0), int(run.get("observed_count") or 0),
+                int(run.get("missing_count") or 0), bool(run.get("batch_failed")),
+                str(run.get("note") or ""), created_at,
+            ),
+        )
+        inserted = cursor.fetchone() is not None
+        if not inserted:
+            return False
+        for item in items:
+            canonical = _json_text(item)
+            cursor.execute(
+                """INSERT INTO ghost_external_radar_observations (
+                       run_id, symbol, first_seen_ts, origins, market_provider,
+                       market_data_as_of, market_status, missing_reason,
+                       observed_price, prior_close, session_high,
+                       observed_current_move_pct, observed_peak_move_pct,
+                       session_volume, avg_daily_volume, observed_rvol,
+                       payload_sha256, advisory_only, decision_eligible, created_at
+                   ) VALUES (
+                       %s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                       %s,TRUE,FALSE,%s
+                   ) ON CONFLICT (run_id, symbol) DO NOTHING""",
+                (
+                    run_id, item["symbol"], item.get("first_seen_ts"),
+                    _json_text(item.get("origins") or []), item.get("market_provider") or "unknown",
+                    str(item.get("market_data_as_of") or "") or None,
+                    item.get("market_status") or "unavailable", item.get("missing_reason"),
+                    item.get("observed_price"), item.get("prior_close"), item.get("session_high"),
+                    item.get("observed_current_move_pct"), item.get("observed_peak_move_pct"),
+                    item.get("session_volume"), item.get("avg_daily_volume"),
+                    item.get("observed_rvol"), hashlib.sha256(canonical.encode()).hexdigest(),
+                    created_at,
+                ),
+            )
+        return True
+
+    if cur is not None:
+        return _write(cur)
+    from core.db import db_conn
+    with db_conn() as conn:
+        return _write(conn.cursor())
+
+
+def latest_external_radar_snapshot() -> Dict[str, Any]:
+    """Read the most recent persisted dynamic-radar snapshot without polling."""
+    ttl = max(300, int(os.getenv("EXTERNAL_RADAR_SNAPSHOT_TTL_S", "5400")))
+    now = int(time.time())
+    from core.db import db_conn
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT run_id, observed_at, status, selected_count, observed_count,
+                      missing_count, batch_failed, note
+               FROM ghost_external_radar_snapshots
+               ORDER BY observed_at DESC LIMIT 1"""
+        )
+        run = cur.fetchone()
+        if not run:
+            return {
+                "ok": True, "status": "empty", "items": [], "selected_count": 0,
+                "observed_count": 0, "missing_count": 0, "advisory_only": True,
+                "decision_eligible": False, "snapshot_age_s": None,
+                "note": "No external advisory radar cycle has completed yet.",
+            }
+        cur.execute(
+            """SELECT symbol, first_seen_ts, origins, market_provider,
+                      market_data_as_of, market_status, missing_reason,
+                      observed_price, prior_close, session_high,
+                      observed_current_move_pct, observed_peak_move_pct,
+                      session_volume, avg_daily_volume, observed_rvol
+               FROM ghost_external_radar_observations
+               WHERE run_id=%s ORDER BY observed_peak_move_pct DESC NULLS LAST, symbol""",
+            (run[0],),
+        )
+        rows = cur.fetchall()
+    items = [
+        {
+            "symbol": row[0], "first_seen_ts": row[1], "origins": row[2] or [],
+            "market_provider": row[3], "market_data_as_of": row[4],
+            "market_status": row[5], "missing_reason": row[6],
+            "observed_price": row[7], "prior_close": row[8], "session_high": row[9],
+            "observed_current_move_pct": row[10], "observed_peak_move_pct": row[11],
+            "session_volume": row[12], "avg_daily_volume": row[13],
+            "observed_rvol": row[14], "advisory_only": True, "decision_eligible": False,
+        }
+        for row in rows
+    ]
+    observed_at = int(run[1] or 0)
+    snapshot_age_s = max(0, now - observed_at) if observed_at else None
+    stored_status = run[2]
+    # Re-age at read time so a persisted snapshot can never masquerade as
+    # current activity, and a stored failure never reports healthy.
+    if stored_status not in {"empty", "complete", "partial"}:
+        status = stored_status
+        ok = False
+    elif snapshot_age_s is not None and snapshot_age_s > ttl:
+        status = "stale"
+        ok = False
+    else:
+        status = stored_status
+        ok = True
+    return {
+        "ok": ok,
+        "run_id": run[0], "observed_at": observed_at, "status": status,
+        "selected_count": run[3], "observed_count": run[4], "missing_count": run[5],
+        "batch_failed": bool(run[6]), "note": run[7], "items": items,
+        "snapshot_age_s": snapshot_age_s, "snapshot_ttl_s": ttl,
+        "advisory_only": True, "decision_eligible": False,
+    }
+
+
 def prune_external_context(*, now_ts: Optional[int] = None, cur=None) -> Dict[str, int]:
     """Bound advisory storage while retaining enough history for forensics."""
     now = int(time.time()) if now_ts is None else int(now_ts)
     observation_days = max(7, int(os.getenv("EXTERNAL_CONTEXT_RETENTION_DAYS", "30")))
+    radar_days = max(2, int(os.getenv("EXTERNAL_RADAR_RETENTION_DAYS", "7")))
     snapshot_days = max(2, int(os.getenv("MARKET_CONTEXT_RETENTION_DAYS", "7")))
 
     def _prune(cursor) -> Dict[str, int]:
@@ -331,12 +512,24 @@ def prune_external_context(*, now_ts: Optional[int] = None, cur=None) -> Dict[st
         )
         observations_deleted = max(0, int(cursor.rowcount or 0))
         cursor.execute(
+            "DELETE FROM ghost_external_radar_observations WHERE created_at < %s",
+            (now - radar_days * 86400,),
+        )
+        radar_observations_deleted = max(0, int(cursor.rowcount or 0))
+        cursor.execute(
+            "DELETE FROM ghost_external_radar_snapshots WHERE created_at < %s",
+            (now - radar_days * 86400,),
+        )
+        radar_snapshots_deleted = max(0, int(cursor.rowcount or 0))
+        cursor.execute(
             "DELETE FROM ghost_market_context_snapshots WHERE received_at < %s",
             (now - snapshot_days * 86400,),
         )
         snapshots_deleted = max(0, int(cursor.rowcount or 0))
         return {
             "observations_deleted": observations_deleted,
+            "radar_observations_deleted": radar_observations_deleted,
+            "radar_snapshots_deleted": radar_snapshots_deleted,
             "snapshots_deleted": snapshots_deleted,
         }
 

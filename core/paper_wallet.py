@@ -889,6 +889,7 @@ def _intraday_squeeze_candidates(board: Dict[str, Any], *, now_ts: Optional[int]
         "scan_ok": bool(board.get("scan_ok")),
         "source_picks": len(picks),
         "ready": 0,
+        "skip_advisory": 0,
         "skip_kind": 0,
         "skip_confidence": 0,
         "skip_score": 0,
@@ -929,6 +930,10 @@ def _intraday_squeeze_candidates(board: Dict[str, Any], *, now_ts: Optional[int]
     scored = []
     for pick in picks:
         if not isinstance(pick, dict):
+            continue
+        symbol = str(pick.get("symbol") or "").strip().upper()
+        if pick.get("advisory_only") is True or pick.get("decision_eligible") is False:
+            diag["skip_advisory"] += 1
             continue
         kind = str(pick.get("kind") or "").strip()
         if kind not in ("squeeze_active", "squeeze_forming"):
@@ -978,10 +983,6 @@ def _intraday_squeeze_candidates(board: Dict[str, Any], *, now_ts: Optional[int]
         short_risk = str(pick.get("short_risk") or "").lower()
         if kind == "squeeze_forming" and short_risk not in ("high", "extreme"):
             diag["skip_direction"] += 1
-            continue
-        symbol = str(pick.get("symbol") or "").strip().upper()
-        if not symbol:
-            diag["skip_price"] += 1
             continue
         if symbol in blocked_earnings:
             diag["skip_earnings"] = diag.get("skip_earnings", 0) + 1

@@ -157,7 +157,8 @@ def run_external_screener_cycle() -> Dict[str, Any]:
     totals = {"received": 0, "inserted": 0, "valid": 0, "invalid": 0,
               "official": 0, "quarantined": 0}
     for screen in _screens():
-        rows, provider_status = fetch_yahoo_screen(screen)
+        count = max(1, min(50, int(os.getenv("EXTERNAL_SCREENER_ROWS", "50"))))
+        rows, provider_status = fetch_yahoo_screen(screen, count=count)
         counts = ingest_rows(rows) if rows else dict.fromkeys(totals, 0)
         statuses[screen] = {**provider_status, **counts}
         for key in totals:

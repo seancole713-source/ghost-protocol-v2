@@ -315,6 +315,25 @@ def test_intraday_squeeze_candidates_prefers_stronger_radar(monkeypatch):
     assert expires_at > 1_000_000
 
 
+def test_intraday_wallet_rejects_external_advisory_rows(monkeypatch):
+    import core.paper_wallet as pw
+
+    monkeypatch.setenv("PAPER_INTRADAY_MIN_CONFIDENCE", "1")
+    monkeypatch.setenv("PAPER_INTRADAY_MIN_SQUEEZE_SCORE", "1")
+    monkeypatch.setenv("PAPER_INTRADAY_MIN_CONTINUE_PCT", "1")
+    board = {"scan_ok": True, "last_scan_ts": 123, "picks": [{
+        "symbol": "ARCT", "kind": "squeeze_active", "confidence_pct": 99,
+        "squeeze_score": 99, "price": 20.0, "sell": 22.0, "stop": 19.0,
+        "above_vwap": True, "probabilities": {"p_continue_3pct_60m": 99},
+        "advisory_only": True, "decision_eligible": False,
+    }]}
+
+    out = pw._intraday_squeeze_candidates(board, now_ts=1_000_000)
+
+    assert out["rows"] == []
+    assert out["diag"]["skip_advisory"] == 1
+
+
 def test_intraday_squeeze_candidates_rejects_bad_geometry(monkeypatch):
     import core.paper_wallet as pw
 
