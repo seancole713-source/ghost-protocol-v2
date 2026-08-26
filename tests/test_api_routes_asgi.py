@@ -18,6 +18,41 @@ def test_api_health_route_returns_health_payload(monkeypatch):
     assert body["score"] == 100
 
 
+def test_api_big_movers_route_contract(monkeypatch):
+    captured = {}
+
+    def fake_snapshot(min_gain_pct, *, db_conn_factory):
+        captured["floor"] = min_gain_pct
+        captured["db"] = db_conn_factory
+        return {
+            "ok": True,
+            "status": "empty",
+            "items": [],
+            "count": 0,
+            "scope": "official_watchlist",
+            "market_wide": False,
+        }
+
+    monkeypatch.setattr("core.big_movers.big_movers_snapshot", fake_snapshot)
+    with _client_with_test_mode(monkeypatch) as client:
+        r = client.get("/api/big-movers?min_gain_pct=7.5")
+    assert r.status_code == 200
+    assert r.json()["market_wide"] is False
+    assert captured["floor"] == 7.5
+    assert captured["db"] is wolf_app.db_conn
+
+
+def test_api_big_movers_fails_closed(monkeypatch):
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("database details must not leak")
+
+    monkeypatch.setattr("core.big_movers.big_movers_snapshot", fail)
+    with _client_with_test_mode(monkeypatch) as client:
+        r = client.get("/api/big-movers")
+    assert r.status_code == 503
+    assert r.json() == {"ok": False, "error": "big movers unavailable"}
+
+
 def test_api_coverage_route_success(monkeypatch):
     class FakeCursor:
         def __init__(self):

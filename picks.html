@@ -112,6 +112,17 @@ a{color:inherit}
 .lvl .v{font-family:"IBM Plex Mono",monospace;font-size:16px;font-weight:600;font-variant-numeric:tabular-nums}
 .lvl.target .v{color:var(--good)} .lvl.stop .v{color:var(--bad)}
 
+.mover-card{background:var(--surface);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);padding:17px;display:flex;flex-direction:column;gap:13px}
+.mover-head{display:flex;align-items:flex-start;gap:12px}
+.mover-symbol{font-size:24px;font-weight:650;letter-spacing:-.02em;line-height:1;flex:1}
+.mover-gain{font-family:"IBM Plex Mono",monospace;color:var(--good);font-size:22px;font-weight:650;line-height:1;white-space:nowrap}
+.mover-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.mover-cell{background:var(--surface);padding:10px;display:flex;flex-direction:column;gap:3px;min-width:0}
+.mover-cell .k{font-size:10.5px;color:var(--ink-3)}
+.mover-cell .v{font-family:"IBM Plex Mono",monospace;font-size:15px;font-weight:600;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.mover-cell.target .v{color:var(--good)}
+@media (max-width:430px){.mover-grid{grid-template-columns:1fr}.mover-cell{flex-direction:row;justify-content:space-between;gap:12px}}
+
 .why{display:flex;flex-direction:column;gap:8px}
 .why h4{margin:0;font-size:12.5px;color:var(--ink-3);font-weight:500}
 .why ul{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:7px}
@@ -172,6 +183,7 @@ a{color:inherit}
 
   <nav class="tabs" role="tablist" aria-label="Ghost sections">
     <button class="tabbtn" id="tab-today" role="tab" aria-selected="true" aria-controls="view-today">Today</button>
+    <button class="tabbtn" id="tab-bigmovers" role="tab" aria-selected="false" aria-controls="view-bigmovers">Big Movers</button>
     <button class="tabbtn" id="tab-mystocks" role="tab" aria-selected="false" aria-controls="view-mystocks">My stocks</button>
     <button class="tabbtn" id="tab-record" role="tab" aria-selected="false" aria-controls="view-record">Record</button>
     <button class="tabbtn" id="tab-system" role="tab" aria-selected="false" aria-controls="view-system">System</button>
@@ -179,6 +191,7 @@ a{color:inherit}
 
   <main>
     <section class="view" id="view-today" role="tabpanel" aria-labelledby="tab-today"><div class="loading">Loading today's read…</div></section>
+    <section class="view" id="view-bigmovers" role="tabpanel" aria-labelledby="tab-bigmovers" hidden><div class="loading">Loading Big Movers…</div></section>
     <section class="view" id="view-mystocks" role="tabpanel" aria-labelledby="tab-mystocks" hidden><div class="loading">Loading your stocks…</div></section>
     <section class="view" id="view-record" role="tabpanel" aria-labelledby="tab-record" hidden><div class="loading">Loading the record…</div></section>
     <section class="view" id="view-system" role="tabpanel" aria-labelledby="tab-system" hidden><div class="loading">Loading system status…</div></section>
@@ -241,6 +254,7 @@ function guardedLoad(key, work){
 /* ---------------------------------------------------------------- tabs -- */
 var tabs = [
   {btn:document.getElementById('tab-today'), panel:document.getElementById('view-today'), load:loadToday, loaded:false},
+  {btn:document.getElementById('tab-bigmovers'), panel:document.getElementById('view-bigmovers'), load:loadBigMovers, loaded:false},
   {btn:document.getElementById('tab-mystocks'), panel:document.getElementById('view-mystocks'), load:loadMyStocks, loaded:false},
   {btn:document.getElementById('tab-record'), panel:document.getElementById('view-record'), load:loadRecord, loaded:false},
   {btn:document.getElementById('tab-system'), panel:document.getElementById('view-system'), load:loadSystem, loaded:false},
@@ -465,6 +479,47 @@ function loadToday(){ return guardedLoad('today', async function(){
     html += '<div class="empty">No fresh squeeze alerts, active directional picks, or external observations to show.</div>';
   }
 
+  el.innerHTML = html;
+  });
+}
+
+/* --------------------------------------------------------- Big Movers --- */
+function targetWindowDate(value){
+  var ms = timestampMs(value);
+  if(ms == null) return '—';
+  return new Date(ms).toLocaleDateString('en-US', {month:'short', day:'numeric', year:'numeric'});
+}
+function loadBigMovers(){ return guardedLoad('bigmovers', async function(){
+  var el = document.getElementById('view-bigmovers');
+  var resp = await getJson('/api/big-movers?min_gain_pct=5');
+  if(!resp.__ok){
+    el.innerHTML = '<div class="err">Big Movers are unavailable right now. No forecast is shown without verified data.</div>';
+    return;
+  }
+  var rows = Array.isArray(resp.items) ? resp.items.filter(function(item){
+    return item && item.official_live_prediction === true && item.research_pick === false
+      && Number(item.forecast_gain_pct) >= 5;
+  }) : [];
+  rows.sort(function(a,b){ return Number(b.forecast_gain_pct||0) - Number(a.forecast_gain_pct||0); });
+  var html = '<div class="section"><h2>Big Movers — official Ghost forecasts</h2>'
+    + '<div class="hint">Active upward forecasts of 5% or more, measured from Ghost\'s original issued entry to its original target. Limited to Ghost\'s '+Number(resp.universe_size||0)+'-symbol official watchlist — not the entire stock market. Squeeze and external observations are excluded because they are not proven price forecasts.</div>'
+    + '<div class="hint">Prices refresh while this tab is open. The date is the end of the target window, not an exact promised hit date.</div></div>';
+  if(!rows.length){
+    html += '<div class="empty">'+esc(resp.empty_reason||'No active official Ghost forecast currently has an issued gain of at least 5%.')+'</div>';
+  } else {
+    rows.forEach(function(item){
+      var state = item.current_price_state || 'unavailable';
+      var current = item.current_price == null ? 'Unavailable' : money(item.current_price);
+      var freshness = item.current_price_freshness_seconds == null ? '' : ' · '+Math.max(0,Math.round(Number(item.current_price_freshness_seconds)))+'s old';
+      html += '<div class="mover-card"><div class="mover-head"><div class="mover-symbol">'+esc(item.symbol||'—')+'</div>'
+        + '<div class="mover-gain">+'+fmtPct(item.forecast_gain_pct,1)+'</div></div>'
+        + '<div class="mover-grid">'
+        + '<div class="mover-cell"><span class="k">Current price</span><span class="v">'+current+'</span></div>'
+        + '<div class="mover-cell target"><span class="k">Ghost target</span><span class="v">'+money(item.forecast_target_price)+'</span></div>'
+        + '<div class="mover-cell"><span class="k">Target window ends</span><span class="v">'+targetWindowDate(item.target_window_ends_at)+'</span></div>'
+        + '</div><div class="hint">Issued from '+money(item.issued_entry_price)+' · price state: '+esc(state)+esc(freshness)+'</div></div>';
+    });
+  }
   el.innerHTML = html;
   });
 }

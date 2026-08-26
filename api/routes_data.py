@@ -13,6 +13,22 @@ from fastapi.responses import JSONResponse, HTMLResponse, Response, PlainTextRes
 LOGGER = logging.getLogger("ghost.routes_data")
 router = APIRouter()
 
+
+@router.get("/api/big-movers")
+def get_big_movers(min_gain_pct: float = 5.0):
+    """Active official forecasts whose immutable issued gain is at least 5%."""
+    from wolf_app import db_conn  # late import — shared state + monkeypatch-safe
+    try:
+        from core.big_movers import big_movers_snapshot
+        return big_movers_snapshot(
+            min_gain_pct=min_gain_pct,
+            db_conn_factory=db_conn,
+        )
+    except Exception as e:
+        LOGGER.warning("big movers snapshot failed: %s", str(e)[:160])
+        return JSONResponse({"ok": False, "error": "big movers unavailable"}, status_code=503)
+
+
 @router.get("/api/picks")
 def get_picks(symbol: str = "ALL", asset_type: str = None, limit: int = 50, offset: int = 0):
     """Recent picks with pagination. Defaults to ALL watchlist symbols.

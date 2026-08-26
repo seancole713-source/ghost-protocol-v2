@@ -3610,6 +3610,7 @@ from api.routes_wolf_ops import (  # noqa: E402,F401 — facade re-exports
 from api.routes_data import router as _routes_data_router  # noqa: E402
 APP.include_router(_routes_data_router)
 from api.routes_data import (  # noqa: E402,F401 — facade re-exports
+    get_big_movers,
     get_picks,
     get_history,
     get_news,
