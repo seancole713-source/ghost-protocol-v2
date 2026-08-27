@@ -80,7 +80,7 @@ async def mcp_get_root(request: Request):
     return {
         "ok": True,
         "service": "ghost-protocol-mcp",
-        "phase": "1.6",
+        "phase": "2.0",
         "transport": "streamable-http",
         "oauth": True,
         "jsonrpc_post": "/mcp",
@@ -93,7 +93,7 @@ async def mcp_get_token(path_token: str, request: Request):
     return {
         "ok": True,
         "service": "ghost-protocol-mcp",
-        "phase": "1.6",
+        "phase": "2.0",
         "transport": "streamable-http",
         "jsonrpc_post": f"/mcp/{path_token}",
     }

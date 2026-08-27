@@ -1,4 +1,4 @@
-"""MCP Streamable HTTP JSON-RPC dispatch (read-only tools, Phase 1.5)."""
+"""MCP Streamable HTTP JSON-RPC dispatch for Ghost research workflows."""
 from __future__ import annotations
 
 import json
@@ -58,7 +58,8 @@ def dispatch_message(message: JsonRpcMessage) -> Optional[JsonRpcResponse]:
             return None
         return None
 
-    params = message.get("params") if isinstance(message.get("params"), dict) else {}
+    raw_params = message.get("params")
+    params: Dict[str, Any] = raw_params if isinstance(raw_params, dict) else {}
 
     if method == "initialize":
         return _ok(
@@ -66,7 +67,13 @@ def dispatch_message(message: JsonRpcMessage) -> Optional[JsonRpcResponse]:
             {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": "ghost-protocol-mcp", "version": "1.5.0"},
+                "serverInfo": {"name": "ghost-protocol-mcp", "version": "2.0.0"},
+                "instructions": (
+                    "Ghost may queue advisory research tasks for connected agents. "
+                    "Use ghost_agent_claim_task, heartbeat while researching, and "
+                    "ghost_agent_submit_evidence with structured claims and source "
+                    "references. Agent evidence is never directly trade-eligible."
+                ),
             },
         )
 
@@ -81,7 +88,8 @@ def dispatch_message(message: JsonRpcMessage) -> Optional[JsonRpcResponse]:
         if not name or not isinstance(name, str):
             return _err(msg_id, -32602, "params.name required")
         try:
-            arguments = params.get("arguments") if isinstance(params.get("arguments"), dict) else {}
+            raw_arguments = params.get("arguments")
+            arguments = raw_arguments if isinstance(raw_arguments, dict) else {}
             content = invoke_tool(name, arguments)
             text = json.dumps(content, default=str)
         except KeyError:

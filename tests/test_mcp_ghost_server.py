@@ -1,4 +1,4 @@
-"""Tests for Ghost MCP Phase 1.6 (OAuth lazy auth, path token, portfolio admin)."""
+"""Tests for Ghost MCP OAuth, path-token, research, and agent workflows."""
 import json
 
 from fastapi.testclient import TestClient
@@ -226,6 +226,7 @@ def test_mcp_handshake_path_token(monkeypatch):
         assert r1.status_code == 200
         init = r1.json()
         assert init["result"]["protocolVersion"] == "2024-11-05"
+        assert "ghost_agent_claim_task" in init["result"]["instructions"]
         assert "Mcp-Session-Id" in r1.headers
 
         r2 = client.post(
@@ -240,8 +241,10 @@ def test_mcp_handshake_path_token(monkeypatch):
         )
         assert r3.status_code == 200
         names = {t["name"] for t in r3.json()["result"]["tools"]}
-        assert len(names) == 19  # 9 operational + 10 research
+        assert len(names) == 26  # 9 operational + 10 research + 7 agent workflow
         assert "ghost_shadow_stats" in names
+        assert "ghost_agent_claim_task" in names
+        assert "ghost_agent_submit_evidence" in names
 
         r4 = client.post(
             "/mcp/secret",

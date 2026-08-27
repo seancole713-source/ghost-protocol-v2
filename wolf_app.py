@@ -1681,6 +1681,26 @@ async def lifespan(app: FastAPI):
             raise
 
     scheduler.register("research_outbox", _research_outbox_job, interval_s=60)
+
+    def _agent_workflow_maintenance_job():
+        try:
+            from core.agent_workflow import maintain_workflow
+            result = maintain_workflow()
+            if result.get("expired") or result.get("requeued") or result.get("dead_letter"):
+                LOGGER.info(
+                    "agent workflow maintenance expired=%s requeued=%s dead_letter=%s",
+                    result.get("expired", 0), result.get("requeued", 0),
+                    result.get("dead_letter", 0),
+                )
+        except Exception as _e:
+            LOGGER.warning("agent workflow maintenance failed: %s", str(_e)[:80])
+            raise
+
+    scheduler.register(
+        "agent_workflow_maintenance",
+        _agent_workflow_maintenance_job,
+        interval_s=60,
+    )
     # Activation lease maintenance remains enabled even when new automatic
     # activations are disabled, so an existing lease can still expire safely.
     def _research_activation_lease_job():
@@ -1792,6 +1812,16 @@ async def lifespan(app: FastAPI):
                 radar.get("status"), radar.get("observed_count", 0),
                 radar.get("selected_count", 0),
             )
+            # Agent workflow availability must never fail the market-data lane.
+            try:
+                from core.agent_workflow import enqueue_external_radar_tasks
+                queued = enqueue_external_radar_tasks(radar)
+                LOGGER.info(
+                    "agent mover triage attempted=%s created=%s",
+                    queued.get("attempted", 0), queued.get("created", 0),
+                )
+            except Exception as _agent_e:
+                LOGGER.warning("agent mover triage unavailable: %s", str(_agent_e)[:120])
         except Exception as _e:
             LOGGER.warning("external screener job failed: %s", str(_e)[:120])
             raise
@@ -2266,7 +2296,7 @@ except Exception as _we:
 try:
     from mcp.routes import router as mcp_router
     APP.include_router(mcp_router)
-    LOGGER.info("[INIT] Ghost MCP Phase 1.6 routes loaded at /mcp")
+    LOGGER.info("[INIT] Ghost MCP Phase 2.0 routes loaded at /mcp")
 except Exception as _mcp:
     LOGGER.warning(f"[INIT] MCP routes unavailable: {_mcp}")
 
@@ -2283,6 +2313,13 @@ try:
     LOGGER.info("[INIT] Research platform endpoints loaded at /api/research")
 except Exception as _re:
     LOGGER.warning(f"[INIT] Research endpoints unavailable: {_re}")
+
+try:
+    from api.agent_workflow_endpoints import router as agent_workflow_router
+    APP.include_router(agent_workflow_router)
+    LOGGER.info("[INIT] Agent workflow endpoints loaded at /api/agent-workflow")
+except Exception as _agent_workflow:
+    LOGGER.warning(f"[INIT] Agent workflow endpoints unavailable: {_agent_workflow}")
 
 
 

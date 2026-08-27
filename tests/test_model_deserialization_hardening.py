@@ -2,7 +2,6 @@ import base64
 import hashlib
 import json
 import pickle
-import time
 
 import core.signal_engine as _se
 from tests.calibration_fixtures import serveable_meta

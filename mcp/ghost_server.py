@@ -1,4 +1,4 @@
-"""Read-only Ghost MCP tools.
+"""Ghost MCP research and operations tools.
 
 The HTTP client layer is structurally GET-only: ``GhostMcpGetClient`` exposes
 only ``get()``; there are no post/put/delete methods.
@@ -6,10 +6,14 @@ only ``get()``; there are no post/put/delete methods.
 Phase 2 adds research-platform tools with typed input schemas and argument
 support so agents can inspect contracts, artifacts, proof status, activation
 history, and platform health.
+
+The agent-workflow tools are the only scoped mutations: connected agents may
+claim durable advisory tasks, renew leases, and submit source-backed evidence.
+They cannot issue predictions, change gates, clear pauses, or place orders.
 """
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, FrozenSet, List, Mapping, Optional
+from typing import Any, Callable, Dict, FrozenSet, Mapping, Optional
 
 ALLOWED_HTTP_METHOD = "GET"
 
@@ -125,6 +129,102 @@ RESEARCH_TOOLS: Mapping[str, Dict[str, Any]] = {
     },
     "ghost_research_status": {
         "description": "Current research mode status — whether research picks are enabled, how many have been resolved, daily cap, stall status, and confidence floor.",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+}
+
+# ── Two-way advisory agent workflow ────────────────────────────────────────
+
+AGENT_WORKFLOW_TOOLS: Mapping[str, Dict[str, Any]] = {
+    "ghost_agent_tasks": {
+        "description": "List durable advisory research tasks waiting for connected agents. Agent evidence is never directly trade-eligible.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "default": "PENDING"},
+                "task_type": {"type": "string", "default": ""},
+                "symbol": {"type": "string", "default": ""},
+                "limit": {"type": "integer", "default": 50, "minimum": 1, "maximum": 200},
+            },
+            "additionalProperties": False,
+        },
+    },
+    "ghost_agent_task": {
+        "description": "Read one agent task with its append-only event history and submitted evidence.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"task_id": {"type": "string"}},
+            "required": ["task_id"],
+            "additionalProperties": False,
+        },
+    },
+    "ghost_agent_claim_task": {
+        "description": "Claim the highest-priority available advisory task with a time-limited lease.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string", "description": "Stable connected-agent identity"},
+                "lease_seconds": {"type": "integer", "default": 600, "minimum": 60, "maximum": 3600},
+                "task_types": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["agent_id"],
+            "additionalProperties": False,
+        },
+    },
+    "ghost_agent_heartbeat": {
+        "description": "Renew an active advisory task lease while research is in progress.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string"},
+                "agent_id": {"type": "string"},
+                "lease_token": {"type": "string"},
+                "lease_seconds": {"type": "integer", "default": 600, "minimum": 60, "maximum": 3600},
+            },
+            "required": ["task_id", "agent_id", "lease_token"],
+            "additionalProperties": False,
+        },
+    },
+    "ghost_agent_submit_evidence": {
+        "description": "Submit structured, source-backed advisory evidence for a claimed task. Submission is schema-validated and cannot fire a prediction or trade.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string"},
+                "agent_id": {"type": "string"},
+                "lease_token": {"type": "string"},
+                "agent_provider": {"type": "string", "description": "e.g. anthropic or openai"},
+                "model_name": {"type": "string"},
+                "prompt_version": {"type": "string"},
+                "summary": {"type": "string"},
+                "claims": {"type": "object"},
+                "source_refs": {"type": "array", "items": {"type": "object"}},
+                "agent_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                "raw_response": {},
+            },
+            "required": [
+                "task_id", "agent_id", "lease_token", "agent_provider",
+                "model_name", "prompt_version", "summary", "claims", "source_refs"
+            ],
+            "additionalProperties": False,
+        },
+    },
+    "ghost_agent_release_task": {
+        "description": "Release a claimed advisory task without submitting evidence.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string"},
+                "agent_id": {"type": "string"},
+                "lease_token": {"type": "string"},
+                "reason": {"type": "string", "default": "agent_released"},
+            },
+            "required": ["task_id", "agent_id", "lease_token"],
+            "additionalProperties": False,
+        },
+    },
+    "ghost_agent_workflow_health": {
+        "description": "Inspect queue, lease, evidence-validation, and dead-letter health for the advisory agent workflow.",
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
 }
@@ -448,6 +548,102 @@ _RESEARCH_HANDLERS: Mapping[str, Callable[[Dict[str, Any]], Any]] = {
 }
 
 
+def _agent_workflow_call(function_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Invoke one bounded workflow operation with stable MCP error payloads."""
+    from core import agent_workflow
+
+    function = getattr(agent_workflow, function_name)
+    try:
+        return function(**arguments)
+    except agent_workflow.AgentWorkflowError as exc:
+        return {"ok": False, "error": "invalid_agent_workflow_request", "detail": str(exc)}
+
+
+def _agent_tasks(args: Dict[str, Any]) -> Dict[str, Any]:
+    return _agent_workflow_call(
+        "list_tasks",
+        {
+            "status": args.get("status", "PENDING") or None,
+            "task_type": args.get("task_type") or None,
+            "symbol": args.get("symbol") or None,
+            "limit": int(args.get("limit", 50)),
+        },
+    )
+
+
+def _agent_task(args: Dict[str, Any]) -> Dict[str, Any]:
+    return _agent_workflow_call("get_task", {"task_id": args.get("task_id", "")})
+
+
+def _agent_claim_task(args: Dict[str, Any]) -> Dict[str, Any]:
+    return _agent_workflow_call(
+        "claim_task",
+        {
+            "agent_id": args.get("agent_id", ""),
+            "lease_seconds": int(args.get("lease_seconds", 600)),
+            "task_types": args.get("task_types"),
+        },
+    )
+
+
+def _agent_heartbeat(args: Dict[str, Any]) -> Dict[str, Any]:
+    return _agent_workflow_call(
+        "heartbeat_task",
+        {
+            "task_id": args.get("task_id", ""),
+            "agent_id": args.get("agent_id", ""),
+            "lease_token": args.get("lease_token", ""),
+            "lease_seconds": int(args.get("lease_seconds", 600)),
+        },
+    )
+
+
+def _agent_submit_evidence(args: Dict[str, Any]) -> Dict[str, Any]:
+    return _agent_workflow_call(
+        "submit_evidence",
+        {
+            "task_id": args.get("task_id", ""),
+            "agent_id": args.get("agent_id", ""),
+            "lease_token": args.get("lease_token", ""),
+            "agent_provider": args.get("agent_provider", ""),
+            "model_name": args.get("model_name", ""),
+            "prompt_version": args.get("prompt_version", ""),
+            "summary": args.get("summary", ""),
+            "claims": args.get("claims", {}),
+            "source_refs": args.get("source_refs", []),
+            "agent_confidence": args.get("agent_confidence"),
+            "raw_response": args.get("raw_response"),
+        },
+    )
+
+
+def _agent_release_task(args: Dict[str, Any]) -> Dict[str, Any]:
+    return _agent_workflow_call(
+        "release_task",
+        {
+            "task_id": args.get("task_id", ""),
+            "agent_id": args.get("agent_id", ""),
+            "lease_token": args.get("lease_token", ""),
+            "reason": args.get("reason", "agent_released"),
+        },
+    )
+
+
+def _agent_workflow_health(_args: Dict[str, Any]) -> Dict[str, Any]:
+    return _agent_workflow_call("workflow_health", {})
+
+
+_AGENT_WORKFLOW_HANDLERS: Mapping[str, Callable[[Dict[str, Any]], Any]] = {
+    "ghost_agent_tasks": _agent_tasks,
+    "ghost_agent_task": _agent_task,
+    "ghost_agent_claim_task": _agent_claim_task,
+    "ghost_agent_heartbeat": _agent_heartbeat,
+    "ghost_agent_submit_evidence": _agent_submit_evidence,
+    "ghost_agent_release_task": _agent_release_task,
+    "ghost_agent_workflow_health": _agent_workflow_health,
+}
+
+
 # ── tool listing & invocation ───────────────────────────────────────────────
 
 
@@ -465,6 +661,12 @@ def list_tools() -> list[Dict[str, Any]]:
             "description": meta["description"],
             "inputSchema": meta["inputSchema"],
         })
+    for name, meta in AGENT_WORKFLOW_TOOLS.items():
+        tools.append({
+            "name": name,
+            "description": meta["description"],
+            "inputSchema": meta["inputSchema"],
+        })
     return tools
 
 
@@ -473,4 +675,6 @@ def invoke_tool(name: str, arguments: Optional[Dict[str, Any]] = None) -> Any:
         return _CLIENT.get(TOOL_TO_PATH[name])
     if name in _RESEARCH_HANDLERS:
         return _RESEARCH_HANDLERS[name](arguments or {})
+    if name in _AGENT_WORKFLOW_HANDLERS:
+        return _AGENT_WORKFLOW_HANDLERS[name](arguments or {})
     raise KeyError(f"Unknown MCP tool: {name!r}")

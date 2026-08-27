@@ -419,4 +419,11 @@ def _migrate_schema():
             ensure_external_context_tables(cur)
     except Exception as e:
         LOGGER.warning("External context tables: " + str(e)[:80])
+    try:
+        from core.agent_workflow import ensure_agent_workflow_tables
+        with db_conn() as conn:
+            cur = conn.cursor()
+            ensure_agent_workflow_tables(cur)
+    except Exception as e:
+        LOGGER.warning("Agent workflow tables: " + str(e)[:80])
     LOGGER.info("Schema migration complete")

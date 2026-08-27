@@ -476,6 +476,28 @@ def test_proven_artifact_activation_lease_and_rollback_lifecycle(monkeypatch):
             "wf_edge_min": 0.20,
             "gate_brier": 0.16,
             "gate_n": 20,
+            "calibrated": True,
+            "calibration_status": "valid",
+            "calibration_schema": "chronological_bakeoff_v1",
+            "calibration_method": "sigmoid",
+            "calibration_winner": "sigmoid",
+            "calibration_n": 30,
+            "calibration_fit_n": 18,
+            "calibration_purge_n": 2,
+            "calibration_selection_n": 10,
+            "calibration_refit_n": 30,
+            "calibration_candidates": [
+                {"method": "raw_identity", "valid": True, "brier": 0.20,
+                 "log_loss": 0.60, "reliability_gap": 0.10},
+                {"method": "sigmoid", "valid": True, "brier": 0.16,
+                 "log_loss": 0.52, "reliability_gap": 0.06},
+            ],
+            "conformal": {
+                "ok": True,
+                "samples": 10,
+                "q_hat": 0.20,
+                "alpha": 0.10,
+            },
         }
         candidate_raw = pickle.dumps(
             {"generation": "candidate"}, protocol=pickle.HIGHEST_PROTOCOL,
@@ -524,6 +546,28 @@ def test_proven_artifact_activation_lease_and_rollback_lifecycle(monkeypatch):
             "wf_acc_mean": 0.70,
             "wf_edge_mean": 0.20,
             "precision_gate": precision_proof,
+            "calibrated": True,
+            "calibration_status": "valid",
+            "calibration_schema": "chronological_bakeoff_v1",
+            "calibration_method": "sigmoid",
+            "calibration_winner": "sigmoid",
+            "calibration_n": 30,
+            "calibration_fit_n": 18,
+            "calibration_purge_n": 2,
+            "calibration_selection_n": 10,
+            "calibration_refit_n": 30,
+            "calibration_candidates": [
+                {"method": "raw_identity", "valid": True, "brier": 0.20,
+                 "log_loss": 0.60, "reliability_gap": 0.10},
+                {"method": "sigmoid", "valid": True, "brier": 0.18,
+                 "log_loss": 0.55, "reliability_gap": 0.08},
+            ],
+            "gate_n": 20,
+            "gate_brier": 0.20,
+            "conformal_ok": True,
+            "conformal_samples": 10,
+            "conformal_q_hat": 0.20,
+            "conformal_alpha": 0.10,
         }
         incumbent_meta_json = json.dumps(incumbent_meta, sort_keys=True)
 
@@ -650,7 +694,7 @@ def test_proven_artifact_activation_lease_and_rollback_lifecycle(monkeypatch):
                 registration_id=registration_id,
                 cur=cur,
             )
-            assert activation_result["ok"] is True
+            assert activation_result["ok"] is True, activation_result
             assert activation_result["predecessor_sha"] == incumbent_model_sha
 
             @contextmanager
