@@ -101,6 +101,26 @@ def admin_audit_log(request: Request, limit: int = 100):
         return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
 
 
+@router.get("/api/admin/agent-workflow", include_in_schema=False)
+def admin_agent_workflow(request: Request, limit: int = 30):
+    """Cookie-gated worker, task, and evidence-validation monitoring."""
+    from wolf_app import _ADMIN_COOKIE, _admin_token_valid
+
+    if not _admin_token_valid(request.cookies.get(_ADMIN_COOKIE, "")):
+        raise HTTPException(status_code=404)
+    try:
+        from core.agent_workflow import workflow_dashboard
+
+        return workflow_dashboard(limit=max(1, min(int(limit), 100)))
+    except Exception as exc:
+        logging.getLogger("ghost.admin.agent_workflow").exception(
+            "agent workflow dashboard failed"
+        )
+        return JSONResponse(
+            {"ok": False, "error": str(exc)[:200]}, status_code=503,
+        )
+
+
 @router.post("/api/admin/delete-model", include_in_schema=False)
 async def delete_model(x_cron_secret: str = Header(None), non_wolf_only: bool = False):
     """Delete v3 models from ghost_v3_model.

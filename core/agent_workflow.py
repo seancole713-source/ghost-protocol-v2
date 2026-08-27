@@ -26,12 +26,18 @@ TASK_STATUSES = frozenset(
 )
 ACTIVE_TASK_STATUSES = frozenset({"PENDING", "CLAIMED"})
 VALIDATION_STATUSES = frozenset({"ACCEPTED", "QUARANTINED"})
+QUARANTINE_CATEGORIES = frozenset(
+    {"none", "schema_error", "source_error", "injection_suspected", "policy_violation"}
+)
+REPAIRABLE_QUARANTINE_CATEGORIES = frozenset({"schema_error", "source_error"})
+WORKER_STATUSES = frozenset({"STARTING", "IDLE", "WORKING", "ERROR", "STOPPED"})
 
 _TASK_TYPE_RE = re.compile(r"^[a-z][a-z0-9_]{2,63}$")
 _SYMBOL_RE = re.compile(r"^[A-Z][A-Z0-9.\-]{0,19}$")
 _AGENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/\-]{1,127}$")
 _IDEMPOTENCY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/\-]{2,199}$")
 _TASK_ID_RE = re.compile(r"^agt_[0-9a-f]{32}$")
+_EVIDENCE_ID_RE = re.compile(r"^evd_[0-9a-f]{32}$")
 _PROMPT_INJECTION_PATTERNS = (
     "ignore previous instructions",
     "ignore all previous instructions",
@@ -49,6 +55,8 @@ _MAX_SOURCES = 25
 _MAX_SUMMARY_CHARS = 8_000
 _MIN_LEASE_SECONDS = 60
 _MAX_LEASE_SECONDS = 3_600
+
+SUBMISSION_CONTRACT_VERSION = "ghost.agent-evidence/v2"
 
 DEFAULT_RESPONSE_SCHEMA: Dict[str, Any] = {
     "type": "object",
@@ -78,7 +86,8 @@ _EVIDENCE_COLUMNS = (
     "evidence_id", "task_id", "agent_id", "agent_provider", "model_name",
     "prompt_version", "submitted_at", "summary", "claims", "source_refs",
     "agent_confidence", "payload_sha256", "raw_response", "validation_status",
-    "validation_reasons", "advisory_only", "decision_eligible",
+    "validation_reasons", "quarantine_category", "validation_errors", "lease_id",
+    "repair_of_evidence_id", "advisory_only", "decision_eligible",
 )
 
 
@@ -179,6 +188,13 @@ def _normalize_task_id(value: Any) -> str:
     return task_id
 
 
+def _normalize_evidence_id(value: Any) -> str:
+    evidence_id = str(value or "").strip().lower()
+    if not _EVIDENCE_ID_RE.fullmatch(evidence_id):
+        raise AgentWorkflowError("invalid evidence_id")
+    return evidence_id
+
+
 def _lease_seconds(value: Any) -> int:
     try:
         lease = int(value)
@@ -206,6 +222,74 @@ def _safe_raw_response(value: Any) -> Any:
     }
 
 
+def _example_for_schema(schema: Any) -> Any:
+    """Build a small deterministic example for the supported schema subset."""
+    if not isinstance(schema, dict):
+        return None
+    if schema.get("enum"):
+        return schema["enum"][0]
+    expected = schema.get("type")
+    if expected == "object":
+        raw_properties = schema.get("properties")
+        properties: Dict[str, Any] = raw_properties if isinstance(raw_properties, dict) else {}
+        raw_required = schema.get("required")
+        required: List[Any] = raw_required if isinstance(raw_required, list) else []
+        fields = required or list(properties)[:4]
+        return {
+            str(field): _example_for_schema(properties.get(field, {}))
+            for field in fields
+        }
+    if expected == "array":
+        return [_example_for_schema(schema.get("items", {}))]
+    if expected == "string":
+        return "source-backed finding"
+    if expected == "number":
+        return 0.75
+    if expected == "integer":
+        return 1
+    if expected == "boolean":
+        return True
+    return None
+
+
+def submission_contract(response_schema: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Return the exact envelope agents must submit, including a valid example."""
+    schema = response_schema or DEFAULT_RESPONSE_SCHEMA
+    return {
+        "version": SUBMISSION_CONTRACT_VERSION,
+        "required_response_schema": schema,
+        "submission_fields": {
+            "summary": "non-empty string, at most 8000 characters",
+            "claims": "object matching required_response_schema",
+            "source_refs": "one or more {kind, locator} objects",
+            "agent_confidence": "optional number from 0 through 1",
+            "raw_response": "optional bounded audit payload",
+            "repair_of_evidence_id": "required on a corrected resubmission",
+        },
+        "submission_example": {
+            "summary": "Official and independent sources support a mixed catalyst verdict.",
+            "claims": _example_for_schema(schema),
+            "source_refs": [
+                {
+                    "kind": "official_release",
+                    "locator": "https://example.com/investor-relations/release",
+                    "retrieved_ts": 1_800_000_000,
+                }
+            ],
+            "agent_confidence": 0.75,
+        },
+        "repair_policy": {
+            "repairable_categories": sorted(REPAIRABLE_QUARANTINE_CATEGORIES),
+            "lease_retained_for_repair": True,
+            "instruction": (
+                "When accepted=false and retry_allowed=true, correct only the listed "
+                "validation_errors and resubmit with repair_of_evidence_id before lease expiry."
+            ),
+        },
+        "safety": {"advisory_only": True, "decision_eligible": False},
+    }
+
+
 def ensure_agent_workflow_tables(cur) -> None:
     """Create the queue and immutable audit tables additively."""
     cur.execute(
@@ -228,6 +312,7 @@ def ensure_agent_workflow_tables(cur) -> None:
             updated_at BIGINT NOT NULL,
             claimed_by TEXT,
             lease_token_sha256 CHAR(64),
+            lease_id TEXT,
             lease_expires_at BIGINT,
             attempt_count INT NOT NULL DEFAULT 0,
             max_attempts INT NOT NULL DEFAULT 3 CHECK (max_attempts BETWEEN 1 AND 20),
@@ -288,6 +373,13 @@ def ensure_agent_workflow_tables(cur) -> None:
             validation_status TEXT NOT NULL
                 CHECK (validation_status IN ('ACCEPTED','QUARANTINED')),
             validation_reasons JSONB NOT NULL,
+            quarantine_category TEXT NOT NULL DEFAULT 'none'
+                CHECK (quarantine_category IN (
+                    'none','schema_error','source_error','injection_suspected','policy_violation'
+                )),
+            validation_errors JSONB NOT NULL DEFAULT '[]',
+            lease_id TEXT,
+            repair_of_evidence_id TEXT REFERENCES ghost_agent_evidence(evidence_id),
             advisory_only BOOLEAN NOT NULL DEFAULT TRUE CHECK (advisory_only IS TRUE),
             decision_eligible BOOLEAN NOT NULL DEFAULT FALSE CHECK (decision_eligible IS FALSE),
             UNIQUE (task_id, agent_id, payload_sha256)
@@ -309,6 +401,8 @@ def ensure_agent_workflow_tables(cur) -> None:
             validation_ts BIGINT NOT NULL,
             status TEXT NOT NULL CHECK (status IN ('ACCEPTED','QUARANTINED')),
             reasons JSONB NOT NULL,
+            quarantine_category TEXT NOT NULL DEFAULT 'none',
+            errors JSONB NOT NULL DEFAULT '[]',
             checks JSONB NOT NULL
         )
         """
@@ -318,6 +412,63 @@ def ensure_agent_workflow_tables(cur) -> None:
         CREATE INDEX IF NOT EXISTS idx_agent_validation_evidence_time
         ON ghost_agent_evidence_validations (evidence_id, validation_ts, id)
         """
+    )
+    # Additive migrations for installations created by the Phase 2.0 workflow.
+    cur.execute("ALTER TABLE ghost_agent_tasks ADD COLUMN IF NOT EXISTS lease_id TEXT")
+    cur.execute(
+        """ALTER TABLE ghost_agent_evidence ADD COLUMN IF NOT EXISTS quarantine_category TEXT
+           NOT NULL DEFAULT 'none' CHECK (quarantine_category IN (
+             'none','schema_error','source_error','injection_suspected','policy_violation'
+           ))"""
+    )
+    cur.execute(
+        "ALTER TABLE ghost_agent_evidence ADD COLUMN IF NOT EXISTS validation_errors JSONB "
+        "NOT NULL DEFAULT '[]'"
+    )
+    cur.execute("ALTER TABLE ghost_agent_evidence ADD COLUMN IF NOT EXISTS lease_id TEXT")
+    cur.execute(
+        "ALTER TABLE ghost_agent_evidence ADD COLUMN IF NOT EXISTS repair_of_evidence_id TEXT "
+        "REFERENCES ghost_agent_evidence(evidence_id)"
+    )
+    cur.execute(
+        "ALTER TABLE ghost_agent_evidence_validations ADD COLUMN IF NOT EXISTS "
+        "quarantine_category TEXT NOT NULL DEFAULT 'none'"
+    )
+    cur.execute(
+        "ALTER TABLE ghost_agent_evidence_validations ADD COLUMN IF NOT EXISTS errors JSONB "
+        "NOT NULL DEFAULT '[]'"
+    )
+    cur.execute(
+        """UPDATE ghost_agent_evidence
+           SET quarantine_category=CASE
+             WHEN validation_reasons::text ILIKE '%prompt injection%' THEN 'injection_suspected'
+             WHEN validation_reasons::text ILIKE '%claims.%' THEN 'schema_error'
+             WHEN validation_reasons::text ILIKE '%source_ref%' THEN 'source_error'
+             ELSE 'schema_error'
+           END
+           WHERE validation_status='QUARANTINED' AND quarantine_category='none'"""
+    )
+    cur.execute(
+        """CREATE TABLE IF NOT EXISTS ghost_agent_workers (
+            agent_id TEXT PRIMARY KEY,
+            agent_provider TEXT NOT NULL,
+            model_name TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('STARTING','IDLE','WORKING','ERROR','STOPPED')),
+            current_task_id TEXT REFERENCES ghost_agent_tasks(task_id),
+            started_at BIGINT NOT NULL,
+            last_seen_at BIGINT NOT NULL,
+            processed_count BIGINT NOT NULL DEFAULT 0,
+            accepted_count BIGINT NOT NULL DEFAULT 0,
+            quarantined_count BIGINT NOT NULL DEFAULT 0,
+            last_error TEXT,
+            metadata JSONB NOT NULL DEFAULT '{}',
+            advisory_only BOOLEAN NOT NULL DEFAULT TRUE CHECK (advisory_only IS TRUE),
+            decision_eligible BOOLEAN NOT NULL DEFAULT FALSE CHECK (decision_eligible IS FALSE)
+        )"""
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_agent_workers_last_seen "
+        "ON ghost_agent_workers (last_seen_at DESC)"
     )
 
 
@@ -434,7 +585,7 @@ def _expire_unavailable_tasks(cur, now: int) -> Dict[str, int]:
     cur.execute(
         """UPDATE ghost_agent_tasks
            SET status='EXPIRED', updated_at=%s, claimed_by=NULL,
-               lease_token_sha256=NULL, lease_expires_at=NULL
+               lease_token_sha256=NULL, lease_id=NULL, lease_expires_at=NULL
            WHERE status IN ('PENDING','CLAIMED')
              AND deadline_at IS NOT NULL AND deadline_at <= %s
            RETURNING task_id""",
@@ -449,7 +600,7 @@ def _expire_unavailable_tasks(cur, now: int) -> Dict[str, int]:
         """UPDATE ghost_agent_tasks
            SET status=CASE WHEN attempt_count >= max_attempts THEN 'DEAD_LETTER' ELSE 'PENDING' END,
                updated_at=%s, claimed_by=NULL, lease_token_sha256=NULL,
-               lease_expires_at=NULL, last_error='lease_expired'
+               lease_id=NULL, lease_expires_at=NULL, last_error='lease_expired'
            WHERE status='CLAIMED' AND lease_expires_at <= %s
            RETURNING task_id, status""",
         (now, now),
@@ -526,13 +677,14 @@ def claim_task(
             return {"ok": True, "claimed": False, "task": None}
         task = _public_task(row)
         lease_expires = now + lease
+        lease_id = "lease_" + uuid.uuid4().hex
         cur.execute(
             """UPDATE ghost_agent_tasks
                SET status='CLAIMED', claimed_by=%s, lease_token_sha256=%s,
-                   lease_expires_at=%s, attempt_count=attempt_count+1,
+                   lease_id=%s, lease_expires_at=%s, attempt_count=attempt_count+1,
                    updated_at=%s, last_error=NULL
                WHERE task_id=%s""",
-            (agent_id, token_sha, lease_expires, now, task["task_id"]),
+            (agent_id, token_sha, lease_id, lease_expires, now, task["task_id"]),
         )
         _event(
             cur, task["task_id"], "CLAIMED", agent_id, now,
@@ -551,7 +703,9 @@ def claim_task(
         "claimed": True,
         "task": task,
         "lease_token": lease_token,
+        "lease_id": lease_id,
         "lease_expires_at": lease_expires,
+        "submission_contract": submission_contract(task.get("required_response_schema")),
         "safety": {"advisory_only": True, "decision_eligible": False},
     }
 
@@ -601,11 +755,25 @@ def heartbeat_task(
     return {"ok": True, "task_id": task_id, "lease_expires_at": lease_expires}
 
 
-def _validate_schema_value(value: Any, schema: Any, path: str = "claims") -> List[str]:
-    """Validate the bounded JSON-Schema subset used by workflow tasks."""
+def _validation_error(
+    code: str, path: str, message: str, category: str, *, repairable: bool = True,
+) -> Dict[str, Any]:
+    return {
+        "code": code,
+        "path": path,
+        "message": message,
+        "category": category,
+        "repairable": repairable,
+    }
+
+
+def _validate_schema_value_details(
+    value: Any, schema: Any, path: str = "claims",
+) -> List[Dict[str, Any]]:
+    """Validate the bounded JSON-Schema subset with machine-readable errors."""
     if not isinstance(schema, dict):
-        return [f"{path}: invalid response schema"]
-    errors: List[str] = []
+        return [_validation_error("invalid_schema", path, "invalid response schema", "schema_error")]
+    errors: List[Dict[str, Any]] = []
     expected = schema.get("type")
     type_ok = {
         "object": isinstance(value, dict),
@@ -617,94 +785,144 @@ def _validate_schema_value(value: Any, schema: Any, path: str = "claims") -> Lis
         "null": value is None,
     }
     if isinstance(expected, str) and expected in type_ok and not type_ok[expected]:
-        return [f"{path}: expected {expected}"]
+        return [_validation_error("type_mismatch", path, f"expected {expected}", "schema_error")]
     if "enum" in schema and value not in schema.get("enum", []):
-        errors.append(f"{path}: value not in enum")
+        errors.append(_validation_error("enum", path, "value not in enum", "schema_error"))
     if isinstance(value, dict):
         required = schema.get("required", [])
         if isinstance(required, list):
             for field in required:
                 if field not in value:
-                    errors.append(f"{path}.{field}: required")
+                    errors.append(
+                        _validation_error("required", f"{path}.{field}", "required", "schema_error")
+                    )
         properties = schema.get("properties", {})
         if isinstance(properties, dict):
             for field, child_schema in properties.items():
                 if field in value:
-                    errors.extend(_validate_schema_value(value[field], child_schema, f"{path}.{field}"))
+                    errors.extend(
+                        _validate_schema_value_details(value[field], child_schema, f"{path}.{field}")
+                    )
             if schema.get("additionalProperties") is False:
                 for field in value:
                     if field not in properties:
-                        errors.append(f"{path}.{field}: additional property not allowed")
+                        errors.append(
+                            _validation_error(
+                                "additional_property", f"{path}.{field}",
+                                "additional property not allowed", "schema_error",
+                            )
+                        )
     if isinstance(value, list):
         if isinstance(schema.get("minItems"), int) and len(value) < schema["minItems"]:
-            errors.append(f"{path}: fewer than minItems")
+            errors.append(_validation_error("min_items", path, "fewer than minItems", "schema_error"))
         if isinstance(schema.get("maxItems"), int) and len(value) > schema["maxItems"]:
-            errors.append(f"{path}: more than maxItems")
+            errors.append(_validation_error("max_items", path, "more than maxItems", "schema_error"))
         item_schema = schema.get("items")
         if isinstance(item_schema, dict):
             for index, item in enumerate(value):
-                errors.extend(_validate_schema_value(item, item_schema, f"{path}[{index}]"))
+                errors.extend(_validate_schema_value_details(item, item_schema, f"{path}[{index}]"))
     if isinstance(value, str):
         if isinstance(schema.get("minLength"), int) and len(value) < schema["minLength"]:
-            errors.append(f"{path}: shorter than minLength")
+            errors.append(_validation_error("min_length", path, "shorter than minLength", "schema_error"))
         if isinstance(schema.get("maxLength"), int) and len(value) > schema["maxLength"]:
-            errors.append(f"{path}: longer than maxLength")
+            errors.append(_validation_error("max_length", path, "longer than maxLength", "schema_error"))
     return errors[:50]
 
 
-def validate_submission(
+def _validate_schema_value(value: Any, schema: Any, path: str = "claims") -> List[str]:
+    """Compatibility wrapper returning the original human-readable reasons."""
+    return [f"{item['path']}: {item['message']}" for item in _validate_schema_value_details(value, schema, path)]
+
+
+def validate_submission_details(
     *, claims: Dict[str, Any], source_refs: List[Dict[str, Any]], summary: str,
     agent_confidence: Optional[float], response_schema: Dict[str, Any],
-    raw_response: Any = None,
-    now_ts: Optional[int] = None,
-) -> List[str]:
-    """Return structural validation reasons; an empty list means accepted."""
+    raw_response: Any = None, now_ts: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Return categorized and machine-readable validation output."""
     now = int(time.time()) if now_ts is None else int(now_ts)
-    errors: List[str] = []
+    errors: List[Dict[str, Any]] = []
     if not isinstance(claims, dict):
-        return ["claims must be an object"]
-    if _json_depth(claims) > 20:
-        errors.append("claims exceeds maximum nesting depth")
-    elif _json_size(claims) > _MAX_CLAIMS_BYTES:
-        errors.append(f"claims exceeds {_MAX_CLAIMS_BYTES} bytes")
-    errors.extend(_validate_schema_value(claims, response_schema))
+        errors.append(_validation_error("type_mismatch", "claims", "must be an object", "schema_error"))
+    else:
+        if _json_depth(claims) > 20:
+            errors.append(
+                _validation_error(
+                    "max_depth", "claims", "exceeds maximum nesting depth", "schema_error",
+                )
+            )
+        elif _json_size(claims) > _MAX_CLAIMS_BYTES:
+            errors.append(
+                _validation_error(
+                    "max_bytes", "claims", f"exceeds {_MAX_CLAIMS_BYTES} bytes", "schema_error",
+                )
+            )
+        errors.extend(_validate_schema_value_details(claims, response_schema))
     if not isinstance(summary, str) or not summary.strip():
-        errors.append("summary is required")
+        errors.append(_validation_error("required", "summary", "is required", "schema_error"))
     elif len(summary) > _MAX_SUMMARY_CHARS:
-        errors.append(f"summary exceeds {_MAX_SUMMARY_CHARS} characters")
+        errors.append(
+            _validation_error(
+                "max_length", "summary", f"exceeds {_MAX_SUMMARY_CHARS} characters", "schema_error",
+            )
+        )
     if not isinstance(source_refs, list) or not source_refs:
-        errors.append("at least one source_ref is required")
+        errors.append(
+            _validation_error(
+                "required", "source_refs", "at least one source_ref is required", "source_error",
+            )
+        )
     elif len(source_refs) > _MAX_SOURCES:
-        errors.append(f"source_refs exceeds {_MAX_SOURCES} items")
+        errors.append(
+            _validation_error(
+                "max_items", "source_refs", f"exceeds {_MAX_SOURCES} items", "source_error",
+            )
+        )
     else:
         for index, source in enumerate(source_refs):
+            path = f"source_refs[{index}]"
             if not isinstance(source, dict):
-                errors.append(f"source_refs[{index}] must be an object")
+                errors.append(_validation_error("type_mismatch", path, "must be an object", "source_error"))
                 continue
             locator = str(source.get("locator") or "").strip()
             kind = str(source.get("kind") or "").strip()
             if not locator or len(locator) > 2_048:
-                errors.append(f"source_refs[{index}].locator is required and bounded")
+                errors.append(
+                    _validation_error("required_bounded", f"{path}.locator", "is required and bounded", "source_error")
+                )
             if not kind or len(kind) > 64:
-                errors.append(f"source_refs[{index}].kind is required and bounded")
+                errors.append(
+                    _validation_error("required_bounded", f"{path}.kind", "is required and bounded", "source_error")
+                )
             for timestamp_field in ("published_ts", "observed_ts", "retrieved_ts"):
                 if source.get(timestamp_field) is None:
                     continue
+                timestamp_path = f"{path}.{timestamp_field}"
                 try:
                     source_ts = int(source[timestamp_field])
                 except (TypeError, ValueError):
-                    errors.append(f"source_refs[{index}].{timestamp_field} must be epoch seconds")
+                    errors.append(
+                        _validation_error("epoch_seconds", timestamp_path, "must be epoch seconds", "source_error")
+                    )
                     continue
                 if source_ts > now + 300:
-                    errors.append(f"source_refs[{index}].{timestamp_field} is in the future")
+                    errors.append(
+                        _validation_error("future_timestamp", timestamp_path, "is in the future", "source_error")
+                    )
     if agent_confidence is not None:
         try:
             confidence = float(agent_confidence)
         except (TypeError, ValueError, OverflowError):
-            errors.append("agent_confidence must be numeric")
+            errors.append(
+                _validation_error("numeric", "agent_confidence", "must be numeric", "schema_error")
+            )
         else:
             if not math.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
-                errors.append("agent_confidence must be between 0 and 1")
+                errors.append(
+                    _validation_error(
+                        "range", "agent_confidence", "must be between 0 and 1", "schema_error",
+                    )
+                )
     untrusted_text = " ".join(
         (
             str(summary or ""),
@@ -714,8 +932,65 @@ def validate_submission(
         )
     ).lower()
     if any(pattern in untrusted_text for pattern in _PROMPT_INJECTION_PATTERNS):
-        errors.append("potential prompt injection detected in agent evidence")
-    return errors[:50]
+        errors.append(
+            _validation_error(
+                "prompt_injection", "submission", "potential prompt injection detected in agent evidence",
+                "injection_suspected", repairable=False,
+            )
+        )
+    errors = errors[:50]
+    categories = {str(item["category"]) for item in errors}
+    if "injection_suspected" in categories:
+        primary = "injection_suspected"
+    elif "policy_violation" in categories:
+        primary = "policy_violation"
+    elif "schema_error" in categories:
+        primary = "schema_error"
+    elif "source_error" in categories:
+        primary = "source_error"
+    else:
+        primary = "none"
+    reasons = []
+    for item in errors:
+        path = str(item.get("path") or "")
+        message = str(item["message"])
+        if path == "claims" and message == "must be an object":
+            reasons.append("claims must be an object")
+        elif path == "summary":
+            reasons.append(f"summary {message}")
+        elif path == "agent_confidence":
+            reasons.append(f"agent_confidence {message}")
+        elif path in {"source_refs", "submission"}:
+            reasons.append(message)
+        else:
+            reasons.append(f"{path}: {message}" if path else message)
+    return {
+        "valid": not errors,
+        "quarantine_category": primary,
+        "validation_categories": sorted(categories),
+        "validation_errors": errors,
+        "validation_reasons": reasons,
+        "retry_allowed": bool(errors) and all(bool(item.get("repairable")) for item in errors),
+    }
+
+
+def validate_submission(
+    *, claims: Dict[str, Any], source_refs: List[Dict[str, Any]], summary: str,
+    agent_confidence: Optional[float], response_schema: Dict[str, Any],
+    raw_response: Any = None,
+    now_ts: Optional[int] = None,
+) -> List[str]:
+    """Return structural validation reasons; an empty list means accepted."""
+    result = validate_submission_details(
+        claims=claims,
+        source_refs=source_refs,
+        summary=summary,
+        agent_confidence=agent_confidence,
+        response_schema=response_schema,
+        raw_response=raw_response,
+        now_ts=now_ts,
+    )
+    return list(result["validation_reasons"])
 
 
 def submit_evidence(
@@ -731,11 +1006,17 @@ def submit_evidence(
     source_refs: List[Dict[str, Any]],
     agent_confidence: Optional[float] = None,
     raw_response: Any = None,
+    repair_of_evidence_id: Optional[str] = None,
     now_ts: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """Submit source-backed evidence and complete or requeue the task."""
+    """Submit evidence, retaining the lease when a bounded repair is possible."""
     task_id = _normalize_task_id(task_id)
     agent_id = _normalize_agent_id(agent_id)
+    repair_id = (
+        _normalize_evidence_id(repair_of_evidence_id)
+        if repair_of_evidence_id is not None
+        else None
+    )
     for field, value in (
         ("agent_provider", agent_provider),
         ("model_name", model_name),
@@ -753,6 +1034,7 @@ def submit_evidence(
             "claims": claims,
             "source_refs": source_refs,
             "raw_response": raw_safe,
+            "repair_of_evidence_id": repair_id,
         }
     )
 
@@ -762,7 +1044,8 @@ def submit_evidence(
         cur = conn.cursor()
         cur.execute(
             """SELECT status, claimed_by, lease_token_sha256, lease_expires_at,
-                      required_response_schema, required_submissions, attempt_count, max_attempts
+                      lease_id, required_response_schema, required_submissions,
+                      attempt_count, max_attempts
                FROM ghost_agent_tasks WHERE task_id=%s FOR UPDATE""",
             (task_id,),
         )
@@ -773,7 +1056,8 @@ def submit_evidence(
             row,
             (
                 "status", "claimed_by", "lease_token_sha256", "lease_expires_at",
-                "required_response_schema", "required_submissions", "attempt_count", "max_attempts",
+                "lease_id", "required_response_schema", "required_submissions",
+                "attempt_count", "max_attempts",
             ),
         )
 
@@ -790,13 +1074,30 @@ def submit_evidence(
                 "idempotent": True,
                 "accepted": evidence["validation_status"] == "ACCEPTED",
                 "evidence": evidence,
+                "quarantine_category": evidence.get("quarantine_category", "none"),
+                "validation_errors": evidence.get("validation_errors") or [],
             }
 
         _assert_active_lease(task, agent_id=agent_id, lease_token=lease_token, now=now)
+        lease_id = str(task.get("lease_id") or "")
+        if not lease_id:
+            raise AgentWorkflowError("task lease has no lease_id")
+        if repair_id:
+            cur.execute(
+                """SELECT 1 FROM ghost_agent_evidence
+                   WHERE evidence_id=%s AND task_id=%s AND agent_id=%s
+                     AND lease_id=%s AND validation_status='QUARANTINED'""",
+                (repair_id, task_id, agent_id, lease_id),
+            )
+            if not cur.fetchone():
+                raise AgentWorkflowError(
+                    "repair_of_evidence_id must reference this agent's quarantined evidence "
+                    "from the active lease"
+                )
         schema = task.get("required_response_schema") or DEFAULT_RESPONSE_SCHEMA
         if isinstance(schema, str):
             schema = json.loads(schema)
-        reasons = validate_submission(
+        validation = validate_submission_details(
             claims=claims,
             source_refs=source_refs,
             summary=summary,
@@ -805,32 +1106,47 @@ def submit_evidence(
             raw_response=raw_safe,
             now_ts=now,
         )
+        reasons = list(validation["validation_reasons"])
+        validation_errors = list(validation["validation_errors"])
+        quarantine_category = str(validation["quarantine_category"])
         validation_status = "QUARANTINED" if reasons else "ACCEPTED"
         evidence_id = "evd_" + uuid.uuid4().hex
-        confidence_value = None if agent_confidence is None else float(agent_confidence)
+        try:
+            confidence_value = None if agent_confidence is None else float(agent_confidence)
+        except (TypeError, ValueError, OverflowError):
+            confidence_value = None
+        if confidence_value is not None and not math.isfinite(confidence_value):
+            confidence_value = None
         cur.execute(
             f"""INSERT INTO ghost_agent_evidence (
                     evidence_id, task_id, agent_id, agent_provider, model_name,
                     prompt_version, submitted_at, summary, claims, source_refs,
                     agent_confidence, payload_sha256, raw_response, validation_status,
-                    validation_reasons, advisory_only, decision_eligible
-                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s,%s,%s::jsonb,%s,%s::jsonb,TRUE,FALSE)
+                    validation_reasons, quarantine_category, validation_errors,
+                    lease_id, repair_of_evidence_id, advisory_only, decision_eligible
+                ) VALUES (
+                    %s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s,%s,%s::jsonb,%s,
+                    %s::jsonb,%s,%s::jsonb,%s,%s,TRUE,FALSE
+                )
                 RETURNING {', '.join(_EVIDENCE_COLUMNS)}""",
             (
                 evidence_id, task_id, agent_id, str(agent_provider).strip(),
                 str(model_name).strip(), str(prompt_version).strip(), now, summary.strip(),
                 _canonical_json(claims), _canonical_json(source_refs), confidence_value,
                 payload_sha, _canonical_json(raw_safe) if raw_safe is not None else None,
-                validation_status, _canonical_json(reasons),
+                validation_status, _canonical_json(reasons), quarantine_category,
+                _canonical_json(validation_errors), lease_id, repair_id,
             ),
         )
         evidence = _public_evidence(cur.fetchone())
         cur.execute(
             """INSERT INTO ghost_agent_evidence_validations
-               (evidence_id, validator, validation_ts, status, reasons, checks)
-               VALUES (%s,'ghost.schema_validator/v1',%s,%s,%s::jsonb,%s::jsonb)""",
+               (evidence_id, validator, validation_ts, status, reasons,
+                quarantine_category, errors, checks)
+               VALUES (%s,'ghost.schema_validator/v2',%s,%s,%s::jsonb,%s,%s::jsonb,%s::jsonb)""",
             (
                 evidence_id, now, validation_status, _canonical_json(reasons),
+                quarantine_category, _canonical_json(validation_errors),
                 _canonical_json(
                     {
                         "schema": True,
@@ -850,26 +1166,52 @@ def submit_evidence(
         required = int(task.get("required_submissions") or 1)
         attempts = int(task.get("attempt_count") or 0)
         max_attempts = int(task.get("max_attempts") or 1)
+        cur.execute(
+            """SELECT COUNT(*) FROM ghost_agent_evidence
+               WHERE task_id=%s AND agent_id=%s AND lease_id=%s
+                 AND validation_status='QUARANTINED'""",
+            (task_id, agent_id, lease_id),
+        )
+        lease_quarantine_count = int((cur.fetchone() or (0,))[0])
+        try:
+            max_repairs = max(1, min(5, int(os.getenv("AGENT_MAX_REPAIR_SUBMISSIONS", "2"))))
+        except ValueError:
+            max_repairs = 2
+        retry_allowed = bool(validation["retry_allowed"])
+        lease_retained = (
+            validation_status == "QUARANTINED"
+            and retry_allowed
+            and lease_quarantine_count <= max_repairs
+        )
         if validation_status == "ACCEPTED" and accepted_count >= required:
             next_status = "COMPLETED"
             completed_at = now
+        elif lease_retained:
+            next_status = "CLAIMED"
+            completed_at = None
         elif validation_status == "QUARANTINED" and attempts >= max_attempts:
             next_status = "DEAD_LETTER"
             completed_at = None
         else:
             next_status = "PENDING"
             completed_at = None
-        cur.execute(
-            """UPDATE ghost_agent_tasks
-               SET status=%s, updated_at=%s, completed_at=%s, claimed_by=NULL,
-                   lease_token_sha256=NULL, lease_expires_at=NULL, last_error=%s
-               WHERE task_id=%s""",
-            (
-                next_status, now, completed_at,
-                "; ".join(reasons)[:1_000] if reasons else None,
-                task_id,
-            ),
-        )
+        last_error = "; ".join(reasons)[:1_000] if reasons else None
+        if lease_retained:
+            cur.execute(
+                """UPDATE ghost_agent_tasks
+                   SET status='CLAIMED', updated_at=%s, last_error=%s
+                   WHERE task_id=%s""",
+                (now, last_error, task_id),
+            )
+        else:
+            cur.execute(
+                """UPDATE ghost_agent_tasks
+                   SET status=%s, updated_at=%s, completed_at=%s, claimed_by=NULL,
+                       lease_token_sha256=NULL, lease_id=NULL, lease_expires_at=NULL,
+                       last_error=%s
+                   WHERE task_id=%s""",
+                (next_status, now, completed_at, last_error, task_id),
+            )
         _event(
             cur, task_id,
             "EVIDENCE_ACCEPTED" if validation_status == "ACCEPTED" else "EVIDENCE_QUARANTINED",
@@ -877,9 +1219,13 @@ def submit_evidence(
             {
                 "evidence_id": evidence_id,
                 "validation_status": validation_status,
+                "quarantine_category": quarantine_category,
+                "validation_categories": validation["validation_categories"],
                 "accepted_submissions": accepted_count,
                 "required_submissions": required,
                 "task_status": next_status,
+                "lease_retained": lease_retained,
+                "repair_of_evidence_id": repair_id,
             },
         )
     return {
@@ -890,7 +1236,14 @@ def submit_evidence(
         "accepted_submissions": accepted_count,
         "required_submissions": required,
         "evidence": evidence,
+        "quarantine_category": quarantine_category,
+        "validation_categories": validation["validation_categories"],
+        "validation_errors": validation_errors,
         "validation_reasons": reasons,
+        "retry_allowed": lease_retained,
+        "lease_retained": lease_retained,
+        "lease_expires_at": task.get("lease_expires_at") if lease_retained else None,
+        "submission_contract": submission_contract(schema) if reasons else None,
         "safety": {"advisory_only": True, "decision_eligible": False},
     }
 
@@ -929,7 +1282,7 @@ def release_task(
         )
         cur.execute(
             """UPDATE ghost_agent_tasks SET status=%s, updated_at=%s, claimed_by=NULL,
-                      lease_token_sha256=NULL, lease_expires_at=NULL, last_error=%s
+                      lease_token_sha256=NULL, lease_id=NULL, lease_expires_at=NULL, last_error=%s
                WHERE task_id=%s""",
             (next_status, now, reason, task_id),
         )
@@ -1010,6 +1363,147 @@ def get_task(task_id: str) -> Dict[str, Any]:
     return {"ok": True, "task": task, "evidence": evidence, "events": events}
 
 
+def heartbeat_worker(
+    *, agent_id: str, agent_provider: str, model_name: str, status: str,
+    current_task_id: Optional[str] = None, processed_delta: int = 0,
+    accepted_delta: int = 0, quarantined_delta: int = 0,
+    last_error: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
+    now_ts: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Upsert a bounded worker heartbeat for operator monitoring."""
+    agent_id = _normalize_agent_id(agent_id)
+    worker_status = str(status or "").strip().upper()
+    if worker_status not in WORKER_STATUSES:
+        raise AgentWorkflowError("invalid worker status")
+    provider = str(agent_provider or "").strip()
+    model = str(model_name or "").strip()
+    if not provider or len(provider) > 128:
+        raise AgentWorkflowError("invalid agent_provider")
+    if not model or len(model) > 128:
+        raise AgentWorkflowError("invalid model_name")
+    task_id = _normalize_task_id(current_task_id) if current_task_id else None
+    meta = _bounded_json(metadata or {}, max_bytes=8_192, field="metadata")
+    try:
+        deltas = [int(processed_delta), int(accepted_delta), int(quarantined_delta)]
+    except (TypeError, ValueError):
+        raise AgentWorkflowError("worker counters must be integers")
+    if any(value < 0 or value > 100 for value in deltas):
+        raise AgentWorkflowError("worker counter deltas must be between 0 and 100")
+    now = int(time.time()) if now_ts is None else int(now_ts)
+    error = str(last_error or "").strip()[:1_000] or None
+
+    from core.db import db_conn
+
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO ghost_agent_workers (
+                   agent_id, agent_provider, model_name, status, current_task_id,
+                   started_at, last_seen_at, processed_count, accepted_count,
+                   quarantined_count, last_error, metadata, advisory_only, decision_eligible
+               ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,TRUE,FALSE)
+               ON CONFLICT (agent_id) DO UPDATE SET
+                   agent_provider=EXCLUDED.agent_provider,
+                   model_name=EXCLUDED.model_name,
+                   status=EXCLUDED.status,
+                   current_task_id=EXCLUDED.current_task_id,
+                   started_at=CASE WHEN EXCLUDED.status='STARTING'
+                                   THEN EXCLUDED.started_at
+                                   ELSE ghost_agent_workers.started_at END,
+                   last_seen_at=EXCLUDED.last_seen_at,
+                   processed_count=ghost_agent_workers.processed_count+EXCLUDED.processed_count,
+                   accepted_count=ghost_agent_workers.accepted_count+EXCLUDED.accepted_count,
+                   quarantined_count=ghost_agent_workers.quarantined_count+EXCLUDED.quarantined_count,
+                   last_error=EXCLUDED.last_error,
+                   metadata=EXCLUDED.metadata,
+                   advisory_only=TRUE,
+                   decision_eligible=FALSE
+               RETURNING agent_id, agent_provider, model_name, status, current_task_id,
+                         started_at, last_seen_at, processed_count, accepted_count,
+                         quarantined_count, last_error, metadata,
+                         advisory_only, decision_eligible""",
+            (
+                agent_id, provider, model, worker_status, task_id, now, now,
+                deltas[0], deltas[1], deltas[2], error, _canonical_json(meta),
+            ),
+        )
+        columns = (
+            "agent_id", "agent_provider", "model_name", "status", "current_task_id",
+            "started_at", "last_seen_at", "processed_count", "accepted_count",
+            "quarantined_count", "last_error", "metadata", "advisory_only",
+            "decision_eligible",
+        )
+        worker = _row_dict(cur.fetchone(), columns)
+    worker["advisory_only"] = True
+    worker["decision_eligible"] = False
+    return {"ok": True, "worker": worker}
+
+
+def workflow_dashboard(*, limit: int = 30, now_ts: Optional[int] = None) -> Dict[str, Any]:
+    """Return a sanitized operator view of workers, tasks, and validations."""
+    now = int(time.time()) if now_ts is None else int(now_ts)
+    limit = max(1, min(int(limit), 100))
+    from core.db import db_conn
+
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT agent_id, agent_provider, model_name, status, current_task_id,
+                      started_at, last_seen_at, processed_count, accepted_count,
+                      quarantined_count, last_error
+               FROM ghost_agent_workers ORDER BY last_seen_at DESC"""
+        )
+        worker_columns = (
+            "agent_id", "agent_provider", "model_name", "status", "current_task_id",
+            "started_at", "last_seen_at", "processed_count", "accepted_count",
+            "quarantined_count", "last_error",
+        )
+        workers = [_row_dict(row, worker_columns) for row in (cur.fetchall() or [])]
+        for worker in workers:
+            age = max(0, now - int(worker.get("last_seen_at") or 0))
+            worker["heartbeat_age_seconds"] = age
+            worker["online"] = age <= 120 and worker.get("status") != "STOPPED"
+        cur.execute(
+            f"SELECT {_TASK_SELECT} FROM ghost_agent_tasks "
+            "ORDER BY created_at DESC LIMIT %s",
+            (limit,),
+        )
+        tasks = [_public_task(row) for row in (cur.fetchall() or [])]
+        cur.execute(
+            """SELECT evidence_id, task_id, agent_id, model_name, submitted_at,
+                      summary, validation_status, quarantine_category,
+                      validation_reasons, repair_of_evidence_id
+               FROM ghost_agent_evidence
+               ORDER BY submitted_at DESC, evidence_id DESC LIMIT %s""",
+            (limit,),
+        )
+        evidence_columns = (
+            "evidence_id", "task_id", "agent_id", "model_name", "submitted_at",
+            "summary", "validation_status", "quarantine_category",
+            "validation_reasons", "repair_of_evidence_id",
+        )
+        evidence = [_row_dict(row, evidence_columns) for row in (cur.fetchall() or [])]
+        cur.execute(
+            """SELECT quarantine_category, COUNT(*) FROM ghost_agent_evidence
+               WHERE validation_status='QUARANTINED' GROUP BY quarantine_category"""
+        )
+        categories = {category: 0 for category in QUARANTINE_CATEGORIES if category != "none"}
+        for row in cur.fetchall() or []:
+            item = _row_dict(row, ("category", "count"))
+            categories[str(item["category"])] = int(item["count"])
+    return {
+        "ok": True,
+        "generated_at": now,
+        "health": workflow_health(),
+        "workers": workers,
+        "recent_tasks": tasks,
+        "recent_evidence": evidence,
+        "quarantine_categories": categories,
+        "submission_contract": submission_contract(),
+        "safety": {"advisory_only": True, "decision_eligible": False},
+    }
+
+
 def workflow_health() -> Dict[str, Any]:
     from core.db import db_conn
 
@@ -1034,12 +1528,32 @@ def workflow_health() -> Dict[str, Any]:
         for row in cur.fetchall() or []:
             item = _row_dict(row, ("status", "count"))
             validation_counts[str(item["status"]).lower()] = int(item["count"])
+        cur.execute(
+            """SELECT quarantine_category, COUNT(*) FROM ghost_agent_evidence
+               WHERE validation_status='QUARANTINED' GROUP BY quarantine_category"""
+        )
+        category_counts = {
+            category: 0 for category in QUARANTINE_CATEGORIES if category != "none"
+        }
+        for row in cur.fetchall() or []:
+            item = _row_dict(row, ("category", "count"))
+            category_counts[str(item["category"])] = int(item["count"])
+        cur.execute(
+            """SELECT COUNT(*), COUNT(*) FILTER (
+                   WHERE last_seen_at >= %s AND status <> 'STOPPED'
+               ) FROM ghost_agent_workers""",
+            (now - 120,),
+        )
+        worker_row = cur.fetchone() or (0, 0)
+        worker_counts = {"registered": int(worker_row[0]), "online": int(worker_row[1])}
     healthy = stale_leases == 0 and counts.get("dead_letter", 0) == 0
     return {
         "ok": healthy,
         "status": "healthy" if healthy else "degraded",
         "tasks": counts,
         "evidence": validation_counts,
+        "quarantine_categories": category_counts,
+        "workers": worker_counts,
         "stale_leases": stale_leases,
         "advisory_only": True,
         "decision_eligible": False,

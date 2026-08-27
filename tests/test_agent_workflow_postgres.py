@@ -222,6 +222,88 @@ def test_wrong_lease_token_cannot_submit():
         )
 
 
+def test_repairable_quarantine_retains_lease_and_accepts_corrected_resubmission():
+    task = workflow.create_task(
+        task_type="repairable_schema_test",
+        symbol="BRNX",
+        requested_by="ghost.test",
+        request_payload={"question": "Classify the move"},
+        idempotency_key="repairable:BRNX:2026-08-27",
+        now_ts=1_800_250_000,
+    )["task"]
+    claimed = workflow.claim_task(
+        agent_id="claude.production", lease_seconds=600, now_ts=1_800_250_010,
+    )
+    rejected = workflow.submit_evidence(
+        task_id=task["task_id"],
+        agent_id="claude.production",
+        lease_token=claimed["lease_token"],
+        agent_provider="anthropic",
+        model_name="claude",
+        prompt_version="repair/v2",
+        summary="Useful research in the wrong shape.",
+        claims={"classification": "news_breakout"},
+        source_refs=[{"url": "https://example.com/release"}],
+        now_ts=1_800_250_020,
+    )
+    assert rejected["accepted"] is False
+    assert rejected["task_status"] == "CLAIMED"
+    assert rejected["lease_retained"] is True
+    assert rejected["retry_allowed"] is True
+    assert rejected["quarantine_category"] == "schema_error"
+    assert rejected["validation_errors"]
+    assert workflow.get_task(task["task_id"])["task"]["status"] == "CLAIMED"
+
+    repaired = workflow.submit_evidence(
+        task_id=task["task_id"],
+        agent_id="claude.production",
+        lease_token=claimed["lease_token"],
+        agent_provider="anthropic",
+        model_name="claude",
+        prompt_version="repair/v2",
+        summary="Corrected source-backed evidence.",
+        claims=_claims(),
+        source_refs=_sources(1_800_250_030),
+        repair_of_evidence_id=rejected["evidence"]["evidence_id"],
+        now_ts=1_800_250_030,
+    )
+    assert repaired["accepted"] is True
+    assert repaired["task_status"] == "COMPLETED"
+    audit = workflow.get_task(task["task_id"])
+    assert [item["validation_status"] for item in audit["evidence"]] == [
+        "QUARANTINED", "ACCEPTED",
+    ]
+    assert audit["evidence"][0]["quarantine_category"] == "schema_error"
+    assert audit["evidence"][1]["repair_of_evidence_id"] == rejected["evidence"]["evidence_id"]
+
+
+def test_worker_heartbeat_and_dashboard_are_durable_and_sanitized():
+    first = workflow.heartbeat_worker(
+        agent_id="claude.production.worker",
+        agent_provider="anthropic",
+        model_name="claude-sonnet",
+        status="STARTING",
+        metadata={"worker_version": "1.0"},
+        now_ts=1_800_260_000,
+    )
+    assert first["worker"]["decision_eligible"] is False
+    workflow.heartbeat_worker(
+        agent_id="claude.production.worker",
+        agent_provider="anthropic",
+        model_name="claude-sonnet",
+        status="IDLE",
+        processed_delta=1,
+        accepted_delta=1,
+        now_ts=1_800_260_030,
+    )
+    dashboard = workflow.workflow_dashboard(limit=10, now_ts=1_800_260_040)
+    assert dashboard["workers"][0]["online"] is True
+    assert dashboard["workers"][0]["processed_count"] == 1
+    assert dashboard["workers"][0]["accepted_count"] == 1
+    assert dashboard["safety"] == {"advisory_only": True, "decision_eligible": False}
+    assert "ghost_token" not in str(dashboard).lower()
+
+
 def test_maintenance_requeues_then_dead_letters_abandoned_leases():
     task = workflow.create_task(
         task_type="abandoned_task_test",

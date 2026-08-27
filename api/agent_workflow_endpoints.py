@@ -182,12 +182,43 @@ async def agent_workflow_submit(task_id: str, payload: Dict[str, Any], request: 
             source_refs=payload.get("source_refs", []),
             agent_confidence=payload.get("agent_confidence"),
             raw_response=payload.get("raw_response"),
+            repair_of_evidence_id=payload.get("repair_of_evidence_id"),
         )
         return JSONResponse(status_code=200 if result.get("accepted") else 202, content=result)
     except AgentWorkflowError as exc:
         raise _payload_error(exc)
     except Exception:
         LOGGER.exception("agent workflow evidence submission failed task_id=%s", task_id)
+        return JSONResponse(
+            status_code=503,
+            content={"ok": False, "error": "agent_workflow_unavailable"},
+        )
+
+
+@router.post("/workers/heartbeat")
+async def agent_workflow_worker_heartbeat(payload: Dict[str, Any], request: Request):
+    _protected(request)
+    try:
+        from core.agent_workflow import heartbeat_worker
+
+        return JSONResponse(
+            content=heartbeat_worker(
+                agent_id=payload.get("agent_id", ""),
+                agent_provider=payload.get("agent_provider", ""),
+                model_name=payload.get("model_name", ""),
+                status=payload.get("status", ""),
+                current_task_id=payload.get("current_task_id"),
+                processed_delta=payload.get("processed_delta", 0),
+                accepted_delta=payload.get("accepted_delta", 0),
+                quarantined_delta=payload.get("quarantined_delta", 0),
+                last_error=payload.get("last_error"),
+                metadata=payload.get("metadata"),
+            )
+        )
+    except AgentWorkflowError as exc:
+        raise _payload_error(exc)
+    except Exception:
+        LOGGER.exception("agent workflow worker heartbeat failed")
         return JSONResponse(
             status_code=503,
             content={"ok": False, "error": "agent_workflow_unavailable"},

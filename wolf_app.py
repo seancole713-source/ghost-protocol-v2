@@ -3566,6 +3566,7 @@ from api.routes_admin import (  # noqa: E402,F401 — facade re-exports
     admin_login,
     admin_logout,
     admin_audit_log,
+    admin_agent_workflow,
     delete_model,
     fix_stock_expiry,
     news_import,

@@ -59,6 +59,12 @@ body{background:radial-gradient(1100px 520px at 50% -8%,#1a0f14 0%,#0a0a0a 58%) 
 .text-gray-999{color:#999}
 .text-orange{color:#f59e0b}
 .alert-panel{border-left:4px solid #ff4d4f;background:rgba(255,77,79,.08);padding:8px 12px;border-radius:6px;margin-bottom:8px}
+.agent-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:8px;margin:10px 0 14px}
+.agent-stat{border:1px solid #263247;border-radius:9px;background:#0b111c;padding:10px 12px}
+.agent-stat b{display:block;color:#fff;font-size:20px;margin-top:3px}
+.agent-pill{display:inline-block;border:1px solid #334155;border-radius:999px;padding:2px 7px;font-size:10px;font-weight:700;letter-spacing:.4px;text-transform:uppercase}
+.agent-pill.ok{border-color:#14532d;background:#07130b}.agent-pill.warn{border-color:#5b4112;background:#171106}.agent-pill.fail{border-color:#5b1a1a;background:#170808}
+.agent-scroll{overflow-x:auto}
 </style>
 </head>
 <body>
@@ -237,6 +243,19 @@ body{background:radial-gradient(1100px 520px at 50% -8%,#1a0f14 0%,#0a0a0a 58%) 
   <div class="desc">When resolved picks are scarce, Ghost lowers the floors and emits capped <b>research picks</b> (learning fuel, clearly labeled). Exits automatically once enough picks resolve.</div>
   <div class="row"><button class="secondary" onclick="loadResearchStatus()">Refresh</button></div>
   <div id="research-status" class="mt10"><div class="kv">Loading&#8230;</div></div>
+</div>
+
+<!-- ─── Connected agent workflow ─── -->
+<div class="sec-label">Connected Agent Workflow</div>
+<div class="card">
+  <div class="flex-row-between">
+    <div>
+      <h3>Claude worker and evidence queue</h3>
+      <div class="desc">Persistent worker heartbeats, durable task leases, accepted evidence, and categorized quarantines. Agent output remains advisory-only and never bypasses Ghost's firing gates.</div>
+    </div>
+    <button class="secondary" onclick="loadAgentWorkflow()">Refresh</button>
+  </div>
+  <div id="agent-workflow-status" class="mt10"><div class="kv">Loading&#8230;</div></div>
 </div>
 
 <!-- ─── Circuit breakers (PR #69) ─── -->
@@ -1529,6 +1548,62 @@ async function loadResearchStatus(){
   }catch(e){el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml(String(e)) + '</div>'}
 }
 
+/* ─── Persistent Claude worker + advisory evidence ─── */
+async function loadAgentWorkflow(){
+  var el = document.getElementById('agent-workflow-status');
+  if(!el) return;
+  el.innerHTML = '<div class="kv"><span class="warn">&#x21BB; Loading worker state...</span></div>';
+  try{
+    var g = await _fetchJson('/api/admin/agent-workflow?limit=30');
+    if(!g || g.ok === false){
+      el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml((g&&g.error)||'unavailable') + '</div>';
+      return;
+    }
+    var h=g.health||{},tc=h.tasks||{},ec=h.evidence||{},wc=h.workers||{},cats=g.quarantine_categories||{};
+    var html='<div class="agent-summary">'
+      +'<div class="agent-stat"><span class="text-gray-8b96a8 fs10">WORKERS ONLINE</span><b>'+(wc.online||0)+' / '+(wc.registered||0)+'</b></div>'
+      +'<div class="agent-stat"><span class="text-gray-8b96a8 fs10">PENDING</span><b>'+(tc.pending||0)+'</b></div>'
+      +'<div class="agent-stat"><span class="text-gray-8b96a8 fs10">CLAIMED</span><b>'+(tc.claimed||0)+'</b></div>'
+      +'<div class="agent-stat"><span class="text-gray-8b96a8 fs10">COMPLETED</span><b>'+(tc.completed||0)+'</b></div>'
+      +'<div class="agent-stat"><span class="text-gray-8b96a8 fs10">ACCEPTED EVIDENCE</span><b>'+(ec.accepted||0)+'</b></div>'
+      +'<div class="agent-stat"><span class="text-gray-8b96a8 fs10">QUARANTINED</span><b>'+(ec.quarantined||0)+'</b></div>'
+      +'</div>';
+    var workers=g.workers||[];
+    html+='<h4>Workers</h4><div class="agent-scroll"><table class="tbl"><thead><tr><th>Agent</th><th>Status</th><th>Model</th><th>Heartbeat</th><th>Current task</th><th>Accepted / Processed</th><th>Last error</th></tr></thead><tbody>';
+    if(!workers.length) html+='<tr><td colspan="7" class="text-gray-999">No persistent worker has registered yet.</td></tr>';
+    workers.forEach(function(w){
+      var cls=w.online?(w.status==='ERROR'?'fail':'ok'):'fail';
+      html+='<tr><td><b>'+escHtml(w.agent_id||'—')+'</b></td><td><span class="agent-pill '+cls+'">'+escHtml(w.status||'unknown')+'</span></td>'
+        +'<td>'+escHtml(w.model_name||'—')+'</td><td>'+(w.last_seen_at?fmtTimeAgo(w.last_seen_at):'never')+'</td>'
+        +'<td><code>'+escHtml(w.current_task_id||'—')+'</code></td><td>'+(w.accepted_count||0)+' / '+(w.processed_count||0)+'</td>'
+        +'<td class="fs11">'+escHtml((w.last_error||'—').slice(0,160))+'</td></tr>';
+    });
+    html+='</tbody></table></div>';
+    html+='<div class="kv mt10"><b>Quarantine categories</b> · schema '+(cats.schema_error||0)+' · sources '+(cats.source_error||0)+' · injection '+(cats.injection_suspected||0)+' · policy '+(cats.policy_violation||0)+'</div>';
+    html+='<h4 class="mt12">Recent tasks</h4><div class="agent-scroll"><table class="tbl"><thead><tr><th>Created</th><th>Symbol</th><th>Type</th><th>Status</th><th>Agent</th><th>Attempts</th><th>Last error</th></tr></thead><tbody>';
+    var tasks=g.recent_tasks||[];
+    if(!tasks.length) html+='<tr><td colspan="7" class="text-gray-999">No tasks recorded.</td></tr>';
+    tasks.forEach(function(t){
+      var cls=t.status==='COMPLETED'?'ok':(t.status==='DEAD_LETTER'||t.status==='EXPIRED'?'fail':'warn');
+      html+='<tr><td>'+(t.created_at?fmtTimeAgo(t.created_at):'—')+'</td><td><b>'+escHtml(t.symbol||'—')+'</b></td><td>'+escHtml(t.task_type||'—')+'</td>'
+        +'<td><span class="agent-pill '+cls+'">'+escHtml(t.status||'—')+'</span></td><td>'+escHtml(t.claimed_by||'—')+'</td><td>'+(t.attempt_count||0)+' / '+(t.max_attempts||0)+'</td>'
+        +'<td class="fs11">'+escHtml((t.last_error||'—').slice(0,180))+'</td></tr>';
+    });
+    html+='</tbody></table></div>';
+    html+='<h4 class="mt12">Recent evidence</h4><div class="agent-scroll"><table class="tbl"><thead><tr><th>Submitted</th><th>Agent</th><th>Result</th><th>Category</th><th>Summary</th><th>Repair</th></tr></thead><tbody>';
+    var evidence=g.recent_evidence||[];
+    if(!evidence.length) html+='<tr><td colspan="6" class="text-gray-999">No evidence submitted.</td></tr>';
+    evidence.forEach(function(e){
+      var accepted=e.validation_status==='ACCEPTED',cls=accepted?'ok':(e.quarantine_category==='injection_suspected'?'fail':'warn');
+      html+='<tr><td>'+(e.submitted_at?fmtTimeAgo(e.submitted_at):'—')+'</td><td>'+escHtml(e.agent_id||'—')+'</td>'
+        +'<td><span class="agent-pill '+cls+'">'+escHtml(e.validation_status||'—')+'</span></td><td>'+escHtml(e.quarantine_category||'none')+'</td>'
+        +'<td class="fs11">'+escHtml((e.summary||'—').slice(0,220))+'</td><td><code>'+escHtml(e.repair_of_evidence_id||'—')+'</code></td></tr>';
+    });
+    html+='</tbody></table></div>';
+    el.innerHTML=html;
+  }catch(e){el.innerHTML='<div class="kv"><span class="fail">&#10007;</span> '+escHtml(String(e))+'</div>'}
+}
+
 /* ─── Boot ─── */
 loadDeployMeta();
 loadMissionControl();
@@ -1544,7 +1619,7 @@ loadDeadLetter();
 setTimeout(function(){ loadFeatureDrift(); loadOptionsFlow(); }, 200);
 setTimeout(function(){ loadGateHistory(); loadKillStatus(); loadPnl(); }, 400);
 setTimeout(function(){ loadSuperGhost(); loadResearchStatus(); }, 600);
-setTimeout(function(){ loadLineage(); loadAuditLog(); }, 800);
+setTimeout(function(){ loadAgentWorkflow(); loadLineage(); loadAuditLog(); }, 800);
 function _mcTick(fn, ms){
   // Skip a tick if the previous run is still in flight (an 8-endpoint batch on
   // a slow link can exceed the interval) and while the tab is hidden.
@@ -1563,6 +1638,7 @@ _mcTick(loadGateStatus, 60000);
 _mcTick(loadKillStatus, 120000);
 _mcTick(loadSqueezeStatus, 60000);
 _mcTick(loadSqueezeDailyLog, 300000);
+_mcTick(loadAgentWorkflow, 60000);
 _mcTick(loadCircuitBreakers, 120000);
 _mcTick(loadLatency, 120000);
 _mcTick(loadDegraded, 120000);

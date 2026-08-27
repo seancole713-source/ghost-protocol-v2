@@ -159,7 +159,7 @@ AGENT_WORKFLOW_TOOLS: Mapping[str, Dict[str, Any]] = {
         },
     },
     "ghost_agent_claim_task": {
-        "description": "Claim the highest-priority available advisory task with a time-limited lease.",
+        "description": "Claim the highest-priority advisory task. The response includes the exact submission schema, a valid example, repair rules, and a time-limited lease.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -186,7 +186,7 @@ AGENT_WORKFLOW_TOOLS: Mapping[str, Dict[str, Any]] = {
         },
     },
     "ghost_agent_submit_evidence": {
-        "description": "Submit structured, source-backed advisory evidence for a claimed task. Submission is schema-validated and cannot fire a prediction or trade.",
+        "description": "Submit structured, source-backed advisory evidence. Repairable failures retain the lease and return categorized machine-readable corrections; evidence can never fire a prediction or trade.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -201,6 +201,10 @@ AGENT_WORKFLOW_TOOLS: Mapping[str, Dict[str, Any]] = {
                 "source_refs": {"type": "array", "items": {"type": "object"}},
                 "agent_confidence": {"type": "number", "minimum": 0, "maximum": 1},
                 "raw_response": {},
+                "repair_of_evidence_id": {
+                    "type": "string",
+                    "description": "Quarantined evidence ID being corrected during the active lease",
+                },
             },
             "required": [
                 "task_id", "agent_id", "lease_token", "agent_provider",
@@ -613,6 +617,7 @@ def _agent_submit_evidence(args: Dict[str, Any]) -> Dict[str, Any]:
             "source_refs": args.get("source_refs", []),
             "agent_confidence": args.get("agent_confidence"),
             "raw_response": args.get("raw_response"),
+            "repair_of_evidence_id": args.get("repair_of_evidence_id"),
         },
     )
 
