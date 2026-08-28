@@ -11,6 +11,15 @@ from fastapi import APIRouter, Header, HTTPException, Request, Depends  # noqa: 
 from fastapi.responses import JSONResponse, HTMLResponse, Response, PlainTextResponse  # noqa: F401
 
 router = APIRouter()
+LOGGER = logging.getLogger("ghost.api.wolf_ops")
+
+
+def _performance_log_error(operation: str, exc: Exception) -> JSONResponse:
+    LOGGER.exception("performance log %s failed (%s)", operation, type(exc).__name__)
+    return JSONResponse(
+        {"ok": False, "error": "performance_log_unavailable"},
+        status_code=500,
+    )
 
 @router.get("/api/wolf/gate-status")
 def wolf_gate_status():
@@ -439,7 +448,7 @@ def wolf_perf_log_cycles(limit: int = 50, offset: int = 0, since: int = 0):
         out = fetch_cycles(limit=limit, offset=offset, since_ts=since_ts)
         return {"ok": True, **out}
     except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+        return _performance_log_error("cycles", e)
 
 
 @router.get("/api/wolf/performance-log/cycles/{cycle_id}")
@@ -452,7 +461,7 @@ def wolf_perf_log_cycle_detail(cycle_id: int, symbol_limit: int = 200):
             return JSONResponse({"ok": False, "error": "cycle_not_found"}, status_code=404)
         return {"ok": True, "cycle": detail}
     except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+        return _performance_log_error("cycle_detail", e)
 
 
 @router.get("/api/wolf/performance-log/events")
@@ -475,7 +484,7 @@ def wolf_perf_log_events(
         )
         return {"ok": True, **out}
     except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+        return _performance_log_error("events", e)
 
 
 @router.get("/api/wolf/performance-log/progress")
@@ -486,7 +495,7 @@ def wolf_perf_log_progress(days: int = 7):
         out = fetch_progress_summary(days=days)
         return {"ok": True, **out}
     except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+        return _performance_log_error("progress", e)
 
 
 @router.get("/api/wolf/performance-log/symbols/{symbol}")
@@ -498,7 +507,7 @@ def wolf_perf_log_symbol(symbol: str, limit: int = 100, since: int = 0):
         out = fetch_symbol_eval_history(symbol, limit=limit, since_ts=since_ts)
         return {"ok": True, **out}
     except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
+        return _performance_log_error("symbol_history", e)
 
 
 @router.post("/api/wolf/signal-alert/check")

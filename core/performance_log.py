@@ -459,7 +459,9 @@ def fetch_cycles(limit: int = 50, offset: int = 0, since_ts: Optional[int] = Non
     off = max(0, int(offset))
     with db_conn() as conn:
         cur = conn.cursor()
-        ensure_perf_tables(cur)
+        # Schema setup runs once in core.db.init_db(). Read requests must not
+        # execute DDL or backfills because concurrent dashboard loads can then
+        # contend with each other and transiently fail.
         if since_ts:
             cur.execute(
                 "SELECT COUNT(*) FROM ghost_perf_cycles WHERE cycle_ts >= %s",
@@ -521,7 +523,6 @@ def fetch_cycle_detail(cycle_id: int, symbol_limit: int = 200) -> Optional[Dict[
 
     with db_conn() as conn:
         cur = conn.cursor()
-        ensure_perf_tables(cur)
         cur.execute(
             """
             SELECT id, cycle_ts, duration_ms, scanned, candidates, saved, dedup_blocked,
@@ -604,7 +605,6 @@ def fetch_symbol_eval_history(symbol: str, limit: int = 100, since_ts: Optional[
     lim = max(1, min(500, int(limit)))
     with db_conn() as conn:
         cur = conn.cursor()
-        ensure_perf_tables(cur)
         if since_ts:
             cur.execute(
                 """
@@ -682,7 +682,6 @@ def fetch_events(
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
     with db_conn() as conn:
         cur = conn.cursor()
-        ensure_perf_tables(cur)
         cur.execute(f"SELECT COUNT(*) FROM ghost_perf_events{where}", tuple(params))
         total = cur.fetchone()[0]
         cur.execute(
@@ -718,7 +717,6 @@ def fetch_progress_summary(days: int = 7) -> Dict[str, Any]:
     from core.prediction_filters import V32_ERA_MIN_ID as v32_min
     with db_conn() as conn:
         cur = conn.cursor()
-        ensure_perf_tables(cur)
         cur.execute(
             """
             SELECT id, symbol, direction, confidence, entry_price, target_price, stop_price,

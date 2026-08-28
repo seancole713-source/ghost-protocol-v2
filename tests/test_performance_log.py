@@ -1,4 +1,6 @@
 """Tests for backend performance log (core/performance_log.py + wolf API)."""
+from contextlib import contextmanager
+import json
 import time
 
 import core.performance_log as perf
@@ -97,6 +99,39 @@ def test_perf_schema_backfill_does_not_rewrite_null_confidence_rows():
 
     backfill = next(sql for sql in statements if sql.startswith("UPDATE ghost_perf_symbol_evals"))
     assert "confidence_final IS NULL AND confidence IS NOT NULL" in backfill
+
+
+def test_progress_reads_never_run_schema_ddl(monkeypatch):
+    class _Cur:
+        def __init__(self):
+            self.query = ""
+
+        def execute(self, sql, params=None):
+            self.query = " ".join(sql.split())
+
+        def fetchone(self):
+            if "COUNT(*) AS cycles" in self.query:
+                return (1, 0, 0, 0, 12.5)
+            raise AssertionError(f"unexpected fetchone query: {self.query}")
+
+        def fetchall(self):
+            return []
+
+    @contextmanager
+    def _db_conn():
+        yield type("_Conn", (), {"cursor": lambda self: _Cur()})()
+
+    monkeypatch.setattr("core.db.db_conn", _db_conn)
+    monkeypatch.setattr(
+        perf,
+        "ensure_perf_tables",
+        lambda _cur: (_ for _ in ()).throw(AssertionError("read path ran schema DDL")),
+    )
+
+    out = perf.fetch_progress_summary(days=7)
+
+    assert out["cycles"]["count"] == 1
+    assert out["open_count"] == 0
 
 
 def test_log_prediction_cycle_inserts_rows(monkeypatch):
@@ -204,6 +239,24 @@ def test_wolf_perf_log_progress_endpoint(monkeypatch):
     assert out["ok"] is True
     assert out["days"] == 14
     assert out["open_count"] == 2
+
+
+def test_wolf_perf_log_progress_sanitizes_and_logs_failures(monkeypatch, caplog):
+    def _fail(days=7):
+        raise RuntimeError("postgres-secret-detail")
+
+    monkeypatch.setattr(perf, "fetch_progress_summary", _fail)
+
+    with caplog.at_level("ERROR"):
+        response = wolf_app.wolf_perf_log_progress(days=7)
+
+    assert response.status_code == 500
+    assert json.loads(response.body) == {
+        "ok": False,
+        "error": "performance_log_unavailable",
+    }
+    assert "postgres-secret-detail" not in response.body.decode()
+    assert "postgres-secret-detail" in caplog.text
 
 
 def test_wolf_perf_log_cycle_detail_not_found(monkeypatch):
