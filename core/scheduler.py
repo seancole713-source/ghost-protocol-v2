@@ -29,6 +29,7 @@ class Task:
     # instance while the previous one is still running.
     running: bool = field(default=False, init=False)
     skipped_overlap_count: int = field(default=0, init=False)
+    next_run_at: float = field(default=0.0, init=False)
 
 _tasks: Dict[str, Task] = {}
 _running = False
@@ -39,13 +40,25 @@ _DEFAULT_TASK_TIMEOUT_S = float(
 )
 
 
-def register(name: str, fn: Callable, interval_s: int, timeout_s: Optional[float] = None):
-    """Register a background task. Call before start()."""
-    _tasks[name] = Task(
+def register(
+    name: str,
+    fn: Callable,
+    interval_s: int,
+    timeout_s: Optional[float] = None,
+    initial_delay_s: Optional[float] = None,
+):
+    """Register a task without launching the entire fleet simultaneously."""
+    task = Task(
         name=name, fn=fn, interval_s=interval_s,
         timeout_s=timeout_s if timeout_s is not None else _DEFAULT_TASK_TIMEOUT_S,
     )
-    LOGGER.info(f"Task registered: {name} every {interval_s}s timeout={_tasks[name].timeout_s}s")
+    delay = interval_s if initial_delay_s is None else max(0.0, float(initial_delay_s))
+    task.next_run_at = time.time() + delay
+    _tasks[name] = task
+    LOGGER.info(
+        "Task registered: %s every %ss timeout=%ss initial_delay=%ss",
+        name, interval_s, task.timeout_s, round(delay, 1),
+    )
 
 def start():
     """Start the scheduler loop in a background asyncio task."""
@@ -62,11 +75,12 @@ async def _loop():
     while _running:
         now = time.time()
         for task in list(_tasks.values()):
-            if now - task.last_run >= task.interval_s:
+            if now >= task.next_run_at:
                 if task.running:
                     task.skipped_overlap_count += 1
                     LOGGER.debug("Task %s skipped (overlap #%s)", task.name, task.skipped_overlap_count)
                     continue
+                task.next_run_at = now + task.interval_s
                 asyncio.create_task(_run_task(task))
         await asyncio.sleep(10)
 
@@ -125,6 +139,7 @@ def status() -> List[dict]:
         "interval_s": t.interval_s,
         "timeout_s": t.timeout_s,
         "last_run_ago_s": int(now - t.last_run) if t.last_run else None,
+        "next_run_in_s": max(0, int(t.next_run_at - now)) if t.next_run_at else None,
         "run_count": t.run_count,
         "error_count": t.error_count,
         "timeout_count": t.timeout_count,

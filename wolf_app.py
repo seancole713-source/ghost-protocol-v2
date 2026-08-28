@@ -1487,7 +1487,10 @@ async def lifespan(app: FastAPI):
         _scan_tick = max(300, int(os.getenv("SCAN_INTERVAL_MARKET_MIN", "30")) * 60)
     except Exception:
         _scan_tick = 1800
-    scheduler.register("market_scan", _market_scan_job, interval_s=_scan_tick, timeout_s=600)
+    scheduler.register(
+        "market_scan", _market_scan_job, interval_s=_scan_tick,
+        timeout_s=600, initial_delay_s=300,
+    )
     from core.daily_model_issuance import run_daily_model_issuance
 
     def _daily_model_issuance_job():
@@ -1497,7 +1500,7 @@ async def lifespan(app: FastAPI):
 
     scheduler.register(
         "daily_model_issuance", _daily_model_issuance_job,
-        interval_s=300, timeout_s=600,
+        interval_s=300, timeout_s=600, initial_delay_s=60,
     )
     # Watchdog: real-time hit alerts every 5 minutes
     from core.watchdog import run_watchdog as _scheduled_watchdog
