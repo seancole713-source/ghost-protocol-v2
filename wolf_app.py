@@ -1234,6 +1234,13 @@ def _watchlist_missing_symbol_pairs() -> list:
         return []
 
 
+def _startup_auto_train_enabled() -> bool:
+    """Require an explicit opt-in before training the fleet during web startup."""
+    return os.getenv("V3_STARTUP_AUTO_TRAIN_ENABLED", "0").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
 def _coverage_maintenance_job():
     """
     Keep model coverage above a floor.
@@ -2087,8 +2094,14 @@ async def lifespan(app: FastAPI):
                     _RETRAIN_JOB_LOCK.release()
                 except Exception:
                     pass
-    import threading as _th
-    _th.Thread(target=_startup_train, daemon=True).start()
+    if _startup_auto_train_enabled():
+        import threading as _th
+
+        _th.Thread(target=_startup_train, daemon=True).start()
+    else:
+        LOGGER.info(
+            "Startup auto-training disabled; scheduled/manual training remains available"
+        )
     LOGGER.info("Ghost Protocol v2 ready.")
     yield
     scheduler.stop()

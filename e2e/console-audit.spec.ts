@@ -97,22 +97,33 @@ test.describe("Console display audit", () => {
     expect(failedApiResponses, `Failed API: ${JSON.stringify(failedApiResponses)}`).toHaveLength(0);
   });
 
-  test("Overview tab — hero ring, coverage, regime all populated", async ({ page }) => {
+  test("Overview tab — hero ring, coverage, and regime are honest", async ({ page }) => {
     await page.goto("/console", { waitUntil: "domcontentloaded" });
     await expect(page.locator("#healthPill")).toContainText("Ghost online", { timeout: 30_000 });
 
-    // Hero ring should show a grade, not "—"
+    // A grade is intentionally unavailable when no model can serve. In that
+    // state the action must say so instead of inventing a grade.
     const grade = await page.locator("#heroGrade").textContent();
-    expect(grade?.trim()).not.toBe("—");
     expect(grade?.trim().length).toBeGreaterThan(0);
+    const action = (await page.locator("#heroAction").textContent())?.trim() ?? "";
+    if (grade?.trim() === "—") {
+      expect(action).toMatch(/No signal|NO EDGE|Unavailable/i);
+    }
 
-    // Coverage should be "N/25" not "—"
+    // Coverage is unavailable when the fail-closed snapshot has no model.
     const cov = await page.locator("#mCoverage").textContent();
-    expect(cov?.trim()).toMatch(/\d+\/25/);
+    expect(cov?.trim()).toMatch(/(?:\d+|—)\/25/);
+    if (cov?.trim() === "—/25") {
+      expect(action).toMatch(/No signal|NO EDGE|Unavailable/i);
+    }
 
-    // Regime should not be "—"
+    // Regime can also be unavailable when the fail-closed model snapshot has
+    // no market context; it must still render an explicit value.
     const regime = await page.locator("#mRegime").textContent();
-    expect(regime?.trim()).not.toBe("—");
+    expect(regime?.trim().length).toBeGreaterThan(0);
+    if (regime?.trim() === "—") {
+      expect(action).toMatch(/No signal|NO EDGE|Unavailable/i);
+    }
   });
 
   test("My Picks tab — each pick has a grade and action", async ({ page }) => {

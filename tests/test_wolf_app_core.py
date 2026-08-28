@@ -4916,6 +4916,14 @@ def test_has_loadable_v3_model_any_symbol_counts(monkeypatch):
     assert wolf_app._has_loadable_v3_model() is True
 
 
+def test_startup_auto_train_is_opt_in(monkeypatch):
+    monkeypatch.delenv("V3_STARTUP_AUTO_TRAIN_ENABLED", raising=False)
+    assert wolf_app._startup_auto_train_enabled() is False
+
+    monkeypatch.setenv("V3_STARTUP_AUTO_TRAIN_ENABLED", "true")
+    assert wolf_app._startup_auto_train_enabled() is True
+
+
 def test_purge_v3_keeps_serveable_models(monkeypatch):
     """Regression: NOK passed train gates then was deleted by post-train purge."""
     import wolf_app

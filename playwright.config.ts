@@ -4,7 +4,9 @@ const baseURL = process.env.BASE_URL || "https://ghost-protocol-v2-production.up
 
 export default defineConfig({
   testDir: "./e2e",
-  globalTimeout: 180_000,
+  // A serial production audit spans desktop, mobile, and the API surface.
+  // Railway cold paths can make the complete 71-test run exceed three minutes.
+  globalTimeout: 600_000,
   timeout: 30_000,
   expect: {
     timeout: 10_000,
