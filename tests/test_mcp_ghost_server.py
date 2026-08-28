@@ -39,6 +39,51 @@ def test_invoke_research_status_executes_canonical_helper(monkeypatch):
 
     assert result == {"ok": True, **expected}
 
+def test_symbol_quote_tool_is_listed_with_required_symbol_arg():
+    tools = {t["name"]: t for t in ghost_server.list_tools()}
+    assert "ghost_symbol_quote" in tools
+    schema = tools["ghost_symbol_quote"]["inputSchema"]
+    assert schema["required"] == ["symbol"]
+
+
+def test_invoke_symbol_quote_returns_any_symbols_price_not_wolf_only(monkeypatch):
+    monkeypatch.setattr(
+        "core.prices.get_extended_session",
+        lambda symbol: {
+            "symbol": symbol,
+            "session": "premarket",
+            "live_price": None,
+            "session_price": 21.4,
+            "previous_close": 20.0,
+            "gap_abs": 1.4,
+            "gap_pct": 7.0,
+        },
+    )
+    monkeypatch.setattr(
+        "config.symbols.V3_WHITELIST_STOCKS", frozenset({"PYPL", "MRVL"}),
+    )
+
+    result = ghost_server.invoke_tool("ghost_symbol_quote", {"symbol": "gps"})
+
+    assert result["ok"] is True
+    assert result["symbol"] == "GPS"
+    assert result["session_price"] == 21.4
+    assert result["in_official_watchlist"] is False
+
+
+def test_invoke_symbol_quote_requires_symbol():
+    result = ghost_server.invoke_tool("ghost_symbol_quote", {})
+    assert result == {"ok": False, "error": "symbol is required"}
+
+
+def test_invoke_symbol_quote_reports_no_price_available(monkeypatch):
+    monkeypatch.setattr("core.prices.get_extended_session", lambda symbol: {})
+
+    result = ghost_server.invoke_tool("ghost_symbol_quote", {"symbol": "ZZZZ"})
+
+    assert result == {"ok": False, "symbol": "ZZZZ", "error": "no_price_available"}
+
+
 def test_jsonrpc_sanitizes_tool_execution_failures(monkeypatch):
     monkeypatch.setattr(
         "mcp.jsonrpc.invoke_tool",
@@ -241,7 +286,7 @@ def test_mcp_handshake_path_token(monkeypatch):
         )
         assert r3.status_code == 200
         names = {t["name"] for t in r3.json()["result"]["tools"]}
-        assert len(names) == 26  # 9 operational + 10 research + 7 agent workflow
+        assert len(names) == 27  # 9 operational + 10 research + 1 market data + 7 agent workflow
         assert "ghost_shadow_stats" in names
         assert "ghost_agent_claim_task" in names
         assert "ghost_agent_submit_evidence" in names

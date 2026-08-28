@@ -123,9 +123,12 @@ ledger earns them.
 
 ## Mode 2 — Intraday update ("what's today's pick update")
 
-1. Re-pull live state for the morning's candidates: Ghost price reads
-   (`ghost_score` or the picks/tasks refresh) plus a quick web check for
-   any new headline on each.
+1. Re-pull live state for the morning's candidates: `ghost_symbol_quote`
+   (per-symbol, works for any ticker — official watchlist or not) for a live
+   price/gap read, plus a quick web check for any new headline on each.
+   Note: `ghost_score` is NOT a per-symbol tool — it's Ghost's own
+   parameterless WOLF cockpit score, always. Don't call it with a `symbol`
+   argument expecting a different ticker back.
 2. Compare against the morning report: current price vs. morning price,
    peak so far, direction still intact?
 3. Report per symbol: "still on track" / "reversed" / "new information",
