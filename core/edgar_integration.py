@@ -101,11 +101,37 @@ def _parse_8k_items(filing: Dict[str, Any]) -> List[str]:
     return items
 
 
-def fetch_recent_8k(symbol: str, days: int = 90) -> Dict[str, Any]:
+def _apply_asof_filter(result: Dict[str, Any], asof_ts: int) -> Dict[str, Any]:
+    """Drop filings dated after asof_ts so a historical read can't see the future.
+
+    The submissions API has no as-of mode -- it always answers "as of now".
+    This is a post-fetch filter over that same live read, not a separate
+    historical query, mirroring the pattern in core.earnings_surprise.
+    """
+    if not result.get("available"):
+        return result
+    cutoff_date = datetime.fromtimestamp(asof_ts, tz=timezone.utc).strftime("%Y-%m-%d")
+    filings = [f for f in (result.get("filings") or []) if f.get("filing_date", "") <= cutoff_date]
+    material_events = [e for e in (result.get("material_events") or []) if e.get("date", "") <= cutoff_date]
+    return {
+        **result,
+        "filings": filings,
+        "filings_count": len(filings),
+        "material_events": material_events,
+        "latest_filing_date": filings[0]["filing_date"] if filings else None,
+        "has_earnings": any(e["category"] == "earnings_results" for e in material_events),
+        "has_delisting_risk": any(e["category"] == "delisting_notice" for e in material_events),
+        "has_officer_change": any(e["category"] == "officer_departure_election" for e in material_events),
+        "asof_ts": asof_ts,
+    }
+
+
+def fetch_recent_8k(symbol: str, days: int = 90, *, asof_ts: Optional[int] = None) -> Dict[str, Any]:
     """Fetch recent 8-K filings for a symbol from SEC EDGAR.
 
     Returns structured dict with filings list and material event summary.
-    Cached for 1 hour per symbol.
+    Cached for 1 hour per symbol. ``asof_ts``, when given, filters out any
+    filing dated after it -- see ``_apply_asof_filter``.
     """
     sym = (symbol or "").upper()
     now = time.time()
@@ -113,7 +139,8 @@ def fetch_recent_8k(symbol: str, days: int = 90) -> Dict[str, Any]:
     # Check cache
     cached = _edgar_cache.get(sym)
     if cached and (now - cached[0]) < _CACHE_TTL_S:
-        return dict(cached[1])
+        result = dict(cached[1])
+        return _apply_asof_filter(result, int(asof_ts)) if asof_ts is not None else result
 
     cik = _cik_for_symbol(sym)
     if not cik:
@@ -206,7 +233,7 @@ def fetch_recent_8k(symbol: str, days: int = 90) -> Dict[str, Any]:
         "checked_at": int(now),
     }
     _edgar_cache[sym] = (now, result)
-    return result
+    return _apply_asof_filter(result, int(asof_ts)) if asof_ts is not None else result
 
 
 def parse_material_events(filings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

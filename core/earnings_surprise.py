@@ -11,7 +11,9 @@ never fires a pick or loosens any gate.
 from __future__ import annotations
 
 import logging
+import math
 import time
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from core.quiet import note_suppressed
@@ -29,6 +31,30 @@ def _f(v: Any) -> Optional[float]:
         out = float(v)
         return out if out == out and out not in (float("inf"), float("-inf")) else None
     except (TypeError, ValueError):
+        return None
+
+
+def _report_ts(idx: Any) -> Optional[int]:
+    """Best-effort epoch seconds for an earnings_history index label.
+
+    yfinance indexes earnings_history by the report date (a pandas Timestamp
+    in modern versions, occasionally a plain date-ish string). Returns None
+    rather than guessing when the label can't be parsed -- an unparseable
+    date must not silently pass as "known now".
+    """
+    try:
+        as_ts = getattr(idx, "timestamp", None)
+        if callable(as_ts):
+            value = as_ts()
+            if isinstance(value, (int, float)) and math.isfinite(value):
+                return int(value)
+    except Exception:
+        pass
+    try:
+        return int(
+            datetime.fromisoformat(str(idx)[:10]).replace(tzinfo=timezone.utc).timestamp()
+        )
+    except Exception:
         return None
 
 
@@ -60,6 +86,7 @@ def _latest_quarter_earnings(symbol: str) -> Dict[str, Any]:
                     out["available"] = True
                     idx = eh.index[-1]
                     out["quarter"] = str(idx)
+                    out["report_ts"] = _report_ts(idx)
                     if est is not None and act is not None and est != 0:
                         out["eps_surprise_pct"] = round((act - est) / abs(est) * 100.0, 2)
         except Exception as exc:
@@ -84,16 +111,29 @@ def _latest_quarter_earnings(symbol: str) -> Dict[str, Any]:
     return out
 
 
-def get_earnings_surprise(symbol: str) -> Dict[str, Any]:
-    """Cached per-symbol earnings surprise (actual vs expected)."""
+def get_earnings_surprise(symbol: str, *, asof_ts: Optional[int] = None) -> Dict[str, Any]:
+    """Cached per-symbol earnings surprise (actual vs expected).
+
+    yfinance only ever answers "what's the most recent quarter right now" --
+    there is no historical as-of mode to query. ``asof_ts`` does not change
+    what gets fetched; it is a post-fetch honesty gate: if the report yfinance
+    currently has on file was published after ``asof_ts``, that fact was not
+    yet knowable at that decision time and this returns unavailable rather
+    than laundering a present-day read as something known in the past.
+    """
     sym = (symbol or "").strip().upper()
     if not sym:
         return {"available": False}
     hit = _cache.get(sym)
     if hit and time.time() - hit[0] < _CACHE_TTL_S:
-        return dict(hit[1])
-    out = _latest_quarter_earnings(sym)
-    _cache[sym] = (time.time(), out)
+        out = dict(hit[1])
+    else:
+        out = _latest_quarter_earnings(sym)
+        _cache[sym] = (time.time(), out)
+    if asof_ts is not None and out.get("available"):
+        report_ts = out.get("report_ts")
+        if report_ts is None or report_ts > int(asof_ts):
+            return {**out, "available": False, "reason": "report_ts_after_or_unknown_asof"}
     return out
 
 
