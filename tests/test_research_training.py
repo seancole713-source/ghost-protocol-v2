@@ -304,19 +304,27 @@ def test_discovery_recomputes_precision_proof_and_selects_one_finalist():
 
 
 def test_discovery_environment_restoration_is_lossless(monkeypatch):
-    from scripts.research_discovery import _apply_env, _restore_env
+    from scripts.research_discovery import (
+        PRODUCTION_VARIANTS,
+        _apply_env,
+        _restore_env,
+    )
 
     monkeypatch.setenv("V3_POOL_TRAINING", "custom")
-    previous = _apply_env({"V3_POOL_TRAINING": "0", "V3_ENSEMBLE_ENABLED": "1"})
+    previous = _apply_env({"V3_POOL_TRAINING": "0", "V3_ENSEMBLE": "on"})
     assert previous == {
         "V3_POOL_TRAINING": "custom",
-        "V3_ENSEMBLE_ENABLED": None,
+        "V3_ENSEMBLE": None,
     }
 
     _restore_env(previous)
 
     assert __import__("os").environ["V3_POOL_TRAINING"] == "custom"
-    assert "V3_ENSEMBLE_ENABLED" not in __import__("os").environ
+    assert "V3_ENSEMBLE" not in __import__("os").environ
+    assert PRODUCTION_VARIANTS[1]["env_overrides"] == {"V3_ENSEMBLE": "on"}
+    assert PRODUCTION_VARIANTS[2]["env_overrides"] == {
+        "V3_ENSEMBLE": "stacking"
+    }
 
 
 def test_discovery_registers_one_finalist_with_family_evidence(monkeypatch, tmp_path):

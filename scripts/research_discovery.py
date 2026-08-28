@@ -35,12 +35,12 @@ PRODUCTION_VARIANTS: List[Dict[str, Any]] = [
     {
         "name": "soft_voting_ensemble",
         "description": "Soft-voting ensemble under same contract",
-        "env_overrides": {"V3_ENSEMBLE_ENABLED": "1", "V3_STACKING_ENABLED": "0"},
+        "env_overrides": {"V3_ENSEMBLE": "on"},
     },
     {
         "name": "stacking_ensemble",
         "description": "Stacking ensemble under same contract",
-        "env_overrides": {"V3_STACKING_ENABLED": "1"},
+        "env_overrides": {"V3_ENSEMBLE": "stacking"},
     },
     {
         "name": "no_pooling",
@@ -81,6 +81,34 @@ MAX_BRIER = 0.30
 MAX_INVALID_RATE = 0.10
 MIN_COVERAGE = 0.01
 SIDAK_FAMILY_CONFIDENCE = 0.95
+
+
+def _bound_railway_cpu() -> Optional[int]:
+    """Limit one-shot discovery CPU without changing model semantics.
+
+    The Railway app and discovery process share a service instance. Unbounded
+    sklearn/XGBoost workers previously consumed every visible CPU while the
+    production API was serving traffic. Linux affinity applies to this
+    discovery process and its worker threads only.
+    """
+    if not os.getenv("RAILWAY_ENVIRONMENT"):
+        return None
+    try:
+        get_affinity = getattr(os, "sched_getaffinity", None)
+        set_affinity = getattr(os, "sched_setaffinity", None)
+        if not callable(get_affinity) or not callable(set_affinity):
+            return None
+        requested = max(
+            1,
+            int(os.getenv("RESEARCH_DISCOVERY_MAX_CPU_CORES", "4")),
+        )
+        available = sorted(get_affinity(0))
+        selected = set(available[:requested])
+        if selected and len(selected) < len(available):
+            set_affinity(0, selected)
+        return len(selected)
+    except (AttributeError, OSError, ValueError):
+        return None
 
 
 def _apply_env(overrides: Dict[str, str]) -> Dict[str, Optional[str]]:
@@ -302,6 +330,7 @@ def run_discovery(
     Returns a report with all candidates, their gate results, and the
     selected finalist (if any).
     """
+    cpu_limit = _bound_railway_cpu()
     from config.symbols import OFFICIAL_WATCHLIST
     from core.research_training import train_research_candidate
 
@@ -547,6 +576,7 @@ def run_discovery(
         "program": "bounded_candidate_discovery",
         "family_size": family_size,
         "sidak_confidence": SIDAK_FAMILY_CONFIDENCE,
+        "cpu_limit": cpu_limit,
         "symbols": symbols,
         "direction": direction,
         "results": results,

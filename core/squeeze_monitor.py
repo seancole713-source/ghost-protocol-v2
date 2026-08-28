@@ -84,6 +84,14 @@ REPRICE_ALERT_PCT = float(os.getenv("SQUEEZE_REPRICE_ALERT_PCT", "1.5"))
 _last_alert: Dict[str, float] = {}
 _short_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
 _SHORT_CACHE_TTL = 86400
+_SHORT_FAILURE_CACHE_TTL = max(
+    300,
+    int(os.getenv("SQUEEZE_SHORT_FAILURE_CACHE_TTL_S", "900")),
+)
+_SHORT_PREWARM_REFRESH_S = max(
+    3600,
+    int(os.getenv("SQUEEZE_SHORT_PREWARM_REFRESH_S", "14400")),
+)
 
 # --- Multi-symbol Alpaca bar batching (squeeze breaker-cascade fix) ---------
 # The per-symbol scan made ~2 Alpaca bar calls per symbol (30d 1Day for avg
@@ -508,6 +516,39 @@ async def prewarm_short_cache() -> None:
         await asyncio.sleep(delay)
 
 
+async def maintain_short_cache() -> None:
+    """Keep the daily warmer alive across closed-market process starts.
+
+    The previous one-shot task returned immediately when a deploy happened
+    outside extended hours and was never recreated the next session. This loop
+    waits for the market window and retries only every four hours by default;
+    successful entries remain cached for a day, so retries primarily revisit
+    transient provider failures.
+    """
+    from core.market_hours import is_us_extended_hours
+
+    while True:
+        try:
+            market_open = is_us_extended_hours()
+        except Exception as exc:
+            LOGGER.warning(
+                "[SqueezeMonitor] market-window check failed: %s",
+                str(exc)[:120],
+            )
+            market_open = False
+        if market_open:
+            try:
+                await prewarm_short_cache()
+            except Exception as exc:
+                LOGGER.warning(
+                    "[SqueezeMonitor] short-cache maintenance failed: %s",
+                    str(exc)[:120],
+                )
+            await asyncio.sleep(_SHORT_PREWARM_REFRESH_S)
+        else:
+            await asyncio.sleep(300)
+
+
 async def start_squeeze_monitor() -> None:
     enabled = os.getenv("SQUEEZE_MONITOR_ENABLED", "1") == "1"
     if not enabled:
@@ -521,8 +562,13 @@ async def start_squeeze_monitor() -> None:
         SQUEEZE_PRICE_PCT,
         SQUEEZE_VOL_MULT,
     )
-    if os.getenv("SQUEEZE_SHORT_PREWARM", "1").strip().lower() in ("1", "true", "yes", "on"):
-        asyncio.create_task(prewarm_short_cache())
+    if os.getenv("SQUEEZE_SHORT_PREWARM", "1").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
+        asyncio.create_task(maintain_short_cache())
     _ensure_scan_cache_loaded()
     while True:
         try:
@@ -828,7 +874,7 @@ def _short_context_from_finviz(symbol: str) -> Dict[str, Any]:
 def _short_context(symbol: str) -> Dict[str, Any]:
     sym = symbol.upper()
     cached = _short_cache.get(sym)
-    if cached and (time.time() - cached[0]) < _SHORT_CACHE_TTL:
+    if cached and (time.time() - cached[0]) < _short_cache_ttl(cached[1]):
         return cached[1]
     out: Dict[str, Any] = {
         "short_float_pct": None,
@@ -906,13 +952,27 @@ def _short_context(symbol: str) -> Dict[str, Any]:
 def _cached_short_context(symbol: str) -> Dict[str, Any]:
     """Return only already-warmed short data; never block the live scan."""
     cached = _short_cache.get(symbol.upper())
-    if cached and (time.time() - cached[0]) < _SHORT_CACHE_TTL:
+    if cached and (time.time() - cached[0]) < _short_cache_ttl(cached[1]):
         return dict(cached[1])
     return {
         "short_float_pct": None,
         "days_to_cover": None,
         "squeeze_risk": None,
     }
+
+
+def _short_cache_ttl(context: Dict[str, Any]) -> int:
+    """Cache useful evidence for a day, but retry empty provider failures."""
+    useful = any(
+        context.get(key) is not None
+        for key in (
+            "short_float_pct",
+            "days_to_cover",
+            "shares_short",
+            "float_shares",
+        )
+    )
+    return _SHORT_CACHE_TTL if useful else _SHORT_FAILURE_CACHE_TTL
 
 
 def _yf_short_enabled() -> bool:

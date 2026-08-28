@@ -5,6 +5,9 @@ Guards the breaker-cascade fix: one paginated multi-symbol request replaces
 without touching the network, falling back to the per-symbol path on a miss.
 """
 
+import asyncio
+import time
+
 import core.squeeze_monitor as sm
 
 
@@ -62,6 +65,101 @@ def test_cached_short_context_never_fetches(monkeypatch):
     )
 
     assert sm._cached_short_context("AAPL")["squeeze_risk"] is None
+
+
+def test_empty_short_cache_entry_expires_quickly(monkeypatch):
+    monkeypatch.setattr(sm, "_SHORT_FAILURE_CACHE_TTL", 60)
+    monkeypatch.setattr(
+        sm,
+        "_short_cache",
+        {
+            "AAPL": (
+                time.time() - 61,
+                {
+                    "short_float_pct": None,
+                    "days_to_cover": None,
+                    "squeeze_risk": None,
+                },
+            )
+        },
+    )
+
+    assert sm._cached_short_context("AAPL")["short_float_pct"] is None
+    assert sm._short_cache_ttl(sm._short_cache["AAPL"][1]) == 60
+
+
+def test_expired_empty_short_cache_entry_is_refetched(monkeypatch):
+    monkeypatch.setattr(sm, "_SHORT_FAILURE_CACHE_TTL", 60)
+    monkeypatch.setattr(
+        sm,
+        "_short_cache",
+        {
+            "AAPL": (
+                time.time() - 61,
+                {"short_float_pct": None, "days_to_cover": None},
+            )
+        },
+    )
+    monkeypatch.setattr(sm, "_yf_short_enabled", lambda: False)
+    monkeypatch.setattr(
+        sm,
+        "_short_context_from_finviz",
+        lambda _symbol: {
+            "short_float_pct": 12.5,
+            "days_to_cover": 2.0,
+            "squeeze_risk": "medium",
+        },
+    )
+
+    refreshed = sm._short_context("AAPL")
+
+    assert refreshed["short_float_pct"] == 12.5
+    assert sm._short_cache["AAPL"][1]["days_to_cover"] == 2.0
+
+
+def test_useful_short_cache_entry_keeps_daily_ttl():
+    assert sm._short_cache_ttl({"short_float_pct": 12.5}) == sm._SHORT_CACHE_TTL
+
+
+def test_short_cache_maintenance_survives_closed_market_start(monkeypatch):
+    import core.market_hours as market_hours
+
+    market_states = iter((False, True))
+    warmed = []
+    sleeps = []
+
+    monkeypatch.setattr(
+        market_hours,
+        "is_us_extended_hours",
+        lambda: next(market_states),
+    )
+    monkeypatch.setattr(
+        sm,
+        "prewarm_short_cache",
+        lambda: _record_async(warmed, "ran"),
+    )
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+        if len(sleeps) >= 2:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    async def run():
+        try:
+            await sm.maintain_short_cache()
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(run())
+
+    assert warmed == ["ran"]
+    assert sleeps == [300, sm._SHORT_PREWARM_REFRESH_S]
+
+
+async def _record_async(items, value):
+    items.append(value)
 
 
 def test_fetch_volumes_uses_batch_store_without_network(monkeypatch):
