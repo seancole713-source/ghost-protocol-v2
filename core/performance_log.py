@@ -99,7 +99,7 @@ def ensure_perf_tables(cur) -> None:
     # confidence is the only stage safely reconstructible for historical rows.
     cur.execute(
         "UPDATE ghost_perf_symbol_evals SET confidence_final=confidence "
-        "WHERE confidence_final IS NULL"
+        "WHERE confidence_final IS NULL AND confidence IS NOT NULL"
     )
     cur.execute(
         """

@@ -86,6 +86,19 @@ def test_trim_scores_keeps_audit_fields_and_drops_large_event_payloads():
     assert "arbitrary_future_blob" not in trimmed
 
 
+def test_perf_schema_backfill_does_not_rewrite_null_confidence_rows():
+    statements = []
+
+    class _Cur:
+        def execute(self, sql, params=None):
+            statements.append(" ".join(sql.split()))
+
+    perf.ensure_perf_tables(_Cur())
+
+    backfill = next(sql for sql in statements if sql.startswith("UPDATE ghost_perf_symbol_evals"))
+    assert "confidence_final IS NULL AND confidence IS NOT NULL" in backfill
+
+
 def test_log_prediction_cycle_inserts_rows(monkeypatch):
     monkeypatch.setenv("GHOST_PERF_LOG", "on")
     executed = []
