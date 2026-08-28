@@ -502,6 +502,10 @@ async def prewarm_short_cache() -> None:
     from core.market_hours import is_us_extended_hours
 
     delay = float(os.getenv("SQUEEZE_SHORT_PREWARM_DELAY_S", "2.5"))
+    timeout_s = max(
+        3.0,
+        min(30.0, float(os.getenv("SQUEEZE_SHORT_PREWARM_TIMEOUT_S", "12"))),
+    )
     symbols = sorted(get_edge_set())
     LOGGER.info("[SqueezeMonitor] Short-cache prewarm — %s symbols", len(symbols))
     for sym in symbols:
@@ -509,8 +513,19 @@ async def prewarm_short_cache() -> None:
             return
         try:
             # Keep the blocking vendor client off the event loop. Await one at
-            # a time so a slow provider cannot leak an unbounded thread fan-out.
-            await asyncio.to_thread(_short_context, sym)
+            # a time, but do not let one broken ticker strand the entire daily
+            # queue. A timed-out vendor thread may finish and populate the cache
+            # later; the bounded default executor prevents event-loop blockage.
+            await asyncio.wait_for(
+                asyncio.to_thread(_short_context, sym),
+                timeout=timeout_s,
+            )
+        except asyncio.TimeoutError:
+            LOGGER.warning(
+                "[SqueezeMonitor] short-cache timeout %s (%.0fs)",
+                sym,
+                timeout_s,
+            )
         except Exception as exc:
             LOGGER.debug("[SqueezeMonitor] prewarm %s: %s", sym, exc)
         await asyncio.sleep(delay)
