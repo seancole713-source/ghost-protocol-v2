@@ -2200,20 +2200,11 @@ def _rate_limit_cfg():
 
 def _rate_limit_budget(request: Request, rpm_default: int, rpm_get: int, rpm_write: int) -> int:
     method = (request.method or "").upper()
-    path = request.url.path or ""
     if method == "GET":
-        # Hot-path read endpoints polled by cockpit and E2E probes.
-        if path.startswith("/api/") and (
-            path.startswith("/api/cockpit")
-            or path.startswith("/api/stats")
-            or path.startswith("/api/v2/recent")
-            or path.startswith("/api/news")
-            or path.startswith("/api/price/")
-            or path.startswith("/api/objective")
-            or path.startswith("/api/wolf/")
-        ):
-            return max(rpm_get, rpm_default)
-        return rpm_default
+        # Dashboard loads fan out across many read-only API families. Applying
+        # the write/default budget to some GET paths made one legitimate page
+        # refresh starve later reads from the same client.
+        return max(rpm_get, rpm_default)
     if method in ("POST", "PUT", "PATCH", "DELETE"):
         return min(rpm_write, rpm_default)
     return rpm_default

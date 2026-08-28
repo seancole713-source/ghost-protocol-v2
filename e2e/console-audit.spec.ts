@@ -88,7 +88,7 @@ test.describe("Console display audit", () => {
     const { consoleErrors, pageErrors, failedApiResponses } =
       attachStrictClientMonitors(page);
 
-    await page.goto("/picks", { waitUntil: "domcontentloaded" });
+    await page.goto("/console", { waitUntil: "domcontentloaded" });
     // Wait for the async loadAll() to finish — health pill flips to "Ghost online"
     await expect(page.locator("#healthPill")).toContainText("Ghost online", { timeout: 30_000 });
 
@@ -98,7 +98,7 @@ test.describe("Console display audit", () => {
   });
 
   test("Overview tab — hero ring, coverage, regime all populated", async ({ page }) => {
-    await page.goto("/picks", { waitUntil: "domcontentloaded" });
+    await page.goto("/console", { waitUntil: "domcontentloaded" });
     await expect(page.locator("#healthPill")).toContainText("Ghost online", { timeout: 30_000 });
 
     // Hero ring should show a grade, not "—"
@@ -116,7 +116,7 @@ test.describe("Console display audit", () => {
   });
 
   test("My Picks tab — each pick has a grade and action", async ({ page }) => {
-    await page.goto("/picks", { waitUntil: "domcontentloaded" });
+    await page.goto("/console", { waitUntil: "domcontentloaded" });
     await expect(page.locator("#healthPill")).toContainText("Ghost online", { timeout: 30_000 });
     await switchTab(page, "mypicks");
 
@@ -136,7 +136,7 @@ test.describe("Console display audit", () => {
   test("Wallet tab — balance and positions render without JS errors", async ({ page }) => {
     const { consoleErrors, pageErrors } = attachStrictClientMonitors(page);
 
-    await page.goto("/picks", { waitUntil: "domcontentloaded" });
+    await page.goto("/console", { waitUntil: "domcontentloaded" });
     await expect(page.locator("#healthPill")).toContainText("Ghost online", { timeout: 30_000 });
     await switchTab(page, "wallet");
 
@@ -150,7 +150,7 @@ test.describe("Console display audit", () => {
   });
 
   test("Today tab — EOD mirror has no duplicate symbols", async ({ page }) => {
-    await page.goto("/picks", { waitUntil: "domcontentloaded" });
+    await page.goto("/console", { waitUntil: "domcontentloaded" });
     await expect(page.locator("#healthPill")).toContainText("Ghost online", { timeout: 30_000 });
     await switchTab(page, "today");
 
@@ -163,7 +163,7 @@ test.describe("Console display audit", () => {
   });
 
   test("Today tab — EOD mirror cells have real data (not all '—')", async ({ page }) => {
-    await page.goto("/picks", { waitUntil: "domcontentloaded" });
+    await page.goto("/console", { waitUntil: "domcontentloaded" });
     await expect(page.locator("#healthPill")).toContainText("Ghost online", { timeout: 30_000 });
     await switchTab(page, "today");
 
@@ -175,7 +175,7 @@ test.describe("Console display audit", () => {
   });
 
   test("This week tab — history table has no duplicate symbol+ref rows", async ({ page }) => {
-    await page.goto("/picks", { waitUntil: "domcontentloaded" });
+    await page.goto("/console", { waitUntil: "domcontentloaded" });
     await expect(page.locator("#healthPill")).toContainText("Ghost online", { timeout: 30_000 });
     await switchTab(page, "week");
 
@@ -196,7 +196,7 @@ test.describe("Console display audit", () => {
   });
 
   test("48 hour tab — mirror cards render for pool symbols", async ({ page }) => {
-    await page.goto("/picks", { waitUntil: "domcontentloaded" });
+    await page.goto("/console", { waitUntil: "domcontentloaded" });
     await expect(page.locator("#healthPill")).toContainText("Ghost online", { timeout: 30_000 });
     await switchTab(page, "h48");
 
@@ -210,7 +210,7 @@ test.describe("Console display audit", () => {
   });
 
   test("Live mirror tab — mirror score and precision are numbers", async ({ page }) => {
-    await page.goto("/picks", { waitUntil: "domcontentloaded" });
+    await page.goto("/console", { waitUntil: "domcontentloaded" });
     await expect(page.locator("#healthPill")).toContainText("Ghost online", { timeout: 30_000 });
     await switchTab(page, "tracker");
 
@@ -275,7 +275,7 @@ test.describe("Console display audit", () => {
       });
     });
 
-    await page.goto("/picks", { waitUntil: "domcontentloaded" });
+    await page.goto("/console", { waitUntil: "domcontentloaded" });
     await switchTab(page, "hunter");
 
     await expect(page.locator("#hunterList")).toContainText("0 qualified setups");
@@ -315,7 +315,7 @@ test.describe("Console display audit", () => {
       });
     });
 
-    await page.goto("/picks", { waitUntil: "domcontentloaded" });
+    await page.goto("/console", { waitUntil: "domcontentloaded" });
     await switchTab(page, "hunter");
     await expect(page.locator("#hunterList")).toContainText("HTZ");
     await page.locator("#refreshBtn").click();
@@ -324,7 +324,7 @@ test.describe("Console display audit", () => {
   });
 
   test("Health section — all checks render with status labels", async ({ page }) => {
-    await page.goto("/picks", { waitUntil: "domcontentloaded" });
+    await page.goto("/console", { waitUntil: "domcontentloaded" });
     await expect(page.locator("#healthPill")).toContainText("Ghost online", { timeout: 30_000 });
     // Health is rendered inline in the overview section, not a separate tab.
     // The miniHealth div is always visible on the overview page.
@@ -342,7 +342,7 @@ test.describe("Console display audit", () => {
   });
 
   test("Top Stocks tab — shows locked state or candidates", async ({ page }) => {
-    await page.goto("/picks", { waitUntil: "domcontentloaded" });
+    await page.goto("/console", { waitUntil: "domcontentloaded" });
     await expect(page.locator("#healthPill")).toContainText("Ghost online", { timeout: 30_000 });
     await switchTab(page, "top");
 
@@ -360,7 +360,7 @@ test.describe("Console display audit", () => {
   test("Bullish tab — renders without errors (may be empty)", async ({ page }) => {
     const { consoleErrors, pageErrors } = attachStrictClientMonitors(page);
 
-    await page.goto("/picks", { waitUntil: "domcontentloaded" });
+    await page.goto("/console", { waitUntil: "domcontentloaded" });
     await expect(page.locator("#healthPill")).toContainText("Ghost online", { timeout: 30_000 });
     await switchTab(page, "bullish");
 

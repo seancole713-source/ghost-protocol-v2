@@ -188,9 +188,10 @@ def test_cors_has_no_wildcard_default():
 
 
 def test_rate_limit_returns_429_over_limit(monkeypatch):
-    """A public /api/ path 429s once an IP exceeds RATE_LIMIT_RPM in the window."""
+    """A public GET 429s once an IP exceeds its read budget."""
     monkeypatch.setenv("RATE_LIMIT_ENABLED", "1")
     monkeypatch.setenv("RATE_LIMIT_RPM", "2")
+    monkeypatch.setenv("RATE_LIMIT_RPM_GET", "2")
     wolf_app._RL_HITS.clear()
     with _client_with_test_mode(monkeypatch) as client:
         r1 = client.get("/api/coverage")
@@ -228,14 +229,14 @@ def test_rate_limit_disabled_passes_through(monkeypatch):
 
 
 def test_rate_limit_get_write_budgets_are_separate(monkeypatch):
-    """Boosted GET budgets on hot read paths must not weaken write throttles."""
+    """Boosted GET budgets on every read path must not weaken write throttles."""
     monkeypatch.setenv("RATE_LIMIT_ENABLED", "1")
     monkeypatch.setenv("RATE_LIMIT_RPM", "2")
     monkeypatch.setenv("RATE_LIMIT_RPM_GET", "5")
     monkeypatch.setenv("RATE_LIMIT_RPM_WRITE", "2")
     wolf_app._RL_HITS.clear()
     with _client_with_test_mode(monkeypatch) as client:
-        read_codes = [client.get("/api/cockpit/live").status_code for _ in range(3)]
+        read_codes = [client.get("/api/coverage").status_code for _ in range(3)]
         # /api/portfolio is auth-gated; we only care that write-throttle still trips.
         write_codes = [
             client.post("/api/portfolio", json={"symbol": "WOLF", "qty": 1, "buy_price": 1.0}).status_code
