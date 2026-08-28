@@ -179,8 +179,13 @@ def _patch(monkeypatch, up_p):
             "validation_schema": _se._v3_validation_schema(),
             "label_hold_bars": _se.V3_LABEL_HOLD_BARS,
             "precision_gate": {"ok": True, "threshold": 0.60, "target": 0.70,
+                               "proof_schema": "effective_market_sessions_v1",
                                "calib": {"support": 20, "wins": 20},
-                               "gate": {"support": 20, "wins": 20}}}
+                               "gate": {
+                                   "support": 60, "wins": 60,
+                                   "distinct_sessions": 60, "hold_bars": 3,
+                                   "effective_support": 20, "effective_wins": 20,
+                               }}}
     monkeypatch.setattr(
         _se, "load_model",
         lambda s, direction="UP": (_Model(up_p), _se.FEATURE_COLS, dict(meta))

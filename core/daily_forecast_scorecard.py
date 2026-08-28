@@ -8,6 +8,7 @@ from core.quiet import note_suppressed
 
 import logging
 import os
+import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -133,14 +134,14 @@ def _actual_from_bar(bar: Optional[dict]) -> Optional[Dict[str, float]]:
         return None
     o = float(bar.get("open") or 0)
     h = float(bar.get("high") or 0)
-    l = float(bar.get("low") or 0)
+    low = float(bar.get("low") or 0)
     c = float(bar.get("close") or 0)
     if o <= 0:
         return None
     return {
         "open": round(o, 4),
         "high": round(h, 4),
-        "low": round(l, 4),
+        "low": round(low, 4),
         "close": round(c, 4),
     }
 
@@ -148,7 +149,7 @@ def _actual_from_bar(bar: Optional[dict]) -> Optional[Dict[str, float]]:
 def _actual_from_live(live: Dict[str, Any], *, use_rth_close: bool = False) -> Optional[Dict[str, float]]:
     o = live.get("today_open")
     h = live.get("today_high")
-    l = live.get("today_low")
+    low = live.get("today_low")
     if use_rth_close:
         c = live.get("rth_close") or live.get("price")
     else:
@@ -158,7 +159,7 @@ def _actual_from_live(live: Dict[str, Any], *, use_rth_close: bool = False) -> O
     return {
         "open": round(float(o), 4),
         "high": round(float(h or o), 4),
-        "low": round(float(l or o), 4),
+        "low": round(float(low or o), 4),
         "close": round(float(c or o), 4),
     }
 
@@ -557,7 +558,7 @@ def _last_bar_age_days(rows: List[dict]) -> Optional[int]:
 
 def build_daily_scorecard(symbol: str, days: int = 14, asset_type: str = "stock") -> Dict[str, Any]:
     """Build forecast-vs-actual rows for the last `days` completed sessions (+ live next)."""
-    from core.signal_engine import load_model, _active_feature_cols
+    from core.signal_engine import load_model
 
     sym = (symbol or "WOLF").strip().upper()
     days = max(3, min(int(days or 14), 60))

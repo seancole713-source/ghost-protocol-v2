@@ -183,6 +183,25 @@ def test_evaluate_forward_counts_expired_as_resolved_non_win():
     assert out["win_rate"] == 0.5
 
 
+def test_forward_evaluation_collapses_same_symbol_session_model_generations():
+    rows = [
+        {"symbol": "GOOD", "trade_date": "2026-08-19", "up_prob": 0.8,
+         "eval_ts": 1100, "outcome": "WIN"},
+        {"symbol": "GOOD", "trade_date": "2026-08-19", "up_prob": 0.9,
+         "eval_ts": 1200, "outcome": "WIN"},
+        {"symbol": "GOOD", "trade_date": "2026-08-20", "up_prob": 0.8,
+         "eval_ts": 1300, "outcome": "LOSS"},
+    ]
+    out = reg.evaluate_forward(
+        rows, registered_symbols=["GOOD"], registered_at_ts=1000,
+    )
+    assert out["raw_forward_rows"] == 3
+    assert out["eligible_rows"] == 2
+    assert out["pseudo_replicates_excluded"] == 1
+    assert out["n"] == 2
+    assert out["wins"] == 1
+
+
 def test_register_slices_preserves_selection_evidence_for_audit(monkeypatch):
     writes = []
 

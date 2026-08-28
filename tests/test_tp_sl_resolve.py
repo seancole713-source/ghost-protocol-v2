@@ -228,10 +228,15 @@ def test_feature_asof_on_live_features(monkeypatch):
             "wf_fold_count": 3, "trained_at": time.time(),
             "model_sha256": "a" * 64, "label_schema": _se._v3_label_schema(),
             "validation_schema": _se._v3_validation_schema(),
-            "label_hold_bars": _se.V3_LABEL_HOLD_BARS,
-            "precision_gate": {"ok": True, "threshold": 0.55, "target": 0.70,
-                               "calib": {"support": 20, "wins": 20},
-                               "gate": {"support": 20, "wins": 20}}}
+                "label_hold_bars": _se.V3_LABEL_HOLD_BARS,
+                "precision_gate": {"ok": True, "threshold": 0.55, "target": 0.70,
+                                   "proof_schema": "effective_market_sessions_v1",
+                                   "calib": {"support": 20, "wins": 20},
+                                   "gate": {
+                                       "support": 60, "wins": 60,
+                                       "distinct_sessions": 60, "hold_bars": 3,
+                                       "effective_support": 20, "effective_wins": 20,
+                                   }}}
     monkeypatch.setattr(_se, "load_model", lambda s, direction="UP": (_M(), _se.FEATURE_COLS, meta))
     monkeypatch.setenv("GHOST_ACCURACY_CONTRACT", "legacy")
     # Hermetic: kill the live premarket overlay (time-of-day flake — real
@@ -271,10 +276,15 @@ def test_confidence_equals_up_prob(monkeypatch):
             "wf_edge_mean": 0.2, "wf_fold_count": 4, "trained_at": time.time(),
             "model_sha256": "a" * 64, "label_schema": _se._v3_label_schema(),
             "validation_schema": _se._v3_validation_schema(),
-            "label_hold_bars": _se.V3_LABEL_HOLD_BARS,
-            "precision_gate": {"ok": True, "threshold": 0.55, "target": 0.70,
-                               "calib": {"support": 20, "wins": 20},
-                               "gate": {"support": 20, "wins": 20}}}
+                "label_hold_bars": _se.V3_LABEL_HOLD_BARS,
+                "precision_gate": {"ok": True, "threshold": 0.55, "target": 0.70,
+                                   "proof_schema": "effective_market_sessions_v1",
+                                   "calib": {"support": 20, "wins": 20},
+                                   "gate": {
+                                       "support": 60, "wins": 60,
+                                       "distinct_sessions": 60, "hold_bars": 3,
+                                       "effective_support": 20, "effective_wins": 20,
+                                   }}}
     monkeypatch.setattr(_se, "load_model", lambda s, direction="UP": (_M(), _se.FEATURE_COLS, meta))
     monkeypatch.setenv("GHOST_ACCURACY_CONTRACT", "legacy")
     # Hermetic: kill the live premarket overlay (time-of-day flake — real

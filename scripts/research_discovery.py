@@ -171,13 +171,13 @@ def evaluate_candidate_gates(
     gates.append({
         "name": "precision_gate",
         "passed": pg_ok,
-        "value": precision_gate.get("wilson_low"),
+        "value": precision_gate.get("effective_wilson_low"),
         "threshold": TARGET_PRECISION,
         "reason": "" if pg_ok else precision.get("fail_reason", "precision gate failed"),
     })
 
     # 5. Gate support
-    gate_n = int(precision_gate.get("support", 0) or 0)
+    gate_n = int(precision_gate.get("effective_support", 0) or 0)
     gates.append({
         "name": "gate_support",
         "passed": gate_n >= MIN_GATE_SUPPORT,
@@ -213,8 +213,8 @@ def evaluate_candidate_gates(
         alpha = _sidak_corrected_alpha(family_size, SIDAK_FAMILY_CONFIDENCE)
         z = _sidak_z(alpha)
         from core.binomial_stats import wilson_lower_bound
-        pg_wins = int(precision_gate.get("wins", 0) or 0)
-        pg_n = int(precision_gate.get("support", 0) or gate_n)
+        pg_wins = int(precision_gate.get("effective_wins", 0) or 0)
+        pg_n = int(precision_gate.get("effective_support", 0) or gate_n)
         sidak_low = wilson_lower_bound(pg_wins, pg_n, z) if pg_n > 0 else 0.0
         sidak_pass = sidak_low >= TARGET_PRECISION
         gates.append({

@@ -17,8 +17,9 @@ from typing import Any, Dict, List, Optional
 
 LOGGER = logging.getLogger("ghost.contract70.verdict")
 
-VERDICT_VERSION = "1.0"
+VERDICT_VERSION = "1.1"
 PREREGISTERED_AT = "2026-07-16"
+INDEPENDENCE_AMENDED_AT = "2026-08-27"
 
 # Pre-registered decision rules. Changing these after evidence accrues is a
 # goalpost move — any edit must be ledgered with its own justification.
@@ -40,6 +41,17 @@ def preregistration() -> Dict[str, Any]:
             "proven by Wilson 95% lower bound — not merely observed."
         ),
         "status_at_registration": "UNPROVEN_AT_CURRENT_DATA",
+        "independence_amendment": {
+            "amended_at": INDEPENDENCE_AMENDED_AT,
+            "sampling_unit": "earliest eligible prediction per symbol/market session",
+            "cluster_bound": "95% market-session block bootstrap",
+            "reason": (
+                "Production contained multiple same-symbol/session model-generation "
+                "rows sharing one realized price path. The amendment only tightens "
+                "proof: pseudo-replicates are removed and both Wilson and the "
+                "session-block lower bound must clear 70%."
+            ),
+        },
         "evidence_at_registration": [
             "Offline geometry sweep (12 configs x 24 symbols): no pooled >=70% "
             "precision operating point; serve floors and precision never coexist.",
@@ -58,10 +70,12 @@ def preregistration() -> Dict[str, Any]:
             "min_n": FALSIFIED_MIN_N,
             "win_rate_below": FALSIFIED_MAX_WIN_RATE,
             "wilson_high_below": FALSIFIED_WILSON_HIGH_BELOW,
+            "session_block_bootstrap_high_below": FALSIFIED_WILSON_HIGH_BELOW,
             "meaning": (
                 "With >=100 resolved 70+ rows, observed rate under 65%, and the "
-                "95% CI excluding 70%, the claim is FALSIFIED at current data — "
-                "same shape as the pre-registered 80%-claim gate."
+                "row-level and session-block 95% intervals both excluding 70%, "
+                "the claim is FALSIFIED at current data — same shape as the "
+                "pre-registered 80%-claim gate, with correlated sessions honored."
             ),
         },
         "revived_if": {
@@ -69,7 +83,8 @@ def preregistration() -> Dict[str, Any]:
             "wilson_low_at_least": REVIVAL_WILSON_LOW,
             "meaning": (
                 "A pre-registered forward slice/universe (contract_70_registry) "
-                "reaches Wilson-low >= 0.70 on forward-only outcomes; OR a new "
+                "reaches Wilson-low and session-block-bootstrap-low >= 0.70 on "
+                "forward-only outcomes; OR a new "
                 "data-source candidate first clears the offline harness "
                 "(serve floors + pooled 70% operating point on "
                 "scripts/geometry_grid_sweep.py) and then forward-proves."
@@ -91,7 +106,7 @@ def _load_resolved_rows(days: int, limit: int) -> Optional[List[Dict[str, Any]]]
             cur = conn.cursor()
             cur.execute(
                 """
-                SELECT symbol, eval_ts, up_prob, outcome
+                SELECT symbol, trade_date, eval_ts, up_prob, outcome
                 FROM ghost_shadow_outcomes
                 WHERE eval_ts >= %s AND outcome IN ('WIN','LOSS','EXPIRED')
                 ORDER BY eval_ts DESC
@@ -100,7 +115,10 @@ def _load_resolved_rows(days: int, limit: int) -> Optional[List[Dict[str, Any]]]
                 (cutoff, max(1, min(20000, int(limit)))),
             )
             return [
-                {"symbol": r[0], "eval_ts": r[1], "up_prob": r[2], "outcome": r[3]}
+                {
+                    "symbol": r[0], "trade_date": r[1], "eval_ts": r[2],
+                    "up_prob": r[3], "outcome": r[4],
+                }
                 for r in cur.fetchall()
             ]
     except Exception as e:
@@ -138,9 +156,9 @@ def _forward_proof_status(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
                 registered_at_ts=int(reg.get("registered_at_ts") or 0),
                 prob_floor=float(reg.get("prob_floor") or 0.70),
                 target=float(reg.get("target") or 0.70))
-        # Both evaluators return the contract_win_test_status shape:
-        # wilson_pass already encodes Wilson-low >= 0.70.
-        met = bool(fwd.get("wilson_pass")
+        # Proof requires both the row-level Wilson bound and the market-session
+        # block-bootstrap bound; same-day symbols share broad-market shocks.
+        met = bool(fwd.get("proof_pass")
                    and int(fwd.get("n") or 0) >= REVIVAL_FORWARD_MIN_N)
         return {"registered": True, "revival_met": met, "forward": fwd}
     except Exception as e:
@@ -150,7 +168,11 @@ def _forward_proof_status(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 def contract_70_verdict(days: int = 90, limit: int = 20000) -> Dict[str, Any]:
     """Live verdict under the pre-registered rules. Read-only."""
-    from core.watcher import contract_win_test_status
+    from core.watcher import (
+        contract_win_test_status,
+        independent_symbol_session_rows,
+        session_block_bootstrap_interval,
+    )
 
     out: Dict[str, Any] = {
         "ok": True,
@@ -165,10 +187,26 @@ def contract_70_verdict(days: int = 90, limit: int = 20000) -> Dict[str, Any]:
         out["reason"] = "shadow outcome evidence unreadable this cycle"
         return out
     # EXPIRED counts in the denominator as a non-win (2026-07-14 correction).
-    bucket = [r for r in rows if r.get("up_prob") is not None
+    independent_rows, pseudo_replicates = independent_symbol_session_rows(rows)
+    raw_bucket = [r for r in rows if r.get("up_prob") is not None
+                  and float(r["up_prob"]) >= 0.70]
+    bucket = [r for r in independent_rows if r.get("up_prob") is not None
               and float(r["up_prob"]) >= 0.70]
     wins = sum(1 for r in bucket if r.get("outcome") == "WIN")
     test = contract_win_test_status(wins=wins, n=len(bucket))
+    block_rows = [dict(row, win=row.get("outcome") == "WIN") for row in bucket]
+    block = session_block_bootstrap_interval(block_rows)
+    test.update({
+        "raw_resolved_rows": len(rows),
+        "independent_resolved_rows": len(independent_rows),
+        "raw_bucket_rows": len(raw_bucket),
+        "pseudo_replicates_excluded": pseudo_replicates,
+        "sampling_unit": "earliest_prediction_per_symbol_market_session",
+        "session_block_bootstrap": block,
+        "proof_pass": bool(
+            test["wilson_pass"] and block and float(block["low"]) >= 0.70
+        ),
+    })
     out["live"] = test
     forward = _forward_proof_status(rows)
     out["forward_proof"] = forward
@@ -176,10 +214,12 @@ def contract_70_verdict(days: int = 90, limit: int = 20000) -> Dict[str, Any]:
     n = test["n"]
     wr = test["win_rate"] or 0.0
     wilson = test.get("wilson") or {}
-    if test.get("wilson_pass") or forward.get("revival_met"):
+    if test.get("proof_pass") or forward.get("revival_met"):
         status = "PROVEN"
     elif (n >= FALSIFIED_MIN_N and wr < FALSIFIED_MAX_WIN_RATE
-          and float(wilson.get("high") or 1.0) < FALSIFIED_WILSON_HIGH_BELOW):
+          and float(wilson.get("high") or 1.0) < FALSIFIED_WILSON_HIGH_BELOW
+          and block
+          and float(block.get("high") or 1.0) < FALSIFIED_WILSON_HIGH_BELOW):
         status = "FALSIFIED_AT_CURRENT_DATA"
     elif n < INSUFFICIENT_N_BELOW:
         status = "INSUFFICIENT_N"

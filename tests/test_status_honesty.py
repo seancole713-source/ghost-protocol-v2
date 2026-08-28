@@ -20,8 +20,13 @@ def _meta(acc=0.70, nat=0.60, edge=0.10, wf_edge=0.05, wf_acc=0.65, folds=5,
         "label_schema": "tp_sl_fwd_v1", "feature_schema": "x",
         "precision_gate": {
             "ok": precision_ok, "threshold": 0.6, "target": 0.70,
+            "proof_schema": "effective_market_sessions_v1",
             "calib": {"support": 100, "wins": 80},
-            "gate": {"support": 100, "wins": 80},
+            "gate": {
+                "support": 100, "wins": 100,
+                "distinct_sessions": 100, "hold_bars": 3,
+                "effective_support": 33, "effective_wins": 33,
+            },
         },
     }
 

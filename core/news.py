@@ -7,15 +7,19 @@ Scores headlines via Claude Haiku (or keyword fallback); prediction reads get_sy
 
 P1-3 (audit): circuit breakers on Finnhub and Anthropic to prevent cascading waste.
 """
-import os, time, logging, json, requests
+import json
+import logging
+import os
+import time
 from typing import List, Dict, Optional
+
+import requests
+
+from core.circuit_breaker import _anthropic_cb, _finnhub_cb
 
 LOGGER = logging.getLogger("ghost.news")
 FINNHUB_KEY = os.getenv("FINNHUB_API_KEY", "")
 ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-
-# P1-3: circuit breakers for external API calls
-from core.circuit_breaker import _finnhub_cb, _anthropic_cb
 
 BEARISH_WORDS = [
     "crash","collapse","fall","drop","decline","loss","bankrupt","fraud",
@@ -238,9 +242,6 @@ def run_news_cycle() -> List[Dict]:
     return _cached_articles
 
 
-# Alias for prediction.py compatibility
-get_sentiment_for_symbol = get_symbol_sentiment
-
 def get_cached_articles(limit=None) -> List[Dict]:
     """Return cached articles with proper per-article sentiment scoring."""
     try:
@@ -259,11 +260,16 @@ def get_cached_articles(limit=None) -> List[Dict]:
                     title = (a.get("title") or a.get("headline") or "").lower()
                     bull = sum(1 for w in BULLISH_WORDS if w in title)
                     bear = sum(1 for w in BEARISH_WORDS if w in title)
-                    if bear > bull: art["sentiment"] = round(-0.2 - (bear - bull) * 0.1, 2)
-                    elif bull > bear: art["sentiment"] = round(0.2 + (bull - bear) * 0.1, 2)
-                    elif bear == 1: art["sentiment"] = -0.1
-                    elif bull == 1: art["sentiment"] = 0.1
-                    else: art["sentiment"] = 0.0
+                    if bear > bull:
+                        art["sentiment"] = round(-0.2 - (bear - bull) * 0.1, 2)
+                    elif bull > bear:
+                        art["sentiment"] = round(0.2 + (bull - bear) * 0.1, 2)
+                    elif bear == 1:
+                        art["sentiment"] = -0.1
+                    elif bull == 1:
+                        art["sentiment"] = 0.1
+                    else:
+                        art["sentiment"] = 0.0
                 enriched.append(art)
             except Exception:
                 enriched.append(a)

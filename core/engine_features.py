@@ -111,6 +111,32 @@ def _calculate_features(df):
     }
 
 
+NEWS_FEATURE_COLS = [
+    'news_sentiment', 'news_bullish', 'news_bearish',
+]
+OPTIONS_FEATURE_COLS = [
+    'opt_put_call_ratio', 'opt_skew_elevated_puts', 'opt_skew_elevated_calls',
+]
+INTRADAY_FEATURE_COLS = [
+    'intra_vwap_deviation', 'intra_range_pct', 'intra_gap_fill_pct',
+    'intra_volume_trend', 'intra_hourly_momentum', 'intra_vol_signature',
+]
+MACRO_FEATURE_COLS = [
+    'macro_vix_level', 'macro_yield_spread', 'macro_fed_rate',
+    'macro_dxy_change', 'macro_spy_20d_return', 'macro_spy_vs_sma50',
+    'macro_smh_vs_spy', 'macro_vix_regime',
+]
+CROSS_SECTIONAL_FEATURE_COLS = [
+    'cs_rsi_rank', 'cs_volume_rank', 'cs_momentum_rank',
+    'cs_sma_distance_rank', 'cs_atr_rank', 'cs_adx_rank',
+    'cs_short_float_rank', 'cs_sector_corr', 'cs_obv_rank',
+    'cs_macd_rank', 'cs_stoch_rank',
+]
+# Daily OHLCV bars carry provider close/midnight timestamps. Their hour is not
+# an issuance-time feature, and completed exchange bars are never weekends.
+DAILY_CONSTANT_FEATURE_COLS = ['hour_of_day', 'is_weekend']
+
+
 FEATURE_COLS = [
     'rsi','rsi_oversold','rsi_overbought','macd_hist','macd_bullish',
     'pct_b','bb_squeeze','volume_ratio','volume_spike',
@@ -124,24 +150,20 @@ FEATURE_COLS = [
     # Phase 0 (PR #115): macro + cross-sectional features were computed every
     # cycle but never added to the training feature list — the model was blind
     # to VIX, yield curve, sector ranks, and peer-relative strength.
-    'macro_vix_level','macro_yield_spread','macro_fed_rate',
-    'macro_dxy_change','macro_spy_20d_return','macro_spy_vs_sma50',
-    'macro_smh_vs_spy','macro_vix_regime',
-    'cs_rsi_rank','cs_volume_rank','cs_momentum_rank','cs_sma_distance_rank',
-    'cs_atr_rank','cs_adx_rank','cs_short_float_rank','cs_sector_corr',
+    *MACRO_FEATURE_COLS,
+    *CROSS_SECTIONAL_FEATURE_COLS[:8],
     # Phase 4 (PR #170): news sentiment + options flow — orthogonal data sources
     # that don't correlate with technical indicators.
-    'news_sentiment','news_bullish','news_bearish',
-    'opt_put_call_ratio','opt_skew_elevated_puts','opt_skew_elevated_calls',
+    *NEWS_FEATURE_COLS,
+    *OPTIONS_FEATURE_COLS,
     # Phase 5: additional cross-sectional ranks — the features that make
     # cross-sectional prediction work. These measure how a stock ranks
     # against peers on OBV, MACD, and Stochastic.
-    'cs_obv_rank','cs_macd_rank','cs_stoch_rank',
+    *CROSS_SECTIONAL_FEATURE_COLS[8:],
     # Phase 5 (PR #171): intraday microstructure features — VWAP, range,
     # gap fill, volume trend, hourly momentum, volatility signature.
     # Orthogonal to daily technical indicators.
-    'intra_vwap_deviation','intra_range_pct','intra_gap_fill_pct',
-    'intra_volume_trend','intra_hourly_momentum','intra_vol_signature',
+    *INTRADAY_FEATURE_COLS,
 ]
 
 

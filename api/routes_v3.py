@@ -79,7 +79,7 @@ def v3_explain(symbol: str):
     from wolf_app import db_conn  # late import — shared state + monkeypatch-safe
     try:
         sym = (symbol or "WOLF").upper()
-        from core.signal_engine import load_model, FEATURE_COLS
+        from core.signal_engine import load_model
         model, feature_cols, meta = load_model(sym)
         if model is None:
             return {"ok": False, "error": f"no loadable model for {sym}", "symbol": sym}
@@ -150,7 +150,7 @@ def v3_lineage(limit: int = 50):
     """Model lineage (audit) — rolling history of training runs (accuracy/edge/
     pass per symbol) so /admin can show how the model evolved across retrains.
     Newest first. Public, read-only."""
-    from wolf_app import _RETRAIN_JOB_LOCK, db_conn, ensure_ghost_state  # late import — shared state + monkeypatch-safe
+    from wolf_app import db_conn, ensure_ghost_state  # late import — shared state + monkeypatch-safe
     try:
         import json as _j
         with db_conn() as conn:
@@ -166,8 +166,16 @@ def v3_lineage(limit: int = 50):
                 hist = []
         if not isinstance(hist, list):
             hist = []
-        lim = max(1, min(200, int(limit)))
-        recent = list(reversed(hist))[:lim]
+        from core.signal_engine import compact_train_details
+        lim = max(1, min(30, int(limit)))
+        recent = []
+        for run in list(reversed(hist))[:lim]:
+            if not isinstance(run, dict):
+                continue
+            recent.append({
+                "ts": run.get("ts"),
+                "symbols": compact_train_details(run.get("symbols") or []),
+            })
         return {"ok": True, "count": len(recent), "runs": recent}
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)[:200]}, status_code=500)
@@ -244,7 +252,6 @@ def v3_train(x_cron_secret: str = Header(default=""), force: bool = False):
         accuracy="", passed="", error="", models_before="", models_after="",
         stocks="", finished_at="",
     )
-    import threading
     def _train():
         try:
             LOGGER.info("[v3_train] PR14_DIAG BG_THREAD_STARTED importing train_and_validate")
@@ -488,7 +495,8 @@ def retrain(x_cron_secret: str = Header(default="")):
     if not _cron_ok(x_cron_secret):
         raise HTTPException(status_code=403)
     try:
-        import xgboost as xgb, numpy as np, json as _json, time as _time
+        import numpy as np
+        import xgboost as xgb
         with db_conn() as conn:
             cur = conn.cursor()
             cur.execute("""
@@ -504,15 +512,18 @@ def retrain(x_cron_secret: str = Header(default="")):
             rows = cur.fetchall()
         if len(rows) < 100:
             return JSONResponse({"ok": False, "error": "Only " + str(len(rows)) + " rows"}, status_code=400)
-        import datetime as _dt, collections
+        import collections
+        import datetime as _dt
         sym_wins = collections.defaultdict(lambda: [0,0])
         for row in rows:
             sym = row[5]
             sym_wins[sym][1] += 1
-            if row[6] == 1: sym_wins[sym][0] += 1
+            if row[6] == 1:
+                sym_wins[sym][0] += 1
         X, y = [], []
         for direction, conf, entry, pnl, ts, sym, label in rows:
-            if not entry or entry <= 0: continue
+            if not entry or entry <= 0:
+                continue
             wr = sym_wins[sym][0]/sym_wins[sym][1] if sym_wins[sym][1] else 0.5
             sc = min(sym_wins[sym][1], 100) / 100
             pct = abs(pnl)/100 if pnl else 0.05

@@ -1429,6 +1429,20 @@ def _predict_symbol_ex(symbol, asset_type, regime, scores_out=None):
         return None, reason_map.get(v3_reason, "v3_no_signal")
     direction, confidence = signal
 
+    # The production classifier is trained on completed daily-close features.
+    # Premarket/intraday scans remain read-only diagnostics; issuing them as
+    # official predictions would evaluate a population the model never saw.
+    try:
+        from core.market_hours import in_daily_model_issuance_window
+        if not in_daily_model_issuance_window():
+            score_vector["issuance_window"] = {
+                "eligible": False,
+                "contract": "completed_daily_bar_post_close_v1",
+            }
+            return None, "daily_issuance_window"
+    except Exception:
+        return None, "daily_issuance_clock_unavailable"
+
     _floor = regime.get('confidence_floor_override', _confidence_floor()) if isinstance(regime, dict) else _confidence_floor()
     if is_research:
         _floor = RESEARCH_CONFIDENCE_FLOOR

@@ -1,7 +1,14 @@
-import os, sys, time, logging, threading, hmac, json, secrets as _secrets
+import collections as _collections
+import hmac
+import json
+import logging
+import os
+import sys
+import threading
+import time
 import config.symbols  # noqa: F401 — pin official watchlist before engine imports
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Header, HTTPException, Depends, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -144,7 +151,8 @@ def _v32_stats_start_ts(cur):
         if _row and int(_row[0]) >= 1775606400:
             cur.execute("UPDATE ghost_state SET val=%s WHERE key='v32_stats_start_ts'", (str(CORRECT_V32_TS),))
             LOGGER.info("v32_stats_start_ts corrected to Apr 5 2026")
-    except Exception: pass
+    except Exception:
+        pass
 
     # 2) Existing sticky cutover if present
     sticky_ts = 0
@@ -222,7 +230,15 @@ def _v32_stats_start_ts(cur):
     return final_ts
 
 
-from core.prediction_filters import CRYPTO_JUNK_WHERE, NON_RESEARCH_WHERE, REAL_TRADE_WHERE, RESOLVED_FOR_WINRATE_WHERE, non_research_where, picks_where as _picks_where
+from core.prediction_filters import (  # noqa: E402,F401 — compatibility facade exports
+    CRYPTO_JUNK_WHERE,
+    NON_RESEARCH_WHERE,
+    REAL_TRADE_WHERE,
+    RESOLVED_FOR_WINRATE_WHERE,
+    V32_ERA_MIN_ID as _V32_ERA_MIN_ID,
+    non_research_where,
+    picks_where as _picks_where,
+)
 
 
 def _build_symbol_universe_payload() -> dict:
@@ -703,7 +719,8 @@ def _wolf_retrain_in_days():
 
 def _build_daily_card_data(pick: dict) -> dict:
     """Assemble the daily-card payload from a saved pick + DB-derived context."""
-    import datetime as _dt, pytz as _tz
+    import datetime as _dt
+    import pytz as _tz
     from core.telegram_cards import conviction_from_confidence, compute_news_influence
     tz = _tz.timezone(os.getenv("GHOST_TZ", "America/Chicago"))
     conf = float(pick.get("confidence") or 0)
@@ -820,7 +837,9 @@ def _build_daily_summary():
     """Aggregate the day's engine activity (roadmap #3b): scans + candidates +
     saves from the per-cycle gate history, today's resolutions, and the engine
     pause state. Pure of scheduling — callable any time."""
-    import datetime as _dt, pytz as _tz, json as _j
+    import datetime as _dt
+    import json as _j
+    import pytz as _tz
     tz = _tz.timezone(os.getenv("GHOST_TZ", "America/Chicago"))
     now_ct = _dt.datetime.now(tz)
     day_start = int(now_ct.replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
@@ -872,7 +891,9 @@ def _daily_summary_job():
     """Store one daily summary per CT day at DAILY_SUMMARY_HOUR (default 16, after
     close). Registered hourly with an ISO-date dedup so it fires once/day across
     restarts. Appends to ghost_state.daily_summary_history (last 30)."""
-    import datetime, pytz, json as _j
+    import datetime
+    import json as _j
+    import pytz
     if os.getenv("DAILY_SUMMARY_ENABLED", "1").strip().lower() not in ("1", "true", "yes", "on"):
         return
     ct = pytz.timezone(os.getenv("GHOST_TZ", "America/Chicago"))
@@ -951,7 +972,8 @@ def _market_scan_job():
         check_degraded()
     except Exception:
         pass
-    import datetime as _dt, pytz as _tz
+    import datetime as _dt
+    import pytz as _tz
     from core.prediction import run_prediction_cycle
     now = int(time.time())
     now_ct = _dt.datetime.now(_tz.timezone("America/Chicago"))
@@ -985,7 +1007,8 @@ def _market_scan_job():
 
 def _morning_card_job():
     """Run prediction cycle and send morning Telegram card."""
-    import datetime as _dt, pytz as _pytz, time as _t2
+    import datetime as _dt
+    import pytz as _pytz
     from core.prediction import run_prediction_cycle
     from core.db import db_conn
     _cycle_diag = {}
@@ -1047,7 +1070,8 @@ def _morning_card_job():
 def _record_morning_card_sent():
     """PR #80: record morning card sent date AFTER successful send, not before."""
     try:
-        import datetime as _dt2, pytz as _pytz2
+        import datetime as _dt2
+        import pytz as _pytz2
         _ct2 = _pytz2.timezone("America/Chicago")
         _date_str = _dt2.datetime.now(_ct2).strftime("%Y-%m-%d")
         with db_conn() as _tc:
@@ -1071,7 +1095,8 @@ def _build_weekly_card_data() -> dict:
     """Assemble the overhauled weekly-summary payload: followed-pick P&L over the
     week (via core.pnl), all-time record, retrain countdown, top/weakest pick by
     confidence, and how many of the week's picks were news-driven."""
-    import datetime as _dt, pytz as _tz
+    import datetime as _dt
+    import pytz as _tz
     tz = _tz.timezone(os.getenv("GHOST_TZ", "America/Chicago"))
     now = int(time.time())
     cutoff = now - 7 * 86400
@@ -1137,14 +1162,14 @@ def _build_weekly_card_data() -> dict:
     wk_tot = wk_wins + wk_losses + wk_expired
     start = _dt.datetime.now(tz) - _dt.timedelta(days=6)
     week_range = start.strftime("%b %d") + " - " + _dt.datetime.now(tz).strftime("%b %d")
-    retrain = _wolf_retrain_in_days()
+    retrain_days = _wolf_retrain_in_days()
     return {
         "week_range": week_range,
         "followed": {"wins": wk_wins, "losses": wk_losses, "expired": wk_expired,
                      "win_rate_pct": round(wk_wins / wk_tot * 100, 1) if wk_tot else 0,
                      "pnl_usd": pnl["realized_pnl_usd"]},
         "alltime": {"win_rate_pct": tr["win_rate_pct"], "wins": tr["wins"], "losses": tr["losses"], "expired": tr["expired"]},
-        "retrain_in_days": retrain if retrain is not None else "--",
+        "retrain_in_days": retrain_days if retrain_days is not None else "--",
         "top_pick": top,
         "weakest_pick": weak,
         "news_driven": {"count": news_driven, "total": total_week},
@@ -1155,7 +1180,8 @@ def _weekly_summary_job():
     """Fire the weekly summary once on the configured day/hour CT (default Sunday
     6 PM). Registered hourly; an ISO-week dedup in ghost_state guarantees a single
     send per week even across restarts."""
-    import datetime, pytz
+    import datetime
+    import pytz
     ct = pytz.timezone(os.getenv("GHOST_TZ", "America/Chicago"))
     now_ct = datetime.datetime.now(ct)
     want_day = _WEEKDAY_INDEX.get(os.getenv("TELEGRAM_WEEKLY_DAY", "sunday").strip().lower(), 6)
@@ -1348,6 +1374,19 @@ async def lifespan(app: FastAPI):
         yield
         return
     init_db()
+    # Compact legacy training diagnostics before any public status endpoint can
+    # parse them. The transaction advisory lock makes this safe across replicas.
+    try:
+        from core.signal_engine import compact_persisted_training_state
+
+        _compaction = compact_persisted_training_state()
+        LOGGER.info(
+            "Training state compacted: details=%sB lineage=%sB",
+            _compaction.get("last_train_details_bytes"),
+            _compaction.get("model_lineage_bytes"),
+        )
+    except Exception as _tce:
+        LOGGER.warning("Training state compaction failed: %s", str(_tce)[:120])
     # BG-4/ST-8: elect a single background-work leader across replicas. Railway
     # deploys can overlap (old instance draining while new boots) and scaling to
     # >1 replica would otherwise run the scheduler + intraday monitors in every
@@ -1363,9 +1402,11 @@ async def lifespan(app: FastAPI):
     # Purge weak / legacy-schema models on startup
     try:
         purged = _auto_purge_bad_models()
-        if purged: LOGGER.info(f"Boot purge: removed {purged} legacy ghost_models below floor")
+        if purged:
+            LOGGER.info(f"Boot purge: removed {purged} legacy ghost_models below floor")
         pv = _purge_v3_stale_or_weak()
-        if pv: LOGGER.info(f"Boot v3 purge: removed {pv} stale or sub-floor TP/SL models")
+        if pv:
+            LOGGER.info(f"Boot v3 purge: removed {pv} stale or sub-floor TP/SL models")
         expired_orphans = _expire_open_picks_without_v3_model()
         if expired_orphans:
             LOGGER.info("Boot pick cleanup: expired %s active picks with no model", expired_orphans)
@@ -1401,7 +1442,8 @@ async def lifespan(app: FastAPI):
     # background-work leader may send the recovery card.
     if _is_leader:
         try:
-            import datetime as _sdt, pytz as _stz
+            import datetime as _sdt
+            import pytz as _stz
             _ct = _stz.timezone("America/Chicago")
             _now_ct = _sdt.datetime.now(_ct)
             _hour_ct = _now_ct.hour
@@ -1439,9 +1481,20 @@ async def lifespan(app: FastAPI):
     except Exception:
         _scan_tick = 1800
     scheduler.register("market_scan", _market_scan_job, interval_s=_scan_tick, timeout_s=600)
+    from core.daily_model_issuance import run_daily_model_issuance
+
+    def _daily_model_issuance_job():
+        result = run_daily_model_issuance()
+        if result.get("ok") is not True:
+            raise RuntimeError(f"daily model issuance failed: {result}")
+
+    scheduler.register(
+        "daily_model_issuance", _daily_model_issuance_job,
+        interval_s=300, timeout_s=600,
+    )
     # Watchdog: real-time hit alerts every 5 minutes
-    from core.watchdog import run_watchdog
-    scheduler.register("watchdog", run_watchdog, interval_s=300)
+    from core.watchdog import run_watchdog as _scheduled_watchdog
+    scheduler.register("watchdog", _scheduled_watchdog, interval_s=300)
     # Weekly summary: every Friday at 4 PM CT = 22:00 UTC = 79200s from midnight
     # Approximated as 7-day interval - fires on first Friday after deploy
     scheduler.register("weekly_summary", _weekly_summary_job, interval_s=3600)
@@ -1911,7 +1964,6 @@ async def lifespan(app: FastAPI):
                     )
             except Exception as _wse2:
                 LOGGER.warning("Weekly retrain state write failed: %s", str(_wse2)[:80])
-            from core.prediction import STOCK_SYMBOLS
             syms = _v3_train_collect_symbols()
             trained, failed = 0, len(syms)
             try:
@@ -1958,7 +2010,6 @@ async def lifespan(app: FastAPI):
         _lock_acquired = False
         try:
             from core.signal_engine import train_and_validate
-            import os
             if not _has_loadable_v3_model():
                 if not _RETRAIN_JOB_LOCK.acquire(blocking=False):
                     LOGGER.info("Startup training skipped: retrain lock busy")
@@ -2055,11 +2106,14 @@ APP = FastAPI(
     redoc_url="/redoc" if _DOCS_ENABLED else None,
     openapi_url="/openapi.json" if _DOCS_ENABLED else None,
 )
-# CORS: the cockpit/picks pages are served same-origin, so no origin needs
-# cross-site access by default. GHOST_CORS_ORIGINS (comma-separated) can widen
-# it; "*" keeps the legacy wildcard. Auth is bearer/cookie(SameSite=Lax) and
-# allow_credentials stays False, so this is exposure-narrowing, not auth.
-_CORS_ORIGINS = [o.strip() for o in os.getenv("GHOST_CORS_ORIGINS", "*").split(",") if o.strip()]
+# CORS: cockpit pages are same-origin, so cross-site browser access is denied by
+# default. GHOST_CORS_ORIGINS may explicitly allow trusted frontends; "*" is
+# still accepted only when an operator deliberately configures it.
+_CORS_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("GHOST_CORS_ORIGINS", "").split(",")
+    if origin.strip()
+]
 APP.add_middleware(CORSMiddleware, allow_origins=_CORS_ORIGINS, allow_methods=["*"], allow_headers=["*"])
 
 
@@ -2118,8 +2172,6 @@ async def _value_error_handler(request: Request, exc: ValueError):
 # In-process per-IP sliding window (60s). The app runs single-instance on
 # Railway, so process-local state is sufficient. Admin/cron routes have their
 # own auth and are exempt; /api/health is exempt for uptime monitors.
-import collections as _collections
-
 _RL_LOCK = threading.Lock()
 _RL_HITS = _collections.defaultdict(_collections.deque)  # bucket -> deque[ts]
 _RL_EXEMPT_PREFIXES = ("/api/admin", "/api/cron", "/api/v3/train")
@@ -2296,8 +2348,8 @@ async def v1_ghost_score():
 
 
 # Mount portfolio router — WOLF position tracking, price refresh, ghost predictions
-from core.portfolio_routes import portfolio_router
-from core.stats_direction import compute_stats_by_direction
+from core.portfolio_routes import portfolio_router  # noqa: E402
+from core.stats_direction import compute_stats_by_direction  # noqa: E402
 APP.include_router(portfolio_router)
 
 # Phase 4: WOLF Intel endpoints
@@ -2393,7 +2445,7 @@ _TEST_PREDICTION_PATTERNS = ("ZZE2E%", "ZZ%", "TEST%", "GHOST%", "STOCK GHOST%")
 
 
 def health():
-    import os, time as _t
+    import time as _t
     from core.prices import check_feeds
     from core import scheduler
     issues = []
@@ -2402,7 +2454,8 @@ def health():
     # 1. DB
     db_ok = False
     try:
-        with db_conn() as conn: conn.cursor().execute("SELECT 1")
+        with db_conn() as conn:
+            conn.cursor().execute("SELECT 1")
         db_ok = True
     except Exception as e:
         issues.append("DB failed: " + str(e)[:60])
@@ -2714,11 +2767,16 @@ def health_audit_history(limit: int = 20):
 
 def _norm_pred(r):
     _conf = r.get("confidence") or r.get("confidence_score") or 0
-    if _conf >= 0.90:   _pos = 5.0
-    elif _conf >= 0.85: _pos = 4.0
-    elif _conf >= 0.80: _pos = 3.0
-    elif _conf >= 0.75: _pos = 2.0
-    else:               _pos = 1.0
+    if _conf >= 0.90:
+        _pos = 5.0
+    elif _conf >= 0.85:
+        _pos = 4.0
+    elif _conf >= 0.80:
+        _pos = 3.0
+    elif _conf >= 0.75:
+        _pos = 2.0
+    else:
+        _pos = 1.0
     return {
         "id": r.get("id"),
         "symbol": r.get("symbol",""),
@@ -2908,9 +2966,6 @@ def _top_scan_candidates(limit: int = 5) -> list:
 # v3.2 era marker — predictions with id >= this are Ghost's high-conviction
 # v3.2-engine picks. Used across the codebase (core.stats_direction, core.prediction)
 # to exclude ~223k legacy v1 rows from credibility stats.
-from core.prediction_filters import V32_ERA_MIN_ID as _V32_ERA_MIN_ID  # single source of truth
-
-
 def _pick_journal_scope(symbol: str):
     """Return (sql_prefix, params, label) for pick-journal symbol filter."""
     sym = str(symbol or "ALL").strip().upper()

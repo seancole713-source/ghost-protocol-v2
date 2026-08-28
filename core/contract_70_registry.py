@@ -22,7 +22,11 @@ import json
 import time
 from typing import Any, Dict, List, Optional, Sequence
 
-from core.watcher import contract_win_test_status, wilson_interval
+from core.watcher import (
+    contract_win_test_status,
+    independent_symbol_session_rows,
+    session_block_bootstrap_interval,
+)
 
 _REGISTRY_KEY = "contract_70_forward_registry"
 
@@ -75,18 +79,10 @@ def evaluate_forward(
     """
     reg = {str(s).upper() for s in (registered_symbols or [])}
     cutoff = int(registered_at_ts or 0)
-    n = 0
-    wins = 0
-    used_symbols: Dict[str, Dict[str, int]] = {}
+    forward_rows: List[Dict[str, Any]] = []
     for r in rows:
         sym = str(r.get("symbol") or "").upper()
         if sym not in reg:
-            continue
-        try:
-            p = float(r.get("up_prob"))
-        except Exception:
-            continue
-        if p < float(prob_floor):
             continue
         try:
             ets = int(r.get("eval_ts") or 0)
@@ -97,6 +93,22 @@ def evaluate_forward(
         outcome = str(r.get("outcome") or "").upper()
         if outcome not in ("WIN", "LOSS", "EXPIRED"):
             continue
+        forward_rows.append(r)
+    independent, pseudo_replicates = independent_symbol_session_rows(forward_rows)
+    eligible: List[Dict[str, Any]] = []
+    for r in independent:
+        try:
+            p = float(r.get("up_prob"))
+        except Exception:
+            continue
+        if p >= float(prob_floor):
+            eligible.append(r)
+    n = 0
+    wins = 0
+    used_symbols: Dict[str, Dict[str, int]] = {}
+    for r in eligible:
+        sym = str(r.get("symbol") or "").upper()
+        outcome = str(r.get("outcome") or "").upper()
         n += 1
         g = used_symbols.setdefault(sym, {"n": 0, "wins": 0})
         g["n"] += 1
@@ -104,10 +116,22 @@ def evaluate_forward(
             wins += 1
             g["wins"] += 1
     status = contract_win_test_status(wins=wins, n=n, target=target)
+    block_rows = [dict(row, win=str(row.get("outcome") or "").upper() == "WIN")
+                  for row in eligible]
+    block = session_block_bootstrap_interval(block_rows)
+    status["session_block_bootstrap"] = block
+    status["proof_pass"] = bool(
+        status["wilson_pass"] and block and float(block["low"]) >= float(target)
+    )
     status["basis"] = "forward_only_registered_universe"
     status["registered_symbols"] = sorted(reg)
     status["registered_at_ts"] = cutoff
     status["prob_floor"] = float(prob_floor)
+    status["raw_forward_rows"] = len(forward_rows)
+    status["independent_forward_rows"] = len(independent)
+    status["eligible_rows"] = len(eligible)
+    status["pseudo_replicates_excluded"] = pseudo_replicates
+    status["sampling_unit"] = "earliest_prediction_per_symbol_market_session"
     status["symbols_used"] = [
         {"symbol": s, "n": g["n"], "wins": g["wins"]}
         for s, g in sorted(used_symbols.items())
@@ -133,9 +157,7 @@ def evaluate_forward_slices(
 
     cutoff = int(registered_at_ts or 0)
     specs = [s for s in (registered_slices or []) if isinstance(s, dict)]
-    n = 0
-    wins = 0
-    used: Dict[str, Dict[str, Any]] = {}
+    forward_rows: List[Dict[str, Any]] = []
     for r in rows:
         try:
             ets = int(r.get("eval_ts") or 0)
@@ -146,6 +168,10 @@ def evaluate_forward_slices(
         outcome = str(r.get("outcome") or "").upper()
         if outcome not in ("WIN", "LOSS", "EXPIRED"):
             continue
+        forward_rows.append(r)
+    independent, pseudo_replicates = independent_symbol_session_rows(forward_rows)
+    eligible: List[Dict[str, Any]] = []
+    for r in independent:
         matched_spec = None
         for spec in specs:
             if row_matches_slice(r, spec):
@@ -153,6 +179,15 @@ def evaluate_forward_slices(
                 break
         if matched_spec is None:
             continue
+        item = dict(r)
+        item["_matched_slice_spec"] = matched_spec
+        eligible.append(item)
+    n = 0
+    wins = 0
+    used: Dict[str, Dict[str, Any]] = {}
+    for r in eligible:
+        outcome = str(r.get("outcome") or "").upper()
+        matched_spec = r["_matched_slice_spec"]
         n += 1
         key = json.dumps({"dims": matched_spec.get("dims") or [], "key": matched_spec.get("key") or {}}, sort_keys=True)
         g = used.setdefault(key, {"slice": {"dims": matched_spec.get("dims") or [], "key": matched_spec.get("key") or {}}, "n": 0, "wins": 0})
@@ -161,9 +196,21 @@ def evaluate_forward_slices(
             wins += 1
             g["wins"] += 1
     status = contract_win_test_status(wins=wins, n=n, target=target)
+    block_rows = [dict(row, win=str(row.get("outcome") or "").upper() == "WIN")
+                  for row in eligible]
+    block = session_block_bootstrap_interval(block_rows)
+    status["session_block_bootstrap"] = block
+    status["proof_pass"] = bool(
+        status["wilson_pass"] and block and float(block["low"]) >= float(target)
+    )
     status["basis"] = "forward_only_registered_slices"
     status["registered_slices"] = [{"dims": s.get("dims") or [], "key": s.get("key") or {}} for s in specs]
     status["registered_at_ts"] = cutoff
+    status["raw_forward_rows"] = len(forward_rows)
+    status["independent_forward_rows"] = len(independent)
+    status["eligible_rows"] = len(eligible)
+    status["pseudo_replicates_excluded"] = pseudo_replicates
+    status["sampling_unit"] = "earliest_prediction_per_symbol_market_session"
     status["slices_used"] = [v for _, v in sorted(used.items())]
     return status
 

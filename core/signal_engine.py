@@ -11,11 +11,16 @@ UPGRADES (2026-03-30) from GitHub research:
 v3.2: Training labels match live paper trades — WIN = hit vol-based target before stop
 within N daily bars (see V3_LABEL_HOLD_BARS), same TP/SL math as core.vol_targets.
 """
-import os, time, logging, json, threading, math
+import json
+import logging
+import math
+import os
+import threading
+import time
 from core.quiet import note_suppressed
 import numpy as np
 from typing import Any, Dict, List, Optional
-from core.vol_targets import base_vol_pct, stop_pct_from_vol
+from core.vol_targets import base_vol_pct
 from core.db import ensure_ghost_state
 from core.engine_config import (  # noqa: F401 — facade re-exports (PR #130)
     V3_LABEL_HOLD_BARS,
@@ -63,7 +68,13 @@ from core.engine_config import (  # noqa: F401 — facade re-exports (PR #130)
     _v3_max_calibration_brier,
 )
 from core.engine_features import (  # noqa: F401 — facade re-exports (PR #130)
+    CROSS_SECTIONAL_FEATURE_COLS,
+    DAILY_CONSTANT_FEATURE_COLS,
     FEATURE_COLS,
+    INTRADAY_FEATURE_COLS,
+    MACRO_FEATURE_COLS,
+    NEWS_FEATURE_COLS,
+    OPTIONS_FEATURE_COLS,
     _calculate_features,
     _date_key,
     _align_sector_closes,
@@ -99,7 +110,7 @@ LOGGER.info("[signal_engine] MODULE_LOADED PR17_DIAG ohlcv_chain=sip|iex|polygon
 LABEL_TYPE = "tp_sl_daily"
 LIVE_LABEL_MODE = "tp_sl"
 LABEL_TYPE_DIRECTION = "direction_daily"
-VALIDATION_SCHEMA = "honest_oos_v3"  # compatibility export; use call-time helper below
+VALIDATION_SCHEMA = "honest_oos_v4"  # compatibility export; use call-time helper below
 
 
 def _v3_label_type() -> str:
@@ -333,8 +344,28 @@ def _active_feature_cols() -> list:
     the persisted meta feature_cols, so training persists this list and
     prediction reads it back — the two never disagree on the column set.
     """
+    from core.engine_config import (
+        _v3_cross_sectional_features_enabled,
+        _v3_intraday_features_enabled,
+        _v3_macro_features_enabled,
+        _v3_news_features_enabled,
+        _v3_options_features_enabled,
+    )
+
     prune = _v3_prune_features()
-    cols = [c for c in FEATURE_COLS if c not in prune]
+    optional = set(
+        CROSS_SECTIONAL_FEATURE_COLS
+        + NEWS_FEATURE_COLS
+        + OPTIONS_FEATURE_COLS
+        + INTRADAY_FEATURE_COLS
+        + MACRO_FEATURE_COLS
+        + DAILY_CONSTANT_FEATURE_COLS
+    )
+    cols = [c for c in FEATURE_COLS if c not in prune and c not in optional]
+    if _v3_cross_sectional_features_enabled():
+        cols.extend(c for c in CROSS_SECTIONAL_FEATURE_COLS if c not in prune)
+    if _v3_macro_features_enabled():
+        cols.extend(c for c in MACRO_FEATURE_COLS if c not in prune)
     if _v3_sector_feature_enabled() and "sector_rel_strength" not in prune:
         cols.append("sector_rel_strength")
     # PR #165: point-in-time SEC fundamentals (off by default; toggling
@@ -344,19 +375,16 @@ def _active_feature_cols() -> list:
     if _fund_enabled():
         cols.extend(c for c in FUNDAMENTAL_FEATURE_NAMES if c not in prune)
     # Phase 4: news sentiment + options flow features (off by default)
-    from core.engine_config import _v3_news_features_enabled, _v3_options_features_enabled
     if _v3_news_features_enabled():
-        for c in ('news_sentiment','news_bullish','news_bearish'):
+        for c in NEWS_FEATURE_COLS:
             if c not in prune:
                 cols.append(c)
     if _v3_options_features_enabled():
-        for c in ('opt_put_call_ratio','opt_skew_elevated_puts','opt_skew_elevated_calls'):
+        for c in OPTIONS_FEATURE_COLS:
             if c not in prune:
                 cols.append(c)
-    from core.engine_config import _v3_intraday_features_enabled
     if _v3_intraday_features_enabled():
-        from core.intraday_features import INTRADAY_FEATURE_NAMES
-        cols.extend(c for c in INTRADAY_FEATURE_NAMES if c not in prune)
+        cols.extend(c for c in INTRADAY_FEATURE_COLS if c not in prune)
     return cols
 
 
@@ -636,7 +664,7 @@ def _fetch_ohlcv_once(symbol, asset_type, period='1y', interval='1d'):
     fetching 2y would waste a round-trip and could confuse downstream logic.
     """
     LOGGER.info(f"[_fetch_ohlcv] PR14_DIAG ENTERED symbol={symbol} asset_type={asset_type} period={period}")
-    import os, requests as _req
+    import requests as _req
     from datetime import datetime, timedelta, timezone
     key = os.getenv("ALPACA_KEY_ID", "")
     secret = os.getenv("ALPACA_SECRET_KEY", "")
@@ -890,15 +918,15 @@ def _try_stooq_ohlcv(symbol, period):
                     continue
                 o = float(row.get("Open", 0) or 0)
                 h = float(row.get("High", 0) or 0)
-                l = float(row.get("Low", 0) or 0)
+                low = float(row.get("Low", 0) or 0)
                 v = float(row.get("Volume", 0) or 0)
-                if not all(_math.isfinite(x) and x >= 0 for x in (o, h, l, v)):
+                if not all(_math.isfinite(x) and x >= 0 for x in (o, h, low, v)):
                     continue
                 rows.append({
                     "ts": row_date.strftime("%Y-%m-%dT00:00:00Z"),
                     "open": o,
                     "high": h,
-                    "low": l,
+                    "low": low,
                     "close": close,
                     "volume": v,
                 })
@@ -923,7 +951,7 @@ def _try_polygon_ohlcv(symbol, period):
     Every code path emits an INFO log so ops can tell exactly what happened
     (missing key, HTTP error, status != OK, no results, or success).
     """
-    import os, requests as _req
+    import requests as _req
     from datetime import datetime, timedelta, timezone
     api_key = os.getenv("POLYGON_API_KEY", "")
     if not api_key:
@@ -964,15 +992,15 @@ def _try_polygon_ohlcv(symbol, period):
                 ts = datetime.fromtimestamp(bar["t"] / 1000, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
                 o = float(bar.get("o", 0))
                 h = float(bar.get("h", 0))
-                l = float(bar.get("l", 0))
+                low = float(bar.get("l", 0))
                 v = float(bar.get("v", 0))
-                if not all(_math.isfinite(x) and x >= 0 for x in (o, h, l, v)):
+                if not all(_math.isfinite(x) and x >= 0 for x in (o, h, low, v)):
                     continue
                 rows.append({
                     "ts": ts,
                     "open": o,
                     "high": h,
-                    "low": l,
+                    "low": low,
                     "close": close,
                     "volume": v,
                 })
@@ -1082,15 +1110,15 @@ def _yf_rows_from_history(tk, period=None, start=None, end=None):
                 ts = ix.strftime('%Y-%m-%dT%H:%M:%SZ') if hasattr(ix, 'strftime') else str(ix)
                 o = float(row["Open"])
                 h = float(row["High"])
-                l = float(row["Low"])
+                low = float(row["Low"])
                 v = float(row.get("Volume", 0) or 0)
-                if not all(_math.isfinite(x) and x >= 0 for x in (o, h, l, v)):
+                if not all(_math.isfinite(x) and x >= 0 for x in (o, h, low, v)):
                     continue
                 rows.append({
                     'ts': ts,
                     'open': o,
                     'high': h,
-                    'low': l,
+                    'low': low,
                     'close': close,
                     'volume': v,
                 })
@@ -1118,6 +1146,8 @@ def backtest_symbol(symbol, asset_type):
     # W3: align a sector series to these bars once, then read it point-in-time
     # per bar below. Only computed when the feature is enabled.
     sector_on = _v3_sector_feature_enabled()
+    from core.engine_config import _v3_macro_features_enabled
+    macro_on = _v3_macro_features_enabled()
     aligned_sector = _align_sector_closes(rows, _fetch_sector_series()) if sector_on else None
     sector_lookback = _v3_sector_lookback()
     for i in range(window, len(rows) - margin):
@@ -1129,16 +1159,15 @@ def backtest_symbol(symbol, asset_type):
         features["asset_type"] = asset_type
         if sector_on:
             features["sector_rel_strength"] = _sector_rel_at(rows, aligned_sector, i, sector_lookback)
-        # Phase 1: point-in-time macro features for this training bar's date
-        try:
-            bar_date = str(rows[i].get("ts", ""))[:10]
-            if bar_date:
-                from core.macro_regime import get_macro_features_for_date
-                macro = get_macro_features_for_date(bar_date)
-                for k, v in macro.items():
-                    features[k] = v
-        except Exception:
-            note_suppressed()
+        # Macro history remains experimental until vintage/release-lag proof.
+        if macro_on:
+            try:
+                bar_date = str(rows[i].get("ts", ""))[:10]
+                if bar_date:
+                    from core.macro_regime import get_macro_features_for_date
+                    features.update(get_macro_features_for_date(bar_date))
+            except Exception:
+                note_suppressed()
         # PR #165: point-in-time SEC fundamentals for this bar's date —
         # a quarter is visible only once its SEC filed date has passed.
         try:
@@ -1156,7 +1185,8 @@ def backtest_symbol(symbol, asset_type):
             up_outcome, up_resolved_ts = simulate_volatility_label(
                 rows, i, V3_LABEL_HOLD_BARS,
             )
-            down_outcome = None; down_resolved_ts = None
+            down_outcome = None
+            down_resolved_ts = None
         elif label_type == "cross_sectional":
             # Cross-sectional mode: store forward return for later median-split.
             # Labels are computed in train_and_validate after all symbols are collected.
@@ -1175,8 +1205,10 @@ def backtest_symbol(symbol, asset_type):
                             "_fwd_return": fwd_return,
                             "_date_key": str(rows[i].get("ts", ""))[:10],
                         })
-            up_outcome = None; up_resolved_ts = None
-            down_outcome = None; down_resolved_ts = None
+            up_outcome = None
+            up_resolved_ts = None
+            down_outcome = None
+            down_resolved_ts = None
         elif label_type == "direction":
             up_outcome, up_resolved_ts = simulate_direction_label(
                 rows, i, V3_LABEL_HOLD_BARS, "UP",
@@ -1219,7 +1251,8 @@ def build_training_data(symbols_and_types):
     for symbol, asset_type in symbols_and_types:
         up_rows, down_rows = backtest_symbol(symbol, asset_type)
         all_rows.extend(up_rows)
-    if len(all_rows) < _min_train_rows(): return None, None, []
+    if len(all_rows) < _min_train_rows():
+        return None, None, []
     # Phase 1: compute cross-sectional ranks per date across all symbols.
     # Group rows by date, compute percentile ranks within each date group,
     # then inject back into the feature dicts.
@@ -1271,6 +1304,84 @@ def build_training_data(symbols_and_types):
     y = np.array([r['label'] for r in all_rows])
     return X, y, active_cols
 
+def _compact_train_direction(detail: Any) -> Dict[str, Any]:
+    if not isinstance(detail, dict):
+        return {}
+    keys = (
+        "direction", "passed", "fail_reason", "stage", "n_samples", "wins_ct",
+        "natural_rate", "no_skill_accuracy", "holdout_acc", "edge",
+        "wf_fold_count", "wf_acc_mean", "wf_acc_min", "wf_edge_mean",
+        "wf_edge_min", "holdout_slices", "thresholds", "research_stored",
+        "reliability_monotonic",
+    )
+    out = {key: detail.get(key) for key in keys if key in detail}
+    calibration = detail.get("calibration")
+    if isinstance(calibration, dict):
+        precision = calibration.get("precision_gate")
+        out["calibration"] = {
+            key: calibration.get(key)
+            for key in (
+                "calibrated", "calibration_status", "calibration_schema",
+                "method", "winner", "gate_brier", "gate_n",
+            )
+            if key in calibration
+        }
+        if isinstance(precision, dict):
+            out["calibration"]["precision_gate"] = {
+                key: precision.get(key)
+                for key in ("ok", "target", "threshold", "fail_reason", "calib", "gate")
+                if key in precision
+            }
+    return out
+
+
+def compact_train_details(details_list: Any) -> List[Dict[str, Any]]:
+    """Bound persisted training telemetry to decision-relevant fields."""
+    compacted: List[Dict[str, Any]] = []
+    for entry in details_list if isinstance(details_list, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        item = {
+            key: entry.get(key)
+            for key in ("symbol", "asset_type", "passed", "fail_reason", "stage", "n_samples")
+            if key in entry
+        }
+        directions = entry.get("directions")
+        if isinstance(directions, dict):
+            item["directions"] = {
+                lane: _compact_train_direction(detail)
+                for lane, detail in directions.items()
+                if lane in ("UP", "DOWN") and isinstance(detail, dict)
+            }
+            scored = [
+                detail for detail in item["directions"].values()
+                if isinstance(detail.get("holdout_acc"), (int, float))
+            ]
+            if scored:
+                best = max(scored, key=lambda detail: float(detail["holdout_acc"]))
+                item["accuracy"] = best.get("holdout_acc")
+                item["edge"] = best.get("edge")
+                item["wf_acc_mean"] = best.get("wf_acc_mean")
+            if not item.get("passed") and not item.get("fail_reason"):
+                failures = [
+                    str(detail.get("fail_reason"))
+                    for detail in item["directions"].values()
+                    if detail.get("fail_reason")
+                ]
+                if failures:
+                    item["fail_reason"] = "; ".join(failures[:2])
+        else:
+            # System/pre-train records and compatibility tests use a flat shape.
+            for key in (
+                "holdout_acc", "accuracy", "edge", "wf_acc_mean", "wf_edge_mean",
+                "thresholds",
+            ):
+                if key in entry:
+                    item[key] = entry.get(key)
+        compacted.append(item)
+    return compacted
+
+
 def _persist_train_details(details_list) -> None:
     """Persist per-symbol training diagnostics to ghost_state.last_train_details.
 
@@ -1279,13 +1390,18 @@ def _persist_train_details(details_list) -> None:
     """
     try:
         from core.db import db_conn
+        compacted = compact_train_details(details_list)
         with db_conn() as conn:
             cur = conn.cursor()
             ensure_ghost_state(cur)
             cur.execute(
+                "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                ("ghost_state:training_diagnostics",),
+            )
+            cur.execute(
                 "INSERT INTO ghost_state(key,val) VALUES('last_train_details', %s) "
                 "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
-                (json.dumps({"ts": int(time.time()), "symbols": details_list}),),
+                (json.dumps({"ts": int(time.time()), "symbols": compacted}),),
             )
             # Model lineage (audit): append this run to a rolling history (last 50)
             # so /admin can show how accuracy/edge evolved across retrains.
@@ -1299,8 +1415,12 @@ def _persist_train_details(details_list) -> None:
                     _hist = []
             if not isinstance(_hist, list):
                 _hist = []
-            _hist.append({"ts": int(time.time()), "symbols": details_list})
-            _hist = _hist[-50:]
+            _hist.append({"ts": int(time.time()), "symbols": compacted})
+            _hist = _hist[-20:]
+            # Hard byte bound protects the public read-only lineage endpoint
+            # even if a future field accidentally grows again.
+            while len(_hist) > 1 and len(json.dumps(_hist).encode("utf-8")) > 2_000_000:
+                _hist.pop(0)
             cur.execute(
                 "INSERT INTO ghost_state(key,val) VALUES('model_lineage', %s) "
                 "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
@@ -1308,6 +1428,76 @@ def _persist_train_details(details_list) -> None:
             )
     except Exception as _e:
         LOGGER.warning("train details persist failed: " + str(_e)[:120])
+
+
+def _compact_training_state_values(last_raw: Any, lineage_raw: Any) -> tuple[str, str]:
+    """Return bounded JSON for legacy or current persisted training diagnostics."""
+    try:
+        last = json.loads(last_raw) if isinstance(last_raw, str) else last_raw
+    except (TypeError, ValueError, json.JSONDecodeError):
+        last = {}
+    if not isinstance(last, dict):
+        last = {}
+    last_compact = {
+        "ts": last.get("ts"),
+        "symbols": compact_train_details(last.get("symbols") or []),
+    }
+
+    try:
+        lineage = json.loads(lineage_raw) if isinstance(lineage_raw, str) else lineage_raw
+    except (TypeError, ValueError, json.JSONDecodeError):
+        lineage = []
+    if not isinstance(lineage, list):
+        lineage = []
+    compact_lineage = []
+    for run in lineage[-20:]:
+        if not isinstance(run, dict):
+            continue
+        compact_lineage.append({
+            "ts": run.get("ts"),
+            "symbols": compact_train_details(run.get("symbols") or []),
+        })
+    while (
+        len(compact_lineage) > 1
+        and len(json.dumps(compact_lineage).encode("utf-8")) > 2_000_000
+    ):
+        compact_lineage.pop(0)
+    return json.dumps(last_compact), json.dumps(compact_lineage)
+
+
+def compact_persisted_training_state() -> Dict[str, Any]:
+    """One-time/idempotent compaction for oversized legacy ghost_state values."""
+    from core.db import db_conn
+
+    with db_conn() as conn:
+        cur = conn.cursor()
+        ensure_ghost_state(cur)
+        cur.execute(
+            "SELECT pg_advisory_xact_lock(hashtext(%s))",
+            ("ghost_state:training_diagnostics",),
+        )
+        cur.execute(
+            "SELECT key,val FROM ghost_state "
+            "WHERE key IN ('last_train_details','model_lineage') FOR UPDATE",
+        )
+        values = {str(key): val for key, val in cur.fetchall()}
+        last_json, lineage_json = _compact_training_state_values(
+            values.get("last_train_details"), values.get("model_lineage"),
+        )
+        for key, value in (
+            ("last_train_details", last_json),
+            ("model_lineage", lineage_json),
+        ):
+            cur.execute(
+                "INSERT INTO ghost_state(key,val) VALUES(%s,%s) "
+                "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
+                (key, value),
+            )
+    return {
+        "ok": True,
+        "last_train_details_bytes": len(last_json.encode("utf-8")),
+        "model_lineage_bytes": len(lineage_json.encode("utf-8")),
+    }
 
 
 
@@ -1435,8 +1625,9 @@ def _collect_peer_rows(target_symbol):
 def _train_one_direction(rows, symbol, direction, active_cols, peer_rows, peers_used, pool_info):
     """Train a single-direction model (UP or DOWN). Returns (passed, detail, model_bytes, meta_json)."""
     from xgboost import XGBClassifier
-    import pickle, base64, hashlib
-    from core.db import db_conn
+    import base64
+    import hashlib
+    import pickle
 
     n_samples = len(rows)
     min_rows = _min_train_rows()
@@ -1564,6 +1755,8 @@ def _train_one_direction(rows, symbol, direction, active_cols, peer_rows, peers_
         )
         precision_info = select_fire_threshold(
             calib_probs, y_calib, gate_probs_pg, y_gate,
+            gate_timestamps=target_asof[calib_end:],
+            hold_bars=V3_LABEL_HOLD_BARS,
         )
     except Exception as _pg_e:
         precision_info = {"ok": False, "fail_reason": "error: " + str(_pg_e)[:120]}
@@ -1582,6 +1775,7 @@ def _train_one_direction(rows, symbol, direction, active_cols, peer_rows, peers_
         "probs": [float(p) for p in gate_probs_pg],
         "labels": [int(v) for v in y_gate],
         "timestamps": [int(v) for v in gate_resolved_asof],
+        "session_timestamps": [int(v) for v in target_asof[calib_end:]],
     }
     # Walk-forward starts from raw matrices and derives a separate sign map in
     # each fold. Reusing the final model's training-period map would let later
@@ -1995,9 +2189,11 @@ def _train_cross_sectional(symbols_and_types):
         for r in date_rows:
             ret = r["_fwd_return"]
             if ret > p75:
-                r["label"] = 1; r["outcome"] = "WIN"
+                r["label"] = 1
+                r["outcome"] = "WIN"
             elif ret < p25:
-                r["label"] = 0; r["outcome"] = "LOSS"
+                r["label"] = 0
+                r["outcome"] = "LOSS"
             # middle 50%: skipped (no label)
         
         # Compute percentile ranks for ALL features against peers on this date
@@ -2159,12 +2355,16 @@ def train_and_validate(symbols_and_types):
         return None, 0.0, False
 
     from core.engine_config import (
+        _v3_cross_sectional_features_enabled,
         _v3_intraday_features_enabled,
+        _v3_macro_features_enabled,
         _v3_news_features_enabled,
         _v3_options_features_enabled,
     )
     unsupported_features = [
         name for name, enabled in (
+            ("cross_sectional", _v3_cross_sectional_features_enabled()),
+            ("macro", _v3_macro_features_enabled()),
             ("news", _v3_news_features_enabled()),
             ("options", _v3_options_features_enabled()),
             ("intraday", _v3_intraday_features_enabled()),
@@ -2285,10 +2485,17 @@ def train_and_validate(symbols_and_types):
                     _meta = json.loads(_meta_json)
                     _model_sha = str(_meta.get("model_sha256") or "")
                     timestamps = _oos.get("timestamps") or [0] * len(_oos["probs"])
+                    session_timestamps = (
+                        _oos.get("session_timestamps") or [0] * len(_oos["probs"])
+                    )
                     _global_pools[_dirname]["records"].extend(
-                        (int(ts), float(prob), int(label), _model_sha)
-                        for ts, prob, label in zip(
-                            timestamps, _oos["probs"], _oos["labels"]
+                        (
+                            int(ts), int(session_ts), float(prob), int(label),
+                            _model_sha,
+                        )
+                        for ts, session_ts, prob, label in zip(
+                            timestamps, session_timestamps,
+                            _oos["probs"], _oos["labels"],
                         )
                     )
             # Build combined detail
@@ -2618,7 +2825,8 @@ def load_model(symbol=None, direction="UP"):
     invalidate_model_cache(). The serve guard (model_expired etc.) is
     re-evaluated on every call, so a cached model can still age out.
     """
-    if not symbol: return None, None, None
+    if not symbol:
+        return None, None, None
     ttl = _model_cache_ttl_s()
     cache_key = (str(symbol).upper(), str(direction).upper())
     if ttl > 0:
@@ -2648,7 +2856,10 @@ def load_model(symbol=None, direction="UP"):
 
 def _load_model_uncached(symbol, direction="UP"):
     try:
-        import pickle, base64, binascii, hashlib
+        import base64
+        import binascii
+        import hashlib
+        import pickle
         from core.db import db_conn
         with db_conn() as conn:
             cur = conn.cursor()
@@ -2681,7 +2892,8 @@ def _load_model_uncached(symbol, direction="UP"):
                 return None, None, None
             cur.execute("SELECT value FROM ghost_v3_model WHERE key=%s", (model_key,))
             row = cur.fetchone()
-            if not row: return None, None, None
+            if not row:
+                return None, None, None
             encoded = row[0] or ""
             if len(encoded) > _model_payload_max_bytes() * 2:
                 LOGGER.warning("load_model %s/%s: rejected model payload too large (encoded=%s)", symbol, direction, len(encoded))
@@ -2705,7 +2917,8 @@ def _load_model_uncached(symbol, direction="UP"):
             model = pickle.loads(raw)
             return model, meta.get('feature_cols', FEATURE_COLS), meta
     except Exception as e:
-        LOGGER.warning(f"load_model {symbol}/{direction}: {e}"); return None, None, None
+        LOGGER.warning(f"load_model {symbol}/{direction}: {e}")
+        return None, None, None
 
 def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
     """
@@ -2760,23 +2973,31 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
         features, rows[-1].get("ts") if rows else None, default_now=True,
     )
 
-    # P2 (audit): cross-sectional rank features — percentile within watchlist
-    try:
-        from core.cross_sectional import compute_cross_sectional
+    # Cross-sectional ranks are experimental and fail closed. The legacy path
+    # trained zeros but served previous-scan ranks, which was train/serve skew.
+    from core.engine_config import _v3_cross_sectional_features_enabled
+    if _v3_cross_sectional_features_enabled():
         _all_sym_feats = getattr(predict_live_ex, '_last_scan_features', None)
-        if _all_sym_feats and symbol in _all_sym_feats:
-            cs = compute_cross_sectional(symbol, features, _all_sym_feats)
-            for k, v in cs.items():
-                features[k] = v
-    except Exception:
-        note_suppressed()  # P3 (audit): macro regime features — VIX, yield curve, Fed rate, etc.
-    try:
-        from core.macro_regime import get_macro_features
-        macro = get_macro_features()
-        for k, v in macro.items():
-            features[k] = v
-    except Exception:
-        note_suppressed()  # W3: same point-in-time sector relative strength as training, for the
+        if not _all_sym_feats or symbol not in _all_sym_feats:
+            return None, "cross_sectional_context_missing"
+        try:
+            from core.cross_sectional import compute_cross_sectional
+            features.update(compute_cross_sectional(symbol, features, _all_sym_feats))
+        except Exception:
+            return None, "cross_sectional_context_invalid"
+    # Macro features stay research-only until vintage/release-lag coverage is
+    # proven. Production training rejects the flag above.
+    from core.engine_config import _v3_macro_features_enabled
+    if _v3_macro_features_enabled():
+        try:
+            from core.macro_regime import get_macro_features
+            macro = get_macro_features()
+            if not macro:
+                return None, "macro_context_unavailable"
+            features.update(macro)
+        except Exception:
+            return None, "macro_context_unavailable"
+    # W3: same point-in-time sector relative strength as training, for the
     # current (last) bar. Only when enabled, matching the persisted feature set.
     if _v3_sector_feature_enabled():
         aligned_sector = _align_sector_closes(rows, _fetch_sector_series())
@@ -3110,7 +3331,10 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
                         "validation_schema": meta.get("validation_schema"),
                         "hold_bars": meta.get("label_hold_bars"),
                     }
-                    skill = symbol_review(symbol, **identity)
+                    skill = symbol_review(
+                        symbol, activation_proof=meta.get("activation_proof"),
+                        **identity,
+                    )
                 except Exception as _skill_e:
                     skill = {"ok": False, "symbol": symbol, "fail_reason": "skill_exception",
                              "error": str(_skill_e)[:120]}
@@ -3139,7 +3363,10 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
                 if prob_adj < eff_min_p:
                     return None, "live_recal_prob_low"
                 try:
-                    cal_gate = global_calibration_review(prob_adj, **identity)
+                    cal_gate = global_calibration_review(
+                        prob_adj, activation_proof=meta.get("activation_proof"),
+                        **identity,
+                    )
                 except Exception as _cal_e:
                     cal_gate = {"ok": False, "fail_reason": "calibration_exception",
                                 "error": str(_cal_e)[:120]}
@@ -3201,7 +3428,8 @@ def get_model_status():
             cur = conn.cursor()
             cur.execute("SELECT key, value FROM ghost_v3_model WHERE key LIKE 'meta_%' ORDER BY key")
             rows = cur.fetchall()
-            if not rows: return {"trained": False, "reason": "No models — run /api/v3/train"}
+            if not rows:
+                return {"trained": False, "reason": "No models — run /api/v3/train"}
             model_keys = set()
             cur.execute("SELECT key FROM ghost_v3_model WHERE key LIKE 'model_%'")
             for (k,) in cur.fetchall():
@@ -3251,9 +3479,17 @@ def get_model_status():
                 if identity in skill_cache:
                     return skill_cache[identity]
                 try:
-                    from core.proven_skill_gate import enabled as _skill_enabled, review as _skill_review
+                    from core.proven_skill_gate import (
+                        _activation_proof_review,
+                        enabled as _skill_enabled,
+                        review as _skill_review,
+                    )
                     if not _skill_enabled():
                         out = {"ok": True, "disabled": True, "symbol": sym_u}
+                    elif (
+                        activated := _activation_proof_review(meta.get("activation_proof"))
+                    ) is not None:
+                        out = {**activated, "symbol": sym_u}
                     else:
                         cur.execute(
                             """

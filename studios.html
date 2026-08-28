@@ -81,7 +81,8 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
 </style>
 </head>
 <body>
-<div class="main">
+<a class="skip-link" href="#main">Skip to main content</a>
+<main class="main" id="main">
   <div class="header">
     <h1>STUDIOS <span id="header-sub"></span></h1>
     <div class="header-right">
@@ -94,12 +95,17 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
   <div class="studio-grid" id="studio-grid"></div>
 
   <section class="mt32">
-    <h3 class="fs14 recon-title">RECONCILIATION</h3>
+    <h2 class="fs14 recon-title">RECONCILIATION</h2>
     <div class="overflow-x">
-      <table class="recon-table" id="recon-table"></table>
+      <table class="recon-table" aria-label="Studio reconciliation">
+        <thead>
+          <tr><th scope="col">Studio</th><th scope="col">Check</th><th scope="col">Expected</th><th scope="col">Observed</th><th scope="col">Result</th></tr>
+        </thead>
+        <tbody id="recon-table"></tbody>
+      </table>
     </div>
   </section>
-</div>
+</main>
 
 <script>
 const STUDIO_COLORS = {'Pink Studio':'pink','Retro Studio':'retro','Red Studio':'red'};
@@ -250,18 +256,15 @@ function renderStudios(data){
   _applyDataStyles(grid);
 
   // Reconciliation table
-  document.getElementById('recon-table').innerHTML = `
-    <tr><th>Studio</th><th>Check</th><th>Expected</th><th>Observed</th><th>Result</th></tr>
-    ${data.reconciliation.map(c=>`
+  document.getElementById('recon-table').innerHTML = data.reconciliation.map(c=>`
       <tr>
-        <td>${esc(c.studio)}</td>
+        <th scope="row">${esc(c.studio)}</th>
         <td>${esc(c.check)}</td>
         <td>${esc(c.expected||'—')}</td>
         <td>${esc(c.observed||'—')}</td>
         <td class="${c.pass?'pass':'fail'}">${c.pass?'✓ PASS':'✗ FAIL'}</td>
       </tr>
-    `).join('')}
-  `;
+    `).join('');
 }
 
 function switchTab(btn, tabId){

@@ -4,9 +4,93 @@ from core.watcher import (
     calibration_bins,
     contract_70_symbol_breakdown,
     contract_win_test_status,
+    independent_symbol_session_rows,
+    session_block_bootstrap_interval,
+    summarize_directional_outcomes,
     summarize_shadow_outcomes,
     watcher_verdict,
 )
+
+
+def test_independent_sampling_collapses_same_symbol_session_outcome_blind():
+    rows = [
+        {"symbol": "A", "trade_date": "2026-08-19", "eval_ts": 200,
+         "up_prob": 0.75, "outcome": "LOSS"},
+        {"symbol": "A", "trade_date": "2026-08-19", "eval_ts": 100,
+         "up_prob": 0.80, "outcome": "WIN"},
+        {"symbol": "A", "trade_date": "2026-08-20", "eval_ts": 300,
+         "up_prob": 0.72, "outcome": "WIN"},
+        {"symbol": "B", "trade_date": "2026-08-19", "eval_ts": 150,
+         "up_prob": 0.90, "outcome": "LOSS"},
+    ]
+    sampled, excluded = independent_symbol_session_rows(rows)
+    assert excluded == 1
+    assert len(sampled) == 3
+    assert next(row for row in sampled if row["symbol"] == "A"
+                and row["trade_date"] == "2026-08-19")["eval_ts"] == 100
+
+
+def test_shadow_summary_does_not_count_same_symbol_session_retrains_as_trials():
+    rows = [
+        {"symbol": "A", "trade_date": "2026-08-19", "eval_ts": 100,
+         "up_prob": 0.75, "outcome": "WIN"},
+        {"symbol": "A", "trade_date": "2026-08-19", "eval_ts": 200,
+         "up_prob": 0.80, "outcome": "LOSS"},
+        {"symbol": "A", "trade_date": "2026-08-20", "eval_ts": 300,
+         "up_prob": 0.75, "outcome": "LOSS"},
+    ]
+    out = summarize_shadow_outcomes(rows)
+    assert out["raw_resolved_rows"] == 3
+    assert out["resolved_n"] == 2
+    assert out["duplicate_rows_excluded"] == 1
+    assert out["contract_70"]["n"] == 2
+
+
+def test_directional_calibration_uses_down_probability_not_up_probability():
+    rows = [
+        {"symbol": "A", "trade_date": "2026-08-19", "eval_ts": 100,
+         "direction": "DOWN", "up_prob": 0.10, "model_prob": 0.90,
+         "model_sha256": "sha-a", "outcome": "WIN"},
+        {"symbol": "B", "trade_date": "2026-08-19", "eval_ts": 110,
+         "direction": "UP", "up_prob": 0.80, "model_prob": 0.80,
+         "model_sha256": "sha-b", "outcome": "LOSS"},
+        # Same symbol/session replacement is a pseudo-replicate.
+        {"symbol": "A", "trade_date": "2026-08-19", "eval_ts": 120,
+         "direction": "DOWN", "up_prob": 0.20, "model_prob": 0.80,
+         "model_sha256": "sha-c", "outcome": "WIN"},
+    ]
+    out = summarize_directional_outcomes(rows)
+    assert out["raw_lineage_complete_rows"] == 3
+    assert out["resolved_n"] == 2
+    assert out["pseudo_replicates_excluded"] == 1
+    assert out["high_confidence"]["n"] == 2
+    assert out["high_confidence"]["wins"] == 1
+    assert out["brier"] == 0.325
+    assert out["proof_eligible"] is False
+    assert out["evidence_scope"] == "lineage_complete_mixed_historical_generations"
+
+
+def test_directional_calibration_rejects_legacy_rows_without_lineage():
+    out = summarize_directional_outcomes([
+        {"symbol": "A", "trade_date": "2026-08-19", "eval_ts": 100,
+         "direction": "UP", "model_prob": 0.90, "outcome": "WIN"},
+    ])
+    assert out["resolved_n"] == 0
+    assert out["brier"] is None
+
+
+def test_session_block_bootstrap_preserves_same_day_correlation():
+    rows = []
+    # One all-win day and one all-loss day: twenty symbols are still only two
+    # independent market-session blocks, so the interval must remain wide.
+    for day, won in (("2026-08-19", True), ("2026-08-20", False)):
+        for index in range(10):
+            rows.append({"symbol": f"S{index}", "trade_date": day, "win": won})
+    out = session_block_bootstrap_interval(rows, samples=1000)
+    assert out is not None
+    assert out["sessions"] == 2
+    assert out["low"] == 0.0
+    assert out["high"] == 1.0
 
 
 def test_watcher_calibration_bins_and_brier():

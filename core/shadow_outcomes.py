@@ -141,11 +141,12 @@ def _is_ct_weekday(ts: int) -> bool:
 
 
 def pick_daily_first(evals: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Earliest daily eval per exact symbol/model generation.
+    """Earliest post-close eval per exact symbol/model generation.
 
     Intraday repeats from one generation are pseudo-replicates, but replacing a
-    model during the day creates a new evidence population that must not be
-    blocked by the older generation.
+    model during the post-close window creates a new evidence population that
+    remains visible. Premarket/intraday rows are excluded because the daily
+    model was trained on completed close bars, not partial-session snapshots.
     """
     chosen: Dict[tuple, Dict[str, Any]] = {}
     for ev in evals:
@@ -154,6 +155,16 @@ def pick_daily_first(evals: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if not sym or not ts:
             continue
         if not _is_ct_weekday(int(ts)):
+            continue
+        try:
+            from core.market_hours import in_daily_model_issuance_window
+            import pytz
+
+            zone = pytz.timezone(os.getenv("GHOST_TZ", "America/Chicago"))
+            issued_at = datetime.fromtimestamp(int(ts), zone)
+        except Exception:
+            continue
+        if not in_daily_model_issuance_window(issued_at):
             continue
         identity = _shadow_identity(ev)
         generation = (

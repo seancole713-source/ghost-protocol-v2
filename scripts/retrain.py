@@ -6,7 +6,12 @@ LESSONS APPLIED:
   - FEATURE_ORDER exported so prediction.py uses identical features
   - Confidence calibration check after training
 """
-import os, sys, time, json, logging
+import json
+import logging
+import os
+import sys
+import time
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 LOGGER = logging.getLogger("ghost.retrain")
@@ -69,12 +74,15 @@ def load_balanced_data(min_samples=200, days=90):
     from collections import defaultdict
     sym_stats = defaultdict(lambda: {"wins": 0, "total": 0})
     for row in rows:
-        sym = row[0]; label = row[6]
+        sym = row[0]
+        label = row[6]
         sym_stats[sym]["total"] += 1
-        if label == 1: sym_stats[sym]["wins"] += 1
+        if label == 1:
+            sym_stats[sym]["wins"] += 1
     X, y = [], []
     for sym, direction, conf, price, pnl, ts, label in rows:
-        if not price or price <= 0: continue
+        if not price or price <= 0:
+            continue
         wr = sym_stats[sym]["wins"] / sym_stats[sym]["total"] if sym_stats[sym]["total"] else 0.5
         cnt = sym_stats[sym]["total"]
         import datetime
@@ -94,12 +102,14 @@ def load_balanced_data(min_samples=200, days=90):
         ]
         X.append(features)
         y.append(label)
-    wins = sum(y); total = len(y)
+    wins = sum(y)
+    total = len(y)
     LOGGER.info("Final sample: " + str(wins) + "W/" + str(total-wins) + "L = " + str(round(wins/total*100,1)) + "% win rate")
     return X, y, sym_stats
 
 def train_model(X, y, model_path="/tmp/ghost_v2.json"):
-    import xgboost as xgb, numpy as np
+    import numpy as np
+    import xgboost as xgb
     X_np, y_np = np.array(X), np.array(y)
     # Shuffle to mix wins and losses
     idx = np.random.permutation(len(X_np))
@@ -140,7 +150,8 @@ def train_model(X, y, model_path="/tmp/ghost_v2.json"):
         "calibration": calibration, "model_path": model_path,
         "feature_order": FEATURE_ORDER
     }
-    with open(model_path.replace(".json","_meta.json"), "w") as f: json.dump(meta, f)
+    with open(model_path.replace(".json", "_meta.json"), "w") as f:
+        json.dump(meta, f)
     return meta
 
 def run_retrain(min_samples=200, model_path="/tmp/ghost_v2.json"):
@@ -153,7 +164,8 @@ def run_retrain(min_samples=200, model_path="/tmp/ghost_v2.json"):
     try:
         from core import prediction
         prediction._model = None  # force reload on next prediction
-    except: pass
+    except Exception:
+        pass
     return meta
 
 if __name__ == "__main__":

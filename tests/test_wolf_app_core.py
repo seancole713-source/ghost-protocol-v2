@@ -1833,6 +1833,87 @@ def test_persist_train_details_writes_json_to_ghost_state(monkeypatch):
     assert payload["symbols"][0]["fail_reason"] == "holdout_acc < 55.0% (52.0%)"
 
 
+def test_compact_train_details_preserves_decision_metrics_and_drops_bulk():
+    import core.signal_engine as _se
+
+    details = [{
+        "symbol": "WOLF",
+        "asset_type": "stock",
+        "passed": False,
+        "directions": {
+            "UP": {
+                "direction": "UP",
+                "passed": False,
+                "fail_reason": "precision_gate",
+                "holdout_acc": 0.62,
+                "edge": 0.08,
+                "wf_acc_mean": 0.60,
+                "feature_audit": [{"payload": "x" * 100_000}],
+                "calibration": {
+                    "calibrated": True,
+                    "gate_brier": 0.21,
+                    "precision_gate": {
+                        "ok": False,
+                        "target": 0.70,
+                        "threshold": 0.82,
+                        "holdout_rows": ["x" * 100_000],
+                    },
+                    "calibration_candidates": ["x" * 100_000],
+                },
+            },
+        },
+        "raw_rows": ["x" * 100_000],
+    }]
+
+    compacted = _se.compact_train_details(details)
+
+    assert compacted[0]["symbol"] == "WOLF"
+    assert compacted[0]["accuracy"] == 0.62
+    assert compacted[0]["edge"] == 0.08
+    assert compacted[0]["fail_reason"] == "precision_gate"
+    up = compacted[0]["directions"]["UP"]
+    assert up["calibration"]["gate_brier"] == 0.21
+    assert up["calibration"]["precision_gate"]["target"] == 0.70
+    assert "feature_audit" not in up
+    assert "calibration_candidates" not in up["calibration"]
+    assert "holdout_rows" not in up["calibration"]["precision_gate"]
+    assert len(__import__("json").dumps(compacted)) < 5_000
+
+
+def test_compact_training_state_values_rewrites_legacy_payloads_idempotently():
+    import core.signal_engine as _se
+
+    symbol = {
+        "symbol": "WOLF",
+        "passed": False,
+        "directions": {
+            "UP": {
+                "holdout_acc": 0.61,
+                "edge": 0.04,
+                "gate_oos": {"probs": [0.9] * 50_000},
+            },
+        },
+    }
+    last = json.dumps({"ts": 123, "symbols": [symbol]})
+    lineage = json.dumps([
+        {"ts": i, "symbols": [symbol]} for i in range(25)
+    ])
+
+    compact_last, compact_lineage = _se._compact_training_state_values(last, lineage)
+    parsed_last = json.loads(compact_last)
+    parsed_lineage = json.loads(compact_lineage)
+
+    assert parsed_last["ts"] == 123
+    assert "gate_oos" not in parsed_last["symbols"][0]["directions"]["UP"]
+    assert len(parsed_lineage) == 20
+    assert parsed_lineage[0]["ts"] == 5
+    assert len(compact_lineage.encode("utf-8")) <= 2_000_000
+    assert _se._compact_training_state_values(compact_last, compact_lineage) == (
+        compact_last,
+        compact_lineage,
+    )
+
+
 def test_v3_train_sync_includes_train_details_in_response(monkeypatch):
     """v3_train_sync reads ghost_state.last_train_details and surfaces it
     inside its response under 'train_details' so the cockpit can render
@@ -3073,6 +3154,9 @@ def test_predict_ex_captures_near_miss_on_floor_skip(monkeypatch):
         return (("UP", 0.62), None)   # below a 0.80 floor
     monkeypatch.setattr(_se, "predict_live_ex", _ple)
     monkeypatch.setattr(_pred, "_is_premarket", lambda: False)
+    monkeypatch.setattr(
+        "core.market_hours.in_daily_model_issuance_window", lambda now=None: True,
+    )
 
     sv = {}
     pick, skip = _pred._predict_symbol_ex("WOLF", "stock",
@@ -3244,11 +3328,16 @@ def test_predict_live_ex_journals_full_feature_vector(monkeypatch):
             "label_schema": _se._v3_label_schema(),
             "validation_schema": _se._v3_validation_schema(),
             "label_hold_bars": _se.V3_LABEL_HOLD_BARS,
-            "edge": 0.3, "accuracy": 0.66, "wf_acc_mean": 0.64,
-            "wf_edge_mean": 0.2, "wf_fold_count": 4, "trained_at": time.time(),
-            "precision_gate": {"ok": True, "threshold": 0.55, "target": 0.70,
-                               "calib": {"support": 20, "wins": 20},
-                               "gate": {"support": 20, "wins": 20}}}
+                "edge": 0.3, "accuracy": 0.66, "wf_acc_mean": 0.64,
+                "wf_edge_mean": 0.2, "wf_fold_count": 4, "trained_at": time.time(),
+                "precision_gate": {"ok": True, "threshold": 0.55, "target": 0.70,
+                                   "proof_schema": "effective_market_sessions_v1",
+                                   "calib": {"support": 20, "wins": 20},
+                                   "gate": {
+                                       "support": 60, "wins": 60,
+                                       "distinct_sessions": 60, "hold_bars": 3,
+                                       "effective_support": 20, "effective_wins": 20,
+                                   }}}
     monkeypatch.setattr(_se, "load_model", lambda s, direction="UP": (_M(), _se.FEATURE_COLS, meta))
     monkeypatch.setenv("GHOST_ACCURACY_CONTRACT", "legacy")
     # Hermetic: kill the live premarket overlay so the real symbol price can't
@@ -3303,11 +3392,16 @@ def test_predict_live_ex_applies_direction_specific_inversions(monkeypatch):
         "label_schema": _se._v3_label_schema(),
         "validation_schema": _se._v3_validation_schema(),
         "label_hold_bars": _se.V3_LABEL_HOLD_BARS,
-        "edge": 0.3, "accuracy": 0.66, "wf_acc_mean": 0.64,
-        "wf_edge_mean": 0.2, "wf_fold_count": 4, "trained_at": time.time(),
-        "precision_gate": {"ok": True, "threshold": 0.55, "target": 0.70,
-                           "calib": {"support": 20, "wins": 20},
-                           "gate": {"support": 20, "wins": 20}},
+            "edge": 0.3, "accuracy": 0.66, "wf_acc_mean": 0.64,
+            "wf_edge_mean": 0.2, "wf_fold_count": 4, "trained_at": time.time(),
+            "precision_gate": {"ok": True, "threshold": 0.55, "target": 0.70,
+                               "proof_schema": "effective_market_sessions_v1",
+                               "calib": {"support": 20, "wins": 20},
+                               "gate": {
+                                   "support": 60, "wins": 60,
+                                   "distinct_sessions": 60, "hold_bars": 3,
+                                   "effective_support": 20, "effective_wins": 20,
+                               }},
     }
 
     def _load(_symbol, direction="UP"):
@@ -4574,30 +4668,59 @@ def test_feature_schema_tracks_pool_sector_and_fundamental_flags(monkeypatch):
     monkeypatch.setenv("V3_NEWS_FEATURES", "off")
     monkeypatch.setenv("V3_OPTIONS_FEATURES", "off")
     monkeypatch.setenv("V3_INTRADAY_FEATURES", "off")
-    assert _se._v3_feature_schema() == "macd_pct_v1+sec0+fa1+fund0+news0+opt0+intra0"
+    monkeypatch.setenv("V3_CROSS_SECTIONAL_FEATURES", "off")
+    monkeypatch.setenv("V3_MACRO_FEATURES", "off")
+    assert _se._v3_feature_schema() == "tech3+macd_pct_v1+sec0+fa1+fund0+cs0+macro0+news0+opt0+intra0"
     monkeypatch.setenv("V3_POOL_TRAINING", "off")
-    assert _se._v3_feature_schema() == "macd_raw_v0+sec0+fa1+fund0+news0+opt0+intra0"
+    assert _se._v3_feature_schema() == "tech3+macd_raw_v0+sec0+fa1+fund0+cs0+macro0+news0+opt0+intra0"
     monkeypatch.setenv("V3_SECTOR_FEATURE", "on")
-    assert _se._v3_feature_schema() == "macd_raw_v0+sec1+fa1+fund0+news0+opt0+intra0"
+    assert _se._v3_feature_schema() == "tech3+macd_raw_v0+sec1+fa1+fund0+cs0+macro0+news0+opt0+intra0"
     monkeypatch.setenv("V3_FUNDAMENTAL_FEATURES", "on")
-    assert _se._v3_feature_schema() == "macd_raw_v0+sec1+fa1+fund1+news0+opt0+intra0"
+    assert _se._v3_feature_schema() == "tech3+macd_raw_v0+sec1+fa1+fund1+cs0+macro0+news0+opt0+intra0"
+    monkeypatch.setenv("V3_CROSS_SECTIONAL_FEATURES", "on")
+    assert _se._v3_feature_schema() == "tech3+macd_raw_v0+sec1+fa1+fund1+cs1+macro0+news0+opt0+intra0"
+    monkeypatch.setenv("V3_MACRO_FEATURES", "on")
+    assert _se._v3_feature_schema() == "tech3+macd_raw_v0+sec1+fa1+fund1+cs1+macro1+news0+opt0+intra0"
     monkeypatch.setenv("V3_NEWS_FEATURES", "on")
-    assert _se._v3_feature_schema() == "macd_raw_v0+sec1+fa1+fund1+news1+opt0+intra0"
+    assert _se._v3_feature_schema() == "tech3+macd_raw_v0+sec1+fa1+fund1+cs1+macro1+news1+opt0+intra0"
     monkeypatch.setenv("V3_OPTIONS_FEATURES", "on")
-    assert _se._v3_feature_schema() == "macd_raw_v0+sec1+fa1+fund1+news1+opt1+intra0"
+    assert _se._v3_feature_schema() == "tech3+macd_raw_v0+sec1+fa1+fund1+cs1+macro1+news1+opt1+intra0"
     monkeypatch.setenv("V3_INTRADAY_FEATURES", "on")
-    assert _se._v3_feature_schema() == "macd_raw_v0+sec1+fa1+fund1+news1+opt1+intra1"
+    assert _se._v3_feature_schema() == "tech3+macd_raw_v0+sec1+fa1+fund1+cs1+macro1+news1+opt1+intra1"
 
 
 def test_active_feature_cols_appends_sector_only_when_on(monkeypatch):
     import core.signal_engine as _se
     monkeypatch.setenv("V3_SECTOR_FEATURE", "off")
+    monkeypatch.setenv("V3_CROSS_SECTIONAL_FEATURES", "off")
+    monkeypatch.setenv("V3_NEWS_FEATURES", "off")
+    monkeypatch.setenv("V3_OPTIONS_FEATURES", "off")
+    monkeypatch.setenv("V3_INTRADAY_FEATURES", "off")
+    monkeypatch.setenv("V3_MACRO_FEATURES", "off")
     assert "sector_rel_strength" not in _se._active_feature_cols()
-    assert _se._active_feature_cols() == list(_se.FEATURE_COLS)
+    cols = _se._active_feature_cols()
+    assert not set(_se.CROSS_SECTIONAL_FEATURE_COLS) & set(cols)
+    assert not set(_se.DAILY_CONSTANT_FEATURE_COLS) & set(cols)
+    assert not set(_se.MACRO_FEATURE_COLS) & set(cols)
     monkeypatch.setenv("V3_SECTOR_FEATURE", "on")
     cols = _se._active_feature_cols()
     assert cols[-1] == "sector_rel_strength"
-    assert len(cols) == len(_se.FEATURE_COLS) + 1
+
+
+def test_active_feature_cols_adds_optional_groups_once(monkeypatch):
+    import core.signal_engine as _se
+    monkeypatch.setenv("V3_CROSS_SECTIONAL_FEATURES", "on")
+    monkeypatch.setenv("V3_NEWS_FEATURES", "on")
+    monkeypatch.setenv("V3_OPTIONS_FEATURES", "on")
+    monkeypatch.setenv("V3_INTRADAY_FEATURES", "on")
+    monkeypatch.setenv("V3_MACRO_FEATURES", "on")
+    cols = _se._active_feature_cols()
+    assert len(cols) == len(set(cols))
+    assert set(_se.CROSS_SECTIONAL_FEATURE_COLS) <= set(cols)
+    assert set(_se.NEWS_FEATURE_COLS) <= set(cols)
+    assert set(_se.OPTIONS_FEATURE_COLS) <= set(cols)
+    assert set(_se.INTRADAY_FEATURE_COLS) <= set(cols)
+    assert set(_se.MACRO_FEATURE_COLS) <= set(cols)
 
 
 def test_proba_ensemble_averages_and_predicts():
@@ -4642,7 +4765,6 @@ def test_prune_features_removes_columns(monkeypatch):
     monkeypatch.setenv("V3_PRUNE_FEATURES", "hour_of_day, day_of_week ,is_weekend")
     cols = _se._active_feature_cols()
     assert "hour_of_day" not in cols and "day_of_week" not in cols and "is_weekend" not in cols
-    assert len(cols) == len(_se.FEATURE_COLS) - 3
     # sector column still added on top of pruning when enabled
     monkeypatch.setenv("V3_SECTOR_FEATURE", "on")
     assert _se._active_feature_cols()[-1] == "sector_rel_strength"

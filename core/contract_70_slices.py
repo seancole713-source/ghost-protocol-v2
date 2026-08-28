@@ -47,8 +47,6 @@ def _sidak_family_z(num_tests: int, family_confidence: float = 0.95) -> float:
     computed at that stricter per-test level. This only ever TIGHTENS the bar
     (z grows with k); it can never make a weak slice qualify.
     """
-    import math
-
     k = max(1, int(num_tests))
     fc = min(0.999999, max(0.5, float(family_confidence)))
     per_test = fc ** (1.0 / k)          # Šidák per-comparison confidence
@@ -356,7 +354,7 @@ def load_resolved_contract_rows(*, days: int = 120, limit: int = 20000) -> List[
             cur = conn.cursor()
             cur.execute(
                 """
-                SELECT so.symbol, so.eval_ts, so.up_prob, so.outcome, so.fired,
+                SELECT so.symbol, so.trade_date, so.eval_ts, so.up_prob, so.outcome, so.fired,
                        COALESCE(
                          so.regime_label,
                          (SELECT pe.regime_label FROM ghost_perf_symbol_evals pe
@@ -386,14 +384,15 @@ def load_resolved_contract_rows(*, days: int = 120, limit: int = 20000) -> List[
             for r in cur.fetchall():
                 rows.append({
                     "symbol": r[0],
-                    "eval_ts": r[1],
-                    "up_prob": r[2],
-                    "outcome": r[3],
-                    "fired": r[4],
-                    "regime_label": r[5],
-                    "adx_trending": r[6],
-                    "above_ema200": r[7],
-                    "ema_trend_bullish": r[8],
+                    "trade_date": r[1],
+                    "eval_ts": r[2],
+                    "up_prob": r[3],
+                    "outcome": r[4],
+                    "fired": r[5],
+                    "regime_label": r[6],
+                    "adx_trending": r[7],
+                    "above_ema200": r[8],
+                    "ema_trend_bullish": r[9],
                 })
     except Exception:
         return []
@@ -415,7 +414,7 @@ def load_resolved_contract_rows_since(*, since_ts: int, limit: int = 50000) -> L
             cur = conn.cursor()
             cur.execute(
                 """
-                SELECT so.symbol, so.eval_ts, so.up_prob, so.outcome, so.fired,
+                SELECT so.symbol, so.trade_date, so.eval_ts, so.up_prob, so.outcome, so.fired,
                        COALESCE(
                          so.regime_label,
                          (SELECT pe.regime_label FROM ghost_perf_symbol_evals pe
@@ -445,14 +444,15 @@ def load_resolved_contract_rows_since(*, since_ts: int, limit: int = 50000) -> L
             for r in cur.fetchall():
                 rows.append({
                     "symbol": r[0],
-                    "eval_ts": r[1],
-                    "up_prob": r[2],
-                    "outcome": r[3],
-                    "fired": r[4],
-                    "regime_label": r[5],
-                    "adx_trending": r[6],
-                    "above_ema200": r[7],
-                    "ema_trend_bullish": r[8],
+                    "trade_date": r[1],
+                    "eval_ts": r[2],
+                    "up_prob": r[3],
+                    "outcome": r[4],
+                    "fired": r[5],
+                    "regime_label": r[6],
+                    "adx_trending": r[7],
+                    "above_ema200": r[8],
+                    "ema_trend_bullish": r[9],
                 })
     except Exception:
         return []
@@ -474,12 +474,18 @@ def contract_70_slice_search(
     except Exception:
         pass
     rows = load_resolved_contract_rows(days=days, limit=limit)
+    from core.watcher import independent_symbol_session_rows
+
+    independent_rows, pseudo_replicates = independent_symbol_session_rows(rows)
     out = find_qualified_slices(
-        rows,
+        independent_rows,
         target=target,
         min_n=min_n,
         min_wilson_low=min_wilson_low,
     )
     out["days"] = max(1, min(365, int(days)))
     out["read_only"] = True
+    out["raw_resolved_rows"] = len(rows)
+    out["pseudo_replicates_excluded"] = pseudo_replicates
+    out["sampling_unit"] = "earliest_prediction_per_symbol_market_session"
     return out

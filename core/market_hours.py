@@ -45,6 +45,8 @@ _NYSE_HALF_DAYS = frozenset({
 })
 
 _HALF_DAY_CLOSE_MIN = 12 * 60  # 12:00 PM CT
+DAILY_MODEL_ISSUANCE_DELAY_MIN = 5
+DAILY_MODEL_ISSUANCE_WINDOW_MIN = 55
 
 
 def _holiday_overrides() -> "frozenset[str]":
@@ -124,6 +126,23 @@ def is_us_after_hours(now: _dt.datetime | None = None) -> bool:
     if now.weekday() >= 5 or is_market_holiday(now.date()):
         return False
     return _rth_close_for(now) <= hm < AFTERHOURS_END_MIN
+
+
+def in_daily_model_issuance_window(now: _dt.datetime | None = None) -> bool:
+    """True only in the frozen post-close daily-model sampling window.
+
+    Training features use completed daily bars and labels enter at that close.
+    Production and shadow issuance therefore sample 5-60 minutes after the
+    applicable cash close, including early-close sessions. Intraday/premarket
+    scans remain useful diagnostics but are not comparable outcome evidence.
+    """
+    now, hm = session_hm(now)
+    if is_market_holiday(now.date()):
+        return False
+    close_min = _rth_close_for(now)
+    start = close_min + DAILY_MODEL_ISSUANCE_DELAY_MIN
+    end = close_min + DAILY_MODEL_ISSUANCE_DELAY_MIN + DAILY_MODEL_ISSUANCE_WINDOW_MIN
+    return start <= hm < end
 
 
 def market_session_label(now: _dt.datetime | None = None) -> str:

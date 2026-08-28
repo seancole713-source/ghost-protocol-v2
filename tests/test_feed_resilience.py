@@ -23,7 +23,7 @@ def test_alpaca_null_bars_guarded():
 # ── R3-B · shadow seeder deadlock guards ─────────────────────────────────
 
 def test_pick_daily_first_returns_deterministic_order():
-    base = 1781000000
+    base = 1781035800
     evals = [
         {"symbol": "ZZZ", "eval_ts": base + 50},
         {"symbol": "AAA", "eval_ts": base + 10},

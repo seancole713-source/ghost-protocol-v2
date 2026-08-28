@@ -14,6 +14,16 @@ LOGGER = logging.getLogger("ghost.routes_data")
 router = APIRouter()
 
 
+def _operator_authorized(request: Request, x_cron_secret: str) -> bool:
+    """Authenticate internal diagnostics without exposing whether they exist."""
+    from wolf_app import _ADMIN_COOKIE, _admin_token_valid, _cron_ok
+
+    return bool(
+        _cron_ok(x_cron_secret, strict=True)
+        or _admin_token_valid(request.cookies.get(_ADMIN_COOKIE, ""))
+    )
+
+
 @router.get("/api/big-movers")
 def get_big_movers(min_gain_pct: float = 5.0):
     """Active official forecasts whose immutable issued gain is at least 5%."""
@@ -126,14 +136,17 @@ def get_news():
 
 
 @router.get("/api/schema")
-def get_schema():
+def get_schema(request: Request, x_cron_secret: str = Header(default="")):
+    if not _operator_authorized(request, x_cron_secret):
+        raise HTTPException(status_code=404)
     from wolf_app import db_conn  # late import — shared state + monkeypatch-safe
     tables = {}
     with db_conn() as conn:
         cur = conn.cursor()
         cur.execute("SELECT table_name, column_name FROM information_schema.columns WHERE table_schema='public' ORDER BY table_name, ordinal_position")
         for table, col in cur.fetchall():
-            if table not in tables: tables[table] = []
+            if table not in tables:
+                tables[table] = []
             tables[table].append(col)
     return {"ok": True, "tables": tables}
 
@@ -535,8 +548,10 @@ def coverage_status():
 
 
 @router.get("/api/db-probe")
-def db_probe():
+def db_probe(request: Request, x_cron_secret: str = Header(default="")):
     """Count rows in v1 outcome tables to find where data lives."""
+    if not _operator_authorized(request, x_cron_secret):
+        raise HTTPException(status_code=404)
     from wolf_app import db_conn  # late import — shared state + monkeypatch-safe
     tables = [
         "accuracy_forecasts", "ghost_predictions", "ghost_prediction_outcomes",
@@ -588,142 +603,41 @@ def research_status_endpoint():
 
 
 @router.get("/api/debug-signal/{symbol}")
-def debug_signal(symbol: str):
-    """Step-by-step trace of signal logic - exposes every intermediate value."""
-    from core.db import db_conn
+def debug_signal(
+    symbol: str,
+    request: Request,
+    x_cron_secret: str = Header(default=""),
+):
+    """Authenticated trace of the canonical v3 research prediction path."""
+    if not _operator_authorized(request, x_cron_secret):
+        raise HTTPException(status_code=404)
+    from core.signal_engine import predict_live_ex
     from core.prices import get_price
-    import os, traceback
-    result = {"symbol": symbol, "steps": []}
+
+    sym = str(symbol or "").strip().upper()
+    if not sym or len(sym) > 15 or not sym.replace("-", "").replace(".", "").isalnum():
+        raise HTTPException(status_code=400, detail="invalid symbol")
+    scores = {}
     try:
-        price = get_price(symbol, "stock")
-        result["price"] = price
-        result["steps"].append("price=" + str(price))
-        with db_conn() as conn:
-            cur = conn.cursor()
-            cur.execute("SELECT predicted_direction, hit_direction FROM ghost_prediction_outcomes WHERE symbol=%s AND hit_direction IN (0,1) ORDER BY created_at DESC LIMIT 200", (symbol,))
-            gpo_rows = cur.fetchall()
-            result["gpo_count"] = len(gpo_rows)
-            result["steps"].append("gpo_rows=" + str(len(gpo_rows)))
-            cur.execute("SELECT direction, CASE WHEN outcome='WIN' THEN 1 ELSE 0 END FROM predictions WHERE symbol=%s AND outcome IN ('WIN','LOSS') ORDER BY id DESC LIMIT 50", (symbol,))
-            v2_rows = cur.fetchall()
-            result["v2_count"] = len(v2_rows)
-            result["steps"].append("v2_rows=" + str(len(v2_rows)))
-        # Circuit breaker check
-        if len(v2_rows) >= 8:
-            last8 = [r[1] for r in v2_rows[:8]]
-            cb_fires = all(x == 0 for x in last8)
-            result["circuit_breaker"] = {"would_fire": cb_fires, "last8": last8}
-            result["steps"].append("circuit_breaker would_fire=" + str(cb_fires))
-            if cb_fires:
-                result["final"] = "BENCHED_BY_CIRCUIT_BREAKER"
-                return result
-        else:
-            result["circuit_breaker"] = {"would_fire": False, "v2_count_lt_8": len(v2_rows)}
-        # Combine rows
-        rows = list(v2_rows) + list(v2_rows) + list(gpo_rows)
-        result["combined_rows"] = len(rows)
-        result["steps"].append("combined=" + str(len(rows)))
-        # Check MIN_SAMPLES (10)
-        if len(rows) < 10:
-            result["final"] = "TOO_FEW_SAMPLES"
-            return result
-        total = len(rows)
-        wins = sum(1 for _, o in rows if o == 1 or o == "WIN")
-        win_rate = wins / total
-        up_picks = sum(1 for ddd, _ in rows if ddd == "UP")
-        down_picks = total - up_picks
-        up_wins = sum(1 for ddd, o in rows if ddd == "UP" and (o == 1 or o == "WIN"))
-        down_wins = sum(1 for ddd, o in rows if ddd == "DOWN" and (o == 1 or o == "WIN"))
-        up_wr = up_wins / max(up_picks, 1)
-        down_wr = down_wins / max(down_picks, 1)
-        result["computed"] = {
-            "total": total, "wins": wins, "win_rate": round(win_rate,3),
-            "up_picks": up_picks, "down_picks": down_picks,
-            "up_win_rate": round(up_wr,3), "down_win_rate": round(down_wr,3),
-            "edge_threshold": 0.6, "inverse_threshold": 0.4,
-            "sample_directions": list(set(r[0] for r in rows[:20])),
-            "sample_outcomes": list(set(str(r[1]) for r in rows[:20])),
+        price = get_price(sym, "stock")
+        signal, reason = predict_live_ex(
+            sym, "stock", research_mode=True, scores=scores,
+        )
+        return {
+            "ok": True,
+            "symbol": sym,
+            "price": price,
+            "signal": signal,
+            "reason": reason,
+            "scores": scores,
+            "note": "Research trace only; does not authorize or persist a pick.",
         }
-        # Decision
-        if up_wr > down_wr and up_wr > 0.6:
-            result["final"] = "FIRE_UP " + str(round(up_wr,3))
-        elif down_wr > up_wr and down_wr > 0.6:
-            result["final"] = "FIRE_DOWN " + str(round(down_wr,3))
-        elif win_rate < 0.4:
-            result["final"] = "INVERT"
-        else:
-            result["final"] = "BENCH (no edge)"
     except Exception as e:
-        result["error"] = str(e)
-        result["traceback"] = traceback.format_exc()
-    return result
-    """Call actual prediction functions and return detailed trace."""
-    import os
-    from core.prices import get_price
-    from core.prediction import _get_symbol_signal, _check_regime, CONFIDENCE_FLOOR, EDGE_THRESHOLD, INVERSE_THRESHOLD, MIN_SAMPLES
-    price = get_price(symbol)
-    regime = _check_regime()
-    signal_error = None
-    try:
-        signal = _get_symbol_signal(symbol, price or 1.0)
-    except Exception as e:
-        signal = None
-        signal_error = str(e)
-    env_conf_floor = os.getenv("MIN_ALERT_CONFIDENCE", "NOT_SET")
-    return {
-        "symbol": symbol,
-        "price": price,
-        "signal": signal, "signal_error": signal_error,
-        "would_pass_floor": signal is not None and signal[1] >= CONFIDENCE_FLOOR,
-        "regime": regime,
-        "env_MIN_ALERT_CONFIDENCE": env_conf_floor,
-        "CONFIDENCE_FLOOR": CONFIDENCE_FLOOR,
-        "EDGE_THRESHOLD": EDGE_THRESHOLD,
-        "INVERSE_THRESHOLD": INVERSE_THRESHOLD,
-        "MIN_SAMPLES": MIN_SAMPLES,
-    }
-    from core.db import db_conn
-    with db_conn() as conn:
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT predicted_direction, hit_direction, COUNT(*) as cnt
-            FROM ghost_prediction_outcomes
-            WHERE symbol = %s AND hit_direction IN (0,1)
-            GROUP BY predicted_direction, hit_direction
-        """, (symbol,))
-        gpo_breakdown = [{"dir":r[0],"hit":r[1],"count":r[2]} for r in cur.fetchall()]
-        cur.execute(
-            "SELECT direction, outcome, id FROM predictions WHERE symbol=%s AND outcome IN ('WIN','LOSS') ORDER BY id DESC LIMIT 10",
-            (symbol,))
-        v2_results = [{"dir":r[0],"outcome":r[1],"id":r[2]} for r in cur.fetchall()]
-        cur.execute(
-            "SELECT direction, outcome FROM predictions WHERE symbol=%s AND outcome IS NULL AND predicted_at IS NOT NULL LIMIT 5",
-            (symbol,))
-        v2_open = [{"dir":r[0]} for r in cur.fetchall()]
-    # Compute win rates same way as _get_symbol_signal
-    rows = [(r["dir"], r["hit"]) for r in gpo_breakdown for _ in range(r["count"])]
-    total = len(rows)
-    wins = sum(1 for _,o in rows if o==1)
-    win_rate = wins/total if total else 0
-    up_picks = sum(1 for d,_ in rows if d=="UP")
-    down_picks = total - up_picks
-    up_wins = sum(1 for d,o in rows if d=="UP" and o==1)
-    down_wins = sum(1 for d,o in rows if d=="DOWN" and o==1)
-    up_wr = up_wins/max(up_picks,1)
-    down_wr = down_wins/max(down_picks,1)
-    return {
-        "symbol": symbol,
-        "gpo_breakdown": gpo_breakdown,
-        "v2_resolved": v2_results,
-        "v2_open_count": len(v2_open),
-        "computed": {
-            "total":total,"wins":wins,"win_rate":round(win_rate,3),
-            "up_picks":up_picks,"down_picks":down_picks,
-            "up_win_rate":round(up_wr,3),"down_win_rate":round(down_wr,3),
-            "would_fire": up_wr>0.60 or down_wr>0.60 or win_rate<0.40,
-            "direction": "UP" if up_wr>down_wr and up_wr>0.60 else ("DOWN" if down_wr>up_wr and down_wr>0.60 else ("INVERT" if win_rate<0.40 else "BENCH"))
-        }
-    }
+        LOGGER.exception("debug signal failed for %s", sym)
+        return JSONResponse(
+            {"ok": False, "symbol": sym, "error": type(e).__name__},
+            status_code=503,
+        )
 
 
 @router.get("/api/market/session/{symbol}")

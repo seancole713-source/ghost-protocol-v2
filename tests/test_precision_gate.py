@@ -19,6 +19,10 @@ from core.precision_gate import (
 )
 
 
+def _daily_timestamps(n, start_day=1):
+    return [(start_day + i) * 86400 for i in range(n)]
+
+
 # ---------------------------------------------------------------- unit level
 
 def test_wilson_lower_bound_sanity():
@@ -71,9 +75,12 @@ def test_select_fire_threshold_ok_path(monkeypatch):
     monkeypatch.setenv("V3_PRECISION_GATE_MIN_SUPPORT", "3")
     calib_probs = [0.3, 0.4, 0.62, 0.7, 0.8, 0.9]
     calib_labels = [0, 0, 1, 1, 0, 1]  # >=0.62: 3/4 = 75%
-    gate_probs = [0.7] * 20
-    gate_labels = [1] * 20              # Wilson lower bound clears 70%
-    out = select_fire_threshold(calib_probs, calib_labels, gate_probs, gate_labels)
+    gate_probs = [0.7] * 60
+    gate_labels = [1] * 60
+    out = select_fire_threshold(
+        calib_probs, calib_labels, gate_probs, gate_labels,
+        gate_timestamps=_daily_timestamps(60),
+    )
     assert out["ok"] is True
     assert out["threshold"] == 0.62
     assert out["gate"]["precision"] == 1.0
@@ -86,9 +93,12 @@ def test_select_fire_threshold_fails_gate_validation(monkeypatch):
     monkeypatch.setenv("V3_PRECISION_GATE_SLACK", "0.05")
     calib_probs = [0.3, 0.4, 0.62, 0.7, 0.8, 0.9]
     calib_labels = [0, 0, 1, 1, 1, 1]  # calib looks great
-    gate_probs = [0.65, 0.7, 0.8, 0.9]
-    gate_labels = [0, 0, 0, 1]         # gate slice: 25% — model is overfit
-    out = select_fire_threshold(calib_probs, calib_labels, gate_probs, gate_labels)
+    gate_probs = [0.7] * 60
+    gate_labels = [0] * 45 + [1] * 15
+    out = select_fire_threshold(
+        calib_probs, calib_labels, gate_probs, gate_labels,
+        gate_timestamps=_daily_timestamps(60),
+    )
     assert out["ok"] is False
     assert "gate_wilson" in (out.get("fail_reason") or "")
 
@@ -100,7 +110,10 @@ def test_select_fire_threshold_fails_gate_support(monkeypatch):
     calib_labels = [1, 1, 1, 1]
     gate_probs = [0.7, 0.9]
     gate_labels = [1, 1]  # only 2 gate picks — cannot validate
-    out = select_fire_threshold(calib_probs, calib_labels, gate_probs, gate_labels)
+    out = select_fire_threshold(
+        calib_probs, calib_labels, gate_probs, gate_labels,
+        gate_timestamps=_daily_timestamps(2),
+    )
     assert out["ok"] is False
     assert "gate_support" in (out.get("fail_reason") or "")
 
@@ -116,6 +129,8 @@ def test_select_fire_threshold_uses_raw_wilson_not_display_rounding(monkeypatch)
         [0.7] * 50, [1] * 50,
         [0.7] * 50, [1] * 42 + [0] * 8,
         target=target,
+        gate_timestamps=_daily_timestamps(50),
+        hold_bars=1,
     )
     assert out["gate"]["wilson_low"] == round(raw, 4)
     assert out["ok"] is False
@@ -134,8 +149,12 @@ def test_symbol_proof_rejects_non_integer_counts(monkeypatch):
     monkeypatch.setenv("V3_PRECISION_GATE_MIN_SUPPORT", "5")
     base = {
         "ok": True, "threshold": 0.68, "target": 0.70,
+        "proof_schema": "effective_market_sessions_v1",
         "calib": {"support": 20, "wins": 20},
-        "gate": {"support": 20, "wins": 20},
+        "gate": {
+            "support": 60, "wins": 60, "distinct_sessions": 60,
+            "hold_bars": 3, "effective_support": 20, "effective_wins": 20,
+        },
     }
     assert validate_fire_proof(base) is True
     for bad in (20.9, True, "20.9", float("nan"), float("inf"), None):
@@ -171,8 +190,12 @@ def _complete_proof(proof):
         return proof
     return {
         **proof,
+        "proof_schema": "effective_market_sessions_v1",
         "calib": {"support": 20, "wins": 20},
-        "gate": {"support": 20, "wins": 20},
+        "gate": {
+            "support": 60, "wins": 60, "distinct_sessions": 60,
+            "hold_bars": 3, "effective_support": 20, "effective_wins": 20,
+        },
     }
 
 
@@ -292,7 +315,7 @@ def test_env_off_switch_restores_legacy_behavior(monkeypatch):
 
 def test_select_global_threshold_uses_independent_chronological_halves(monkeypatch):
     from core.precision_gate import select_global_threshold
-    monkeypatch.setenv("V3_PRECISION_GLOBAL_MIN_SUPPORT", "20")
+    monkeypatch.setenv("V3_PRECISION_GLOBAL_MIN_SUPPORT", "10")
     # Selection half finds 0.65; weak validation half must reject it.
     probs = [0.65] * 30 + [0.4] * 30 + [0.65] * 30 + [0.4] * 30
     labels = ([1] * 24 + [0] * 6 + [0] * 30
@@ -300,6 +323,7 @@ def test_select_global_threshold_uses_independent_chronological_halves(monkeypat
     timestamps = list(range(1, len(probs) + 1))
     out = select_global_threshold(
         probs, labels, target=0.70, timestamps=timestamps,
+        session_timestamps=_daily_timestamps(len(probs)),
     )
     assert out["ok"] is False
     assert "pooled_validation_wilson" in (out.get("fail_reason") or "")
@@ -311,6 +335,7 @@ def test_select_global_threshold_uses_independent_chronological_halves(monkeypat
     timestamps = list(range(1, len(probs) + 1))
     out = select_global_threshold(
         probs, labels, target=0.70, timestamps=timestamps,
+        session_timestamps=_daily_timestamps(len(probs)),
     )
     assert out["ok"] is True
     assert out["threshold"] == 0.65
@@ -330,12 +355,14 @@ def test_global_threshold_rejects_malformed_records(monkeypatch):
     monkeypatch.setenv("V3_PRECISION_GLOBAL_MIN_SUPPORT", "2")
     mismatch = select_global_threshold(
         [0.8] * 4, [1] * 3, target=0.70, timestamps=[1, 2, 3, 4],
+        session_timestamps=_daily_timestamps(4),
     )
     assert mismatch["fail_reason"] == "pooled_record_lengths_mismatch"
     for bad in (float("nan"), float("inf"), -float("inf")):
         out = select_global_threshold(
             [0.8, 0.8, bad, 0.8], [1] * 4, target=0.70,
             timestamps=[1, 2, 3, 4],
+            session_timestamps=_daily_timestamps(4),
         )
         assert out["ok"] is False
         assert out["fail_reason"] == "pooled_timestamps_invalid"
@@ -348,6 +375,11 @@ def _current_global_proof_blob(model_hash="sha-current"):
         "ok": True, "threshold": 0.68,
         "target": pg.precision_target(), "support": 100, "wins": 90,
         "wilson_low": pg.wilson_lower_bound(90, 100),
+        "distinct_sessions": 100,
+        "hold_bars": V3_LABEL_HOLD_BARS,
+        "effective_support": 33,
+        "effective_wins": 29,
+        "effective_wilson_low": pg.wilson_lower_bound(29, 33),
         "proof_schema": pg._GLOBAL_PROOF_SCHEMA,
         "model_sha256s": [model_hash],
     }
@@ -434,11 +466,12 @@ def test_threshold_search_preserves_exact_probability_boundary():
     assert out is not None
     assert out["threshold"] == exact
     stats = select_fire_threshold(
-        [exact] * 20, [1] * 20, [exact] * 20, [1] * 20,
+        [exact] * 20, [1] * 20, [exact] * 60, [1] * 60,
         target=0.70,
+        gate_timestamps=_daily_timestamps(60),
     )
     assert stats["ok"] is True
-    assert stats["gate"]["support"] == 20
+    assert stats["gate"]["support"] == 60
 
 
 def test_global_threshold_does_not_split_timestamp_ties(monkeypatch):
@@ -447,6 +480,7 @@ def test_global_threshold_does_not_split_timestamp_ties(monkeypatch):
     out = select_global_threshold(
         [0.8] * 6, [1] * 6, target=0.70,
         timestamps=[100, 100, 100, 200, 200, 200],
+        session_timestamps=[86400] * 3 + [172800] * 3,
     )
     assert out["ok"] is False
     # The three rows at 100 and three at 200 remain whole groups. The failure
@@ -461,6 +495,7 @@ def test_global_threshold_applies_embargo(monkeypatch):
     out = select_global_threshold(
         [0.8] * 6, [1] * 6, target=0.70,
         timestamps=[100, 101, 102, 103, 104, 105], embargo_seconds=3,
+        session_timestamps=_daily_timestamps(6),
     )
     assert out["ok"] is False
     assert out["fail_reason"].startswith("pooled_split_support")

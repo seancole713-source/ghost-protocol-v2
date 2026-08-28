@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
 LOGGER = logging.getLogger("ghost.research_contracts")
-CURRENT_LIVE_CONTRACT_VERSION = "v2"
+CURRENT_LIVE_CONTRACT_VERSION = "v3"
 
 # ── frozen spec types ──────────────────────────────────────────────────────
 
@@ -271,8 +271,42 @@ def _register_contracts() -> None:
         lifecycle="RETIRED",
     ))
 
-    # v2 binds the prose to the exact frozen machine horizon. The resolver
-    # algorithm is unchanged, so its independently versioned ID remains v1.
+    # Preserve the immediately previous contract for historical artifact lookup.
+    legacy_feature_schema = _v3_feature_schema().removeprefix("tech3+")
+    legacy_feature_schema = legacy_feature_schema.replace("+cs0", "").replace("+cs1", "")
+    legacy_feature_schema = legacy_feature_schema.replace("+macro0", "").replace("+macro1", "")
+    legacy_validation_schema = _v3_validation_schema().replace(
+        "honest_oos_v4", "honest_oos_v3", 1,
+    )
+    register_contract(PredictionContract(
+        name="tp_sl_swing",
+        version="v2",
+        description=(
+            "Historical directional TP/SL swing contract before effective-"
+            "session proof and train/serve-safe feature schema enforcement."
+        ),
+        output_domain=frozenset({"UP", "DOWN"}),
+        outcome_domain=OutcomeSpec(
+            terminal_outcomes=frozenset({"WIN", "LOSS", "EXPIRED"}),
+            expired_is_non_win=True,
+        ),
+        horizon_bars=V3_LABEL_HOLD_BARS,
+        feature_schema=legacy_feature_schema,
+        evidence_schema=_v3_label_schema(),
+        validation_schema=legacy_validation_schema,
+        resolver_id="tp_sl_bar_path/v1",
+        resolver_version="1.0.0",
+        proof=ProofSpec(target_wilson_low=0.70, min_support=20, min_forward_support=10),
+        allowed_sources=(
+            SourceSpec("daily_ohlcv", required=True, max_staleness_s=86400),
+        ),
+        live_eligible=True,
+        lifecycle="RETIRED",
+    ))
+
+    # v3 binds the effective-session proof and train/serve-safe feature schema.
+    # The resolver algorithm is unchanged, so its independently versioned ID
+    # remains v1.
     register_contract(PredictionContract(
         name="tp_sl_swing",
         version=CURRENT_LIVE_CONTRACT_VERSION,

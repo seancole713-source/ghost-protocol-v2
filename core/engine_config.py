@@ -380,6 +380,26 @@ def _v3_prune_features() -> set:
     return {p.strip() for p in raw.split(",") if p.strip()}
 
 
+def _v3_cross_sectional_features_enabled() -> bool:
+    """Enable point-in-time ranks in the directional production lane.
+
+    Disabled by default. The legacy directional trainer left these columns at
+    zero while live inference filled them from a previous scan, creating
+    train/serve skew. Production training fails closed when this experimental
+    group is requested until a point-in-time panel trainer is promoted.
+    """
+    return (os.getenv("V3_CROSS_SECTIONAL_FEATURES", "off") or "off").strip().lower() in (
+        "1", "on", "true", "yes",
+    )
+
+
+def _v3_macro_features_enabled() -> bool:
+    """Enable macro features only for research with point-in-time evidence."""
+    return (os.getenv("V3_MACRO_FEATURES", "off") or "off").strip().lower() in (
+        "1", "on", "true", "yes",
+    )
+
+
 def _v3_feature_schema() -> str:
     """Version tag for the feature vector's *semantics* (not just its columns).
 
@@ -397,7 +417,12 @@ def _v3_feature_schema() -> str:
     news = "news1" if _v3_news_features_enabled() else "news0"
     options = "opt1" if _v3_options_features_enabled() else "opt0"
     intraday = "intra1" if _v3_intraday_features_enabled() else "intra0"
-    return f"{macd}+{sector}+{audit}+{fundamentals}+{news}+{options}+{intraday}"
+    cross_sectional = "cs1" if _v3_cross_sectional_features_enabled() else "cs0"
+    macro = "macro1" if _v3_macro_features_enabled() else "macro0"
+    return (
+        f"tech3+{macd}+{sector}+{audit}+{fundamentals}+{cross_sectional}+{macro}"
+        f"+{news}+{options}+{intraday}"
+    )
 
 
 def _v3_intraday_features_enabled() -> bool:

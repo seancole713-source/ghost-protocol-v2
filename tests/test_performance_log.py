@@ -54,6 +54,38 @@ def test_symbol_eval_from_scan_rejects_invalid_score_direction():
     assert ev["direction"] is None
 
 
+def test_trim_scores_keeps_audit_fields_and_drops_large_event_payloads():
+    scores = {
+        "schema": "v1",
+        "price": 12.5,
+        "up_prob": 0.71,
+        "model_identity_by_direction": {"UP": {"model_sha256": "abc"}},
+        "features": {
+            "feature_asof_ts": 1700000000,
+            "rsi": 42.0,
+            "macd_hist": 0.1,
+            "unused_feature": "large",
+        },
+        "event_context": {"articles": ["x" * 10_000]},
+        "bull_run_checklist": {"checks": ["x" * 10_000]},
+        "arbitrary_future_blob": "x" * 10_000,
+    }
+
+    trimmed = perf._trim_scores(scores)
+
+    assert trimmed["price"] == 12.5
+    assert trimmed["up_prob"] == 0.71
+    assert trimmed["model_identity_by_direction"]["UP"]["model_sha256"] == "abc"
+    assert trimmed["features"] == {
+        "feature_asof_ts": 1700000000,
+        "rsi": 42.0,
+        "macd_hist": 0.1,
+    }
+    assert "event_context" not in trimmed
+    assert "bull_run_checklist" not in trimmed
+    assert "arbitrary_future_blob" not in trimmed
+
+
 def test_log_prediction_cycle_inserts_rows(monkeypatch):
     monkeypatch.setenv("GHOST_PERF_LOG", "on")
     executed = []

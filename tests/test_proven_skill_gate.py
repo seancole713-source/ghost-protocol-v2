@@ -167,9 +167,51 @@ def test_global_calibration_uses_neutral_model_probability(monkeypatch):
         label_schema="label", validation_schema="validation", hold_bars=5,
     )
     assert out["ok"] is True
-    assert "prob_live_recalibrated >= %s" in seen["sql"]
+    assert "model_prob >= %s" in seen["sql"]
     assert "up_prob >= %s" not in seen["sql"]
     assert "feature_schema=%s" in seen["sql"]
     assert seen["params"][1:] == (
         "DOWN", "sha-down", "feature", "label", "validation", 5,
     )
+
+
+def test_registered_forward_activation_proof_satisfies_redundant_live_gates(monkeypatch):
+    monkeypatch.setenv("V3_PROVEN_SKILL_GATE", "1")
+    monkeypatch.setenv("V3_OVERCONFIDENCE_GATE", "1")
+    proof = {
+        "registration_id": "fwd_123",
+        "wins": 42,
+        "n": 50,
+        "status": "PROVEN",
+        "persisted_status": "PROVEN",
+        "closed_at_ts": 123456,
+        "all_secondary_pass": True,
+    }
+    identity = {
+        "direction": "UP",
+        "model_sha256": "sha",
+        "feature_schema": "feature",
+        "label_schema": "label",
+        "validation_schema": "validation",
+        "hold_bars": 3,
+        "activation_proof": proof,
+    }
+
+    skill = g.symbol_review("WOLF", **identity)
+    calibration = g.global_calibration_review(0.9, **identity)
+
+    assert skill["ok"] is True
+    assert calibration["ok"] is True
+    assert skill["source"] == "registered_forward_activation_proof"
+    assert calibration["source"] == "registered_forward_activation_proof"
+
+
+def test_invalid_activation_proof_does_not_bypass_identity_gate(monkeypatch):
+    monkeypatch.setenv("V3_PROVEN_SKILL_GATE", "1")
+    out = g.symbol_review(
+        "WOLF", direction="UP", model_sha256="", feature_schema="feature",
+        label_schema="label", validation_schema="validation", hold_bars=3,
+        activation_proof={"wins": 42, "n": 50},
+    )
+    assert out["ok"] is False
+    assert out["fail_reason"] == "skill_identity_missing"

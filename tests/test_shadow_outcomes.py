@@ -12,12 +12,12 @@ from core.shadow_outcomes import (
 )
 
 
-def test_pick_daily_first_keeps_earliest_per_symbol_day():
-    base = 1781000000  # all same CT day
+def test_pick_daily_first_keeps_earliest_post_close_per_symbol_day():
+    base = 1781035800  # 2026-06-09 15:10 CT
     evals = [
-        {"symbol": "STUB", "eval_ts": base + 3600},
+        {"symbol": "STUB", "eval_ts": base + 600},
         {"symbol": "STUB", "eval_ts": base},          # earliest — kept
-        {"symbol": "STUB", "eval_ts": base + 7200},
+        {"symbol": "STUB", "eval_ts": base + 1200},
         {"symbol": "FLNC", "eval_ts": base + 100},
     ]
     out = pick_daily_first(evals)
@@ -29,21 +29,21 @@ def test_pick_daily_first_keeps_earliest_per_symbol_day():
 
 def test_seed_filters_unpriced_before_grouping():
     """An earlier same-day eval without a price must not block a priced one."""
-    base = 1781000000
+    base = 1781035800
     evals = [
         {"symbol": "STUB", "eval_ts": base, "scores": {}},               # unpriced
-        {"symbol": "STUB", "eval_ts": base + 3600, "scores": {"price": 9.5}},
+        {"symbol": "STUB", "eval_ts": base + 600, "scores": {"price": 9.5}},
     ]
     priced = [ev for ev in evals if _eval_entry_price(ev) is not None]
     out = pick_daily_first(priced)
     assert len(out) == 1
-    assert out[0]["eval_ts"] == base + 3600
+    assert out[0]["eval_ts"] == base + 600
 
 
 def test_pick_daily_first_separate_days_kept():
     evals = [
-        {"symbol": "STUB", "eval_ts": 1781000000},
-        {"symbol": "STUB", "eval_ts": 1781000000 + 3 * 86400},
+        {"symbol": "STUB", "eval_ts": 1781035800},
+        {"symbol": "STUB", "eval_ts": 1781035800 + 3 * 86400},
     ]
     assert len(pick_daily_first(evals)) == 2
 
@@ -51,9 +51,9 @@ def test_pick_daily_first_separate_days_kept():
 def test_pick_daily_first_rejects_weekend_evaluations():
     central = ZoneInfo("America/Chicago")
     evals = [
-        {"symbol": "STUB", "eval_ts": int(datetime(2026, 8, 1, 12, tzinfo=central).timestamp())},
-        {"symbol": "STUB", "eval_ts": int(datetime(2026, 8, 2, 12, tzinfo=central).timestamp())},
-        {"symbol": "STUB", "eval_ts": int(datetime(2026, 8, 3, 12, tzinfo=central).timestamp())},
+        {"symbol": "STUB", "eval_ts": int(datetime(2026, 8, 1, 15, 10, tzinfo=central).timestamp())},
+        {"symbol": "STUB", "eval_ts": int(datetime(2026, 8, 2, 15, 10, tzinfo=central).timestamp())},
+        {"symbol": "STUB", "eval_ts": int(datetime(2026, 8, 3, 15, 10, tzinfo=central).timestamp())},
     ]
 
     out = pick_daily_first(evals)
@@ -62,8 +62,18 @@ def test_pick_daily_first_rejects_weekend_evaluations():
     assert out[0]["eval_ts"] == evals[2]["eval_ts"]
 
 
+def test_pick_daily_first_rejects_intraday_daily_model_samples():
+    central = ZoneInfo("America/Chicago")
+    out = pick_daily_first([
+        {"symbol": "STUB", "eval_ts": int(datetime(2026, 8, 3, 10, tzinfo=central).timestamp())},
+        {"symbol": "STUB", "eval_ts": int(datetime(2026, 8, 3, 15, 10, tzinfo=central).timestamp())},
+    ])
+    assert len(out) == 1
+    assert datetime.fromtimestamp(out[0]["eval_ts"], central).hour == 15
+
+
 def test_pick_daily_first_keeps_same_day_model_generations():
-    base = 1781000000
+    base = 1781035800
     def _ev(ts, sha):
         return {
             "symbol": "STUB", "eval_ts": ts, "direction": "UP",
@@ -346,7 +356,7 @@ def test_seed_persists_regime_label_into_durable_column(monkeypatch):
     """
     import core.shadow_outcomes as so
 
-    base = 1781000000
+    base = 1781035800
     # symbol, eval_ts, up_prob, confidence, skip_code, fired,
     # entry_price, target_price, stop_price, scores, regime_label, direction,
     # prob_model_raw, prob_train_calibrated, prob_live_recalibrated, confidence_final
@@ -450,7 +460,7 @@ def test_shadow_identity_requires_exact_hold_horizon():
 
 
 def test_pick_daily_first_handles_mixed_legacy_and_current_rows():
-    base = 1781000000
+    base = 1781035800
     legacy = {"symbol": "STUB", "eval_ts": base}
     current = {
         "symbol": "STUB", "eval_ts": base + 60, "direction": "UP",
@@ -467,7 +477,7 @@ def test_seed_query_and_conflict_are_direction_neutral(monkeypatch):
     """DOWN-only rows are read and exact generation uniqueness is delegated to DB."""
     import core.shadow_outcomes as so
 
-    base = 1781000000
+    base = 1781035800
     scores = {
         "price": 10.0, "down_prob": 0.81, "winning_direction": "DOWN",
         "model_identity_by_direction": {
@@ -561,7 +571,7 @@ def test_seed_persists_regime_gate_flags_into_durable_columns(monkeypatch):
     from the eval scores.regime into the durable outcome columns."""
     import core.shadow_outcomes as so
 
-    base = 1781000000
+    base = 1781035800
     # symbol, eval_ts, up_prob, confidence, skip_code, fired,
     # entry_price, target_price, stop_price, scores, regime_label, direction,
     # probability lifecycle stages

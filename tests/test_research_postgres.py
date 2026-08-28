@@ -446,22 +446,30 @@ def test_proven_artifact_activation_lease_and_rollback_lifecycle(monkeypatch):
         compute_artifact_sha,
         register_artifact,
     )
-    from core.research_contracts import get_contract
+    from core.research_contracts import CURRENT_LIVE_CONTRACT_VERSION, get_contract
     import core.db as db
     import core.research_activation as activation
     import core.signal_engine as signal_engine
 
     with _isolated_schema("research_activation") as (conn, _schema):
         proof_start = int(time.time()) - 60 * 86400
-        contract = get_contract("tp_sl_swing", "v2")
+        contract = get_contract("tp_sl_swing", CURRENT_LIVE_CONTRACT_VERSION)
         assert contract is not None
         contract_id = contract.contract_id()
         precision_proof = {
             "ok": True,
             "target": 0.70,
             "threshold": 0.70,
+            "proof_schema": "effective_market_sessions_v1",
             "calib": {"support": 20, "wins": 20},
-            "gate": {"support": 20, "wins": 20},
+            "gate": {
+                "support": 60,
+                "wins": 60,
+                "distinct_sessions": 60,
+                "hold_bars": signal_engine.V3_LABEL_HOLD_BARS,
+                "effective_support": 20,
+                "effective_wins": 20,
+            },
             "feature_inversions": [],
         }
         gate_proof = {

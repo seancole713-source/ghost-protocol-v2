@@ -7,6 +7,7 @@ loosens an existing gate and never changes research/shadow/wallet scoring.
 """
 from __future__ import annotations
 
+import math
 import os
 from typing import Any, Dict, Optional
 
@@ -25,6 +26,45 @@ def min_tp_rate() -> float:
 
 def min_avg_pnl_pct() -> float:
     return float(os.getenv("V3_PROVEN_SKILL_MIN_AVG_PNL_PCT", "0.0"))
+
+
+def _activation_proof_review(proof: Any) -> Optional[Dict[str, Any]]:
+    """Recognize the stronger, persisted fixed-sample forward proof."""
+    if not isinstance(proof, dict):
+        return None
+    from core.binomial_stats import v2_confirmatory_pass
+
+    raw_wins = proof.get("wins")
+    raw_n = proof.get("n")
+    if isinstance(raw_wins, bool) or isinstance(raw_n, bool):
+        return None
+    try:
+        wins_numeric = float(raw_wins)
+        n_numeric = float(raw_n)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not all(math.isfinite(value) and value.is_integer()
+               for value in (wins_numeric, n_numeric)):
+        return None
+    wins = int(wins_numeric)
+    n = int(n_numeric)
+    if (
+        not v2_confirmatory_pass(wins, n)
+        or proof.get("status") != "PROVEN"
+        or proof.get("persisted_status") != "PROVEN"
+        or proof.get("all_secondary_pass") is not True
+        or not proof.get("registration_id")
+        or not proof.get("closed_at_ts")
+    ):
+        return None
+    return {
+        "ok": True,
+        "source": "registered_forward_activation_proof",
+        "resolved": n,
+        "wins": wins,
+        "tp_rate": round(wins / n, 4),
+        "registration_id": proof.get("registration_id"),
+    }
 
 
 def review(symbol: str, *, resolved: int, wins: int, avg_pnl_pct: Optional[float]) -> Dict[str, Any]:
@@ -62,10 +102,14 @@ def review(symbol: str, *, resolved: int, wins: int, avg_pnl_pct: Optional[float
 def symbol_review(
     symbol: str, *, direction: str, model_sha256: str, feature_schema: str,
     label_schema: str, validation_schema: str, hold_bars: int,
+    activation_proof: Any = None,
 ) -> Dict[str, Any]:
     """Review only evidence from the exact current lane/model generation."""
     if not enabled():
         return {"ok": True, "disabled": True, "symbol": (symbol or "").upper()}
+    activated = _activation_proof_review(activation_proof)
+    if activated is not None:
+        return {**activated, "symbol": (symbol or "").upper()}
     from core.db import db_conn
     sym = (symbol or "").upper()
     lane = (direction or "").upper()
@@ -163,11 +207,15 @@ def calibration_review(*, prob: float, samples: int, wins: int) -> Dict[str, Any
 def global_calibration_review(
     prob: float, *, direction: str, model_sha256: str, feature_schema: str,
     label_schema: str, validation_schema: str, hold_bars: int,
+    activation_proof: Any = None,
 ) -> Dict[str, Any]:
     """Read high-probability evidence for the exact current model identity."""
     p = float(prob or 0.0)
     if not overconfidence_enabled():
         return {"ok": True, "disabled": True, "prob": round(p, 4)}
+    activated = _activation_proof_review(activation_proof)
+    if activated is not None:
+        return {**activated, "prob": round(p, 4)}
     thr = overconfidence_threshold()
     if p < thr:
         return calibration_review(prob=p, samples=0, wins=0)
@@ -190,7 +238,7 @@ def global_calibration_review(
                        SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) AS wins
                 FROM ghost_shadow_outcomes
                 WHERE outcome IN ('WIN','LOSS','EXPIRED')
-                  AND prob_live_recalibrated >= %s
+                  AND model_prob >= %s
                   AND direction=%s AND model_sha256=%s AND feature_schema=%s
                   AND label_schema=%s AND validation_schema=%s AND hold_bars=%s
                 """,

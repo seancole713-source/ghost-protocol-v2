@@ -144,10 +144,32 @@ def _jsonb(val: Any) -> Optional[str]:
 def _trim_scores(scores: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if not isinstance(scores, dict):
         return {}
-    out = dict(scores)
+    # This row is written for every symbol on every scan. Keep only fields used
+    # by shadow seeding, gate diagnosis, calibration, and model lineage. Full
+    # event/checklist payloads have their own durable ledgers.
+    keep = {
+        "schema", "price", "up_prob", "down_prob", "up_prob_raw",
+        "down_prob_raw", "prob_model_raw", "prob_train_calibrated",
+        "prob_live_recalibrated", "confidence_final", "winning_direction",
+        "confidence", "confidence_floor", "research_pick", "research_floor",
+        "model_identity_by_direction", "model_meta", "regime", "features",
+        "precision_gate_up", "precision_gate_down", "proven_skill_gate_up",
+        "proven_skill_gate_down", "overconfidence_gate_up",
+        "overconfidence_gate_down", "live_recalibration_up",
+        "live_recalibration_down", "issuance_window",
+    }
+    out = {key: value for key, value in scores.items() if key in keep}
     feats = out.get("features")
-    if isinstance(feats, dict) and len(feats) > 24:
-        out["features"] = {k: feats[k] for k in list(feats)[:24]}
+    if isinstance(feats, dict):
+        feature_keep = {
+            "feature_asof_ts", "rsi", "macd_hist", "pct_b", "volume_ratio",
+            "mom_4h", "mom_8h", "mom_24h", "price_in_range", "above_ema200",
+            "ema_trend_bullish", "adx", "adx_trending", "atr_pct", "obv_slope",
+            "stoch_k", "stoch_d", "sector_rel_strength",
+        }
+        out["features"] = {
+            key: value for key, value in feats.items() if key in feature_keep
+        }
     return out
 
 

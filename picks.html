@@ -46,12 +46,14 @@ body{
   min-height:100vh;
 }
 a{color:inherit}
+.skip-link{position:fixed;left:12px;top:8px;z-index:1000;padding:9px 12px;border-radius:7px;background:var(--ink);color:var(--ground);font-weight:700;transform:translateY(-160%)}
+.skip-link:focus{transform:translateY(0);outline:3px solid var(--accent);outline-offset:2px}
 .wrap{max-width:640px;margin:0 auto;padding:0 0 100px}
 
 /* header */
 .topbar{position:sticky;top:0;z-index:30;background:var(--ground);border-bottom:1px solid var(--line);
   padding:14px 18px;display:flex;align-items:center;justify-content:space-between;gap:12px}
-.brand{display:flex;align-items:center;gap:8px}
+.brand{display:flex;align-items:center;gap:8px;margin:0}
 .brand b{font-family:"Newsreader",Georgia,serif;font-size:19px;font-weight:600;letter-spacing:-.01em}
 .livedot{display:inline-flex;align-items:center;gap:6px;font-family:"IBM Plex Mono",monospace;font-size:10px;
   letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3);border:1px solid var(--line);border-radius:999px;padding:5px 9px}
@@ -172,9 +174,10 @@ a{color:inherit}
 </style>
 </head>
 <body>
+<a class="skip-link" href="#main">Skip to main content</a>
 <div class="wrap">
   <header class="topbar">
-    <div class="brand"><b>Ghost</b></div>
+    <h1 class="brand"><b>Ghost</b></h1>
     <div class="header-status">
       <span class="livedot" id="livedot"><i></i><span id="livedot-txt">Loading</span></span>
     </div>
@@ -189,7 +192,7 @@ a{color:inherit}
     <button class="tabbtn" id="tab-system" role="tab" aria-selected="false" aria-controls="view-system">System</button>
   </nav>
 
-  <main>
+  <main id="main">
     <section class="view" id="view-today" role="tabpanel" aria-labelledby="tab-today"><div class="loading">Loading today's read…</div></section>
     <section class="view" id="view-bigmovers" role="tabpanel" aria-labelledby="tab-bigmovers" hidden><div class="loading">Loading Big Movers…</div></section>
     <section class="view" id="view-mystocks" role="tabpanel" aria-labelledby="tab-mystocks" hidden><div class="loading">Loading your stocks…</div></section>
@@ -320,7 +323,7 @@ function pickCard(sym, direction, entry, target, stop, report){
       });
     });
   }
-  var whyBlock = whyItems ? '<div class="why"><h4>What Ghost is seeing</h4><ul>'+whyItems+'</ul></div>' : '';
+  var whyBlock = whyItems ? '<div class="why"><h2>What Ghost is seeing</h2><ul>'+whyItems+'</ul></div>' : '';
 
   var vetoBlock = '';
   if(report && report.blocked){

@@ -6,6 +6,27 @@ import json
 import pickle
 
 from core.research_training import train_research_candidate
+import core.research_contracts  # noqa: F401 - freeze before transient variants
+
+
+def _valid_precision_proof():
+    return {
+        "ok": True,
+        "target": 0.70,
+        "threshold": 0.72,
+        "proof_schema": "effective_market_sessions_v1",
+        "calib": {"wins": 20, "support": 20},
+        "gate": {
+            "wins": 60,
+            "support": 60,
+            "wilson_low": 0.9398,
+            "distinct_sessions": 60,
+            "hold_bars": 3,
+            "effective_support": 20,
+            "effective_wins": 20,
+            "effective_wilson_low": 0.8389,
+        },
+    }
 
 
 def test_candidate_preserves_production_precision_and_gate_metrics(monkeypatch):
@@ -176,13 +197,7 @@ def test_discovery_gates_use_normalized_candidate_metrics():
             "gate_brier": 0.18,
             "natural_rate": 0.55,
         },
-        "precision_gate": {
-            "ok": True,
-            "target": 0.70,
-            "threshold": 0.72,
-            "calib": {"wins": 20, "support": 20},
-            "gate": {"wins": 20, "support": 20, "wilson_low": 0.8389},
-        },
+        "precision_gate": _valid_precision_proof(),
     }
 
     result = evaluate_candidate_gates(candidate)
@@ -206,13 +221,7 @@ def test_discovery_rejects_contract_incompatible_candidate():
             "gate_brier": 0.10,
             "natural_rate": 0.50,
         },
-        "precision_gate": {
-            "ok": True,
-            "target": 0.70,
-            "threshold": 0.8,
-            "calib": {"wins": 20, "support": 20},
-            "gate": {"wins": 20, "support": 20, "wilson_low": 0.84},
-        },
+        "precision_gate": _valid_precision_proof(),
     }
 
     result = evaluate_candidate_gates(candidate)
@@ -318,13 +327,7 @@ def test_discovery_registers_one_finalist_with_family_evidence(monkeypatch, tmp_
     import core.research_training as training
     import scripts.research_discovery as discovery
 
-    precision = {
-        "ok": True,
-        "target": 0.70,
-        "threshold": 0.72,
-        "calib": {"wins": 20, "support": 20},
-        "gate": {"wins": 20, "support": 20, "wilson_low": 0.8389},
-    }
+    precision = _valid_precision_proof()
     candidate = {
         "symbol": "WOLF",
         "direction": "UP",
@@ -389,13 +392,7 @@ def test_discovery_reports_finalist_persistence_failure(monkeypatch, tmp_path):
     import core.research_training as training
     import scripts.research_discovery as discovery
 
-    precision = {
-        "ok": True,
-        "target": 0.70,
-        "threshold": 0.72,
-        "calib": {"wins": 20, "support": 20},
-        "gate": {"wins": 20, "support": 20, "wilson_low": 0.8389},
-    }
+    precision = _valid_precision_proof()
     candidate = {
         "symbol": "WOLF",
         "direction": "UP",

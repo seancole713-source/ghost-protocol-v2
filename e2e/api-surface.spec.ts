@@ -35,6 +35,9 @@ const READ_ONLY_JSON_GETS = [
 const EXPECTED_NON_200: Record<string, number> = {
   "/api/diagnostics": 404,   // intentional privacy — returns 404 unauthenticated
   "/api/portfolio": 401,      // auth-gated — requires portfolio auth
+  "/api/schema": 404,         // internal database metadata
+  "/api/db-probe": 404,       // internal database diagnostics
+  "/api/debug-signal/WOLF": 404, // internal model trace
 };
 
 async function getWithRateLimitRetry(request: any, path: string) {

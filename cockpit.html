@@ -169,11 +169,11 @@ section.block{margin-bottom:32px}
 .earn-row{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 @media (max-width:820px){.earn-row{grid-template-columns:1fr}}
 .earn-card{background:#111;border:1px solid #1e1e1e;border-radius:14px;padding:18px}
-.earn-card h4{font-size:12px;font-weight:700;color:#888;letter-spacing:1px;text-transform:uppercase;margin-bottom:14px}
+.earn-card h2{font-size:12px;font-weight:700;color:#888;letter-spacing:1px;text-transform:uppercase;margin-bottom:14px}
 
 /* ─── Analyst panel ─── */
 .analyst-card{background:#111;border:1px solid #1e1e1e;border-radius:14px;padding:18px;margin-bottom:14px}
-.analyst-card h4{font-size:12px;font-weight:700;color:#888;letter-spacing:1px;text-transform:uppercase;margin-bottom:14px}
+.analyst-card h2{font-size:12px;font-weight:700;color:#888;letter-spacing:1px;text-transform:uppercase;margin-bottom:14px}
 .target-track{position:relative;height:64px;margin:30px 16px 18px}
 .target-line{position:absolute;left:0;right:0;top:32px;height:3px;background:linear-gradient(90deg,#ff3b3b 0%,#f59e0b 50%,#22c55e 100%);border-radius:2px}
 .target-marker{position:absolute;top:24px;width:2px;height:18px;background:#fff;transform:translateX(-50%)}
@@ -298,7 +298,7 @@ section.block{margin-bottom:32px}
 .activity-strip .e{color:#f59e0b;font-weight:700}
 .truth-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;margin-bottom:14px}
 .truth-card{background:#111;border:1px solid #1e1e1e;border-radius:12px;padding:14px 16px}
-.truth-card h4{font-size:10px;font-weight:700;letter-spacing:1.5px;color:#999;text-transform:uppercase;margin-bottom:10px}
+.truth-card h2{font-size:10px;font-weight:700;letter-spacing:1.5px;color:#999;text-transform:uppercase;margin-bottom:10px}
 .truth-big{font-size:26px;font-weight:800;color:#fff;margin-bottom:4px}
 .truth-big.v32{color:#4ade80}
 .truth-big.legacy{color:#f59e0b}
@@ -689,9 +689,10 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
 </style>
 </head>
 <body>
+<a class="skip-link" href="#main">Skip to main content</a>
 
 <div class="topbar">
-  <div class="logo">&#128123; GHOST <span>PROTOCOL</span></div>
+  <h1 class="logo">&#128123; GHOST <span>PROTOCOL</span></h1>
   <div class="top-right">
     <span class="deploy-badge" id="deploy-badge" title="Running deploy">deploy …</span>
     <span class="mkt-badge" id="mkt-badge">—</span>
@@ -699,7 +700,7 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
   </div>
 </div>
 
-<div class="main">
+<main class="main" id="main">
 
   <!-- ═══════════ CLEAN MOVERS BOARD · facelift v2 (default view) ═══════════ -->
   <style id="mvr-style">
@@ -1119,11 +1120,11 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
     <div class="sec-label">Earnings &amp; Revenue</div>
     <div class="earn-row">
       <div class="earn-card">
-        <h4>EPS — Estimate vs Actual</h4>
+        <h2>EPS — Estimate vs Actual</h2>
         <div class="chart-canvas-wrap"><canvas id="eps-chart"></canvas></div>
       </div>
       <div class="earn-card">
-        <h4>Revenue &amp; Net Income (quarterly)</h4>
+        <h2>Revenue &amp; Net Income (quarterly)</h2>
         <div class="chart-canvas-wrap"><canvas id="rev-chart"></canvas></div>
       </div>
     </div>
@@ -1133,12 +1134,12 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
   <section class="block" id="analyst-section">
     <div class="sec-label">Analyst Insights</div>
     <div class="analyst-card">
-      <h4>Price Targets</h4>
+      <h2>Price Targets</h2>
       <div class="target-track" id="target-track"></div>
       <div id="target-summary" class="truth-note center mt8"></div>
     </div>
     <div class="analyst-card">
-      <h4>Recommendation Distribution</h4>
+      <h2>Recommendation Distribution</h2>
       <div class="rec-bar" id="rec-bar"></div>
       <div class="rec-legend" id="rec-legend"></div>
       <div id="latest-rating-wrap"></div>
@@ -1286,13 +1287,13 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
       <div class="activity-strip" id="activity-strip"></div>
       <div class="truth-grid">
         <div class="truth-card">
-          <h4>Post&#8211;v3.2 window (decision metric)</h4>
+          <h2>Post&#8211;v3.2 window (decision metric)</h2>
           <div class="truth-big v32" id="t-v32-wr">&#8212;</div>
           <div class="truth-note"><b>Issued in window</b> — WIN/LOSS for picks where <code>predicted_at</code> is on or after the cutover (when models were trained). The fair score for the <i>current</i> engine. API: <code>post_v32</code>.</div>
           <div class="truth-kv" id="t-v32-kv"></div>
         </div>
         <div class="truth-card">
-          <h4>System freshness</h4>
+          <h2>System freshness</h2>
           <div class="truth-big" id="t-fresh">&#8212;</div>
           <div class="truth-kv" id="t-sys-kv"></div>
         </div>
@@ -1303,7 +1304,7 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
     </div>
   </section>
 
-</div>
+</main>
 
 <div class="footer">
   <span>Ghost Protocol v2 &middot; WOLF command center</span>
@@ -1919,7 +1920,7 @@ function _renderV3SqueezeAlerts(picks, watching){
   }).join('');
   el.innerHTML = '<div class="v3-sq-alerts">'
     + '<div class="v3-sq-alerts-h">Telegram squeeze alerts today · intraday radar (not v3)</div>'
-    + '<table class="sq-table"><thead><tr>'
+    + '<table aria-label="Ghost market and performance data" class="sq-table"><thead><tr>'
     + '<th>Stock</th><th>Buy</th><th>Sell</th><th>Score</th><th>P(+3% 60m)</th><th>Conf</th><th>Peak</th>'
     + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
 }
@@ -2701,7 +2702,7 @@ function _renderDfTable(days){
         : '—') + '</td>'
       + '</tr>';
   }).join('');
-  wrap.innerHTML = '<table class="df-table"><thead><tr>'
+  wrap.innerHTML = '<table aria-label="Ghost market and performance data" class="df-table"><thead><tr>'
     + '<th>Session</th><th>Ghost predicted</th><th>Actual</th>'
     + '<th>Open rate</th><th>Peak rate</th><th>Low rate</th><th>Close rate</th><th title="OHLC level closeness — telemetry, not prediction accuracy">Level close.</th>'
     + '</tr></thead><tbody>' + rows + '</tbody></table>';
@@ -2800,7 +2801,7 @@ function _dpOhlcRow(kind, sym, dateHtml, open, peak, low, close, scoreHtml){
 }
 
 function _renderDpThreeRows(sym, panel, next, lastResolved, live){
-  var head = '<table class="dp-ohlc-table"><thead><tr>'
+  var head = '<table aria-label="Ghost market and performance data" class="dp-ohlc-table"><thead><tr>'
     + '<th>Symbol</th><th>Date</th><th>Open</th><th>Peak</th><th>Low</th><th>Close / Last</th><th>Score</th>'
     + '</tr></thead><tbody>';
   var rows = [];
@@ -3016,7 +3017,7 @@ function _sqDriftSummaryBlock(rows, title){
       + '<td class="sq-drift ' + escHtml(st) + '">' + sign + Number(r.gap_pct).toFixed(2) + '% · ' + escHtml(r.gap_label || '') + '</td></tr>';
   }).join('');
   return '<div class="sq-drift-block"><div class="sq-drift-block-h">' + escHtml(title) + '</div>'
-    + '<table class="sq-table"><thead><tr>'
+    + '<table aria-label="Ghost market and performance data" class="sq-table"><thead><tr>'
     + '<th>Stock</th><th>Alert buy</th><th>Live now</th><th>Gap</th>'
     + '</tr></thead><tbody>' + body + '</tbody></table></div>';
 }
@@ -3110,7 +3111,7 @@ function _renderSqueezePicks(data){
       var alertBlock = '';
       if(sessionAlerts.length){
         alertBlock = '<div class="sq-section-label">Telegram alerts this session</div>'
-          + '<table class="sq-table"><thead><tr>'
+          + '<table aria-label="Ghost market and performance data" class="sq-table"><thead><tr>'
           + '<th>Stock</th><th>Buy</th><th>Sell</th><th>Live vs alert</th><th>Score</th><th>P(+3% 60m)</th><th>Conf</th><th>Peak</th>'
           + '</tr></thead><tbody>'
           + sessionAlerts.slice(0, 8).map(function(p){
@@ -3132,7 +3133,7 @@ function _renderSqueezePicks(data){
         + '<div class="sq-section-label">'
         + (stale ? 'Last session snapshot (not live) · ' : '')
         + 'Top movers · buy / sell now (scorecard v1)</div>'
-        + '<table class="sq-table"><thead><tr>'
+        + '<table aria-label="Ghost market and performance data" class="sq-table"><thead><tr>'
         + '<th>Stock</th><th>Buy</th><th>Sell</th><th>Stop</th><th>Score</th><th>P(+3% 60m)</th><th>Peak</th><th>RVOL</th>'
         + '</tr></thead><tbody>' + lrows + '</tbody></table>';
     } else {
@@ -3159,7 +3160,7 @@ function _renderSqueezePicks(data){
       + '</tr>';
   }).join('');
   wrap.innerHTML = driftBlock
-    + '<table class="sq-table"><thead><tr>'
+    + '<table aria-label="Ghost market and performance data" class="sq-table"><thead><tr>'
     + '<th>Stock</th><th>Buy</th><th>Sell</th><th>Stop</th><th>Score</th><th>P(+3% 60m)</th><th>Live vs alert</th><th>Conf</th><th>Peak · RVOL</th>'
     + '</tr></thead><tbody>' + rows + '</tbody></table>';
   if(foot){
@@ -3280,7 +3281,7 @@ function _renderSqueezeDailyLog(data, focusDay){
         + '</tr>';
     }).join('');
     wrap.innerHTML = driftBlock
-      + '<table class="sq-table"><thead><tr>'
+      + '<table aria-label="Ghost market and performance data" class="sq-table"><thead><tr>'
       + '<th>Stock</th><th>Ghost predicted</th><th>Live vs alert</th><th>Market (EOD)</th><th>Outcome</th><th>Score</th><th>Context</th>'
       + '</tr></thead><tbody>' + body + '</tbody></table>';
   }
@@ -4235,11 +4236,11 @@ async function loadAttribution(){
         + '<td><span class="neg">' + (f.loss_avg == null ? '—' : f.loss_avg) + '</span></td>'
         + '<td>' + _attrDelta(f.delta) + '</td></tr>';
     }).join('');
-    featEl.innerHTML = '<table class="tbl"><thead><tr><th>Signal</th><th>Win avg</th><th>Loss avg</th><th>Δ (win−loss)</th></tr></thead><tbody>' + frows + '</tbody></table>';
+    featEl.innerHTML = '<table aria-label="Ghost market and performance data" class="tbl"><thead><tr><th>Signal</th><th>Win avg</th><th>Loss avg</th><th>Δ (win−loss)</th></tr></thead><tbody>' + frows + '</tbody></table>';
     var reg = fa.by_regime || [];
     regEl.innerHTML = reg.length
-      ? '<div class="sec-label m4-0-8">Win rate by regime</div><table class="tbl"><tbody>'
-        + reg.map(function(r){ return '<tr><td><b>' + escHtml(r.regime) + '</b></td><td>' + r.wins + 'W / ' + r.losses + 'L</td><td>' + (r.win_rate_pct == null ? '—' : r.win_rate_pct + '%') + '</td></tr>'; }).join('')
+      ? '<div class="sec-label m4-0-8">Win rate by regime</div><table aria-label="Ghost market and performance data" class="tbl"><tbody>'
+        + reg.map(function(r){ return '<tr><th scope="row"><b>' + escHtml(r.regime) + '</b></th><td>' + r.wins + 'W / ' + r.losses + 'L</td><td>' + (r.win_rate_pct == null ? '—' : r.win_rate_pct + '%') + '</td></tr>'; }).join('')
         + '</tbody></table>'
       : '';
     var ca = g.component_attribution || {};
@@ -4251,7 +4252,7 @@ async function loadAttribution(){
           + '<td>' + _attrDelta(c.delta) + '</td></tr>';
       }).join('');
       compEl.innerHTML = '<div class="sec-label m4-0-8">Ghost-score components (win vs loss)</div>'
-        + '<table class="tbl"><thead><tr><th>Component</th><th>Win avg</th><th>Loss avg</th><th>Δ</th></tr></thead><tbody>' + crows + '</tbody></table>';
+        + '<table aria-label="Ghost market and performance data" class="tbl"><thead><tr><th>Component</th><th>Win avg</th><th>Loss avg</th><th>Δ</th></tr></thead><tbody>' + crows + '</tbody></table>';
     } else {
       compEl.innerHTML = '<div class="kv text-999">Ghost-score component attribution accrues as new picks (which journal a component snapshot) resolve.</div>';
     }
@@ -4395,7 +4396,7 @@ async function loadPerfCycleDetail(cycleId){
         + '</tr>';
     }).join('');
     detailEl.innerHTML = head
-      + '<table class="tbl"><thead><tr><th>Symbol</th><th>Gate</th><th>P(up)</th><th>Conf</th><th>Regime</th><th>Dir</th></tr></thead><tbody>'
+      + '<table aria-label="Ghost market and performance data" class="tbl"><thead><tr><th>Symbol</th><th>Gate</th><th>P(up)</th><th>Conf</th><th>Regime</th><th>Dir</th></tr></thead><tbody>'
       + rows + '</tbody></table>'
       + '<div class="tac-m8-0-4"><button class="btn-add" type="button" onclick="loadPerfCycleDetail(' + cycleId + ')">Close detail</button></div>';
   }catch(e){
@@ -4428,7 +4429,7 @@ async function loadPerformanceLog(){
     if(!open.length){
       openEl.innerHTML = '<div class="empty"><div class="ico">&#128202;</div>No open picks right now.</div>';
     } else {
-      openEl.innerHTML = '<table class="tbl"><thead><tr><th>Symbol</th><th>Dir</th><th>Conf</th><th>Entry</th><th>Expires</th></tr></thead><tbody>'
+      openEl.innerHTML = '<table aria-label="Ghost market and performance data" class="tbl"><thead><tr><th>Symbol</th><th>Dir</th><th>Conf</th><th>Entry</th><th>Expires</th></tr></thead><tbody>'
         + open.map(function(p){
           return '<tr><td data-label="Symbol"><b>' + escHtml(p.symbol) + '</b></td><td data-label="Direction">' + escHtml(p.direction) + '</td>'
             + '<td data-label="Confidence">' + _plConf(p.confidence) + '</td><td data-label="Entry">' + (p.entry_price != null ? '$' + Number(p.entry_price).toFixed(2) : '—') + '</td>'
@@ -4439,7 +4440,7 @@ async function loadPerformanceLog(){
     if(!resolved.length){
       resEl.innerHTML = '<div class="empty"><div class="ico">&#128202;</div>No resolves in the last ' + _plDays + ' days.</div>';
     } else {
-      resEl.innerHTML = '<table class="tbl"><thead><tr><th>Symbol</th><th>When</th><th>Conf</th><th>P&amp;L</th><th>Result</th></tr></thead><tbody>'
+      resEl.innerHTML = '<table aria-label="Ghost market and performance data" class="tbl"><thead><tr><th>Symbol</th><th>When</th><th>Conf</th><th>P&amp;L</th><th>Result</th></tr></thead><tbody>'
         + resolved.slice(0, 25).map(function(p){
           return '<tr><td data-label="Symbol"><b>' + escHtml(p.symbol) + '</b></td><td data-label="When">' + fmtTimeAgo(p.resolved_at || p.predicted_at) + '</td>'
             + '<td data-label="Confidence">' + _plConf(p.confidence) + '</td><td data-label="P&amp;L">' + _pjPct(p.pnl_pct) + '</td>'
@@ -4452,7 +4453,7 @@ async function loadPerformanceLog(){
     if(!cycles.length){
       cycEl.innerHTML = '<div class="empty"><div class="ico">&#9203;</div>No scan cycles in window — data accrues after deploy.</div>';
     } else {
-      cycEl.innerHTML = '<table class="tbl"><thead><tr><th>When</th><th>Scanned</th><th>Cand/Saved</th><th>Binding</th><th>Near miss</th></tr></thead><tbody>'
+      cycEl.innerHTML = '<table aria-label="Ghost market and performance data" class="tbl"><thead><tr><th>When</th><th>Scanned</th><th>Cand/Saved</th><th>Binding</th><th>Near miss</th></tr></thead><tbody>'
         + cycles.map(function(c){
           return '<tr class="pl-cycle-row" onclick="loadPerfCycleDetail(' + c.id + ')">'
             + '<td data-label="When">' + fmtTimeAgo(c.cycle_ts) + '</td>'
@@ -4523,7 +4524,7 @@ async function loadSignalHistory(){
         + '<td data-label="How close">' + near(h.near_miss) + '</td>'
         + '</tr>';
     }).join('');
-    listEl.innerHTML = '<table class="tbl"><thead><tr><th>When</th><th>Outcome</th><th>Cand/Saved</th><th>Binding gate</th><th>How close</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    listEl.innerHTML = '<table aria-label="Ghost market and performance data" class="tbl"><thead><tr><th>When</th><th>Outcome</th><th>Cand/Saved</th><th>Binding gate</th><th>How close</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }catch(e){ listEl.innerHTML = '<div class="empty">Signal history error.</div>'; }
 }
 

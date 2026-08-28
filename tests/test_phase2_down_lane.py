@@ -44,8 +44,13 @@ _META = {"tier": "proven", "direction": "UP",
          "wf_edge_mean": 0.2, "wf_fold_count": 4, "trained_at": time.time(),
          # Phase 3: a model may only fire above its proven-precision threshold.
          "precision_gate": {"ok": True, "threshold": 0.55, "target": 0.70,
+                            "proof_schema": "effective_market_sessions_v1",
                             "calib": {"support": 20, "wins": 20},
-                            "gate": {"support": 20, "wins": 20}}}
+                            "gate": {
+                                "support": 60, "wins": 60,
+                                "distinct_sessions": 60, "hold_bars": 3,
+                                "effective_support": 20, "effective_wins": 20,
+                            }}}
 
 
 def _patch_gates(monkeypatch):
@@ -236,7 +241,7 @@ def test_purge_keeps_wolf_directional_models(monkeypatch):
     assert purged == 1
     assert deleted == [
         ("model_ZOMBIE_up", "meta_ZOMBIE_up"),
-        ("v3_global_fire_threshold_v2",),
+        ("v3_global_fire_threshold_v3",),
     ]
 
 
@@ -277,7 +282,7 @@ def test_delete_model_non_wolf_only_keeps_wolf_directional(monkeypatch):
     assert out["ok"] is True
     assert deleted == [
         ("model_NVDA_up", "meta_NVDA_up"),
-        ("v3_global_fire_threshold_v2",),
+        ("v3_global_fire_threshold_v3",),
     ]
     kept = " ".join(out["kept"])
     assert "WOLF_up" in kept and "WOLF_down" in kept

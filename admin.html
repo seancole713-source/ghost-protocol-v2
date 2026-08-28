@@ -68,16 +68,17 @@ body{background:radial-gradient(1100px 520px at 50% -8%,#1a0f14 0%,#0a0a0a 58%) 
 </style>
 </head>
 <body>
+<a class="skip-link" href="#main">Skip to main content</a>
 
 <div class="topbar">
-  <div class="logo">&#128123; GHOST <span>ADMIN</span></div>
+  <h1 class="logo">&#128123; GHOST <span>ADMIN</span></h1>
   <div class="flex-row">
     <span id="deploy-badge" class="deploy-badge" title="Running deploy">deploy …</span>
     <span id="badge-admin" class="badge-admin">PR … OPERATOR CONSOLE</span>
   </div>
 </div>
 
-<div class="main">
+<main class="main" id="main">
 
 <div class="note flex-row-between">
   <span><b>Operator-only view.</b> Cookie-authenticated (signed in with <code>CRON_SECRET</code>).
@@ -95,7 +96,7 @@ body{background:radial-gradient(1100px 520px at 50% -8%,#1a0f14 0%,#0a0a0a 58%) 
 <!-- ─── Training controls ─── -->
 <div class="sec-label">Training</div>
 <div class="card">
-  <h3>v3 Model Controls</h3>
+  <h2>v3 Model Controls</h2>
   <div class="desc">Synchronous training takes 1-5 min and returns the actual outcome inline. Async <b>Train Now</b> returns immediately; use <b>Refresh Status</b> after 3-5 min.</div>
   <div class="row">
     <input type="password" id="train-secret" aria-label="Cron secret" placeholder="x-cron-secret" autocomplete="off" spellcheck="false">
@@ -397,7 +398,7 @@ body{background:radial-gradient(1100px 520px at 50% -8%,#1a0f14 0%,#0a0a0a 58%) 
   <div id="audit-log" class="mt10"><div class="kv">Loading&#8230;</div></div>
 </div>
 
-</div>
+</main>
 
 <script src="/static/ghost.js"></script>
 <script>
@@ -481,8 +482,8 @@ function renderTrainDetails(td){
         ['wf_folds',s.wf_fold_count,s.thresholds&&s.thresholds.min_wf_folds],
         ['wf_acc_mean',(s.wf_acc_mean!=null?(s.wf_acc_mean*100).toFixed(1)+'%':'—'),(s.thresholds&&s.thresholds.min_wf_acc_mean!=null?(s.thresholds.min_wf_acc_mean*100).toFixed(1)+'%':'—')],
       ];
-      html+='<table class="tbl ml14"><tr>'+rows.map(function(m){
-        return '<td class="text-gray-888">'+m[0]+'</td><td class="text-white"><b>'+escHtml(String(m[1]))+'</b></td><td class="text-gray-999">need&ge; '+escHtml(String(m[2]))+'</td>';
+      html+='<table aria-label="Ghost operator data" class="tbl ml14"><tr>'+rows.map(function(m){
+        return '<th scope="row" class="text-gray-888">'+m[0]+'</th><td class="text-white"><b>'+escHtml(String(m[1]))+'</b></td><td class="text-gray-999">need&ge; '+escHtml(String(m[2]))+'</td>';
       }).join('</tr><tr>')+'</tr></table>';
     }
   });
@@ -544,7 +545,7 @@ async function testDataSources(){
     if(!b||b.ok===false){r.innerHTML='<div class="kv"><span class="fail">&#10007;</span> '+escHtml((b&&b.error)||('HTTP '+resp.status))+'</div>';return}
     var rows=b.results||[];
     var working=(b.summary&&b.summary.working)||[];
-    var html='<table class="tbl"><thead><tr><th>Source</th><th>OK?</th><th>Bars</th><th>Latency</th><th>Detail</th></tr></thead><tbody>';
+    var html='<table aria-label="Ghost operator data" class="tbl"><thead><tr><th>Source</th><th>OK?</th><th>Bars</th><th>Latency</th><th>Detail</th></tr></thead><tbody>';
     rows.forEach(function(rw){
       var cls=rw.ok?'ok':'fail',icon=rw.ok?'&#10003;':'&#10007;';
       var detail=rw.ok?('first='+(rw.first_ts||'—')+' last='+(rw.last_ts||'—')):escHtml(rw.error||'—');
@@ -786,7 +787,7 @@ function renderConfidence(conf){
   var note=conf.denominator_note||'Fired WIN/LOSS only; Contract 70 proof uses /api/ghost/contract/70-verdict.';
   var h='<p class="kv"><b>≥70 confidence verdict:</b> '+escHtml(hc.verdict||'diagnostic')+' · raw '+(hc.win_rate_pct!=null?hc.win_rate_pct+'%':'—')+' · Wilson 95% '+(hc.wilson_low_pct!=null?hc.wilson_low_pct+'%':'—')+'–'+(hc.wilson_high_pct!=null?hc.wilson_high_pct+'%':'—')+' · '+(hc.proven_70?'70% proven':'70% not proven')+'</p>';
   h+='<p class="desc">'+escHtml(note)+' Raw bucket win rate is calibration only, never a 70% proof claim unless Wilson lower bound clears 70%.</p>';
-  h+='<table class="tbl"><thead><tr><th>Bucket</th><th>N</th><th>W / L</th><th>Win rate</th><th>Wilson 95%</th><th>70 proof</th></tr></thead><tbody>';
+  h+='<table aria-label="Ghost operator data" class="tbl"><thead><tr><th>Bucket</th><th>N</th><th>W / L</th><th>Win rate</th><th>Wilson 95%</th><th>70 proof</th></tr></thead><tbody>';
   buckets.forEach(function(b){
     var tot=b.total||0,wr=b.win_rate_pct!=null?b.win_rate_pct:0;
     var wl=b.wilson_low_pct!=null?b.wilson_low_pct:null, wh=b.wilson_high_pct!=null?b.wilson_high_pct:null;
@@ -808,31 +809,31 @@ async function loadGateStatus(){
     var ss = g.symbol_stats || {};
     var lp = g.live_prediction || {};
     var floor = g.confidence_floor;
-    var html = '<table class="tbl"><tbody>';
-    html += '<tr><td>Objective mode</td><td><b>' + escHtml(o.mode || '—') + '</b>'
+    var html = '<table aria-label="Ghost operator data" class="tbl"><tbody>';
+    html += '<tr><th scope="row">Objective mode</th><td><b>' + escHtml(o.mode || '—') + '</b>'
       + (o.enforced ? '' : ' <span class="warn">(NOT enforced)</span>')
       + (o.auto_mode_enabled ? ' <span class="warn">(auto-mode ON — env override may not stick!)</span>' : '') + '</td></tr>';
-    html += '<tr><td>Target win-rate</td><td>' + (o.target_wr != null ? (o.target_wr*100).toFixed(0)+'%' : '—') + '</td></tr>';
-    html += '<tr><td>Min samples</td><td>' + (o.min_samples != null ? o.min_samples : '—') + '</td></tr>';
-    html += '<tr><td>Bootstrap min conf</td><td>' + (o.bootstrap_min_conf != null ? (o.bootstrap_min_conf*100).toFixed(0)+'%' : '—') + '</td></tr>';
-    html += '<tr><td>Alert confidence floor</td><td>' + (floor != null ? (floor*100).toFixed(0)+'%' : '—') + '</td></tr>';
-    html += '<tr><td>WOLF resolved picks</td><td>' + (ss.combined_total != null ? ss.combined_total : '—')
+    html += '<tr><th scope="row">Target win-rate</th><td>' + (o.target_wr != null ? (o.target_wr*100).toFixed(0)+'%' : '—') + '</td></tr>';
+    html += '<tr><th scope="row">Min samples</th><td>' + (o.min_samples != null ? o.min_samples : '—') + '</td></tr>';
+    html += '<tr><th scope="row">Bootstrap min conf</th><td>' + (o.bootstrap_min_conf != null ? (o.bootstrap_min_conf*100).toFixed(0)+'%' : '—') + '</td></tr>';
+    html += '<tr><th scope="row">Alert confidence floor</th><td>' + (floor != null ? (floor*100).toFixed(0)+'%' : '—') + '</td></tr>';
+    html += '<tr><th scope="row">WOLF resolved picks</th><td>' + (ss.combined_total != null ? ss.combined_total : '—')
       + ' &middot; WR ' + (ss.combined_wr != null ? (ss.combined_wr*100).toFixed(1)+'%' : '—')
       + ' &middot; <b>' + escHtml(ss.phase || '—') + '</b> phase</td></tr>';
     html += '</tbody></table>';
     var probHtml = '';
     if(lp.up_prob != null){
-      probHtml += '<table class="tbl"><tbody>';
-      probHtml += '<tr><td>Model up_prob</td><td><b>' + lp.up_prob.toFixed(4) + '</b>'
+      probHtml += '<table aria-label="Ghost operator data" class="tbl"><tbody>';
+      probHtml += '<tr><th scope="row">Model up_prob</th><td><b>' + lp.up_prob.toFixed(4) + '</b>'
         + (lp.regime && lp.regime.label ? ' &middot; regime <b>' + escHtml(lp.regime.label) + '</b>' : '') + '</td></tr>';
       if(lp.up_prob_needed_to_fire != null){
-        probHtml += '<tr><td>up_prob needed to fire</td><td>' + lp.up_prob_needed_to_fire.toFixed(4)
+        probHtml += '<tr><th scope="row">up_prob needed to fire</th><td>' + lp.up_prob_needed_to_fire.toFixed(4)
           + ' <span class="text-gray-8b96a8">(binding conf '
           + (lp.binding_confidence_threshold != null ? (lp.binding_confidence_threshold*100).toFixed(0)+'%' : '—') + ')</span></td></tr>';
         var gap = lp.up_prob_gap;
         if(gap != null){
           var gapCls = gap >= 0 ? 'ok' : 'fail';
-          probHtml += '<tr><td>Gap to clear</td><td><span class="' + gapCls + '"><b>'
+          probHtml += '<tr><th scope="row">Gap to clear</th><td><span class="' + gapCls + '"><b>'
             + (gap >= 0 ? '+' : '') + gap.toFixed(4) + '</b></span> '
             + (gap >= 0 ? '(cleared)' : '(short)') + '</td></tr>';
         }
@@ -852,13 +853,13 @@ async function loadGateStatus(){
     } else {
       var wa = lp.would_alert;
       var icon = wa ? '<span class="ok">&#10003;</span>' : '<span class="warn">&#x23F3;</span>';
-      html += '<table class="tbl"><tbody>';
-      html += '<tr><td>Direction</td><td><b>' + escHtml(lp.direction) + '</b></td></tr>';
-      html += '<tr><td>Confidence</td><td><b>' + (lp.confidence*100).toFixed(1) + '%</b></td></tr>';
-      html += '<tr><td>Passes confidence floor</td><td>' + gateBadge(lp.passes_confidence_floor) + '</td></tr>';
-      html += '<tr><td>Passes objective gate</td><td>' + gateBadge(lp.passes_objective_gate)
+      html += '<table aria-label="Ghost operator data" class="tbl"><tbody>';
+      html += '<tr><th scope="row">Direction</th><td><b>' + escHtml(lp.direction) + '</b></td></tr>';
+      html += '<tr><th scope="row">Confidence</th><td><b>' + (lp.confidence*100).toFixed(1) + '%</b></td></tr>';
+      html += '<tr><th scope="row">Passes confidence floor</th><td>' + gateBadge(lp.passes_confidence_floor) + '</td></tr>';
+      html += '<tr><th scope="row">Passes objective gate</th><td>' + gateBadge(lp.passes_objective_gate)
         + (lp.objective_skip_reason ? ' <code>'+escHtml(lp.objective_skip_reason)+'</code>' : '') + '</td></tr>';
-      html += '<tr><td><b>WOULD ALERT</b></td><td>' + icon + ' <b>' + (wa ? 'YES' : 'NO') + '</b></td></tr>';
+      html += '<tr><th scope="row">WOULD ALERT</th><td>' + icon + ' <b>' + (wa ? 'YES' : 'NO') + '</b></td></tr>';
       html += '</tbody></table>';
       html += probHtml;
     }
@@ -904,7 +905,7 @@ async function loadGateHistory(){
       if(h.paused) icon = '<span class="fail">&#9209; paused</span>';
       return '<tr><td>' + fmtTimeAgo(h.ts) + '</td><td>' + icon + '</td><td>cand ' + (h.candidates||0) + ' / saved ' + (h.saved||0) + (h.dedup_blocked ? ' / dedup ' + h.dedup_blocked : '') + '</td><td>' + (h.top_skip ? '<code>'+escHtml(h.top_skip)+'</code>' : '—') + '</td><td>' + fmtNear(h.near_miss) + '</td></tr>';
     }).join('');
-    el.innerHTML = summary + '<table class="tbl"><thead><tr><th>When</th><th>Outcome</th><th>Candidates/Saved</th><th>Binding gate</th><th>How close</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    el.innerHTML = summary + '<table aria-label="Ghost operator data" class="tbl"><thead><tr><th>When</th><th>Outcome</th><th>Candidates/Saved</th><th>Binding gate</th><th>How close</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }catch(e){el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml(String(e)) + '</div>'}
 }
 
@@ -922,14 +923,14 @@ async function loadPnl(){
     var pnlCls = g.realized_pnl_usd >= 0 ? 'ok' : 'fail';
     var pf = (g.profit_factor === null) ? '—' : (g.profit_factor === 'Infinity' || g.profit_factor === Infinity ? '∞' : g.profit_factor);
     el.innerHTML = '<div class="kv mb8"><b class="' + pnlCls + '">' + money(g.realized_pnl_usd) + '</b> realized (<span class="' + pnlCls + '">' + pct(g.total_return_pct) + '</span> on $' + g.bankroll + ', stake ' + (g.stake_fraction*100) + '%) &middot; equity <b>$' + g.final_equity + '</b></div>'
-      + '<table class="tbl"><tbody>'
-      + '<tr><td>Trades</td><td><b>' + g.count + '</b> (' + g.wins + 'W / ' + g.losses + 'L / ' + g.expired + 'X)</td></tr>'
-      + '<tr><td>Win rate</td><td>' + (g.win_rate===null?'—':(g.win_rate*100).toFixed(1)+'%') + '</td></tr>'
-      + '<tr><td>Expectancy / trade</td><td>' + pct(g.expectancy_pct) + '</td></tr>'
-      + '<tr><td>Avg win / loss</td><td><span class="ok">' + pct(g.avg_win_pct) + '</span> / <span class="fail">' + pct(g.avg_loss_pct) + '</span></td></tr>'
-      + '<tr><td>Profit factor</td><td>' + pf + '</td></tr>'
-      + '<tr><td>Max drawdown</td><td><span class="fail">-' + g.max_drawdown_pct + '%</span></td></tr>'
-      + '<tr><td>Best / worst</td><td><span class="ok">' + pct(g.best_trade_pct) + '</span> / <span class="fail">' + pct(g.worst_trade_pct) + '</span></td></tr>'
+      + '<table aria-label="Ghost operator data" class="tbl"><tbody>'
+      + '<tr><th scope="row">Trades</th><td><b>' + g.count + '</b> (' + g.wins + 'W / ' + g.losses + 'L / ' + g.expired + 'X)</td></tr>'
+      + '<tr><th scope="row">Win rate</th><td>' + (g.win_rate===null?'—':(g.win_rate*100).toFixed(1)+'%') + '</td></tr>'
+      + '<tr><th scope="row">Expectancy / trade</th><td>' + pct(g.expectancy_pct) + '</td></tr>'
+      + '<tr><th scope="row">Avg win / loss</th><td><span class="ok">' + pct(g.avg_win_pct) + '</span> / <span class="fail">' + pct(g.avg_loss_pct) + '</span></td></tr>'
+      + '<tr><th scope="row">Profit factor</th><td>' + pf + '</td></tr>'
+      + '<tr><th scope="row">Max drawdown</th><td><span class="fail">-' + g.max_drawdown_pct + '%</span></td></tr>'
+      + '<tr><th scope="row">Best / worst</th><td><span class="ok">' + pct(g.best_trade_pct) + '</span> / <span class="fail">' + pct(g.worst_trade_pct) + '</span></td></tr>'
       + '</tbody></table>';
   }catch(e){el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml(String(e)) + '</div>'}
 }
@@ -976,7 +977,7 @@ async function loadKillStatus(){
         + '<td>' + c.samples + '/' + c.window + '</td>'
         + '<td>' + badge(c.status) + '</td></tr>';
     }).join('');
-    el.innerHTML = head + '<table class="tbl"><thead><tr><th>Condition</th><th>Current vs threshold</th><th>Samples/window</th><th>Status</th></tr></thead><tbody>' + rows + '</tbody></table>'
+    el.innerHTML = head + '<table aria-label="Ghost operator data" class="tbl"><thead><tr><th>Condition</th><th>Current vs threshold</th><th>Samples/window</th><th>Status</th></tr></thead><tbody>' + rows + '</tbody></table>'
       + (g.pool && g.pool.ready ? '<div class="kv mt8">DB pool max ' + escHtml(String(g.pool.max)) + '</div>' : '');
   }catch(e){el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml(String(e)) + '</div>'}
 }
@@ -1010,7 +1011,7 @@ async function loadSqueezeStatus(){
     var alertBlock = '';
     if(alerts.length){
       alertBlock = '<div class="kv mt12 mb6"><b>Telegram squeeze alerts this session</b></div>'
-        + '<table class="tbl"><thead><tr><th>Stock</th><th>Buy</th><th>Sell</th><th>Score</th><th>P(+3%)</th><th>Peak</th><th>When</th></tr></thead><tbody>'
+        + '<table aria-label="Ghost operator data" class="tbl"><thead><tr><th>Stock</th><th>Buy</th><th>Sell</th><th>Score</th><th>P(+3%)</th><th>Peak</th><th>When</th></tr></thead><tbody>'
         + alerts.map(function(p){
           var prob = p.probabilities && p.probabilities.p_continue_3pct_60m != null ? Math.round(p.probabilities.p_continue_3pct_60m) + '%' : '—';
           return '<tr><td><b>' + escHtml(p.symbol) + '</b></td><td>' + fmtUsd(p.buy) + '</td><td>' + fmtUsd(p.sell) + '</td><td>' + (p.squeeze_score != null ? Math.round(p.squeeze_score) : '—') + '</td><td>' + prob + '</td><td>+' + (p.peak_move_pct != null ? Number(p.peak_move_pct).toFixed(1) : '—') + '%</td><td>' + fmtTimeAgo(p.alerted_at || g.last_scan_ts) + '</td></tr>';
@@ -1020,7 +1021,7 @@ async function loadSqueezeStatus(){
     var leaderBlock = '';
     if(leaders.length){
       leaderBlock = '<div class="kv mt12 mb6"><b>Top movers (scorecard)</b></div>'
-        + '<table class="tbl"><thead><tr><th>Stock</th><th>Buy</th><th>Sell</th><th>Score</th><th>RVOL</th><th>Peak</th></tr></thead><tbody>'
+        + '<table aria-label="Ghost operator data" class="tbl"><thead><tr><th>Stock</th><th>Buy</th><th>Sell</th><th>Score</th><th>RVOL</th><th>Peak</th></tr></thead><tbody>'
         + leaders.map(function(p){return '<tr><td><b>' + escHtml(p.symbol) + '</b></td><td>' + fmtUsd(p.buy) + '</td><td>' + fmtUsd(p.sell) + '</td><td>' + (p.squeeze_score != null ? Math.round(p.squeeze_score) : '—') + '</td><td>' + (p.rvol != null ? Number(p.rvol).toFixed(1) + '×' : '—') + '</td><td>+' + (p.peak_move_pct != null ? Number(p.peak_move_pct).toFixed(1) : '—') + '%</td></tr>';}).join('') + '</tbody></table>';
     }
     el.innerHTML = head + alertBlock + leaderBlock;
@@ -1047,11 +1048,11 @@ async function loadSqueezeDailyLog(){
     var detailBlock = '';
     if(detail.length){
       detailBlock = '<div class="kv mt12 mb6"><b>Latest day detail · ' + escHtml(focus) + '</b></div>'
-        + '<table class="tbl"><thead><tr><th>Stock</th><th>Buy</th><th>Sell</th><th>Close</th><th>Outcome</th><th>Close P&amp;L</th></tr></thead><tbody>'
+        + '<table aria-label="Ghost operator data" class="tbl"><thead><tr><th>Stock</th><th>Buy</th><th>Sell</th><th>Close</th><th>Outcome</th><th>Close P&amp;L</th></tr></thead><tbody>'
         + detail.map(function(r){return '<tr><td><b>' + escHtml(r.symbol) + '</b><br><span class="text-gray-999 fs11">' + escHtml(r.source || '') + '</span></td><td>' + fmtUsd(r.buy) + '</td><td>' + fmtUsd(r.sell) + '</td><td>' + fmtUsd(r.session_close) + '</td><td>' + escHtml(r.outcome || 'pending') + '</td><td>' + (r.close_pnl_pct != null ? (r.close_pnl_pct >= 0 ? '+' : '') + Number(r.close_pnl_pct).toFixed(2) + '%' : '—') + '</td></tr>';}).join('') + '</tbody></table>';
     }
     el.innerHTML = head + '<div class="kv mt12 mb6"><b>Daily summaries</b></div>'
-      + '<table class="tbl"><thead><tr><th>Date</th><th>Rows</th><th>Telegram</th><th>W/L</th><th>Pending</th></tr></thead><tbody>' + summaryRows + '</tbody></table>' + detailBlock;
+      + '<table aria-label="Ghost operator data" class="tbl"><thead><tr><th>Date</th><th>Rows</th><th>Telegram</th><th>W/L</th><th>Pending</th></tr></thead><tbody>' + summaryRows + '</tbody></table>' + detailBlock;
   }catch(e){el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml(String(e)) + '</div>'}
 }
 
@@ -1102,7 +1103,7 @@ async function loadFeatureDrift(){
     if(!alerts.length){el.innerHTML = '<div class="kv"><span class="ok">&#10003;</span> Stable · ' + (g.samples||0) + ' samples</div>';return}
     var rows = alerts.map(function(a){return '<tr><td><code>' + escHtml(a.feature) + '</code></td><td>' + a.z_shift + '</td><td>' + a.recent_mean + '</td><td>' + a.baseline_mean + '</td></tr>';}).join('');
     el.innerHTML = '<div class="kv"><span class="warn">&#9888;</span> ' + alerts.length + ' drift alert(s)</div>'
-      + '<table class="tbl"><thead><tr><th>Feature</th><th>Z</th><th>Recent</th><th>Baseline</th></tr></thead><tbody>' + rows + '</tbody></table>';
+      + '<table aria-label="Ghost operator data" class="tbl"><thead><tr><th>Feature</th><th>Z</th><th>Recent</th><th>Baseline</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }catch(e){el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml(String(e)) + '</div>'}
 }
 
@@ -1142,7 +1143,7 @@ async function loadCircuitBreakers(){
       var lastFail = b.last_failure_ts ? fmtTimeAgo(b.last_failure_ts) : '—';
       return '<tr><td><b>' + escHtml(b.name || n) + '</b></td><td>' + stateBadge(b.state) + '</td><td>' + (b.failure_count||0) + '/' + (b.threshold||5) + '</td><td>' + cd + '</td><td>' + rate + '</td><td class="fs11 text-gray-888">' + totals + '</td><td class="fs11 text-gray-888">' + lastFail + '</td></tr>';
     }).join('');
-    el.innerHTML = '<table class="tbl"><thead><tr><th>API</th><th>State</th><th>Fails/Thresh</th><th>Cooldown</th><th>Rate window</th><th>Lifetime</th><th>Last fail</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    el.innerHTML = '<table aria-label="Ghost operator data" class="tbl"><thead><tr><th>API</th><th>State</th><th>Fails/Thresh</th><th>Cooldown</th><th>Rate window</th><th>Lifetime</th><th>Last fail</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }catch(e){el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml(String(e)) + '</div>'}
 }
 
@@ -1176,7 +1177,7 @@ async function loadLatency(){
     var slow = g.slowest_routes || [];
     if(slow.length){
       html += '<div class="kv mt8 mb4"><b>Slowest routes (p95)</b></div>'
-        + '<table class="tbl"><thead><tr><th>Route</th><th>p50</th><th>p95</th><th>N</th></tr></thead><tbody>'
+        + '<table aria-label="Ghost operator data" class="tbl"><thead><tr><th>Route</th><th>p50</th><th>p95</th><th>N</th></tr></thead><tbody>'
         + slow.map(function(s){return '<tr><td><code>' + escHtml(s.path||'—') + '</code></td><td>' + (s.p50_ms!=null?s.p50_ms+'ms':'—') + '</td><td>' + (s.p95_ms!=null?s.p95_ms+'ms':'—') + '</td><td>' + (s.samples!=null?s.samples:'—') + '</td></tr>';}).join('')
         + '</tbody></table>';
     }
@@ -1220,7 +1221,7 @@ async function loadDeadLetter(){
       return '<tr><td>' + fmtTimeAgo(d.ts) + '</td><td><code>' + escHtml((d.error || '').slice(0, 80)) + '</code></td><td>' + escHtml((d.text || '').slice(0, 120)) + '</td></tr>';
     }).join('');
     el.innerHTML = '<div class="kv"><b>' + items.length + '</b> failed message(s)</div>'
-      + '<table class="tbl"><thead><tr><th>When</th><th>Error</th><th>Payload</th></tr></thead><tbody>' + rows + '</tbody></table>';
+      + '<table aria-label="Ghost operator data" class="tbl"><thead><tr><th>When</th><th>Error</th><th>Payload</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }catch(e){el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml(String(e)) + '</div>'}
 }
 
@@ -1253,7 +1254,7 @@ async function loadLineage(){
       }).join(', ');
       return '<tr><td>'+fmtTimeAgo(run.ts)+'</td><td>'+(syms||'—')+'</td></tr>';
     }).join('');
-    el.innerHTML='<table class="tbl"><thead><tr><th>When</th><th>Symbols (acc · pass)</th></tr></thead><tbody>'+rows+'</tbody></table>';
+    el.innerHTML='<table aria-label="Ghost operator data" class="tbl"><thead><tr><th>When</th><th>Symbols (acc · pass)</th></tr></thead><tbody>'+rows+'</tbody></table>';
   }catch(e){el.innerHTML='<div class="kv"><span class="fail">&#10007;</span> '+escHtml(String(e))+'</div>'}
 }
 
@@ -1269,7 +1270,7 @@ async function loadAuditLog(){
     var acts=g.actions||[];
     if(!acts.length){el.innerHTML='<div class="kv">No admin actions recorded yet.</div>';return}
     var rows=acts.map(function(a){return '<tr><td>'+fmtTimeAgo(a.ts)+'</td><td><code>'+escHtml(a.action)+'</code></td><td>'+escHtml(a.detail||'')+'</td></tr>';}).join('');
-    el.innerHTML='<table class="tbl"><thead><tr><th>When</th><th>Action</th><th>Detail</th></tr></thead><tbody>'+rows+'</tbody></table>';
+    el.innerHTML='<table aria-label="Ghost operator data" class="tbl"><thead><tr><th>When</th><th>Action</th><th>Detail</th></tr></thead><tbody>'+rows+'</tbody></table>';
   }catch(e){el.innerHTML='<div class="kv"><span class="fail">&#10007;</span> '+escHtml(String(e))+'</div>'}
 }
 
@@ -1413,7 +1414,7 @@ async function loadSgAccuracy(h){
         var b = obj[k];
         return '<tr><td><b>' + escHtml(k) + '</b></td><td>' + (b.n||0) + '</td><td>' + (b.win_rate!=null?(b.win_rate*100).toFixed(0)+'%':'—') + '</td><td>' + (b.avg_return_pct!=null?(b.avg_return_pct>=0?'+':'')+b.avg_return_pct+'%':'—') + '</td></tr>';
       }).join('');
-      return '<div class="kv mt10 mb4"><b>' + title + '</b></div><table class="tbl"><thead><tr><th></th><th>N</th><th>WR</th><th>Avg ret</th></tr></thead><tbody>' + rows + '</tbody></table>';
+      return '<div class="kv mt10 mb4"><b>' + title + '</b></div><table aria-label="Ghost operator data" class="tbl"><thead><tr><th></th><th>N</th><th>WR</th><th>Avg ret</th></tr></thead><tbody>' + rows + '</tbody></table>';
     }
     if(!g.resolved_at_horizon){
       el.innerHTML = head + '<div class="kv text-gray-999">No resolved predictions at this horizon yet — cold start.</div>';
@@ -1433,7 +1434,7 @@ async function loadSgLearning(h){
     if(!profiles.length && !lessons.length){el.innerHTML = '<div class="kv text-gray-999">Cold start — no learning profiles yet. Populates as ledger predictions resolve.</div>';return}
     var html = '';
     if(profiles.length){
-      html += '<table class="tbl"><thead><tr><th>Sym</th><th>Dir</th><th>N</th><th>WR</th><th>Status</th></tr></thead><tbody>'
+      html += '<table aria-label="Ghost operator data" class="tbl"><thead><tr><th>Sym</th><th>Dir</th><th>N</th><th>WR</th><th>Status</th></tr></thead><tbody>'
         + profiles.slice(0,5).map(function(p){
           return '<tr><td><b>' + escHtml(p.symbol) + '</b></td><td>' + escHtml(p.direction||'—') + '</td><td>' + (p.sample_count||0) + '</td><td>' + (p.direction_win_rate!=null?(p.direction_win_rate*100).toFixed(0)+'%':'—') + '</td><td class="fs11">' + escHtml(p.learning_status||'—') + '</td></tr>';
         }).join('') + '</tbody></table>';
@@ -1460,7 +1461,7 @@ async function loadSgTopPick(h){
       if(cur !== null && typeof cur === 'object') cur = Object.keys(cur).map(function(k){return k + '=' + cur[k];}).join(' ');
       return '<tr><td class="fs11"><code>' + escHtml(c.key) + '</code></td><td>' + (c.passed ? '<span class="ok">&#10003;</span>' : '<span class="fail">&#10007;</span>') + '</td><td class="fs11">' + escHtml(String(cur!=null?cur:'—')) + ' <span class="text-gray-999">(' + escHtml(String(c.required||'')) + ')</span></td></tr>';
     }).join('');
-    el.innerHTML = head + '<table class="tbl"><thead><tr><th>Check</th><th></th><th>Current (need)</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    el.innerHTML = head + '<table aria-label="Ghost operator data" class="tbl"><thead><tr><th>Check</th><th></th><th>Current (need)</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }catch(e){el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml(String(e)) + '</div>'}
 }
 
@@ -1480,7 +1481,7 @@ async function loadSgShadow(){
     var rows = profiles.slice(0,12).map(function(p){
       return '<tr><td><b>' + escHtml(p.model_id||'—') + '</b><br><span class="text-gray-999 fs10">' + escHtml(p.model_family||'') + '</span></td><td>' + (p.horizon_days||'—') + 'd</td><td>' + (p.sample_count||0) + '</td><td>' + (p.win_rate!=null?(p.win_rate*100).toFixed(0)+'%':'—') + '</td><td>' + (p.profit_factor!=null?p.profit_factor:'—') + '</td><td>' + (p.net_return_pct!=null?(p.net_return_pct>=0?'+':'')+p.net_return_pct+'%':'—') + '</td><td class="fs11">' + escHtml(p.status||'—') + '</td></tr>';
     }).join('');
-    el.innerHTML = '<table class="tbl"><thead><tr><th>Model</th><th>Hz</th><th>N</th><th>WR</th><th>PF</th><th>Net</th><th>Status</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    el.innerHTML = '<table aria-label="Ghost operator data" class="tbl"><thead><tr><th>Model</th><th>Hz</th><th>N</th><th>WR</th><th>PF</th><th>Net</th><th>Status</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }catch(e){el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml(String(e)) + '</div>'}
 }
 
@@ -1496,7 +1497,7 @@ async function loadSgPromotion(){
       var dCls = r.approved_for_promotion ? 'ok' : (r.decision === 'RETIRE_CANDIDATE' ? 'fail' : 'warn');
       return '<tr><td>' + fmtTimeAgo(r.created_at) + '</td><td><b>' + escHtml(r.candidate_id||'—') + '</b></td><td><span class="' + dCls + '">' + escHtml(r.decision||'—') + '</span></td><td>' + (r.sample_count||0) + '</td><td class="fs11 text-gray-888">' + escHtml((r.reason||'').slice(0,80)) + '</td></tr>';
     }).join('');
-    el.innerHTML = '<table class="tbl"><thead><tr><th>When</th><th>Candidate</th><th>Decision</th><th>N</th><th>Reason</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    el.innerHTML = '<table aria-label="Ghost operator data" class="tbl"><thead><tr><th>When</th><th>Candidate</th><th>Decision</th><th>N</th><th>Reason</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }catch(e){el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml(String(e)) + '</div>'}
 }
 
@@ -1536,14 +1537,14 @@ async function loadResearchStatus(){
         : '<span class="ok"><b>&#10003; graduated</b></span> — normal gated mode')
       + (g.research_enabled ? '' : ' · <span class="text-gray-999">(feature disabled via env)</span>')
       + '</div>';
-    el.innerHTML = head + '<table class="tbl"><tbody>'
-      + '<tr><td>Resolved picks</td><td><b>' + (g.resolved_picks!=null?g.resolved_picks:'—') + '</b> / ' + (g.min_for_exit!=null?g.min_for_exit:'—') + ' needed to exit'
+    el.innerHTML = head + '<table aria-label="Ghost operator data" class="tbl"><tbody>'
+      + '<tr><th scope="row">Resolved picks</th><td><b>' + (g.resolved_picks!=null?g.resolved_picks:'—') + '</b> / ' + (g.min_for_exit!=null?g.min_for_exit:'—') + ' needed to exit'
       + (g.remaining ? ' · <span class="warn">' + g.remaining + ' remaining</span>' : ' · <span class="ok">threshold met</span>') + '</td></tr>'
-      + '<tr><td>Research picks (24h)</td><td>' + (g.research_today!=null?g.research_today:'—') + ' / cap ' + (g.research_daily_cap!=null?g.research_daily_cap:'—') + '</td></tr>'
-      + '<tr><td>Active picks</td><td>' + (g.active_picks!=null?g.active_picks:'—') + '</td></tr>'
-      + '<tr><td>Fires last 24h</td><td>' + (g.recent_fires_24h!=null?g.recent_fires_24h:'—') + '</td></tr>'
-      + '<tr><td>Stall detection</td><td>' + (g.stalled ? '<span class="warn">STALLED — no active picks or fires in ' + (g.stall_hours||'—') + 'h</span>' : '<span class="ok">not stalled</span>') + '</td></tr>'
-      + (g.confidence_floor != null ? '<tr><td>Research floor</td><td>' + (g.confidence_floor*100).toFixed(0) + '% confidence</td></tr>' : '')
+      + '<tr><th scope="row">Research picks (24h)</th><td>' + (g.research_today!=null?g.research_today:'—') + ' / cap ' + (g.research_daily_cap!=null?g.research_daily_cap:'—') + '</td></tr>'
+      + '<tr><th scope="row">Active picks</th><td>' + (g.active_picks!=null?g.active_picks:'—') + '</td></tr>'
+      + '<tr><th scope="row">Fires last 24h</th><td>' + (g.recent_fires_24h!=null?g.recent_fires_24h:'—') + '</td></tr>'
+      + '<tr><th scope="row">Stall detection</th><td>' + (g.stalled ? '<span class="warn">STALLED — no active picks or fires in ' + (g.stall_hours||'—') + 'h</span>' : '<span class="ok">not stalled</span>') + '</td></tr>'
+      + (g.confidence_floor != null ? '<tr><th scope="row">Research floor</th><td>' + (g.confidence_floor*100).toFixed(0) + '% confidence</td></tr>' : '')
       + '</tbody></table>';
   }catch(e){el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml(String(e)) + '</div>'}
 }
@@ -1569,7 +1570,7 @@ async function loadAgentWorkflow(){
       +'<div class="agent-stat"><span class="text-gray-8b96a8 fs10">QUARANTINED</span><b>'+(ec.quarantined||0)+'</b></div>'
       +'</div>';
     var workers=g.workers||[];
-    html+='<h4>Workers</h4><div class="agent-scroll"><table class="tbl"><thead><tr><th>Agent</th><th>Status</th><th>Model</th><th>Heartbeat</th><th>Current task</th><th>Accepted / Processed</th><th>Last error</th></tr></thead><tbody>';
+    html+='<h4>Workers</h4><div class="agent-scroll"><table aria-label="Ghost operator data" class="tbl"><thead><tr><th>Agent</th><th>Status</th><th>Model</th><th>Heartbeat</th><th>Current task</th><th>Accepted / Processed</th><th>Last error</th></tr></thead><tbody>';
     if(!workers.length) html+='<tr><td colspan="7" class="text-gray-999">No persistent worker has registered yet.</td></tr>';
     workers.forEach(function(w){
       var cls=w.online?(w.status==='ERROR'?'fail':'ok'):'fail';
@@ -1580,7 +1581,7 @@ async function loadAgentWorkflow(){
     });
     html+='</tbody></table></div>';
     html+='<div class="kv mt10"><b>Quarantine categories</b> · schema '+(cats.schema_error||0)+' · sources '+(cats.source_error||0)+' · injection '+(cats.injection_suspected||0)+' · policy '+(cats.policy_violation||0)+'</div>';
-    html+='<h4 class="mt12">Recent tasks</h4><div class="agent-scroll"><table class="tbl"><thead><tr><th>Created</th><th>Symbol</th><th>Type</th><th>Status</th><th>Agent</th><th>Attempts</th><th>Last error</th></tr></thead><tbody>';
+    html+='<h4 class="mt12">Recent tasks</h4><div class="agent-scroll"><table aria-label="Ghost operator data" class="tbl"><thead><tr><th>Created</th><th>Symbol</th><th>Type</th><th>Status</th><th>Agent</th><th>Attempts</th><th>Last error</th></tr></thead><tbody>';
     var tasks=g.recent_tasks||[];
     if(!tasks.length) html+='<tr><td colspan="7" class="text-gray-999">No tasks recorded.</td></tr>';
     tasks.forEach(function(t){
@@ -1590,7 +1591,7 @@ async function loadAgentWorkflow(){
         +'<td class="fs11">'+escHtml((t.last_error||'—').slice(0,180))+'</td></tr>';
     });
     html+='</tbody></table></div>';
-    html+='<h4 class="mt12">Recent evidence</h4><div class="agent-scroll"><table class="tbl"><thead><tr><th>Submitted</th><th>Agent</th><th>Result</th><th>Category</th><th>Summary</th><th>Repair</th></tr></thead><tbody>';
+    html+='<h4 class="mt12">Recent evidence</h4><div class="agent-scroll"><table aria-label="Ghost operator data" class="tbl"><thead><tr><th>Submitted</th><th>Agent</th><th>Result</th><th>Category</th><th>Summary</th><th>Repair</th></tr></thead><tbody>';
     var evidence=g.recent_evidence||[];
     if(!evidence.length) html+='<tr><td colspan="6" class="text-gray-999">No evidence submitted.</td></tr>';
     evidence.forEach(function(e){

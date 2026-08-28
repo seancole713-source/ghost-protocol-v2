@@ -152,6 +152,41 @@ def test_diagnostics_404_without_admin_cookie(monkeypatch):
     assert r.status_code == 404
 
 
+def test_debug_signal_is_private_and_uses_canonical_research_path(monkeypatch):
+    monkeypatch.setenv("CRON_SECRET", "testsecret")
+    monkeypatch.setattr("core.prices.get_price", lambda *_args, **_kwargs: 10.0)
+    monkeypatch.setattr(
+        "core.signal_engine.predict_live_ex",
+        lambda symbol, asset_type, research_mode, scores: (
+            ("UP", 0.71, 10.0, 10.5, 9.7), None,
+        ),
+    )
+    with _client_with_test_mode(monkeypatch) as client:
+        anonymous = client.get("/api/debug-signal/WOLF")
+        authorized = client.get(
+            "/api/debug-signal/WOLF", headers={"x-cron-secret": "testsecret"},
+        )
+
+    assert anonymous.status_code == 404
+    assert authorized.status_code == 200
+    assert authorized.json()["signal"][0] == "UP"
+    assert "env_MIN_ALERT_CONFIDENCE" not in authorized.json()
+
+
+def test_database_introspection_routes_are_private(monkeypatch):
+    monkeypatch.setenv("CRON_SECRET", "testsecret")
+    with _client_with_test_mode(monkeypatch) as client:
+        schema = client.get("/api/schema")
+        probe = client.get("/api/db-probe")
+
+    assert schema.status_code == 404
+    assert probe.status_code == 404
+
+
+def test_cors_has_no_wildcard_default():
+    assert wolf_app._CORS_ORIGINS != ["*"]
+
+
 def test_rate_limit_returns_429_over_limit(monkeypatch):
     """A public /api/ path 429s once an IP exceeds RATE_LIMIT_RPM in the window."""
     monkeypatch.setenv("RATE_LIMIT_ENABLED", "1")

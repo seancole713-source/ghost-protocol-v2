@@ -11,6 +11,7 @@ from core.research_contracts import (
     list_contracts,
     is_live_compatible,
     live_compatible_contract,
+    CURRENT_LIVE_CONTRACT_VERSION,
 )
 
 
@@ -141,7 +142,7 @@ def test_contract_is_frozen():
 # ── live-compatibility boundary ────────────────────────────────────────────
 
 def test_is_live_compatible_true_for_tp_sl_swing(monkeypatch):
-    c = get_contract("tp_sl_swing", "v2")
+    c = get_contract("tp_sl_swing", CURRENT_LIVE_CONTRACT_VERSION)
     assert c is not None
     # Mock the live schema functions at their source module
     monkeypatch.setattr(
@@ -179,7 +180,7 @@ def test_retired_v1_is_not_live_compatible():
 
 
 def test_is_live_compatible_false_on_schema_mismatch(monkeypatch):
-    c = get_contract("tp_sl_swing", "v2")
+    c = get_contract("tp_sl_swing", CURRENT_LIVE_CONTRACT_VERSION)
     assert c is not None
     monkeypatch.setattr(
         "core.signal_engine._v3_feature_schema",
@@ -189,7 +190,7 @@ def test_is_live_compatible_false_on_schema_mismatch(monkeypatch):
 
 
 def test_live_compatible_contract_returns_tp_sl_swing(monkeypatch):
-    c = get_contract("tp_sl_swing", "v2")
+    c = get_contract("tp_sl_swing", CURRENT_LIVE_CONTRACT_VERSION)
     assert c is not None
     monkeypatch.setattr(
         "core.signal_engine._v3_feature_schema",
@@ -210,13 +211,13 @@ def test_live_compatible_contract_returns_tp_sl_swing(monkeypatch):
     live = live_compatible_contract()
     assert live is not None
     assert live.name == "tp_sl_swing"
-    assert live.version == "v2"
+    assert live.version == CURRENT_LIVE_CONTRACT_VERSION
 
 
 # ── outcome domain invariants ──────────────────────────────────────────────
 
 def test_tp_sl_outcomes_include_expired():
-    c = get_contract("tp_sl_swing", "v2")
+    c = get_contract("tp_sl_swing", CURRENT_LIVE_CONTRACT_VERSION)
     assert c is not None
     assert "EXPIRED" in c.outcome_domain.terminal_outcomes
     assert c.outcome_domain.expired_is_non_win is True

@@ -7,9 +7,134 @@ is calibrated to reality or just guessing.
 from __future__ import annotations
 
 import math
+import os
+import random
 import time
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional, Sequence
+from zoneinfo import ZoneInfo
+
 from core.quiet import note_suppressed
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+
+
+def _symbol_session_key(row: Dict[str, Any]) -> Optional[tuple[str, str]]:
+    """Return the statistical sampling unit for one persisted evaluation.
+
+    A symbol can be evaluated by several model generations during one market
+    session. Those rows share the same future price path and are therefore
+    pseudo-replicates, not independent Bernoulli trials. Prefer the persisted
+    session label and derive it from the issuance timestamp only for older rows.
+    """
+    symbol = str(row.get("symbol") or "").strip().upper()
+    if not symbol:
+        return None
+    trade_date = str(row.get("trade_date") or "").strip()
+    if trade_date:
+        return symbol, trade_date
+    try:
+        eval_ts = int(row.get("eval_ts"))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    # Reject sentinel/test-scale timestamps rather than fabricating a 1970
+    # market session. Production shadow issuance timestamps are modern epoch
+    # seconds; callers with synthetic clocks can provide trade_date explicitly.
+    if eval_ts < 1_000_000_000:
+        return None
+    try:
+        zone = ZoneInfo(os.getenv("GHOST_TZ", "America/Chicago"))
+    except Exception:
+        zone = timezone.utc
+    return symbol, datetime.fromtimestamp(eval_ts, zone).strftime("%Y-%m-%d")
+
+
+def independent_symbol_session_rows(
+    rows: Sequence[Dict[str, Any]],
+) -> tuple[List[Dict[str, Any]], int]:
+    """Keep the earliest eligible row per symbol/session.
+
+    Selection is outcome-blind and deterministic. Rows without enough temporal
+    identity are retained rather than silently discarded, but they cannot
+    collide with another row. The returned count makes pseudo-replication
+    visible on every measurement surface that uses this helper.
+    """
+    chosen: Dict[tuple[str, str], tuple[int, int, Dict[str, Any]]] = {}
+    passthrough: List[tuple[int, Dict[str, Any]]] = []
+    for index, row in enumerate(rows):
+        key = _symbol_session_key(row)
+        if key is None:
+            passthrough.append((index, row))
+            continue
+        try:
+            eval_ts = int(row.get("eval_ts"))
+        except (TypeError, ValueError, OverflowError):
+            eval_ts = index
+        candidate = (eval_ts, index, row)
+        previous = chosen.get(key)
+        if previous is None or candidate[:2] < previous[:2]:
+            chosen[key] = candidate
+    kept = passthrough + [(index, row) for _, index, row in chosen.values()]
+    kept.sort(key=lambda item: item[0])
+    result = [row for _, row in kept]
+    return result, max(0, len(rows) - len(result))
+
+
+def session_block_bootstrap_interval(
+    rows: Sequence[Dict[str, Any]],
+    *,
+    win_key: str = "win",
+    samples: int = 3000,
+) -> Optional[Dict[str, Any]]:
+    """Cluster-bootstrap win rate by market session.
+
+    Symbols observed on the same date share broad-market shocks, so even one
+    row per symbol/session is not fully independent cross-sectionally. Resample
+    whole dates to preserve that correlation and expose a conservative second
+    proof bound beside Wilson. A fixed seed keeps API results reproducible.
+    """
+    blocks: Dict[str, tuple[int, int]] = {}
+    for row in rows:
+        key = _symbol_session_key(row)
+        if key is None:
+            continue
+        session = key[1]
+        value = row.get(win_key)
+        if value is None:
+            continue
+        wins, total = blocks.get(session, (0, 0))
+        blocks[session] = (wins + (1 if bool(value) else 0), total + 1)
+    block_values = list(blocks.values())
+    if len(block_values) < 2:
+        return None
+    draws = max(500, min(10000, int(samples)))
+    rng = random.Random(70_2026)
+    rates: List[float] = []
+    block_count = len(block_values)
+    for _ in range(draws):
+        wins = 0
+        total = 0
+        for _ in range(block_count):
+            block_wins, block_total = block_values[rng.randrange(block_count)]
+            wins += block_wins
+            total += block_total
+        if total:
+            rates.append(wins / total)
+    if not rates:
+        return None
+    rates.sort()
+
+    def percentile(p: float) -> float:
+        index = min(len(rates) - 1, max(0, round((len(rates) - 1) * p)))
+        return round(rates[index], 4)
+
+    return {
+        "method": "market_session_block_bootstrap",
+        "sessions": block_count,
+        "samples": len(rates),
+        "estimate": round(sum(wins for wins, _ in block_values)
+                          / sum(total for _, total in block_values), 4),
+        "low": percentile(0.025),
+        "high": percentile(0.975),
+    }
 
 
 def wilson_interval(wins: int, n: int, z: float = 1.96) -> Dict[str, float]:
@@ -163,7 +288,7 @@ def contract_win_test_status(*, wins: int, n: int, target: float = 0.70) -> Dict
     else:
         status = "not_70"
     return {
-        "threshold": 0.70,
+        "threshold": round(target_f, 4),
         "target_win_rate": round(target_f, 4),
         "n": n_i,
         "wins": w_i,
@@ -221,12 +346,21 @@ def contract_70_symbol_breakdown(rows: Sequence[Dict[str, Any]], *, target: floa
 
 def summarize_shadow_outcomes(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     """Summarize ghost_shadow_outcomes-like rows for Watcher endpoint/tests."""
+    raw_resolved = [
+        r for r in rows
+        if str(r.get("outcome") or "").upper() in ("WIN", "LOSS", "EXPIRED")
+    ]
+    sampled, duplicate_rows_excluded = independent_symbol_session_rows(raw_resolved)
     resolved = []
-    for r in rows:
+    for r in sampled:
         outcome = str(r.get("outcome") or "").upper()
-        if outcome not in ("WIN", "LOSS", "EXPIRED"):
-            continue
-        resolved.append({"prob": r.get("up_prob"), "win": outcome == "WIN", "symbol": r.get("symbol")})
+        resolved.append({
+            "prob": r.get("up_prob"),
+            "win": outcome == "WIN",
+            "symbol": r.get("symbol"),
+            "trade_date": r.get("trade_date"),
+            "eval_ts": r.get("eval_ts"),
+        })
     bins = calibration_bins(resolved, prob_key="prob", outcome_key="win")
     high = [r for r in resolved if r.get("prob") is not None and float(r.get("prob")) >= 0.55]
     high_wins = sum(1 for r in high if r["win"])
@@ -240,9 +374,18 @@ def summarize_shadow_outcomes(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         target_wr = 0.70
     brier = brier_score(resolved, prob_key="prob", outcome_key="win")
     contract_70 = contract_win_test_status(wins=high70_wins, n=len(high70), target=target_wr)
+    contract_70["session_block_bootstrap"] = session_block_bootstrap_interval(high70)
+    block = contract_70["session_block_bootstrap"]
+    contract_70["proof_pass"] = bool(
+        contract_70["wilson_pass"] and block
+        and float(block["low"]) >= target_wr
+    )
     contract_70["symbols"] = contract_70_symbol_breakdown(resolved, target=target_wr)
     return {
         "resolved_n": len(resolved),
+        "raw_resolved_rows": len(raw_resolved),
+        "duplicate_rows_excluded": duplicate_rows_excluded,
+        "sampling_unit": "earliest_eligible_prediction_per_symbol_market_session",
         "high_confidence": {
             "threshold": 0.55,
             "n": len(high),
@@ -257,6 +400,85 @@ def summarize_shadow_outcomes(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def summarize_directional_outcomes(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    """Score lineage-complete UP and DOWN predictions on their own probability.
+
+    ``up_prob`` is not the probability that a DOWN prediction succeeds. Current
+    shadow rows persist ``model_prob`` for the selected direction, so this view
+    prevents DOWN calls from corrupting Brier score and calibration bins. Legacy
+    rows without direction/model lineage remain visible in the older contract
+    view but cannot prove the behavior of the current directional engine.
+    """
+    eligible: List[Dict[str, Any]] = []
+    for row in rows:
+        outcome = str(row.get("outcome") or "").upper()
+        direction = str(row.get("direction") or "").upper()
+        try:
+            probability = float(row.get("model_prob"))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if (outcome not in ("WIN", "LOSS", "EXPIRED")
+                or direction not in ("UP", "DOWN")
+                or not 0.0 <= probability <= 1.0
+                or not row.get("model_sha256")):
+            continue
+        item = dict(row)
+        item["_direction_probability"] = probability
+        eligible.append(item)
+    sampled, pseudo_replicates = independent_symbol_session_rows(eligible)
+    scored = [{
+        "prob": row["_direction_probability"],
+        "win": str(row.get("outcome") or "").upper() == "WIN",
+        "direction": str(row.get("direction") or "").upper(),
+        "symbol": row.get("symbol"),
+        "trade_date": row.get("trade_date"),
+        "eval_ts": row.get("eval_ts"),
+    } for row in sampled]
+    high = [row for row in scored if row["prob"] >= 0.70]
+    high_wins = sum(1 for row in high if row["win"])
+    by_direction = []
+    for direction in ("UP", "DOWN"):
+        direction_rows = [row for row in scored if row["direction"] == direction]
+        wins = sum(1 for row in direction_rows if row["win"])
+        by_direction.append({
+            "direction": direction,
+            "n": len(direction_rows),
+            "wins": wins,
+            "win_rate": round(wins / len(direction_rows), 4) if direction_rows else None,
+            "brier": brier_score(direction_rows),
+        })
+    block = session_block_bootstrap_interval(high)
+    return {
+        "probability_field": "model_prob",
+        "lineage_required": True,
+        "evidence_scope": "lineage_complete_mixed_historical_generations",
+        "proof_eligible": False,
+        "note": (
+            "Descriptive only: rows span prior model/schema generations. The "
+            "registered forward ledger is the authority for promotion."
+        ),
+        "sampling_unit": "earliest_lineage_complete_prediction_per_symbol_market_session",
+        "raw_lineage_complete_rows": len(eligible),
+        "resolved_n": len(scored),
+        "pseudo_replicates_excluded": pseudo_replicates,
+        "brier": brier_score(scored),
+        "bins": calibration_bins(scored),
+        "high_confidence": {
+            "threshold": 0.70,
+            "n": len(high),
+            "wins": high_wins,
+            "win_rate": round(high_wins / len(high), 4) if high else None,
+            "wilson": wilson_interval(high_wins, len(high)) if high else None,
+            "session_block_bootstrap": block,
+            "proof_pass": bool(
+                high and wilson_interval(high_wins, len(high))["low"] >= 0.70
+                and block and float(block["low"]) >= 0.70
+            ),
+        },
+        "by_direction": by_direction,
+    }
+
+
 def watcher_summary(*, days: int = 30, limit: int = 5000) -> Dict[str, Any]:
     """Read-only live summary from existing Ghost tables."""
     from core.db import db_conn
@@ -267,7 +489,8 @@ def watcher_summary(*, days: int = 30, limit: int = 5000) -> Dict[str, Any]:
         try:
             cur.execute(
                 """
-                SELECT symbol, eval_ts, up_prob, outcome, pnl_pct
+                SELECT symbol, trade_date, eval_ts, up_prob, outcome, pnl_pct,
+                       direction, model_prob, model_sha256
                 FROM ghost_shadow_outcomes
                 WHERE eval_ts >= %s AND outcome IN ('WIN','LOSS','EXPIRED')
                 ORDER BY eval_ts DESC
@@ -276,7 +499,12 @@ def watcher_summary(*, days: int = 30, limit: int = 5000) -> Dict[str, Any]:
                 (cutoff, max(1, min(20000, int(limit)))),
             )
             rows = [
-                {"symbol": r[0], "eval_ts": r[1], "up_prob": r[2], "outcome": r[3], "pnl_pct": r[4]}
+                {
+                    "symbol": r[0], "trade_date": r[1], "eval_ts": r[2],
+                    "up_prob": r[3], "outcome": r[4], "pnl_pct": r[5],
+                    "direction": r[6], "model_prob": r[7],
+                    "model_sha256": r[8],
+                }
                 for r in cur.fetchall()
             ]
         except Exception:
@@ -300,6 +528,7 @@ def watcher_summary(*, days: int = 30, limit: int = 5000) -> Dict[str, Any]:
             skip_rows = []
 
     shadow = summarize_shadow_outcomes(rows)
+    shadow["directional_lineage_complete"] = summarize_directional_outcomes(rows)
     # Forward-only 70+ proof (read-only): if a candidate universe has been
     # pre-registered, score ONLY outcomes resolved after registration so the
     # 70+ claim can never be back-fit to the selection window. Absent a

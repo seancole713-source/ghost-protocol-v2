@@ -18,6 +18,7 @@ class TestPreregistration:
         assert p["verdict_version"] == v.VERDICT_VERSION
         assert p["preregistered_at"] == "2026-07-16"
         assert p["status_at_registration"] == "UNPROVEN_AT_CURRENT_DATA"
+        assert p["independence_amendment"]["amended_at"] == "2026-08-27"
         assert len(p["evidence_at_registration"]) >= 5
         assert p["falsified_if"]["min_n"] == 100
         assert p["falsified_if"]["win_rate_below"] == 0.65
@@ -34,7 +35,7 @@ class TestPreregistration:
             raise AssertionError("preregistration touched the DB")
 
         monkeypatch.setattr(db, "db_conn", boom)
-        assert v.preregistration()["verdict_version"] == "1.0"
+        assert v.preregistration()["verdict_version"] == v.VERDICT_VERSION
 
 
 # ── Verdict statuses under controlled evidence ───────────────────────
@@ -42,9 +43,11 @@ class TestPreregistration:
 def _rows(wins: int, losses: int, prob: float = 0.75):
     rows = []
     for i in range(wins):
-        rows.append({"symbol": f"W{i}", "eval_ts": 1, "up_prob": prob, "outcome": "WIN"})
+        rows.append({"symbol": f"W{i}", "trade_date": f"W{i}", "eval_ts": 1,
+                     "up_prob": prob, "outcome": "WIN"})
     for i in range(losses):
-        rows.append({"symbol": f"L{i}", "eval_ts": 1, "up_prob": prob, "outcome": "LOSS"})
+        rows.append({"symbol": f"L{i}", "trade_date": f"L{i}", "eval_ts": 1,
+                     "up_prob": prob, "outcome": "LOSS"})
     return rows
 
 
@@ -96,7 +99,8 @@ class TestVerdict:
     def test_expired_counts_as_non_win(self, monkeypatch):
         # 2026-07-14 correction: EXPIRED is in the denominator.
         rows = _rows(30, 0) + [
-            {"symbol": f"E{i}", "eval_ts": 1, "up_prob": 0.75, "outcome": "EXPIRED"}
+            {"symbol": f"E{i}", "trade_date": f"E{i}", "eval_ts": 1,
+             "up_prob": 0.75, "outcome": "EXPIRED"}
             for i in range(30)
         ]
         self._patch(monkeypatch, rows)

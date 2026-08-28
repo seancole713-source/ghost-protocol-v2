@@ -2,6 +2,7 @@
 import datetime as dt
 
 from core.market_hours import (
+    in_daily_model_issuance_window,
     is_us_after_hours,
     is_us_extended_hours,
     is_us_premarket,
@@ -84,6 +85,15 @@ def test_half_day_closes_early():
     assert is_us_rth(t_before) is True
     assert is_us_rth(t_after) is False
     assert is_us_after_hours(t_after) is True
+
+
+def test_daily_model_issuance_window_tracks_normal_and_early_close():
+    assert in_daily_model_issuance_window(_ct(2026, 6, 10, 15, 4)) is False
+    assert in_daily_model_issuance_window(_ct(2026, 6, 10, 15, 5)) is True
+    assert in_daily_model_issuance_window(_ct(2026, 6, 10, 15, 59)) is True
+    assert in_daily_model_issuance_window(_ct(2026, 6, 10, 16, 0)) is False
+    assert in_daily_model_issuance_window(_ct(2026, 11, 27, 12, 5)) is True
+    assert in_daily_model_issuance_window(_ct(2026, 11, 27, 13, 0)) is False
 
 
 def test_holiday_env_override():
