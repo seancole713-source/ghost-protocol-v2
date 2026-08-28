@@ -2604,9 +2604,11 @@ def health():
         tasks = scheduler.status()
         mc = next((t for t in tasks if t["name"] == "morning_card"), None)
         if mc:
-            last_card_min = int(mc.get("last_run_ago_s", 0) / 60)
-            if last_card_min > 1440:
-                issues.append("Morning card last ran " + str(last_card_min) + "m ago")
+            last_run_ago_s = mc.get("last_run_ago_s")
+            if last_run_ago_s is not None:
+                last_card_min = int(last_run_ago_s / 60)
+                if last_card_min > 1440:
+                    issues.append("Morning card last ran " + str(last_card_min) + "m ago")
     except Exception as _se:
         LOGGER.warning("health.scheduler_status failed: " + str(_se)[:120])
 

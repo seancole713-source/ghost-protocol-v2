@@ -117,6 +117,26 @@ def test_api_health_alias_calls_health(monkeypatch):
     assert "telegram_configured" not in out and "tasks" not in out
 
 
+def test_health_accepts_scheduler_task_that_has_not_run(monkeypatch):
+    import core.prices
+    import core.scheduler
+
+    def unavailable_db():
+        raise RuntimeError("test database unavailable")
+
+    monkeypatch.setattr(wolf_app, "db_conn", unavailable_db)
+    monkeypatch.setattr(core.prices, "check_feeds", lambda: {})
+    monkeypatch.setattr(
+        core.scheduler,
+        "status",
+        lambda: [{"name": "morning_card", "last_run_ago_s": None}],
+    )
+
+    out = wolf_app.health()
+
+    assert out["last_morning_card_min"] is None
+
+
 def test_api_health_route_registered_once():
     paths = [getattr(r, "path", "") for r in wolf_app.APP.routes]
     assert paths.count("/api/health") == 1
