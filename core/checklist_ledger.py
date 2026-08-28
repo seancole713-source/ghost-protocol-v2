@@ -103,10 +103,33 @@ def ensure_checklist_tables(cur) -> None:
         "ALTER TABLE ghost_checklist_snapshots "
         "ALTER COLUMN outcome_contract SET NOT NULL"
     )
+    # Shadow lane: snapshots frozen for the daily virtual picks in
+    # ghost_shadow_outcomes. `lane` keeps the cohorts separate -- a shadow
+    # sample and an official sample are never pooled merely because their
+    # scores look alike (shadow evidence coverage is systematically thinner).
+    cur.execute(
+        "ALTER TABLE ghost_checklist_snapshots "
+        "ADD COLUMN IF NOT EXISTS lane VARCHAR(16)"
+    )
+    cur.execute(
+        "UPDATE ghost_checklist_snapshots SET lane='official' WHERE lane IS NULL"
+    )
+    cur.execute(
+        "ALTER TABLE ghost_checklist_snapshots ALTER COLUMN lane SET NOT NULL"
+    )
+    cur.execute(
+        "ALTER TABLE ghost_checklist_snapshots "
+        "ADD COLUMN IF NOT EXISTS shadow_outcome_id BIGINT"
+    )
     cur.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_checklist_snapshots_prediction "
         "ON ghost_checklist_snapshots (prediction_id) "
         "WHERE prediction_id IS NOT NULL"
+    )
+    cur.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_checklist_snapshots_shadow "
+        "ON ghost_checklist_snapshots (shadow_outcome_id) "
+        "WHERE shadow_outcome_id IS NOT NULL"
     )
     cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_checklist_snapshots_symbol_time "
@@ -137,24 +160,35 @@ def store_snapshot_with_cursor(
     deadline_ts: Optional[int] = None,
     prediction_id: Optional[int] = None,
     outcome_contract: str = DEFAULT_OUTCOME_CONTRACT,
+    lane: str = "official",
+    shadow_outcome_id: Optional[int] = None,
 ) -> int:
     """Insert one immutable issue-time snapshot using the caller's transaction.
 
-    The caller supplies the exact prediction timestamp.  ``prediction_id`` is
-    idempotent: a retry returns the already-linked row instead of recollecting
-    or replacing evidence.
+    The caller supplies the exact prediction timestamp.  ``prediction_id`` (or
+    ``shadow_outcome_id`` for the shadow lane) is idempotent: a retry returns
+    the already-linked row instead of recollecting or replacing evidence.
     """
     validate_outcome_contract()
+    if prediction_id is not None and shadow_outcome_id is not None:
+        raise ValueError("a snapshot links to one lane: prediction_id or shadow_outcome_id, not both")
     issued = int(issued_at)
+    # Postgres allows one conflict target per statement, and the two link
+    # columns carry independent partial unique indexes.
+    conflict_clause = (
+        "ON CONFLICT (shadow_outcome_id) WHERE shadow_outcome_id IS NOT NULL"
+        if shadow_outcome_id is not None
+        else "ON CONFLICT (prediction_id) WHERE prediction_id IS NOT NULL"
+    )
     cur.execute(
         """
         INSERT INTO ghost_checklist_snapshots
             (symbol, direction, checklist_version, outcome_contract, issued_at,
              hold_bars, score_pct, blocked, entry_price, target_price,
              stop_price, deadline_ts, evidence_json, report_json,
-             prediction_id, created_at)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-        ON CONFLICT (prediction_id) WHERE prediction_id IS NOT NULL
+             prediction_id, lane, shadow_outcome_id, created_at)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        """ + conflict_clause + """
         DO NOTHING
         RETURNING id
         """,
@@ -174,12 +208,23 @@ def store_snapshot_with_cursor(
             json.dumps(evidence, default=str),
             json.dumps(report, default=str),
             prediction_id,
+            (lane or "official"),
+            shadow_outcome_id,
             issued,
         ),
     )
     inserted = cur.fetchone()
     if inserted is not None:
         return int(inserted[0])
+    if shadow_outcome_id is not None:
+        cur.execute(
+            "SELECT id FROM ghost_checklist_snapshots WHERE shadow_outcome_id=%s",
+            (shadow_outcome_id,),
+        )
+        existing = cur.fetchone()
+        if existing is None:
+            raise RuntimeError("checklist snapshot idempotency lookup failed")
+        return int(existing[0])
     if prediction_id is None:
         raise RuntimeError("checklist snapshot insert returned no id")
     cur.execute(
@@ -205,6 +250,8 @@ def store_snapshot(
     deadline_ts: Optional[int] = None,
     prediction_id: Optional[int] = None,
     outcome_contract: str = DEFAULT_OUTCOME_CONTRACT,
+    lane: str = "official",
+    shadow_outcome_id: Optional[int] = None,
 ) -> int:
     """Persist one immutable snapshot with an exact caller-supplied issue time."""
     from core.db import db_conn
@@ -224,6 +271,8 @@ def store_snapshot(
             deadline_ts=deadline_ts,
             prediction_id=prediction_id,
             outcome_contract=outcome_contract,
+            lane=lane,
+            shadow_outcome_id=shadow_outcome_id,
         )
         conn.commit()
         return row_id
@@ -261,13 +310,20 @@ def resolved_samples_for_calibration(
     direction: str,
     symbol: Optional[str] = None,
     min_issued_before: Optional[int] = None,
+    lane: str = "official",
 ) -> List[Dict[str, Any]]:
-    """Resolved rows from one exact prospective calibration cohort only."""
+    """Resolved rows from one exact prospective calibration cohort only.
+
+    ``lane`` is part of the cohort identity: shadow-lane samples (virtual
+    daily picks with thinner evidence coverage) are never pooled with
+    official-pick samples unless a caller explicitly asks for that lane.
+    """
     import time as _time
 
     cohort = (
         str(checklist_version), int(hold_bars), str(outcome_contract),
         str(direction).upper(), (symbol or "").upper() or None,
+        str(lane or "official"),
     )
     cache_key = repr(cohort)
     if min_issued_before is None:
@@ -285,8 +341,9 @@ def resolved_samples_for_calibration(
             "hold_bars=%s",
             "outcome_contract=%s",
             "direction=%s",
+            "lane=%s",
         ]
-        params: List[Any] = [cohort[0], cohort[1], cohort[2], cohort[3]]
+        params: List[Any] = [cohort[0], cohort[1], cohort[2], cohort[3], cohort[5]]
         if cohort[4] is not None:
             clauses.append("symbol=%s")
             params.append(cohort[4])
@@ -451,5 +508,42 @@ def resolve_open_snapshots(limit: int = 100) -> Dict[str, Any]:
             resolved += 1
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning("checklist resolve failed for snapshot %s: %s", snap_id, str(exc)[:160])
+
+    return {"ok": True, "resolved": resolved, "pending_checked": len(pairs)}
+
+
+def resolve_open_shadow_snapshots(limit: int = 200) -> Dict[str, Any]:
+    """Scheduler job: copy resolved shadow-pick outcomes onto their snapshots.
+
+    The shadow ledger (ghost_shadow_outcomes, resolved by the same TP/SL
+    bar-path machinery as live picks) is the outcome source of truth for the
+    shadow lane; this job never decides an outcome itself. EXPIRED stays in
+    the denominator as a non-win, matching contract-70.
+    """
+    from core.db import db_conn
+
+    resolved = 0
+    with db_conn() as conn:
+        cur = conn.cursor()
+        ensure_checklist_tables(cur)
+        cur.execute(
+            """
+            SELECT s.id, o.outcome, o.exit_price
+              FROM ghost_checklist_snapshots s
+              JOIN ghost_shadow_outcomes o ON o.id = s.shadow_outcome_id
+             WHERE s.outcome IS NULL
+               AND o.outcome IN ('WIN', 'LOSS', 'EXPIRED')
+             LIMIT %s
+            """,
+            (max(1, min(500, int(limit))),),
+        )
+        pairs = cur.fetchall()
+
+    for snap_id, outcome, exit_price in pairs:
+        try:
+            resolve_snapshot(snap_id, outcome=outcome, resolved_price=exit_price)
+            resolved += 1
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("shadow checklist resolve failed for snapshot %s: %s", snap_id, str(exc)[:160])
 
     return {"ok": True, "resolved": resolved, "pending_checked": len(pairs)}

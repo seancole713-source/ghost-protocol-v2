@@ -1622,6 +1622,19 @@ async def lifespan(app: FastAPI):
             return result
 
         scheduler.register("checklist_resolver", _checklist_resolver_job, interval_s=1800)
+        # Shadow-lane twin of the checklist resolver: copies resolved shadow-pick
+        # outcomes (ghost_shadow_outcomes) onto their frozen checklist snapshots.
+        # This is the lane that keeps accruing calibration samples while the
+        # official engine is paused — the daily virtual picks are its game play.
+        from core.checklist_ledger import resolve_open_shadow_snapshots as _shadow_checklist_resolver
+
+        def _shadow_checklist_resolver_job():
+            result = _shadow_checklist_resolver()
+            if not isinstance(result, dict) or not result.get("ok", False):
+                raise RuntimeError(f"shadow checklist resolver failed: {result}")
+            return result
+
+        scheduler.register("checklist_shadow_resolver", _shadow_checklist_resolver_job, interval_s=1800)
         # Shadow evidence scoring: turns ACCEPTED agent-workflow research
         # (core.agent_workflow) into a deterministic five-dimension quality score
         # (core.evidence_scoring) and persists it to a shadow-only feature ledger
