@@ -211,28 +211,49 @@ def _yoy_from_series(series: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     return {"latest": latest, "prior": prior}
 
 
-def get_fundamentals(symbol: str) -> Dict[str, Any]:
-    """Best-effort SEC fundamentals for a symbol.
+def _filed_ts(value: Any) -> Optional[int]:
+    """Epoch seconds for an XBRL ``filed`` date string (YYYY-MM-DD)."""
+    try:
+        d = _dt.date.fromisoformat(str(value)[:10])
+        return int(_dt.datetime(d.year, d.month, d.day, tzinfo=_dt.timezone.utc).timestamp())
+    except Exception:
+        return None
 
-    Returns a dict using the field names ``core.super_ghost._evaluate_company``
-    already reads: ``actual_eps``/``eps_actual``, ``eps_year_ago``,
-    ``revenue``, ``revenue_year_ago``, ``revenue_yoy``. ``available`` is True
-    only if at least one of EPS or revenue resolved.
+
+def _apply_asof_filter(out: Dict[str, Any], asof_ts: int) -> Dict[str, Any]:
+    """Drop any fact filed after asof_ts so a historical read can't see the future.
+
+    EPS and revenue come from independent SEC concepts that can straddle
+    asof_ts differently, so each is gated on its own ``*_filed_ts`` rather
+    than blanking the whole record together.
     """
-    sym = (symbol or "").strip().upper()
-    out: Dict[str, Any] = {"available": False, "symbol": sym, "source": "sec_xbrl"}
-    if not sym:
+    if not out.get("available"):
         return out
-    now = time.time()
-    cached = _cache.get(sym)
-    if cached and (now - cached[0]) < _CACHE_TTL_S:
-        return dict(cached[1])
+    result = dict(out)
+    eps_filed = result.get("eps_filed_ts")
+    if eps_filed is None or eps_filed > asof_ts:
+        for k in ("actual_eps", "eps_actual", "eps_year_ago", "eps_period", "eps_basis", "eps_tag", "eps_filed_ts"):
+            result.pop(k, None)
+    rev_filed = result.get("revenue_filed_ts")
+    if rev_filed is None or rev_filed > asof_ts:
+        for k in ("revenue", "revenue_year_ago", "revenue_yoy", "revenue_period", "revenue_tag", "revenue_filed_ts"):
+            result.pop(k, None)
+    result["available"] = ("eps_actual" in result) or ("revenue" in result)
+    if not result["available"]:
+        result["reason"] = "no_facts_known_as_of"
+    result["asof_ts"] = asof_ts
+    return result
 
+
+def _fetch_fundamentals_now(sym: str) -> Dict[str, Any]:
+    """Uncached live SEC XBRL fetch. Always a present-day read -- SEC's
+    companyconcept API has no as-of mode. Any historical gating happens in
+    ``get_fundamentals`` via ``_apply_asof_filter``, never here."""
+    out: Dict[str, Any] = {"available": False, "symbol": sym, "source": "sec_xbrl"}
     cik = cik_for_symbol(sym)
     if not cik:
         out["reason"] = "no_cik_mapping"
-        _cache[sym] = (now, out)
-        return dict(out)
+        return out
 
     # EPS series (diluted preferred, basic fallback).
     eps_series: List[Dict[str, Any]] = []
@@ -253,6 +274,7 @@ def get_fundamentals(symbol: str) -> Dict[str, Any]:
             out["eps_year_ago"] = prior["val"]
             out["eps_period"] = f"{latest.get('fy')} {latest.get('fp')}"
             out["eps_basis"] = "yoy_trend"  # not a consensus surprise; honest label
+            out["eps_filed_ts"] = _filed_ts(latest.get("filed"))
             out["available"] = True
 
     # Revenue series.
@@ -274,13 +296,37 @@ def get_fundamentals(symbol: str) -> Dict[str, Any]:
             if prior and prior > 0:
                 out["revenue_yoy"] = (latest - prior) / prior
             out["revenue_period"] = f"{rev_yoy['latest'].get('fy')} {rev_yoy['latest'].get('fp')}"
+            out["revenue_filed_ts"] = _filed_ts(rev_yoy["latest"].get("filed"))
             out["available"] = True
 
     if not out["available"]:
         out["reason"] = "no_xbrl_facts"
     out["cik"] = cik
-    out["checked_at"] = int(now)
-    _cache[sym] = (now, out)
+    out["checked_at"] = int(time.time())
+    return out
+
+
+def get_fundamentals(symbol: str, *, asof_ts: Optional[int] = None) -> Dict[str, Any]:
+    """Best-effort SEC fundamentals for a symbol.
+
+    Returns a dict using the field names ``core.super_ghost._evaluate_company``
+    already reads: ``actual_eps``/``eps_actual``, ``eps_year_ago``,
+    ``revenue``, ``revenue_year_ago``, ``revenue_yoy``. ``available`` is True
+    only if at least one of EPS or revenue resolved. ``asof_ts``, when given,
+    drops any fact filed after it -- see ``_apply_asof_filter``.
+    """
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        return {"available": False, "symbol": sym, "source": "sec_xbrl"}
+    now = time.time()
+    cached = _cache.get(sym)
+    if cached and (now - cached[0]) < _CACHE_TTL_S:
+        out = dict(cached[1])
+    else:
+        out = _fetch_fundamentals_now(sym)
+        _cache[sym] = (now, out)
+    if asof_ts is not None:
+        out = _apply_asof_filter(out, int(asof_ts))
     return dict(out)
 
 

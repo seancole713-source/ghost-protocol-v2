@@ -134,88 +134,143 @@ def _confirmed_projection(
     return _num(reconciled.get("actual_value", reconciled.get("value"))), reconciled, bounded
 
 
-def _collect_earnings(symbol: str) -> Dict[str, Any]:
-    out: Dict[str, Any] = {}
+def _collect_earnings(symbol: str, *, asof_ts: int) -> Dict[str, Any]:
+    """Returns ``{"earnings_surprise_pct": {"value": ..., "_ts": report_ts}}``
+    or ``{}``.
+
+    ``report_ts`` is the earnings report date yfinance attaches to the
+    quarter -- the genuine point-in-time source_timestamp, not request time.
+    get_earnings_surprise's own asof_ts gate already refuses to answer if
+    that report postdates asof_ts, so a present value here is always safe.
+    """
     from core.earnings_surprise import get_earnings_surprise
 
-    data = _safe("earnings_surprise", get_earnings_surprise, symbol) or {}
-    if data.get("available"):
-        eps_actual = _num(data.get("eps_actual"))
-        eps_expected = _num(data.get("eps_expected") or data.get("eps_estimate"))
-        if eps_actual is not None and eps_expected not in (None, 0):
-            out["earnings_surprise_pct"] = round(
-                (eps_actual - eps_expected) / abs(eps_expected) * 100.0, 2,
-            )
-    return out
+    data = _safe("earnings_surprise", get_earnings_surprise, symbol, asof_ts=asof_ts) or {}
+    if not data.get("available"):
+        return {}
+    eps_actual = _num(data.get("eps_actual"))
+    eps_expected = _num(data.get("eps_expected") or data.get("eps_estimate"))
+    if eps_actual is None or eps_expected in (None, 0):
+        return {}
+    return {
+        "earnings_surprise_pct": {
+            "value": round((eps_actual - eps_expected) / abs(eps_expected) * 100.0, 2),
+            "_ts": _epoch(data.get("report_ts")),
+        },
+    }
 
 
-def _collect_fundamentals(symbol: str) -> Dict[str, Any]:
+def _collect_fundamentals(symbol: str, *, asof_ts: int) -> Dict[str, Any]:
+    """Each returned signal carries its own ``_ts`` -- the SEC filing date the
+    underlying fact was drawn from. get_fundamentals's own asof_ts gate
+    independently drops EPS or revenue if filed after asof_ts, so any value
+    returned here was genuinely knowable by then."""
     out: Dict[str, Any] = {}
     from core.sec_fundamentals import get_fundamentals
 
-    data = _safe("sec_fundamentals", get_fundamentals, symbol) or {}
+    data = _safe("sec_fundamentals", get_fundamentals, symbol, asof_ts=asof_ts) or {}
     if not data.get("available"):
         return out
 
     revenue = _num(data.get("revenue"))
     revenue_prior = _num(data.get("revenue_year_ago"))
+    revenue_ts = _epoch(data.get("revenue_filed_ts"))
     if revenue is not None and revenue_prior not in (None, 0):
-        out["revenue_growth_pct"] = round((revenue - revenue_prior) / abs(revenue_prior) * 100.0, 2)
+        out["revenue_growth_pct"] = {
+            "value": round((revenue - revenue_prior) / abs(revenue_prior) * 100.0, 2),
+            "_ts": revenue_ts,
+        }
 
     eps = _num(data.get("actual_eps") or data.get("eps_actual"))
     eps_prior = _num(data.get("eps_year_ago"))
+    eps_ts = _epoch(data.get("eps_filed_ts"))
     if eps is not None and eps_prior not in (None, 0):
-        out["net_income_growth_pct"] = round((eps - eps_prior) / abs(eps_prior) * 100.0, 2)
+        net_income_growth = round((eps - eps_prior) / abs(eps_prior) * 100.0, 2)
+        out["net_income_growth_pct"] = {"value": net_income_growth, "_ts": eps_ts}
         # No direct margin series here -- EPS growth outrunning revenue growth
         # is the closest point-in-time proxy this source can honestly give.
+        # The derived fact is only knowable once *both* inputs are filed, so
+        # its timestamp is the later of the two, not the earlier.
         rev_growth = out.get("revenue_growth_pct")
         if rev_growth is not None:
-            out["margin_change_pct"] = round(out["net_income_growth_pct"] - rev_growth, 2)
+            margin_ts = max(t for t in (eps_ts, revenue_ts) if t is not None) if (eps_ts or revenue_ts) else None
+            out["margin_change_pct"] = {
+                "value": round(net_income_growth - rev_growth["value"], 2),
+                "_ts": margin_ts,
+            }
     return out
 
 
-def _collect_news(symbol: str) -> Dict[str, Any]:
+def _collect_news(symbol: str, *, asof_ts: int) -> Dict[str, Any]:
+    """Each returned signal carries ``_ts`` = the newest contributing event's
+    own asof_ts (already point-in-time bounded by recent_events_for_symbol).
+    An aggregate is only as fresh as its most recent input."""
     out: Dict[str, Any] = {}
     from core.news_events import recent_events_for_symbol
 
-    events = _safe("news_events", recent_events_for_symbol, symbol) or []
+    events = _safe(
+        "news_events", recent_events_for_symbol, symbol, asof_ts=asof_ts,
+    ) or []
     if not events:
         return out
-    scores = [_num(e.get("sentiment")) for e in events if isinstance(e, dict)]
-    scores = [s for s in scores if s is not None]
-    if scores:
-        out["news_sentiment"] = round(sum(scores) / len(scores), 3)
-    guidance_events = [
-        e for e in events
-        if isinstance(e, dict) and "guidance" in str(e.get("event_type", "")).lower()
+    scored = [
+        (e, _num(e.get("sentiment"))) for e in events if isinstance(e, dict)
     ]
-    if guidance_events:
-        avg = sum(_num(e.get("sentiment")) or 0.0 for e in guidance_events) / len(guidance_events)
-        out["guidance_direction"] = 1 if avg > 0 else (-1 if avg < 0 else 0)
+    scored = [(e, s) for e, s in scored if s is not None]
+    if scored:
+        newest_ts = max((_epoch(e.get("asof_ts")) or 0) for e, _ in scored) or None
+        out["news_sentiment"] = {
+            "value": round(sum(s for _, s in scored) / len(scored), 3),
+            "_ts": newest_ts,
+        }
+    guidance_scored = [
+        (e, s) for e, s in scored
+        if "guidance" in str(e.get("event_type", "")).lower()
+    ]
+    if guidance_scored:
+        avg = sum(s for _, s in guidance_scored) / len(guidance_scored)
+        newest_guidance_ts = max((_epoch(e.get("asof_ts")) or 0) for e, _ in guidance_scored) or None
+        out["guidance_direction"] = {
+            "value": 1 if avg > 0 else (-1 if avg < 0 else 0),
+            "_ts": newest_guidance_ts,
+        }
     return out
 
 
-def _collect_leadership_change(symbol: str) -> Dict[str, Any]:
+def _collect_leadership_change(symbol: str, *, asof_ts: int) -> Dict[str, Any]:
     """A leadership-change signal only when SEC EDGAR shows one actually happened.
 
     Item 5.02 on an 8-K is the SEC's own leadership-change/officer-departure
     code. Absence of that item means no known event, not neutral news --
     so the signal is left out of the dict entirely rather than set to 0.0,
     which keeps the checklist box UNKNOWN instead of misreading silence as
-    a wash.
+    a wash. fetch_recent_8k's own asof_ts filter already drops any filing
+    dated after asof_ts.
     """
-    out: Dict[str, Any] = {}
     from core.edgar_integration import _sentiment_from_items, fetch_recent_8k
 
-    data = _safe("edgar_8k", fetch_recent_8k, symbol, days=30) or {}
+    data = _safe("edgar_8k", fetch_recent_8k, symbol, days=30, asof_ts=asof_ts) or {}
     if not data.get("available"):
-        return out
+        return {}
     for filing in data.get("filings") or []:
         items = [it.get("item") for it in filing.get("items", []) if isinstance(it, dict)]
         if "5.02" in items:
-            out["leadership_change_sentiment"] = _sentiment_from_items(items)
-            break  # most recent leadership filing only; do not average stale ones in
-    return out
+            filing_ts = None
+            try:
+                from datetime import datetime as _dt, timezone as _tz
+                filing_ts = int(
+                    _dt.fromisoformat(str(filing.get("filing_date"))[:10])
+                    .replace(tzinfo=_tz.utc).timestamp()
+                )
+            except Exception:
+                pass
+            return {
+                "leadership_change_sentiment": {
+                    "value": _sentiment_from_items(items), "_ts": filing_ts,
+                },
+            }
+            # most recent leadership filing only; do not average stale ones in
+    return {}
 
 
 def _collect_squeeze_fuel(symbol: str, market_ctx: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -281,6 +336,20 @@ def _collect_context(market_ctx: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         out["market_move_pct"] = market_move
     return out
 
+
+# How long each externally-timestamped signal stays fresh, keyed to its
+# source's own natural cadence -- not the blanket 24h used for live market
+# features. A quarterly SEC fact is still "current" for ~a quarter; a news
+# event is not.
+_EXTERNAL_SIGNAL_MAX_AGE_S: Dict[str, int] = {
+    "earnings_surprise_pct": 100 * 86400,
+    "revenue_growth_pct": 100 * 86400,
+    "net_income_growth_pct": 100 * 86400,
+    "margin_change_pct": 100 * 86400,
+    "leadership_change_sentiment": 30 * 86400,  # matches fetch_recent_8k's days=30 window
+    "news_sentiment": 7 * 86400,  # matches recent_events_for_symbol's default lookback
+    "guidance_direction": 7 * 86400,
+}
 
 # Which source a signal came from -- surfaced on the card as "Evidence" so a
 # box is never just a number, but a number with a place it can be checked.
@@ -352,9 +421,13 @@ def collect_evidence(
 ) -> Dict[str, Any]:
     """Build a point-in-time projection plus the immutable records behind it.
 
-    Mutable providers that cannot prove when their value was knowable are not
-    queried here. They remain explicitly unsupported until a timestamped source
-    is available; source labels alone are not provenance.
+    Live market features (price, volume, positioning) are timestamped off the
+    caller's own feature/price snapshot. Catalyst-class signals (earnings,
+    fundamentals, news, leadership changes) come from independent sources
+    that each carry their own genuine point-in-time timestamp -- the SEC
+    filing date, the earnings report date, the news event's own asof_ts --
+    never request time. A source that cannot prove when its value was
+    knowable is dropped by its own asof_ts gate before it ever reaches here.
     """
     sym = (symbol or "").strip().upper()
     decision_ts = int(time.time()) if asof_ts is None else int(asof_ts)
@@ -379,19 +452,24 @@ def collect_evidence(
             raw[key] = value
             feature_signals.add(key)
 
+    # Catalyst-class signals: each source is queried independently and best-
+    # effort (one being down must not take the others down with it), and each
+    # returns its own {"value", "_ts"} rather than a bare scalar -- there is
+    # no shared snapshot timestamp to borrow the way market features have.
+    timestamped: Dict[str, Dict[str, Any]] = {}
+    for collected in (
+        _safe("collect_earnings", _collect_earnings, sym, asof_ts=decision_ts) or {},
+        _safe("collect_fundamentals", _collect_fundamentals, sym, asof_ts=decision_ts) or {},
+        _safe("collect_news", _collect_news, sym, asof_ts=decision_ts) or {},
+        _safe("collect_leadership_change", _collect_leadership_change, sym, asof_ts=decision_ts) or {},
+    ):
+        timestamped.update(collected)
+
     evidence: Dict[str, Any] = {
         "_asof_ts": decision_ts,
         RECORDS_KEY: {},
         CONFLICTS_KEY: [],
-        UNSUPPORTED_KEY: [
-            "earnings_surprise_pct",
-            "guidance_direction",
-            "news_sentiment",
-            "leadership_change_sentiment",
-            "revenue_growth_pct",
-            "margin_change_pct",
-            "net_income_growth_pct",
-        ],
+        UNSUPPORTED_KEY: [],
     }
     for signal, value in raw.items():
         source_ts = (
@@ -421,6 +499,36 @@ def collect_evidence(
             [record],
             asof_ts=decision_ts,
             max_age_s=24 * 3600,
+        )
+        evidence[RECORDS_KEY][signal] = bounded
+        if scalar is not None:
+            evidence[signal] = scalar
+        elif reconciled and reconciled.get("confidence_status") == VERIFIED_CONFLICT:
+            evidence[CONFLICTS_KEY].append({
+                "signal": signal,
+                "records": reconciled.get("data_conflict") or [],
+            })
+
+    for signal, payload in timestamped.items():
+        value = payload.get("value") if isinstance(payload, dict) else None
+        source_ts = _epoch(payload.get("_ts")) if isinstance(payload, dict) else None
+        record = _record(
+            source=SOURCE_BY_SIGNAL.get(signal, "External source"),
+            source_timestamp=source_ts,
+            observation_timestamp=source_ts,
+            reporting_period="issue_time",
+            unit="score" if signal in ("news_sentiment", "guidance_direction", "leadership_change_sentiment") else "percent",
+            basis="point_in_time",
+            actual_value=value,
+            methodology=f"Checklist projection for {signal}",
+            request_timestamp=decision_ts,
+            provenance={"symbol": sym, "source_timestamp": source_ts},
+        )
+        scalar, reconciled, bounded = _confirmed_projection(
+            signal,
+            [record],
+            asof_ts=decision_ts,
+            max_age_s=_EXTERNAL_SIGNAL_MAX_AGE_S.get(signal, 7 * 86400),
         )
         evidence[RECORDS_KEY][signal] = bounded
         if scalar is not None:
