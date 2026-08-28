@@ -522,7 +522,8 @@ async def prewarm_short_cache() -> bool:
     from config.symbols import get_edge_set
     from core.market_hours import is_us_extended_hours
 
-    delay = float(os.getenv("SQUEEZE_SHORT_PREWARM_DELAY_S", "2.5"))
+    # Stay below the dedicated 12 logical-call/minute short-data budget.
+    delay = float(os.getenv("SQUEEZE_SHORT_PREWARM_DELAY_S", "5.5"))
     timeout_s = max(
         3.0,
         min(30.0, float(os.getenv("SQUEEZE_SHORT_PREWARM_TIMEOUT_S", "12"))),
@@ -562,7 +563,9 @@ async def prewarm_short_cache() -> bool:
                     timeout_s,
                 )
             else:
-                task.result()
+                context = task.result()
+                if not _short_context_useful(context):
+                    complete = False
         except Exception as exc:
             complete = False
             LOGGER.debug("[SqueezeMonitor] prewarm %s: %s", sym, exc)
@@ -948,8 +951,8 @@ def _short_context(symbol: str) -> Dict[str, Any]:
         "institutional_ownership_pct": None,
     }
     if _yf_short_enabled():
-        from core.circuit_breaker import _yfinance_cb
-        if _yfinance_cb.allow():
+        from core.circuit_breaker import _yfinance_short_cb
+        if _yfinance_short_cb.allow():
             try:
                 import yfinance as yf
 
@@ -987,9 +990,9 @@ def _short_context(symbol: str) -> Dict[str, Any]:
                 inst = info.get("heldPercentInstitutions")
                 if inst is not None:
                     out["institutional_ownership_pct"] = round(float(inst) * 100, 2)
-                _yfinance_cb.record_success()
+                _yfinance_short_cb.record_success()
             except Exception as exc:
-                _yfinance_cb.record_failure()
+                _yfinance_short_cb.record_failure()
                 LOGGER.debug("[SqueezeMonitor] yfinance short %s: %s", sym, exc)
     if out["short_float_pct"] is None and out["days_to_cover"] is None:
         # Merge Finviz fallback into the existing dict — do NOT replace it, or
@@ -1022,7 +1025,12 @@ def _cached_short_context(symbol: str) -> Dict[str, Any]:
 
 def _short_cache_ttl(context: Dict[str, Any]) -> int:
     """Cache useful evidence for a day, but retry empty provider failures."""
-    useful = any(
+    return _SHORT_CACHE_TTL if _short_context_useful(context) else _SHORT_FAILURE_CACHE_TTL
+
+
+def _short_context_useful(context: Dict[str, Any]) -> bool:
+    """True when a short-data lookup produced at least one decision field."""
+    return any(
         context.get(key) is not None
         for key in (
             "short_float_pct",
@@ -1031,7 +1039,6 @@ def _short_cache_ttl(context: Dict[str, Any]) -> int:
             "float_shares",
         )
     )
-    return _SHORT_CACHE_TTL if useful else _SHORT_FAILURE_CACHE_TTL
 
 
 def _yf_short_enabled() -> bool:

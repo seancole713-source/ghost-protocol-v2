@@ -24,8 +24,6 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Optional
-
 LOGGER = logging.getLogger("ghost.circuit_breaker")
 
 
@@ -198,6 +196,16 @@ _yfinance_market_context_cb = CircuitBreaker(
     rate_limit_max_calls=4,
 )
 
+_yfinance_short_cb = CircuitBreaker(
+    name="yfinance_short_interest",
+    failure_threshold=int(__import__("os").getenv("CB_YFINANCE_SHORT_THRESHOLD", "3")),
+    cooldown_seconds=int(__import__("os").getenv("CB_YFINANCE_SHORT_COOLDOWN_S", "900")),
+    rate_limit_window_s=60,
+    rate_limit_max_calls=int(
+        __import__("os").getenv("CB_YFINANCE_SHORT_RATE_MAX_CALLS", "12")
+    ),
+)
+
 _finnhub_cb = CircuitBreaker(
     name="finnhub",
     failure_threshold=int(__import__("os").getenv("CB_FINNHUB_THRESHOLD", "5")),
@@ -242,6 +250,7 @@ _alpaca_options_cb = CircuitBreaker(
 def _managed_breakers():
     return (
         _yfinance_cb, _yahoo_screener_cb, _yfinance_market_context_cb,
+        _yfinance_short_cb,
         _finnhub_cb, _polygon_cb, _alpaca_cb, _anthropic_cb,
     )
 

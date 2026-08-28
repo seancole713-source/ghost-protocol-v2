@@ -358,11 +358,14 @@ def test_advisory_jobs_have_dedicated_breakers():
         _yahoo_screener_cb,
         _yfinance_cb,
         _yfinance_market_context_cb,
+        _yfinance_short_cb,
     )
 
     assert _yahoo_screener_cb is not _yfinance_cb
     assert _yfinance_market_context_cb is not _yfinance_cb
     assert _yahoo_screener_cb is not _yfinance_market_context_cb
+    assert _yfinance_short_cb is not _yfinance_cb
+    assert _yfinance_short_cb is not _yfinance_market_context_cb
 
 
 def test_leader_scheduler_registers_external_snapshot_jobs():

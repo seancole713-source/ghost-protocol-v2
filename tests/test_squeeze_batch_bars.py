@@ -143,6 +143,8 @@ def test_expired_empty_short_cache_entry_is_refetched(monkeypatch):
 
 def test_useful_short_cache_entry_keeps_daily_ttl():
     assert sm._short_cache_ttl({"short_float_pct": 12.5}) == sm._SHORT_CACHE_TTL
+    assert sm._short_context_useful({"short_float_pct": 12.5}) is True
+    assert sm._short_context_useful({"short_float_pct": None}) is False
 
 
 def test_short_cache_maintenance_survives_closed_market_start(monkeypatch):
