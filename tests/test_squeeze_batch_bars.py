@@ -190,23 +190,25 @@ def test_short_cache_prewarm_skips_a_stuck_symbol(monkeypatch):
     import config.symbols
     import core.market_hours as market_hours
 
-    completed = []
+    symbols_completed = []
 
     def short_context(symbol):
         if symbol == "A":
             time.sleep(3.2)
-        completed.append(symbol)
+        symbols_completed.append(symbol)
         return {}
 
     monkeypatch.setattr(config.symbols, "get_edge_set", lambda: {"A", "B"})
     monkeypatch.setattr(market_hours, "is_us_extended_hours", lambda: True)
     monkeypatch.setattr(sm, "_short_context", short_context)
+    monkeypatch.setattr(sm, "_short_warm_pending", set())
     monkeypatch.setenv("SQUEEZE_SHORT_PREWARM_DELAY_S", "0")
     monkeypatch.setenv("SQUEEZE_SHORT_PREWARM_TIMEOUT_S", "3")
 
-    asyncio.run(sm.prewarm_short_cache())
+    completed = asyncio.run(sm.prewarm_short_cache())
 
-    assert "B" in completed
+    assert completed is False
+    assert "B" in symbols_completed
 
 
 def test_fetch_volumes_uses_batch_store_without_network(monkeypatch):

@@ -83,6 +83,7 @@ MIN_TELEGRAM_CONFIDENCE = int(os.getenv("SQUEEZE_TELEGRAM_MIN_CONFIDENCE", "75")
 REPRICE_ALERT_PCT = float(os.getenv("SQUEEZE_REPRICE_ALERT_PCT", "1.5"))
 _last_alert: Dict[str, float] = {}
 _short_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_short_warm_pending: set[asyncio.Task[Any]] = set()
 _SHORT_CACHE_TTL = 86400
 _SHORT_FAILURE_CACHE_TTL = max(
     300,
@@ -91,6 +92,10 @@ _SHORT_FAILURE_CACHE_TTL = max(
 _SHORT_PREWARM_REFRESH_S = max(
     3600,
     int(os.getenv("SQUEEZE_SHORT_PREWARM_REFRESH_S", "14400")),
+)
+_SHORT_PREWARM_RETRY_S = max(
+    300,
+    min(3600, int(os.getenv("SQUEEZE_SHORT_PREWARM_RETRY_S", "900"))),
 )
 
 # --- Multi-symbol Alpaca bar batching (squeeze breaker-cascade fix) ---------
@@ -496,7 +501,23 @@ def get_squeeze_picks() -> Dict[str, Any]:
     }
 
 
-async def prewarm_short_cache() -> None:
+def _retain_short_warm_task(task: asyncio.Task[Any]) -> None:
+    """Keep a timed-out vendor thread observable until it exits."""
+    _short_warm_pending.add(task)
+
+    def consume(done: asyncio.Task[Any]) -> None:
+        _short_warm_pending.discard(done)
+        try:
+            done.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            LOGGER.debug("[SqueezeMonitor] late short-cache task: %s", exc)
+
+    task.add_done_callback(consume)
+
+
+async def prewarm_short_cache() -> bool:
     """Background: warm short-interest cache before RTH (Finviz/yfinance, one symbol at a time)."""
     from config.symbols import get_edge_set
     from core.market_hours import is_us_extended_hours
@@ -506,29 +527,47 @@ async def prewarm_short_cache() -> None:
         3.0,
         min(30.0, float(os.getenv("SQUEEZE_SHORT_PREWARM_TIMEOUT_S", "12"))),
     )
+    pending_limit = max(
+        1,
+        min(32, int(os.getenv("SQUEEZE_SHORT_PREWARM_PENDING_MAX", "8"))),
+    )
     symbols = sorted(get_edge_set())
+    complete = True
     LOGGER.info("[SqueezeMonitor] Short-cache prewarm — %s symbols", len(symbols))
     for sym in symbols:
         if not is_us_extended_hours():
-            return
+            return False
+        if len(_short_warm_pending) >= pending_limit:
+            LOGGER.warning(
+                "[SqueezeMonitor] short-cache pending limit reached (%s); retrying later",
+                pending_limit,
+            )
+            return False
         try:
             # Keep the blocking vendor client off the event loop. Await one at
             # a time, but do not let one broken ticker strand the entire daily
             # queue. A timed-out vendor thread may finish and populate the cache
             # later; the bounded default executor prevents event-loop blockage.
-            await asyncio.wait_for(
-                asyncio.to_thread(_short_context, sym),
+            task = asyncio.create_task(asyncio.to_thread(_short_context, sym))
+            done, _ = await asyncio.wait(
+                {task},
                 timeout=timeout_s,
             )
-        except asyncio.TimeoutError:
-            LOGGER.warning(
-                "[SqueezeMonitor] short-cache timeout %s (%.0fs)",
-                sym,
-                timeout_s,
-            )
+            if task not in done:
+                complete = False
+                _retain_short_warm_task(task)
+                LOGGER.warning(
+                    "[SqueezeMonitor] short-cache timeout %s (%.0fs)",
+                    sym,
+                    timeout_s,
+                )
+            else:
+                task.result()
         except Exception as exc:
+            complete = False
             LOGGER.debug("[SqueezeMonitor] prewarm %s: %s", sym, exc)
         await asyncio.sleep(delay)
+    return complete
 
 
 async def maintain_short_cache() -> None:
@@ -553,13 +592,18 @@ async def maintain_short_cache() -> None:
             market_open = False
         if market_open:
             try:
-                await prewarm_short_cache()
+                completed = await prewarm_short_cache()
             except Exception as exc:
                 LOGGER.warning(
                     "[SqueezeMonitor] short-cache maintenance failed: %s",
                     str(exc)[:120],
                 )
-            await asyncio.sleep(_SHORT_PREWARM_REFRESH_S)
+                completed = False
+            await asyncio.sleep(
+                _SHORT_PREWARM_REFRESH_S
+                if completed is not False
+                else _SHORT_PREWARM_RETRY_S
+            )
         else:
             await asyncio.sleep(300)
 
