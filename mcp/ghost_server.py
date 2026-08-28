@@ -551,6 +551,58 @@ _RESEARCH_HANDLERS: Mapping[str, Callable[[Dict[str, Any]], Any]] = {
     "ghost_research_status": _research_status,
 }
 
+# ── Market data: live per-symbol price (any symbol, not just WOLF) ────────
+#
+# ghost_score is Ghost's own single-symbol cockpit read — parameterless,
+# hardcoded to WOLF. It is not a per-symbol lookup and never was. This tool
+# fills that gap: a raw live-price read for any symbol, official-watchlist
+# or not, reusing the same Alpaca-first/yfinance-fallback extended-session
+# pricing Ghost's own premarket scans use internally. It returns a price and
+# a session label, never a score or a signal — model coverage stays gated by
+# ghost_symbol_universe/ghost_score exactly as before.
+
+MARKET_DATA_TOOLS: Mapping[str, Dict[str, Any]] = {
+    "ghost_symbol_quote": {
+        "description": (
+            "Live price quote for any symbol, not limited to WOLF or the official "
+            "watchlist. Alpaca live trade first, yfinance premarket/after-hours "
+            "fallback — the same feed Ghost's own premarket scans use. Returns "
+            "session label (premarket/rth/afterhours/closed), live price, previous "
+            "close, and gap %. This is a raw price read, not a model score."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "description": "Ticker symbol, e.g. PYPL"},
+            },
+            "required": ["symbol"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+
+def _symbol_quote(args: Dict[str, Any]) -> Dict[str, Any]:
+    from core.prices import get_extended_session
+    from config.symbols import V3_WHITELIST_STOCKS
+
+    symbol = str(args.get("symbol") or "").strip().upper()
+    if not symbol:
+        return {"ok": False, "error": "symbol is required"}
+    quote = get_extended_session(symbol)
+    if not quote:
+        return {"ok": False, "symbol": symbol, "error": "no_price_available"}
+    return {
+        "ok": True,
+        **quote,
+        "in_official_watchlist": symbol in V3_WHITELIST_STOCKS,
+    }
+
+
+_MARKET_DATA_HANDLERS: Mapping[str, Callable[[Dict[str, Any]], Any]] = {
+    "ghost_symbol_quote": _symbol_quote,
+}
+
 
 def _agent_workflow_call(function_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
     """Invoke one bounded workflow operation with stable MCP error payloads."""
@@ -666,6 +718,12 @@ def list_tools() -> list[Dict[str, Any]]:
             "description": meta["description"],
             "inputSchema": meta["inputSchema"],
         })
+    for name, meta in MARKET_DATA_TOOLS.items():
+        tools.append({
+            "name": name,
+            "description": meta["description"],
+            "inputSchema": meta["inputSchema"],
+        })
     for name, meta in AGENT_WORKFLOW_TOOLS.items():
         tools.append({
             "name": name,
@@ -680,6 +738,8 @@ def invoke_tool(name: str, arguments: Optional[Dict[str, Any]] = None) -> Any:
         return _CLIENT.get(TOOL_TO_PATH[name])
     if name in _RESEARCH_HANDLERS:
         return _RESEARCH_HANDLERS[name](arguments or {})
+    if name in _MARKET_DATA_HANDLERS:
+        return _MARKET_DATA_HANDLERS[name](arguments or {})
     if name in _AGENT_WORKFLOW_HANDLERS:
         return _AGENT_WORKFLOW_HANDLERS[name](arguments or {})
     raise KeyError(f"Unknown MCP tool: {name!r}")

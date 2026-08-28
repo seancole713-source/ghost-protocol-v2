@@ -18,10 +18,10 @@ _WATCHLIST_SKIP = frozenset({"GHOST", "TEST"})
 # Official live watchlist — Ghost scans and forecasts these symbols only.
 # Sourced from investor watchlist (mobile app screenshots, Jun 2026).
 OFFICIAL_WATCHLIST: Tuple[str, ...] = (
-    "AAPL", "ABCL", "ABNB", "ACDC", "ADBE", "AI", "ALAB", "AMC", "AMD", "AMZN", "APGE",
-    "ARCT", "ARDT", "AVGO", "BA", "BABA", "BB", "BBWI", "BILL", "BMBL", "BROS",
+    "AAPL", "ABCL", "ABNB", "ACDC", "ADBE", "AFRM", "AI", "ALAB", "AMC", "AMD", "AMZN", "APGE",
+    "ARCT", "ARDT", "AVGO", "BA", "BABA", "BB", "BBWI", "BILL", "BMBL", "BMNR", "BROS",
     "BTGO", "CAT", "CLNE", "COIN", "COST", "CRM", "CVNA", "DASH", "DELL", "DIS",
-    "DJT", "DOMO", "DUOL", "FLNC", "GE", "GME", "GOOG", "GOOGL", "GS", "HIMS",
+    "DJT", "DOMO", "DUOL", "FLNC", "GE", "GME", "GOOG", "GOOGL", "GPS", "GS", "HIMS",
     "HOOD", "HTZ", "INTC", "IQ", "ITRI", "JACK", "JPM", "KC", "LCID", "LLY",
     "LMND", "LU", "LULU", "MA", "META", "MRVL", "MSFT", "MTZ", "MU", "NAVN",
     "NFLX", "NKE", "NOK", "NVDA", "ODD", "OGC", "OLLI", "OPK", "OPTU", "ORCL", "PFE",
@@ -37,6 +37,11 @@ OFFICIAL_WATCHLIST: Tuple[str, ...] = (
     # +4 momentum/explosion names (TRU, OGC, SATS, ALAB) added 2026-08-17 per
     # operator EXPLOSION (1-2 week) strategy request. Prices verified plausible.
     # SNDK excluded (feed showed implausible ~$1600); SpaceX skipped (private).
+    # +3 (AFRM, BMNR, GPS) added 2026-08-28: surfaced by the /morning-picks web
+    # sweep as real premarket movers outside the universe — coverage gap, not a
+    # trading call. Adding a symbol here only widens what the radar/scan loop
+    # looks at; it has zero trained model until the normal train->promote
+    # pipeline runs and clears the same tier="proven" gate everything else does.
 )
 OFFICIAL_WATCHLIST_CSV = ",".join(OFFICIAL_WATCHLIST)
 
