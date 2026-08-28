@@ -17,8 +17,11 @@ must survive across the many transactions a scheduler runs over its lifetime.
 """
 from __future__ import annotations
 
+import asyncio
+import inspect
 import logging
 import os
+from collections.abc import Awaitable, Callable
 from typing import Optional
 
 import psycopg2
@@ -84,6 +87,40 @@ def try_acquire_leader() -> bool:
             except Exception:
                 pass
         return True
+
+
+def leader_retry_interval_s() -> float:
+    """Bounded retry interval for an HTTP-only replica awaiting leadership."""
+    try:
+        interval = float(os.getenv("SCHEDULER_LEADER_RETRY_S", "5"))
+    except (TypeError, ValueError):
+        interval = 5.0
+    return max(1.0, min(60.0, interval))
+
+
+async def wait_for_leadership(
+    on_acquired: Callable[[], Awaitable[None] | None],
+    *,
+    retry_s: float | None = None,
+) -> None:
+    """Retry election after startup so rolling deploys cannot strand the app.
+
+    Railway keeps the old instance alive until the new HTTP instance is ready.
+    A one-shot startup election therefore cannot wait for the old process: doing
+    so deadlocks readiness, while giving up permanently leaves no scheduler once
+    the old process drains. The new instance serves HTTP, then calls this loop in
+    a background task until the session lock becomes available.
+    """
+    interval = leader_retry_interval_s() if retry_s is None else max(0.0, retry_s)
+    while True:
+        await asyncio.sleep(interval)
+        if not try_acquire_leader():
+            continue
+        LOGGER.info("Acquired scheduler leadership after HTTP-ready handoff")
+        result = on_acquired()
+        if inspect.isawaitable(result):
+            await result
+        return
 
 
 def release_leader() -> None:

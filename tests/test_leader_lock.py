@@ -7,6 +7,9 @@ common case; a false "not leader" would stop all background work).
 """
 from __future__ import annotations
 
+import asyncio
+from pathlib import Path
+
 import core.leader_lock as ll
 
 
@@ -90,3 +93,41 @@ def test_leader_lock_disabled_assumes_leader(monkeypatch):
     ll.release_leader()
     assert ll.try_acquire_leader() is True
     assert ll.is_leader() is False  # no lock held in disabled mode
+
+
+def test_leader_retry_interval_is_bounded(monkeypatch):
+    monkeypatch.setenv("SCHEDULER_LEADER_RETRY_S", "0")
+    assert ll.leader_retry_interval_s() == 1.0
+    monkeypatch.setenv("SCHEDULER_LEADER_RETRY_S", "999")
+    assert ll.leader_retry_interval_s() == 60.0
+    monkeypatch.setenv("SCHEDULER_LEADER_RETRY_S", "not-a-number")
+    assert ll.leader_retry_interval_s() == 5.0
+
+
+def test_wait_for_leadership_retries_then_starts_runtime(monkeypatch):
+    attempts = iter((False, False, True))
+    sleeps = []
+    started = []
+
+    async def fake_sleep(delay):
+        sleeps.append(delay)
+
+    async def start_runtime():
+        started.append(True)
+
+    monkeypatch.setattr(ll.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(ll, "try_acquire_leader", lambda: next(attempts))
+
+    asyncio.run(ll.wait_for_leadership(start_runtime, retry_s=0))
+
+    assert sleeps == [0.0, 0.0, 0.0]
+    assert started == [True]
+
+
+def test_lifespan_keeps_nonleader_alive_for_handoff():
+    source = (Path(__file__).resolve().parents[1] / "wolf_app.py").read_text(
+        encoding="utf-8"
+    )
+    assert "wait_for_leadership(_start_leader_runtime)" in source
+    assert "serving HTTP and retrying leadership" in source
+    assert "skipping scheduler + intraday monitors" not in source

@@ -1472,605 +1472,571 @@ async def lifespan(app: FastAPI):
         except Exception as _se:
             LOGGER.warning(f"Startup card recovery failed: {_se}")
 
-    if not _is_leader:
-        LOGGER.info("Not the background-work leader — skipping scheduler + intraday monitors")
-        yield
-        return
-
-    from core import scheduler
-    from core.prediction import reconcile_outcomes
-    from core.news import run_news_cycle
-    scheduler.register("morning_card", _morning_card_job, interval_s=86400, timeout_s=600)
-    # Market-hours scan loop (roadmap #3a): tick at the market interval; the job
-    # self-gates to SCAN_INTERVAL_MARKET_MIN / SCAN_INTERVAL_OFFHOURS_MIN.
-    try:
-        _scan_tick = max(300, int(os.getenv("SCAN_INTERVAL_MARKET_MIN", "30")) * 60)
-    except Exception:
-        _scan_tick = 1800
-    scheduler.register(
-        "market_scan", _market_scan_job, interval_s=_scan_tick,
-        timeout_s=600, initial_delay_s=300,
-    )
-    from core.daily_model_issuance import run_daily_model_issuance
-
-    def _daily_model_issuance_job():
-        result = run_daily_model_issuance()
-        if result.get("ok") is not True:
-            raise RuntimeError(f"daily model issuance failed: {result}")
-
-    scheduler.register(
-        "daily_model_issuance", _daily_model_issuance_job,
-        interval_s=300, timeout_s=600, initial_delay_s=60,
-    )
-    # Watchdog: real-time hit alerts every 5 minutes
-    from core.watchdog import run_watchdog as _scheduled_watchdog
-    scheduler.register("watchdog", _scheduled_watchdog, interval_s=300)
-    # Weekly summary: every Friday at 4 PM CT = 22:00 UTC = 79200s from midnight
-    # Approximated as 7-day interval - fires on first Friday after deploy
-    scheduler.register("weekly_summary", _weekly_summary_job, interval_s=3600)
-    # Daily summary (roadmap #3b): hourly tick, fires once/day at DAILY_SUMMARY_HOUR.
-    scheduler.register("daily_summary", _daily_summary_job, interval_s=3600)
-    from core.squeeze_outcomes import run_squeeze_eod_job as _squeeze_eod_job
-
-    scheduler.register("squeeze_eod", _squeeze_eod_job, interval_s=3600)
-    # Forward clock on options evidence: one point-in-time chain snapshot per
-    # symbol per trading day (self-gates to the 13:00-15:00 CT window and
-    # once/day inside the job). Historical options data is paywalled — this
-    # accrues the honest history a future options-feature test needs.
-    from core.options_snapshots import run_options_snapshot_job as _options_snap_job
-
-    def _options_snapshots_job():
-        try:
-            _options_snap_job()
-        except Exception as _e:
-            LOGGER.warning("options snapshot job failed: %s", str(_e)[:80])
-            raise
-
-    scheduler.register("options_snapshots", _options_snapshots_job, interval_s=3600)
-    # PR #84: Super Ghost Truth Ledger — resolve logged predictions vs realized
-    # price at 1/5/20-day horizons so accuracy + if-followed stats accrue.
-    from core.super_ghost_ledger import run_resolver_job as _super_ghost_resolver
-
-    def _super_ghost_ledger_job():
-        try:
-            _super_ghost_resolver()
-        except Exception as _e:
-            LOGGER.warning("super ghost ledger job failed: %s", str(_e)[:80])
-            raise
-
-    scheduler.register("super_ghost_ledger", _super_ghost_ledger_job, interval_s=3600)
-    scheduler.register("reconcile", reconcile_outcomes, interval_s=900)
-    # Public Hunter reads are snapshot-only. This single-flight scheduler is the
-    # sole producer, using batched bars and cached optional evidence so a page
-    # view can never exhaust shared market-data provider limits.
-    from core.squeeze_hunter import refresh_hunter_snapshot as _hunter_refresh
-
-    def _hunter_snapshot_job():
-        result = _hunter_refresh(limit=20)
-        if not isinstance(result, dict) or not result.get("ok", False):
-            raise RuntimeError(f"squeeze hunter snapshot failed: {result}")
-        return result
-
-    scheduler.register("squeeze_hunter_snapshot", _hunter_snapshot_job, interval_s=900, timeout_s=300)
-    # Squeeze Hunter resolver: resolve Hunter evaluations vs realized 1/5/14-day
-    # returns so the audit trail accrues outcomes (the raw evidence for a future
-    # Wilson/Brier calibration step). Writes only ghost_squeeze_hunter_* tables.
-    from core.squeeze_hunter_ledger import resolve_hunter_predictions as _hunter_resolver
-
-    def _hunter_resolver_job():
-        result = _hunter_resolver(limit=200)
-        if not isinstance(result, dict) or not result.get("ok", False):
-            raise RuntimeError(f"squeeze hunter resolver failed: {result}")
-        return result
-
-    scheduler.register("squeeze_hunter_resolver", _hunter_resolver_job, interval_s=3600)
-    # Squeeze Hunter issuance: preregistered sampler writes ONE evaluation per
-    # symbol per session date (idempotent). This is the only path that persists
-    # Hunter evaluations — public GET traffic stays read-only. Runs every 15 min
-    # so the frozen 15:05-16:00 CT sampling window is never missed by an hourly
-    # tick landing outside it.
-    from core.squeeze_hunter_ledger import issue_hunter_samples as _hunter_issue
-
-    def _hunter_issue_job():
-        result = _hunter_issue()
-        if not isinstance(result, dict) or not result.get("ok", False):
-            raise RuntimeError(f"squeeze hunter issuance failed: {result}")
-        return result
-
-    scheduler.register("squeeze_hunter_issue", _hunter_issue_job, interval_s=900)
-    # One-off YMM earnings scenario: immutable snapshots at preregistered event
-    # phases plus a five-session outcome resolver. Both are shadow-only.
-    from core.bull_run_ledger import (
-        resolve_scenario as _bull_run_resolver,
-        run_snapshot_job as _bull_run_snapshot,
-    )
-
-    def _bull_run_snapshot_job():
-        result = _bull_run_snapshot()
-        if not isinstance(result, dict) or not result.get("ok", False):
-            raise RuntimeError(f"bull-run snapshot failed: {result}")
-        return result
-
-    def _bull_run_resolver_job():
-        result = _bull_run_resolver()
-        if not isinstance(result, dict) or not result.get("ok", False):
-            raise RuntimeError(f"bull-run resolver failed: {result}")
-        return result
-
-    scheduler.register("bull_run_snapshot", _bull_run_snapshot_job, interval_s=900)
-    scheduler.register("bull_run_resolver", _bull_run_resolver_job, interval_s=3600)
-    # Checklist-confidence calibration loop. Snapshots are frozen synchronously
-    # inside the prediction transaction (no delayed reconstruction), so only the
-    # outcome resolver runs on a schedule: it copies resolved TP/SL outcomes
-    # back onto the immutable snapshots so the completeness->win-rate table
-    # accrues samples prospectively.
-    from core.checklist_ledger import resolve_open_snapshots as _checklist_resolver
-
-    def _checklist_resolver_job():
-        result = _checklist_resolver()
-        if not isinstance(result, dict) or not result.get("ok", False):
-            raise RuntimeError(f"checklist resolver failed: {result}")
-        return result
-
-    scheduler.register("checklist_resolver", _checklist_resolver_job, interval_s=1800)
-    # Shadow evidence scoring: turns ACCEPTED agent-workflow research
-    # (core.agent_workflow) into a deterministic five-dimension quality score
-    # (core.evidence_scoring) and persists it to a shadow-only feature ledger
-    # (core.shadow_evidence_ledger). Read-only against the fire path -- this
-    # job never touches predictions, gates, or the wallet, and a score is
-    # written once and never overwritten.
-    from core.shadow_evidence_ledger import score_pending_evidence as _score_pending_evidence
-
-    def _shadow_evidence_scoring_job():
-        result = _score_pending_evidence()
-        if not isinstance(result, dict) or not result.get("ok", False):
-            raise RuntimeError(f"shadow evidence scoring failed: {result}")
-        return result
-
-    scheduler.register("shadow_evidence_scoring", _shadow_evidence_scoring_job, interval_s=600)
-    # T19: Auto-refresh portfolio stock prices every 15 min
-    from core.portfolio_routes import auto_refresh_portfolio_prices
-    scheduler.register("portfolio_price_refresh", auto_refresh_portfolio_prices, interval_s=900)
-    from core.risk_discipline import run_risk_discipline_cycle
-
-    def _risk_discipline_job():
-        try:
-            run_risk_discipline_cycle(notify=True)
-        except Exception as _e:
-            LOGGER.warning("risk discipline job failed: %s", str(_e)[:80])
-            raise
-
-    scheduler.register("risk_discipline", _risk_discipline_job, interval_s=300)
-    scheduler.register("news", run_news_cycle, interval_s=1800)
-    # PR #134: structured news-event ingestion (Alpaca+Finnhub → typed events)
-    # and the defensive tripwire (dark until NEWS_DEFENSE_ENABLED=1).
-    from core.news_ingest import run_news_ingest_cycle as _news_ingest_cycle
-    from core.news_defense import run_defense_check as _news_defense_check
-
-    def _news_ingest_job():
-        try:
-            _news_ingest_cycle()
-        except Exception as _e:
-            LOGGER.warning("news ingest job failed: %s", str(_e)[:100])
-            raise
-
-    def _news_defense_job():
-        try:
-            _news_defense_check()
-        except Exception as _e:
-            LOGGER.warning("news defense job failed: %s", str(_e)[:100])
-            raise
-
-    scheduler.register("news_event_ingest", _news_ingest_job, interval_s=900)
-    scheduler.register("news_defense", _news_defense_job, interval_s=300)
-    # PR #138: paper wallet — fake-money mirror of Ghost's signals (gated +
-    # shadow books) so fill-level evidence accrues with zero real risk.
-    from core.paper_wallet import run_wallet_cycle as _paper_wallet_cycle
-
-    def _paper_wallet_job():
-        try:
-            _paper_wallet_cycle()
-        except Exception as _e:
-            LOGGER.warning("paper wallet job failed: %s", str(_e)[:100])
-            raise
-
-    scheduler.register("paper_wallet", _paper_wallet_job, interval_s=300)
-    # Shadow scoring: resolve every silenced model eval as a virtual pick so
-    # per-symbol live hit rates accrue without firing (core.shadow_outcomes).
-    from core.shadow_outcomes import run_shadow_cycle as _shadow_cycle
-
-    def _shadow_outcomes_job():
-        try:
-            _shadow_cycle()
-        except Exception as _e:
-            LOGGER.warning("shadow outcomes job failed: %s", str(_e)[:80])
-            raise
-
-    scheduler.register("shadow_outcomes", _shadow_outcomes_job, interval_s=3600)
-    # PR #153: Watcher notebook — append-only observability snapshots.
-    # This writes only ghost_watcher_snapshots and never influences decisions.
-    from core.watcher import snapshot_watcher as _watcher_snapshot
-
-    def _watcher_job():
-        try:
-            _watcher_snapshot(days=30)
-        except Exception as _e:
-            LOGGER.warning("watcher snapshot job failed: %s", str(_e)[:100])
-            raise
-
-    scheduler.register("watcher", _watcher_job, interval_s=900)
-    # Research platform: isolated scoring and resolution (Phase 5-7).
-    # Writes only ghost_research_* tables. Never touches live models or picks.
-    from core.research_runner import run_research_cycle as _research_cycle
-
-    def _research_runner_job():
-        try:
-            _research_cycle()
-        except Exception as _e:
-            LOGGER.warning("research runner job failed: %s", str(_e)[:80])
-            raise
-
-    scheduler.register("research_runner", _research_runner_job, interval_s=3600)
-    # Research outbox processor: evaluates forward proof and triggers activation.
-    from core.research_ledger import get_outbox_pending, mark_outbox_processed, mark_outbox_failed
-
-    def _research_outbox_job():
-        try:
-            pending = get_outbox_pending(limit=20)
-            for row in pending:
-                try:
-                    # Look up the prediction to get its artifact and symbol
-                    from core.db import db_conn
-                    with db_conn() as _conn:
-                        _c = _conn.cursor()
-                        _c.execute(
-                            "SELECT artifact_sha, symbol, direction, contract_id"
-                            " FROM ghost_research_predictions WHERE id = %s",
-                            (row["prediction_id"],),
-                        )
-                        pred_row = _c.fetchone()
-                    if not pred_row:
-                        mark_outbox_processed(row["id"])
-                        continue
-                    pred_artifact_sha = pred_row[0]
-                    pred_symbol = pred_row[1]
-                    pred_direction = pred_row[2]
-
-                    # Find the forward registration for this artifact
-                    from core.research_forward import update_forward_proof_status, get_active_registrations
-                    from core.research_activation import activate_artifact, auto_activation_enabled
-                    registrations = get_active_registrations(status="COLLECTING")
-                    for reg in registrations:
-                        if reg.get("artifact_sha") != pred_artifact_sha:
-                            continue
-                        proof = update_forward_proof_status(reg["registration_id"])
-                        if proof.get("status") == "PROVEN" and auto_activation_enabled():
-                            activate_artifact(
-                                symbol=pred_symbol,
-                                direction=pred_direction,
-                                artifact_sha=pred_artifact_sha,
-                                registration_id=reg["registration_id"],
-                            )
-                    mark_outbox_processed(row["id"])
-                except Exception as _oe:
-                    mark_outbox_failed(row["id"], str(_oe)[:200])
-        except Exception as _e:
-            LOGGER.warning("research outbox job failed: %s", str(_e)[:80])
-            raise
-
-    scheduler.register("research_outbox", _research_outbox_job, interval_s=60)
-
-    def _agent_workflow_maintenance_job():
-        try:
-            from core.agent_workflow import maintain_workflow
-            result = maintain_workflow()
-            if result.get("expired") or result.get("requeued") or result.get("dead_letter"):
-                LOGGER.info(
-                    "agent workflow maintenance expired=%s requeued=%s dead_letter=%s",
-                    result.get("expired", 0), result.get("requeued", 0),
-                    result.get("dead_letter", 0),
-                )
-        except Exception as _e:
-            LOGGER.warning("agent workflow maintenance failed: %s", str(_e)[:80])
-            raise
-
-    scheduler.register(
-        "agent_workflow_maintenance",
-        _agent_workflow_maintenance_job,
-        interval_s=60,
-    )
-    # Activation lease maintenance remains enabled even when new automatic
-    # activations are disabled, so an existing lease can still expire safely.
-    def _research_activation_lease_job():
-        try:
-            from core.research_activation import review_active_leases
-            result = review_active_leases()
-            if result.get("failed"):
-                raise RuntimeError(
-                    f"{result['failed']} activation lease review(s) failed"
-                )
-        except Exception as _e:
-            LOGGER.warning("research activation lease job failed: %s", str(_e)[:80])
-            raise
-
-    scheduler.register(
-        "research_activation_lease",
-        _research_activation_lease_job,
-        interval_s=300,
-    )
-    # Research resolver: resolves pending research predictions using the
-    # same TP/SL resolver as production. Writes only ghost_research_* tables.
-    from core.research_ledger import get_pending_predictions
-    from core.research_resolvers import resolve_pending_tp_sl_prediction
-
-    def _research_resolver_job():
-        try:
-            pending = get_pending_predictions(limit=50)
-            if not pending:
-                return
-            for pred in pending:
-                try:
-                    from core.research_ledger import resolve_research_prediction
-                    from core.signal_engine import _fetch_ohlcv
-                    context = pred.get("context") or {}
-                    asset_type = str(context.get("asset_type") or "stock")
-                    daily_bars = _fetch_ohlcv(
-                        pred["symbol"], asset_type, period="1y", interval="1d",
-                    )
-                    result = resolve_pending_tp_sl_prediction(
-                        pred,
-                        daily_bars=daily_bars,
-                    )
-                    if result:
-                        resolve_research_prediction(
-                            prediction_id=pred["id"],
-                            resolver_id="tp_sl_bar_path/v1",
-                            resolver_version="1.0.0",
-                            outcome=result.outcome,
-                            observed_value=result.observed_value,
-                            resolved_ts=result.resolved_ts,
-                            evidence_available_ts=result.available_ts,
-                            evidence_payload=result.evidence,
-                            reason=result.reason,
-                        )
-                except Exception as _re:
-                    LOGGER.debug("research resolver skip for pred %s: %s", pred["id"], str(_re)[:80])
-        except Exception as _e:
-            LOGGER.warning("research resolver job failed: %s", str(_e)[:80])
-            raise
-
-    scheduler.register("research_resolver", _research_resolver_job, interval_s=900)
-    # Daily report notebook — append-only observability snapshots answering
-    # "what is Ghost doing and why?" Writes only ghost_daily_report_logs.
-    from core.daily_report import snapshot_daily_report as _daily_report_snapshot
-
-    def _daily_report_job():
-        try:
-            _daily_report_snapshot()
-        except Exception as _e:
-            LOGGER.warning("daily report snapshot job failed: %s", str(_e)[:100])
-            raise
-
-    scheduler.register("daily_report", _daily_report_job, interval_s=900)
-    # Explosion-event benchmark — resumable detection-recall measurement over
-    # completed daily bars. Self-gates by NYSE session and DB run claim, so it
-    # is safe to poll hourly; it never blocks a pick or loosens a trade gate.
-    from core.explosion_benchmark import run_daily_benchmark_job as _run_benchmark
-
-    def _explosion_benchmark_job():
-        try:
-            _run_benchmark()
-        except Exception as _e:
-            LOGGER.warning("explosion benchmark job failed: %s", str(_e)[:120])
-            raise
-
-    scheduler.register(
-        "explosion_benchmark",
-        _explosion_benchmark_job,
-        interval_s=3600,
-        timeout_s=600,
-    )
-
-    # Advisory external context — leader-only because this scheduler exists only
-    # after the cross-replica leader gate. HTTP handlers read persisted snapshots.
-    def _external_screener_job():
-        try:
-            from core.external_screener_ingest import run_external_screener_cycle
-            result = run_external_screener_cycle()
-            LOGGER.info(
-                "external screener status=%s inserted=%s",
-                result.get("status"), result.get("inserted", 0),
-            )
-            # Enrich only after the immutable discoveries have been persisted.
-            # This batch-only lane remains separate from candidates and alerts.
-            from core.external_radar import run_external_radar_cycle
-            radar = run_external_radar_cycle()
-            LOGGER.info(
-                "external radar status=%s observed=%s/%s",
-                radar.get("status"), radar.get("observed_count", 0),
-                radar.get("selected_count", 0),
-            )
-            # Agent workflow availability must never fail the market-data lane.
-            try:
-                from core.agent_workflow import enqueue_external_radar_tasks
-                queued = enqueue_external_radar_tasks(radar)
-                LOGGER.info(
-                    "agent mover triage attempted=%s created=%s",
-                    queued.get("attempted", 0), queued.get("created", 0),
-                )
-            except Exception as _agent_e:
-                LOGGER.warning("agent mover triage unavailable: %s", str(_agent_e)[:120])
-        except Exception as _e:
-            LOGGER.warning("external screener job failed: %s", str(_e)[:120])
-            raise
-
-    scheduler.register(
-        "external_screener",
-        _external_screener_job,
-        interval_s=max(300, int(os.getenv("EXTERNAL_SCREENER_INTERVAL", "900"))),
-        timeout_s=120,
-    )
-
-    def _broad_market_context_job():
-        try:
-            from core.broad_market_context import refresh_broad_market_context
-            result = refresh_broad_market_context()
-            LOGGER.info(
-                "broad market context status=%s valid=%s/%s",
-                result.get("status"), result.get("valid_count", 0),
-                result.get("expected_count", 0),
-            )
-        except Exception as _e:
-            LOGGER.warning("broad market context job failed: %s", str(_e)[:120])
-            raise
-
-    scheduler.register(
-        "broad_market_context",
-        _broad_market_context_job,
-        interval_s=max(300, int(os.getenv("BROAD_MARKET_CONTEXT_INTERVAL", "900"))),
-        timeout_s=180,
-    )
-
-    # Coverage maintenance: if too few loadable v3 models, run rate-limited retrain.
-    scheduler.register(
-        "coverage_maintenance",
-        _coverage_maintenance_job,
-        interval_s=max(900, int(os.getenv("COVERAGE_CHECK_INTERVAL_SEC", "3600"))),
-    )
-    # Weekly model retrain — keeps models fresh as market conditions change
-    from core.signal_engine import train_and_validate as _tv
-    def _weekly_retrain():
-        _lock_acquired = False
-        try:
-            if not _RETRAIN_JOB_LOCK.acquire(blocking=False):
-                LOGGER.info("Weekly retrain skipped: retrain lock busy")
-                return
-            _lock_acquired = True
-            min_interval_s = max(3600, int(os.getenv("WEEKLY_RETRAIN_MIN_INTERVAL_SEC", "604800")))
-            now_ts = int(time.time())
-            last_ts = 0
-            try:
-                with db_conn() as _wc:
-                    _wcur = _wc.cursor()
-                    ensure_ghost_state(_wcur)
-                    _wcur.execute("SELECT val FROM ghost_state WHERE key='last_weekly_retrain_ts'")
-                    _wr = _wcur.fetchone()
-                    last_ts = int(_wr[0]) if _wr and _wr[0] else 0
-            except Exception as _wse:
-                LOGGER.warning("Weekly retrain state read failed: %s", str(_wse)[:80])
-            if last_ts and (now_ts - last_ts) < min_interval_s:
-                LOGGER.info(
-                    "Weekly retrain skipped: last run %ss ago (<%ss)",
-                    now_ts - last_ts, min_interval_s
-                )
-                return
-            try:
-                with db_conn() as _wc2:
-                    _wcur2 = _wc2.cursor()
-                    _wcur2.execute(
-                        "INSERT INTO ghost_state(key,val) VALUES('last_weekly_retrain_ts',%s) "
-                        "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
-                        (str(now_ts),),
-                    )
-            except Exception as _wse2:
-                LOGGER.warning("Weekly retrain state write failed: %s", str(_wse2)[:80])
-            syms = _v3_train_collect_symbols()
-            trained, failed = 0, len(syms)
-            try:
-                # train_and_validate expects one list of (symbol, asset_type), not per-symbol calls
-                _, acc_ratio, _ok = _tv(syms)
-                trained = int(round(acc_ratio * len(syms))) if syms else 0
-                failed = len(syms) - trained
-            except Exception as _e:
-                LOGGER.warning("Weekly retrain failed: " + str(_e)[:80])
-            LOGGER.info("Weekly retrain complete: " + str(trained) + " trained, " + str(failed) + " failed")
-            try:
-                purged = _auto_purge_bad_models()
-                pv = _purge_v3_stale_or_weak()
-                LOGGER.info("Weekly retrain purge: legacy=%s v3=%s", purged, pv)
-            except Exception as _pe:
-                LOGGER.warning("Weekly purge failed: "+str(_pe)[:60])
-        except Exception as _e:
-            LOGGER.warning("Weekly retrain error: "+str(_e)[:80])
-        finally:
-            if _lock_acquired:
-                try:
-                    _RETRAIN_JOB_LOCK.release()
-                except Exception:
-                    pass
-    scheduler.register("weekly_retrain", _weekly_retrain, interval_s=604800)
-    scheduler.start()
-    # Intraday monitors (must run in lifespan — engines/startup._on_startup is not invoked).
     import asyncio as _aio
-    _bg_loop = _aio.get_running_loop()
-    try:
-        from core.wolf_monitor import start_wolf_monitor
-        _bg_loop.create_task(start_wolf_monitor())
-        LOGGER.info("[GHOST STARTUP] WOLF autonomous monitor started")
-    except Exception as _wme:
-        LOGGER.warning("WOLF monitor start failed: %s", str(_wme)[:80])
-    try:
-        from core.squeeze_monitor import start_squeeze_monitor
-        _bg_loop.create_task(start_squeeze_monitor())
-        LOGGER.info("[GHOST STARTUP] Watchlist squeeze monitor started (44 symbols)")
-    except Exception as _sqe:
-        LOGGER.warning("Squeeze monitor start failed: %s", str(_sqe)[:80])
-    # Ghost v3: auto-train on startup if no model in DB
-    def _startup_train():
-        _lock_acquired = False
+
+    _leader_runtime_started = False
+
+    async def _start_leader_runtime() -> None:
+        nonlocal _leader_runtime_started
+        if _leader_runtime_started:
+            return
+        from core import scheduler
+        from core.prediction import reconcile_outcomes
+        from core.news import run_news_cycle
+        scheduler.register("morning_card", _morning_card_job, interval_s=86400, timeout_s=600)
+        # Market-hours scan loop (roadmap #3a): tick at the market interval; the job
+        # self-gates to SCAN_INTERVAL_MARKET_MIN / SCAN_INTERVAL_OFFHOURS_MIN.
         try:
-            from core.signal_engine import train_and_validate
-            if not _has_loadable_v3_model():
+            _scan_tick = max(300, int(os.getenv("SCAN_INTERVAL_MARKET_MIN", "30")) * 60)
+        except Exception:
+            _scan_tick = 1800
+        scheduler.register(
+            "market_scan", _market_scan_job, interval_s=_scan_tick,
+            timeout_s=600, initial_delay_s=300,
+        )
+        from core.daily_model_issuance import run_daily_model_issuance
+
+        def _daily_model_issuance_job():
+            result = run_daily_model_issuance()
+            if result.get("ok") is not True:
+                raise RuntimeError(f"daily model issuance failed: {result}")
+
+        scheduler.register(
+            "daily_model_issuance", _daily_model_issuance_job,
+            interval_s=300, timeout_s=600, initial_delay_s=60,
+        )
+        # Watchdog: real-time hit alerts every 5 minutes
+        from core.watchdog import run_watchdog as _scheduled_watchdog
+        scheduler.register("watchdog", _scheduled_watchdog, interval_s=300)
+        # Weekly summary: every Friday at 4 PM CT = 22:00 UTC = 79200s from midnight
+        # Approximated as 7-day interval - fires on first Friday after deploy
+        scheduler.register("weekly_summary", _weekly_summary_job, interval_s=3600)
+        # Daily summary (roadmap #3b): hourly tick, fires once/day at DAILY_SUMMARY_HOUR.
+        scheduler.register("daily_summary", _daily_summary_job, interval_s=3600)
+        from core.squeeze_outcomes import run_squeeze_eod_job as _squeeze_eod_job
+
+        scheduler.register("squeeze_eod", _squeeze_eod_job, interval_s=3600)
+        # Forward clock on options evidence: one point-in-time chain snapshot per
+        # symbol per trading day (self-gates to the 13:00-15:00 CT window and
+        # once/day inside the job). Historical options data is paywalled — this
+        # accrues the honest history a future options-feature test needs.
+        from core.options_snapshots import run_options_snapshot_job as _options_snap_job
+
+        def _options_snapshots_job():
+            try:
+                _options_snap_job()
+            except Exception as _e:
+                LOGGER.warning("options snapshot job failed: %s", str(_e)[:80])
+                raise
+
+        scheduler.register("options_snapshots", _options_snapshots_job, interval_s=3600)
+        # PR #84: Super Ghost Truth Ledger — resolve logged predictions vs realized
+        # price at 1/5/20-day horizons so accuracy + if-followed stats accrue.
+        from core.super_ghost_ledger import run_resolver_job as _super_ghost_resolver
+
+        def _super_ghost_ledger_job():
+            try:
+                _super_ghost_resolver()
+            except Exception as _e:
+                LOGGER.warning("super ghost ledger job failed: %s", str(_e)[:80])
+                raise
+
+        scheduler.register("super_ghost_ledger", _super_ghost_ledger_job, interval_s=3600)
+        scheduler.register("reconcile", reconcile_outcomes, interval_s=900)
+        # Public Hunter reads are snapshot-only. This single-flight scheduler is the
+        # sole producer, using batched bars and cached optional evidence so a page
+        # view can never exhaust shared market-data provider limits.
+        from core.squeeze_hunter import refresh_hunter_snapshot as _hunter_refresh
+
+        def _hunter_snapshot_job():
+            result = _hunter_refresh(limit=20)
+            if not isinstance(result, dict) or not result.get("ok", False):
+                raise RuntimeError(f"squeeze hunter snapshot failed: {result}")
+            return result
+
+        scheduler.register("squeeze_hunter_snapshot", _hunter_snapshot_job, interval_s=900, timeout_s=300)
+        # Squeeze Hunter resolver: resolve Hunter evaluations vs realized 1/5/14-day
+        # returns so the audit trail accrues outcomes (the raw evidence for a future
+        # Wilson/Brier calibration step). Writes only ghost_squeeze_hunter_* tables.
+        from core.squeeze_hunter_ledger import resolve_hunter_predictions as _hunter_resolver
+
+        def _hunter_resolver_job():
+            result = _hunter_resolver(limit=200)
+            if not isinstance(result, dict) or not result.get("ok", False):
+                raise RuntimeError(f"squeeze hunter resolver failed: {result}")
+            return result
+
+        scheduler.register("squeeze_hunter_resolver", _hunter_resolver_job, interval_s=3600)
+        # Squeeze Hunter issuance: preregistered sampler writes ONE evaluation per
+        # symbol per session date (idempotent). This is the only path that persists
+        # Hunter evaluations — public GET traffic stays read-only. Runs every 15 min
+        # so the frozen 15:05-16:00 CT sampling window is never missed by an hourly
+        # tick landing outside it.
+        from core.squeeze_hunter_ledger import issue_hunter_samples as _hunter_issue
+
+        def _hunter_issue_job():
+            result = _hunter_issue()
+            if not isinstance(result, dict) or not result.get("ok", False):
+                raise RuntimeError(f"squeeze hunter issuance failed: {result}")
+            return result
+
+        scheduler.register("squeeze_hunter_issue", _hunter_issue_job, interval_s=900)
+        # One-off YMM earnings scenario: immutable snapshots at preregistered event
+        # phases plus a five-session outcome resolver. Both are shadow-only.
+        from core.bull_run_ledger import (
+            resolve_scenario as _bull_run_resolver,
+            run_snapshot_job as _bull_run_snapshot,
+        )
+
+        def _bull_run_snapshot_job():
+            result = _bull_run_snapshot()
+            if not isinstance(result, dict) or not result.get("ok", False):
+                raise RuntimeError(f"bull-run snapshot failed: {result}")
+            return result
+
+        def _bull_run_resolver_job():
+            result = _bull_run_resolver()
+            if not isinstance(result, dict) or not result.get("ok", False):
+                raise RuntimeError(f"bull-run resolver failed: {result}")
+            return result
+
+        scheduler.register("bull_run_snapshot", _bull_run_snapshot_job, interval_s=900)
+        scheduler.register("bull_run_resolver", _bull_run_resolver_job, interval_s=3600)
+        # Checklist-confidence calibration loop. Snapshots are frozen synchronously
+        # inside the prediction transaction (no delayed reconstruction), so only the
+        # outcome resolver runs on a schedule: it copies resolved TP/SL outcomes
+        # back onto the immutable snapshots so the completeness->win-rate table
+        # accrues samples prospectively.
+        from core.checklist_ledger import resolve_open_snapshots as _checklist_resolver
+
+        def _checklist_resolver_job():
+            result = _checklist_resolver()
+            if not isinstance(result, dict) or not result.get("ok", False):
+                raise RuntimeError(f"checklist resolver failed: {result}")
+            return result
+
+        scheduler.register("checklist_resolver", _checklist_resolver_job, interval_s=1800)
+        # Shadow evidence scoring: turns ACCEPTED agent-workflow research
+        # (core.agent_workflow) into a deterministic five-dimension quality score
+        # (core.evidence_scoring) and persists it to a shadow-only feature ledger
+        # (core.shadow_evidence_ledger). Read-only against the fire path -- this
+        # job never touches predictions, gates, or the wallet, and a score is
+        # written once and never overwritten.
+        from core.shadow_evidence_ledger import score_pending_evidence as _score_pending_evidence
+
+        def _shadow_evidence_scoring_job():
+            result = _score_pending_evidence()
+            if not isinstance(result, dict) or not result.get("ok", False):
+                raise RuntimeError(f"shadow evidence scoring failed: {result}")
+            return result
+
+        scheduler.register("shadow_evidence_scoring", _shadow_evidence_scoring_job, interval_s=600)
+        # T19: Auto-refresh portfolio stock prices every 15 min
+        from core.portfolio_routes import auto_refresh_portfolio_prices
+        scheduler.register("portfolio_price_refresh", auto_refresh_portfolio_prices, interval_s=900)
+        from core.risk_discipline import run_risk_discipline_cycle
+
+        def _risk_discipline_job():
+            try:
+                run_risk_discipline_cycle(notify=True)
+            except Exception as _e:
+                LOGGER.warning("risk discipline job failed: %s", str(_e)[:80])
+                raise
+
+        scheduler.register("risk_discipline", _risk_discipline_job, interval_s=300)
+        scheduler.register("news", run_news_cycle, interval_s=1800)
+        # PR #134: structured news-event ingestion (Alpaca+Finnhub → typed events)
+        # and the defensive tripwire (dark until NEWS_DEFENSE_ENABLED=1).
+        from core.news_ingest import run_news_ingest_cycle as _news_ingest_cycle
+        from core.news_defense import run_defense_check as _news_defense_check
+
+        def _news_ingest_job():
+            try:
+                _news_ingest_cycle()
+            except Exception as _e:
+                LOGGER.warning("news ingest job failed: %s", str(_e)[:100])
+                raise
+
+        def _news_defense_job():
+            try:
+                _news_defense_check()
+            except Exception as _e:
+                LOGGER.warning("news defense job failed: %s", str(_e)[:100])
+                raise
+
+        scheduler.register("news_event_ingest", _news_ingest_job, interval_s=900)
+        scheduler.register("news_defense", _news_defense_job, interval_s=300)
+        # PR #138: paper wallet — fake-money mirror of Ghost's signals (gated +
+        # shadow books) so fill-level evidence accrues with zero real risk.
+        from core.paper_wallet import run_wallet_cycle as _paper_wallet_cycle
+
+        def _paper_wallet_job():
+            try:
+                _paper_wallet_cycle()
+            except Exception as _e:
+                LOGGER.warning("paper wallet job failed: %s", str(_e)[:100])
+                raise
+
+        scheduler.register("paper_wallet", _paper_wallet_job, interval_s=300)
+        # Shadow scoring: resolve every silenced model eval as a virtual pick so
+        # per-symbol live hit rates accrue without firing (core.shadow_outcomes).
+        from core.shadow_outcomes import run_shadow_cycle as _shadow_cycle
+
+        def _shadow_outcomes_job():
+            try:
+                _shadow_cycle()
+            except Exception as _e:
+                LOGGER.warning("shadow outcomes job failed: %s", str(_e)[:80])
+                raise
+
+        scheduler.register("shadow_outcomes", _shadow_outcomes_job, interval_s=3600)
+        # PR #153: Watcher notebook — append-only observability snapshots.
+        # This writes only ghost_watcher_snapshots and never influences decisions.
+        from core.watcher import snapshot_watcher as _watcher_snapshot
+
+        def _watcher_job():
+            try:
+                _watcher_snapshot(days=30)
+            except Exception as _e:
+                LOGGER.warning("watcher snapshot job failed: %s", str(_e)[:100])
+                raise
+
+        scheduler.register("watcher", _watcher_job, interval_s=900)
+        # Research platform: isolated scoring and resolution (Phase 5-7).
+        # Writes only ghost_research_* tables. Never touches live models or picks.
+        from core.research_runner import run_research_cycle as _research_cycle
+
+        def _research_runner_job():
+            try:
+                _research_cycle()
+            except Exception as _e:
+                LOGGER.warning("research runner job failed: %s", str(_e)[:80])
+                raise
+
+        scheduler.register("research_runner", _research_runner_job, interval_s=3600)
+        # Research outbox processor: evaluates forward proof and triggers activation.
+        from core.research_ledger import get_outbox_pending, mark_outbox_processed, mark_outbox_failed
+
+        def _research_outbox_job():
+            try:
+                pending = get_outbox_pending(limit=20)
+                for row in pending:
+                    try:
+                        # Look up the prediction to get its artifact and symbol
+                        from core.db import db_conn
+                        with db_conn() as _conn:
+                            _c = _conn.cursor()
+                            _c.execute(
+                                "SELECT artifact_sha, symbol, direction, contract_id"
+                                " FROM ghost_research_predictions WHERE id = %s",
+                                (row["prediction_id"],),
+                            )
+                            pred_row = _c.fetchone()
+                        if not pred_row:
+                            mark_outbox_processed(row["id"])
+                            continue
+                        pred_artifact_sha = pred_row[0]
+                        pred_symbol = pred_row[1]
+                        pred_direction = pred_row[2]
+
+                        # Find the forward registration for this artifact
+                        from core.research_forward import update_forward_proof_status, get_active_registrations
+                        from core.research_activation import activate_artifact, auto_activation_enabled
+                        registrations = get_active_registrations(status="COLLECTING")
+                        for reg in registrations:
+                            if reg.get("artifact_sha") != pred_artifact_sha:
+                                continue
+                            proof = update_forward_proof_status(reg["registration_id"])
+                            if proof.get("status") == "PROVEN" and auto_activation_enabled():
+                                activate_artifact(
+                                    symbol=pred_symbol,
+                                    direction=pred_direction,
+                                    artifact_sha=pred_artifact_sha,
+                                    registration_id=reg["registration_id"],
+                                )
+                        mark_outbox_processed(row["id"])
+                    except Exception as _oe:
+                        mark_outbox_failed(row["id"], str(_oe)[:200])
+            except Exception as _e:
+                LOGGER.warning("research outbox job failed: %s", str(_e)[:80])
+                raise
+
+        scheduler.register("research_outbox", _research_outbox_job, interval_s=60)
+
+        def _agent_workflow_maintenance_job():
+            try:
+                from core.agent_workflow import maintain_workflow
+                result = maintain_workflow()
+                if result.get("expired") or result.get("requeued") or result.get("dead_letter"):
+                    LOGGER.info(
+                        "agent workflow maintenance expired=%s requeued=%s dead_letter=%s",
+                        result.get("expired", 0), result.get("requeued", 0),
+                        result.get("dead_letter", 0),
+                    )
+            except Exception as _e:
+                LOGGER.warning("agent workflow maintenance failed: %s", str(_e)[:80])
+                raise
+
+        scheduler.register(
+            "agent_workflow_maintenance",
+            _agent_workflow_maintenance_job,
+            interval_s=60,
+        )
+        # Activation lease maintenance remains enabled even when new automatic
+        # activations are disabled, so an existing lease can still expire safely.
+        def _research_activation_lease_job():
+            try:
+                from core.research_activation import review_active_leases
+                result = review_active_leases()
+                if result.get("failed"):
+                    raise RuntimeError(
+                        f"{result['failed']} activation lease review(s) failed"
+                    )
+            except Exception as _e:
+                LOGGER.warning("research activation lease job failed: %s", str(_e)[:80])
+                raise
+
+        scheduler.register(
+            "research_activation_lease",
+            _research_activation_lease_job,
+            interval_s=300,
+        )
+        # Research resolver: resolves pending research predictions using the
+        # same TP/SL resolver as production. Writes only ghost_research_* tables.
+        from core.research_ledger import get_pending_predictions
+        from core.research_resolvers import resolve_pending_tp_sl_prediction
+
+        def _research_resolver_job():
+            try:
+                pending = get_pending_predictions(limit=50)
+                if not pending:
+                    return
+                for pred in pending:
+                    try:
+                        from core.research_ledger import resolve_research_prediction
+                        from core.signal_engine import _fetch_ohlcv
+                        context = pred.get("context") or {}
+                        asset_type = str(context.get("asset_type") or "stock")
+                        daily_bars = _fetch_ohlcv(
+                            pred["symbol"], asset_type, period="1y", interval="1d",
+                        )
+                        result = resolve_pending_tp_sl_prediction(
+                            pred,
+                            daily_bars=daily_bars,
+                        )
+                        if result:
+                            resolve_research_prediction(
+                                prediction_id=pred["id"],
+                                resolver_id="tp_sl_bar_path/v1",
+                                resolver_version="1.0.0",
+                                outcome=result.outcome,
+                                observed_value=result.observed_value,
+                                resolved_ts=result.resolved_ts,
+                                evidence_available_ts=result.available_ts,
+                                evidence_payload=result.evidence,
+                                reason=result.reason,
+                            )
+                    except Exception as _re:
+                        LOGGER.debug("research resolver skip for pred %s: %s", pred["id"], str(_re)[:80])
+            except Exception as _e:
+                LOGGER.warning("research resolver job failed: %s", str(_e)[:80])
+                raise
+
+        scheduler.register("research_resolver", _research_resolver_job, interval_s=900)
+        # Daily report notebook — append-only observability snapshots answering
+        # "what is Ghost doing and why?" Writes only ghost_daily_report_logs.
+        from core.daily_report import snapshot_daily_report as _daily_report_snapshot
+
+        def _daily_report_job():
+            try:
+                _daily_report_snapshot()
+            except Exception as _e:
+                LOGGER.warning("daily report snapshot job failed: %s", str(_e)[:100])
+                raise
+
+        scheduler.register("daily_report", _daily_report_job, interval_s=900)
+        # Explosion-event benchmark — resumable detection-recall measurement over
+        # completed daily bars. Self-gates by NYSE session and DB run claim, so it
+        # is safe to poll hourly; it never blocks a pick or loosens a trade gate.
+        from core.explosion_benchmark import run_daily_benchmark_job as _run_benchmark
+
+        def _explosion_benchmark_job():
+            try:
+                _run_benchmark()
+            except Exception as _e:
+                LOGGER.warning("explosion benchmark job failed: %s", str(_e)[:120])
+                raise
+
+        scheduler.register(
+            "explosion_benchmark",
+            _explosion_benchmark_job,
+            interval_s=3600,
+            timeout_s=600,
+        )
+
+        # Advisory external context — leader-only because this scheduler exists only
+        # after the cross-replica leader gate. HTTP handlers read persisted snapshots.
+        def _external_screener_job():
+            try:
+                from core.external_screener_ingest import run_external_screener_cycle
+                result = run_external_screener_cycle()
+                LOGGER.info(
+                    "external screener status=%s inserted=%s",
+                    result.get("status"), result.get("inserted", 0),
+                )
+                # Enrich only after the immutable discoveries have been persisted.
+                # This batch-only lane remains separate from candidates and alerts.
+                from core.external_radar import run_external_radar_cycle
+                radar = run_external_radar_cycle()
+                LOGGER.info(
+                    "external radar status=%s observed=%s/%s",
+                    radar.get("status"), radar.get("observed_count", 0),
+                    radar.get("selected_count", 0),
+                )
+                # Agent workflow availability must never fail the market-data lane.
+                try:
+                    from core.agent_workflow import enqueue_external_radar_tasks
+                    queued = enqueue_external_radar_tasks(radar)
+                    LOGGER.info(
+                        "agent mover triage attempted=%s created=%s",
+                        queued.get("attempted", 0), queued.get("created", 0),
+                    )
+                except Exception as _agent_e:
+                    LOGGER.warning("agent mover triage unavailable: %s", str(_agent_e)[:120])
+            except Exception as _e:
+                LOGGER.warning("external screener job failed: %s", str(_e)[:120])
+                raise
+
+        scheduler.register(
+            "external_screener",
+            _external_screener_job,
+            interval_s=max(300, int(os.getenv("EXTERNAL_SCREENER_INTERVAL", "900"))),
+            timeout_s=120,
+        )
+
+        def _broad_market_context_job():
+            try:
+                from core.broad_market_context import refresh_broad_market_context
+                result = refresh_broad_market_context()
+                LOGGER.info(
+                    "broad market context status=%s valid=%s/%s",
+                    result.get("status"), result.get("valid_count", 0),
+                    result.get("expected_count", 0),
+                )
+            except Exception as _e:
+                LOGGER.warning("broad market context job failed: %s", str(_e)[:120])
+                raise
+
+        scheduler.register(
+            "broad_market_context",
+            _broad_market_context_job,
+            interval_s=max(300, int(os.getenv("BROAD_MARKET_CONTEXT_INTERVAL", "900"))),
+            timeout_s=180,
+        )
+
+        # Coverage maintenance: if too few loadable v3 models, run rate-limited retrain.
+        scheduler.register(
+            "coverage_maintenance",
+            _coverage_maintenance_job,
+            interval_s=max(900, int(os.getenv("COVERAGE_CHECK_INTERVAL_SEC", "3600"))),
+        )
+        # Weekly model retrain — keeps models fresh as market conditions change
+        from core.signal_engine import train_and_validate as _tv
+        def _weekly_retrain():
+            _lock_acquired = False
+            try:
                 if not _RETRAIN_JOB_LOCK.acquire(blocking=False):
-                    LOGGER.info("Startup training skipped: retrain lock busy")
+                    LOGGER.info("Weekly retrain skipped: retrain lock busy")
                     return
                 _lock_acquired = True
-                LOGGER.info("No loadable v3.2 TP/SL model found — training on startup...")
-                _record_v3_train_state(
-                    ts=int(time.time()), state="started", force="startup",
-                    accuracy="", passed="", error="", models_before="", models_after="",
-                )
-                stocks = _v3_train_collect_symbols()
-                _record_v3_train_state(state="running", stocks=str(stocks))
-                m, acc, passed = train_and_validate(stocks)
-                LOGGER.info(f"Startup training: acc={round((acc or 0)*100,1)}% passed={passed}")
-                _record_v3_train_state(
-                    state="passed" if passed else "failed",
-                    accuracy=f"{(acc or 0):.4f}", passed=str(bool(passed)).lower(),
-                    finished_at=int(time.time()), error="",
-                )
+                min_interval_s = max(3600, int(os.getenv("WEEKLY_RETRAIN_MIN_INTERVAL_SEC", "604800")))
+                now_ts = int(time.time())
+                last_ts = 0
                 try:
-                    purged = _auto_purge_bad_models()
-                    pv = _purge_v3_stale_or_weak()
-                    LOGGER.info(f"Startup purge: legacy={purged} v3={pv}")
-                except Exception as _spe:
-                    LOGGER.warning("Startup purge failed: "+str(_spe)[:60])
-            else:
-                LOGGER.info("v3 TP/SL model loaded from DB — ready")
-                try:
-                    purged = _auto_purge_bad_models()
-                    pv = _purge_v3_stale_or_weak()
-                    if purged or pv:
-                        LOGGER.info(f"Startup cleanup: legacy={purged} v3={pv}")
-                except Exception:
-                    pass
-                missing = _watchlist_missing_symbol_pairs()
-                if missing and _RETRAIN_JOB_LOCK.acquire(blocking=False):
-                    _lock_acquired = True
-                    LOGGER.warning(
-                        "Startup coverage gap: %s watchlist symbols missing models — training",
-                        len(missing),
+                    with db_conn() as _wc:
+                        _wcur = _wc.cursor()
+                        ensure_ghost_state(_wcur)
+                        _wcur.execute("SELECT val FROM ghost_state WHERE key='last_weekly_retrain_ts'")
+                        _wr = _wcur.fetchone()
+                        last_ts = int(_wr[0]) if _wr and _wr[0] else 0
+                except Exception as _wse:
+                    LOGGER.warning("Weekly retrain state read failed: %s", str(_wse)[:80])
+                if last_ts and (now_ts - last_ts) < min_interval_s:
+                    LOGGER.info(
+                        "Weekly retrain skipped: last run %ss ago (<%ss)",
+                        now_ts - last_ts, min_interval_s
                     )
+                    return
+                try:
+                    with db_conn() as _wc2:
+                        _wcur2 = _wc2.cursor()
+                        _wcur2.execute(
+                            "INSERT INTO ghost_state(key,val) VALUES('last_weekly_retrain_ts',%s) "
+                            "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
+                            (str(now_ts),),
+                        )
+                except Exception as _wse2:
+                    LOGGER.warning("Weekly retrain state write failed: %s", str(_wse2)[:80])
+                syms = _v3_train_collect_symbols()
+                trained, failed = 0, len(syms)
+                try:
+                    # train_and_validate expects one list of (symbol, asset_type), not per-symbol calls
+                    _, acc_ratio, _ok = _tv(syms)
+                    trained = int(round(acc_ratio * len(syms))) if syms else 0
+                    failed = len(syms) - trained
+                except Exception as _e:
+                    LOGGER.warning("Weekly retrain failed: " + str(_e)[:80])
+                LOGGER.info("Weekly retrain complete: " + str(trained) + " trained, " + str(failed) + " failed")
+                try:
+                    purged = _auto_purge_bad_models()
+                    pv = _purge_v3_stale_or_weak()
+                    LOGGER.info("Weekly retrain purge: legacy=%s v3=%s", purged, pv)
+                except Exception as _pe:
+                    LOGGER.warning("Weekly purge failed: "+str(_pe)[:60])
+            except Exception as _e:
+                LOGGER.warning("Weekly retrain error: "+str(_e)[:80])
+            finally:
+                if _lock_acquired:
+                    try:
+                        _RETRAIN_JOB_LOCK.release()
+                    except Exception:
+                        pass
+        scheduler.register("weekly_retrain", _weekly_retrain, interval_s=604800)
+        scheduler.start()
+        # Intraday monitors (must run in lifespan — engines/startup._on_startup is not invoked).
+        import asyncio as _aio
+        _bg_loop = _aio.get_running_loop()
+        try:
+            from core.wolf_monitor import start_wolf_monitor
+            _bg_loop.create_task(start_wolf_monitor())
+            LOGGER.info("[GHOST STARTUP] WOLF autonomous monitor started")
+        except Exception as _wme:
+            LOGGER.warning("WOLF monitor start failed: %s", str(_wme)[:80])
+        try:
+            from core.squeeze_monitor import start_squeeze_monitor
+            _bg_loop.create_task(start_squeeze_monitor())
+            LOGGER.info("[GHOST STARTUP] Watchlist squeeze monitor started (44 symbols)")
+        except Exception as _sqe:
+            LOGGER.warning("Squeeze monitor start failed: %s", str(_sqe)[:80])
+        # Ghost v3: auto-train on startup if no model in DB
+        def _startup_train():
+            _lock_acquired = False
+            try:
+                from core.signal_engine import train_and_validate
+                if not _has_loadable_v3_model():
+                    if not _RETRAIN_JOB_LOCK.acquire(blocking=False):
+                        LOGGER.info("Startup training skipped: retrain lock busy")
+                        return
+                    _lock_acquired = True
+                    LOGGER.info("No loadable v3.2 TP/SL model found — training on startup...")
                     _record_v3_train_state(
-                        ts=int(time.time()), state="started", force="startup_missing",
+                        ts=int(time.time()), state="started", force="startup",
                         accuracy="", passed="", error="", models_before="", models_after="",
                     )
-                    _record_v3_train_state(state="running", stocks=str(missing))
-                    m, acc, passed = train_and_validate(missing)
-                    LOGGER.info(
-                        "Startup missing-model training: acc=%s%% passed=%s symbols=%s",
-                        round((acc or 0) * 100, 1), passed, len(missing),
-                    )
+                    stocks = _v3_train_collect_symbols()
+                    _record_v3_train_state(state="running", stocks=str(stocks))
+                    m, acc, passed = train_and_validate(stocks)
+                    LOGGER.info(f"Startup training: acc={round((acc or 0)*100,1)}% passed={passed}")
                     _record_v3_train_state(
                         state="passed" if passed else "failed",
                         accuracy=f"{(acc or 0):.4f}", passed=str(bool(passed)).lower(),
@@ -2079,37 +2045,117 @@ async def lifespan(app: FastAPI):
                     try:
                         purged = _auto_purge_bad_models()
                         pv = _purge_v3_stale_or_weak()
+                        LOGGER.info(f"Startup purge: legacy={purged} v3={pv}")
+                    except Exception as _spe:
+                        LOGGER.warning("Startup purge failed: "+str(_spe)[:60])
+                else:
+                    LOGGER.info("v3 TP/SL model loaded from DB — ready")
+                    try:
+                        purged = _auto_purge_bad_models()
+                        pv = _purge_v3_stale_or_weak()
                         if purged or pv:
-                            LOGGER.info(f"Post-startup-missing purge: legacy={purged} v3={pv}")
+                            LOGGER.info(f"Startup cleanup: legacy={purged} v3={pv}")
                     except Exception:
                         pass
-        except Exception as _te:
-            LOGGER.warning("Startup training failed: " + str(_te))
-            try:
-                _record_v3_train_state(
-                    state="exception", error=str(_te)[:300], finished_at=int(time.time()),
-                )
-            except Exception:
-                pass
-        finally:
-            if _lock_acquired:
+                    missing = _watchlist_missing_symbol_pairs()
+                    if missing and _RETRAIN_JOB_LOCK.acquire(blocking=False):
+                        _lock_acquired = True
+                        LOGGER.warning(
+                            "Startup coverage gap: %s watchlist symbols missing models — training",
+                            len(missing),
+                        )
+                        _record_v3_train_state(
+                            ts=int(time.time()), state="started", force="startup_missing",
+                            accuracy="", passed="", error="", models_before="", models_after="",
+                        )
+                        _record_v3_train_state(state="running", stocks=str(missing))
+                        m, acc, passed = train_and_validate(missing)
+                        LOGGER.info(
+                            "Startup missing-model training: acc=%s%% passed=%s symbols=%s",
+                            round((acc or 0) * 100, 1), passed, len(missing),
+                        )
+                        _record_v3_train_state(
+                            state="passed" if passed else "failed",
+                            accuracy=f"{(acc or 0):.4f}", passed=str(bool(passed)).lower(),
+                            finished_at=int(time.time()), error="",
+                        )
+                        try:
+                            purged = _auto_purge_bad_models()
+                            pv = _purge_v3_stale_or_weak()
+                            if purged or pv:
+                                LOGGER.info(f"Post-startup-missing purge: legacy={purged} v3={pv}")
+                        except Exception:
+                            pass
+            except Exception as _te:
+                LOGGER.warning("Startup training failed: " + str(_te))
                 try:
-                    _RETRAIN_JOB_LOCK.release()
+                    _record_v3_train_state(
+                        state="exception", error=str(_te)[:300], finished_at=int(time.time()),
+                    )
                 except Exception:
                     pass
-    if _startup_auto_train_enabled():
-        import threading as _th
+            finally:
+                if _lock_acquired:
+                    try:
+                        _RETRAIN_JOB_LOCK.release()
+                    except Exception:
+                        pass
+        if _startup_auto_train_enabled():
+            import threading as _th
 
-        _th.Thread(target=_startup_train, daemon=True).start()
+            _th.Thread(target=_startup_train, daemon=True).start()
+        else:
+            LOGGER.info(
+                "Startup auto-training disabled; scheduled/manual training remains available"
+            )
+        LOGGER.info("Ghost Protocol v2 ready.")
+        _leader_runtime_started = True
+
+    _takeover_task = None
+    if _is_leader:
+        await _start_leader_runtime()
     else:
+        from core.leader_lock import wait_for_leadership
+
         LOGGER.info(
-            "Startup auto-training disabled; scheduled/manual training remains available"
+            "Not the background-work leader — serving HTTP and retrying leadership"
         )
-    LOGGER.info("Ghost Protocol v2 ready.")
-    yield
-    scheduler.stop()
-    from core.leader_lock import release_leader
-    release_leader()
+        _takeover_task = _aio.create_task(
+            wait_for_leadership(_start_leader_runtime)
+        )
+
+        def _restart_on_takeover_failure(task):
+            if task.cancelled():
+                return
+            exc = task.exception()
+            if exc is not None:
+                LOGGER.critical(
+                    "Background runtime failed during leader handoff: %s",
+                    str(exc)[:200],
+                )
+                # A clean process restart is safer than serving indefinitely
+                # without prediction issuance, resolution, or market monitors.
+                os._exit(1)
+
+        _takeover_task.add_done_callback(_restart_on_takeover_failure)
+        LOGGER.info("Ghost Protocol v2 ready (HTTP; leadership handoff pending).")
+
+    try:
+        yield
+    finally:
+        if _takeover_task is not None and not _takeover_task.done():
+            _takeover_task.cancel()
+            try:
+                await _takeover_task
+            except _aio.CancelledError:
+                pass
+        if _leader_runtime_started:
+            from core import scheduler
+
+            scheduler.stop()
+        from core.leader_lock import release_leader
+
+        release_leader()
 
 # Security (audit): /docs (Swagger UI), /redoc, and the OpenAPI schema are
 # disabled unless DOCS_ENABLED is explicitly truthy. When the schema IS exposed,
