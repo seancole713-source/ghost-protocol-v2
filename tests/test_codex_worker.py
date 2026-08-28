@@ -86,9 +86,37 @@ def test_source_extraction_ignores_urls_without_citation_hint():
 def test_normalize_source_refs_matches_ghost_contract_shape():
     now = 1_800_000_000
     refs = worker._normalize_source_refs(
-        [{"kind": "filing", "locator": "https://example.com/release"}], [], now,
+        [{"kind": "filing", "locator": "https://example.com/release"}],
+        [{"kind": "web_search", "locator": "https://example.com/release"}],
+        now,
     )
-    assert refs == [{"kind": "filing", "locator": "https://example.com/release", "retrieved_ts": now}]
+    assert refs == [
+        {"kind": "web_search", "locator": "https://example.com/release", "retrieved_ts": now}
+    ]
+
+
+def test_normalize_source_refs_discards_model_only_urls():
+    now = 1_800_000_000
+    refs = worker._normalize_source_refs(
+        [{"kind": "sec_filing", "locator": "https://invented.example/fake"}],
+        [],
+        now,
+    )
+    assert refs == []
+
+
+def test_source_extraction_rejects_uncited_web_search_action_sources():
+    now = 1_800_000_000
+    output = [
+        {
+            "type": "web_search_call",
+            "action": {
+                "type": "search",
+                "sources": [{"type": "url", "url": "https://example.com/official"}],
+            },
+        }
+    ]
+    assert worker._source_refs_from_openai_response(output, now) == []
 
 
 class _FakeResponse:
@@ -152,6 +180,9 @@ def test_openai_client_research_happy_path_needs_no_repair():
     assert result["claims"]["verdict"] == "supports"
     assert result["source_refs"][0]["locator"] == "https://example.com/release"
     assert result["raw_response"]["format_repaired"] is False
+    assert session.calls[0]["max_tool_calls"] == client.config.web_search_max_uses
+    assert session.calls[0]["tool_choice"] == "required"
+    assert session.calls[0]["store"] is False
 
 
 class _NoSourcesSession:
@@ -177,6 +208,27 @@ class _NoSourcesSession:
 
 def test_research_refuses_to_submit_when_no_source_refs_found():
     client = worker.OpenAIClient(_config(), session=_NoSourcesSession())
+    with pytest.raises(worker.ResearchIncompleteError):
+        client.research(
+            {"task_id": "canary", "request_payload": {}},
+            {"required_response_schema": {"type": "object"}},
+        )
+
+
+class _HallucinatedSourceSession(_NoSourcesSession):
+    def post(self, _url, json, timeout):
+        response = super().post(_url, json, timeout)
+        response.body["output_text"] = (
+            '{"summary":"unsupported","claims":{"verdict":"supports","evidence":[{}],'
+            '"risks":[],"recommended_next_step":"monitor"},'
+            '"source_refs":[{"kind":"sec_filing","locator":"https://invented.example/fake"}],'
+            '"agent_confidence":0.9}'
+        )
+        return response
+
+
+def test_research_rejects_model_authored_url_without_provider_citation():
+    client = worker.OpenAIClient(_config(), session=_HallucinatedSourceSession())
     with pytest.raises(worker.ResearchIncompleteError):
         client.research(
             {"task_id": "canary", "request_payload": {}},

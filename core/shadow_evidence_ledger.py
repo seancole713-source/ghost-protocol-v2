@@ -199,9 +199,10 @@ def score_pending_evidence(limit: int = 50) -> Dict[str, Any]:
         cur.execute(
             """
             SELECT e.evidence_id, e.task_id, e.claims, e.source_refs, t.symbol
-              FROM ghost_agent_evidence e
+             FROM ghost_agent_evidence e
               JOIN ghost_agent_tasks t ON t.task_id = e.task_id
              WHERE e.validation_status = 'ACCEPTED'
+               AND t.status = 'COMPLETED'
                AND NOT EXISTS (
                    SELECT 1 FROM ghost_shadow_evidence_scores s
                     WHERE s.evidence_id = e.evidence_id

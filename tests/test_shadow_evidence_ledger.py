@@ -167,6 +167,8 @@ def test_score_pending_evidence_skips_one_failure_without_stopping_the_pass():
     assert result["failed"] == 1
     assert result["scanned"] == 2
     assert calls == ["evd_good", "evd_bad"]
+    query = next(sql for sql in cur.executed if "FROM ghost_agent_evidence e" in sql)
+    assert "t.status = 'COMPLETED'" in query
 
 
 def test_recent_scores_filters_by_symbol_and_task():

@@ -35,9 +35,28 @@ def test_unrecognized_source_kind_scores_the_floor():
 
 
 def test_authority_takes_the_best_source_present():
-    refs = [_ref(kind="web_search"), _ref(kind="sec_filing"), _ref(kind="social_media")]
+    refs = [
+        _ref(kind="web_search", locator="https://example.com/search"),
+        _ref(kind="sec_filing", locator="https://sec.gov/Archives/filing"),
+        _ref(kind="social_media", locator="https://x.com/post"),
+    ]
     result = es.score_source_authority(refs)
     assert result["score"] == es._SOURCE_AUTHORITY["sec_filing"]
+
+
+def test_privileged_kind_does_not_inflate_unrelated_domain():
+    result = es.score_source_authority([
+        _ref(kind="sec_filing", locator="https://random-blog.example/post"),
+    ])
+    assert result["score"] == es._SOURCE_AUTHORITY_FLOOR
+
+
+def test_provider_web_search_ref_infers_regulatory_authority_from_domain():
+    result = es.score_source_authority([
+        _ref(kind="web_search", locator="https://www.sec.gov/Archives/filing"),
+    ])
+    assert result["score"] == 1.0
+    assert result["per_source"][0]["domain_verified"] is True
 
 
 # --------------------------------------------------------------- freshness --
@@ -59,6 +78,13 @@ def test_month_old_source_scores_near_floor():
     refs = [_ref(published_ts=NOW - 60 * 86400)]
     result = es.score_freshness(refs, now_ts=NOW)
     assert result["score"] == es._FRESHNESS_FLOOR
+
+
+def test_recent_retrieval_does_not_make_old_source_fresh():
+    refs = [{"retrieved_ts": NOW - 10}]
+    result = es.score_freshness(refs, now_ts=NOW)
+    assert result["score"] == es._FRESHNESS_FLOOR
+    assert result["newest_age_s"] is None
 
 
 # ----------------------------------------------------------- corroboration --
@@ -88,10 +114,17 @@ def test_distinct_domains_increase_corroboration_with_diminishing_returns():
 def test_unparseable_locator_is_excluded_not_guessed():
     refs = [_ref(locator=""), _ref(locator="not a url at all !!")]
     result = es.score_corroboration(refs)
-    # "not a url" still parses to some netloc/path under urlparse's lenient
-    # rules or is excluded; either way it must not silently count as two
-    # confident independent domains from garbage input.
-    assert result["independent_domains"] <= 1
+    assert result["independent_domains"] == 0
+
+
+def test_subdomains_of_one_organization_are_not_independent_sources():
+    refs = [
+        _ref(locator="https://finance.yahoo.com/story"),
+        _ref(locator="https://news.yahoo.com/story"),
+    ]
+    result = es.score_corroboration(refs)
+    assert result["independent_domains"] == 1
+    assert result["domains"] == ["yahoo.com"]
 
 
 # ----------------------------------------------------------- contradiction --

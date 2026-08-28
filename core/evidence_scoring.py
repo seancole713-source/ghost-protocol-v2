@@ -29,7 +29,7 @@ core.shadow_evidence_ledger persists. Storage and scheduling live there.
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, Optional, Sequence
 from urllib.parse import urlparse
 
 SCORING_VERSION = "evidence_score_v1"
@@ -65,6 +65,15 @@ _SOURCE_AUTHORITY: Dict[str, float] = {
     "social_media": 0.15,
 }
 _SOURCE_AUTHORITY_FLOOR = 0.10  # unrecognized kind, or kind missing entirely
+
+_REGULATORY_DOMAINS = frozenset({
+    "sec.gov", "finra.org", "federalregister.gov", "fca.org.uk",
+})
+_EXCHANGE_DOMAINS = frozenset({
+    "nasdaq.com", "nasdaqtrader.com", "nyse.com", "cboe.com", "otcmarkets.com",
+})
+_REGULATORY_KINDS = frozenset({"filing", "sec_filing", "regulatory_filing"})
+_EXCHANGE_KINDS = frozenset({"exchange_notice"})
 
 # Freshness decay bands, keyed by age in seconds at scoring time.
 _FRESHNESS_BANDS = (
@@ -108,24 +117,27 @@ def _num(value: Any) -> Optional[float]:
 
 
 def _source_domain(locator: str) -> Optional[str]:
-    """Registrable-ish domain for a locator, for independence checks.
-
-    Not a full public-suffix-list implementation -- good enough to tell
-    finance.yahoo.com and sec.gov apart, and to collapse www.x.com / x.com
-    into one source. Anything unparseable returns None and is excluded from
-    the domain-independence count, never guessed at.
-    """
+    """Return a conservative organization-level domain for HTTP(S) URLs."""
     try:
-        parsed = urlparse(locator if "://" in locator else f"https://{locator}")
+        parsed = urlparse(locator)
     except ValueError:
         return None
-    host = (parsed.netloc or parsed.path or "").lower().strip()
-    if not host:
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return None
+    host = parsed.netloc.lower().strip()
     host = host.split("@")[-1].split(":")[0]
     if host.startswith("www."):
         host = host[4:]
-    return host or None
+    labels = [label for label in host.split(".") if label]
+    if len(labels) < 2:
+        return None
+    # Keep the registrable label for common country-code second-level
+    # suffixes; otherwise collapse arbitrary subdomains to one organization.
+    if len(labels) >= 3 and ".".join(labels[-2:]) in {
+        "co.uk", "com.au", "co.jp", "co.nz", "com.br", "com.cn",
+    }:
+        return ".".join(labels[-3:])
+    return ".".join(labels[-2:])
 
 
 def score_source_authority(source_refs: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
@@ -144,8 +156,25 @@ def score_source_authority(source_refs: Sequence[Dict[str, Any]]) -> Dict[str, A
             per_source.append({"kind": None, "authority": _SOURCE_AUTHORITY_FLOOR})
             continue
         kind = str(ref.get("kind") or "").strip().lower()
-        authority = _SOURCE_AUTHORITY.get(kind, _SOURCE_AUTHORITY_FLOOR)
-        per_source.append({"kind": kind or None, "authority": authority})
+        domain = _source_domain(str(ref.get("locator") or "").strip())
+        domain_authority = None
+        if domain in _REGULATORY_DOMAINS:
+            domain_authority = 1.0
+        elif domain in _EXCHANGE_DOMAINS:
+            domain_authority = 0.95
+
+        declared_authority = _SOURCE_AUTHORITY.get(kind, _SOURCE_AUTHORITY_FLOOR)
+        if kind in _REGULATORY_KINDS and domain not in _REGULATORY_DOMAINS:
+            declared_authority = _SOURCE_AUTHORITY_FLOOR
+        elif kind in _EXCHANGE_KINDS and domain not in _EXCHANGE_DOMAINS:
+            declared_authority = _SOURCE_AUTHORITY_FLOOR
+        authority = max(declared_authority, domain_authority or _SOURCE_AUTHORITY_FLOOR)
+        per_source.append({
+            "kind": kind or None,
+            "domain": domain,
+            "authority": authority,
+            "domain_verified": domain_authority is not None,
+        })
         best = max(best, authority)
     return {"score": round(best, 4), "per_source": per_source}
 
@@ -153,11 +182,9 @@ def score_source_authority(source_refs: Sequence[Dict[str, Any]]) -> Dict[str, A
 def score_freshness(source_refs: Sequence[Dict[str, Any]], *, now_ts: int) -> Dict[str, Any]:
     """Freshest usable timestamp across sources, decayed by age band.
 
-    Prefers published_ts, then observed_ts, then retrieved_ts per source --
-    matching the priority order the checklist evidence layer already uses
-    for "when did this become knowable." A source with no timestamp at all
-    contributes nothing to the max (rule 1); if every source lacks a
-    timestamp the dimension scores the floor.
+    Prefers published_ts, then observed_ts. ``retrieved_ts`` is intentionally
+    excluded: fetching a year-old article now does not make its catalyst
+    fresh. A source with no knowable-time timestamp scores the floor.
     """
     if not source_refs:
         return {"score": 0.0, "newest_age_s": None}
@@ -168,7 +195,7 @@ def score_freshness(source_refs: Sequence[Dict[str, Any]], *, now_ts: int) -> Di
         if not isinstance(ref, dict):
             continue
         ts = None
-        for field in ("published_ts", "observed_ts", "retrieved_ts"):
+        for field in ("published_ts", "observed_ts"):
             candidate = _num(ref.get(field))
             if candidate is not None:
                 ts = int(candidate)

@@ -1,10 +1,9 @@
 # Independent Codex Worker — Interface Contract
 
-Status: **specification only, not implemented.** No code in this repo builds
-or deploys this worker. This document exists so whoever does build it isn't
-reverse-engineering the protocol from `services/claude_worker/worker.py` —
-and so the result plugs into consensus scoring that already exists, with
-zero changes to `core/agent_workflow.py` or `core/shadow_evidence_ledger.py`.
+Status: **implemented, tested, not yet production-deployed.** The worker is
+implemented in `services/codex_worker/worker.py`. This document defines the
+server contract it follows and the production sequencing required to enable
+consensus without stalling the existing Claude-only queue.
 
 Everything below is verified against the live code in this repo as of
 `c85fdd9` (`core/agent_workflow.py`, `api/agent_workflow_endpoints.py`,
@@ -97,7 +96,7 @@ document and the code ever drift.
    -> {accepted, task_status, accepted_submissions, required_submissions,
        quarantine_category, validation_errors, retry_allowed, lease_retained}
 4. if retry_allowed and lease_retained: correct claims/source_refs per
-   validation_errors, resubmit with claims.repair_of_evidence_id set to
+   validation_errors, resubmit with top-level repair_of_evidence_id set to
    the rejected evidence_id, same lease_token, before lease_expires_at.
 5. if unable to research this task: POST /tasks/{task_id}/release
    {agent_id, lease_token, reason}
@@ -181,8 +180,9 @@ subtract, never inflate).
 
 ## 8. Explicitly out of scope here
 
-- Which OpenAI model, prompt, or web-search tool the Codex worker uses —
-  implementation detail, not part of the contract.
+- The OpenAI model, prompt, and web-search settings are implementation
+  details in `services/codex_worker/worker.py`, not part of this server
+  contract. They require a live canary before production deployment.
 - `OPENAI_API_KEY` provisioning and the new Railway service itself —
   infrastructure/ownership decision, not a code contract.
 - Raising `required_submissions` on issued tasks so consensus is actually

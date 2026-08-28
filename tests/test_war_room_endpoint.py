@@ -20,10 +20,12 @@ def _client(monkeypatch):
 
 
 def test_war_room_route_registered():
-    paths = {getattr(r, "path", "") for r in wolf_app.APP.routes}
+    from core.health_audit import iter_registered_routes
+    routes = list(iter_registered_routes(wolf_app.APP))
+    paths = {getattr(r, "path", "") for r in routes}
     assert "/api/wolf/war-room" in paths
     methods = set()
-    for r in wolf_app.APP.routes:
+    for r in routes:
         if getattr(r, "path", "") == "/api/wolf/war-room":
             methods |= set(getattr(r, "methods", set()) or set())
     assert "POST" in methods

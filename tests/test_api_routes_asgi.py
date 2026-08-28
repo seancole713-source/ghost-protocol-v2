@@ -288,9 +288,11 @@ def test_v1_ghost_score_route_registered():
 def test_diagnostics_route_is_registered_but_hidden():
     """The 404 above is the auth wall, not a missing route: the path IS
     registered, yet hidden from the OpenAPI schema (include_in_schema=False)."""
-    paths = [getattr(r, "path", None) for r in wolf_app.APP.routes]
+    from core.health_audit import iter_registered_routes
+    routes = list(iter_registered_routes(wolf_app.APP))
+    paths = [getattr(r, "path", None) for r in routes]
     assert "/api/diagnostics" in paths
-    diag = next(r for r in wolf_app.APP.routes if getattr(r, "path", None) == "/api/diagnostics")
+    diag = next(r for r in routes if getattr(r, "path", None) == "/api/diagnostics")
     assert diag.include_in_schema is False
 
 
@@ -298,7 +300,8 @@ def test_v3_train_route_maps_to_trainer_not_helper():
     """Regression: POST /api/v3/train must invoke the background trainer
     (v3_train), not the _v3_train_collect_symbols helper the decorator was
     accidentally attached to — which returned the symbol list and never trained."""
-    route = next(r for r in wolf_app.APP.routes
+    from core.health_audit import iter_registered_routes
+    route = next(r for r in iter_registered_routes(wolf_app.APP)
                  if getattr(r, "path", None) == "/api/v3/train")
     assert route.endpoint is wolf_app.v3_train
     assert "POST" in route.methods

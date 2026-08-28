@@ -97,6 +97,27 @@ def _persist_run(db_conn, payload: Dict[str, Any]) -> None:
         )
 
 
+def iter_registered_routes(app):
+    """Yield direct and included FastAPI routes across framework versions.
+
+    FastAPI 0.141 keeps included routers as lazy ``_IncludedRouter`` nodes
+    instead of flattening them into ``app.routes``. Runtime dispatch still
+    works, but a shallow inspection falsely reports every included endpoint
+    missing. Traverse the public router and the lazy wrapper defensively.
+    """
+    pending = list(getattr(app, "routes", []) or [])
+    seen_routers = set()
+    while pending:
+        route = pending.pop(0)
+        if getattr(route, "path", None):
+            yield route
+        original_router = getattr(route, "original_router", None)
+        if original_router is None or id(original_router) in seen_routers:
+            continue
+        seen_routers.add(id(original_router))
+        pending.extend(list(getattr(original_router, "routes", []) or []))
+
+
 def run_health_audit(
     app,
     db_conn,
@@ -112,7 +133,7 @@ def run_health_audit(
     autofix_resolved = 0
 
     # 1) API route availability surface.
-    routes = {getattr(r, "path", "") for r in getattr(app, "routes", [])}
+    routes = {getattr(r, "path", "") for r in iter_registered_routes(app)}
     for path in _required_route_paths():
         if path in routes:
             findings.append(
@@ -904,4 +925,3 @@ def run_health_audit(
     except Exception:
         note_suppressed()
     return report
-
