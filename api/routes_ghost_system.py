@@ -672,6 +672,25 @@ def checklist_global_record_endpoint(limit: int = 30):
         return JSONResponse({"ok": False, "error": "database_unavailable"}, status_code=503)
 
 
+@router.get("/api/ghost/shadow-evidence/scores")
+def shadow_evidence_scores_endpoint(symbol: str = "", task_id: str = "", limit: int = 50):
+    """Read-only: recent deterministic evidence scores for the dashboard.
+
+    Shadow-only telemetry — this never feeds a gate or a prediction. Filter
+    by symbol and/or task_id; omit both for the most recent scores overall.
+    """
+    try:
+        from core.shadow_evidence_ledger import recent_scores
+        rows = recent_scores(
+            symbol=symbol.strip() or None,
+            task_id=task_id.strip() or None,
+            limit=limit,
+        )
+        return {"ok": True, "scores": rows, "advisory_only": True, "decision_eligible": False}
+    except Exception:
+        return JSONResponse({"ok": False, "error": "database_unavailable"}, status_code=503)
+
+
 @router.post("/api/ghost/checklist/snapshot-run")
 def checklist_snapshot_run_endpoint(x_cron_secret: str = Header(default="")):
     """Retired: delayed current-state reconstruction is not issue-time evidence."""

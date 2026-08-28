@@ -1550,6 +1550,21 @@ async def lifespan(app: FastAPI):
         return result
 
     scheduler.register("checklist_resolver", _checklist_resolver_job, interval_s=1800)
+    # Shadow evidence scoring: turns ACCEPTED agent-workflow research
+    # (core.agent_workflow) into a deterministic five-dimension quality score
+    # (core.evidence_scoring) and persists it to a shadow-only feature ledger
+    # (core.shadow_evidence_ledger). Read-only against the fire path -- this
+    # job never touches predictions, gates, or the wallet, and a score is
+    # written once and never overwritten.
+    from core.shadow_evidence_ledger import score_pending_evidence as _score_pending_evidence
+
+    def _shadow_evidence_scoring_job():
+        result = _score_pending_evidence()
+        if not isinstance(result, dict) or not result.get("ok", False):
+            raise RuntimeError(f"shadow evidence scoring failed: {result}")
+        return result
+
+    scheduler.register("shadow_evidence_scoring", _shadow_evidence_scoring_job, interval_s=600)
     # T19: Auto-refresh portfolio stock prices every 15 min
     from core.portfolio_routes import auto_refresh_portfolio_prices
     scheduler.register("portfolio_price_refresh", auto_refresh_portfolio_prices, interval_s=900)
