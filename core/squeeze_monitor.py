@@ -1150,15 +1150,23 @@ def _metrics_from_batch_bars(symbol: str) -> Optional[Dict[str, Any]]:
     }
 
 
-def batched_market_metrics(symbols: List[str]) -> Dict[str, Dict[str, Any]]:
-    """Return an isolated batch snapshot without leaking shared scan state."""
+def batched_market_metrics(
+    symbols: List[str],
+) -> Dict[str, Optional[Dict[str, Any]]]:
+    """Return an isolated batch snapshot without leaking shared scan state.
+
+    A symbol present in the batch but lacking an intraday print is returned as
+    ``None``. That is an authoritative premarket absence, not a provider miss;
+    retaining the key prevents the radar from launching dozens of slow
+    per-symbol fallbacks for securities that simply have not traded yet.
+    """
     with _batch_bars_lock:
         try:
             _batch_fetch_bars(symbols)
             return {
-                symbol: metrics
+                symbol: _metrics_from_batch_bars(symbol)
                 for symbol in symbols
-                if (metrics := _metrics_from_batch_bars(symbol)) is not None
+                if symbol.upper() in _batch_bars
             }
         finally:
             _batch_bars.clear()

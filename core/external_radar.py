@@ -223,7 +223,7 @@ def run_external_radar_cycle(*, now_ts: Optional[int] = None) -> Dict[str, Any]:
         return {"ok": True, "status": "disabled", "advisory_only": True,
                 "decision_eligible": False}
     seeds = load_external_radar_seeds(now_ts=now)
-    metrics_map: Dict[str, Dict[str, Any]] = {}
+    metrics_map: Dict[str, Optional[Dict[str, Any]]] = {}
     batch_failed = False
     if seeds:
         try:

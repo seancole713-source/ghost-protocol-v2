@@ -1554,7 +1554,13 @@ async def lifespan(app: FastAPI):
                 raise RuntimeError(f"squeeze hunter snapshot failed: {result}")
             return result
 
-        scheduler.register("squeeze_hunter_snapshot", _hunter_snapshot_job, interval_s=900, timeout_s=300)
+        scheduler.register(
+            "squeeze_hunter_snapshot",
+            _hunter_snapshot_job,
+            interval_s=900,
+            timeout_s=300,
+            initial_delay_s=5,
+        )
         # Squeeze Hunter resolver: resolve Hunter evaluations vs realized 1/5/14-day
         # returns so the audit trail accrues outcomes (the raw evidence for a future
         # Wilson/Brier calibration step). Writes only ghost_squeeze_hunter_* tables.

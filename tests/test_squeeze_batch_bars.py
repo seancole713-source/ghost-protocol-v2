@@ -56,6 +56,30 @@ def test_metrics_from_batch_bars_avoids_per_symbol_quote_path(monkeypatch):
     assert metrics["current_move_pct"] == 6
 
 
+def test_batch_preserves_symbol_with_no_premarket_print(monkeypatch):
+    def fake_fetch(_symbols):
+        sm._batch_bars.update({
+            "AAPL": {
+                "daily": [{"o": 98, "c": 100, "v": 1000}],
+                "intraday": [],
+            },
+            "MSFT": {
+                "daily": [{"o": 198, "c": 200, "v": 2000}],
+                "intraday": [{"c": 201, "h": 202, "l": 200, "v": 100}],
+            },
+        })
+
+    monkeypatch.setattr(sm, "_batch_fetch_bars", fake_fetch)
+
+    metrics = sm.batched_market_metrics(["AAPL", "MSFT", "MISSING"])
+
+    assert "AAPL" in metrics
+    assert metrics["AAPL"] is None
+    assert metrics["MSFT"] is not None
+    assert "MISSING" not in metrics
+    assert sm._batch_bars == {}
+
+
 def test_cached_short_context_never_fetches(monkeypatch):
     monkeypatch.setattr(sm, "_short_cache", {})
     monkeypatch.setattr(
