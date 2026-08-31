@@ -1132,7 +1132,7 @@ def test_fetch_ohlcv_falls_back_to_yfinance_when_both_alpaca_feeds_empty(monkeyp
     assert rows[0]["close"] == 61.0
     # Both Alpaca feeds attempted before yfinance kicked in
     assert len(alpaca_calls) == 2 and "feed=sip" in alpaca_calls[0] and "feed=iex" in alpaca_calls[1]
-    assert yfinance_called_with == {"symbol": "WOLF", "period": "2y"}
+    assert yfinance_called_with == {"symbol": "WOLF", "period": "5y"}
 
 
 def test_try_yfinance_ohlcv_returns_none_when_yfinance_empty(monkeypatch):
