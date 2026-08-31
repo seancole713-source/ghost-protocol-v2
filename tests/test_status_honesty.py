@@ -115,6 +115,31 @@ def test_negative_wf_edge_blocks(monkeypatch):
     assert s["fire_block_reason"].startswith("meta_gate:wf_edge")
 
 
+def test_positive_wf_edge_below_holdout_floor_does_not_block(monkeypatch):
+    """Runtime/status must use the dedicated WF floor, not holdout edge."""
+    monkeypatch.setenv("V3_MIN_EDGE", "0.05")
+    monkeypatch.setenv("V3_MIN_WF_EDGE", "0.00")
+    st = _status_with(
+        monkeypatch,
+        {"ITRI_up": _meta(edge=0.053, wf_edge=0.038)},
+    )
+    s = st["stored_symbols"]["ITRI_up"]
+    assert s["fireable_now"] is True
+    assert "fire_block_reason" not in s
+
+
+def test_dedicated_positive_wf_edge_floor_blocks(monkeypatch):
+    monkeypatch.setenv("V3_MIN_EDGE", "0.05")
+    monkeypatch.setenv("V3_MIN_WF_EDGE", "0.04")
+    st = _status_with(
+        monkeypatch,
+        {"ITRI_up": _meta(edge=0.053, wf_edge=0.038)},
+    )
+    s = st["stored_symbols"]["ITRI_up"]
+    assert s["fireable_now"] is False
+    assert s["fire_block_reason"] == "meta_gate:wf_edge 3.8% < 4.0%"
+
+
 def test_wf_edge_floor_default_is_zero(monkeypatch):
     monkeypatch.delenv("V3_MIN_WF_EDGE", raising=False)
     assert _v3_min_wf_edge() == 0.0
