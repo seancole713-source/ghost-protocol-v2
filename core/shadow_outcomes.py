@@ -348,6 +348,7 @@ def seed_shadow_rows(days_back: int = 3) -> int:
         hold = label_hold_bars()
         now = int(time.time())
         inserted = 0
+        new_rows: List[Dict[str, Any]] = []
         # Drop evals without a resolvable entry first (rows logged before the
         # scan price was captured) so they can't shadow out priced ones as the
         # "earliest of the day".
@@ -370,6 +371,7 @@ def seed_shadow_rows(days_back: int = 3) -> int:
             if target <= 0 or stop <= 0:
                 continue
             eval_ts = int(ev["eval_ts"])
+            row_expires_at = expires_at_nth_trading_close(eval_ts, hold)
             cur.execute(
                 """
                 INSERT INTO ghost_shadow_outcomes
@@ -382,13 +384,14 @@ def seed_shadow_rows(days_back: int = 3) -> int:
                      label_schema, validation_schema, hold_bars)
                 VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 ON CONFLICT DO NOTHING
+                RETURNING id
                 """,
                 (
                     sym, _ct_date(eval_ts), eval_ts,
                     ev.get("up_prob"), ev.get("confidence"), ev.get("skip_code"),
                     bool(ev.get("fired")),
                     round(entry, 6), round(target, 6), round(stop, 6),
-                    expires_at_nth_trading_close(eval_ts, hold), now,
+                    row_expires_at, now,
                     (str(ev.get("regime_label")) if ev.get("regime_label") is not None else None),
                     _regime_flag(ev, "adx_trending"),
                     _regime_flag(ev, "above_ema200"),
@@ -404,9 +407,126 @@ def seed_shadow_rows(days_back: int = 3) -> int:
                 ),
             )
             inserted += cur.rowcount or 0
+            returned = cur.fetchone()
+            if returned:
+                new_rows.append({
+                    "shadow_outcome_id": int(returned[0]),
+                    "symbol": sym,
+                    "direction": direction,
+                    "eval_ts": eval_ts,
+                    "entry": round(entry, 6),
+                    "target": round(target, 6),
+                    "stop": round(stop, 6),
+                    "expires_at": row_expires_at,
+                    "scores": ev.get("scores"),
+                })
     if inserted:
         LOGGER.info("Shadow seed: %d new virtual picks", inserted)
+    # Checklist snapshots run AFTER the seeding transaction closes: the
+    # catalyst collectors touch the network, and network I/O must never sit
+    # inside the advisory-locked seed transaction. Seeding never depends on
+    # snapshot success.
+    if new_rows:
+        try:
+            snapshot_shadow_checklists(new_rows)
+        except Exception as exc:  # noqa: BLE001 - snapshots are best-effort
+            LOGGER.warning("shadow checklist snapshots failed: %s", str(exc)[:160])
     return inserted
+
+
+def _shadow_market_ctx(scores: Any) -> Dict[str, Any]:
+    """Rebuild issue-time market context from the eval row's own frozen data.
+
+    Only values the scan itself persisted are used -- nothing is re-fetched,
+    so a snapshot written hours after the eval cannot see anything the scan
+    did not. Whatever the row lacks stays absent and the corresponding
+    checklist box reads UNKNOWN, which is the honest outcome.
+    """
+    if isinstance(scores, str):
+        try:
+            scores = json.loads(scores)
+        except Exception:
+            scores = None
+    if not isinstance(scores, dict):
+        return {}
+    feats = scores.get("features")
+    feats = feats if isinstance(feats, dict) else {}
+    ctx: Dict[str, Any] = {}
+    if scores.get("price") is not None:
+        ctx["price"] = scores.get("price")
+    asof = feats.get("feature_asof_ts")
+    if asof is not None:
+        ctx["feature_asof_ts"] = asof
+        # The scan price is captured in the same feature snapshot.
+        ctx["price_as_of_ts"] = asof
+    if feats.get("volume_ratio") is not None:
+        ctx["relative_volume"] = feats.get("volume_ratio")
+    mom = feats.get("mom_4h")
+    if isinstance(mom, (int, float)):
+        ctx["trend_slope_pct"] = float(mom) * 100.0
+    macro = feats.get("macro_spy_20d_return")
+    if isinstance(macro, (int, float)):
+        ctx["market_move_pct"] = float(macro) * 100.0
+    return ctx
+
+
+def snapshot_shadow_checklists(rows: List[Dict[str, Any]], *, budget: Optional[int] = None) -> int:
+    """Freeze a checklist snapshot for each newly-seeded shadow pick.
+
+    This is what gives the checklist its daily game-play: every virtual pick
+    becomes a calibration sample when it resolves, instead of the ledger
+    accruing samples only while the official engine is unpaused. Evidence is
+    collected as of the row's own eval_ts (the catalyst collectors carry
+    their own no-lookahead gates), and each snapshot links to its shadow row
+    so the resolver can copy the outcome back later.
+    """
+    max_rows = budget if budget is not None else int(
+        os.getenv("SHADOW_CHECKLIST_BUDGET_PER_RUN", "40")
+    )
+    from core.catalyst_checklist import evaluate_checklist
+    from core.checklist_evidence import collect_evidence
+    from core.checklist_ledger import store_snapshot
+
+    written = 0
+    skipped = 0
+    for row in rows:
+        if written >= max(0, max_rows):
+            skipped += 1
+            continue
+        try:
+            eval_ts = int(row["eval_ts"])
+            ctx = _shadow_market_ctx(row.get("scores"))
+            evidence = collect_evidence(
+                row["symbol"], asof_ts=eval_ts, market_ctx=ctx,
+            )
+            report = evaluate_checklist(row["symbol"], row["direction"], evidence)
+            store_snapshot(
+                symbol=row["symbol"],
+                direction=row["direction"],
+                report=report,
+                evidence=evidence,
+                issued_at=eval_ts,
+                entry_price=row.get("entry"),
+                target_price=row.get("target"),
+                stop_price=row.get("stop"),
+                deadline_ts=row.get("expires_at"),
+                lane="shadow",
+                shadow_outcome_id=row["shadow_outcome_id"],
+            )
+            written += 1
+        except Exception as exc:  # noqa: BLE001 - one bad row must not stop the rest
+            LOGGER.warning(
+                "shadow checklist snapshot failed for %s: %s",
+                row.get("symbol"), str(exc)[:160],
+            )
+    if written:
+        LOGGER.info("Shadow checklist: %d snapshots frozen", written)
+    if skipped:
+        LOGGER.warning(
+            "Shadow checklist: %d rows skipped by per-run budget (%d)",
+            skipped, max_rows,
+        )
+    return written
 
 
 def resolve_shadow_rows(max_symbols: int = 60) -> int:

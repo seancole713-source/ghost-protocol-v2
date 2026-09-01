@@ -42,8 +42,26 @@ def _backtest_window() -> int:
 
 
 def _v3_ohlcv_period() -> str:
-    """Default OHLCV lookback for training backtests (2y gives more labeled samples)."""
-    return (os.getenv("V3_OHLCV_PERIOD", "2y") or "2y").strip()
+    """Default OHLCV lookback for training backtests.
+
+    Raised from 2y to 5y (2026-08-31): live model status showed 2y already
+    producing ~375 labeled rows per symbol (matches the math -- ~504 trading
+    days minus the backtest window minus the label margin), which is plenty
+    of *raw* samples. The actual bottleneck is downstream: the precision
+    gate's untouched gate slice (last 15% of those rows) only counts
+    *picked* sessions -- rows where the model's own score cleared its
+    calibration threshold -- and that pick rate over 2y wasn't enough to
+    clear the gate's effective-session floor (distinct picked trading days
+    // hold_bars) even for models with real edge, e.g. ITRI/DOWN landing at
+    ~10 distinct picked days against a ~25-day requirement. More history is
+    a proportional lever on that count, not a guess: same pick rate over a
+    longer window means proportionally more qualifying days. 5y (already a
+    precedented value for this exact knob -- see scripts/geometry_grid_sweep.py)
+    is a deliberately moderate step, not maxed out, because older bars begin
+    spanning a different market regime and that tradeoff needs to be watched
+    against real gate results, not assumed away.
+    """
+    return (os.getenv("V3_OHLCV_PERIOD", "5y") or "5y").strip()
 
 
 def _v3_ohlcv_fetch_retries() -> int:

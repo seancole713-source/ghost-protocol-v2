@@ -222,8 +222,10 @@ def test_store_snapshot_with_cursor_is_insert_only_and_preserves_issue_time(monk
     assert "ALTER TABLE" not in sql
     params = cur.params[0]
     assert params[4] == 1_766_000_123
-    assert params[15] == 1_766_000_123
     assert params[14] == 7
+    assert params[15] == "official"   # lane defaults to the official cohort
+    assert params[16] is None         # no shadow link on an official snapshot
+    assert params[17] == 1_766_000_123
 
 
 def test_outcome_contract_fails_closed_on_horizon_mismatch(monkeypatch):
@@ -234,6 +236,106 @@ def test_outcome_contract_fails_closed_on_horizon_mismatch(monkeypatch):
         assert "contract mismatch" in str(exc)
     else:
         raise AssertionError("mismatched hold horizons must fail closed")
+
+
+# ------------------------------------------------------------- shadow lane --
+
+def test_shadow_snapshot_links_by_shadow_outcome_id_and_lane(monkeypatch):
+    cur = _Cursor(fetchone_rows=[(55,)])
+    monkeypatch.setattr(ck, "validate_outcome_contract", lambda: None)
+    report = {
+        "checklist_version": "catalyst_checklist_v1",
+        "hold_bars": 3,
+        "score_pct": 25.0,
+        "blocked": False,
+    }
+
+    row_id = ck.store_snapshot_with_cursor(
+        cur,
+        symbol="pypl",
+        direction="up",
+        report=report,
+        evidence={},
+        issued_at=1_766_000_500,
+        lane="shadow",
+        shadow_outcome_id=402,
+    )
+
+    assert row_id == 55
+    sql = " ".join(cur.executed)
+    assert "ON CONFLICT (shadow_outcome_id)" in sql
+    params = cur.params[0]
+    assert params[14] is None       # no prediction link on a shadow snapshot
+    assert params[15] == "shadow"
+    assert params[16] == 402
+
+
+def test_shadow_snapshot_retry_returns_the_already_linked_row(monkeypatch):
+    """Idempotency: a conflicting re-insert looks up by shadow_outcome_id."""
+    cur = _Cursor(fetchone_rows=[None, (61,)])
+    monkeypatch.setattr(ck, "validate_outcome_contract", lambda: None)
+    report = {"checklist_version": "v", "hold_bars": 3, "score_pct": 10.0, "blocked": False}
+
+    row_id = ck.store_snapshot_with_cursor(
+        cur, symbol="X", direction="UP", report=report, evidence={},
+        issued_at=1, lane="shadow", shadow_outcome_id=402,
+    )
+
+    assert row_id == 61
+    assert "WHERE shadow_outcome_id=%s" in cur.executed[-1]
+
+
+def test_snapshot_refuses_to_link_both_lanes(monkeypatch):
+    monkeypatch.setattr(ck, "validate_outcome_contract", lambda: None)
+    report = {"checklist_version": "v", "hold_bars": 3, "score_pct": 10.0, "blocked": False}
+    try:
+        ck.store_snapshot_with_cursor(
+            _Cursor(), symbol="X", direction="UP", report=report, evidence={},
+            issued_at=1, prediction_id=7, shadow_outcome_id=402,
+        )
+    except ValueError as exc:
+        assert "not both" in str(exc)
+    else:
+        raise AssertionError("dual-lane link must be refused")
+
+
+def test_calibration_cohorts_separate_shadow_from_official(monkeypatch):
+    """Shadow samples (thinner evidence coverage) must never silently pool
+    with official-pick samples: lane is part of the cohort identity."""
+    ck._bust_calibration_cache()
+    cur = _Cursor(fetchall_rows=[])
+    _with_fake_db(monkeypatch, cur)
+
+    ck.resolved_samples_for_calibration(**_COHORT)
+    official_sql = cur.executed[-1]
+    official_params = cur.params[-1]
+    assert "lane=%s" in official_sql
+    assert "official" in official_params
+
+    ck._bust_calibration_cache()
+    ck.resolved_samples_for_calibration(**_COHORT, lane="shadow")
+    assert "shadow" in cur.params[-1]
+
+
+def test_resolve_open_shadow_snapshots_copies_outcomes_and_expired_is_nonwin(monkeypatch):
+    cur = _Cursor(fetchall_rows=[(11, "WIN", 5.5), (12, "EXPIRED", 4.1)])
+    _with_fake_db(monkeypatch, cur)
+
+    resolved_calls = []
+    monkeypatch.setattr(
+        ck, "resolve_snapshot",
+        lambda snap_id, *, outcome, resolved_price: resolved_calls.append(
+            (snap_id, outcome, resolved_price)
+        ),
+    )
+
+    out = ck.resolve_open_shadow_snapshots()
+
+    assert out == {"ok": True, "resolved": 2, "pending_checked": 2}
+    assert resolved_calls == [(11, "WIN", 5.5), (12, "EXPIRED", 4.1)]
+    sql = " ".join(cur.executed)
+    assert "JOIN ghost_shadow_outcomes" in sql
+    assert "o.outcome IN ('WIN', 'LOSS', 'EXPIRED')" in sql
 
 
 def test_resolve_open_snapshots_copies_outcomes_and_expired_is_nonwin(monkeypatch):

@@ -640,3 +640,186 @@ def test_seed_persists_regime_gate_flags_into_durable_columns(monkeypatch):
     assert params[13] == 1   # adx_trending
     assert params[14] == 0   # above_ema200
     assert params[15] == 1   # ema_trend_bullish
+
+
+# ---------------------------------------------------- shadow checklist lane --
+
+from core import shadow_outcomes as so  # noqa: E402  (section-local alias, matches file style)
+
+def test_shadow_market_ctx_rebuilds_only_from_the_frozen_row():
+    """Nothing is re-fetched: a snapshot written hours after the eval can only
+    see what the scan itself persisted."""
+    scores = json.dumps({
+        "price": 12.5,
+        "features": {
+            "feature_asof_ts": 1_766_000_000,
+            "volume_ratio": 2.4,
+            "mom_4h": 0.031,
+            "macro_spy_20d_return": -0.012,
+        },
+    })
+    ctx = so._shadow_market_ctx(scores)
+    assert ctx["price"] == 12.5
+    assert ctx["feature_asof_ts"] == 1_766_000_000
+    assert ctx["price_as_of_ts"] == 1_766_000_000
+    assert ctx["relative_volume"] == 2.4
+    assert ctx["trend_slope_pct"] == 3.1
+    assert ctx["market_move_pct"] == -1.2
+
+
+def test_shadow_market_ctx_missing_data_stays_missing():
+    assert so._shadow_market_ctx(None) == {}
+    assert so._shadow_market_ctx("not json !!") == {}
+    ctx = so._shadow_market_ctx({"price": 9.0})
+    assert ctx == {"price": 9.0}  # no fabricated timestamps or ratios
+
+
+def test_snapshot_shadow_checklists_freezes_at_eval_ts_with_shadow_link(monkeypatch):
+    calls = {}
+
+    def _fake_collect(symbol, *, asof_ts=None, market_ctx=None):
+        calls["collect"] = {"symbol": symbol, "asof_ts": asof_ts, "ctx": market_ctx}
+        return {"_asof_ts": asof_ts}
+
+    def _fake_eval(symbol, direction, evidence):
+        calls["eval"] = {"symbol": symbol, "direction": direction}
+        return {"checklist_version": "v", "hold_bars": 3, "score_pct": 20.0, "blocked": False}
+
+    stored = []
+    monkeypatch.setattr("core.checklist_evidence.collect_evidence", _fake_collect)
+    monkeypatch.setattr("core.catalyst_checklist.evaluate_checklist", _fake_eval)
+    monkeypatch.setattr(
+        "core.checklist_ledger.store_snapshot", lambda **kw: stored.append(kw) or 1,
+    )
+
+    rows = [{
+        "shadow_outcome_id": 402, "symbol": "PYPL", "direction": "DOWN",
+        "eval_ts": 1_766_000_000, "entry": 60.0, "target": 57.0, "stop": 62.0,
+        "expires_at": 1_766_400_000,
+        "scores": {"price": 60.0, "features": {"feature_asof_ts": 1_766_000_000}},
+    }]
+    written = so.snapshot_shadow_checklists(rows)
+
+    assert written == 1
+    assert calls["collect"]["asof_ts"] == 1_766_000_000
+    assert calls["collect"]["ctx"]["price"] == 60.0
+    assert calls["eval"]["direction"] == "DOWN"
+    kw = stored[0]
+    assert kw["issued_at"] == 1_766_000_000    # eval time, never snapshot time
+    assert kw["lane"] == "shadow"
+    assert kw["shadow_outcome_id"] == 402
+    assert kw["deadline_ts"] == 1_766_400_000
+
+
+def test_snapshot_shadow_checklists_budget_and_isolation(monkeypatch):
+    """The per-run budget bounds network work, and one failing row never
+    stops the rest."""
+    monkeypatch.setattr(
+        "core.checklist_evidence.collect_evidence",
+        lambda symbol, *, asof_ts=None, market_ctx=None: {},
+    )
+    monkeypatch.setattr(
+        "core.catalyst_checklist.evaluate_checklist",
+        lambda symbol, direction, evidence: {
+            "checklist_version": "v", "hold_bars": 3, "score_pct": 0.0, "blocked": False,
+        },
+    )
+    stored = []
+
+    def _store(**kw):
+        if kw["symbol"] == "BAD":
+            raise RuntimeError("db hiccup")
+        stored.append(kw["symbol"])
+        return 1
+
+    monkeypatch.setattr("core.checklist_ledger.store_snapshot", _store)
+
+    def _row(sym, sid):
+        return {
+            "shadow_outcome_id": sid, "symbol": sym, "direction": "UP",
+            "eval_ts": 1, "entry": 1.0, "target": 2.0, "stop": 0.5,
+            "expires_at": 2, "scores": None,
+        }
+
+    rows = [_row("BAD", 1), _row("A", 2), _row("B", 3), _row("C", 4)]
+    written = so.snapshot_shadow_checklists(rows, budget=2)
+
+    assert written == 2          # BAD failed, A and B fit the budget, C skipped
+    assert stored == ["A", "B"]
+
+
+def test_seed_passes_new_rows_to_checklist_after_the_transaction(monkeypatch):
+    """The seeding transaction must close before any snapshot work begins,
+    and only genuinely-new rows (RETURNING id) get snapshots."""
+    eval_ts = 1781035800  # known post-close CT timestamp (matches sibling seed tests)
+    state = {"in_txn": False}
+    captured = {}
+
+    class _Cur:
+        rowcount = 0
+
+        def execute(self, sql, params=None):
+            stripped = " ".join(sql.split())
+            if "pg_try_advisory_xact_lock" in stripped:
+                self._fetch = (True,)
+            elif stripped.startswith("SELECT symbol, eval_ts"):
+                self._rows = [(
+                    "WOLF", eval_ts, 0.61, 0.61, None, False,
+                    None, None, None,
+                    json.dumps({
+                        "price": 25.0, "up_prob": 0.61,
+                        "features": {"feature_asof_ts": eval_ts, "volume_ratio": 1.5},
+                        "model_identity_by_direction": {"UP": {
+                            "model_sha256": "a" * 64, "feature_schema": "f1",
+                            "label_schema": "l1", "validation_schema": "v1",
+                            "hold_bars": 5, "model_prob": 0.61,
+                        }},
+                    }),
+                    None, "UP", 0.61, 0.61, None, 0.61,
+                )]
+                self._fetch = None
+            elif stripped.startswith("INSERT INTO ghost_shadow_outcomes"):
+                self.rowcount = 1
+                self._fetch = (777,)
+            else:
+                self._fetch = None
+
+        def fetchone(self):
+            return getattr(self, "_fetch", None)
+
+        def fetchall(self):
+            return getattr(self, "_rows", [])
+
+    class _Conn:
+        def cursor(self):
+            return _Cur()
+
+        def __enter__(self):
+            state["in_txn"] = True
+            return self
+
+        def __exit__(self, *a):
+            state["in_txn"] = False
+            return False
+
+    import core.db as db
+    monkeypatch.setattr(db, "db_conn", lambda: _Conn())
+    monkeypatch.setattr(so, "ensure_shadow_table", lambda cur: None)
+    monkeypatch.setattr("core.tp_sl_resolve.label_hold_bars", lambda: 5)
+    monkeypatch.setattr(
+        "core.tp_sl_resolve.expires_at_nth_trading_close", lambda ts, hold: ts + 5 * 86400
+    )
+
+    def _fake_snapshots(rows, **kw):
+        captured["rows"] = rows
+        captured["txn_open_during_snapshot"] = state["in_txn"]
+        return len(rows)
+
+    monkeypatch.setattr(so, "snapshot_shadow_checklists", _fake_snapshots)
+
+    assert so.seed_shadow_rows(days_back=3) == 1
+    assert captured["txn_open_during_snapshot"] is False
+    row = captured["rows"][0]
+    assert row["shadow_outcome_id"] == 777
+    assert row["symbol"] == "WOLF"
+    assert row["eval_ts"] == eval_ts

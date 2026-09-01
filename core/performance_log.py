@@ -166,6 +166,9 @@ def _trim_scores(scores: Optional[Dict[str, Any]]) -> Dict[str, Any]:
             "mom_4h", "mom_8h", "mom_24h", "price_in_range", "above_ema200",
             "ema_trend_bullish", "adx", "adx_trending", "atr_pct", "obv_slope",
             "stoch_k", "stoch_d", "sector_rel_strength",
+            # Shadow-lane checklist snapshots rebuild market context from this
+            # row alone; the macro return is the market_move_pct input.
+            "macro_spy_20d_return",
         }
         out["features"] = {
             key: value for key, value in feats.items() if key in feature_keep
