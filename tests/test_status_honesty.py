@@ -179,3 +179,33 @@ def test_status_mirrors_runtime_proven_skill_gate(monkeypatch):
     assert s["fireable_now"] is False
     assert s["fire_block_reason"] == "skill_unproven"
     assert s["proven_skill_gate"]["fail_reason"].startswith("resolved<")
+
+
+def test_missing_tier_never_displays_proven_while_serve_rejected(monkeypatch):
+    """A model whose stored meta has no 'tier' key must never show
+    tier == 'proven' while /api/v3/status simultaneously marks it
+    serve_reject == 'tier_unproven'. get_model_status() used to default a
+    missing tier straight to "proven" for display while model_serve_guard()
+    — the actual gate — independently rejected the same model as
+    tier_unproven, so GET /api/v3/status showed both fields for the same
+    model at once (43/255 stored models live on 2026-09-01)."""
+    class _Conn:
+        def cursor(self):
+            return _Cur({"NOTIER_up": _meta()})
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+    import core.db as db
+    monkeypatch.setattr(db, "db_conn", lambda: _Conn())
+    monkeypatch.setattr(se, "get_last_train_gate_summary", lambda: {})
+    monkeypatch.setenv("V3_PROVEN_SKILL_GATE", "0")
+    monkeypatch.setenv("V3_PRECISION_GATE", "0")
+    # Deliberately do NOT stub model_serve_guard — _meta() carries no "tier"
+    # key, so the real gate must independently reject it as tier_unproven.
+    assert "tier" not in _meta()
+    st = se.get_model_status()
+    s = st["stored_symbols"]["NOTIER_up"]
+    assert s["serve_reject"] == "tier_unproven"
+    assert s["serveable"] is False
+    assert s["tier"] != "proven"

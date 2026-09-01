@@ -3567,7 +3567,12 @@ def get_model_status():
                     "precision_source": precision_review.get("source"),
                     "fire_threshold": precision_review.get("threshold"),
                     "serveable": reject is None,
-                    "tier": m.get("tier", "proven"),
+                    # Never fabricate "proven" for a missing/blank tier key.
+                    # model_serve_guard() is the actual gate and treats a
+                    # missing tier as tier_unproven (reject, above) — the
+                    # displayed tier must agree with that verdict instead of
+                    # defaulting to the one value that would contradict it.
+                    "tier": m.get("tier") or "unknown",
                 }
                 if reject:
                     summary["serve_reject"] = reject

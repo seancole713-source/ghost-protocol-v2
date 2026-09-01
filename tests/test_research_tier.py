@@ -371,7 +371,9 @@ class TestFirePathTripwires:
 
     def test_status_carries_tier_and_research_counts(self):
         src = self._src()
-        assert '"tier": m.get("tier", "proven")' in src
+        # A missing tier key must never display as "proven" (2026-09-01 fix)
+        # -- model_serve_guard's tier_unproven reject is the source of truth.
+        assert '"tier": m.get("tier") or "unknown"' in src
         assert '"serveable_research"' in src
         assert 'block = "research_tier"' in src
 
