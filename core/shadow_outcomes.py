@@ -529,8 +529,58 @@ def snapshot_shadow_checklists(rows: List[Dict[str, Any]], *, budget: Optional[i
     return written
 
 
+_SHADOW_RESOLVE_OFFSET_KEY = "shadow_resolve_offset"
+
+
+def _read_shadow_resolve_offset() -> int:
+    """Read the persisted round-robin cursor into the pending-symbol list."""
+    from core.db import db_conn
+
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            ensure_ghost_state(cur)
+            cur.execute(
+                "SELECT val FROM ghost_state WHERE key=%s",
+                (_SHADOW_RESOLVE_OFFSET_KEY,),
+            )
+            row = cur.fetchone()
+        return int(row[0]) if row and row[0] else 0
+    except Exception as e:
+        LOGGER.debug("shadow resolve offset read failed: %s", str(e)[:80])
+        return 0
+
+
+def _write_shadow_resolve_offset(offset: int) -> None:
+    from core.db import db_conn
+
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            ensure_ghost_state(cur)
+            cur.execute(
+                "INSERT INTO ghost_state(key,val) VALUES(%s,%s) "
+                "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
+                (_SHADOW_RESOLVE_OFFSET_KEY, str(offset)),
+            )
+    except Exception as e:
+        LOGGER.debug("shadow resolve offset write failed: %s", str(e)[:80])
+
+
 def resolve_shadow_rows(max_symbols: int = 60) -> int:
-    """Resolve pending shadow rows with the same bar-path rules as live picks."""
+    """Resolve pending shadow rows with the same bar-path rules as live picks.
+
+    Each cycle processes at most max_symbols distinct symbols (one OHLCV
+    fetch per symbol). With a universe of 100+ symbols and a fixed per-cycle
+    budget, always starting from the alphabetical head ("A...") means any
+    symbol past the budget alphabetically never gets attempted -- confirmed
+    live 2026-09-01: 448 pending rows, oldest pending eval from 2026-08-17,
+    zero rows resolved on the most recent cycle. The starting point is
+    instead a cursor persisted in ghost_state (key 'shadow_resolve_offset')
+    that advances by the batch size every cycle and wraps around, so every
+    symbol is attempted at least once within ceil(n_symbols / max_symbols)
+    cycles regardless of alphabetical position.
+    """
     from core.db import db_conn
     from core.pnl import resolution_exit
     from core.tp_sl_resolve import label_hold_bars, resolve_open_prediction_detail
@@ -553,10 +603,20 @@ def resolve_shadow_rows(max_symbols: int = 60) -> int:
     for row in pending:
         by_symbol.setdefault(str(row[1]).upper(), []).append(row)
 
+    symbols = sorted(by_symbol.keys())
+    n_symbols = len(symbols)
+    raw_offset = _read_shadow_resolve_offset()
+    offset = raw_offset % n_symbols if n_symbols else 0
+    # Rotate the alphabetical list so this cycle starts where the last cycle's
+    # budget ran out, instead of always restarting at the head.
+    ordered_symbols = symbols[offset:] + symbols[:offset]
+    batch = ordered_symbols[:max_symbols]
+    next_offset = (offset + len(batch)) % n_symbols if n_symbols else 0
+    _write_shadow_resolve_offset(next_offset)
+
     resolved = 0
-    for i, (sym, rows) in enumerate(sorted(by_symbol.items())):
-        if i >= max_symbols:
-            break
+    for sym in batch:
+        rows = by_symbol[sym]
         bars = None
         try:
             from core.signal_engine import _fetch_ohlcv

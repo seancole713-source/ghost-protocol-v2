@@ -306,7 +306,9 @@ def test_console_routing_after_picks_rebuild(monkeypatch):
     assert "WOLF Command Center" in cockpit.text
     assert picks.headers["cache-control"].startswith("no-store")
     assert 'name="ghost-build"' in picks.text
-    assert 'content="pr-130"' in picks.text
+    # Was hardcoded to the PR version at write time (pr-130); read the live
+    # constant instead so this doesn't break on every future version bump.
+    assert f'content="pr-{wolf_app._RUNNING_PR_VERSION}"' in picks.text
 
 
 def test_super_ghost_snapshot_endpoint_bundles_console_payload(monkeypatch):

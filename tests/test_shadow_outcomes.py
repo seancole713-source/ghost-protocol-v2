@@ -347,6 +347,94 @@ def test_resolve_shadow_rows_keeps_pending_when_bars_unavailable(monkeypatch):
     assert updates == []
 
 
+def test_resolve_shadow_rows_rotates_start_point_across_cycles(monkeypatch):
+    """Every pending symbol must get a resolution attempt within a bounded
+    number of cycles, not just whichever ones sort alphabetically first.
+
+    Confirmed live 2026-09-01: 448 pending shadow rows across 103+ symbols,
+    max_symbols=60 processed alphabetically from "A" every cycle, oldest
+    pending eval from 2026-08-17, last cycle resolved 0 new rows -- anything
+    past the alphabetical head of the 60-symbol budget was never attempted.
+    This test uses 12 symbols and a budget of 5 (bars always unavailable, so
+    every row stays pending) and checks that the SECOND cycle does not repeat
+    the FIRST cycle's symbols, and that three cycles cover the full universe.
+    """
+    import datetime as _dt
+    from core import shadow_outcomes as so
+
+    entry_ts = int(_dt.datetime(2026, 5, 20, 15, 0, tzinfo=_dt.timezone.utc).timestamp())
+    expires = int(_dt.datetime(2026, 5, 28, 21, 0, tzinfo=_dt.timezone.utc).timestamp())
+    symbols = [f"SYM{i:02d}" for i in range(1, 13)]  # 12 symbols, already sorted
+    pending_rows = [
+        (i, sym, entry_ts, 10.0, 10.2, 9.87, expires, "UP", 3)
+        for i, sym in enumerate(symbols, start=1)
+    ]
+
+    ghost_state_store: dict = {}
+
+    class _Cur:
+        def __init__(self):
+            self.last_sql = ""
+            self.last_params = None
+
+        def execute(self, sql, params=None):
+            self.last_sql = sql
+            self.last_params = params
+            if "INSERT INTO ghost_state" in sql:
+                key, val = params
+                ghost_state_store[key] = val
+
+        def fetchall(self):
+            if "outcome IS NULL" in self.last_sql:
+                return list(pending_rows)
+            return []
+
+        def fetchone(self):
+            if "SELECT val FROM ghost_state" in self.last_sql:
+                val = ghost_state_store.get(self.last_params[0])
+                return (val,) if val is not None else None
+            return None
+
+    class _Conn:
+        def cursor(self):
+            return _Cur()
+
+    class _Ctx:
+        def __enter__(self):
+            return _Conn()
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr("core.db.db_conn", lambda: _Ctx())
+    monkeypatch.setattr(so, "ensure_shadow_table", lambda cur: None)
+
+    import core.signal_engine as _se
+
+    fetched_this_cycle: list = []
+
+    def _fake_fetch(sym, atype, period="3m"):
+        fetched_this_cycle.append(sym)
+        return []  # no bar path -> row stays pending, isolates the attempt
+
+    monkeypatch.setattr(_se, "_fetch_ohlcv", _fake_fetch)
+
+    attempts_per_cycle = []
+    for _ in range(3):
+        fetched_this_cycle.clear()
+        so.resolve_shadow_rows(max_symbols=5)
+        attempts_per_cycle.append(list(fetched_this_cycle))
+
+    cycle1, cycle2, cycle3 = attempts_per_cycle
+    assert cycle1 == symbols[0:5]
+    assert cycle2 == symbols[5:10]
+    assert cycle3 == symbols[10:12] + symbols[0:3]
+    # The old bug: every cycle restarted at "A" and re-attempted the same
+    # alphabetical head instead of advancing past it.
+    assert set(cycle1).isdisjoint(cycle2)
+    assert set(cycle1) | set(cycle2) | set(cycle3) == set(symbols)
+
+
 def test_seed_persists_regime_label_into_durable_column(monkeypatch):
     """seed_shadow_rows must copy the eval's regime_label into the outcome row.
 
