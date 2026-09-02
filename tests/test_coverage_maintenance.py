@@ -8,7 +8,7 @@ def test_coverage_maintenance_schedule_defaults(monkeypatch):
     monkeypatch.delenv("COVERAGE_CHECK_INTERVAL_SEC", raising=False)
     monkeypatch.delenv("COVERAGE_MAINTENANCE_TIMEOUT_SEC", raising=False)
 
-    assert wolf_app._coverage_maintenance_schedule() == (3600, 7200)
+    assert wolf_app._coverage_maintenance_schedule() == (3600, 21600)
 
 
 def test_coverage_maintenance_timeout_override(monkeypatch):
