@@ -1241,6 +1241,17 @@ def _startup_auto_train_enabled() -> bool:
     )
 
 
+def _coverage_maintenance_schedule() -> tuple[int, int]:
+    """Return the coverage interval and a timeout long enough for a fleet run."""
+    interval_s = max(900, int(os.getenv("COVERAGE_CHECK_INTERVAL_SEC", "3600")))
+    timeout_s = max(
+        interval_s,
+        900,
+        int(os.getenv("COVERAGE_MAINTENANCE_TIMEOUT_SEC", "7200")),
+    )
+    return interval_s, timeout_s
+
+
 def _coverage_maintenance_job():
     """
     Keep model coverage above a floor.
@@ -1954,10 +1965,14 @@ async def lifespan(app: FastAPI):
         )
 
         # Coverage maintenance: if too few loadable v3 models, run rate-limited retrain.
+        # Full-fleet runs can exceed one hour, so keep their scheduler timeout
+        # separate from the cadence and never shorter than the next tick.
+        coverage_interval_s, coverage_timeout_s = _coverage_maintenance_schedule()
         scheduler.register(
             "coverage_maintenance",
             _coverage_maintenance_job,
-            interval_s=max(900, int(os.getenv("COVERAGE_CHECK_INTERVAL_SEC", "3600"))),
+            interval_s=coverage_interval_s,
+            timeout_s=coverage_timeout_s,
         )
         # Weekly model retrain — keeps models fresh as market conditions change
         from core.signal_engine import train_and_validate as _tv
