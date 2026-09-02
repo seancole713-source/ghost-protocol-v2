@@ -1241,6 +1241,17 @@ def _startup_auto_train_enabled() -> bool:
     )
 
 
+def _coverage_maintenance_schedule() -> tuple[int, int]:
+    """Return the coverage interval and a timeout long enough for a fleet run."""
+    interval_s = max(900, int(os.getenv("COVERAGE_CHECK_INTERVAL_SEC", "3600")))
+    timeout_s = max(
+        interval_s,
+        900,
+        int(os.getenv("COVERAGE_MAINTENANCE_TIMEOUT_SEC", "7200")),
+    )
+    return interval_s, timeout_s
+
+
 def _coverage_maintenance_job():
     """
     Keep model coverage above a floor.
@@ -1256,20 +1267,7 @@ def _coverage_maintenance_job():
     min_models = max(1, int(os.getenv("MODEL_COVERAGE_MIN_MODELS", "3")))
     cooldown_s = max(900, int(os.getenv("COVERAGE_RETRAIN_COOLDOWN_SEC", "21600")))
     boot_grace_s = max(0, int(os.getenv("COVERAGE_BOOT_GRACE_SEC", "600")))
-    # Default lowered from 0.25 to 0.05 (2026-09-01): live model status showed a
-    # genuine tier=proven rate of ~44/255 = 17.3% across the fleet -- structurally
-    # BELOW the old 0.25 floor. That's not a malfunction, it's the fleet's normal
-    # heterogeneous yield (most symbols legitimately lack tradeable edge; a few
-    # do). The old threshold meant every full-batch retrain re-triggered the
-    # 12h backoff regardless of outcome, so coverage could never recover no
-    # matter how many times it retried -- a self-perpetuating stall, not a
-    # working safety valve. 0.05 still catches genuine pipeline breakage (e.g.
-    # a bug that zeroes out every symbol) while not treating this fleet's
-    # actual, expected pass rate as an emergency. This never touches the
-    # precision/proof standard itself -- a model still needs the full gate
-    # chain (holdout, edge, walk-forward, precision gate) to ever fire; this
-    # only controls how often the SYSTEM RETRIES the backlog.
-    low_yield_ratio = max(0.0, min(1.0, float(os.getenv("COVERAGE_LOW_YIELD_RATIO", "0.05"))))
+    low_yield_ratio = max(0.0, min(1.0, float(os.getenv("COVERAGE_LOW_YIELD_RATIO", "0.25"))))
     low_yield_backoff_s = max(3600, int(os.getenv("COVERAGE_LOW_YIELD_BACKOFF_SEC", "43200")))
     now = int(time.time())
     _lock_acquired = False
@@ -1967,21 +1965,14 @@ async def lifespan(app: FastAPI):
         )
 
         # Coverage maintenance: if too few loadable v3 models, run rate-limited retrain.
-        # Explicit timeout (2026-09-01): this had no override, so it inherited the
-        # scheduler's 120s default -- confirmed in production logs to log a false
-        # "TIMEOUT" every run despite the real work (a full-batch retrain across
-        # up to ~106 symbols, each with a 5y OHLCV fetch plus peer-pool fetches)
-        # continuing to completion regardless, since _run_task shields the
-        # underlying thread rather than killing it. Harmless in effect but hides
-        # a real signal: task.timeout_count now permanently taints this task's
-        # health status, and an operator reading the scheduler's own health
-        # check has no way to tell a real hang from this expected long-runner.
-        # Bounded to the job's own interval so it still can't overlap the next tick.
+        # Full-fleet runs can exceed one hour, so keep their scheduler timeout
+        # separate from the cadence and never shorter than the next tick.
+        coverage_interval_s, coverage_timeout_s = _coverage_maintenance_schedule()
         scheduler.register(
             "coverage_maintenance",
             _coverage_maintenance_job,
-            interval_s=max(900, int(os.getenv("COVERAGE_CHECK_INTERVAL_SEC", "3600"))),
-            timeout_s=max(900, int(os.getenv("COVERAGE_CHECK_INTERVAL_SEC", "3600"))),
+            interval_s=coverage_interval_s,
+            timeout_s=coverage_timeout_s,
         )
         # Weekly model retrain — keeps models fresh as market conditions change
         from core.signal_engine import train_and_validate as _tv
