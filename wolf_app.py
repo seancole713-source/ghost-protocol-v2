@@ -1247,7 +1247,7 @@ def _coverage_maintenance_schedule() -> tuple[int, int]:
     timeout_s = max(
         interval_s,
         900,
-        int(os.getenv("COVERAGE_MAINTENANCE_TIMEOUT_SEC", "7200")),
+        int(os.getenv("COVERAGE_MAINTENANCE_TIMEOUT_SEC", "21600")),
     )
     return interval_s, timeout_s
 
@@ -1965,8 +1965,9 @@ async def lifespan(app: FastAPI):
         )
 
         # Coverage maintenance: if too few loadable v3 models, run rate-limited retrain.
-        # Full-fleet runs can exceed one hour, so keep their scheduler timeout
-        # separate from the cadence and never shorter than the next tick.
+        # Five-year full-fleet runs can exceed three hours, so keep their
+        # scheduler timeout separate from the cadence and never shorter than
+        # the next tick.
         coverage_interval_s, coverage_timeout_s = _coverage_maintenance_schedule()
         scheduler.register(
             "coverage_maintenance",
