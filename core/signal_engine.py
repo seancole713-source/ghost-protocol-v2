@@ -166,6 +166,33 @@ def _v3_research_tier_enabled() -> bool:
 
 
 
+def _serving_feature_bars(rows):
+    """Trailing bar slice matching what training fed to _calculate_features.
+
+    backtest_symbol() windows EVERY labeled row to `_backtest_window()`
+    trailing bars (`hist = rows[max(0, i - window) : i + 1]`), so during
+    training `_calculate_features` never sees more than ~121 bars and the
+    `n >= 200` branch in core.engine_features is never reached: ema200 is
+    silently aliased to ema50 and ema_trend_bullish uses the 2-way
+    cur>ema20>ema50 fallback.
+
+    The live and research serve paths fetch period='1y' (~252 bars) and, until
+    this helper existed, passed the FULL array in — taking the `n >= 200`
+    branch instead: a real ema200 plus the 3-way 20>50>200 stack. `_ema()` is
+    a full-history recursive EMA with no fixed lookback, so its output depends
+    on input length. That handed the model a feature distribution it was never
+    fit on, and _v3_feature_schema() does not encode window size, so the
+    model-serve guard could not catch it.
+
+    core/daily_forecast_scorecard.py already windows this way for its own
+    backtest; this makes the serve paths agree with training too.
+    """
+    if not rows:
+        return rows
+    window = _backtest_window()
+    return rows[max(0, len(rows) - 1 - window):]
+
+
 def _effective_backtest_window(n_bars: int) -> int:
     """Shrink the feature window when history is thin so labeling still produces rows."""
     margin = V3_LABEL_HOLD_BARS + 1
@@ -1820,7 +1847,19 @@ def _train_one_direction(rows, symbol, direction, active_cols, peer_rows, peers_
         min_wf_acc = 0.50 + wf_scale * (min_wf_acc - 0.50)
         min_wf_acc_min = 0.45 + wf_scale * (symbol_wf_acc_min - 0.45)
         min_wf_folds = max(2, int(min_wf_folds * (0.5 + 0.5 * wf_scale)))
-        min_wf_edge = -0.05 + wf_scale * (min_wf_edge + 0.05)
+        # min_wf_edge is deliberately NOT relaxed here. This block used to scale
+        # it down to -0.05 at n_samples<=30, silently re-enabling the exact
+        # negative-edge floor PR #135 removed: _v3_min_wf_edge()'s contract is
+        # "a model with negative out-of-time edge must never count toward a 70%
+        # system ... loosening below zero requires an explicit env choice", and
+        # this path involved no env choice at all. It was not inert — a
+        # gate-passing model's OOS rows feed store_global_thresholds()' pooled
+        # cross-symbol live-fire proof below, so a thin-data model with a
+        # genuinely negative walk-forward edge could contribute to real fire
+        # evidence. Thin data still relaxes accuracy/fold counts above (those
+        # carry no such prohibition); an operator who truly wants a sub-zero
+        # floor sets V3_MIN_WF_EDGE explicitly, exactly as the contract says.
+        min_wf_edge = max(min_wf_edge, _v3_min_wf_edge())
     gate_checks = [
         ("n_samples", n_samples >= min_rows, f"n_samples<{min_rows} ({n_samples})"),
         ("tp_sl_wins", wins_ct >= min_wins, f"tp_sl_wins<{min_wins} ({wins_ct})"),
@@ -2967,7 +3006,11 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
     except Exception as _pm_e:
         LOGGER.debug("premarket overlay skipped %s: %s", symbol, str(_pm_e)[:80])
 
-    features = _calculate_features(rows)
+    # Window to the same trailing bar count training used — see
+    # _serving_feature_bars. `rows` itself stays full-length below for the
+    # sector alignment and fundamentals date, which training also computes
+    # against full history.
+    features = _calculate_features(_serving_feature_bars(rows))
     from core.feature_schema import attach_feature_asof
     attach_feature_asof(
         features, rows[-1].get("ts") if rows else None, default_now=True,
