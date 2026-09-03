@@ -89,25 +89,45 @@ def test_default_contract_is_still_70(monkeypatch):
     assert ac.active_contract().precision_target == 0.70
 
 
-def test_admission_sits_below_firing_but_above_a_coin_flip(contract_55):
-    """Mirrors the 70 contract's structure (admit 0.60, fire 0.70) without
-    admitting models that are worse than chance."""
-    spec = contract_55.active_contract()
+def test_selection_is_never_loosened_to_chase_the_lower_target(contract_55):
+    """The counter-intuitive core of this contract: ONLY the firing target
+    moves. Every selection knob stays at its 70-contract value.
 
-    assert spec.min_holdout_acc < spec.precision_target
-    assert spec.min_wf_acc_mean < spec.precision_target
-    assert spec.min_holdout_acc > 0.50
-    assert spec.min_wf_acc_mean > 0.50
-
-
-def test_validation_rigor_and_kill_floor_are_not_relaxed(contract_55):
-    """Fold count and the kill floor are target-independent, so the staged
-    contract must not weaken them relative to the 70 contract."""
+    Loosening selection to "help" a 55% goal actively pushes it out of reach.
+    The gate proves the target via a Wilson lower bound, and the sample size
+    needed explodes as the measured rate approaches the target — so admitting
+    weaker models, or letting select_threshold take looser slices, drags the
+    pooled rate toward 55% and turns an n=650 problem into an n=9,525 one.
+    """
     spec = contract_55.active_contract()
     seventy = contract_55.CONTRACTS["70"]
 
-    assert spec.min_wf_folds == seventy.min_wf_folds
-    assert spec.kill_winrate_floor == seventy.kill_winrate_floor
+    for field in ("min_holdout_acc", "min_wf_acc_mean", "min_wf_folds",
+                  "min_edge", "min_win_proba", "objective_bootstrap_min_conf",
+                  "objective_min_samples", "kill_winrate_floor",
+                  "min_alert_confidence"):
+        assert getattr(spec, field) == getattr(seventy, field), (
+            f"{field} was loosened for the 55 contract — this makes the 55% "
+            f"proof HARDER, not easier; see the spec comment"
+        )
+
+    # The one thing that does move.
+    assert spec.precision_target == 0.55 < seventy.precision_target
+    assert spec.target_win_rate == 0.55 < seventy.target_win_rate
+
+
+def test_diluting_the_pooled_rate_explodes_the_sample_requirement(contract_55):
+    """Guards the arithmetic the contract comment relies on."""
+    def needed(rate):
+        for n in range(200, 20001, 25):
+            if wilson_lower_bound(round(rate * n), n) >= 0.55:
+                return n
+        return None
+
+    assert needed(0.5885) == 650
+    assert needed(0.57) > 2000
+    assert needed(0.56) > 9000
+    assert needed(0.55) is None, "a rate equal to the target is unprovable"
 
 
 def test_edge_floor_stays_positive(contract_55):

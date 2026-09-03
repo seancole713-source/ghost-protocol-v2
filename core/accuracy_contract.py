@@ -50,29 +50,46 @@ CONTRACTS: Dict[str, ContractSpec] = {
     "55": ContractSpec(
         name="55",
         target_win_rate=0.55,
-        # Admission stays BELOW the firing target, mirroring the 70 contract
-        # (admits at 0.60, fires at 0.70): the precision gate's job is to find
-        # a high-probability slice that beats the model's own average. But it
-        # must stay meaningfully above the 0.50 coin flip — extrapolating the
-        # 70/80 pattern (target - 0.10) would give 0.45, i.e. admitting models
-        # that are worse than chance, which is meaningless for a binary label.
-        min_holdout_acc=0.53,
-        min_wf_acc_mean=0.53,
-        # UNCHANGED from the 70 contract on purpose. Fold count is validation
-        # rigor, not ambition: a less ambitious target is no reason to check
-        # the model less thoroughly.
+        # EVERY SELECTION KNOB BELOW IS HELD AT THE 70-CONTRACT VALUE ON
+        # PURPOSE. Only the firing target moves. This is counter-intuitive
+        # enough to be worth the arithmetic:
+        #
+        # The gate fires on wilson_lower_bound(wins, n) >= target, and the
+        # sample size needed to PROVE a target explodes as the measured rate
+        # approaches it — you cannot prove p >= t at 95% when p ~= t, at any n.
+        # Against a 55% target, from the pooled proof's measured rates:
+        #
+        #     rate 0.5885 (today) -> n =    650
+        #     rate 0.58           -> n =  1,075
+        #     rate 0.57           -> n =  2,375
+        #     rate 0.56           -> n =  9,525
+        #     rate 0.555          -> n = >20,000
+        #
+        # Loosening admission admits weaker models, and a lower target makes
+        # select_threshold pick lower thresholds (it takes the LOWEST threshold
+        # clearing the target), so slices get bigger but land nearer the
+        # target. Both effects drag the pooled rate DOWN — straight into the
+        # region where the proof becomes unreachable. Loosening selection to
+        # "help" a 55% goal would actively push it out of reach.
+        #
+        # So: keep selection exactly as strict as the 70 contract, so the pool
+        # keeps its ~58.85% rate, and let only the bar it must clear come down.
+        # That is what makes 55% reachable at n=650 instead of n=9,525.
+        min_holdout_acc=0.60,
+        min_wf_acc_mean=0.60,
+        # Fold count is validation rigor, not ambition.
         min_wf_folds=4,
-        min_edge=0.02,
-        min_win_proba=0.52,
+        min_edge=0.05,
+        min_win_proba=0.55,
         precision_target=0.55,
         objective_mode="balanced",
-        objective_bootstrap_min_conf=0.75,
-        objective_min_samples=10,
+        objective_bootstrap_min_conf=0.85,
+        objective_min_samples=12,
         # UNCHANGED from the 70 contract on purpose. Its own rationale is
         # target-independent: kill means "provably worse than a coin flip",
         # not "below target".
         kill_winrate_floor=0.45,
-        min_alert_confidence=0.75,
+        min_alert_confidence=0.80,
         research_bypass_precision=True,
     ),
     "70": ContractSpec(
