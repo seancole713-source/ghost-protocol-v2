@@ -2036,7 +2036,26 @@ async def lifespan(app: FastAPI):
                         _RETRAIN_JOB_LOCK.release()
                     except Exception:
                         pass
-        scheduler.register("weekly_retrain", _weekly_retrain, interval_s=604800)
+        # POLL hourly; the CADENCE is enforced by _weekly_retrain itself against
+        # last_weekly_retrain_ts in ghost_state (WEEKLY_RETRAIN_MIN_INTERVAL_SEC,
+        # default 604800). Registering at 604800 meant the job could never fire:
+        # scheduler.register sets next_run_at = now + interval_s and that field
+        # is in-memory only, so every deploy or restart pushed the next run
+        # another seven days out. This service redeploys far more often than
+        # weekly, so the retrain effectively never ran on its own and models
+        # only ever refreshed when someone POSTed /api/v3/train by hand. Every
+        # other registered job is <=24h and so survives its own interval; this
+        # was the only one that could not. The DB timestamp is the durable
+        # cadence guard and is unaffected by restarts, which is exactly what it
+        # is for — the scheduler interval just needs to be short enough to ask.
+        # Timeout sized like coverage_maintenance (PR #169): a five-year
+        # full-fleet run exceeded three hours, and the default task timeout
+        # would mark it failed while the shielded work kept running.
+        _, retrain_timeout_s = _coverage_maintenance_schedule()
+        scheduler.register(
+            "weekly_retrain", _weekly_retrain,
+            interval_s=3600, timeout_s=retrain_timeout_s,
+        )
         scheduler.start()
         # Intraday monitors (must run in lifespan — engines/startup._on_startup is not invoked).
         import asyncio as _aio
