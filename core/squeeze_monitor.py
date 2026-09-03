@@ -280,6 +280,8 @@ def _persist_scan_report(report: Dict[str, Any]) -> None:
             for k in (
                 "ok", "ts", "session", "symbols", "fetch_ok", "fetch_fail",
                 "fetch_failed_symbols",
+                "no_intraday_print", "no_intraday_print_symbols",
+                "fetch_skipped", "fetch_skipped_symbols",
                 "picks", "candidates", "watches", "leaders", "duration_ms", "status", "elapsed_frac",
             )
         }
@@ -486,6 +488,13 @@ def get_squeeze_picks() -> Dict[str, Any]:
         "fetch_ok": st.get("fetch_ok"),
         "fetch_fail": st.get("fetch_fail"),
         "fetch_failed_symbols": list(st.get("fetch_failed_symbols") or []),
+        # Separated from fetch_fail so a normal premarket watchlist (most
+        # symbols simply have not printed yet) no longer reads as degraded
+        # market data. See the report initializer in _run_scan.
+        "no_intraday_print": st.get("no_intraday_print"),
+        "no_intraday_print_symbols": list(st.get("no_intraday_print_symbols") or []),
+        "fetch_skipped": st.get("fetch_skipped"),
+        "fetch_skipped_symbols": list(st.get("fetch_skipped_symbols") or []),
         # PR #137 (audit): these counts belong to the snapshot at last_scan_ts,
         # NOT to right now — one degraded cycle (e.g. during a breaker trip)
         # persists here until the next scan overwrites it, so this surface can
@@ -690,8 +699,21 @@ async def _run_watchlist_scan() -> None:
         "session": "rth" if is_us_rth() else ("premarket" if is_us_premarket() else "extended"),
         "symbols": len(symbols),
         "fetch_ok": 0,
+        # fetch_fail counts GENUINE provider failures only. A symbol the batch
+        # authoritatively reports as having no intraday print yet (the normal
+        # premarket state for most of the watchlist) is counted in
+        # no_intraday_print instead, and a symbol the fallback loop never got
+        # to (it stops early rather than queue behind a stuck vendor thread)
+        # is counted in fetch_skipped. Conflating those three inflated
+        # fetch_fail to ~86/107 on every premarket scan, which flipped
+        # ghost_console's badge to "Market data degraded" while the data was
+        # fine -- the display contradicting what this module already knew.
         "fetch_fail": 0,
         "fetch_failed_symbols": [],
+        "no_intraday_print": 0,
+        "no_intraday_print_symbols": [],
+        "fetch_skipped": 0,
+        "fetch_skipped_symbols": [],
         "candidates": [],
         "watches": [],
         "alerts_sent": 0,
@@ -719,11 +741,17 @@ async def _run_watchlist_scan() -> None:
         metrics_map.update(batched_market_metrics(symbols))
     except Exception as exc:
         LOGGER.debug("[SqueezeMonitor] batch prewarm failed, per-symbol fallback: %s", exc)
+    # Symbols the batch answered for (even with None) are authoritative; only
+    # the rest go through the slow per-symbol path. Keep both sets so the
+    # counting loop below can tell an authoritative absence from a real miss.
+    batch_answered = set(metrics_map)
     fallback_symbols = [sym for sym in symbols if sym not in metrics_map]
+    fallback_attempted: set = set()
     pool = ThreadPoolExecutor(max_workers=workers)
     try:
         for sym in fallback_symbols:
             task = loop.run_in_executor(pool, _sync_fetch_metrics, sym)
+            fallback_attempted.add(sym)
             try:
                 metrics_map[sym] = await asyncio.wait_for(task, timeout=fetch_timeout)
             except asyncio.TimeoutError:
@@ -744,8 +772,20 @@ async def _run_watchlist_scan() -> None:
     for symbol in symbols:
         metrics = metrics_map.get(symbol)
         if not metrics:
-            report["fetch_fail"] += 1
-            report["fetch_failed_symbols"].append(symbol)
+            if symbol in batch_answered:
+                # batched_market_metrics' own contract: a symbol in the batch
+                # with no intraday print is an authoritative absence (it just
+                # has not traded this session yet), not a provider miss.
+                report["no_intraday_print"] += 1
+                report["no_intraday_print_symbols"].append(symbol)
+            elif symbol in fallback_attempted:
+                report["fetch_fail"] += 1
+                report["fetch_failed_symbols"].append(symbol)
+            else:
+                # The fallback loop stopped before reaching this symbol.
+                # Never attempted is not the same as failed.
+                report["fetch_skipped"] += 1
+                report["fetch_skipped_symbols"].append(symbol)
             continue
         report["fetch_ok"] += 1
         rvol = compute_rvol(metrics["session_volume"], metrics["avg_daily_volume"], elapsed, premarket=_premarket)
@@ -855,9 +895,11 @@ async def _run_watchlist_scan() -> None:
     _last_scan_report = report
     _persist_scan_report(report)
     LOGGER.info(
-        "[SqueezeMonitor] scan ok=%s fail=%s candidates=%s ms=%s",
+        "[SqueezeMonitor] scan ok=%s no_print=%s fail=%s skipped=%s candidates=%s ms=%s",
         report["fetch_ok"],
+        report["no_intraday_print"],
         report["fetch_fail"],
+        report["fetch_skipped"],
         len(report["candidates"]),
         report["duration_ms"],
     )
