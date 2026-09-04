@@ -485,7 +485,23 @@ def snapshot_shadow_checklists(rows: List[Dict[str, Any]], *, budget: Optional[i
     )
     from core.catalyst_checklist import evaluate_checklist
     from core.checklist_evidence import collect_evidence
-    from core.checklist_ledger import store_snapshot
+    from core.checklist_ledger import store_snapshot, validate_outcome_contract
+
+    # Check the contract ONCE, loudly, before the loop. It is a process-wide
+    # configuration fact, not a property of any row: when issuance and
+    # resolution horizons diverge, store_snapshot raises for EVERY row. The
+    # per-row handler below then swallowed it as a warning, so a misconfigured
+    # deployment looked like ordinary flaky rows and the whole checklist lane
+    # recorded nothing for days without a single error-level line. Fail here
+    # instead, once, at ERROR — a config problem must not masquerade as data.
+    try:
+        validate_outcome_contract()
+    except Exception as exc:  # noqa: BLE001 - config error, reported not raised
+        LOGGER.error(
+            "Shadow checklist DISABLED — %s. No snapshots can be written until "
+            "this is resolved; calibration will stay empty.", str(exc)[:200],
+        )
+        return 0
 
     written = 0
     skipped = 0
