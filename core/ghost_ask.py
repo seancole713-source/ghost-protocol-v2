@@ -52,6 +52,88 @@ def _system_prompt() -> str:
     )
 
 
+def checklist_calibration_summary() -> Dict[str, Any]:
+    """Whether the catalyst checklist actually predicts outcomes yet.
+
+    The checklist machinery (evaluate -> snapshot -> resolve -> calibrate) has
+    been in place since PR #165/#166, but its central empirical claim — that a
+    higher completeness score wins more often — was never observable outside
+    /api/ghost/checklist/{symbol}/calibration, which needs direct API access.
+    This surfaces the same numbers in the context payload so the question can
+    be answered by anyone reading Ghost's state.
+
+    `spread_pp` is the number that matters: realized hit rate of the top band
+    minus the bottom band, in percentage points. Flat means the score carries
+    no information and nothing downstream should be built on it. It is
+    reported alongside the sample counts because a spread computed on a handful
+    of rows is noise, not evidence.
+
+    Read-only, and deliberately fail-soft: this is diagnostics, never a gate.
+    """
+    from core.catalyst_checklist import CHECKLIST_VERSION
+    from core.checklist_calibration import MIN_BAND_SAMPLES, build_calibration
+    from core.checklist_ledger import (
+        DEFAULT_OUTCOME_CONTRACT,
+        resolved_samples_for_calibration,
+    )
+    from core.tp_sl_resolve import label_hold_bars
+
+    hold_bars = int(label_hold_bars())
+    out: Dict[str, Any] = {
+        "checklist_version": CHECKLIST_VERSION,
+        "hold_bars": hold_bars,
+        "min_band_samples": MIN_BAND_SAMPLES,
+        "cohorts": {},
+    }
+    for lane in ("shadow", "official"):
+        for direction in ("UP", "DOWN"):
+            key = f"{lane}:{direction}"
+            try:
+                samples = resolved_samples_for_calibration(
+                    checklist_version=CHECKLIST_VERSION,
+                    hold_bars=hold_bars,
+                    outcome_contract=DEFAULT_OUTCOME_CONTRACT,
+                    direction=direction,
+                    lane=lane,
+                )
+            except Exception as exc:
+                out["cohorts"][key] = {"error": str(exc)[:80]}
+                continue
+
+            calib = build_calibration(samples)
+            populated = [
+                {
+                    "band": b["band"],
+                    "n": b["n"],
+                    "wins": b["wins"],
+                    "raw_rate_pct": b["raw_rate_pct"],
+                    "proven_rate_pct": b["proven_rate_pct"],
+                    "proven": b["proven"],
+                }
+                for b in (calib.get("bands") or [])
+                if b.get("n")
+            ]
+            # Bands come back in ascending score order, so last minus first is
+            # the realized separation between the most and least complete
+            # checklists actually observed.
+            spread = None
+            if len(populated) >= 2:
+                spread = round(
+                    populated[-1]["raw_rate_pct"] - populated[0]["raw_rate_pct"], 2
+                )
+
+            out["cohorts"][key] = {
+                "total_samples": calib.get("total_samples", 0),
+                "skipped_samples": calib.get("skipped_samples", 0),
+                "populated_bands": len(populated),
+                "proven_bands": sum(1 for b in populated if b["proven"]),
+                "any_proven": calib.get("any_proven", False),
+                "spread_pp": spread,
+                "bands": populated,
+            }
+    return out
+
+
 def build_ask_context(include_portfolio: bool = False) -> Dict[str, Any]:
     """Snapshot live Ghost state for Claude (sync, no HTTP loopback).
 
@@ -76,6 +158,11 @@ def build_ask_context(include_portfolio: bool = False) -> Dict[str, Any]:
         ctx["engine_pause"] = engine_pause_state()
     except Exception as e:
         ctx["engine_pause_error"] = str(e)[:120]
+
+    try:
+        ctx["checklist_calibration"] = checklist_calibration_summary()
+    except Exception as e:
+        ctx["checklist_calibration_error"] = str(e)[:120]
 
     try:
         from core.risk_discipline import combined_trading_block, risk_settings
