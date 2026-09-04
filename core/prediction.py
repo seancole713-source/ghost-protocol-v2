@@ -670,7 +670,36 @@ def enforce_kill_conditions() -> Dict[str, Any]:
         prev = engine_pause_state()
         if prev.get("paused"):
             if prev.get("latched"):
-                return prev
+                # A latch normally requires a human to review the degradation
+                # before trading resumes, and that stays true whenever there is
+                # anything to review. But once EVERY admissible outcome has
+                # aged out of the window (KILL_RECENCY_DAYS), the pause is being
+                # held up by evidence the switch itself no longer accepts, and
+                # nothing can ever change that: a pause stops firing, no firing
+                # means no new outcomes, so the window stays empty forever.
+                # That is the same self-perpetuating shape the recency bound was
+                # added to break, one level up — the switch stopped tripping on
+                # stale rows, but the latch kept holding on them.
+                #
+                # Deliberately narrow: this clears ONLY when resolved_available
+                # is 0. A latch over evidence that exists and merely is not
+                # tripping still needs a human, because there is something real
+                # to look at. The switch also stays fully armed either way, so a
+                # genuine degradation re-trips on the next resolved picks.
+                if int(ev.get("resolved_available") or 0) > 0:
+                    return prev
+                try:
+                    _clear_engine_pause()
+                except Exception as e:
+                    LOGGER.error("engine latch auto-clear failed: %s", str(e)[:160])
+                    return {**prev, "clear_failed": True, "error": str(e)[:160]}
+                LOGGER.warning(
+                    "ENGINE LATCH AUTO-CLEARED — the pause reason (%s) had no "
+                    "admissible evidence left within %sd; kill switch remains "
+                    "armed and will re-trip on new outcomes",
+                    prev.get("reason"), ev.get("recency_days"),
+                )
+                return {"paused": False, "cleared": True, "latch_expired": True}
             try:
                 _clear_engine_pause()
             except Exception as e:

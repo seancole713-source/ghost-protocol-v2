@@ -177,6 +177,18 @@ def build_ask_context(include_portfolio: bool = False) -> Dict[str, Any]:
         ctx["checklist_calibration_error"] = str(e)[:120]
 
     try:
+        # Retrospective screen, cached by the scheduled job. Absent until the
+        # first pass completes; never computed on this read path, which would
+        # warm an EDGAR fetch per symbol inside a request.
+        from core.checklist_backfill_screen import cached_screen
+
+        screen = cached_screen()
+        if screen is not None:
+            ctx["checklist_backfill_screen"] = screen
+    except Exception as e:
+        ctx["checklist_backfill_screen_error"] = str(e)[:120]
+
+    try:
         from core.risk_discipline import combined_trading_block, risk_settings
         ctx["risk_discipline"] = combined_trading_block()
         ctx["risk_settings"] = risk_settings()
