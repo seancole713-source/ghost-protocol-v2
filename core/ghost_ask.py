@@ -85,6 +85,18 @@ def checklist_calibration_summary() -> Dict[str, Any]:
         "min_band_samples": MIN_BAND_SAMPLES,
         "cohorts": {},
     }
+    # Answer "why is everything zero?" in the same payload as the zeros. A
+    # broken issuance contract stops every snapshot write, so empty cohorts
+    # mean something very different depending on this flag: not-enough-data
+    # yet, or nothing can ever be recorded.
+    try:
+        from core.checklist_ledger import validate_outcome_contract
+
+        validate_outcome_contract()
+        out["contract_ok"] = True
+    except Exception as exc:  # noqa: BLE001 - diagnostics, never a gate
+        out["contract_ok"] = False
+        out["contract_error"] = str(exc)[:200]
     for lane in ("shadow", "official"):
         for direction in ("UP", "DOWN"):
             key = f"{lane}:{direction}"
