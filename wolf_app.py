@@ -1646,6 +1646,26 @@ async def lifespan(app: FastAPI):
             return result
 
         scheduler.register("checklist_shadow_resolver", _shadow_checklist_resolver_job, interval_s=1800)
+
+        # Retrospective checklist screen. The prospective calibration cohorts
+        # only started filling on 2026-09-04 (PR #180 unblocked snapshot
+        # writes), so the "does the checklist separate winners from losers"
+        # question is otherwise weeks away. This replays the checklist against
+        # already-resolved shadow rows using point-in-time evidence and caches
+        # the result for the context payload. Screening only, writes nothing to
+        # the checklist ledger, and never touches a gate.
+        #
+        # initial_delay_s is explicit on purpose: register() otherwise defers by
+        # a full interval, which is exactly how weekly_retrain went years
+        # without firing (PR #178). Daily refresh, first pass shortly after boot.
+        def _checklist_screen_job():
+            from core.checklist_backfill_screen import refresh_screen
+            refresh_screen()
+
+        scheduler.register(
+            "checklist_backfill_screen", _checklist_screen_job,
+            interval_s=86400, timeout_s=1800, initial_delay_s=300,
+        )
         # Shadow evidence scoring: turns ACCEPTED agent-workflow research
         # (core.agent_workflow) into a deterministic five-dimension quality score
         # (core.evidence_scoring) and persists it to a shadow-only feature ledger
