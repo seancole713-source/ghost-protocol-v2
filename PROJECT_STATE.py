@@ -59,6 +59,33 @@ SESSION_LOG = {
 
     # ── WHAT HAPPENED THIS SESSION ──
     "session_summary": [
+        "day_losers CONFIRMED FETCHING; ALL SCREENS READ bad=50 OFF-HOURS AND THAT IS CORRECT "
+        "(2026-09-05, Claude, PR #186 verification). The per-screen log added by #186 printed at "
+        "19:44:23Z: `external screener status=complete inserted=0 | day_gainers=50/50 in=0 bad=50 "
+        "day_losers=50/50 in=0 bad=50 most_shorted_stocks=50/50 in=0 bad=50`. That settles two "
+        "things that inference could not. FIRST, day_losers is genuinely being requested and is "
+        "returning 50 rows -- before #186 the only evidence was `status=complete inserted=50` on "
+        "the prior cycle, which could not distinguish a fetched screen from an unrequested one. "
+        "It also retroactively confirms those 50 rows WERE the day_losers rows: they are "
+        "duplicates now (inserted=0), which is what a closed-market re-poll produces because "
+        "observation_id is screen:symbol:source_ts:volume and none of those change while the "
+        "market is shut. "
+        "SECOND, and the part a future session must not misread: bad=50 on ALL THREE screens "
+        "means every row arrived validation_valid=FALSE. This is NOT a dead lane. It is Saturday; "
+        "Yahoo serves Friday's post-market quote, source_age_s is ~69,800s, and "
+        "EXTERNAL_SCREENER_MAX_AGE_S is 1800, so every row is legitimately stale_source_timestamp "
+        "at ingest. The five alerts still surfacing are Friday rows that were ingested WHILE "
+        "fresh and remain valid in the ledger. The dead window is only post-market close to "
+        "pre-market open plus weekends -- windows in which no new market data exists either. "
+        "_quote_point already reads preMarketPrice/preMarketTime when marketState is PRE, so "
+        "Monday's pre-market gappers ingest fresh and normally. "
+        "READ THE INVERSE, THOUGH: bad=50 DURING a live session would be a real fault (provider "
+        "serving lagged quotes), and a single screen reading UNAVAILABLE(...) while the others "
+        "read 50/50 is a real fault at any hour. The bound was deliberately NOT widened to make "
+        "the weekend read green -- a Friday quote fetched on Saturday IS stale, and loosening a "
+        "data-quality bound so a small closed-market sample looks 'working' is precisely the "
+        "move this project forbids.",
+
         "THE FULL-MARKET PROVIDER IS NOT AVAILABLE ON THIS PLAN; THE DECLINE GAP CLOSED ANOTHER "
         "WAY (2026-09-05, Claude, PR #185). PR #184 shipped core/market_wide_snapshot.py to pull "
         "every US ticker's close-to-close move from one Polygon grouped-daily call. It deployed "
