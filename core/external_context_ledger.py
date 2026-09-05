@@ -338,21 +338,55 @@ def external_observations_for_symbol(symbol: str, cur, *, limit: int = 50) -> Li
     return items
 
 
-def recent_external_discoveries(*, limit: int = 50) -> Dict[str, Any]:
-    """Latest validated discovery snapshot for UI/API display only."""
+_DISCOVERY_COLUMNS = """provider, screen, symbol, source_ts, received_ts, rank,
+                        price, move_pct, volume, avg_volume, external_score,
+                        in_official_watchlist, quarantined, delayed, freshness,
+                        validation_valid"""
+
+
+def recent_external_discoveries(
+    *, limit: int = 50, per_screen: Optional[int] = None
+) -> Dict[str, Any]:
+    """Latest validated discovery snapshot for UI/API display only.
+
+    `per_screen` takes the newest N rows from EACH screen instead of the newest
+    N overall. Screens run on wildly different clocks -- the Yahoo lane writes
+    ~100 intraday rows every 15 minutes while the full-market lane writes one
+    batch a day stamped at the session start -- so a single global ORDER BY
+    source_ts DESC is monopolised by the fastest writer and the daily lane
+    falls out of the window entirely. Partitioning keeps every provider
+    visible without giving any of them a larger share by accident.
+    """
     from core.db import db_conn
+    capped = max(1, min(200, int(limit)))
     with db_conn() as conn:
         cur = conn.cursor()
-        cur.execute(
-            """SELECT provider, screen, symbol, source_ts, received_ts, rank,
-                      price, move_pct, volume, avg_volume, external_score,
-                      in_official_watchlist, quarantined, delayed, freshness
-               FROM ghost_external_observations
-               WHERE validation_valid=TRUE
-               ORDER BY COALESCE(source_ts, received_ts) DESC, rank ASC
-               LIMIT %s""",
-            (max(1, min(200, int(limit))),),
-        )
+        if per_screen is not None:
+            cur.execute(
+                f"""SELECT {_DISCOVERY_COLUMNS} FROM (
+                        SELECT {_DISCOVERY_COLUMNS},
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY screen
+                                   ORDER BY COALESCE(source_ts, received_ts) DESC,
+                                            rank ASC
+                               ) AS screen_rank
+                        FROM ghost_external_observations
+                        WHERE validation_valid=TRUE
+                    ) ranked
+                    WHERE screen_rank <= %s
+                    ORDER BY COALESCE(source_ts, received_ts) DESC, rank ASC
+                    LIMIT %s""",
+                (max(1, min(200, int(per_screen))), capped),
+            )
+        else:
+            cur.execute(
+                f"""SELECT {_DISCOVERY_COLUMNS}
+                   FROM ghost_external_observations
+                   WHERE validation_valid=TRUE
+                   ORDER BY COALESCE(source_ts, received_ts) DESC, rank ASC
+                   LIMIT %s""",
+                (capped,),
+            )
         rows = cur.fetchall()
     now = int(time.time())
     items = []
@@ -366,6 +400,9 @@ def recent_external_discoveries(*, limit: int = 50) -> Dict[str, Any]:
             "avg_volume": row[9], "external_score": row[10],
             "in_official_watchlist": bool(row[11]), "quarantined": bool(row[12]),
             "delayed": bool(row[13]), "freshness": freshness,
+            # Exposed so a consumer can enforce validity itself rather than
+            # trusting that this WHERE clause is the only path to these rows.
+            "validation_valid": bool(row[15]),
             "advisory_only": True, "decision_eligible": False,
         })
     return {"ok": True, "items": items, "count": len(items), "advisory_only": True,

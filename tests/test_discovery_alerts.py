@@ -21,18 +21,30 @@ These tests pin the two things that make closing that gap safe:
 """
 from __future__ import annotations
 
+import time
+
 import core.discovery_alerts as da
 
 
-def _obs(symbol, move_pct, *, in_watchlist=False, quarantined=False,
+def _obs(symbol, move_pct, *, in_watchlist=False, validation_valid=True,
          age=600, screen="day_gainers"):
+    """Mirror a real ledger row.
+
+    `quarantined` is DERIVED here, never passed in. In production
+    normalize_external_observation computes it as
+    `symbol and not in_official_watchlist`, so in_watchlist=False always
+    implies quarantined=True. The original fixture let a caller set the two
+    independently, which allowed a combination the ledger cannot produce and
+    hid the fact that this module dropped every row it existed to surface.
+    """
     return {
         "provider": "yahoo", "screen": screen, "symbol": symbol,
         "source_ts": 1_788_000_000, "received_ts": 1_788_000_100,
         "source_age_s": age, "rank": 1, "price": 1.72,
         "move_pct": move_pct, "volume": 5_000_000, "avg_volume": 900_000,
         "external_score": None, "in_official_watchlist": in_watchlist,
-        "quarantined": quarantined, "delayed": False, "freshness": "fresh",
+        "quarantined": not in_watchlist, "delayed": False, "freshness": "fresh",
+        "validation_valid": validation_valid,
         "advisory_only": True, "decision_eligible": False,
     }
 
@@ -104,10 +116,46 @@ def test_stale_rows_are_dropped(monkeypatch):
     assert da.build_discovery_alerts()["alert_count"] == 0
 
 
-def test_quarantined_rows_are_dropped(monkeypatch):
-    _patch(monkeypatch, [_obs("SCAM", 400.0, quarantined=True)])
+def test_rows_that_failed_validation_are_dropped(monkeypatch):
+    """The real quality filter: bad symbol, missing/future timestamp, stale
+    past the provider's own bound, non-positive price."""
+    _patch(monkeypatch, [_obs("SCAM", 400.0, validation_valid=False)])
 
-    assert da.build_discovery_alerts()["alert_count"] == 0
+    out = da.build_discovery_alerts()
+
+    assert out["alert_count"] == 0
+    assert out["dropped"]["invalid"] == 1
+
+
+def test_quarantine_is_not_a_reason_to_hide_a_mover(monkeypatch):
+    """Regression pin for the bug that made PR #182 dead on arrival.
+
+    In this ledger `quarantined` means "not in config/symbols.py", not "bad
+    data" -- normalize_external_observation sets it as
+    `symbol and not in_official_watchlist`. Dropping on it meant the alert
+    list could only ever contain the 107 symbols Ghost already models, i.e.
+    exactly the rows a discovery lane does not need to report."""
+    row = _obs("GPRO", 183.0, in_watchlist=False)
+    assert row["quarantined"] is True, "fixture no longer mirrors the ledger"
+
+    _patch(monkeypatch, [row])
+
+    assert da.build_discovery_alerts()["alert_count"] == 1
+
+
+def test_the_ledger_really_does_quarantine_everything_off_watchlist():
+    """Pins the upstream invariant the test above depends on, against the real
+    normalizer rather than a fixture."""
+    from core.external_context_ledger import normalize_external_observation
+
+    row = normalize_external_observation(
+        provider="yahoo_saved_screener", provider_family="yahoo",
+        screen="day_gainers", raw_symbol="GPRO", source_ts=int(time.time()),
+        payload={}, price=1.72, move_pct=183.0,
+    )
+
+    assert row["in_official_watchlist"] is False
+    assert row["quarantined"] is True
 
 
 def test_duplicate_symbols_keep_the_largest_move(monkeypatch):
@@ -188,14 +236,14 @@ def test_rows_without_a_move_are_distinguished_from_small_moves(monkeypatch):
     assert out["max_move_seen_pct"] == 5.0
 
 
-def test_stale_and_quarantined_drops_are_counted_separately(monkeypatch):
+def test_stale_and_invalid_drops_are_counted_separately(monkeypatch):
     _patch(monkeypatch, [
         _obs("A", 50.0, age=7 * 86400),
-        _obs("B", 50.0, quarantined=True),
+        _obs("B", 50.0, validation_valid=False),
     ])
 
     out = da.build_discovery_alerts()
 
     assert out["dropped"]["stale"] == 1
-    assert out["dropped"]["quarantined"] == 1
+    assert out["dropped"]["invalid"] == 1
     assert out["alert_count"] == 0
