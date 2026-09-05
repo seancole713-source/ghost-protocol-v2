@@ -1063,6 +1063,29 @@ def external_discovery_snapshot(limit: int = Query(default=50, ge=1, le=200)):
         }, status_code=503)
 
 
+@router.get("/api/intelligence/market-movers")
+def market_movers():
+    """Ranked market-wide movers, including symbols Ghost cannot model.
+
+    Reads the persisted advisory ledger only -- the full-market scan runs on
+    the scheduler. Every item is decision_eligible=False: a discovery is a
+    reason to look, and a symbol that has already run is often the worst thing
+    to buy.
+    """
+    try:
+        from core.discovery_alerts import build_discovery_alerts
+        return build_discovery_alerts()
+    except Exception:
+        logging.getLogger("ghost.api.external_context").exception(
+            "market movers unavailable"
+        )
+        return JSONResponse({
+            "ok": False, "status": "unavailable",
+            "error": "market_movers_unavailable",
+            "advisory_only": True, "decision_eligible": False,
+        }, status_code=503)
+
+
 @router.get("/api/intelligence/external-radar")
 def external_radar_snapshot():
     """Read batch-enriched external observations; never poll providers."""

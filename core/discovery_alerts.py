@@ -19,6 +19,14 @@ writes nothing, scores nothing, and cannot create a candidate:
 external_screener_ingest keeps its invariant untouched because the alerting
 lives here, in a consumer, rather than in the ingest path.
 
+Coverage note (2026-09-05): the Yahoo saved screens this originally read are
+capped at 50 rows each and hardcoded to two screens, ~100 symbols per cycle out
+of ~11,000 listed US tickers, with no day_losers screen at all -- so the
+absolute-move ranking below could never have been shown a crash. The
+full-market side now arrives from core/market_wide_snapshot.py, which pulls
+every US ticker's close-to-close move from one Polygon grouped-daily call and
+writes it into this same advisory ledger.
+
 Every alert carries decision_eligible=False. A discovery is a reason to LOOK,
 never a reason to trade -- and notably, a symbol that has already run is often
 the worst thing to buy. GPRO post-announcement becomes a merger-arb pinned
@@ -46,11 +54,21 @@ def _min_move_pct() -> float:
 
 
 def _max_age_s() -> int:
-    """Beyond this, a screen row is history rather than news."""
+    """Display horizon, not a data-quality gate.
+
+    Per-provider freshness is already enforced upstream at validation time:
+    each provider passes its own max_age_s to normalize_external_observation
+    (30 minutes for the intraday Yahoo screens, four days for Polygon daily
+    bars) and anything past it lands with validation_valid=FALSE and never
+    reaches this function. What remains is how far back a human still wants to
+    look. A daily bar is stamped at the START of its session, so Friday's close
+    is ~45h old by Sunday afternoon; a 24h horizon would blank the full-market
+    lane every weekend.
+    """
     try:
-        return max(300, int(os.getenv("DISCOVERY_ALERT_MAX_AGE_S", "86400")))
+        return max(300, int(os.getenv("DISCOVERY_ALERT_MAX_AGE_S", "259200")))
     except Exception:
-        return 86400
+        return 259200
 
 
 def _max_alerts() -> int:
@@ -60,7 +78,14 @@ def _max_alerts() -> int:
         return 12
 
 
-def build_discovery_alerts(limit: int = 120) -> Dict[str, Any]:
+def _per_screen() -> int:
+    try:
+        return max(1, min(200, int(os.getenv("DISCOVERY_ALERT_PER_SCREEN", "60"))))
+    except Exception:
+        return 60
+
+
+def build_discovery_alerts(limit: int = 240) -> Dict[str, Any]:
     """Rank recent market-wide discoveries a human would want to see.
 
     Read-only. Returns advisory items only; nothing here is trade-eligible.
@@ -84,7 +109,9 @@ def build_discovery_alerts(limit: int = 120) -> Dict[str, Any]:
     }
 
     try:
-        snapshot = recent_external_discoveries(limit=limit)
+        # per_screen keeps the once-a-day full-market batch from being crowded
+        # out of the window by the every-15-minutes Yahoo lane.
+        snapshot = recent_external_discoveries(limit=limit, per_screen=_per_screen())
     except Exception as exc:  # noqa: BLE001 - advisory surface, never a gate
         out["error"] = str(exc)[:160]
         return out
@@ -100,14 +127,22 @@ def build_discovery_alerts(limit: int = 120) -> Dict[str, Any]:
     # zero self-explanatory: a max_move_seen near the threshold means quiet, a
     # null one means nothing is arriving with a usable move at all.
     largest: Optional[float] = None
-    dropped = {"no_move": 0, "stale": 0, "quarantined": 0, "below_threshold": 0}
+    dropped = {"no_move": 0, "stale": 0, "invalid": 0, "below_threshold": 0}
 
     for item in snapshot.get("items") or []:
         symbol = (item.get("symbol") or "").strip().upper()
         if not symbol:
             continue
-        if item.get("quarantined"):
-            dropped["quarantined"] += 1
+        # NOT quarantined. In this ledger `quarantined` means "outside
+        # config/symbols.py" -- normalize_external_observation sets it as
+        # `symbol and not in_official_watchlist` -- so it is TRUE for every
+        # symbol this lane exists to surface. Dropping on it made the alert
+        # list structurally incapable of reporting GPRO, which is the one
+        # thing PR #182 was built to do. The real quality filter is
+        # validation_valid: bad symbol, missing or future timestamp, stale
+        # beyond the provider's own bound, non-positive price.
+        if item.get("validation_valid") is False:
+            dropped["invalid"] += 1
             continue
         age = item.get("source_age_s")
         if age is not None and int(age) > max_age:

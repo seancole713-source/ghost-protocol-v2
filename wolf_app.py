@@ -1982,6 +1982,34 @@ async def lifespan(app: FastAPI):
             timeout_s=120,
         )
 
+        # Full-market discovery. The Yahoo screens above see ~100 symbols per
+        # cycle out of ~11,000 US tickers and carry no day_losers screen at
+        # all; this pulls every ticker's close-to-close move from one Polygon
+        # grouped-daily call. Same advisory ledger, same invariants -- it
+        # cannot create a candidate or enter the modelled universe.
+        def _market_wide_snapshot_job():
+            try:
+                from core.market_wide_snapshot import run_market_wide_cycle
+                result = run_market_wide_cycle()
+                LOGGER.info(
+                    "market-wide scan status=%s day=%s scanned=%s stored=%s",
+                    result.get("status"), result.get("latest_day"),
+                    result.get("scanned", 0), result.get("inserted", 0),
+                )
+            except Exception as _e:
+                LOGGER.warning("market-wide snapshot job failed: %s", str(_e)[:120])
+                raise
+
+        scheduler.register(
+            "market_wide_snapshot",
+            _market_wide_snapshot_job,
+            interval_s=max(3600, int(os.getenv("MARKET_WIDE_INTERVAL_S", "21600"))),
+            timeout_s=300,
+            # register() defers a task by a full interval when this is omitted,
+            # which is how weekly_retrain went a year without firing (PR #178).
+            initial_delay_s=600,
+        )
+
         def _broad_market_context_job():
             try:
                 from core.broad_market_context import refresh_broad_market_context
