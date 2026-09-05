@@ -2020,6 +2020,37 @@ async def lifespan(app: FastAPI):
                 LOGGER.warning("market-wide snapshot job failed: %s", str(_e)[:120])
                 raise
 
+        # One-shot read-only stop-geometry sweep. V3_STOP_VOL_MULT=1.8 is the
+        # binding constraint on the entire engine -- every lane of the live
+        # retrain fails, most with NEGATIVE walk-forward edge, so every model is
+        # stamped tier="research" and hard-blocked. The two sweep scripts answer
+        # which multiplier restores edge, and they can only run here: the OHLCV
+        # chain needs the provider keys and egress that exist on this box alone.
+        # Runs once ever (ghost_state marker), in a CHILD process so its
+        # V3_STOP_VOL_MULT writes cannot touch the live engine, and under the
+        # retrain lock so the two never compete for CPU.
+        def _geometry_sweep_job():
+            try:
+                from core.geometry_sweep_job import run_geometry_sweep_once
+                result = run_geometry_sweep_once()
+                if result.get("status") not in ("already_run", "disabled"):
+                    LOGGER.info("geometry sweep status=%s ok=%s",
+                                result.get("status", "ran"), result.get("ok"))
+            except Exception as _e:
+                LOGGER.warning("geometry sweep job failed: %s", str(_e)[:160])
+                raise
+
+        scheduler.register(
+            "geometry_sweep",
+            _geometry_sweep_job,
+            interval_s=1800,
+            # Longer than the sweep's own subprocess timeout, so the scheduler
+            # never kills it half-way and leaves no marker.
+            timeout_s=max(600, int(os.getenv("GEOMETRY_SWEEP_TIMEOUT_S", "3600"))) + 600,
+            # register() defers a full interval without this -- the PR #178 trap.
+            initial_delay_s=180,
+        )
+
         scheduler.register(
             "market_wide_snapshot",
             _market_wide_snapshot_job,
