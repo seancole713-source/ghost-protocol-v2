@@ -70,6 +70,21 @@ def _api_key() -> str:
     return (os.getenv("POLYGON_API_KEY") or "").strip()
 
 
+# Remembered so the diagnosis does not decay. Confirmed live 2026-09-05: Polygon
+# answered 403 for grouped-daily on this account's plan. After five such cycles
+# the circuit breaker opens and every later cycle would report the generic
+# "provider_breaker_open" instead -- turning "your plan does not cover this
+# endpoint" into "something is flaky", which is precisely the degradation this
+# module exists to refuse. Sticky within the process, cleared on restart so a
+# plan upgrade takes effect on the next deploy.
+_NOT_AUTHORIZED: Dict[str, Any] = {}
+
+
+def _remember_not_authorized(detail: Dict[str, Any]) -> None:
+    _NOT_AUTHORIZED.clear()
+    _NOT_AUTHORIZED.update({k: v for k, v in detail.items() if k != "day"})
+
+
 def _env_float(name: str, default: float, *, low: float, high: float) -> float:
     try:
         return max(low, min(high, float(os.getenv(name, str(default)))))
@@ -112,6 +127,9 @@ def fetch_grouped_day(day: str, *, timeout_s: float = 20.0) -> Tuple[List[Dict[s
     key = _api_key()
     if not key:
         return [], {"status": "unavailable", "reason": "polygon_api_key_missing", "day": day}
+    if _NOT_AUTHORIZED:
+        # Checked BEFORE the breaker so the real reason survives.
+        return [], {"status": "unavailable", "day": day, **_NOT_AUTHORIZED}
     from core.circuit_breaker import _polygon_cb
     if not _polygon_cb.allow():
         return [], {"status": "unavailable", "reason": "provider_breaker_open", "day": day}
@@ -131,9 +149,11 @@ def fetch_grouped_day(day: str, *, timeout_s: float = 20.0) -> Tuple[List[Dict[s
                 "MARKET-WIDE DISABLED — Polygon returned %d for grouped-daily. "
                 "The key is rejected or the plan does not include this endpoint; "
                 "this will not recover on retry.", response.status_code)
-            return [], {"status": "unavailable", "reason": "provider_not_authorized",
+            detail = {"status": "unavailable", "reason": "provider_not_authorized",
                         "http_status": response.status_code, "day": day,
                         "permanent": True}
+            _remember_not_authorized(detail)
+            return [], detail
         response.raise_for_status()
         payload = response.json()
         provider_status = str(payload.get("status") or "").upper()
@@ -141,9 +161,11 @@ def fetch_grouped_day(day: str, *, timeout_s: float = 20.0) -> Tuple[List[Dict[s
             _polygon_cb.record_failure()
             LOGGER.error("MARKET-WIDE DISABLED — Polygon body status=%s day=%s",
                          provider_status, day)
-            return [], {"status": "unavailable", "reason": "provider_not_authorized",
+            detail = {"status": "unavailable", "reason": "provider_not_authorized",
                         "provider_status": provider_status, "day": day,
                         "permanent": True}
+            _remember_not_authorized(detail)
+            return [], detail
         results = payload.get("results")
         rows = [r for r in results if isinstance(r, dict)] if isinstance(results, list) else []
         _polygon_cb.record_success()

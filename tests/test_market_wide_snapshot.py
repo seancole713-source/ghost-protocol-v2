@@ -346,3 +346,46 @@ def test_an_http_403_is_translated_before_the_breaker_hides_it(monkeypatch):
     assert rows == []
     assert status["reason"] == "provider_not_authorized"
     assert status["permanent"] is True
+
+
+def test_a_permanent_rejection_is_not_overwritten_by_the_breaker(monkeypatch):
+    """Confirmed live 2026-09-05: Polygon answers 403 for grouped-daily on this
+    plan. After five cycles the circuit breaker opens, and every later cycle
+    would report the generic provider_breaker_open -- turning "your plan does
+    not cover this endpoint" back into "something is flaky"."""
+    monkeypatch.setattr(mws, "_NOT_AUTHORIZED", {}, raising=False)
+
+    class _Resp:
+        status_code = 403
+
+        def json(self):
+            return {"status": "NOT_AUTHORIZED"}
+
+        def raise_for_status(self):
+            raise AssertionError("unreachable")
+
+    monkeypatch.setattr(mws.requests, "get", lambda *a, **k: _Resp())
+    mws.fetch_grouped_day("2026-09-04")
+
+    # Now make the breaker refuse, as it would after repeated failures.
+    import core.circuit_breaker as cb
+    monkeypatch.setattr(cb._polygon_cb, "allow", lambda: False)
+
+    _rows, status = mws.fetch_grouped_day("2026-09-05")
+
+    assert status["reason"] == "provider_not_authorized"
+    assert status["permanent"] is True
+    mws._NOT_AUTHORIZED.clear()
+
+
+def test_nothing_is_remembered_until_a_rejection_happens(monkeypatch):
+    """The sticky flag must not be set by a timeout or a bad gateway."""
+    monkeypatch.setattr(mws, "_NOT_AUTHORIZED", {}, raising=False)
+
+    def boom(*a, **k):
+        raise RuntimeError("connection reset")
+
+    monkeypatch.setattr(mws.requests, "get", boom)
+    mws.fetch_grouped_day("2026-09-04")
+
+    assert mws._NOT_AUTHORIZED == {}

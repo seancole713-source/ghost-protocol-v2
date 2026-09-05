@@ -20,7 +20,14 @@ from core.external_context_ledger import (
 
 LOGGER = logging.getLogger("ghost.external_screener")
 _YAHOO_ENDPOINT = "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved"
-_DEFAULT_SCREENS: Tuple[str, ...] = ("day_gainers", "most_shorted_stocks")
+# day_losers is not optional garnish. The alert lane ranks by ABSOLUTE move --
+# it was written to surface crashes -- and without this screen no decline could
+# ever reach it, so that ranking had never once been shown one. Verified live on
+# 2026-09-05: the top alert was BRNX at -26.3%, and it arrived only because that
+# name happened to also be heavily shorted.
+_DEFAULT_SCREENS: Tuple[str, ...] = (
+    "day_gainers", "day_losers", "most_shorted_stocks",
+)
 
 
 def _enabled() -> bool:
@@ -36,7 +43,10 @@ def _screens() -> Tuple[str, ...]:
         for item in os.getenv("EXTERNAL_SCREENER_SCREENS", ",".join(_DEFAULT_SCREENS)).split(",")
         if item.strip()
     ]
-    return tuple(item for item in requested if item in allowed)[:2]
+    # Cap is the allowlist itself: each screen costs one bounded request per
+    # cycle, and silently truncating to the first two is how a screen added to
+    # the allowlist would appear configured and never be fetched.
+    return tuple(item for item in requested if item in allowed)[:len(_DEFAULT_SCREENS)]
 
 
 def _quote_point(quote: Dict[str, Any]) -> Tuple[Any, Any]:
@@ -149,7 +159,7 @@ def ingest_rows(rows: Iterable[Dict[str, Any]]) -> Dict[str, int]:
 
 
 def run_external_screener_cycle() -> Dict[str, Any]:
-    """Leader-scheduled refresh. Safe partial failure; bounded to two requests."""
+    """Leader-scheduled refresh. Safe partial failure; one request per screen."""
     if not _enabled():
         return {"ok": True, "status": "disabled", "screens": {},
                 "advisory_only": True, "decision_eligible": False}
