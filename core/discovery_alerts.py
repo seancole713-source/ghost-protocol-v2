@@ -93,21 +93,39 @@ def build_discovery_alerts(limit: int = 120) -> Dict[str, Any]:
     max_age = _max_age_s()
     seen: Dict[str, Dict[str, Any]] = {}
 
+    # Why-zero diagnostics. An empty alert list is ambiguous on its own -- a
+    # genuinely quiet tape and a filter that can never pass look identical, and
+    # that ambiguity is how a dead lane survives unnoticed. Recording the
+    # largest move actually observed, and where rows were dropped, makes the
+    # zero self-explanatory: a max_move_seen near the threshold means quiet, a
+    # null one means nothing is arriving with a usable move at all.
+    largest: Optional[float] = None
+    dropped = {"no_move": 0, "stale": 0, "quarantined": 0, "below_threshold": 0}
+
     for item in snapshot.get("items") or []:
         symbol = (item.get("symbol") or "").strip().upper()
-        if not symbol or item.get("quarantined"):
+        if not symbol:
+            continue
+        if item.get("quarantined"):
+            dropped["quarantined"] += 1
             continue
         age = item.get("source_age_s")
         if age is not None and int(age) > max_age:
+            dropped["stale"] += 1
             continue
         move = item.get("move_pct")
         if move is None:
+            dropped["no_move"] += 1
             continue
         try:
             move = float(move)
         except (TypeError, ValueError):
+            dropped["no_move"] += 1
             continue
+        if largest is None or abs(move) > abs(largest):
+            largest = move
         if abs(move) < min_move:
+            dropped["below_threshold"] += 1
             continue
 
         # Keep the largest absolute move per symbol; screens overlap.
@@ -137,6 +155,8 @@ def build_discovery_alerts(limit: int = 120) -> Dict[str, Any]:
     out["alert_count"] = len(alerts)
     out["outside_watchlist_count"] = sum(1 for a in alerts if not a["in_watchlist"])
     out["considered"] = len(snapshot.get("items") or [])
+    out["max_move_seen_pct"] = round(largest, 2) if largest is not None else None
+    out["dropped"] = dropped
     return out
 
 
