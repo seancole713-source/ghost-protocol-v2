@@ -6,6 +6,16 @@ out-of-time model edge (mean wf_edge -0.06, negative for 8/12 symbols) while
 the raw win rate but destroy the edge the precision gate needs, which is why
 every fleet retrain at 1.8 yields 0 serveable/fireable models.
 
+DOES NOT REPRODUCE (re-run on the box 2026-09-05, PR #188). Same script, same
+symbols, production config: mean wf_edge came back 0.65 -0.1013 / 0.9 -0.0722 /
+1.2 -0.0593 / 1.5 -0.0561 / 1.8 -0.0593. 0.65 is the WORST multiplier, not the
+best, and ZERO of 12 symbols show positive wf_edge at ANY multiplier. The
+difference is the feature set, not the geometry: n_feature_cols=32 now versus
+49 then, with news/options/intraday/macro/cross-sectional all toggled off in
+production. Read the paragraph above as a record of what was true in July on a
+richer model, NOT as current guidance -- it was quoted as live guidance on
+2026-09-05 and sent a session chasing a lever that no longer exists.
+
 Usage (data feeds only exist on the box, so run through Railway):
   railway run --environment production --service ghost-protocol-v2 \
     sh -c "cd $PWD && PYTHONPATH=$PWD python3.13 scripts/geometry_edge_sweep.py"
