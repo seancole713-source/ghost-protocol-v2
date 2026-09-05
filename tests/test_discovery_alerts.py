@@ -155,3 +155,47 @@ def test_job_registers_with_an_explicit_initial_delay():
     idx = src.index('"discovery_alerts", _discovery_alerts_job')
 
     assert "initial_delay_s=" in src[idx:idx + 200]
+
+
+# ------------------------------------------------- why-zero diagnostics --
+
+def test_zero_alerts_explains_itself(monkeypatch):
+    """An empty list is ambiguous: a quiet tape and a filter that can never
+    pass look identical, and that ambiguity is how a dead lane survives. The
+    payload must say which it was."""
+    _patch(monkeypatch, [
+        _obs("AAPL", 2.1, in_watchlist=True),
+        _obs("MSFT", -3.4, in_watchlist=True),
+    ])
+
+    out = da.build_discovery_alerts()
+
+    assert out["alert_count"] == 0
+    assert out["max_move_seen_pct"] == -3.4, "largest observed move not reported"
+    assert out["dropped"]["below_threshold"] == 2
+
+
+def test_rows_without_a_move_are_distinguished_from_small_moves(monkeypatch):
+    """max_move_seen_pct of None means nothing usable is arriving at all --
+    a different problem from a quiet market, and it must not look the same."""
+    rows = [_obs("A", 5.0), _obs("B", None)]
+    _patch(monkeypatch, rows)
+
+    out = da.build_discovery_alerts()
+
+    assert out["dropped"]["no_move"] == 1
+    assert out["dropped"]["below_threshold"] == 1
+    assert out["max_move_seen_pct"] == 5.0
+
+
+def test_stale_and_quarantined_drops_are_counted_separately(monkeypatch):
+    _patch(monkeypatch, [
+        _obs("A", 50.0, age=7 * 86400),
+        _obs("B", 50.0, quarantined=True),
+    ])
+
+    out = da.build_discovery_alerts()
+
+    assert out["dropped"]["stale"] == 1
+    assert out["dropped"]["quarantined"] == 1
+    assert out["alert_count"] == 0
