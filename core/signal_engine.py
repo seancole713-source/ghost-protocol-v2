@@ -2732,6 +2732,17 @@ def _calibration_lifecycle_reject(meta: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def _model_age_days(meta: Dict[str, Any]) -> Optional[float]:
+    """Age in days, or None when trained_at is missing or unusable."""
+    try:
+        trained_at = float(meta.get("trained_at"))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(trained_at) or trained_at <= 0:
+        return None
+    return round(max(0.0, (time.time() - trained_at) / 86400.0), 3)
+
+
 def model_serve_guard(
     meta: Optional[Dict[str, Any]], *, expected_direction: Optional[str] = None,
     allow_research_scoring: bool = False,
@@ -3610,6 +3621,13 @@ def get_model_status():
                     "precision_source": precision_review.get("source"),
                     "fire_threshold": precision_review.get("threshold"),
                     "serveable": reject is None,
+                    # A status payload that cannot tell you a model's age
+                    # cannot answer "is this about to stop loading?" --
+                    # model_serve_guard expires an unactivated model at 14
+                    # days, and the retrain jobs need that to decide what
+                    # genuinely needs refreshing.
+                    "trained_at": m.get("trained_at"),
+                    "age_days": _model_age_days(m),
                     # Never fabricate "proven" for a missing/blank tier key.
                     # model_serve_guard() is the actual gate and treats a
                     # missing tier as tier_unproven (reject, above) — the

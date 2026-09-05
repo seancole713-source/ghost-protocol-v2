@@ -1223,13 +1223,102 @@ def _build_train_symbol_list():
     return watchlist_symbol_pairs(include_portfolio=True)
 
 
+# model_serve_guard rejects a research-tier model with exactly this code. It is
+# the ONLY reject that still leaves a usable artifact: the pickle loads, every
+# schema matches, and the scan scores shadow probabilities from it every cycle.
+# Every other reject (stale schema, expired, bad sha, missing pickle) means
+# there is genuinely nothing to serve.
+_LOADABLE_DESPITE = frozenset({"tier_unproven"})
+
+# model_serve_guard expires an unactivated model at 14 days.
+_MODEL_SERVE_MAX_AGE_DAYS = 14.0
+
+
+def _model_refresh_within_days() -> float:
+    """How close to the serve expiry a model must be before it is retrained."""
+    try:
+        return max(0.5, min(13.0, float(os.getenv("MODEL_REFRESH_WITHIN_DAYS", "3"))))
+    except (TypeError, ValueError):
+        return 3.0
+
+
+def _model_fleet_coverage() -> dict:
+    """One get_model_status() read reduced to what the retrain jobs need.
+
+    LOADABLE, not PROVEN. This is the fix for a loop that could never end.
+    Both retrain jobs used get_model_status()["symbols"], which is built only
+    where model_serve_guard returns None -- i.e. proven tier only. With every
+    model stamped "research" that map is empty, so coverage saw missing=107
+    forever and retrained the whole fleet every cycle, and the map it read
+    could never be raised by the loop reading it. Its own docstring said
+    "lack a LOADABLE v3 model" and the job comment said "if too few loadable
+    v3 models"; the implementation never matched either.
+
+    Why it mattered more than wasted CPU: proven_skill_gate counts resolved
+    shadow outcomes WHERE model_sha256=%s, and every retrain rewrites that sha.
+    Measured live 2026-09-05 over 30 days -- 3,252 identity groups for 207
+    lanes, 3,252 distinct shas, max n=6, and ZERO groups reaching the n>=10 the
+    gate requires. Pooled by lane instead of by sha the same outcomes give a
+    mean of 19.3, and 153 of 207 lanes clear 10. The evidence was never thin;
+    it was being shredded into 3,252 buckets holding ~1 outcome each.
+    """
+    out = {"loadable_symbols": set(), "loadable_models": 0,
+           "expiring_symbols": set(), "checked": 0}
+    try:
+        from core.signal_engine import get_model_status
+        stored = (get_model_status() or {}).get("stored_symbols") or {}
+    except Exception:
+        return out
+    refresh_within = _model_refresh_within_days()
+    for key, meta in stored.items():
+        if not isinstance(meta, dict):
+            continue
+        out["checked"] += 1
+        reject = meta.get("serve_reject")
+        if reject is not None and reject not in _LOADABLE_DESPITE:
+            continue
+        raw = str(key)
+        if raw.endswith("_up"):
+            sym = raw[:-3]
+        elif raw.endswith("_down"):
+            sym = raw[:-5]
+        else:
+            sym = raw
+        out["loadable_symbols"].add(sym)
+        out["loadable_models"] += 1
+        age = meta.get("age_days")
+        # Unknown age is treated as due for refresh: a model whose trained_at
+        # cannot be read is exactly the one that might already be expired.
+        if age is None or float(age) >= _MODEL_SERVE_MAX_AGE_DAYS - refresh_within:
+            out["expiring_symbols"].add(sym)
+    return out
+
+
 def _watchlist_missing_symbol_pairs() -> list:
     """Watchlist symbols that currently lack a loadable v3 model."""
     try:
-        from core.signal_engine import get_model_status
         expected = _build_train_symbol_list()
-        loaded = set((get_model_status() or {}).get("symbols", {}).keys())
-        return [(sym, atype) for sym, atype in expected if sym not in loaded]
+        loadable = _model_fleet_coverage()["loadable_symbols"]
+        return [(sym, atype) for sym, atype in expected if sym not in loadable]
+    except Exception:
+        return []
+
+
+def _models_needing_retrain() -> list:
+    """Symbols with no loadable model, or one close enough to the 14-day serve
+    expiry that it must be refreshed before it stops loading.
+
+    Retraining anything else is not free: it rewrites model_sha256 and resets
+    the proven-skill gate's forward-evidence count to zero. A model that still
+    loads and is not near expiry is left alone so its evidence can accumulate.
+    """
+    try:
+        expected = _build_train_symbol_list()
+        cov = _model_fleet_coverage()
+        due = cov["expiring_symbols"]
+        loadable = cov["loadable_symbols"]
+        return [(sym, atype) for sym, atype in expected
+                if sym not in loadable or sym in due]
     except Exception:
         return []
 
@@ -1299,17 +1388,28 @@ def _coverage_maintenance_job():
         return
 
     try:
-        from core.signal_engine import get_model_status, train_and_validate
-        st = get_model_status() or {}
-        loaded = int(st.get("models", 0)) if st.get("trained") else 0
+        from core.signal_engine import train_and_validate
+        # LOADABLE, not proven. st["models"] counts only proven-tier models and
+        # is 0, so this arm never short-circuited and the job retrained the
+        # whole fleet every cycle -- shredding the sha the skill gate counts on.
+        cov = _model_fleet_coverage()
+        loaded = cov["loadable_models"]
         missing = _watchlist_missing_symbol_pairs()
         if loaded >= min_models and not missing:
             LOGGER.info("Coverage maintenance: loaded models %s >= floor %s, watchlist complete", loaded, min_models)
             return
 
-        syms = missing if missing else _build_train_symbol_list()
+        # Never fall back to the whole fleet. A blanket retrain is what reset
+        # every model_sha256 and zeroed the proven-skill evidence count; only
+        # symbols with no loadable model, or one near the 14-day serve expiry,
+        # actually need one.
+        syms = missing if missing else _models_needing_retrain()
         if not syms:
-            LOGGER.warning("Coverage maintenance: empty symbol universe, skip retrain")
+            LOGGER.info(
+                "Coverage maintenance: %s loadable models, none missing or near "
+                "expiry — leaving shas stable so skill evidence can accumulate",
+                loaded,
+            )
             return
 
         if not _RETRAIN_JOB_LOCK.acquire(blocking=False):
@@ -2129,7 +2229,20 @@ async def lifespan(app: FastAPI):
                         )
                 except Exception as _wse2:
                     LOGGER.warning("Weekly retrain state write failed: %s", str(_wse2)[:80])
-                syms = _v3_train_collect_symbols()
+                # Was _v3_train_collect_symbols() — the entire fleet, every
+                # 7 days. Each pass rewrote every model_sha256, and
+                # proven_skill_gate counts resolved outcomes at the CURRENT
+                # sha, needing 10. Measured live: lanes accrue ~0.64 resolved
+                # outcomes/day, so a 7-day rotation caps a lane at ~4.5 and the
+                # gate could never be satisfied by any model, however good.
+                syms = _models_needing_retrain()
+                if not syms:
+                    LOGGER.info(
+                        "Weekly retrain: every watchlist symbol has a loadable "
+                        "model and none is near the 14-day expiry — skipping so "
+                        "model_sha256 stays stable for skill evidence"
+                    )
+                    return
                 trained, failed = 0, len(syms)
                 try:
                     # train_and_validate expects one list of (symbol, asset_type), not per-symbol calls
