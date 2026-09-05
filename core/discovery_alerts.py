@@ -1,0 +1,159 @@
+"""Market-wide discovery alerts — the layer that would have shown you GoPro.
+
+On 2026-09-01 GPRO announced a merger and ran ~183% in five days. Ghost never
+mentioned it, and the reason was not a bad prediction: GPRO is not in
+config/symbols.py, and that hardcoded 107-symbol list is the ENTIRE universe
+Ghost scans, models, and picks from. It was never looked at.
+
+Meanwhile Ghost's external screener had been pulling market-wide movers hourly
+the whole time, into ghost_external_observations. That lane is deliberately
+walled off -- core/external_screener_ingest.py states it "never mutates Ghost's
+symbol universe, creates candidates, sends alerts, changes confidence, or
+touches a wallet". The boundary is correct: unvalidated third-party screen rows
+must never reach the fire path.
+
+But "must not become a pick" was implemented as "must not be seen", and those
+are different requirements. This module closes only that gap. It READS the
+existing advisory ledger and ranks what a human would want to know about. It
+writes nothing, scores nothing, and cannot create a candidate:
+external_screener_ingest keeps its invariant untouched because the alerting
+lives here, in a consumer, rather than in the ingest path.
+
+Every alert carries decision_eligible=False. A discovery is a reason to LOOK,
+never a reason to trade -- and notably, a symbol that has already run is often
+the worst thing to buy. GPRO post-announcement becomes a merger-arb pinned
+stock drifting to a fixed deal price, which is exactly the APGE pattern that
+produced 49/49 expired outcomes in the shadow ledger.
+"""
+from __future__ import annotations
+
+import logging
+import os
+import time
+from typing import Any, Dict, List, Optional
+
+LOGGER = logging.getLogger("ghost.discovery")
+
+ALERT_VERSION = "discovery_alerts_v1"
+
+
+def _min_move_pct() -> float:
+    """Absolute move that makes a symbol worth a human's attention."""
+    try:
+        return max(1.0, float(os.getenv("DISCOVERY_ALERT_MIN_MOVE_PCT", "10")))
+    except Exception:
+        return 10.0
+
+
+def _max_age_s() -> int:
+    """Beyond this, a screen row is history rather than news."""
+    try:
+        return max(300, int(os.getenv("DISCOVERY_ALERT_MAX_AGE_S", "86400")))
+    except Exception:
+        return 86400
+
+
+def _max_alerts() -> int:
+    try:
+        return max(1, min(50, int(os.getenv("DISCOVERY_ALERT_MAX", "12"))))
+    except Exception:
+        return 12
+
+
+def build_discovery_alerts(limit: int = 120) -> Dict[str, Any]:
+    """Rank recent market-wide discoveries a human would want to see.
+
+    Read-only. Returns advisory items only; nothing here is trade-eligible.
+    """
+    from core.external_context_ledger import recent_external_discoveries
+
+    started = int(time.time())
+    out: Dict[str, Any] = {
+        "alert_version": ALERT_VERSION,
+        "computed_at": started,
+        "min_move_pct": _min_move_pct(),
+        "max_age_s": _max_age_s(),
+        "advisory_only": True,
+        "decision_eligible": False,
+        "note": (
+            "Discovery only: a reason to look, never a reason to trade. These "
+            "symbols are outside Ghost's modelled universe and carry no gate, "
+            "no proof and no position sizing."
+        ),
+        "alerts": [],
+    }
+
+    try:
+        snapshot = recent_external_discoveries(limit=limit)
+    except Exception as exc:  # noqa: BLE001 - advisory surface, never a gate
+        out["error"] = str(exc)[:160]
+        return out
+
+    min_move = _min_move_pct()
+    max_age = _max_age_s()
+    seen: Dict[str, Dict[str, Any]] = {}
+
+    for item in snapshot.get("items") or []:
+        symbol = (item.get("symbol") or "").strip().upper()
+        if not symbol or item.get("quarantined"):
+            continue
+        age = item.get("source_age_s")
+        if age is not None and int(age) > max_age:
+            continue
+        move = item.get("move_pct")
+        if move is None:
+            continue
+        try:
+            move = float(move)
+        except (TypeError, ValueError):
+            continue
+        if abs(move) < min_move:
+            continue
+
+        # Keep the largest absolute move per symbol; screens overlap.
+        prior = seen.get(symbol)
+        if prior is not None and abs(float(prior["move_pct"])) >= abs(move):
+            continue
+        seen[symbol] = {
+            "symbol": symbol,
+            "move_pct": round(move, 2),
+            "price": item.get("price"),
+            "volume": item.get("volume"),
+            "avg_volume": item.get("avg_volume"),
+            "screen": item.get("screen"),
+            "provider": item.get("provider"),
+            "source_age_s": age,
+            "freshness": item.get("freshness"),
+            "delayed": bool(item.get("delayed")),
+            # The GoPro case in one field: Ghost cannot form a view on this
+            # symbol at all, because it is outside the modelled universe.
+            "in_watchlist": bool(item.get("in_official_watchlist")),
+            "ghost_can_model_it": bool(item.get("in_official_watchlist")),
+            "decision_eligible": False,
+        }
+
+    alerts = sorted(seen.values(), key=lambda a: -abs(a["move_pct"]))[: _max_alerts()]
+    out["alerts"] = alerts
+    out["alert_count"] = len(alerts)
+    out["outside_watchlist_count"] = sum(1 for a in alerts if not a["in_watchlist"])
+    out["considered"] = len(snapshot.get("items") or [])
+    return out
+
+
+def log_discovery_alerts() -> Dict[str, Any]:
+    """Scheduled surface. Logs at WARNING so movers Ghost cannot model still
+    reach the operator instead of dying in an advisory table."""
+    result = build_discovery_alerts()
+    alerts = result.get("alerts") or []
+    if not alerts:
+        return result
+    outside = result.get("outside_watchlist_count") or 0
+    LOGGER.warning(
+        "DISCOVERY: %d movers >=%.0f%% (%d outside the modelled universe): %s",
+        len(alerts), result["min_move_pct"], outside,
+        ", ".join(
+            f"{a['symbol']}{'' if a['in_watchlist'] else '*'} {a['move_pct']:+.1f}%"
+            for a in alerts[:8]
+        ),
+    )
+    return result
