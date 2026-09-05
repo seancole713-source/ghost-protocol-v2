@@ -121,8 +121,29 @@ def fetch_grouped_day(day: str, *, timeout_s: float = 20.0) -> Tuple[List[Dict[s
             params={"adjusted": "true", "apiKey": key},
             timeout=max(1.0, min(60.0, float(timeout_s))),
         )
+        # A plan that does not include this endpoint answers 403 with
+        # NOT_AUTHORIZED, and an expired key answers 401. Both are permanent,
+        # and both look exactly like a flaky provider once the breaker has
+        # swallowed them -- so name them instead of retrying forever.
+        if response.status_code in (401, 403):
+            _polygon_cb.record_failure()
+            LOGGER.error(
+                "MARKET-WIDE DISABLED — Polygon returned %d for grouped-daily. "
+                "The key is rejected or the plan does not include this endpoint; "
+                "this will not recover on retry.", response.status_code)
+            return [], {"status": "unavailable", "reason": "provider_not_authorized",
+                        "http_status": response.status_code, "day": day,
+                        "permanent": True}
         response.raise_for_status()
         payload = response.json()
+        provider_status = str(payload.get("status") or "").upper()
+        if provider_status in {"NOT_AUTHORIZED", "ERROR"}:
+            _polygon_cb.record_failure()
+            LOGGER.error("MARKET-WIDE DISABLED — Polygon body status=%s day=%s",
+                         provider_status, day)
+            return [], {"status": "unavailable", "reason": "provider_not_authorized",
+                        "provider_status": provider_status, "day": day,
+                        "permanent": True}
         results = payload.get("results")
         rows = [r for r in results if isinstance(r, dict)] if isinstance(results, list) else []
         _polygon_cb.record_success()
@@ -330,8 +351,14 @@ def run_market_wide_cycle(*, now_ts: Optional[int] = None, fetcher=None) -> Dict
     if len(sessions) < 2:
         # Fewer than two sessions means no close-to-close basis exists. Report
         # it rather than falling back to an intraday move of a different kind.
+        permanent = [st for st in statuses if st.get("permanent")]
         return {**base, "ok": False, "status": "unavailable",
-                "reason": "insufficient_sessions", "sessions_found": len(sessions),
+                "reason": (permanent[0].get("reason") if permanent
+                           else "insufficient_sessions"),
+                # Surfaced at the top level so "the key is rejected" is not
+                # left buried under a generic no-data result.
+                "permanent_failure": bool(permanent),
+                "sessions_found": len(sessions),
                 "provider_statuses": statuses, "scanned": 0, "inserted": 0}
 
     (latest_day, latest_rows), (prior_day, prior_rows) = sessions[0], sessions[1]

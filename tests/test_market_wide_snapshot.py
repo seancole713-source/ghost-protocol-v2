@@ -299,3 +299,50 @@ def test_job_registers_with_an_explicit_initial_delay():
     idx = src.index('"market_wide_snapshot",')
 
     assert "initial_delay_s=" in src[idx:idx + 400]
+
+
+# ----------------------------------------------- permanent vs transient --
+
+def test_a_rejected_key_is_reported_as_permanent_not_a_flake(monkeypatch):
+    """A plan that excludes grouped-daily answers 403 forever. Under a circuit
+    breaker that is indistinguishable from a flaky provider, which is how a
+    lane stays 'temporarily' down for months."""
+    def fetcher(day):
+        return [], {"status": "unavailable", "reason": "provider_not_authorized",
+                    "http_status": 403, "day": day, "permanent": True}
+
+    out = mws.run_market_wide_cycle(fetcher=fetcher)
+
+    assert out["ok"] is False
+    assert out["reason"] == "provider_not_authorized"
+    assert out["permanent_failure"] is True
+
+
+def test_a_transient_failure_is_not_reported_as_permanent():
+    def fetcher(day):
+        return [], {"status": "unavailable", "reason": "provider_request_failed",
+                    "day": day}
+
+    out = mws.run_market_wide_cycle(fetcher=fetcher)
+
+    assert out["permanent_failure"] is False
+    assert out["reason"] == "insufficient_sessions"
+
+
+def test_an_http_403_is_translated_before_the_breaker_hides_it(monkeypatch):
+    class _Resp:
+        status_code = 403
+
+        def json(self):
+            return {"status": "NOT_AUTHORIZED"}
+
+        def raise_for_status(self):
+            raise AssertionError("403 must be handled before raise_for_status")
+
+    monkeypatch.setattr(mws.requests, "get", lambda *a, **k: _Resp())
+
+    rows, status = mws.fetch_grouped_day("2026-09-04")
+
+    assert rows == []
+    assert status["reason"] == "provider_not_authorized"
+    assert status["permanent"] is True
