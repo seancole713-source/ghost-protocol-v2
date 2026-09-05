@@ -1948,9 +1948,29 @@ async def lifespan(app: FastAPI):
             try:
                 from core.external_screener_ingest import run_external_screener_cycle
                 result = run_external_screener_cycle()
+                # Per-screen, not just the total. The cycle already computes a
+                # full status per screen and used to discard it into two
+                # numbers, which meant nothing in production could distinguish
+                # "day_losers was fetched and returned rows" from "day_losers
+                # was never requested" -- the exact configured-versus-fetched
+                # ambiguity PR #185 was written to close. Rows that arrive
+                # stale (a screen polled while the market has been shut for
+                # hours) land validation_valid=FALSE and never reach the alert
+                # list, so invalid is reported beside inserted rather than
+                # left to look like a quiet tape.
                 LOGGER.info(
-                    "external screener status=%s inserted=%s",
+                    "external screener status=%s inserted=%s | %s",
                     result.get("status"), result.get("inserted", 0),
+                    " ".join(
+                        "{}={}/{} in={} bad={}".format(
+                            screen, state.get("rows", 0), state.get("received", 0),
+                            state.get("inserted", 0), state.get("invalid", 0),
+                        )
+                        if state.get("status") == "available"
+                        else "{}=UNAVAILABLE({})".format(
+                            screen, state.get("reason", "unknown"))
+                        for screen, state in (result.get("screens") or {}).items()
+                    ) or "no screens configured",
                 )
                 # Enrich only after the immutable discoveries have been persisted.
                 # This batch-only lane remains separate from candidates and alerts.

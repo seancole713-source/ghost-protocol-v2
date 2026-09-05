@@ -91,3 +91,41 @@ def test_the_cycle_requests_each_screen_once(monkeypatch):
     esi.run_external_screener_cycle()
 
     assert asked == list(esi._DEFAULT_SCREENS)
+
+
+# --------------------------------------------- configured versus fetched --
+
+def test_the_cycle_reports_each_screen_separately(monkeypatch):
+    """A total alone cannot distinguish "day_losers was fetched and returned
+    rows" from "day_losers was never requested". Verified on 2026-09-05: the
+    live log read `status=complete inserted=50` and there was no way to tell
+    which screens those 50 rows came from."""
+    def fake_fetch(screen, *, count=25, timeout_s=8.0):
+        if screen == "day_losers":
+            return [], {"status": "unavailable", "reason": "provider_request_failed"}
+        return [{"validation_valid": True, "in_official_watchlist": False}], \
+            {"status": "available", "rows": 1}
+
+    monkeypatch.setattr(esi, "fetch_yahoo_screen", fake_fetch)
+    monkeypatch.setattr(esi, "store_external_observation", lambda row, **kw: True)
+    import core.external_context_ledger as ledger
+    monkeypatch.setattr(ledger, "prune_external_context", lambda **kw: {})
+
+    out = esi.run_external_screener_cycle()
+
+    assert out["status"] == "partial", "one dead screen must not read as complete"
+    assert out["screens"]["day_losers"]["status"] == "unavailable"
+    assert out["screens"]["day_gainers"]["status"] == "available"
+
+
+def test_the_log_line_names_every_screen():
+    """The per-screen state is computed either way; the bug was discarding it
+    into two numbers before anything could read it."""
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / "wolf_app.py").read_text(encoding="utf-8")
+    idx = src.index('"external screener status=%s')
+    window = src[idx - 200:idx + 900]
+
+    assert 'result.get("screens")' in window, "log still reports totals only"
+    assert "UNAVAILABLE" in window, "a dead screen must be named, not silently absent"
