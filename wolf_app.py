@@ -1666,6 +1666,24 @@ async def lifespan(app: FastAPI):
             "checklist_backfill_screen", _checklist_screen_job,
             interval_s=86400, timeout_s=1800, initial_delay_s=300,
         )
+
+        # Market-wide discovery alerts. The external screener has been pulling
+        # movers hourly into an advisory ledger the whole time, but that lane
+        # never surfaced anything -- which is why GPRO ran ~183% in five days
+        # (merger announced 2026-09-01) without Ghost mentioning it. It is not
+        # in config/symbols.py, and that 107-symbol list is the entire universe
+        # Ghost scans. Read-only consumer: it cannot create a candidate, and
+        # external_screener_ingest keeps its "never sends alerts" invariant
+        # because the alerting lives in the consumer, not the ingest path.
+        # Explicit initial_delay_s for the PR #178 reason.
+        def _discovery_alerts_job():
+            from core.discovery_alerts import log_discovery_alerts
+            log_discovery_alerts()
+
+        scheduler.register(
+            "discovery_alerts", _discovery_alerts_job,
+            interval_s=1800, timeout_s=120, initial_delay_s=420,
+        )
         # Shadow evidence scoring: turns ACCEPTED agent-workflow research
         # (core.agent_workflow) into a deterministic five-dimension quality score
         # (core.evidence_scoring) and persists it to a shadow-only feature ledger

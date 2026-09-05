@@ -189,6 +189,17 @@ def build_ask_context(include_portfolio: bool = False) -> Dict[str, Any]:
         ctx["checklist_backfill_screen_error"] = str(e)[:120]
 
     try:
+        # Market-wide movers, including ones Ghost cannot model because they
+        # sit outside the 107-symbol universe. Advisory only -- present so a
+        # move like GPRO's is visible rather than dying in a ledger nobody
+        # reads. Cheap: one bounded query against an already-persisted table.
+        from core.discovery_alerts import build_discovery_alerts
+
+        ctx["discovery_alerts"] = build_discovery_alerts()
+    except Exception as e:
+        ctx["discovery_alerts_error"] = str(e)[:120]
+
+    try:
         from core.risk_discipline import combined_trading_block, risk_settings
         ctx["risk_discipline"] = combined_trading_block()
         ctx["risk_settings"] = risk_settings()
