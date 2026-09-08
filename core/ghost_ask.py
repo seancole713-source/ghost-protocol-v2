@@ -75,6 +75,7 @@ def checklist_calibration_summary() -> Dict[str, Any]:
     from core.checklist_ledger import (
         DEFAULT_OUTCOME_CONTRACT,
         resolved_samples_for_calibration,
+        snapshot_counts,
     )
     from core.tp_sl_resolve import label_hold_bars
 
@@ -112,6 +113,22 @@ def checklist_calibration_summary() -> Dict[str, Any]:
                 out["cohorts"][key] = {"error": str(exc)[:80]}
                 continue
 
+            # contract_ok says writes are PERMITTED. This says they HAPPENED.
+            # A cohort with written>0 and resolved=0 is genuinely waiting out
+            # the hold; written=0 is a dead lane, and the two have looked
+            # identical every time this went wrong (PR #180: zero snapshots
+            # for days, reported as "0 samples, still accruing").
+            try:
+                counts = snapshot_counts(
+                    checklist_version=CHECKLIST_VERSION,
+                    hold_bars=hold_bars,
+                    outcome_contract=DEFAULT_OUTCOME_CONTRACT,
+                    direction=direction,
+                    lane=lane,
+                )
+            except Exception as exc:  # noqa: BLE001 - diagnostics, never a gate
+                counts = {"error": str(exc)[:80]}
+
             calib = build_calibration(samples)
             populated = [
                 {
@@ -134,7 +151,18 @@ def checklist_calibration_summary() -> Dict[str, Any]:
                     populated[-1]["raw_rate_pct"] - populated[0]["raw_rate_pct"], 2
                 )
 
+            written = int(counts.get("written") or 0)
             out["cohorts"][key] = {
+                "snapshots": counts,
+                # One word a human can act on, instead of leaving them to
+                # infer it from three numbers that only mean something
+                # together.
+                "lane_state": (
+                    "error" if counts.get("error") else
+                    "never_written" if written == 0 else
+                    "waiting_on_hold" if not counts.get("resolved") else
+                    "accruing"
+                ),
                 "total_samples": calib.get("total_samples", 0),
                 "skipped_samples": calib.get("skipped_samples", 0),
                 "populated_bands": len(populated),
