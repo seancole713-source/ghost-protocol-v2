@@ -226,14 +226,16 @@ def test_zero_alerts_explains_itself(monkeypatch):
 def test_rows_without_a_move_are_distinguished_from_small_moves(monkeypatch):
     """max_move_seen_pct of None means nothing usable is arriving at all --
     a different problem from a quiet market, and it must not look the same."""
-    rows = [_obs("A", 5.0), _obs("B", None)]
+    # 2.0, not 5.0: the alert bar moved to 5% on 2026-09-08, so a 5% move is
+    # now an ALERT. This test needs a move that is real but still below the bar.
+    rows = [_obs("A", 2.0), _obs("B", None)]
     _patch(monkeypatch, rows)
 
     out = da.build_discovery_alerts()
 
     assert out["dropped"]["no_move"] == 1
     assert out["dropped"]["below_threshold"] == 1
-    assert out["max_move_seen_pct"] == 5.0
+    assert out["max_move_seen_pct"] == 2.0
 
 
 def test_stale_and_invalid_drops_are_counted_separately(monkeypatch):
@@ -247,3 +249,56 @@ def test_stale_and_invalid_drops_are_counted_separately(monkeypatch):
     assert out["dropped"]["stale"] == 1
     assert out["dropped"]["invalid"] == 1
     assert out["alert_count"] == 0
+
+
+# ------------------------------------------- 5% bar (operator, 2026-09-08) --
+
+def test_a_five_percent_mover_is_an_alert(monkeypatch):
+    """The operator's instruction: a 5% move is worth knowing about, and a
+    discovery lane that only reports doubles is not watching the market."""
+    _patch(monkeypatch, [_obs("FIVE", 5.4)])
+
+    assert da.build_discovery_alerts()["alert_count"] == 1
+
+
+def test_below_five_is_still_dropped(monkeypatch):
+    """Widened, not removed -- ordinary noise must not become an alert."""
+    _patch(monkeypatch, [_obs("NOISE", 3.2)])
+
+    out = da.build_discovery_alerts()
+
+    assert out["alert_count"] == 0
+    assert out["dropped"]["below_threshold"] == 1
+
+
+def test_the_cap_moved_with_the_threshold(monkeypatch):
+    """Dropping the bar to 5% while holding a cap of 12 would be a NO-OP: the
+    list ranks by absolute move, so twelve big movers fill it and every new
+    5-10% name is silently cut. Regression pin for that trap."""
+    rows = [_obs(f"S{i}", 5.0 + i * 0.5) for i in range(40)]
+    _patch(monkeypatch, rows)
+
+    out = da.build_discovery_alerts()
+
+    assert out["alert_count"] == 40, "small movers cut by a stale cap"
+    assert out["truncated"] == 0
+
+
+def test_a_cap_that_cuts_movers_says_so(monkeypatch):
+    """A cap that silently hides qualifying movers reads exactly like a quiet
+    tape -- the failure this module exists to stop."""
+    monkeypatch.setenv("DISCOVERY_ALERT_MAX", "5")
+    _patch(monkeypatch, [_obs(f"S{i}", 5.0 + i) for i in range(20)])
+
+    out = da.build_discovery_alerts()
+
+    assert out["alert_count"] == 5
+    assert out["qualifying_count"] == 20
+    assert out["truncated"] == 15
+
+
+def test_the_threshold_is_still_operator_configurable(monkeypatch):
+    monkeypatch.setenv("DISCOVERY_ALERT_MIN_MOVE_PCT", "12")
+    _patch(monkeypatch, [_obs("SIX", 6.0)])
+
+    assert da.build_discovery_alerts()["alert_count"] == 0

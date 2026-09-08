@@ -59,6 +59,26 @@ SESSION_LOG = {
 
     # ── WHAT HAPPENED THIS SESSION ──
     "session_summary": [
+        "DISCOVERY BAR 10% -> 5% (2026-09-08, Claude, operator instruction). A 5% move is worth "
+        "knowing about and a discovery lane that only reports doubles is not watching the market. "
+        "RECORDED EXPLICITLY SO NO FUTURE SESSION MISREADS IT AS A LOOSENING: "
+        "DISCOVERY_ALERT_MIN_MOVE_PCT is a DISPLAY threshold on an advisory lane whose every row "
+        "carries decision_eligible=False. It controls how much Ghost REPORTS, never what Ghost "
+        "CLAIMS. No proof gate, precision target, confidence floor or win-rate threshold was "
+        "touched -- those remain floor-clamped by accuracy_contract and are not reachable from "
+        "here. Moving the bar alone would have been a NO-OP: the list ranks by absolute move, so "
+        "a cap of 12 kept the twelve biggest movers and silently cut every new 5-10% name. "
+        "DISCOVERY_ALERT_MAX therefore moved 12 -> 50 (ceiling 50 -> 200) in the same change, and "
+        "the payload now carries qualifying_count and truncated with a WARNING when the cap cuts "
+        "anything, because a cap that silently hides qualifying movers reads exactly like a quiet "
+        "tape -- the failure this module exists to stop. Suite 1993 -> 1998. "
+        "HONEST LIMIT ON 'NEVER MISS': not achievable on the Yahoo screens. Each returns at most "
+        "50 rows (Yahoo's own per-request cap, enforced at external_screener_ingest.py:170), so "
+        "on an active session more names move >5% than the three screens can return. Ghost will "
+        "now surface everything >5% THAT IT SEES; seeing every US ticker needs the Polygon "
+        "grouped-daily lane, which is built, deployed and self-disabling on a 403 because this "
+        "account's plan does not include the endpoint.",
+
         "THE GEOMETRY LEVER IS DEAD; THE EVIDENCE CLOCK WAS THE REAL BUG (2026-09-05, Claude, "
         "PR #188 + this). TWO MEASUREMENTS, BOTH RUN ON THE BOX, BOTH OVERTURNING A PRIOR BELIEF. "
         "(1) GEOMETRY. PR #188 shipped a one-shot job that runs scripts/geometry_edge_sweep.py and "

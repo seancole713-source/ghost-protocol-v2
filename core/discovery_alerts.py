@@ -46,11 +46,18 @@ ALERT_VERSION = "discovery_alerts_v1"
 
 
 def _min_move_pct() -> float:
-    """Absolute move that makes a symbol worth a human's attention."""
+    """Absolute move that makes a symbol worth a human's attention.
+
+    5%, not 10%, on the operator's instruction (2026-09-08): a 5% move is worth
+    knowing about, and a discovery lane that only reports doubles is not
+    watching the market. This is a DISPLAY threshold on an advisory lane -- it
+    controls how much Ghost reports, never what Ghost claims. Nothing here is
+    trade-eligible, so widening it loosens no proof and no gate.
+    """
     try:
-        return max(1.0, float(os.getenv("DISCOVERY_ALERT_MIN_MOVE_PCT", "10")))
+        return max(1.0, float(os.getenv("DISCOVERY_ALERT_MIN_MOVE_PCT", "5")))
     except Exception:
-        return 10.0
+        return 5.0
 
 
 def _max_age_s() -> int:
@@ -72,10 +79,17 @@ def _max_age_s() -> int:
 
 
 def _max_alerts() -> int:
+    """How many ranked movers the payload carries.
+
+    Raised with the threshold. Dropping the bar to 5% while holding a cap of 12
+    would have been a NO-OP: the list is ranked by absolute move, so the twelve
+    biggest movers still fill it and every new 5-10% name is silently cut. The
+    cap and the threshold only make sense moved together.
+    """
     try:
-        return max(1, min(50, int(os.getenv("DISCOVERY_ALERT_MAX", "12"))))
+        return max(1, min(200, int(os.getenv("DISCOVERY_ALERT_MAX", "50"))))
     except Exception:
-        return 12
+        return 50
 
 
 def _per_screen() -> int:
@@ -185,9 +199,21 @@ def build_discovery_alerts(limit: int = 240) -> Dict[str, Any]:
             "decision_eligible": False,
         }
 
-    alerts = sorted(seen.values(), key=lambda a: -abs(a["move_pct"]))[: _max_alerts()]
+    ranked = sorted(seen.values(), key=lambda a: -abs(a["move_pct"]))
+    alerts = ranked[: _max_alerts()]
     out["alerts"] = alerts
     out["alert_count"] = len(alerts)
+    # Every mover that cleared the threshold, including any the cap cut. A cap
+    # that silently hides qualifying movers reads exactly like a quiet tape --
+    # the failure this module was built to stop.
+    out["qualifying_count"] = len(ranked)
+    out["truncated"] = max(0, len(ranked) - len(alerts))
+    if out["truncated"]:
+        LOGGER.warning(
+            "DISCOVERY: %d movers >=%.0f%% qualified but the cap shows %d — "
+            "raise DISCOVERY_ALERT_MAX to see the rest",
+            len(ranked), _min_move_pct(), len(alerts),
+        )
     out["outside_watchlist_count"] = sum(1 for a in alerts if not a["in_watchlist"])
     out["considered"] = len(snapshot.get("items") or [])
     out["max_move_seen_pct"] = round(largest, 2) if largest is not None else None
