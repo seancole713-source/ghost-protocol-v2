@@ -302,3 +302,26 @@ def test_the_threshold_is_still_operator_configurable(monkeypatch):
     _patch(monkeypatch, [_obs("SIX", 6.0)])
 
     assert da.build_discovery_alerts()["alert_count"] == 0
+
+
+def test_the_default_cap_cannot_cut_a_qualifying_mover():
+    """Measured live 2026-09-08: 70 movers qualified at the 5% bar and a cap of
+    50 truncated 20 of them. The operator's standard is "never miss anything
+    above 5%", so the default cap must exceed the largest list that can exist
+    -- at most DISCOVERY_ALERT_PER_SCREEN rows per screen, three screens."""
+    ceiling = da._per_screen() * 3
+
+    assert da._max_alerts() > ceiling, (
+        f"cap {da._max_alerts()} can truncate a {ceiling}-row list"
+    )
+
+
+def test_seventy_qualifying_movers_all_survive(monkeypatch):
+    """The exact live shape that was being truncated."""
+    _patch(monkeypatch, [_obs(f"S{i}", 5.0 + i * 0.2) for i in range(70)])
+
+    out = da.build_discovery_alerts()
+
+    assert out["qualifying_count"] == 70
+    assert out["alert_count"] == 70
+    assert out["truncated"] == 0
