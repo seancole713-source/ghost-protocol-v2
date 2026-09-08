@@ -302,6 +302,62 @@ def resolve_snapshot(row_id: int, *, outcome: str, resolved_price: Optional[floa
     _bust_calibration_cache()
 
 
+def snapshot_counts(
+    *,
+    checklist_version: str,
+    hold_bars: int,
+    outcome_contract: str,
+    lane: str = "official",
+    direction: Optional[str] = None,
+) -> Dict[str, int]:
+    """written / pending / resolved snapshots in one prospective cohort.
+
+    Without this, calibration's total_samples=0 is ambiguous in exactly the way
+    that has cost this project weeks: snapshots written and waiting out the
+    5-bar hold looks identical to snapshots never written at all. The second
+    was silently true for days -- production ran V3_LABEL_HOLD_BARS=5 against a
+    hardcoded HOLD_BARS=3, validate_outcome_contract() failed closed on every
+    write, and shadow_outcomes swallowed it per row as a WARNING (PR #180).
+    The cohorts read "0 samples, still accruing" throughout.
+
+    contract_ok says writes are *permitted*. This says whether they *happened*.
+    A cohort with written>0 and resolved=0 is genuinely waiting; written=0 is a
+    dead lane and should be treated as one immediately, not in a fortnight.
+    """
+    from core.db import db_conn
+
+    out = {"written": 0, "pending": 0, "resolved": 0, "oldest_pending_age_s": 0}
+    where = ["checklist_version=%s", "hold_bars=%s", "outcome_contract=%s", "lane=%s"]
+    args: List[Any] = [str(checklist_version), int(hold_bars),
+                       str(outcome_contract), str(lane or "official")]
+    if direction:
+        where.append("direction=%s")
+        args.append(str(direction).upper())
+    clause = " AND ".join(where)
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                f"""SELECT COUNT(*),
+                           SUM(CASE WHEN outcome IS NULL THEN 1 ELSE 0 END),
+                           SUM(CASE WHEN outcome IS NOT NULL THEN 1 ELSE 0 END),
+                           MIN(CASE WHEN outcome IS NULL THEN issued_at END)
+                    FROM ghost_checklist_snapshots WHERE {clause}""",
+                tuple(args),
+            )
+            row = cur.fetchone()
+    except Exception:
+        return out
+    if not row:
+        return out
+    out["written"] = int(row[0] or 0)
+    out["pending"] = int(row[1] or 0)
+    out["resolved"] = int(row[2] or 0)
+    if row[3]:
+        out["oldest_pending_age_s"] = max(0, int(time.time()) - int(row[3]))
+    return out
+
+
 def resolved_samples_for_calibration(
     *,
     checklist_version: str,
