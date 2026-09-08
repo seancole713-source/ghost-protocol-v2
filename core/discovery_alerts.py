@@ -85,11 +85,18 @@ def _max_alerts() -> int:
     would have been a NO-OP: the list is ranked by absolute move, so the twelve
     biggest movers still fill it and every new 5-10% name is silently cut. The
     cap and the threshold only make sense moved together.
+
+    The default is deliberately larger than the largest list that can exist:
+    recent_external_discoveries returns at most DISCOVERY_ALERT_PER_SCREEN (60)
+    rows per screen across three screens, so 180 is the ceiling on qualifying
+    movers and a cap of 200 can never cut one. Measured live 2026-09-08 at the
+    5% bar: 70 qualified and a cap of 50 truncated 20 of them -- which by the
+    operator's standard ("never miss anything above 5%") is 20 misses.
     """
     try:
-        return max(1, min(200, int(os.getenv("DISCOVERY_ALERT_MAX", "50"))))
+        return max(1, min(500, int(os.getenv("DISCOVERY_ALERT_MAX", "200"))))
     except Exception:
-        return 50
+        return 200
 
 
 def _per_screen() -> int:
