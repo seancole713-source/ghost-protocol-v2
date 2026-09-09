@@ -836,11 +836,15 @@ def shadow_diagnostics() -> Dict[str, Any]:
     return out
 
 
-def shadow_stats(days: int = 30) -> Dict[str, Any]:
-    """Scoreboard payload for /api/shadow-stats and the MCP tool."""
-    from core.db import db_conn
-    from core.tp_sl_resolve import label_hold_bars
+def load_shadow_rows(days: int = 30) -> List[Dict[str, Any]]:
+    """Shadow evaluations from the last N days, resolved and pending alike.
 
+    Factored out of shadow_stats so calibration can read the same rows through
+    the same query rather than growing a second, subtly different one. Note the
+    up_prob column: for a DOWN row the model's probability lives in model_prob,
+    so a naive read of up_prob would score the down lane against the wrong
+    number entirely.
+    """
     days = max(1, min(365, int(days)))
     cutoff = int(time.time()) - days * 86400
     with db_conn() as conn:
@@ -852,7 +856,7 @@ def shadow_stats(days: int = 30) -> Dict[str, Any]:
             "FROM ghost_shadow_outcomes WHERE eval_ts >= %s",
             (cutoff,),
         )
-        rows = [
+        return [
             {
                 "symbol": r[0], "eval_ts": r[1],
                 "up_prob": r[6] if str(r[5] or "").upper() == "DOWN" else r[2],
@@ -863,6 +867,14 @@ def shadow_stats(days: int = 30) -> Dict[str, Any]:
             }
             for r in cur.fetchall()
         ]
+
+
+def shadow_stats(days: int = 30) -> Dict[str, Any]:
+    """Scoreboard payload for /api/shadow-stats and the MCP tool."""
+    from core.db import db_conn
+    from core.tp_sl_resolve import label_hold_bars
+
+    rows = load_shadow_rows(days=days)
     out = aggregate_shadow_stats(rows)
     diag = shadow_diagnostics()
     try:
