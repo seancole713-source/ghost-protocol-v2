@@ -166,11 +166,12 @@ def test_a_missing_script_is_reported_not_raised(monkeypatch):
 
 # ------------------------------------------------------------- coverage --
 
-def test_both_sweeps_are_run(monkeypatch):
-    """Edge alone is not the answer: geometry_edge_sweep says which multiplier
-    restores edge, provable_oppoint_sweep says whether a provable operating
-    point exists there -- the question the 2026-07-08 run only asked at the 70%
-    target, while production now runs contract 55."""
+def test_every_configured_sweep_is_run(monkeypatch):
+    """Each sweep answers a different question -- geometry_edge_sweep which
+    multiplier restores edge, provable_oppoint_sweep whether a provable
+    operating point exists there, feature_group_sweep whether the 31 dark
+    feature columns carry anything. Asserted against SWEEPS rather than a
+    hardcoded list, so adding a fourth does not silently skip this check."""
     ran = []
     monkeypatch.setattr(gsj, "run_one_sweep",
                         lambda script, **k: (ran.append(script) or
@@ -180,7 +181,8 @@ def test_both_sweeps_are_run(monkeypatch):
 
     gsj.run_geometry_sweep_once()
 
-    assert ran == ["geometry_edge_sweep.py", "provable_oppoint_sweep.py"]
+    assert ran == list(gsj.SWEEPS)
+    assert len(ran) >= 3
 
 
 def test_both_sweep_scripts_actually_exist():
@@ -216,3 +218,46 @@ def test_job_registers_with_an_explicit_initial_delay():
     idx = src.index('"geometry_sweep",')
 
     assert "initial_delay_s=" in src[idx:idx + 700]
+
+
+# ------------------------------------------- dark feature groups (v2) --
+
+def test_the_feature_group_sweep_is_included():
+    """31 of 62 feature columns are switched off and have never been measured.
+    2026-09-09 showed the cost -- ROIV on a Phase 2b readout, AMGN/NVS on a
+    trial failure, the tape on oil and the Fed, none of it visible to a
+    price-only vector."""
+    assert "feature_group_sweep.py" in gsj.SWEEPS
+
+
+def test_the_version_was_bumped_so_it_actually_runs():
+    """The run-once marker is keyed by version. Adding a script without
+    bumping it means the new sweep silently never fires -- the marker from the
+    previous run short-circuits the job before it reaches SWEEPS."""
+    assert gsj.SWEEP_VERSION != "geometry_sweep_v1"
+    assert gsj._STATE_KEY.endswith(gsj.SWEEP_VERSION)
+
+
+def test_the_feature_sweep_reports_coverage_not_just_edge():
+    """A flat edge has two opposite causes: the signal does not help, or the
+    columns are all zero because the history was never available. Those look
+    identical without a coverage number."""
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / "scripts" /
+           "feature_group_sweep.py").read_text(encoding="utf-8")
+
+    assert "def _coverage(" in src
+    assert "NOT COMPUTED" in src, "a zero-coverage group must be called out"
+
+
+def test_the_feature_sweep_clears_every_toggle_between_configs():
+    """One variable at a time. A leaked toggle would attribute one group's
+    effect to another."""
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1] / "scripts" /
+           "feature_group_sweep.py").read_text(encoding="utf-8")
+    idx = src.index("def _apply(")
+
+    assert "os.environ.pop(" in src[idx:idx + 400]

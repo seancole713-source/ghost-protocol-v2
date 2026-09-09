@@ -47,13 +47,24 @@ from typing import Any, Dict, List, Optional
 
 LOGGER = logging.getLogger("ghost.geometry_sweep")
 
-SWEEP_VERSION = "geometry_sweep_v1"
+# v2 adds the dark-feature-group sweep. The marker is keyed by version, so
+# bumping it is what lets an already-completed run happen again.
+SWEEP_VERSION = "geometry_sweep_v2"
 _STATE_KEY = f"geometry_sweep:{SWEEP_VERSION}"
 
 # geometry_edge_sweep answers "which stop multiplier restores walk-forward
 # edge". provable_oppoint_sweep answers "is there a provable operating point
 # there" -- the question the 2026-07-08 run only ever asked at the 70% target.
-SWEEPS = ("geometry_edge_sweep.py", "provable_oppoint_sweep.py")
+SWEEPS = (
+    "geometry_edge_sweep.py",
+    "provable_oppoint_sweep.py",
+    # 31 of Ghost's 62 feature columns are switched off. 2026-09-09 showed the
+    # cost: ROIV moved on a Phase 2b readout, AMGN/NVS on a trial failure, the
+    # tape on oil and the Fed -- all invisible to a price-only vector. This
+    # measures each dark group before anything is enabled, because turning one
+    # on changes feature_schema and invalidates all 257 stored models.
+    "feature_group_sweep.py",
+)
 
 _MAX_LOGGED_LINES = 400
 
