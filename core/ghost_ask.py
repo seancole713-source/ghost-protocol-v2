@@ -228,6 +228,17 @@ def build_ask_context(include_portfolio: bool = False) -> Dict[str, Any]:
         ctx["discovery_alerts_error"] = str(e)[:120]
 
     try:
+        # The confidence number the operator asked to see, with what each band
+        # has actually been worth. Shown together deliberately: sorted on its
+        # own the number points at the WORSE bet, because the calibration is
+        # inverted (high-confidence 56.6% vs low-confidence 61.5%).
+        from core.confidence_calibration import calibrated_confidence_report
+
+        ctx["confidence_calibration"] = calibrated_confidence_report()
+    except Exception as e:
+        ctx["confidence_calibration_error"] = str(e)[:120]
+
+    try:
         from core.risk_discipline import combined_trading_block, risk_settings
         ctx["risk_discipline"] = combined_trading_block()
         ctx["risk_settings"] = risk_settings()
