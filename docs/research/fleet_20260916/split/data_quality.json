@@ -1,0 +1,178 @@
+{
+  "AAPL": [],
+  "ABCL": [],
+  "ABNB": [],
+  "ACDC": [
+    "large_daily_move_requires_corporate_action_audit"
+  ],
+  "ADBE": [],
+  "AFRM": [],
+  "AI": [],
+  "ALAB": [],
+  "ALGM": [],
+  "AMC": [
+    "large_daily_move_requires_corporate_action_audit"
+  ],
+  "AMD": [],
+  "AMZN": [],
+  "AOSL": [],
+  "APGE": [
+    "latest_session_missing"
+  ],
+  "ARCT": [
+    "large_daily_move_requires_corporate_action_audit"
+  ],
+  "ARDT": [],
+  "AVGO": [],
+  "BA": [],
+  "BABA": [],
+  "BB": [],
+  "BBWI": [],
+  "BILL": [],
+  "BMBL": [
+    "large_daily_move_requires_corporate_action_audit"
+  ],
+  "BMNR": [
+    "large_daily_move_requires_corporate_action_audit"
+  ],
+  "BROS": [],
+  "BTGO": [],
+  "CAT": [],
+  "CLNE": [],
+  "COIN": [],
+  "COST": [],
+  "CRM": [],
+  "CVNA": [
+    "large_daily_move_requires_corporate_action_audit"
+  ],
+  "DASH": [],
+  "DELL": [],
+  "DIS": [],
+  "DJT": [
+    "large_daily_move_requires_corporate_action_audit"
+  ],
+  "DOMO": [],
+  "DUOL": [],
+  "FLNC": [
+    "large_daily_move_requires_corporate_action_audit"
+  ],
+  "GE": [],
+  "GME": [
+    "large_daily_move_requires_corporate_action_audit"
+  ],
+  "GOOG": [],
+  "GOOGL": [],
+  "GPS": [
+    "latest_session_missing"
+  ],
+  "GS": [],
+  "HIMS": [
+    "large_daily_move_requires_corporate_action_audit"
+  ],
+  "HOOD": [],
+  "HTZ": [
+    "large_daily_move_requires_corporate_action_audit"
+  ],
+  "INTC": [],
+  "IQ": [
+    "large_daily_move_requires_corporate_action_audit"
+  ],
+  "ITRI": [],
+  "JACK": [],
+  "JPM": [],
+  "KC": [
+    "large_daily_move_requires_corporate_action_audit"
+  ],
+  "LCID": [
+    "large_daily_move_requires_corporate_action_audit"
+  ],
+  "LLY": [],
+  "LMND": [
+    "large_daily_move_requires_corporate_action_audit"
+  ],
+  "LU": [
+    "large_daily_move_requires_corporate_action_audit"
+  ],
+  "LULU": [],
+  "MA": [],
+  "MCHP": [],
+  "META": [],
+  "MPWR": [],
+  "MRVL": [],
+  "MSFT": [],
+  "MTZ": [],
+  "MU": [],
+  "NAVN": [
+    "large_daily_move_requires_corporate_action_audit"
+  ],
+  "NFLX": [],
+  "NKE": [],
+  "NOK": [],
+  "NVDA": [],
+  "NVTS": [
+    "large_daily_move_requires_corporate_action_audit"
+  ],
+  "ODD": [
+    "large_daily_move_requires_corporate_action_audit"
+  ],
+  "OGC": [],
+  "OLLI": [],
+  "ON": [],
+  "OPK": [],
+  "OPTU": [
+    "large_daily_move_requires_corporate_action_audit"
+  ],
+  "ORCL": [],
+  "PFE": [],
+  "PLTK": [],
+  "PLTR": [],
+  "PLUG": [
+    "large_daily_move_requires_corporate_action_audit"
+  ],
+  "POWI": [],
+  "PYPL": [],
+  "QCOM": [],
+  "RIG": [],
+  "RIOT": [],
+  "RKT": [],
+  "SABR": [],
+  "SAP": [],
+  "SATS": [
+    "latest_session_missing"
+  ],
+  "SHOP": [],
+  "SMH": [],
+  "SNAP": [
+    "large_daily_move_requires_corporate_action_audit"
+  ],
+  "SOUN": [
+    "large_daily_move_requires_corporate_action_audit"
+  ],
+  "SPCE": [
+    "large_daily_move_requires_corporate_action_audit"
+  ],
+  "STM": [],
+  "STUB": [],
+  "SW": [],
+  "TAL": [],
+  "TGTX": [
+    "large_daily_move_requires_corporate_action_audit"
+  ],
+  "TLRY": [
+    "large_daily_move_requires_corporate_action_audit"
+  ],
+  "TME": [],
+  "TRU": [],
+  "TSLA": [],
+  "TXN": [],
+  "UBER": [],
+  "V": [],
+  "W": [],
+  "WMT": [],
+  "WOLF": [
+    "large_daily_move_requires_corporate_action_audit"
+  ],
+  "XOM": [],
+  "XPO": [],
+  "YMM": []
+}

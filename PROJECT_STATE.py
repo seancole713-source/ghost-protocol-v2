@@ -33,6 +33,13 @@ of the pause, and the only proven serveable model (ITRI/DOWN) is off via V3_DOWN
 # ============================================================
 
 SESSION_LOG = {
+    "paired_fleet_evaluation_2026_09_16": {
+        "report": "docs/research/fleet_20260916_results.md",
+        "deployed_repair": "PR #200, f8015ff, Railway 8fe31f9e SUCCESS; CI 35111862613 green: 2060 unit, 43 PostgreSQL, 67 browser passed (10 skipped). Live input checks verified.",
+        "experiment": "Two predeclared 214-hypothesis runs, raw then split-adjusted. Each: 204 evaluated, 10 exclusions, 0 admitted, 0 qualified, 0 execution errors. 428 total multiplicity screen on corrected run.",
+        "source": "Raw protocol e1cdd0e; split protocol 6169308. Complete metrics and hashes retained; no cherry-picked winner, production model writes, promotions or trades.",
+        "honesty": "Mission not achieved: 0 approved models, no proven 70% accuracy. These are offline fits, not independent forward predictions. Daily five-bar labels are not premarket/intraday labels.",
+    },
     "split_history_repair_2026_09_16": {
         "report": "docs/split_history_repair_2026-09-16.md",
         "finding": "Alpaca raw defaults turned NVDA's split into -89.91% and SMH's into -48.93%; split-adjusted comparisons are +0.90% and +2.15%.",
