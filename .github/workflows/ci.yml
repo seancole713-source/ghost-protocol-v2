@@ -225,6 +225,11 @@ jobs:
       - name: Run deploy go/no-go
         run: bash scripts/go-no-go.sh
 
+      - name: Verify prediction evidence APIs
+        env:
+          EXPECTED_SHA: ${{ github.event_name == 'push' && github.sha || '' }}
+        run: python3 scripts/verify_prediction_pipeline.py
+
       - name: Require zero critical health-audit findings
         run: python3 scripts/verify_health_audit.py
 

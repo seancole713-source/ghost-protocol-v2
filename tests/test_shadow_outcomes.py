@@ -1,6 +1,6 @@
 """Tests for shadow scoring (core.shadow_outcomes) — pure helpers, no DB."""
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from core.shadow_outcomes import (
@@ -267,6 +267,7 @@ def test_regime_blocked_eval_still_scores_up_prob(monkeypatch):
     """Full-44 shadow coverage: a regime-gated symbol must still journal
     up_prob (model scored before the gate is enforced), and the firing
     behavior must be unchanged (None, 'regime_gate')."""
+    monkeypatch.setattr("core.market_hours._now_ct", lambda: datetime(2026, 5, 21, 8, tzinfo=ZoneInfo("America/Chicago")))
     import time as _t
 
     import numpy as _np
@@ -276,7 +277,7 @@ def test_regime_blocked_eval_still_scores_up_prob(monkeypatch):
     rows = []
     for i in range(220):
         px = 100.0 + i * 0.4
-        rows.append({"ts": "2026-05-20T%02d:00:00Z" % (i % 24),
+        rows.append({"ts": (datetime(2026, 5, 20) - timedelta(days=219 - i)).date().isoformat(),
                      "open": px - 0.2, "high": px + 0.5, "low": px - 0.5,
                      "close": px, "volume": 1000 + i * 5})
     monkeypatch.setattr(_se, "_fetch_ohlcv",

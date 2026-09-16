@@ -499,7 +499,7 @@ def get_squeeze_picks() -> Dict[str, Any]:
         # NOT to right now — one degraded cycle (e.g. during a breaker trip)
         # persists here until the next scan overwrites it, so this surface can
         # legitimately disagree with newer scan log lines.
-        "fetch_note": "fetch_ok/fetch_fail are from the scan snapshot at last_scan_ts; compare timestamps before reading as current",
+        "fetch_note": "Counts describe the selected feed at last_scan_ts. No usable intraday print is not proof of no trading market-wide; IEX is limited coverage.",
         "symbols": st.get("symbols"),
         "duration_ms": st.get("duration_ms"),
         "leaders": leaders,
@@ -712,6 +712,7 @@ async def _run_watchlist_scan() -> None:
         "fetch_failed_symbols": [],
         "no_intraday_print": 0,
         "no_intraday_print_symbols": [],
+        "coverage_note": "No usable intraday print on the selected feed is not proof of no trading market-wide; IEX is limited coverage.",
         "fetch_skipped": 0,
         "fetch_skipped_symbols": [],
         "candidates": [],
@@ -1229,13 +1230,18 @@ def _metrics_from_batch_bars(symbol: str) -> Optional[Dict[str, Any]]:
     intraday = list(cached.get("intraday") or [])
     if not daily or not intraday:
         return None
+    from core.daily_bar_contract import bar_session_date, prior_daily_bars
+
+    session_date = bar_session_date(intraday[-1].get("t"))
+    if session_date is None:
+        return None
+    daily = prior_daily_bars(daily, session_date)
+    if not daily:
+        return None
     try:
         price = float(intraday[-1].get("c") or 0.0)
         session_high = max(float(bar.get("h") or 0.0) for bar in intraday)
-        if len(daily) >= 2:
-            prior_close = float(daily[-2].get("c") or 0.0)
-        else:
-            prior_close = float(daily[-1].get("o") or 0.0)
+        prior_close = float(daily[-1].get("c") or 0.0)
         avg_vol, session_vol, vwap = _volumes_from_bars(daily, intraday)
         if min(price, session_high, prior_close) <= 0 or not avg_vol or avg_vol <= 0:
             return None
@@ -1253,6 +1259,7 @@ def _metrics_from_batch_bars(symbol: str) -> Optional[Dict[str, Any]]:
         "vwap": vwap,
         "price_as_of_ts": intraday[-1].get("t"),
         "price_source": "alpaca_batch_bar",
+        "reference_session_date": bar_session_date(daily[-1].get("t")).isoformat(),
         "peak_move_pct": (session_high - prior_close) / prior_close * 100,
         "current_move_pct": (price - prior_close) / prior_close * 100,
     }
@@ -1264,9 +1271,9 @@ def batched_market_metrics(
     """Return an isolated batch snapshot without leaking shared scan state.
 
     A symbol present in the batch but lacking an intraday print is returned as
-    ``None``. That is an authoritative premarket absence, not a provider miss;
-    retaining the key prevents the radar from launching dozens of slow
-    per-symbol fallbacks for securities that simply have not traded yet.
+    ``None``. This means no usable snapshot on the selected feed, NOT proof
+    that the stock has not traded market-wide (IEX has limited coverage).
+    Retaining the key prevents dozens of redundant per-symbol fallbacks.
     """
     with _batch_bars_lock:
         try:

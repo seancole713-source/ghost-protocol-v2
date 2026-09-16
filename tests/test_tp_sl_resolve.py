@@ -1,6 +1,8 @@
 """Tests for shared TP/SL resolution (Phase 2 label alignment)."""
+from zoneinfo import ZoneInfo
+
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 
 from core import tp_sl_resolve as tps
@@ -208,6 +210,7 @@ def test_holdout_acc_override_env(monkeypatch):
 
 
 def test_feature_asof_on_live_features(monkeypatch):
+    monkeypatch.setattr("core.market_hours._now_ct", lambda: datetime(2026, 6, 5, 15, 10, tzinfo=ZoneInfo("America/Chicago")))
     import core.signal_engine as _se
     import numpy as _np
 
@@ -215,7 +218,7 @@ def test_feature_asof_on_live_features(monkeypatch):
     rows = []
     for i in range(220):
         px = 100.0 + i * 0.4
-        rows.append({"ts": ts if i == 219 else "2026-05-20T%02d:00:00Z" % (i % 24),
+        rows.append({"ts": ts if i == 219 else (datetime(2026, 5, 20) - timedelta(days=219 - i)).date().isoformat(),
                      "open": px - 0.2, "high": px + 0.5, "low": px - 0.5,
                      "close": px, "volume": 1000 + i * 5})
     monkeypatch.setattr(_se, "_fetch_ohlcv", lambda *a, **k: rows)
@@ -257,13 +260,14 @@ def test_feature_asof_on_live_features(monkeypatch):
 
 def test_confidence_equals_up_prob(monkeypatch):
     """Phase 2: fired confidence must equal calibrated up_prob, not holdout accuracy blend."""
+    monkeypatch.setattr("core.market_hours._now_ct", lambda: datetime(2026, 5, 21, 8, tzinfo=ZoneInfo("America/Chicago")))
     import core.signal_engine as _se
     import numpy as _np
 
     rows = []
     for i in range(220):
         px = 100.0 + i * 0.4
-        rows.append({"ts": "2026-05-20T%02d:00:00Z" % (i % 24),
+        rows.append({"ts": (datetime(2026, 5, 20) - timedelta(days=219 - i)).date().isoformat(),
                      "open": px - 0.2, "high": px + 0.5, "low": px - 0.5,
                      "close": px, "volume": 1000 + i * 5})
     monkeypatch.setattr(_se, "_fetch_ohlcv", lambda s, a, period="5d", interval="1h": rows)
