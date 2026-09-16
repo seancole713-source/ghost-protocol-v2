@@ -33,6 +33,13 @@ of the pause, and the only proven serveable model (ITRI/DOWN) is off via V3_DOWN
 # ============================================================
 
 SESSION_LOG = {
+    "latest_repair_2026_09_16": {
+        "status": "Repair under validation; do not infer deployment from this source entry.",
+        "baseline_commit": "f374e5a34121a5228c004b33da5f6b8dc712e9d4",
+        "report": "docs/prediction_pipeline_repair_2026-09-16.md",
+        "live_findings": "Unpaused but 0 fireable models; /api/shadow-stats HTTP 500; prior-close date off by one; daily model consumed partial/overlaid bars.",
+        "honesty": "No threshold changes. No proven 70% accuracy. Research forecasts remain separate from official picks.",
+    },
     "session_date": "2026-09-03",
     "session_span": "Handoff read → premarket/prediction audit → adversarially-verified bug hunt (23 agents) → train/serve feature-parity fix + negative-edge floor restoration → 8 revert-verified regression tests → dd60ac5 on PR #171, CI green (unmerged)",
     "handover_to": "Next AI agent picking up this project",

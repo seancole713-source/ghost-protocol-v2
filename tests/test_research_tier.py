@@ -328,11 +328,14 @@ def test_research_artifact_loads_scores_and_never_fires(monkeypatch):
     model, cols, loaded_meta = se.load_model("TEST", "UP")
     assert model is not None and loaded_meta["tier"] == "research"
 
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+    monkeypatch.setattr("core.market_hours._now_ct", lambda: datetime(2026, 5, 21, 8, tzinfo=ZoneInfo("America/Chicago")))
     rows = []
     for i in range(220):
         px = 100.0 + i * 0.1
         rows.append({
-            "ts": f"2026-05-{(i % 20) + 1:02d}T21:00:00Z",
+            "ts": (datetime(2026, 5, 20) - timedelta(days=219 - i)).date().isoformat(),
             "open": px, "high": px + 0.5, "low": px - 0.5,
             "close": px, "volume": 1000 + i,
         })

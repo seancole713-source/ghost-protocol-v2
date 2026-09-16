@@ -35,12 +35,12 @@ def test_metrics_from_batch_bars_avoids_per_symbol_quote_path(monkeypatch):
         {
             "AAPL": {
                 "daily": [
-                    {"o": 98, "c": 100, "v": 1000},
-                    {"o": 100, "c": 102, "v": 1200},
+                    {"t": "2026-09-15T04:00:00Z", "o": 98, "c": 100, "v": 1000},
+                    {"t": "2026-09-16T04:00:00Z", "o": 100, "c": 102, "v": 1200},
                 ],
                 "intraday": [
-                    {"c": 104, "h": 105, "l": 103, "v": 100},
-                    {"c": 106, "h": 107, "l": 105, "v": 200},
+                    {"t": "2026-09-16T13:30:00Z", "c": 104, "h": 105, "l": 103, "v": 100},
+                    {"t": "2026-09-16T13:30:00Z", "c": 106, "h": 107, "l": 105, "v": 200},
                 ],
             }
         },
@@ -60,12 +60,12 @@ def test_batch_preserves_symbol_with_no_premarket_print(monkeypatch):
     def fake_fetch(_symbols):
         sm._batch_bars.update({
             "AAPL": {
-                "daily": [{"o": 98, "c": 100, "v": 1000}],
+                "daily": [{"t": "2026-09-15T04:00:00Z", "o": 98, "c": 100, "v": 1000}],
                 "intraday": [],
             },
             "MSFT": {
-                "daily": [{"o": 198, "c": 200, "v": 2000}],
-                "intraday": [{"c": 201, "h": 202, "l": 200, "v": 100}],
+                "daily": [{"t": "2026-09-15T04:00:00Z", "o": 198, "c": 200, "v": 2000}],
+                "intraday": [{"t": "2026-09-16T13:30:00Z", "c": 201, "h": 202, "l": 200, "v": 100}],
             },
         })
 
@@ -270,8 +270,8 @@ def test_metrics_from_batch_bars_zero_volume_not_fabricated(monkeypatch):
         "_batch_bars",
         {
             "AAPL": {
-                "daily": [{"o": 98, "c": 100, "v": 1000}, {"o": 100, "c": 102, "v": 1200}],
-                "intraday": [{"c": 104, "h": 105, "l": 103, "v": 0}],
+                "daily": [{"t": "2026-09-15T04:00:00Z", "o": 98, "c": 100, "v": 1000}, {"t": "2026-09-16T04:00:00Z", "o": 100, "c": 102, "v": 1200}],
+                "intraday": [{"t": "2026-09-16T13:30:00Z", "c": 104, "h": 105, "l": 103, "v": 0}],
             }
         },
     )

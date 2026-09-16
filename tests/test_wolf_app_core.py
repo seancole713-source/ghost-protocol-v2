@@ -1,4 +1,7 @@
+from datetime import datetime, timedelta
 import builtins
+from zoneinfo import ZoneInfo
+
 import json
 import time
 
@@ -3329,13 +3332,14 @@ def test_predict_live_ex_journals_full_feature_vector(monkeypatch):
     """predict_live_ex writes the complete indicator vector (RSI/MACD/Bollinger/
     ATR/volume/momentum/EMA/ADX) into scores['features'] via real
     _calculate_features, so the pick journal captures it."""
+    monkeypatch.setattr("core.market_hours._now_ct", lambda: datetime(2026, 5, 21, 8, tzinfo=ZoneInfo("America/Chicago")))
     import core.signal_engine as _se
     import numpy as _np
-    # 220 steadily-rising 1h bars -> uptrend that clears the regime gates
+    # 220 steadily-rising daily bars -> uptrend that clears the regime gates
     rows = []
     for i in range(220):
         px = 100.0 + i * 0.4
-        rows.append({"ts": "2026-05-20T%02d:00:00Z" % (i % 24),
+        rows.append({"ts": (datetime(2026, 5, 20) - timedelta(days=219 - i)).date().isoformat(),
                      "open": px - 0.2, "high": px + 0.5, "low": px - 0.5,
                      "close": px, "volume": 1000 + i * 5})
     monkeypatch.setattr(_se, "_fetch_ohlcv",
@@ -3381,13 +3385,14 @@ def test_predict_live_ex_journals_full_feature_vector(monkeypatch):
 
 def test_predict_live_ex_applies_direction_specific_inversions(monkeypatch):
     """UP and DOWN serving matrices use only their own persisted sign map."""
+    monkeypatch.setattr("core.market_hours._now_ct", lambda: datetime(2026, 5, 21, 8, tzinfo=ZoneInfo("America/Chicago")))
     import core.signal_engine as _se
     import numpy as _np
 
     rows = []
     for i in range(220):
         px = 100.0 + i * 0.4
-        rows.append({"ts": "2026-05-20T%02d:00:00Z" % (i % 24),
+        rows.append({"ts": (datetime(2026, 5, 20) - timedelta(days=219 - i)).date().isoformat(),
                      "open": px - 0.2, "high": px + 0.5, "low": px - 0.5,
                      "close": px, "volume": 1000 + i * 5})
     monkeypatch.setattr(

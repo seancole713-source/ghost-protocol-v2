@@ -2998,22 +2998,22 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
     if not rows or len(rows) < 30:
         return None, "intraday_data"
 
+    from core.daily_bar_contract import completed_daily_bars
+    rows = completed_daily_bars(rows)
+    if len(rows) < 30:
+        return None, "daily_data"
+    if scores is not None:
+        scores["feature_timeframe"] = "completed_daily_bar"
+        scores["feature_bar_ts"] = rows[-1].get("ts")
+
     premarket_ctx = None
     try:
         from core.prediction import _is_premarket, _premarket_scan_enabled
         if _is_premarket() and _premarket_scan_enabled():
             from core.prices import get_extended_session
             premarket_ctx = get_extended_session(symbol)
-            sp = premarket_ctx.get("session_price") or premarket_ctx.get("live_price")
-            if sp and float(sp) > 0 and rows:
-                # Overlay extended-hours price on the last daily bar so momentum
-                # features reflect the gap without retraining on intraday bars.
-                last = dict(rows[-1])
-                px = float(sp)
-                last["close"] = px
-                last["high"] = max(float(last.get("high") or px), px)
-                last["low"] = min(float(last.get("low") or px), px)
-                rows = rows[:-1] + [last]
+            # Extended-hours evidence is context only. Replacing yesterday's
+            # close with this morning's quote creates a bar never seen at fit.
     except Exception as _pm_e:
         LOGGER.debug("premarket overlay skipped %s: %s", symbol, str(_pm_e)[:80])
 

@@ -794,7 +794,6 @@ def shadow_diagnostics() -> Dict[str, Any]:
     try:
         with db_conn() as conn:
             cur = conn.cursor()
-            ensure_shadow_table(cur)
             cur.execute("SELECT COUNT(*) FROM ghost_shadow_outcomes WHERE outcome IS NULL")
             out["pending"] = int(cur.fetchone()[0] or 0)
             cur.execute("SELECT COUNT(*) FROM ghost_shadow_outcomes WHERE outcome IS NOT NULL")
@@ -845,11 +844,12 @@ def load_shadow_rows(days: int = 30) -> List[Dict[str, Any]]:
     so a naive read of up_prob would score the down lane against the wrong
     number entirely.
     """
+    from core.db import db_conn
+
     days = max(1, min(365, int(days)))
     cutoff = int(time.time()) - days * 86400
     with db_conn() as conn:
         cur = conn.cursor()
-        ensure_shadow_table(cur)
         cur.execute(
             "SELECT symbol, eval_ts, up_prob, outcome, pnl_pct, direction, model_prob, "
             "model_sha256, label_schema, validation_schema, hold_bars "
@@ -871,7 +871,6 @@ def load_shadow_rows(days: int = 30) -> List[Dict[str, Any]]:
 
 def shadow_stats(days: int = 30) -> Dict[str, Any]:
     """Scoreboard payload for /api/shadow-stats and the MCP tool."""
-    from core.db import db_conn
     from core.tp_sl_resolve import label_hold_bars
 
     rows = load_shadow_rows(days=days)
