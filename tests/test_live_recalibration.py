@@ -195,7 +195,7 @@ def _patch(monkeypatch, up_p):
         lambda s, direction="UP": (_Model(up_p), _se.FEATURE_COLS, dict(meta))
         if direction == "UP" else (None, None, None))
     monkeypatch.setattr(_se, "_fetch_ohlcv",
-                        lambda s, a, period="5d", interval="1h": _uptrend_rows())
+                        lambda s, a, period="5d", interval="1h", adjustment="raw": _uptrend_rows())
     monkeypatch.setenv("GHOST_ACCURACY_CONTRACT", "legacy")
     monkeypatch.setenv("GHOST_PREMARKET_SCAN", "0")
     for k, v in {"V3_MIN_WIN_PROBA": "0.55", "V3_MIN_EDGE": "0.0",

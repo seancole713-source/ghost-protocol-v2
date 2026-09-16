@@ -668,13 +668,13 @@ def _simulate_down_tp_sl(rows: list, entry_idx: int, hold_bars: int, vol_pct: fl
 def _fetch_sector_series(period='1y'):
     """Sector proxy OHLCV for the W3 relative-strength feature (best-effort)."""
     try:
-        return _fetch_ohlcv(_v3_sector_proxy(), "stock", period=period) or []
+        return _fetch_ohlcv(_v3_sector_proxy(), "stock", period=period, adjustment="split") or []
     except Exception as e:
         LOGGER.info(f"sector series fetch failed: {str(e)[:80]}")
         return []
 
 
-def _fetch_ohlcv_once(symbol, asset_type, period='1y', interval='1d'):
+def _fetch_ohlcv_once(symbol, asset_type, period='1y', interval='1d', *, adjustment='raw'):
     """Fetch OHLCV bars from Alpaca at the requested interval.
 
     PR #14 diag: emits "_fetch_ohlcv ENTERED" at the top so we can confirm
@@ -691,6 +691,8 @@ def _fetch_ohlcv_once(symbol, asset_type, period='1y', interval='1d'):
     fetching 2y would waste a round-trip and could confuse downstream logic.
     """
     LOGGER.info(f"[_fetch_ohlcv] PR14_DIAG ENTERED symbol={symbol} asset_type={asset_type} period={period}")
+    if adjustment not in {"raw", "split"}:
+        raise ValueError("unsupported OHLCV adjustment")
     import requests as _req
     from datetime import datetime, timedelta, timezone
     key = os.getenv("ALPACA_KEY_ID", "")
@@ -720,7 +722,7 @@ def _fetch_ohlcv_once(symbol, asset_type, period='1y', interval='1d'):
             url = (
                 f"https://data.alpaca.markets/v2/stocks/{symbol.upper()}/bars"
                 f"?timeframe={timeframe}&limit=10000&feed={feed}"
-                f"&start={start_str}&end={end_str}"
+                f"&start={start_str}&end={end_str}&adjustment={adjustment}"
             )
             r = _req.get(url, headers=headers, timeout=30)
             if r.status_code != 200:
@@ -805,7 +807,7 @@ def _block_up_below_sma5(symbol, asset_type, current_price):
     cur = float(current_price or 0)
     if cur <= 0:
         return False, None, cur
-    daily = _fetch_ohlcv(symbol, asset_type, period="1mo", interval="1d")
+    daily = _fetch_ohlcv(symbol, asset_type, period="1mo", interval="1d", adjustment="split")
     sma = _sma5_from_daily_bars(daily)
     if sma is None or sma <= 0:
         return False, sma, cur
@@ -850,12 +852,19 @@ def _normalize_daily_ohlcv(rows) -> Optional[List[Dict[str, Any]]]:
     return normalized or None
 
 
-def _fetch_ohlcv(symbol, asset_type, period=None, interval='1d'):
-    """Fetch canonical OHLCV with interval-aware caching and in-flight dedupe."""
+def _fetch_ohlcv(symbol, asset_type, period=None, interval='1d', *, adjustment='raw'):
+    """Fetch OHLCV with interval/price-basis-aware caching and in-flight dedupe.
+
+    Model inputs explicitly request split-adjusted history. Keep the legacy
+    default for outcome callers whose issuance reference is an observed price;
+    changing their basis also requires adjusting that reference.
+    """
+    if adjustment not in {"raw", "split"}:
+        raise ValueError("unsupported OHLCV adjustment")
     period = period or _v3_ohlcv_period()
     sym = (symbol or "").upper()
     atype = (asset_type or "stock").strip().lower()
-    cache_key = (sym, atype, period, str(interval or '1d').lower())
+    cache_key = (sym, atype, period, str(interval or '1d').lower(), adjustment)
 
     def _cached():
         with _OHLCV_CACHE_LOCK:
@@ -876,7 +885,10 @@ def _fetch_ohlcv(symbol, asset_type, period=None, interval='1d'):
             return rows
         retries = _v3_ohlcv_fetch_retries()
         for attempt in range(retries):
-            raw_rows = _fetch_ohlcv_once(symbol, asset_type, period, interval)
+            raw_rows = _fetch_ohlcv_once(
+                symbol, asset_type, period, interval,
+                **({"adjustment": adjustment} if adjustment != "raw" else {}),
+            )
             rows = _normalize_daily_ohlcv(raw_rows) if raw_rows else None
             if rows:
                 with _OHLCV_CACHE_LOCK:
@@ -1161,7 +1173,7 @@ def _yf_rows_from_history(tk, period=None, start=None, end=None):
 
 
 def backtest_symbol(symbol, asset_type):
-    rows = _fetch_ohlcv(symbol, asset_type)
+    rows = _fetch_ohlcv(symbol, asset_type, adjustment="split")
     min_bars = _min_backtest_bars()
     if not rows or len(rows) < min_bars:
         return [], []
@@ -2998,7 +3010,7 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
 
     # The deployed classifier is trained on daily bars. Keep serving on the
     # same frequency; intraday specialists must use their own model contract.
-    rows = _fetch_ohlcv(symbol, asset_type, period='1y', interval='1d')
+    rows = _fetch_ohlcv(symbol, asset_type, period='1y', interval='1d', adjustment="split")
     if not rows or len(rows) < 30:
         return None, "intraday_data"
 

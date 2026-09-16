@@ -270,7 +270,7 @@ def test_confidence_equals_up_prob(monkeypatch):
         rows.append({"ts": (datetime(2026, 5, 20) - timedelta(days=219 - i)).date().isoformat(),
                      "open": px - 0.2, "high": px + 0.5, "low": px - 0.5,
                      "close": px, "volume": 1000 + i * 5})
-    monkeypatch.setattr(_se, "_fetch_ohlcv", lambda s, a, period="5d", interval="1h": rows)
+    monkeypatch.setattr(_se, "_fetch_ohlcv", lambda s, a, period="5d", interval="1h", adjustment="raw": rows)
 
     class _M:
         def predict_proba(self, X):

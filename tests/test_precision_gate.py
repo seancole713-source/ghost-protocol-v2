@@ -217,7 +217,7 @@ def _patch(monkeypatch, up_p, precision_gate):
         lambda s, direction="UP": (_Model(up_p), _se.FEATURE_COLS, dict(meta))
         if direction == "UP" else (None, None, None))
     monkeypatch.setattr(_se, "_fetch_ohlcv",
-                        lambda s, a, period="5d", interval="1h": _uptrend_rows())
+                        lambda s, a, period="5d", interval="1h", adjustment="raw": _uptrend_rows())
     # Legacy contract so these tests isolate precision-gate behavior from the
     # 70% contract floor clamps on training meta gates.
     monkeypatch.setenv("GHOST_ACCURACY_CONTRACT", "legacy")
@@ -303,7 +303,7 @@ def test_research_mode_allowed_when_contract_70(monkeypatch):
         lambda s, direction="UP": (_Model(0.60), _se.FEATURE_COLS, dict(meta))
         if direction == "UP" else (None, None, None))
     monkeypatch.setattr(_se, "_fetch_ohlcv",
-                        lambda s, a, period="5d", interval="1h": _uptrend_rows())
+                        lambda s, a, period="5d", interval="1h", adjustment="raw": _uptrend_rows())
     sig, reason = _se.predict_live_ex("WOLF", "stock", research_mode=True)
     # Research bypass is now enabled — precision gate should NOT block
     assert sig is not None

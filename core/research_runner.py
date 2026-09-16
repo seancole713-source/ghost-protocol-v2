@@ -143,7 +143,7 @@ def score_research_artifact(
         return None
 
     # 3. Fetch OHLCV data
-    rows = _fetch_ohlcv(symbol, asset_type, period="1y", interval="1d")
+    rows = _fetch_ohlcv(symbol, asset_type, period="1y", interval="1d", adjustment="split")
     if not rows or len(rows) < 30:
         return None
     evaluation_date = completed_session_evaluation_date(rows[-1].get("ts"))

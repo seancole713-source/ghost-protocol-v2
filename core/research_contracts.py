@@ -13,11 +13,11 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
 LOGGER = logging.getLogger("ghost.research_contracts")
-CURRENT_LIVE_CONTRACT_VERSION = "v3"
+CURRENT_LIVE_CONTRACT_VERSION = "v4"
 
 # ── frozen spec types ──────────────────────────────────────────────────────
 
@@ -241,6 +241,9 @@ def _register_contracts() -> None:
         V3_LABEL_HOLD_BARS,
     )
 
+    # Preserve old contract identities; a data-basis repair is a new lineage.
+    pre_split_schema = _v3_feature_schema().removesuffix("+alpaca_split_v1")
+
     # ── tp_sl_swing/v1 (live-eligible) ──────────────────────────────────
     register_contract(PredictionContract(
         name="tp_sl_swing",
@@ -258,7 +261,7 @@ def _register_contracts() -> None:
             expired_is_non_win=True,
         ),
         horizon_bars=V3_LABEL_HOLD_BARS,
-        feature_schema=_v3_feature_schema(),
+        feature_schema=pre_split_schema,
         evidence_schema=_v3_label_schema(),
         validation_schema=_v3_validation_schema(),
         resolver_id="tp_sl_bar_path/v1",
@@ -272,7 +275,7 @@ def _register_contracts() -> None:
     ))
 
     # Preserve the immediately previous contract for historical artifact lookup.
-    legacy_feature_schema = _v3_feature_schema().removeprefix("tech3+")
+    legacy_feature_schema = pre_split_schema.removeprefix("tech3+")
     legacy_feature_schema = legacy_feature_schema.replace("+cs0", "").replace("+cs1", "")
     legacy_feature_schema = legacy_feature_schema.replace("+macro0", "").replace("+macro1", "")
     legacy_validation_schema = _v3_validation_schema().replace(
@@ -307,9 +310,9 @@ def _register_contracts() -> None:
     # v3 binds the effective-session proof and train/serve-safe feature schema.
     # The resolver algorithm is unchanged, so its independently versioned ID
     # remains v1.
-    register_contract(PredictionContract(
+    historical_swing = PredictionContract(
         name="tp_sl_swing",
-        version=CURRENT_LIVE_CONTRACT_VERSION,
+        version="v3",
         description=(
             "Directional TP/SL swing prediction. UP or DOWN with volatility-"
             f"derived target/stop geometry. {V3_LABEL_HOLD_BARS} completed daily "
@@ -323,7 +326,7 @@ def _register_contracts() -> None:
             expired_is_non_win=True,
         ),
         horizon_bars=V3_LABEL_HOLD_BARS,
-        feature_schema=_v3_feature_schema(),
+        feature_schema=pre_split_schema,
         evidence_schema=_v3_label_schema(),
         validation_schema=_v3_validation_schema(),
         resolver_id="tp_sl_bar_path/v1",
@@ -333,6 +336,12 @@ def _register_contracts() -> None:
             SourceSpec("daily_ohlcv", required=True, max_staleness_s=86400),
         ),
         live_eligible=True,
+        lifecycle="RETIRED",
+    )
+    register_contract(historical_swing)
+    register_contract(replace(
+        historical_swing, version=CURRENT_LIVE_CONTRACT_VERSION,
+        feature_schema=_v3_feature_schema(), lifecycle="ACTIVE",
     ))
 
     # ── intraday_continuation/v1 (research-only) ────────────────────────

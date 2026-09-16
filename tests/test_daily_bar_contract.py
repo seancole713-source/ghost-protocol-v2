@@ -53,7 +53,8 @@ def test_live_score_never_overlays_extended_quote_or_partial_bar(monkeypatch):
     rows.append({"ts": "2026-09-16", "close": 999})
     monkeypatch.setattr("core.market_hours._now_ct", lambda: ct(9, 16, 8))
     monkeypatch.setattr(engine, "load_model", lambda *a: (object(), [], {}))
-    monkeypatch.setattr(engine, "_fetch_ohlcv", lambda *a, **kw: rows)
+    requests = []
+    monkeypatch.setattr(engine, "_fetch_ohlcv", lambda *a, **kw: requests.append(kw) or rows)
     monkeypatch.setattr("core.prediction._is_premarket", lambda: True)
     monkeypatch.setattr("core.prediction._premarket_scan_enabled", lambda: True)
     monkeypatch.setattr("core.prices.get_extended_session", lambda s: {"session_price": 999})
@@ -69,6 +70,7 @@ def test_live_score_never_overlays_extended_quote_or_partial_bar(monkeypatch):
     assert observed[-1]["close"] == 100
     assert observed[-1]["ts"] == "2026-09-15"
     assert rows[-1]["close"] == 999  # supplier data was not mutated
+    assert requests[0]["adjustment"] == "split"
 
 
 def test_radar_premarket_gap_and_volume_use_completed_baseline(monkeypatch):

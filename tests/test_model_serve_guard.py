@@ -251,7 +251,7 @@ def test_block_up_below_sma5_blocks_when_price_under_sma(monkeypatch):
     monkeypatch.setattr(
         _se,
         "_fetch_ohlcv",
-        lambda symbol, asset_type, period=None, interval="1d": [
+        lambda symbol, asset_type, period=None, interval="1d", adjustment="raw": [
             {"close": 100.0},
             {"close": 100.0},
             {"close": 100.0},
