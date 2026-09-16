@@ -1175,7 +1175,11 @@ def backtest_symbol(symbol, asset_type):
     sector_on = _v3_sector_feature_enabled()
     from core.engine_config import _v3_macro_features_enabled
     macro_on = _v3_macro_features_enabled()
-    aligned_sector = _align_sector_closes(rows, _fetch_sector_series()) if sector_on else None
+    # Match target history: a one-year proxy silently zeroed earlier rows of
+    # a five-year training set while serving populated relative strength.
+    aligned_sector = _align_sector_closes(
+        rows, _fetch_sector_series(period=_v3_ohlcv_period()),
+    ) if sector_on else None
     sector_lookback = _v3_sector_lookback()
     for i in range(window, len(rows) - margin):
         hist = rows[max(0, i - window) : i + 1]

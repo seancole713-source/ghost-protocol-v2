@@ -34,11 +34,18 @@ of the pause, and the only proven serveable model (ITRI/DOWN) is off via V3_DOWN
 
 SESSION_LOG = {
     "latest_repair_2026_09_16": {
-        "status": "PR #197 deployed and verified as f5b7e4b; frontend navigation/readiness follow-up under validation. See report for exact results and limitations.",
+        "status": "PR #197 and #198 deployed and verified; latest 522faf4, Railway cc80b09c, CI 35105963342 green (2051 unit, 43 PostgreSQL, 67 browser; 10 browser skipped).",
         "baseline_commit": "f374e5a34121a5228c004b33da5f6b8dc712e9d4",
         "report": "docs/prediction_pipeline_repair_2026-09-16.md",
         "live_findings": "Unpaused but 0 fireable models; /api/shadow-stats HTTP 500; prior-close date off by one; daily model consumed partial/overlaid bars.",
         "honesty": "No threshold changes. No proven 70% accuracy. Research forecasts remain separate from official picks.",
+    },
+    "sector_training_history_repair_2026_09_16": {
+        "report": "docs/sector_history_repair_2026-09-16.md",
+        "finding": "5y target training fetched only 1y of sector data; measured 902/1126 AAPL rows missing context. Matching windows gives 0/1126 missing.",
+        "repair": "Training requests the configured history length for its sector proxy. Existing live model weights, thresholds and firing gates unchanged.",
+        "validation": "2054 unit tests passed. Paired AAPL replay mixed; all four variants fail admission. Exact deployment verification belongs to the repair PR, not this pre-release entry.",
+        "honesty": "No accuracy improvement claimed; no replay artifact stored or promoted. No valid precision proof among 214 current research artifacts.",
     },
     "session_date": "2026-09-03",
     "session_span": "Handoff read → premarket/prediction audit → adversarially-verified bug hunt (23 agents) → train/serve feature-parity fix + negative-edge floor restoration → 8 revert-verified regression tests → dd60ac5 on PR #171, CI green (unmerged)",
