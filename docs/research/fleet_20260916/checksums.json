@@ -1,0 +1,10 @@
+{
+  "raw/data_quality.json": "c4df0375e0e0314285978b4b4b742eda241b33c3a6efd077337a3c82bea8c049",
+  "raw/results.jsonl": "92fbefc6f02fc20c89daa1348f39bc585abc3e595b4778e8de613a7cad96a591",
+  "raw/runtime.json": "ed82c3fe13f56a6a56b67e7db0aef8f4ef924418d5dd1c49592af87955902604",
+  "raw/summary.json": "873c0d01c6e7f96e74b9440484cd0b5b75403ab030a2d81cdc5166045721fdc5",
+  "split/data_quality.json": "e197df200e949578635c4d930413b19ec58e87802b197aaa82c55cdb33f8b29c",
+  "split/results.jsonl": "88d05d034898f7ac7b8d11e3d8e7d40ca9abbb237c08c61fd5306ad2a2e42972",
+  "split/runtime.json": "a96074ac65bd60ed7f5d93ca56bc14d3070fbbe671c9d6dce53e112715f190bd",
+  "split/summary.json": "035df933e62c35499fc2b83f7f3bfdac926403175512485a4cf407e6f8ada67f"
+}
