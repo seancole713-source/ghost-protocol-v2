@@ -83,7 +83,7 @@ def _patch_models(monkeypatch, up_p=None, down_p=None):
         return None, None, None
     monkeypatch.setattr(_se, "load_model", _lm)
     monkeypatch.setattr(_se, "_fetch_ohlcv",
-                        lambda s, a, period="5d", interval="1h": _uptrend_rows())
+                        lambda s, a, period="5d", interval="1h", adjustment="raw": _uptrend_rows())
 
 
 def test_stronger_down_never_suppresses_fireable_up(monkeypatch):

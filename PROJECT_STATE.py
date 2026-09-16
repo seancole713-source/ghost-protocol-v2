@@ -33,6 +33,13 @@ of the pause, and the only proven serveable model (ITRI/DOWN) is off via V3_DOWN
 # ============================================================
 
 SESSION_LOG = {
+    "split_history_repair_2026_09_16": {
+        "report": "docs/split_history_repair_2026-09-16.md",
+        "finding": "Alpaca raw defaults turned NVDA's split into -89.91% and SMH's into -48.93%; split-adjusted comparisons are +0.90% and +2.15%.",
+        "repair": "Model-only split requests, adjustment-aware caching, new feature schema and v4 contract; v1-v3 identities preserved. Outcome reference-price semantics not silently changed.",
+        "validation": "2060 local unit tests passed; CI and live deployment evidence will be attached to the repair PR.",
+        "honesty": "No proven 70% accuracy, no manual model activation, no threshold relaxation. Raw fleet replay is a limited baseline, not proof of the corrected lineage.",
+    },
     "latest_repair_2026_09_16": {
         "status": "PR #197 and #198 deployed and verified; latest 522faf4, Railway cc80b09c, CI 35105963342 green (2051 unit, 43 PostgreSQL, 67 browser; 10 browser skipped).",
         "baseline_commit": "f374e5a34121a5228c004b33da5f6b8dc712e9d4",
