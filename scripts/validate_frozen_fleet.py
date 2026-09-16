@@ -38,7 +38,22 @@ def load_snapshot(manifest_path: Path, bars_path: Path):
         raise ValueError("Invalid declared family")
     if not universe or manifest["family_size"] != len(universe) * len(directions):
         raise ValueError("Family size mismatch")
+    total_family = manifest.get("multiplicity_family_size", manifest["family_size"])
+    if type(total_family) is not int or total_family < manifest["family_size"]:
+        raise ValueError("Multiplicity family cannot omit attempted hypotheses")
     return manifest, json.loads(raw)
+
+
+def verify_source_files(manifest: dict, root: Path) -> None:
+    hashes = manifest.get("source_file_sha256")
+    if not hashes:
+        raise ValueError("Missing source hashes; replay the old program at its declared commit")
+    for name, expected in hashes.items():
+        path = root / name
+        if not path.resolve().is_relative_to(root.resolve()):
+            raise ValueError("Source path outside repository")
+        if hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+            raise ValueError(f"Source hash mismatch: {name}")
 
 
 def run(manifest_path: Path, bars_path: Path, output: Path) -> dict:
@@ -49,6 +64,7 @@ def run(manifest_path: Path, bars_path: Path, output: Path) -> dict:
     if "core.engine_config" in sys.modules:
         raise RuntimeError("Run the audit in a fresh interpreter")
     manifest, source = load_snapshot(manifest_path, bars_path)
+    verify_source_files(manifest, Path(__file__).resolve().parents[1])
     if output.exists():
         raise FileExistsError("Never overwrite an existing experiment")
     output.mkdir(parents=True)
@@ -107,9 +123,11 @@ def run(manifest_path: Path, bars_path: Path, output: Path) -> dict:
     def backtest(symbol, asset_type):
         return original_backtest(symbol, asset_type)
 
-    def fetch(symbol, asset_type, period=None, interval="1d"):
+    def fetch(symbol, asset_type, period=None, interval="1d", *, adjustment="raw"):
         if interval != "1d":
             raise ValueError("Only the declared daily snapshot is available")
+        if adjustment != manifest["bar_adjustment"]:
+            raise ValueError("Model request and frozen price basis differ")
         return snapshot.get(symbol)
 
     def forbidden(*args, **kwargs):
@@ -138,7 +156,7 @@ def run(manifest_path: Path, bars_path: Path, output: Path) -> dict:
                         proof = candidate.get("precision_gate") or {}
                         gate = proof.get("gate") or {}
                         support, wins = gate.get("effective_support", 0), gate.get("effective_wins", 0)
-                        lower = family_lower_bound(wins, support, manifest["family_size"],
+                        lower = family_lower_bound(wins, support, manifest.get("multiplicity_family_size", manifest["family_size"]),
                                                    manifest["family_alpha"]) if support else 0.0
                         row.update(
                             status="EVALUATED", training_passed=candidate.get("training_passed") is True,
@@ -166,7 +184,9 @@ def run(manifest_path: Path, bars_path: Path, output: Path) -> dict:
                 print(json.dumps({key: row.get(key) for key in (
                     "symbol", "direction", "status", "training_passed", "candidate_qualified")}), flush=True)
 
-    report = {"family_size": manifest["family_size"], "results_count": len(results),
+    report = {"family_size": manifest["family_size"],
+              "multiplicity_family_size": manifest.get("multiplicity_family_size", manifest["family_size"]),
+              "results_count": len(results),
               "evaluated": sum(row["status"] == "EVALUATED" for row in results),
               "training_passed": sum(row.get("training_passed", False) for row in results),
               "qualified": sum(row["candidate_qualified"] for row in results),
