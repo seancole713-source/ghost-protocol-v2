@@ -157,6 +157,7 @@ def _trim_scores(scores: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         "proven_skill_gate_down", "overconfidence_gate_up",
         "overconfidence_gate_down", "live_recalibration_up",
         "live_recalibration_down", "issuance_window",
+        "feature_timeframe", "feature_bar_ts",
     }
     out = {key: value for key, value in scores.items() if key in keep}
     feats = out.get("features")

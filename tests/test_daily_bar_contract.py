@@ -86,3 +86,17 @@ def test_radar_premarket_gap_and_volume_use_completed_baseline(monkeypatch):
     assert before["current_move_pct"] == 5
     assert before["avg_daily_volume"] == 200
     assert before["reference_session_date"] == "2026-09-15"
+
+
+def test_performance_log_preserves_feature_clock():
+    from core.performance_log import _trim_scores
+
+    out = _trim_scores({
+        "feature_timeframe": "completed_daily_bar",
+        "feature_bar_ts": "2026-09-15T04:00:00Z",
+        "irrelevant_large_payload": {"raw": "discard"},
+    })
+    assert out == {
+        "feature_timeframe": "completed_daily_bar",
+        "feature_bar_ts": "2026-09-15T04:00:00Z",
+    }

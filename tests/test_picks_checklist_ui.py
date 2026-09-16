@@ -63,6 +63,16 @@ def test_pause_reason_and_header_are_user_facing():
     assert ">Live<" not in PICKS
 
 
+def test_model_readiness_is_not_inferred_from_pause_latch():
+    assert "function modelReadiness(models)" in PICKS
+    assert "models.fleet_summary.fireable_now" in PICKS
+    assert "No approved models" in PICKS
+    assert "Model readiness unavailable" in PICKS
+    assert "paused?'Safety-paused':'Available'" not in PICKS
+    assert '<span class="val ok">Available</span>' not in PICKS
+    assert '/console#research' in PICKS
+
+
 def test_missing_prices_and_wallet_scope_are_explicit():
     assert "Live price unavailable" in PICKS
     assert "Separate paper wallet" in PICKS
