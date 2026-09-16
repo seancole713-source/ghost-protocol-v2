@@ -34,7 +34,7 @@ of the pause, and the only proven serveable model (ITRI/DOWN) is off via V3_DOWN
 
 SESSION_LOG = {
     "latest_repair_2026_09_16": {
-        "status": "Repair under validation; do not infer deployment from this source entry.",
+        "status": "PR #197 deployed and verified as f5b7e4b; frontend navigation/readiness follow-up under validation. See report for exact results and limitations.",
         "baseline_commit": "f374e5a34121a5228c004b33da5f6b8dc712e9d4",
         "report": "docs/prediction_pipeline_repair_2026-09-16.md",
         "live_findings": "Unpaused but 0 fireable models; /api/shadow-stats HTTP 500; prior-close date off by one; daily model consumed partial/overlaid bars.",

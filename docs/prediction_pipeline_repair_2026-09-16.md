@@ -58,3 +58,30 @@ commit is live. Passing code tests is not a passing investment experiment.
   failure display, no horizontal overflow and no JavaScript errors.
 - GitHub TEST_DATABASE_URL is already configured (verified by secret name,
   not by disclosing its value). Main-branch CI will run PostgreSQL integration.
+
+## Production verification of PR #197
+
+- PR #197 merged as f5b7e4bba99c0a1c3b9ee51c66884777ead8c227.
+- Railway deployment 12c364b3-f537-4fe5-af01-3421a9ea64a6 reached SUCCESS.
+- Exact version and evidence-API smoke passed in production.
+- Research view returned 206 open forecasts and 32 overdue unresolved rows.
+  Example: AAPL record 3405357, issued September 15, UP, five trading bars.
+  These are existing forecasts, not newly issued September 16 predictions.
+- A fresh regular-session squeeze scan had usable observations for 102/107
+  symbols (two fetch failures, three lacking usable prints on the selected feed).
+- An authenticated normal prediction cycle completed successfully but generated
+  zero official picks. All 257 artifacts remain unproven. No gates were bypassed.
+- PostgreSQL integration actually ran and passed, not skipped.
+- Production browser run: 61 passed, 10 skipped, two new tests failed because
+  the test targeted /picks instead of /console. The follow-up corrects that
+  route, links /picks to /console#research, and replaces the existing false
+  unpaused-equals-Available labels with model-readiness checks.
+- A read-only production query identified all overdue rows: APGE (9) and SATS
+  (23). The current Alpaca request returned APGE bars only through September 2
+  and no SATS bars in the requested period. These rows were not force-resolved,
+  deleted, or counted as successful predictions.
+
+The accurate-intraday-prediction mission is NOT achieved by these repairs.
+The live daily model remains research-only, and new daily evidence is issued
+post-close. A validated intraday model and adequate feed coverage are separate
+requirements, not something a confidence-label change can supply.

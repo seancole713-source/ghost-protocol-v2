@@ -397,7 +397,7 @@ if(s.status==='insufficient'&&s.insufficient_reason){html+='<p class="fs11-amber
 html+='</div>'});
 html+='</div>';
 box.innerHTML=html}
-document.addEventListener('visibilitychange',function(){if(!document.hidden){queueLoadAll(60,{force:true});if(state.activeSection==='hunter')loadHunter(true)}});initNav();renderPool();loadContract70();loadAll({force:true});setInterval(function(){loadAll({});if(state.activeSection==='hunter')loadHunter(true)},60000);
+document.addEventListener('visibilitychange',function(){if(!document.hidden){queueLoadAll(60,{force:true});if(state.activeSection==='hunter')loadHunter(true)}});initNav();if(location.hash==='#research')switchSection('research');renderPool();loadContract70();loadAll({force:true});setInterval(function(){loadAll({});if(state.activeSection==='hunter')loadHunter(true)},60000);
 })();
 </script>
 </body>
