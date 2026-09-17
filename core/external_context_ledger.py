@@ -344,54 +344,76 @@ _DISCOVERY_COLUMNS = """provider, screen, symbol, source_ts, received_ts, rank,
                         validation_valid"""
 
 
+def observation_max_age_s(provider: str) -> int:
+    """Daily reference bars and intraday quotes have different freshness limits."""
+    if provider == "polygon_grouped_daily":
+        name, default, floor = "MARKET_WIDE_MAX_AGE_S", 4 * 86400, 86400
+    else:
+        name, default, floor = "EXTERNAL_SCREENER_MAX_AGE_S", 1800, 300
+    try:
+        return max(floor, int(os.getenv(name, str(default))))
+    except (TypeError, ValueError):
+        return default
+
+
 def recent_external_discoveries(
     *, limit: int = 50, per_screen: Optional[int] = None
 ) -> Dict[str, Any]:
-    """Latest validated discovery snapshot for UI/API display only.
+    """Latest observations per provider/screen/symbol, not a window of repeats.
 
-    `per_screen` takes the newest N rows from EACH screen instead of the newest
-    N overall. Screens run on wildly different clocks -- the Yahoo lane writes
-    ~100 intraday rows every 15 minutes while the full-market lane writes one
-    batch a day stamped at the session start -- so a single global ORDER BY
-    source_ts DESC is monopolised by the fastest writer and the daily lane
-    falls out of the window entirely. Partitioning keeps every provider
-    visible without giving any of them a larger share by accident.
+    Deduplicate before applying display budgets or validity filters. A newer
+    invalid observation must not resurrect an older passing one. The indexed
+    receipt-time bound avoids ranking the entire append-only history on reads.
     """
     from core.db import db_conn
-    capped = max(1, min(200, int(limit)))
+    capped = max(1, min(1000, int(limit)))
+    now = int(time.time())
+    lookback = max(observation_max_age_s("polygon_grouped_daily"),
+                   observation_max_age_s("yahoo_saved_screener"))
+    screen_cap = max(1, min(200, int(per_screen))) if per_screen is not None else None
+    columns = ", ".join("obs." + field.strip() for field in _DISCOVERY_COLUMNS.split(","))
+    screen_filter = "WHERE screen_rank <= %s" if screen_cap is not None else ""
+    params = (now - lookback, now - observation_max_age_s("yahoo_saved_screener"))
+    if screen_cap is not None:
+        params += (screen_cap,)
     with db_conn() as conn:
         cur = conn.cursor()
-        if per_screen is not None:
-            cur.execute(
-                f"""SELECT {_DISCOVERY_COLUMNS} FROM (
-                        SELECT {_DISCOVERY_COLUMNS},
-                               ROW_NUMBER() OVER (
-                                   PARTITION BY screen
-                                   ORDER BY COALESCE(source_ts, received_ts) DESC,
-                                            rank ASC
-                               ) AS screen_rank
-                        FROM ghost_external_observations
-                        WHERE validation_valid=TRUE
-                    ) ranked
-                    WHERE screen_rank <= %s
-                    ORDER BY COALESCE(source_ts, received_ts) DESC, rank ASC
-                    LIMIT %s""",
-                (max(1, min(200, int(per_screen))), capped),
-            )
-        else:
-            cur.execute(
-                f"""SELECT {_DISCOVERY_COLUMNS}
-                   FROM ghost_external_observations
-                   WHERE validation_valid=TRUE
-                   ORDER BY COALESCE(source_ts, received_ts) DESC, rank ASC
-                   LIMIT %s""",
-                (capped,),
-            )
+        cur.execute(
+            f"""WITH latest AS (
+                    SELECT DISTINCT ON (provider, screen, symbol)
+                           id, provider, screen, symbol, source_ts, received_ts, rank
+                    FROM ghost_external_observations
+                    WHERE received_ts >= %s
+                      AND (provider = 'polygon_grouped_daily' OR received_ts >= %s)
+                    ORDER BY provider, screen, symbol, received_ts DESC, id DESC
+                ), ranked AS (
+                    SELECT *,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY screen
+                               ORDER BY source_ts DESC NULLS LAST, rank ASC, id DESC
+                           ) AS screen_rank,
+                           COUNT(*) OVER () AS available_count
+                    FROM latest
+                ), budgeted AS (
+                    SELECT * FROM ranked {screen_filter}
+                ), selected AS (
+                    SELECT id, available_count, COUNT(*) OVER () AS budgeted_count
+                    FROM budgeted
+                    ORDER BY source_ts DESC NULLS LAST, rank ASC, id DESC
+                    LIMIT %s
+                )
+                SELECT {columns}, obs.raw_payload->>'move_basis' AS move_basis, obs.id,
+                       selected.available_count, selected.budgeted_count
+                FROM selected JOIN ghost_external_observations obs ON obs.id = selected.id
+                ORDER BY obs.source_ts DESC NULLS LAST, obs.rank ASC, obs.id DESC""",
+            params + (capped,),
+        )
         rows = cur.fetchall()
-    now = int(time.time())
     items = []
     for row in rows:
-        source_age_s, freshness = _current_freshness(row[3], now_ts=now)
+        source_age_s, freshness = _current_freshness(
+            row[3], now_ts=now, max_age_s=observation_max_age_s(row[0]),
+        )
         items.append({
             "provider": row[0], "screen": row[1], "symbol": row[2],
             "source_ts": row[3], "received_ts": row[4],
@@ -400,13 +422,20 @@ def recent_external_discoveries(
             "avg_volume": row[9], "external_score": row[10],
             "in_official_watchlist": bool(row[11]), "quarantined": bool(row[12]),
             "delayed": bool(row[13]), "freshness": freshness,
-            # Exposed so a consumer can enforce validity itself rather than
-            # trusting that this WHERE clause is the only path to these rows.
-            "validation_valid": bool(row[15]),
+            "validation_valid": bool(row[15]), "move_basis": row[16],
+            "observation_id": row[17],
             "advisory_only": True, "decision_eligible": False,
         })
-    return {"ok": True, "items": items, "count": len(items), "advisory_only": True,
-            "decision_eligible": False}
+    available = int(rows[0][18]) if rows else 0
+    budgeted = int(rows[0][19]) if rows else 0
+    return {
+        "ok": True, "items": items, "count": len(items), "as_of": now,
+        "available_count": available,
+        "screen_truncated": max(0, available - budgeted),
+        "limit_truncated": max(0, budgeted - len(items)),
+        "selection": "latest_per_provider_screen_symbol",
+        "lookback_s": lookback, "advisory_only": True, "decision_eligible": False,
+    }
 
 
 def store_external_radar_snapshot(run: Dict[str, Any], items: List[Dict[str, Any]], *, cur=None) -> bool:

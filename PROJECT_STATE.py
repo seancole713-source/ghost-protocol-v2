@@ -33,6 +33,13 @@ of the pause, and the only proven serveable model (ITRI/DOWN) is off via V3_DOWN
 # ============================================================
 
 SESSION_LOG = {
+    "discovery_freshness_repair_2026_09_17": {
+        "report": "docs/discovery_freshness_repair_2026-09-17.md",
+        "baseline": "f8015ff verified live; SIP HTTP 403, IEX HTTP 200 with existing credentials.",
+        "repair": "Latest unique discovery observations before budgets/filters; daily history separated; read-time expiry and source clocks. Batch session freshness no longer comes from cache insertion time.",
+        "validation": "2077 unit and 47 localhost PostgreSQL integration tests passed. Three live API contract smoke tests added; deployed verification belongs to the PR after merge.",
+        "remaining": "No approved intraday model or 70% proof; no new alerts/trades. Scanner timeframe status, observation clocks, prior-close fallbacks, and feed coverage remain open; see report.",
+    },
     "split_history_repair_2026_09_16": {
         "report": "docs/split_history_repair_2026-09-16.md",
         "finding": "Alpaca raw defaults turned NVDA's split into -89.91% and SMH's into -48.93%; split-adjusted comparisons are +0.90% and +2.15%.",
