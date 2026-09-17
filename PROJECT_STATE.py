@@ -33,6 +33,14 @@ of the pause, and the only proven serveable model (ITRI/DOWN) is off via V3_DOWN
 # ============================================================
 
 SESSION_LOG = {
+    "squeeze_evidence_repair_2026_09_17": {
+        "report": "docs/squeeze_evidence_repair_2026-09-17.md",
+        "baseline": "6572468 verified live. Six regression cases reproduced false absence, stale issuance, and false fresh-scan state.",
+        "repair": "Typed timeframe outcomes, complete same-feed evidence, bounded off-loop requests with retained ownership, clock-preserving candidate/scorecard pipeline and age-based scan status.",
+        "probe": "14:13:50Z read-only 107-symbol probe: 100 recent complete bars, 3 successful empty IEX responses, 4 stale rejected. No issuance or production writes.",
+        "release": "Final tests and exact deployment verification belong to the repair PR; do not infer deployment from this source entry.",
+        "remaining": "No 70% proof or approved model. Limited IEX coverage, corporate actions, other previous-close consumers and actual forward forecasting evidence remain open.",
+    },
     "discovery_freshness_repair_2026_09_17": {
         "report": "docs/discovery_freshness_repair_2026-09-17.md",
         "baseline": "f8015ff verified live; SIP HTTP 403, IEX HTTP 200 with existing credentials.",

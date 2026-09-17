@@ -21,6 +21,9 @@ import logging
 import math
 import os
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
+import threading
+from urllib.parse import quote
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -32,6 +35,10 @@ from core.market_hours import (
     RTH_OPEN_MIN,
     SESSION_TZ,
     session_hm,
+)
+
+from core.squeeze_evidence import (
+    CONTRACT, EVIDENCE_FIELDS, BarFetch, MarketSnapshot, evidence_status, observation_ts,
 )
 
 LOGGER = logging.getLogger("ghost.squeeze")
@@ -112,7 +119,12 @@ SQUEEZE_BATCH_BARS = os.getenv("SQUEEZE_BATCH_BARS", "1").strip().lower() in (
     "1", "true", "yes", "on",
 )
 _BATCH_SYMBOLS_PER_REQ = int(os.getenv("SQUEEZE_BATCH_SYMBOLS_PER_REQ", "50"))
-_batch_bars: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
+_batch_bars: Dict[str, Dict[str, Any]] = {}
+_BATCH_DEADLINE_S = 30.0
+_BATCH_MAX_PAGES = 20
+_batch_worker_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="squeeze-bars")
+_batch_worker_future: Future | None = None
+_batch_worker_lock = threading.Lock()
 _batch_bars_lock = __import__("threading").Lock()
 _last_scan_report: Dict[str, Any] = {
     "ok": False,
@@ -282,6 +294,8 @@ def _persist_scan_report(report: Dict[str, Any]) -> None:
                 "fetch_failed_symbols",
                 "no_intraday_print", "no_intraday_print_symbols",
                 "fetch_skipped", "fetch_skipped_symbols",
+                "invalid_baseline", "invalid_baseline_symbols", "invalid_quote", "invalid_quote_symbols",
+                "stale_quote", "stale_quote_symbols", "data_status_by_symbol", "data_contract",
                 "picks", "candidates", "watches", "leaders", "duration_ms", "status", "elapsed_frac",
             )
         }
@@ -400,6 +414,8 @@ def candidate_to_pick(
         or metrics.get("decision_eligible") is False
     ):
         raise ValueError("official squeeze candidate required")
+    if evidence_status(metrics) != "ready":
+        raise ValueError("fresh complete squeeze evidence required")
     from core.squeeze_scorecard import build_scorecard_row
 
     row = build_scorecard_row(symbol, metrics, rvol, short_ctx, kind=kind)
@@ -423,9 +439,9 @@ def get_squeeze_picks() -> Dict[str, Any]:
 
     _ensure_scan_cache_loaded()
     st = dict(_last_scan_report)
-    picks = list(st.get("picks") or st.get("candidates") or [])
-    leaders = list(st.get("leaders") or [])
-    watches = list(st.get("watches") or [])
+    picks = [dict(row) for row in (st.get("picks") or st.get("candidates") or [])]
+    leaders = [dict(row) for row in (st.get("leaders") or [])]
+    watches = [dict(row) for row in (st.get("watches") or [])]
     alerts = list(_alert_history)
     picks = enrich_pick_rows(picks, alerts, leaders)
     alert_map = first_alert_buy_map(alerts)
@@ -447,6 +463,13 @@ def get_squeeze_picks() -> Dict[str, Any]:
     enabled = os.getenv("SQUEEZE_MONITOR_ENABLED", "1") == "1"
     radar_active = enabled and is_us_extended_hours()
     last_ts = st.get("ts")
+    scan_ts = observation_ts(last_ts)
+    scan_age = time.time() - scan_ts if scan_ts is not None else None
+    snapshot_stale = not radar_active or scan_age is None or scan_age < 0 or scan_age > max(180, 3 * CHECK_INTERVAL_SEC)
+    for row in picks + leaders + watches:
+        row["snapshot_stale"] = snapshot_stale
+        ts = observation_ts(row.get("price_as_of_ts"))
+        row["price_age_s"] = time.time() - ts if ts else None
     try:
         from core.broad_market_context import get_broad_market_context
         market_context = get_broad_market_context()
@@ -472,7 +495,14 @@ def get_squeeze_picks() -> Dict[str, Any]:
             "advisory_only": True, "decision_eligible": False,
         }
     return {
-        "scan_ok": bool(st.get("ok") and st.get("status") == "complete"),
+        "scan_ok": bool(st.get("ok") and st.get("status") == "complete" and not snapshot_stale),
+        "data_contract": st.get("data_contract"),
+        "data_degraded": snapshot_stale or any((st.get(key) or 0) > 0 for key in (
+            "fetch_fail", "fetch_skipped", "invalid_baseline", "invalid_quote", "stale_quote",
+        )),
+        "data_status_by_symbol": st.get("data_status_by_symbol", {}),
+        **{key: st.get(key) for key in ("invalid_baseline", "invalid_quote", "stale_quote")},
+        **{key + "_symbols": st.get(key + "_symbols", []) for key in ("invalid_baseline", "invalid_quote", "stale_quote")},
         "picks": picks,
         "pick_count": len(picks),
         "watches": watches,
@@ -488,9 +518,7 @@ def get_squeeze_picks() -> Dict[str, Any]:
         "fetch_ok": st.get("fetch_ok"),
         "fetch_fail": st.get("fetch_fail"),
         "fetch_failed_symbols": list(st.get("fetch_failed_symbols") or []),
-        # Separated from fetch_fail so a normal premarket watchlist (most
-        # symbols simply have not printed yet) no longer reads as degraded
-        # market data. See the report initializer in _run_scan.
+        # Only complete successful empty intraday responses count as no-print.
         "no_intraday_print": st.get("no_intraday_print"),
         "no_intraday_print_symbols": list(st.get("no_intraday_print_symbols") or []),
         "fetch_skipped": st.get("fetch_skipped"),
@@ -499,14 +527,15 @@ def get_squeeze_picks() -> Dict[str, Any]:
         # NOT to right now — one degraded cycle (e.g. during a breaker trip)
         # persists here until the next scan overwrites it, so this surface can
         # legitimately disagree with newer scan log lines.
-        "fetch_note": "Counts describe the selected feed at last_scan_ts. No usable intraday print is not proof of no trading market-wide; IEX is limited coverage.",
+        "fetch_note": "Counts describe evidence at last_scan_ts. fetch_ok means complete, recent same-feed bars, not a live trade tick. No-print requires a successful empty response; IEX does not cover all trading.",
         "symbols": st.get("symbols"),
         "duration_ms": st.get("duration_ms"),
         "leaders": leaders,
         "scorecard": scorecard_legend(),
         "radar_active": radar_active,
         "radar_resume_ct": next_radar_resume_label(),
-        "snapshot_stale": bool(not radar_active and last_ts),
+        "snapshot_stale": snapshot_stale,
+        "scan_age_s": scan_age,
     }
 
 
@@ -677,7 +706,6 @@ def _reset_alert_history_if_new_session() -> None:
 
 
 async def _run_watchlist_scan() -> None:
-    from concurrent.futures import ThreadPoolExecutor
 
     from core.market_hours import is_us_extended_hours, is_us_premarket, is_us_rth
 
@@ -689,7 +717,6 @@ async def _run_watchlist_scan() -> None:
     from config.symbols import get_edge_set
 
     symbols = sorted(get_edge_set())
-    loop = asyncio.get_running_loop()
     elapsed = rth_elapsed_fraction()
     _premarket = is_us_premarket()
     t0 = time.time()
@@ -699,15 +726,8 @@ async def _run_watchlist_scan() -> None:
         "session": "rth" if is_us_rth() else ("premarket" if is_us_premarket() else "extended"),
         "symbols": len(symbols),
         "fetch_ok": 0,
-        # fetch_fail counts GENUINE provider failures only. A symbol the batch
-        # authoritatively reports as having no intraday print yet (the normal
-        # premarket state for most of the watchlist) is counted in
-        # no_intraday_print instead, and a symbol the fallback loop never got
-        # to (it stops early rather than queue behind a stuck vendor thread)
-        # is counted in fetch_skipped. Conflating those three inflated
-        # fetch_fail to ~86/107 on every premarket scan, which flipped
-        # ghost_console's badge to "Market data degraded" while the data was
-        # fine -- the display contradicting what this module already knew.
+        # A complete empty response, a failed request and invalid evidence are
+        # distinct outcomes. IEX absence never proves market-wide inactivity.
         "fetch_fail": 0,
         "fetch_failed_symbols": [],
         "no_intraday_print": 0,
@@ -722,13 +742,10 @@ async def _run_watchlist_scan() -> None:
         "elapsed_frac": round(elapsed, 4),
         "status": "running",
     }
-    global _last_scan_report
+    global _last_scan_report, _batch_worker_future
     _last_scan_report = dict(report)
 
     fetch_timeout = float(os.getenv("SQUEEZE_FETCH_TIMEOUT_S", "18"))
-    # Default to 1 worker to avoid hammering APIs with parallel requests.
-    # 4 workers × 44 symbols = 176 concurrent API calls that trigger 429 storms.
-    workers = int(os.getenv("SQUEEZE_FETCH_WORKERS", "1"))
     # Inter-symbol delay for sequential fetches
     fetch_delay = float(os.getenv("SQUEEZE_FETCH_DELAY_S", "0.3"))
     # Prewarm the whole watchlist's bars in a couple of multi-symbol requests so
@@ -737,63 +754,61 @@ async def _run_watchlist_scan() -> None:
     # A successful batch prewarm contains every field the radar needs. The
     # helper owns and clears the shared batch store before any async fallback,
     # preventing Hunter and radar refreshes from corrupting each other's data.
-    metrics_map: Dict[str, Optional[Dict[str, Any]]] = {}
-    try:
-        metrics_map.update(batched_market_metrics(symbols))
-    except Exception as exc:
-        LOGGER.debug("[SqueezeMonitor] batch prewarm failed, per-symbol fallback: %s", exc)
-    # Symbols the batch answered for (even with None) are authoritative; only
-    # the rest go through the slow per-symbol path. Keep both sets so the
-    # counting loop below can tell an authoritative absence from a real miss.
-    batch_answered = set(metrics_map)
-    fallback_symbols = [sym for sym in symbols if sym not in metrics_map]
+    snapshot = await _async_market_snapshot(symbols)
+    metrics_map = snapshot.metrics
+    batch_statuses = snapshot.statuses
+    report["data_contract"] = CONTRACT
+    report["data_status_by_symbol"] = batch_statuses
+    for status in ("invalid_baseline", "invalid_quote", "stale_quote"):
+        report[status] = 0
+        report[status + "_symbols"] = []
+    fallback_symbols = [sym for sym in symbols if sym not in batch_statuses]
     fallback_attempted: set = set()
-    pool = ThreadPoolExecutor(max_workers=workers)
-    try:
-        for sym in fallback_symbols:
-            task = loop.run_in_executor(pool, _sync_fetch_metrics, sym)
-            fallback_attempted.add(sym)
-            try:
-                metrics_map[sym] = await asyncio.wait_for(task, timeout=fetch_timeout)
-            except asyncio.TimeoutError:
-                LOGGER.warning("[SqueezeMonitor] fetch timeout %s (%.0fs)", sym, fetch_timeout)
-                metrics_map[sym] = None
-                # The underlying vendor thread cannot be cancelled. Do not
-                # queue the rest of the universe behind the same stuck worker.
-                break
-            except Exception as exc:
-                LOGGER.debug("[SqueezeMonitor] fetch %s: %s", sym, exc)
-                metrics_map[sym] = None
-            # Inter-symbol delay to prevent API rate-limit storms
-            if fetch_delay > 0:
-                await asyncio.sleep(fetch_delay)
-    finally:
-        pool.shutdown(wait=False, cancel_futures=True)
+    for sym in fallback_symbols:
+        with _batch_worker_lock:
+            if _batch_worker_future is not None and not _batch_worker_future.done():
+                break  # timed-out prior work remains owned; never queue behind it
+            _batch_worker_future = _batch_worker_pool.submit(_single_market_snapshot, sym)
+            future = _batch_worker_future
+        fallback_attempted.add(sym)
+        try:
+            fallback = await asyncio.wait_for(
+                asyncio.shield(asyncio.wrap_future(future)), timeout=fetch_timeout,
+            )
+            metrics_map.update(fallback.metrics)
+            batch_statuses.update(fallback.statuses)
+        except asyncio.TimeoutError:
+            LOGGER.warning("[SqueezeMonitor] fetch timeout %s (%.0fs)", sym, fetch_timeout)
+            metrics_map[sym] = None
+            break
+        except Exception as exc:
+            LOGGER.debug("[SqueezeMonitor] fetch %s: %s", sym, exc)
+            metrics_map[sym] = None
+        if fetch_delay > 0:
+            await asyncio.sleep(fetch_delay)
     short_ctx_map: Dict[str, Dict[str, Any]] = {}
     for symbol in symbols:
         metrics = metrics_map.get(symbol)
-        if not metrics:
-            if symbol in batch_answered:
-                # batched_market_metrics' own contract: a symbol in the batch
-                # with no intraday print is an authoritative absence (it just
-                # has not traded this session yet), not a provider miss.
-                report["no_intraday_print"] += 1
-                report["no_intraday_print_symbols"].append(symbol)
-            elif symbol in fallback_attempted:
-                report["fetch_fail"] += 1
-                report["fetch_failed_symbols"].append(symbol)
-            else:
-                # The fallback loop stopped before reaching this symbol.
-                # Never attempted is not the same as failed.
-                report["fetch_skipped"] += 1
-                report["fetch_skipped_symbols"].append(symbol)
+        status = batch_statuses.get(symbol, {}).get("status")
+        if metrics:
+            status = evidence_status(metrics)
+        elif status is None:
+            status = "fetch_fail" if symbol in fallback_attempted else "fetch_skipped"
+        if status != "ready":
+            counter = status if status in ("no_intraday_print", "invalid_baseline", "invalid_quote", "stale_quote", "fetch_skipped") else "fetch_fail"
+            report[counter] += 1
+            report["fetch_failed_symbols" if counter == "fetch_fail" else counter + "_symbols"].append(symbol)
+            report["data_status_by_symbol"].setdefault(symbol, {})["status"] = status
             continue
+        metrics["quote_status"] = "fresh_bar"
+        metrics["price_age_s"] = round(time.time() - observation_ts(metrics["price_as_of_ts"]), 3)
         report["fetch_ok"] += 1
         rvol = compute_rvol(metrics["session_volume"], metrics["avg_daily_volume"], elapsed, premarket=_premarket)
         peak_pct = metrics["peak_move_pct"]
         current_pct = metrics["current_move_pct"]
 
         report.setdefault("leaders", []).append({
+            **{key: metrics.get(key) for key in EVIDENCE_FIELDS},
             "symbol": symbol,
             "peak_move_pct": round(peak_pct, 2),
             "current_move_pct": round(current_pct, 2),
@@ -818,6 +833,7 @@ async def _run_watchlist_scan() -> None:
         # stays visible as an escalating WATCH (never a trade signal).
         if not kind and evaluate_watch_signal(peak_pct, current_pct, rvol):
             watch = _record_watch_observation(symbol, peak_pct, current_pct, rvol)
+            watch.update({key: metrics.get(key) for key in EVIDENCE_FIELDS})
             report["watches"].append(watch)
             try:
                 from core.explosion_benchmark import record_observation
@@ -1139,50 +1155,19 @@ def _alpaca_prev_close(symbol: str) -> Optional[float]:
     return None
 
 
-def _sync_fetch_metrics(symbol: str) -> Optional[Dict[str, Any]]:
-    """Price/OHLCV via core.prices session helper + Alpaca/yfinance volume."""
+def _single_market_snapshot(symbol: str) -> MarketSnapshot:
+    """Fallback preserves the same status contract as the full-universe batch."""
     sym = (symbol or "").upper().strip()
-    if not sym:
-        return None
+    if _alpaca_headers():
+        return batched_market_snapshot([sym], force=True)
+    metrics = _yf_fetch_metrics(sym) if sym and _yf_fallback_enabled() else None
+    status = evidence_status(metrics) if metrics else "fetch_fail"
+    return MarketSnapshot(metrics={sym: metrics}, statuses={sym: {"status": status, "reason": "yfinance_fallback"}})
 
-    try:
-        from core.prices import get_intraday_session
 
-        sess = get_intraday_session(sym)
-        prev_close = sess.get("previous_close")
-        last_px = sess.get("price")
-        session_high = sess.get("today_high") or sess.get("rth_high") or last_px
-        if not last_px or float(last_px) <= 0:
-            return _yf_fetch_metrics(sym) if _yf_fallback_enabled() else None
-        if not prev_close or float(prev_close) <= 0:
-            prev_close = _alpaca_prev_close(sym)
-        if not prev_close or float(prev_close) <= 0:
-            return _yf_fetch_metrics(sym) if _yf_fallback_enabled() else None
-        prev_close = float(prev_close)
-        last_px = float(last_px)
-        session_high = float(session_high or last_px)
-
-        avg_vol, session_vol, vwap = _fetch_volumes(sym)
-        if not avg_vol or avg_vol <= 0:
-            return _yf_fetch_metrics(sym) if _yf_fallback_enabled() else None
-        if not session_vol or session_vol <= 0:
-            # Never fabricate session volume — a missing volume read must not
-            # become a fake RVOL spike (forensic MD-3/SQ-4). Force RVOL to 0.
-            session_vol = 0.0
-
-        return {
-            "price": last_px,
-            "prior_close": prev_close,
-            "session_high": session_high,
-            "session_volume": float(session_vol),
-            "avg_daily_volume": float(avg_vol),
-            "vwap": vwap,
-            "peak_move_pct": (session_high - prev_close) / prev_close * 100,
-            "current_move_pct": (last_px - prev_close) / prev_close * 100,
-        }
-    except Exception as exc:
-        LOGGER.debug("[SqueezeMonitor] metrics %s: %s", sym, exc)
-        return _yf_fetch_metrics(sym) if _yf_fallback_enabled() else None
+def _sync_fetch_metrics(symbol: str) -> Optional[Dict[str, Any]]:
+    """Compatibility view of the single-symbol evidence-aware fallback."""
+    return _single_market_snapshot(symbol).metrics.get((symbol or "").upper().strip())
 
 
 def _vwap_from_bars(bars: List[Dict[str, Any]]) -> Optional[float]:
@@ -1223,7 +1208,10 @@ def _volumes_from_bars(
 
 def _metrics_from_batch_bars(symbol: str) -> Optional[Dict[str, Any]]:
     """Build the complete radar snapshot from prewarmed Alpaca bars."""
-    cached = _batch_bars.get(symbol.upper())
+    return _metrics_from_bar_set(_batch_bars.get(symbol.upper()))
+
+
+def _metrics_from_bar_set(cached: dict | None) -> Optional[Dict[str, Any]]:
     if not cached:
         return None
     daily = list(cached.get("daily") or [])
@@ -1232,13 +1220,26 @@ def _metrics_from_batch_bars(symbol: str) -> Optional[Dict[str, Any]]:
         return None
     from core.daily_bar_contract import bar_session_date, prior_daily_bars
 
+    stamps = [observation_ts(bar.get("t")) for bar in intraday]
+    if any(stamp is None for stamp in stamps) or len(set(stamps)) != len(stamps):
+        return None
+    intraday.sort(key=lambda bar: observation_ts(bar.get("t")))
     session_date = bar_session_date(intraday[-1].get("t"))
     if session_date is None:
+        return None
+    if any(bar_session_date(bar.get("t")) != session_date for bar in intraday):
         return None
     daily = prior_daily_bars(daily, session_date)
     if not daily:
         return None
+    if len({bar_session_date(row.get("t")) for row in daily}) != len(daily):
+        return None
     try:
+        for bar in intraday:
+            for field in ("c", "h", "l", "v"):
+                value = float(bar[field])
+                if not math.isfinite(value) or value < 0 or (field != "v" and value == 0):
+                    return None
         price = float(intraday[-1].get("c") or 0.0)
         session_high = max(float(bar.get("h") or 0.0) for bar in intraday)
         prior_close = float(daily[-1].get("c") or 0.0)
@@ -1248,7 +1249,7 @@ def _metrics_from_batch_bars(symbol: str) -> Optional[Dict[str, Any]]:
         if not session_vol or session_vol <= 0:
             # Never fabricate session volume (forensic MD-3/SQ-4).
             session_vol = 0.0
-    except (TypeError, ValueError, OverflowError):
+    except (KeyError, TypeError, ValueError, OverflowError):
         return None
     return {
         "price": price,
@@ -1257,7 +1258,14 @@ def _metrics_from_batch_bars(symbol: str) -> Optional[Dict[str, Any]]:
         "session_volume": float(session_vol),
         "avg_daily_volume": float(avg_vol),
         "vwap": vwap,
-        "price_as_of_ts": intraday[-1].get("t"),
+        "market_data_contract": CONTRACT,
+        "price_as_of_ts": observation_ts(intraday[-1].get("t")),
+        "price_timestamp_basis": "5Min_bar_start",
+        "price_feed": getattr(cached.get("intraday_result"), "feed", None),
+        "daily_feed": getattr(cached.get("daily_result"), "feed", None),
+        "intraday_feed": getattr(cached.get("intraday_result"), "feed", None),
+        "bars_complete": all(getattr(cached.get(key), "complete", False) for key in ("daily_result", "intraday_result")),
+        "volume_basis": "selected_feed_session_vs_prior_daily",
         "price_source": "alpaca_batch_bar",
         "reference_session_date": bar_session_date(daily[-1].get("t")).isoformat(),
         "peak_move_pct": (session_high - prior_close) / prior_close * 100,
@@ -1265,130 +1273,166 @@ def _metrics_from_batch_bars(symbol: str) -> Optional[Dict[str, Any]]:
     }
 
 
-def batched_market_metrics(
-    symbols: List[str],
-) -> Dict[str, Optional[Dict[str, Any]]]:
-    """Return an isolated batch snapshot without leaking shared scan state.
+def batched_market_snapshot(symbols: List[str], *, force: bool = False) -> MarketSnapshot:
+    """Each requested symbol has a status; empty success is not request failure."""
+    snapshot = MarketSnapshot()
+    if not _batch_bars_lock.acquire(blocking=False):
+        snapshot.statuses = {sym: {"status": "fetch_skipped", "reason": "batch_busy"} for sym in symbols}
+        return snapshot
+    try:
+        _batch_fetch_bars(symbols, force=force)
+        for symbol in symbols:
+            cached = _batch_bars.get(symbol.upper())
+            if cached is None:
+                continue  # disabled/unconfigured: caller may use a bounded fallback
+            daily = cached["daily_result"]
+            intraday = cached["intraday_result"]
+            detail = {"daily": daily.summary(), "intraday": intraday.summary()}
+            metrics = None
+            if not daily.complete or not intraday.complete:
+                detail["reason"] = daily.reason if not daily.complete else intraday.reason
+                status = "fetch_skipped" if (
+                    daily.pages == intraday.pages == 0
+                    and detail["reason"] in ("rate_limited_batch", "deadline_exceeded")
+                ) else "fetch_fail"
+            elif not cached["intraday"]:
+                status = "no_intraday_print"
+                detail["reason"] = "successful_empty_selected_feed"
+            else:
+                metrics = _metrics_from_batch_bars(symbol)
+                status = evidence_status(metrics) if metrics else "invalid_baseline"
+                detail["reason"] = status if status != "ready" else None
+            detail["status"] = status
+            detail["price_as_of_ts"] = (metrics or {}).get("price_as_of_ts")
+            detail["reference_session_date"] = (metrics or {}).get("reference_session_date")
+            ts = observation_ts(detail["price_as_of_ts"])
+            detail["price_age_s"] = round(time.time() - ts, 3) if ts else None
+            snapshot.statuses[symbol] = detail
+            snapshot.metrics[symbol] = metrics if status == "ready" else None
+        return snapshot
+    finally:
+        _batch_bars.clear()
+        _batch_bars_lock.release()
 
-    A symbol present in the batch but lacking an intraday print is returned as
-    ``None``. This means no usable snapshot on the selected feed, NOT proof
-    that the stock has not traded market-wide (IEX has limited coverage).
-    Retaining the key prevents dozens of redundant per-symbol fallbacks.
-    """
-    with _batch_bars_lock:
-        try:
-            _batch_fetch_bars(symbols)
-            return {
-                symbol: _metrics_from_batch_bars(symbol)
-                for symbol in symbols
-                if symbol.upper() in _batch_bars
-            }
-        finally:
-            _batch_bars.clear()
+
+def batched_market_metrics(symbols: List[str]) -> Dict[str, Optional[Dict[str, Any]]]:
+    """Hunter compatibility view: only validated metrics, never failure-as-evidence."""
+    return batched_market_snapshot(symbols).metrics
+
+
+async def _async_market_snapshot(symbols: List[str]) -> MarketSnapshot:
+    """Never block the event loop or abandon ownership of a timed-out thread."""
+    global _batch_worker_future
+    with _batch_worker_lock:
+        if _batch_worker_future is not None and not _batch_worker_future.done():
+            return MarketSnapshot(statuses={sym: {"status": "fetch_skipped", "reason": "batch_still_running"} for sym in symbols})
+        _batch_worker_future = _batch_worker_pool.submit(batched_market_snapshot, symbols)
+        future = _batch_worker_future
+    try:
+        return await asyncio.wait_for(asyncio.shield(asyncio.wrap_future(future)), _BATCH_DEADLINE_S + 2)
+    except asyncio.TimeoutError:
+        return MarketSnapshot(statuses={sym: {"status": "fetch_fail", "reason": "batch_timeout"} for sym in symbols})
 
 
 def _alpaca_multi_bars(
-    symbols: List[str],
-    *,
-    timeframe: str,
-    start: str,
-    end: str,
-    page_limit: int = 10000,
-) -> Dict[str, List[Dict[str, Any]]]:
-    """Bars for many symbols in one paginated multi-symbol Alpaca request.
+    symbols: List[str], *, timeframe: str, start: str, end: str,
+    page_limit: int = 10000, deadline: float | None = None,
+) -> BarFetch:
+    """A complete paginated response is required even for an empty symbol.
 
-    Returns {SYMBOL: [bars...]}. Empty dict on total failure (caller then falls
-    back to the per-symbol path). Same feed-priority + 429 accounting as the
-    per-symbol fetch.
+    Alpaca pages are symbol-major, so an interrupted page stream cannot prove
+    that a later symbol did not trade. Partial responses never escape as success.
     """
     import requests
     from core.prices import _alpaca_bar_feeds, _note_alpaca_feed_status
 
     headers = _alpaca_headers()
     if not headers or not symbols:
-        return {}
+        return BarFetch(reason="not_configured")
+    deadline = time.monotonic() + _BATCH_DEADLINE_S if deadline is None else deadline
     syms = ",".join(s.upper() for s in symbols)
+    failure = BarFetch(reason="no_feed")
     for feed in _alpaca_bar_feeds():
         out: Dict[str, List[Dict[str, Any]]] = {}
-        page_token = None
-        ok = False
-        try:
-            while True:
-                url = (
-                    f"https://data.alpaca.markets/v2/stocks/bars"
-                    f"?symbols={syms}&timeframe={timeframe}"
-                    f"&start={start}&end={end}&limit={page_limit}&feed={feed}"
-                )
-                if page_token:
-                    url += f"&page_token={page_token}"
-                r = requests.get(url, headers=headers, timeout=_TIMEOUT)
-                if r.status_code != 200:
-                    _note_alpaca_feed_status(feed, r.status_code)
-                    ok = False
+        token = None
+        seen: set[str] = set()
+        for page in range(_BATCH_MAX_PAGES):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return BarFetch(feed=feed, reason="deadline_exceeded", pages=page)
+            url = (
+                f"https://data.alpaca.markets/v2/stocks/bars?symbols={syms}"
+                f"&timeframe={timeframe}&start={start}&end={end}"
+                f"&limit={page_limit}&feed={feed}&sort=asc&adjustment=raw"
+            )
+            if token:
+                url += f"&page_token={quote(token, safe='')}"
+            try:
+                response = requests.get(url, headers=headers, timeout=min(_TIMEOUT, remaining))
+                if response.status_code != 200:
+                    _note_alpaca_feed_status(feed, response.status_code)
+                    failure = BarFetch(feed=feed, reason=f"http_{response.status_code}", pages=page + 1)
+                    if response.status_code == 429:
+                        return failure
                     break
-                data = r.json()
-                for sym, bars in (data.get("bars") or {}).items():
-                    out.setdefault(sym.upper(), []).extend(bars or [])
-                ok = True
-                page_token = data.get("next_page_token")
-                if not page_token:
-                    break
-        except Exception as exc:
-            LOGGER.debug("[SqueezeMonitor] multi-bars %s feed=%s: %s", timeframe, feed, exc)
-            ok = False
-        if ok and out:
-            return out
-    return {}
+                data = response.json()
+                if time.monotonic() > deadline:
+                    return BarFetch(feed=feed, reason="deadline_exceeded", pages=page + 1)
+                if not isinstance(data, dict) or "bars" not in data or not isinstance(data["bars"], (dict, type(None))):
+                    return BarFetch(feed=feed, reason="invalid_response", pages=page + 1)
+                for sym, bars in (data["bars"] or {}).items():
+                    if not isinstance(bars, list) or any(not isinstance(bar, dict) for bar in bars):
+                        return BarFetch(feed=feed, reason="invalid_response", pages=page + 1)
+                    out.setdefault(sym.upper(), []).extend(bars)
+                token = data.get("next_page_token")
+                if not token:
+                    return BarFetch(out, complete=True, feed=feed, pages=page + 1)
+                if not isinstance(token, str) or token in seen:
+                    return BarFetch(feed=feed, reason="repeated_page_token", pages=page + 1)
+                seen.add(token)
+            except Exception as exc:
+                LOGGER.debug("[SqueezeMonitor] multi-bars %s feed=%s: %s", timeframe, feed, type(exc).__name__)
+                failure = BarFetch(feed=feed, reason="request_failed", pages=page + 1)
+                break
+        else:
+            return BarFetch(feed=feed, reason="page_limit", pages=_BATCH_MAX_PAGES)
+    return failure
 
 
-def _batch_fetch_bars(symbols: List[str]) -> None:
-    """Prewarm the scan-local bar store for the whole watchlist.
-
-    Populates _batch_bars[SYMBOL] = {"daily": [...], "intraday": [...]} using
-    two paginated multi-symbol Alpaca requests (30d 1Day + session 5Min)
-    instead of ~2 calls per symbol. Best-effort: a symbol missing from the
-    store just triggers the per-symbol fallback in _fetch_volumes.
-    """
+def _batch_fetch_bars(symbols: List[str], *, force: bool = False) -> None:
+    """Keep completion, feed and failure provenance for both timeframes."""
     _batch_bars.clear()
-    if not SQUEEZE_BATCH_BARS or not symbols:
-        return
-    if not _alpaca_headers():
+    if (not SQUEEZE_BATCH_BARS and not force) or not symbols or not _alpaca_headers():
         return
     now_utc = datetime.now(timezone.utc)
-    try:
-        from zoneinfo import ZoneInfo
-        ct = ZoneInfo(SESSION_TZ)
-    except Exception:
-        ct = None
-    if ct:
-        day_start = datetime.now(ct).replace(
-            hour=PREMARKET_START_MIN // 60,
-            minute=PREMARKET_START_MIN % 60,
-            second=0, microsecond=0,
-        ).astimezone(timezone.utc)
-    else:
-        day_start = now_utc.replace(hour=9, minute=0, second=0, microsecond=0)
-    daily_start = (now_utc - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    now_ct = session_hm(now_utc)[0]
+    day_start = now_ct.replace(hour=PREMARKET_START_MIN // 60, minute=PREMARKET_START_MIN % 60, second=0, microsecond=0).astimezone(timezone.utc)
+    daily_start = (now_utc - timedelta(days=40)).strftime("%Y-%m-%dT%H:%M:%SZ")
     intraday_start = day_start.strftime("%Y-%m-%dT%H:%M:%SZ")
     end_str = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    daily: Dict[str, List[Dict[str, Any]]] = {}
-    intraday: Dict[str, List[Dict[str, Any]]] = {}
-    for i in range(0, len(symbols), _BATCH_SYMBOLS_PER_REQ):
-        chunk = symbols[i:i + _BATCH_SYMBOLS_PER_REQ]
-        daily.update(_alpaca_multi_bars(chunk, timeframe="1Day", start=daily_start, end=end_str))
-        intraday.update(_alpaca_multi_bars(chunk, timeframe="5Min", start=intraday_start, end=end_str))
-    for sym in symbols:
-        u = sym.upper()
-        d = daily.get(u)
-        it = intraday.get(u)
-        if d or it:
-            _batch_bars[u] = {"daily": d or [], "intraday": it or []}
-    LOGGER.info(
-        "[SqueezeMonitor] batch bars: %d/%d symbols prewarmed "
-        "(2 multi-symbol reqs/chunk vs ~%d per-symbol calls)",
-        len(_batch_bars), len(symbols), len(symbols) * 2,
-    )
+    deadline = time.monotonic() + _BATCH_DEADLINE_S
+    stop_reason = None
+    chunk_size = max(1, _BATCH_SYMBOLS_PER_REQ)
+    for i in range(0, len(symbols), chunk_size):
+        chunk = symbols[i:i + chunk_size]
+        if stop_reason:
+            daily = intraday = BarFetch(reason=stop_reason)
+        else:
+            daily = _alpaca_multi_bars(chunk, timeframe="1Day", start=daily_start, end=end_str, deadline=deadline)
+            intraday = (
+                BarFetch(reason="http_429") if daily.reason == "http_429" else
+                _alpaca_multi_bars(chunk, timeframe="5Min", start=intraday_start, end=end_str, deadline=deadline)
+            )
+            if "http_429" in (daily.reason, intraday.reason):
+                stop_reason = "rate_limited_batch"
+            elif time.monotonic() >= deadline:
+                stop_reason = "deadline_exceeded"
+        for sym in chunk:
+            u = sym.upper()
+            _batch_bars[u] = {
+                "daily": daily.bars.get(u, []), "intraday": intraday.bars.get(u, []),
+                "daily_result": daily, "intraday_result": intraday,
+            }
 
 
 def _fetch_volumes(symbol: str) -> Tuple[Optional[float], Optional[float], Optional[float]]:
@@ -1500,46 +1544,33 @@ def _fetch_volumes(symbol: str) -> Tuple[Optional[float], Optional[float], Optio
 
 
 def _yf_fetch_metrics(symbol: str) -> Optional[Dict[str, Any]]:
+    """No previous-close/open fallback when intraday evidence is unavailable."""
     from core.circuit_breaker import _yfinance_cb
     if not _yfinance_cb.allow():
         return None
     try:
         import yfinance as yf
 
-        t = yf.Ticker(symbol)
-        hist = t.history(period="30d", interval="1d")
-        intraday = t.history(period="1d", interval="5m")
-        if hist is None or hist.empty or len(hist) < 2:
+        ticker = yf.Ticker(symbol)
+        daily = ticker.history(period="1mo", interval="1d", auto_adjust=False)
+        intraday = ticker.history(period="1d", interval="5m", prepost=True, auto_adjust=False)
+        if daily is None or daily.empty or intraday is None or intraday.empty:
             return None
-        prev_close = float(hist["Close"].iloc[-2])
-        avg_vol = float(hist["Volume"].iloc[-20:].mean())
-        if intraday is not None and not intraday.empty:
-            session_vol = float(intraday["Volume"].sum())
-            session_high = float(intraday["High"].max())
-            last_px = float(intraday["Close"].iloc[-1])
-        else:
-            session_vol = float(hist["Volume"].iloc[-1])
-            session_high = float(hist["High"].iloc[-1])
-            last_px = float(hist["Close"].iloc[-1])
-        if prev_close <= 0:
-            return None
-        vwap = None
-        if intraday is not None and not intraday.empty:
-            tp = (intraday["High"] + intraday["Low"] + intraday["Close"]) / 3.0
-            vols = intraday["Volume"].astype(float)
-            den = float(vols.sum())
-            vwap = round(float((tp * vols).sum() / den), 4) if den > 0 else None
+
+        def rows(frame):
+            return [{"t": index.isoformat(), **{short: float(row[name]) for short, name in (
+                ("c", "Close"), ("h", "High"), ("l", "Low"), ("v", "Volume"),
+            )}} for index, row in frame.iterrows()]
+
+        metrics = _metrics_from_bar_set({
+            "daily": rows(daily), "intraday": rows(intraday),
+            "daily_result": BarFetch(complete=True, feed="yfinance"),
+            "intraday_result": BarFetch(complete=True, feed="yfinance"),
+        })
         _yfinance_cb.record_success()
-        return {
-            "price": last_px,
-            "prior_close": prev_close,
-            "session_high": session_high,
-            "session_volume": session_vol,
-            "avg_daily_volume": avg_vol,
-            "vwap": vwap,
-            "peak_move_pct": (session_high - prev_close) / prev_close * 100,
-            "current_move_pct": (last_px - prev_close) / prev_close * 100,
-        }
+        if metrics:
+            metrics["price_source"] = "yfinance_bar"
+        return metrics if metrics and evidence_status(metrics) == "ready" else None
     except Exception:
         _yfinance_cb.record_failure()
         return None
@@ -1615,6 +1646,9 @@ def _maybe_alert(
         or metrics.get("decision_eligible") is False
     ):
         LOGGER.warning("[SqueezeMonitor] reject nonofficial/advisory alert %s", symbol)
+        return False
+    if evidence_status(metrics) != "ready":
+        LOGGER.warning("[SqueezeMonitor] reject invalid/stale alert evidence %s", symbol)
         return False
     buy, sell = squeeze_trade_levels(metrics["price"], metrics["session_high"], kind)
     conf = squeeze_confidence(

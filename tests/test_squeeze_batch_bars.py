@@ -39,7 +39,7 @@ def test_metrics_from_batch_bars_avoids_per_symbol_quote_path(monkeypatch):
                     {"t": "2026-09-16T04:00:00Z", "o": 100, "c": 102, "v": 1200},
                 ],
                 "intraday": [
-                    {"t": "2026-09-16T13:30:00Z", "c": 104, "h": 105, "l": 103, "v": 100},
+                    {"t": "2026-09-16T13:25:00Z", "c": 104, "h": 105, "l": 103, "v": 100},
                     {"t": "2026-09-16T13:30:00Z", "c": 106, "h": 107, "l": 105, "v": 200},
                 ],
             }
@@ -57,7 +57,7 @@ def test_metrics_from_batch_bars_avoids_per_symbol_quote_path(monkeypatch):
 
 
 def test_batch_preserves_symbol_with_no_premarket_print(monkeypatch):
-    def fake_fetch(_symbols):
+    def fake_fetch(_symbols, **kwargs):
         sm._batch_bars.update({
             "AAPL": {
                 "daily": [{"t": "2026-09-15T04:00:00Z", "o": 98, "c": 100, "v": 1000}],
@@ -69,6 +69,15 @@ def test_batch_preserves_symbol_with_no_premarket_print(monkeypatch):
             },
         })
 
+    from core.squeeze_evidence import BarFetch
+    from datetime import datetime
+    monkeypatch.setattr(sm.time, "time", lambda: datetime.fromisoformat("2026-09-16T13:34:00+00:00").timestamp())
+    original_fetch = fake_fetch
+    def fake_fetch(_symbols, **kwargs):
+        original_fetch(_symbols)
+        for row in sm._batch_bars.values():
+            row["daily_result"] = BarFetch(complete=True, feed="iex")
+            row["intraday_result"] = BarFetch(complete=True, feed="iex")
     monkeypatch.setattr(sm, "_batch_fetch_bars", fake_fetch)
 
     metrics = sm.batched_market_metrics(["AAPL", "MSFT", "MISSING"])
@@ -307,8 +316,10 @@ def test_alpaca_multi_bars_paginates_and_groups(monkeypatch):
 
     monkeypatch.setattr(requests, "get", _fake_get)
     out = sm._alpaca_multi_bars(["AAPL", "MSFT"], timeframe="1Day", start="s", end="e")
-    assert out["AAPL"] == [{"v": 1}, {"v": 3}]  # pages concatenated
-    assert out["MSFT"] == [{"v": 2}]
+    assert out.complete is True
+    assert out.feed == "iex"
+    assert out.bars["AAPL"] == [{"v": 1}, {"v": 3}]  # pages concatenated
+    assert out.bars["MSFT"] == [{"v": 2}]
 
 
 def test_alpaca_multi_bars_empty_on_non_200(monkeypatch):
@@ -326,4 +337,7 @@ def test_alpaca_multi_bars_empty_on_non_200(monkeypatch):
             return {}
 
     monkeypatch.setattr(requests, "get", lambda *a, **k: _Err())
-    assert sm._alpaca_multi_bars(["AAPL"], timeframe="1Day", start="s", end="e") == {}
+    result = sm._alpaca_multi_bars(["AAPL"], timeframe="1Day", start="s", end="e")
+    assert result.bars == {}
+    assert result.complete is False
+    assert result.reason == "http_429"

@@ -151,6 +151,12 @@ def test_candidate_to_pick_matches_telegram_fields():
         "current_move_pct": 1.0,
         "prior_close": 4.20,
     }
+    import time
+    from core.daily_bar_contract import previous_session
+    from core.market_hours import session_hm
+    metrics.update({"price_as_of_ts": time.time() - 60, "daily_feed": "iex", "intraday_feed": "iex",
+                    "reference_session_date": previous_session(session_hm()[0].date()).isoformat(),
+                    "bars_complete": True, "session_volume": 1000, "avg_daily_volume": 1000})
     pick = candidate_to_pick("SPCE", "squeeze_active", metrics, 3.0, {"squeeze_risk": "high"})
     msg = format_squeeze_alert("SPCE", "squeeze_active", metrics, 3.0, {"squeeze_risk": "high"})
     assert pick["symbol"] == "SPCE"
@@ -380,18 +386,24 @@ def test_no_intraday_print_is_not_counted_as_a_fetch_failure(monkeypatch):
     monkeypatch.setattr("core.market_hours.is_us_premarket", lambda *a, **k: True)
     monkeypatch.setattr("core.market_hours.is_us_rth", lambda *a, **k: False)
     monkeypatch.setattr("config.symbols.get_edge_set", lambda: {"AAA", "BBB", "CCC"})
-    # AAA printed; BBB and CCC are in the batch but have no intraday print.
-    monkeypatch.setattr(sm, "batched_market_metrics", lambda syms: {
+    # Explicit complete-empty status is required; None alone proves nothing.
+    import time
+    from core.daily_bar_contract import previous_session
+    from core.market_hours import session_hm
+    from core.squeeze_evidence import MarketSnapshot
+    monkeypatch.setattr(sm, "batched_market_snapshot", lambda syms: MarketSnapshot(metrics={
         "AAA": {"session_volume": 1000.0, "avg_daily_volume": 500.0,
-                "peak_move_pct": 1.0, "current_move_pct": 1.0, "price": 10.0},
-        "BBB": None,
-        "CCC": None,
-    })
+                "peak_move_pct": 1.0, "current_move_pct": 1.0, "price": 10.0,
+                "prior_close": 9.9, "session_high": 10.0, "price_as_of_ts": time.time() - 60,
+                "reference_session_date": previous_session(session_hm()[0].date()).isoformat(),
+                "daily_feed": "iex", "intraday_feed": "iex", "bars_complete": True},
+        "BBB": None, "CCC": None,
+    }, statuses={sym: {"status": "ready" if sym == "AAA" else "no_intraday_print"} for sym in syms}))
 
     def _boom(sym):  # the fallback path must never be reached for batch answers
         raise AssertionError(f"per-symbol fallback ran for batched symbol {sym}")
 
-    monkeypatch.setattr(sm, "_sync_fetch_metrics", _boom)
+    monkeypatch.setattr(sm, "_single_market_snapshot", _boom)
     monkeypatch.setattr(sm, "_persist_scan_report", lambda r: None)
     monkeypatch.setattr(sm, "_maybe_alert", lambda *a, **k: False)
     monkeypatch.setattr(sm, "_enrich_watches_with_quorum", lambda w: None)
@@ -418,14 +430,15 @@ def test_symbols_never_attempted_are_skipped_not_failed(monkeypatch):
     monkeypatch.setattr("core.market_hours.is_us_premarket", lambda *a, **k: True)
     monkeypatch.setattr("core.market_hours.is_us_rth", lambda *a, **k: False)
     monkeypatch.setattr("config.symbols.get_edge_set", lambda: {"AAA", "BBB", "CCC"})
-    monkeypatch.setattr(sm, "batched_market_metrics", lambda syms: {})  # batch miss
+    from core.squeeze_evidence import MarketSnapshot
+    monkeypatch.setattr(sm, "batched_market_snapshot", lambda syms: MarketSnapshot())  # batch disabled
 
     def _hang(sym):
         import time as _t
-        _t.sleep(5)  # exceeds the patched timeout below
+        _t.sleep(0.15)  # exceeds the patched timeout below
         return None
 
-    monkeypatch.setattr(sm, "_sync_fetch_metrics", _hang)
+    monkeypatch.setattr(sm, "_single_market_snapshot", _hang)
     monkeypatch.setenv("SQUEEZE_FETCH_TIMEOUT_S", "0.05")
     monkeypatch.setenv("SQUEEZE_FETCH_DELAY_S", "0")
     monkeypatch.setattr(sm, "_persist_scan_report", lambda r: None)
@@ -443,6 +456,7 @@ def test_symbols_never_attempted_are_skipped_not_failed(monkeypatch):
     assert len(report["fetch_failed_symbols"]) == 1
     assert len(report["fetch_skipped_symbols"]) == 2
     assert report["fetch_ok"] == 0
+    sm._batch_worker_future.result(timeout=1)
 
 
 def test_get_squeeze_picks_exposes_the_new_fetch_outcome_counts(monkeypatch):
