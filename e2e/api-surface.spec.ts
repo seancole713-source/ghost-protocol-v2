@@ -136,3 +136,24 @@ test("market sessions never call unknown-age references live", async ({ request 
     }
   }
 });
+
+test("squeeze coverage accounts for failures, absence and invalid evidence separately", async ({ request }) => {
+  const response = await getWithRateLimitRetry(request, "/api/squeeze/picks");
+  expect(response.status()).toBe(200);
+  const body = await response.json();
+  if (body.last_scan_status !== "complete") {
+    expect(body.scan_ok).toBe(false);
+    return; // no completed scan is not evidence of coverage
+  }
+  expect(body.data_contract).toBe("squeeze_bar_evidence_v1");
+  const counts = ["fetch_ok", "fetch_fail", "fetch_skipped", "no_intraday_print", "invalid_baseline", "invalid_quote", "stale_quote"];
+  for (const key of counts) expect(body[key]).toBeGreaterThanOrEqual(0);
+  expect(counts.reduce((sum, key) => sum + body[key], 0)).toBe(body.symbols);
+  if (body.snapshot_stale) expect(body.scan_ok).toBe(false);
+  for (const row of body.picks || []) {
+    expect(row.market_data_contract).toBe("squeeze_bar_evidence_v1");
+    expect(row.price_as_of_ts).toBeGreaterThan(0);
+    expect(row.daily_feed).toBe(row.intraday_feed);
+    expect(row.bars_complete).toBe(true);
+  }
+});

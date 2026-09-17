@@ -3082,9 +3082,9 @@ function _renderSqueezePicks(data){
     var fetchLine = (data && data.fetch_ok != null)
       ? ' Priced <b>' + data.fetch_ok + '/' + symCount + '</b> on last scan.'
       : '';
-    var failSyms = (data && data.fetch_failed_symbols) ? data.fetch_failed_symbols : [];
+    var failSyms = [].concat((data && data.fetch_failed_symbols)||[], (data && data.invalid_baseline_symbols)||[], (data && data.invalid_quote_symbols)||[], (data && data.stale_quote_symbols)||[]);
     var failLine = failSyms.length
-      ? ' Unpriced: <b>' + escHtml(failSyms.join(', ')) + '</b>.'
+      ? ' Missing or invalid evidence: <b>' + escHtml(failSyms.join(', ')) + '</b>.'
       : '';
     var resumeCt = (data && data.radar_resume_ct) ? data.radar_resume_ct : '3:00 AM CT';
     var emptyTitle = overnight
@@ -3094,8 +3094,8 @@ function _renderSqueezePicks(data){
       ? 'Ghost sleeps <b>7:00 PM – 3:00 AM CT</b>. Premarket scan starts at <b>' + escHtml(resumeCt) + '</b>.'
         + (scanTs ? ' Last scan at <b>' + escHtml(scanStr) + '</b>.' : '')
       : watching
-        ? 'Radar is <b>live</b> — watching all ' + symCount + ' symbols.' + fetchLine + failLine
-          + ' Table below shows <b>buy now</b> / <b>sell now</b> (same levels as Telegram).'
+        ? (stale ? 'Radar snapshot is <b>stale</b>. ' : 'Radar is scanning the selected feed. ') + symCount + ' symbols requested.' + fetchLine + failLine
+          + ' Table below shows research reference levels, not approved trades.'
           + (data && data.is_after_hours
             ? ' Cash market closed at <b>3:00 PM CT</b> — extended-hours quotes only until 7:00 PM CT.'
             : '.')
