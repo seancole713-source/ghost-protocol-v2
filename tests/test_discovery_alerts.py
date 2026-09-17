@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import time
 
+import pytest
+
 import core.discovery_alerts as da
 
 
@@ -37,14 +39,15 @@ def _obs(symbol, move_pct, *, in_watchlist=False, validation_valid=True,
     independently, which allowed a combination the ledger cannot produce and
     hid the fact that this module dropped every row it existed to surface.
     """
+    observed = int(time.time()) - age
     return {
         "provider": "yahoo", "screen": screen, "symbol": symbol,
-        "source_ts": 1_788_000_000, "received_ts": 1_788_000_100,
+        "source_ts": observed, "received_ts": observed,
         "source_age_s": age, "rank": 1, "price": 1.72,
         "move_pct": move_pct, "volume": 5_000_000, "avg_volume": 900_000,
         "external_score": None, "in_official_watchlist": in_watchlist,
         "quarantined": not in_watchlist, "delayed": False, "freshness": "fresh",
-        "validation_valid": validation_valid,
+        "validation_valid": validation_valid, "move_basis": "premarket",
         "advisory_only": True, "decision_eligible": False,
     }
 
@@ -158,17 +161,17 @@ def test_the_ledger_really_does_quarantine_everything_off_watchlist():
     assert row["quarantined"] is True
 
 
-def test_duplicate_symbols_keep_the_largest_move(monkeypatch):
+def test_duplicate_symbols_keep_the_latest_move(monkeypatch):
     """Screens overlap; the same symbol appears under several of them."""
     _patch(monkeypatch, [
-        _obs("GPRO", 40.0, screen="day_gainers"),
-        _obs("GPRO", 183.0, screen="most_actives"),
+        _obs("GPRO", 40.0, age=30, screen="day_gainers"),
+        _obs("GPRO", 183.0, age=600, screen="most_shorted_stocks"),
     ])
 
     out = da.build_discovery_alerts()
 
     assert out["alert_count"] == 1
-    assert out["alerts"][0]["move_pct"] == 183.0
+    assert out["alerts"][0]["move_pct"] == 40.0
 
 
 def test_alerts_rank_by_absolute_move(monkeypatch):
@@ -325,3 +328,68 @@ def test_seventy_qualifying_movers_all_survive(monkeypatch):
     assert out["qualifying_count"] == 70
     assert out["alert_count"] == 70
     assert out["truncated"] == 0
+
+
+def test_latest_below_threshold_does_not_resurrect_an_old_peak(monkeypatch):
+    _patch(monkeypatch, [_obs("FADE", 25, age=600), _obs("FADE", 2, age=30)])
+    out = da.build_discovery_alerts()
+    assert out["alerts"] == []
+    assert out["dropped"]["below_threshold"] == 1
+
+
+def test_latest_invalid_row_does_not_resurrect_valid_history(monkeypatch):
+    _patch(monkeypatch, [
+        _obs("BAD", 25, age=600),
+        _obs("BAD", 20, age=30, validation_valid=False),
+    ])
+    assert da.build_discovery_alerts()["alerts"] == []
+
+
+def test_intraday_rows_age_out_at_read_time_not_three_days(monkeypatch):
+    _patch(monkeypatch, [_obs("OLD", 25, age=1801)])
+    out = da.build_discovery_alerts()
+    assert out["alerts"] == []
+    assert out["dropped"]["stale"] == 1
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_nonfinite_moves_never_enter_json_alerts(monkeypatch, value):
+    _patch(monkeypatch, [_obs("BAD", value)])
+    assert da.build_discovery_alerts()["alerts"] == []
+
+
+@pytest.mark.parametrize("age", [-5, None])
+def test_future_or_missing_source_time_is_not_current(monkeypatch, age):
+    row = _obs("BAD", 25, age=age or 0)
+    if age is None:
+        row.update(source_ts=None, source_age_s=None)
+    _patch(monkeypatch, [row])
+    assert da.build_discovery_alerts()["alerts"] == []
+
+
+def test_ingestion_age_cannot_override_real_source_timestamp(monkeypatch):
+    row = _obs("OLD", 25, age=3600)
+    row["source_age_s"] = 5
+    _patch(monkeypatch, [row])
+    assert da.build_discovery_alerts()["alerts"] == []
+
+
+def test_daily_history_is_not_ranked_as_a_current_intraday_move(monkeypatch):
+    daily = _obs("GPRO", 183, age=45 * 3600, screen="market_wide_daily")
+    daily.update(provider="polygon_grouped_daily", move_basis="close_to_close")
+    _patch(monkeypatch, [daily, _obs("GPRO", 6, age=30)])
+    out = da.build_discovery_alerts()
+    assert out["alerts"][0]["move_pct"] == 6
+    assert out["historical_alerts"][0]["move_pct"] == 183
+    assert out["historical_alerts"][0]["observation_kind"] == "daily_history"
+    assert out["historical_alerts"][0]["decision_eligible"] is False
+
+
+def test_alert_exposes_matched_source_provenance(monkeypatch):
+    row = _obs("CRDO", 7.5, age=30)
+    _patch(monkeypatch, [row])
+    alert = da.build_discovery_alerts()["alerts"][0]
+    assert alert["source_ts"] == row["source_ts"]
+    assert alert["received_ts"] == row["received_ts"]
+    assert alert["move_basis"] == "premarket"
+    assert alert["observation_kind"] == "intraday_observation"

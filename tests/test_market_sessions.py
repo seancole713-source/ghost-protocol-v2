@@ -47,7 +47,7 @@ def test_fresh_fetch_budget_is_enforced(monkeypatch):
 
 def test_young_cache_serves_as_live_without_fetching(monkeypatch):
     calls = []
-    cache = {"WOLF": (time.time() - 10, {"price": 41.3, "feed": "alpaca_iex"})}
+    cache = {"WOLF": (time.time() - 10, {"price": 41.3, "feed": "alpaca_iex", "price_as_of_ts": time.time() - 10})}
     _setup(monkeypatch, cache=cache, fetch_calls=calls)
     out = ms.get_market_sessions(["WOLF"], max_fresh=5)
     row = out["sessions"]["WOLF"]
@@ -57,7 +57,7 @@ def test_young_cache_serves_as_live_without_fetching(monkeypatch):
 
 
 def test_stale_cache_labeled_stale_not_hidden(monkeypatch):
-    cache = {"OLD": (time.time() - 5000, {"price": 5.0, "feed": "alpaca_iex"})}
+    cache = {"OLD": (time.time() - 5000, {"price": 5.0, "feed": "alpaca_iex", "price_as_of_ts": time.time() - 5000})}
     _setup(monkeypatch, cache=cache)
     out = ms.get_market_sessions(["OLD"], max_fresh=0)
     row = out["sessions"]["OLD"]
@@ -74,7 +74,7 @@ def test_breaker_open_labeled(monkeypatch):
 
 
 def test_fetch_failure_falls_back_to_cache_as_stale(monkeypatch):
-    cache = {"X": (time.time() - 2000, {"price": 3.0, "feed": "alpaca_iex"})}
+    cache = {"X": (time.time() - 2000, {"price": 3.0, "feed": "alpaca_iex", "price_as_of_ts": time.time() - 2000})}
     monkeypatch.setattr(prices, "_intraday_cache", cache)
     monkeypatch.setattr(cb, "_alpaca_cb", _FakeBreaker(True))
 
@@ -180,3 +180,61 @@ def test_truly_empty_row_with_open_breaker_is_not_labeled_live(monkeypatch):
     out = ms.get_market_sessions(["Y"], max_fresh=0)
     assert out["sessions"]["Y"]["ok"] is False
     assert out["sessions"]["Y"]["provider_state"] == "breaker_open"
+
+
+def test_young_cache_cannot_make_an_old_observation_live(monkeypatch):
+    now = time.time()
+    cache = {"MRVL": (now - 10, {"price": 241.24, "feed": "alpaca_iex",
+                                  "price_as_of_ts": now - 3600})}
+    _setup(monkeypatch, cache=cache)
+    row = ms.get_market_sessions(["MRVL"], max_fresh=0)["sessions"]["MRVL"]
+    assert row["provider_state"] == "stale"
+    assert row["freshness_seconds"] >= 3599
+    assert row["cache_age_seconds"] <= 11
+    assert row["quote_status"] == "stale"
+
+
+def test_no_observation_clock_never_becomes_live(monkeypatch):
+    cache = {"X": (time.time() - 10, {"price": 12.0, "feed": "alpaca_iex"})}
+    _setup(monkeypatch, cache=cache)
+    row = ms.get_market_sessions(["X"], max_fresh=0)["sessions"]["X"]
+    assert row["provider_state"] == "unavailable"
+    assert row["freshness_seconds"] is None
+    assert row["quote_status"] == "unknown"
+    assert row["ok"] is True  # still observable, but not verified current
+
+
+def test_reference_only_fallback_does_not_borrow_a_trade_timestamp(monkeypatch):
+    now = time.time()
+    original = {"price": None, "rth_close": 12.0, "price_as_of_ts": now - 5}
+    _setup(monkeypatch, cache={"X": (now - 10, original)})
+    row = ms.get_market_sessions(["X"], max_fresh=0)["sessions"]["X"]
+    assert row["provider_state"] == "reference_only"
+    assert row["quote_status"] == "reference_only"
+    assert row["freshness_seconds"] is None
+    assert row["price_as_of_ts"] is None
+    assert original["price"] is None
+    assert original["price_as_of_ts"] == now - 5
+
+
+def test_future_observation_is_not_live(monkeypatch):
+    now = time.time()
+    _setup(monkeypatch, cache={"X": (now-5, {"price": 12, "price_as_of_ts": now+300})})
+    row = ms.get_market_sessions(["X"], max_fresh=0)["sessions"]["X"]
+    assert row["quote_status"] == "future_timestamp"
+    assert row["provider_state"] == "unavailable"
+
+
+def test_fresh_fetch_does_not_reset_observation_age(monkeypatch):
+    _setup(monkeypatch, fetch_result={"price": 12, "price_as_of_ts": time.time()-3600})
+    row = ms.get_market_sessions(["X"], max_fresh=1)["sessions"]["X"]
+    assert row["provider_state"] == "stale"
+    assert row["freshness_seconds"] >= 3599
+
+
+def test_provider_marked_stale_is_not_overridden_by_a_young_clock(monkeypatch):
+    now = time.time()
+    _setup(monkeypatch, cache={"X": (now-5, {
+        "price": 12, "price_as_of_ts": now-5, "data_stale": True})})
+    row = ms.get_market_sessions(["X"], max_fresh=0)["sessions"]["X"]
+    assert row["provider_state"] == "stale"
