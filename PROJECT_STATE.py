@@ -33,6 +33,14 @@ of the pause, and the only proven serveable model (ITRI/DOWN) is off via V3_DOWN
 # ============================================================
 
 SESSION_LOG = {
+    "runtime_recovery_2026_09_21": {
+        "report": "docs/runtime_recovery_2026-09-21.md",
+        "incident": "PR #203 c459895 crashed: Python 3.13 / NumPy 1.26.4 extension required missing GLIBC_2.38. Public forecast endpoints returned 502, not zero picks.",
+        "recovery": "Previous image 6572468 loaded but b7666ab9 FAILED the 120s health deadline: schema initialization took 118s, server bound at 124s.",
+        "repair": "Supported Python 3.12, CI/runtime parity, native wheels and fail-closed final-image/boot preflight; bounded 300s health startup window.",
+        "release": "Pending CI and exact-SHA production verification recorded on repair PR. Do not infer restored production from source alone.",
+        "honesty": "No statistical gate or model change. No 70% proof. Slow repeat schema migration and separate premarket/regular forecast evidence remain open.",
+    },
     "squeeze_evidence_repair_2026_09_17": {
         "report": "docs/squeeze_evidence_repair_2026-09-17.md",
         "baseline": "6572468 verified live. Six regression cases reproduced false absence, stale issuance, and false fresh-scan state.",
