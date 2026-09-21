@@ -31,8 +31,25 @@ from typing import Any, Dict, List, Optional, Tuple
 
 CHECKLIST_VERSION = "catalyst_v1"
 
-# Matches the trained lane: V3_LABEL_HOLD_BARS = 3.
-HOLD_BARS = 3
+# DERIVED, never hardcoded. This was `HOLD_BARS = 3` with a comment claiming it
+# matched the trained lane. Production runs V3_LABEL_HOLD_BARS=5, so it did not
+# — and checklist_ledger.validate_outcome_contract() fails closed on exactly
+# that divergence, which is the first statement of record_snapshot(). Every
+# checklist snapshot therefore raised, the shadow writer swallowed it per row
+# ("one bad row must not stop the rest"), and the entire checklist lane
+# recorded ZERO snapshots with no health signal. Confirmed live 2026-09-04:
+# all four calibration cohorts read total_samples=0.
+#
+# The guard was right; the constant was the bug. Reading the same source the
+# resolver reads makes that divergence structurally impossible rather than
+# merely detected. Snapshots already written under a different horizon stay
+# separated by cohort identity, because outcome_contract embeds this value.
+#
+# Captured at import: the process must restart to pick up an env change, and
+# on Railway an env change restarts the container anyway.
+from core.tp_sl_resolve import label_hold_bars as _label_hold_bars
+
+HOLD_BARS = _label_hold_bars()
 
 UP = "UP"
 DOWN = "DOWN"

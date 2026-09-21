@@ -13,11 +13,16 @@ RULES:
   7. SESSION_LOG is the handover log — read it to understand what happened in the
      last session and what's in flight. Update it at the end of every session.
 
-LAST UPDATED: 2026-09-02 - PRs #167 and #169: corrected the unsupported 5% coverage-yield
-change, deployed a six-hour scheduler timeout sized from the observed 199-minute five-year fleet
-run, ran the sanctioned 12-hypothesis WOLF/UP discovery (no finalist), and completed the forced
-107-symbol retrain (zero gate passes; ITRI's proven incumbent retained). Production remains honest:
-Contract 70 is falsified at current data, no forward registration exists, and the engine is paused.
+LAST UPDATED: 2026-09-03 - PRs #171 and #172, both MERGED AND DEPLOYED (live f176fa5, verified
+by boot banner). #171: train/serve EMA feature skew + restored PR #135's banned negative
+walk-forward edge floor. #172: found the reason the engine pause could never clear — the kill
+windows are COUNTS with no age bound, so a pause suppressed firing, no new outcomes resolved, and
+the same stale rows re-tripped the switch forever. Bounded by KILL_RECENCY_DAYS=14 (mirroring the
+existing CB_RECENCY_DAYS). Live result: brier red(0.3571/15 samples) -> insufficient(null/0),
+any_triggered=false. NO THRESHOLD WAS LOOSENED in either PR. Engine is STILL PAUSED: the latch
+persists and needs one POST /api/admin/resume-engine — but it will now stick instead of re-pausing
+after the 24h grace. Ghost still fires nothing: 104/107 symbols skip on v3_research_tier upstream
+of the pause, and the only proven serveable model (ITRI/DOWN) is off via V3_DOWN_SIGNALS_ENABLED=0.
 """
 
 # ============================================================
@@ -28,8 +33,52 @@ Contract 70 is falsified at current data, no forward registration exists, and th
 # ============================================================
 
 SESSION_LOG = {
-    "session_date": "2026-09-02",
-    "session_span": "Handoff verification → PR #167 correction → bounded discovery → forced five-year fleet retrain → PR #169 timeout correction → live verification",
+    "runtime_recovery_2026_09_21": {
+        "report": "docs/runtime_recovery_2026-09-21.md",
+        "incident": "PR #203 c459895 crashed: Python 3.13 / NumPy 1.26.4 extension required missing GLIBC_2.38. Public forecast endpoints returned 502, not zero picks.",
+        "recovery": "Previous image 6572468 loaded but b7666ab9 FAILED the 120s health deadline: schema initialization took 118s, server bound at 124s.",
+        "repair": "Supported Python 3.12, CI/runtime parity, native wheels and fail-closed final-image/boot preflight; bounded 300s health startup window.",
+        "release": "Pending CI and exact-SHA production verification recorded on repair PR. Do not infer restored production from source alone.",
+        "honesty": "No statistical gate or model change. No 70% proof. Slow repeat schema migration and separate premarket/regular forecast evidence remain open.",
+    },
+    "squeeze_evidence_repair_2026_09_17": {
+        "report": "docs/squeeze_evidence_repair_2026-09-17.md",
+        "baseline": "6572468 verified live. Six regression cases reproduced false absence, stale issuance, and false fresh-scan state.",
+        "repair": "Typed timeframe outcomes, complete same-feed evidence, bounded off-loop requests with retained ownership, clock-preserving candidate/scorecard pipeline and age-based scan status.",
+        "probe": "14:13:50Z read-only 107-symbol probe: 100 recent complete bars, 3 successful empty IEX responses, 4 stale rejected. No issuance or production writes.",
+        "release": "Final tests and exact deployment verification belong to the repair PR; do not infer deployment from this source entry.",
+        "remaining": "No 70% proof or approved model. Limited IEX coverage, corporate actions, other previous-close consumers and actual forward forecasting evidence remain open.",
+    },
+    "discovery_freshness_repair_2026_09_17": {
+        "report": "docs/discovery_freshness_repair_2026-09-17.md",
+        "baseline": "f8015ff verified live; SIP HTTP 403, IEX HTTP 200 with existing credentials.",
+        "repair": "Latest unique discovery observations before budgets/filters; daily history separated; read-time expiry and source clocks. Batch session freshness no longer comes from cache insertion time.",
+        "validation": "2077 unit and 47 localhost PostgreSQL integration tests passed. Three live API contract smoke tests added; deployed verification belongs to the PR after merge.",
+        "remaining": "No approved intraday model or 70% proof; no new alerts/trades. Scanner timeframe status, observation clocks, prior-close fallbacks, and feed coverage remain open; see report.",
+    },
+    "split_history_repair_2026_09_16": {
+        "report": "docs/split_history_repair_2026-09-16.md",
+        "finding": "Alpaca raw defaults turned NVDA's split into -89.91% and SMH's into -48.93%; split-adjusted comparisons are +0.90% and +2.15%.",
+        "repair": "Model-only split requests, adjustment-aware caching, new feature schema and v4 contract; v1-v3 identities preserved. Outcome reference-price semantics not silently changed.",
+        "validation": "2060 local unit tests passed; CI and live deployment evidence will be attached to the repair PR.",
+        "honesty": "No proven 70% accuracy, no manual model activation, no threshold relaxation. Raw fleet replay is a limited baseline, not proof of the corrected lineage.",
+    },
+    "latest_repair_2026_09_16": {
+        "status": "PR #197 and #198 deployed and verified; latest 522faf4, Railway cc80b09c, CI 35105963342 green (2051 unit, 43 PostgreSQL, 67 browser; 10 browser skipped).",
+        "baseline_commit": "f374e5a34121a5228c004b33da5f6b8dc712e9d4",
+        "report": "docs/prediction_pipeline_repair_2026-09-16.md",
+        "live_findings": "Unpaused but 0 fireable models; /api/shadow-stats HTTP 500; prior-close date off by one; daily model consumed partial/overlaid bars.",
+        "honesty": "No threshold changes. No proven 70% accuracy. Research forecasts remain separate from official picks.",
+    },
+    "sector_training_history_repair_2026_09_16": {
+        "report": "docs/sector_history_repair_2026-09-16.md",
+        "finding": "5y target training fetched only 1y of sector data; measured 902/1126 AAPL rows missing context. Matching windows gives 0/1126 missing.",
+        "repair": "Training requests the configured history length for its sector proxy. Existing live model weights, thresholds and firing gates unchanged.",
+        "validation": "2054 unit tests passed. Paired AAPL replay mixed; all four variants fail admission. Exact deployment verification belongs to the repair PR, not this pre-release entry.",
+        "honesty": "No accuracy improvement claimed; no replay artifact stored or promoted. No valid precision proof among 214 current research artifacts.",
+    },
+    "session_date": "2026-09-03",
+    "session_span": "Handoff read → premarket/prediction audit → adversarially-verified bug hunt (23 agents) → train/serve feature-parity fix + negative-edge floor restoration → 8 revert-verified regression tests → dd60ac5 on PR #171, CI green (unmerged)",
     "handover_to": "Next AI agent picking up this project",
 
     # ── WHAT'S DEPLOYED RIGHT NOW ──
@@ -54,6 +103,445 @@ SESSION_LOG = {
 
     # ── WHAT HAPPENED THIS SESSION ──
     "session_summary": [
+        "DISCOVERY BAR 10% -> 5% (2026-09-08, Claude, operator instruction). A 5% move is worth "
+        "knowing about and a discovery lane that only reports doubles is not watching the market. "
+        "RECORDED EXPLICITLY SO NO FUTURE SESSION MISREADS IT AS A LOOSENING: "
+        "DISCOVERY_ALERT_MIN_MOVE_PCT is a DISPLAY threshold on an advisory lane whose every row "
+        "carries decision_eligible=False. It controls how much Ghost REPORTS, never what Ghost "
+        "CLAIMS. No proof gate, precision target, confidence floor or win-rate threshold was "
+        "touched -- those remain floor-clamped by accuracy_contract and are not reachable from "
+        "here. Moving the bar alone would have been a NO-OP: the list ranks by absolute move, so "
+        "a cap of 12 kept the twelve biggest movers and silently cut every new 5-10% name. "
+        "DISCOVERY_ALERT_MAX therefore moved in the same change, and the payload now carries "
+        "qualifying_count and truncated with a WARNING when the cap cuts anything, because a cap "
+        "that silently hides qualifying movers reads exactly like a quiet tape -- the failure this "
+        "module exists to stop. That field immediately caught its own PR: the first live cycle "
+        "read alert_count=50, qualifying_count=70, truncated=20, so the cap was still 20 misses. "
+        "PR #191 raised it to 200 (ceiling 500), chosen to be structurally un-truncatable -- at "
+        "most DISCOVERY_ALERT_PER_SCREEN (60) rows across three screens bounds the list at 180 -- "
+        "with a test asserting that RELATIONSHIP against the live values, so raising per-screen "
+        "without raising the cap fails CI rather than silently truncating again. VERIFIED LIVE "
+        "14:14Z: alert_count=70, qualifying_count=70, truncated=0, 6 of them watchlist names. "
+        "CURRENT VALUES: min_move_pct 5.0, DISCOVERY_ALERT_MAX 200. Suite 1993 -> 2000. "
+        "HONEST LIMIT ON 'NEVER MISS': not achievable on the Yahoo screens. Each returns at most "
+        "50 rows (Yahoo's own per-request cap, enforced at external_screener_ingest.py:170), so "
+        "on an active session more names move >5% than the three screens can return. Ghost will "
+        "now surface everything >5% THAT IT SEES; seeing every US ticker needs the Polygon "
+        "grouped-daily lane, which is built, deployed and self-disabling on a 403 because this "
+        "account's plan does not include the endpoint.",
+
+        "THE GEOMETRY LEVER IS DEAD; THE EVIDENCE CLOCK WAS THE REAL BUG (2026-09-05, Claude, "
+        "PR #188 + this). TWO MEASUREMENTS, BOTH RUN ON THE BOX, BOTH OVERTURNING A PRIOR BELIEF. "
+        "(1) GEOMETRY. PR #188 shipped a one-shot job that runs scripts/geometry_edge_sweep.py and "
+        "scripts/provable_oppoint_sweep.py in a CHILD process (they mutate "
+        "os.environ['V3_STOP_VOL_MULT'], which imported would re-label the live engine) under the "
+        "retrain lock. Results 21:44-22:03Z contradict the 2026-07-08 finding this session had "
+        "been quoting: mean wf_edge by mult was 0.65 -0.1013 / 0.9 -0.0722 / 1.2 -0.0593 / "
+        "1.5 -0.0561 / 1.8 -0.0593 -- i.e. 0.65 is the WORST multiplier for walk-forward edge, "
+        "not the best, and ZERO of 12 symbols show positive wf_edge at ANY multiplier. The "
+        "provable-operating-point run is starker: pooled precision at thr>=0.55 is 0.371 "
+        "(support 124, wilson 0.291) at mult 0.65 versus 0.580 (support 2773, wilson 0.561) at "
+        "1.8 -- the tight stop drops the base rate to ~35% so calibrated probabilities almost "
+        "never reach 0.55, which is the mechanism behind July's '0/24 provable'. WHY JULY DOES "
+        "NOT REPRODUCE: n_feature_cols=32 today versus 49 then; news/options/intraday/macro/"
+        "cross-sectional features are all toggled OFF in production, so the +0.22 was measured on "
+        "a materially richer model. DO NOT CHANGE V3_STOP_VOL_MULT -- it would worsen the gate "
+        "that is actually blocking. EV is negative at every multiplier tested (1.8: break-even "
+        "64.3% vs precision 58.0% = -0.35%/trade; 0.65: break-even 39.4% vs 37.1% = "
+        "-0.08%/trade), so no geometry in 0.65-1.8 is EV-positive with the current feature set. "
+        "The lever is FEATURES, exactly as PROJECT_STATE:479 flagged and never shipped. "
+        "(2) THE EVIDENCE CLOCK, and this one is a real bug with a real fix. proven_skill_gate "
+        "counts resolved shadow outcomes WHERE model_sha256=%s and needs 10. Both retrain jobs "
+        "chose what to train from get_model_status()['symbols'], which is populated only where "
+        "model_serve_guard returns None -- PROVEN tier only. With every model stamped 'research' "
+        "that map is empty, so coverage read missing=107 forever, retrained the whole fleet every "
+        "~12-16h, and the map it read could never be raised by the loop reading it. Its own "
+        "docstring said 'lack a LOADABLE v3 model' and the job comment said 'if too few loadable "
+        "v3 models'; the implementation matched neither. Weekly retrain blanketed the fleet every "
+        "7 days on top. MEASURED over 30 days of shadow outcomes: 3,252 identity groups for 207 "
+        "lanes, 3,252 DISTINCT model_sha256, max n=6, median 1, and ZERO groups reaching n>=10. "
+        "Pooled by lane instead of by sha the same outcomes give mean 19.3 and 153 of 207 lanes "
+        "clear 10. The evidence was never thin -- it was shredded into 3,252 buckets holding ~1 "
+        "outcome each, so NO model could ever prove skill however good it was. "
+        "FIX: coverage and weekly both now count LOADABLE models (research tier included -- "
+        "tier_unproven is the only reject that still leaves a usable artifact) and retrain only "
+        "symbols with no loadable model or one within MODEL_REFRESH_WITHIN_DAYS (default 3) of "
+        "the 14-day serve expiry. Neither job falls back to the whole fleet any more. "
+        "get_model_status now exposes trained_at and age_days, without which 'is this about to "
+        "stop loading' was unanswerable. 12 tests. Suite 1981 -> 1993. "
+        "HONEST RESIDUAL: lanes accrue ~0.64 resolved outcomes/day, so even with a perfectly "
+        "stable sha a 14-day model life yields ~9 -- just under the required 10. The fix removes "
+        "the shredding and lets the faster lanes finish; whether the 14-day expiry itself needs "
+        "revisiting is the NEXT question, and it is a proof-integrity parameter that must not be "
+        "widened casually. Also unresolved: geometry_edge_sweep.py's docstring still asserts the "
+        "July numbers that no longer reproduce.",
+
+        "day_losers CONFIRMED FETCHING; ALL SCREENS READ bad=50 OFF-HOURS AND THAT IS CORRECT "
+        "(2026-09-05, Claude, PR #186 verification). The per-screen log added by #186 printed at "
+        "19:44:23Z: `external screener status=complete inserted=0 | day_gainers=50/50 in=0 bad=50 "
+        "day_losers=50/50 in=0 bad=50 most_shorted_stocks=50/50 in=0 bad=50`. That settles two "
+        "things that inference could not. FIRST, day_losers is genuinely being requested and is "
+        "returning 50 rows -- before #186 the only evidence was `status=complete inserted=50` on "
+        "the prior cycle, which could not distinguish a fetched screen from an unrequested one. "
+        "It also retroactively confirms those 50 rows WERE the day_losers rows: they are "
+        "duplicates now (inserted=0), which is what a closed-market re-poll produces because "
+        "observation_id is screen:symbol:source_ts:volume and none of those change while the "
+        "market is shut. "
+        "SECOND, and the part a future session must not misread: bad=50 on ALL THREE screens "
+        "means every row arrived validation_valid=FALSE. This is NOT a dead lane. It is Saturday; "
+        "Yahoo serves Friday's post-market quote, source_age_s is ~69,800s, and "
+        "EXTERNAL_SCREENER_MAX_AGE_S is 1800, so every row is legitimately stale_source_timestamp "
+        "at ingest. The five alerts still surfacing are Friday rows that were ingested WHILE "
+        "fresh and remain valid in the ledger. The dead window is only post-market close to "
+        "pre-market open plus weekends -- windows in which no new market data exists either. "
+        "_quote_point already reads preMarketPrice/preMarketTime when marketState is PRE, so "
+        "Monday's pre-market gappers ingest fresh and normally. "
+        "READ THE INVERSE, THOUGH: bad=50 DURING a live session would be a real fault (provider "
+        "serving lagged quotes), and a single screen reading UNAVAILABLE(...) while the others "
+        "read 50/50 is a real fault at any hour. The bound was deliberately NOT widened to make "
+        "the weekend read green -- a Friday quote fetched on Saturday IS stale, and loosening a "
+        "data-quality bound so a small closed-market sample looks 'working' is precisely the "
+        "move this project forbids.",
+
+        "THE FULL-MARKET PROVIDER IS NOT AVAILABLE ON THIS PLAN; THE DECLINE GAP CLOSED ANOTHER "
+        "WAY (2026-09-05, Claude, PR #185). PR #184 shipped core/market_wide_snapshot.py to pull "
+        "every US ticker's close-to-close move from one Polygon grouped-daily call. It deployed "
+        "clean (b8076f9, deploy bee28699 SUCCESS 18:38:23Z) and the job registered correctly "
+        "(market_wide_snapshot every 21600s timeout=300s initial_delay=600.0s). At 18:48:29Z it "
+        "fired and reported: MARKET-WIDE DISABLED — Polygon returned 403 for grouped-daily. This "
+        "account's Polygon plan does not include the endpoint. The 403 handling added late in "
+        "#184 is the only reason that is known rather than guessed: without it the failure would "
+        "have been swallowed by the circuit breaker and read as a flaky provider indefinitely -- "
+        "the exact failure mode of the four dead subsystems found on 2026-09-04. "
+        "TWO FIXES. (1) day_losers added to _DEFAULT_SCREENS. The alert lane ranks by ABSOLUTE "
+        "move and was written to surface crashes, but the allowlist held only day_gainers and "
+        "most_shorted_stocks, so a decline could reach it ONLY if the name also happened to be "
+        "heavily shorted. Confirmed live: the top alert after #184 deployed was BRNX at -26.3%, "
+        "and it arrived through most_shorted_stocks. _screens() also truncated to the first two "
+        "entries, so adding a screen to the allowlist would have left it configured and never "
+        "fetched -- the cap is now the allowlist length. Chosen over a new provider because the "
+        "Yahoo path is PROVEN LIVE (five alerts returned through it minutes earlier) and because "
+        "every outbound provider host is blocked from the agent container, so an Alpaca or "
+        "alternative adapter could only have been written blind against an unverified schema. "
+        "(2) The Polygon rejection is now remembered in-process and checked BEFORE the circuit "
+        "breaker, because after five failures the breaker opens and every later cycle would have "
+        "reported the generic provider_breaker_open instead -- decaying an exact diagnosis back "
+        "into 'something is flaky'. Sticky within the process, cleared on restart so a plan "
+        "upgrade takes effect on the next deploy. "
+        "VERIFIED LIVE that #184's central fix works: /api/wolf/ask/context discovery_alerts "
+        "returned alert_count=5, outside_watchlist_count=5, dropped={no_move:0, stale:0, "
+        "invalid:0, below_threshold:110}, considered=120 (= the new 60-per-screen cap x 2 "
+        "screens), max_age_s=259200. ALL FIVE alerts carry in_watchlist=false, so under the code "
+        "running an hour earlier every one of them was dropped as quarantined and the count was "
+        "necessarily zero while looking like a quiet tape. "
+        "STILL OPEN: genuine full-market coverage (every ticker, not the top N of three screens) "
+        "needs either a Polygon plan that includes grouped-daily, or an adapter for a provider "
+        "whose API can be verified from an environment with egress. Suite 1958 -> 1967.",
+
+        "GHOST COULD NOT SEE A CRASH, AND THE FIX FOR THAT WAS ITSELF DEAD (2026-09-05, Claude). "
+        "Two defects, one of them mine from three days earlier. FIRST: the discovery alert lane "
+        "shipped in PR #182 -- built specifically so a GPRO-style run would be visible -- dropped "
+        "every row it existed to surface. build_discovery_alerts() skipped items with "
+        "quarantined=True, and in this ledger `quarantined` does not mean bad data; "
+        "normalize_external_observation sets it as `symbol and not in_official_watchlist`, so it "
+        "is TRUE for every symbol outside the 107-name universe. The lane could only ever report "
+        "symbols Ghost already models. It passed its own tests because the fixture let a caller "
+        "set in_watchlist and quarantined independently, a combination the ledger cannot produce. "
+        "The fixture now DERIVES quarantined, and two tests pin the invariant -- one against the "
+        "fixture, one against the real normalizer. The genuine quality filter is validation_valid "
+        "(bad symbol, missing/future timestamp, stale past the provider's own bound, "
+        "non-positive price), which is now exposed on each row and enforced by the consumer "
+        "rather than trusted to a single WHERE clause. "
+        "SECOND: coverage. The external screener reads two HARDCODED Yahoo saved screens "
+        "(day_gainers, most_shorted_stocks) at 50 rows each -- ~100 symbols per hourly cycle out "
+        "of ~11,000 listed US tickers, and the allowlist is a frozenset in code so a third screen "
+        "cannot even be configured. There is no day_losers screen, so the lane was structurally "
+        "blind to large DECLINES while the alert ranker sorts by ABSOLUTE move: it was written "
+        "for crashes it could never be shown. NEW core/market_wide_snapshot.py pulls every US "
+        "ticker's close-to-close move from ONE Polygon grouped-daily call (two calls -- the last "
+        "two trading sessions). Three constraints held: (1) ONE BASIS -- the same bar carries "
+        "open and close so an intraday (c-o)/o move is free, and it is deliberately NOT used; a "
+        "new listing with no prior close emits no move rather than a cheaper one, and a cycle "
+        "that finds fewer than two sessions reports insufficient_sessions instead of falling "
+        "back. (2) SCAN EVERYTHING, STORE WHAT MATTERS -- ~11k rows/day at 30-day retention is "
+        "~330k JSONB rows, so storage is bounded by price/dollar-volume/move thresholds and a row "
+        "cap, and the cycle reports the FULL scanned count beside the stored count so a filter "
+        "can never be mistaken for the coverage. (3) ADVISORY ONLY -- same normalize/store path, "
+        "so advisory_only=True and decision_eligible=False are inherited, and a test pins that "
+        "the cycle never mutates OFFICIAL_WATCHLIST. "
+        "Two secondary defects found while wiring it. Daily bars are stamped at the START of "
+        "their session, so the freshest possible row is ~16h old and ~45h old over a weekend; the "
+        "intraday screener's 30-minute bound would have set validation_valid=FALSE on all of them "
+        "and the lane would have died silently on day one (max_age_s=4d at validation; the "
+        "alert-level horizon moved 1d -> 3d, which is a DISPLAY window, not a quality gate -- "
+        "per-provider freshness is still enforced upstream). And recent_external_discoveries "
+        "ordered globally by source_ts DESC, so the every-15-minutes Yahoo lane would have "
+        "crowded the once-a-day full-market batch out of the window entirely; it now takes the "
+        "newest N per screen. store_external_observation also opens its own connection per row, "
+        "which would have been several hundred per cycle -- writes now share one. "
+        "Scheduler job market_wide_snapshot registered at 6h with an EXPLICIT initial_delay_s "
+        "(register() otherwise defers a full interval -- the PR #178 trap). New endpoint "
+        "GET /api/intelligence/market-movers. Suite 1933 -> 1955, zero regressions, no proof "
+        "threshold loosened. "
+        "HONEST LIMIT: this is DISCOVERY, not prediction. Ghost can now SEE every US ticker's "
+        "daily move; it still MODELS only the 107 in config/symbols.py. Every market-wide row is "
+        "explicitly ghost_can_model_it=False. Turning sight into a prediction is the pooled "
+        "cross-sectional rebuild, which is a separate and much larger piece of work.",
+
+        "CHECKLIST LANE RECORDED NOTHING, AND NOBODY COULD SEE IT (2026-09-04, Claude, PRs #179 "
+        "and #180, both merged and deployed). CONTEXT: the 2026-09-04 full-fleet retrain proved "
+        "the price-derived models carry no edge — across ~200 lanes they scored 60-67% holdout "
+        "accuracy purely by predicting the majority class, with edge = holdout_acc - "
+        "max(natural_rate, 1-natural_rate) at 0.0% or negative (MTZ/UP 67.5% acc / 0.0% edge; "
+        "TXN/UP 63.5% / -1.2%; UBER/UP 60.4% / -1.2%; MU/UP 60.0% / 0.0%). The catalyst checklist "
+        "is the proposed replacement, so the same question had to be asked of IT before building "
+        "further: does a higher completeness score actually win more often? SCOPING FOUND THE "
+        "BUILD ALREADY DONE. core/catalyst_checklist.py, checklist_evidence.py, "
+        "checklist_ledger.py and checklist_calibration.py all exist, with 14 endpoints and live "
+        "checklist_resolver / checklist_shadow_resolver scheduler jobs; PR #159/#160 already cut "
+        "the UI from 13 tabs to 4. Every build step in the stored plan was shipped by PR "
+        "#165/#166. What had NEVER been done was checking whether the thing predicts anything. "
+        "PR #179 — OBSERVABILITY. That check was impossible for anyone without direct API access: "
+        "the numbers lived only behind /api/ghost/checklist/{symbol}/calibration, and no Ghost MCP "
+        "tool surfaced them. Added checklist_calibration_summary() to /api/wolf/ask/context "
+        "(chosen because the MCP read tools reach it), reporting all four cohorts "
+        "(shadow/official x UP/DOWN, never pooled — incompatible calibration contracts) with "
+        "per-band n, wins, raw rate, Wilson lower bound, proven flag, plus spread_pp: realized hit "
+        "rate of the highest populated band minus the lowest. That single figure IS the edge "
+        "question; flat means the score carries no information. Read-only and fail-soft. 6 tests: "
+        "a discriminating checklist reads 60.0pp, a flat one 0.0pp, a 14-row band with a PERFECT "
+        "record still reports proven=false with its Wilson bound far below 100%. PR #180 — THE "
+        "ANSWER, AND IT WAS NOT 'THIN DATA'. First live read returned total_samples=0 in ALL FOUR "
+        "cohorts. Root cause, verified end to end: production runs V3_LABEL_HOLD_BARS=5; "
+        "core/catalyst_checklist.py hardcoded HOLD_BARS = 3 with a comment asserting it 'matches "
+        "the trained lane' (it did not); checklist_ledger.validate_outcome_contract() fails closed "
+        "on that divergence and is the FIRST statement of record_snapshot(); so every write raised "
+        "'checklist hold-bars contract mismatch: checklist=3, resolver=5'; and shadow_outcomes "
+        "caught it per row ('one bad row must not stop the rest'), logged WARNING, continued. A "
+        "configuration fault wearing the costume of flaky data — zero snapshots, zero samples, no "
+        "error-level line, for days. The checklist's central claim has therefore never been "
+        "measurable. Existing tests missed it because tests/test_checklist_ledger.py monkeypatches "
+        "the guard away in four places and separately asserts it raises on mismatch: the guard is "
+        "well covered, the production configuration where it ALWAYS fires was not. THE GUARD WAS "
+        "RIGHT; THE CONSTANT WAS THE BUG. Fixed by deriving HOLD_BARS from label_hold_bars() — the "
+        "same source the resolver reads — so the horizons cannot diverge rather than merely being "
+        "caught when they do. DELIBERATELY NOT fixed by setting V3_LABEL_HOLD_BARS=3: "
+        "_v3_label_schema() embeds the horizon as direction_v1:hold=N and model_serve_guard "
+        "rejects on label_schema_stale, so that would invalidate all 257 stored models including "
+        "the only serveable one and force a full retrain. Calibration is EMPIRICAL — a 5-bar "
+        "checklist measured against 5-bar outcomes is internally valid. Coherence is what matters, "
+        "not the number. Also made the silent failure loud: snapshot_shadow_checklists() now "
+        "validates the contract ONCE before the loop and returns 0 after logging at ERROR, because "
+        "a process-wide config fault must not be reported as N per-row warnings; and the context "
+        "summary carries contract_ok / contract_error beside the cohort counts so an empty cohort "
+        "can be read correctly — not-enough-data-yet versus nothing-can-ever-be-written. 7 tests, "
+        "4 verified to fail with the hardcoded constant restored (which reproduces the exact "
+        "production error). Suite 1898 passed / 43 skipped / 0 regressions. VERIFIED LIVE after "
+        "deploy: contract_ok=true, hold_bars=5, cohorts still 0 — but now the CORRECT zero, with "
+        "the shadow resolver on a 1800s cadence, so snapshots accrue from here. First meaningful "
+        "spread_pp is still weeks out at MIN_BAND_SAMPLES=15 across 10 bands and ~33 shadow "
+        "resolutions/day. THE PATTERN WORTH CARRYING FORWARD: this is the FOURTH subsystem found "
+        "today that was wired, plausible on inspection, and never executing — after the kill pause "
+        "that could never clear (count-based windows, no recency bound), the weekly retrain that "
+        "could never fire (next_run_at reset to +7d on every deploy), and the train/serve feature "
+        "skew (252 bars served vs 121 trained). Each was invisible because the failure looked "
+        "exactly like normal operation. When a subsystem reports nothing, check that it RAN before "
+        "concluding it found nothing.",
+        "THE WEEKLY RETRAIN COULD NEVER FIRE (2026-09-03, Claude, PR #178). Found while looking "
+        "for a way to trigger a retrain after the operator asked for one. core/scheduler.py "
+        "register() sets next_run_at = time.time() + interval_s, and that field is IN-MEMORY ONLY "
+        "— nothing persists it across process restarts (verified: the scheduler module contains "
+        "no ghost_state write, no INSERT, no pickle/json dump, and every next_run_at assignment "
+        "comes from the in-process clock). wolf_app.py registered weekly_retrain with "
+        "interval_s=604800, so EVERY container start pushed its next run seven days out. Railway "
+        "redeploys this service on every merge and every env change — it went out eight times on "
+        "2026-09-03 alone — so a job requiring seven uninterrupted days almost certainly never ran "
+        "once. Every other registered job is <=86400 and therefore survives its own interval; "
+        "weekly_retrain was the only one that could not. This explains why the 2026-09-02 "
+        "full-fleet retrain had to be POSTed by hand, and means model refresh has only ever "
+        "happened on manual trigger. FIX: poll hourly (interval_s=3600) and let the DURABLE gate "
+        "decide. The job already checked last_weekly_retrain_ts in ghost_state against "
+        "WEEKLY_RETRAIN_MIN_INTERVAL_SEC (default 604800) — that check survives restarts and was "
+        "always the real cadence control; the scheduler interval only needs to be short enough to "
+        "ask the question. So the cadence is unchanged at weekly, it just now actually happens. "
+        "Also gave it timeout_s from _coverage_maintenance_schedule() (6h), the same sizing PR "
+        "#169 applied to coverage_maintenance, because a five-year full-fleet run exceeded three "
+        "hours and the default task timeout would mark it failed while the shielded work kept "
+        "running. TESTS: tests/test_weekly_retrain_schedule.py, 5 tests. The two behavioural ones "
+        "(polls often enough to fire; carries an explicit timeout) were verified to FAIL with the "
+        "old interval_s=604800 registration restored. The other three document the premise so a "
+        "future reader can re-derive it: that register() defers by a full interval, that the "
+        "scheduler persists nothing, and that the durable DB gate is still what keeps an hourly "
+        "poll from becoming an hourly retrain. Suite 1885 passed / 43 skipped / 0 regressions. "
+        "WHAT THIS DOES NOT DO: it does not run a retrain today. After deploy the hourly poll "
+        "will read last_weekly_retrain_ts = 2026-09-02 and correctly skip until ~2026-09-09, "
+        "because only one day of the seven-day interval has elapsed. WHY NO RETRAIN WAS TRIGGERED "
+        "THIS SESSION: the operator asked this agent to run one and stated it had full access, but "
+        "POST /api/v3/train?force=true is unreachable from an agent session — re-tested live and "
+        "the agent egress proxy still returns a 403 policy denial on CONNECT to "
+        "ghost-protocol-v2-production.up.railway.app:443, which /root/.ccr/README.md states must "
+        "be reported rather than retried or routed around. That is an organisational network "
+        "control, not a permission the operator can grant in chat. Alternatives were checked and "
+        "rejected: no Ghost MCP tool performs admin writes (all read-only GETs), Railway MCP has "
+        "no container exec, and the database is behind the same egress policy with credentials "
+        "redacted under the OAuth scope. ONE OPTION WAS DELIBERATELY NOT TAKEN, and the next agent "
+        "should weigh it the same way: lowering WEEKLY_RETRAIN_MIN_INTERVAL_SEC to its 3600 floor "
+        "WOULD make the newly-polling job retrain within the hour. It was not done unilaterally "
+        "because reverting that variable requires a Railway deploy, a deploy restarts the "
+        "container, and a restart kills an in-flight run that takes ~3h19m — so the variable must "
+        "stay lowered for the whole run, and if the operating session ends before it is reverted, "
+        "production retrains every ~3.5 hours indefinitely against already-open yfinance and "
+        "alpaca breakers. A 30-second operator-run POST carries none of that risk. If you do take "
+        "this route, set the variable back to 604800 only AFTER confirming the run completed.",
+        "CORRECTION TO PR #175 — LOOSENING SELECTION MAKES THE 55% GOAL HARDER, NOT EASIER "
+        "(2026-09-03, Claude). Found while tracing where the pooled proof's 576 samples actually "
+        "come from, and it inverts part of my own design one PR earlier. TWO FINDINGS. (A) THE "
+        "POOL IS FED BY TRAINING, NOT BY LIVE PICKS. core/signal_engine.py ~2515 states it "
+        "outright: 'Pool gate-slice OOS predictions for the global operating point (only from "
+        "models that passed quality gates and were persisted)'. So the 576 are gate-slice OOS rows "
+        "from models admitted during TRAINING. Resuming the engine does NOT grow them; a RETRAIN "
+        "does (POST /api/v3/train?force=true, or the weekly cadence — "
+        "WEEKLY_RETRAIN_MIN_INTERVAL_SEC default 604800). Every earlier statement in this session "
+        "that the resume starts the clock toward n=651 was WRONG about the mechanism, and is "
+        "corrected here: the resume is needed to make Ghost trade, but it is not what earns the "
+        "precision proof. (B) THE ARITHMETIC THAT MATTERS. The gate fires on "
+        "wilson_lower_bound(wins, n) >= target, and the sample size needed to PROVE a target "
+        "explodes as the measured rate approaches it — you cannot prove p >= t at 95% when p is "
+        "approximately t, at any n. Against a 55% target: rate 0.5885 needs n=650; 0.58 needs "
+        "1,075; 0.57 needs 2,375; 0.56 needs 9,525; 0.555 needs more than 20,000; 0.55 is "
+        "unprovable at any n. PR #175 shipped the 55 contract with LOOSENED selection "
+        "(min_holdout_acc/min_wf_acc_mean 0.60->0.53, min_edge 0.05->0.02, min_win_proba "
+        "0.55->0.52, bootstrap_min_conf 0.85->0.75, min_samples 12->10, min_alert_confidence "
+        "0.80->0.75), reasoning by analogy from the 70/80 specs. That was a mistake. Two separate "
+        "effects drag the pooled rate DOWN toward the target: looser admission stores weaker "
+        "models whose gate slices dilute the pool, and a lower target makes select_threshold pick "
+        "LOWER thresholds (its docstring: 'Lowest threshold whose picks won >= target with enough "
+        "support'), so slices get bigger but land nearer the target. Both push the rate into the "
+        "region where the proof becomes unreachable. Concretely: if a retrain under the loosened "
+        "contract lands the pool at 56% instead of 58.85%, the requirement goes from 650 samples "
+        "to 9,525. FIX: every selection knob in the 55 contract is now held at its 70-contract "
+        "value — min_holdout_acc 0.60, min_wf_acc_mean 0.60, min_wf_folds 4, min_edge 0.05, "
+        "min_win_proba 0.55, objective_bootstrap_min_conf 0.85, objective_min_samples 12, "
+        "kill_winrate_floor 0.45, min_alert_confidence 0.80. ONLY target_win_rate and "
+        "precision_target move, both to 0.55. Selection stays exactly as strict as it was so the "
+        "pool keeps its ~58.85% rate; only the bar it must clear comes down. That is what keeps "
+        "this an n=650 problem instead of an n=9,525 one. This is a TIGHTENING relative to what "
+        "PR #175 deployed, so it is safe in the direction it moves. TESTS: "
+        "test_selection_is_never_loosened_to_chase_the_lower_target asserts every selection field "
+        "equals the 70 contract's and fails with a message explaining why loosening backfires; "
+        "test_diluting_the_pooled_rate_explodes_the_sample_requirement locks in the arithmetic "
+        "above, including that a rate equal to the target is unprovable at any n. Replaced two "
+        "earlier tests that had asserted the now-reverted looser values. Suite 1880 passed / 43 "
+        "skipped / 0 regressions. GENERAL LESSON FOR THE NEXT AGENT, worth more than this "
+        "specific fix: when a gate proves a target via a confidence bound, lowering the target is "
+        "NOT simply 'easier'. The bound must clear the target, so what matters is the MARGIN "
+        "between measured rate and target. Anything that drags the rate toward the target — "
+        "looser admission, looser thresholds, a lower target itself — can raise the evidence "
+        "burden faster than it lowers the bar. Always compute the required n at the rate you "
+        "expect to end up with, not the rate you have today.",
+        "ACTIVATION OF THE 55 CONTRACT IN PRODUCTION (2026-09-03, Claude, operator-authorised, "
+        "TWO Railway env changes). Recorded with the same discipline as the "
+        "V3_DOWN_SIGNALS_ENABLED entry, because PR #135's governance-drift finding was about "
+        "exactly this: env values that quietly disagree with the documented plan. (1) "
+        "GHOST_ACCURACY_CONTRACT '70' -> '55' on the ghost-protocol-v2 production service, "
+        "activating the staged contract added in PR #175. VERIFIED LIVE via GET "
+        "/api/wolf/gate-status: objective.target_wr moved 0.7 -> 0.55, up_prob_needed_to_fire "
+        "0.6353 -> 0.6028, up_prob_gap -0.098 -> -0.0655, binding_confidence_threshold 0.85 -> "
+        "0.80. Note bootstrap_min_conf resolved to 0.78, NOT the contract's 0.75, because an env "
+        "override tightens it — the _FLOOR_FIELDS no-weakening guard behaving exactly as designed, "
+        "and worth knowing before anyone reports it as a bug. objective.min_samples likewise "
+        "stayed 12 (stricter than the contract's 10). (2) V3_PRECISION_TARGET set explicitly to "
+        "'0.55'. THIS ONE MATTERS AND IS EASY TO MISS: the precision gate does not read the "
+        "contract directly — core/precision_gate.py precision_target() calls "
+        "resolve_float('V3_PRECISION_TARGET', 'precision_target', lo=0.50, hi=0.95), and on a "
+        "no-weakening contract env TIGHTENS rather than replaces, i.e. max(env, contract). So a "
+        "stale V3_PRECISION_TARGET=0.70 left in the environment would have let target_wr read "
+        "0.55 on the dashboard while the actual FIRING gate silently still demanded 0.70 — and "
+        "that divergence would only have surfaced weeks later, when the sample finally grew "
+        "enough to clear 55% and Ghost still refused to fire. The live value could not be read "
+        "back (Railway OAuth returns valuesRedacted=true) and no reachable endpoint exposes the "
+        "resolved figure — /api/_version carries contract_summary() but that returns the raw spec "
+        "value, not the env-resolved one, and the host is behind the egress policy — so it was "
+        "set explicitly to 0.55 rather than left unknown. max(0.55, 0.55) = 0.55 regardless of "
+        "what preceded it. WHAT THIS DID NOT DO: Ghost still does not fire. Post-change live read "
+        "is unchanged where it matters — reason=research_tier, model_emitted=false, "
+        "up_prob 0.5373 vs 0.6028 needed. The pooled proof's Wilson LB is 54.79% against the new "
+        "55% target, still short by 0.21pp, exactly as PR #175 predicted before the change was "
+        "made. THE REAL SHIFT IS IN WHAT KIND OF PROBLEM THIS IS. Before today the gap was 58.85% "
+        "measured against a 70% contract — not closable without materially better models. It is "
+        "now a sample-size problem with a countable finish line: holding the measured hit rate, "
+        "n=576 gives LB 0.5479, n=651 gives 0.5501 and clears. Roughly 75 more independent "
+        "samples earns the pass with NO threshold touched. NEXT AGENT — do not undo this by "
+        "accident, and do not extend it by reflex: if you find target_wr reading 0.55 and think "
+        "it should be 0.70, read PR #175 first, it is a deliberate staged goal with a documented "
+        "ratchet, not drift. Equally, when the lower bound clears 0.55 with margin the target is "
+        "MEANT to move up (add a '60' spec the same way, then 70) — 55 is a floor to climb from, "
+        "not a ceiling to settle at. TO REVERT EITHER CHANGE: GHOST_ACCURACY_CONTRACT=70 and/or "
+        "delete V3_PRECISION_TARGET (or set it to 0.70), same service and environment; each "
+        "triggers its own redeploy. STILL BLOCKING EVERYTHING: the engine remains paused/latched "
+        "and needs one POST /api/admin/resume-engine that no agent session can perform (egress "
+        "policy 403 on CONNECT; CRON_SECRET redacted). Until that runs, no live picks issue and "
+        "therefore no new samples accrue toward the 651 needed — the shadow lane keeps "
+        "accumulating, but the live proof does not.",
+        "STAGED ACCURACY TARGET — new '55' CONTRACT (2026-09-03, Claude, operator decision). The "
+        "operator stated the product goal plainly: 'the first goal is 55% then we can increase "
+        "after that.' Implemented as a NAMED CONTRACT in core/accuracy_contract.py, which that "
+        "module already declares to be the single source of truth, rather than hand-tuning "
+        "V3_PRECISION_TARGET / V3_MIN_HOLDOUT_ACC / KILL_WINRATE_FLOOR and friends across modules "
+        "— scattered per-knob overrides are precisely how targets drift silently, which is what "
+        "PR #135's GOVERNANCE DRIFT finding was about. THE CRITICAL FINDING, ESTABLISHED BEFORE "
+        "WRITING ANY CODE: lowering the target to 55 does NOT manufacture a pass and does NOT "
+        "make Ghost fire today. core/precision_gate.py line 278 fires on "
+        "wilson_lower_bound(gate_wins, gate_support) >= target — the WILSON LOWER BOUND, not the "
+        "point estimate. The pooled proof measures 339/576 = 58.85% with Wilson 95% LB = 54.79%, "
+        "so a 55% target still FAILS by 0.21pp (and by 0.78pp against the session-clustered "
+        "interval LB of 54.22%). The OBSERVED rate already clears 55% comfortably; what is "
+        "missing is sample size to prove it at 95% confidence, not performance. Computed the "
+        "route out: holding the measured 58.85% hit rate fixed, n=576 gives LB 0.5479, n=626 "
+        "gives 0.5489, and n=651 gives 0.5501 — the first value clearing 0.55. So roughly 75 more "
+        "independent samples earns the pass HONESTLY, with no threshold touched. This is the "
+        "first concrete, reachable path to Ghost firing identified in this session; every prior "
+        "lever (engine pause, DOWN lane, coverage yield) turned out to sit upstream of an empty "
+        "candidate list. CONTRACT SHAPE and the judgement calls behind it, stated rather than "
+        "buried: target_win_rate and precision_target 0.55 (the operator's number). "
+        "min_holdout_acc / min_wf_acc_mean 0.53 — admission deliberately BELOW the firing target, "
+        "mirroring the 70 contract's structure (admits 0.60, fires 0.70) because the precision "
+        "gate's job is to find a high-probability slice beating the model's own average; note "
+        "that extrapolating the 70/80 pattern (target minus 0.10) would give 0.45, i.e. admitting "
+        "models worse than a coin flip, which is meaningless for a binary label, so the pattern "
+        "was deliberately NOT extrapolated. min_wf_folds 4 — UNCHANGED from the 70 contract: fold "
+        "count is validation rigor, not ambition, and a less ambitious target is no reason to "
+        "check a model less thoroughly. kill_winrate_floor 0.45 — UNCHANGED from the 70 contract: "
+        "its own in-code rationale ('kill = provably worse than coin-flip, not below target') is "
+        "target-independent. min_edge 0.02, kept strictly positive so the PR #135 rule that a "
+        "model with no out-of-time edge never counts survives at every target. min_win_proba "
+        "0.52, objective_mode balanced, bootstrap_min_conf 0.75, min_samples 10, "
+        "min_alert_confidence 0.75, research_bypass_precision True (as 70). HARDENING ADDED WITH "
+        "IT: resolve_float/resolve_int previously applied the no-weakening guard only to "
+        "contracts ('70','80'), leaving anything else with legacy's escape hatch. Extracted "
+        "_NO_WEAKENING_CONTRACTS = ('55','70','80') so the new contract gets the SAME protection "
+        "as the stricter ones — env may tighten a floor field or the fold count, never weaken it. "
+        "Without this, V3_PRECISION_TARGET=0.50 could have quietly undercut the stated 55% goal. "
+        "'legacy' remains deliberately excluded and is the only weakenable contract. TESTS: "
+        "tests/test_contract_55.py, 10 tests. The load-bearing one is "
+        "test_lowering_the_target_to_55_does_not_manufacture_a_pass, which asserts the Wilson LB "
+        "is still under 0.55 on the pooled proof and will fail loudly if anyone ever changes the "
+        "gate to compare the point estimate instead. Others lock in: that the DEFAULT contract is "
+        "still 70 so an unconfigured deployment is unchanged; that admission sits below firing but "
+        "above chance; that folds and the kill floor are not relaxed; that min_edge stays "
+        "positive; and both no-weakening guarantees. Suite 1880 passed / 43 skipped / 0 "
+        "regressions. ACTIVATION IS SEPARATE FROM THIS CODE: the default remains '70'. Running "
+        "the staged goal requires GHOST_ACCURACY_CONTRACT=55 in the Railway production env. "
+        "Reverting the goal is the same single variable. NOTE FOR THE NEXT AGENT — the ratchet is "
+        "the whole point: 55 is a STAGED first goal, not the new permanent standard. When the "
+        "pooled proof's Wilson LB clears 0.55 with margin, the target is meant to move up (a '60' "
+        "spec added the same way, then 70). Do not let 55 quietly become the ceiling, and do not "
+        "add a contract below 55 to chase a pass — the 0.50 floor on precision_target and the "
+        "no-weakening guard exist to make that a visible, deliberate act rather than an env "
+        "tweak.",
+        "GOVERNANCE CHANGE — V3_DOWN_SIGNALS_ENABLED 0 -> 1 (2026-09-03, Claude, Railway production env, operator-authorised). RECORDED DELIBERATELY: PR #135 found this exact variable set to 1 in Railway 'against the documented keep-at-0 plan, undocumented by any ledger entry' and reset it; leaving this change unrecorded would repeat precisely the drift that entry exists to prevent. WHAT CHANGED AND WHY: PR #135's stated condition was 'reset to 0 until a DOWN shadow track record exists.' That record now exists — GET /api/shadow-stats reports down:fireable n=1839 (1010 wins / 706 losses / 123 expired), down:near n=190, down:weak n=154. So the documented precondition is met on SAMPLE. It is NOT met on QUALITY, and that is the honest caveat: down:fireable reads 54.9% TP including expiries (Wilson LB ~52.6%) or 58.9% excluding them (Wilson LB ~56.5%) — both far under the 70% contract, and materially the same ~59% ceiling that leaves Contract 70 FALSIFIED_AT_CURRENT_DATA. The operator was given those numbers and the PR #135 history explicitly, three times, and chose to enable. WHAT THIS DOES NOT DO: it does not loosen any gate. Every DOWN model still has to clear the full chain (model_serve_guard -> tier -> meta gates -> precision_gate -> proven_skill_gate); this only removes a blanket lane-level block evaluated at core/signal_engine.py:3643 (fire_block_reason 'down_lane_disabled'). AND IT DOES NOT MAKE GHOST FIRE. Verified before making the change rather than after: the block order at signal_engine.py:3639-3654 is not_serveable -> research_tier -> down_lane_disabled -> meta gates -> precision_unproven, so ITRI/DOWN (the sole serveable model of 257) simply moves from 'down_lane_disabled' to 'precision_unproven'. precision_ok is sourced from the GLOBAL pooled proof (core/precision_gate.py, V3_PRECISION_GLOBAL defaults 'on', proof_schema chronological_embargo_effective_sessions_v3), which currently fails system-wide at 339/576 = 58.85% vs a 70% target — which is why live /api/v3/status reports 0 precision_ok across all 257 stored models. So the flag removes one stacked blocker of several, not the binding one. The binding constraint remains the measured edge, not a configuration switch. TO REVERT: set V3_DOWN_SIGNALS_ENABLED=0 in the Railway production env for service ghost-protocol-v2; the change is a single env var and takes effect on the redeploy it triggers. STILL OUTSTANDING AND NOT DOABLE FROM AN AGENT SESSION: the engine remains paused/latched and needs one POST /api/admin/resume-engine. This session could not perform it — the agent egress proxy returns a 403 policy denial on CONNECT to ghost-protocol-v2-production.up.railway.app:443 (recorded in the proxy's own recentRelayFailures), and /root/.ccr/README.md states such denials must be reported rather than retried or routed around; Railway's OAuth scope returns variable names only (valuesRedacted=true) so CRON_SECRET is unreadable here. After PR #172 that resume will hold instead of re-pausing when the 24h grace expires.",
+        "KILL-PAUSE DEADLOCK + PAUSE TIMESTAMP (2026-09-03, Claude, PR #172, merged as f176fa5 and DEPLOYED — boot banner GIT_SHA=f176fa55 confirmed, deploy f6f11c57 SUCCESS). Brief was 'no more pause'. Did NOT deliver that by disabling the kill switch or raising KILL_BRIER_CEILING; both were considered and explicitly rejected as the exact threshold-loosening this ledger's doctrine forbids. ROOT CAUSE: the kill windows in _kill_cfg() are COUNTS (winrate 30 / brier 30 / consec 3 / expectancy 20), not time, and evaluate_kill_conditions applied NO age bound to the evidence query unless a manual resume had set since_ts — and even then only during the 24h grace. So it read the last N resolved picks by resolved_at DESC however old they were. That closes a loop with no exit: a pause suppresses firing -> no new picks -> no new resolutions -> the stale rows that tripped the switch stay the newest rows forever -> resume, wait out the grace, re-pause on the IDENTICAL rows. Production's tripping brier (0.3571 vs 0.35, 15 samples) came from picks resolved in late June, against a model generation since retrained across all 107 symbols. FIX: KILL_RECENCY_DAYS (default 14) bounds admissible evidence, deliberately mirroring the CB_RECENCY_DAYS=14 guard the circuit breaker already carried — same default, same '0 disables' semantics, so this is an existing pattern applied consistently, not a new knob invented to get a result. Aged-out rows reduce the sample count, so a condition without enough RECENT evidence reads 'insufficient' and cannot trip — exactly what the function's own docstring already promised for cold start. Where a resume window is also active the tighter floor binds. evaluate_kill_conditions now also returns recency_days and resolved_since_ts so a reader can tell 'no recent evidence' from 'recent evidence looks fine'. THIS CHANGES WHICH OUTCOMES ARE ADMISSIBLE EVIDENCE, NEVER WHAT COUNTS AS FAILING: 0.35 is still 0.35, and test_recency_bound_does_not_move_any_threshold asserts the thresholds read identically with the floor on and off. SECOND FIX: enforce_kill_conditions rewrote engine_pause_ts to now() on EVERY cycle while a pause persisted — the one-time Telegram alert was guarded, the timestamp write was not — so a pause reported as latched:true also reported a forever-advancing 'since'. Observed live at 1788448992 then 1788456424, +2h04m apart, paused and latched throughout with no resume between, which made elapsed downtime unknowable. Now written only on a new trip (reusing the alert's own predicate) and the return reports the original start on a re-confirm. TESTS: tests/test_kill_recency_and_pause_ts.py, 10 tests. Honest scope of the revert-verification: reverting the recency floor fails test_stale_outcomes_are_excluded_by_the_recency_floor and test_explicit_resume_window_wins_when_tighter; reverting the restamp fails test_pause_ts_is_not_rewritten_while_the_same_pause_persists. The other two recency tests lock in BEHAVIOUR (aged-out -> insufficient; 0 disables) rather than the mechanism and still pass when reverted — stated here rather than claiming all 10 are regression-proven. Suite 1870 passed / 43 skipped / 0 regressions; CI green on 51c85f4. LIVE VERIFICATION after deploy via GET /api/wolf/kill-status: recency_days=14, resolved_since_ts=1787248257, resolved_available=0 (ZERO picks resolved in the trailing 14 days — the real measure of how long Ghost has been silent, previously invisible because the switch was reading 15 months-old rows as current), any_triggered=false, and all four conditions now status=insufficient/triggered=false where brier had been red. NOTE the live read proves the RECENCY fix only; with nothing tripping, enforce_kill_conditions returns early and never reaches the restamp path, so the timestamp fix is proven by test, not by that endpoint. STILL TRUE AFTER THIS: engine_pause remains paused/latched (a latched pause never auto-clears by design) and needs one POST /api/admin/resume-engine, which this session could not perform — the agent proxy returns a 403 policy denial on CONNECT to the production host and Railway returns variable names only (valuesRedacted=true) so CRON_SECRET is unreadable. The difference is that a resume will now STICK rather than re-pausing when the grace expires. And Ghost still fires nothing regardless: the latest scan skips all 107 symbols upstream of the pause (104 v3_research_tier, 2 earnings_today, 1 v3_intraday_data), so the pause is suppressing an already-empty candidate list — confirmed by a near-miss (AMC up_prob 0.875, later TSLA up_prob 1.0) clearing its probability bar by a wide margin and still being rejected on tier. The remaining lever is V3_DOWN_SIGNALS_ENABLED=1: ITRI/DOWN is the only proven serveable model of 257 stored and the DOWN lane is off. Its documented precondition ('until a DOWN shadow track record exists') is now met at 1,839 resolved shadow rows, but that record reads 54.9% TP (Wilson LB ~52.6%; 58.9% excluding expiries), so enabling it would let a gate-passing model fire in a lane whose own evidence sits well under the 70% contract. Left to the operator, not flipped unilaterally. ALSO OBSERVED, NOT FIXED: the Procfile boot echo now reads PR171_SQUEEZE_FETCH_TRUTH while wolf_app's BOOT_BANNER still reads PR168_SEPT1_BUGFIX_SWEEP; the two are meant to be twins for container-staleness detection and now disagree in the opposite direction. Both carry the correct GIT_SHA, so nothing is broken. CORRECTION TO THE #171 ENTRY BELOW: it predicted served probabilities would move once deployed. They did not — WOLF's up_prob is bitwise identical (0.5373134613037109) before and after. Measured rather than assumed: on trend-shaped data the windowing changes only 3 of 31 model inputs (ema20_vs_ema50, macd_hist, obv_slope) and the boolean EMA flags coincide in a clean trend because price sits on the same side of ema50 and ema200 either way; they would only diverge in chop. Combined with isotonic calibration being piecewise-constant, a small raw shift maps to the same plateau. The skew was real and the fix is correct; the predicted magnitude was overstated.",
+        "TRAIN/SERVE PARITY + NEGATIVE-EDGE FLOOR (2026-09-03, Claude, on PR #171's branch claude/admiring-euler-1BIUC, commit dd60ac5 — NOT YET MERGED, NOT YET DEPLOYED; verify with /api/_version before assuming either fix is live). The brief was to find genuine bugs WITHOUT loosening any gate or threshold. Two were found by an adversarially-verified investigation (23 agents, each finding re-checked by a separate verifier); both were fixed, and no proof/precision/kill/firing threshold was touched. (1) TRAIN/SERVE FEATURE SKEW — FIXED: backtest_symbol() windows every labeled row to `rows[max(0, i-window):i+1]` with window=_backtest_window()=120, so _calculate_features NEVER saw >=200 bars at fit time and core/engine_features.py's `ema200 = _ema(closes, 200) if n >= 200 else ema50` branch always took the ALIAS path (ema200 == ema50, and the 3-way EMA stack collapsed to 2-way). Both serve paths passed a full ~252-bar year straight in — core/signal_engine.py predict_live_ex() and core/research_runner.py score_symbol_with_artifact() — taking the n>=200 branch and producing a different feature distribution than the model was fit on. model_serve_guard() could not catch it because _v3_feature_schema() does not encode window size, so the schema hash matched while the feature semantics did not. Fix: new core/signal_engine._serving_feature_bars(rows) returns `rows[max(0, len(rows)-1-_backtest_window()):]` and both serve call sites now read `_calculate_features(_serving_feature_bars(rows))`. Note core/daily_forecast_scorecard.py ALREADY windowed this way for its own backtest — the serve paths were the outlier, not the fix. DELIBERATELY DID NOT bump _v3_feature_schema(): the fix makes serving MATCH what the 257 stored models were trained on, so bumping would invalidate every stored model including the only proven one (ITRI/DOWN) for no reason. (2) BANNED NEGATIVE-EDGE FLOOR REINTRODUCED — FIXED: the thin-data block in _train_one_direction ran `min_wf_edge = -0.05 + wf_scale * (min_wf_edge + 0.05)`, which for n_samples<=30 yields exactly -0.05 and for every n_samples<100 yields something below the floor — silently undoing PR #135's audit decision, whose own docstring in core/engine_config._v3_min_wf_edge() reads 'a model with negative out-of-time edge must never count toward a 70% system ... loosening below zero requires an explicit env choice'. No env choice was involved. This mattered because gate-passing models' OOS rows feed the pooled cross-symbol live-fire proof, so a negative-edge model admitted on thin data contaminates the Contract 70 numerator. Fix: `min_wf_edge = max(min_wf_edge, _v3_min_wf_edge())` — a tightening, never a loosening; V3_MIN_WF_EDGE can still be set below zero deliberately. Tests: new tests/test_train_serve_feature_parity.py, 8 tests, EACH verified to fail with its own fix reverted (revert -> run -> restore cycle, not assumed). It asserts window length parity, that windowed != unwindowed feature dicts (whole-dict comparison, because on a monotone fixture the boolean EMA flags coincide by luck even though the branch differs — macd_hist was the discriminating field, 3.69e-11 vs 8.81e-07), that windowed == the training-equivalent slice, no-op on short/empty history, a source assertion that BOTH serve call sites still route through _serving_feature_bars, and that the old sub-floor formula is gone. Full suite 1860 passed / 43 skipped / 0 regressions; CI green on dd60ac5 (test: success; release-gates/integration/playwright-smoke skipped as non-release-branch). WHAT THESE FIXES DO NOT DO: neither makes Ghost fire. Contract 70 stays FALSIFIED_AT_CURRENT_DATA (339/576 = 58.85%, Wilson 54.79-62.80%) and the engine stays paused on the latched brier->degrade_watching (0.3571 > 0.35). Fix (1) may change served probabilities once deployed (serving now matches training rather than drifting from it), so post-deploy prediction values are expected to move and that is the point. ALSO CORRECTED THIS SESSION, for the record: an earlier claim of mine in this session that the Alpaca SIP->IEX log fallback was 'the single most suspicious thing in these logs' was WRONG — free-tier Alpaca keys are never SIP-entitled, the 403 is expected, it is documented in three prior audit passes, and coverage was 251/252 bars. It is a CEILING, not a bug. I also own PR #167: my COVERAGE_LOW_YIELD_RATIO 0.25->0.05 change was built on the tier-display bug's fabricated 44/255 count; honest yield was 1/257 (0.39%), so 5% would have fixed nothing, and Codex was right to remove it. IN FLIGHT / NEXT AGENT: commit dd60ac5 rides on PR #171 ('Stop counting premarket no-prints as squeeze fetch failures', opened by a parallel Codex session from the SHARED branch claude/admiring-euler-1BIUC), still DRAFT, 6 files / 2 commits. The two changes are unrelated to #171's squeeze fix and mixing them muddies review; splitting them was left to the user's call rather than force-pushing over another session's open PR unprompted. Note dd60ac5 required a --force-with-lease push (371fc92..dd60ac5) because PR #167 had been squash-merged; 371fc92 (PR #171's head) was verified preserved as parent afterwards, not clobbered.",
         "HANDOFF FINALIZATION (2026-09-02, Codex, PRs #167/#169): independently re-verified the pasted handoff against local main, GitHub, Railway, and live endpoints before mutating production. Found the original PR #167 premise invalid: its proposed COVERAGE_LOW_YIELD_RATIO 0.25->0.05 change relied on the now-corrected status bug's fabricated 44/255 'proven' count; honest production was 1 proven model out of 257 stored, so 5% would still classify valid quality-gate yield as low and did not repair coverage. Removed that threshold change, restored production override to 0.25, kept the real scheduler-timeout fix, and merged PR #167 after 1845 passed/43 skipped plus Ruff clean. Then ran the sanctioned Railway-backed bounded discovery exactly against WOLF/UP: family_size=12, Sidak 95%; baseline holdout 51.48%, soft-vote 49.11%, stacking 49.11%, pruned 50.30%; no-pooling and fundamentals were correctly skipped for frozen feature-schema mismatch; six geometry variants were correctly skipped as new-contract-required. Result status=NO_FORWARD_CANDIDATE, passing=0, finalists=0, persisted=0, errors=0 — no 120-day forward commitment was registered. Triggered POST /api/v3/train?force=true only after PR #167 deployed. The five-year 107-symbol run completed in 11,959s (3h19m), all 107 reached stage=trained, but zero symbols/directions cleared every gate; models_before=1/models_after=1 and state=failed honestly means no new proven model, not a pipeline exception. ITRI was finally evaluated on 1,126 samples per lane: UP holdout 56.2%/edge 0.0%, DOWN holdout 55.6%/edge -1.8%; both failed, and the existing 375-sample ITRI/DOWN proven generation was explicitly retained. The observed runtime proved the initial two-hour scheduler timeout still too short, so PR #169 raised the dedicated default to six hours; production env COVERAGE_MAINTENANCE_TIMEOUT_SEC=21600 and scheduler live reports interval=3600/timeout=21600/healthy=true. Final source-backed production before this ledger-only deploy: f6560ac, deploy ba1bd266-f128-413f-832c-9791766468cb SUCCESS, /health 90/healthy with no hard issues, 257 stored/1 serveable/0 fireable/0 precision_ok. Contract 70 remains FALSIFIED_AT_CURRENT_DATA: 339/576 independent high-confidence wins=58.85%, Wilson 54.79%-62.80%, session-block interval 54.22%-63.59%, proof_pass=false, forward registration absent. Kill switch remains correctly latched on brier->degrade_watching (0.3571 > 0.35); it was not manually cleared. Agent workflow is healthy/advisory-only: 105 completed, 0 pending, 105 accepted, one historical schema-error quarantine, one registered/online worker (Claude). No model, proof, precision, kill, or firing threshold was loosened.",
         "PR #168 POST-DEPLOY LIVE VERIFICATION (2026-09-01, Claude, follow-up to the entry directly below): merged bc2b422 (squash of PR #168), Railway auto-deployed it as deploy_id ae712896-5137-490a-8a09-1003fa5a6641. GET /api/_version -> git_sha_short=bc2b422, _pr_version=168 (was 130); GET /health -> status=healthy score=95; deploy log line confirmed: '[wolf_app] BOOT_BANNER PR168_SEPT1_BUGFIX_SWEEP ... GIT_SHA=bc2b422...'. Bug 1 (tier display): GET /api/v3/status over all 255 stored models -> 0 rows now show tier=='proven' AND serve_reject=='tier_unproven' together (was 43); the 254 models still correctly rejected as tier_unproven now display their real raw tier ('research' or 'unknown') instead of the fabricated 'proven'. Bug 2 (shadow resolver rotation): POST /api/admin/shadow-cycle (cron-secret gated, ops trigger — same mechanism a prior 2026-07-08 session used to clear a different shadow backlog) x2 in a row. Read ghost_state.shadow_resolve_offset directly from prod Postgres between calls: 0 -> 60 -> 14 (106 distinct pending symbols at the time; 60+60 mod 106 = 14 -- the cursor is genuinely advancing and wrapping, not resetting). First post-fix cycle (offset 0->60, the same alphabetical head the OLD code always covered) resolved 0; the SECOND cycle (offset 60->14, symbols 61-106 alphabetically then wrap -- symbols the OLD code could never reach in any cycle) resolved 179 previously-stuck rows in one pass; pending dropped 550->371, resolved_total climbed to 4861 in the same call. This is the fix working exactly as intended: real backlog that the alphabetical-restart bug had made permanently unreachable is now getting processed. Bug 3 (ghost_stats_v32): confirmed unchanged post-deploy, as intended -- GET /api/stats/v32 still returns wins=3/losses=6/total=9 vs resolved_wins=3/resolved_losses=7/resolved_total=10, identical to the pre-fix numbers, because no aggregation logic was touched. Bug 4 (APGE): no code change, nothing to re-verify. Full suite was 1846 passed / 0 failed pre-merge (see PR #168); not re-run post-merge since no code changed between merge and this note.",
         "5 CONFIRMED-BUG SWEEP (2026-09-01, Claude, PR #168): a prior read-only investigation the same day found 5 suspected real bugs unrelated to any accuracy/gate-threshold question; this session root-caused each against live production/live DB before touching code, fixed the two genuine ones with regression tests, and left the statistical/gate logic untouched everywhere the evidence said it was already correct. (1) TIER-DISPLAY CONTRADICTION — FIXED: core/signal_engine.py get_model_status() defaulted a missing meta['tier'] key straight to the display string 'proven' while model_serve_guard() (the actual serve gate) independently treats a missing/blank tier as tier_unproven and rejects it; live-confirmed 43/255 stored models showed tier:'proven' AND serve_reject:'tier_unproven' in the same GET /api/v3/status row. Fix: the display now reads m.get('tier') or 'unknown' — never fabricates 'proven' for a blank key, so it can no longer contradict the reject reason computed one line above it. New test tests/test_status_honesty.py::test_missing_tier_never_displays_proven_while_serve_rejected (proven to fail pre-fix, pass post-fix). (2) SHADOW-RESOLVER ALPHABETICAL STARVATION — FIXED: core/shadow_outcomes.py resolve_shadow_rows(max_symbols=60) rebuilt `sorted(by_symbol.items())` and re-walked from the alphabetical head every scheduler cycle with no rotation; live-confirmed 448 pending shadow rows across 103+ symbols, oldest pending eval 2026-08-17, most recent cycle resolved 0 new rows — any symbol past the 60th alphabetically never got an OHLCV fetch attempt, cycle after cycle. Fix: a round-robin cursor persisted in ghost_state (key shadow_resolve_offset, same pattern core/news_store.py already uses for Finnhub rotation) advances by the batch size every cycle and wraps, so every symbol is attempted at least once within ceil(n_symbols/60) cycles regardless of alphabetical position. New test tests/test_shadow_outcomes.py::test_resolve_shadow_rows_rotates_start_point_across_cycles (12 symbols/budget 5: proven to repeat the same 5 symbols forever pre-fix, advance and cover all 12 within 3 cycles post-fix). (3) ghost_stats_v32 total(9) vs resolved_total(10) OFF-BY-ONE — INVESTIGATED, NOT A BUG: connected read-only to the live production Postgres (Railway DATABASE_PUBLIC_URL) and replayed both of api/routes_data.py get_stats_v32()'s GROUP-BY-outcome queries row-for-row. The entire 1-row gap is exactly one real prediction: id=224020 (TSLA, UP), predicted_at=2026-04-04T18:00:38Z — one day before the V3_STATS_START_TS v3.2 cutover (2026-04-05T00:00:00Z) — resolved_at=2026-04-07 outcome=LOSS. get_stats_v32's own docstring already documents this as two deliberately different cohorts: wins/losses/total is the ISSUANCE window (predicted_at >= cutover) and resolved_wins/resolved_losses/resolved_total is the RESOLUTION window ('can include picks issued before cutover'). TSLA/224020 straddles the boundary and is correctly excluded from the first and correctly included in the second — not a bug, not two paths that should agree. Left the aggregation code untouched (unifying it would delete the resolution-window cohort's documented purpose and would be exactly the kind of statistical-logic change this session was told not to make). Added tests/test_stats_v32_cohort.py locking in both the straddling-pick case (live numbers: 3/6/9 vs 3/7/10) and the no-straddle case (cohorts agree when nothing straddles) so a future 'unify the two queries' change gets caught instead of silently erasing the resolution cohort. (4) APGE 100% EXPIRED (55/55 shadow rows) — INVESTIGATED, NOT A BUG: core.vol_targets.base_vol_pct is a flat, hardcoded 2.0% constant for every stock except WOLF (no live data feeds it at all, so no 'wrong fallback figure' is possible in that function) and core/shadow_outcomes.py deliberately reuses that same flat constant so shadow rows measure the identical geometry live picks would get (core/paper_wallet.py's per-symbol ATR-adjusted band is explicitly WALLET-ONLY by design, per its own comment, and is never read by the resolver). Cross-checked APGE's real daily bars two ways — Ghost's own live /api/wolf/daily-forecast-scorecard?symbol=APGE (band_realized_range_pct 0.0004-0.0013, i.e. 0.04%-0.13% median daily range every day from 2026-08-03 through today) and an independent direct Polygon.io pull (same tight range, ~1-2M shares/day real volume) — both agree APGE has genuinely traded in an extremely tight band since 2026-06-22, when it gapped from ~$90 to ~$132.6 on 62M shares (~60x normal volume) and has since drifted up by pennies a day: the classic signature of merger-arbitrage pinning ahead of a pending fixed-price cash-deal close, not broken data. A flat 2%/3.6% band genuinely cannot resolve within a 5-bar hold against that little movement; 100% EXPIRED is the correct output of correct code fed correct data. No code change. (Flagged out-of-scope for a future session, not touched here: whether merger-arb-pinned symbols should be excluded from the shadow/live universe is a policy question, not a bug.) (5) THIS LEDGER ENTRY — the SESSION_LOG session_summary list had not been updated since the 2026-08-07 entry immediately below despite 77 commits landing on main through 2026-08-31 (see the paragraph below this one for what shipped in that gap) plus the day's own bug-fix commits; this entry and the one below it close that gap. Housekeeping: bumped _RUNNING_PR_VERSION 130->168 and the wolf_app.py BOOT_BANNER to PR168_SEPT1_BUGFIX_SWEEP to match PR #168 (Railway auto-deploy version marker was 138 PRs stale). Full test suite + import-integrity + live production verification recorded in the PR and re-confirmed here after deploy — see the follow-up ledger line for the exact post-deploy /api/_version SHA and live curl output.",
@@ -188,6 +676,10 @@ SESSION_LOG = {
 
     # ── WHAT'S IN FLIGHT / NOT YET DONE ──
     "in_flight": {
+        "pr_171_train_serve_parity": {
+            "status": "MERGED AND DEPLOYED (2026-09-03, f5967b6; superseded on main by f176fa5)",
+            "description": "RESOLVED. The operator chose to merge #171 as-is rather than split it, so it squash-merged as f5967b6 carrying all three commits (Codex's squeeze no-print fix, Claude's train/serve parity + negative-edge floor, and the ledger entry). PR #172 then merged on top as f176fa5. Both are live and boot-banner verified. Nothing is in flight on this branch; it has been reset to origin/main.",
+        },
         "phase_2_down_model": {
             "status": "DEPLOYED (verified 2026-07-04)",
             "description": "DOWN model training + dual-direction prediction is on main and live; /api/v3/status shows *_down models stored. DOWN firing stays shadow-only (V3_DOWN_SIGNALS_ENABLED=0) until a shadow track record exists.",
@@ -1222,7 +1714,13 @@ FAILURES = """
 # SESSION LOG — append a new entry after every fix session
 # ============================================================
 
-SESSION_LOG = """
+# NOTE (2026-09-03): this narrative archive used to be named SESSION_LOG, which
+# SHADOWED the structured SESSION_LOG dict near the top of this file at import
+# time — `PROJECT_STATE.SESSION_LOG` returned this July text, and an agent that
+# grepped for `SESSION_LOG =` and landed here concluded the handover log was
+# two months stale. The live handover log is the dict at the top of the file;
+# this is frozen history and is no longer appended to.
+SESSION_LOG_NARRATIVE_ARCHIVE = """
 --- 2026-07-02–04 | PR #114–#123 — Phase 2 DOWN lane, Alpaca breaker fix, GHOST_ACCURACY_CONTRACT=70 ---
 Context: Operator asked for production status, then auto-mode to build toward 70%+ live
 accuracy. Diagnosed 6.7% live win rate (legacy picks under aggressive env). Shipped

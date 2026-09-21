@@ -80,3 +80,80 @@ test.describe("API GET surface", () => {
     expect(loc).toMatch(/picks/i);
   });
 });
+
+test("discovery separates current observations from daily history", async ({ request }) => {
+  const response = await getWithRateLimitRetry(request, "/api/intelligence/market-movers");
+  expect(response.status()).toBe(200);
+  const body = await response.json();
+  expect(body.alert_version).toBe("discovery_alerts_v2");
+  expect(body.selection).toBe("latest_observation_not_largest_historical_move");
+  expect(body.decision_eligible).toBe(false);
+  expect(Array.isArray(body.historical_alerts)).toBe(true);
+  expect(body.discovery_coverage.full_market_coverage).toBe(false);
+  for (const row of body.alerts) {
+    expect(row.observation_kind).toBe("intraday_observation");
+    expect(Number.isFinite(row.move_pct)).toBe(true);
+    expect(row.source_ts).toBeGreaterThan(0);
+    expect(row.source_age_s).toBeGreaterThanOrEqual(0);
+    expect(row.source_age_s).toBeLessThanOrEqual(body.intraday_max_age_s);
+    expect(row.decision_eligible).toBe(false);
+  }
+  for (const row of body.historical_alerts) {
+    expect(row.observation_kind).toBe("daily_history");
+    expect(row.decision_eligible).toBe(false);
+  }
+});
+
+test("discovery budget counts unique provider-screen-symbol observations", async ({ request }) => {
+  const response = await getWithRateLimitRetry(request, "/api/intelligence/external-discovery?limit=200");
+  expect(response.status()).toBe(200);
+  const body = await response.json();
+  expect(body.selection).toBe("latest_per_provider_screen_symbol");
+  const identities = body.items.map((row: any) => `${row.provider}:${row.screen}:${row.symbol}`);
+  expect(new Set(identities).size).toBe(identities.length);
+  expect(body.available_count).toBeGreaterThanOrEqual(body.count);
+  expect(body.limit_truncated).toBeGreaterThanOrEqual(0);
+});
+
+test("market sessions never call unknown-age references live", async ({ request }) => {
+  const response = await getWithRateLimitRetry(request, "/api/market/sessions?symbols=NOK,MRVL,BBNX&max_fresh=0");
+  expect(response.status()).toBe(200);
+  const body = await response.json();
+  expect(body.fresh_fetches).toBe(0);
+  for (const row of Object.values(body.sessions) as any[]) {
+    expect(row).toHaveProperty("cache_age_seconds");
+    expect(row).toHaveProperty("quote_status");
+    if (row.provider_state === "live") {
+      expect(row.quote_status).toBe("fresh");
+      expect(row.price_as_of_ts).toBeTruthy();
+      expect(row.freshness_seconds).toBeGreaterThanOrEqual(0);
+      expect(row.freshness_seconds).toBeLessThan(60);
+    }
+    if (row.quote_status === "reference_only") {
+      expect(row.provider_state).toBe("reference_only");
+      expect(row.price_as_of_ts).toBeNull();
+      expect(row.freshness_seconds).toBeNull();
+    }
+  }
+});
+
+test("squeeze coverage accounts for failures, absence and invalid evidence separately", async ({ request }) => {
+  const response = await getWithRateLimitRetry(request, "/api/squeeze/picks");
+  expect(response.status()).toBe(200);
+  const body = await response.json();
+  if (body.last_scan_status !== "complete") {
+    expect(body.scan_ok).toBe(false);
+    return; // no completed scan is not evidence of coverage
+  }
+  expect(body.data_contract).toBe("squeeze_bar_evidence_v1");
+  const counts = ["fetch_ok", "fetch_fail", "fetch_skipped", "no_intraday_print", "invalid_baseline", "invalid_quote", "stale_quote"];
+  for (const key of counts) expect(body[key]).toBeGreaterThanOrEqual(0);
+  expect(counts.reduce((sum, key) => sum + body[key], 0)).toBe(body.symbols);
+  if (body.snapshot_stale) expect(body.scan_ok).toBe(false);
+  for (const row of body.picks || []) {
+    expect(row.market_data_contract).toBe("squeeze_bar_evidence_v1");
+    expect(row.price_as_of_ts).toBeGreaterThan(0);
+    expect(row.daily_feed).toBe(row.intraday_feed);
+    expect(row.bars_complete).toBe(true);
+  }
+});

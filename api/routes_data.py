@@ -94,6 +94,20 @@ def get_picks(symbol: str = "ALL", asset_type: str = None, limit: int = 50, offs
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
 
 
+@router.get("/api/forecasts/research")
+def get_research_forecasts(limit: int = 50):
+    """Keep research forecasts visible without relabelling them approved picks."""
+    try:
+        from core.research_forecasts import research_forecasts
+        return research_forecasts(limit=limit)
+    except Exception:
+        LOGGER.exception("research forecasts unavailable")
+        return JSONResponse(
+            {"ok": False, "error": "Research forecasts unavailable", "forecasts": []},
+            status_code=503,
+        )
+
+
 @router.get("/api/history")
 def get_history(limit: int = 200):
     from wolf_app import REAL_TRADE_WHERE, _norm_pred, db_conn  # late import — shared state + monkeypatch-safe

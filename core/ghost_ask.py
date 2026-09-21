@@ -42,14 +42,138 @@ def _system_prompt() -> str:
         "8. Be concise (under 250 words unless user asks for detail). Use plain language.\n"
         "9. When context.market_session is Pre-Market and premarket_scan_enabled is true, "
         "Ghost scans the watchlist before the 9:30 ET open using extended-hours quotes "
-        "(gap vs prior close). Pre-market fires require a higher confidence floor; "
-        "open-buffer rules still apply after the bell.\n"
+        "(gap vs prior close). Scanning is NOT issuance: the daily model samples "
+        "only in its post-close window. Premarket and regular-session scores are "
+        "diagnostics, not approved intraday predictions. Never promise a pick "
+        "just because scans are running.\n"
         "10. When open_pick_review_enabled is true, Ghost re-scans open picks every cycle. "
         "If the model no longer supports the trade (regime gate, prob below floor, etc.), "
         "the pick is withdrawn (outcome WITHDRAWN) — not a WIN/LOSS. A new pick may follow "
         "in the same or a later cycle. Explain withdrawals using context.latest_scan or "
         "recent resolves; do not treat a withdrawn pick as still actionable.\n"
     )
+
+
+def checklist_calibration_summary() -> Dict[str, Any]:
+    """Whether the catalyst checklist actually predicts outcomes yet.
+
+    The checklist machinery (evaluate -> snapshot -> resolve -> calibrate) has
+    been in place since PR #165/#166, but its central empirical claim — that a
+    higher completeness score wins more often — was never observable outside
+    /api/ghost/checklist/{symbol}/calibration, which needs direct API access.
+    This surfaces the same numbers in the context payload so the question can
+    be answered by anyone reading Ghost's state.
+
+    `spread_pp` is the number that matters: realized hit rate of the top band
+    minus the bottom band, in percentage points. Flat means the score carries
+    no information and nothing downstream should be built on it. It is
+    reported alongside the sample counts because a spread computed on a handful
+    of rows is noise, not evidence.
+
+    Read-only, and deliberately fail-soft: this is diagnostics, never a gate.
+    """
+    from core.catalyst_checklist import CHECKLIST_VERSION
+    from core.checklist_calibration import MIN_BAND_SAMPLES, build_calibration
+    from core.checklist_ledger import (
+        DEFAULT_OUTCOME_CONTRACT,
+        resolved_samples_for_calibration,
+        snapshot_counts,
+    )
+    from core.tp_sl_resolve import label_hold_bars
+
+    hold_bars = int(label_hold_bars())
+    out: Dict[str, Any] = {
+        "checklist_version": CHECKLIST_VERSION,
+        "hold_bars": hold_bars,
+        "min_band_samples": MIN_BAND_SAMPLES,
+        "cohorts": {},
+    }
+    # Answer "why is everything zero?" in the same payload as the zeros. A
+    # broken issuance contract stops every snapshot write, so empty cohorts
+    # mean something very different depending on this flag: not-enough-data
+    # yet, or nothing can ever be recorded.
+    try:
+        from core.checklist_ledger import validate_outcome_contract
+
+        validate_outcome_contract()
+        out["contract_ok"] = True
+    except Exception as exc:  # noqa: BLE001 - diagnostics, never a gate
+        out["contract_ok"] = False
+        out["contract_error"] = str(exc)[:200]
+    for lane in ("shadow", "official"):
+        for direction in ("UP", "DOWN"):
+            key = f"{lane}:{direction}"
+            try:
+                samples = resolved_samples_for_calibration(
+                    checklist_version=CHECKLIST_VERSION,
+                    hold_bars=hold_bars,
+                    outcome_contract=DEFAULT_OUTCOME_CONTRACT,
+                    direction=direction,
+                    lane=lane,
+                )
+            except Exception as exc:
+                out["cohorts"][key] = {"error": str(exc)[:80]}
+                continue
+
+            # contract_ok says writes are PERMITTED. This says they HAPPENED.
+            # A cohort with written>0 and resolved=0 is genuinely waiting out
+            # the hold; written=0 is a dead lane, and the two have looked
+            # identical every time this went wrong (PR #180: zero snapshots
+            # for days, reported as "0 samples, still accruing").
+            try:
+                counts = snapshot_counts(
+                    checklist_version=CHECKLIST_VERSION,
+                    hold_bars=hold_bars,
+                    outcome_contract=DEFAULT_OUTCOME_CONTRACT,
+                    direction=direction,
+                    lane=lane,
+                )
+            except Exception as exc:  # noqa: BLE001 - diagnostics, never a gate
+                counts = {"error": str(exc)[:80]}
+
+            calib = build_calibration(samples)
+            populated = [
+                {
+                    "band": b["band"],
+                    "n": b["n"],
+                    "wins": b["wins"],
+                    "raw_rate_pct": b["raw_rate_pct"],
+                    "proven_rate_pct": b["proven_rate_pct"],
+                    "proven": b["proven"],
+                }
+                for b in (calib.get("bands") or [])
+                if b.get("n")
+            ]
+            # Bands come back in ascending score order, so last minus first is
+            # the realized separation between the most and least complete
+            # checklists actually observed.
+            spread = None
+            if len(populated) >= 2:
+                spread = round(
+                    populated[-1]["raw_rate_pct"] - populated[0]["raw_rate_pct"], 2
+                )
+
+            written = int(counts.get("written") or 0)
+            out["cohorts"][key] = {
+                "snapshots": counts,
+                # One word a human can act on, instead of leaving them to
+                # infer it from three numbers that only mean something
+                # together.
+                "lane_state": (
+                    "error" if counts.get("error") else
+                    "never_written" if written == 0 else
+                    "waiting_on_hold" if not counts.get("resolved") else
+                    "accruing"
+                ),
+                "total_samples": calib.get("total_samples", 0),
+                "skipped_samples": calib.get("skipped_samples", 0),
+                "populated_bands": len(populated),
+                "proven_bands": sum(1 for b in populated if b["proven"]),
+                "any_proven": calib.get("any_proven", False),
+                "spread_pp": spread,
+                "bands": populated,
+            }
+    return out
 
 
 def build_ask_context(include_portfolio: bool = False) -> Dict[str, Any]:
@@ -76,6 +200,45 @@ def build_ask_context(include_portfolio: bool = False) -> Dict[str, Any]:
         ctx["engine_pause"] = engine_pause_state()
     except Exception as e:
         ctx["engine_pause_error"] = str(e)[:120]
+
+    try:
+        ctx["checklist_calibration"] = checklist_calibration_summary()
+    except Exception as e:
+        ctx["checklist_calibration_error"] = str(e)[:120]
+
+    try:
+        # Retrospective screen, cached by the scheduled job. Absent until the
+        # first pass completes; never computed on this read path, which would
+        # warm an EDGAR fetch per symbol inside a request.
+        from core.checklist_backfill_screen import cached_screen
+
+        screen = cached_screen()
+        if screen is not None:
+            ctx["checklist_backfill_screen"] = screen
+    except Exception as e:
+        ctx["checklist_backfill_screen_error"] = str(e)[:120]
+
+    try:
+        # Market-wide movers, including ones Ghost cannot model because they
+        # sit outside the 107-symbol universe. Advisory only -- present so a
+        # move like GPRO's is visible rather than dying in a ledger nobody
+        # reads. Cheap: one bounded query against an already-persisted table.
+        from core.discovery_alerts import build_discovery_alerts
+
+        ctx["discovery_alerts"] = build_discovery_alerts()
+    except Exception as e:
+        ctx["discovery_alerts_error"] = str(e)[:120]
+
+    try:
+        # The confidence number the operator asked to see, with what each band
+        # has actually been worth. Shown together deliberately: sorted on its
+        # own the number points at the WORSE bet, because the calibration is
+        # inverted (high-confidence 56.6% vs low-confidence 61.5%).
+        from core.confidence_calibration import calibrated_confidence_report
+
+        ctx["confidence_calibration"] = calibrated_confidence_report()
+    except Exception as e:
+        ctx["confidence_calibration_error"] = str(e)[:120]
 
     try:
         from core.risk_discipline import combined_trading_block, risk_settings

@@ -20,7 +20,14 @@ from core.external_context_ledger import (
 
 LOGGER = logging.getLogger("ghost.external_screener")
 _YAHOO_ENDPOINT = "https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved"
-_DEFAULT_SCREENS: Tuple[str, ...] = ("day_gainers", "most_shorted_stocks")
+# day_losers is not optional garnish. The alert lane ranks by ABSOLUTE move --
+# it was written to surface crashes -- and without this screen no decline could
+# ever reach it, so that ranking had never once been shown one. Verified live on
+# 2026-09-05: the top alert was BRNX at -26.3%, and it arrived only because that
+# name happened to also be heavily shorted.
+_DEFAULT_SCREENS: Tuple[str, ...] = (
+    "day_gainers", "day_losers", "most_shorted_stocks",
+)
 
 
 def _enabled() -> bool:
@@ -36,22 +43,50 @@ def _screens() -> Tuple[str, ...]:
         for item in os.getenv("EXTERNAL_SCREENER_SCREENS", ",".join(_DEFAULT_SCREENS)).split(",")
         if item.strip()
     ]
-    return tuple(item for item in requested if item in allowed)[:2]
+    # Cap is the allowlist itself: each screen costs one bounded request per
+    # cycle, and silently truncating to the first two is how a screen added to
+    # the allowlist would appear configured and never be fetched.
+    return tuple(item for item in requested if item in allowed)[:len(_DEFAULT_SCREENS)]
 
 
-def _quote_point(quote: Dict[str, Any]) -> Tuple[Any, Any]:
-    """Choose a matched price/timestamp pair without using ingestion time."""
+def _quote_point(quote: Dict[str, Any]) -> Tuple[Any, Any, Any, str]:
+    """Choose a matched price / timestamp / CHANGE triple from ONE session.
+
+    The change percent used to come from regularMarketChangePercent no matter
+    which session the price and timestamp were taken from. Before the open that
+    field still reports the PREVIOUS completed session, so a premarket row
+    carried a timestamp from this morning beside a move from yesterday --
+    two different sessions presented as one observation.
+
+    Caught live on 2026-09-09: ROIV showed +18.75% on the premarket screen,
+    which is exactly where it CLOSED on 2026-09-08. The row looked like a
+    stock moving now; it was a stock that had finished moving the day before.
+    Anyone reading the discovery list before the bell was reading yesterday's
+    scoreboard believing it was today's.
+
+    Same rule as market_wide_snapshot's close-to-close labels: one basis, taken
+    from the session that produced the price, or none at all.
+    """
     state = str(quote.get("marketState") or "").upper()
-    candidates = []
+    candidates: List[Tuple[Any, Any, Any, str]] = []
     if state in {"PRE", "PREPRE"}:
-        candidates.append((quote.get("preMarketPrice"), quote.get("preMarketTime")))
+        candidates.append((
+            quote.get("preMarketPrice"), quote.get("preMarketTime"),
+            quote.get("preMarketChangePercent"), "premarket",
+        ))
     if state in {"POST", "POSTPOST", "CLOSED"}:
-        candidates.append((quote.get("postMarketPrice"), quote.get("postMarketTime")))
-    candidates.append((quote.get("regularMarketPrice"), quote.get("regularMarketTime")))
-    for price, observed_at in candidates:
+        candidates.append((
+            quote.get("postMarketPrice"), quote.get("postMarketTime"),
+            quote.get("postMarketChangePercent"), "postmarket",
+        ))
+    candidates.append((
+        quote.get("regularMarketPrice"), quote.get("regularMarketTime"),
+        quote.get("regularMarketChangePercent"), "regular",
+    ))
+    for price, observed_at, change_pct, basis in candidates:
         if price is not None and observed_at is not None:
-            return price, observed_at
-    return None, None
+            return price, observed_at, change_pct, basis
+    return None, None, None, "none"
 
 
 def parse_yahoo_screen(
@@ -71,7 +106,7 @@ def parse_yahoo_screen(
     for index, quote in enumerate(quotes, start=1):
         if not isinstance(quote, dict):
             continue
-        price, source_ts = _quote_point(quote)
+        price, source_ts, move_pct, move_basis = _quote_point(quote)
         avg_volume = quote.get("averageDailyVolume3Month")
         volume = quote.get("regularMarketVolume")
         rows.append(normalize_external_observation(
@@ -87,16 +122,18 @@ def parse_yahoo_screen(
             ),
             rank=index,
             price=price,
-            move_pct=quote.get("regularMarketChangePercent"),
+            move_pct=move_pct,
             volume=volume,
             avg_volume=avg_volume,
             external_score=(
                 quote.get("shortPercentOfFloat")
                 if screen == "most_shorted_stocks"
-                else quote.get("regularMarketChangePercent")
+                else move_pct
             ),
             delayed=bool(quote.get("exchangeDataDelayedBy", 0)),
-            payload=quote,
+            # Basis recorded beside the raw quote so a stored row can always be
+            # traced back to the session its move came from.
+            payload={**quote, "move_basis": move_basis},
             max_age_s=max(300, int(os.getenv("EXTERNAL_SCREENER_MAX_AGE_S", "1800"))),
         ))
     return rows
@@ -149,7 +186,7 @@ def ingest_rows(rows: Iterable[Dict[str, Any]]) -> Dict[str, int]:
 
 
 def run_external_screener_cycle() -> Dict[str, Any]:
-    """Leader-scheduled refresh. Safe partial failure; bounded to two requests."""
+    """Leader-scheduled refresh. Safe partial failure; one request per screen."""
     if not _enabled():
         return {"ok": True, "status": "disabled", "screens": {},
                 "advisory_only": True, "decision_eligible": False}

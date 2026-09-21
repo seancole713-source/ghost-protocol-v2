@@ -439,7 +439,7 @@ def _v3_feature_schema() -> str:
     macro = "macro1" if _v3_macro_features_enabled() else "macro0"
     return (
         f"tech3+{macd}+{sector}+{audit}+{fundamentals}+{cross_sectional}+{macro}"
-        f"+{news}+{options}+{intraday}"
+        f"+{news}+{options}+{intraday}+alpaca_split_v1"
     )
 
 

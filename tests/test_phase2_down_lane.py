@@ -10,6 +10,9 @@ Covers the five defects found in the Phase 2 review:
      admin purge / pick-expiry paths.
   5. Peer pools are direction-separated (covered in test_wolf_app_core).
 """
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
 import time
 
 import numpy as np
@@ -21,7 +24,7 @@ def _uptrend_rows(n=220):
     rows = []
     for i in range(n):
         px = 100.0 + i * 0.4
-        rows.append({"ts": "2026-05-20T%02d:00:00Z" % (i % 24),
+        rows.append({"ts": (datetime(2026, 5, 20) - timedelta(days=n - 1 - i)).date().isoformat(),
                      "open": px - 0.2, "high": px + 0.5, "low": px - 0.5,
                      "close": px, "volume": 1000 + i * 5})
     return rows
@@ -54,6 +57,7 @@ _META = {"tier": "proven", "direction": "UP",
 
 
 def _patch_gates(monkeypatch):
+    monkeypatch.setattr("core.market_hours._now_ct", lambda: datetime(2026, 5, 21, 8, tzinfo=ZoneInfo("America/Chicago")))
     monkeypatch.setenv("GHOST_ACCURACY_CONTRACT", "legacy")
     # Hermetic: when CI runs during US premarket (4:00-9:30 AM CT) the live
     # extended-session overlay stomps the synthetic fixture's last bar with the
@@ -79,7 +83,7 @@ def _patch_models(monkeypatch, up_p=None, down_p=None):
         return None, None, None
     monkeypatch.setattr(_se, "load_model", _lm)
     monkeypatch.setattr(_se, "_fetch_ohlcv",
-                        lambda s, a, period="5d", interval="1h": _uptrend_rows())
+                        lambda s, a, period="5d", interval="1h", adjustment="raw": _uptrend_rows())
 
 
 def test_stronger_down_never_suppresses_fireable_up(monkeypatch):

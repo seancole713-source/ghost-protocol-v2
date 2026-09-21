@@ -166,6 +166,33 @@ def _v3_research_tier_enabled() -> bool:
 
 
 
+def _serving_feature_bars(rows):
+    """Trailing bar slice matching what training fed to _calculate_features.
+
+    backtest_symbol() windows EVERY labeled row to `_backtest_window()`
+    trailing bars (`hist = rows[max(0, i - window) : i + 1]`), so during
+    training `_calculate_features` never sees more than ~121 bars and the
+    `n >= 200` branch in core.engine_features is never reached: ema200 is
+    silently aliased to ema50 and ema_trend_bullish uses the 2-way
+    cur>ema20>ema50 fallback.
+
+    The live and research serve paths fetch period='1y' (~252 bars) and, until
+    this helper existed, passed the FULL array in — taking the `n >= 200`
+    branch instead: a real ema200 plus the 3-way 20>50>200 stack. `_ema()` is
+    a full-history recursive EMA with no fixed lookback, so its output depends
+    on input length. That handed the model a feature distribution it was never
+    fit on, and _v3_feature_schema() does not encode window size, so the
+    model-serve guard could not catch it.
+
+    core/daily_forecast_scorecard.py already windows this way for its own
+    backtest; this makes the serve paths agree with training too.
+    """
+    if not rows:
+        return rows
+    window = _backtest_window()
+    return rows[max(0, len(rows) - 1 - window):]
+
+
 def _effective_backtest_window(n_bars: int) -> int:
     """Shrink the feature window when history is thin so labeling still produces rows."""
     margin = V3_LABEL_HOLD_BARS + 1
@@ -641,13 +668,13 @@ def _simulate_down_tp_sl(rows: list, entry_idx: int, hold_bars: int, vol_pct: fl
 def _fetch_sector_series(period='1y'):
     """Sector proxy OHLCV for the W3 relative-strength feature (best-effort)."""
     try:
-        return _fetch_ohlcv(_v3_sector_proxy(), "stock", period=period) or []
+        return _fetch_ohlcv(_v3_sector_proxy(), "stock", period=period, adjustment="split") or []
     except Exception as e:
         LOGGER.info(f"sector series fetch failed: {str(e)[:80]}")
         return []
 
 
-def _fetch_ohlcv_once(symbol, asset_type, period='1y', interval='1d'):
+def _fetch_ohlcv_once(symbol, asset_type, period='1y', interval='1d', *, adjustment='raw'):
     """Fetch OHLCV bars from Alpaca at the requested interval.
 
     PR #14 diag: emits "_fetch_ohlcv ENTERED" at the top so we can confirm
@@ -664,6 +691,8 @@ def _fetch_ohlcv_once(symbol, asset_type, period='1y', interval='1d'):
     fetching 2y would waste a round-trip and could confuse downstream logic.
     """
     LOGGER.info(f"[_fetch_ohlcv] PR14_DIAG ENTERED symbol={symbol} asset_type={asset_type} period={period}")
+    if adjustment not in {"raw", "split"}:
+        raise ValueError("unsupported OHLCV adjustment")
     import requests as _req
     from datetime import datetime, timedelta, timezone
     key = os.getenv("ALPACA_KEY_ID", "")
@@ -693,7 +722,7 @@ def _fetch_ohlcv_once(symbol, asset_type, period='1y', interval='1d'):
             url = (
                 f"https://data.alpaca.markets/v2/stocks/{symbol.upper()}/bars"
                 f"?timeframe={timeframe}&limit=10000&feed={feed}"
-                f"&start={start_str}&end={end_str}"
+                f"&start={start_str}&end={end_str}&adjustment={adjustment}"
             )
             r = _req.get(url, headers=headers, timeout=30)
             if r.status_code != 200:
@@ -778,7 +807,7 @@ def _block_up_below_sma5(symbol, asset_type, current_price):
     cur = float(current_price or 0)
     if cur <= 0:
         return False, None, cur
-    daily = _fetch_ohlcv(symbol, asset_type, period="1mo", interval="1d")
+    daily = _fetch_ohlcv(symbol, asset_type, period="1mo", interval="1d", adjustment="split")
     sma = _sma5_from_daily_bars(daily)
     if sma is None or sma <= 0:
         return False, sma, cur
@@ -823,12 +852,19 @@ def _normalize_daily_ohlcv(rows) -> Optional[List[Dict[str, Any]]]:
     return normalized or None
 
 
-def _fetch_ohlcv(symbol, asset_type, period=None, interval='1d'):
-    """Fetch canonical OHLCV with interval-aware caching and in-flight dedupe."""
+def _fetch_ohlcv(symbol, asset_type, period=None, interval='1d', *, adjustment='raw'):
+    """Fetch OHLCV with interval/price-basis-aware caching and in-flight dedupe.
+
+    Model inputs explicitly request split-adjusted history. Keep the legacy
+    default for outcome callers whose issuance reference is an observed price;
+    changing their basis also requires adjusting that reference.
+    """
+    if adjustment not in {"raw", "split"}:
+        raise ValueError("unsupported OHLCV adjustment")
     period = period or _v3_ohlcv_period()
     sym = (symbol or "").upper()
     atype = (asset_type or "stock").strip().lower()
-    cache_key = (sym, atype, period, str(interval or '1d').lower())
+    cache_key = (sym, atype, period, str(interval or '1d').lower(), adjustment)
 
     def _cached():
         with _OHLCV_CACHE_LOCK:
@@ -849,7 +885,10 @@ def _fetch_ohlcv(symbol, asset_type, period=None, interval='1d'):
             return rows
         retries = _v3_ohlcv_fetch_retries()
         for attempt in range(retries):
-            raw_rows = _fetch_ohlcv_once(symbol, asset_type, period, interval)
+            raw_rows = _fetch_ohlcv_once(
+                symbol, asset_type, period, interval,
+                **({"adjustment": adjustment} if adjustment != "raw" else {}),
+            )
             rows = _normalize_daily_ohlcv(raw_rows) if raw_rows else None
             if rows:
                 with _OHLCV_CACHE_LOCK:
@@ -1134,7 +1173,7 @@ def _yf_rows_from_history(tk, period=None, start=None, end=None):
 
 
 def backtest_symbol(symbol, asset_type):
-    rows = _fetch_ohlcv(symbol, asset_type)
+    rows = _fetch_ohlcv(symbol, asset_type, adjustment="split")
     min_bars = _min_backtest_bars()
     if not rows or len(rows) < min_bars:
         return [], []
@@ -1148,7 +1187,11 @@ def backtest_symbol(symbol, asset_type):
     sector_on = _v3_sector_feature_enabled()
     from core.engine_config import _v3_macro_features_enabled
     macro_on = _v3_macro_features_enabled()
-    aligned_sector = _align_sector_closes(rows, _fetch_sector_series()) if sector_on else None
+    # Match target history: a one-year proxy silently zeroed earlier rows of
+    # a five-year training set while serving populated relative strength.
+    aligned_sector = _align_sector_closes(
+        rows, _fetch_sector_series(period=_v3_ohlcv_period()),
+    ) if sector_on else None
     sector_lookback = _v3_sector_lookback()
     for i in range(window, len(rows) - margin):
         hist = rows[max(0, i - window) : i + 1]
@@ -1820,7 +1863,19 @@ def _train_one_direction(rows, symbol, direction, active_cols, peer_rows, peers_
         min_wf_acc = 0.50 + wf_scale * (min_wf_acc - 0.50)
         min_wf_acc_min = 0.45 + wf_scale * (symbol_wf_acc_min - 0.45)
         min_wf_folds = max(2, int(min_wf_folds * (0.5 + 0.5 * wf_scale)))
-        min_wf_edge = -0.05 + wf_scale * (min_wf_edge + 0.05)
+        # min_wf_edge is deliberately NOT relaxed here. This block used to scale
+        # it down to -0.05 at n_samples<=30, silently re-enabling the exact
+        # negative-edge floor PR #135 removed: _v3_min_wf_edge()'s contract is
+        # "a model with negative out-of-time edge must never count toward a 70%
+        # system ... loosening below zero requires an explicit env choice", and
+        # this path involved no env choice at all. It was not inert — a
+        # gate-passing model's OOS rows feed store_global_thresholds()' pooled
+        # cross-symbol live-fire proof below, so a thin-data model with a
+        # genuinely negative walk-forward edge could contribute to real fire
+        # evidence. Thin data still relaxes accuracy/fold counts above (those
+        # carry no such prohibition); an operator who truly wants a sub-zero
+        # floor sets V3_MIN_WF_EDGE explicitly, exactly as the contract says.
+        min_wf_edge = max(min_wf_edge, _v3_min_wf_edge())
     gate_checks = [
         ("n_samples", n_samples >= min_rows, f"n_samples<{min_rows} ({n_samples})"),
         ("tp_sl_wins", wins_ct >= min_wins, f"tp_sl_wins<{min_wins} ({wins_ct})"),
@@ -2693,6 +2748,17 @@ def _calibration_lifecycle_reject(meta: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def _model_age_days(meta: Dict[str, Any]) -> Optional[float]:
+    """Age in days, or None when trained_at is missing or unusable."""
+    try:
+        trained_at = float(meta.get("trained_at"))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(trained_at) or trained_at <= 0:
+        return None
+    return round(max(0.0, (time.time() - trained_at) / 86400.0), 3)
+
+
 def model_serve_guard(
     meta: Optional[Dict[str, Any]], *, expected_direction: Optional[str] = None,
     allow_research_scoring: bool = False,
@@ -2944,9 +3010,17 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
 
     # The deployed classifier is trained on daily bars. Keep serving on the
     # same frequency; intraday specialists must use their own model contract.
-    rows = _fetch_ohlcv(symbol, asset_type, period='1y', interval='1d')
+    rows = _fetch_ohlcv(symbol, asset_type, period='1y', interval='1d', adjustment="split")
     if not rows or len(rows) < 30:
         return None, "intraday_data"
+
+    from core.daily_bar_contract import completed_daily_bars
+    rows = completed_daily_bars(rows)
+    if len(rows) < 30:
+        return None, "daily_data"
+    if scores is not None:
+        scores["feature_timeframe"] = "completed_daily_bar"
+        scores["feature_bar_ts"] = rows[-1].get("ts")
 
     premarket_ctx = None
     try:
@@ -2954,20 +3028,16 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
         if _is_premarket() and _premarket_scan_enabled():
             from core.prices import get_extended_session
             premarket_ctx = get_extended_session(symbol)
-            sp = premarket_ctx.get("session_price") or premarket_ctx.get("live_price")
-            if sp and float(sp) > 0 and rows:
-                # Overlay extended-hours price on the last daily bar so momentum
-                # features reflect the gap without retraining on intraday bars.
-                last = dict(rows[-1])
-                px = float(sp)
-                last["close"] = px
-                last["high"] = max(float(last.get("high") or px), px)
-                last["low"] = min(float(last.get("low") or px), px)
-                rows = rows[:-1] + [last]
+            # Extended-hours evidence is context only. Replacing yesterday's
+            # close with this morning's quote creates a bar never seen at fit.
     except Exception as _pm_e:
         LOGGER.debug("premarket overlay skipped %s: %s", symbol, str(_pm_e)[:80])
 
-    features = _calculate_features(rows)
+    # Window to the same trailing bar count training used — see
+    # _serving_feature_bars. `rows` itself stays full-length below for the
+    # sector alignment and fundamentals date, which training also computes
+    # against full history.
+    features = _calculate_features(_serving_feature_bars(rows))
     from core.feature_schema import attach_feature_asof
     attach_feature_asof(
         features, rows[-1].get("ts") if rows else None, default_now=True,
@@ -3567,6 +3637,13 @@ def get_model_status():
                     "precision_source": precision_review.get("source"),
                     "fire_threshold": precision_review.get("threshold"),
                     "serveable": reject is None,
+                    # A status payload that cannot tell you a model's age
+                    # cannot answer "is this about to stop loading?" --
+                    # model_serve_guard expires an unactivated model at 14
+                    # days, and the retrain jobs need that to decide what
+                    # genuinely needs refreshing.
+                    "trained_at": m.get("trained_at"),
+                    "age_days": _model_age_days(m),
                     # Never fabricate "proven" for a missing/blank tier key.
                     # model_serve_guard() is the actual gate and treats a
                     # missing tier as tier_unproven (reject, above) — the

@@ -143,7 +143,7 @@ def score_research_artifact(
         return None
 
     # 3. Fetch OHLCV data
-    rows = _fetch_ohlcv(symbol, asset_type, period="1y", interval="1d")
+    rows = _fetch_ohlcv(symbol, asset_type, period="1y", interval="1d", adjustment="split")
     if not rows or len(rows) < 30:
         return None
     evaluation_date = completed_session_evaluation_date(rows[-1].get("ts"))
@@ -151,7 +151,11 @@ def score_research_artifact(
         return None
 
     # 4. Build features (same path as production)
-    features = _calculate_features(rows)
+    # Windowed to the same trailing bar count training used, so ema200 /
+    # ema_trend_bullish take the same code branch they did at fit time —
+    # see core.signal_engine._serving_feature_bars.
+    from core.signal_engine import _serving_feature_bars
+    features = _calculate_features(_serving_feature_bars(rows))
     attach_feature_asof(features, rows[-1].get("ts") if rows else None, default_now=True)
 
     # 5. Get feature order from artifact

@@ -167,7 +167,10 @@ def build_scorecard_row(
     buy, sell = squeeze_trade_levels(price, session_high, trade_kind)
     stop = compute_stop(price, vwap=vwap_f, prior_close=prior_close if prior_close > 0 else None)
 
+    from core.squeeze_evidence import EVIDENCE_FIELDS
+
     row: Dict[str, Any] = {
+        **{key: metrics.get(key) for key in EVIDENCE_FIELDS},
         "symbol": symbol.upper(),
         "buy": buy,
         "sell": sell,

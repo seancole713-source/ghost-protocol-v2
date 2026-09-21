@@ -70,6 +70,23 @@ def tp_sl_geometry_contract(*, hold_bars: Optional[int] = None) -> Dict[str, Any
         "stock_default_vol_pct": STOCK_DEFAULT_VOL_PCT,
         "stop_vol_mult": _stop_vol_mult(),
         "vol_map": {key: float(VOL_MAP[key]) for key in sorted(VOL_MAP)},
+        # Adaptive bands change what every label MEANS, so they must change
+        # model identity too. Recording the mode here makes the label_schema
+        # hash differ, which makes model_serve_guard reject models trained
+        # under the other geometry instead of serving them against labels they
+        # were never fit for. Absent this, flipping the env var would silently
+        # rewrite the contract beneath the stored fleet.
+        "adaptive_vol": (
+            {
+                "enabled": True,
+                "floor_pct": _adaptive_vol_floor("stock"),
+                "cap_pct": _forecast_band_vol_cap("stock"),
+                "realized_scale": _forecast_band_realized_scale(),
+                "lookback_bars": _forecast_band_lookback(),
+            }
+            if adaptive_vol_enabled()
+            else {"enabled": False}
+        ),
     }
 
 
@@ -104,6 +121,94 @@ def _forecast_band_realized_scale() -> float:
         return max(0.5, float(os.getenv("V3_FORECAST_BAND_REALIZED_SCALE", "0.85")))
     except Exception:
         return 0.85
+
+
+def adaptive_vol_enabled() -> bool:
+    """Two-sided per-symbol TP/SL bands. Off by default: enabling changes the
+    geometry contract, which changes every model's label_schema and requires a
+    full retrain before anything can serve."""
+    return (os.getenv("V3_ADAPTIVE_VOL_BANDS", "0") or "0").strip().lower() in (
+        "1", "on", "true", "yes"
+    )
+
+
+def _adaptive_vol_floor(asset_type: str) -> float:
+    """Smallest band a symbol may be given, so a pinned name still needs a real
+    move rather than resolving on noise."""
+    try:
+        default = 0.006 if (asset_type or "").lower() == "stock" else 0.010
+        return max(0.002, float(os.getenv("V3_ADAPTIVE_VOL_FLOOR", str(default))))
+    except Exception:
+        return 0.006
+
+
+def adaptive_vol_pct(
+    symbol: str,
+    asset_type: str,
+    rows: Optional[Sequence[Dict[str, Any]]] = None,
+    *,
+    end_idx: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Per-symbol band that scales BOTH ways from realized range.
+
+    forecast_band_vol_pct only ever widens -- `max(base, realized*scale)` -- so
+    a quiet symbol keeps the flat 2%. That is the half of the problem PR #163
+    did not solve, and it is the expensive half: a 2% target inside five bars is
+    unreachable for a mega-cap or an event-pinned name, so the trade EXPIRES and
+    expiry counts as a loss (SE-4). Ghost is then scored wrong on a trade that
+    never actually ran.
+
+    Measured over 4,424 resolved shadow outcomes on 2026-09-04: 6.6% expired
+    overall, concentrated in a handful of symbols -- APGE 100% expired (49/49),
+    JPM 74.4%, GOOG 58.3%, COST 37.8%, AMZN 34.1%, V 31.8%. Those are not bad
+    predictions; they are an instrument that cannot register a reading. Pooled
+    Wilson LB was 53.89% with them and 56.29% without.
+
+    So this narrows as well as widens, floored so a pinned symbol still has to
+    make a real move, and capped exactly as the widen-only path is.
+
+    Point-in-time by construction: pass ``end_idx`` and only bars up to that
+    index are used, so a label never sees range from after its own entry.
+    """
+    base = base_vol_pct(symbol, asset_type)
+    out: Dict[str, Any] = {
+        "vol_pct": round(base, 4),
+        "base_vol_pct": round(base, 4),
+        "realized_range_pct": None,
+        "source": "base",
+    }
+    if not adaptive_vol_enabled():
+        out["source"] = "base_adaptive_disabled"
+        return out
+
+    hist = list(rows or [])
+    if end_idx is not None:
+        hist = hist[: end_idx + 1]
+    if len(hist) < 3:
+        out["source"] = "base_insufficient_history"
+        return out
+
+    realized = median_realized_range_pct(hist, _forecast_band_lookback())
+    if realized is None or realized <= 0:
+        out["source"] = "base_no_realized_range"
+        return out
+
+    floor = _adaptive_vol_floor(asset_type)
+    cap = _forecast_band_vol_cap(asset_type)
+    scaled = float(realized) * _forecast_band_realized_scale()
+    vol = min(max(scaled, floor), cap)
+
+    out["vol_pct"] = round(vol, 4)
+    out["realized_range_pct"] = round(float(realized), 4)
+    out["floor_pct"] = round(floor, 4)
+    out["cap_pct"] = round(cap, 4)
+    if vol <= floor + 1e-9:
+        out["source"] = "realized_range_floored"
+    elif vol >= cap - 1e-9:
+        out["source"] = "realized_range_capped"
+    else:
+        out["source"] = "realized_range"
+    return out
 
 
 def median_realized_range_pct(rows: Sequence[Dict[str, Any]], lookback: int) -> Optional[float]:

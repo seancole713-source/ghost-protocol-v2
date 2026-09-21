@@ -1,4 +1,7 @@
+from datetime import datetime, timedelta
 import builtins
+from zoneinfo import ZoneInfo
+
 import json
 import time
 
@@ -1052,7 +1055,7 @@ def test_backtest_symbol_returns_empty_when_under_min_bars(monkeypatch):
     """backtest_symbol must bail out cleanly when feed returns fewer rows than the env floor."""
     import core.signal_engine as _se
     monkeypatch.setenv("MIN_BACKTEST_BARS", "100")
-    monkeypatch.setattr(_se, "_fetch_ohlcv", lambda symbol, asset_type: [{"ts": "x", "close": 1.0}] * 90)
+    monkeypatch.setattr(_se, "_fetch_ohlcv", lambda symbol, asset_type, adjustment="raw": [{"ts": "x", "close": 1.0}] * 90)
     up_rows, down_rows = _se.backtest_symbol("WOLF", "stock")
     assert up_rows == []
     assert down_rows == []
@@ -1068,7 +1071,7 @@ def test_backtest_symbol_includes_expiry_as_non_win(monkeypatch):
         "open": 100.0, "high": 100.1, "low": 99.9, "close": 100.0,
         "volume": 100000,
     } for i in range(100)]
-    monkeypatch.setattr(_se, "_fetch_ohlcv", lambda symbol, asset_type: rows)
+    monkeypatch.setattr(_se, "_fetch_ohlcv", lambda symbol, asset_type, adjustment="raw": rows)
     monkeypatch.setenv("MIN_BACKTEST_BARS", "10")
     monkeypatch.setenv("V3_BACKTEST_WINDOW", "60")
 
@@ -1089,7 +1092,7 @@ def test_backtest_symbol_window_governs_sample_count(monkeypatch):
         d = base + _dt.timedelta(days=i)
         rows.append({"ts": d.isoformat(), "open": 60.0 + i*0.5, "high": 66.0 + i*0.5,
                       "low": 54.0 + i*0.5, "close": 60.0 + i*0.5, "volume": 100000})
-    monkeypatch.setattr(_se, "_fetch_ohlcv", lambda symbol, asset_type: rows)
+    monkeypatch.setattr(_se, "_fetch_ohlcv", lambda symbol, asset_type, adjustment="raw": rows)
     monkeypatch.setenv("MIN_BACKTEST_BARS", "10")
     monkeypatch.setenv("V3_BACKTEST_WINDOW", "120")
     out_120_up, _ = _se.backtest_symbol("WOLF", "stock")
@@ -3329,17 +3332,18 @@ def test_predict_live_ex_journals_full_feature_vector(monkeypatch):
     """predict_live_ex writes the complete indicator vector (RSI/MACD/Bollinger/
     ATR/volume/momentum/EMA/ADX) into scores['features'] via real
     _calculate_features, so the pick journal captures it."""
+    monkeypatch.setattr("core.market_hours._now_ct", lambda: datetime(2026, 5, 21, 8, tzinfo=ZoneInfo("America/Chicago")))
     import core.signal_engine as _se
     import numpy as _np
-    # 220 steadily-rising 1h bars -> uptrend that clears the regime gates
+    # 220 steadily-rising daily bars -> uptrend that clears the regime gates
     rows = []
     for i in range(220):
         px = 100.0 + i * 0.4
-        rows.append({"ts": "2026-05-20T%02d:00:00Z" % (i % 24),
+        rows.append({"ts": (datetime(2026, 5, 20) - timedelta(days=219 - i)).date().isoformat(),
                      "open": px - 0.2, "high": px + 0.5, "low": px - 0.5,
                      "close": px, "volume": 1000 + i * 5})
     monkeypatch.setattr(_se, "_fetch_ohlcv",
-                        lambda s, a, period="5d", interval="1h": rows)
+                        lambda s, a, period="5d", interval="1h", adjustment="raw": rows)
 
     class _M:
         def predict_proba(self, X): return _np.array([[0.1, 0.9]])
@@ -3381,18 +3385,19 @@ def test_predict_live_ex_journals_full_feature_vector(monkeypatch):
 
 def test_predict_live_ex_applies_direction_specific_inversions(monkeypatch):
     """UP and DOWN serving matrices use only their own persisted sign map."""
+    monkeypatch.setattr("core.market_hours._now_ct", lambda: datetime(2026, 5, 21, 8, tzinfo=ZoneInfo("America/Chicago")))
     import core.signal_engine as _se
     import numpy as _np
 
     rows = []
     for i in range(220):
         px = 100.0 + i * 0.4
-        rows.append({"ts": "2026-05-20T%02d:00:00Z" % (i % 24),
+        rows.append({"ts": (datetime(2026, 5, 20) - timedelta(days=219 - i)).date().isoformat(),
                      "open": px - 0.2, "high": px + 0.5, "low": px - 0.5,
                      "close": px, "volume": 1000 + i * 5})
     monkeypatch.setattr(
         _se, "_fetch_ohlcv",
-        lambda s, a, period="5d", interval="1h": rows,
+        lambda s, a, period="5d", interval="1h", adjustment="raw": rows,
     )
 
     seen = {}
@@ -4690,23 +4695,23 @@ def test_feature_schema_tracks_pool_sector_and_fundamental_flags(monkeypatch):
     monkeypatch.setenv("V3_INTRADAY_FEATURES", "off")
     monkeypatch.setenv("V3_CROSS_SECTIONAL_FEATURES", "off")
     monkeypatch.setenv("V3_MACRO_FEATURES", "off")
-    assert _se._v3_feature_schema() == "tech3+macd_pct_v1+sec0+fa1+fund0+cs0+macro0+news0+opt0+intra0"
+    assert _se._v3_feature_schema() == "tech3+macd_pct_v1+sec0+fa1+fund0+cs0+macro0+news0+opt0+intra0+alpaca_split_v1"
     monkeypatch.setenv("V3_POOL_TRAINING", "off")
-    assert _se._v3_feature_schema() == "tech3+macd_raw_v0+sec0+fa1+fund0+cs0+macro0+news0+opt0+intra0"
+    assert _se._v3_feature_schema() == "tech3+macd_raw_v0+sec0+fa1+fund0+cs0+macro0+news0+opt0+intra0+alpaca_split_v1"
     monkeypatch.setenv("V3_SECTOR_FEATURE", "on")
-    assert _se._v3_feature_schema() == "tech3+macd_raw_v0+sec1+fa1+fund0+cs0+macro0+news0+opt0+intra0"
+    assert _se._v3_feature_schema() == "tech3+macd_raw_v0+sec1+fa1+fund0+cs0+macro0+news0+opt0+intra0+alpaca_split_v1"
     monkeypatch.setenv("V3_FUNDAMENTAL_FEATURES", "on")
-    assert _se._v3_feature_schema() == "tech3+macd_raw_v0+sec1+fa1+fund1+cs0+macro0+news0+opt0+intra0"
+    assert _se._v3_feature_schema() == "tech3+macd_raw_v0+sec1+fa1+fund1+cs0+macro0+news0+opt0+intra0+alpaca_split_v1"
     monkeypatch.setenv("V3_CROSS_SECTIONAL_FEATURES", "on")
-    assert _se._v3_feature_schema() == "tech3+macd_raw_v0+sec1+fa1+fund1+cs1+macro0+news0+opt0+intra0"
+    assert _se._v3_feature_schema() == "tech3+macd_raw_v0+sec1+fa1+fund1+cs1+macro0+news0+opt0+intra0+alpaca_split_v1"
     monkeypatch.setenv("V3_MACRO_FEATURES", "on")
-    assert _se._v3_feature_schema() == "tech3+macd_raw_v0+sec1+fa1+fund1+cs1+macro1+news0+opt0+intra0"
+    assert _se._v3_feature_schema() == "tech3+macd_raw_v0+sec1+fa1+fund1+cs1+macro1+news0+opt0+intra0+alpaca_split_v1"
     monkeypatch.setenv("V3_NEWS_FEATURES", "on")
-    assert _se._v3_feature_schema() == "tech3+macd_raw_v0+sec1+fa1+fund1+cs1+macro1+news1+opt0+intra0"
+    assert _se._v3_feature_schema() == "tech3+macd_raw_v0+sec1+fa1+fund1+cs1+macro1+news1+opt0+intra0+alpaca_split_v1"
     monkeypatch.setenv("V3_OPTIONS_FEATURES", "on")
-    assert _se._v3_feature_schema() == "tech3+macd_raw_v0+sec1+fa1+fund1+cs1+macro1+news1+opt1+intra0"
+    assert _se._v3_feature_schema() == "tech3+macd_raw_v0+sec1+fa1+fund1+cs1+macro1+news1+opt1+intra0+alpaca_split_v1"
     monkeypatch.setenv("V3_INTRADAY_FEATURES", "on")
-    assert _se._v3_feature_schema() == "tech3+macd_raw_v0+sec1+fa1+fund1+cs1+macro1+news1+opt1+intra1"
+    assert _se._v3_feature_schema() == "tech3+macd_raw_v0+sec1+fa1+fund1+cs1+macro1+news1+opt1+intra1+alpaca_split_v1"
 
 
 def test_active_feature_cols_appends_sector_only_when_on(monkeypatch):

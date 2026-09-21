@@ -485,7 +485,23 @@ def snapshot_shadow_checklists(rows: List[Dict[str, Any]], *, budget: Optional[i
     )
     from core.catalyst_checklist import evaluate_checklist
     from core.checklist_evidence import collect_evidence
-    from core.checklist_ledger import store_snapshot
+    from core.checklist_ledger import store_snapshot, validate_outcome_contract
+
+    # Check the contract ONCE, loudly, before the loop. It is a process-wide
+    # configuration fact, not a property of any row: when issuance and
+    # resolution horizons diverge, store_snapshot raises for EVERY row. The
+    # per-row handler below then swallowed it as a warning, so a misconfigured
+    # deployment looked like ordinary flaky rows and the whole checklist lane
+    # recorded nothing for days without a single error-level line. Fail here
+    # instead, once, at ERROR — a config problem must not masquerade as data.
+    try:
+        validate_outcome_contract()
+    except Exception as exc:  # noqa: BLE001 - config error, reported not raised
+        LOGGER.error(
+            "Shadow checklist DISABLED — %s. No snapshots can be written until "
+            "this is resolved; calibration will stay empty.", str(exc)[:200],
+        )
+        return 0
 
     written = 0
     skipped = 0
@@ -778,7 +794,6 @@ def shadow_diagnostics() -> Dict[str, Any]:
     try:
         with db_conn() as conn:
             cur = conn.cursor()
-            ensure_shadow_table(cur)
             cur.execute("SELECT COUNT(*) FROM ghost_shadow_outcomes WHERE outcome IS NULL")
             out["pending"] = int(cur.fetchone()[0] or 0)
             cur.execute("SELECT COUNT(*) FROM ghost_shadow_outcomes WHERE outcome IS NOT NULL")
@@ -820,23 +835,28 @@ def shadow_diagnostics() -> Dict[str, Any]:
     return out
 
 
-def shadow_stats(days: int = 30) -> Dict[str, Any]:
-    """Scoreboard payload for /api/shadow-stats and the MCP tool."""
+def load_shadow_rows(days: int = 30) -> List[Dict[str, Any]]:
+    """Shadow evaluations from the last N days, resolved and pending alike.
+
+    Factored out of shadow_stats so calibration can read the same rows through
+    the same query rather than growing a second, subtly different one. Note the
+    up_prob column: for a DOWN row the model's probability lives in model_prob,
+    so a naive read of up_prob would score the down lane against the wrong
+    number entirely.
+    """
     from core.db import db_conn
-    from core.tp_sl_resolve import label_hold_bars
 
     days = max(1, min(365, int(days)))
     cutoff = int(time.time()) - days * 86400
     with db_conn() as conn:
         cur = conn.cursor()
-        ensure_shadow_table(cur)
         cur.execute(
             "SELECT symbol, eval_ts, up_prob, outcome, pnl_pct, direction, model_prob, "
             "model_sha256, label_schema, validation_schema, hold_bars "
             "FROM ghost_shadow_outcomes WHERE eval_ts >= %s",
             (cutoff,),
         )
-        rows = [
+        return [
             {
                 "symbol": r[0], "eval_ts": r[1],
                 "up_prob": r[6] if str(r[5] or "").upper() == "DOWN" else r[2],
@@ -847,6 +867,13 @@ def shadow_stats(days: int = 30) -> Dict[str, Any]:
             }
             for r in cur.fetchall()
         ]
+
+
+def shadow_stats(days: int = 30) -> Dict[str, Any]:
+    """Scoreboard payload for /api/shadow-stats and the MCP tool."""
+    from core.tp_sl_resolve import label_hold_bars
+
+    rows = load_shadow_rows(days=days)
     out = aggregate_shadow_stats(rows)
     diag = shadow_diagnostics()
     try:

@@ -5,6 +5,10 @@ demonstrably produced >= V3_PRECISION_TARGET precision out-of-sample
 (chosen on the calib slice, validated on the untouched gate slice).
 No proof, no fire.
 """
+from datetime import datetime, timedelta
+
+from zoneinfo import ZoneInfo
+
 import time
 
 import numpy as np
@@ -171,7 +175,7 @@ def _uptrend_rows(n=220):
     rows = []
     for i in range(n):
         px = 100.0 + i * 0.4
-        rows.append({"ts": "2026-05-20T%02d:00:00Z" % (i % 24),
+        rows.append({"ts": (datetime(2026, 5, 20) - timedelta(days=n - 1 - i)).date().isoformat(),
                      "open": px - 0.2, "high": px + 0.5, "low": px - 0.5,
                      "close": px, "volume": 1000 + i * 5})
     return rows
@@ -200,6 +204,7 @@ def _complete_proof(proof):
 
 
 def _patch(monkeypatch, up_p, precision_gate):
+    monkeypatch.setattr("core.market_hours._now_ct", lambda: datetime(2026, 5, 21, 8, tzinfo=ZoneInfo("America/Chicago")))
     meta = {"edge": 0.3, "accuracy": 0.66, "wf_acc_mean": 0.64,
             "wf_edge_mean": 0.2, "wf_fold_count": 4, "trained_at": time.time(),
             "model_sha256": "a" * 64, "label_schema": _se._v3_label_schema(),
@@ -212,7 +217,7 @@ def _patch(monkeypatch, up_p, precision_gate):
         lambda s, direction="UP": (_Model(up_p), _se.FEATURE_COLS, dict(meta))
         if direction == "UP" else (None, None, None))
     monkeypatch.setattr(_se, "_fetch_ohlcv",
-                        lambda s, a, period="5d", interval="1h": _uptrend_rows())
+                        lambda s, a, period="5d", interval="1h", adjustment="raw": _uptrend_rows())
     # Legacy contract so these tests isolate precision-gate behavior from the
     # 70% contract floor clamps on training meta gates.
     monkeypatch.setenv("GHOST_ACCURACY_CONTRACT", "legacy")
@@ -287,6 +292,7 @@ def test_research_mode_bypasses_precision_gate_under_legacy(monkeypatch):
 def test_research_mode_allowed_when_contract_70(monkeypatch):
     """P3 audit: research bypass is now enabled under the 70 contract so
     research-mode picks can fire even without a proven precision gate."""
+    monkeypatch.setattr("core.market_hours._now_ct", lambda: datetime(2026, 5, 21, 8, tzinfo=ZoneInfo("America/Chicago")))
     monkeypatch.setenv("GHOST_ACCURACY_CONTRACT", "70")
     monkeypatch.delenv("V3_PRECISION_GATE", raising=False)
     meta = {"edge": 0.3, "accuracy": 0.66, "wf_acc_mean": 0.70,
@@ -297,7 +303,7 @@ def test_research_mode_allowed_when_contract_70(monkeypatch):
         lambda s, direction="UP": (_Model(0.60), _se.FEATURE_COLS, dict(meta))
         if direction == "UP" else (None, None, None))
     monkeypatch.setattr(_se, "_fetch_ohlcv",
-                        lambda s, a, period="5d", interval="1h": _uptrend_rows())
+                        lambda s, a, period="5d", interval="1h", adjustment="raw": _uptrend_rows())
     sig, reason = _se.predict_live_ex("WOLF", "stock", research_mode=True)
     # Research bypass is now enabled — precision gate should NOT block
     assert sig is not None

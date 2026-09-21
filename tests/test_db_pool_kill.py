@@ -62,6 +62,7 @@ def test_evaluate_kill_conditions_include_pause(monkeypatch):
         "expectancy_window": 20,
         "cooldown_minutes": 1440,
         "min_samples": 10,
+        "recency_days": 14,
     })
     monkeypatch.setattr(pred, "_kill_symbol_universe", lambda: ["WOLF"])
 

@@ -183,6 +183,7 @@ a{color:inherit}
     </div>
   </header>
   <div class="stamp" id="stamp"></div>
+  <div class="stamp"><a href="/console#research">Research forecasts (not approved picks)</a></div>
 
   <nav class="tabs" role="tablist" aria-label="Ghost sections">
     <button class="tabbtn" id="tab-today" role="tab" aria-selected="true" aria-controls="view-today">Today</button>
@@ -348,8 +349,9 @@ function loadToday(){ return guardedLoad('today', async function(){
     getJson('/api/squeeze/picks'),
     getJson('/api/picks?limit=5'),
     getJson('/api/wolf/kill-status'),
+    getJson('/api/v3/status'),
   ]);
-  var squeeze = results[0], picksResp = results[1], kill = results[2];
+  var squeeze = results[0], picksResp = results[1], kill = results[2], models = results[3];
   var html = '';
 
   var scanTs = squeeze.__ok ? timestampMs(squeeze.last_scan_ts) : null;
@@ -420,8 +422,8 @@ function loadToday(){ return guardedLoad('today', async function(){
     html += '<div class="facts"><div class="fact"><div class="line"><span class="lbl">Official directional-pick issuance</span><span class="val mid">Safety-paused</span></div>'
       + '<div class="mean">'+esc(pauseExplanation(kill))+' This blocks only new official directional picks. Analysis, squeeze scanning, monitoring, and learning remain active.</div></div></div>';
   } else {
-    html += '<div class="facts"><div class="fact"><div class="line"><span class="lbl">Official directional-pick issuance</span><span class="val ok">Available</span></div>'
-      + '<div class="mean">No engine-level safety pause is blocking new directional picks.</div></div></div>';
+    html += '<div class="facts"><div class="fact"><div class="line"><span class="lbl">Official directional-pick issuance</span><span class="val mid">'+esc(modelReadiness(models))+'</span></div>'
+      + '<div class="mean">Safety latch is clear. Model proof, signal quality and the post-close issuance window still govern new daily-model picks.</div></div></div>';
   }
   html += '</div>';
 
@@ -620,20 +622,27 @@ function loadRecord(){ return guardedLoad('record', async function(){
 }
 
 /* -------------------------------------------------------------- System - */
+function modelReadiness(models){
+  var count = models && models.__ok && models.fleet_summary && models.fleet_summary.fireable_now;
+  if(typeof count !== 'number' || !Number.isFinite(count) || count < 0) return 'Model readiness unavailable';
+  return count === 0 ? 'No approved models' : 'Models eligible; signal gates still apply';
+}
+
 function loadSystem(){ return guardedLoad('system', async function(){
   var el = document.getElementById('view-system');
   var results = await Promise.all([
     getJson('/api/health'),
     getJson('/api/wolf/kill-status'),
     getJson('/api/system/degraded'),
+    getJson('/api/v3/status'),
   ]);
-  var health = results[0], kill = results[1], degraded = results[2];
+  var health = results[0], kill = results[1], degraded = results[2], models = results[3];
 
   var html = '<div class="section"><h2>Is Ghost healthy?</h2>';
   html += '<div class="sysrow"><span class="k">Core service</span><span class="v '+(health.__ok?'ok':'no')+'">'+(health.__ok?'Healthy':'Unknown — treat as unavailable')+'</span></div>';
   if(kill.__ok){
     var paused = !!(kill.engine_pause && kill.engine_pause.paused);
-    html += '<div class="sysrow"><span class="k">Official directional-pick issuance</span><span class="v '+(paused?'mid':'ok')+'">'+(paused?'Safety-paused':'Available')+'</span></div>';
+    html += '<div class="sysrow"><span class="k">Official directional-pick issuance</span><span class="v mid">'+esc(paused?'Safety-paused':modelReadiness(models))+'</span></div>';
     if(paused){
       html += '<div class="hint">'+esc(pauseExplanation(kill))+' Only new official directional picks are blocked; the rest of Ghost remains active.</div>';
     }

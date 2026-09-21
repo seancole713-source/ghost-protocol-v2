@@ -204,6 +204,7 @@ _SKIP_PRIORITY: List[str] = [
     "v3_prob_invalid",
     "v3_prob_low",
     "v3_intraday_data",
+    "v3_daily_data",
     "v3_engine_error",
     "v3_no_signal",
     "no_v3_model",
@@ -228,7 +229,8 @@ _SKIP_LABELS: Dict[str, str] = {
     "v3_research_tier": "v3 research-tier model is shadow-only and cannot issue official picks",
     "v3_prob_invalid": "v3 model returned an invalid probability",
     "v3_prob_low": "v3 model prob below BUY floor",
-    "v3_intraday_data": "v3 intraday bars missing/short",
+    "v3_intraday_data": "v3 daily history missing/short",
+    "v3_daily_data": "v3 latest completed daily session unavailable",
     "v3_engine_error": "v3 engine error",
     "v3_no_signal": "v3 returned no signal (other)",
     "no_v3_model": "no v3 model trained for symbol (coverage gap — not WOLF unload)",
@@ -315,6 +317,15 @@ def _kill_cfg() -> Dict[str, Any]:
         "expectancy_window": max(1, int(g("KILL_EXPECTANCY_WINDOW", "20"))),
         "cooldown_minutes": max(1, int(g("KILL_COOLDOWN_MINUTES", "1440"))),
         "min_samples": max(1, int(g("KILL_MIN_SAMPLES", "10"))),
+        # Kill windows above are COUNTS, not time, so without this the switch
+        # judges the live engine on whatever the last N resolved picks were —
+        # even if they resolved months ago against a since-retrained model
+        # generation. That is self-perpetuating: a pause suppresses firing,
+        # no firing means no new outcomes, so the stale rows that tripped the
+        # switch stay the newest rows forever and the pause can never clear.
+        # Same guard, same default, same "0 disables" semantics as
+        # CB_RECENCY_DAYS on the circuit breaker (see _circuit_breaker_floor).
+        "recency_days": max(0, int(g("KILL_RECENCY_DAYS", "14"))),
     }
 
 
@@ -387,12 +398,29 @@ def evaluate_kill_conditions(*, include_pause: bool = False, since_ts: int = 0) 
     cold start every gated condition reads 'insufficient' and never trips.
 
     When since_ts > 0, only picks resolved after that timestamp are considered.
-    This allows manual resume to reset the window — only new outcomes count."""
+    This allows manual resume to reset the window — only new outcomes count.
+
+    Independently of since_ts, KILL_RECENCY_DAYS bounds how old an outcome may
+    be and still count. The kill windows are counts, so without that bound the
+    switch keeps judging the engine on the last N resolved picks no matter how
+    stale they are — and because a pause stops firing, those same stale rows
+    stay the newest rows forever. Outcomes that age out reduce the sample count,
+    so a condition with too little RECENT evidence reads 'insufficient' and
+    cannot trip, exactly as it does during cold start. Thresholds are untouched:
+    this changes which outcomes are admissible evidence, never what counts as
+    failing."""
     cfg = _kill_cfg()
     need = max(cfg["winrate_window"], cfg["brier_window"],
                cfg["expectancy_window"], cfg["consec_losses"], cfg["min_samples"])
     symbols = _kill_symbol_universe()
     pause_state: Dict[str, Any] = {"paused": False}
+    # Whichever floor is tighter wins: an explicit resume window, or the
+    # recency bound. 0 means "no floor" for both.
+    recency_days = max(0, int(cfg.get("recency_days") or 0))
+    floors = [int(since_ts)] if since_ts > 0 else []
+    if recency_days > 0:
+        floors.append(int(time.time()) - recency_days * 86400)
+    resolved_since_ts = max(floors) if floors else 0
     try:
         with db_conn() as conn:
             cur = conn.cursor()
@@ -401,13 +429,13 @@ def evaluate_kill_conditions(*, include_pause: bool = False, since_ts: int = 0) 
                 + RESOLVED_FOR_WINRATE_WHERE + " AND "
                 + NON_RESEARCH_WHERE
             )
-            if since_ts > 0:
+            if resolved_since_ts > 0:
                 cur.execute(
                     "SELECT confidence, outcome, pnl_pct FROM predictions "
                     "WHERE symbol = ANY(%s) AND id >= " + str(V32_ERA_MIN_ID) + " "
                     "AND " + canonical_where + " AND resolved_at >= %s "
                     "ORDER BY resolved_at DESC NULLS LAST, id DESC LIMIT %s",
-                    (symbols, since_ts, need))
+                    (symbols, resolved_since_ts, need))
             else:
                 cur.execute(
                     "SELECT confidence, outcome, pnl_pct FROM predictions "
@@ -506,6 +534,10 @@ def evaluate_kill_conditions(*, include_pause: bool = False, since_ts: int = 0) 
         "enabled": cfg["enabled"],
         "any_triggered": any(c["triggered"] for c in conds),
         "resolved_available": len(rows),
+        # Which outcomes were admissible, so a reader can tell "no recent
+        # evidence" apart from "recent evidence looks fine".
+        "recency_days": recency_days,
+        "resolved_since_ts": resolved_since_ts,
         "conditions": conds,
     }
     if include_pause:
@@ -640,7 +672,36 @@ def enforce_kill_conditions() -> Dict[str, Any]:
         prev = engine_pause_state()
         if prev.get("paused"):
             if prev.get("latched"):
-                return prev
+                # A latch normally requires a human to review the degradation
+                # before trading resumes, and that stays true whenever there is
+                # anything to review. But once EVERY admissible outcome has
+                # aged out of the window (KILL_RECENCY_DAYS), the pause is being
+                # held up by evidence the switch itself no longer accepts, and
+                # nothing can ever change that: a pause stops firing, no firing
+                # means no new outcomes, so the window stays empty forever.
+                # That is the same self-perpetuating shape the recency bound was
+                # added to break, one level up — the switch stopped tripping on
+                # stale rows, but the latch kept holding on them.
+                #
+                # Deliberately narrow: this clears ONLY when resolved_available
+                # is 0. A latch over evidence that exists and merely is not
+                # tripping still needs a human, because there is something real
+                # to look at. The switch also stays fully armed either way, so a
+                # genuine degradation re-trips on the next resolved picks.
+                if int(ev.get("resolved_available") or 0) > 0:
+                    return prev
+                try:
+                    _clear_engine_pause()
+                except Exception as e:
+                    LOGGER.error("engine latch auto-clear failed: %s", str(e)[:160])
+                    return {**prev, "clear_failed": True, "error": str(e)[:160]}
+                LOGGER.warning(
+                    "ENGINE LATCH AUTO-CLEARED — the pause reason (%s) had no "
+                    "admissible evidence left within %sd; kill switch remains "
+                    "armed and will re-trip on new outcomes",
+                    prev.get("reason"), ev.get("recency_days"),
+                )
+                return {"paused": False, "cleared": True, "latch_expired": True}
             try:
                 _clear_engine_pause()
             except Exception as e:
@@ -673,12 +734,19 @@ def enforce_kill_conditions() -> Dict[str, Any]:
     auto_resume_at = (now + cfg["cooldown_minutes"] * 60) if cooldown_only else None
     prev = engine_pause_state()
 
+    # engine_pause_ts is when the pause STARTED, so it must only be written on a
+    # new trip. Rewriting it every enforcement cycle made a latched pause report
+    # a forever-advancing "since", so nobody could tell how long the engine had
+    # actually been down. Same predicate the one-time alert below already uses.
+    is_new_trip = (not prev.get("paused")) or prev.get("reason") != reason
+
     try:
         with db_conn() as c:
             cur = c.cursor()
             ensure_ghost_state(cur)
-            pairs = [("engine_paused", "1"), ("engine_pause_reason", reason),
-                     ("engine_pause_ts", str(now))]
+            pairs = [("engine_paused", "1"), ("engine_pause_reason", reason)]
+            if is_new_trip:
+                pairs.append(("engine_pause_ts", str(now)))
             for k, v in pairs:
                 cur.execute(
                     "INSERT INTO ghost_state(key,val) VALUES(%s,%s) "
@@ -700,7 +768,7 @@ def enforce_kill_conditions() -> Dict[str, Any]:
         LOGGER.error("engine pause write failed: " + str(e)[:80])
 
     # One-time Telegram alert per new trip reason.
-    if not prev.get("paused") or prev.get("reason") != reason:
+    if is_new_trip:
         LOGGER.warning("KILL CONDITION TRIPPED — engine paused: %s", reason)
         try:
             from core.telegram import send_health_alert
@@ -718,7 +786,9 @@ def enforce_kill_conditions() -> Dict[str, Any]:
                     "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val", (str(now),))
         except Exception:
             note_suppressed()
-    return {"paused": True, "reason": reason, "since": now,
+    # Report the original trip time on a re-confirm, not this cycle's clock.
+    since = now if is_new_trip else int(prev.get("since") or now)
+    return {"paused": True, "reason": reason, "since": since,
             "auto_resume_at": auto_resume_at, "actions": actions}
 
 
@@ -1422,6 +1492,7 @@ def _predict_symbol_ex(symbol, asset_type, regime, scores_out=None):
             "live_recal_prob_low": "v3_live_recal_prob_low",
             "live_recal_prob_invalid": "v3_live_recal_prob_invalid",
             "research_tier": "v3_research_tier",
+            "daily_data": "v3_daily_data",
             "prob_invalid": "v3_prob_invalid",
             "prob_low": "v3_prob_low",
             "down_shadow_only": "sell_blocked",

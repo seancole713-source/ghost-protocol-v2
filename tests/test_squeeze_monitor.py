@@ -151,6 +151,12 @@ def test_candidate_to_pick_matches_telegram_fields():
         "current_move_pct": 1.0,
         "prior_close": 4.20,
     }
+    import time
+    from core.daily_bar_contract import previous_session
+    from core.market_hours import session_hm
+    metrics.update({"price_as_of_ts": time.time() - 60, "daily_feed": "iex", "intraday_feed": "iex",
+                    "reference_session_date": previous_session(session_hm()[0].date()).isoformat(),
+                    "bars_complete": True, "session_volume": 1000, "avg_daily_volume": 1000})
     pick = candidate_to_pick("SPCE", "squeeze_active", metrics, 3.0, {"squeeze_risk": "high"})
     msg = format_squeeze_alert("SPCE", "squeeze_active", metrics, 3.0, {"squeeze_risk": "high"})
     assert pick["symbol"] == "SPCE"
@@ -358,3 +364,118 @@ def test_squeeze_alert_key_changes_only_on_material_reprice():
         assert k1 != k3
     finally:
         sm.REPRICE_ALERT_PCT = monkeypatch_pct
+
+
+# ── fetch-outcome classification (premarket no-print vs real failure) ────────
+#
+# Regression fixture for a live-observed telemetry bug: a premarket scan
+# logged "ok=21 fail=86" on a 107-symbol watchlist, and because
+# ghost_console.html flips its badge to "Market data degraded" on
+# fetch_fail > 0, the console reported degraded market data on every
+# premarket cycle. The 86 were symbols batched_market_metrics itself
+# documents as "an authoritative premarket absence, not a provider miss".
+
+def test_no_intraday_print_is_not_counted_as_a_fetch_failure(monkeypatch):
+    """A symbol the batch answered for with None has not traded yet -- it is
+    not a provider failure and must not set fetch_fail."""
+    import asyncio
+
+    import core.squeeze_monitor as sm
+
+    monkeypatch.setattr("core.market_hours.is_us_extended_hours", lambda *a, **k: True)
+    monkeypatch.setattr("core.market_hours.is_us_premarket", lambda *a, **k: True)
+    monkeypatch.setattr("core.market_hours.is_us_rth", lambda *a, **k: False)
+    monkeypatch.setattr("config.symbols.get_edge_set", lambda: {"AAA", "BBB", "CCC"})
+    # Explicit complete-empty status is required; None alone proves nothing.
+    import time
+    from core.daily_bar_contract import previous_session
+    from core.market_hours import session_hm
+    from core.squeeze_evidence import MarketSnapshot
+    monkeypatch.setattr(sm, "batched_market_snapshot", lambda syms: MarketSnapshot(metrics={
+        "AAA": {"session_volume": 1000.0, "avg_daily_volume": 500.0,
+                "peak_move_pct": 1.0, "current_move_pct": 1.0, "price": 10.0,
+                "prior_close": 9.9, "session_high": 10.0, "price_as_of_ts": time.time() - 60,
+                "reference_session_date": previous_session(session_hm()[0].date()).isoformat(),
+                "daily_feed": "iex", "intraday_feed": "iex", "bars_complete": True},
+        "BBB": None, "CCC": None,
+    }, statuses={sym: {"status": "ready" if sym == "AAA" else "no_intraday_print"} for sym in syms}))
+
+    def _boom(sym):  # the fallback path must never be reached for batch answers
+        raise AssertionError(f"per-symbol fallback ran for batched symbol {sym}")
+
+    monkeypatch.setattr(sm, "_single_market_snapshot", _boom)
+    monkeypatch.setattr(sm, "_persist_scan_report", lambda r: None)
+    monkeypatch.setattr(sm, "_maybe_alert", lambda *a, **k: False)
+    monkeypatch.setattr(sm, "_enrich_watches_with_quorum", lambda w: None)
+    monkeypatch.setattr(sm, "_reset_alert_history_if_new_session", lambda: None)
+
+    asyncio.run(sm._run_watchlist_scan())
+    report = sm._last_scan_report
+
+    assert report["fetch_ok"] == 1
+    assert report["fetch_fail"] == 0, "premarket absence must not read as failure"
+    assert report["fetch_failed_symbols"] == []
+    assert report["no_intraday_print"] == 2
+    assert sorted(report["no_intraday_print_symbols"]) == ["BBB", "CCC"]
+
+
+def test_symbols_never_attempted_are_skipped_not_failed(monkeypatch):
+    """When the fallback loop stops early on a timeout, the symbols it never
+    reached are 'skipped', not 'failed' -- never attempted != tried and failed."""
+    import asyncio
+
+    import core.squeeze_monitor as sm
+
+    monkeypatch.setattr("core.market_hours.is_us_extended_hours", lambda *a, **k: True)
+    monkeypatch.setattr("core.market_hours.is_us_premarket", lambda *a, **k: True)
+    monkeypatch.setattr("core.market_hours.is_us_rth", lambda *a, **k: False)
+    monkeypatch.setattr("config.symbols.get_edge_set", lambda: {"AAA", "BBB", "CCC"})
+    from core.squeeze_evidence import MarketSnapshot
+    monkeypatch.setattr(sm, "batched_market_snapshot", lambda syms: MarketSnapshot())  # batch disabled
+
+    def _hang(sym):
+        import time as _t
+        _t.sleep(0.15)  # exceeds the patched timeout below
+        return None
+
+    monkeypatch.setattr(sm, "_single_market_snapshot", _hang)
+    monkeypatch.setenv("SQUEEZE_FETCH_TIMEOUT_S", "0.05")
+    monkeypatch.setenv("SQUEEZE_FETCH_DELAY_S", "0")
+    monkeypatch.setattr(sm, "_persist_scan_report", lambda r: None)
+    monkeypatch.setattr(sm, "_maybe_alert", lambda *a, **k: False)
+    monkeypatch.setattr(sm, "_enrich_watches_with_quorum", lambda w: None)
+    monkeypatch.setattr(sm, "_reset_alert_history_if_new_session", lambda: None)
+
+    asyncio.run(sm._run_watchlist_scan())
+    report = sm._last_scan_report
+
+    # Exactly one symbol was attempted (then timed out, breaking the loop);
+    # the other two were never tried.
+    assert report["fetch_fail"] == 1
+    assert report["fetch_skipped"] == 2
+    assert len(report["fetch_failed_symbols"]) == 1
+    assert len(report["fetch_skipped_symbols"]) == 2
+    assert report["fetch_ok"] == 0
+    sm._batch_worker_future.result(timeout=1)
+
+
+def test_get_squeeze_picks_exposes_the_new_fetch_outcome_counts(monkeypatch):
+    import core.squeeze_monitor as sm
+
+    monkeypatch.setattr(sm, "_last_scan_report", {
+        "status": "complete", "ts": 1, "ok": True,
+        "fetch_ok": 21, "fetch_fail": 0, "fetch_failed_symbols": [],
+        "no_intraday_print": 86, "no_intraday_print_symbols": ["ZZZ"],
+        "fetch_skipped": 0, "fetch_skipped_symbols": [],
+        "symbols": 107, "picks": [], "candidates": [], "leaders": [],
+    })
+    monkeypatch.setattr(sm, "_alert_history", [])
+
+    board = sm.get_squeeze_picks()
+
+    # The console's degraded badge keys off fetch_fail; a normal premarket
+    # watchlist must leave it at zero.
+    assert board["fetch_fail"] == 0
+    assert board["no_intraday_print"] == 86
+    assert board["no_intraday_print_symbols"] == ["ZZZ"]
+    assert board["fetch_skipped"] == 0

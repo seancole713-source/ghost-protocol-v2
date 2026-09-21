@@ -1223,13 +1223,102 @@ def _build_train_symbol_list():
     return watchlist_symbol_pairs(include_portfolio=True)
 
 
+# model_serve_guard rejects a research-tier model with exactly this code. It is
+# the ONLY reject that still leaves a usable artifact: the pickle loads, every
+# schema matches, and the scan scores shadow probabilities from it every cycle.
+# Every other reject (stale schema, expired, bad sha, missing pickle) means
+# there is genuinely nothing to serve.
+_LOADABLE_DESPITE = frozenset({"tier_unproven"})
+
+# model_serve_guard expires an unactivated model at 14 days.
+_MODEL_SERVE_MAX_AGE_DAYS = 14.0
+
+
+def _model_refresh_within_days() -> float:
+    """How close to the serve expiry a model must be before it is retrained."""
+    try:
+        return max(0.5, min(13.0, float(os.getenv("MODEL_REFRESH_WITHIN_DAYS", "3"))))
+    except (TypeError, ValueError):
+        return 3.0
+
+
+def _model_fleet_coverage() -> dict:
+    """One get_model_status() read reduced to what the retrain jobs need.
+
+    LOADABLE, not PROVEN. This is the fix for a loop that could never end.
+    Both retrain jobs used get_model_status()["symbols"], which is built only
+    where model_serve_guard returns None -- i.e. proven tier only. With every
+    model stamped "research" that map is empty, so coverage saw missing=107
+    forever and retrained the whole fleet every cycle, and the map it read
+    could never be raised by the loop reading it. Its own docstring said
+    "lack a LOADABLE v3 model" and the job comment said "if too few loadable
+    v3 models"; the implementation never matched either.
+
+    Why it mattered more than wasted CPU: proven_skill_gate counts resolved
+    shadow outcomes WHERE model_sha256=%s, and every retrain rewrites that sha.
+    Measured live 2026-09-05 over 30 days -- 3,252 identity groups for 207
+    lanes, 3,252 distinct shas, max n=6, and ZERO groups reaching the n>=10 the
+    gate requires. Pooled by lane instead of by sha the same outcomes give a
+    mean of 19.3, and 153 of 207 lanes clear 10. The evidence was never thin;
+    it was being shredded into 3,252 buckets holding ~1 outcome each.
+    """
+    out = {"loadable_symbols": set(), "loadable_models": 0,
+           "expiring_symbols": set(), "checked": 0}
+    try:
+        from core.signal_engine import get_model_status
+        stored = (get_model_status() or {}).get("stored_symbols") or {}
+    except Exception:
+        return out
+    refresh_within = _model_refresh_within_days()
+    for key, meta in stored.items():
+        if not isinstance(meta, dict):
+            continue
+        out["checked"] += 1
+        reject = meta.get("serve_reject")
+        if reject is not None and reject not in _LOADABLE_DESPITE:
+            continue
+        raw = str(key)
+        if raw.endswith("_up"):
+            sym = raw[:-3]
+        elif raw.endswith("_down"):
+            sym = raw[:-5]
+        else:
+            sym = raw
+        out["loadable_symbols"].add(sym)
+        out["loadable_models"] += 1
+        age = meta.get("age_days")
+        # Unknown age is treated as due for refresh: a model whose trained_at
+        # cannot be read is exactly the one that might already be expired.
+        if age is None or float(age) >= _MODEL_SERVE_MAX_AGE_DAYS - refresh_within:
+            out["expiring_symbols"].add(sym)
+    return out
+
+
 def _watchlist_missing_symbol_pairs() -> list:
     """Watchlist symbols that currently lack a loadable v3 model."""
     try:
-        from core.signal_engine import get_model_status
         expected = _build_train_symbol_list()
-        loaded = set((get_model_status() or {}).get("symbols", {}).keys())
-        return [(sym, atype) for sym, atype in expected if sym not in loaded]
+        loadable = _model_fleet_coverage()["loadable_symbols"]
+        return [(sym, atype) for sym, atype in expected if sym not in loadable]
+    except Exception:
+        return []
+
+
+def _models_needing_retrain() -> list:
+    """Symbols with no loadable model, or one close enough to the 14-day serve
+    expiry that it must be refreshed before it stops loading.
+
+    Retraining anything else is not free: it rewrites model_sha256 and resets
+    the proven-skill gate's forward-evidence count to zero. A model that still
+    loads and is not near expiry is left alone so its evidence can accumulate.
+    """
+    try:
+        expected = _build_train_symbol_list()
+        cov = _model_fleet_coverage()
+        due = cov["expiring_symbols"]
+        loadable = cov["loadable_symbols"]
+        return [(sym, atype) for sym, atype in expected
+                if sym not in loadable or sym in due]
     except Exception:
         return []
 
@@ -1299,17 +1388,28 @@ def _coverage_maintenance_job():
         return
 
     try:
-        from core.signal_engine import get_model_status, train_and_validate
-        st = get_model_status() or {}
-        loaded = int(st.get("models", 0)) if st.get("trained") else 0
+        from core.signal_engine import train_and_validate
+        # LOADABLE, not proven. st["models"] counts only proven-tier models and
+        # is 0, so this arm never short-circuited and the job retrained the
+        # whole fleet every cycle -- shredding the sha the skill gate counts on.
+        cov = _model_fleet_coverage()
+        loaded = cov["loadable_models"]
         missing = _watchlist_missing_symbol_pairs()
         if loaded >= min_models and not missing:
             LOGGER.info("Coverage maintenance: loaded models %s >= floor %s, watchlist complete", loaded, min_models)
             return
 
-        syms = missing if missing else _build_train_symbol_list()
+        # Never fall back to the whole fleet. A blanket retrain is what reset
+        # every model_sha256 and zeroed the proven-skill evidence count; only
+        # symbols with no loadable model, or one near the 14-day serve expiry,
+        # actually need one.
+        syms = missing if missing else _models_needing_retrain()
         if not syms:
-            LOGGER.warning("Coverage maintenance: empty symbol universe, skip retrain")
+            LOGGER.info(
+                "Coverage maintenance: %s loadable models, none missing or near "
+                "expiry — leaving shas stable so skill evidence can accumulate",
+                loaded,
+            )
             return
 
         if not _RETRAIN_JOB_LOCK.acquire(blocking=False):
@@ -1646,6 +1746,44 @@ async def lifespan(app: FastAPI):
             return result
 
         scheduler.register("checklist_shadow_resolver", _shadow_checklist_resolver_job, interval_s=1800)
+
+        # Retrospective checklist screen. The prospective calibration cohorts
+        # only started filling on 2026-09-04 (PR #180 unblocked snapshot
+        # writes), so the "does the checklist separate winners from losers"
+        # question is otherwise weeks away. This replays the checklist against
+        # already-resolved shadow rows using point-in-time evidence and caches
+        # the result for the context payload. Screening only, writes nothing to
+        # the checklist ledger, and never touches a gate.
+        #
+        # initial_delay_s is explicit on purpose: register() otherwise defers by
+        # a full interval, which is exactly how weekly_retrain went years
+        # without firing (PR #178). Daily refresh, first pass shortly after boot.
+        def _checklist_screen_job():
+            from core.checklist_backfill_screen import refresh_screen
+            refresh_screen()
+
+        scheduler.register(
+            "checklist_backfill_screen", _checklist_screen_job,
+            interval_s=86400, timeout_s=1800, initial_delay_s=300,
+        )
+
+        # Market-wide discovery alerts. The external screener has been pulling
+        # movers hourly into an advisory ledger the whole time, but that lane
+        # never surfaced anything -- which is why GPRO ran ~183% in five days
+        # (merger announced 2026-09-01) without Ghost mentioning it. It is not
+        # in config/symbols.py, and that 107-symbol list is the entire universe
+        # Ghost scans. Read-only consumer: it cannot create a candidate, and
+        # external_screener_ingest keeps its "never sends alerts" invariant
+        # because the alerting lives in the consumer, not the ingest path.
+        # Explicit initial_delay_s for the PR #178 reason.
+        def _discovery_alerts_job():
+            from core.discovery_alerts import log_discovery_alerts
+            log_discovery_alerts()
+
+        scheduler.register(
+            "discovery_alerts", _discovery_alerts_job,
+            interval_s=1800, timeout_s=120, initial_delay_s=420,
+        )
         # Shadow evidence scoring: turns ACCEPTED agent-workflow research
         # (core.agent_workflow) into a deterministic five-dimension quality score
         # (core.evidence_scoring) and persists it to a shadow-only feature ledger
@@ -1910,9 +2048,29 @@ async def lifespan(app: FastAPI):
             try:
                 from core.external_screener_ingest import run_external_screener_cycle
                 result = run_external_screener_cycle()
+                # Per-screen, not just the total. The cycle already computes a
+                # full status per screen and used to discard it into two
+                # numbers, which meant nothing in production could distinguish
+                # "day_losers was fetched and returned rows" from "day_losers
+                # was never requested" -- the exact configured-versus-fetched
+                # ambiguity PR #185 was written to close. Rows that arrive
+                # stale (a screen polled while the market has been shut for
+                # hours) land validation_valid=FALSE and never reach the alert
+                # list, so invalid is reported beside inserted rather than
+                # left to look like a quiet tape.
                 LOGGER.info(
-                    "external screener status=%s inserted=%s",
+                    "external screener status=%s inserted=%s | %s",
                     result.get("status"), result.get("inserted", 0),
+                    " ".join(
+                        "{}={}/{} in={} bad={}".format(
+                            screen, state.get("rows", 0), state.get("received", 0),
+                            state.get("inserted", 0), state.get("invalid", 0),
+                        )
+                        if state.get("status") == "available"
+                        else "{}=UNAVAILABLE({})".format(
+                            screen, state.get("reason", "unknown"))
+                        for screen, state in (result.get("screens") or {}).items()
+                    ) or "no screens configured",
                 )
                 # Enrich only after the immutable discoveries have been persisted.
                 # This batch-only lane remains separate from candidates and alerts.
@@ -1942,6 +2100,65 @@ async def lifespan(app: FastAPI):
             _external_screener_job,
             interval_s=max(300, int(os.getenv("EXTERNAL_SCREENER_INTERVAL", "900"))),
             timeout_s=120,
+        )
+
+        # Full-market discovery. The Yahoo screens above see ~100 symbols per
+        # cycle out of ~11,000 US tickers and carry no day_losers screen at
+        # all; this pulls every ticker's close-to-close move from one Polygon
+        # grouped-daily call. Same advisory ledger, same invariants -- it
+        # cannot create a candidate or enter the modelled universe.
+        def _market_wide_snapshot_job():
+            try:
+                from core.market_wide_snapshot import run_market_wide_cycle
+                result = run_market_wide_cycle()
+                LOGGER.info(
+                    "market-wide scan status=%s day=%s scanned=%s stored=%s",
+                    result.get("status"), result.get("latest_day"),
+                    result.get("scanned", 0), result.get("inserted", 0),
+                )
+            except Exception as _e:
+                LOGGER.warning("market-wide snapshot job failed: %s", str(_e)[:120])
+                raise
+
+        # One-shot read-only stop-geometry sweep. V3_STOP_VOL_MULT=1.8 is the
+        # binding constraint on the entire engine -- every lane of the live
+        # retrain fails, most with NEGATIVE walk-forward edge, so every model is
+        # stamped tier="research" and hard-blocked. The two sweep scripts answer
+        # which multiplier restores edge, and they can only run here: the OHLCV
+        # chain needs the provider keys and egress that exist on this box alone.
+        # Runs once ever (ghost_state marker), in a CHILD process so its
+        # V3_STOP_VOL_MULT writes cannot touch the live engine, and under the
+        # retrain lock so the two never compete for CPU.
+        def _geometry_sweep_job():
+            try:
+                from core.geometry_sweep_job import run_geometry_sweep_once
+                result = run_geometry_sweep_once()
+                if result.get("status") not in ("already_run", "disabled"):
+                    LOGGER.info("geometry sweep status=%s ok=%s",
+                                result.get("status", "ran"), result.get("ok"))
+            except Exception as _e:
+                LOGGER.warning("geometry sweep job failed: %s", str(_e)[:160])
+                raise
+
+        scheduler.register(
+            "geometry_sweep",
+            _geometry_sweep_job,
+            interval_s=1800,
+            # Longer than the sweep's own subprocess timeout, so the scheduler
+            # never kills it half-way and leaves no marker.
+            timeout_s=max(600, int(os.getenv("GEOMETRY_SWEEP_TIMEOUT_S", "3600"))) + 600,
+            # register() defers a full interval without this -- the PR #178 trap.
+            initial_delay_s=180,
+        )
+
+        scheduler.register(
+            "market_wide_snapshot",
+            _market_wide_snapshot_job,
+            interval_s=max(3600, int(os.getenv("MARKET_WIDE_INTERVAL_S", "21600"))),
+            timeout_s=300,
+            # register() defers a task by a full interval when this is omitted,
+            # which is how weekly_retrain went a year without firing (PR #178).
+            initial_delay_s=600,
         )
 
         def _broad_market_context_job():
@@ -2012,7 +2229,20 @@ async def lifespan(app: FastAPI):
                         )
                 except Exception as _wse2:
                     LOGGER.warning("Weekly retrain state write failed: %s", str(_wse2)[:80])
-                syms = _v3_train_collect_symbols()
+                # Was _v3_train_collect_symbols() — the entire fleet, every
+                # 7 days. Each pass rewrote every model_sha256, and
+                # proven_skill_gate counts resolved outcomes at the CURRENT
+                # sha, needing 10. Measured live: lanes accrue ~0.64 resolved
+                # outcomes/day, so a 7-day rotation caps a lane at ~4.5 and the
+                # gate could never be satisfied by any model, however good.
+                syms = _models_needing_retrain()
+                if not syms:
+                    LOGGER.info(
+                        "Weekly retrain: every watchlist symbol has a loadable "
+                        "model and none is near the 14-day expiry — skipping so "
+                        "model_sha256 stays stable for skill evidence"
+                    )
+                    return
                 trained, failed = 0, len(syms)
                 try:
                     # train_and_validate expects one list of (symbol, asset_type), not per-symbol calls
@@ -2036,7 +2266,26 @@ async def lifespan(app: FastAPI):
                         _RETRAIN_JOB_LOCK.release()
                     except Exception:
                         pass
-        scheduler.register("weekly_retrain", _weekly_retrain, interval_s=604800)
+        # POLL hourly; the CADENCE is enforced by _weekly_retrain itself against
+        # last_weekly_retrain_ts in ghost_state (WEEKLY_RETRAIN_MIN_INTERVAL_SEC,
+        # default 604800). Registering at 604800 meant the job could never fire:
+        # scheduler.register sets next_run_at = now + interval_s and that field
+        # is in-memory only, so every deploy or restart pushed the next run
+        # another seven days out. This service redeploys far more often than
+        # weekly, so the retrain effectively never ran on its own and models
+        # only ever refreshed when someone POSTed /api/v3/train by hand. Every
+        # other registered job is <=24h and so survives its own interval; this
+        # was the only one that could not. The DB timestamp is the durable
+        # cadence guard and is unaffected by restarts, which is exactly what it
+        # is for — the scheduler interval just needs to be short enough to ask.
+        # Timeout sized like coverage_maintenance (PR #169): a five-year
+        # full-fleet run exceeded three hours, and the default task timeout
+        # would mark it failed while the shielded work kept running.
+        _, retrain_timeout_s = _coverage_maintenance_schedule()
+        scheduler.register(
+            "weekly_retrain", _weekly_retrain,
+            interval_s=3600, timeout_s=retrain_timeout_s,
+        )
         scheduler.start()
         # Intraday monitors (must run in lifespan — engines/startup._on_startup is not invoked).
         import asyncio as _aio

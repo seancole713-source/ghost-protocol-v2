@@ -1,13 +1,25 @@
-"""Ghost accuracy contract — single source of truth for the 70%+ target.
+"""Ghost accuracy contract — single source of truth for the precision target.
 
-Set GHOST_ACCURACY_CONTRACT=70 (default) to align training gates, live firing,
-objective mode, kill-switch floors, and precision targets without hunting env
-vars across modules. Explicit per-knob env overrides still win when set.
+Set GHOST_ACCURACY_CONTRACT to align training gates, live firing, objective
+mode, kill-switch floors, and precision targets without hunting env vars
+across modules. Explicit per-knob env overrides still win when set, except
+that on the named production contracts env may only TIGHTEN a floor field,
+never weaken it (see _FLOOR_FIELDS and _NO_WEAKENING_CONTRACTS).
 
 Contracts:
+  55      — staged first goal: >=55% OOS precision to fire, then ratchet up
   70      — production target: >=70% OOS precision to fire, balanced objective
   80      — north-star precision mode (stricter training + firing)
   legacy  — pre-audit aggressive settings (NOT recommended)
+
+NOTE ON THE 55 CONTRACT. Lowering the target does not manufacture a pass.
+The precision gate requires the WILSON LOWER BOUND to clear the target
+(precision_gate.py), not the point estimate. At the pooled proof measured
+2026-09-03 — 339/576 = 58.85%, Wilson LB 54.79% — a 55% target still fails,
+by 0.21pp. The observed rate already exceeds 55%; the sample is simply not yet
+large enough to prove it at 95% confidence. Roughly 651 independent samples at
+the same hit rate puts the lower bound at 0.5501 and clears it. This contract
+sets the goal; evidence still has to earn the pass.
 """
 from __future__ import annotations
 
@@ -35,6 +47,51 @@ class ContractSpec:
 
 
 CONTRACTS: Dict[str, ContractSpec] = {
+    "55": ContractSpec(
+        name="55",
+        target_win_rate=0.55,
+        # EVERY SELECTION KNOB BELOW IS HELD AT THE 70-CONTRACT VALUE ON
+        # PURPOSE. Only the firing target moves. This is counter-intuitive
+        # enough to be worth the arithmetic:
+        #
+        # The gate fires on wilson_lower_bound(wins, n) >= target, and the
+        # sample size needed to PROVE a target explodes as the measured rate
+        # approaches it — you cannot prove p >= t at 95% when p ~= t, at any n.
+        # Against a 55% target, from the pooled proof's measured rates:
+        #
+        #     rate 0.5885 (today) -> n =    650
+        #     rate 0.58           -> n =  1,075
+        #     rate 0.57           -> n =  2,375
+        #     rate 0.56           -> n =  9,525
+        #     rate 0.555          -> n = >20,000
+        #
+        # Loosening admission admits weaker models, and a lower target makes
+        # select_threshold pick lower thresholds (it takes the LOWEST threshold
+        # clearing the target), so slices get bigger but land nearer the
+        # target. Both effects drag the pooled rate DOWN — straight into the
+        # region where the proof becomes unreachable. Loosening selection to
+        # "help" a 55% goal would actively push it out of reach.
+        #
+        # So: keep selection exactly as strict as the 70 contract, so the pool
+        # keeps its ~58.85% rate, and let only the bar it must clear come down.
+        # That is what makes 55% reachable at n=650 instead of n=9,525.
+        min_holdout_acc=0.60,
+        min_wf_acc_mean=0.60,
+        # Fold count is validation rigor, not ambition.
+        min_wf_folds=4,
+        min_edge=0.05,
+        min_win_proba=0.55,
+        precision_target=0.55,
+        objective_mode="balanced",
+        objective_bootstrap_min_conf=0.85,
+        objective_min_samples=12,
+        # UNCHANGED from the 70 contract on purpose. Its own rationale is
+        # target-independent: kill means "provably worse than a coin flip",
+        # not "below target".
+        kill_winrate_floor=0.45,
+        min_alert_confidence=0.80,
+        research_bypass_precision=True,
+    ),
     "70": ContractSpec(
         name="70",
         target_win_rate=0.70,
@@ -101,6 +158,10 @@ def active_contract() -> ContractSpec:
     return CONTRACTS[contract_name()]
 
 
+# Named production contracts: env may tighten a floor field but never weaken
+# it. "legacy" is deliberately excluded — it is the pre-audit escape hatch.
+_NO_WEAKENING_CONTRACTS = ("55", "70", "80")
+
 # Fields where env vars may only tighten the contract, never weaken it.
 _FLOOR_FIELDS = frozenset({
     "min_holdout_acc",
@@ -140,7 +201,7 @@ def resolve_float(env_key: str, field: str, *, lo: Optional[float] = None, hi: O
     spec = active_contract()
     default = float(getattr(spec, field))
     val = _env_float(env_key, default)
-    if contract_name() in ("70", "80") and field in _FLOOR_FIELDS:
+    if contract_name() in _NO_WEAKENING_CONTRACTS and field in _FLOOR_FIELDS:
         val = max(val, default)
     if lo is not None:
         val = max(lo, val)
@@ -153,7 +214,7 @@ def resolve_int(env_key: str, field: str, *, lo: Optional[int] = None, hi: Optio
     spec = active_contract()
     default = int(getattr(spec, field))
     val = _env_int(env_key, default)
-    if contract_name() in ("70", "80") and field == "min_wf_folds":
+    if contract_name() in _NO_WEAKENING_CONTRACTS and field == "min_wf_folds":
         val = max(val, default)
     if lo is not None:
         val = max(lo, val)

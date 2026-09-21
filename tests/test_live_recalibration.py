@@ -1,4 +1,7 @@
 """PR #162: live per-bin probability recalibration — the scoreboard feedback loop."""
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
 import time
 
 import numpy as np
@@ -156,7 +159,7 @@ def _uptrend_rows(n=220):
     rows = []
     for i in range(n):
         px = 100.0 + i * 0.4
-        rows.append({"ts": "2026-05-20T%02d:00:00Z" % (i % 24),
+        rows.append({"ts": (datetime(2026, 5, 20) - timedelta(days=n - 1 - i)).date().isoformat(),
                      "open": px - 0.2, "high": px + 0.5, "low": px - 0.5,
                      "close": px, "volume": 1000 + i * 5})
     return rows
@@ -171,6 +174,7 @@ class _Model:
 
 
 def _patch(monkeypatch, up_p):
+    monkeypatch.setattr("core.market_hours._now_ct", lambda: datetime(2026, 5, 21, 8, tzinfo=ZoneInfo("America/Chicago")))
     meta = {"edge": 0.3, "accuracy": 0.66, "wf_acc_mean": 0.64,
             "wf_edge_mean": 0.2, "wf_fold_count": 4, "trained_at": time.time(),
             "model_sha256": "a" * 64,
@@ -191,7 +195,7 @@ def _patch(monkeypatch, up_p):
         lambda s, direction="UP": (_Model(up_p), _se.FEATURE_COLS, dict(meta))
         if direction == "UP" else (None, None, None))
     monkeypatch.setattr(_se, "_fetch_ohlcv",
-                        lambda s, a, period="5d", interval="1h": _uptrend_rows())
+                        lambda s, a, period="5d", interval="1h", adjustment="raw": _uptrend_rows())
     monkeypatch.setenv("GHOST_ACCURACY_CONTRACT", "legacy")
     monkeypatch.setenv("GHOST_PREMARKET_SCAN", "0")
     for k, v in {"V3_MIN_WIN_PROBA": "0.55", "V3_MIN_EDGE": "0.0",
