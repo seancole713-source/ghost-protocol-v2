@@ -2045,19 +2045,22 @@ def run_prediction_cycle(with_diag: bool = False):
     _saved_ids = [p["id"] for p in saved if p.get("id")]
     # Persist cycle heartbeat even when zero picks are saved.
     try:
+        import json as _hsj
         with db_conn() as _hc:
             _cur = _hc.cursor()
             ensure_ghost_state(_cur)
             _now = int(time.time())
+            _skips_json = _hsj.dumps(dict(sorted(skip_counts.items())))
             _cur.execute(
                 """
                 INSERT INTO ghost_state(key,val) VALUES
                     ('last_prediction_cycle_ts', %s),
                     ('last_prediction_cycle_saved', %s),
-                    ('last_prediction_cycle_scanned', %s)
+                    ('last_prediction_cycle_scanned', %s),
+                    ('last_prediction_cycle_skips', %s)
                 ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val
                 """,
-                (str(_now), str(len(saved)), str(len(symbols))),
+                (str(_now), str(len(saved)), str(len(symbols)), _skips_json),
             )
     except Exception as _he:
         LOGGER.warning("Cycle heartbeat write failed: " + str(_he)[:80])

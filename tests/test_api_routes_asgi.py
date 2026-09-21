@@ -301,6 +301,8 @@ def test_health_public_is_slim(monkeypatch):
             for leaked in ("telegram_configured", "price_feeds", "tasks",
                            "confidence_floor", "dedup_blocked", "predictions_freshness_min"):
                 assert leaked not in b, path + " leaked " + leaked
+            assert "ready_to_trade" not in b
+            assert "fireable_now" not in b
 
 
 def test_admin_health_gated(monkeypatch):

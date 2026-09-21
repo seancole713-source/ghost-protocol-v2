@@ -59,6 +59,57 @@ class TestWinrateWhere:
         assert "outcome='EXPIRED'" not in migration_block
         assert "exit_price=NULL, pnl_pct=NULL" in migration_block
 
+    def test_backfill_classifier_and_run_once_gate(self):
+        """#17: the three idempotent full-table backfill UPDATEs are classified
+        as backfills and gated behind the run-once marker; DDL is not."""
+        import core.db as db
+
+        assert db._is_backfill("UPDATE predictions SET predicted_at = run_at WHERE predicted_at IS NULL")
+        assert db._is_backfill("UPDATE predictions SET confidence_final=confidence WHERE confidence_final IS NULL")
+        assert db._is_backfill("duplicate_open_migration")
+        # DDL must keep running every boot (new columns/indexes on new deploys).
+        assert not db._is_backfill("ALTER TABLE predictions ADD COLUMN IF NOT EXISTS scores JSONB")
+        assert not db._is_backfill("CREATE INDEX IF NOT EXISTS idx_predictions_symbol_time ON predictions (symbol, predicted_at DESC)")
+
+    def test_backfill_marker_is_not_written_after_backfill_failure(self, monkeypatch):
+        """A failed full-table backfill must remain retryable on the next boot."""
+        import core.db as db
+
+        class Cursor:
+            def execute(self, sql, params=None):
+                if db._is_backfill(sql):
+                    raise RuntimeError("backfill unavailable")
+
+            def fetchone(self):
+                return None
+
+        class Conn:
+            def __init__(self):
+                self.cur = Cursor()
+
+            def cursor(self):
+                return self.cur
+
+            def commit(self):
+                pass
+
+            def rollback(self):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        marked = []
+        monkeypatch.setattr(db, "db_conn", lambda: Conn())
+        monkeypatch.setattr(db, "_mark_backfills_done", lambda cur: marked.append(True))
+        monkeypatch.setattr(db, "_backfills_already_done", lambda cur: False)
+
+        db._migrate_schema()
+        assert not marked
+
     def test_fragment_math(self):
         """Simulate the denominator against a mixed population."""
         rows = [

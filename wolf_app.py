@@ -2532,6 +2532,32 @@ _TEST_PREDICTION_PATTERNS = ("ZZE2E%", "ZZ%", "TEST%", "GHOST%", "STOCK GHOST%")
 
 
 
+def _model_readiness_summary(model_status: dict | None) -> dict:
+    """Expose model readiness without making liveness depend on it."""
+    status = model_status or {}
+    fleet = status.get("fleet_summary") or {}
+    stored = status.get("stored_symbols") or {}
+    reasons = [
+        {"model": key, "reason": value.get("fire_block_reason")}
+        for key, value in stored.items()
+        if isinstance(value, dict)
+        and value.get("serveable")
+        and value.get("fire_block_reason")
+    ]
+    fireable = fleet.get("fireable_now")
+    try:
+        ready = int(fireable) > 0 if fireable is not None else None
+    except (TypeError, ValueError):
+        ready = None
+    return {
+        "serveable": fleet.get("serveable"),
+        "fireable_now": fireable,
+        "precision_ok": fleet.get("precision_ok"),
+        "fire_block_reasons": reasons,
+        "ready_to_trade": ready,
+    }
+
+
 def health():
     import time as _t
     from core.prices import check_feeds
@@ -2680,6 +2706,22 @@ def health():
     except Exception:
         pass
 
+    # 9b. Model readiness — separate from liveness (checklist #15).
+    # "Online" (DB/feeds/freshness) must never masquerade as "ready to trade".
+    # Readiness is defined by the authoritative fireable_now count plus the
+    # exact per-model block reason, so zero official picks always has a visible
+    # cause instead of a bare "0 saved".
+    model_readiness = {
+        "serveable": None, "fireable_now": None, "precision_ok": None,
+        "fire_block_reasons": [], "ready_to_trade": None,
+    }
+    try:
+        from core.signal_engine import get_model_status
+        _ms = get_model_status() or {}
+        model_readiness = _model_readiness_summary(_ms)
+    except Exception as _mr:
+        LOGGER.warning("health.model_readiness failed: " + str(_mr)[:120])
+
     score = max(0, min(100, 100 - len(issues)*20 - len(warnings)*5))
     status_str = "healthy" if score >= 80 and not issues else "degraded" if score >= 50 else "critical"
     return {
@@ -2693,12 +2735,16 @@ def health():
         "price_feeds": feeds, "tasks": tasks, "issues": issues, "warnings": warnings,
         "degraded": degraded, "degraded_reasons": degraded_reasons,
         "dead_letter_count": dead_letter_count,
+        "model_readiness": model_readiness,
     }
 
 def _health_public():
     """Slim public health (audit v2 #10): liveness only — no internals
     (telegram config, confidence floor, dedup, freshness, tasks, price feeds).
-    Full detail moved to the cookie-gated /admin/health."""
+    Full detail moved to the cookie-gated /admin/health.
+
+    Readiness remains available from the authenticated health surface; this
+    endpoint is intentionally liveness-only."""
     full = health()
     return {"status": full.get("status"), "score": full.get("score"), "ts": int(time.time())}
 
@@ -3330,13 +3376,15 @@ def _v3_system_health(model_status: dict) -> dict:
         db_ok = False
         issues.append("db_unreachable")
 
-    cycle = {"ts": None, "saved": None, "scanned": None, "age_min": None}
+    cycle = {"ts": None, "saved": None, "scanned": None, "age_min": None,
+             "skips": None, "no_price": None, "no_v3_model": None}
     try:
+        import json as _v3j
         with db_conn() as c:
             cur = c.cursor()
             cur.execute(
                 "SELECT key,val FROM ghost_state WHERE key IN "
-                "('last_prediction_cycle_ts','last_prediction_cycle_saved','last_prediction_cycle_scanned')")
+                "('last_prediction_cycle_ts','last_prediction_cycle_saved','last_prediction_cycle_scanned','last_prediction_cycle_skips')")
             kv = {k: v for k, v in cur.fetchall()}
         if kv.get("last_prediction_cycle_ts"):
             cycle["ts"] = int(kv["last_prediction_cycle_ts"])
@@ -3345,6 +3393,15 @@ def _v3_system_health(model_status: dict) -> dict:
             cycle["saved"] = int(kv["last_prediction_cycle_saved"])
         if kv.get("last_prediction_cycle_scanned") is not None:
             cycle["scanned"] = int(kv["last_prediction_cycle_scanned"])
+        if kv.get("last_prediction_cycle_skips"):
+            try:
+                _skips = _v3j.loads(kv["last_prediction_cycle_skips"])
+                if isinstance(_skips, dict):
+                    cycle["skips"] = _skips
+                    cycle["no_price"] = int(_skips.get("no_price", 0))
+                    cycle["no_v3_model"] = int(_skips.get("no_v3_model", 0))
+            except Exception:
+                pass
     except Exception:
         pass
 

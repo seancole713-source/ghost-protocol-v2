@@ -1,4 +1,9 @@
-import os, logging, time, psycopg2, psycopg2.pool
+import logging
+import os
+import time
+
+import psycopg2
+import psycopg2.pool
 from core.quiet import note_suppressed
 from typing import Optional
 
@@ -149,6 +154,51 @@ def ensure_ghost_state(cur=None):
         c.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
         conn.commit()
 
+
+_SCHEMA_BACKFILL_MARKER = "schema_backfills_v1"
+
+
+def _backfills_already_done(cur) -> bool:
+    """Fail-open: unknown/missing marker means run the backfills again.
+
+    The gated backfills are idempotent by construction (fill NULLs / dedupe
+    open rows), so re-running them on a marker read failure is safe and
+    strictly better than skipping a migration that never completed."""
+    try:
+        ensure_ghost_state(cur)
+        cur.execute("SELECT val FROM ghost_state WHERE key=%s", (_SCHEMA_BACKFILL_MARKER,))
+        row = cur.fetchone()
+        return bool(row and row[0])
+    except Exception:
+        return False
+
+
+def _mark_backfills_done(cur) -> bool:
+    """Record completion only after every gated backfill succeeds."""
+    try:
+        cur.execute(
+            "INSERT INTO ghost_state(key,val) VALUES(%s,'1') "
+            "ON CONFLICT(key) DO UPDATE SET val='1'",
+            (_SCHEMA_BACKFILL_MARKER,),
+        )
+        return True
+    except Exception:
+        note_suppressed()
+        return False
+
+
+def _is_backfill(sql: str) -> bool:
+    """True for the idempotent full-table backfill UPDATEs that dominate
+    startup cost. DDL (ADD COLUMN IF NOT EXISTS / CREATE INDEX IF NOT EXISTS)
+    is cheap and deliberately NOT classified here — it must keep running every
+    boot so new deployments still get new columns/indexes."""
+    return (
+        "SET predicted_at = run_at" in sql
+        or "SET confidence_final=confidence" in sql
+        or "duplicate_open_migration" in sql
+    )
+
+
 def _migrate_schema():
     """Add missing columns to v1 predictions table for v2 compatibility."""
     # V1 uses run_at, v2 uses predicted_at - add both, keep v1 data intact
@@ -254,13 +304,26 @@ def _migrate_schema():
     ]
     with db_conn() as conn:
         cur = conn.cursor()
+        backfills_done = _backfills_already_done(cur)
+        backfills_complete = backfills_done
         for sql in migrations:
             try:
+                # Run-once gate (checklist #17): the three idempotent full-table
+                # backfill UPDATEs (predicted_at, confidence_final, ADMIN_VOID
+                # dedupe) rewrote ~223k rows every boot. Skip them once the
+                # marker is set; keep all DDL + the unique-index step running.
+                if _is_backfill(sql) and backfills_done:
+                    continue
                 cur.execute(sql)
                 conn.commit()
             except Exception as e:
                 LOGGER.warning("Migration: " + str(e)[:80])
                 conn.rollback()
+                if _is_backfill(sql):
+                    backfills_complete = False
+        if not backfills_done and backfills_complete:
+            _mark_backfills_done(cur)
+            conn.commit()
     try:
         from core.performance_log import ensure_perf_tables
         with db_conn() as conn:
