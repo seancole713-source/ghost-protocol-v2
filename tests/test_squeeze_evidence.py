@@ -25,6 +25,8 @@ def scan(monkeypatch):
     monkeypatch.setattr("core.market_hours.is_us_extended_hours", lambda *a: True)
     monkeypatch.setattr("core.market_hours.is_us_premarket", lambda *a: False)
     monkeypatch.setattr("core.market_hours.is_us_rth", lambda *a: True)
+    # Match the simulated RTH session instead of using the wall-clock pace.
+    monkeypatch.setattr(sm, "rth_elapsed_fraction", lambda *a: 0.25)
     monkeypatch.setattr("config.symbols.get_edge_set", lambda: {"SPCE"})
     monkeypatch.setattr(sm, "_alpaca_headers", lambda: {"test": "not-a-secret"})
     monkeypatch.setattr("core.prices._alpaca_bar_feeds", lambda: ("iex",))
