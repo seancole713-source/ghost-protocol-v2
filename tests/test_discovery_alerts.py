@@ -393,3 +393,103 @@ def test_alert_exposes_matched_source_provenance(monkeypatch):
     assert alert["received_ts"] == row["received_ts"]
     assert alert["move_basis"] == "premarket"
     assert alert["observation_kind"] == "intraday_observation"
+
+
+# ------------------------------------------------------- corporate actions --
+#
+# A stock on its ex-dividend date steps down by roughly the cash it detached,
+# against an unadjusted previous close. This lane ranks by ABSOLUTE move, so a
+# high-yield name paying a large special dividend was guaranteed to top the
+# alert list on a day nothing happened to it. Found live 2026-09-22 with FRO,
+# which detached $3.41/share on 2026-09-18.
+
+
+def _stub_actions(monkeypatch, per_symbol, *, status="available"):
+    """Stub the dividend lookup so no test touches the network."""
+    import core.corporate_actions as ca
+    monkeypatch.setattr(ca, "ex_dividends_on", lambda day: (
+        {sym: {"kind": "ex_dividend", "cash_amount": cash, "currency": "USD",
+               "ex_dividend_date": day, "dividend_type": "CD", "frequency": 4,
+               "pay_date": None, "provider": ca.PROVIDER, "distributions": 1}
+         for sym, cash in per_symbol.items()},
+        status,
+    ))
+
+
+def test_a_dividend_drop_is_reclassified_not_deleted(monkeypatch):
+    """The operator's rule is that Ghost never misses a move. A silent filter
+    is how a lane dies, so an explained decline is MOVED, never dropped."""
+    _patch(monkeypatch, [_obs("FRO", -5.38, in_watchlist=False)])
+    # base = 1.72 / (1 - 0.0538) = 1.8178; the whole decline is this dividend.
+    _stub_actions(monkeypatch, {"FRO": 0.09780})
+
+    out = da.build_discovery_alerts()
+
+    assert out["alert_count"] == 0
+    assert out["corporate_action_alert_count"] == 1
+    row = out["corporate_action_alerts"][0]
+    assert row["symbol"] == "FRO"
+    assert row["reclassified"] == "move_explained_by_corporate_action"
+    # The tape is preserved exactly; the explanation sits BESIDE it.
+    assert row["move_pct"] == -5.38
+    assert row["economic_move_pct"] == pytest.approx(0.0, abs=0.1)
+    assert row["corporate_action"]["kind"] == "ex_dividend"
+    assert out["dropped"]["explained_by_corporate_action"] == 1
+
+
+def test_a_real_selloff_on_a_dividend_day_still_alerts(monkeypatch):
+    """Only the mechanical part is explained away. The rest is a real decline."""
+    _patch(monkeypatch, [_obs("FRO", -22.0, in_watchlist=False)])
+    _stub_actions(monkeypatch, {"FRO": 0.09780})
+
+    out = da.build_discovery_alerts()
+
+    assert out["alert_count"] == 1
+    alert = out["alerts"][0]
+    assert alert["move_pct"] == -22.0
+    assert alert["economic_move_pct"] < -16.0
+    assert out["corporate_action_alert_count"] == 0
+
+
+def test_an_unavailable_dividend_feed_changes_nothing(monkeypatch):
+    """The failure mode that would recreate the bug: if 'feed down' were read as
+    'no dividend', a blink would silently restore crash-labelling -- and if it
+    were read as 'assume a dividend', real crashes would vanish. Neither."""
+    _patch(monkeypatch, [_obs("FRO", -5.38), _obs("GPRO", 183.0)])
+    _stub_actions(monkeypatch, {}, status="provider_request_failed")
+
+    out = da.build_discovery_alerts()
+
+    assert out["alert_count"] == 2
+    assert out["corporate_action_alert_count"] == 0
+    assert all(a["economic_move_pct"] is None for a in out["alerts"])
+    assert all(
+        a["corporate_action_coverage"] == "provider_request_failed"
+        for a in out["alerts"]
+    )
+    assert out["corporate_action_coverage"] == {"provider_request_failed": 2}
+
+
+def test_a_dividend_never_promotes_a_non_mover_into_the_list(monkeypatch):
+    """A 3% gain beside a 4% dividend is a 7% total return no intraday trader
+    could have taken. The threshold stays on the OBSERVED move."""
+    _patch(monkeypatch, [_obs("KO", 3.0)])
+    _stub_actions(monkeypatch, {"KO": 0.0668})   # ~4% of the recovered base
+
+    out = da.build_discovery_alerts()
+
+    assert out["alert_count"] == 0
+    assert out["corporate_action_alert_count"] == 0
+    assert out["dropped"]["below_threshold"] == 1
+
+
+def test_alerts_rank_on_the_economic_move_when_it_is_known(monkeypatch):
+    """Ordering should reflect what actually happened, not what detached."""
+    _patch(monkeypatch, [_obs("FRO", -12.0), _obs("GPRO", 9.0)])
+    _stub_actions(monkeypatch, {"FRO": 0.1204})   # ~7pp of the 12% is the dividend
+
+    out = da.build_discovery_alerts()
+
+    assert [a["symbol"] for a in out["alerts"]] == ["GPRO", "FRO"]
+    assert out["alerts"][1]["move_pct"] == -12.0     # raw move is larger
+    assert abs(out["alerts"][1]["economic_move_pct"]) < 9.0   # economic is smaller

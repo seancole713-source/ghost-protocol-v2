@@ -218,6 +218,19 @@ _polygon_cb = CircuitBreaker(
     cooldown_seconds=int(__import__("os").getenv("CB_POLYGON_COOLDOWN_S", "300")),
 )
 
+# Corporate actions are an ADVISORY labelling lane on discovery. They must not
+# consume or open the production _polygon_cb that prices depend on: a dividends
+# reference endpoint being down is not a reason to stop quoting.
+_polygon_corp_actions_cb = CircuitBreaker(
+    name="polygon_corporate_actions",
+    failure_threshold=int(__import__("os").getenv("CB_POLYGON_CORP_ACTIONS_THRESHOLD", "3")),
+    cooldown_seconds=int(__import__("os").getenv("CB_POLYGON_CORP_ACTIONS_COOLDOWN_S", "900")),
+    rate_limit_window_s=60,
+    rate_limit_max_calls=int(
+        __import__("os").getenv("CB_POLYGON_CORP_ACTIONS_RATE_MAX_CALLS", "12")
+    ),
+)
+
 _alpaca_cb = CircuitBreaker(
     name="alpaca",
     failure_threshold=int(__import__("os").getenv("CB_ALPACA_THRESHOLD", "5")),
@@ -251,7 +264,8 @@ def _managed_breakers():
     return (
         _yfinance_cb, _yahoo_screener_cb, _yfinance_market_context_cb,
         _yfinance_short_cb,
-        _finnhub_cb, _polygon_cb, _alpaca_cb, _anthropic_cb,
+        _finnhub_cb, _polygon_cb, _polygon_corp_actions_cb, _alpaca_cb,
+        _anthropic_cb,
     )
 
 
