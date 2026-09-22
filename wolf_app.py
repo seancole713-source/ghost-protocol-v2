@@ -2161,6 +2161,38 @@ async def lifespan(app: FastAPI):
             initial_delay_s=600,
         )
 
+        # edge readiness probe: what the CURRENT data keys can actually see, per
+        # capability and per strategy, BEFORE the operator buys any feed. Read-
+        # only, one bounded request per capability (Polygon paced so Ghost's own
+        # pricing is not rate-limited), results written to the log as
+        # EDGE_PROBE_SUMMARY lines. edge/ is the independent build and imports
+        # nothing from Ghost's engine; this is its only hook.
+        def _edge_probe_job():
+            if os.getenv("EDGE_PROBE_ENABLED", "1").strip().lower() not in {"1", "true", "yes", "on"}:
+                return
+            try:
+                import json as _json
+                from edge.probe import run as _edge_probe_run, summary_lines as _edge_lines
+                rep = _edge_probe_run()
+                for ln in _edge_lines(rep):
+                    LOGGER.warning("EDGE_PROBE_SUMMARY %s", ln)
+                for cap, row in sorted(rep["capabilities"].items()):
+                    LOGGER.warning("EDGE_PROBE_CAP %s %s via %s http=%s rows=%s %s", cap,
+                                   row["status"], row["provider"], row.get("http_status"),
+                                   row.get("rows"), (row.get("note") or "")[:120])
+                LOGGER.info("EDGE_PROBE %s", _json.dumps(rep, separators=(",", ":"), default=str)[:20000])
+            except Exception as _e:
+                LOGGER.warning("edge probe job failed: %s", str(_e)[:160])
+                raise
+
+        scheduler.register(
+            "edge_readiness_probe",
+            _edge_probe_job,
+            interval_s=max(3600, int(os.getenv("EDGE_PROBE_INTERVAL_S", "86400"))),
+            timeout_s=300,
+            initial_delay_s=240,
+        )
+
         def _broad_market_context_job():
             try:
                 from core.broad_market_context import refresh_broad_market_context
