@@ -171,3 +171,46 @@ GAP_AND_GO_V1 = ExperimentSpec(
         "rank": "avg_dollar_volume desc",
     },
 )
+
+
+def issue_intraday(
+    spec: ExperimentSpec, *, symbol: str, session_date: date, entry_ref: float, issued_at: int,
+    prob: Optional[float] = None, evidence: Optional[Dict[str, Any]] = None,
+) -> Forecast:
+    """An intraday forecast: its window opens the minute AFTER issuance.
+
+    Same freeze as a premarket forecast -- recorded before its window opens --
+    but the window is relative. The entry expires `entry_window_min` (from the
+    spec's eligibility, so it is inside the hash) after issuance; the time exit
+    is the spec's fixed clock time.
+    """
+    ref = float(entry_ref)
+    if not math.isfinite(ref) or ref <= 0:
+        raise ContractError("entry reference must be a positive price")
+    minutes = int((spec.eligibility or {}).get("entry_window_min") or 0)
+    if minutes <= 0:
+        raise ContractError("an intraday spec must state entry_window_min")
+    window_start = int(issued_at) + 60
+    time_exit = _clock(session_date, spec.time_exit_et)
+    if window_start + minutes * 60 >= time_exit:
+        raise ContractError("too late in the session for this setup's entry window")
+    if spec.min_prob is not None and (prob is None or prob < spec.min_prob):
+        raise ContractError("below the spec's abstention threshold: record an abstention instead")
+    trigger = _cents(ref * spec.trigger_mult)
+    limit = _cents(ref * spec.limit_mult)
+    target = _cents(trigger * spec.target_mult)
+    stop = _cents(trigger * spec.stop_mult)
+    if not (stop < trigger <= limit and trigger < target):
+        raise ContractError("levels are inconsistent")
+    shares = int(spec.size_usd // trigger)
+    if shares < 1:
+        raise ContractError("size buys less than one share")
+    day = session_date.isoformat()
+    return Forecast(
+        forecast_id=forecast_id_for(spec.experiment_id, symbol, day),
+        experiment_id=spec.experiment_id, spec_hash=spec.spec_hash(),
+        symbol=symbol.upper(), session_date=day, issued_at=int(issued_at),
+        window_start=window_start, entry_expiry=window_start + minutes * 60, time_exit=time_exit,
+        entry_ref=_cents(ref), entry_trigger=trigger, entry_limit=limit,
+        target=target, stop=stop, shares=shares, prob=prob, evidence=dict(evidence or {}),
+    )

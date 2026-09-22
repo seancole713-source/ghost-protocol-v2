@@ -99,12 +99,16 @@ def _open_orders(http, symbol: str) -> List[dict]:
     return list(r.json() or [])
 
 
-def cancel_unfilled_entries(http, ledger: Ledger, *, day: str, experiments) -> Dict[str, Any]:
-    """10:30 ET: an entry that has not filled is cancelled (its legs go with it)."""
+def cancel_unfilled_entries(http, ledger: Ledger, *, day: str, experiments,
+                            now: Optional[int] = None) -> Dict[str, Any]:
+    """At each forecast's OWN entry expiry (10:30 ET for the morning card, issuance
+    + 20 min intraday), an entry that has not filled is cancelled with its legs."""
     done, touched = [], False
     for f in _forecasts(ledger, day, experiments):
         rec = ledger.store.get("edge_paper", f"{f.forecast_id}|paper")
         if not rec or rec.get("state") != "submitted" or rec.get("entry_cancel_checked"):
+            continue
+        if now is not None and now < f.entry_expiry:
             continue
         for o in _open_orders(http, f.symbol):
             if o.get("client_order_id") == f"{f.forecast_id}-entry" and float(o.get("filled_qty") or 0) == 0:

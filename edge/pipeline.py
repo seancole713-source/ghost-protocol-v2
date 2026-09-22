@@ -267,7 +267,8 @@ def resolve_day(get, ledger: Ledger, *, day: date, now: int) -> Dict[str, Any]:
     if now < _at(day, 16, 20):
         return {"status": "too_early"}
     from edge.contracts import Forecast
-    fcs = [f for spec in EXPERIMENTS
+    from edge import intraday as I
+    fcs = [f for spec in EXPERIMENTS + I.INTRADAY_SPECS
            for f in ledger.store.scan("forecasts", experiment_id=spec.experiment_id, session_date=day.isoformat())]
     pending = [f for f in fcs
                if not (ledger.store.get("outcomes", f"{f['forecast_id']}|simulated") or {}).get("outcome") in TERMINAL]
@@ -399,69 +400,81 @@ def miss_review(get, ledger: Ledger, *, day: date, now: int, top: int = 50,
 
 
 def run(get, ledger: Ledger, *, now: int, http=None, notifier=None) -> Dict[str, Any]:
-    """One scheduler tick. Decides by exchange time what, if anything, is due.
+    """One scheduler tick. Each window is checked independently -- they overlap
+    (the intraday radar runs across the 10:25 reminder and the 10:30 cancels).
 
-    `http` (requests-like, with post/delete) turns on PAPER execution; None
-    leaves the shadow as forecasts only.
+    `http` (requests-like) turns on PAPER execution; `notifier` turns on phone
+    messages. None leaves the shadow as forecasts only.
     """
+    from edge import intraday as I
     day = _et(now).date()
-    out: Dict[str, Any] = {"day": day.isoformat()}
+    ds = day.isoformat()
+    out: Dict[str, Any] = {"day": ds}
     if not trading_day(day):
         return {**out, "status": "market_closed"}
-    # Each step fails on its own and every error is kept, never swallowed.
+    all_specs = EXPERIMENTS + I.INTRADAY_SPECS
+
     def guarded(key, step):
         try:
             out[key] = step()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - each step fails alone, errors kept
             out[key] = {"status": "error", "error": f"{type(exc).__name__}: {str(exc)[:160]}"}
 
-    if _at(day, 6, 0) <= now < _at(day, 7, 0):
-        guarded("universe", lambda: U.step(get, ledger.store, day=day.isoformat(), now=now))
-    elif _at(day, 7, 0) <= now < _at(day, 9, 5):
-        prev = previous_trading_day(day)
-        guarded("miss_review", lambda: miss_review(get, ledger, day=prev, now=now))
-    elif _at(day, 9, 5) <= now < _at(day, 9, 28):
+    def within(a, b):
+        return _at(day, *a) <= now < _at(day, *b)
+
+    if within((6, 0), (7, 0)):
+        guarded("universe", lambda: U.step(get, ledger.store, day=ds, now=now))
+    if within((7, 0), (9, 5)):
+        guarded("miss_review", lambda: miss_review(get, ledger, day=previous_trading_day(day), now=now))
+    if within((9, 5), (9, 28)):
         guarded("card", lambda: morning_card(get, ledger, now=now))
         if http is not None:
-            guarded("paper", lambda: _paper().submit(http, ledger, day=day.isoformat(), experiments=EXPERIMENTS))
-        card = ledger.store.get("edge_cards", day.isoformat())
+            guarded("paper_submit", lambda: _paper().submit(http, ledger, day=ds, experiments=EXPERIMENTS))
+        card = ledger.store.get("edge_cards", ds)
         if notifier is not None and card:
-            guarded("notify", lambda: _notify().once(notifier, ledger.store, day=day.isoformat(), kind="card",
-                                                      text=_notify().card_text(card)))
-    elif notifier is not None and _at(day, 10, 25) <= now < _at(day, 10, 30):
-        guarded("notify", lambda: _notify().once(notifier, ledger.store, day=day.isoformat(),
-                                                  kind="duty_1030", text=_notify().DUTY_1030))
-    elif notifier is not None and _at(day, 15, 25) <= now < _at(day, 15, 30):
-        guarded("notify", lambda: _notify().once(notifier, ledger.store, day=day.isoformat(),
-                                                  kind="duty_1530", text=_notify().DUTY_1530))
-    elif http is not None and _at(day, 10, 30) <= now < _at(day, 10, 45):
-        guarded("paper", lambda: _paper().cancel_unfilled_entries(
-            http, ledger, day=day.isoformat(), experiments=EXPERIMENTS))
-    elif http is not None and _at(day, 15, 30) <= now < _at(day, 15, 45):
-        guarded("paper", lambda: _paper().time_exit(http, ledger, day=day.isoformat(), experiments=EXPERIMENTS))
-    elif _at(day, 16, 20) <= now < _at(day, 20, 0):
-        guarded("resolve", lambda: resolve_day(get, ledger, day=day, now=now))
+            guarded("notify_card", lambda: _notify().once(notifier, ledger.store, day=ds, kind="card",
+                                                           text=_notify().card_text(card)))
+    if notifier is not None and within((10, 25), (10, 30)):
+        guarded("notify_duty", lambda: _notify().once(notifier, ledger.store, day=ds,
+                                                       kind="duty_1030", text=_notify().DUTY_1030))
+    if notifier is not None and within((15, 25), (15, 30)):
+        guarded("notify_duty", lambda: _notify().once(notifier, ledger.store, day=ds,
+                                                       kind="duty_1530", text=_notify().DUTY_1530))
+    if within((9, 45), (14, 30)):
+        guarded("intraday", lambda: I.tick(get, ledger, now=now))
         if http is not None:
-            guarded("paper", lambda: _paper().reconcile(http, ledger, day=day.isoformat(),
-                                                        experiments=EXPERIMENTS, now=now))
+            guarded("paper_submit_intraday", lambda: _paper().submit(http, ledger, day=ds,
+                                                                      experiments=I.INTRADAY_SPECS))
+    if http is not None and within((10, 30), (15, 0)):
+        guarded("paper_cancel", lambda: _paper().cancel_unfilled_entries(http, ledger, day=ds,
+                                                                          experiments=all_specs, now=now))
+    if http is not None and within((15, 30), (15, 45)):
+        guarded("paper_exit", lambda: _paper().time_exit(http, ledger, day=ds, experiments=all_specs))
+    if within((16, 20), (20, 0)):
+        guarded("resolve", lambda: resolve_day(get, ledger, day=day, now=now))
+        guarded("radar_close", lambda: I.close_day(ledger, day=day, now=now))
+        if http is not None:
+            guarded("paper_reconcile", lambda: _paper().reconcile(http, ledger, day=ds,
+                                                                  experiments=all_specs, now=now))
         if out["resolve"].get("status") == "resolved":
             out["report"] = {spec.experiment_id: ledger.report(spec.experiment_id)
-                             for spec in EXPERIMENTS if ledger.store.get("experiments", spec.experiment_id)}
-            text = _notify().graded_text(day.isoformat(), out["resolve"].get("settled") or {})
+                             for spec in all_specs if ledger.store.get("experiments", spec.experiment_id)}
+            text = _notify().graded_text(ds, out["resolve"].get("settled") or {})
             if notifier is not None and text:
-                guarded("notify", lambda: _notify().once(notifier, ledger.store, day=day.isoformat(),
-                                                          kind="graded", text=text))
-    else:
+                guarded("notify_graded", lambda: _notify().once(notifier, ledger.store, day=ds,
+                                                                 kind="graded", text=text))
+    if len(out) == 1:
         out["status"] = "idle"
     return out
 
 
-_NEWS = {"issued", "resolved", "reviewed", "error", "complete", "submitted", "sent",
+_NEWS = {"issued", "resolved", "reviewed", "error", "complete", "submitted", "sent", "closed",
          "entries_checked", "time_exit", "reconciled"}
 
 
 def noteworthy(out: Dict[str, Any]) -> bool:
-    """True when a tick DID something -- issued, graded, reviewed, or failed."""
+    """True when a tick DID something -- issued, graded, reviewed, sent, or failed."""
     return any(isinstance(v, dict) and v.get("status") in _NEWS for v in out.values())
 
 
