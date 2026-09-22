@@ -26,8 +26,11 @@ acting on, and manage each decision from entry to exit. A 60–70% hit rate is a
 | Phone cards | `cards` | ✅ | unit tests |
 | Data providers | `providers/*` | ✅ | written to vendor docs; **the build machine cannot reach them** |
 | Readiness probe | `probe` | ✅ | runs daily **in production**; results are `EDGE_PROBE_SUMMARY` log lines |
+| **Shadow pipeline** | `pipeline` | ✅ | **runs every market day in production**: card 09:05–09:28 ET, grading and miss review 16:20–20:00 ET. Experiment `gap_and_go_auto@v1`. Logs `EDGE_SHADOW`. |
 
-Nothing here trades, and nothing here is validated yet. The only rule being traded is
+Nothing here trades, and nothing here is validated yet. The shadow pipeline records
+forecasts on free data (Alpaca movers, IEX premarket prices, SIP bars >15 min old,
+Alpaca news); every name it cannot price is recorded as data-unavailable, not skipped. The only rule being traded is
 Gap-and-Go v1 (`docs/gap_and_go_v1.md`), by the operator, at $1,000 per trade.
 
 ## Before buying data
