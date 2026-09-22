@@ -398,8 +398,12 @@ def miss_review(get, ledger: Ledger, *, day: date, now: int, top: int = 50,
     return {"status": "reviewed", **{k: out[k] for k in ("movers", "executable", "caught", "recall", "labels", "coverage_note")}}
 
 
-def run(get, ledger: Ledger, *, now: int) -> Dict[str, Any]:
-    """One scheduler tick. Decides by exchange time what, if anything, is due."""
+def run(get, ledger: Ledger, *, now: int, http=None) -> Dict[str, Any]:
+    """One scheduler tick. Decides by exchange time what, if anything, is due.
+
+    `http` (requests-like, with post/delete) turns on PAPER execution; None
+    leaves the shadow as forecasts only.
+    """
     day = _et(now).date()
     out: Dict[str, Any] = {"day": day.isoformat()}
     if not trading_day(day):
@@ -418,8 +422,18 @@ def run(get, ledger: Ledger, *, now: int) -> Dict[str, Any]:
         guarded("miss_review", lambda: miss_review(get, ledger, day=prev, now=now))
     elif _at(day, 9, 5) <= now < _at(day, 9, 28):
         guarded("card", lambda: morning_card(get, ledger, now=now))
+        if http is not None:
+            guarded("paper", lambda: _paper().submit(http, ledger, day=day.isoformat(), experiments=EXPERIMENTS))
+    elif http is not None and _at(day, 10, 30) <= now < _at(day, 10, 45):
+        guarded("paper", lambda: _paper().cancel_unfilled_entries(
+            http, ledger, day=day.isoformat(), experiments=EXPERIMENTS))
+    elif http is not None and _at(day, 15, 30) <= now < _at(day, 15, 45):
+        guarded("paper", lambda: _paper().time_exit(http, ledger, day=day.isoformat(), experiments=EXPERIMENTS))
     elif _at(day, 16, 20) <= now < _at(day, 20, 0):
         guarded("resolve", lambda: resolve_day(get, ledger, day=day, now=now))
+        if http is not None:
+            guarded("paper", lambda: _paper().reconcile(http, ledger, day=day.isoformat(),
+                                                        experiments=EXPERIMENTS, now=now))
         if out["resolve"].get("status") == "resolved":
             out["report"] = {spec.experiment_id: ledger.report(spec.experiment_id)
                              for spec in EXPERIMENTS if ledger.store.get("experiments", spec.experiment_id)}
@@ -428,9 +442,15 @@ def run(get, ledger: Ledger, *, now: int) -> Dict[str, Any]:
     return out
 
 
-_NEWS = {"issued", "resolved", "reviewed", "error", "complete"}
+_NEWS = {"issued", "resolved", "reviewed", "error", "complete", "submitted",
+         "entries_checked", "time_exit", "reconciled"}
 
 
 def noteworthy(out: Dict[str, Any]) -> bool:
     """True when a tick DID something -- issued, graded, reviewed, or failed."""
     return any(isinstance(v, dict) and v.get("status") in _NEWS for v in out.values())
+
+
+def _paper():
+    from edge import paper
+    return paper

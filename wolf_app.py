@@ -2216,7 +2216,10 @@ async def lifespan(app: FastAPI):
                 if not _edge_store_ready["done"]:
                     store.ensure()
                     _edge_store_ready["done"] = True
-                out = _edge_run(_edge_get(), _EdgeLedger(store), now=int(_time.time()))
+                import requests as _requests
+                paper_on = os.getenv("EDGE_PAPER_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
+                out = _edge_run(_edge_get(), _EdgeLedger(store), now=int(_time.time()),
+                                http=_requests if paper_on else None)
                 if _edge_noteworthy(out):
                     LOGGER.warning("EDGE_SHADOW %s", _json.dumps(out, default=str)[:4000])
             except Exception as _e:
