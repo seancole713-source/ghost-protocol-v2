@@ -5,11 +5,18 @@ Every day this runs is a day of timestamped forecasts, graded outcomes and
 miss reviews that no amount of later building can backfill honestly.
 
 Three steps, each idempotent (safe to re-run; a marker stops repeats):
+  07:00-09:04 ET  miss_review     the PREVIOUS session's movers vs what that
+                                  morning's radar saw -- full market
   09:05-09:28 ET  morning_card    candidates -> signals -> decisions; forecasts
                                   and abstentions RECORDED before the open
   16:20-20:00 ET  resolve_day     grade from consolidated minute bars:
                                   "forecast" and "simulated" records
-  16:20-20:00 ET  miss_review     the day's movers vs what the radar saw
+
+Why the miss review waits for the next morning: this account's Polygon plan is
+not entitled to a session's grouped-daily bar while that session is still the
+current day (403), and IS for completed sessions (probe, 2026-09-22: D-1 answered
+12,626 tickers). Asking for today at 16:20 would fall back to a 50-name view
+every single day.
 
 It runs its OWN experiment, gap_and_go_auto@v1: the operator's Gap-and-Go v1
 levels with a keyword catalyst check instead of human-plus-Claude research.
@@ -66,6 +73,13 @@ def _holidays() -> set:
 
 def trading_day(day: date) -> bool:
     return day.weekday() < 5 and day.isoformat() not in _holidays()
+
+
+def previous_trading_day(day: date) -> date:
+    d = day - timedelta(days=1)
+    while not trading_day(d):
+        d -= timedelta(days=1)
+    return d
 
 
 def _daily_stats(bars: List[dict], day: date) -> Dict[str, Optional[float]]:
@@ -328,18 +342,22 @@ def run(get, ledger: Ledger, *, now: int) -> Dict[str, Any]:
     out: Dict[str, Any] = {"day": day.isoformat()}
     if not trading_day(day):
         return {**out, "status": "market_closed"}
-    if _at(day, 9, 5) <= now < _at(day, 9, 28):
-        out["card"] = morning_card(get, ledger, now=now)
+    # Each step fails on its own and every error is kept, never swallowed.
+    def guarded(key, step):
+        try:
+            out[key] = step()
+        except Exception as exc:  # noqa: BLE001
+            out[key] = {"status": "error", "error": f"{type(exc).__name__}: {str(exc)[:160]}"}
+
+    if _at(day, 7, 0) <= now < _at(day, 9, 5):
+        prev = previous_trading_day(day)
+        guarded("miss_review", lambda: miss_review(get, ledger, day=prev, now=now))
+    elif _at(day, 9, 5) <= now < _at(day, 9, 28):
+        guarded("card", lambda: morning_card(get, ledger, now=now))
     elif _at(day, 16, 20) <= now < _at(day, 20, 0):
-        # Each step fails on its own: a grading error must not also cost the
-        # day's miss review, and every error is kept, never swallowed.
-        for key, step in (("resolve", lambda: resolve_day(get, ledger, day=day, now=now)),
-                          ("miss_review", lambda: miss_review(get, ledger, day=day, now=now))):
-            try:
-                out[key] = step()
-            except Exception as exc:  # noqa: BLE001
-                out[key] = {"status": "error", "error": f"{type(exc).__name__}: {str(exc)[:160]}"}
-        out["report"] = ledger.report(EID) if ledger.store.get("experiments", EID) else None
+        guarded("resolve", lambda: resolve_day(get, ledger, day=day, now=now))
+        if out["resolve"].get("status") == "resolved":
+            out["report"] = ledger.report(EID) if ledger.store.get("experiments", EID) else None
     else:
         out["status"] = "idle"
     return out

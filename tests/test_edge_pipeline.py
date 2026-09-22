@@ -178,8 +178,12 @@ def test_a_failing_grade_does_not_cost_the_miss_review(ledger):
             return super().__call__(url, params, headers, timeout)
 
     out = P.run(Broken("evening"), ledger, now=ts(16, 25))
-    assert out["resolve"]["status"] == "error"
-    assert out["miss_review"]["status"] == "reviewed"
+    assert out["resolve"]["status"] == "error"            # recorded, not swallowed
+    # The miss review is not tied to grading: it runs the NEXT morning on the
+    # completed session, when full-market bars are entitled.
+    nxt = P.run(FakeAlpaca("evening"), ledger, now=ts(8, 0, DAY + timedelta(days=1)))
+    assert nxt["miss_review"]["status"] == "reviewed"
+    assert ledger.store.get("edge_miss", "2026-09-23") is not None
 
 
 def test_the_auto_experiment_is_not_the_operators_rule():
@@ -235,3 +239,7 @@ def test_the_miss_review_sees_the_whole_market_when_polygon_answers(ledger):
     assert rows["NEWX"]["label"] == "UNIVERSE_COVERAGE"          # moved +12% in RTH, never on the 9am radar
     assert rows["SHOP"]["label"] == "CAUGHT"
     assert out["recall"] == 0.5
+
+
+def test_monday_morning_reviews_friday():
+    assert P.previous_trading_day(date(2026, 9, 28)) == date(2026, 9, 25)
