@@ -52,7 +52,7 @@ def test_a_reviewed_cited_claim_becomes_usable_and_costs_are_counted():
     assert "correlated" in rec["independence"]
     assert store.get("edge_research_budget", "2026-09-23")["spent_usd"] == pytest.approx(out["cost_usd"])
     kw = c.calls[0]
-    assert kw["model"] == "claude-opus-5" and kw["fallbacks"] == "default"
+    assert kw["model"] == "claude-opus-5-5" and kw["fallbacks"] == "default"
     assert kw["betas"] == ["server-side-fallback-2026-07-01"]
     assert kw["tools"][0]["type"] == "web_search_20260209"
     assert W.research_symbol(c, store, symbol="SHOP", day="2026-09-23", now=ts(8, 40))["status"] == "already_researched"
@@ -159,9 +159,35 @@ def test_without_a_model_name_it_falls_back_to_claude_and_the_probe_lists_choice
     assert "key can use: gpt-x, gpt-y" in p.note
 
 
+def test_the_probe_lists_every_chat_model_not_an_alphabetical_prefix(monkeypatch):
+    from edge import research_openai as RO
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    monkeypatch.delenv("EDGE_OPENAI_MODEL", raising=False)
+    ids = ["babbage-002", "chat-latest", "chatgpt-image-latest", "dall-e-3", "davinci-002",
+           "gpt-3.5-turbo", "gpt-3.5-turbo-0125", "gpt-3.5-turbo-instruct", "gpt-4.1",
+           "gpt-4.1-2025-04-14", "gpt-4o-audio-preview", "gpt-4o-realtime-preview", "gpt-5",
+           "gpt-5-codex", "gpt-5-mini", "gpt-5.1", "o3", "o4-mini", "omni-moderation-latest",
+           "text-embedding-3-large", "tts-1", "whisper-1"] + [f"ft-{i}" for i in range(120)]
+    note = RO.probe(OAIHttp(models=ids)).note
+    listed = note.split("chat models this key can use: ")[1].split(", ")
+    assert listed == ["chat-latest", "gpt-3.5-turbo", "gpt-4.1", "gpt-5", "gpt-5-mini", "gpt-5.1",
+                      "o3", "o4-mini"]
+    monkeypatch.setenv("EDGE_OPENAI_MODEL", "gpt-5")    # configured: still shows what else it could use
+    p = RO.probe(OAIHttp(models=ids))
+    assert p.status == "OK" and p.note.startswith("using gpt-5; ") and "gpt-5.1" in p.note
+
+
 def test_an_unusable_openai_reply_falls_back_to_claude(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "k")
     monkeypatch.setenv("EDGE_OPENAI_MODEL", "gpt-x")
     store, c = MemoryStore(), Client([reply(AUTHOR_OK), reply(REVIEW_OK)])
     W.research_symbol(c, store, symbol="SHOP", day="2026-09-23", now=ts(8, 35), http=OAIHttp("not json"))
     assert store.get("edge_research", "2026-09-23|SHOP")["reviewer"] == W.REVIEWER and len(c.calls) == 2
+
+
+def test_the_daily_cap_is_counted_at_opus_5_5_list_prices():
+    # 1M input $4, 1M cache read $0.20, 1M output $20, 3 searches $0.03
+    usage = NS(input_tokens=1_000_000, cache_creation_input_tokens=0, cache_read_input_tokens=1_000_000,
+               output_tokens=1_000_000, server_tool_use=NS(web_search_requests=3))
+    assert W.MODEL == "claude-opus-5-5" and W.AUTHOR == "claude-opus-5-5/author"
+    assert W.cost_usd(usage) == pytest.approx(4.00 + 0.20 + 20.00 + 0.03)

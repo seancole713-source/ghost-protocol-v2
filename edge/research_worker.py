@@ -26,10 +26,12 @@ from typing import Any, Dict, List, Optional, Tuple
 from edge import research as RS
 from edge.contracts import ET
 
-MODEL = "claude-opus-5"
-# claude-opus-5 list prices, USD per token, and per web search (Anthropic pricing, 2026).
-PRICE_IN, PRICE_OUT, PRICE_SEARCH = 5.00 / 1e6, 25.00 / 1e6, 10.00 / 1000
-AUTHOR, REVIEWER = "claude-opus-5/author", "claude-opus-5/reviewer"
+MODEL = "claude-opus-5-5"
+# claude-opus-5-5 list prices, USD per token, and per web search; cache reads bill at 5% of
+# input (platform.claude.com/docs/en/about-claude/pricing).
+PRICE_IN, PRICE_OUT, PRICE_SEARCH = 4.00 / 1e6, 20.00 / 1e6, 10.00 / 1000
+PRICE_CACHE_READ = PRICE_IN * 0.05
+AUTHOR, REVIEWER = f"{MODEL}/author", f"{MODEL}/reviewer"
 
 AUTHOR_PROMPT = """You research one stock for a trading-research ledger. Your output is checked
 mechanically and anything unsupported is discarded, so precision beats coverage.
@@ -95,7 +97,7 @@ def cost_usd(usage: Any) -> float:
     if stu is not None:
         searches = int(getattr(stu, "web_search_requests", 0) or 0)
     tokens_in = (getattr(usage, "input_tokens", 0) or 0) + (getattr(usage, "cache_creation_input_tokens", 0) or 0)
-    return (tokens_in * PRICE_IN + (getattr(usage, "cache_read_input_tokens", 0) or 0) * PRICE_IN * 0.1
+    return (tokens_in * PRICE_IN + (getattr(usage, "cache_read_input_tokens", 0) or 0) * PRICE_CACHE_READ
             + (getattr(usage, "output_tokens", 0) or 0) * PRICE_OUT + searches * PRICE_SEARCH)
 
 
