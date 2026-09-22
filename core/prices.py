@@ -388,6 +388,40 @@ def get_price(symbol, asset_type=None):
     return get_stock_price(symbol)
 
 
+def _session_start_epoch(now_ct, session: str) -> Optional[int]:
+    """Epoch second at which the CURRENT session began, or None when closed.
+
+    A price stamped before this moment belongs to an earlier session and must
+    never be priced against a previous close as if it were this session's move.
+    """
+    starts = {
+        "premarket": PREMARKET_START_MIN,
+        "rth": RTH_OPEN_MIN,
+    }
+    if session == "afterhours":
+        try:
+            from core.market_hours import _rth_close_for
+            start_min = _rth_close_for(now_ct)
+        except Exception:
+            start_min = RTH_CLOSE_MIN
+    else:
+        start_min = starts.get(session)
+    if start_min is None:
+        return None
+    try:
+        if now_ct.tzinfo is None:
+            # A naive clock is exchange-local by contract (_now_ct); without this
+            # .timestamp() would silently read it in the HOST's timezone.
+            from zoneinfo import ZoneInfo
+            now_ct = now_ct.replace(tzinfo=ZoneInfo(SESSION_TZ))
+        start = now_ct.replace(
+            hour=start_min // 60, minute=start_min % 60, second=0, microsecond=0,
+        )
+        return int(start.timestamp())
+    except Exception:
+        return None
+
+
 def get_extended_session(symbol: str) -> Dict[str, Any]:
     """Extended-hours context: prior close, live quote, gap %, and session label.
 
@@ -432,6 +466,7 @@ def get_extended_session(symbol: str) -> Dict[str, Any]:
     session_price = live
     session_price_as_of_ts = price_as_of_ts
     session_price_source = "alpaca_trade" if live_quote is not None else None
+    now_ct = None
     try:
         now_ct = _now_ct()
         if now_ct.weekday() < 5:
@@ -451,9 +486,34 @@ def get_extended_session(symbol: str) -> Dict[str, Any]:
                     session_price_source = "yfinance_fast_info"
     except Exception:
         note_suppressed()
+    # ONE BASIS OR NONE -- the rule PR #194 applied to the discovery screener,
+    # applied here to the main quote path. Caught live 2026-09-22 premarket:
+    # WOLF, SHOP and BB had no Alpaca print yet that morning, so `live` was
+    # Monday's 16:00 ET closing trade, 17.4h old. It was labelled "premarket"
+    # and priced against the previous close to give a "gap" of +16.9%, +7.1%
+    # and +7.4% -- which were Monday's completed moves, presented as Tuesday's
+    # premarket gaps. The number is still returned; it simply may not be
+    # called this session's gap.
+    session_start_ts = _session_start_epoch(now_ct, session) if now_ct else None
+    now_ts = int(time.time())
+    session_price_age_s = None
+    session_price_basis = "no_price"
+    if session_price and float(session_price) > 0:
+        if session_price_as_of_ts is None:
+            session_price_basis = "unverified_time"
+        else:
+            session_price_age_s = max(0, now_ts - int(session_price_as_of_ts))
+            if session_start_ts is not None and int(session_price_as_of_ts) < session_start_ts:
+                session_price_basis = "prior_session_trade"
+            else:
+                session_price_basis = "current_session"
     gap_pct = None
     gap_abs = None
-    if prev_close and prev_close > 0 and session_price and float(session_price) > 0:
+    if (
+        session_price_basis != "prior_session_trade"
+        and prev_close and prev_close > 0
+        and session_price and float(session_price) > 0
+    ):
         gap_abs = round(float(session_price) - prev_close, 4)
         gap_pct = round(gap_abs / prev_close * 100, 3)
     return {
@@ -468,8 +528,14 @@ def get_extended_session(symbol: str) -> Dict[str, Any]:
         "post_market_price": round(float(post_market), 4) if post_market else None,
         "price_as_of_ts": session_price_as_of_ts,
         "price_source": session_price_source,
-        "requested_at_ts": int(time.time()),
-        "ts": int(time.time()),
+        "session_start_ts": session_start_ts,
+        "session_price_age_s": session_price_age_s,
+        # current_session | prior_session_trade | unverified_time | no_price.
+        # A prior_session_trade carries NO gap: the last print predates this
+        # session, so there is no observation of how this session is moving.
+        "session_price_basis": session_price_basis,
+        "requested_at_ts": now_ts,
+        "ts": now_ts,
     }
 
 
