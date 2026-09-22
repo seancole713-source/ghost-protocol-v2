@@ -68,11 +68,31 @@ GAP_BASELINE = replace(
                  "candidates": "Alpaca movers screener, top 50 gainers"},
 )
 BASE_EID = GAP_BASELINE.experiment_id
-EXPERIMENTS = (SPEC, GAP_BASELINE)
+
+# The same frozen levels, but the catalyst must be a Claude research claim --
+# cited, reviewed by a second pass, and made BEFORE the card. Registered only
+# when the research worker is on. It answers: does AI research beat the keyword
+# tagger and the no-catalyst baseline?
+GAP_VERIFIED = replace(
+    GAP_AND_GO_V1, name="gap_and_go_verified",
+    description="Gap-and-Go v1 levels; catalyst and dilution judged from reviewed, cited Claude research "
+                "made before the card (edge/research_worker.py).",
+    eligibility={**GAP_AND_GO_V1.eligibility,
+                 "catalyst": "reviewed Claude research claim, company-specific, made before 09:05 ET",
+                 "reference_price": "IEX latest trade, current session, <=30 min old",
+                 "candidates": "Alpaca movers screener, top 50 gainers"},
+)
+VERIFIED_EID = GAP_VERIFIED.experiment_id
+EXPERIMENTS = (SPEC, GAP_BASELINE, GAP_VERIFIED)
 
 # What each experiment needs to be released LIVE. Shadow records regardless;
 # the banner is what a live release would have said, kept beside the record.
 REQUIRES = {EID: ["movers", "quotes_iex", "news"], BASE_EID: ["movers", "quotes_iex"]}
+
+
+def _research():
+    from edge import research_worker
+    return research_worker
 
 
 def _et(ts: int) -> datetime:
@@ -160,7 +180,10 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, A
         return {"status": "already_issued", "day": day.isoformat()}
     if not (_at(day, 9, 5) <= now < _at(day, 9, 28)):
         return {"status": "outside_card_window", "day": day.isoformat()}
+    research_on = _research().enabled()
     for spec in EXPERIMENTS:
+        if spec is GAP_VERIFIED and not research_on:
+            continue
         ledger.register(spec, now=now)
 
     mv = A.movers(get, top=top)
@@ -193,8 +216,25 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, A
         }
         d = S.decide("premarket_continuation", signals)
         b = S.decide("gap_baseline", signals)
+        v = None
+        if research_on:
+            rv = _research().verdict(store, day=day.isoformat(), symbol=sym, issued_at=now)
+            vsig = dict(signals)
+            vsig["catalyst"] = (D.Signal("catalyst", D.UNKNOWN, evidence={"missing": "not researched before the card"})
+                                if rv["catalyst"] is None else
+                                D.Signal("catalyst", D.PASS if rv["catalyst"] else D.FAIL,
+                                         evidence={"headline": rv.get("headline"),
+                                                   "reasons": [] if rv["catalyst"] else
+                                                   ["research found no reviewed company-specific catalyst"]}))
+            vsig["not_dilutive"] = (D.Signal("not_dilutive", D.UNKNOWN, evidence={"missing": "not researched"})
+                                    if rv["dilutive"] is None else
+                                    D.Signal("not_dilutive", D.FAIL if rv["dilutive"] else D.PASS,
+                                             evidence={"reasons": ["research found dilution"]} if rv["dilutive"] else {}))
+            v = S.decide("premarket_continuation", vsig)
         row = {"symbol": sym, "verdict": d.verdict, "reasons": d.reasons, "missing": d.missing,
                "baseline_verdict": b.verdict, "baseline_reasons": b.reasons, "baseline_missing": b.missing,
+               "verified_verdict": v.verdict if v else None,
+               "verified_reasons": v.reasons if v else [], "verified_missing": v.missing if v else [],
                "ref_price": ref["price"], "ref_ts": ref["ts"], "prev_close": st["prev_close"],
                "avg_dollars": st["avg_dollars"],
                "catalyst": signals["catalyst"].evidence.get("headline")}
@@ -208,6 +248,12 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, A
     base_chosen = _issue_top(ledger, GAP_BASELINE, rows, base_eligible, day=day, now=now,
                              verdict_key="baseline_verdict", reasons_key="baseline_reasons",
                              missing_key="baseline_missing", id_key="baseline_forecast_id")
+    ver_chosen = []
+    if research_on:
+        ver_chosen = _issue_top(ledger, GAP_VERIFIED, rows,
+                                [r for r in rows if r["verified_verdict"] == S.ELIGIBLE], day=day, now=now,
+                                verdict_key="verified_verdict", reasons_key="verified_reasons",
+                                missing_key="verified_missing", id_key="verified_forecast_id")
 
     priced = sum(1 for r in rows if r["ref_price"])
     health = H.assess([
@@ -222,6 +268,7 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, A
             "candidates": len(rows), "priced": priced, "eligible": len(eligible),
             "forecasts": [r["symbol"] for r in chosen],
             "baseline_forecasts": [r["symbol"] for r in base_chosen],
+            "verified_forecasts": [r["symbol"] for r in ver_chosen] if research_on else None,
             "movers_last_updated": updated,
             "coverage_note": f"{priced}/{len(rows)} candidates had a fresh IEX premarket price",
             "health": health, "health_banner": H.banner(len(chosen), {EID: blocking[EID]}),
@@ -251,6 +298,43 @@ def _issue_top(ledger: Ledger, spec, rows, eligible, *, day: date, now: int, ver
         ledger.abstain(experiment_id=spec.experiment_id, symbol=r["symbol"],
                        session_date=day.isoformat(), reasons=list(why), now=now)
     return chosen
+
+
+def research_candidates(get, store, *, day: date, now: int, n: int) -> List[str]:
+    """The movers most likely to reach the card: gap +5..40%, liquid, by dollar volume. Cached per day."""
+    cached = store.get("edge_research_queue", day.isoformat())
+    if cached:
+        return cached["symbols"]
+    mv = A.movers(get, top=50)
+    syms = sorted({str(g["symbol"]).upper() for g in mv.get("gainers") or [] if g.get("symbol")})
+    daily = A.bars_multi(get, syms, timeframe="1Day", start=(day - timedelta(days=45)).isoformat())
+    snaps = A.snapshots(get, syms, feed="iex")
+    ranked = []
+    for s in syms:
+        st = _daily_stats(daily.get(s) or [], day)
+        ref = _reference(snaps.get(s), now=now, day=day)
+        g = D.gap(st["prev_close"], ref["price"]) if ref["price"] else None
+        liq = D.liquidity(price=ref["price"] or st["prev_close"], avg_shares=st["avg_shares"])
+        if g is not None and g.state == D.PASS and liq.state == D.PASS:
+            ranked.append((-(st["avg_dollars"] or 0), s))
+    out = [s for _, s in sorted(ranked)[:n]]
+    store.put("edge_research_queue", day.isoformat(), {"symbols": out, "at": now})
+    return out
+
+
+def research_step(get, ledger: Ledger, *, day: date, now: int, client=None) -> Dict[str, Any]:
+    """One symbol per tick, so a tick stays inside the scheduler's timeout."""
+    import os as _os
+    rw = _research()
+    try:
+        n = max(1, min(10, int(_os.getenv("EDGE_RESEARCH_MAX_SYMBOLS", "5"))))
+    except ValueError:
+        n = 5
+    queue = research_candidates(get, ledger.store, day=day, now=now, n=n)
+    for s in queue:
+        if not ledger.store.get("edge_research", f"{day.isoformat()}|{s}"):
+            return rw.research_symbol(client or rw._client(), ledger.store, symbol=s, day=day.isoformat(), now=now)
+    return {"status": "nothing", "queue": queue}
 
 
 def _minute_bars(rows: List[dict]) -> List[tuple]:
@@ -427,6 +511,8 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None) -> Dict[str,
         guarded("universe", lambda: U.step(get, ledger.store, day=ds, now=now))
     if within((7, 0), (9, 5)):
         guarded("miss_review", lambda: miss_review(get, ledger, day=previous_trading_day(day), now=now))
+    if within((8, 30), (9, 5)) and _research().enabled():
+        guarded("research", lambda: research_step(get, ledger, day=day, now=now))
     if within((9, 5), (9, 28)):
         guarded("card", lambda: morning_card(get, ledger, now=now))
         if http is not None:
@@ -469,7 +555,7 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None) -> Dict[str,
     return out
 
 
-_NEWS = {"issued", "resolved", "reviewed", "error", "complete", "submitted", "sent", "closed",
+_NEWS = {"issued", "resolved", "reviewed", "error", "complete", "submitted", "sent", "closed", "researched",
          "entries_checked", "time_exit", "reconciled"}
 
 
