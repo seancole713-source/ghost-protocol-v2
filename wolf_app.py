@@ -2180,7 +2180,7 @@ async def lifespan(app: FastAPI):
                 for cap, row in sorted(rep["capabilities"].items()):
                     LOGGER.warning("EDGE_PROBE_CAP %s %s via %s http=%s rows=%s %s", cap,
                                    row["status"], row["provider"], row.get("http_status"),
-                                   row.get("rows"), (row.get("note") or "")[:120])
+                                   row.get("rows"), (row.get("note") or "")[:600])
                 LOGGER.info("EDGE_PROBE %s", _json.dumps(rep, separators=(",", ":"), default=str)[:20000])
                 try:
                     from core.db import db_conn

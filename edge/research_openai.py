@@ -46,10 +46,25 @@ def probe(http) -> B.Probe:
     want = (os.getenv("EDGE_OPENAI_MODEL") or "").strip()
     if want and want in ids:
         return B.Probe("llm.reviewer.independent", "openai", B.OK, http_status=200, rows=len(ids),
-                       note=f"using {want}")
+                       note=f"using {want}; chat models this key can use: " + ", ".join(chat_models(ids)))
     return B.Probe("llm.reviewer.independent", "openai", B.EMPTY, http_status=200, rows=len(ids),
                    note=("EDGE_OPENAI_MODEL not set; " if not want else f"{want} not available; ")
-                        + "key can use: " + ", ".join(ids[:15]))
+                        + "chat models this key can use: " + ", ".join(chat_models(ids)))
+
+
+# Not chat-completions text models: media, embeddings, legacy completions, and
+# Responses-only variants. Dated snapshots duplicate their undated alias.
+_NOT_CHAT = ("audio", "realtime", "tts", "transcribe", "image", "embedding", "search",
+             "instruct", "moderation", "dall-e", "whisper", "babbage", "davinci", "codex", "sora")
+_DATED = re.compile(r"-(\d{4}-\d{2}-\d{2}|\d{4})$")
+
+
+def chat_models(ids: List[str]) -> List[str]:
+    """Every chat model the key lists -- ALL of them, so the strongest is never cut off
+    by an alphabetical prefix (the first probe stopped at gpt-4.1 of 134)."""
+    return sorted(i for i in ids
+                  if (i.startswith(("gpt-", "chatgpt-", "chat-")) or re.match(r"o\d", i))
+                  and not any(w in i for w in _NOT_CHAT) and not _DATED.search(i))
 
 
 PROMPT = """You are checking claims about the stock {symbol} before they enter a trading-research

@@ -159,6 +159,24 @@ def test_without_a_model_name_it_falls_back_to_claude_and_the_probe_lists_choice
     assert "key can use: gpt-x, gpt-y" in p.note
 
 
+def test_the_probe_lists_every_chat_model_not_an_alphabetical_prefix(monkeypatch):
+    from edge import research_openai as RO
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    monkeypatch.delenv("EDGE_OPENAI_MODEL", raising=False)
+    ids = ["babbage-002", "chat-latest", "chatgpt-image-latest", "dall-e-3", "davinci-002",
+           "gpt-3.5-turbo", "gpt-3.5-turbo-0125", "gpt-3.5-turbo-instruct", "gpt-4.1",
+           "gpt-4.1-2025-04-14", "gpt-4o-audio-preview", "gpt-4o-realtime-preview", "gpt-5",
+           "gpt-5-codex", "gpt-5-mini", "gpt-5.1", "o3", "o4-mini", "omni-moderation-latest",
+           "text-embedding-3-large", "tts-1", "whisper-1"] + [f"ft-{i}" for i in range(120)]
+    note = RO.probe(OAIHttp(models=ids)).note
+    listed = note.split("chat models this key can use: ")[1].split(", ")
+    assert listed == ["chat-latest", "gpt-3.5-turbo", "gpt-4.1", "gpt-5", "gpt-5-mini", "gpt-5.1",
+                      "o3", "o4-mini"]
+    monkeypatch.setenv("EDGE_OPENAI_MODEL", "gpt-5")    # configured: still shows what else it could use
+    p = RO.probe(OAIHttp(models=ids))
+    assert p.status == "OK" and p.note.startswith("using gpt-5; ") and "gpt-5.1" in p.note
+
+
 def test_an_unusable_openai_reply_falls_back_to_claude(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "k")
     monkeypatch.setenv("EDGE_OPENAI_MODEL", "gpt-x")
