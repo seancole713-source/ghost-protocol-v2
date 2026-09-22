@@ -2181,6 +2181,14 @@ async def lifespan(app: FastAPI):
                                    row["status"], row["provider"], row.get("http_status"),
                                    row.get("rows"), (row.get("note") or "")[:120])
                 LOGGER.info("EDGE_PROBE %s", _json.dumps(rep, separators=(",", ":"), default=str)[:20000])
+                try:
+                    from core.db import db_conn
+                    from edge.store_pg import PostgresStore as _EdgeStore
+                    _st = _EdgeStore(db_conn)
+                    _st.ensure()
+                    _st.put("edge_probe", "latest", {k: v for k, v in rep.items() if k != "probes"})
+                except Exception as _pe:
+                    LOGGER.warning("edge probe store failed: %s", str(_pe)[:120])
             except Exception as _e:
                 LOGGER.warning("edge probe job failed: %s", str(_e)[:160])
                 raise
