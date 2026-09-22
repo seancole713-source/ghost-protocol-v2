@@ -5,11 +5,13 @@ from, and none of them shows a win rate without its interval.
 """
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any, Dict, Optional
 
 from edge.ledger import Ledger
 
-VIEWS = ("summary", "today", "experiments", "backtest", "misses", "probe", "universe")
+VIEWS = ("summary", "today", "experiments", "backtest", "misses", "probe", "universe",
+         "research", "radar", "paper", "models", "scorecard", "notes")
 
 
 def _latest(store, table: str) -> Optional[Dict[str, Any]]:
@@ -88,9 +90,82 @@ def universe(store) -> Optional[Dict[str, Any]]:
         "added": (u.get("added") or [])[:50], "removed": (u.get("removed") or [])[:50]}
 
 
-def view(store, name: str = "summary", day: Optional[str] = None) -> Dict[str, Any]:
+def _day_of(store, table: str, day: Optional[str], field: str = "day") -> Optional[str]:
+    if day:
+        return day
+    rows = store.scan(table)
+    return max((r.get(field) or "" for r in rows), default=None) or None
+
+
+def research(store, day: Optional[str] = None) -> Dict[str, Any]:
+    d = _day_of(store, "edge_research", day)
+    if not d:
+        return {"note": "no research yet (08:30-09:04 ET on trading days, when EDGE_RESEARCH_ENABLED)"}
+    recs = sorted(store.scan("edge_research", day=d), key=lambda r: r["made_at"])
+    return {"day": d, "spent_usd": (store.get("edge_research_budget", d) or {}).get("spent_usd"),
+            "symbols": [{"symbol": r["symbol"], "reviewer": r.get("reviewer"), "cost_usd": r.get("cost_usd"),
+                         "review": r.get("review"), "unknowns": (r.get("unknowns") or [])[:5],
+                         "claims": [{k: c.get(k) for k in ("kind", "statement", "status", "problems")}
+                                    for c in r.get("claims") or []]} for r in recs]}
+
+
+def radar(store, day: Optional[str] = None) -> Dict[str, Any]:
+    d = _day_of(store, "edge_radar", day, "session_date")
+    if not d:
+        return {"note": "no radar activity yet (09:45-14:30 ET on trading days)"}
+    items = store.scan("edge_radar", session_date=d)
+    out = []
+    for it in sorted(items, key=lambda r: -(r.get("detected_move_pct") or 0)):
+        last = (it.get("history") or [{}])[-1]
+        out.append({"symbol": it["symbol"], "state": it.get("state"), "strategy": it.get("strategy"),
+                    "detected_move_pct": it.get("detected_move_pct"), "last_reason": last.get("reason")})
+    return {"day": d, "states": dict(Counter(i["state"] for i in out)),
+            "items": out[:40]}
+
+
+def paper(store, day: Optional[str] = None) -> Dict[str, Any]:
+    d = _day_of(store, "forecasts", day, "session_date")
+    if not d:
+        return {"note": "no forecasts yet"}
+    rows = []
+    for f in sorted(store.scan("forecasts", session_date=d), key=lambda r: r["issued_at"]):
+        p = store.get("edge_paper", f"{f['forecast_id']}|paper") or {}
+        act = store.get("outcomes", f"{f['forecast_id']}|actual") or {}
+        sim = store.get("outcomes", f"{f['forecast_id']}|simulated") or {}
+        rows.append({"experiment": f["experiment_id"], "symbol": f["symbol"],
+                     "entry_trigger": f.get("entry_trigger"), "target": f.get("target"), "stop": f.get("stop"),
+                     "shares": f.get("shares"), "paper_state": p.get("state"), "paper_message": p.get("message"),
+                     "simulated": sim.get("outcome"), "actual": act.get("outcome"),
+                     "actual_pnl_usd": act.get("pnl_usd")})
+    return {"day": d, "orders": rows, "note": "Alpaca PAPER account only; no real money"}
+
+
+def models(store) -> Dict[str, Any]:
+    cur = store.get("edge_models", "current")
+    last = store.get("edge_models", "last_attempt")
+    ev = (store.get("edge_models", cur["model_sha"]) or {}).get("evaluation") if cur else None
+    return {"current": cur, "current_evaluation": ev,
+            "last_attempt": {k: v for k, v in (last or {}).items() if k != "artifact"} or None,
+            "note": "a model forecasts only if it QUALIFIED out of sample; otherwise none is used"}
+
+
+def view(store, name: str = "summary", day: Optional[str] = None, kind: Optional[str] = None) -> Dict[str, Any]:
     if name not in VIEWS:
         return {"error": f"view must be one of {VIEWS}"}
+    if name == "research":
+        return research(store, day)
+    if name == "radar":
+        return radar(store, day)
+    if name == "paper":
+        return paper(store, day)
+    if name == "models":
+        return models(store)
+    if name == "scorecard":
+        from edge import scorecard as SC
+        return SC.scorecard(store)
+    if name == "notes":
+        from edge import agent_notes as AN
+        return AN.recent(store, day=day, kind=kind)
     if name == "today":
         return today(store, day)
     if name == "experiments":
@@ -103,7 +178,8 @@ def view(store, name: str = "summary", day: Optional[str] = None) -> Dict[str, A
         return store.get("edge_probe", "latest") or {"note": "no probe stored yet"}
     if name == "universe":
         return universe(store) or {"note": "no universe snapshot yet (06:00-07:00 ET)"}
-    t = today(store)
+    from edge import scorecard as SC
+    t, sc = today(store), SC.scorecard(store)
     return {
         "today": {k: t.get(k) for k in ("day", "forecasts", "baseline_forecasts", "health_banner", "note")},
         "experiments": experiments(store),
@@ -111,5 +187,7 @@ def view(store, name: str = "summary", day: Optional[str] = None) -> Dict[str, A
                                       "limits": b.get("limits")})(backtest(store)),
         "latest_misses": (lambda m: m and {k: m.get(k) for k in (
             "day", "movers", "executable", "caught", "recall", "labels", "coverage_note")})(misses(store)),
+        "ai_scorecard": {"sessions": sc.get("sessions"),
+                         **{k: (sc.get(k) or {}).get("verdict") for k in ("keyword_catalyst", "ai_research", "model")}},
         "note": "shadow and paper only; nothing here is a trade recommendation",
     }

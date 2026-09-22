@@ -606,7 +606,24 @@ def _edge_report(args: Dict[str, Any]) -> Dict[str, Any]:
 
     name = str(args.get("view") or "summary").strip().lower()
     day = str(args.get("day") or "").strip() or None
-    return view(PostgresStore(db_conn), name, day)
+    kind = str(args.get("kind") or "").strip() or None
+    return view(PostgresStore(db_conn), name, day, kind)
+
+
+def _edge_note(args: Dict[str, Any]) -> Dict[str, Any]:
+    import time
+
+    from core.db import db_conn
+    from edge import agent_notes as AN
+    from edge.store_pg import PostgresStore
+
+    syms = args.get("symbols") or []
+    try:
+        return AN.write(PostgresStore(db_conn), kind=args.get("kind"), author=args.get("author"),
+                        body=args.get("body"), day=(str(args.get("day") or "").strip() or None),
+                        symbols=syms if isinstance(syms, list) else [], now=int(time.time()))
+    except AN.NoteError as exc:
+        return {"status": "refused", "error": str(exc)}
 
 
 EDGE_TOOLS: Mapping[str, Dict[str, Any]] = {
@@ -615,17 +632,43 @@ EDGE_TOOLS: Mapping[str, Dict[str, Any]] = {
             "Read the independent edge system: its daily shadow card, per-experiment records "
             "(forecast / simulated / actual paper fills, each with Wilson interval and verdict), "
             "the point-in-time backtest of the frozen Gap-and-Go rule, the daily miss review, the "
-            "data-readiness probe, and the universe snapshot. Read-only; shadow and paper only -- "
+            "data-readiness probe, the universe snapshot, the pre-card AI research, the intraday "
+            "radar, the Alpaca PAPER orders, the model registry, the AI scorecard (does research "
+            "add edge?) and the scheduled agents' notes. Read-only; shadow and paper only -- "
             "never a trade recommendation."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "view": {"type": "string", "enum": ["summary", "today", "experiments", "backtest",
-                                                    "misses", "probe", "universe"],
+                                                    "misses", "probe", "universe", "research", "radar",
+                                                    "paper", "models", "scorecard", "notes"],
                          "description": "Which view; default summary"},
-                "day": {"type": "string", "description": "YYYY-MM-DD for today/misses; default latest"},
+                "day": {"type": "string",
+                        "description": "YYYY-MM-DD for today/misses/research/radar/paper/notes; default latest"},
+                "kind": {"type": "string", "description": "notes view only: filter by note kind"},
             },
+            "additionalProperties": False,
+        },
+    },
+    "ghost_edge_note": {
+        "description": (
+            "Append a note from a scheduled AI agent (premarket brief, evening report, ops watchdog, "
+            "miss investigation, hypothesis, scorecard). Notes are append-only -- never edited or "
+            "deleted -- and are commentary, never evidence: no ledger, card or gate reads them. "
+            "Read them back with ghost_edge_report view=notes."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string", "enum": ["brief", "report", "watchdog", "miss_investigation",
+                                                    "hypothesis", "scorecard"]},
+                "author": {"type": "string", "description": "the agent's name, e.g. premarket-briefer"},
+                "body": {"type": "string", "description": "the note, at most 8000 characters"},
+                "day": {"type": "string", "description": "YYYY-MM-DD it is about; default today (ET)"},
+                "symbols": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["kind", "author", "body"],
             "additionalProperties": False,
         },
     },
@@ -635,6 +678,7 @@ EDGE_TOOLS: Mapping[str, Dict[str, Any]] = {
 _MARKET_DATA_HANDLERS: Mapping[str, Callable[[Dict[str, Any]], Any]] = {
     "ghost_symbol_quote": _symbol_quote,
     "ghost_edge_report": _edge_report,
+    "ghost_edge_note": _edge_note,
 }
 
 
