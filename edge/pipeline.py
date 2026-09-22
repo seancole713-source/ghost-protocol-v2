@@ -231,7 +231,13 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, A
                                     D.Signal("not_dilutive", D.FAIL if rv["dilutive"] else D.PASS,
                                              evidence={"reasons": ["research found dilution"]} if rv["dilutive"] else {}))
             v = S.decide("premarket_continuation", vsig)
+        inputs = {"prev_close": st["prev_close"], "avg_shares": st["avg_shares"], "ref_price": ref["price"],
+                  "ref_why": ref["why"],
+                  "events": None if usable is None else [
+                      {"headline": e.headline, "kind": e.kind, "published_at": e.published_at,
+                       "first_seen_at": e.first_seen_at, "url": e.url} for e in usable]}
         row = {"symbol": sym, "verdict": d.verdict, "reasons": d.reasons, "missing": d.missing,
+               "inputs": inputs,
                "baseline_verdict": b.verdict, "baseline_reasons": b.reasons, "baseline_missing": b.missing,
                "verified_verdict": v.verdict if v else None,
                "verified_reasons": v.reasons if v else [], "verified_missing": v.missing if v else [],
@@ -510,7 +516,12 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None) -> Dict[str,
     if within((6, 0), (7, 0)):
         guarded("universe", lambda: U.step(get, ledger.store, day=ds, now=now))
     if within((7, 0), (9, 5)):
-        guarded("miss_review", lambda: miss_review(get, ledger, day=previous_trading_day(day), now=now))
+        prev = previous_trading_day(day)
+        guarded("miss_review", lambda: miss_review(get, ledger, day=prev, now=now))
+        review = ledger.store.get("edge_miss", prev.isoformat())
+        text = _notify().misses_text(review) if review else None
+        if notifier is not None and text:
+            guarded("notify_misses", lambda: _notify().once(notifier, ledger.store, day=ds, kind="misses", text=text))
     if within((8, 30), (9, 5)) and _research().enabled():
         guarded("research", lambda: research_step(get, ledger, day=day, now=now))
     if within((9, 5), (9, 28)):
@@ -537,6 +548,9 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None) -> Dict[str,
                                                                           experiments=all_specs, now=now))
     if http is not None and within((15, 30), (15, 45)):
         guarded("paper_exit", lambda: _paper().time_exit(http, ledger, day=ds, experiments=all_specs))
+    if within((20, 0), (20, 5)):
+        from edge import replay as RP
+        guarded("replay", lambda: RP.replay_all(ledger.store))
     if within((16, 20), (20, 0)):
         guarded("resolve", lambda: resolve_day(get, ledger, day=day, now=now))
         guarded("radar_close", lambda: I.close_day(ledger, day=day, now=now))
@@ -556,6 +570,7 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None) -> Dict[str,
 
 
 _NEWS = {"issued", "resolved", "reviewed", "error", "complete", "submitted", "sent", "closed", "researched",
+         "drift", "consistent",
          "entries_checked", "time_exit", "reconciled"}
 
 

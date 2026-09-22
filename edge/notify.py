@@ -74,3 +74,22 @@ def graded_text(day: str, settled: Dict[str, Any]) -> Optional[str]:
         parts.append(f"{k.split(':')[-1]} [{k.split('@')[0]}] {v.get('simulated')}"
                      + (f" {pnl:+.2f}" if isinstance(pnl, (int, float)) else ""))
     return f"edge shadow graded {day}:\n" + "\n".join(parts) + "\n(simulated, $1,000 size, 10bps costs)"
+
+
+def misses_text(review: Dict[str, Any]) -> Optional[str]:
+    """The previous session's +5% movers: what was catchable, what was caught, why not."""
+    if not review or not review.get("movers"):
+        return None
+    labels = {k: v for k, v in (review.get("labels") or {}).items() if v}
+    top = sorted((r for r in review.get("rows") or [] if r.get("opportunity") == "EXECUTABLE"),
+                 key=lambda r: -(r.get("move_pct") or 0))[:5]
+    lines = [f"Movers review {review.get('day')}: {review.get('movers')} stocks hit +5%, "
+             f"{review.get('executable')} were tradeable after the open, caught {review.get('caught')}."]
+    if labels:
+        lines.append("Missed because: " + ", ".join(f"{k.lower().replace('_', ' ')} {v}" for k, v in sorted(labels.items())))
+    if top:
+        lines.append("Biggest: " + ", ".join(f"{r['symbol']} +{r['move_pct']:.0f}% ({(r.get('label') or '').lower().replace('_', ' ')})"
+                                             for r in top))
+    if review.get("gap_only"):
+        lines.append(f"{review['gap_only']} more gained only in the gap -- nothing to buy after the open.")
+    return "\n".join(lines)
