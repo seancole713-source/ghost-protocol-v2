@@ -86,8 +86,10 @@ def collect(get: Optional[B.HttpGet] = None, *, ibkr_fetch: Optional[Callable[[]
     probes.append(public.probe_edgar(get))
     probes.append(public.probe_ibkr(ibkr_fetch) if ibkr_fetch else public.probe_ibkr())
     if http is not None:
+        from edge import research_openai
         probes.append(shortdata.probe_finra_si(http))
         probes.append(shortdata.probe_borrow(http))
+        probes.append(research_openai.probe(http))
     else:
         probes.append(B.Probe(B.SHORT_INTEREST, "finra_api", B.UNVERIFIED, note="probe not run (no http client)"))
     return probes

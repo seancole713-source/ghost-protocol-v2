@@ -124,3 +124,44 @@ def test_the_card_runs_a_verified_experiment_when_research_is_on(monkeypatch):
     rows = {r["symbol"]: r for r in card["rows"]}
     assert rows["USAR"]["verified_missing"] == ["catalyst: not researched before the card",
                                                 "not_dilutive: not researched"]
+
+
+class OAIHttp:
+    def __init__(self, verdict=None, models=("gpt-x", "gpt-y"), code=200):
+        self.verdict, self.models, self.code, self.posts = verdict, models, code, []
+
+    def get(self, url, headers=None, timeout=None):
+        return NS(status_code=self.code, json=lambda: {"data": [{"id": m} for m in self.models]})
+
+    def post(self, url, json=None, headers=None, timeout=None):
+        self.posts.append(json)
+        return NS(status_code=200, json=lambda: {"choices": [{"message": {"content": self.verdict}}]})
+
+
+def test_a_different_family_reviews_when_configured(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    monkeypatch.setenv("EDGE_OPENAI_MODEL", "gpt-x")
+    store, c = MemoryStore(), Client([reply(AUTHOR_OK)])        # no Claude review call needed
+    W.research_symbol(c, store, symbol="SHOP", day="2026-09-23", now=ts(8, 35), http=OAIHttp(REVIEW_OK))
+    rec = store.get("edge_research", "2026-09-23|SHOP")
+    assert rec["reviewer"] == "openai:gpt-x" and len(c.calls) == 1
+    assert "different model family" in rec["independence"] and "not independent evidence" in rec["independence"]
+
+
+def test_without_a_model_name_it_falls_back_to_claude_and_the_probe_lists_choices(monkeypatch):
+    from edge import research_openai as RO
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    monkeypatch.delenv("EDGE_OPENAI_MODEL", raising=False)
+    store, c = MemoryStore(), Client([reply(AUTHOR_OK), reply(REVIEW_OK)])
+    W.research_symbol(c, store, symbol="SHOP", day="2026-09-23", now=ts(8, 35), http=OAIHttp(REVIEW_OK))
+    assert store.get("edge_research", "2026-09-23|SHOP")["reviewer"] == W.REVIEWER
+    p = RO.probe(OAIHttp())
+    assert "key can use: gpt-x, gpt-y" in p.note
+
+
+def test_an_unusable_openai_reply_falls_back_to_claude(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    monkeypatch.setenv("EDGE_OPENAI_MODEL", "gpt-x")
+    store, c = MemoryStore(), Client([reply(AUTHOR_OK), reply(REVIEW_OK)])
+    W.research_symbol(c, store, symbol="SHOP", day="2026-09-23", now=ts(8, 35), http=OAIHttp("not json"))
+    assert store.get("edge_research", "2026-09-23|SHOP")["reviewer"] == W.REVIEWER and len(c.calls) == 2

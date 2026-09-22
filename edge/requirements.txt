@@ -1,0 +1,8 @@
+# edge's own runtime dependencies, for when it moves to its own repository.
+# Versions match Ghost's pins so both install side by side today.
+requests
+psycopg2-binary
+scikit-learn==1.5.2
+anthropic==1.8.0
+httpx2==2.12.0
+websockets

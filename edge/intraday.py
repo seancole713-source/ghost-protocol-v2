@@ -179,6 +179,10 @@ def tick(get, ledger: Ledger, *, now: int, top: int = 50, http=None) -> Dict[str
     syms = sorted(gainers)
     if not syms:
         return {"status": "no_movers"}
+    from edge import stream as ST
+    live = ST.maybe_start()              # None unless EDGE_STREAM_ENABLED
+    if live is not None:
+        ST.watch(syms)
     today = A.bars_multi(get, syms, timeframe="1Min", start=_iso(_at(day, 9, 30)), end=_iso(now), feed="iex")
     daily_key = f"{ds}"
     daily = store.get("edge_intraday_daily", daily_key) or {}
@@ -217,6 +221,9 @@ def tick(get, ledger: Ledger, *, now: int, top: int = 50, http=None) -> Dict[str
         if item.state == R.DATA_UNAVAILABLE:
             item.transition(R.WATCHING, ts=now, reason="IEX prints resumed")
         price = last[4]
+        streamed = live.price(s, now=now) if live is not None else None
+        if streamed is not None and streamed["ts"] > last[0] + 60:
+            price = streamed["price"]     # fresher than the last polled bar
         minute = int((now - open_ts) // 60) - 1
         cum_now = sum(b[5] for b in bars)
         history_at_minute = hist.get(s, {}).get(minute) or []

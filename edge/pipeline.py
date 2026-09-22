@@ -382,7 +382,9 @@ def research_step(get, ledger: Ledger, *, day: date, now: int, client=None) -> D
     queue = research_candidates(get, ledger.store, day=day, now=now, n=n)
     for s in queue:
         if not ledger.store.get("edge_research", f"{day.isoformat()}|{s}"):
-            return rw.research_symbol(client or rw._client(), ledger.store, symbol=s, day=day.isoformat(), now=now)
+            import requests as _rq
+            return rw.research_symbol(client or rw._client(), ledger.store, symbol=s, day=day.isoformat(), now=now,
+                                      http=_rq)
     return {"status": "nothing", "queue": queue}
 
 
