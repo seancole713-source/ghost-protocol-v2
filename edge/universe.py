@@ -42,7 +42,7 @@ def step(get, store, *, day: str, now: int, pages_per_tick: int = 5, sleep=time.
     for i in range(pages_per_tick):
         if i:
             sleep(_pace())
-        r = get(url, params=params, timeout=30)
+        r = PG._get_patiently(get, url, params, sleep=sleep)
         if getattr(r, "status_code", 200) >= 400:
             return {"status": "error", "error": f"HTTP {r.status_code}", "pages": prog["pages"]}
         p = r.json() or {}

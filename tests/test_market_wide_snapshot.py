@@ -457,3 +457,23 @@ def test_a_403_on_a_completed_session_is_still_a_plan_verdict(monkeypatch):
     _rows, status = mws.fetch_grouped_day("2026-09-21")
     assert status["permanent"] is True
     mws._NOT_AUTHORIZED.clear()
+
+
+def test_a_429_is_waited_out_not_treated_as_a_failure(monkeypatch):
+    """Live 2026-09-22 19:49 UTC: Ghost's own signal engine had spent the shared
+    Polygon key's per-minute allowance, the lane's call got 429 and gave up."""
+    monkeypatch.setattr(mws, "_NOT_AUTHORIZED", {}, raising=False)
+    monkeypatch.setenv("POLYGON_API_KEY", "k")
+    waits, calls = [], []
+    monkeypatch.setattr(mws, "_sleep", waits.append)
+
+    class R429(_R):
+        headers = {"Retry-After": "7"}
+
+    def get(url, params=None, timeout=None):
+        calls.append(url)
+        return R429(429) if len(calls) == 1 else _R(200, [{"T": "SHOP", "c": 1}])
+
+    monkeypatch.setattr(mws.requests, "get", get)
+    rows, status = mws.fetch_grouped_day("2026-09-21")
+    assert status["status"] == "available" and rows and waits == [7.0]
