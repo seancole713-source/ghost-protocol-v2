@@ -2193,6 +2193,44 @@ async def lifespan(app: FastAPI):
             initial_delay_s=240,
         )
 
+        # edge shadow pipeline: forecasts every market day WITHOUT trading.
+        # 09:05-09:28 ET it records a card (forecasts + abstentions, before the
+        # open); 16:20-20:00 ET it grades them from minute bars and runs the
+        # miss review. Outside those windows a tick does nothing. Its own
+        # experiment (gap_and_go_auto@v1), its own table (edge_rows); it never
+        # touches Ghost's picks, gates or the operator's scoreboard.
+        _edge_store_ready = {"done": False}
+
+        def _edge_shadow_job():
+            if os.getenv("EDGE_SHADOW_ENABLED", "1").strip().lower() not in {"1", "true", "yes", "on"}:
+                return
+            try:
+                import json as _json
+                import time as _time
+                from core.db import db_conn
+                from edge.ledger import Ledger as _EdgeLedger
+                from edge.pipeline import noteworthy as _edge_noteworthy, run as _edge_run
+                from edge.providers.base import default_get as _edge_get
+                from edge.store_pg import PostgresStore as _EdgeStore
+                store = _EdgeStore(db_conn)
+                if not _edge_store_ready["done"]:
+                    store.ensure()
+                    _edge_store_ready["done"] = True
+                out = _edge_run(_edge_get(), _EdgeLedger(store), now=int(_time.time()))
+                if _edge_noteworthy(out):
+                    LOGGER.warning("EDGE_SHADOW %s", _json.dumps(out, default=str)[:4000])
+            except Exception as _e:
+                LOGGER.warning("edge shadow job failed: %s", str(_e)[:200])
+                raise
+
+        scheduler.register(
+            "edge_shadow",
+            _edge_shadow_job,
+            interval_s=300,
+            timeout_s=240,
+            initial_delay_s=60,
+        )
+
         def _broad_market_context_job():
             try:
                 from core.broad_market_context import refresh_broad_market_context

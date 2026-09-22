@@ -389,3 +389,71 @@ def test_nothing_is_remembered_until_a_rejection_happens(monkeypatch):
     mws.fetch_grouped_day("2026-09-04")
 
     assert mws._NOT_AUTHORIZED == {}
+
+
+
+# ------------------------------------- "not yet" is not "never" (2026-09-22) --
+#
+# Same key, same endpoint, six minutes apart in production: 200 with 12,626
+# tickers for 2026-09-21, 403 for 2026-09-22 while that session was still
+# running. The lane read the second as "the plan lacks grouped-daily", set a
+# permanent flag, and stayed dark -- the Sept 5 diagnosis was this, not a plan.
+
+class _R:
+    def __init__(self, code, rows=None):
+        self.status_code, self._rows = code, rows or []
+
+    def json(self):
+        return {"status": "OK", "results": self._rows}
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise AssertionError("must be handled before raise_for_status")
+
+
+def test_a_403_on_the_current_session_is_not_yet_not_never(monkeypatch):
+    monkeypatch.setattr(mws, "_NOT_AUTHORIZED", {}, raising=False)
+    monkeypatch.setenv("POLYGON_API_KEY", "k")
+    import core.circuit_breaker as cb
+    fails = []
+    monkeypatch.setattr(cb._polygon_cb, "record_failure", lambda: fails.append(1))
+    monkeypatch.setattr(mws.requests, "get", lambda *a, **k: _R(403))
+
+    rows, status = mws.fetch_grouped_day("2026-09-22", current_session=True)
+
+    assert rows == [] and status["status"] == "not_yet_entitled"
+    assert status["permanent"] is False
+    assert mws._NOT_AUTHORIZED == {} and fails == []
+
+
+def test_the_walk_skips_an_unserved_today_and_finds_completed_sessions(monkeypatch):
+    monkeypatch.setattr(mws, "_NOT_AUTHORIZED", {}, raising=False)
+    monkeypatch.setenv("POLYGON_API_KEY", "k")
+    bar = [{"T": "SHOP", "c": 137.92, "v": 9_000_000, "vw": 137.0, "o": 128.8, "h": 139, "l": 128}]
+
+    def get(url, params=None, timeout=None):
+        if url.endswith("2026-09-22"):
+            return _R(403)
+        if url.endswith(("2026-09-19", "2026-09-20")):    # weekend: Polygon answers empty
+            return _R(200, [])
+        return _R(200, bar)
+
+    monkeypatch.setattr(mws.requests, "get", get)
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    now = int(datetime(2026, 9, 22, 15, 22, tzinfo=ZoneInfo("America/New_York")).timestamp())
+
+    found, statuses = mws._recent_trading_days(now_ts=now)
+
+    assert [d for d, _ in found] == ["2026-09-21", "2026-09-18"]   # the weekend walked past
+    assert statuses[0]["status"] == "not_yet_entitled"
+    assert mws._NOT_AUTHORIZED == {}
+
+
+def test_a_403_on_a_completed_session_is_still_a_plan_verdict(monkeypatch):
+    monkeypatch.setattr(mws, "_NOT_AUTHORIZED", {}, raising=False)
+    monkeypatch.setenv("POLYGON_API_KEY", "k")
+    monkeypatch.setattr(mws.requests, "get", lambda *a, **k: _R(403))
+    _rows, status = mws.fetch_grouped_day("2026-09-21")
+    assert status["permanent"] is True
+    mws._NOT_AUTHORIZED.clear()

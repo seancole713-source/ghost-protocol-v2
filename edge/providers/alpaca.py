@@ -104,3 +104,62 @@ def movers(get: B.HttpGet, top: int = 50) -> Dict[str, List[dict]]:
     p = r.json() or {}
     return {"gainers": list(p.get("gainers") or []), "losers": list(p.get("losers") or []),
             "last_updated": p.get("last_updated")}
+
+
+# ----------------------------------------------------------- data calls --
+# Used by edge.pipeline. Free-plan facts that shape them (Alpaca docs):
+#   * feed=sip is allowed for data older than 15 minutes -- enough for daily
+#     bars and for grading yesterday's/today's minute bars after the close;
+#   * real-time quotes on the free plan are IEX only -- one exchange's view,
+#     which is why premarket prices are treated as degraded evidence.
+
+def _get_json(get: B.HttpGet, path: str, params: dict) -> dict:
+    r = get(_base_url() + path, params=params, headers=_headers(), timeout=20)
+    r.raise_for_status()
+    return r.json() or {}
+
+
+def bars_multi(get: B.HttpGet, symbols: List[str], *, timeframe: str, start: str, end: Optional[str] = None,
+               feed: str = "sip", max_pages: int = 10) -> Dict[str, List[dict]]:
+    """{symbol: [bar, ...]} for many symbols, following next_page_token."""
+    out: Dict[str, List[dict]] = {s: [] for s in symbols}
+    if not symbols:
+        return out
+    params = {"symbols": ",".join(symbols), "timeframe": timeframe, "start": start,
+              "feed": feed, "limit": 10000, "adjustment": "raw"}
+    if end:
+        params["end"] = end
+    for _ in range(max_pages):
+        p = _get_json(get, "/v2/stocks/bars", params)
+        for sym, rows in (p.get("bars") or {}).items():
+            out.setdefault(sym, []).extend(rows or [])
+        tok = p.get("next_page_token")
+        if not tok:
+            break
+        params = {**params, "page_token": tok}
+    return out
+
+
+def snapshots(get: B.HttpGet, symbols: List[str], *, feed: str = "iex") -> Dict[str, dict]:
+    if not symbols:
+        return {}
+    return _get_json(get, "/v2/stocks/snapshots", {"symbols": ",".join(symbols), "feed": feed})
+
+
+def news(get: B.HttpGet, symbols: List[str], *, start: str, limit: int = 50, max_pages: int = 4) -> List[dict]:
+    if not symbols:
+        return []
+    params = {"symbols": ",".join(symbols), "start": start, "limit": limit, "sort": "desc"}
+    out: List[dict] = []
+    for _ in range(max_pages):
+        p = _get_json(get, "/v1beta1/news", params)
+        out.extend(p.get("news") or [])
+        tok = p.get("next_page_token")
+        if not tok:
+            break
+        params = {**params, "page_token": tok}
+    return out
+
+
+def iso_to_epoch(s: Optional[str]) -> Optional[int]:
+    return _iso_ts(s)
