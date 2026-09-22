@@ -37,13 +37,13 @@ import time
 from datetime import date, datetime, time as dtime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
-from edge import catalysts as C, detectors as D, setups as S, stats
+from edge import catalysts as C, detectors as D, features as FX, setups as S, stats
 from edge.contracts import COUNTED, ET, WIN, issue
 from edge.pipeline import GAP_AND_GO_AUTO, GAP_BASELINE, previous_trading_day, trading_day
 from edge.providers import alpaca as A, polygon as PG
 from edge.resolver import resolve_execution, resolve_market
 
-BACKTEST_VERSION = "gap_and_go_backtest_v1"
+BACKTEST_VERSION = "gap_and_go_backtest_v2"
 LIMITS = [
     "research evidence on past sessions, NOT the forward record",
     "candidates pre-screened by that day's open >= +1% (small optimistic bias: misses 9:10 gappers that faded before the open)",
@@ -150,9 +150,11 @@ def session(get, day: date, prev_rows: List[dict], today_rows: List[dict], rolli
             "liquidity": D.liquidity(price=ref or prev_close[t], avg_shares=sh),
             "catalyst": S.catalyst_signal(ev), "not_dilutive": S.dilution_signal(ev),
         }
-        rows.append({"symbol": t, "avg_dollars": dol, "ref": ref, "bars": b,
+        fx = FX.build(day=day, prev_close=prev_close[t], avg_shares=sh, avg_dollars=dol, sip_bars=b, events=ev)
+        rows.append({"symbol": t, "avg_dollars": dol, "ref": ref, "bars": b, "features": fx,
                      "main": S.decide("premarket_continuation", sig).verdict,
-                     "base": S.decide("gap_baseline", sig).verdict})
+                     "base": S.decide("gap_baseline", sig).verdict,
+                     "gap_ok": sig["gap"].state == D.PASS, "liquid": sig["liquidity"].state == D.PASS})
     results = []
     for spec, key in ((GAP_AND_GO_AUTO, "main"), (GAP_BASELINE, "base")):
         chosen = sorted([r for r in rows if r[key] == S.ELIGIBLE], key=lambda r: -r["avg_dollars"])[:spec.max_per_day]
@@ -163,8 +165,23 @@ def session(get, day: date, prev_rows: List[dict], today_rows: List[dict], rolli
             results.append({"experiment": spec.experiment_id, "symbol": r["symbol"], "ref": r["ref"],
                             "forecast": m.outcome, "simulated": x.outcome, "pnl_usd": x.pnl_usd,
                             "ambiguous": x.ambiguous})
+    # The model dataset: EVERY priced, gap-qualified, liquid candidate -- not just the
+    # ones a rule chose -- with its point-in-time features and its market outcome
+    # under the same frozen levels. This is what a model is trained and judged on.
+    dataset = []
+    for r in rows:
+        if not (r["ref"] and r["gap_ok"] and r["liquid"] and FX.complete(r["features"])):
+            continue
+        f = issue(GAP_AND_GO_AUTO, symbol=r["symbol"], session_date=day, entry_ref=r["ref"], issued_at=issued_at)
+        rth = [x for x in r["bars"] if x[0] >= _at(day, 9, 30)]
+        m = resolve_market(f, rth)
+        x = resolve_execution(f, rth, cost_bps_per_side=cost_bps)
+        dataset.append({"day": day.isoformat(), "symbol": r["symbol"], "features": r["features"],
+                        "avg_dollars": r["avg_dollars"], "market": m.outcome, "simulated": x.outcome,
+                        "pnl_usd": x.pnl_usd, "catalyst_ok": r["main"] == S.ELIGIBLE})
     priced = sum(1 for r in rows if r["ref"])
-    return {"day": day.isoformat(), "candidates": len(rows), "priced": priced, "results": results}
+    return {"day": day.isoformat(), "candidates": len(rows), "priced": priced, "results": results,
+            "dataset": dataset}
 
 
 def summarize(sessions: List[Dict[str, Any]], break_even: float) -> Dict[str, Any]:
@@ -235,7 +252,16 @@ def run(get, store, *, end_day: date, days: int = 60, warmup: int = 20,
         rolling.push(rows)
         prev_rows = rows
     summary = summarize(results, GAP_AND_GO_AUTO.break_even_win_rate())
+    dataset = [row for sess in results for row in sess.get("dataset") or []]
+    summary["dataset_rows"] = len(dataset)
+    try:
+        from edge import models as MD
+        summary["model"] = MD.train_and_register(store, dataset)
+    except Exception as exc:  # noqa: BLE001 - a failed model never blocks the backtest record
+        summary["model"] = {"status": "error", "error": f"{type(exc).__name__}: {str(exc)[:160]}"}
     summary.update({"window": [results[0]["day"], results[-1]["day"]] if results else None,
                     "skipped": skipped, "completed_at": int(time.time())})
-    store.put("edge_backtest", BACKTEST_VERSION, {**summary, "sessions_detail": results})
+    store.put("edge_backtest", BACKTEST_VERSION, {**summary, "sessions_detail": [
+        {k: v for k, v in sess.items() if k != "dataset"} for sess in results]})
+    store.put("edge_dataset", BACKTEST_VERSION, {"rows": dataset, "features": list(FX.FEATURES)})
     return {"status": "complete", **{k: summary[k] for k in ("sessions", "window", "experiments")}}

@@ -185,6 +185,10 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, A
         if spec is GAP_VERIFIED and not research_on:
             continue
         ledger.register(spec, now=now)
+    from edge import features as FX, models as MD
+    model = MD.current(store)            # (artifact, spec) only if a model QUALIFIED out of sample
+    if model is not None:
+        ledger.register(model[1], now=now)
 
     mv = A.movers(get, top=top)
     updated = A.iso_to_epoch(mv.get("last_updated"))
@@ -200,6 +204,14 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, A
     except Exception:  # noqa: BLE001
         items = None
     events = _events(items, set(syms), now)
+    sip_pre = {}
+    if model is not None:
+        # Same bars, same cutoff, same builder as training: no train/serve skew.
+        try:
+            sip_pre = A.bars_multi(get, syms, timeframe="1Min", start=_iso(_at(day, 4, 0)),
+                                   end=_iso(_at(day, *FX.CUTOFF)), feed="sip")
+        except Exception:  # noqa: BLE001 - no features -> the model abstains, recorded
+            sip_pre = {}
 
     rows, eligible = [], []
     for sym in syms:
@@ -236,8 +248,15 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, A
                   "events": None if usable is None else [
                       {"headline": e.headline, "kind": e.kind, "published_at": e.published_at,
                        "first_seen_at": e.first_seen_at, "url": e.url} for e in usable]}
+        model_prob = None
+        if model is not None:
+            fx = FX.build(day=day, prev_close=st["prev_close"], avg_shares=st["avg_shares"],
+                          avg_dollars=st["avg_dollars"], sip_bars=_minute_bars(sip_pre.get(sym) or []),
+                          events=usable)
+            model_prob = MD.predict(model[0], fx)
+            inputs["model_features"] = fx
         row = {"symbol": sym, "verdict": d.verdict, "reasons": d.reasons, "missing": d.missing,
-               "inputs": inputs,
+               "inputs": inputs, "model_prob": model_prob,
                "baseline_verdict": b.verdict, "baseline_reasons": b.reasons, "baseline_missing": b.missing,
                "verified_verdict": v.verdict if v else None,
                "verified_reasons": v.reasons if v else [], "verified_missing": v.missing if v else [],
@@ -254,6 +273,28 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, A
     base_chosen = _issue_top(ledger, GAP_BASELINE, rows, base_eligible, day=day, now=now,
                              verdict_key="baseline_verdict", reasons_key="baseline_reasons",
                              missing_key="baseline_missing", id_key="baseline_forecast_id")
+    model_chosen = []
+    if model is not None:
+        mspec = model[1]
+        gap_ok = [r for r in rows if r["baseline_verdict"] == S.ELIGIBLE and r["model_prob"] is not None
+                  and r["model_prob"] >= mspec.min_prob]
+        gap_ok.sort(key=lambda r: -r["model_prob"])
+        model_chosen = gap_ok[:mspec.max_per_day]
+        chosen_syms = {r["symbol"] for r in model_chosen}
+        for r in model_chosen:
+            f = issue(mspec, symbol=r["symbol"], session_date=day, entry_ref=r["ref_price"], issued_at=now,
+                      prob=r["model_prob"], evidence={"model_sha": mspec.eligibility["model_sha"]})
+            ledger.record(f, now=now)
+            r["model_forecast_id"] = f.forecast_id
+        for r in rows:
+            if r["symbol"] in chosen_syms:
+                continue
+            why = (r["baseline_reasons"] or r["baseline_missing"] or
+                   (["model could not score it (incomplete features)"] if r["model_prob"] is None else
+                    [f"model probability {r['model_prob']:.2f} below {mspec.min_prob:.2f}"]
+                    if r["model_prob"] < mspec.min_prob else ["ranked below the top 2 by model probability"]))
+            ledger.abstain(experiment_id=mspec.experiment_id, symbol=r["symbol"], session_date=day.isoformat(),
+                           reasons=list(why), now=now)
     ver_chosen = []
     if research_on:
         ver_chosen = _issue_top(ledger, GAP_VERIFIED, rows,
@@ -275,6 +316,8 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, A
             "forecasts": [r["symbol"] for r in chosen],
             "baseline_forecasts": [r["symbol"] for r in base_chosen],
             "verified_forecasts": [r["symbol"] for r in ver_chosen] if research_on else None,
+            "model_forecasts": [r["symbol"] for r in model_chosen] if model is not None else None,
+            "model_experiment": model[1].experiment_id if model is not None else None,
             "movers_last_updated": updated,
             "coverage_note": f"{priced}/{len(rows)} candidates had a fresh IEX premarket price",
             "health": health, "health_banner": H.banner(len(chosen), {EID: blocking[EID]}),
@@ -358,7 +401,7 @@ def resolve_day(get, ledger: Ledger, *, day: date, now: int) -> Dict[str, Any]:
         return {"status": "too_early"}
     from edge.contracts import Forecast
     from edge import intraday as I
-    fcs = [f for spec in EXPERIMENTS + I.INTRADAY_SPECS
+    fcs = [f for spec in _all_specs(ledger.store, I)
            for f in ledger.store.scan("forecasts", experiment_id=spec.experiment_id, session_date=day.isoformat())]
     pending = [f for f in fcs
                if not (ledger.store.get("outcomes", f"{f['forecast_id']}|simulated") or {}).get("outcome") in TERMINAL]
@@ -502,7 +545,7 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None) -> Dict[str,
     out: Dict[str, Any] = {"day": ds}
     if not trading_day(day):
         return {**out, "status": "market_closed"}
-    all_specs = EXPERIMENTS + I.INTRADAY_SPECS
+    all_specs = _all_specs(ledger.store, I)
 
     def guarded(key, step):
         try:
@@ -587,3 +630,13 @@ def _paper():
 def _notify():
     from edge import notify
     return notify
+
+
+def _all_specs(store, I):
+    """Every experiment the shadow runs today, including a qualified model's."""
+    from edge import models as MD
+    specs = list(EXPERIMENTS) + list(I.INTRADAY_SPECS)
+    m = MD.current(store)
+    if m is not None:
+        specs.append(m[1])
+    return tuple(specs)
