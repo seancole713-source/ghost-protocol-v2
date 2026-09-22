@@ -40,6 +40,11 @@ STRATEGIES: Dict[str, List[Dict[str, Any]]] = {
         {"need": "real-time quotes", "ok": [B.QUOTE_SIP], "fallback": [B.QUOTE_IEX]},
         {"need": "minute bars", "ok": [B.MINUTE_BARS]},
     ],
+    "short_interest_ignition": [
+        {"need": "short interest (not short VOLUME)", "ok": [B.SHORT_INTEREST]},
+        {"need": "real-time quotes", "ok": [B.QUOTE_SIP], "fallback": [B.QUOTE_IEX]},
+        {"need": "minute bars", "ok": [B.MINUTE_BARS]},
+    ],
     "intraday_continuation": [
         {"need": "full-market movers", "ok": [B.SNAPSHOT_ALL, B.MOVERS]},
         {"need": "real-time quotes", "ok": [B.QUOTE_SIP], "fallback": [B.QUOTE_IEX]},

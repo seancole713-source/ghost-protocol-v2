@@ -154,3 +154,19 @@ def liquidity(*, price: Optional[float], avg_shares: Optional[float], spread_bps
         reasons.append(f"spread {spread_bps:.0f}bps > {max_spread_bps:g}")
     return Signal("liquidity", FAIL if reasons else PASS, round(price * avg_shares),
                   "tradeable size", {"reasons": reasons})
+
+
+def high_short_interest(*, days_to_cover: Optional[float], short_interest_age_days: Optional[float],
+                        min_dtc: float = 5.0, max_si_age_days: float = 20.0) -> Signal:
+    """Heavily shorted on the latest report: days-to-cover >= 5, report <= 20 days old.
+
+    Deliberately NOT called "crowded": crowding also needs an expensive borrow,
+    and no free borrow source reaches production (IBKR FTP and iBorrowDesk both
+    refused from Railway, 2026-09-22). This says only what the data shows.
+    """
+    if days_to_cover is None or short_interest_age_days is None:
+        return _unknown("short_interest", "short interest report")
+    if short_interest_age_days > max_si_age_days:
+        return _unknown("short_interest", f"short interest is {short_interest_age_days:.0f} days old")
+    return Signal("short_interest", PASS if days_to_cover >= min_dtc else FAIL, round(days_to_cover, 2),
+                  f"days to cover >= {min_dtc:g}", {"si_age_days": short_interest_age_days})

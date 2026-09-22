@@ -51,6 +51,8 @@ STRATEGIES = {
                  optional=("vwap_hold", "crowded_short"), note="v0 hypothesis"),
         Strategy("crowded_short_ignition", required=("crowded_short", "liquidity", "rvol_tod", "acceleration"),
                  optional=("catalyst", "vwap_hold"), note="v0 hypothesis"),
+        Strategy("short_interest_ignition", required=("short_interest", "liquidity", "rvol_tod", "acceleration"),
+                 optional=("catalyst", "crowded_short"), note="v0 hypothesis"),
         Strategy("intraday_continuation", required=("liquidity", "vwap_hold", "rvol_tod", "acceleration"),
                  optional=("catalyst",), note="v0 hypothesis"),
     ]

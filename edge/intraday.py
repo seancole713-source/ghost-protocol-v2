@@ -54,10 +54,19 @@ CROWDED_SHORT_IGNITION = replace(
     eligibility={**_BASE_ELIG, "requires": list(S.STRATEGIES["crowded_short_ignition"].required),
                  "short_data": "FINRA consolidated short interest + iBorrowDesk borrow (IBKR, unofficial)"},
 )
-INTRADAY_SPECS = (CATALYST_BREAKOUT, INTRADAY_CONTINUATION, CROWDED_SHORT_IGNITION)
+SHORT_INTEREST_IGNITION = replace(
+    GAP_AND_GO_V1, name="short_interest_ignition", version=1,
+    description="v0 hypothesis: heavily shorted (days to cover >= 5, report <= 20 days old) + time-of-day "
+                "RVOL + acceleration. No borrow data: NOT a crowded-short claim.",
+    trigger_mult=1.002, limit_mult=1.01, entry_expiry_et="14:50", time_exit_et="15:30",
+    eligibility={**_BASE_ELIG, "requires": list(S.STRATEGIES["short_interest_ignition"].required),
+                 "short_data": "FINRA consolidated short interest (verified in production 2026-09-22)"},
+)
+INTRADAY_SPECS = (CATALYST_BREAKOUT, INTRADAY_CONTINUATION, CROWDED_SHORT_IGNITION, SHORT_INTEREST_IGNITION)
 _STRATEGY_OF = {CATALYST_BREAKOUT.experiment_id: "catalyst_breakout",
                 INTRADAY_CONTINUATION.experiment_id: "intraday_continuation",
-                CROWDED_SHORT_IGNITION.experiment_id: "crowded_short_ignition"}
+                CROWDED_SHORT_IGNITION.experiment_id: "crowded_short_ignition",
+                SHORT_INTEREST_IGNITION.experiment_id: "short_interest_ignition"}
 
 
 def _short_data(http, store, syms: List[str], day: date, *, max_borrow_calls: int = 10) -> Dict[str, Dict[str, Any]]:
@@ -241,6 +250,7 @@ def tick(get, ledger: Ledger, *, now: int, top: int = 50, http=None) -> Dict[str
             "rvol_tod": D.rvol_time_of_day(cum_now, history_at_minute),   # UNKNOWN under 10 sessions
             "vwap_hold": D.vwap_hold(bars), "acceleration": D.acceleration(bars),
             "crowded_short": _crowded(shorts.get(s) or {}, day),
+            "short_interest": _short_interest(shorts.get(s) or {}, day),
         }
         if item.state == R.DETECTED:
             item.transition(R.WATCHING, ts=now)
@@ -302,4 +312,12 @@ def _crowded(rec: Dict[str, Any], day: date) -> D.Signal:
     return D.crowded_short(
         borrow_fee_pct=(bw or {}).get("borrow_fee_pct"), available_shares=(bw or {}).get("available_shares"),
         short_interest_pct_float=None, days_to_cover=(si or {}).get("days_to_cover"),
+        short_interest_age_days=SD.si_age_days((si or {}).get("settlement_date"), day) if si else None)
+
+
+def _short_interest(rec: Dict[str, Any], day: date) -> D.Signal:
+    from edge.providers import shortdata as SD
+    si = rec.get("si")
+    return D.high_short_interest(
+        days_to_cover=(si or {}).get("days_to_cover"),
         short_interest_age_days=SD.si_age_days((si or {}).get("settlement_date"), day) if si else None)
