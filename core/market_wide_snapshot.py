@@ -122,8 +122,19 @@ def _market_today(now_ts: Optional[int] = None) -> date:
         return datetime.utcfromtimestamp(ts).date()
 
 
-def fetch_grouped_day(day: str, *, timeout_s: float = 20.0) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-    """Fetch one session's bars for every US ticker. Empty list on a holiday."""
+def fetch_grouped_day(day: str, *, timeout_s: float = 20.0,
+                      current_session: bool = False) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Fetch one session's bars for every US ticker. Empty list on a holiday.
+
+    `current_session=True` marks a request for TODAY's bar. This account's plan
+    refuses a session's grouped bar while it is still the current day and
+    serves it once the session is complete -- measured in production on
+    2026-09-22: the same key answered 403 for that day at 15:22 ET and 200 with
+    12,626 tickers for the day before, six minutes earlier. So a 403 on the
+    current session means "not yet", never "your plan lacks this": it is not
+    remembered and does not count against the breaker. That misreading is what
+    kept this lane disabled from 2026-09-05 onward.
+    """
     key = _api_key()
     if not key:
         return [], {"status": "unavailable", "reason": "polygon_api_key_missing", "day": day}
@@ -143,6 +154,11 @@ def fetch_grouped_day(day: str, *, timeout_s: float = 20.0) -> Tuple[List[Dict[s
         # NOT_AUTHORIZED, and an expired key answers 401. Both are permanent,
         # and both look exactly like a flaky provider once the breaker has
         # swallowed them -- so name them instead of retrying forever.
+        if response.status_code in (401, 403) and current_session and response.status_code == 403:
+            LOGGER.info("grouped daily for the current session %s is not entitled yet; "
+                        "using completed sessions", day)
+            return [], {"status": "not_yet_entitled", "reason": "current_session_not_entitled",
+                        "http_status": 403, "day": day, "permanent": False}
         if response.status_code in (401, 403):
             _polygon_cb.record_failure()
             LOGGER.error(
@@ -198,8 +214,16 @@ def _recent_trading_days(
         if len(found) >= needed:
             break
         day = (today - timedelta(days=offset)).isoformat()
-        rows, status = fetch(day)
+        if offset == 0:
+            try:
+                rows, status = fetch(day, current_session=True)
+            except TypeError:           # an injected fetcher without the flag
+                rows, status = fetch(day)
+        else:
+            rows, status = fetch(day)
         statuses.append(status)
+        if status.get("status") == "not_yet_entitled":
+            continue                    # today is not served yet; completed sessions are
         if status.get("status") != "available":
             # A hard provider failure is not a holiday; stop rather than
             # marching backwards through a week of the same error.
