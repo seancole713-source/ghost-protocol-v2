@@ -85,14 +85,24 @@ test("discovery separates current observations from daily history", async ({ req
   const response = await getWithRateLimitRetry(request, "/api/intelligence/market-movers");
   expect(response.status()).toBe(200);
   const body = await response.json();
-  expect(body.alert_version).toBe("discovery_alerts_v2");
+  expect(body.alert_version).toBe("discovery_alerts_v3");
   expect(body.selection).toBe("latest_observation_not_largest_historical_move");
   expect(body.decision_eligible).toBe(false);
   expect(Array.isArray(body.historical_alerts)).toBe(true);
   expect(body.discovery_coverage.full_market_coverage).toBe(false);
+  // v3 (PR #205): ex-dividend drops are labelled, never deleted. A row explained
+  // by its dividend moves to corporate_action_alerts; unknown stays unknown.
+  expect(Array.isArray(body.corporate_action_alerts)).toBe(true);
+  for (const row of body.corporate_action_alerts) {
+    expect(row.reclassified).toBe("move_explained_by_corporate_action");
+    expect(row.corporate_action.kind).toBe("ex_dividend");
+    expect(row.decision_eligible).toBe(false);
+  }
   for (const row of body.alerts) {
     expect(row.observation_kind).toBe("intraday_observation");
     expect(Number.isFinite(row.move_pct)).toBe(true);
+    expect(typeof row.corporate_action_coverage).toBe("string");
+    expect(row.economic_move_pct === null || Number.isFinite(row.economic_move_pct)).toBe(true);
     expect(row.source_ts).toBeGreaterThan(0);
     expect(row.source_age_s).toBeGreaterThanOrEqual(0);
     expect(row.source_age_s).toBeLessThanOrEqual(body.intraday_max_age_s);
