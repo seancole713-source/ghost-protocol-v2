@@ -528,7 +528,7 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None) -> Dict[str,
         guarded("notify_duty", lambda: _notify().once(notifier, ledger.store, day=ds,
                                                        kind="duty_1530", text=_notify().DUTY_1530))
     if within((9, 45), (14, 30)):
-        guarded("intraday", lambda: I.tick(get, ledger, now=now))
+        guarded("intraday", lambda: I.tick(get, ledger, now=now, http=http))
         if http is not None:
             guarded("paper_submit_intraday", lambda: _paper().submit(http, ledger, day=ds,
                                                                       experiments=I.INTRADAY_SPECS))

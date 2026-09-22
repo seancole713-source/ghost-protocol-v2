@@ -2173,7 +2173,8 @@ async def lifespan(app: FastAPI):
             try:
                 import json as _json
                 from edge.probe import run as _edge_probe_run, summary_lines as _edge_lines
-                rep = _edge_probe_run()
+                import requests as _rq
+                rep = _edge_probe_run(http=_rq)
                 for ln in _edge_lines(rep):
                     LOGGER.warning("EDGE_PROBE_SUMMARY %s", ln)
                 for cap, row in sorted(rep["capabilities"].items()):

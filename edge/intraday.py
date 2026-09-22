@@ -47,9 +47,48 @@ INTRADAY_CONTINUATION = replace(
     trigger_mult=1.002, limit_mult=1.01, entry_expiry_et="14:50", time_exit_et="15:30",
     eligibility={**_BASE_ELIG, "requires": list(S.STRATEGIES["intraday_continuation"].required)},
 )
-INTRADAY_SPECS = (CATALYST_BREAKOUT, INTRADAY_CONTINUATION)
+CROWDED_SHORT_IGNITION = replace(
+    GAP_AND_GO_V1, name="crowded_short_ignition", version=1,
+    description="v0 hypothesis: expensive borrow + large recent short interest + time-of-day RVOL + acceleration.",
+    trigger_mult=1.002, limit_mult=1.01, entry_expiry_et="14:50", time_exit_et="15:30",
+    eligibility={**_BASE_ELIG, "requires": list(S.STRATEGIES["crowded_short_ignition"].required),
+                 "short_data": "FINRA consolidated short interest + iBorrowDesk borrow (IBKR, unofficial)"},
+)
+INTRADAY_SPECS = (CATALYST_BREAKOUT, INTRADAY_CONTINUATION, CROWDED_SHORT_IGNITION)
 _STRATEGY_OF = {CATALYST_BREAKOUT.experiment_id: "catalyst_breakout",
-                INTRADAY_CONTINUATION.experiment_id: "intraday_continuation"}
+                INTRADAY_CONTINUATION.experiment_id: "intraday_continuation",
+                CROWDED_SHORT_IGNITION.experiment_id: "crowded_short_ignition"}
+
+
+def _short_data(http, store, syms: List[str], day: date, *, max_borrow_calls: int = 10) -> Dict[str, Dict[str, Any]]:
+    """Per-symbol short interest + borrow, cached per day. Anything unfetched stays unknown."""
+    from edge.providers import shortdata as SD
+    ds = day.isoformat()
+    cache = store.get("edge_short", ds) or {}
+    if http is None:
+        return cache
+    need_si = [s for s in syms if s not in cache or "si" not in cache[s]]
+    if need_si:
+        try:
+            rows = SD.fetch_finra_si_for(http, need_si)
+        except Exception as exc:  # noqa: BLE001 - recorded, never guessed
+            rows = None
+            store.put("edge_short_errors", ds, {"finra": f"{type(exc).__name__}: {str(exc)[:120]}"})
+        for s in need_si:
+            cache.setdefault(s, {})["si"] = (rows or {}).get(s) if rows is not None else None
+    calls = 0
+    for s in syms:
+        if "borrow" in cache.get(s, {}):
+            continue
+        if calls >= max_borrow_calls:
+            break
+        try:
+            cache.setdefault(s, {})["borrow"] = SD.fetch_borrow(http, s)
+        except Exception:  # noqa: BLE001
+            cache.setdefault(s, {})["borrow"] = None
+        calls += 1
+    store.put("edge_short", ds, cache)
+    return cache
 
 
 def _at(day: date, hh: int, mm: int) -> int:
@@ -126,7 +165,7 @@ def _save(store, item: R.RadarItem) -> None:
     store.put("edge_radar", f"{item.session_date}|{item.symbol}", asdict(item))
 
 
-def tick(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, Any]:
+def tick(get, ledger: Ledger, *, now: int, top: int = 50, http=None) -> Dict[str, Any]:
     day = datetime.fromtimestamp(now, tz=ET).date()
     ds = day.isoformat()
     store = ledger.store
@@ -154,6 +193,7 @@ def tick(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, Any]:
                         "prev_close": float(done[-1]["c"]) if done else None}
         store.put("edge_intraday_daily", daily_key, daily)
     hist = _history(get, store, syms, day)
+    shorts = _short_data(http, store, syms, day)
     try:
         items = A.news(get, syms, start=_iso(now - 86_400))
     except Exception:  # noqa: BLE001 - recorded as unknown, never guessed
@@ -193,6 +233,7 @@ def tick(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, Any]:
             "orb_break": D.orb_break(bars, open_ts, now_ts=now),
             "rvol_tod": D.rvol_time_of_day(cum_now, history_at_minute),   # UNKNOWN under 10 sessions
             "vwap_hold": D.vwap_hold(bars), "acceleration": D.acceleration(bars),
+            "crowded_short": _crowded(shorts.get(s) or {}, day),
         }
         if item.state == R.DETECTED:
             item.transition(R.WATCHING, ts=now)
@@ -246,3 +287,12 @@ def close_day(ledger: Ledger, *, day: date, now: int) -> Dict[str, Any]:
             _save(ledger.store, item)
             n += 1
     return {"status": "closed" if n else "nothing", "expired": n}
+
+
+def _crowded(rec: Dict[str, Any], day: date) -> D.Signal:
+    from edge.providers import shortdata as SD
+    si, bw = rec.get("si"), rec.get("borrow")
+    return D.crowded_short(
+        borrow_fee_pct=(bw or {}).get("borrow_fee_pct"), available_shares=(bw or {}).get("available_shares"),
+        short_interest_pct_float=None, days_to_cover=(si or {}).get("days_to_cover"),
+        short_interest_age_days=SD.si_age_days((si or {}).get("settlement_date"), day) if si else None)
