@@ -57,7 +57,7 @@ def test_the_duty_reminders_fire_at_their_times():
     P.run(None, lg, now=ts(10, 26), notifier=tg)
     P.run(None, lg, now=ts(15, 27), notifier=tg)
     texts = [j["text"] for _, j in tg.sent]
-    assert any("10:30" in t for t in texts) and any("3:30" in t for t in texts)
+    assert any("9:30am CT" in t for t in texts) and any("2:30pm CT" in t for t in texts)
     P.run(None, lg, now=ts(10, 28), notifier=tg)
     assert len(tg.sent) == 2
 

@@ -59,10 +59,12 @@ def card_text(card: Dict[str, Any]) -> str:
     return "\n".join(x for x in lines if x)
 
 
-DUTY_1030 = ("Gap-and-Go v1: cancel any UNFILLED entry by 10:30 ET. "
+# The operator reads Central time (the market opens 8:30am CT = 9:30am ET);
+# every message leads with CT and keeps ET in brackets for the record.
+DUTY_1030 = ("Gap-and-Go v1: cancel any UNFILLED entry by 9:30am CT (10:30 ET). "
              "(Skip if you placed nothing today.)")
-DUTY_1530 = ("Gap-and-Go v1: SELL anything still open by 3:30 ET -- bracket orders expire at 4:00 "
-             "and leave the position unprotected overnight. (Skip if you're flat.)")
+DUTY_1530 = ("Gap-and-Go v1: SELL anything still open by 2:30pm CT (3:30 ET) -- bracket orders expire at "
+             "the 3:00pm CT close and leave the position unprotected overnight. (Skip if you're flat.)")
 
 
 def graded_text(day: str, settled: Dict[str, Any]) -> Optional[str]:
