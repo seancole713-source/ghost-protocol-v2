@@ -66,7 +66,7 @@ UNLOCK: Dict[str, str] = {
     B.SPLITS: "Polygon/Massive reference splits",
     B.DIVIDENDS: "Polygon/Massive reference dividends",
     B.NEWS: "Alpaca news (free with a data key) or Polygon/Massive news",
-    B.FILINGS: "SEC EDGAR is free -- set SEC_USER_AGENT to a real contact",
+    B.FILINGS: "SEC EDGAR is free -- set EDGAR_USER_AGENT to a name and a real contact email",
     B.BORROW: "IBKR borrow data: the FTP file (blocked from Railway) or iBorrowDesk over HTTPS (free, "
               "unofficial). Commercial alternatives (Ortex, Fintel, S3 Partners) need quotes and licence terms",
     B.SHORT_INTEREST: "FINRA consolidated short interest via the FINRA Query API (free; may need free "
