@@ -2233,6 +2233,10 @@ async def lifespan(app: FastAPI):
                                 notifier=_requests if tg_on else None)
                 if _edge_noteworthy(out):
                     LOGGER.warning("EDGE_SHADOW %s", _json.dumps(out, default=str)[:4000])
+                    # The scheduled agents read these from Railway logs (once per stage per day).
+                    from edge.readout import views_to_log as _edge_views_to_log
+                    for _n, _d, _j in _edge_views_to_log(store, out, now=int(_time.time())):
+                        LOGGER.warning("EDGE_VIEW %s %s %s", _n, _d, _j)
             except Exception as _e:
                 LOGGER.warning("edge shadow job failed: %s", str(_e)[:200])
                 raise

@@ -23,7 +23,7 @@ acting on, and manage each decision from entry to exit. A 60–70% hit rate is a
 | Miss review (full market) | `miss_audit`, `pipeline` | yes, 07:00–09:04 ET for the prior session | unit tests |
 | Historical backtest | `backtest` | yes, once, overnight | point-in-time tests |
 | Readiness probe | `probe`, `providers/*` | yes, daily | **production-verified 2026-09-22** |
-| Research worker | `research_worker` | **off** until `EDGE_RESEARCH_ENABLED` (costs API money; cap `EDGE_RESEARCH_DAILY_USD`) | fake-client tests |
+| Research worker (Claude Opus 5.5) | `research_worker` | **off** until `EDGE_RESEARCH_ENABLED` (costs API money; cap `EDGE_RESEARCH_DAILY_USD`) | fake-client tests |
 | Phone messages | `notify` | yes (`EDGE_TELEGRAM_ENABLED`) | unit tests |
 | Promotion gate | `promotion` | yes (in every readout) | unit tests |
 | Readout / MCP | `readout`, `ghost_edge_report` | yes | unit tests |
@@ -31,6 +31,8 @@ acting on, and manage each decision from entry to exit. A 60–70% hit rate is a
 | Replay guard | `replay` | yes, 20:00 ET | simulated-refactor test |
 | Independent reviewer | `research_openai` | when `OPENAI_API_KEY` works and `EDGE_OPENAI_MODEL` is set (probe lists usable models) | fallback tests |
 | Streaming | `stream` | off until `EDGE_STREAM_ENABLED` (worth it with SIP data: `EDGE_STREAM_FEED=sip`) | protocol tests |
+| AI scorecard | `scorecard` | yes, 16:20 ET: every priced card candidate graded as a labelled counterfactual; compares what research/keywords/model approved vs rejected | unit + simulated-day tests |
+| Agent notes | `agent_notes`, `ghost_edge_note` | yes: append-only notes from the scheduled agents; never evidence | unit tests |
 | Standalone service | `service`, `requirements.txt`, `railway.json` | ready; `EDGE_STANDALONE=1` after switching Ghost's edge jobs off | isolated CI (`.github/workflows/edge.yml`) |
 
 Every strategy except the frozen Gap-and-Go v1 levels is an **unvalidated v0 hypothesis**.

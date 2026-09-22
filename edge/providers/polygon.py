@@ -103,7 +103,15 @@ def probe(get: Optional[B.HttpGet] = None, *, today: Optional[date] = None,
     for i, call in enumerate(calls):
         if i and pace_s > 0 and _key():
             sleep(pace_s)
-        out.append(call())
+        res = call()
+        if res.status == B.RATE_LIMITED:
+            # The shared key's per-minute allowance, not a verdict about the data (the
+            # jobs themselves wait it out) -- so the probe waits once too before reporting.
+            sleep(20.0)
+            res = call()
+            if res.status == B.RATE_LIMITED:
+                res.note = (res.note + " (still 429 after one 20s wait)").strip()
+        out.append(res)
     return out
 
 

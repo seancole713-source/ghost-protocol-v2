@@ -312,3 +312,24 @@ def test_with_a_universe_an_unsurfaced_listed_stock_is_a_detection_failure(monke
     P.miss_review(FullMarket("evening"), ledger, day=DAY, now=ts(16, 25))
     rows = {r["symbol"]: r for r in ledger.store.get("edge_miss", "2026-09-23")["rows"]}
     assert rows["NEWX"]["label"] == "DETECTION_FAILURE"
+
+
+def test_after_the_close_every_priced_candidate_is_graded_as_a_labelled_counterfactual(ledger):
+    from edge import scorecard as SC
+    P.morning_card(FakeAlpaca(), ledger, now=ts(9, 10))
+    assert SC.grade_card(FakeAlpaca("evening"), ledger.store, day=DAY, now=ts(16, 0))["status"] == "too_early"
+    out = SC.grade_card(FakeAlpaca("evening"), ledger.store, day=DAY, now=ts(16, 25))
+    assert out["status"] == "graded" and out["rows"] == 4          # STALE had no fresh price
+    rec = ledger.store.get("edge_card_outcomes", DAY.isoformat())
+    shop = next(r for r in rec["rows"] if r["symbol"] == "SHOP")
+    assert shop["outcome"] == "WIN" and shop["auto"] == "ELIGIBLE" and "counterfactual" in rec["label"]
+    # never part of any experiment's record
+    assert ledger.report(P.EID)["forecasts"] == 1
+    again = SC.grade_card(FakeAlpaca("evening"), ledger.store, day=DAY, now=ts(16, 30))
+    assert again["status"] == "already_graded"
+
+
+def test_the_evening_tick_grades_the_card(ledger):
+    P.morning_card(FakeAlpaca(), ledger, now=ts(9, 10))
+    out = P.run(FakeAlpaca("evening"), ledger, now=ts(16, 25))
+    assert out["card_graded"]["status"] == "graded" and P.noteworthy(out)

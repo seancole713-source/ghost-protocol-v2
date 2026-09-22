@@ -599,6 +599,8 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None) -> Dict[str,
     if within((16, 20), (20, 0)):
         guarded("resolve", lambda: resolve_day(get, ledger, day=day, now=now))
         guarded("radar_close", lambda: I.close_day(ledger, day=day, now=now))
+        from edge import scorecard as SC
+        guarded("card_graded", lambda: SC.grade_card(get, ledger.store, day=day, now=now))
         if http is not None:
             guarded("paper_reconcile", lambda: _paper().reconcile(http, ledger, day=ds,
                                                                   experiments=all_specs, now=now))
@@ -614,7 +616,7 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None) -> Dict[str,
     return out
 
 
-_NEWS = {"issued", "resolved", "reviewed", "error", "complete", "submitted", "sent", "closed", "researched",
+_NEWS = {"issued", "resolved", "graded", "reviewed", "error", "complete", "submitted", "sent", "closed", "researched",
          "drift", "consistent",
          "entries_checked", "time_exit", "reconciled"}
 

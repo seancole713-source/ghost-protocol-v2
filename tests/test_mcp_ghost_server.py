@@ -286,7 +286,7 @@ def test_mcp_handshake_path_token(monkeypatch):
         )
         assert r3.status_code == 200
         names = {t["name"] for t in r3.json()["result"]["tools"]}
-        assert len(names) == 28  # 9 operational + 10 research + 1 market data + 7 agent workflow + 1 edge
+        assert len(names) == 29  # 9 operational + 10 research + 1 market data + 7 agent workflow + 2 edge
         assert "ghost_edge_report" in names
         assert "ghost_shadow_stats" in names
         assert "ghost_agent_claim_task" in names
