@@ -194,3 +194,44 @@ def test_only_ticks_that_did_something_are_logged(ledger):
     again = P.run(FakeAlpaca(), ledger, now=ts(9, 15))
     assert P.noteworthy(first) and not P.noteworthy(again)
     assert not P.noteworthy(P.run(FakeAlpaca(), ledger, now=ts(12, 0)))
+
+
+class FullMarket(FakeAlpaca):
+    """Evening fake with Polygon grouped daily -- the probe-verified path."""
+
+    def __call__(self, url, params=None, headers=None, timeout=None):
+        if "/v2/aggs/grouped/" in url:
+            day = url.rstrip("/").split("/")[-1]
+            if day == DAY.isoformat():
+                rows = [
+                    {"T": "SHOP", "o": 146.0, "h": 158.0, "l": 145.5, "c": 156.0, "v": 9_000_000},
+                    {"T": "GAPR", "o": 13.0, "h": 13.1, "l": 11.8, "c": 12.0, "v": 900_000},
+                    {"T": "NEWX", "o": 5.0, "h": 5.6, "l": 4.99, "c": 5.5, "v": 2_000_000},   # never seen at 9am
+                    {"T": "PNNY", "o": 0.40, "h": 0.60, "l": 0.39, "c": 0.55, "v": 90_000_000},  # < $1
+                    {"T": "THNX", "o": 3.0, "h": 3.4, "l": 2.99, "c": 3.3, "v": 100_000},     # < $1M traded
+                    {"T": "ABCD.WS", "o": 1.0, "h": 2.0, "l": 1.0, "c": 2.0, "v": 5_000_000},  # warrant
+                ]
+            else:
+                rows = [{"T": t, "c": c} for t, c in
+                        (("SHOP", 137.92), ("GAPR", 10.0), ("NEWX", 5.0), ("PNNY", 0.40), ("THNX", 3.0), ("ABCD.WS", 1.0))]
+            return Resp({"results": rows})
+        if (params or {}).get("timeframe") == "1Min" and "NEWX" in (params or {}).get("symbols", ""):
+            out = super().__call__(url, params, headers, timeout)._p
+            t, rows = ts(9, 30), []
+            for c in (5.0, 5.1, 5.3, 5.5, 5.6):
+                rows.append({"t": iso(t), "o": c - 0.1, "h": c + 0.02, "l": c - 0.1, "c": c, "v": 1000})
+                t += 600
+            out["bars"]["NEWX"] = rows
+            return Resp(out)
+        return super().__call__(url, params, headers, timeout)
+
+
+def test_the_miss_review_sees_the_whole_market_when_polygon_answers(ledger):
+    P.morning_card(FakeAlpaca(), ledger, now=ts(9, 10))
+    out = P.miss_review(FullMarket("evening"), ledger, day=DAY, now=ts(16, 25))
+    assert out["coverage_note"].startswith("full market: 3 liquid US stocks")
+    rows = {r["symbol"]: r for r in ledger.store.get("edge_miss", "2026-09-23")["rows"]}
+    assert set(rows) == {"SHOP", "GAPR", "NEWX"}                 # penny, illiquid, warrant filtered out
+    assert rows["NEWX"]["label"] == "UNIVERSE_COVERAGE"          # moved +12% in RTH, never on the 9am radar
+    assert rows["SHOP"]["label"] == "CAUGHT"
+    assert out["recall"] == 0.5

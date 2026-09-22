@@ -8,7 +8,9 @@ Auth is the apiKey query parameter. Capabilities probed, one request each:
   splits       GET /v3/reference/splits
   dividends    GET /v3/reference/dividends
   news         GET /v2/reference/news
-Known fact, 2026-09-05: grouped-daily returned 403 for this account's plan.
+Observed history: grouped-daily returned 403 for this account on 2026-09-05 and
+200 with 12,626 tickers on 2026-09-22 (edge probe). The all-tickers SNAPSHOT
+was still 403 ("upgrade your plan") on 2026-09-22. Trust the latest probe.
 """
 from __future__ import annotations
 

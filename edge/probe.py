@@ -60,7 +60,7 @@ UNLOCK: Dict[str, str] = {
     B.QUOTE_IEX: "Alpaca's free plan provides IEX -- check ALPACA_KEY_ID/SECRET",
     B.SNAPSHOT_ALL: "Polygon/Massive stocks plan that includes the all-tickers snapshot",
     B.MOVERS: "Alpaca screener (documented as available on the free data plan) -- check the key",
-    B.DAILY_ALL: "Polygon/Massive plan that includes grouped daily bars (refused 403 on 2026-09-05)",
+    B.DAILY_ALL: "Polygon/Massive plan that includes grouped daily bars (OK on 2026-09-22)",
     B.MINUTE_BARS: "minute aggregates: Polygon/Massive stocks plan, or Alpaca SIP bars (>15 min delayed on free)",
     B.UNIVERSE: "Polygon/Massive reference tickers (reference endpoints are on most plans)",
     B.SPLITS: "Polygon/Massive reference splits",
