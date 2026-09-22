@@ -176,3 +176,27 @@ def test_polygon_waits_out_a_429():
 
     assert polygon.grouped_daily(get, _d(2026, 9, 21), sleep=waits.append) == [{"T": "X"}]
     assert waits == [15.0]
+
+
+def test_the_probe_waits_once_before_reporting_a_429():
+    calls, waits = {"grouped": 0}, []
+    routes = [r for r in POLYGON_AS_OBSERVED if r[0] != "/v2/aggs/grouped"]
+
+    def get(url, params=None, headers=None, timeout=None):
+        if "/v2/aggs/grouped" in url:
+            calls["grouped"] += 1
+            if calls["grouped"] == 1:
+                return Resp(429, {"error": "You've exceeded the maximum requests per minute"})
+            return Resp(200, {"results": [{"T": "AAPL", "t": 1790083800000}]})
+        return router(routes)(url, params=params)
+
+    got = {p.capability: p for p in polygon.probe(get, today=TODAY, pace_s=0, sleep=waits.append)}
+    assert got[B.DAILY_ALL].status == B.OK and waits == [20.0]
+
+    def always_429(url, params=None, headers=None, timeout=None):
+        if "/v2/aggs/grouped" in url:
+            return Resp(429, {"error": "exceeded"})
+        return router(routes)(url, params=params)
+
+    got = {p.capability: p for p in polygon.probe(always_429, today=TODAY, pace_s=0, sleep=lambda s: None)}
+    assert got[B.DAILY_ALL].status == B.RATE_LIMITED and "after one 20s wait" in got[B.DAILY_ALL].note

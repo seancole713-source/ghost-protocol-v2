@@ -174,7 +174,7 @@ def test_the_probe_lists_every_chat_model_not_an_alphabetical_prefix(monkeypatch
                       "o3", "o4-mini"]
     monkeypatch.setenv("EDGE_OPENAI_MODEL", "gpt-5")    # configured: still shows what else it could use
     p = RO.probe(OAIHttp(models=ids))
-    assert p.status == "OK" and p.note.startswith("using gpt-5; ") and "gpt-5.1" in p.note
+    assert p.status == "OK" and p.note.startswith("using gpt-5 (test call answered); ") and "gpt-5.1" in p.note
 
 
 def test_an_unusable_openai_reply_falls_back_to_claude(monkeypatch):
@@ -191,3 +191,38 @@ def test_the_daily_cap_is_counted_at_opus_5_5_list_prices():
                output_tokens=1_000_000, server_tool_use=NS(web_search_requests=3))
     assert W.MODEL == "claude-opus-5-5" and W.AUTHOR == "claude-opus-5-5/author"
     assert W.cost_usd(usage) == pytest.approx(4.00 + 0.20 + 20.00 + 0.03)
+
+
+def test_a_listed_model_that_refuses_a_chat_completion_reads_error(monkeypatch):
+    from edge import research_openai as RO
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    monkeypatch.setenv("EDGE_OPENAI_MODEL", "gpt-x")
+
+    class Refuses(OAIHttp):
+        def post(self, url, json=None, headers=None, timeout=None):
+            return NS(status_code=400, json=lambda: {"error": {"message": "only supported in v1/responses"}})
+
+    p = RO.probe(Refuses())
+    assert p.status == "ERROR" and "only supported in v1/responses" in p.note
+
+
+def test_the_openai_review_is_bounded_and_counted_in_the_daily_cap(monkeypatch):
+    from edge import research_openai as RO
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    monkeypatch.setenv("EDGE_OPENAI_MODEL", "gpt-6-sol")
+
+    class Billed(OAIHttp):
+        def post(self, url, json=None, headers=None, timeout=None):
+            self.posts.append(json)
+            return NS(status_code=200, json=lambda: {"choices": [{"message": {"content": REVIEW_OK}}],
+                                                     "usage": {"prompt_tokens": 100_000, "completion_tokens": 10_000}})
+
+    h = Billed()
+    verdict, cost = RO.review(h, symbol="SHOP", claims=[{"kind": "contract"}])
+    assert verdict["entity_ok"] is True and cost == pytest.approx(0.2 + 0.1)     # $2 / $10 per 1M
+    assert h.posts[0]["max_completion_tokens"] == RO.MAX_OUT
+    assert RO.cost_usd("some-new-model", {"completion_tokens": 1_000_000}) == 50.0  # unknown: priciest rate
+    store, c = MemoryStore(), Client([reply(AUTHOR_OK)])
+    W.research_symbol(c, store, symbol="SHOP", day="2026-09-23", now=ts(8, 35), http=Billed())
+    rec = store.get("edge_research", "2026-09-23|SHOP")
+    assert rec["reviewer"] == "openai:gpt-6-sol" and rec["cost_usd"] >= 0.3

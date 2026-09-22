@@ -17,11 +17,24 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from edge.providers import base as B
 
 API = "https://api.openai.com/v1"
+# USD per 1M tokens (input, output), OpenAI list prices. A model not listed here is
+# charged at the most expensive listed rate, so the daily cap can only over-count.
+PRICES = {"gpt-6-luna": (0.10, 0.50), "gpt-6-sol": (2.00, 10.00), "gpt-6-astra": (10.00, 50.00),
+          "gpt-4.1": (2.00, 8.00)}
+_WORST = max(PRICES.values(), key=lambda p: p[1])
+# Reasoning models spend hidden output tokens; this bounds one review's cost.
+MAX_OUT = 4000
+
+
+def cost_usd(model: str, usage: Optional[Dict[str, Any]]) -> float:
+    p_in, p_out = PRICES.get(model, _WORST)
+    u = usage or {}
+    return ((u.get("prompt_tokens") or 0) * p_in + (u.get("completion_tokens") or 0) * p_out) / 1e6
 
 
 def _key() -> str:
@@ -44,9 +57,27 @@ def probe(http) -> B.Probe:
         return B.Probe("llm.reviewer.independent", "openai", st, http_status=r.status_code)
     ids = sorted(str(m.get("id")) for m in (r.json() or {}).get("data") or [] if isinstance(m, dict))
     want = (os.getenv("EDGE_OPENAI_MODEL") or "").strip()
+    listing = "chat models this key can use: " + ", ".join(chat_models(ids))
     if want and want in ids:
+        # Listed is not the same as usable for this job: make one tiny real call.
+        try:
+            t = http.post(f"{API}/chat/completions", timeout=60,
+                          headers={"Authorization": f"Bearer {_key()}", "Content-Type": "application/json"},
+                          json={"model": want, "max_completion_tokens": 300,
+                                "messages": [{"role": "user", "content": "Reply with the single word OK."}]})
+        except Exception as exc:  # noqa: BLE001
+            return B.Probe("llm.reviewer.independent", "openai", B.ERROR, rows=len(ids),
+                           note=f"{want} test call failed: {type(exc).__name__}; {listing}")
+        if t.status_code >= 400:
+            msg = ""
+            try:
+                msg = str(((t.json() or {}).get("error") or {}).get("message") or "")[:160]
+            except Exception:  # noqa: BLE001
+                pass
+            return B.Probe("llm.reviewer.independent", "openai", B.ERROR, http_status=t.status_code,
+                           rows=len(ids), note=f"{want} refused a chat completion: {msg}; {listing}")
         return B.Probe("llm.reviewer.independent", "openai", B.OK, http_status=200, rows=len(ids),
-                       note=f"using {want}; chat models this key can use: " + ", ".join(chat_models(ids)))
+                       note=f"using {want} (test call answered); {listing}")
     return B.Probe("llm.reviewer.independent", "openai", B.EMPTY, http_status=200, rows=len(ids),
                    note=("EDGE_OPENAI_MODEL not set; " if not want else f"{want} not available; ")
                         + "chat models this key can use: " + ", ".join(chat_models(ids)))
@@ -80,23 +111,27 @@ Reply with ONLY a JSON object:
   "notes": str}}"""
 
 
-def review(http, *, symbol: str, claims: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """The reviewer's JSON verdict, or None if unavailable / unusable (the caller falls back)."""
+def review(http, *, symbol: str, claims: List[Dict[str, Any]]) -> Tuple[Optional[Dict[str, Any]], float]:
+    """(the reviewer's JSON verdict or None if unavailable / unusable, cost in USD).
+    On None the caller falls back to the Claude reviewer; the cost is still counted."""
     if not configured():
-        return None
-    body = {"model": os.environ["EDGE_OPENAI_MODEL"].strip(),
+        return None, 0.0
+    model = os.environ["EDGE_OPENAI_MODEL"].strip()
+    body = {"model": model, "max_completion_tokens": MAX_OUT,
             "messages": [{"role": "user", "content": PROMPT.format(symbol=symbol, claims=json.dumps(claims, indent=1))}]}
     try:
         r = http.post(f"{API}/chat/completions", json=body, timeout=90,
                       headers={"Authorization": f"Bearer {_key()}", "Content-Type": "application/json"})
         if r.status_code >= 400:
-            return None
-        text = (((r.json() or {}).get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+            return None, 0.0
+        payload = r.json() or {}
+        cost = cost_usd(model, payload.get("usage"))
+        text = ((payload.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
     except Exception:  # noqa: BLE001
-        return None
+        return None, 0.0
     m = re.search(r"\{.*\}", text, re.S)
     try:
         v = json.loads(m.group(0)) if m else None
     except (json.JSONDecodeError, ValueError):
         v = None
-    return v if isinstance(v, dict) else None
+    return (v if isinstance(v, dict) else None), cost

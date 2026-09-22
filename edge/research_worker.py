@@ -171,11 +171,11 @@ def research_symbol(client, store, *, symbol: str, day: str, now: int, http=None
     text, c1, stop1 = _ask(client, AUTHOR_PROMPT.format(symbol=symbol, cutoff=cutoff, kinds=list(RS.KINDS)))
     raw = _json(text) or {"claims": [], "unknowns": [f"author output unusable (stop={stop1})"]}
     claims = to_claims(symbol, raw, made_at=now)
-    review_raw, c2, stop2, reviewer = None, 0.0, "skipped", REVIEWER
+    review_raw, c2, c_oai, stop2, reviewer = None, 0.0, 0.0, "skipped", REVIEWER
     if claims and http is not None:
         from edge import research_openai as RO
         if RO.configured():
-            review_raw = RO.review(http, symbol=symbol, claims=[
+            review_raw, c_oai = RO.review(http, symbol=symbol, claims=[
                 {"kind": c.kind, "statement": c.statement,
                  "quotes": [x.quote for x in c.citations], "urls": [x.url for x in c.citations]} for c in claims])
             if review_raw is not None:
@@ -198,7 +198,7 @@ def research_symbol(client, store, *, symbol: str, day: str, now: int, http=None
                             else (RS.QUARANTINED, ["no usable review"]))
         graded.append({"kind": c.kind, "statement": c.statement, "status": status, "problems": problems,
                        "urls": [x.url for x in c.citations]})
-    spent = c1 + c2
+    spent = c1 + c2 + c_oai            # the daily cap covers BOTH providers
     budget["spent_usd"] = round(budget["spent_usd"] + spent, 6)
     store.put("edge_research_budget", day, budget)
     rec = {"day": day, "symbol": symbol.upper(), "made_at": now, "claims": graded,

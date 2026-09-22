@@ -191,3 +191,33 @@ def view(store, name: str = "summary", day: Optional[str] = None, kind: Optional
                          **{k: (sc.get(k) or {}).get("verdict") for k in ("keyword_catalyst", "ai_research", "model")}},
         "note": "shadow and paper only; nothing here is a trade recommendation",
     }
+
+
+# What the scheduled agents read when the Ghost connector is not in their tool list:
+# Railway logs. Each stage's views are logged ONCE per day, right after the tick
+# that produced them, as `EDGE_VIEW <name> <day> <json>`.
+_STAGES = (
+    ("morning", lambda o: (o.get("card") or {}).get("status") == "issued", ("today", "paper", "research")),
+    ("misses", lambda o: (o.get("miss_review") or {}).get("status") not in (None, "error"), ("misses",)),
+    ("radar", lambda o: (o.get("radar_close") or {}).get("status") == "closed", ("radar",)),
+    ("evening", lambda o: (o.get("card_graded") or {}).get("status") == "graded",
+     ("paper", "experiments", "scorecard")),
+)
+
+
+def views_to_log(store, out: Dict[str, Any], *, now: int, limit: int = 20000) -> list:
+    """[(name, day, json)] for every stage this tick completed and has not logged yet today."""
+    import json
+    day = out.get("day")
+    if not day:
+        return []
+    lines = []
+    for stage, done, names in _STAGES:
+        key = f"{day}|{stage}"
+        if not done(out) or store.get("edge_view_logged", key):
+            continue
+        for n in names:
+            v = view(store, n, None if n == "misses" else day)
+            lines.append((n, day, json.dumps(v, default=str, separators=(",", ":"))[:limit]))
+        store.put("edge_view_logged", key, {"day": day, "stage": stage, "at": now})
+    return lines
