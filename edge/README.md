@@ -8,30 +8,37 @@ and moves to its own repository with one copy.
 acting on, and manage each decision from entry to exit. A 60–70% hit rate is a
 *research objective to be measured*, not a promise.
 
-## Status — be exact about what is and isn't true
+## Status — what is built, what runs, how it is verified
 
-| Layer | Module | Built | Verified how |
+| Layer | Module | Runs in production | Verified how |
 |---|---|---|---|
-| Forecast contract | `contracts` | ✅ | unit tests |
-| Frozen forward ledger (3 records) | `ledger`, `store_pg` | ✅ | unit tests; Postgres store not yet run live |
-| Outcome resolver | `resolver` | ✅ | unit tests on synthetic minute bars |
-| Real-fill reconciliation | `fills`, `broker_alpaca` | ✅ | unit tests; **not connected to a broker** |
-| Radar state machine | `radar` | ✅ | unit tests |
-| Data health | `health` | ✅ | unit tests |
-| Risk (trade / day / open / theme) | `risk` | ✅ | unit tests |
-| Statistics | `stats` | ✅ | unit tests; Wilson checked against an outside calculation |
-| Detectors, catalysts, strategies | `detectors`, `catalysts`, `setups` | ✅ | unit tests; **every strategy threshold is an unvalidated v0 hypothesis** |
-| Miss review | `miss_audit` | ✅ | unit tests |
-| Research-claim contract | `research` | ✅ | unit tests; **no worker writes to it yet** |
-| Phone cards | `cards` | ✅ | unit tests |
-| Data providers | `providers/*` | ✅ | written to vendor docs; **the build machine cannot reach them** |
-| Readiness probe | `probe` | ✅ | runs daily **in production**; results are `EDGE_PROBE_SUMMARY` log lines |
-| **Shadow pipeline** | `pipeline` | ✅ | **runs every market day in production**: card 09:05–09:28 ET, grading and miss review 16:20–20:00 ET. Experiment `gap_and_go_auto@v1`. Logs `EDGE_SHADOW`. |
+| Forecast contract (premarket + intraday) | `contracts` | yes | unit tests |
+| Frozen forward ledger, 3 records | `ledger`, `store_pg` | yes (`edge_rows`) | unit tests |
+| Outcome resolver (market / simulated) | `resolver` | yes, 16:20 ET | unit tests on minute bars |
+| Real fills (paper broker) | `paper`, `fills`, `broker_alpaca` | yes, **paper only** (`EDGE_PAPER_ENABLED`) | unit tests; live paper fills from the first shadow card |
+| Premarket shadow card | `pipeline` | yes, 09:05–09:28 ET | end-to-end simulated day |
+| Baseline + verified experiments | `pipeline` | baseline yes; verified only with research on | unit tests |
+| Intraday radar, 3 strategies | `intraday` | yes, 09:45–14:30 ET | end-to-end simulated session |
+| Universe snapshot | `universe` | yes, 06:00–07:00 ET | unit tests |
+| Miss review (full market) | `miss_audit`, `pipeline` | yes, 07:00–09:04 ET for the prior session | unit tests |
+| Historical backtest | `backtest` | yes, once, overnight | point-in-time tests |
+| Readiness probe | `probe`, `providers/*` | yes, daily | **production-verified 2026-09-22** |
+| Research worker | `research_worker` | **off** until `EDGE_RESEARCH_ENABLED` (costs API money; cap `EDGE_RESEARCH_DAILY_USD`) | fake-client tests |
+| Phone messages | `notify` | yes (`EDGE_TELEGRAM_ENABLED`) | unit tests |
+| Promotion gate | `promotion` | yes (in every readout) | unit tests |
+| Readout / MCP | `readout`, `ghost_edge_report` | yes | unit tests |
 
-Nothing here trades, and nothing here is validated yet. The shadow pipeline records
-forecasts on free data (Alpaca movers, IEX premarket prices, SIP bars >15 min old,
-Alpaca news); every name it cannot price is recorded as data-unavailable, not skipped. The only rule being traded is
-Gap-and-Go v1 (`docs/gap_and_go_v1.md`), by the operator, at $1,000 per trade.
+Every strategy except the frozen Gap-and-Go v1 levels is an **unvalidated v0 hypothesis**.
+Nothing here trades real money: the operator places every live order.
+
+### Production facts (probe + logs, 2026-09-22)
+
+- Works on current keys: full-market daily bars, minute bars, reference data, splits,
+  dividends, news, Alpaca movers, SEC filings, FINRA short volume.
+- Plan-limited: real-time SIP quotes (Alpaca 403), Polygon all-tickers snapshot (403).
+- The Polygon key has a **per-minute request allowance** that Ghost's own signal engine
+  exhausts; every edge Polygon call waits out a 429 rather than failing.
+- IBKR's borrow FTP is unreachable from Railway; iBorrowDesk (HTTPS) is probed instead.
 
 ## Before buying data
 

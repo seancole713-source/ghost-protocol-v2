@@ -77,6 +77,13 @@ This rule exists because ten months of re-planning produced zero trades.
     graded_from, graded_at, note}`. outcome ∈ WIN | LOSS | TIME_EXIT |
   NO_FILL | SKIPPED | UNGRADED.
 
+**Edge shadow (read it, don't duplicate it):** `ghost_edge_report` (Ghost MCP)
+shows the independent system's own 09:05 card (`view: today`), per-experiment
+records with intervals and promotion stage (`view: experiments`), the backtest,
+the miss review and the probe. It is shadow/paper only -- useful context for the
+operator's card (e.g. "the automated shadow also took SHOP" or "research found
+dilution"), never a substitute for the frozen rule.
+
 **Card procedure (target: card written by 9:15am ET):**
 1. Candidates = Ghost discovery (`ghost_context` → `discovery_alerts.alerts`,
    gainers only, `observation_kind: intraday_observation`,
