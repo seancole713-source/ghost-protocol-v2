@@ -398,7 +398,7 @@ def miss_review(get, ledger: Ledger, *, day: date, now: int, top: int = 50,
     return {"status": "reviewed", **{k: out[k] for k in ("movers", "executable", "caught", "recall", "labels", "coverage_note")}}
 
 
-def run(get, ledger: Ledger, *, now: int, http=None) -> Dict[str, Any]:
+def run(get, ledger: Ledger, *, now: int, http=None, notifier=None) -> Dict[str, Any]:
     """One scheduler tick. Decides by exchange time what, if anything, is due.
 
     `http` (requests-like, with post/delete) turns on PAPER execution; None
@@ -424,6 +424,16 @@ def run(get, ledger: Ledger, *, now: int, http=None) -> Dict[str, Any]:
         guarded("card", lambda: morning_card(get, ledger, now=now))
         if http is not None:
             guarded("paper", lambda: _paper().submit(http, ledger, day=day.isoformat(), experiments=EXPERIMENTS))
+        card = ledger.store.get("edge_cards", day.isoformat())
+        if notifier is not None and card:
+            guarded("notify", lambda: _notify().once(notifier, ledger.store, day=day.isoformat(), kind="card",
+                                                      text=_notify().card_text(card)))
+    elif notifier is not None and _at(day, 10, 25) <= now < _at(day, 10, 30):
+        guarded("notify", lambda: _notify().once(notifier, ledger.store, day=day.isoformat(),
+                                                  kind="duty_1030", text=_notify().DUTY_1030))
+    elif notifier is not None and _at(day, 15, 25) <= now < _at(day, 15, 30):
+        guarded("notify", lambda: _notify().once(notifier, ledger.store, day=day.isoformat(),
+                                                  kind="duty_1530", text=_notify().DUTY_1530))
     elif http is not None and _at(day, 10, 30) <= now < _at(day, 10, 45):
         guarded("paper", lambda: _paper().cancel_unfilled_entries(
             http, ledger, day=day.isoformat(), experiments=EXPERIMENTS))
@@ -437,12 +447,16 @@ def run(get, ledger: Ledger, *, now: int, http=None) -> Dict[str, Any]:
         if out["resolve"].get("status") == "resolved":
             out["report"] = {spec.experiment_id: ledger.report(spec.experiment_id)
                              for spec in EXPERIMENTS if ledger.store.get("experiments", spec.experiment_id)}
+            text = _notify().graded_text(day.isoformat(), out["resolve"].get("settled") or {})
+            if notifier is not None and text:
+                guarded("notify", lambda: _notify().once(notifier, ledger.store, day=day.isoformat(),
+                                                          kind="graded", text=text))
     else:
         out["status"] = "idle"
     return out
 
 
-_NEWS = {"issued", "resolved", "reviewed", "error", "complete", "submitted",
+_NEWS = {"issued", "resolved", "reviewed", "error", "complete", "submitted", "sent",
          "entries_checked", "time_exit", "reconciled"}
 
 
@@ -454,3 +468,8 @@ def noteworthy(out: Dict[str, Any]) -> bool:
 def _paper():
     from edge import paper
     return paper
+
+
+def _notify():
+    from edge import notify
+    return notify

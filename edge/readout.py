@@ -33,12 +33,23 @@ def today(store, day: Optional[str] = None) -> Dict[str, Any]:
             "rows": compact}
 
 
+def _by_day(store, eid: str) -> Dict[str, list]:
+    out: Dict[str, list] = {}
+    for f in store.scan("forecasts", experiment_id=eid):
+        o = store.get("outcomes", f"{f['forecast_id']}|simulated")
+        if o and o.get("outcome") in ("WIN", "LOSS", "TIME_EXIT"):
+            out.setdefault(f["session_date"], []).append(o["outcome"] == "WIN")
+    return out
+
+
 def experiments(store) -> Dict[str, Any]:
+    from edge import promotion
+    from edge.pipeline import BASE_EID
     lg = Ledger(store)
+    reports = {row["experiment_id"]: lg.report(row["experiment_id"]) for row in store.scan("experiments")}
+    candidates = [e for e in reports if e != BASE_EID]
     out = {}
-    for row in store.scan("experiments"):
-        eid = row["experiment_id"]
-        rep = lg.report(eid)
+    for eid, rep in reports.items():
         out[eid] = {
             "forecasts": rep["forecasts"], "abstentions": rep["abstentions"], "excluded": rep["excluded"],
             "break_even": rep["break_even"],
@@ -46,6 +57,10 @@ def experiments(store) -> Dict[str, Any]:
                                                      "win_rate_ci", "verdict")}
                         for rec, r in rep["records"].items()},
         }
+        if eid != BASE_EID and BASE_EID in reports:
+            by_day = _by_day(store, eid)
+            out[eid]["promotion"] = promotion.evaluate(rep, baseline=reports[BASE_EID], sessions=len(by_day),
+                                                       by_day=by_day, n_candidates=max(1, len(candidates)))
     return out
 
 
