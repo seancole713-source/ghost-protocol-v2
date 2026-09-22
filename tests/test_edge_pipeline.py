@@ -147,8 +147,8 @@ def test_weekends_and_holidays_do_nothing(ledger, monkeypatch):
 def test_after_the_close_forecasts_are_graded_in_two_separate_records(ledger):
     P.morning_card(FakeAlpaca(), ledger, now=ts(9, 10))
     out = P.resolve_day(FakeAlpaca("evening"), ledger, day=DAY, now=ts(16, 25))
-    assert out["settled"]["SHOP"] == {"forecast": "WIN", "simulated": "WIN",
-                                      "pnl_usd": out["settled"]["SHOP"]["pnl_usd"]}
+    shop = out["settled"]["gap_and_go_auto@v1:SHOP"]
+    assert (shop["forecast"], shop["simulated"]) == ("WIN", "WIN")
     rep = ledger.report(P.EID)
     assert rep["records"]["forecast"]["wins"] == 1
     assert rep["records"]["actual"]["by_outcome"] == {"PENDING": 1}     # no broker yet
@@ -243,3 +243,72 @@ def test_the_miss_review_sees_the_whole_market_when_polygon_answers(ledger):
 
 def test_monday_morning_reviews_friday():
     assert P.previous_trading_day(date(2026, 9, 28)) == date(2026, 9, 25)
+
+
+
+def test_the_baseline_trades_the_same_gaps_without_asking_why(ledger):
+    """No catalyst check: it takes USAR (sympathy) and would take an offering.
+    If the catalyst filter can't beat this over time, it isn't adding edge."""
+    out = P.morning_card(FakeAlpaca(), ledger, now=ts(9, 10))
+    assert out["forecasts"] == ["SHOP"]
+    assert out["baseline_forecasts"] == ["SHOP", "USAR"]        # top 2 by dollar volume
+    rep = ledger.report(P.BASE_EID)
+    assert rep["forecasts"] == 2
+    assert P.GAP_BASELINE.spec_hash() != P.SPEC.spec_hash()
+
+
+def test_the_card_carries_what_a_live_release_would_have_said(ledger):
+    P.morning_card(FakeAlpaca(), ledger, now=ts(9, 10))
+    card = ledger.store.get("edge_cards", "2026-09-23")
+    assert card["health"]["quotes_iex"]["coverage"] == 0.8
+    assert card["health_banner"] == "1 setup. Coverage healthy."
+    assert "shadow records regardless" in card["health_note"]
+
+
+# ---------------------------------------------------------------- universe --
+
+from edge import universe as U
+
+
+class RefTickers:
+    """Polygon reference tickers, two pages, types as Polygon labels them."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def __call__(self, url, params=None, headers=None, timeout=None):
+        self.calls += 1
+        if "cursor=p2" in url:
+            return Resp({"results": [{"ticker": "NEWX", "type": "CS"}, {"ticker": "SPY", "type": "ETF"}]})
+        return Resp({"results": [{"ticker": t, "type": "CS"} for t in ("SHOP", "GAPR", "USAR")] +
+                                [{"ticker": "ABCD.WS", "type": "WARRANT"}],
+                     "next_url": "https://api.polygon.io/v3/reference/tickers?cursor=p2"})
+
+
+def test_universe_snapshot_keeps_common_stock_and_diffs_the_day(monkeypatch, ledger):
+    monkeypatch.setenv("POLYGON_API_KEY", "k")
+    store = ledger.store
+    store.put("edge_universe", "2026-09-22", {"day": "2026-09-22", "symbols": ["SHOP", "GONE"]})
+    out = U.step(RefTickers(), store, day="2026-09-23", now=ts(6, 5), sleep=lambda s: None)
+    snap = store.get("edge_universe", "2026-09-23")
+    assert out["status"] == "complete" and snap["symbols"] == ["GAPR", "NEWX", "SHOP", "USAR"]
+    assert snap["added"] == ["GAPR", "NEWX", "USAR"] and snap["removed"] == ["GONE"]
+    assert U.step(RefTickers(), store, day="2026-09-23", now=ts(6, 10))["status"] == "already_complete"
+
+
+def test_universe_resumes_across_ticks(monkeypatch, ledger):
+    monkeypatch.setenv("POLYGON_API_KEY", "k")
+    first = U.step(RefTickers(), ledger.store, day="2026-09-23", now=ts(6, 5), pages_per_tick=1)
+    assert first["status"] == "in_progress" and first["so_far"] == 3
+    second = U.step(RefTickers(), ledger.store, day="2026-09-23", now=ts(6, 10), pages_per_tick=1)
+    assert second["status"] == "complete" and second["count"] == 4
+
+
+def test_with_a_universe_an_unsurfaced_listed_stock_is_a_detection_failure(monkeypatch, ledger):
+    """NEWX is a listed common stock; the 9am screen never showed it. That is the
+    radar failing to see, not the system being out of scope."""
+    ledger.store.put("edge_universe", "2026-09-23", {"day": "2026-09-23", "symbols": ["SHOP", "GAPR", "NEWX", "USAR"]})
+    P.morning_card(FakeAlpaca(), ledger, now=ts(9, 10))
+    P.miss_review(FullMarket("evening"), ledger, day=DAY, now=ts(16, 25))
+    rows = {r["symbol"]: r for r in ledger.store.get("edge_miss", "2026-09-23")["rows"]}
+    assert rows["NEWX"]["label"] == "DETECTION_FAILURE"

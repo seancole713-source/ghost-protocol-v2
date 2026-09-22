@@ -67,21 +67,29 @@ UNLOCK: Dict[str, str] = {
     B.DIVIDENDS: "Polygon/Massive reference dividends",
     B.NEWS: "Alpaca news (free with a data key) or Polygon/Massive news",
     B.FILINGS: "SEC EDGAR is free -- set SEC_USER_AGENT to a real contact",
-    B.BORROW: "IBKR's public shortstock FTP file is free; if it errors, Railway may block outbound FTP. "
-              "Commercial alternatives (Ortex, Fintel, S3 Partners) need quotes and licence terms",
-    B.SHORT_INTEREST: "FINRA equity short interest (free, twice monthly) -- adapter not built yet",
+    B.BORROW: "IBKR borrow data: the FTP file (blocked from Railway) or iBorrowDesk over HTTPS (free, "
+              "unofficial). Commercial alternatives (Ortex, Fintel, S3 Partners) need quotes and licence terms",
+    B.SHORT_INTEREST: "FINRA consolidated short interest via the FINRA Query API (free; may need free "
+                      "API credentials -- the probe says which)",
     B.SHORT_VOLUME: "FINRA daily short-sale volume is free (it is NOT short interest)",
 }
 
 
-def collect(get: Optional[B.HttpGet] = None, *, ibkr_fetch: Optional[Callable[[], str]] = None) -> List[B.Probe]:
+def collect(get: Optional[B.HttpGet] = None, *, ibkr_fetch: Optional[Callable[[], str]] = None,
+            http=None) -> List[B.Probe]:
+    """`http` (requests-like, with post) enables the FINRA API and iBorrowDesk probes."""
+    from edge.providers import shortdata
     probes: List[B.Probe] = []
     probes += polygon.probe(get)
     probes += alpaca.probe(get)
     probes.append(public.probe_finra(get))
     probes.append(public.probe_edgar(get))
     probes.append(public.probe_ibkr(ibkr_fetch) if ibkr_fetch else public.probe_ibkr())
-    probes.append(B.Probe(B.SHORT_INTEREST, "finra", B.UNVERIFIED, note="adapter not built yet"))
+    if http is not None:
+        probes.append(shortdata.probe_finra_si(http))
+        probes.append(shortdata.probe_borrow(http))
+    else:
+        probes.append(B.Probe(B.SHORT_INTEREST, "finra_api", B.UNVERIFIED, note="probe not run (no http client)"))
     return probes
 
 

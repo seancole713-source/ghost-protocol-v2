@@ -134,7 +134,9 @@ def test_a_dead_catalyst_feed_is_unavailable_not_rejected():
 
 
 def test_only_the_frozen_rule_is_not_marked_a_hypothesis():
-    assert all(s.note == "v0 hypothesis" for n, s in S.STRATEGIES.items() if n != "premarket_continuation")
+    special = {"premarket_continuation", "gap_baseline"}
+    assert all(s.note == "v0 hypothesis" for n, s in S.STRATEGIES.items() if n not in special)
+    assert S.STRATEGIES["gap_baseline"].note.startswith("baseline")   # the bar, not a hypothesis
     assert not any(s.validated for s in S.STRATEGIES.values())   # nothing is validated yet
 
 

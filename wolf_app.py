@@ -2173,7 +2173,8 @@ async def lifespan(app: FastAPI):
             try:
                 import json as _json
                 from edge.probe import run as _edge_probe_run, summary_lines as _edge_lines
-                rep = _edge_probe_run()
+                import requests as _rq
+                rep = _edge_probe_run(http=_rq)
                 for ln in _edge_lines(rep):
                     LOGGER.warning("EDGE_PROBE_SUMMARY %s", ln)
                 for cap, row in sorted(rep["capabilities"].items()):
@@ -2181,6 +2182,14 @@ async def lifespan(app: FastAPI):
                                    row["status"], row["provider"], row.get("http_status"),
                                    row.get("rows"), (row.get("note") or "")[:120])
                 LOGGER.info("EDGE_PROBE %s", _json.dumps(rep, separators=(",", ":"), default=str)[:20000])
+                try:
+                    from core.db import db_conn
+                    from edge.store_pg import PostgresStore as _EdgeStore
+                    _st = _EdgeStore(db_conn)
+                    _st.ensure()
+                    _st.put("edge_probe", "latest", {k: v for k, v in rep.items() if k != "probes"})
+                except Exception as _pe:
+                    LOGGER.warning("edge probe store failed: %s", str(_pe)[:120])
             except Exception as _e:
                 LOGGER.warning("edge probe job failed: %s", str(_e)[:160])
                 raise
@@ -2216,7 +2225,12 @@ async def lifespan(app: FastAPI):
                 if not _edge_store_ready["done"]:
                     store.ensure()
                     _edge_store_ready["done"] = True
-                out = _edge_run(_edge_get(), _EdgeLedger(store), now=int(_time.time()))
+                import requests as _requests
+                paper_on = os.getenv("EDGE_PAPER_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
+                tg_on = os.getenv("EDGE_TELEGRAM_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
+                out = _edge_run(_edge_get(), _EdgeLedger(store), now=int(_time.time()),
+                                http=_requests if paper_on else None,
+                                notifier=_requests if tg_on else None)
                 if _edge_noteworthy(out):
                     LOGGER.warning("EDGE_SHADOW %s", _json.dumps(out, default=str)[:4000])
             except Exception as _e:
@@ -2229,6 +2243,47 @@ async def lifespan(app: FastAPI):
             interval_s=300,
             timeout_s=240,
             initial_delay_s=60,
+        )
+
+        # edge backtest: the FROZEN Gap-and-Go rule on the last N past sessions,
+        # point-in-time at 09:10 ET, with the same resolver and baseline as the
+        # live shadow. Research evidence, never the forward ledger. Runs ONCE
+        # per BACKTEST_VERSION (stored marker), only overnight (20:00-05:00 ET)
+        # so its paced Polygon calls cannot crowd Ghost's daytime use of the key.
+        def _edge_backtest_job():
+            if os.getenv("EDGE_BACKTEST_ENABLED", "1").strip().lower() not in {"1", "true", "yes", "on"}:
+                return
+            try:
+                import json as _json
+                import time as _time
+                from datetime import datetime as _dt
+                from zoneinfo import ZoneInfo as _Z
+                from core.db import db_conn
+                from edge import backtest as _bt
+                from edge.pipeline import previous_trading_day as _prev_td
+                from edge.providers.base import default_get as _edge_get
+                from edge.store_pg import PostgresStore as _EdgeStore
+                now_et = _dt.now(_Z("America/New_York"))
+                if 5 <= now_et.hour < 20:
+                    return
+                store = _EdgeStore(db_conn)
+                store.ensure()
+                if store.get("edge_backtest", _bt.BACKTEST_VERSION):
+                    return
+                days = max(5, min(250, int(os.getenv("EDGE_BACKTEST_DAYS", "60"))))
+                out = _bt.run(_edge_get(), store, end_day=_prev_td(now_et.date() if now_et.hour >= 20
+                                                                   else now_et.date()), days=days)
+                LOGGER.warning("EDGE_BACKTEST %s", _json.dumps(out, default=str)[:6000])
+            except Exception as _e:
+                LOGGER.warning("edge backtest job failed: %s", str(_e)[:200])
+                raise
+
+        scheduler.register(
+            "edge_backtest",
+            _edge_backtest_job,
+            interval_s=1800,
+            timeout_s=3300,
+            initial_delay_s=300,
         )
 
         def _broad_market_context_job():

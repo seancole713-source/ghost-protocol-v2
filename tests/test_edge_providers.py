@@ -155,3 +155,15 @@ def test_polygon_calls_are_paced_so_ghost_is_not_rate_limited():
     waits = []
     polygon.probe(router(POLYGON_AS_OBSERVED), today=TODAY, pace_s=13, sleep=waits.append)
     assert waits == [13] * 6
+
+
+def test_polygon_waits_out_a_429():
+    from datetime import date as _d
+    seq, waits = [Resp(429, {"error": "exceeded the maximum requests per minute"}),
+                  Resp(200, {"results": [{"T": "X"}]})], []
+
+    def get(url, params=None, headers=None, timeout=None):
+        return seq.pop(0)
+
+    assert polygon.grouped_daily(get, _d(2026, 9, 21), sleep=waits.append) == [{"T": "X"}]
+    assert waits == [15.0]

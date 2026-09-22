@@ -110,24 +110,32 @@ def acceleration(bars: Sequence[Bar], *, k: int = 5, min_ratio: float = 1.5) -> 
 
 def crowded_short(*, borrow_fee_pct: Optional[float], available_shares: Optional[float],
                   short_interest_pct_float: Optional[float], short_interest_age_days: Optional[float],
-                  min_fee: float = 20.0, min_si: float = 20.0, max_si_age_days: float = 20.0) -> Signal:
+                  days_to_cover: Optional[float] = None,
+                  min_fee: float = 20.0, min_si: float = 20.0, min_dtc: float = 5.0,
+                  max_si_age_days: float = 20.0) -> Signal:
     """Crowded short = expensive to borrow AND a large, reasonably recent short interest.
 
-    Short interest is reported twice a month; an older report is recorded as
-    stale evidence and the detector answers UNKNOWN rather than trust it.
-    Daily short VOLUME is a different measurement and is not accepted here.
+    "Large" is SI >= 20% of float when float is known; otherwise days-to-cover
+    (short shares / average daily volume) >= 5, a standard crowding measure. The
+    basis used is recorded. Short interest is reported twice a month; a report
+    older than 20 days is UNKNOWN, not evidence. Daily short VOLUME is a
+    different measurement and is not accepted here.
     """
     if borrow_fee_pct is None:
         return _unknown("crowded_short", "borrow fee")
-    if short_interest_pct_float is None or short_interest_age_days is None:
+    if short_interest_age_days is None or (short_interest_pct_float is None and days_to_cover is None):
         return _unknown("crowded_short", "short interest report")
     if short_interest_age_days > max_si_age_days:
         return _unknown("crowded_short", f"short interest is {short_interest_age_days:.0f} days old")
-    crowded = borrow_fee_pct >= min_fee and short_interest_pct_float >= min_si
-    return Signal("crowded_short", PASS if crowded else FAIL, round(short_interest_pct_float, 2),
-                  f"fee >= {min_fee:g}% and SI >= {min_si:g}% float",
+    if short_interest_pct_float is not None:
+        large, basis, value = short_interest_pct_float >= min_si, f"SI >= {min_si:g}% float", short_interest_pct_float
+    else:
+        large, basis, value = days_to_cover >= min_dtc, f"days to cover >= {min_dtc:g}", days_to_cover
+    crowded = borrow_fee_pct >= min_fee and large
+    return Signal("crowded_short", PASS if crowded else FAIL, round(value, 2),
+                  f"fee >= {min_fee:g}% and {basis}",
                   {"borrow_fee_pct": borrow_fee_pct, "available_shares": available_shares,
-                   "si_age_days": short_interest_age_days})
+                   "si_age_days": short_interest_age_days, "basis": basis})
 
 
 def liquidity(*, price: Optional[float], avg_shares: Optional[float], spread_bps: Optional[float] = None,

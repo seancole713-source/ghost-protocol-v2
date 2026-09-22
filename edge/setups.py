@@ -45,6 +45,8 @@ STRATEGIES = {
         Strategy("premarket_continuation", required=("gap", "liquidity", "catalyst", "not_dilutive"),
                  optional=("rvol_tod",), validated=False,
                  note="the frozen Gap-and-Go v1 rule; validated only by its own forward record"),
+        Strategy("gap_baseline", required=("gap", "liquidity"), optional=(),
+                 note="baseline: the same gap and liquidity rules with NO catalyst or dilution check"),
         Strategy("catalyst_breakout", required=("catalyst", "not_dilutive", "liquidity", "orb_break", "rvol_tod"),
                  optional=("vwap_hold", "crowded_short"), note="v0 hypothesis"),
         Strategy("crowded_short_ignition", required=("crowded_short", "liquidity", "rvol_tod", "acceleration"),

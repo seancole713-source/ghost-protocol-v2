@@ -599,8 +599,42 @@ def _symbol_quote(args: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _edge_report(args: Dict[str, Any]) -> Dict[str, Any]:
+    from core.db import db_conn
+    from edge.readout import view
+    from edge.store_pg import PostgresStore
+
+    name = str(args.get("view") or "summary").strip().lower()
+    day = str(args.get("day") or "").strip() or None
+    return view(PostgresStore(db_conn), name, day)
+
+
+EDGE_TOOLS: Mapping[str, Dict[str, Any]] = {
+    "ghost_edge_report": {
+        "description": (
+            "Read the independent edge system: its daily shadow card, per-experiment records "
+            "(forecast / simulated / actual paper fills, each with Wilson interval and verdict), "
+            "the point-in-time backtest of the frozen Gap-and-Go rule, the daily miss review, the "
+            "data-readiness probe, and the universe snapshot. Read-only; shadow and paper only -- "
+            "never a trade recommendation."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "view": {"type": "string", "enum": ["summary", "today", "experiments", "backtest",
+                                                    "misses", "probe", "universe"],
+                         "description": "Which view; default summary"},
+                "day": {"type": "string", "description": "YYYY-MM-DD for today/misses; default latest"},
+            },
+            "additionalProperties": False,
+        },
+    },
+}
+
+
 _MARKET_DATA_HANDLERS: Mapping[str, Callable[[Dict[str, Any]], Any]] = {
     "ghost_symbol_quote": _symbol_quote,
+    "ghost_edge_report": _edge_report,
 }
 
 
@@ -725,6 +759,12 @@ def list_tools() -> list[Dict[str, Any]]:
             "inputSchema": meta["inputSchema"],
         })
     for name, meta in AGENT_WORKFLOW_TOOLS.items():
+        tools.append({
+            "name": name,
+            "description": meta["description"],
+            "inputSchema": meta["inputSchema"],
+        })
+    for name, meta in EDGE_TOOLS.items():
         tools.append({
             "name": name,
             "description": meta["description"],

@@ -107,18 +107,39 @@ def probe(get: Optional[B.HttpGet] = None, *, today: Optional[date] = None,
     return out
 
 
-def grouped_daily(get: B.HttpGet, day: date) -> List[Dict[str, Any]]:
+def _get_patiently(get: B.HttpGet, url: str, params: Dict[str, Any], *, timeout: int = 30, sleep=None):
+    """GET that waits out a 429 (the shared key's per-minute allowance) twice.
+
+    Measured 2026-09-22: this account's Polygon key answers 429 "exceeded the
+    maximum requests per minute" whenever Ghost's signal engine has just used
+    it. A 429 is contention, never a verdict about the data.
+    """
+    import time as _time
+    sleep = sleep or _time.sleep
+    for attempt in range(3):
+        r = get(url, params=params, timeout=timeout)
+        if getattr(r, "status_code", 200) != 429 or attempt == 2:
+            return r
+        try:
+            wait = float((getattr(r, "headers", None) or {}).get("Retry-After") or 15)
+        except (TypeError, ValueError):
+            wait = 15.0
+        sleep(min(30.0, max(1.0, wait)))
+    return r
+
+
+def grouped_daily(get: B.HttpGet, day: date, *, sleep=None) -> List[Dict[str, Any]]:
     """Every US stock's daily bar for one session: [{T, o, h, l, c, v, vw, t}]."""
-    r = get(_base_url() + f"/v2/aggs/grouped/locale/us/market/stocks/{day.isoformat()}",
-            params={"adjusted": "true", "apiKey": _key()}, timeout=30)
+    r = _get_patiently(get, _base_url() + f"/v2/aggs/grouped/locale/us/market/stocks/{day.isoformat()}",
+                       {"adjusted": "true", "apiKey": _key()}, sleep=sleep)
     r.raise_for_status()
     return list((r.json() or {}).get("results") or [])
 
 
 def minute_bars(get: B.HttpGet, symbol: str, day: date) -> List[tuple]:
     """Minute bars as edge.resolver Bars: (ts_s, o, h, l, c, v), ts = bar start."""
-    r = get(_base_url() + f"/v2/aggs/ticker/{symbol.upper()}/range/1/minute/{day}/{day}",
-            params={"adjusted": "true", "sort": "asc", "limit": 50000, "apiKey": _key()}, timeout=30)
+    r = _get_patiently(get, _base_url() + f"/v2/aggs/ticker/{symbol.upper()}/range/1/minute/{day}/{day}",
+                       {"adjusted": "true", "sort": "asc", "limit": 50000, "apiKey": _key()})
     r.raise_for_status()
     out = []
     for b in (r.json() or {}).get("results") or []:

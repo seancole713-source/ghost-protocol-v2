@@ -122,6 +122,10 @@ def _market_today(now_ts: Optional[int] = None) -> date:
         return datetime.utcfromtimestamp(ts).date()
 
 
+def _sleep(seconds: float) -> None:
+    time.sleep(seconds)
+
+
 def fetch_grouped_day(day: str, *, timeout_s: float = 20.0,
                       current_session: bool = False) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """Fetch one session's bars for every US ticker. Empty list on a holiday.
@@ -145,11 +149,24 @@ def fetch_grouped_day(day: str, *, timeout_s: float = 20.0,
     if not _polygon_cb.allow():
         return [], {"status": "unavailable", "reason": "provider_breaker_open", "day": day}
     try:
-        response = requests.get(
-            _ENDPOINT.format(day=day),
-            params={"adjusted": "true", "apiKey": key},
-            timeout=max(1.0, min(60.0, float(timeout_s))),
-        )
+        # A 429 is the shared key's per-minute allowance, not a verdict on the
+        # data. Confirmed live 2026-09-22 19:49 UTC: Ghost's own signal-engine
+        # fallbacks spend this key's allowance continuously, so the lane's one
+        # grouped-daily call kept landing on "exceeded the maximum requests per
+        # minute" and giving up. Wait (Retry-After, else 15s) and try twice more.
+        for attempt in range(3):
+            response = requests.get(
+                _ENDPOINT.format(day=day),
+                params={"adjusted": "true", "apiKey": key},
+                timeout=max(1.0, min(60.0, float(timeout_s))),
+            )
+            if response.status_code != 429 or attempt == 2:
+                break
+            try:
+                wait = float(response.headers.get("Retry-After") or 15)
+            except (TypeError, ValueError, AttributeError):
+                wait = 15.0
+            _sleep(min(30.0, max(1.0, wait)))
         # A plan that does not include this endpoint answers 403 with
         # NOT_AUTHORIZED, and an expired key answers 401. Both are permanent,
         # and both look exactly like a flaky provider once the breaker has
