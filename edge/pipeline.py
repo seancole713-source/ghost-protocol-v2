@@ -36,7 +36,8 @@ from dataclasses import replace
 from datetime import date, datetime, time as dtime, timedelta
 from typing import Any, Dict, List, Optional
 
-from edge import catalysts as C, detectors as D, miss_audit as M, setups as S
+from edge import catalysts as C, detectors as D, health as H, miss_audit as M, setups as S
+from edge import universe as U
 from edge.contracts import ET, GAP_AND_GO_V1, TERMINAL, issue
 from edge.ledger import Ledger
 from edge.providers import alpaca as A
@@ -53,6 +54,25 @@ GAP_AND_GO_AUTO = replace(
 )
 SPEC = GAP_AND_GO_AUTO
 EID = SPEC.experiment_id
+
+# The baseline the critique demanded: identical levels, gap and liquidity, and
+# NO catalyst check at all. If gap_and_go_auto cannot beat this, its catalyst
+# filter is not adding edge -- it is only reducing the sample.
+GAP_BASELINE = replace(
+    GAP_AND_GO_V1, name="gap_baseline",
+    description="Baseline: Gap-and-Go v1 levels on any liquid +5..40% premarket gapper, "
+                "no catalyst or dilution check.",
+    eligibility={**{k: v for k, v in GAP_AND_GO_V1.eligibility.items() if k not in ("catalyst", "exclude")},
+                 "catalyst": "NOT CHECKED (baseline)",
+                 "reference_price": "IEX latest trade, current session, <=30 min old",
+                 "candidates": "Alpaca movers screener, top 50 gainers"},
+)
+BASE_EID = GAP_BASELINE.experiment_id
+EXPERIMENTS = (SPEC, GAP_BASELINE)
+
+# What each experiment needs to be released LIVE. Shadow records regardless;
+# the banner is what a live release would have said, kept beside the record.
+REQUIRES = {EID: ["movers", "quotes_iex", "news"], BASE_EID: ["movers", "quotes_iex"]}
 
 
 def _et(ts: int) -> datetime:
@@ -140,7 +160,8 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, A
         return {"status": "already_issued", "day": day.isoformat()}
     if not (_at(day, 9, 5) <= now < _at(day, 9, 28)):
         return {"status": "outside_card_window", "day": day.isoformat()}
-    ledger.register(SPEC, now=now)
+    for spec in EXPERIMENTS:
+        ledger.register(spec, now=now)
 
     mv = A.movers(get, top=top)
     updated = A.iso_to_epoch(mv.get("last_updated"))
@@ -171,7 +192,9 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, A
             "not_dilutive": S.dilution_signal(usable),
         }
         d = S.decide("premarket_continuation", signals)
+        b = S.decide("gap_baseline", signals)
         row = {"symbol": sym, "verdict": d.verdict, "reasons": d.reasons, "missing": d.missing,
+               "baseline_verdict": b.verdict, "baseline_reasons": b.reasons, "baseline_missing": b.missing,
                "ref_price": ref["price"], "ref_ts": ref["ts"], "prev_close": st["prev_close"],
                "avg_dollars": st["avg_dollars"],
                "catalyst": signals["catalyst"].evidence.get("headline")}
@@ -179,29 +202,55 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, A
         if d.verdict == S.ELIGIBLE:
             eligible.append(row)
 
-    eligible.sort(key=lambda r: -(r["avg_dollars"] or 0))
-    chosen = eligible[:SPEC.max_per_day]
+    chosen = _issue_top(ledger, SPEC, rows, eligible, day=day, now=now,
+                        verdict_key="verdict", reasons_key="reasons", missing_key="missing", id_key="forecast_id")
+    base_eligible = [r for r in rows if r["baseline_verdict"] == S.ELIGIBLE]
+    base_chosen = _issue_top(ledger, GAP_BASELINE, rows, base_eligible, day=day, now=now,
+                             verdict_key="baseline_verdict", reasons_key="baseline_reasons",
+                             missing_key="baseline_missing", id_key="baseline_forecast_id")
+
+    priced = sum(1 for r in rows if r["ref_price"])
+    health = H.assess([
+        H.SourceHealth("movers", updated, 900),
+        H.SourceHealth("quotes_iex", now if rows else None, 1800, covered=priced, expected=len(rows) or None,
+                       min_coverage=0.5),
+        H.SourceHealth("news", now if items is not None else None, 1800,
+                       error=None if items is not None else "news request failed"),
+    ], now)
+    blocking = {eid: H.release_allowed(req, health) for eid, req in REQUIRES.items()}
+    card = {"day": day.isoformat(), "issued_at": now, "experiment_id": EID,
+            "candidates": len(rows), "priced": priced, "eligible": len(eligible),
+            "forecasts": [r["symbol"] for r in chosen],
+            "baseline_forecasts": [r["symbol"] for r in base_chosen],
+            "movers_last_updated": updated,
+            "coverage_note": f"{priced}/{len(rows)} candidates had a fresh IEX premarket price",
+            "health": health, "health_banner": H.banner(len(chosen), {EID: blocking[EID]}),
+            "health_note": "shadow records regardless; the banner is what a LIVE release would say",
+            "rows": rows}
+    store.put("edge_cards", day.isoformat(), card)
+    return {"status": "issued", **{k: card[k] for k in (
+        "day", "candidates", "priced", "eligible", "forecasts", "baseline_forecasts",
+        "coverage_note", "health_banner")}}
+
+
+def _issue_top(ledger: Ledger, spec, rows, eligible, *, day: date, now: int, verdict_key: str,
+               reasons_key: str, missing_key: str, id_key: str) -> List[dict]:
+    """Record the top N eligible by dollar volume; an abstention with reasons for the rest."""
+    eligible = sorted(eligible, key=lambda r: -(r["avg_dollars"] or 0))
+    chosen = eligible[:spec.max_per_day]
     chosen_syms = {r["symbol"] for r in chosen}
     for r in chosen:
-        f = issue(SPEC, symbol=r["symbol"], session_date=day, entry_ref=r["ref_price"], issued_at=now,
+        f = issue(spec, symbol=r["symbol"], session_date=day, entry_ref=r["ref_price"], issued_at=now,
                   evidence={k: r[k] for k in ("prev_close", "avg_dollars", "catalyst", "ref_ts")})
         ledger.record(f, now=now)
-        r["forecast_id"] = f.forecast_id
+        r[id_key] = f.forecast_id
     for r in rows:
         if r["symbol"] in chosen_syms:
             continue
-        why = r["reasons"] or r["missing"] or ["eligible, ranked below the top 2 by dollar volume"]
-        ledger.abstain(experiment_id=EID, symbol=r["symbol"], session_date=day.isoformat(),
-                       reasons=list(why), now=now)
-
-    priced = sum(1 for r in rows if r["ref_price"])
-    card = {"day": day.isoformat(), "issued_at": now, "experiment_id": EID,
-            "candidates": len(rows), "priced": priced, "eligible": len(eligible),
-            "forecasts": [r["symbol"] for r in chosen], "movers_last_updated": updated,
-            "coverage_note": f"{priced}/{len(rows)} candidates had a fresh IEX premarket price",
-            "rows": rows}
-    store.put("edge_cards", day.isoformat(), card)
-    return {"status": "issued", **{k: card[k] for k in ("day", "candidates", "priced", "eligible", "forecasts", "coverage_note")}}
+        why = r[reasons_key] or r[missing_key] or ["eligible, ranked below the top 2 by dollar volume"]
+        ledger.abstain(experiment_id=spec.experiment_id, symbol=r["symbol"],
+                       session_date=day.isoformat(), reasons=list(why), now=now)
+    return chosen
 
 
 def _minute_bars(rows: List[dict]) -> List[tuple]:
@@ -218,7 +267,8 @@ def resolve_day(get, ledger: Ledger, *, day: date, now: int) -> Dict[str, Any]:
     if now < _at(day, 16, 20):
         return {"status": "too_early"}
     from edge.contracts import Forecast
-    fcs = ledger.store.scan("forecasts", experiment_id=EID, session_date=day.isoformat())
+    fcs = [f for spec in EXPERIMENTS
+           for f in ledger.store.scan("forecasts", experiment_id=spec.experiment_id, session_date=day.isoformat())]
     pending = [f for f in fcs
                if not (ledger.store.get("outcomes", f"{f['forecast_id']}|simulated") or {}).get("outcome") in TERMINAL]
     if not pending:
@@ -232,7 +282,8 @@ def resolve_day(get, ledger: Ledger, *, day: date, now: int) -> Dict[str, Any]:
         m, x = resolve_market(f, b), resolve_execution(f, b)
         ledger.settle(f.forecast_id, m, now=now, record="forecast")
         ledger.settle(f.forecast_id, x, now=now, record="simulated")
-        settled[f.symbol] = {"forecast": m.outcome, "simulated": x.outcome, "pnl_usd": x.pnl_usd}
+        settled[f"{f.experiment_id}:{f.symbol}"] = {"forecast": m.outcome, "simulated": x.outcome,
+                                                   "pnl_usd": x.pnl_usd}
     return {"status": "resolved", "settled": settled}
 
 
@@ -315,9 +366,20 @@ def miss_review(get, ledger: Ledger, *, day: date, now: int, top: int = 50,
         hot = hot[:max_minute_symbols]
     minute = A.bars_multi(get, hot, timeframe="1Min", start=_iso(_at(day, 9, 30)), end=_iso(_at(day, 16, 0))) if hot else {}
     syms = hot
-    radar, universe, data_down = {}, set(), set()
+    # The universe the system could claim that day. A listed common stock the
+    # radar never surfaced is a DETECTION failure; only a name outside this set
+    # is a coverage gap. Without a snapshot yet, fall back and say so.
+    universe = U.symbols_as_of(store, day.isoformat())
+    if universe is None:
+        universe = set()
+        coverage += "; no universe snapshot yet -- 'coverage' means not in the 9am candidate list"
+        fallback_universe = True
+    else:
+        fallback_universe = False
+    radar, data_down = {}, set()
     for r in card.get("rows") or []:
-        universe.add(r["symbol"])
+        if fallback_universe:
+            universe.add(r["symbol"])
         if r["ref_price"] is None:
             data_down.add(r["symbol"])
         radar[r["symbol"]] = M.RadarRecord(
@@ -349,7 +411,9 @@ def run(get, ledger: Ledger, *, now: int) -> Dict[str, Any]:
         except Exception as exc:  # noqa: BLE001
             out[key] = {"status": "error", "error": f"{type(exc).__name__}: {str(exc)[:160]}"}
 
-    if _at(day, 7, 0) <= now < _at(day, 9, 5):
+    if _at(day, 6, 0) <= now < _at(day, 7, 0):
+        guarded("universe", lambda: U.step(get, ledger.store, day=day.isoformat(), now=now))
+    elif _at(day, 7, 0) <= now < _at(day, 9, 5):
         prev = previous_trading_day(day)
         guarded("miss_review", lambda: miss_review(get, ledger, day=prev, now=now))
     elif _at(day, 9, 5) <= now < _at(day, 9, 28):
@@ -357,13 +421,14 @@ def run(get, ledger: Ledger, *, now: int) -> Dict[str, Any]:
     elif _at(day, 16, 20) <= now < _at(day, 20, 0):
         guarded("resolve", lambda: resolve_day(get, ledger, day=day, now=now))
         if out["resolve"].get("status") == "resolved":
-            out["report"] = ledger.report(EID) if ledger.store.get("experiments", EID) else None
+            out["report"] = {spec.experiment_id: ledger.report(spec.experiment_id)
+                             for spec in EXPERIMENTS if ledger.store.get("experiments", spec.experiment_id)}
     else:
         out["status"] = "idle"
     return out
 
 
-_NEWS = {"issued", "resolved", "reviewed", "error"}
+_NEWS = {"issued", "resolved", "reviewed", "error", "complete"}
 
 
 def noteworthy(out: Dict[str, Any]) -> bool:
