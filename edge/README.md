@@ -27,6 +27,11 @@ acting on, and manage each decision from entry to exit. A 60–70% hit rate is a
 | Phone messages | `notify` | yes (`EDGE_TELEGRAM_ENABLED`) | unit tests |
 | Promotion gate | `promotion` | yes (in every readout) | unit tests |
 | Readout / MCP | `readout`, `ghost_edge_report` | yes | unit tests |
+| Model layer | `features`, `models` | trains after the backtest; forecasts ONLY if it beats the base rate AND the baseline out of sample | planted-signal vs noise tests |
+| Replay guard | `replay` | yes, 20:00 ET | simulated-refactor test |
+| Independent reviewer | `research_openai` | when `OPENAI_API_KEY` works and `EDGE_OPENAI_MODEL` is set (probe lists usable models) | fallback tests |
+| Streaming | `stream` | off until `EDGE_STREAM_ENABLED` (worth it with SIP data: `EDGE_STREAM_FEED=sip`) | protocol tests |
+| Standalone service | `service`, `requirements.txt`, `railway.json` | ready; `EDGE_STANDALONE=1` after switching Ghost's edge jobs off | isolated CI (`.github/workflows/edge.yml`) |
 
 Every strategy except the frozen Gap-and-Go v1 levels is an **unvalidated v0 hypothesis**.
 Nothing here trades real money: the operator places every live order.

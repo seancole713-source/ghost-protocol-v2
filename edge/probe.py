@@ -40,6 +40,11 @@ STRATEGIES: Dict[str, List[Dict[str, Any]]] = {
         {"need": "real-time quotes", "ok": [B.QUOTE_SIP], "fallback": [B.QUOTE_IEX]},
         {"need": "minute bars", "ok": [B.MINUTE_BARS]},
     ],
+    "short_interest_ignition": [
+        {"need": "short interest (not short VOLUME)", "ok": [B.SHORT_INTEREST]},
+        {"need": "real-time quotes", "ok": [B.QUOTE_SIP], "fallback": [B.QUOTE_IEX]},
+        {"need": "minute bars", "ok": [B.MINUTE_BARS]},
+    ],
     "intraday_continuation": [
         {"need": "full-market movers", "ok": [B.SNAPSHOT_ALL, B.MOVERS]},
         {"need": "real-time quotes", "ok": [B.QUOTE_SIP], "fallback": [B.QUOTE_IEX]},
@@ -66,7 +71,7 @@ UNLOCK: Dict[str, str] = {
     B.SPLITS: "Polygon/Massive reference splits",
     B.DIVIDENDS: "Polygon/Massive reference dividends",
     B.NEWS: "Alpaca news (free with a data key) or Polygon/Massive news",
-    B.FILINGS: "SEC EDGAR is free -- set SEC_USER_AGENT to a real contact",
+    B.FILINGS: "SEC EDGAR is free -- set EDGAR_USER_AGENT to a name and a real contact email",
     B.BORROW: "IBKR borrow data: the FTP file (blocked from Railway) or iBorrowDesk over HTTPS (free, "
               "unofficial). Commercial alternatives (Ortex, Fintel, S3 Partners) need quotes and licence terms",
     B.SHORT_INTEREST: "FINRA consolidated short interest via the FINRA Query API (free; may need free "
@@ -86,8 +91,10 @@ def collect(get: Optional[B.HttpGet] = None, *, ibkr_fetch: Optional[Callable[[]
     probes.append(public.probe_edgar(get))
     probes.append(public.probe_ibkr(ibkr_fetch) if ibkr_fetch else public.probe_ibkr())
     if http is not None:
+        from edge import research_openai
         probes.append(shortdata.probe_finra_si(http))
         probes.append(shortdata.probe_borrow(http))
+        probes.append(research_openai.probe(http))
     else:
         probes.append(B.Probe(B.SHORT_INTEREST, "finra_api", B.UNVERIFIED, note="probe not run (no http client)"))
     return probes

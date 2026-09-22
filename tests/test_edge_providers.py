@@ -117,8 +117,17 @@ def test_ibkr_file_parses_floors_and_fees():
 
 def test_edgar_asks_for_a_real_user_agent(monkeypatch):
     monkeypatch.delenv("SEC_USER_AGENT", raising=False)
+    monkeypatch.delenv("EDGAR_USER_AGENT", raising=False)
     p = public.probe_edgar(router(PUBLIC))
-    assert p.status == B.OK and "SEC_USER_AGENT" in p.note
+    assert p.status == B.OK and "EDGAR_USER_AGENT" in p.note
+
+
+def test_one_variable_serves_ghost_and_edge(monkeypatch):
+    """Ghost's core/edgar_integration reads EDGAR_USER_AGENT; edge must honour the same one."""
+    monkeypatch.delenv("SEC_USER_AGENT", raising=False)
+    monkeypatch.setenv("EDGAR_USER_AGENT", "Ghost Research ops@example.com")
+    assert public._sec_user_agent() == "Ghost Research ops@example.com"
+    assert public.probe_edgar(router(PUBLIC)).note == ""
 
 
 def full_router(extra=()):

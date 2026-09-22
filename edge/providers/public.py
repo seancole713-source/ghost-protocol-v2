@@ -12,7 +12,8 @@ IBKR shortable-stock file -- ftp3.interactivebrokers.com, user "shortstock", fil
   view, not the market's. Coverage and meaning are recorded as such.
 
 SEC EDGAR current 8-K feed -- https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=8-K&output=atom
-  SEC requires a descriptive User-Agent with contact details (SEC_USER_AGENT).
+  SEC requires a descriptive User-Agent with contact details (EDGAR_USER_AGENT,
+  the same variable Ghost's core/edgar_integration.py reads).
 """
 from __future__ import annotations
 
@@ -118,7 +119,9 @@ EDGAR_8K_ATOM = "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type
 
 
 def _sec_user_agent() -> str:
-    return (os.getenv("SEC_USER_AGENT") or "edge-research contact@example.invalid").strip()
+    """One variable for all SEC access: Ghost's EDGAR_USER_AGENT (edge's SEC_USER_AGENT also works)."""
+    return (os.getenv("EDGAR_USER_AGENT") or os.getenv("SEC_USER_AGENT")
+            or "edge-research contact@example.invalid").strip()
 
 
 def probe_edgar(get: Optional[B.HttpGet] = None) -> B.Probe:
@@ -129,7 +132,7 @@ def probe_edgar(get: Optional[B.HttpGet] = None) -> B.Probe:
     st = B.classify(r.status_code)
     if st != B.OK:
         return B.Probe(B.FILINGS, "sec_edgar", st, http_status=r.status_code, latency_ms=ms,
-                       note="SEC refuses requests without a descriptive User-Agent (set SEC_USER_AGENT)")
+                       note="SEC refuses requests without a descriptive User-Agent (set EDGAR_USER_AGENT)")
     entries = r.text.count("<entry>")
     stamps = re.findall(r"<updated>([^<]+)</updated>", r.text)
     newest = None
@@ -138,6 +141,7 @@ def probe_edgar(get: Optional[B.HttpGet] = None) -> B.Probe:
             newest = max(newest or 0, int(datetime.fromisoformat(s.strip()).timestamp()))
         except ValueError:
             continue
-    ua_note = "" if os.getenv("SEC_USER_AGENT") else "set SEC_USER_AGENT to a real contact"
+    ua_note = ("" if (os.getenv("EDGAR_USER_AGENT") or os.getenv("SEC_USER_AGENT"))
+               else "set EDGAR_USER_AGENT to a name and a real contact email")
     return B.Probe(B.FILINGS, "sec_edgar", B.OK if entries else B.EMPTY, http_status=r.status_code,
                    latency_ms=ms, rows=entries, newest_ts=newest, note=ua_note)

@@ -87,3 +87,26 @@ def test_the_probe_includes_both_when_it_has_an_http_client():
 def test_row_order_cannot_resurrect_an_older_report():
     assert SD.parse_finra_si(list(reversed(FINRA_ROWS)))["GME"]["settlement_date"] == "2026-09-15"
     assert SD.parse_finra_si(FINRA_ROWS)["GME"]["settlement_date"] == "2026-09-15"
+
+
+def test_short_interest_alone_is_measured_honestly():
+    from edge.intraday import _short_interest
+    rec = {"si": {"days_to_cover": 7.5, "settlement_date": "2026-09-15"}}
+    s = _short_interest(rec, date(2026, 9, 23))
+    assert s.name == "short_interest" and s.state == D.PASS
+    assert _short_interest({}, date(2026, 9, 23)).state == D.UNKNOWN
+
+
+def test_short_interest_ignition_runs_without_borrow_data_but_crowded_short_does_not():
+    from edge import setups as S
+    sig = {"short_interest": D.Signal("short_interest", D.PASS, 7.5), "liquidity": D.Signal("liquidity", D.PASS),
+           "rvol_tod": D.Signal("rvol_tod", D.PASS), "acceleration": D.Signal("acceleration", D.PASS),
+           "crowded_short": D.Signal("crowded_short", D.UNKNOWN, evidence={"missing": "borrow fee"})}
+    assert S.decide("short_interest_ignition", sig).verdict == S.ELIGIBLE
+    assert S.decide("crowded_short_ignition", sig).verdict == S.DATA_UNAVAILABLE
+
+
+def test_the_probe_marks_it_runnable_on_verified_free_data():
+    from edge import probe as P
+    caps = {B.SHORT_INTEREST: {"status": B.OK}, B.QUOTE_IEX: {"status": B.OK}, B.MINUTE_BARS: {"status": B.OK}}
+    assert P.assess(caps)["short_interest_ignition"]["state"] == "DEGRADED"      # IEX quotes only

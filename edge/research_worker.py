@@ -158,7 +158,7 @@ def to_claims(symbol: str, raw: Dict[str, Any], *, made_at: int) -> List[RS.Clai
     return out
 
 
-def research_symbol(client, store, *, symbol: str, day: str, now: int) -> Dict[str, Any]:
+def research_symbol(client, store, *, symbol: str, day: str, now: int, http=None) -> Dict[str, Any]:
     key = f"{day}|{symbol.upper()}"
     if store.get("edge_research", key):
         return {"status": "already_researched", "symbol": symbol}
@@ -169,14 +169,22 @@ def research_symbol(client, store, *, symbol: str, day: str, now: int) -> Dict[s
     text, c1, stop1 = _ask(client, AUTHOR_PROMPT.format(symbol=symbol, cutoff=cutoff, kinds=list(RS.KINDS)))
     raw = _json(text) or {"claims": [], "unknowns": [f"author output unusable (stop={stop1})"]}
     claims = to_claims(symbol, raw, made_at=now)
-    review_raw, c2, stop2 = None, 0.0, "skipped"
-    if claims:
+    review_raw, c2, stop2, reviewer = None, 0.0, "skipped", REVIEWER
+    if claims and http is not None:
+        from edge import research_openai as RO
+        if RO.configured():
+            review_raw = RO.review(http, symbol=symbol, claims=[
+                {"kind": c.kind, "statement": c.statement,
+                 "quotes": [x.quote for x in c.citations], "urls": [x.url for x in c.citations]} for c in claims])
+            if review_raw is not None:
+                reviewer, stop2 = f"openai:{os.environ.get('EDGE_OPENAI_MODEL', '').strip()}", "openai"
+    if claims and review_raw is None:
         rtext, c2, stop2 = _ask(client, REVIEWER_PROMPT.format(
             symbol=symbol, cutoff=cutoff,
             claims=json.dumps([{"kind": c.kind, "statement": c.statement,
                                 "urls": [x.url for x in c.citations]} for c in claims], indent=1)))
         review_raw = _json(rtext)
-    review = RS.Review(reviewer=REVIEWER,
+    review = RS.Review(reviewer=reviewer,
                        entity_ok=(review_raw or {}).get("entity_ok"),
                        contradictions=[str(x) for x in (review_raw or {}).get("contradictions") or []],
                        dilution_found=(review_raw or {}).get("dilution_found"),
@@ -196,7 +204,10 @@ def research_symbol(client, store, *, symbol: str, day: str, now: int) -> Dict[s
            "review": {"entity_ok": review.entity_ok, "contradictions": review.contradictions,
                       "dilution_found": review.dilution_found, "stale": review.stale, "notes": review.notes},
            "author_stop": stop1, "reviewer_stop": stop2, "cost_usd": round(spent, 4),
-           "independence": "author and reviewer share a model: agreement is correlated, not independent"}
+           "reviewer": reviewer,
+           "independence": ("reviewer is a different model family, but both read the same citations: "
+                            "agreement is still not independent evidence") if reviewer.startswith("openai:")
+                           else "author and reviewer share a model: agreement is correlated, not independent"}
     store.put("edge_research", key, rec)
     return {"status": "researched", "symbol": symbol.upper(), "claims": len(graded),
             "usable": sum(1 for g in graded if g["status"] != RS.QUARANTINED), "cost_usd": round(spent, 4)}

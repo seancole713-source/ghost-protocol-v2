@@ -1,7 +1,12 @@
 # Gap-and-Go v1 — FROZEN
 
 **Frozen:** 2026-09-22. **Operator decision:** Option A — $1,000 per trade.
-**First card:** Wednesday 2026-09-23, 9:00am ET.
+**First card:** Wednesday 2026-09-23, 8:00am CT (9:00am ET).
+
+**Time zone.** The operator works in Central time; the market opens 8:30am CT
+(9:30am ET) and closes 3:00pm CT (4:00pm ET). This document's rule times are in
+ET because that is the exchange's clock. In CT: entry expiry **9:30am CT**, time
+exit **2:30pm CT**.
 
 ## Why this exists
 

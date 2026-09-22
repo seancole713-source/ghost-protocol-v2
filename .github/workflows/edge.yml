@@ -1,0 +1,22 @@
+name: edge
+on:
+  pull_request:
+    paths: ["edge/**", "tests/test_edge_*.py", ".github/workflows/edge.yml"]
+  push:
+    branches: [main]
+    paths: ["edge/**"]
+jobs:
+  edge-alone:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - name: Install edge's own dependencies only
+        run: pip install -r edge/requirements.txt pytest
+      - name: edge imports nothing from Ghost
+        run: |
+          if grep -rnE "^(from|import) (core|wolf_app|mcp)\b" edge/; then
+            echo "edge must not import Ghost code"; exit 1; fi
+      - name: edge tests, without Ghost's conftest
+        run: python -m pytest -q -p no:cacheprovider --noconftest tests/test_edge_*.py -k "not mcp_tool"

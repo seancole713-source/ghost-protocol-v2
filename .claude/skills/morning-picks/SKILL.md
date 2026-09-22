@@ -105,8 +105,9 @@ dilution"), never a substitute for the frozen rule.
    `blind_spots`.
 7. Tell the operator, per call: symbol, catalyst in one line, buy stop / limit,
    target, stop, shares, max loss — and the two manual duties: **cancel an
-   unfilled entry at 10:30am ET**, **sell anything open at 3:30pm ET**. Link
-   the scoreboard. These are the frozen rule's levels, not Claude's opinion;
+   unfilled entry at 9:30am CT (10:30 ET)**, **sell anything open at 2:30pm CT
+   (3:30 ET)**. The operator works in CENTRAL time: the market opens 8:30am CT.
+   Always lead with CT. Link the scoreboard. These are the frozen rule's levels, not Claude's opinion;
    the operator decides and places every order.
 
 **Grading ("grade today", after 4pm ET):** for each call, read

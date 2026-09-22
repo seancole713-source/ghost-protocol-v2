@@ -34,7 +34,9 @@ class Resp:
 
 
 def path_bars(d, pre_close, rth_path, *, pre_minute=(9, 5)):
-    rows = [{"t": iso(ts(d, *pre_minute)), "o": pre_close, "h": pre_close, "l": pre_close, "c": pre_close, "v": 5000}]
+    early = round(pre_close * 0.99, 2)          # an 08:30 print, as a real premarket has
+    rows = [{"t": iso(ts(d, 8, 30)), "o": early, "h": early, "l": early, "c": early, "v": 3000},
+            {"t": iso(ts(d, *pre_minute)), "o": pre_close, "h": pre_close, "l": pre_close, "c": pre_close, "v": 5000}]
     t, prev = ts(d, 9, 30), rth_path[0]
     for c in rth_path:
         rows.append({"t": iso(t), "o": prev, "h": max(prev, c) + 0.01, "l": min(prev, c) - 0.01, "c": c, "v": 1000})
@@ -118,3 +120,15 @@ def test_liquidity_uses_prior_sessions_only():
         r.push([{"T": "X", "v": v, "vw": 1.0}])
     assert r.avg("X", min_days=3) == (300, 300)      # the last three PRIOR days
     assert BT.Rolling().avg("NEW") == (None, None)   # no history -> unknown, not zero
+
+
+def test_the_backtest_builds_the_model_dataset_and_tries_to_qualify_a_model():
+    store = MemoryStore()
+    BT.run(Market(), store, end_day=END, days=1, warmup=12, pace_s=0, sleep=lambda s: None)
+    ds = store.get("edge_dataset", BT.BACKTEST_VERSION)
+    assert ds["features"] and ds["rows"]
+    row = ds["rows"][0]
+    assert set(row["features"]) >= {"gap_855", "pre_trend", "catalyst_company"}
+    full = store.get("edge_backtest", BT.BACKTEST_VERSION)
+    assert full["model"]["status"] == "not_qualified"       # one session can never qualify
+    assert "dataset" not in full["sessions_detail"][0]
