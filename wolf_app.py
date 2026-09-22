@@ -2231,6 +2231,47 @@ async def lifespan(app: FastAPI):
             initial_delay_s=60,
         )
 
+        # edge backtest: the FROZEN Gap-and-Go rule on the last N past sessions,
+        # point-in-time at 09:10 ET, with the same resolver and baseline as the
+        # live shadow. Research evidence, never the forward ledger. Runs ONCE
+        # per BACKTEST_VERSION (stored marker), only overnight (20:00-05:00 ET)
+        # so its paced Polygon calls cannot crowd Ghost's daytime use of the key.
+        def _edge_backtest_job():
+            if os.getenv("EDGE_BACKTEST_ENABLED", "1").strip().lower() not in {"1", "true", "yes", "on"}:
+                return
+            try:
+                import json as _json
+                import time as _time
+                from datetime import datetime as _dt
+                from zoneinfo import ZoneInfo as _Z
+                from core.db import db_conn
+                from edge import backtest as _bt
+                from edge.pipeline import previous_trading_day as _prev_td
+                from edge.providers.base import default_get as _edge_get
+                from edge.store_pg import PostgresStore as _EdgeStore
+                now_et = _dt.now(_Z("America/New_York"))
+                if 5 <= now_et.hour < 20:
+                    return
+                store = _EdgeStore(db_conn)
+                store.ensure()
+                if store.get("edge_backtest", _bt.BACKTEST_VERSION):
+                    return
+                days = max(5, min(250, int(os.getenv("EDGE_BACKTEST_DAYS", "60"))))
+                out = _bt.run(_edge_get(), store, end_day=_prev_td(now_et.date() if now_et.hour >= 20
+                                                                   else now_et.date()), days=days)
+                LOGGER.warning("EDGE_BACKTEST %s", _json.dumps(out, default=str)[:6000])
+            except Exception as _e:
+                LOGGER.warning("edge backtest job failed: %s", str(_e)[:200])
+                raise
+
+        scheduler.register(
+            "edge_backtest",
+            _edge_backtest_job,
+            interval_s=1800,
+            timeout_s=3300,
+            initial_delay_s=300,
+        )
+
         def _broad_market_context_job():
             try:
                 from core.broad_market_context import refresh_broad_market_context
