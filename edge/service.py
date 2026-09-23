@@ -83,6 +83,11 @@ class Service:
         for ln in summary_lines(rep):
             LOG.warning("EDGE_PROBE_SUMMARY %s", ln)
         self.store.put("edge_probe", "latest", {k: v for k, v in rep.items() if k != "probes"})
+        from edge import calendar as CAL
+        from edge.contracts import ET
+        from datetime import datetime
+        LOG.warning("EDGE_CALENDAR %s", CAL.refresh(self.http, self.store,
+                                                    today=datetime.fromtimestamp(now, tz=ET).date(), now=now))
         self.last_probe = now
 
     def backtest(self, et) -> None:

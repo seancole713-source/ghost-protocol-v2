@@ -2188,6 +2188,14 @@ async def lifespan(app: FastAPI):
                     _st = _EdgeStore(db_conn)
                     _st.ensure()
                     _st.put("edge_probe", "latest", {k: v for k, v in rep.items() if k != "probes"})
+                    # Market calendar (holidays + early closes) from Alpaca, refreshed daily.
+                    import time as _time
+                    from datetime import datetime as _dt
+                    from zoneinfo import ZoneInfo as _Z
+                    from edge import calendar as _cal
+                    _c = _cal.refresh(_rq, _st, today=_dt.now(_Z("America/New_York")).date(),
+                                      now=int(_time.time()))
+                    LOGGER.warning("EDGE_CALENDAR %s", _json.dumps(_c, default=str)[:600])
                 except Exception as _pe:
                     LOGGER.warning("edge probe store failed: %s", str(_pe)[:120])
             except Exception as _e:

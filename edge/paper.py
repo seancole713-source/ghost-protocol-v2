@@ -194,3 +194,21 @@ def reconcile(http, ledger: Ledger, *, day: str, experiments, now: int) -> Dict[
         settled[f"{f.experiment_id}:{f.symbol}"] = {"actual": res.outcome, "pnl_usd": res.pnl_usd,
                                                     "warnings": pos.warnings}
     return {"status": "reconciled" if settled else "nothing", "settled": settled}
+
+
+def probe(http):
+    """Does the PAPER trading account accept these keys and allow trading? Reads /v2/account
+    on the pinned paper host; never logs the account number."""
+    from edge.providers import base as B
+    try:
+        r = http.get(f"{base_url()}/v2/account", headers=_headers(), timeout=15)
+    except Exception as exc:  # noqa: BLE001
+        return B.Probe("broker.paper", "alpaca_paper", B.ERROR, note=f"{type(exc).__name__}: {str(exc)[:80]}")
+    if r.status_code >= 400:
+        return B.Probe("broker.paper", "alpaca_paper", B.classify(r.status_code), http_status=r.status_code,
+                       note="the paper host refused these keys (live keys are refused here by design)")
+    a = r.json() or {}
+    blocked = [k for k in ("trading_blocked", "account_blocked", "trade_suspended_by_user") if a.get(k)]
+    ok = str(a.get("status") or "").upper() == "ACTIVE" and not blocked
+    return B.Probe("broker.paper", "alpaca_paper", B.OK if ok else B.ERROR, http_status=r.status_code, rows=1,
+                   note=f"paper account {a.get('status')}" + (f"; blocked: {', '.join(blocked)}" if blocked else ""))

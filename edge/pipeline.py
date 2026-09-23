@@ -107,19 +107,22 @@ def _iso(ts: int) -> str:
     return datetime.fromtimestamp(ts, tz=ET).isoformat()
 
 
-def _holidays() -> set:
-    return {x.strip() for x in os.getenv("EDGE_HOLIDAYS", "").split(",") if x.strip()}
+def trading_day(day: date, store=None, now: Optional[int] = None) -> bool:
+    """Weekdays that are not NYSE holidays (Alpaca's calendar when stored, else a built-in
+    NYSE table) and not in EDGE_HOLIDAYS."""
+    from edge import calendar as CAL
+    return CAL.session(day, store, now)["trading"]
 
 
-def trading_day(day: date) -> bool:
-    return day.weekday() < 5 and day.isoformat() not in _holidays()
-
-
-def previous_trading_day(day: date) -> date:
+def previous_trading_day(day: date, store=None) -> date:
     d = day - timedelta(days=1)
-    while not trading_day(d):
+    while not trading_day(d, store):
         d -= timedelta(days=1)
     return d
+
+
+EARLY_CLOSE_NOTE = ("early close (13:00 ET): the frozen rule's 15:30 ET time exit falls after the close, "
+                    "so no forecasts are issued today rather than bend the rule")
 
 
 def _daily_stats(bars: List[dict], day: date) -> Dict[str, Optional[float]]:
@@ -174,12 +177,19 @@ def _events(items: Optional[List[dict]], symbols: set, now: int) -> Optional[Dic
 def morning_card(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, Any]:
     day = _et(now).date()
     store = ledger.store
-    if not trading_day(day):
+    if not trading_day(day, store, now):
         return {"status": "market_closed", "day": day.isoformat()}
     if store.get("edge_cards", day.isoformat()):
         return {"status": "already_issued", "day": day.isoformat()}
     if not (_at(day, 9, 5) <= now < _at(day, 9, 28)):
         return {"status": "outside_card_window", "day": day.isoformat()}
+    from edge import calendar as CAL
+    if CAL.session(day, store, now)["early_close"]:
+        store.put("edge_cards", day.isoformat(), {
+            "day": day.isoformat(), "issued_at": now, "experiment_id": EID, "status": "early_close",
+            "candidates": 0, "priced": 0, "eligible": 0, "forecasts": [], "baseline_forecasts": [],
+            "health_banner": EARLY_CLOSE_NOTE, "rows": []})
+        return {"status": "early_close", "day": day.isoformat(), "note": EARLY_CLOSE_NOTE}
     research_on = _research().enabled()
     for spec in EXPERIMENTS:
         if spec is GAP_VERIFIED and not research_on:
@@ -545,8 +555,11 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None) -> Dict[str,
     day = _et(now).date()
     ds = day.isoformat()
     out: Dict[str, Any] = {"day": ds}
-    if not trading_day(day):
+    from edge import calendar as CAL
+    sess = CAL.session(day, ledger.store, now)
+    if not sess["trading"]:
         return {**out, "status": "market_closed"}
+    early = sess["early_close"]          # no forecasts, no intraday, no duty reminders
     all_specs = _all_specs(ledger.store, I)
 
     def guarded(key, step):
@@ -561,7 +574,7 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None) -> Dict[str,
     if within((6, 0), (7, 0)):
         guarded("universe", lambda: U.step(get, ledger.store, day=ds, now=now))
     if within((7, 0), (9, 5)):
-        prev = previous_trading_day(day)
+        prev = previous_trading_day(day, ledger.store)
         guarded("miss_review", lambda: miss_review(get, ledger, day=prev, now=now))
         review = ledger.store.get("edge_miss", prev.isoformat())
         text = _notify().misses_text(review) if review else None
@@ -577,13 +590,13 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None) -> Dict[str,
         if notifier is not None and card:
             guarded("notify_card", lambda: _notify().once(notifier, ledger.store, day=ds, kind="card",
                                                            text=_notify().card_text(card)))
-    if notifier is not None and within((10, 25), (10, 30)):
+    if notifier is not None and not early and within((10, 25), (10, 30)):
         guarded("notify_duty", lambda: _notify().once(notifier, ledger.store, day=ds,
                                                        kind="duty_1030", text=_notify().DUTY_1030))
-    if notifier is not None and within((15, 25), (15, 30)):
+    if notifier is not None and not early and within((15, 25), (15, 30)):
         guarded("notify_duty", lambda: _notify().once(notifier, ledger.store, day=ds,
                                                        kind="duty_1530", text=_notify().DUTY_1530))
-    if within((9, 45), (14, 30)):
+    if not early and within((9, 45), (14, 30)):
         guarded("intraday", lambda: I.tick(get, ledger, now=now, http=http))
         if http is not None:
             guarded("paper_submit_intraday", lambda: _paper().submit(http, ledger, day=ds,
