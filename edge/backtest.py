@@ -46,7 +46,9 @@ from edge.resolver import resolve_execution, resolve_market
 # v3: v2's historical news query had no `end`, so Alpaca paged back from NOW and the capped
 # pages held no news from the session studied -- the catalyst rule saw almost none (1 forecast
 # in 58 sessions). The no-catalyst baseline was unaffected. v2's record is kept as it was.
-BACKTEST_VERSION = "gap_and_go_backtest_v3"
+# v4: the resolver no longer fills a stop-limit on a bar that ran through the trigger and past the
+# limit (it waits for price to return to the limit), matching what the paper broker did on day 1.
+BACKTEST_VERSION = "gap_and_go_backtest_v4"
 LIMITS = [
     "research evidence on past sessions, NOT the forward record",
     "candidates pre-screened by that day's open >= +1% (small optimistic bias: misses 9:10 gappers that faded before the open)",

@@ -25,6 +25,14 @@ MECHANICAL = frozenset({REVERSE_SPLIT})
 PRICE_ACTION = "price_action"          # describes a move; never a catalyst (never in COMPANY_SPECIFIC)
 COMPANY_SPECIFIC = frozenset({EARNINGS, GUIDANCE, FDA, CONTRACT, MNA, INDEX, ANALYST})
 
+# A market wrap -- index moves and/or several stories joined by ";" -- is never one company's catalyst,
+# whatever words it contains. 2026-09-23: "Dow Falls 100 Points; General Mills Posts Upbeat Q1
+# Earnings" qualified WHLR as an EARNINGS catalyst (General Mills' earnings, not Wheeler's).
+_MARKET_WRAP = re.compile(
+    r"\b(dow|nasdaq|s&p( 500)?|russell 2000|stock market|us stocks|wall street)\b.{0,30}"
+    r"\b(points?|falls?|gains?|rises?|drops?|jumps?|higher|lower|slips?|climbs?|down|up)\b"
+    r"|;\s*\S.*\b(posts?|reports?|shares?|stock)\b")
+
 _RULES = [  # first match wins; dilution is checked first on purpose
     (OFFERING, r"\b(public offering|registered direct|at-the-market|atm program|private placement|priced .* offering|warrants?)\b"),
     (REVERSE_SPLIT, r"\breverse (stock |share )?split\b|\b1[- ]for[- ]\d+\b|\bshare consolidation\b"),
@@ -69,6 +77,8 @@ class CatalystEvent:
 
 def classify(headline: str) -> str:
     h = headline.lower()
+    if _MARKET_WRAP.search(h):
+        return PRICE_ACTION
     for kind, pattern in _RULES:
         if re.search(pattern, h):
             return kind

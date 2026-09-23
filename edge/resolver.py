@@ -136,8 +136,13 @@ def _walk(f: Forecast, bars: Iterable[Bar], *, bar_seconds: int, market: bool) -
                         entry, entry_ts = o, ts
                     elif l <= f.entry_limit:      # came back into range this bar
                         entry, entry_ts = f.entry_limit, ts
-                else:
+                elif c <= f.entry_limit:
+                    # Triggered inside the bar and it CLOSED inside the stop-limit band: it traded there.
                     entry, entry_ts = f.entry_trigger, ts
+                # else: the bar ran through the trigger AND past the limit. A stop-limit then rests at
+                # the limit; it fills only if price comes back to it before expiry (later bars). A
+                # minute bar cannot show the order ever traded inside a narrow band -- 2026-09-23 GLND
+                # (band $2.94-$2.96, 85x volume) was graded a fill here while the broker never filled.
             elif triggered and l <= f.entry_limit:
                 entry, entry_ts = f.entry_limit, ts
             if entry is None:

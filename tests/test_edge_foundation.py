@@ -229,3 +229,16 @@ def test_sizing_respects_both_caps_and_the_locks():
     d = risk.size(risk.OPERATOR_V1, entry=9.49, stop=9.21, trades_today=0,
                   realised_today_usd=0, experiment_pnl_usd=-300)
     assert not d.allowed and "pause line" in d.reasons[0]
+
+
+def test_a_bar_that_runs_through_the_stop_limit_band_is_not_a_fill():
+    f = fc()   # trigger 9.49, limit 9.59
+    # 9:30 bar opens below the trigger and runs to 9.90, closing above the limit: a narrow
+    # stop-limit would not have filled (the GLND case). No later bar returns to 9.59 -> NO_FILL.
+    r = resolve(f, bars((9, 30, 9.40, 9.95, 9.38, 9.90), (9, 31, 9.90, 9.99, 9.70, 9.80),
+                        (10, 31, 9.80, 9.85, 9.75, 9.80)))
+    assert r.outcome == "NO_FILL" and "limit" in r.note
+    # ...but if price comes back to the limit inside the window, the resting limit fills there.
+    r = resolve(f, bars((9, 30, 9.40, 9.95, 9.38, 9.90), (9, 31, 9.90, 9.92, 9.55, 9.60),
+                        (9, 45, 9.80, 9.99, 9.78, 9.97)))
+    assert r.outcome == "WIN" and r.entry_fill == 9.59
