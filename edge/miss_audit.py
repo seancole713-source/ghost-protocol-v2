@@ -141,7 +141,10 @@ def audit(session_date: str, moves: Iterable[DayMove], *, universe: Set[str], da
             continue
         rep.movers += 1
         row = {"symbol": m.symbol, "opportunity": opp,
-               "move_pct": round((m.high / m.prev_close - 1) * 100, 2)}
+               # move_pct is the intraday PEAK vs the prior close (the best exit anyone had);
+               # close_pct is where it finished -- PAAI 2026-09-22 peaked +44% and closed -7%.
+               "move_pct": round((m.high / m.prev_close - 1) * 100, 2),
+               "close_pct": round((m.close / m.prev_close - 1) * 100, 2)}
         if opp == "GAP_ONLY":
             rep.gap_only += 1
         elif opp == "UNKNOWN_ORDERING":

@@ -391,7 +391,12 @@ def research_candidates(get, store, *, day: date, now: int, n: int) -> List[str]
         if g is not None and g.state == D.PASS and liq.state == D.PASS:
             ranked.append((-(st["avg_dollars"] or 0), s))
     out = [s for _, s in sorted(ranked)[:n]]
-    store.put("edge_research_queue", day.isoformat(), {"symbols": out, "at": now})
+    # Cache only a NON-empty queue. At 08:30 ET the free IEX feed often has no fresh
+    # premarket prints yet; caching that empty answer stopped research for the whole day
+    # (2026-09-23). An empty queue is recomputed on the next tick (3 calls per 5 min).
+    if out:
+        store.put("edge_research_queue", day.isoformat(), {"symbols": out, "at": now,
+                                                            "movers": len(syms)})
     return out
 
 
@@ -404,6 +409,9 @@ def research_step(get, ledger: Ledger, *, day: date, now: int, client=None) -> D
     except ValueError:
         n = 5
     queue = research_candidates(get, ledger.store, day=day, now=now, n=n)
+    if not queue:
+        return {"status": "no_candidates_yet", "note": "no mover passed gap + liquidity with a fresh IEX "
+                                                        "price; retried next tick"}
     for s in queue:
         if not ledger.store.get("edge_research", f"{day.isoformat()}|{s}"):
             import requests as _rq
@@ -677,7 +685,7 @@ def _settled(ledger: Ledger, day: str, specs) -> Dict[str, Any]:
     return out
 
 
-_NEWS = {"issued", "resolved", "graded", "no_movers", "no_telegram_config", "budget_exhausted",
+_NEWS = {"issued", "resolved", "graded", "no_movers", "no_candidates_yet", "no_telegram_config", "budget_exhausted",
          "early_close", "reviewed", "error", "complete", "submitted", "sent", "closed", "researched",
          "drift", "consistent",
          "entries_checked", "time_exit", "reconciled"}
