@@ -85,13 +85,15 @@ def misses_text(review: Dict[str, Any]) -> Optional[str]:
     labels = {k: v for k, v in (review.get("labels") or {}).items() if v}
     top = sorted((r for r in review.get("rows") or [] if r.get("opportunity") == "EXECUTABLE"),
                  key=lambda r: -(r.get("move_pct") or 0))[:5]
-    lines = [f"Movers review {review.get('day')}: {review.get('movers')} stocks hit +5%, "
+    lines = [f"Movers review {review.get('day')}: {review.get('movers')} stocks hit +5% at their peak, "
              f"{review.get('executable')} were tradeable after the open, caught {review.get('caught')}."]
     if labels:
         lines.append("Missed because: " + ", ".join(f"{k.lower().replace('_', ' ')} {v}" for k, v in sorted(labels.items())))
     if top:
-        lines.append("Biggest: " + ", ".join(f"{r['symbol']} +{r['move_pct']:.0f}% ({(r.get('label') or '').lower().replace('_', ' ')})"
-                                             for r in top))
+        lines.append("Biggest (peak / close): " + ", ".join(
+            f"{r['symbol']} +{r['move_pct']:.0f}%"
+            + (f" / {r['close_pct']:+.0f}%" if isinstance(r.get("close_pct"), (int, float)) else "")
+            + f" ({(r.get('label') or '').lower().replace('_', ' ')})" for r in top))
     if review.get("gap_only"):
         lines.append(f"{review['gap_only']} more gained only in the gap -- nothing to buy after the open.")
     return "\n".join(lines)

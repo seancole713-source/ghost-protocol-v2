@@ -183,8 +183,11 @@ def tick(get, ledger: Ledger, *, now: int, top: int = 50, http=None) -> Dict[str
     for spec in INTRADAY_SPECS:
         ledger.register(spec, now=now)
     mv = A.movers(get, top=top)
+    from edge import premarket as PM, universe as U
+    uni = U.symbols_as_of(ledger.store, day.isoformat())
     gainers = {str(g["symbol"]).upper(): float(g.get("percent_change") or 0)
-               for g in mv.get("gainers") or [] if g.get("symbol")}
+               for g in mv.get("gainers") or []
+               if g.get("symbol") and PM.common_stock(str(g["symbol"]), uni)}   # no warrants/rights (E6)
     syms = sorted(gainers)
     if not syms:
         return {"status": "no_movers"}

@@ -342,3 +342,21 @@ def test_a_card_tick_that_died_after_recording_forecasts_is_recovered_not_blocke
     out = P.morning_card(FakeAlpaca(), ledger, now=ts(9, 15))   # a later tick, different prices/time
     assert out["status"] == "issued" and out["forecasts"] == card["forecasts"]
     assert len(ledger.store.scan("forecasts", experiment_id=P.EID)) == 1
+
+
+def test_an_empty_research_queue_is_retried_not_cached_for_the_day(ledger, monkeypatch):
+    monkeypatch.setenv("EDGE_RESEARCH_ENABLED", "1")
+    calls = {"n": 0}
+
+    class NoFreshPrice(FakeAlpaca):
+        def __call__(self, url, params=None, headers=None, timeout=None):
+            if "/v2/stocks/snapshots" in url:
+                calls["n"] += 1
+                return Resp({})                      # 08:30 ET: IEX has printed nothing yet
+            return super().__call__(url, params=params, headers=headers, timeout=timeout)
+
+    out = P.research_step(NoFreshPrice(), ledger, day=DAY, now=ts(8, 30), client=object())
+    assert out["status"] == "no_candidates_yet"
+    assert ledger.store.get("edge_research_queue", DAY.isoformat()) is None
+    P.research_step(NoFreshPrice(), ledger, day=DAY, now=ts(8, 35), client=object())
+    assert calls["n"] == 2                            # recomputed, not frozen empty for the day

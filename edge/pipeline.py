@@ -167,6 +167,8 @@ def _events(items: Optional[List[dict]], symbols: set, now: int) -> Optional[Dic
         if pub is None:
             continue
         tick = [t.upper() for t in (n.get("symbols") or [])]
+        if len(tick) > C.MAX_STORY_TICKERS:
+            continue     # a market wrap ("Crude Oil Down...; Thor Shares Gain...") is not a company catalyst
         for sym in set(tick) & symbols:
             out[sym].append(C.make(sym, str(n.get("headline") or ""), source=str(n.get("source") or "alpaca"),
                                    url=str(n.get("url") or ""), published_at=pub, first_seen_at=now,
@@ -200,12 +202,12 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, A
     if model is not None:
         ledger.register(model[1], now=now)
 
-    mv = A.movers(get, top=top)
-    updated = A.iso_to_epoch(mv.get("last_updated"))
-    gainers = [g for g in mv.get("gainers") or [] if g.get("symbol")]
-    syms = sorted({str(g["symbol"]).upper() for g in gainers})
+    from edge import premarket as PM
+    cand = PM.candidates(get, store, day=day, now=now, top=top)   # today's scanned gappers + the screener
+    updated = cand["movers_last_updated"]
+    syms = sorted(set(cand["symbols"]))
     daily = A.bars_multi(get, syms, timeframe="1Day", start=(day - timedelta(days=45)).isoformat())
-    source_errors: Dict[str, str] = {}      # a failed source is named on the card, never passed off as "no data"
+    source_errors: Dict[str, str] = dict(cand["errors"])   # a failed source is named on the card, never "no data"
     try:
         snaps = A.snapshots(get, syms, feed="iex")
     except Exception as exc:  # noqa: BLE001 - recorded as missing, never guessed
@@ -318,7 +320,7 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, A
 
     priced = sum(1 for r in rows if r["ref_price"])
     health = H.assess([
-        H.SourceHealth("movers", updated, 900),
+        H.SourceHealth("movers", now if cand["scan"].get("priced") else updated, 900),
         H.SourceHealth("quotes_iex", now if rows else None, 1800, covered=priced, expected=len(rows) or None,
                        min_coverage=0.5),
         H.SourceHealth("news", now if items is not None else None, 1800,
@@ -332,7 +334,9 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, A
             "verified_forecasts": [r["symbol"] for r in ver_chosen] if research_on else None,
             "model_forecasts": [r["symbol"] for r in model_chosen] if model is not None else None,
             "model_experiment": model[1].experiment_id if model is not None else None,
-            "movers_last_updated": updated,
+            "movers_last_updated": updated, "movers_stale": cand["movers_stale"],
+            "premarket_scan": cand["scan"], "premarket_scan_top": cand["scan_top"],
+            "dropped_non_common": cand["dropped_non_common"],
             "coverage_note": f"{priced}/{len(rows)} candidates had a fresh IEX premarket price",
             "health": health, "health_banner": H.banner(len(chosen), {EID: blocking[EID]}),
             "source_errors": source_errors, "movers_count": len(syms),
@@ -378,8 +382,10 @@ def research_candidates(get, store, *, day: date, now: int, n: int) -> List[str]
     cached = store.get("edge_research_queue", day.isoformat())
     if cached:
         return cached["symbols"]
-    mv = A.movers(get, top=50)
-    syms = sorted({str(g["symbol"]).upper() for g in mv.get("gainers") or [] if g.get("symbol")})
+    from edge import premarket as PM
+    syms = sorted(set(PM.candidates(get, store, day=day, now=now, top=50)["symbols"]))
+    if not syms:
+        return []
     daily = A.bars_multi(get, syms, timeframe="1Day", start=(day - timedelta(days=45)).isoformat())
     snaps = A.snapshots(get, syms, feed="iex")
     ranked = []
@@ -391,7 +397,12 @@ def research_candidates(get, store, *, day: date, now: int, n: int) -> List[str]
         if g is not None and g.state == D.PASS and liq.state == D.PASS:
             ranked.append((-(st["avg_dollars"] or 0), s))
     out = [s for _, s in sorted(ranked)[:n]]
-    store.put("edge_research_queue", day.isoformat(), {"symbols": out, "at": now})
+    # Cache only a NON-empty queue. At 08:30 ET the free IEX feed often has no fresh
+    # premarket prints yet; caching that empty answer stopped research for the whole day
+    # (2026-09-23). An empty queue is recomputed on the next tick (3 calls per 5 min).
+    if out:
+        store.put("edge_research_queue", day.isoformat(), {"symbols": out, "at": now,
+                                                            "movers": len(syms)})
     return out
 
 
@@ -404,6 +415,9 @@ def research_step(get, ledger: Ledger, *, day: date, now: int, client=None) -> D
     except ValueError:
         n = 5
     queue = research_candidates(get, ledger.store, day=day, now=now, n=n)
+    if not queue:
+        return {"status": "no_candidates_yet", "note": "no mover passed gap + liquidity with a fresh IEX "
+                                                        "price; retried next tick"}
     for s in queue:
         if not ledger.store.get("edge_research", f"{day.isoformat()}|{s}"):
             import requests as _rq
@@ -677,7 +691,7 @@ def _settled(ledger: Ledger, day: str, specs) -> Dict[str, Any]:
     return out
 
 
-_NEWS = {"issued", "resolved", "graded", "no_movers", "no_telegram_config", "budget_exhausted",
+_NEWS = {"issued", "resolved", "graded", "no_movers", "no_candidates_yet", "no_telegram_config", "budget_exhausted",
          "early_close", "reviewed", "error", "complete", "submitted", "sent", "closed", "researched",
          "drift", "consistent",
          "entries_checked", "time_exit", "reconciled"}

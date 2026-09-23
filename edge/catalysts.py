@@ -75,6 +75,12 @@ def story_key(headline: str) -> str:
     return hashlib.sha1(norm.encode()).hexdigest()[:16]
 
 
+# A story tagged with more tickers than this is a market wrap or sector roundup, never a
+# company-specific catalyst (rule E4). 2026-09-23: "Crude Oil Down Over 1%; Thor Industries
+# Shares Gain After Q4 Results" was tagged to DCOY, VKTX and QNME.
+MAX_STORY_TICKERS = 3
+
+
 def make(symbol: str, headline: str, *, source: str, url: str, published_at: int, first_seen_at: int,
          tickers: Iterable[str] = (), scheduled: bool = False) -> CatalystEvent:
     if first_seen_at < published_at - 300:
