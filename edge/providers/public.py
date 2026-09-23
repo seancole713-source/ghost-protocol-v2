@@ -124,11 +124,18 @@ def _sec_user_agent() -> str:
             or "edge-research contact@example.invalid").strip()
 
 
+EDGAR_TIMEOUT_S = 30.0     # the current-8-K feed was measured at ~12 s from Railway; 12 s flapped
+
+
 def probe_edgar(get: Optional[B.HttpGet] = None) -> B.Probe:
     get = get or B.default_get()
-    r, ms, err = B.timed_get(get, EDGAR_8K_ATOM, headers={"User-Agent": _sec_user_agent()})
+    for attempt in range(2):     # one retry: a slow SEC response is not an outage
+        r, ms, err = B.timed_get(get, EDGAR_8K_ATOM, headers={"User-Agent": _sec_user_agent()},
+                                 timeout=EDGAR_TIMEOUT_S)
+        if r is not None:
+            break
     if r is None:
-        return B.Probe(B.FILINGS, "sec_edgar", B.ERROR, latency_ms=ms, note=err)
+        return B.Probe(B.FILINGS, "sec_edgar", B.ERROR, latency_ms=ms, note=f"{err} (twice, {EDGAR_TIMEOUT_S:g}s each)")
     st = B.classify(r.status_code)
     if st != B.OK:
         return B.Probe(B.FILINGS, "sec_edgar", st, http_status=r.status_code, latency_ms=ms,
