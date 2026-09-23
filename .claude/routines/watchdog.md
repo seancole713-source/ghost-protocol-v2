@@ -2,12 +2,16 @@
 
 ## Check
 1. Latest deployment status (`list-deployments`, limit 2).
-2. Logs since the last watchdog run (about 1 hour), filtered: `ERROR`, `Traceback`,
-   `job failed`, `timed out`, `EDGE_SHADOW`, `EDGE_PROBE_CAP`.
+2. Logs since the last watchdog run (about 1 hour), filtered: `EDGE_SHADOW_ERRORS` (every
+   failed edge step, logged first), `card_alarm` (no card by 09:28 ET), `ERROR`, `Traceback`,
+   `job failed`, `timed out`, `EDGE_SHADOW skipped` (tick lease held -- normal only during a
+   redeploy), `EDGE_PROBE_CAP`, `EDGE_CALENDAR`. On the card, `source_errors` names any data
+   source that failed (a failed source is not "no data").
 3. Is what should have happened by now today there? (ET clock)
    06:00 universe · 07:00 miss review · 08:30 research (if EDGE_RESEARCH_ENABLED) ·
    09:05-09:28 card + paper submit · 09:45-14:30 intraday ticks · 10:30 entry cancels ·
    15:30 time exit · 16:20 grading, card_graded, reconcile.
+   Early-close days (13:00 ET) have a card that says so and NO forecasts -- by design.
 4. Known and NOT bugs (do not "fix"): Alpaca SIP 403 and Polygon snapshot 403 (plan
    limits), borrow sources unreachable (IBKR FTP / iBorrowDesk), yfinance circuit
    breakers in Ghost's old squeeze monitor, strategies DEGRADED on IEX quotes.

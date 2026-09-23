@@ -41,7 +41,10 @@ def scan(monkeypatch):
     monkeypatch.setattr("core.squeeze_outcomes.record_squeeze_prediction", lambda *a, **kw: pytest.fail("invalid quote persisted"))
     from core.daily_bar_contract import previous_session
     now = datetime.now(timezone.utc)
-    prior = previous_session(now.date()).isoformat()
+    # The session date is the exchange's (ET), not UTC's: 00:00-04:00 UTC is still the
+    # previous ET day, and a UTC date there makes "prior" the current session.
+    from zoneinfo import ZoneInfo
+    prior = previous_session(now.astimezone(ZoneInfo("America/New_York")).date()).isoformat()
     daily = {"SPCE": [{"t": prior + "T04:00:00Z", "c": 100, "v": 1000}]}
     bar = {"t": (now - timedelta(minutes=3)).isoformat(), "c": 120, "h": 120, "l": 110, "v": 1000}
     return daily, {"SPCE": [bar]}

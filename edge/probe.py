@@ -57,6 +57,17 @@ STRATEGIES: Dict[str, List[Dict[str, Any]]] = {
     "supported_universe": [
         {"need": "listed-ticker reference", "ok": [B.UNIVERSE]},
     ],
+    # Operations, not strategies: each is what a whole stage of the day depends on.
+    "paper_execution": [
+        {"need": "Alpaca PAPER account accepting these keys", "ok": ["broker.paper"]},
+    ],
+    "phone_messages": [
+        {"need": "Telegram bot that can reach the operator's chat", "ok": ["notify.telegram"]},
+    ],
+    "ai_research": [
+        {"need": "Claude research author", "ok": ["llm.research.author"]},
+        {"need": "independent reviewer", "ok": ["llm.reviewer.independent"], "fallback": ["llm.research.author"]},
+    ],
 }
 
 UNLOCK: Dict[str, str] = {
@@ -77,12 +88,16 @@ UNLOCK: Dict[str, str] = {
     B.SHORT_INTEREST: "FINRA consolidated short interest via the FINRA Query API (free; may need free "
                       "API credentials -- the probe says which)",
     B.SHORT_VOLUME: "FINRA daily short-sale volume is free (it is NOT short interest)",
+    "broker.paper": "Alpaca PAPER keys in ALPACA_KEY_ID/ALPACA_SECRET_KEY (live keys are refused by the paper host)",
+    "notify.telegram": "TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID for a bot that is in the operator's chat",
+    "llm.research.author": "ANTHROPIC_API_KEY with access to claude-opus-5-5 (and credit)",
+    "llm.reviewer.independent": "OPENAI_API_KEY with credit, and EDGE_OPENAI_MODEL set to a model the probe lists",
 }
 
 
 def collect(get: Optional[B.HttpGet] = None, *, ibkr_fetch: Optional[Callable[[], str]] = None,
-            http=None) -> List[B.Probe]:
-    """`http` (requests-like, with post) enables the FINRA API and iBorrowDesk probes."""
+            http=None, llm_client=None) -> List[B.Probe]:
+    """`http` (requests-like, with post) enables the FINRA API, iBorrowDesk and LLM probes."""
     from edge.providers import shortdata
     probes: List[B.Probe] = []
     probes += polygon.probe(get)
@@ -95,6 +110,11 @@ def collect(get: Optional[B.HttpGet] = None, *, ibkr_fetch: Optional[Callable[[]
         probes.append(shortdata.probe_finra_si(http))
         probes.append(shortdata.probe_borrow(http))
         probes.append(research_openai.probe(http))
+        from edge import research_worker
+        probes.append(research_worker.probe(llm_client))
+        from edge import notify, paper
+        probes.append(paper.probe(http))
+        probes.append(notify.probe(http))
     else:
         probes.append(B.Probe(B.SHORT_INTEREST, "finra_api", B.UNVERIFIED, note="probe not run (no http client)"))
     return probes

@@ -49,6 +49,27 @@ class MemoryStore:
     def put(self, table, key, row):
         self._t.setdefault(table, {})[key] = dict(row)
 
+    def claim(self, name, *, owner, ttl_s, now=None):
+        import time as _time
+        now = int(now if now is not None else _time.time())
+        cur = self._t.setdefault("edge_lease", {}).get(name)
+        if cur and cur["owner"] != owner and now - cur["at"] < ttl_s:
+            return False
+        self._t["edge_lease"][name] = {"owner": owner, "at": now}
+        return True
+
+    def prune(self, table, *, older_than):
+        rows = self._t.get(table, {})
+        drop = [k for k, v in rows.items() if int(v.get("_at", v.get("written_at", 0)) or 0) < older_than]
+        for k in drop:
+            rows.pop(k)
+        return len(drop)
+
+    def release(self, name, *, owner):
+        cur = self._t.get("edge_lease", {}).get(name)
+        if cur and cur["owner"] == owner:
+            cur["at"] = 0
+
     def scan(self, table, **where):
         return [dict(r) for r in self._t.get(table, {}).values()
                 if all(r.get(k) == v for k, v in where.items())]

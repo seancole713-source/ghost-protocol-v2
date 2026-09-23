@@ -95,3 +95,26 @@ def misses_text(review: Dict[str, Any]) -> Optional[str]:
     if review.get("gap_only"):
         lines.append(f"{review['gap_only']} more gained only in the gap -- nothing to buy after the open.")
     return "\n".join(lines)
+
+
+def probe(http):
+    """Can the bot reach the operator's chat? getChat checks token AND chat without sending.
+    Never logs the URL: the token lives in it."""
+    from edge.providers import base as B
+    tok, chat = _creds()
+    if not tok:
+        return B.Probe("notify.telegram", "telegram", B.NO_KEY, note="TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set")
+    try:
+        r = http.get(f"{TELEGRAM}/bot{tok}/getChat", params={"chat_id": chat}, timeout=10)
+    except Exception as exc:  # noqa: BLE001
+        return B.Probe("notify.telegram", "telegram", B.ERROR, note=type(exc).__name__)
+    if r.status_code >= 400:
+        desc = ""
+        try:
+            desc = str((r.json() or {}).get("description") or "")[:120]
+        except Exception:  # noqa: BLE001
+            pass
+        return B.Probe("notify.telegram", "telegram", B.classify(r.status_code), http_status=r.status_code,
+                       note=f"bot cannot reach the chat: {desc}")
+    return B.Probe("notify.telegram", "telegram", B.OK, http_status=r.status_code, rows=1,
+                   note="bot can reach the operator's chat (nothing sent)")

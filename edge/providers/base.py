@@ -81,3 +81,12 @@ def timed_get(get: HttpGet, url: str, **kw) -> tuple:
 
 def default_get() -> HttpGet:
     return requests.get
+
+
+def et_today():
+    """Today on the exchange clock. Railway runs in UTC, where 20:00-24:00 ET is already
+    tomorrow -- a probe then treated today's still-open session as "yesterday"."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    return datetime.now(ZoneInfo("America/New_York")).date()
+

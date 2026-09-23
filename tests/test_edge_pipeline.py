@@ -333,3 +333,12 @@ def test_the_evening_tick_grades_the_card(ledger):
     P.morning_card(FakeAlpaca(), ledger, now=ts(9, 10))
     out = P.run(FakeAlpaca("evening"), ledger, now=ts(16, 25))
     assert out["card_graded"]["status"] == "graded" and P.noteworthy(out)
+
+
+def test_a_card_tick_that_died_after_recording_forecasts_is_recovered_not_blocked(ledger):
+    P.morning_card(FakeAlpaca(), ledger, now=ts(9, 10))
+    card = ledger.store.get("edge_cards", DAY.isoformat())
+    ledger.store._t["edge_cards"].pop(DAY.isoformat())          # the card write never happened
+    out = P.morning_card(FakeAlpaca(), ledger, now=ts(9, 15))   # a later tick, different prices/time
+    assert out["status"] == "issued" and out["forecasts"] == card["forecasts"]
+    assert len(ledger.store.scan("forecasts", experiment_id=P.EID)) == 1

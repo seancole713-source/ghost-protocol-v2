@@ -83,7 +83,7 @@ def probe(get: Optional[B.HttpGet] = None, *, today: Optional[date] = None,
     sleep = sleep or _time.sleep
     if pace_s is None:
         pace_s = float(os.getenv("EDGE_PROBE_POLYGON_PACE_S", "13"))
-    today = today or date.today()
+    today = today or B.et_today()
     day = _last_weekday(today)
     calls = [
         lambda: _probe_one(get, B.UNIVERSE, "/v3/reference/tickers",

@@ -42,8 +42,8 @@ def base_url() -> str:
 
 
 def _headers() -> Dict[str, str]:
-    kid = (os.getenv("ALPACA_KEY_ID") or "").strip()
-    sec = (os.getenv("ALPACA_SECRET_KEY") or "").strip()
+    kid = (os.getenv("ALPACA_KEY_ID") or os.getenv("APCA_API_KEY_ID") or "").strip()
+    sec = (os.getenv("ALPACA_SECRET_KEY") or os.getenv("APCA_API_SECRET_KEY") or "").strip()
     if not kid or not sec:
         raise RuntimeError("ALPACA_KEY_ID / ALPACA_SECRET_KEY not set")
     return {"APCA-API-KEY-ID": kid, "APCA-API-SECRET-KEY": sec}
@@ -63,8 +63,29 @@ def _forecasts(ledger: Ledger, day: str, experiments) -> List[Forecast]:
     return out
 
 
+_OPEN = {"new", "accepted", "pending_new", "accepted_for_bidding", "held", "partially_filled",
+         "pending_replace", "calculated"}
+
+
+def _by_client_id(http, cid: str) -> Optional[dict]:
+    """The broker's own record of OUR order id, or None if it has none (or cannot say)."""
+    try:
+        r = http.get(f"{base_url()}/v2/orders:by_client_order_id", headers=_headers(), timeout=15,
+                     params={"client_order_id": cid, "nested": "true"})
+    except Exception:  # noqa: BLE001
+        return None
+    return (r.json() or None) if r.status_code == 200 else None
+
+
+def _transient(code: Optional[int]) -> bool:
+    return code is None or code == 429 or code >= 500
+
+
 def submit(http, ledger: Ledger, *, day: str, experiments) -> Dict[str, Any]:
-    """Place every not-yet-placed forecast of `day` as a paper bracket."""
+    """Place every not-yet-placed forecast of `day` as a paper bracket. Idempotent: before
+    anything is recorded as rejected, the broker is asked whether it already holds OUR
+    client_order_id (a timed-out POST that Alpaca accepted is `submitted`, not `rejected`),
+    and a transient failure (timeout, 429, 5xx) records nothing so the next tick retries."""
     url, h, placed, errors = base_url(), _headers(), [], []
     for f in _forecasts(ledger, day, experiments):
         key = f"{f.forecast_id}|paper"
@@ -72,73 +93,113 @@ def submit(http, ledger: Ledger, *, day: str, experiments) -> Dict[str, Any]:
             continue
         body = bracket_request(f.forecast_id, f.symbol, f.shares, entry_stop=f.entry_trigger,
                                entry_limit=f.entry_limit, target=f.target, stop=f.stop)
-        r = http.post(f"{url}/v2/orders", json=body, headers=h, timeout=15)
-        rec = {"forecast_id": f.forecast_id, "symbol": f.symbol, "status_code": r.status_code}
-        if 200 <= r.status_code < 300:
-            o = r.json() or {}
-            rec.update({"order_id": o.get("id"), "state": "submitted"})
+        code, msg, oid = None, "", None
+        try:
+            r = http.post(f"{url}/v2/orders", json=body, headers=h, timeout=15)
+            code = r.status_code
+            if 200 <= code < 300:
+                oid = (r.json() or {}).get("id")
+            else:
+                try:
+                    msg = str((r.json() or {}).get("message") or "")[:200]
+                except Exception:  # noqa: BLE001
+                    pass
+        except Exception as exc:  # noqa: BLE001
+            msg = type(exc).__name__
+        if oid is None:
+            held = _by_client_id(http, f"{f.forecast_id}-entry")
+            if held:
+                oid = held.get("id")
+        if oid is not None:
+            ledger.store.put("edge_paper", key, {"forecast_id": f.forecast_id, "symbol": f.symbol,
+                                                 "status_code": code, "order_id": oid, "state": "submitted"})
             placed.append(f.symbol)
+        elif _transient(code):
+            errors.append(f"{f.symbol}: transient {code or msg}, retrying next tick")
         else:
-            # A refusal is a fact about execution, recorded as a rejected entry.
-            msg = ""
-            try:
-                msg = str((r.json() or {}).get("message") or "")[:200]
-            except Exception:  # noqa: BLE001
-                pass
-            rec.update({"state": "rejected", "message": msg})
-            errors.append(f"{f.symbol}: HTTP {r.status_code} {msg}")
-        ledger.store.put("edge_paper", key, rec)
+            # A definite refusal is a fact about execution, recorded as a rejected entry.
+            ledger.store.put("edge_paper", key, {"forecast_id": f.forecast_id, "symbol": f.symbol,
+                                                 "status_code": code, "state": "rejected", "message": msg})
+            errors.append(f"{f.symbol}: HTTP {code} {msg}")
     return {"status": "submitted" if placed or errors else "nothing_to_submit",
             "placed": placed, "errors": errors}
 
 
-def _open_orders(http, symbol: str) -> List[dict]:
-    r = http.get(f"{base_url()}/v2/orders", params={"status": "open", "symbols": symbol, "nested": "true"},
-                 headers=_headers(), timeout=15)
-    r.raise_for_status()
-    return list(r.json() or [])
+def _delete(http, order_id: str) -> bool:
+    try:
+        r = http.delete(f"{base_url()}/v2/orders/{order_id}", headers=_headers(), timeout=15)
+    except Exception:  # noqa: BLE001
+        return False
+    return r.status_code in (200, 204) or r.status_code == 404
 
 
 def cancel_unfilled_entries(http, ledger: Ledger, *, day: str, experiments,
                             now: Optional[int] = None) -> Dict[str, Any]:
     """At each forecast's OWN entry expiry (10:30 ET for the morning card, issuance
-    + 20 min intraday), an entry that has not filled is cancelled with its legs."""
-    done, touched = [], False
+    + 20 min intraday), an entry that has not filled is cancelled with its legs. Only
+    THIS forecast's order is touched; a failed cancel is retried next tick. A partly
+    filled entry is left alone: its legs protect the filled shares until the time exit."""
+    done, touched, errors = [], False, []
     for f in _forecasts(ledger, day, experiments):
         rec = ledger.store.get("edge_paper", f"{f.forecast_id}|paper")
         if not rec or rec.get("state") != "submitted" or rec.get("entry_cancel_checked"):
             continue
         if now is not None and now < f.entry_expiry:
             continue
-        for o in _open_orders(http, f.symbol):
-            if o.get("client_order_id") == f"{f.forecast_id}-entry" and float(o.get("filled_qty") or 0) == 0:
-                http.delete(f"{base_url()}/v2/orders/{o['id']}", headers=_headers(), timeout=15)
-                done.append(f.symbol)
+        o = _by_client_id(http, f"{f.forecast_id}-entry")
+        if o is None:
+            errors.append(f"{f.symbol}: broker has no record yet")
+            continue
+        if o.get("status") in _OPEN and float(o.get("filled_qty") or 0) == 0:
+            if not _delete(http, o["id"]):
+                errors.append(f"{f.symbol}: cancel failed, retrying")
+                continue
+            done.append(f.symbol)
         ledger.store.put("edge_paper", f"{f.forecast_id}|paper", {**rec, "entry_cancel_checked": True})
         touched = True
-    return {"status": "entries_checked" if touched else "nothing", "canceled": done}
+    return {"status": "entries_checked" if touched else ("error" if errors else "nothing"),
+            "canceled": done, "errors": errors}
 
 
 def time_exit(http, ledger: Ledger, *, day: str, experiments) -> Dict[str, Any]:
-    """15:30 ET: cancel the bracket legs, then close what is still open."""
-    closed, touched = [], False
+    """15:30 ET: for each forecast, cancel ITS OWN open orders, then sell the shares ITS
+    entry bought and its legs have not already sold -- never the whole symbol position,
+    which two experiments can share. A sell the broker refuses (legs still pending
+    cancel) is retried next tick; the forecast is marked done only when it is flat."""
+    closed, touched, errors = [], False, []
     for f in _forecasts(ledger, day, experiments):
         rec = ledger.store.get("edge_paper", f"{f.forecast_id}|paper")
         if not rec or rec.get("state") != "submitted" or rec.get("time_exit_done"):
             continue
-        for o in _open_orders(http, f.symbol):
-            http.delete(f"{base_url()}/v2/orders/{o['id']}", headers=_headers(), timeout=15)
-        r = http.get(f"{base_url()}/v2/positions/{f.symbol}", headers=_headers(), timeout=15)
-        if r.status_code == 200:
-            qty = abs(int(float((r.json() or {}).get("qty") or 0)))
-            if qty:
-                http.post(f"{base_url()}/v2/orders", headers=_headers(), timeout=15, json={
-                    "symbol": f.symbol, "qty": str(qty), "side": "sell", "type": "market",
+        entry = _by_client_id(http, f"{f.forecast_id}-entry")
+        if entry is None:
+            errors.append(f"{f.symbol}: broker has no record yet")
+            continue
+        legs = entry.get("legs") or []
+        pending = [o for o in [entry] + legs if o.get("status") in _OPEN]
+        if not all(_delete(http, o["id"]) for o in pending):
+            errors.append(f"{f.symbol}: cancel failed, retrying")
+            continue
+        bought = int(float(entry.get("filled_qty") or 0))
+        sold = sum(int(float(leg.get("filled_qty") or 0)) for leg in legs)
+        tx = _by_client_id(http, f"{f.forecast_id}-tx")
+        remaining = bought - sold - (int(float(tx.get("filled_qty") or 0)) if tx else 0)
+        if remaining > 0 and not (tx and tx.get("status") in _OPEN):
+            try:
+                r = http.post(f"{base_url()}/v2/orders", headers=_headers(), timeout=15, json={
+                    "symbol": f.symbol, "qty": str(remaining), "side": "sell", "type": "market",
                     "time_in_force": "day", "client_order_id": f"{f.forecast_id}-tx"})
-                closed.append(f.symbol)
+                ok = 200 <= r.status_code < 300
+            except Exception:  # noqa: BLE001
+                ok = False
+            if not ok:
+                errors.append(f"{f.symbol}: exit sell refused, retrying")
+                continue
+            closed.append(f.symbol)
         ledger.store.put("edge_paper", f"{f.forecast_id}|paper", {**rec, "time_exit_done": True})
         touched = True
-    return {"status": "time_exit" if touched else "nothing", "closed": closed}
+    return {"status": "time_exit" if touched else ("error" if errors else "nothing"),
+            "closed": closed, "errors": errors}
 
 
 def _events_from_orders(orders: List[dict], forecast_id: str) -> List[F.OrderEvent]:
@@ -194,3 +255,21 @@ def reconcile(http, ledger: Ledger, *, day: str, experiments, now: int) -> Dict[
         settled[f"{f.experiment_id}:{f.symbol}"] = {"actual": res.outcome, "pnl_usd": res.pnl_usd,
                                                     "warnings": pos.warnings}
     return {"status": "reconciled" if settled else "nothing", "settled": settled}
+
+
+def probe(http):
+    """Does the PAPER trading account accept these keys and allow trading? Reads /v2/account
+    on the pinned paper host; never logs the account number."""
+    from edge.providers import base as B
+    try:
+        r = http.get(f"{base_url()}/v2/account", headers=_headers(), timeout=15)
+    except Exception as exc:  # noqa: BLE001
+        return B.Probe("broker.paper", "alpaca_paper", B.ERROR, note=f"{type(exc).__name__}: {str(exc)[:80]}")
+    if r.status_code >= 400:
+        return B.Probe("broker.paper", "alpaca_paper", B.classify(r.status_code), http_status=r.status_code,
+                       note="the paper host refused these keys (live keys are refused here by design)")
+    a = r.json() or {}
+    blocked = [k for k in ("trading_blocked", "account_blocked", "trade_suspended_by_user") if a.get(k)]
+    ok = str(a.get("status") or "").upper() == "ACTIVE" and not blocked
+    return B.Probe("broker.paper", "alpaca_paper", B.OK if ok else B.ERROR, http_status=r.status_code, rows=1,
+                   note=f"paper account {a.get('status')}" + (f"; blocked: {', '.join(blocked)}" if blocked else ""))

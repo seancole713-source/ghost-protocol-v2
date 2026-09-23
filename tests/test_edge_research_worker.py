@@ -226,3 +226,36 @@ def test_the_openai_review_is_bounded_and_counted_in_the_daily_cap(monkeypatch):
     W.research_symbol(c, store, symbol="SHOP", day="2026-09-23", now=ts(8, 35), http=Billed())
     rec = store.get("edge_research", "2026-09-23|SHOP")
     assert rec["reviewer"] == "openai:gpt-6-sol" and rec["cost_usd"] >= 0.3
+
+
+def test_the_claude_probe_makes_one_real_call_with_the_workers_own_settings(monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    assert W.probe(Client([])).status == "NO_KEY"
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.setenv("EDGE_RESEARCH_ENABLED", "1")
+    ok = reply("OK")
+    ok.model = "claude-opus-5-5"
+    c = Client([ok])
+    p = W.probe(c)
+    assert p.status == "OK" and "using claude-opus-5-5 (test call answered, served by it)" in p.note
+    assert "research ON" in p.note and "$3/day" in p.note
+    kw = c.calls[0]
+    assert kw["model"] == "claude-opus-5-5" and kw["fallbacks"] == "default" and kw["max_tokens"] <= 300
+    fb = reply("OK")
+    fb.model = "claude-opus-5"
+    assert "served by claude-opus-5" in W.probe(Client([fb])).note        # a fallback answered
+
+
+def test_a_failing_claude_call_is_classified_not_hidden(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    monkeypatch.delenv("EDGE_RESEARCH_ENABLED", raising=False)
+
+    class Denied(Exception):
+        status_code, message = 401, "invalid x-api-key"
+
+    class Boom:
+        beta = NS(messages=NS(create=lambda **kw: (_ for _ in ()).throw(Denied())))
+
+    p = W.probe(Boom())
+    assert p.status == "NOT_AUTHORIZED" and "invalid x-api-key" in p.note and "research OFF" in p.note
+    assert W.probe(Client([reply("", stop="refusal")])).status == "ERROR"

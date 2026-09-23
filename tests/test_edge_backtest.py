@@ -70,6 +70,9 @@ class Market:
                    "LATE": path_bars(d, 10.60, [10.6, 10.6], pre_minute=(9, 10))}
             return Resp({"bars": {s: out[s] for s in params["symbols"].split(",") if s in out}})
         if "/v1beta1/news" in url:
+            # A past window must be bounded, or Alpaca pages back from NOW (v2's bug).
+            assert params.get("end") == iso(ts(END, 9, 10)).replace("+00:00", "Z") or \
+                params.get("end", "").startswith(str(END)), params
             return Resp({"news": [
                 {"headline": "RUNR wins contract award from Navy", "created_at": iso(ts(END, 8, 0)),
                  "symbols": ["RUNR"], "source": "x", "url": "u1"},

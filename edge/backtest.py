@@ -43,7 +43,10 @@ from edge.pipeline import GAP_AND_GO_AUTO, GAP_BASELINE, previous_trading_day, t
 from edge.providers import alpaca as A, polygon as PG
 from edge.resolver import resolve_execution, resolve_market
 
-BACKTEST_VERSION = "gap_and_go_backtest_v2"
+# v3: v2's historical news query had no `end`, so Alpaca paged back from NOW and the capped
+# pages held no news from the session studied -- the catalyst rule saw almost none (1 forecast
+# in 58 sessions). The no-catalyst baseline was unaffected. v2's record is kept as it was.
+BACKTEST_VERSION = "gap_and_go_backtest_v3"
 LIMITS = [
     "research evidence on past sessions, NOT the forward record",
     "candidates pre-screened by that day's open >= +1% (small optimistic bias: misses 9:10 gappers that faded before the open)",
@@ -128,7 +131,7 @@ def session(get, day: date, prev_rows: List[dict], today_rows: List[dict], rolli
     if not syms:
         return {"day": day.isoformat(), "candidates": 0, "results": []}
     minute = A.bars_multi(get, syms, timeframe="1Min", start=_iso(_at(day, 4, 0)), end=_iso(_at(day, 16, 0)))
-    news = A.news(get, syms, start=_iso(_at(day, 9, 10) - 86_400), limit=50)
+    news = A.news(get, syms, start=_iso(_at(day, 9, 10) - 86_400), end=_iso(_at(day, 9, 10)), limit=50)
     issued_at = _at(day, 9, 10)
     events: Dict[str, List[C.CatalystEvent]] = {s: [] for s in syms}
     for n in news:
@@ -264,4 +267,6 @@ def run(get, store, *, end_day: date, days: int = 60, warmup: int = 20,
     store.put("edge_backtest", BACKTEST_VERSION, {**summary, "sessions_detail": [
         {k: v for k, v in sess.items() if k != "dataset"} for sess in results]})
     store.put("edge_dataset", BACKTEST_VERSION, {"rows": dataset, "features": list(FX.FEATURES)})
-    return {"status": "complete", **{k: summary[k] for k in ("sessions", "window", "experiments")}}
+    return {"status": "complete", **{k: summary[k] for k in ("sessions", "window", "experiments",
+                                                              "dataset_rows")},
+            "model": {k: v for k, v in (summary.get("model") or {}).items() if k != "evaluation"}}
