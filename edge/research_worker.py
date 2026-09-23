@@ -89,6 +89,35 @@ def _client():
     return anthropic.Anthropic(timeout=110.0, max_retries=1)
 
 
+def probe(client=None):
+    """One tiny real call with the research worker's own settings -- model, betas, fallback --
+    and which model actually SERVED it (a server-side fallback can answer instead)."""
+    from edge.providers import base as B
+    cap, prov = "llm.research.author", "anthropic"
+    state = f"research {'ON' if enabled() else 'OFF (EDGE_RESEARCH_ENABLED)'}, cap ${daily_cap_usd():g}/day"
+    if not (os.getenv("ANTHROPIC_API_KEY") or "").strip():
+        return B.Probe(cap, prov, B.NO_KEY, note=f"ANTHROPIC_API_KEY not set; {state}")
+    try:
+        c = client or _client()
+        resp = c.beta.messages.create(
+            model=MODEL, max_tokens=300,
+            betas=["server-side-fallback-2026-07-01"], fallbacks="default",
+            thinking={"type": "adaptive"}, output_config={"effort": "low"},
+            messages=[{"role": "user", "content": "Reply with the single word OK."}],
+        )
+    except Exception as exc:  # noqa: BLE001
+        code = getattr(exc, "status_code", None)
+        msg = str(getattr(exc, "message", "") or exc)[:160]
+        return B.Probe(cap, prov, B.classify(code) if code else B.ERROR, http_status=code,
+                       note=f"{MODEL} test call failed: {type(exc).__name__}: {msg}; {state}")
+    served = str(getattr(resp, "model", "") or "")
+    if resp.stop_reason == "refusal":
+        return B.Probe(cap, prov, B.ERROR, http_status=200, note=f"{MODEL} refused the test call; {state}")
+    who = f"served by {served}" if served and served != MODEL else "served by it"
+    return B.Probe(cap, prov, B.OK, http_status=200, rows=1,
+                   note=f"using {MODEL} (test call answered, {who}); {state}")
+
+
 def cost_usd(usage: Any) -> float:
     if usage is None:
         return 0.0

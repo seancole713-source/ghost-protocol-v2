@@ -81,8 +81,8 @@ UNLOCK: Dict[str, str] = {
 
 
 def collect(get: Optional[B.HttpGet] = None, *, ibkr_fetch: Optional[Callable[[], str]] = None,
-            http=None) -> List[B.Probe]:
-    """`http` (requests-like, with post) enables the FINRA API and iBorrowDesk probes."""
+            http=None, llm_client=None) -> List[B.Probe]:
+    """`http` (requests-like, with post) enables the FINRA API, iBorrowDesk and LLM probes."""
     from edge.providers import shortdata
     probes: List[B.Probe] = []
     probes += polygon.probe(get)
@@ -95,6 +95,8 @@ def collect(get: Optional[B.HttpGet] = None, *, ibkr_fetch: Optional[Callable[[]
         probes.append(shortdata.probe_finra_si(http))
         probes.append(shortdata.probe_borrow(http))
         probes.append(research_openai.probe(http))
+        from edge import research_worker
+        probes.append(research_worker.probe(llm_client))
     else:
         probes.append(B.Probe(B.SHORT_INTEREST, "finra_api", B.UNVERIFIED, note="probe not run (no http client)"))
     return probes
