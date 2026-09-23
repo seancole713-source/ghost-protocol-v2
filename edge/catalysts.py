@@ -22,13 +22,19 @@ INDEX, ANALYST, OFFERING, REVERSE_SPLIT, POLICY, OTHER = (
     "index_inclusion", "analyst_action", "offering_dilution", "reverse_split", "policy_macro", "other")
 DILUTIVE = frozenset({OFFERING})
 MECHANICAL = frozenset({REVERSE_SPLIT})
+PRICE_ACTION = "price_action"          # describes a move; never a catalyst (never in COMPANY_SPECIFIC)
 COMPANY_SPECIFIC = frozenset({EARNINGS, GUIDANCE, FDA, CONTRACT, MNA, INDEX, ANALYST})
 
 _RULES = [  # first match wins; dilution is checked first on purpose
     (OFFERING, r"\b(public offering|registered direct|at-the-market|atm program|private placement|priced .* offering|warrants?)\b"),
-    (REVERSE_SPLIT, r"\breverse (stock )?split\b"),
+    (REVERSE_SPLIT, r"\breverse (stock |share )?split\b|\b1[- ]for[- ]\d+\b|\bshare consolidation\b"),
+    # Price action describes a move, it never explains one: "WHLR stock explodes on volatility".
+    (PRICE_ACTION, r"\b(stocks?|shares)\b.{0,40}\b(soar|soars|surge|surges|jump|jumps|rall(y|ies)|pops?|explodes?|"
+                   r"rockets?|spikes?|climbs?|plunges?|tumbles?|sinks?|whipsaws?|skyrockets?|rips?)\b|"
+                   r"\bvolatility\b|\bwhy .{0,40} (stock|shares) (is|are) (up|down|trading)\b|"
+                   r"\b(top )?(gainers|losers|movers)\b|\bstocks moving\b"),
     (MNA, r"\b(to acquire|acquisition of|merger|to be acquired|takeover|buyout|definitive agreement)\b"),
-    (FDA, r"\b(fda|pdufa|approval|clearance|breakthrough therapy|phase (1|2|3|i|ii|iii))\b"),
+    (FDA, r"\b(fda|pdufa|breakthrough therapy|phase (1|2|3|i|ii|iii)|(nda|bla|510\(k\)|ema|marketing) (approval|clearance))\b"),
     (EARNINGS, r"\b(earnings|quarterly results|q[1-4] results|eps|revenue (rose|grew|increased|beat))\b"),
     (GUIDANCE, r"\b(raises|lifts|boosts|cuts|lowers) (its )?(full-year |annual )?(guidance|outlook|forecast)\b"),
     (CONTRACT, r"\b(contract|award(ed)?|partnership|collaboration|agreement with|order from)\b"),

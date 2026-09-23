@@ -240,6 +240,15 @@ def reconcile(http, ledger: Ledger, *, day: str, experiments, now: int) -> Dict[
                  params={"status": "all", "after": f"{day}T00:00:00Z", "nested": "true", "limit": 500})
     r.raise_for_status()
     orders = list(r.json() or [])
+    ids = [f.forecast_id for f in _forecasts(ledger, day, experiments)]
+    # Keep the broker's own record of every order (compact) so a simulated/actual mismatch can be
+    # explained afterwards -- 2026-09-23 GLND: simulated LOSS, paper NO_FILL, nothing kept to say why.
+    keep = ("id", "client_order_id", "symbol", "side", "type", "status", "stop_price", "limit_price",
+            "qty", "filled_qty", "filled_avg_price", "submitted_at", "filled_at", "canceled_at",
+            "expired_at", "updated_at")
+    ledger.store.put("edge_paper_orders", day, {"day": day, "at": now, "orders": [
+        {**{k: o.get(k) for k in keep}, "legs": [{k: g.get(k) for k in keep} for g in o.get("legs") or []]}
+        for o in orders if any(str(o.get("client_order_id") or "").startswith(fid) for fid in ids)]})
     settled = {}
     for f in _forecasts(ledger, day, experiments):
         prior = ledger.store.get("outcomes", f"{f.forecast_id}|actual")

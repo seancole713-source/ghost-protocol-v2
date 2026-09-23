@@ -127,16 +127,38 @@ def paper(store, day: Optional[str] = None) -> Dict[str, Any]:
     d = _day_of(store, "forecasts", day, "session_date")
     if not d:
         return {"note": "no forecasts yet"}
+    from datetime import datetime
+    from edge.contracts import ET
+
+    def _hm(ts):
+        return datetime.fromtimestamp(int(ts), tz=ET).strftime("%H:%M:%S ET") if ts else None
+
+    broker = {o.get("client_order_id"): o for o in (store.get("edge_paper_orders", d) or {}).get("orders") or []}
     rows = []
     for f in sorted(store.scan("forecasts", session_date=d), key=lambda r: r["issued_at"]):
         p = store.get("edge_paper", f"{f['forecast_id']}|paper") or {}
         act = store.get("outcomes", f"{f['forecast_id']}|actual") or {}
         sim = store.get("outcomes", f"{f['forecast_id']}|simulated") or {}
+        rule = store.get("outcomes", f"{f['forecast_id']}|forecast") or {}
+        entry = broker.get(f"{f['forecast_id']}-entry") or {}
+        filled_at = entry.get("filled_at")
+        from edge.providers.alpaca import iso_to_epoch
+        late = bool(filled_at and iso_to_epoch(filled_at) and iso_to_epoch(filled_at) > f["entry_expiry"])
+        outside = act.get("outcome") in ("WIN", "LOSS", "TIME_EXIT") and rule.get("outcome") == "NO_FILL"
         rows.append({"experiment": f["experiment_id"], "symbol": f["symbol"],
-                     "entry_trigger": f.get("entry_trigger"), "target": f.get("target"), "stop": f.get("stop"),
+                     "issued": _hm(f.get("issued_at")), "entry_window_ends": _hm(f.get("entry_expiry")),
+                     "why": (f.get("evidence") or {}),
+                     "entry_trigger": f.get("entry_trigger"), "entry_limit": f.get("entry_limit"),
+                     "target": f.get("target"), "stop": f.get("stop"),
                      "shares": f.get("shares"), "paper_state": p.get("state"), "paper_message": p.get("message"),
-                     "simulated": sim.get("outcome"), "actual": act.get("outcome"),
-                     "actual_pnl_usd": act.get("pnl_usd")})
+                     "simulated": sim.get("outcome"), "simulated_note": sim.get("note"),
+                     "actual": act.get("outcome"), "actual_pnl_usd": act.get("pnl_usd"),
+                     "actual_counted": not outside,
+                     "broker_entry": {k: entry.get(k) for k in ("status", "submitted_at", "filled_at",
+                                                                "filled_avg_price", "canceled_at")} if entry else None,
+                     "filled_after_window": late,
+                     "note": ("broker filled where the rule's record has no entry: outside the rule, not counted"
+                              if outside else None)})
     return {"day": d, "orders": rows, "note": "Alpaca PAPER account only; no real money"}
 
 

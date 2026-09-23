@@ -188,3 +188,17 @@ def test_the_audit_reports_recall_beside_correct_rejections():
     assert rep.recall == 0.5
     assert (rep.correct_rejections, rep.wrong_rejections) == (1, 1)
     assert rep.rejection_precision == 0.5
+
+
+def test_price_action_and_reverse_splits_are_never_company_catalysts():
+    from edge import catalysts as C, setups as S
+    for h in ["WHLR Stock Explodes On Volatility As Traders Target Micro-Cap REIT",
+              "Why Wheeler Real Estate stock is trading higher today", "12 Real Estate Stocks Moving In Wednesday's Session"]:
+        assert C.classify(h) == C.PRICE_ACTION, h
+    assert C.classify("Wheeler announces 1-for-9 reverse stock split") == C.REVERSE_SPLIT
+    assert C.classify("Board approves 1-for-30 share consolidation") == C.REVERSE_SPLIT
+    assert C.classify("Receives FDA approval for Mytesi label") == C.FDA
+    assert C.classify("Shareholders approve director slate") == C.OTHER      # bare "approval" is not FDA
+    ev = [C.make("WHLR", "Wheeler announces 1-for-9 reverse stock split", source="x", url="u",
+                 published_at=1, first_seen_at=1)]
+    assert S.dilution_signal(ev).state == "FAIL"                              # E5: not mechanical

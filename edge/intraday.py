@@ -244,7 +244,8 @@ def tick(get, ledger: Ledger, *, now: int, top: int = 50, http=None) -> Dict[str
             evs = [C.make(s, str(n.get("headline") or ""), source=str(n.get("source") or ""), url=str(n.get("url") or ""),
                           published_at=A.iso_to_epoch(n.get("created_at")) or now,
                           first_seen_at=now, tickers=[x.upper() for x in n.get("symbols") or []])
-                   for n in items if s in [x.upper() for x in n.get("symbols") or []]]
+                   for n in items if s in [x.upper() for x in n.get("symbols") or []]
+                   and len(n.get("symbols") or []) <= C.MAX_STORY_TICKERS]      # no market wraps (E4)
             ev = C.usable_at(C.dedupe(evs), s, issued_at=now)
         sig = {
             "liquidity": D.liquidity(price=price, avg_shares=(daily.get(s) or {}).get("avg_shares")),

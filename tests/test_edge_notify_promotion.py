@@ -54,6 +54,7 @@ def test_no_config_sends_nothing(monkeypatch):
 
 def test_the_duty_reminders_fire_at_their_times():
     lg, tg = Ledger(MemoryStore()), TG()
+    lg.store.put("edge_cards", "2026-09-23", {"day": "2026-09-23", "forecasts": ["SHOP"]})
     P.run(None, lg, now=ts(10, 26), notifier=tg)
     P.run(None, lg, now=ts(15, 27), notifier=tg)
     texts = [j["text"] for _, j in tg.sent]
@@ -106,3 +107,21 @@ def test_a_record_that_clears_every_bar_is_only_proposable_never_live():
 
 def test_criteria_are_hashed_so_a_lowered_bar_is_visible():
     assert len(PR.CRITERIA_HASH) == 16
+
+
+
+def test_no_duty_reminders_when_the_card_had_no_trade():
+    lg, tg = Ledger(MemoryStore()), TG()
+    lg.store.put("edge_cards", "2026-09-23", {"day": "2026-09-23", "forecasts": []})
+    P.run(None, lg, now=ts(10, 26), notifier=tg)
+    P.run(None, lg, now=ts(15, 27), notifier=tg)
+    assert tg.sent == []
+
+
+def test_a_paper_stage_needs_the_rule_to_have_traded_too():
+    from edge import promotion as PR
+    rep = {"break_even": 0.375, "records": {
+        "simulated": {"filled": 0, "wins": 0, "win_rate": None},
+        "actual": {"filled": 1, "wins": 1, "expectancy_usd": {"mean": 62.2}}}}
+    base = {"records": {"simulated": {"win_rate": 0.3}}}
+    assert PR.evaluate(rep, baseline=base, sessions=1, by_day={}, n_candidates=1)["stage"] == "shadow"

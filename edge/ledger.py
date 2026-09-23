@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Optional, Protocol
 
 from edge import stats
 from edge.contracts import (
-    COUNTED, EXCLUDED, TERMINAL, WIN, ContractError, ExperimentSpec, Forecast, FrozenSpecError,
+    COUNTED, EXCLUDED, NO_FILL, TERMINAL, WIN, ContractError, ExperimentSpec, Forecast, FrozenSpecError,
 )
 from edge.resolver import Resolution
 
@@ -34,6 +34,9 @@ class Store(Protocol):
     def get(self, table: str, key: str) -> Optional[Dict[str, Any]]: ...
     def put(self, table: str, key: str, row: Dict[str, Any]) -> None: ...
     def scan(self, table: str, **where: Any) -> List[Dict[str, Any]]: ...
+
+
+OUTSIDE_RULE = "OUTSIDE_RULE"   # a broker fill the rule's own record never took; shown, not counted
 
 
 class MemoryStore:
@@ -193,6 +196,14 @@ class Ledger:
                        record: str) -> Dict[str, Any]:
         outcomes = {f["forecast_id"]: self.store.get("outcomes", f"{f['forecast_id']}|{record}")
                     for f in forecasts}
+        if record == "actual":
+            # A broker fill where the rule's own record says there was no entry (it filled after the
+            # entry window, or on prices the rule never saw) is outside the rule: shown, never counted.
+            # 2026-09-23 WHLR: filled after its 20-minute window -> paper WIN the rule never took.
+            for fid, o in list(outcomes.items()):
+                rule = self.store.get("outcomes", f"{fid}|forecast") or {}
+                if o and o["outcome"] in COUNTED and rule.get("outcome") == NO_FILL:
+                    outcomes[fid] = {**o, "outcome": OUTSIDE_RULE}
         by = {}
         for o in outcomes.values():
             key = o["outcome"] if o else "PENDING"
