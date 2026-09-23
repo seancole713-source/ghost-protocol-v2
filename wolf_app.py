@@ -2236,11 +2236,23 @@ async def lifespan(app: FastAPI):
                 import requests as _requests
                 paper_on = os.getenv("EDGE_PAPER_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
                 tg_on = os.getenv("EDGE_TELEGRAM_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
-                out = _edge_run(_edge_get(), _EdgeLedger(store), now=int(_time.time()),
-                                http=_requests if paper_on else None,
-                                notifier=_requests if tg_on else None)
+                import socket as _socket
+                _owner = f"{os.getenv('RAILWAY_DEPLOYMENT_ID') or _socket.gethostname()}:{os.getpid()}"
+                if not store.claim("edge_shadow", owner=_owner, ttl_s=280):
+                    LOGGER.warning("EDGE_SHADOW skipped: another Ghost container holds the tick lease")
+                    return
+                try:
+                    out = _edge_run(_edge_get(), _EdgeLedger(store), now=int(_time.time()),
+                                    http=_requests if paper_on else None,
+                                    notifier=_requests if tg_on else None)
+                finally:
+                    store.release("edge_shadow", owner=_owner)
                 if _edge_noteworthy(out):
-                    LOGGER.warning("EDGE_SHADOW %s", _json.dumps(out, default=str)[:4000])
+                    # Errors first, so a long evening report can never push them off the line.
+                    _errs = {k: v for k, v in out.items() if isinstance(v, dict) and v.get("status") == "error"}
+                    if _errs:
+                        LOGGER.warning("EDGE_SHADOW_ERRORS %s", _json.dumps(_errs, default=str)[:4000])
+                    LOGGER.warning("EDGE_SHADOW %s", _json.dumps(out, default=str)[:12000])
                     # The scheduled agents read these from Railway logs (once per stage per day).
                     from edge.readout import views_to_log as _edge_views_to_log
                     for _n, _d, _j in _edge_views_to_log(store, out, now=int(_time.time())):

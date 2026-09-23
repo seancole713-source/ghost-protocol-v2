@@ -65,9 +65,18 @@ class Service:
     def tick(self) -> Dict[str, Any]:
         from edge import pipeline
         now = int(self.clock())
-        out = pipeline.run(self.get, self.ledger, now=now,
-                           http=self.http if _on("EDGE_PAPER_ENABLED") else None,
-                           notifier=self.notifier if _on("EDGE_TELEGRAM_ENABLED") else None)
+        owner = f"edge-service:{os.getpid()}"
+        claim = getattr(self.store, "claim", None)
+        if claim is not None and not claim("edge_shadow", owner=owner, ttl_s=280, now=now):
+            LOG.warning("EDGE_SHADOW skipped: another runner holds the tick lease")
+            return {"status": "lease_held_elsewhere"}
+        try:
+            out = pipeline.run(self.get, self.ledger, now=now,
+                               http=self.http if _on("EDGE_PAPER_ENABLED") else None,
+                               notifier=self.notifier if _on("EDGE_TELEGRAM_ENABLED") else None)
+        finally:
+            if claim is not None:
+                self.store.release("edge_shadow", owner=owner)
         if pipeline.noteworthy(out):
             LOG.warning("EDGE_SHADOW %s", json.dumps(out, default=str)[:4000])
         if _on("EDGE_PROBE_ENABLED") and (self.last_probe is None or now - self.last_probe >= 86_400):

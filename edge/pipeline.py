@@ -205,14 +205,15 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, A
     gainers = [g for g in mv.get("gainers") or [] if g.get("symbol")]
     syms = sorted({str(g["symbol"]).upper() for g in gainers})
     daily = A.bars_multi(get, syms, timeframe="1Day", start=(day - timedelta(days=45)).isoformat())
+    source_errors: Dict[str, str] = {}      # a failed source is named on the card, never passed off as "no data"
     try:
         snaps = A.snapshots(get, syms, feed="iex")
-    except Exception:  # noqa: BLE001 - recorded as missing, never guessed
-        snaps = {}
+    except Exception as exc:  # noqa: BLE001 - recorded as missing, never guessed
+        snaps, source_errors["snapshots_iex"] = {}, f"{type(exc).__name__}: {str(exc)[:160]}"
     try:
         items = A.news(get, syms, start=_iso(now - 86_400))
-    except Exception:  # noqa: BLE001
-        items = None
+    except Exception as exc:  # noqa: BLE001
+        items, source_errors["news"] = None, f"{type(exc).__name__}: {str(exc)[:160]}"
     events = _events(items, set(syms), now)
     sip_pre = {}
     if model is not None:
@@ -220,8 +221,8 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, A
         try:
             sip_pre = A.bars_multi(get, syms, timeframe="1Min", start=_iso(_at(day, 4, 0)),
                                    end=_iso(_at(day, *FX.CUTOFF)), feed="sip")
-        except Exception:  # noqa: BLE001 - no features -> the model abstains, recorded
-            sip_pre = {}
+        except Exception as exc:  # noqa: BLE001 - no features -> the model abstains, recorded
+            sip_pre, source_errors["sip_premarket_bars"] = {}, f"{type(exc).__name__}: {str(exc)[:160]}"
 
     rows, eligible = [], []
     for sym in syms:
@@ -284,6 +285,9 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, A
                              verdict_key="baseline_verdict", reasons_key="baseline_reasons",
                              missing_key="baseline_missing", id_key="baseline_forecast_id")
     model_chosen = []
+    if model is not None and ledger.store.scan("forecasts", experiment_id=model[1].experiment_id,
+                                               session_date=day.isoformat()):
+        model = None           # recorded by an earlier tick that died before the card; never twice
     if model is not None:
         mspec = model[1]
         gap_ok = [r for r in rows if r["baseline_verdict"] == S.ELIGIBLE and r["model_prob"] is not None
@@ -331,25 +335,35 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, A
             "movers_last_updated": updated,
             "coverage_note": f"{priced}/{len(rows)} candidates had a fresh IEX premarket price",
             "health": health, "health_banner": H.banner(len(chosen), {EID: blocking[EID]}),
+            "source_errors": source_errors, "movers_count": len(syms),
             "health_note": "shadow records regardless; the banner is what a LIVE release would say",
             "rows": rows}
     store.put("edge_cards", day.isoformat(), card)
     return {"status": "issued", **{k: card[k] for k in (
         "day", "candidates", "priced", "eligible", "forecasts", "baseline_forecasts",
-        "coverage_note", "health_banner")}}
+        "coverage_note", "health_banner", "source_errors")}}
 
 
 def _issue_top(ledger: Ledger, spec, rows, eligible, *, day: date, now: int, verdict_key: str,
                reasons_key: str, missing_key: str, id_key: str) -> List[dict]:
     """Record the top N eligible by dollar volume; an abstention with reasons for the rest."""
-    eligible = sorted(eligible, key=lambda r: -(r["avg_dollars"] or 0))
-    chosen = eligible[:spec.max_per_day]
+    prior = {f["symbol"]: f for f in ledger.store.scan("forecasts", experiment_id=spec.experiment_id,
+                                                         session_date=day.isoformat())}
+    if prior:
+        # An earlier tick recorded this experiment's forecasts but died before writing the
+        # card. Forecasts are immutable: keep them, never issue a second set.
+        chosen = [r for r in rows if r["symbol"] in prior]
+        for r in chosen:
+            r[id_key] = prior[r["symbol"]]["forecast_id"]
+    else:
+        eligible = sorted(eligible, key=lambda r: -(r["avg_dollars"] or 0))
+        chosen = eligible[:spec.max_per_day]
+        for r in chosen:
+            f = issue(spec, symbol=r["symbol"], session_date=day, entry_ref=r["ref_price"], issued_at=now,
+                      evidence={k: r[k] for k in ("prev_close", "avg_dollars", "catalyst", "ref_ts")})
+            ledger.record(f, now=now)
+            r[id_key] = f.forecast_id
     chosen_syms = {r["symbol"] for r in chosen}
-    for r in chosen:
-        f = issue(spec, symbol=r["symbol"], session_date=day, entry_ref=r["ref_price"], issued_at=now,
-                  evidence={k: r[k] for k in ("prev_close", "avg_dollars", "catalyst", "ref_ts")})
-        ledger.record(f, now=now)
-        r[id_key] = f.forecast_id
     for r in rows:
         if r["symbol"] in chosen_syms:
             continue
@@ -580,7 +594,7 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None) -> Dict[str,
         text = _notify().misses_text(review) if review else None
         if notifier is not None and text:
             guarded("notify_misses", lambda: _notify().once(notifier, ledger.store, day=ds, kind="misses", text=text))
-    if within((8, 30), (9, 5)) and _research().enabled():
+    if within((8, 30), (9, 0)) and _research().enabled():   # ends 5 min early: a slow call cannot crowd the card
         guarded("research", lambda: research_step(get, ledger, day=day, now=now))
     if within((9, 5), (9, 28)):
         guarded("card", lambda: morning_card(get, ledger, now=now))
@@ -590,10 +604,12 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None) -> Dict[str,
         if notifier is not None and card:
             guarded("notify_card", lambda: _notify().once(notifier, ledger.store, day=ds, kind="card",
                                                            text=_notify().card_text(card)))
-    if notifier is not None and not early and within((10, 25), (10, 30)):
+    if within((9, 28), (9, 45)) and not ledger.store.get("edge_cards", ds):
+        out["card_alarm"] = {"status": "error", "error": "no shadow card by 09:28 ET (see earlier card errors)"}
+    if notifier is not None and not early and within((10, 20), (10, 30)):     # >= 2 ticks wide
         guarded("notify_duty", lambda: _notify().once(notifier, ledger.store, day=ds,
                                                        kind="duty_1030", text=_notify().DUTY_1030))
-    if notifier is not None and not early and within((15, 25), (15, 30)):
+    if notifier is not None and not early and within((15, 20), (15, 30)):
         guarded("notify_duty", lambda: _notify().once(notifier, ledger.store, day=ds,
                                                        kind="duty_1530", text=_notify().DUTY_1530))
     if not early and within((9, 45), (14, 30)):
@@ -604,11 +620,14 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None) -> Dict[str,
     if http is not None and within((10, 30), (15, 0)):
         guarded("paper_cancel", lambda: _paper().cancel_unfilled_entries(http, ledger, day=ds,
                                                                           experiments=all_specs, now=now))
-    if http is not None and within((15, 30), (15, 45)):
+    if http is not None and within((15, 30), (15, 55)):                        # refused sells retry
         guarded("paper_exit", lambda: _paper().time_exit(http, ledger, day=ds, experiments=all_specs))
-    if within((20, 0), (20, 5)):
+    if within((20, 0), (20, 15)):
         from edge import replay as RP
         guarded("replay", lambda: RP.replay_all(ledger.store))
+        if not ledger.store.get("edge_pruned", ds):
+            guarded("prune", lambda: prune(ledger.store, now=now))
+            ledger.store.put("edge_pruned", ds, {"day": ds, "at": now})
     if within((16, 20), (20, 0)):
         guarded("resolve", lambda: resolve_day(get, ledger, day=day, now=now))
         guarded("radar_close", lambda: I.close_day(ledger, day=day, now=now))
@@ -620,8 +639,12 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None) -> Dict[str,
         if out["resolve"].get("status") == "resolved":
             out["report"] = {spec.experiment_id: ledger.report(spec.experiment_id)
                              for spec in all_specs if ledger.store.get("experiments", spec.experiment_id)}
-            text = _notify().graded_text(ds, out["resolve"].get("settled") or {})
-            if notifier is not None and text:
+        # Built from the stored outcomes, not this tick's resolve result: a Telegram failure
+        # at 16:20 is retried on later ticks instead of the graded message being lost.
+        if notifier is not None and out["resolve"].get("status") in ("resolved", "nothing_pending") \
+                and not ledger.store.get("edge_notify", f"{ds}|graded"):
+            text = _notify().graded_text(ds, _settled(ledger, ds, all_specs))
+            if text:
                 guarded("notify_graded", lambda: _notify().once(notifier, ledger.store, day=ds,
                                                                  kind="graded", text=text))
     if len(out) == 1:
@@ -629,7 +652,33 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None) -> Dict[str,
     return out
 
 
-_NEWS = {"issued", "resolved", "graded", "reviewed", "error", "complete", "submitted", "sent", "closed", "researched",
+# Caches only -- never the ledger (forecasts, outcomes, abstentions, cards, experiments), which
+# is kept forever. Days to keep, by table. edge_rvol is the bulk (tens of KB per symbol per day)
+# and is only read on the day it was written.
+RETENTION_DAYS = {"edge_rvol": 3, "edge_view_logged": 14, "edge_universe_progress": 7, "edge_short": 14,
+                  "edge_short_errors": 14, "edge_universe": 30, "edge_radar": 90}
+
+
+def prune(store, *, now: int) -> Dict[str, Any]:
+    if not hasattr(store, "prune"):
+        return {"status": "nothing"}
+    return {"status": "pruned", "deleted": {t: store.prune(t, older_than=now - d * 86_400)
+                                            for t, d in RETENTION_DAYS.items()}}
+
+
+def _settled(ledger: Ledger, day: str, specs) -> Dict[str, Any]:
+    out = {}
+    for spec in specs:
+        for f in ledger.store.scan("forecasts", experiment_id=spec.experiment_id, session_date=day):
+            sim = ledger.store.get("outcomes", f"{f['forecast_id']}|simulated") or {}
+            if sim.get("outcome") in TERMINAL:
+                out[f"{spec.experiment_id}:{f['symbol']}"] = {"simulated": sim["outcome"],
+                                                             "pnl_usd": sim.get("pnl_usd")}
+    return out
+
+
+_NEWS = {"issued", "resolved", "graded", "no_movers", "no_telegram_config", "budget_exhausted",
+         "early_close", "reviewed", "error", "complete", "submitted", "sent", "closed", "researched",
          "drift", "consistent",
          "entries_checked", "time_exit", "reconciled"}
 

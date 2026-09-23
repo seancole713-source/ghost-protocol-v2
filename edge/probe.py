@@ -57,6 +57,17 @@ STRATEGIES: Dict[str, List[Dict[str, Any]]] = {
     "supported_universe": [
         {"need": "listed-ticker reference", "ok": [B.UNIVERSE]},
     ],
+    # Operations, not strategies: each is what a whole stage of the day depends on.
+    "paper_execution": [
+        {"need": "Alpaca PAPER account accepting these keys", "ok": ["broker.paper"]},
+    ],
+    "phone_messages": [
+        {"need": "Telegram bot that can reach the operator's chat", "ok": ["notify.telegram"]},
+    ],
+    "ai_research": [
+        {"need": "Claude research author", "ok": ["llm.research.author"]},
+        {"need": "independent reviewer", "ok": ["llm.reviewer.independent"], "fallback": ["llm.research.author"]},
+    ],
 }
 
 UNLOCK: Dict[str, str] = {
@@ -77,6 +88,10 @@ UNLOCK: Dict[str, str] = {
     B.SHORT_INTEREST: "FINRA consolidated short interest via the FINRA Query API (free; may need free "
                       "API credentials -- the probe says which)",
     B.SHORT_VOLUME: "FINRA daily short-sale volume is free (it is NOT short interest)",
+    "broker.paper": "Alpaca PAPER keys in ALPACA_KEY_ID/ALPACA_SECRET_KEY (live keys are refused by the paper host)",
+    "notify.telegram": "TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID for a bot that is in the operator's chat",
+    "llm.research.author": "ANTHROPIC_API_KEY with access to claude-opus-5-5 (and credit)",
+    "llm.reviewer.independent": "OPENAI_API_KEY with credit, and EDGE_OPENAI_MODEL set to a model the probe lists",
 }
 
 

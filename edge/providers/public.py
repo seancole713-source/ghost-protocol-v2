@@ -49,7 +49,7 @@ def parse_finra_short_volume(text: str) -> Dict[str, Dict[str, float]]:
 
 def probe_finra(get: Optional[B.HttpGet] = None, *, today: Optional[date] = None) -> B.Probe:
     get = get or B.default_get()
-    d = (today or date.today()) - timedelta(days=1)
+    d = (today or B.et_today()) - timedelta(days=1)
     while d.weekday() >= 5:
         d -= timedelta(days=1)
     r, ms, err = B.timed_get(get, finra_short_volume_url(d), headers={"User-Agent": "edge-probe"})

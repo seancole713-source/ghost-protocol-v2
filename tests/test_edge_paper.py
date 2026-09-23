@@ -61,6 +61,9 @@ class Broker:
         return R(204)
 
     def get(self, url, params=None, headers=None, timeout=None):
+        if "by_client_order_id" in url:
+            hit = [o for o in self.orders if o.get("client_order_id") == (params or {}).get("client_order_id")]
+            return R(200, hit[0]) if hit else R(404, {"message": "order not found"})
         if "/v2/positions/" in url:
             return R(200, {"qty": str(self.position_qty)}) if self.position_qty else R(404, {})
         if (params or {}).get("status") == "open":
@@ -122,10 +125,13 @@ def test_unfilled_entry_is_cancelled_at_1030_and_a_filled_one_is_not(ledger):
 def test_time_exit_cancels_legs_first_then_sells_what_is_open(ledger):
     f = ledger.fc
     PP.submit(Broker(), ledger, day="2026-09-23", experiments=EXPERIMENTS)
-    b = Broker(orders=[{"id": "leg-tp", "status": "new"}, {"id": "leg-sl", "status": "held"}], position_qty=6)
+    b = Broker(orders=[{"id": "o1", "client_order_id": f"{f.forecast_id}-entry", "status": "filled",
+                        "filled_qty": "6", "legs": [{"id": "leg-tp", "status": "new", "filled_qty": "0"},
+                                                    {"id": "leg-sl", "status": "held", "filled_qty": "0"}]}])
     out = PP.time_exit(b, ledger, day="2026-09-23", experiments=EXPERIMENTS)
     assert len(b.deletes) == 2 and out["closed"] == ["SHOP"]
     assert b.posts[-1]["client_order_id"] == f"{f.forecast_id}-tx" and b.posts[-1]["type"] == "market"
+    assert b.posts[-1]["qty"] == "6"
 
 
 def test_reconcile_uses_the_real_fill_prices_not_the_levels(ledger):
@@ -147,3 +153,64 @@ def test_reconcile_uses_the_real_fill_prices_not_the_levels(ledger):
     assert row["pnl_usd"] == pytest.approx(f.shares * (143.10 - 148.30))      # slipped past the 143.74 stop
     rep = ledger.report("gap_and_go_auto@v1")
     assert rep["records"]["actual"]["by_outcome"] == {"LOSS": 1}
+
+
+def test_a_timed_out_post_the_broker_accepted_is_submitted_not_rejected(ledger):
+    f = ledger.fc
+
+    class TimesOut(Broker):
+        def post(self, url, json=None, headers=None, timeout=None):
+            self.posts.append(json)
+            raise TimeoutError("read timed out")
+
+    b = TimesOut(orders=[{"id": "o9", "client_order_id": f"{f.forecast_id}-entry", "status": "new"}])
+    PP.submit(b, ledger, day="2026-09-23", experiments=EXPERIMENTS)
+    rec = ledger.store.get("edge_paper", f"{f.forecast_id}|paper")
+    assert rec["state"] == "submitted" and rec["order_id"] == "o9"
+
+
+def test_a_transient_failure_records_nothing_and_retries(ledger):
+    f = ledger.fc
+
+    class Busy(Broker):
+        def post(self, url, json=None, headers=None, timeout=None):
+            self.posts.append(json)
+            return R(503, {"message": "try later"})
+
+    out = PP.submit(Busy(), ledger, day="2026-09-23", experiments=EXPERIMENTS)
+    assert ledger.store.get("edge_paper", f"{f.forecast_id}|paper") is None and "retrying" in out["errors"][0]
+    PP.submit(Broker(), ledger, day="2026-09-23", experiments=EXPERIMENTS)
+    assert ledger.store.get("edge_paper", f"{f.forecast_id}|paper")["state"] == "submitted"
+
+
+def test_two_forecasts_on_one_symbol_each_sell_only_their_own_shares(ledger):
+    from edge.pipeline import GAP_BASELINE
+    f1 = ledger.fc
+    f2 = issue(GAP_BASELINE, symbol="SHOP", session_date=DAY, entry_ref=146.71, issued_at=ts(9, 10))
+    ledger.record(f2, now=ts(9, 11))
+    PP.submit(Broker(), ledger, day="2026-09-23", experiments=EXPERIMENTS)
+    orders = [{"id": "a", "client_order_id": f"{f1.forecast_id}-entry", "status": "filled", "filled_qty": "6",
+               "legs": [{"id": "a-tp", "status": "new", "filled_qty": "0"}]},
+              {"id": "b", "client_order_id": f"{f2.forecast_id}-entry", "status": "filled", "filled_qty": "6",
+               "legs": [{"id": "b-tp", "status": "filled", "filled_qty": "6"}]}]      # b already hit target
+    b = Broker(orders=orders)
+    out = PP.time_exit(b, ledger, day="2026-09-23", experiments=EXPERIMENTS)
+    sells = [p for p in b.posts if p.get("side") == "sell"]
+    assert [p["qty"] for p in sells] == ["6"] and sells[0]["client_order_id"] == f"{f1.forecast_id}-tx"
+    assert out["closed"] == ["SHOP"]
+
+
+def test_a_refused_exit_sell_is_retried_not_marked_done(ledger):
+    f = ledger.fc
+    PP.submit(Broker(), ledger, day="2026-09-23", experiments=EXPERIMENTS)
+
+    class Held(Broker):
+        def post(self, url, json=None, headers=None, timeout=None):
+            self.posts.append(json)
+            return R(403, {"message": "insufficient qty available for order (held_for_orders)"})
+
+    orders = [{"id": "o1", "client_order_id": f"{f.forecast_id}-entry", "status": "filled", "filled_qty": "6",
+               "legs": [{"id": "tp", "status": "pending_cancel", "filled_qty": "0"}]}]
+    out = PP.time_exit(Held(orders=orders), ledger, day="2026-09-23", experiments=EXPERIMENTS)
+    assert "retrying" in out["errors"][0]
+    assert not ledger.store.get("edge_paper", f"{f.forecast_id}|paper").get("time_exit_done")

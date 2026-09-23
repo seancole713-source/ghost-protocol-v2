@@ -19,6 +19,7 @@ from __future__ import annotations
 import os
 from datetime import date, datetime, time as dtime, timedelta, timezone
 from typing import Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 from edge.providers import base as B
 
@@ -73,12 +74,14 @@ def _probe_one(get, cap: str, path: str, params: dict, extract) -> B.Probe:
 def probe(get: Optional[B.HttpGet] = None, *, today: Optional[date] = None,
           sample_symbol: str = "AAPL") -> List[B.Probe]:
     get = get or B.default_get()
-    today = today or date.today()
+    today = today or B.et_today()
     y = today - timedelta(days=1)
     while y.weekday() >= 5:
         y -= timedelta(days=1)
-    start = datetime.combine(y, dtime(13, 30), tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
-    end = datetime.combine(y, dtime(20, 0), tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
+    # The regular session on the exchange clock (13:30-20:00 UTC in summer, 14:30-21:00 in winter).
+    et = ZoneInfo("America/New_York")
+    start = datetime.combine(y, dtime(9, 30), tzinfo=et).astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    end = datetime.combine(y, dtime(16, 0), tzinfo=et).astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
     trade = lambda p: (1 if p.get("trade") else 0, _iso_ts((p.get("trade") or {}).get("t")))
     return [
         _probe_one(get, B.QUOTE_SIP, f"/v2/stocks/{sample_symbol}/trades/latest", {"feed": "sip"}, trade),
@@ -120,7 +123,7 @@ def _get_json(get: B.HttpGet, path: str, params: dict) -> dict:
 
 
 def bars_multi(get: B.HttpGet, symbols: List[str], *, timeframe: str, start: str, end: Optional[str] = None,
-               feed: str = "sip", max_pages: int = 10) -> Dict[str, List[dict]]:
+               feed: str = "sip", max_pages: int = 40) -> Dict[str, List[dict]]:
     """{symbol: [bar, ...]} for many symbols, following next_page_token."""
     out: Dict[str, List[dict]] = {s: [] for s in symbols}
     if not symbols:
@@ -146,7 +149,7 @@ def snapshots(get: B.HttpGet, symbols: List[str], *, feed: str = "iex") -> Dict[
     return _get_json(get, "/v2/stocks/snapshots", {"symbols": ",".join(symbols), "feed": feed})
 
 
-def news(get: B.HttpGet, symbols: List[str], *, start: str, limit: int = 50, max_pages: int = 4) -> List[dict]:
+def news(get: B.HttpGet, symbols: List[str], *, start: str, limit: int = 50, max_pages: int = 8) -> List[dict]:
     if not symbols:
         return []
     params = {"symbols": ",".join(symbols), "start": start, "limit": limit, "sort": "desc"}

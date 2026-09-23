@@ -65,3 +65,36 @@ class PostgresStore:
                         tuple(params))
             rows = cur.fetchall()
         return [r[0] if isinstance(r[0], dict) else json.loads(r[0]) for r in rows]
+
+    def claim(self, name: str, *, owner: str, ttl_s: int, now: Optional[int] = None) -> bool:
+        """Atomically take (or renew) a lease. Two Ghost containers overlap for a minute or two
+        during every redeploy; only the lease holder runs an edge tick, so orders and phone
+        messages cannot go out twice."""
+        now = int(now if now is not None else time.time())
+        with self._connect() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO edge_rows (tbl, key, row, known_at) VALUES ('edge_lease', %s, %s::jsonb, %s) "
+                "ON CONFLICT (tbl, key) DO UPDATE SET row = EXCLUDED.row, known_at = EXCLUDED.known_at "
+                "WHERE edge_rows.known_at < %s OR edge_rows.row->>'owner' = %s RETURNING key",
+                (name, json.dumps({"owner": owner}), now, now - int(ttl_s), owner),
+            )
+            got = cur.fetchone()
+            conn.commit()
+        return got is not None
+
+    def release(self, name: str, *, owner: str) -> None:
+        with self._connect() as conn:
+            cur = conn.cursor()
+            cur.execute("UPDATE edge_rows SET known_at = 0 WHERE tbl = 'edge_lease' AND key = %s "
+                        "AND row->>'owner' = %s", (name, owner))
+            conn.commit()
+
+    def prune(self, table: str, *, older_than: int) -> int:
+        with self._connect() as conn:
+            cur = conn.cursor()
+            cur.execute("DELETE FROM edge_rows WHERE tbl = %s AND known_at < %s", (table, int(older_than)))
+            n = cur.rowcount
+            conn.commit()
+        return int(n or 0)
+
