@@ -202,3 +202,11 @@ def test_price_action_and_reverse_splits_are_never_company_catalysts():
     ev = [C.make("WHLR", "Wheeler announces 1-for-9 reverse stock split", source="x", url="u",
                  published_at=1, first_seen_at=1)]
     assert S.dilution_signal(ev).state == "FAIL"                              # E5: not mechanical
+
+
+def test_market_wraps_never_qualify_a_stock_day1_whlr():
+    from edge import catalysts as C
+    assert C.classify("Dow Falls 100 Points; General Mills Posts Upbeat Q1 Earnings") == C.PRICE_ACTION
+    assert C.classify("Nasdaq jumps 1%; Tesla shares gain") == C.PRICE_ACTION
+    assert C.classify("General Mills Posts Upbeat Q1 Earnings") == C.EARNINGS
+    assert C.classify("Worthington Enterprises reports fiscal Q1 results, beats estimates") == C.EARNINGS

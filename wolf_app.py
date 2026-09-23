@@ -2292,8 +2292,8 @@ async def lifespan(app: FastAPI):
         scheduler.register(
             "edge_paper_guard",
             _edge_paper_guard_job,
-            interval_s=60,
-            timeout_s=50,
+            interval_s=30,          # WHLR filled 38 s after its window; a 60 s guard could still miss that
+            timeout_s=25,
             initial_delay_s=90,
         )
 
