@@ -200,3 +200,21 @@ def test_the_probe_waits_once_before_reporting_a_429():
 
     got = {p.capability: p for p in polygon.probe(always_429, today=TODAY, pace_s=0, sleep=lambda s: None)}
     assert got[B.DAILY_ALL].status == B.RATE_LIMITED and "after one 20s wait" in got[B.DAILY_ALL].note
+
+
+def test_edgar_waits_longer_and_retries_once_on_a_slow_response():
+    seen, calls = [], {"n": 0}
+
+    def slow_then_ok(url, headers=None, timeout=None):
+        seen.append(timeout)
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise TimeoutError("read timed out")
+        return Resp(200, None, "<feed><entry><updated>2026-09-23T08:01:00-04:00</updated></entry></feed>")
+
+    p = public.probe_edgar(slow_then_ok)
+    assert p.status == B.OK and seen == [30.0, 30.0]
+
+    def always_slow(url, headers=None, timeout=None):
+        raise TimeoutError("read timed out")
+    assert "twice" in public.probe_edgar(always_slow).note
