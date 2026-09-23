@@ -16,6 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List
 
+from edge.catalysts import MECHANICAL as _MECHANICAL
 from edge.detectors import FAIL, PASS, UNKNOWN, Signal
 
 ELIGIBLE, REJECTED, DATA_UNAVAILABLE = "ELIGIBLE", "REJECTED", "DATA_UNAVAILABLE"
@@ -94,4 +95,7 @@ def dilution_signal(events: list) -> Signal:
     bad = [e for e in events if getattr(e, "dilutive", False)]
     if bad:
         return Signal("not_dilutive", FAIL, evidence={"reasons": [f"dilution: {bad[0].headline}"]})
+    mech = [e for e in events if getattr(e, "kind", "") in _MECHANICAL]
+    if mech:   # rule E5 is "not mechanical or dilutive"; a reverse split was slipping through
+        return Signal("not_dilutive", FAIL, evidence={"reasons": [f"mechanical: {mech[0].headline}"]})
     return Signal("not_dilutive", PASS)

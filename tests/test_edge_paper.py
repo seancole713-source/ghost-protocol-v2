@@ -214,3 +214,38 @@ def test_a_refused_exit_sell_is_retried_not_marked_done(ledger):
     out = PP.time_exit(Held(orders=orders), ledger, day="2026-09-23", experiments=EXPERIMENTS)
     assert "retrying" in out["errors"][0]
     assert not ledger.store.get("edge_paper", f"{f.forecast_id}|paper").get("time_exit_done")
+
+
+def test_a_broker_fill_the_rule_never_took_is_shown_but_not_counted(ledger):
+    from edge.resolver import Resolution
+    f = ledger.fc
+    ledger.settle(f.forecast_id, Resolution("NO_FILL"), now=ts(16, 25), record="forecast")
+    ledger.settle(f.forecast_id, Resolution("NO_FILL"), now=ts(16, 25), record="simulated")
+    ledger.settle(f.forecast_id, Resolution("WIN", entry_fill=5.44, exit_price=5.78, pnl_usd=62.22),
+                  now=ts(16, 25), record="actual")
+    act = ledger.report("gap_and_go_auto@v1")["records"]["actual"]
+    assert act["by_outcome"] == {"OUTSIDE_RULE": 1} and act["filled"] == 0 and act["wins"] == 0
+
+
+def test_the_minute_guard_cancels_right_after_the_entry_window(ledger, monkeypatch):
+    from edge import pipeline as P
+    f = ledger.fc
+    PP.submit(Broker(), ledger, day="2026-09-23", experiments=EXPERIMENTS)
+    b = Broker(orders=[{"id": "o1", "client_order_id": f"{f.forecast_id}-entry", "status": "new", "filled_qty": "0"}])
+    assert P.paper_guard(b, ledger, now=f.entry_expiry - 30)["status"] in ("nothing", "entries_checked") and not b.deletes
+    P.paper_guard(b, ledger, now=f.entry_expiry + 30)
+    assert b.deletes == ["https://paper-api.alpaca.markets/v2/orders/o1"]
+
+
+def test_reconcile_keeps_the_brokers_order_record(ledger):
+    f = ledger.fc
+    PP.submit(Broker(), ledger, day="2026-09-23", experiments=EXPERIMENTS)
+    orders = [{"id": "o1", "client_order_id": f"{f.forecast_id}-entry", "status": "canceled", "stop_price": "148.18",
+               "limit_price": "149.65", "filled_qty": "0", "submitted_at": iso(ts(9, 11)), "canceled_at": iso(ts(10, 30))},
+              {"id": "zz", "client_order_id": "someone-else", "status": "filled"}]
+    PP.reconcile(Broker(orders=orders), ledger, day="2026-09-23", experiments=EXPERIMENTS, now=ts(16, 25))
+    kept = ledger.store.get("edge_paper_orders", "2026-09-23")["orders"]
+    assert [o["id"] for o in kept] == ["o1"] and kept[0]["limit_price"] == "149.65"
+    from edge import readout as RO
+    row = RO.view(ledger.store, "paper", "2026-09-23")["orders"][0]
+    assert row["broker_entry"]["status"] == "canceled" and row["filled_after_window"] is False

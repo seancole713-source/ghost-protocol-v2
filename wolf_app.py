@@ -2269,6 +2269,34 @@ async def lifespan(app: FastAPI):
             initial_delay_s=60,
         )
 
+        # Every minute, cancel an unfilled PAPER entry the minute its entry window ends. The
+        # 5-minute shadow tick let an order fill ~5 min after its window (WHLR, 2026-09-23).
+        def _edge_paper_guard_job():
+            if os.getenv("EDGE_PAPER_ENABLED", "1").strip().lower() not in {"1", "true", "yes", "on"}:
+                return
+            try:
+                import json as _json
+                import time as _time
+                import requests as _requests
+                from core.db import db_conn
+                from edge.ledger import Ledger as _EdgeLedger
+                from edge.pipeline import paper_guard as _edge_paper_guard
+                from edge.store_pg import PostgresStore as _EdgeStore
+                out = _edge_paper_guard(_requests, _EdgeLedger(_EdgeStore(db_conn)), now=int(_time.time()))
+                if out.get("canceled") or out.get("errors"):
+                    LOGGER.warning("EDGE_PAPER_GUARD %s", _json.dumps(out, default=str)[:1000])
+            except Exception as _e:
+                LOGGER.warning("edge paper guard failed: %s", str(_e)[:200])
+                raise
+
+        scheduler.register(
+            "edge_paper_guard",
+            _edge_paper_guard_job,
+            interval_s=60,
+            timeout_s=50,
+            initial_delay_s=90,
+        )
+
         # edge backtest: the FROZEN Gap-and-Go rule on the last N past sessions,
         # point-in-time at 09:10 ET, with the same resolver and baseline as the
         # live shadow. Research evidence, never the forward ledger. Runs ONCE

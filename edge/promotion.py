@@ -60,7 +60,10 @@ def evaluate(report: Dict[str, Any], *, baseline: Dict[str, Any], sessions: int,
     bw = baseline["records"]["simulated"].get("win_rate")
     if sim.get("win_rate") is None or bw is None or not sim["win_rate"] > bw:
         unmet.append("does not beat the no-catalyst baseline")
-    stage = "proposable" if not unmet else ("paper" if (act.get("filled") or 0) else "shadow")
+    # "paper" means the rule traded AND the broker agreed; an actual fill alone (e.g. one outside
+    # the rule, which the report no longer counts) never advances a stage.
+    stage = "proposable" if not unmet else (
+        "paper" if (act.get("filled") or 0) and (sim.get("filled") or 0) else "shadow")
     return {"stage": stage, "unmet": unmet, "criteria_version": CRITERIA["version"],
             "criteria_hash": CRITERIA_HASH,
             "live": "never automatic -- requires the operator's explicit decision"}

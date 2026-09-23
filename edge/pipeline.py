@@ -620,10 +620,12 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None) -> Dict[str,
                                                            text=_notify().card_text(card)))
     if within((9, 28), (9, 45)) and not ledger.store.get("edge_cards", ds):
         out["card_alarm"] = {"status": "error", "error": "no shadow card by 09:28 ET (see earlier card errors)"}
-    if notifier is not None and not early and within((10, 20), (10, 30)):     # >= 2 ticks wide
+    card_today = ledger.store.get("edge_cards", ds) or {}
+    operator_has_trade = bool(card_today.get("forecasts"))   # no card trade -> no duty text
+    if notifier is not None and not early and operator_has_trade and within((10, 20), (10, 30)):     # >= 2 ticks wide
         guarded("notify_duty", lambda: _notify().once(notifier, ledger.store, day=ds,
                                                        kind="duty_1030", text=_notify().DUTY_1030))
-    if notifier is not None and not early and within((15, 20), (15, 30)):
+    if notifier is not None and not early and operator_has_trade and within((15, 20), (15, 30)):
         guarded("notify_duty", lambda: _notify().once(notifier, ledger.store, day=ds,
                                                        kind="duty_1530", text=_notify().DUTY_1530))
     if not early and within((9, 45), (14, 30)):
@@ -631,7 +633,7 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None) -> Dict[str,
         if http is not None:
             guarded("paper_submit_intraday", lambda: _paper().submit(http, ledger, day=ds,
                                                                       experiments=I.INTRADAY_SPECS))
-    if http is not None and within((10, 30), (15, 0)):
+    if http is not None and within((9, 45), (15, 0)):      # intraday entries expire from ~09:50
         guarded("paper_cancel", lambda: _paper().cancel_unfilled_entries(http, ledger, day=ds,
                                                                           experiments=all_specs, now=now))
     if http is not None and within((15, 30), (15, 55)):                        # refused sells retry
@@ -678,6 +680,17 @@ def prune(store, *, now: int) -> Dict[str, Any]:
         return {"status": "nothing"}
     return {"status": "pruned", "deleted": {t: store.prune(t, older_than=now - d * 86_400)
                                             for t, d in RETENTION_DAYS.items()}}
+
+
+def paper_guard(http, ledger: Ledger, *, now: int) -> Dict[str, Any]:
+    """Every minute: cancel an unfilled paper entry the minute its entry window ends. The 5-minute
+    tick let WHLR's order live ~5 minutes past its window and fill there (2026-09-23)."""
+    from edge import intraday as I
+    day = _et(now).date()
+    if not trading_day(day, ledger.store, now) or not (_at(day, 9, 45) <= now < _at(day, 15, 0)):
+        return {"status": "outside_window"}
+    return _paper().cancel_unfilled_entries(http, ledger, day=day.isoformat(),
+                                            experiments=_all_specs(ledger.store, I), now=now)
 
 
 def _settled(ledger: Ledger, day: str, specs) -> Dict[str, Any]:
