@@ -149,10 +149,15 @@ def snapshots(get: B.HttpGet, symbols: List[str], *, feed: str = "iex") -> Dict[
     return _get_json(get, "/v2/stocks/snapshots", {"symbols": ",".join(symbols), "feed": feed})
 
 
-def news(get: B.HttpGet, symbols: List[str], *, start: str, limit: int = 50, max_pages: int = 8) -> List[dict]:
+def news(get: B.HttpGet, symbols: List[str], *, start: str, end: Optional[str] = None, limit: int = 50,
+         max_pages: int = 8) -> List[dict]:
+    """Newest first. A PAST window must pass `end`: without it Alpaca pages back from NOW, and
+    the capped pages hold only recent articles -- none from the session being studied."""
     if not symbols:
         return []
     params = {"symbols": ",".join(symbols), "start": start, "limit": limit, "sort": "desc"}
+    if end:
+        params["end"] = end
     out: List[dict] = []
     for _ in range(max_pages):
         p = _get_json(get, "/v1beta1/news", params)
