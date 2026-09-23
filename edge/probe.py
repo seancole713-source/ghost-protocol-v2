@@ -24,7 +24,7 @@ from edge.providers import base as B
 # capability in `fallback` satisfies it DEGRADED.
 STRATEGIES: Dict[str, List[Dict[str, Any]]] = {
     "premarket_continuation": [
-        {"need": "full-market premarket movers", "ok": [B.SNAPSHOT_ALL, B.MOVERS]},
+        {"need": "full-market premarket movers", "ok": [B.SNAPSHOT_ALL, "movers.premarket_scan", B.MOVERS]},
         {"need": "real-time quotes", "ok": [B.QUOTE_SIP], "fallback": [B.QUOTE_IEX]},
         {"need": "minute bars (outcomes)", "ok": [B.MINUTE_BARS]},
         {"need": "dated catalysts", "ok": [B.NEWS, B.FILINGS]},
@@ -88,6 +88,7 @@ UNLOCK: Dict[str, str] = {
     B.SHORT_INTEREST: "FINRA consolidated short interest via the FINRA Query API (free; may need free "
                       "API credentials -- the probe says which)",
     B.SHORT_VOLUME: "FINRA daily short-sale volume is free (it is NOT short interest)",
+    "movers.premarket_scan": "IEX snapshots of the prior session's liquid stocks (free); a consolidated view needs SIP",
     "broker.paper": "Alpaca PAPER keys in ALPACA_KEY_ID/ALPACA_SECRET_KEY (live keys are refused by the paper host)",
     "notify.telegram": "TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID for a bot that is in the operator's chat",
     "llm.research.author": "ANTHROPIC_API_KEY with access to claude-opus-5-5 (and credit)",
@@ -102,6 +103,8 @@ def collect(get: Optional[B.HttpGet] = None, *, ibkr_fetch: Optional[Callable[[]
     probes: List[B.Probe] = []
     probes += polygon.probe(get)
     probes += alpaca.probe(get)
+    from edge import premarket as PM
+    probes.append(PM.probe(get))
     probes.append(public.probe_finra(get))
     probes.append(public.probe_edgar(get))
     probes.append(public.probe_ibkr(ibkr_fetch) if ibkr_fetch else public.probe_ibkr())
