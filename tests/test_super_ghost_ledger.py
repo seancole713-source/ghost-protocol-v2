@@ -353,3 +353,28 @@ def test_resolve_predictions_updates_rows(monkeypatch):
     assert out["ok"] is True
     assert out["updated"] == 1
     assert out["horizons_filled"] >= 3
+
+
+def test_auto_log_watchlist_backs_off_symbols_that_cannot_be_built(monkeypatch):
+    """A symbol with no price data anywhere used to re-run the whole price chain
+    every hour and push the job past its timeout. After one failed build it is
+    skipped for the backoff window, then retried."""
+    from config.symbols import OFFICIAL_WATCHLIST
+    dead = OFFICIAL_WATCHLIST[0]
+    built = []
+    now = [1_790_000_000]
+    monkeypatch.setattr(ledger, "_now", lambda: now[0])
+    monkeypatch.setattr(ledger, "_symbols_logged_since", lambda cutoff: set(OFFICIAL_WATCHLIST) - {dead})
+    monkeypatch.setattr("core.super_ghost.build_super_ghost",
+                        lambda sym: built.append(sym) or {"ok": False, "error": "no price data"})
+    monkeypatch.setattr(ledger, "log_prediction", lambda report: 1)
+
+    first = ledger.auto_log_watchlist()
+    assert built == [dead] and first["auto_logged"] == 0
+    now[0] += 3600
+    second = ledger.auto_log_watchlist()
+    assert built == [dead]                                  # not rebuilt an hour later
+    assert second["skipped_failed_recently"] == 1
+    now[0] += ledger._AUTO_LOG_FAIL_BACKOFF_S
+    ledger.auto_log_watchlist()
+    assert built == [dead, dead]                            # retried after the backoff

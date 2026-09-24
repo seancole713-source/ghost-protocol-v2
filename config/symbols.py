@@ -21,7 +21,7 @@ OFFICIAL_WATCHLIST: Tuple[str, ...] = (
     "AAPL", "ABCL", "ABNB", "ACDC", "ADBE", "AFRM", "AI", "ALAB", "AMC", "AMD", "AMZN", "APGE",
     "ARCT", "ARDT", "AVGO", "BA", "BABA", "BB", "BBWI", "BILL", "BMBL", "BMNR", "BROS",
     "BTGO", "CAT", "CLNE", "COIN", "COST", "CRM", "CVNA", "DASH", "DELL", "DIS",
-    "DJT", "DOMO", "DUOL", "FLNC", "GE", "GME", "GOOG", "GOOGL", "GPS", "GS", "HIMS",
+    "DJT", "DOMO", "DUOL", "FLNC", "GE", "GME", "GOOG", "GOOGL", "GS", "HIMS",
     "HOOD", "HTZ", "INTC", "IQ", "ITRI", "JACK", "JPM", "KC", "LCID", "LLY",
     "LMND", "LU", "LULU", "MA", "META", "MRVL", "MSFT", "MTZ", "MU", "NAVN",
     "NFLX", "NKE", "NOK", "NVDA", "ODD", "OGC", "OLLI", "OPK", "OPTU", "ORCL", "PFE",
@@ -42,6 +42,9 @@ OFFICIAL_WATCHLIST: Tuple[str, ...] = (
     # trading call. Adding a symbol here only widens what the radar/scan loop
     # looks at; it has zero trained model until the normal train->promote
     # pipeline runs and clears the same tier="proven" gate everything else does.
+    # GPS removed 2026-09-24: Gap Inc. moved to ticker GAP in Aug 2024; GPS's last
+    # trade is 2024-08-21, so every hourly ledger pass walked the full 5-tier price
+    # chain for it (ending in a 30 s Stooq connect timeout) and never got a price.
 )
 OFFICIAL_WATCHLIST_CSV = ",".join(OFFICIAL_WATCHLIST)
 

@@ -264,6 +264,11 @@ _MODEL_CACHE_LOCK = threading.Lock()
 # Free-tier Alpaca keys are never SIP-entitled: after the first 403, skip SIP
 # for a while instead of burning one guaranteed-403 call per symbol per sweep.
 _SIP_FORBIDDEN = {"until": 0.0}
+# Stooq is unreachable from Railway (every request is a 30 s connect timeout),
+# and it is the last tier, so a dead symbol paid that on every pass. After one
+# connection-level failure, skip Stooq for _STOOQ_COOLDOWN_S.
+_STOOQ_DOWN = {"until": 0.0}
+_STOOQ_COOLDOWN_S = 6 * 3600
 
 
 def _model_cache_ttl_s() -> int:
@@ -929,10 +934,13 @@ def _try_stooq_ohlcv(symbol, period):
     days_map = {'3m': 90, '6m': 180, '1y': 365, '2y': 730, '5y': 1825}
     lookback_days = days_map.get(period, 365)
     cutoff_date = datetime.now(timezone.utc).date() - timedelta(days=lookback_days)
+    if time.time() < _STOOQ_DOWN["until"]:
+        LOGGER.debug(f"Stooq {symbol}: skipped (unreachable, cooling down)")
+        return None
     LOGGER.info(f"Stooq {symbol}: requesting CSV cutoff>={cutoff_date} (lookback={lookback_days}d)")
     try:
         url = f"https://stooq.com/q/d/l/?s={symbol.lower()}.us&i=d"
-        r = _req.get(url, timeout=30, headers={"User-Agent": "Mozilla/5.0 (ghost-protocol)"})
+        r = _req.get(url, timeout=(5, 20), headers={"User-Agent": "Mozilla/5.0 (ghost-protocol)"})
         if r.status_code != 200:
             LOGGER.info(f"Stooq {symbol}: HTTP {r.status_code}")
             return None
@@ -976,6 +984,11 @@ def _try_stooq_ohlcv(symbol, period):
             return None
         LOGGER.info(f"Stooq {symbol}: parsed {len(rows)} bars in window (skipped {skipped_pre_cutoff} pre-cutoff)")
         return rows
+    except (_req.exceptions.ConnectionError, _req.exceptions.Timeout) as e:
+        _STOOQ_DOWN["until"] = time.time() + _STOOQ_COOLDOWN_S
+        LOGGER.warning(f"Stooq {symbol}: unreachable, skipping Stooq for {_STOOQ_COOLDOWN_S // 3600}h: "
+                       f"{type(e).__name__}")
+        return None
     except Exception as e:
         LOGGER.warning(f"Stooq {symbol}: {e}")
         return None

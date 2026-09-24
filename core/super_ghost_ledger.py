@@ -247,6 +247,10 @@ def log_prediction(report: Dict[str, Any], *, created_at: Optional[int] = None) 
 # rows that inflate learning-brain bucket counts with fake confidence. 20h (not
 # 24h) tolerates scheduler jitter so the daily log doesn't drift later each day.
 _AUTO_LOG_MIN_GAP_S = 20 * 3600
+# A symbol whose report could not be built (no price data anywhere) is not
+# retried for this long; before, it re-ran the full price chain every hour.
+_AUTO_LOG_FAIL_BACKOFF_S = 6 * 3600
+_AUTO_LOG_FAILED: Dict[str, int] = {}
 
 
 def _symbols_logged_since(cutoff_ts: int) -> set:
@@ -280,23 +284,32 @@ def auto_log_watchlist() -> Dict[str, Any]:
         from core.super_ghost import build_super_ghost
         symbols = list(OFFICIAL_WATCHLIST)
         already = _symbols_logged_since(int(_now()) - _AUTO_LOG_MIN_GAP_S)
+        now = int(_now())
         logged = 0
         skipped = 0
+        backed_off = 0
         errors = 0
         for sym in symbols:
             if sym in already:
                 skipped += 1
                 continue
+            if now - _AUTO_LOG_FAILED.get(sym, -_AUTO_LOG_FAIL_BACKOFF_S) < _AUTO_LOG_FAIL_BACKOFF_S:
+                backed_off += 1
+                continue
             try:
                 report = build_super_ghost(sym)
                 if report.get("ok"):
+                    _AUTO_LOG_FAILED.pop(sym, None)
                     lid = log_prediction(report)
                     if lid:
                         logged += 1
+                else:
+                    _AUTO_LOG_FAILED[sym] = now
             except Exception:
+                _AUTO_LOG_FAILED[sym] = now
                 errors += 1
         return {"ok": True, "auto_logged": logged, "skipped_recent": skipped,
-                "errors": errors, "total": len(symbols)}
+                "skipped_failed_recently": backed_off, "errors": errors, "total": len(symbols)}
     except Exception as e:
         return {"ok": False, "error": str(e)[:200]}
 

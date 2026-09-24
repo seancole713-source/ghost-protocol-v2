@@ -1652,7 +1652,10 @@ async def lifespan(app: FastAPI):
                 LOGGER.warning("super ghost ledger job failed: %s", str(_e)[:80])
                 raise
 
-        scheduler.register("super_ghost_ledger", _super_ghost_ledger_job, interval_s=3600)
+        # Hourly job with ten ledger/learning passes: 120 s default was too tight
+        # (timeout #1..#13 on 2026-09-23/24); the work finished anyway, but late
+        # and logged as an ERROR every hour.
+        scheduler.register("super_ghost_ledger", _super_ghost_ledger_job, interval_s=3600, timeout_s=600)
         scheduler.register("reconcile", reconcile_outcomes, interval_s=900)
         # Public Hunter reads are snapshot-only. This single-flight scheduler is the
         # sole producer, using batched bars and cached optional evidence so a page
