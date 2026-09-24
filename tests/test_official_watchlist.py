@@ -6,13 +6,18 @@ from config.symbols import (
 )
 
 
-def test_official_watchlist_has_107_symbols():
+def test_official_watchlist_has_106_symbols():
     # 74 + 26 liquid mega/large caps (PR #164) + 4 momentum/explosion names
     # (TRU, OGC, SATS, ALAB — 2026-08-17) + 3 morning-picks coverage-gap
-    # names (AFRM, BMNR, GPS — 2026-08-28) — universe width is the
-    # shadow-evidence rate (one row per symbol per day).
-    assert len(OFFICIAL_WATCHLIST) == 107
-    assert len(set(OFFICIAL_WATCHLIST)) == 107
+    # names (AFRM, BMNR, GPS — 2026-08-28), less GPS (dead ticker since Gap Inc.
+    # became GAP; removed 2026-09-24) — universe width is the shadow-evidence rate
+    # (one row per symbol per day).
+    assert len(OFFICIAL_WATCHLIST) == 106
+    assert len(set(OFFICIAL_WATCHLIST)) == 106
+
+
+def test_official_watchlist_excludes_dead_gps_ticker():
+    assert "GPS" not in OFFICIAL_WATCHLIST
 
 
 def test_official_watchlist_excludes_delisted_rdfn():

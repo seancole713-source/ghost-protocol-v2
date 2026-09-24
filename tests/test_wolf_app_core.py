@@ -1455,6 +1455,28 @@ def test_try_stooq_ohlcv_returns_none_on_http_error(monkeypatch):
     assert _se._try_stooq_ohlcv("WOLF", "1y") is None
 
 
+def test_try_stooq_ohlcv_cools_down_after_connect_failure(monkeypatch):
+    """Stooq is unreachable from Railway: one connect failure must stop every
+    later call from paying another timeout until the cooldown passes."""
+    import requests
+    import core.signal_engine as _se
+    calls = []
+
+    def dead(url, timeout=None, **kwargs):
+        calls.append(timeout)
+        raise requests.exceptions.ConnectTimeout("connect timeout")
+
+    monkeypatch.setattr("requests.get", dead)
+    assert _se._try_stooq_ohlcv("GPS", "1y") is None
+    assert _se._try_stooq_ohlcv("SATS", "1y") is None
+    assert len(calls) == 1                      # the second call never hit the network
+    assert calls[0][0] <= 5                     # short connect timeout, not 30 s
+    assert _se._STOOQ_DOWN["until"] > time.time() + 5 * 3600
+    _se._STOOQ_DOWN["until"] = 0.0              # cooldown over -> Stooq is tried again
+    monkeypatch.setattr("requests.get", lambda *a, **k: _MockStooqResponse(200, _STOOQ_HAPPY_CSV))
+    assert _se._try_stooq_ohlcv("WOLF", "1y")
+
+
 def test_try_stooq_ohlcv_returns_none_when_no_data_body(monkeypatch):
     """Stooq returns text 'No data' for unknown tickers — must produce None."""
     import core.signal_engine as _se
@@ -4296,7 +4318,7 @@ def test_build_symbol_universe_payload_layers(monkeypatch):
 
     out = wolf_app._build_symbol_universe_payload()
     assert out["ok"] is True
-    assert out["official_watchlist"]["count"] == 107  # PR #164 + 4 momentum names (2026-08-17) + 3 coverage-gap names (2026-08-28)
+    assert out["official_watchlist"]["count"] == 106  # PR #164 + 4 momentum names (2026-08-17) + 3 coverage-gap names (2026-08-28) - dead GPS (2026-09-24)
     assert out["portfolio"]["count"] == 2
     assert set(out["portfolio"]["symbols"]) == {"AMC", "WOLF"}
     assert out["models"]["stored_count"] == 2

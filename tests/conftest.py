@@ -76,6 +76,13 @@ def _clear_module_caches():
         try:
             se.invalidate_model_cache()
             se._SIP_FORBIDDEN["until"] = 0.0
+            se._STOOQ_DOWN["until"] = 0.0
+        except Exception:
+            pass
+    sgl = sys.modules.get("core.super_ghost_ledger")
+    if sgl is not None:
+        try:
+            sgl._AUTO_LOG_FAILED.clear()
         except Exception:
             pass
     px = sys.modules.get("core.prices")
