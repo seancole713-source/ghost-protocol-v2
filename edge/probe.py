@@ -96,6 +96,25 @@ UNLOCK: Dict[str, str] = {
 }
 
 
+# The probe makes dozens of data calls (the premarket scan alone is ~33 IEX
+# batches). Run during the session it starves the live radar: on 2026-09-24 a
+# 9:48 CT redeploy re-ran it at once and the 9:57 CT intraday tick got a 429.
+# So it runs once per ET day, never between 08:00 and 16:30 ET on a weekday.
+QUIET_START, QUIET_END = (8, 0), (16, 30)
+
+
+def due(now: int, last_checked_at: Optional[int]) -> bool:
+    """True when the daily probe should run now."""
+    from datetime import datetime
+    from edge.contracts import ET
+    t = datetime.fromtimestamp(now, tz=ET)
+    if t.weekday() < 5 and QUIET_START <= (t.hour, t.minute) < QUIET_END:
+        return False
+    if last_checked_at is None:
+        return True
+    return datetime.fromtimestamp(int(last_checked_at), tz=ET).date() != t.date()
+
+
 def collect(get: Optional[B.HttpGet] = None, *, ibkr_fetch: Optional[Callable[[], str]] = None,
             http=None, llm_client=None) -> List[B.Probe]:
     """`http` (requests-like, with post) enables the FINRA API, iBorrowDesk and LLM probes."""

@@ -2175,8 +2175,17 @@ async def lifespan(app: FastAPI):
                 return
             try:
                 import json as _json
-                from edge.probe import run as _edge_probe_run, summary_lines as _edge_lines
+                import time as _time
+                from edge.probe import due as _edge_probe_due, run as _edge_probe_run, summary_lines as _edge_lines
                 import requests as _rq
+                try:
+                    from core.db import db_conn as _pdb
+                    from edge.store_pg import PostgresStore as _PStore
+                    _last = (_PStore(_pdb).get("edge_probe", "latest") or {}).get("checked_at")
+                except Exception:  # noqa: BLE001 - no record yet: run
+                    _last = None
+                if not _edge_probe_due(int(_time.time()), _last):
+                    return
                 rep = _edge_probe_run(http=_rq)
                 for ln in _edge_lines(rep):
                     LOGGER.warning("EDGE_PROBE_SUMMARY %s", ln)
@@ -2208,7 +2217,9 @@ async def lifespan(app: FastAPI):
         scheduler.register(
             "edge_readiness_probe",
             _edge_probe_job,
-            interval_s=max(3600, int(os.getenv("EDGE_PROBE_INTERVAL_S", "86400"))),
+            # Checked every 30 min; edge.probe.due() runs it once per ET day and
+            # never during the session, whatever time Ghost was (re)deployed.
+            interval_s=1800,
             timeout_s=300,
             initial_delay_s=240,
         )

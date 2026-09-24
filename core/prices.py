@@ -249,6 +249,37 @@ def _alpaca_trade_quote(symbol) -> Tuple[Optional[float], Optional[int]]:
     return None, None
 
 
+def _alpaca_prev_close(symbol) -> Optional[float]:
+    """The prior session's close from Alpaca's snapshot (prevDailyBar), one call.
+
+    Used when yfinance is unavailable and nothing is cached: without it the
+    extended-session quote discarded a good live Alpaca price. On 2026-09-24,
+    with the yfinance breaker open, GRAL, GLND, GRML, SKYQ and P all returned
+    "no_price_available" while Alpaca had live trades for every one.
+    """
+    if not _alpaca_cb.allow():
+        return None
+    try:
+        key = os.getenv("ALPACA_KEY_ID", "")
+        secret = os.getenv("ALPACA_SECRET_KEY", "")
+        if not key or not secret:
+            return None
+        r = requests.get(
+            f"https://data.alpaca.markets/v2/stocks/{symbol.upper()}/snapshot",
+            headers={"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret},
+            timeout=TIMEOUT,
+        )
+        if r.status_code == 200:
+            _alpaca_cb.record_success()
+            close = float(((r.json() or {}).get("prevDailyBar") or {}).get("c") or 0)
+            return close if close > 0 else None
+        if r.status_code >= 500 or r.status_code == 429:
+            _alpaca_cb.record_failure()
+    except Exception:
+        _alpaca_cb.record_failure()
+    return None
+
+
 def _alpaca(symbol):
     """Real-time Alpaca price; retained as a float-only compatibility API."""
     price, _price_as_of_ts = _alpaca_trade_quote(symbol)
@@ -447,6 +478,8 @@ def get_extended_session(symbol: str) -> Dict[str, Any]:
                 if time.time() - ts < _PREV_CLOSE_TTL_S and val > 0:
                     prev_close = val
             if prev_close is None:
+                prev_close = _alpaca_prev_close(sym)
+            if prev_close is None and live_quote is None:
                 return {}
         else:
             import yfinance as yf

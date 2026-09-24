@@ -210,3 +210,18 @@ def test_market_wraps_never_qualify_a_stock_day1_whlr():
     assert C.classify("Nasdaq jumps 1%; Tesla shares gain") == C.PRICE_ACTION
     assert C.classify("General Mills Posts Upbeat Q1 Earnings") == C.EARNINGS
     assert C.classify("Worthington Enterprises reports fiscal Q1 results, beats estimates") == C.EARNINGS
+
+
+def test_an_analyst_reiteration_is_not_a_catalyst_but_an_upgrade_is():
+    """2026-09-24: 'Guggenheim Reiterates Buy on Everpure, Maintains $150 Price Target'
+    qualified P as a catalyst_breakout. Rule E4 counts an UPGRADE, not a repeat."""
+    from edge import catalysts as C
+    no = ["Guggenheim Reiterates Buy on Everpure, Maintains $150 Price Target",
+          "Jefferies Cuts Price Target On DEF", "UBS Downgrades GHI To Neutral"]
+    yes = ["Morgan Stanley Upgrades XYZ To Overweight, Raises Price Target To $40",
+           "Barclays Raises Price Target On ABC To $30",
+           "Needham Initiates Coverage On JKL With Buy, $20 Price Target"]
+    for h in no:
+        assert C.classify(h) == C.ANALYST_NO_CHANGE and C.ANALYST_NO_CHANGE not in C.COMPANY_SPECIFIC, h
+    for h in yes:
+        assert C.classify(h) == C.ANALYST, h
