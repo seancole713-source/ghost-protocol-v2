@@ -218,3 +218,20 @@ def test_edgar_waits_longer_and_retries_once_on_a_slow_response():
     def always_slow(url, headers=None, timeout=None):
         raise TimeoutError("read timed out")
     assert "twice" in public.probe_edgar(always_slow).note
+
+
+def test_the_probe_runs_once_a_day_and_never_during_the_session():
+    """2026-09-24: a 9:48 CT redeploy re-ran the probe mid-session and its ~40 data
+    calls rate-limited the live radar (9:57 CT tick failed with a 429)."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from edge import probe as PR
+
+    def at(d, hh, mm):
+        return int(datetime(2026, 9, d, hh, mm, tzinfo=ZoneInfo("America/New_York")).timestamp())
+
+    assert PR.due(at(24, 10, 48), None) is False            # Thursday, in the session
+    assert PR.due(at(24, 7, 59), None) is True              # before the quiet window
+    assert PR.due(at(24, 16, 30), at(23, 17, 0)) is True    # after the close, new day
+    assert PR.due(at(24, 20, 0), at(24, 17, 0)) is False    # already ran today
+    assert PR.due(at(26, 12, 0), at(25, 17, 0)) is True     # Saturday midday is fine

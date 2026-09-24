@@ -23,6 +23,10 @@ INDEX, ANALYST, OFFERING, REVERSE_SPLIT, POLICY, OTHER = (
 DILUTIVE = frozenset({OFFERING})
 MECHANICAL = frozenset({REVERSE_SPLIT})
 PRICE_ACTION = "price_action"          # describes a move; never a catalyst (never in COMPANY_SPECIFIC)
+# Rule E4 counts an analyst UPGRADE (or a raised target / new coverage). Reiterating, maintaining
+# or cutting a rating is not new information for a long: 2026-09-24 "Guggenheim Reiterates Buy
+# on Everpure, Maintains $150 Price Target" qualified P as a catalyst_breakout.
+ANALYST_NO_CHANGE = "analyst_no_change"   # never in COMPANY_SPECIFIC
 COMPANY_SPECIFIC = frozenset({EARNINGS, GUIDANCE, FDA, CONTRACT, MNA, INDEX, ANALYST})
 
 # A market wrap -- index moves and/or several stories joined by ";" -- is never one company's catalyst,
@@ -47,7 +51,10 @@ _RULES = [  # first match wins; dilution is checked first on purpose
     (GUIDANCE, r"\b(raises|lifts|boosts|cuts|lowers) (its )?(full-year |annual )?(guidance|outlook|forecast)\b"),
     (CONTRACT, r"\b(contract|award(ed)?|partnership|collaboration|agreement with|order from)\b"),
     (INDEX, r"\b(added to|join(s|ing)?) the (s&p|russell|nasdaq)|index inclusion\b"),
-    (ANALYST, r"\b(upgrade[sd]?|price target|initiat(es|ed) coverage|overweight|outperform)\b"),
+    (ANALYST, r"\b(upgrade[sd]?|raise[sd]? (its |the )?(price target|pt)|initiat(es|ed) coverage)\b"),
+    (ANALYST_NO_CHANGE, r"\b(reiterat\w*|maintain\w*|keeps|affirm\w*|downgrade[sd]?|"
+                        r"(lower|cut|trim)s? (its |the )?(price target|pt))\b"),
+    (ANALYST, r"\b(price target|overweight|outperform)\b"),
     (POLICY, r"\b(tariff|executive order|administration|white house|treasury|sanction|security deal)\b"),
 ]
 
