@@ -35,29 +35,46 @@ COMPANY_SPECIFIC = frozenset({EARNINGS, GUIDANCE, FDA, CONTRACT, MNA, INDEX, ANA
 _MARKET_WRAP = re.compile(
     r"\b(dow|nasdaq|s&p( 500)?|russell 2000|stock market|us stocks|wall street)\b.{0,30}"
     r"\b(points?|falls?|gains?|rises?|drops?|jumps?|higher|lower|slips?|climbs?|down|up)\b"
-    r"|;\s*\S.*\b(posts?|reports?|shares?|stock)\b")
+    # Several stories joined by ";" -- but only when the part before the ";" is about the
+    # market, not the company: "Crude Oil Down Over 1%; Thor Industries Shares Gain" is a
+    # wrap, "FDA Panel Endorses GRAIL's Galleri Test; GRAL Stock Reflects ..." is not.
+    r"|^[^;]*\b(dow|nasdaq|s&p|russell|crude|oil|gold|bitcoin|treasur\w*|yields?|futures|stocks|markets?)\b"
+    r"[^;]*;\s*\S.*\b(posts?|reports?|shares?|stock)\b")
+
+# Price-action words describe a move; they do not explain it. They are checked AFTER the
+# company events, so "GRAL Stock Surges 36% Following Positive FDA Advisory Panel Vote" is
+# the FDA event it names (2026-09-24 live test: 10 of 51 real catalysts were lost, several
+# this way). A headline with only price words still falls through to PRICE_ACTION.
+_PRICE_WORDS = (r"\b(stocks?|shares)\b.{0,40}\b(soar|soars|surge|surges|jump|jumps|rall(y|ies|ying)|pops?|"
+                r"explodes?|rockets?|spikes?|climbs?|plunges?|tumbles?|sinks?|whipsaws?|skyrockets?|rips?|"
+                r"slid(es|ing)|slides?)\b|"
+                r"\bvolatility\b|\bwhy .{0,40} (stock|shares) (is|are) (up|down|trading|rallying|sliding)\b|"
+                r"\b(top )?(gainers|losers|movers)\b|\bstocks moving\b")
 
 _RULES = [  # first match wins; dilution is checked first on purpose
     (OFFERING, r"\b(public offering|registered direct|at-the-market|atm program|private placement|priced .* offering|warrants?)\b"),
     (REVERSE_SPLIT, r"\breverse (stock |share )?split\b|\b1[- ]for[- ]\d+\b|\bshare consolidation\b"),
-    # Price action describes a move, it never explains one: "WHLR stock explodes on volatility".
-    (PRICE_ACTION, r"\b(stocks?|shares)\b.{0,40}\b(soar|soars|surge|surges|jump|jumps|rall(y|ies)|pops?|explodes?|"
-                   r"rockets?|spikes?|climbs?|plunges?|tumbles?|sinks?|whipsaws?|skyrockets?|rips?)\b|"
-                   r"\bvolatility\b|\bwhy .{0,40} (stock|shares) (is|are) (up|down|trading)\b|"
-                   r"\b(top )?(gainers|losers|movers)\b|\bstocks moving\b"),
+    # Previews and filings are not results or decisions (rule E4 needs the event itself).
+    (OTHER, r"\bahead of (its |the |q[1-4] )?earnings\b|\bupcoming earnings\b|\bearnings (preview|scheduled|date)\b"),
+    (OTHER, r"\b(ind|investigational new drug)\b|\bfda submission\b"),
     (MNA, r"\b(to acquire|acquisition of|merger|to be acquired|takeover|buyout|definitive agreement)\b"),
     (FDA, r"\b(fda|pdufa|breakthrough therapy|phase (1|2|3|i|ii|iii)|(nda|bla|510\(k\)|ema|marketing) (approval|clearance))\b"),
-    (EARNINGS, r"\b(earnings|quarterly results|q[1-4] results|eps|revenue (rose|grew|increased|beat))\b"),
-    (GUIDANCE, r"\b(raises|lifts|boosts|cuts|lowers) (its )?(full-year |annual )?(guidance|outlook|forecast)\b"),
+    (EARNINGS, r"\b(earnings|quarterly results|q[1-4] results|eps|revenue (rose|grew|increased|beat))\b"
+               r"|\bq[1-4]\b.{0,20}\b(beats?|miss(es)?|results?|revenue|sales)\b"
+               r"|\breports? (slower|weaker|stronger|record) (growth|sales)\b"),
+    (GUIDANCE, r"\b(raises|lifts|boosts|cuts|lowers) (its )?(full-year |annual |fy\d{2,4} |fiscal \d{4} )?"
+               r"(guidance|outlook|forecast)\b|\b(outlook|guidance|forecast) (tops|beats|exceeds|trails|misses)\b"),
     (CONTRACT, r"\b(contract|award(ed)?|partnership|collaboration|agreement with|order from)\b"),
     (INDEX, r"\b(added to|join(s|ing)?) the (s&p|russell|nasdaq)|index inclusion\b"),
-    (ANALYST, r"\b(upgrade[sd]?|raise[sd]? (its |the )?(price target|pt)|initiat(es|ed) coverage)\b"),
+    (ANALYST, r"\b(upgrade[sd]?|raise[sd]? (\w+ ){0,2}(price )?targets?|initiat(es|ed) coverage)\b"),
     (ANALYST_NO_CHANGE, r"\b(reiterat\w*|maintain\w*|keeps|affirm\w*|downgrade[sd]?|"
-                        r"(lower|cut|trim)s? (its |the )?(price target|pt))\b"),
+                        r"(lower|cut|trim)s? (its |the )?(price target|pt)|"
+                        r"cuts? (\w+ )?(rating|to (sell|underperform|underweight|neutral|hold))|"
+                        r"receives \W?(buy|overweight|outperform)\W? rating)\b"),
     (ANALYST, r"\b(price target|overweight|outperform)\b"),
+    (PRICE_ACTION, _PRICE_WORDS),
     (POLICY, r"\b(tariff|executive order|administration|white house|treasury|sanction|security deal)\b"),
 ]
-
 
 @dataclass(frozen=True)
 class CatalystEvent:
