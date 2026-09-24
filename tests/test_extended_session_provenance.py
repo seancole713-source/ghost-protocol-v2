@@ -129,3 +129,30 @@ def test_an_untimestamped_price_is_labelled_unverified(monkeypatch):
     assert out["price_source"] == "yfinance_fast_info"
     assert out["session_price_basis"] == "unverified_time"
     assert out["gap_pct"] is not None
+
+
+def _breaker_open(monkeypatch, *, prev_close):
+    from core.circuit_breaker import _yfinance_cb
+    monkeypatch.setattr(prices, "_alpaca_trade_quote", lambda _symbol: (3.62, 1_700_000_000))
+    monkeypatch.setattr(prices, "_now_ct", lambda: datetime(2026, 9, 24, 9, 44))
+    monkeypatch.setattr(prices, "is_us_rth", lambda _now: True)
+    monkeypatch.setattr(prices, "is_us_premarket", lambda _now: False)
+    monkeypatch.setattr(prices, "is_us_after_hours", lambda _now: False)
+    monkeypatch.setattr(_yfinance_cb, "allow", lambda: False)
+    monkeypatch.setattr(prices, "_alpaca_prev_close", lambda _symbol: prev_close)
+    monkeypatch.delitem(prices._prev_close_cache, "GLND", raising=False)
+
+
+def test_yfinance_breaker_open_uses_alpacas_prior_close(monkeypatch):
+    """2026-09-24: with the yfinance breaker open and nothing cached, the quote
+    returned {} ("no_price_available") for GRAL/GLND/GRML/SKYQ/P although Alpaca
+    had a live trade. Alpaca's own prior close now fills the gap."""
+    _breaker_open(monkeypatch, prev_close=2.93)
+    out = prices.get_extended_session("GLND")
+    assert out["live_price"] == 3.62 and out["previous_close"] == 2.93
+
+
+def test_yfinance_breaker_open_never_discards_a_live_price(monkeypatch):
+    _breaker_open(monkeypatch, prev_close=None)
+    out = prices.get_extended_session("GLND")
+    assert out["live_price"] == 3.62 and out["previous_close"] is None and out["gap_pct"] is None
