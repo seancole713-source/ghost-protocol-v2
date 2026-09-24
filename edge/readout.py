@@ -32,6 +32,12 @@ def today(store, day: Optional[str] = None) -> Dict[str, Any]:
             "baseline_forecasts": card.get("baseline_forecasts"),
             "candidates": card.get("candidates"), "priced": card.get("priced"),
             "health_banner": card.get("health_banner"), "coverage_note": card.get("coverage_note"),
+            # Where the candidates came from: today's own premarket scan (counts and its
+            # top gappers) vs the movers screener, and any source that failed.
+            "premarket_scan": card.get("premarket_scan"),
+            "premarket_scan_top": card.get("premarket_scan_top"),
+            "movers_stale": card.get("movers_stale"),
+            "source_errors": card.get("source_errors"),
             "rows": compact}
 
 

@@ -103,3 +103,20 @@ def test_the_probe_reports_todays_top_gappers(monkeypatch):
     monkeypatch.setattr(time, "time", lambda: ts(9, 5))
     p = PM.probe(Market())
     assert p.status == "OK" and p.rows == 3 and "WOR +15.9%" in p.note
+
+
+def test_the_today_view_shows_what_the_premarket_scan_saw():
+    """2026-09-24: the card missed BB and GRAL, and the view could not say whether the
+    scan never saw them or saw and dropped them. The card already stores the scan's
+    counts and top gappers; the view must show them."""
+    from edge import readout as R
+    store = MemoryStore()
+    store.put("edge_cards", "2026-09-24", {
+        "day": "2026-09-24", "forecasts": ["GLND"], "rows": [],
+        "premarket_scan": {"scanned": 5301, "priced": 212, "batch_errors": 0},
+        "premarket_scan_top": [{"symbol": "PFSA", "gap_pct": 74.6}],
+        "movers_stale": False, "source_errors": {}})
+    out = R.today(store, "2026-09-24")
+    assert out["premarket_scan"] == {"scanned": 5301, "priced": 212, "batch_errors": 0}
+    assert out["premarket_scan_top"][0]["symbol"] == "PFSA"
+    assert out["movers_stale"] is False and out["source_errors"] == {}
