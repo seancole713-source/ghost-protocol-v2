@@ -10,7 +10,9 @@ The shadow card is issued 8:05-8:28am CT and PAPER orders are placed right after
    paper order state (flag rejections with the broker's message).
 3. For each card name: what the research found that survived review, what was quarantined
    and why, which reviewer checked it. Research is off or empty: say so.
-4. Context: the latest miss investigation, any open watchdog problem.
+4. Context: the latest miss investigation, any open watchdog problem. Scoreboard check: any
+   `cards/<date>` call before today with no `grades/<date>-<SYM>` is a PROBLEM -- grade it
+   now per `reporter.md` step 3 and say so.
 5. If `ghost_edge_note` is available: one note, kind=brief, author=premarket-briefer.
 6. Reply (and push a one-line summary): the names with levels, the health banner, one line
    of research each, any problem. If the operator trades the Gap-and-Go card themself:
