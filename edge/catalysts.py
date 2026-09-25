@@ -52,7 +52,10 @@ _PRICE_WORDS = (r"\b(stocks?|shares)\b.{0,40}\b(soar|soars|surge|surges|jump|jum
                 r"\b(top )?(gainers|losers|movers)\b|\bstocks moving\b")
 
 _RULES = [  # first match wins; dilution is checked first on purpose
-    (OFFERING, r"\b(public offering|registered direct|at-the-market|atm program|private placement|priced .* offering|warrants?)\b"),
+    # 2026-09-24: "Greenland Mines Completes $12-Per-Share Equity Financing" (a registered direct
+    # with pre-funded warrants) did not read as dilution.
+    (OFFERING, r"\b(public offering|registered direct|direct offering|at-the-market|atm program|private placement|"
+               r"priced .* offering|warrants?|equity financing|equity offering|share offering|pre-funded)\b"),
     (REVERSE_SPLIT, r"\breverse (stock |share )?split\b|\b1[- ]for[- ]\d+\b|\bshare consolidation\b"),
     # Previews and filings are not results or decisions (rule E4 needs the event itself).
     (OTHER, r"\bahead of (its |the |q[1-4] )?earnings\b|\bupcoming earnings\b|\bearnings (preview|scheduled|date)\b"),

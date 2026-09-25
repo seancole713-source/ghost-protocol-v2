@@ -61,6 +61,9 @@ SELL_SIGNALS = {
     "Decoy Therapeutics, Inc. Announces a Warrant Inducement Transaction for $3.85 Million in Gross "
     "Proceeds Priced At-The-Market under Nasdaq Rules": C.OFFERING,
     "FBS Global announces 1-for-10 reverse stock split": C.REVERSE_SPLIT,
+    "Greenland Mines Completes $12-Per-Share Equity Financing, Fully Funded Through 2027 Milestones "
+    "with $42 Million, Terminates ATM, and Completes Sarfartoq Rare Earth Field Program": C.OFFERING,
+    "Greenland Mines Announces $38.4 Million Equity Financing": C.OFFERING,
 }
 
 

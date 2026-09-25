@@ -56,6 +56,12 @@ STRATEGIES = {
                  optional=("catalyst", "crowded_short"), note="v0 hypothesis"),
         Strategy("intraday_continuation", required=("liquidity", "vwap_hold", "rvol_tod", "acceleration"),
                  optional=("catalyst",), note="v0 hypothesis"),
+        # v2 = v1 + a dilution / reverse-split veto (rule E5). 2026-09-24: v1 bought GRML the
+        # morning after a $12 registered direct offering and was stopped out. v1 keeps running
+        # unchanged beside it, so the two records say whether the veto adds anything.
+        Strategy("intraday_continuation_v2",
+                 required=("liquidity", "vwap_hold", "rvol_tod", "acceleration", "not_dilutive"),
+                 optional=("catalyst",), note="v0 hypothesis"),
     ]
 }
 

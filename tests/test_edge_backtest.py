@@ -135,3 +135,19 @@ def test_the_backtest_builds_the_model_dataset_and_tries_to_qualify_a_model():
     full = store.get("edge_backtest", BT.BACKTEST_VERSION)
     assert full["model"]["status"] == "not_qualified"       # one session can never qualify
     assert "dataset" not in full["sessions_detail"][0]
+
+
+def test_the_report_stress_tests_costs_and_a_one_minute_entry_delay():
+    """Phase 1: does the result survive real-world friction? 25 bps a side (the first paper
+    fills averaged ~0.2% worse than the trigger) and an order that goes live a minute late."""
+    store = MemoryStore()
+    BT.run(Market(), store, end_day=END, days=1, warmup=12, pace_s=0, sleep=lambda s: None)
+    full = store.get("edge_backtest", BT.BACKTEST_VERSION)
+    auto = full["experiments"]["gap_and_go_auto@v1"]
+    assert set(auto["stress"]) == set(BT.STRESS)
+    (sess,) = full["sessions_detail"]
+    runr = next(r for r in sess["results"] if r["symbol"] == "RUNR" and r["experiment"] == "gap_and_go_auto@v1")
+    base, costly = runr["pnl_usd"], runr["stress"]["cost_25bps"]["pnl_usd"]
+    assert runr["stress"]["cost_25bps"]["simulated"] == runr["simulated"] and costly < base   # same trade, less profit
+    for name, v in auto["stress"].items():
+        assert v["filled"] <= auto["filled"] + 1 and "expectancy_usd" in v, name
