@@ -44,8 +44,21 @@ def ensure_news_tables() -> None:
         )
 
 
-def _article_id(symbol: str, title: str, url: Optional[str], published_at: Optional[int]) -> str:
-    raw = (url or "").strip() or f"{symbol}|{title}|{published_at or 0}"
+def _article_id(symbol: str, title: str, url: Optional[str], published_at: Optional[int] = None) -> str:
+    """Stable identity: (symbol, url) or, without a url, (symbol, headline).
+
+    Audit F25: the old key hashed ``published_at`` into url-less ids, and the
+    Finnhub path filled ``published_at`` with the ingestion time, so the same
+    headline got a new id -- and a new row -- every cycle. ``published_at`` is
+    accepted for call compatibility but is no longer part of the identity.
+    """
+    sym = (symbol or "").strip().upper()
+    u = (url or "").strip()
+    if u:
+        raw = f"url|{sym}|{u}"
+    else:
+        norm = " ".join((title or "").lower().split())
+        raw = f"title|{sym}|{norm}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 
 
@@ -179,13 +192,23 @@ def upsert_fetched_articles(articles: List[Dict[str, Any]], *, origin: str = "fi
                 sym = str(syms[0] if syms else raw.get("symbol") or "").upper()
                 if not sym:
                     continue
+                # Audit F25: a fetched headline keeps the provider's own
+                # publish time. One without a time is skipped -- stamping it
+                # with "now" made a days-old story look fresh every cycle.
+                published = raw.get("published_at") or raw.get("datetime")
+                try:
+                    published = int(published) if published is not None else 0
+                except (TypeError, ValueError):
+                    published = 0
+                if published <= 0:
+                    continue
                 row = _normalize_article(
                     {
                         "symbol": sym,
                         "title": raw.get("title") or raw.get("headline"),
                         "summary": raw.get("summary") or "",
                         "url": raw.get("url") or raw.get("link") or "",
-                        "published_at": raw.get("published_at") or raw.get("datetime") or int(time.time()),
+                        "published_at": published,
                         "source": raw.get("source") or origin,
                         "origin": origin,
                         "category": raw.get("category") or "news",
@@ -193,6 +216,22 @@ def upsert_fetched_articles(articles: List[Dict[str, Any]], *, origin: str = "fi
                     },
                     default_origin=origin,
                 )
+                # Dedupe on (symbol, url or headline) -- also against rows
+                # written under the old time-hashed ids (audit F25).
+                if row["url"]:
+                    cur.execute(
+                        "SELECT 1 FROM ghost_news_articles "
+                        "WHERE symbol = %s AND (url = %s OR title = %s) LIMIT 1",
+                        (row["symbol"], row["url"], row["title"]),
+                    )
+                else:
+                    cur.execute(
+                        "SELECT 1 FROM ghost_news_articles "
+                        "WHERE symbol = %s AND title = %s LIMIT 1",
+                        (row["symbol"], row["title"]),
+                    )
+                if cur.fetchone():
+                    continue
                 cur.execute(
                     """
                     INSERT INTO ghost_news_articles

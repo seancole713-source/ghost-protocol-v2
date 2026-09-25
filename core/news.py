@@ -179,8 +179,27 @@ def _fetch_finnhub_stock(symbol: str) -> List[Dict]:
                     LOGGER.info("Finnhub recovered after %s consecutive failures", _finnhub_fail_streak)
                 _finnhub_fail_streak = 0
                 _finnhub_cb.record_success()
-                return [{"title": a["headline"], "symbols": [symbol], "source": "finnhub_stock"}
-                        for a in r.json()[:5] if "headline" in a]
+                # Audit F25: carry the provider's own publish time, url and
+                # id. Without them news_store stamped every headline with the
+                # ingestion time and re-inserted it on every cycle.
+                out = []
+                for a in (r.json() or [])[:5]:
+                    if not isinstance(a, dict) or not a.get("headline"):
+                        continue
+                    try:
+                        published = int(a.get("datetime") or 0)
+                    except (TypeError, ValueError):
+                        published = 0
+                    out.append({
+                        "title": a["headline"],
+                        "symbols": [symbol],
+                        "source": "finnhub_stock",
+                        "url": str(a.get("url") or ""),
+                        "summary": str(a.get("summary") or ""),
+                        "published_at": published if published > 0 else None,
+                        "provider_article_id": a.get("id"),
+                    })
+                return out
             except requests.RequestException as e:
                 if i < attempts - 1:
                     time.sleep(0.2)

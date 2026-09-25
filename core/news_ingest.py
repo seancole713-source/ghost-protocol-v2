@@ -61,10 +61,14 @@ def _fetch_alpaca(symbols: List[str], since_ts: int) -> List[Dict[str, Any]]:
             published = int(_dt.datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp())
         except Exception:
             continue
-        for sym in (a.get("symbols") or []):
-            if sym.upper() not in symbols:
+        tagged = [str(t).upper() for t in (a.get("symbols") or []) if t]
+        for sym in tagged:
+            if sym not in symbols:
                 continue
             out.append({
+                # Every ticker the provider tagged, so the classifier can
+                # refuse roundups copied to many names (audit F26).
+                "tickers": list(tagged),
                 "provider": "alpaca", "provider_article_id": a.get("id"),
                 "symbol": sym.upper(), "headline": a.get("headline") or "",
                 "summary": a.get("summary") or "", "url": a.get("url") or "",
@@ -94,8 +98,10 @@ def _fetch_finnhub(symbol: str, since_ts: int) -> List[Dict[str, Any]]:
         published = int(a.get("datetime") or 0)
         if published <= since_ts:
             continue
+        related = [t.strip().upper() for t in str(a.get("related") or "").split(",") if t.strip()]
         out.append({
             "provider": "finnhub", "provider_article_id": a.get("id"),
+            "tickers": related,
             "symbol": symbol.upper(), "headline": a.get("headline") or "",
             "summary": a.get("summary") or "", "url": a.get("url") or "",
             "source": a.get("source") or "", "published_at": published,

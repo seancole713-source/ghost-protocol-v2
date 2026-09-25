@@ -111,6 +111,37 @@ def _calculate_features(df):
     }
 
 
+# Minimum completed daily bars for a real EMA200 (the regime gate's "below
+# EMA200" rule). Fewer bars -> the flag is unknown (None), never an alias.
+EMA200_MIN_BARS = 200
+
+
+def regime_above_ema200(rows):
+    """True-EMA200 flag for the regime gate / regime label (audit F18).
+
+    The model feature ``above_ema200`` from ``_calculate_features`` is computed
+    on the ~121-bar training window (train/serve parity), where ``ema200`` is
+    aliased to EMA50 -- so it is really "above EMA50". The regime gate is
+    documented as "no BUY below EMA200", so it reads this helper instead, which
+    uses the FULL completed-bar history the serve path fetched.
+
+    Returns 1 (close > EMA200), 0 (close <= EMA200) or None when fewer than
+    EMA200_MIN_BARS usable closes exist -- unknown, never an EMA50 stand-in.
+    """
+    closes = []
+    for r in rows or []:
+        try:
+            c = float(r.get("close") if isinstance(r, dict) else r)
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(c):
+            closes.append(c)
+    if len(closes) < EMA200_MIN_BARS:
+        return None
+    arr = np.array(closes, dtype=float)
+    return 1 if float(arr[-1]) > _ema(arr, 200) else 0
+
+
 NEWS_FEATURE_COLS = [
     'news_sentiment', 'news_bullish', 'news_bearish',
 ]

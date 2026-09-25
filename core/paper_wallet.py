@@ -1091,12 +1091,16 @@ def run_wallet_cycle() -> Dict[str, Any]:
             # an hours-old signal is honest — we buy now at now's price.
             gated_rows = []
             if gate.get("open"):
+                # Audit F41: research picks feed the learning loop only; they
+                # must never open a lot in the gated (official) book.
+                from core.prediction_filters import non_research_where
                 cur.execute(
                     """SELECT id, symbol, entry_price, target_price, stop_price, expires_at
                        FROM predictions
                        WHERE outcome IS NULL AND direction IN ('UP','BUY')
                          AND expires_at > %s
                          AND entry_price > 0
+                         AND """ + non_research_where() + """
                        ORDER BY predicted_at DESC LIMIT 20""", (now_ts,))
                 gated_rows = [("gated", f"pick:{r[0]}", r[1], r[2], r[3], r[4], r[5])
                               for r in cur.fetchall()]

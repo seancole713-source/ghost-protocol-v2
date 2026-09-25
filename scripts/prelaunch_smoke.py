@@ -91,7 +91,11 @@ def check_ghost_score() -> None:
     score = body.get("score")
     if not isinstance(score, (int, float)):
         _fail("/api/wolf/ghost-score", f"score={score!r}")
-    if body.get("signal") not in ("STRONG BUY", "BUY", "HOLD", "SELL", "STRONG SELL"):
+    # The API emits underscore labels (STRONG_BUY) and, since audit F23,
+    # NO_CURRENT_VIEW when no current model pick exists.
+    if str(body.get("signal") or "").replace("_", " ") not in (
+        "STRONG BUY", "BUY", "HOLD", "SELL", "STRONG SELL", "NO CURRENT VIEW",
+    ):
         _fail("/api/wolf/ghost-score", f"unexpected signal={body.get('signal')!r}")
     floor = body.get("confidence_floor")
     if floor is not None and not (0.0 < float(floor) <= 1.0):

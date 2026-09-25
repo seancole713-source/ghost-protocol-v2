@@ -1612,7 +1612,7 @@ function renderGhostScore(gs, watching, truth){
       fg.setAttribute('stroke', color);
       scoreEl.textContent = Math.round(score);
       scoreEl.style.color = color;
-      sigEl.textContent = (gs.signal || 'HOLD').replace('_', ' ');
+      sigEl.textContent = (gs.signal || 'HOLD').replace(/_/g, ' ');
       sigEl.className = 'gs-signal ' + gsSignalClass(gs.signal);
     }
   }

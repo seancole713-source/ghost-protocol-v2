@@ -1,7 +1,7 @@
 """
 core/edgar_integration.py — SEC EDGAR 8-K filing fetcher.
 
-Fetches recent 8-K filings for WOLF via the SEC EDGAR submissions API
+Fetches recent 8-K filings for any ticker via the SEC EDGAR submissions API
 (free, no key required). Parses material events from filing items and
 feeds structured results into core.wolf_context.
 
@@ -21,11 +21,16 @@ import requests
 
 LOGGER = logging.getLogger("ghost.edgar")
 
-# SEC EDGAR requires a User-Agent identifying your organization/email.
-_SEC_USER_AGENT = os.getenv(
-    "EDGAR_USER_AGENT",
-    "GhostProtocol/2.1 (seancole713-source/ghost-protocol-v2)",
-)
+# SEC EDGAR requires a descriptive User-Agent with a contact. Reuse the one
+# core.sec_fundamentals already sends (same EDGAR_USER_AGENT override) so both
+# SEC clients identify themselves identically.
+try:
+    from core.sec_fundamentals import _SEC_USER_AGENT
+except Exception:  # pragma: no cover - sec_fundamentals is stdlib+requests only
+    _SEC_USER_AGENT = os.getenv(
+        "EDGAR_USER_AGENT",
+        "GhostProtocol/2.5 (seancole713-source/ghost-protocol-v2)",
+    )
 _SEC_TIMEOUT = float(os.getenv("EDGAR_TIMEOUT_S", "10.0"))
 _CACHE_TTL_S = int(os.getenv("EDGAR_CACHE_TTL_S", "3600"))  # 1 hour
 
@@ -62,15 +67,28 @@ _edgar_cache: Dict[str, tuple[float, Dict[str, Any]]] = {}
 
 
 def _cik_for_symbol(symbol: str) -> Optional[str]:
-    """Map ticker to CIK. Currently WOLF-only; extendable via env override."""
-    sym = (symbol or "").upper()
+    """Map any ticker to its 10-digit CIK (audit F27).
+
+    Order: WOLF anchor (EDGAR_WOLF_CIK / hardcoded), an EDGAR_CIK_<SYM> env
+    override, then core.sec_fundamentals.cik_for_symbol -- its static maps and
+    the cached SEC company_tickers.json index (loaded once, retried on
+    failure). Returns None only when the SEC index cannot name the ticker.
+    """
+    sym = (symbol or "").strip().upper()
+    if not sym:
+        return None
     if sym == "WOLF":
-        return os.getenv("EDGAR_WOLF_CIK", _WOLF_CIK)
-    # Generic lookup via SEC company_tickers.json (free, updated daily)
+        return str(os.getenv("EDGAR_WOLF_CIK", _WOLF_CIK)).strip().zfill(10)
     override = os.getenv(f"EDGAR_CIK_{sym}")
-    if override:
-        return override
-    return None
+    if override and override.strip():
+        return override.strip().zfill(10)
+    try:
+        from core.sec_fundamentals import cik_for_symbol
+        cik = cik_for_symbol(sym)
+    except Exception as exc:
+        LOGGER.warning("EDGAR CIK lookup %s failed: %s", sym, str(exc)[:120])
+        return None
+    return str(cik).zfill(10) if cik else None
 
 
 def _fetch_submissions(cik: str) -> Optional[Dict[str, Any]]:
@@ -149,7 +167,10 @@ def fetch_recent_8k(symbol: str, days: int = 90, *, asof_ts: Optional[int] = Non
             "reason": "no_cik_mapping",
             "symbol": sym,
             "filings": [],
-            "note": f"No CIK mapping for {sym}. Set EDGAR_CIK_{sym} env var.",
+            "note": (
+                f"SEC company_tickers.json has no CIK for {sym} (or the index "
+                f"is unreachable). Set EDGAR_CIK_{sym} to override."
+            ),
         }
         _edgar_cache[sym] = (now, result)
         return result

@@ -175,7 +175,10 @@ def score_headline_fallback(articles: Iterable[Dict[str, Any]]) -> Dict[str, Any
             continue
         title = str(art.get("title") or art.get("headline") or "")
         summary = str(art.get("summary") or art.get("description") or "")
-        for ev in classify_text(title, summary):
+        tickers = art.get("tickers") or art.get("symbols") or None
+        if isinstance(tickers, str):
+            tickers = [t for t in tickers.split(",") if t.strip()]
+        for ev in classify_text(title, summary, tickers=tickers):
             ev = dict(ev)
             ev.setdefault("source_reliability", 0.55)
             ev.setdefault("asof_ts", art.get("published_at") or art.get("ts"))

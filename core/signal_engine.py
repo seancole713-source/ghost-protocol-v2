@@ -3239,7 +3239,13 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
     except Exception:
         note_suppressed()
 
-    above_ema200 = features.get('above_ema200', 1)
+    # Audit F18: the model feature 'above_ema200' is computed on the ~121-bar
+    # training window where ema200 aliases EMA50, so it is really "above
+    # EMA50". It stays in `features` unchanged (train/serve parity). The gate
+    # and regime label test a real EMA200 on the full completed-bar history;
+    # None = unknown (< 200 bars), never an EMA50 stand-in.
+    from core.engine_features import regime_above_ema200
+    above_ema200 = regime_above_ema200(rows)
     adx_trending = features.get('adx_trending', 1)
     adx_val = features.get('adx', 25)
     ema_trend_bullish = features.get('ema_trend_bullish', 1)
@@ -3268,7 +3274,11 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
                 note_suppressed()
         scores["regime"] = {
             "label": regime_label,
-            "above_ema200": int(above_ema200),
+            "above_ema200": None if above_ema200 is None else int(above_ema200),
+            "above_ema200_basis": (
+                f"close_vs_ema200_{len(rows)}bars" if above_ema200 is not None
+                else f"unknown_lt_200_bars_{len(rows)}"
+            ),
             "adx": round(float(adx_val), 2),
             "adx_trending": int(adx_trending),
             "ema_trend_bullish": int(ema_trend_bullish),
@@ -3288,10 +3298,12 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
     # symbols, not just the ones that clear regime). Firing behavior unchanged:
     # a regime block still returns before any signal is emitted.
     regime_block = False
-    # Gate 1: below EMA200 + choppy = high-probability loss setup
+    # Gate 1: below EMA200 + choppy = high-probability loss setup. An unknown
+    # EMA200 (< 200 bars) fails closed: it cannot prove price is above it.
     adx_thresh = _v3_adx_trending_threshold()
-    if above_ema200 == 0 and adx_trending == 0:
-        LOGGER.info(f"REGIME GATE [{symbol}]: below EMA200 + ADX={adx_val:.1f}<{adx_thresh:.0f} — skip BUY")
+    if above_ema200 != 1 and adx_trending == 0:
+        _pos = "below EMA200" if above_ema200 == 0 else "EMA200 unknown (<200 bars)"
+        LOGGER.info(f"REGIME GATE [{symbol}]: {_pos} + ADX={adx_val:.1f}<{adx_thresh:.0f} — skip BUY")
         regime_block = True
 
     # Gate 2: full bearish alignment, not oversold
