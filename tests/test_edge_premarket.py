@@ -120,3 +120,24 @@ def test_the_today_view_shows_what_the_premarket_scan_saw():
     assert out["premarket_scan"] == {"scanned": 5301, "priced": 212, "batch_errors": 0}
     assert out["premarket_scan_top"][0]["symbol"] == "PFSA"
     assert out["movers_stale"] is False and out["source_errors"] == {}
+
+
+def test_the_scan_logs_how_much_of_the_market_iex_can_see():
+    """Evidence for the SIP decision (2026-09-24: 44 of 3,254 stocks had a fresh IEX trade at
+    9:05 ET). Each scan records fresh TRADES vs fresh bid/ask QUOTES."""
+    class Quoting(Market):
+        def __call__(self, url, params=None, headers=None, timeout=None):
+            r = super().__call__(url, params, headers, timeout)
+            if "/v2/stocks/snapshots" in url:
+                body = r.json()
+                body.setdefault("FLAT", {})["latestQuote"] = {"bp": 20.0, "ap": 20.2, "t": iso(ts(9, 0))}
+                body["OLD"] = {"latestQuote": {"bp": 15.0, "ap": 15.1, "t": iso(ts(9, 1))},
+                               "latestTrade": {"p": 15.0, "t": iso(ts(16, 0) - 86_400)}}
+                return NS(status_code=200, json=lambda: body, raise_for_status=lambda: None)
+            return r
+
+    store = MemoryStore()
+    out = PM.scan(Quoting(), store, day=DAY, now=ts(9, 5))
+    assert out["priced"] == 3 and out["quoted"] == 2          # OLD has a fresh quote but no fresh trade
+    cov = store.get("edge_pm_coverage", "2026-09-23")["samples"]
+    assert cov[-1]["fresh_trade"] == 3 and cov[-1]["fresh_quote"] == 2 and cov[-1]["scanned"] == 4

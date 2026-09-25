@@ -55,6 +55,8 @@ def card_text(card: Dict[str, Any]) -> str:
     lines = [f"edge shadow {card.get('day')}: " + (", ".join(fc) if fc else "no setups")
              + f"  (baseline: {', '.join(base) if base else 'none'})",
              card.get("coverage_note") or "",
+             ("Top 10 by quality (learning list, graded tonight): " + ", ".join(card["top10"]))
+             if card.get("top10") else "",
              "Shadow + paper only. Not a trade recommendation."]
     return "\n".join(x for x in lines if x)
 

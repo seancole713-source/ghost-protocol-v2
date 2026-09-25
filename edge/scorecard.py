@@ -131,6 +131,12 @@ def scorecard(store) -> Dict[str, Any]:
         "research_quality": research_quality(store),
         "break_even": 0.375,
     }
+    picks = {(t["day"], x["symbol"]) for t in store.scan("edge_top10") for x in t.get("list") or []}
+    if picks:
+        tagged = [(d["day"], r) for d in days for r in d.get("rows") or [] if r.get("outcome")]
+        out["top10"] = _compare("the Top 10 quality ranking",
+                                [r for dd, r in tagged if (dd, r["symbol"]) in picks],
+                                [r for dd, r in tagged if (dd, r["symbol"]) not in picks])
     scored = [r for r in gaps if r.get("model_prob") is not None]
     if scored:
         out["model"] = _compare("the model (prob >= 0.40)",

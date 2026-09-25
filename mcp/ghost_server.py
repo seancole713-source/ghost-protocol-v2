@@ -634,7 +634,8 @@ EDGE_TOOLS: Mapping[str, Dict[str, Any]] = {
             "the point-in-time backtest of the frozen Gap-and-Go rule, the daily miss review, the "
             "data-readiness probe, the universe snapshot, the pre-card AI research, the intraday "
             "radar, the Alpaca PAPER orders, the model registry, the AI scorecard (does research "
-            "add edge?) and the scheduled agents' notes. Read-only; shadow and paper only -- "
+            "add edge?), the daily Top 10 quality ranking (graded after the close) and the "
+            "scheduled agents' notes. Read-only; shadow and paper only -- "
             "never a trade recommendation."
         ),
         "inputSchema": {
@@ -642,10 +643,10 @@ EDGE_TOOLS: Mapping[str, Dict[str, Any]] = {
             "properties": {
                 "view": {"type": "string", "enum": ["summary", "today", "experiments", "backtest",
                                                     "misses", "probe", "universe", "research", "radar",
-                                                    "paper", "models", "scorecard", "notes"],
+                                                    "paper", "models", "scorecard", "notes", "top10"],
                          "description": "Which view; default summary"},
                 "day": {"type": "string",
-                        "description": "YYYY-MM-DD for today/misses/research/radar/paper/notes; default latest"},
+                        "description": "YYYY-MM-DD for today/misses/research/radar/paper/notes/top10; default latest"},
                 "kind": {"type": "string", "description": "notes view only: filter by note kind"},
             },
             "additionalProperties": False,

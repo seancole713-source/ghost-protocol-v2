@@ -342,7 +342,11 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, A
             "source_errors": source_errors, "movers_count": len(syms),
             "health_note": "shadow records regardless; the banner is what a LIVE release would say",
             "rows": rows}
+    from edge import top10 as T10
+    t10 = T10.build(card)                     # learning list, never an order; graded after the close
+    card["top10"] = [x["symbol"] for x in t10["list"]]
     store.put("edge_cards", day.isoformat(), card)
+    store.put("edge_top10", day.isoformat(), t10)
     return {"status": "issued", **{k: card[k] for k in (
         "day", "candidates", "priced", "eligible", "forecasts", "baseline_forecasts",
         "coverage_note", "health_banner", "source_errors")}}

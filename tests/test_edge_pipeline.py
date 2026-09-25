@@ -360,3 +360,13 @@ def test_an_empty_research_queue_is_retried_not_cached_for_the_day(ledger, monke
     assert ledger.store.get("edge_research_queue", DAY.isoformat()) is None
     P.research_step(NoFreshPrice(), ledger, day=DAY, now=ts(8, 35), client=object())
     assert calls["n"] == 2                            # recomputed, not frozen empty for the day
+
+
+def test_the_card_stores_its_top_10_and_the_evening_grades_it(ledger):
+    P.morning_card(FakeAlpaca(), ledger, now=ts(9, 10))
+    card = ledger.store.get("edge_cards", "2026-03-18") or next(iter(ledger.store.scan("edge_cards")))
+    t10 = ledger.store.get("edge_top10", card["day"])
+    assert t10 and card["top10"] == [x["symbol"] for x in t10["list"]] and len(card["top10"]) <= 10
+    P.run(FakeAlpaca("evening"), ledger, now=ts(16, 25))
+    from edge import readout as R
+    assert R.view(ledger.store, "top10", card["day"])["graded"] is True
