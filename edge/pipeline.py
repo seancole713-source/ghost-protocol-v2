@@ -10,7 +10,9 @@ Three steps, each idempotent (safe to re-run; a marker stops repeats):
   09:05-09:28 ET  morning_card    candidates -> signals -> decisions; forecasts
                                   and abstentions RECORDED before the open
   16:20-20:00 ET  resolve_day     grade from consolidated minute bars:
-                                  "forecast" and "simulated" records
+                                  "forecast" and "simulated" records; then the
+                                  control arm grades every radar name once
+                                  (edge/control.py, docs/control_arm_v1.md)
 
 Why the miss review waits for the next morning: this account's Polygon plan is
 not entitled to a session's grouped-daily bar while that session is still the
@@ -848,6 +850,9 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None) -> Dict[str,
         guarded("radar_close", lambda: I.close_day(ledger, day=day, now=now))
         from edge import scorecard as SC
         guarded("card_graded", lambda: SC.grade_card(get, ledger.store, day=day, now=now))
+        # The observe-all control arm (docs/control_arm_v1.md): every radar name graded once.
+        from edge import control as CA
+        guarded("control", lambda: CA.grade_day(get, ledger.store, day=day, now=now))
         if http is not None:
             guarded("paper_reconcile", lambda: _paper().reconcile(http, ledger, day=ds,
                                                                   experiments=all_specs, now=now))

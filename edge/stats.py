@@ -20,6 +20,23 @@ def wilson(k: int, n: int, z: float = 1.96) -> Tuple[float, float]:
     return max(0.0, centre - half), min(1.0, centre + half)
 
 
+def diff_ci(k1: int, n1: int, k2: int, n2: int, z: float = 1.96) -> Optional[Tuple[float, float, float]]:
+    """(p1 - p2, low, high): Newcombe's hybrid score interval for a difference of two rates.
+
+    Built from the two Wilson intervals, so it behaves at small n and near 0 or 1 where the
+    plain normal-approximation interval does not. None when either side has no trials.
+    """
+    if n1 <= 0 or n2 <= 0:
+        return None
+    p1, p2 = k1 / n1, k2 / n2
+    l1, u1 = wilson(k1, n1, z)
+    l2, u2 = wilson(k2, n2, z)
+    d = p1 - p2
+    lo = d - math.sqrt((p1 - l1) ** 2 + (u2 - p2) ** 2)
+    hi = d + math.sqrt((u1 - p1) ** 2 + (p2 - l2) ** 2)
+    return d, max(-1.0, lo), min(1.0, hi)
+
+
 def expectancy(pnls: Sequence[float]) -> Dict[str, Optional[float]]:
     """Average result per trade, and the pieces it is made of."""
     xs = [float(x) for x in pnls]
