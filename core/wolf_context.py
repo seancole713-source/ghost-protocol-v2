@@ -36,6 +36,8 @@ from typing import Optional
 
 import requests
 
+from shared.redaction import redact_exc
+
 from core.yfinance_client import ungated_ticker as _ungated_yf_ticker  # noqa: E402
 LOGGER = logging.getLogger("ghost.wolf_context")
 
@@ -366,7 +368,7 @@ def _fetch_price_change(ticker: str) -> float:
                 except Exception:
                     _yfinance_cb.record_failure()
     except Exception as exc:
-        LOGGER.debug(f"Price change fetch failed for {ticker}: {exc}")
+        LOGGER.debug("Price change fetch failed for %s: %s", ticker, redact_exc(exc))
 
     _cache_set(f"price_change:{ticker}", pct)
     return pct

@@ -80,10 +80,25 @@ class _FormatRepairSession:
                                     "type": "web_search_result",
                                     "url": "https://example.com/release",
                                     "title": "Official release",
+                                },
+                                {
+                                    "type": "web_search_result",
+                                    "url": "https://unrelated.example/other-ticker",
+                                    "title": "Uncited hit",
+                                },
+                            ],
+                        },
+                        {
+                            "type": "text",
+                            "text": "Research draft without JSON.",
+                            "citations": [
+                                {
+                                    "type": "web_search_result_location",
+                                    "url": "https://example.com/release",
+                                    "title": "Official release",
                                 }
                             ],
                         },
-                        {"type": "text", "text": "Research draft without JSON."},
                     ],
                 }
             )
@@ -114,7 +129,42 @@ def test_anthropic_client_repairs_non_json_first_pass_without_second_web_search(
     assert "tools" in session.calls[0]
     assert "tools" not in session.calls[1]
     assert result["raw_response"]["format_repaired"] is True
-    assert result["source_refs"][0]["locator"] == "https://example.com/release"
+    assert [r["locator"] for r in result["source_refs"]] == ["https://example.com/release"]
+    assert result["raw_response"]["source_policy"] == "cited_only/v2"
+
+
+def test_raw_search_results_are_not_stored_as_sources():
+    """F36 acceptance: 10 raw results + 2 cited -> only the 2 cited plus the
+    model's own refs."""
+    now = 1_800_000_000
+    raw_hits = [
+        {"type": "web_search_result", "url": f"https://hit{i}.example/page", "title": f"hit {i}"}
+        for i in range(10)
+    ]
+    content = [
+        {"type": "server_tool_use", "name": "web_search", "input": {"query": "VBIO"}},
+        {"type": "web_search_tool_result", "content": raw_hits},
+        {
+            "type": "text",
+            "text": "VBIO announced ...",
+            "citations": [
+                {"type": "web_search_result_location", "url": "https://hit1.example/page", "title": "hit 1"},
+                {"type": "web_search_result_location", "url": "https://hit4.example/page", "title": "hit 4"},
+                {"type": "web_search_result_location", "url": "https://hit1.example/page", "title": "dup"},
+            ],
+        },
+        {"type": "text", "text": "Uncited paragraph."},
+    ]
+    cited = worker._source_refs_from_response(content, now)
+    assert [r["locator"] for r in cited] == [
+        "https://hit1.example/page", "https://hit4.example/page",
+    ]
+    refs = worker._normalize_source_refs(
+        [{"kind": "filing", "locator": "https://sec.example/8k", "title": "8-K"}], cited, now,
+    )
+    assert [r["locator"] for r in refs] == [
+        "https://sec.example/8k", "https://hit1.example/page", "https://hit4.example/page",
+    ]
 
 
 class _FakeGhost:

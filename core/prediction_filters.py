@@ -74,3 +74,47 @@ def picks_where(symbol: str = "ALL", asset_type: str = None):
         clauses.append("COALESCE(asset_type, 'stock') = 'stock'")
     clauses.append("entry_price IS NOT NULL AND entry_price > 0")
     return clauses, params
+
+
+def accuracy_basis(
+    *,
+    population: str,
+    wins: int,
+    n: int,
+    start_ts=None,
+    end_ts=None,
+    outcomes_counted=("WIN", "LOSS"),
+    excludes=(),
+) -> dict:
+    """Machine-readable basis for an accuracy number (audit F19).
+
+    Every accuracy surface counts a different population (all-era WIN/LOSS vs
+    the v3.2 window with genuine EXPIRED as non-wins, ...). Attach this so a
+    reader -- or an agent quoting the number -- sees which population, which
+    dates, the n, and the 95% Wilson interval instead of a bare percentage.
+    """
+    import datetime as _dt
+    from core.binomial_stats import wilson_interval
+
+    def _iso(ts):
+        try:
+            if ts is None or int(ts) <= 0:
+                return None
+            return _dt.datetime.fromtimestamp(int(ts), tz=_dt.timezone.utc).strftime("%Y-%m-%d")
+        except (TypeError, ValueError, OverflowError, OSError):
+            return None
+
+    wins_i = max(0, int(wins or 0))
+    n_i = max(0, int(n or 0))
+    interval = wilson_interval(wins_i, n_i)
+    return {
+        "population": population,
+        "outcomes_counted": list(outcomes_counted),
+        "excludes": list(excludes),
+        "date_range": {"start": _iso(start_ts), "end": _iso(end_ts)},
+        "wins": wins_i,
+        "n": n_i,
+        "wilson_95": (
+            {"low": interval["low"], "high": interval["high"]} if n_i else None
+        ),
+    }

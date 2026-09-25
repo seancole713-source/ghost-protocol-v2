@@ -161,10 +161,11 @@ def build_scorecard_row(
         ml_meta = model_info()
     except Exception:
         ml_meta = {"model": "heuristic_v1"}
-    from core.squeeze_monitor import squeeze_trade_levels
+    from core.squeeze_monitor import alert_time_fade_pct, squeeze_trade_levels
 
     trade_kind = kind or "squeeze_forming"
     buy, sell = squeeze_trade_levels(price, session_high, trade_kind)
+    fade_pct = alert_time_fade_pct(price, session_high)
     stop = compute_stop(price, vwap=vwap_f, prior_close=prior_close if prior_close > 0 else None)
 
     from core.squeeze_evidence import EVIDENCE_FIELDS
@@ -176,6 +177,9 @@ def build_scorecard_row(
         "sell": sell,
         "stop": stop,
         "price": round(price, 2),
+        "session_high": round(session_high, 2),
+        # F38: distance below the already-printed high at alert time.
+        "alert_time_fade_pct": fade_pct,
         "vwap": round(vwap_f, 2) if vwap_f else None,
         "above_vwap": above_vwap,
         "peak_move_pct": round(float(metrics["peak_move_pct"]), 2),

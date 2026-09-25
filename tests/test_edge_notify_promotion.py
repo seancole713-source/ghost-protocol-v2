@@ -260,3 +260,29 @@ def test_a_paper_stage_needs_the_rule_to_have_traded_too():
         "actual": {"filled": 1, "wins": 1, "expectancy_usd": {"mean": 62.2}}}}
     base = {"records": {"simulated": {"win_rate": 0.3}}}
     assert PR.evaluate(rep, baseline=base, sessions=1, by_day={}, n_candidates=1)["stage"] == "shadow"
+
+
+def test_retirement_needs_enough_trades_and_the_whole_interval_below_break_even():
+    """Audit F09: a rule far below break-even must not run "undecided" forever; retirement is
+    written down beforehand (hashed) and needs >= 30 simulated trades, never a handful."""
+    from edge import promotion as PR
+
+    def rep(wins, n):
+        from edge import stats
+        lo, hi = stats.wilson(wins, n)
+        return {"break_even": 0.375, "feed_regime": "iex",
+                "records": {"simulated": {"filled": n, "wins": wins, "win_rate_ci": [lo, hi]},
+                            "actual": {"expectancy_usd": {"mean": -6.3}}}}
+
+    assert PR.retirement(rep(0, 5))["retire"] is False                     # 0/5: too few to judge
+    r = PR.retirement(rep(16, 68))                                          # the backtest's 23.5%
+    assert r["retire"] is True and "whole interval below break-even" in r["why"]
+    assert PR.retirement(rep(25, 60))["retire"] is False                    # interval reaches 37.5%
+    assert r["retirement_hash"] == PR.RETIREMENT_HASH and len(PR.RETIREMENT_HASH) == 16
+
+
+def test_the_card_states_the_rules_own_backtest():
+    from edge import notify as N
+    card = {"day": "2026-09-28", "forecasts": [], "baseline_forecasts": [],
+            "backtest_note": "Rule's own backtest 2026-07-01..2026-09-24: 16/68 wins (24%) vs 37.5% needed"}
+    assert "Rule's own backtest" in N.card_text(card)

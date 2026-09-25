@@ -1,8 +1,8 @@
 """
 Ghost Score v1.0 — Composite Intelligence Rating Specification
 ==============================================================
-Version: 1.0.0
-Last updated: 2026-06-19 (PR #65 audit batch)
+Version: 1.1.0
+Last updated: 2026-09-25 (audit F23)
 Status: PRODUCTION
 
 This document is the single source of truth for the Ghost Score formula.
@@ -24,6 +24,9 @@ and be recorded in the changelog below.
   model_confidence    40     [0,40]   BUY  → confidence × 40
                                       SELL → (1 − confidence) × 40
                                       none → 20 (neutral midpoint)
+                                      "none" includes a stale pick: resolved,
+                                      past its own expires_at, or (without
+                                      expires_at) older than 5 days.
 
   volume_signal       20     [0,20]   min(20, volume_ratio × 10)
                                       volume_ratio = session_vol / avg_daily_vol
@@ -58,6 +61,8 @@ and be recorded in the changelog below.
   40–59          HOLD          Mixed / neutral
   20–39          SELL          Majority bearish
   0–19           STRONG_SELL   All components aligned bearish
+  (any)          NO_CURRENT_VIEW  No current model pick (absent or stale);
+                               the score is shown, but no BUY/SELL label
 
 ─── Modifiers ──────────────────────────────────────────────────────
 
@@ -103,10 +108,16 @@ and be recorded in the changelog below.
                       unchanged from the live production formula.
                       Added determinism audit: all components are
                       deterministic; Claude sentiment is excluded.
+  v1.1.0  2026-09-25  Audit F23: a stale pick (resolved, past its
+                      horizon, or >5 days old without one) no longer
+                      drives the model component or the label. Model
+                      component = neutral 20; label = NO_CURRENT_VIEW
+                      whenever there is no current pick. Weights and
+                      score thresholds unchanged.
 """
 
 # Re-export the weights dict for programmatic access.
-GHOST_SCORE_SPEC_VERSION = "1.0.0"
+GHOST_SCORE_SPEC_VERSION = "1.1.0"
 GHOST_WEIGHTS = {
     "model_confidence": 40,
     "volume_signal": 20,

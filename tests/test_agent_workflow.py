@@ -361,6 +361,60 @@ def test_create_task_still_rejects_key_reuse_with_different_payload(monkeypatch)
         )
 
 
+@pytest.mark.parametrize(
+    "raw, expected",
+    [(None, 1800), ("", 1800), ("junk", 1800), ("0", 300), ("-5", 300),
+     ("900", 900), ("999999", 21600)],
+)
+def test_reclaim_cooldown_is_bounded(monkeypatch, raw, expected):
+    """F35: the cooldown cannot be configured away (floor 300 s) or past a
+    task's life (ceiling 6 h)."""
+    if raw is None:
+        monkeypatch.delenv("AGENT_RECLAIM_COOLDOWN_SECONDS", raising=False)
+    else:
+        monkeypatch.setenv("AGENT_RECLAIM_COOLDOWN_SECONDS", raw)
+    assert workflow.reclaim_cooldown_seconds() == expected
+
+
+def test_claim_excludes_tasks_this_agent_released_within_cooldown(monkeypatch):
+    """F35: the claim query filters RELEASED events by THIS agent inside the
+    cooldown window (other agents' releases do not block it)."""
+    monkeypatch.setenv("AGENT_RECLAIM_COOLDOWN_SECONDS", "1800")
+    seen = []
+
+    class _Cur:
+        def execute(self, sql, params=None):
+            seen.append((" ".join(sql.split()), params))
+
+        def fetchall(self):
+            return []
+
+        def fetchone(self):
+            return None
+
+    class _Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def cursor(self):
+            return _Cur()
+
+    import core.db as db
+    monkeypatch.setattr(db, "db_conn", lambda: _Conn())
+    out = workflow.claim_task(agent_id="codex.production.worker", now_ts=1_800_000_000)
+    assert out["claimed"] is False
+    select_sql, params = next((s, p) for s, p in seen if s.startswith("SELECT") and "FOR UPDATE" in s)
+    assert "ev.event_type='RELEASED'" in select_sql
+    assert "ev.actor=%s" in select_sql and "ev.event_ts > %s" in select_sql
+    assert params[:5] == [
+        1_800_000_000, 1_800_000_000, "codex.production.worker",
+        "codex.production.worker", 1_800_000_000 - 1800,
+    ]
+
+
 def test_mcp_lists_and_invokes_agent_workflow_tools(monkeypatch):
     names = {tool["name"] for tool in ghost_server.list_tools()}
     assert "ghost_agent_tasks" in names

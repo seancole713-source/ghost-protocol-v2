@@ -21,7 +21,7 @@ import json
 import logging
 import re
 import time
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, Iterable, List, Literal, Optional
 
 LOGGER = logging.getLogger("ghost.news_events")
 
@@ -144,10 +144,52 @@ def event_dedupe_key(
     ).hexdigest()
 
 
-def classify_text(headline: str, summary: str = "") -> List[Dict[str, Any]]:
-    """Deterministic event extraction. Pure function — no I/O, no LLM."""
+def story_guard_reason(
+    headline: str,
+    tickers: Optional[Iterable[str]] = None,
+    *,
+    symbol: Optional[str] = None,
+) -> Optional[str]:
+    """Why a story must NOT become a company event for ``symbol`` (audit F26).
+
+    Ports the edge classifier's rule-E4 guards (edge/catalysts.py) so the old
+    core classifier stops turning market wraps and sector roundups into
+    company catalysts:
+      * ``market_wrap``        -- index moves / several stories joined by ";"
+                                  (edge.catalysts._MARKET_WRAP).
+      * ``multi_ticker_story`` -- tagged to more than MAX_STORY_TICKERS names.
+      * ``entity_mismatch``    -- the provider's own ticker tags are known and
+                                  do not include ``symbol``.
+    Returns None when the story may be classified.
+    """
+    from edge.catalysts import MAX_STORY_TICKERS, _MARKET_WRAP
+
+    tags = {str(t).strip().upper() for t in (tickers or []) if str(t or "").strip()}
+    if len(tags) > MAX_STORY_TICKERS:
+        return "multi_ticker_story"
+    if _MARKET_WRAP.search((headline or "").lower()):
+        return "market_wrap"
+    if symbol and tags and symbol.strip().upper() not in tags:
+        return "entity_mismatch"
+    return None
+
+
+def classify_text(
+    headline: str,
+    summary: str = "",
+    *,
+    tickers: Optional[Iterable[str]] = None,
+    symbol: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Deterministic event extraction. Pure function — no I/O, no LLM.
+
+    Market wraps, multi-ticker roundups and stories whose provider tags do not
+    name ``symbol`` yield no events (story_guard_reason, audit F26).
+    """
     text = f"{headline or ''} {summary or ''}".lower()
     if not text.strip():
+        return []
+    if story_guard_reason(headline, tickers, symbol=symbol):
         return []
     out = []
     for event_type, direction, materiality, patterns in _COMPILED:
@@ -257,7 +299,10 @@ def store_article_and_events(cur, art: Dict[str, Any]) -> Dict[str, Any]:
     article_id = row[0]
     stored = 0
     rel = _source_reliability(art.get("source") or "")
-    for ev in classify_text(headline, art.get("summary") or ""):
+    for ev in classify_text(
+        headline, art.get("summary") or "",
+        tickers=art.get("tickers"), symbol=sym,
+    ):
         edk = event_dedupe_key(sym, ev["event_type"], published_at)
         cur.execute(
             """INSERT INTO ghost_news_events

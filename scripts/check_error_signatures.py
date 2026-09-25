@@ -1,11 +1,28 @@
 #!/usr/bin/env python3
+"""Release gate: alert on ERROR signatures not in the baseline.
+
+Sources: ``/api/diagnostics`` (admin-cookie gated, normally not collectible
+from CI) and the read-only health audit (``auto_fix=false&persist=false``,
+needs CRON_SECRET), whose findings already include the diagnostics errors.
+
+Outcomes (the final line is exactly one of):
+
+- ``PASS: ...``    the audit source was collected and has no unknown signature.
+- ``FAIL: ...``    an unknown signature was found, or an endpoint misbehaved.
+- ``SKIPPED: ...`` no source that covers the application could be collected
+                   (e.g. CRON_SECRET unset). Exit 0 so CI stays green, but a
+                   check that did not happen is never reported as PASS.
+"""
 import json
 import os
 import re
 import sys
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
+
+# Never let a release gate write to the deployment it is judging.
+AUDIT_QUERY = "auto_fix=false&persist=false"
 
 def _fetch_json(url: str, *, method: str = "GET", headers: Dict[str, str] | None = None) -> Dict[str, Any]:
     resp = requests.request(method=method, url=url, headers=headers or {}, timeout=30)
@@ -36,16 +53,17 @@ def _is_known(sig: Dict[str, str], baseline: List[Dict[str, str]]) -> bool:
     return False
 
 
-def _diagnostics_errors(base_url: str) -> List[Dict[str, str]]:
+def _diagnostics_errors(base_url: str) -> Optional[List[Dict[str, str]]]:
+    """Diagnostics error signatures, or None when the source is not collectible."""
     try:
         payload = _fetch_json(f"{base_url}/api/diagnostics")
     except requests.HTTPError as exc:
         # /api/diagnostics intentionally returns 404 without the admin cookie so
         # public CI/live gates do not leak internals. Treat auth-gated absence as
-        # "not collectible" rather than an application error.
+        # "not collectible" (None) — NOT as "no errors".
         if exc.response is not None and exc.response.status_code in (401, 403, 404):
-            print("WARN: /api/diagnostics gated; skipping diagnostics error signatures")
-            return []
+            print("WARN: /api/diagnostics gated; diagnostics error signatures not collected")
+            return None
         raise
     details = payload.get("details", {})
     errors = details.get("errors", []) if isinstance(details, dict) else []
@@ -57,21 +75,21 @@ def _diagnostics_errors(base_url: str) -> List[Dict[str, str]]:
     return out
 
 
-def _audit_failures(base_url: str, cron_secret: str) -> List[Dict[str, str]]:
-    headers: Dict[str, str] = {}
-    if cron_secret:
-        headers["X-Cron-Secret"] = cron_secret
-    try:
-        payload = _fetch_json(f"{base_url}/api/health/audit?auto_fix=true", method="POST", headers=headers)
-    except requests.HTTPError as exc:
-        if not cron_secret and exc.response is not None and exc.response.status_code in (401, 403, 404):
-            print("WARN: /api/health/audit gated and CRON_SECRET unset; skipping audit error signatures")
-            return []
-        raise
+def _audit_failures(base_url: str, cron_secret: str) -> Optional[List[Dict[str, str]]]:
+    """Audit FAIL signatures (read-only call), or None when CRON_SECRET is unset."""
+    if not cron_secret:
+        print("WARN: CRON_SECRET unset; /api/health/audit error signatures not collected")
+        return None
+    headers: Dict[str, str] = {"X-Cron-Secret": cron_secret}
+    payload = _fetch_json(f"{base_url}/api/health/audit?{AUDIT_QUERY}", method="POST", headers=headers)
     if payload.get("ok") is not True:
         return [{"source": "audit", "check": "audit.endpoint", "detail": _normalize(str(payload))}]
     audit = payload.get("audit", {})
     findings = audit.get("findings", []) if isinstance(audit, dict) else []
+    if not isinstance(findings, list) or not findings:
+        # A real audit always lists its PASS records; empty means nothing ran.
+        return [{"source": "audit", "check": "audit.no_findings",
+                 "detail": "health audit returned no findings"}]
     out: List[Dict[str, str]] = []
     for item in findings:
         if item.get("status") != "FAIL":
@@ -106,20 +124,22 @@ def main() -> int:
         return 1
 
     try:
-        signatures = _diagnostics_errors(base_url)
-        signatures.extend(_audit_failures(base_url, cron_secret))
+        diag = _diagnostics_errors(base_url)
+        audit = _audit_failures(base_url, cron_secret)
     except requests.HTTPError as exc:
         body = (exc.response.text or "").strip()
         preview = body[:300] if body else "<empty>"
         print(f"FAIL: endpoint returned HTTP {exc.response.status_code} body={preview}")
         return 1
     except Exception as exc:  # pragma: no cover - defensive live gate
-        print(f"FAIL: unable to collect error signatures: {exc}")
+        print(f"FAIL: unable to collect error signatures: {type(exc).__name__}")
         return 1
 
-    if not signatures:
-        print("PASS: no active error signatures detected")
-        return 0
+    signatures: List[Dict[str, str]] = (diag or []) + (audit or [])
+    # The audit embeds the diagnostics errors, so it alone covers the app.
+    # Without it the gate cannot vouch for anything beyond what it did see.
+    covered = audit is not None
+    skipped = [name for name, src in (("diagnostics", diag), ("health-audit", audit)) if src is None]
 
     unknown: List[Tuple[str, str, str]] = []
     for sig in signatures:
@@ -132,6 +152,19 @@ def main() -> int:
         for source, check, detail in unknown:
             print(f"- [{source}] {check}: {detail}")
         return 1
+
+    if not covered:
+        _print_annotation("warning", "error-signature gate SKIPPED: " + ", ".join(skipped) + " not collected")
+        print(
+            "SKIPPED: error signatures were NOT checked ("
+            + ", ".join(skipped)
+            + " not collectible; set CRON_SECRET for the read-only health audit)."
+        )
+        return 0
+
+    if not signatures:
+        print("PASS: no active error signatures detected")
+        return 0
 
     _print_annotation("warning", f"{len(signatures)} known error signatures detected")
     print("PASS: only known error signatures detected")

@@ -90,7 +90,6 @@ def score_research_artifact(
     from core.feature_schema import attach_feature_asof
     from core.feature_audit import apply_inversions_to_features
     import numpy as np
-    import pickle
 
     if not research_runner_enabled():
         return None
@@ -136,8 +135,17 @@ def score_research_artifact(
             LOGGER.warning("Model SHA mismatch for %s", artifact_sha[:16])
             return None
 
+    from core.model_blob_integrity import (
+        ModelBlobIntegrityError, SIGNATURE_FIELD, load_verified_pickle,
+    )
     try:
-        model = pickle.loads(raw)
+        model = load_verified_pickle(
+            raw, artifact.get(SIGNATURE_FIELD),
+            context=f"research_artifact:{artifact_sha[:16]}",
+        )
+    except ModelBlobIntegrityError as e:
+        LOGGER.warning("Refused model %s: %s", artifact_sha[:16], e.reason)
+        return None
     except Exception as e:
         LOGGER.warning("Failed to unpickle model %s: %s", artifact_sha[:16], str(e)[:80])
         return None

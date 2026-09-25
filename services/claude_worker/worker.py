@@ -197,28 +197,39 @@ def _find_json_object(text: str) -> Dict[str, Any]:
     raise WorkerError("Claude did not return a JSON object")
 
 
-def _iter_dicts(value: Any) -> Iterable[Dict[str, Any]]:
-    if isinstance(value, dict):
-        yield value
-        for item in value.values():
-            yield from _iter_dicts(item)
-    elif isinstance(value, list):
-        for item in value:
-            yield from _iter_dicts(item)
+# F36 (audit 2026-09-25): only pages the answer actually CITES are sources.
+# The Messages API returns every raw search hit as a ``web_search_result``
+# inside ``web_search_tool_result`` blocks; the old substring filter
+# ("web_search" / "citation" / "source" in the type) stored all of them
+# (e.g. 5 cited -> 16 stored, including unrelated tickers), which inflated
+# corroboration and made shadow evidence scores incomparable across agents.
+# A citation is an entry of a text block's ``citations`` list (type
+# ``web_search_result_location`` for web search).
+CITED_SOURCE_TYPES = frozenset({"web_search_result_location"})
+SOURCE_POLICY = "cited_only/v2"
+
+
+def _iter_citations(content: Any) -> Iterable[Dict[str, Any]]:
+    """Yield citation entries attached to text blocks (never raw results)."""
+    blocks = content if isinstance(content, list) else []
+    for block in blocks:
+        if not isinstance(block, dict) or block.get("type") != "text":
+            continue
+        for citation in block.get("citations") or []:
+            if isinstance(citation, dict) and str(citation.get("type") or "") in CITED_SOURCE_TYPES:
+                yield citation
 
 
 def _source_refs_from_response(content: Any, now: int) -> list[Dict[str, Any]]:
+    """Provider-attested sources the answer CITED (F36); raw hits excluded."""
     refs: list[Dict[str, Any]] = []
     seen: set[str] = set()
-    for item in _iter_dicts(content):
+    for item in _iter_citations(content):
         locator = str(item.get("url") or item.get("locator") or "").strip()
         if not locator or locator in seen:
             continue
         parsed = urlparse(locator)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            continue
-        item_type = str(item.get("type") or "")
-        if "web_search" not in item_type and "citation" not in item_type and "source" not in item_type:
             continue
         seen.add(locator)
         ref: Dict[str, Any] = {
@@ -233,9 +244,10 @@ def _source_refs_from_response(content: Any, now: int) -> list[Dict[str, Any]]:
     return refs[:25]
 
 
-def _normalize_source_refs(values: Any, fallback: list[Dict[str, Any]], now: int) -> list[Dict[str, Any]]:
+def _normalize_source_refs(values: Any, cited: list[Dict[str, Any]], now: int) -> list[Dict[str, Any]]:
+    """The model's own source_refs plus the provider citations (cited only)."""
     combined = list(values) if isinstance(values, list) else []
-    combined.extend(fallback)
+    combined.extend(cited)
     refs: list[Dict[str, Any]] = []
     seen: set[str] = set()
     for item in combined:
@@ -431,6 +443,7 @@ RESEARCH_DRAFT:
                 "research_usage": original_body.get("usage"),
                 "text": text[:50000],
                 "citation_count": len(citations),
+                "source_policy": SOURCE_POLICY,
                 "format_repaired": format_repaired,
             },
         }

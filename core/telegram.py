@@ -1,6 +1,7 @@
 import os, logging, requests, time
 from core.quiet import note_suppressed
 from core.db import ensure_ghost_state
+from shared.redaction import redact, redact_exc
 
 LOGGER = logging.getLogger("ghost.telegram")
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -21,6 +22,8 @@ def _send(text):
     if not ALERTS_ENABLED:
         LOGGER.info("Alerts disabled")
         return True
+    # Alert bodies often quote exception text; never forward a credential.
+    text = redact(text)
     ok = True
     if BOT_TOKEN and CHAT_ID:
         last_err = None
@@ -31,10 +34,11 @@ def _send(text):
                 if r.ok:
                     LOGGER.info("Telegram OK (attempt %s)", attempt + 1)
                     break
-                last_err = f"HTTP {r.status_code}: {r.text[:80]}"
+                last_err = redact(f"HTTP {r.status_code}: {r.text[:80]}")
                 LOGGER.error("Telegram fail (attempt %s): %s", attempt + 1, last_err)
             except Exception as e:
-                last_err = str(e)[:160]
+                # requests puts the full URL (with /bot<TOKEN>/) in the message.
+                last_err = redact_exc(e, 160)
                 LOGGER.error("Telegram error (attempt %s): %s", attempt + 1, last_err)
             if attempt + 1 < _TELEGRAM_RETRIES:
                 backoff = _TELEGRAM_RETRY_BACKOFF_S[min(attempt, len(_TELEGRAM_RETRY_BACKOFF_S) - 1)]
@@ -46,7 +50,7 @@ def _send(text):
             try:
                 _enqueue_dead_letter(text, last_err or "unknown")
             except Exception as _dle:
-                LOGGER.error("Dead-letter write failed: %s", str(_dle)[:80])
+                LOGGER.error("Dead-letter write failed: %s", redact_exc(_dle, 80))
     if DISCORD_URL:
         try:
             requests.post(DISCORD_URL, json={"content": text}, timeout=10)
@@ -122,7 +126,7 @@ def send_telegram_message_once(key: str, text: str, *, cooldown_s: int = 3600) -
             LOGGER.info("Telegram suppressed duplicate key=%s last=%s", key, last)
             return True
     except Exception as exc:
-        LOGGER.warning("Telegram de-dupe unavailable for key=%s: %s", key, str(exc)[:80])
+        LOGGER.warning("Telegram de-dupe unavailable for key=%s: %s", key, redact_exc(exc, 80))
     return send_telegram_message(text)
 
 
@@ -130,7 +134,9 @@ def _enqueue_dead_letter(text: str, error: str) -> None:
     """Append a failed alert to ghost_state.telegram_dead_letter (last 50)."""
     import json as _j
     from core.db import db_conn
-    entry = {"ts": int(time.time()), "text": text[:500], "error": error[:200]}
+    # Both fields are persisted in ghost_state and served by an admin endpoint:
+    # never store a credential that rode in on an exception or alert body.
+    entry = {"ts": int(time.time()), "text": redact(text)[:500], "error": redact(error)[:200]}
     try:
         with db_conn() as conn:
             cur = conn.cursor()

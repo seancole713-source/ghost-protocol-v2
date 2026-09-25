@@ -59,6 +59,19 @@ def _coerce_json(v: Any) -> Any:
         return v
 
 
+# F37 (audit 2026-09-25): grading used to fall back SILENTLY to the full-day
+# OHLC when post-alert 5-minute bars were missing. The full-day high/low
+# includes pre-alert prints (look-ahead), so a spike-and-fade alert graded as
+# a WIN and contaminated win counts and the loss-streak breaker. The basis is
+# now stored with every grade, and a full-day fallback is never graded: the
+# row is written as UNRESOLVED (basis full_day_approx, no hit flags), is
+# excluded from wins/losses/streaks, and is re-graded if intraday bars appear.
+GRADING_BASIS_POST_ALERT = "post_alert_5m"
+GRADING_BASIS_FULL_DAY = "full_day_approx"
+OUTCOME_UNRESOLVED = "UNRESOLVED"
+GRADED_OUTCOMES = ("WIN", "LOSS", "MIXED", "NEUTRAL")
+
+
 def ensure_squeeze_outcomes_table(cur) -> None:
     cur.execute(
         """
@@ -96,6 +109,9 @@ def ensure_squeeze_outcomes_table(cur) -> None:
             precision_grade VARCHAR(4),
             mistake_type VARCHAR(64),
             precision_json JSONB,
+            grading_basis VARCHAR(32),
+            post_alert_mfe_pct FLOAT,
+            alert_time_fade_pct FLOAT,
             resolved_at BIGINT,
             created_at BIGINT NOT NULL
         )
@@ -108,6 +124,10 @@ def ensure_squeeze_outcomes_table(cur) -> None:
         "ALTER TABLE ghost_squeeze_outcomes ADD COLUMN IF NOT EXISTS precision_grade VARCHAR(4)",
         "ALTER TABLE ghost_squeeze_outcomes ADD COLUMN IF NOT EXISTS mistake_type VARCHAR(64)",
         "ALTER TABLE ghost_squeeze_outcomes ADD COLUMN IF NOT EXISTS precision_json JSONB",
+        # F37/F38 (audit 2026-09-25): explicit grading basis + alert-time context.
+        "ALTER TABLE ghost_squeeze_outcomes ADD COLUMN IF NOT EXISTS grading_basis VARCHAR(32)",
+        "ALTER TABLE ghost_squeeze_outcomes ADD COLUMN IF NOT EXISTS post_alert_mfe_pct FLOAT",
+        "ALTER TABLE ghost_squeeze_outcomes ADD COLUMN IF NOT EXISTS alert_time_fade_pct FLOAT",
     ):
         cur.execute(sql)
     cur.execute(
@@ -142,6 +162,7 @@ def _pick_fields(pick: Dict[str, Any]) -> Dict[str, Any]:
         "rvol": pick.get("rvol"),
         "peak_move_pct": pick.get("peak_move_pct"),
         "above_vwap": pick.get("above_vwap"),
+        "alert_time_fade_pct": pick.get("alert_time_fade_pct"),
         "payload": pick,
     }
 
@@ -191,12 +212,12 @@ def record_squeeze_prediction(
                     session_date, symbol, kind, source, alerted_at,
                     buy, sell, stop, squeeze_score, setup_score, trigger_score,
                     confirm_score, p_continue_3pct_60m, confidence_pct, rvol,
-                    peak_move_pct, above_vwap, payload, created_at
+                    peak_move_pct, above_vwap, alert_time_fade_pct, payload, created_at
                 ) VALUES (
                     %s,%s,%s,%s,%s,
                     %s,%s,%s,%s,%s,%s,
                     %s,%s,%s,%s,
-                    %s,%s,%s::jsonb,%s
+                    %s,%s,%s,%s::jsonb,%s
                 )
                 RETURNING id
                 """,
@@ -218,6 +239,7 @@ def record_squeeze_prediction(
                     fields["rvol"],
                     fields["peak_move_pct"],
                     fields["above_vwap"],
+                    fields["alert_time_fade_pct"],
                     json.dumps(fields["payload"], default=str),
                     int(time.time()),
                 ),
@@ -273,8 +295,9 @@ def _post_alert_ohlc(symbol: str, session_date: str, alerted_at: int) -> Optiona
     Grading a squeeze alert against the full day's OHLC lets a spike-and-fade
     alert auto-grade as a WIN because the pre-alert high already reached the
     target. Grading against only post-alert bars measures what the alert could
-    actually have captured. Returns None when intraday bars are unavailable
-    (caller falls back to the full-day bar, flagged as approximate).
+    actually have captured. Returns None when intraday bars are unavailable; the caller then marks
+    the row UNRESOLVED with grading_basis=full_day_approx (F37) instead of
+    grading it on the look-ahead full-day bar.
     """
     try:
         from core.signal_engine import _fetch_ohlcv
@@ -366,12 +389,62 @@ def _resolve_row(
     }
 
 
+def _unresolved_full_day_row(buy: float, sell: float, ohlc: Dict[str, float]) -> Dict[str, Any]:
+    """F37: a full-day bar cannot say what happened AFTER the alert.
+
+    The session OHLC is kept for display, but no outcome, hit flag or
+    precision grade is derived from it (the day's high/low may predate the
+    alert), so the row never counts as a win, loss or streak entry.
+    """
+    c = ohlc["close"]
+    return {
+        "outcome": OUTCOME_UNRESOLVED,
+        "grading_basis": GRADING_BASIS_FULL_DAY,
+        "session_open": ohlc["open"],
+        "session_high": ohlc["high"],
+        "session_low": ohlc["low"],
+        "session_close": c,
+        "hit_target": None,
+        "hit_stop": None,
+        "hit_3pct": None,
+        # Close vs alert levels has no look-ahead (the close is after the alert).
+        "close_pnl_pct": round((c - float(buy)) / float(buy) * 100.0, 3) if buy else None,
+        "target_gap_pct": round((c - float(sell)) / float(sell) * 100.0, 3) if sell else None,
+        "precision_score": None,
+        "precision_grade": None,
+        "mistake_type": None,
+        "precision": {},
+        "post_alert_mfe_pct": None,
+    }
+
+
+def grade_squeeze_row(
+    symbol: str, session_date: str, alerted_at: int,
+    buy: float, sell: float, stop: Optional[float],
+) -> Optional[Dict[str, Any]]:
+    """Grade one alert on post-alert bars, or mark it UNRESOLVED (F37)."""
+    ohlc = _post_alert_ohlc(symbol, session_date, int(alerted_at or 0))
+    if ohlc:
+        meta = _resolve_row(float(buy), float(sell), stop, ohlc)
+        meta["grading_basis"] = GRADING_BASIS_POST_ALERT
+        # F38: what the alert could actually have captured (post-alert MFE).
+        meta["post_alert_mfe_pct"] = (
+            round((ohlc["high"] - float(buy)) / float(buy) * 100.0, 3) if buy else None
+        )
+        return meta
+    full_day = _session_ohlc(symbol, session_date)
+    if not full_day:
+        return None
+    return _unresolved_full_day_row(float(buy), float(sell), full_day)
+
+
 def resolve_squeeze_outcomes(session_date: Optional[str] = None) -> int:
     """Resolve pending rows for a CT session date (default: today if after cash close)."""
     if not squeeze_log_enabled():
         return 0
     target = session_date or _ct_date()
     resolved = 0
+    resolved_rows: List[Any] = []
     try:
         from core.db import db_conn
 
@@ -384,7 +457,9 @@ def resolve_squeeze_outcomes(session_date: Optional[str] = None) -> int:
                 """
                 SELECT id, symbol, buy, sell, stop, alerted_at
                 FROM ghost_squeeze_outcomes
-                WHERE session_date = %s AND outcome IS NULL
+                WHERE session_date = %s
+                  AND (outcome IS NULL
+                       OR (outcome = 'UNRESOLVED' AND grading_basis = 'full_day_approx'))
                 ORDER BY alerted_at ASC
                 """,
                 (target,),
@@ -392,19 +467,15 @@ def resolve_squeeze_outcomes(session_date: Optional[str] = None) -> int:
             rows = cur.fetchall()
 
         # Phase 2 (network I/O, no transaction): resolve each row's OHLC.
-        # Grade against post-alert bars when available (forensic SQ-3);
-        # fall back to the full-day bar only when intraday is missing.
+        # Grade against post-alert bars only (forensic SQ-3). Without them
+        # the row is UNRESOLVED / full_day_approx and retried later (F37).
         now = int(time.time())
-        resolved_rows = []
         for rid, sym, buy, sell, stop, alerted_at in rows:
             if buy is None or sell is None:
                 continue
-            ohlc = _post_alert_ohlc(str(sym), target, int(alerted_at or 0))
-            if not ohlc:
-                ohlc = _session_ohlc(str(sym), target)
-            if not ohlc:
+            meta = grade_squeeze_row(str(sym), target, int(alerted_at or 0), buy, sell, stop)
+            if not meta:
                 continue
-            meta = _resolve_row(float(buy), float(sell), stop, ohlc)
             resolved_rows.append((rid, meta))
 
         # Phase 3 (writes only): apply all resolutions in one transaction.
@@ -429,6 +500,8 @@ def resolve_squeeze_outcomes(session_date: Optional[str] = None) -> int:
                             precision_grade = %s,
                             mistake_type = %s,
                             precision_json = %s::jsonb,
+                            grading_basis = %s,
+                            post_alert_mfe_pct = %s,
                             resolved_at = %s
                         WHERE id = %s
                         """,
@@ -447,13 +520,22 @@ def resolve_squeeze_outcomes(session_date: Optional[str] = None) -> int:
                             meta.get("precision_grade"),
                             meta.get("mistake_type"),
                             json.dumps(meta.get("precision") or {}, default=str),
+                            meta.get("grading_basis"),
+                            meta.get("post_alert_mfe_pct"),
                             now,
                             rid,
                         ),
                     )
-                    resolved += 1
+                    if meta.get("outcome") != OUTCOME_UNRESOLVED:
+                        resolved += 1
     except Exception as exc:
         LOGGER.warning("resolve_squeeze_outcomes: %s", str(exc)[:160])
+    unresolved = sum(1 for _rid, m in resolved_rows if m.get("outcome") == OUTCOME_UNRESOLVED)
+    if unresolved:
+        LOGGER.warning(
+            "[SqueezeOutcomes] %s rows for %s UNRESOLVED (no post-alert intraday bars; "
+            "full-day OHLC is not graded)", unresolved, target,
+        )
     if resolved:
         LOGGER.info("[SqueezeOutcomes] resolved %s rows for %s", resolved, target)
     return resolved
@@ -468,14 +550,23 @@ def resolve_pending_squeeze_days(max_days: int = 7) -> int:
         with db_conn() as conn:
             cur = conn.cursor()
             ensure_squeeze_outcomes_table(cur)
+            # F37: UNRESOLVED (full_day_approx) rows are retried while the
+            # 5-minute bars could still be fetched; older ones stay UNRESOLVED.
+            from datetime import timedelta
+
+            retry_cutoff = (
+                datetime.strptime(_ct_date(), "%Y-%m-%d") - timedelta(days=7)
+            ).strftime("%Y-%m-%d")
             cur.execute(
                 """
                 SELECT DISTINCT session_date FROM ghost_squeeze_outcomes
                 WHERE outcome IS NULL
+                   OR (outcome = 'UNRESOLVED' AND grading_basis = 'full_day_approx'
+                       AND session_date >= %s)
                 ORDER BY session_date DESC
                 LIMIT %s
                 """,
-                (max(1, max_days),),
+                (retry_cutoff, max(1, max_days)),
             )
             dates = [r[0] for r in cur.fetchall()]
         for d in dates:
@@ -483,6 +574,14 @@ def resolve_pending_squeeze_days(max_days: int = 7) -> int:
     except Exception as exc:
         LOGGER.warning("resolve_pending_squeeze_days: %s", str(exc)[:120])
     return total
+
+
+def is_graded_row(row: Dict[str, Any]) -> bool:
+    """True only for a real grade: never UNRESOLVED / full_day_approx (F37)."""
+    return (
+        row.get("outcome") in GRADED_OUTCOMES
+        and row.get("grading_basis") != GRADING_BASIS_FULL_DAY
+    )
 
 
 def _dedupe_candidate_telegram(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -541,7 +640,7 @@ def squeeze_daily_log(
                            outcome, session_open, session_high, session_low, session_close,
                            hit_target, hit_stop, hit_3pct, close_pnl_pct, target_gap_pct,
                            precision_score, precision_grade, mistake_type, precision_json,
-                           resolved_at
+                           resolved_at, grading_basis, post_alert_mfe_pct, alert_time_fade_pct
                     FROM ghost_squeeze_outcomes
                     WHERE session_date = %s
                     ORDER BY alerted_at ASC
@@ -565,7 +664,7 @@ def squeeze_daily_log(
                            outcome, session_open, session_high, session_low, session_close,
                            hit_target, hit_stop, hit_3pct, close_pnl_pct, target_gap_pct,
                            precision_score, precision_grade, mistake_type, precision_json,
-                           resolved_at
+                           resolved_at, grading_basis, post_alert_mfe_pct, alert_time_fade_pct
                     FROM ghost_squeeze_outcomes
                     WHERE session_date >= %s
                     ORDER BY session_date DESC, alerted_at ASC
@@ -609,6 +708,9 @@ def squeeze_daily_log(
             "mistake_type": r[26],
             "precision": _coerce_json(r[27]) if r[27] is not None else None,
             "resolved_at": r[28],
+            "grading_basis": r[29] if len(r) > 29 else None,
+            "post_alert_mfe_pct": r[30] if len(r) > 30 else None,
+            "alert_time_fade_pct": r[31] if len(r) > 31 else None,
         })
 
     rows = _dedupe_candidate_telegram(rows)
@@ -621,6 +723,8 @@ def squeeze_daily_log(
         for row in rows:
             if row.get("precision") or row.get("session_open") is None:
                 continue
+            if row.get("outcome") and not is_graded_row(row):
+                continue  # F37: never derive a grade from full-day OHLC
             precision = score_trade_precision(
                 direction="UP",
                 entry=row.get("buy"),
@@ -651,15 +755,17 @@ def squeeze_daily_log(
 
     summaries = []
     for day, day_rows in sorted(by_day.items(), reverse=True):
-        resolved = [x for x in day_rows if x.get("outcome")]
+        resolved = [x for x in day_rows if is_graded_row(x)]
         wins = sum(1 for x in resolved if x.get("outcome") == "WIN")
         losses = sum(1 for x in resolved if x.get("outcome") == "LOSS")
         pending = sum(1 for x in day_rows if not x.get("outcome"))
+        unresolved = sum(1 for x in day_rows if x.get("outcome") and not is_graded_row(x))
         summaries.append({
             "session_date": day,
             "count": len(day_rows),
             "resolved": len(resolved),
             "pending": pending,
+            "unresolved": unresolved,
             "wins": wins,
             "losses": losses,
             "telegram": sum(1 for x in day_rows if x.get("source") == "telegram"),
@@ -698,8 +804,11 @@ def squeeze_daily_log(
         "days": summaries,
         "live_drift": live_drift,
         "note": (
-            "Ghost squeeze buy/sell/stop at alert time vs cash-session OHLC. "
-            "WIN = session high reached sell target; LOSS = session low hit stop. "
+            "Ghost squeeze buy/sell/stop at alert time vs OHLC of the 5-minute bars "
+            "AFTER the alert (grading_basis=post_alert_5m). WIN = post-alert high "
+            "reached sell target; LOSS = post-alert low hit stop. UNRESOLVED "
+            "(grading_basis=full_day_approx) = no post-alert bars; not graded and "
+            "not counted in wins/losses. "
             "Live drift = first Telegram alert buy vs quote now (intraday)."
         ),
     }

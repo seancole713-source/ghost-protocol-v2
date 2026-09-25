@@ -11,7 +11,7 @@ from typing import Any, Dict, Optional
 from edge.ledger import Ledger
 
 VIEWS = ("summary", "today", "experiments", "backtest", "misses", "probe", "universe",
-         "research", "radar", "paper", "models", "scorecard", "notes", "top10")
+         "research", "radar", "paper", "models", "scorecard", "notes", "top10", "control")
 
 
 def _latest(store, table: str) -> Optional[Dict[str, Any]]:
@@ -74,6 +74,7 @@ def experiments(store) -> Dict[str, Any]:
         }
         if eid != BASE_EID and BASE_EID in reports:
             by_day = _by_day(store, eid, rep.get("feed_regime"))
+            out[eid]["retirement"] = promotion.retirement(rep)
             out[eid]["promotion"] = promotion.evaluate(rep, baseline=reports[BASE_EID], sessions=len(by_day),
                                                        by_day=by_day, n_candidates=max(1, len(candidates)))
     return out
@@ -224,6 +225,9 @@ def view(store, name: str = "summary", day: Optional[str] = None, kind: Optional
         d = day or T10.latest_day(store)
         return (T10.with_outcomes(store, d) if d else None) or {
             "note": "no Top 10 yet (built with the card, 09:05-09:28 ET)"}
+    if name == "control":
+        from edge import control as CA
+        return CA.view(store, day)
     if name == "notes":
         from edge import agent_notes as AN
         return AN.recent(store, day=day, kind=kind)
@@ -239,7 +243,7 @@ def view(store, name: str = "summary", day: Optional[str] = None, kind: Optional
         return store.get("edge_probe", "latest") or {"note": "no probe stored yet"}
     if name == "universe":
         return universe(store) or {"note": "no universe snapshot yet (06:00-07:00 ET)"}
-    from edge import scorecard as SC
+    from edge import control as CA, scorecard as SC
     t, sc = today(store), SC.scorecard(store)
     return {
         "today": {k: t.get(k) for k in ("day", "forecasts", "baseline_forecasts", "health_banner", "note")},
@@ -250,6 +254,7 @@ def view(store, name: str = "summary", day: Optional[str] = None, kind: Optional
             "day", "movers", "executable", "caught", "recall", "labels", "coverage_note")})(misses(store)),
         "ai_scorecard": {"sessions": sc.get("sessions"),
                          **{k: (sc.get(k) or {}).get("verdict") for k in ("keyword_catalyst", "ai_research", "model")}},
+        "control_arm": CA.summary(store)["headline"],
         "note": "shadow and paper only; nothing here is a trade recommendation",
     }
 
@@ -262,7 +267,7 @@ _STAGES = (
     ("misses", lambda o: (o.get("miss_review") or {}).get("status") not in (None, "error"), ("misses",)),
     ("radar", lambda o: (o.get("radar_close") or {}).get("status") == "closed", ("radar",)),
     ("evening", lambda o: (o.get("card_graded") or {}).get("status") == "graded",
-     ("paper", "experiments", "scorecard", "top10")),
+     ("paper", "experiments", "scorecard", "top10", "control")),
 )
 
 

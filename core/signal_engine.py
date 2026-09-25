@@ -1201,7 +1201,9 @@ def _try_polygon_ohlcv(symbol, period):
         LOGGER.info(f"Polygon {symbol}: parsed {len(rows)} bars from response")
         return rows
     except Exception as e:
-        LOGGER.warning(f"Polygon {symbol}: {e}")
+        # requests exceptions embed the URL, which carries apiKey=<KEY>.
+        from shared.redaction import redact_exc
+        LOGGER.warning("Polygon %s: %s", symbol, redact_exc(e))
         _note_tier("polygon", "error")
         return None
 
@@ -2134,6 +2136,7 @@ def _train_one_direction(rows, symbol, direction, active_cols, peer_rows, peers_
         return False, detail, None, None
     tier = "proven" if passes else "research"
     raw_model_bytes = pickle.dumps(final_model)
+    from core.model_blob_integrity import sign_model_blob
     model_sha256 = hashlib.sha256(raw_model_bytes).hexdigest()
     model_payload_bytes = len(raw_model_bytes)
     model_bytes = base64.b64encode(raw_model_bytes).decode('ascii')
@@ -2193,6 +2196,8 @@ def _train_one_direction(rows, symbol, direction, active_cols, peer_rows, peers_
         "reliability_monotonic": reliability_mono,
         "model_sha256": model_sha256,
         "model_payload_bytes": model_payload_bytes,
+        # HMAC keyed outside the DB (MODEL_BLOB_HMAC_KEY); None when unset.
+        "model_hmac": sign_model_blob(raw_model_bytes),
     })
     # Research-tier bytes may be stored for shadow evidence, but they did not
     # pass validation and must never count as proven or enter global proof.
@@ -3079,7 +3084,6 @@ def _load_model_uncached(symbol, direction="UP"):
         import base64
         import binascii
         import hashlib
-        import pickle
         from core.db import db_conn
         with db_conn() as conn:
             cur = conn.cursor()
@@ -3134,7 +3138,20 @@ def _load_model_uncached(symbol, direction="UP"):
                     return None, None, None
             else:
                 LOGGER.info("load_model %s/%s: legacy model without sha256 metadata", symbol, direction)
-            model = pickle.loads(raw)
+            # The sha256 above sits in the same table as the blob, so it only
+            # catches corruption. The HMAC (key outside the DB) is what makes
+            # unpickling safe against a database write.
+            from core.model_blob_integrity import (
+                ModelBlobIntegrityError, SIGNATURE_FIELD, load_verified_pickle,
+            )
+            try:
+                model = load_verified_pickle(
+                    raw, meta.get(SIGNATURE_FIELD),
+                    context=f"ghost_v3_model:{model_key}",
+                )
+            except ModelBlobIntegrityError as integrity_exc:
+                LOGGER.warning("load_model %s/%s: refused (%s)", symbol, direction, integrity_exc.reason)
+                return None, None, None
             return model, meta.get('feature_cols', FEATURE_COLS), meta
     except Exception as e:
         LOGGER.warning(f"load_model {symbol}/{direction}: {e}")
@@ -3239,7 +3256,13 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
     except Exception:
         note_suppressed()
 
-    above_ema200 = features.get('above_ema200', 1)
+    # Audit F18: the model feature 'above_ema200' is computed on the ~121-bar
+    # training window where ema200 aliases EMA50, so it is really "above
+    # EMA50". It stays in `features` unchanged (train/serve parity). The gate
+    # and regime label test a real EMA200 on the full completed-bar history;
+    # None = unknown (< 200 bars), never an EMA50 stand-in.
+    from core.engine_features import regime_above_ema200
+    above_ema200 = regime_above_ema200(rows)
     adx_trending = features.get('adx_trending', 1)
     adx_val = features.get('adx', 25)
     ema_trend_bullish = features.get('ema_trend_bullish', 1)
@@ -3268,7 +3291,11 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
                 note_suppressed()
         scores["regime"] = {
             "label": regime_label,
-            "above_ema200": int(above_ema200),
+            "above_ema200": None if above_ema200 is None else int(above_ema200),
+            "above_ema200_basis": (
+                f"close_vs_ema200_{len(rows)}bars" if above_ema200 is not None
+                else f"unknown_lt_200_bars_{len(rows)}"
+            ),
             "adx": round(float(adx_val), 2),
             "adx_trending": int(adx_trending),
             "ema_trend_bullish": int(ema_trend_bullish),
@@ -3288,10 +3315,12 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
     # symbols, not just the ones that clear regime). Firing behavior unchanged:
     # a regime block still returns before any signal is emitted.
     regime_block = False
-    # Gate 1: below EMA200 + choppy = high-probability loss setup
+    # Gate 1: below EMA200 + choppy = high-probability loss setup. An unknown
+    # EMA200 (< 200 bars) fails closed: it cannot prove price is above it.
     adx_thresh = _v3_adx_trending_threshold()
-    if above_ema200 == 0 and adx_trending == 0:
-        LOGGER.info(f"REGIME GATE [{symbol}]: below EMA200 + ADX={adx_val:.1f}<{adx_thresh:.0f} — skip BUY")
+    if above_ema200 != 1 and adx_trending == 0:
+        _pos = "below EMA200" if above_ema200 == 0 else "EMA200 unknown (<200 bars)"
+        LOGGER.info(f"REGIME GATE [{symbol}]: {_pos} + ADX={adx_val:.1f}<{adx_thresh:.0f} — skip BUY")
         regime_block = True
 
     # Gate 2: full bearish alignment, not oversold

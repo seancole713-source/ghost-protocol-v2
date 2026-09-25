@@ -1,10 +1,10 @@
 name: edge
 on:
   pull_request:
-    paths: ["edge/**", "tests/test_edge_*.py", ".github/workflows/edge.yml"]
+    paths: ["edge/**", "shared/**", "tests/test_edge_*.py", ".github/workflows/edge.yml"]
   push:
     branches: [main]
-    paths: ["edge/**"]
+    paths: ["edge/**", "shared/**"]
 jobs:
   edge-alone:
     runs-on: ubuntu-latest

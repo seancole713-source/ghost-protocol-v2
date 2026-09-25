@@ -852,7 +852,7 @@ def load_shadow_rows(days: int = 30) -> List[Dict[str, Any]]:
         cur = conn.cursor()
         cur.execute(
             "SELECT symbol, eval_ts, up_prob, outcome, pnl_pct, direction, model_prob, "
-            "model_sha256, label_schema, validation_schema, hold_bars "
+            "model_sha256, label_schema, validation_schema, hold_bars, feature_schema "
             "FROM ghost_shadow_outcomes WHERE eval_ts >= %s",
             (cutoff,),
         )
@@ -864,6 +864,8 @@ def load_shadow_rows(days: int = 30) -> List[Dict[str, Any]]:
                 "model_prob": r[6], "model_sha256": r[7],
                 "label_schema": r[8], "validation_schema": r[9],
                 "hold_bars": r[10],
+                # Audit F19: without this every identity read 'legacy'.
+                "feature_schema": r[11] if len(r) > 11 else None,
             }
             for r in cur.fetchall()
         ]

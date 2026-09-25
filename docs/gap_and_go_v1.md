@@ -100,6 +100,24 @@ otherwise the grade comes from intraday bars and is marked as such.
   then consider $2,000.
 - Otherwise → stop v1. Write v2 from what the 20 trades showed — a new ledger.
 
+## What history says (read this before trading it)
+
+The rule's own point-in-time backtest (Polygon minute bars, 2026-07-01 to 2026-09-24, 60
+sessions, 10 bps a side) is **below break-even across the whole interval**: 16 wins in 68
+filled trades (23.5%, Wilson 15.0%-34.9%) against the 37.5% needed, about -$6.29 per trade.
+The no-catalyst baseline did better (27.7%, -$2.86 per trade), so the catalyst filter did not
+add value on history. The backtest is research evidence, not the forward record, and it has
+known optimistic biases (see `edge/backtest.py` LIMITS). Ghost prints the latest backtest line
+on every morning card so this is never out of sight.
+
+## Retirement (written down before the forward results)
+
+Ghost's shadow record retires the rule (recommends it to the operator; code never stops it)
+under `retirement_v1` in `edge/promotion.py`, hashed like `promotion_v1`: at 30 or more
+simulated trades in ONE data-feed regime (IEX and SIP are never pooled), if the WHOLE Wilson
+interval of the win rate is below the 37.5% break-even. The operator's own decision at 20
+filled trades (above) stands unchanged.
+
 ## Honest limits
 
 - The win rate is unknown until traded. Gap-and-go is a common setup, not a

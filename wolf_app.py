@@ -21,6 +21,11 @@ logging.basicConfig(
 )
 LOGGER = logging.getLogger("ghost")
 
+# F33: requests exceptions embed request URLs (Telegram /bot<TOKEN>/, Polygon
+# apiKey=...). Mask credentials in every record the root/uvicorn handlers emit.
+from shared.redaction import install_log_redaction as _install_log_redaction
+_install_log_redaction()
+
 # PR #70: suppress yfinance library noise (JSON parse errors, 429s, delisted warnings).
 # yfinance logs at ERROR level for transient Yahoo API issues that Ghost already
 # handles via circuit breakers. Duplicate logging clutters Railway logs.
@@ -1092,6 +1097,62 @@ def _record_morning_card_sent():
     except Exception:
         pass
 
+
+def _morning_card_state() -> dict:
+    """Persisted morning-card send/attempt record from ghost_state."""
+    out = {"last_sent_date": None, "last_sent_ts": None, "last_attempt_ts": None}
+    with db_conn() as _mc:
+        _mcur = _mc.cursor()
+        _mcur.execute(
+            "SELECT key, val FROM ghost_state WHERE key IN "
+            "('last_morning_card_date','last_morning_card_ts','last_morning_card_attempt_ts')"
+        )
+        for _key, _val in _mcur.fetchall() or []:
+            if _key == "last_morning_card_date":
+                out["last_sent_date"] = _val
+            elif _key == "last_morning_card_ts":
+                out["last_sent_ts"] = float(_val) if _val else None
+            elif _key == "last_morning_card_attempt_ts":
+                out["last_attempt_ts"] = float(_val) if _val else None
+    return out
+
+
+def _morning_card_tick(now_ts: float | None = None):
+    """F31: scheduler tick for the morning card at a FIXED ET wall-clock time.
+
+    Registered on a short interval by _start_leader_runtime, so it also runs
+    right after any process becomes leader (boot or rolling-deploy takeover):
+    that first tick is the self-heal. Idempotent: it sends only inside the
+    window and only while today's send is not recorded in ghost_state.
+    """
+    from core import morning_card_schedule as mcs
+
+    now = time.time() if now_ts is None else float(now_ts)
+    try:
+        state = _morning_card_state()
+    except Exception as _mse:
+        LOGGER.warning("Morning card tick: state read failed: %s", str(_mse)[:120])
+        return {"ran": False, "reason": "state_unavailable"}
+    decision = mcs.due(now, last_sent_date=state["last_sent_date"],
+                       last_attempt_ts=state["last_attempt_ts"])
+    if not decision["due"]:
+        return {"ran": False, "reason": decision["reason"]}
+    try:
+        with db_conn() as _ac:
+            _ac.cursor().execute(
+                "INSERT INTO ghost_state(key,val) VALUES('last_morning_card_attempt_ts',%s) "
+                "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
+                (str(int(now)),),
+            )
+    except Exception as _ae:
+        # Without an attempt record a failing send could retry every tick.
+        LOGGER.warning("Morning card tick: attempt record failed, skipping: %s", str(_ae)[:120])
+        return {"ran": False, "reason": "attempt_record_failed"}
+    LOGGER.warning("Morning card due (%s window, CT date %s): running",
+                   decision["start_et"], decision["card_date"])
+    _morning_card_job()
+    return {"ran": True, "reason": "due"}
+
 _WEEKDAY_INDEX = {"monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
                   "friday": 4, "saturday": 5, "sunday": 6}
 
@@ -1558,34 +1619,12 @@ async def lifespan(app: FastAPI):
     except Exception as _ppe:
         LOGGER.warning("Boot portfolio purge failed: " + str(_ppe)[:80])
 
-    # Self-healing: if app restarts within the morning card window (TELEGRAM_DAILY_HOUR
-    # .. +4h CT) and last card was >8h ago, fire now. Prevents silent card misses
-    # when Railway restarts during the cron window. Leader-gated: only the elected
-    # background-work leader may send the recovery card.
-    if _is_leader:
-        try:
-            import datetime as _sdt
-            import pytz as _stz
-            _ct = _stz.timezone("America/Chicago")
-            _now_ct = _sdt.datetime.now(_ct)
-            _hour_ct = _now_ct.hour
-            try:
-                _daily_hour = int(os.getenv("TELEGRAM_DAILY_HOUR", "8"))
-            except Exception:
-                _daily_hour = 8
-            if _daily_hour <= _hour_ct < _daily_hour + 4:  # morning window
-                with db_conn() as _sc:
-                    _scur = _sc.cursor()
-                    _scur.execute("SELECT val FROM ghost_state WHERE key='last_morning_card_ts'")
-                    _row = _scur.fetchone()
-                    _last_ts = int(_row[0]) if _row else 0
-                    _hours_ago = (time.time() - _last_ts) / 3600
-                if _hours_ago > 8:
-                    LOGGER.warning(f"Startup recovery: last card {_hours_ago:.1f}h ago, firing now (hour={_hour_ct} CT)")
-                    import asyncio as _aio
-                    _aio.get_event_loop().run_in_executor(None, _morning_card_job)
-        except Exception as _se:
-            LOGGER.warning(f"Startup card recovery failed: {_se}")
+    # F31: the boot-time morning-card "self-heal" that lived here ran only when
+    # THIS process won the leader lock at boot, so a rolling deploy (new
+    # replica boots as follower, takes over later) skipped it. The card is now
+    # a fixed ET wall-clock job (_morning_card_tick) registered in
+    # _start_leader_runtime; its first tick after any leadership start is the
+    # idempotent self-heal.
 
     import asyncio as _aio
 
@@ -1618,7 +1657,14 @@ async def lifespan(app: FastAPI):
                 )
         except Exception as _eoe:
             LOGGER.warning("Leader pick cleanup failed: %s", str(_eoe)[:120])
-        scheduler.register("morning_card", _morning_card_job, interval_s=86400, timeout_s=600)
+        # F31: fixed ET wall-clock schedule (core.morning_card_schedule), not
+        # "24 h after boot". A short tick + the persisted send record make it
+        # fire once per day in the window, and the first tick ~30 s after this
+        # process becomes leader (boot OR takeover) is the self-heal.
+        scheduler.register(
+            "morning_card", _morning_card_tick, interval_s=300,
+            timeout_s=600, initial_delay_s=30,
+        )
         # Market-hours scan loop (roadmap #3a): tick at the market interval; the job
         # self-gates to SCAN_INTERVAL_MARKET_MIN / SCAN_INTERVAL_OFFHOURS_MIN.
         try:
@@ -3146,15 +3192,32 @@ def health():
     last_card_min = None
     try:
         tasks = scheduler.status()
-        mc = next((t for t in tasks if t["name"] == "morning_card"), None)
-        if mc:
-            last_run_ago_s = mc.get("last_run_ago_s")
-            if last_run_ago_s is not None:
-                last_card_min = int(last_run_ago_s / 60)
-                if last_card_min > 1440:
-                    issues.append("Morning card last ran " + str(last_card_min) + "m ago")
     except Exception as _se:
         LOGGER.warning("health.scheduler_status failed: " + str(_se)[:120])
+    # F31: the morning_card task now ticks every few minutes, so its
+    # process-local last_run says nothing about the card. Health reads the
+    # persisted SEND record (shared across replicas and restarts) instead: a
+    # card that ran but dead-lettered is now visible, and a day whose window
+    # closed without a send is an issue.
+    try:
+        from core import morning_card_schedule as _mcs
+        _mc_state = _morning_card_state()
+        if _mc_state.get("last_sent_ts"):
+            last_card_min = int((_t.time() - float(_mc_state["last_sent_ts"])) / 60)
+        _now_h = _t.time()
+        _win = _mcs.window(_now_h)
+        _in_window = _win["start_ts"] <= _now_h < _win["end_ts"]
+        if _mcs.missed_today(_now_h, last_sent_date=_mc_state.get("last_sent_date")):
+            issues.append(
+                "Morning card not sent today (last sent "
+                + (str(last_card_min) + "m ago" if last_card_min is not None else "never") + ")"
+            )
+        elif last_card_min is not None and last_card_min > 1440 and not _in_window:
+            # Outside today's window the old 24 h staleness rule still applies
+            # (inside it, the tick is sending and missed_today takes over).
+            issues.append("Morning card last sent " + str(last_card_min) + "m ago")
+    except Exception as _mce:
+        LOGGER.warning("health.morning_card_state failed: " + str(_mce)[:120])
 
     # 8. Degraded mode (P3 audit)
     degraded = False
@@ -3334,9 +3397,12 @@ def api_health():
 
 
 @APP.post("/api/health/audit")
-def health_audit(x_cron_secret: str = Header(default=""), auto_fix: bool = True):
+def health_audit(x_cron_secret: str = Header(default=""), auto_fix: bool = True, persist: bool = True):
     """
     Deep reliability audit with persistent findings and optional auto-fix hooks.
+
+    ``auto_fix=false&persist=false`` makes the call read-only (no self-heal
+    writes and no history row); release gates in CI must use that form.
 
     Returns structured PASS/FAIL records for each check:
     status, location, evidence, impact, auto_fix, fix_result.
@@ -3413,6 +3479,7 @@ def health_audit(x_cron_secret: str = Header(default=""), auto_fix: bool = True)
             stats_payload=s,
             cockpit_payload=c,
             auto_fix=bool(auto_fix),
+            persist=bool(persist),
         )
         return {"ok": True, "audit": report}
     except Exception as e:

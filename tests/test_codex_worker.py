@@ -399,3 +399,106 @@ def test_rate_budget_enforces_hourly_and_daily_caps():
     assert budget.allowed(5000) is True
     budget.record(5000)
     assert budget.allowed(5100) is False
+
+
+# --- F34 (audit 2026-09-25): kill switch, incomplete breaker, source guard ---
+
+
+class _CountingGhost(_FakeGhost):
+    def __init__(self):
+        super().__init__()
+        self.claims = 0
+
+    def claim(self):
+        self.claims += 1
+        return super().claim()
+
+
+def test_kill_switch_is_honored_every_cycle_without_claiming(monkeypatch):
+    ghost = _CountingGhost()
+    service = worker.CodexWorker(_config(), ghost=ghost, openai=_FakeOpenAI())
+    monkeypatch.setenv("CODEX_WORKER_ENABLED", "0")
+    assert service.run_once() == "disabled"
+    assert ghost.claims == 0
+    assert ghost.worker_beats[-1][1]["metadata"]["disabled"] is True
+    monkeypatch.setenv("CODEX_WORKER_ENABLED", "1")
+    assert service.run_once() == "accepted"
+    assert ghost.claims == 1
+
+
+def test_main_exits_cleanly_when_disabled(monkeypatch):
+    monkeypatch.setenv("CODEX_WORKER_ENABLED", "false")
+    assert worker.main() == 0
+
+
+def test_consecutive_incomplete_results_pause_claiming(monkeypatch):
+    monkeypatch.delenv("CODEX_WORKER_ENABLED", raising=False)
+    ghost = _CountingGhost()
+    service = worker.CodexWorker(
+        _config(max_consecutive_incomplete=2, incomplete_pause_seconds=3600),
+        ghost=ghost, openai=_IncompleteResearchOpenAI(),
+    )
+    assert service.run_once(now=1000.0) == "incomplete"
+    assert service.run_once(now=1020.0) == "incomplete"
+    assert ghost.claims == 2
+    # Paused: no claim (no OpenAI bill, no burned attempt) for the window.
+    assert service.run_once(now=1040.0) == "paused"
+    assert service.run_once(now=1020.0 + 3599) == "paused"
+    assert ghost.claims == 2
+    assert ghost.submissions == []
+    service.openai = _FakeOpenAI()
+    assert service.run_once(now=1020.0 + 3601) == "accepted"
+    assert ghost.claims == 3
+
+
+def test_accepted_submission_resets_incomplete_streak(monkeypatch):
+    monkeypatch.delenv("CODEX_WORKER_ENABLED", raising=False)
+    ghost = _FakeGhost()
+    service = worker.CodexWorker(
+        _config(max_consecutive_incomplete=2), ghost=ghost, openai=_IncompleteResearchOpenAI(),
+    )
+    assert service.run_once(now=1000.0) == "incomplete"
+    service.openai = _FakeOpenAI()
+    assert service.run_once(now=1010.0) == "accepted"
+    service.openai = _IncompleteResearchOpenAI()
+    assert service.run_once(now=1020.0) == "incomplete"
+    assert service.run_once(now=1030.0) == "incomplete"  # streak restarted at 0
+    assert service.run_once(now=1040.0) == "paused"
+
+
+class _SourcelessOpenAI(_FakeOpenAI):
+    """A client that returns an envelope with no source_refs at all."""
+
+    def research(self, task, contract, **kwargs):
+        envelope = super().research(task, contract, **kwargs)
+        envelope["source_refs"] = []
+        return envelope
+
+
+def test_worker_never_submits_an_envelope_without_source_refs(monkeypatch):
+    monkeypatch.delenv("CODEX_WORKER_ENABLED", raising=False)
+    ghost = _FakeGhost()
+    service = worker.CodexWorker(_config(), ghost=ghost, openai=_SourcelessOpenAI())
+    assert service.run_once() == "incomplete"
+    assert ghost.submissions == []
+    assert len(ghost.released) == 1
+
+
+def test_incomplete_error_reports_response_shape_without_content():
+    client = worker.OpenAIClient(_config(), session=_NoSourcesSession())
+    with pytest.raises(worker.ResearchIncompleteError) as info:
+        client.research(
+            {"task_id": "canary", "request_payload": {}},
+            {"required_response_schema": {"type": "object"}},
+        )
+    assert "citations=0" in str(info.value)
+    shape = worker._response_shape([
+        {"type": "web_search_call", "action": {"sources": [{"url": "https://x.example"}]}},
+        {"type": "message", "content": [{"type": "output_text", "text": "secret text",
+                                         "annotations": [{"type": "url_citation", "url": "https://y"}]}]},
+    ])
+    assert shape == {
+        "output_item_types": {"web_search_call": 1, "message": 1},
+        "annotation_types": {"url_citation": 1},
+    }
+    assert "secret text" not in str(shape) and "https://" not in str(shape)

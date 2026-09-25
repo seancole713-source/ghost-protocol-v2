@@ -145,7 +145,7 @@ def test_each_stage_logs_its_views_once_per_day_for_the_agents():
     assert RO.views_to_log(store, out, now=ts(9, 15)) == []          # once per stage per day
     evening = {"day": "2026-09-23", "card_graded": {"status": "graded"}, "radar_close": {"status": "closed"}}
     assert [n for n, _, _ in RO.views_to_log(store, evening, now=ts(16, 25))] == [
-        "radar", "paper", "experiments", "scorecard", "top10"]
+        "radar", "paper", "experiments", "scorecard", "top10", "control"]
     assert RO.views_to_log(store, {"day": "2026-09-23", "card": {"status": "error"}}, now=ts(9, 20)) == []
     long = RO.views_to_log(MemoryStore(), out, now=ts(9, 10), limit=50)
     assert all(len(j) <= 50 for _, _, j in long)

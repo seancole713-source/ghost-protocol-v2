@@ -46,6 +46,7 @@ def get_picks(symbol: str = "ALL", asset_type: str = None, limit: int = 50, offs
     ?limit=&offset= page resolved picks newest-first (default limit 50, max 200).
     Rows with entry_price=0 or non-stock asset_type are excluded (crypto-era junk)."""
     from wolf_app import _norm_pred, _picks_where, db_conn  # late import — shared state + monkeypatch-safe
+    from core.prediction_filters import accuracy_basis
     try:
         lim = max(1, min(200, int(limit)))
         off = max(0, int(offset))
@@ -60,15 +61,22 @@ def get_picks(symbol: str = "ALL", asset_type: str = None, limit: int = 50, offs
             )
             cols = [d[0] for d in cur.description]
             active = [_norm_pred(dict(zip(cols, r))) for r in cur.fetchall()]
+            # Audit F41: research picks never count toward accuracy.
+            from core.prediction_filters import non_research_where
             cur.execute(
-                "SELECT outcome, COUNT(*) FROM predictions" + where
-                + " AND outcome IN ('WIN','LOSS') GROUP BY outcome",
+                "SELECT outcome, COUNT(*), MIN(predicted_at), MAX(predicted_at) "
+                "FROM predictions" + where
+                + " AND outcome IN ('WIN','LOSS') AND " + non_research_where()
+                + " GROUP BY outcome",
                 tuple(params),
             )
-            tally = {r[0]: r[1] for r in cur.fetchall()}
+            tally_rows = list(cur.fetchall() or [])
+            tally = {r[0]: r[1] for r in tally_rows}
             wins = tally.get("WIN", 0)
             losses = tally.get("LOSS", 0)
             total = wins + losses
+            _starts = [r[2] for r in tally_rows if len(r) > 2 and r[2] is not None]
+            _ends = [r[3] for r in tally_rows if len(r) > 3 and r[3] is not None]
             cur.execute(
                 "SELECT * FROM predictions" + where + " AND outcome IS NOT NULL "
                 "ORDER BY predicted_at DESC NULLS LAST, id DESC LIMIT %s OFFSET %s",
@@ -89,6 +97,20 @@ def get_picks(symbol: str = "ALL", asset_type: str = None, limit: int = 50, offs
             "wins": wins,
             "losses": losses,
             "total": total,
+            # Audit F19: this is NOT the v3.2 record (/api/stats/v32). Say so.
+            "basis": accuracy_basis(
+                population=(
+                    "all-era fired stock picks (entry_price>0), WIN/LOSS only; "
+                    "EXPIRED/WITHDRAWN not counted; research picks excluded"
+                    + ("" if str(symbol).strip().upper() in ("ALL", "*", "") else f"; symbol={str(symbol).strip().upper()}")
+                ),
+                wins=wins,
+                n=total,
+                start_ts=min(_starts) if _starts else None,
+                end_ts=max(_ends) if _ends else None,
+                outcomes_counted=("WIN", "LOSS"),
+                excludes=("EXPIRED", "WITHDRAWN", "research_pick"),
+            ),
         }
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
@@ -188,6 +210,7 @@ def get_stats_v32():
         db_conn,
     )
     import datetime as _dt
+    from core.prediction_filters import accuracy_basis
 
     try:
         with db_conn() as conn:
@@ -251,6 +274,7 @@ def get_stats_v32():
                 AND predicted_at >= %s AND predicted_at IS NOT NULL
                 AND outcome IS NULL
                 AND expires_at > %s
+                AND """ + NON_RESEARCH_WHERE + """
                 """,
                 (v32_start_ts, now_ts),
             )
@@ -278,6 +302,21 @@ def get_stats_v32():
             "resolved_win_rate_pct": rwr,
             "open_picks": open_picks,
             "verdict": verdict,
+            # Audit F19: explicit population so this number is never
+            # compared against /api/picks' all-era WIN/LOSS tally unlabeled.
+            "basis": accuracy_basis(
+                population=(
+                    "v3.2-era BUY/UP picks by predicted_at; WIN/LOSS plus genuine "
+                    "EXPIRED (reconciler pnl set) as non-wins; admin voids, "
+                    "WITHDRAWN and research picks excluded"
+                ),
+                wins=wins,
+                n=total,
+                start_ts=v32_start_ts,
+                end_ts=now_ts,
+                outcomes_counted=("WIN", "LOSS", "EXPIRED"),
+                excludes=("admin_void_EXPIRED", "WITHDRAWN", "research_pick"),
+            ),
         }
     except Exception as e:
         return {"ok": False, "error": str(e)[:80]}

@@ -100,12 +100,17 @@ def ensure_research_artifact_tables(cur) -> None:
             trained_at BIGINT NOT NULL DEFAULT 0,
             status TEXT NOT NULL DEFAULT 'ACTIVE',
             retired_at BIGINT NOT NULL DEFAULT 0,
-            retirement_reason TEXT DEFAULT ''
+            retirement_reason TEXT DEFAULT '',
+            model_hmac TEXT NOT NULL DEFAULT ''
         )
     """)
     cur.execute(
         "ALTER TABLE ghost_research_artifacts "
         "ADD COLUMN IF NOT EXISTS model_sha256 TEXT NOT NULL DEFAULT ''"
+    )
+    cur.execute(
+        "ALTER TABLE ghost_research_artifacts "
+        "ADD COLUMN IF NOT EXISTS model_hmac TEXT NOT NULL DEFAULT ''"
     )
     cur.execute("""
         CREATE TABLE IF NOT EXISTS ghost_research_artifact_events (
@@ -157,7 +162,12 @@ def _register_artifact_impl(cur, meta: ArtifactMeta, payload_bytes: str) -> bool
     now = int(time.time())
     trained_at = meta.trained_at or now
     model_sha256 = compute_payload_model_sha256(payload_bytes) if payload_bytes else ""
+    # HMAC keyed outside the DB (MODEL_BLOB_HMAC_KEY), verified before any
+    # unpickle of this payload. Empty when the key is not configured.
+    model_hmac = ""
     if payload_bytes:
+        from core.model_blob_integrity import sign_model_blob
+        model_hmac = sign_model_blob(base64.b64decode(payload_bytes, validate=True)) or ""
         expected_artifact_sha = compute_artifact_sha(
             model_sha256=model_sha256,
             contract_id=meta.contract_id,
@@ -184,8 +194,8 @@ def _register_artifact_impl(cur, meta: ArtifactMeta, payload_bytes: str) -> bool
              symbol_scope, output_domain, feature_schema, evidence_schema,
              validation_schema, horizon_bars, training_manifest_sha,
              calibration_proof, gate_proof, feature_order, payload_bytes,
-             created_at, trained_at, status)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+             created_at, trained_at, status, model_hmac)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         ON CONFLICT (artifact_sha) DO NOTHING
         """,
         (
@@ -208,6 +218,7 @@ def _register_artifact_impl(cur, meta: ArtifactMeta, payload_bytes: str) -> bool
             now,
             trained_at,
             meta.status,
+            model_hmac,
         ),
     )
     inserted = cur.rowcount > 0
@@ -287,7 +298,8 @@ def _get_artifact_impl(cur, artifact_sha: str) -> Optional[Dict[str, Any]]:
                symbol_scope, output_domain, feature_schema, evidence_schema,
                validation_schema, horizon_bars, training_manifest_sha,
                calibration_proof, gate_proof, feature_order, payload_bytes,
-               created_at, trained_at, status, retired_at, retirement_reason
+               created_at, trained_at, status, retired_at, retirement_reason,
+               model_hmac
         FROM ghost_research_artifacts
         WHERE artifact_sha = %s
         """,
@@ -318,6 +330,7 @@ def _get_artifact_impl(cur, artifact_sha: str) -> Optional[Dict[str, Any]]:
         "status": row[18],
         "retired_at": row[19],
         "retirement_reason": row[20],
+        "model_hmac": (row[21] if len(row) > 21 else "") or "",
     }
 
 

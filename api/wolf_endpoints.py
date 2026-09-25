@@ -30,6 +30,7 @@ import logging
 import threading
 
 from core.prediction_filters import V32_ERA_MIN_ID
+from shared.redaction import redact_exc as _redact_exc
 from dataclasses import asdict
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -572,7 +573,7 @@ def _try_polygon_stats_fallback(out: dict) -> bool:
                         out["market_cap"] = _safe_int(mc)
                         filled = True
             except Exception as _e:
-                LOGGER.info(f"Polygon ref {sym}: {str(_e)[:80]}")
+                LOGGER.info("Polygon ref %s: %s", sym, _redact_exc(_e, 80))
         # Previous day's OHLC + volume
         if any(out.get(k) is None for k in ("open", "high", "low", "volume")):
             try:
@@ -597,7 +598,7 @@ def _try_polygon_stats_fallback(out: dict) -> bool:
                             out["volume"] = _safe_int(bar.get("v"))
                             filled = True
             except Exception as _e:
-                LOGGER.info(f"Polygon prev {sym}: {str(_e)[:80]}")
+                LOGGER.info("Polygon prev %s: %s", sym, _redact_exc(_e, 80))
         # 52-week range — derive from the last 365 daily bars
         if out.get("week52_low") is None or out.get("week52_high") is None:
             try:
@@ -628,11 +629,11 @@ def _try_polygon_stats_fallback(out: dict) -> bool:
                             out["avg_volume"] = _safe_int(sum(vols) / len(vols))
                             filled = True
             except Exception as _e:
-                LOGGER.info(f"Polygon range {sym}: {str(_e)[:80]}")
+                LOGGER.info("Polygon range %s: %s", sym, _redact_exc(_e, 80))
         if filled:
             LOGGER.info(f"Polygon stats fallback {sym}: populated {[k for k in out if out.get(k) is not None]}")
     except Exception as e:
-        LOGGER.warning(f"Polygon stats fallback {sym}: {str(e)[:120]}")
+        LOGGER.warning("Polygon stats fallback %s: %s", sym, _redact_exc(e, 120))
     return filled
 
 
@@ -1216,6 +1217,34 @@ _GHOST_WEIGHTS = {
 }
 
 
+# Audit F23: a pick only counts as the model's CURRENT view while it is
+# unresolved and inside its own horizon (expires_at). With no expires_at, a
+# pick older than this is stale. 5 calendar days covers the 3-trading-day
+# v3.2 hold plus a weekend.
+NO_CURRENT_VIEW = "NO_CURRENT_VIEW"
+_MODEL_VIEW_MAX_AGE_S = 5 * 86400
+
+
+def _model_view_state(latest_pick: Optional[dict], now_ts: int) -> str:
+    """'current', 'none' (no pick) or 'stale' (resolved / past horizon / too old)."""
+    if not latest_pick:
+        return "none"
+    if latest_pick.get("outcome") not in (None, ""):
+        return "stale"
+    expires_at = latest_pick.get("expires_at")
+    if expires_at not in (None, ""):
+        try:
+            return "current" if int(now_ts) < int(float(expires_at)) else "stale"
+        except (TypeError, ValueError):
+            return "stale"
+    predicted_at = latest_pick.get("predicted_at")
+    try:
+        age = int(now_ts) - int(float(predicted_at))
+    except (TypeError, ValueError):
+        return "stale"  # unknown age cannot be claimed as current
+    return "current" if age <= _MODEL_VIEW_MAX_AGE_S else "stale"
+
+
 def _score_model(latest_pick: Optional[dict]) -> float:
     if not latest_pick:
         return 20.0  # neutral midpoint of [0, 40]
@@ -1320,8 +1349,12 @@ def compute_ghost_score(latest_pick, volume_ratio, sector, current_price, sma_5d
     squeeze up-weights high short-squeeze potential. raw_score is pre-modifier."""
     # Freshness reflects engine activity (last scan), falling back to last pick.
     activity_ts = last_scan_ts or (latest_pick.get("predicted_at") if latest_pick else None)
+    # Audit F23: only a current pick (unresolved, inside its own horizon) may
+    # drive the model component; a stale or absent pick scores neutral 20 and
+    # the label reads NO_CURRENT_VIEW instead of a BUY/SELL band.
+    model_view = _model_view_state(latest_pick, now_ts)
     components = {
-        "model": _score_model(latest_pick),
+        "model": _score_model(latest_pick if model_view == "current" else None),
         "volume": _score_volume(volume_ratio),
         "sector": _score_sector(sector),
         "momentum": _score_momentum(current_price, sma_5d),
@@ -1334,7 +1367,8 @@ def compute_ghost_score(latest_pick, volume_ratio, sector, current_price, sma_5d
     return {
         "score": round(score, 1),
         "raw_score": round(raw, 1),
-        "signal": _signal_label(score),
+        "signal": _signal_label(score) if model_view == "current" else NO_CURRENT_VIEW,
+        "model_view": model_view,
         "components": {k: round(v, 2) for k, v in components.items()},
         "weights": dict(_GHOST_WEIGHTS),
         "regime": regime,
@@ -1365,7 +1399,7 @@ def ghost_score_payload_sync(*, cache_ttl_s: float = 60, use_cache: bool = True)
             cur = conn.cursor()
             cur.execute(
                 """
-                SELECT id, predicted_at, direction, confidence
+                SELECT id, predicted_at, direction, confidence, outcome, expires_at
                 FROM predictions
                 WHERE symbol = %s AND predicted_at IS NOT NULL
                 ORDER BY predicted_at DESC
@@ -1380,6 +1414,10 @@ def ghost_score_payload_sync(*, cache_ttl_s: float = 60, use_cache: bool = True)
                     "predicted_at": int(row[1]) if row[1] else None,
                     "direction": row[2],
                     "confidence": float(row[3]) if row[3] is not None else None,
+                    # Audit F23: outcome + horizon decide whether this pick is
+                    # still the model's current view (see _model_view_state).
+                    "outcome": row[4] if len(row) > 4 else None,
+                    "expires_at": (int(row[5]) if len(row) > 5 and row[5] else None),
                 }
     except Exception as e:
         errors.append("latest_pick: " + str(e)[:80])
@@ -1489,6 +1527,13 @@ def ghost_score_payload_sync(*, cache_ttl_s: float = 60, use_cache: bool = True)
         "score": scored["score"],
         "raw_score": scored["raw_score"],
         "signal": scored["signal"],
+        "model_view": scored["model_view"],
+        "model_view_note": (
+            None if scored["model_view"] == "current"
+            else "no current model view: latest pick is "
+            + ("absent" if scored["model_view"] == "none" else "resolved or past its horizon")
+            + "; model component held at neutral 20"
+        ),
         "confidence_floor": _floor,
         "regime": regime,
         "squeeze": squeeze,

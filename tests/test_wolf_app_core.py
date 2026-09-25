@@ -722,7 +722,8 @@ def test_ghost_score_pure_compute_strong_sell():
 
 
 def test_ghost_score_pure_compute_hold_when_no_inputs():
-    """No data at all → neutral midpoint, HOLD signal."""
+    """No data at all → neutral midpoint score, and (audit F23) no BUY/SELL
+    label without a current model pick: NO_CURRENT_VIEW."""
     import api.wolf_endpoints as we
     now = int(time.time())
     out = we.compute_ghost_score(
@@ -730,8 +731,9 @@ def test_ghost_score_pure_compute_hold_when_no_inputs():
         current_price=None, sma_5d=None, now_ts=now,
     )
     # model: 20 (neutral); volume: 10; sector: 7.5; momentum: 7.5; freshness: 0
-    # total = 45 → HOLD
-    assert out["signal"] == "HOLD"
+    # total = 45 (the HOLD band) — but no pick means no current model view.
+    assert out["signal"] == "NO_CURRENT_VIEW"
+    assert out["model_view"] == "none"
     assert 40 <= out["score"] <= 60
 
 

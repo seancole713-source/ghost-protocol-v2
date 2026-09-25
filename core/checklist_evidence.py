@@ -201,6 +201,28 @@ def _collect_fundamentals(symbol: str, *, asof_ts: int) -> Dict[str, Any]:
     return out
 
 
+def _event_sentiment(event: Dict[str, Any]) -> Optional[float]:
+    """Signed scalar for one ghost_news_events row (audit F08).
+
+    The producer (news_events.recent_events_for_symbol) never writes a
+    ``sentiment`` key; it emits event_type / direction_hint / materiality /
+    source_reliability / confirmation_status. Derive the scalar the same way
+    the catalyst scorer does (catalyst_scoring._event_effect) so both surfaces
+    read one definition. An explicit numeric ``sentiment`` is still honoured.
+    Rows with no event_type are unknown (None), not neutral.
+    """
+    explicit = _num(event.get("sentiment"))
+    if explicit is not None:
+        return explicit
+    if not str(event.get("event_type") or "").strip():
+        return None
+    try:
+        from core.catalyst_scoring import _event_effect
+        return float(_event_effect(event))
+    except Exception:
+        return None
+
+
 def _collect_news(symbol: str, *, asof_ts: int) -> Dict[str, Any]:
     """Each returned signal carries ``_ts`` = the newest contributing event's
     own asof_ts (already point-in-time bounded by recent_events_for_symbol).
@@ -214,7 +236,7 @@ def _collect_news(symbol: str, *, asof_ts: int) -> Dict[str, Any]:
     if not events:
         return out
     scored = [
-        (e, _num(e.get("sentiment"))) for e in events if isinstance(e, dict)
+        (e, _event_sentiment(e)) for e in events if isinstance(e, dict)
     ]
     scored = [(e, s) for e, s in scored if s is not None]
     if scored:

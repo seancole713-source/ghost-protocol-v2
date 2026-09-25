@@ -31,6 +31,17 @@ CRITERIA = {
 }
 CRITERIA_HASH = hashlib.sha256(json.dumps(CRITERIA, sort_keys=True).encode()).hexdigest()[:16]
 
+# Retirement is written down before the results too (audit 2026-09-25, F09): without it a rule
+# that is clearly below break-even can run forever "undecided". Evaluated on the simulated record
+# of ONE feed regime (the ledger never pools IEX and SIP). Hashed like the promotion criteria.
+RETIREMENT = {
+    "version": "retirement_v1",
+    "min_simulated_filled": 30,          # never retire on a handful of trades
+    "wilson_high_below_break_even": True,  # the WHOLE interval below break-even -> retire
+    "paper_expectancy_negative_confirms": True,  # shown beside it, never required
+}
+RETIREMENT_HASH = hashlib.sha256(json.dumps(RETIREMENT, sort_keys=True).encode()).hexdigest()[:16]
+
 
 def evaluate(report: Dict[str, Any], *, baseline: Dict[str, Any], sessions: int,
              by_day: Dict[str, List[bool]], n_candidates: int) -> Dict[str, Any]:
@@ -67,3 +78,26 @@ def evaluate(report: Dict[str, Any], *, baseline: Dict[str, Any], sessions: int,
     return {"stage": stage, "unmet": unmet, "criteria_version": CRITERIA["version"],
             "criteria_hash": CRITERIA_HASH,
             "live": "never automatic -- requires the operator's explicit decision"}
+
+
+def retirement(report: Dict[str, Any]) -> Dict[str, Any]:
+    """Should this experiment be retired? Only when enough trades show the whole Wilson interval
+    of the simulated win rate below break-even. Retiring is a recommendation to the operator, like
+    promotion; the code never stops an experiment on its own."""
+    sim = (report.get("records") or {}).get("simulated") or {}
+    act = (report.get("records") or {}).get("actual") or {}
+    n = sim.get("filled") or 0
+    be = report.get("break_even")
+    ci = sim.get("win_rate_ci") or [None, None]
+    out = {"retirement_version": RETIREMENT["version"], "retirement_hash": RETIREMENT_HASH,
+           "feed_regime": report.get("feed_regime")}
+    if n < RETIREMENT["min_simulated_filled"] or be is None or ci[1] is None:
+        return {**out, "retire": False,
+                "why": f"too few simulated trades to judge ({n}/{RETIREMENT['min_simulated_filled']})"}
+    if ci[1] < be:
+        paper = (act.get("expectancy_usd") or {}).get("mean") if isinstance(act.get("expectancy_usd"), dict) else None
+        return {**out, "retire": True,
+                "why": (f"whole interval below break-even: {ci[0]:.1%}-{ci[1]:.1%} vs {be:.1%} "
+                        f"over {n} simulated trades"
+                        + (f"; paper expectancy {paper:+.2f}/trade" if paper is not None else ""))}
+    return {**out, "retire": False, "why": "the interval reaches break-even; keep collecting"}

@@ -132,7 +132,8 @@ def _create_artifacts(cur) -> None:
             trained_at BIGINT NOT NULL DEFAULT 0,
             status TEXT NOT NULL DEFAULT 'ACTIVE',
             retired_at BIGINT NOT NULL DEFAULT 0,
-            retirement_reason TEXT DEFAULT ''
+            retirement_reason TEXT DEFAULT '',
+            model_hmac TEXT NOT NULL DEFAULT ''
         )
     """)
     cur.execute("""
@@ -439,6 +440,7 @@ def _migrate_research_schema(cur) -> None:
         _add_column_if_missing(cur, "ghost_research_artifacts", "status", "TEXT NOT NULL DEFAULT 'ACTIVE'")
         _add_column_if_missing(cur, "ghost_research_artifacts", "retired_at", "BIGINT NOT NULL DEFAULT 0")
         _add_column_if_missing(cur, "ghost_research_artifacts", "retirement_reason", "TEXT DEFAULT ''")
+        _add_column_if_missing(cur, "ghost_research_artifacts", "model_hmac", "TEXT NOT NULL DEFAULT ''")
         columns = _table_columns(cur, "ghost_research_artifacts")
         if "direction" in columns:
             cur.execute(

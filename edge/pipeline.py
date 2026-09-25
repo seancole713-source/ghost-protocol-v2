@@ -10,7 +10,9 @@ Three steps, each idempotent (safe to re-run; a marker stops repeats):
   09:05-09:28 ET  morning_card    candidates -> signals -> decisions; forecasts
                                   and abstentions RECORDED before the open
   16:20-20:00 ET  resolve_day     grade from consolidated minute bars:
-                                  "forecast" and "simulated" records
+                                  "forecast" and "simulated" records; then the
+                                  control arm grades every radar name once
+                                  (edge/control.py, docs/control_arm_v1.md)
 
 Why the miss review waits for the next morning: this account's Polygon plan is
 not entitled to a session's grouped-daily bar while that session is still the
@@ -369,6 +371,7 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, A
             "degraded": bool(failures), "data_failures": failures,
             "failed_attempts": sum(1 for a in attempts["attempts"] if a.get("at") != now),
             "health_note": "shadow records regardless; the banner is what a LIVE release would say",
+            "backtest_note": backtest_note(store),
             "rows": rows}
     from edge import top10 as T10
     t10 = T10.build(card)                     # learning list, never an order; graded after the close
@@ -847,6 +850,9 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None) -> Dict[str,
         guarded("radar_close", lambda: I.close_day(ledger, day=day, now=now))
         from edge import scorecard as SC
         guarded("card_graded", lambda: SC.grade_card(get, ledger.store, day=day, now=now))
+        # The observe-all control arm (docs/control_arm_v1.md): every radar name graded once.
+        from edge import control as CA
+        guarded("control", lambda: CA.grade_day(get, ledger.store, day=day, now=now))
         if http is not None:
             guarded("paper_reconcile", lambda: _paper().reconcile(http, ledger, day=ds,
                                                                   experiments=all_specs, now=now))
@@ -962,3 +968,25 @@ def _all_specs(store, I):
     if m is not None:
         specs.append(m[1])
     return tuple(specs)
+
+
+def backtest_note(store) -> Optional[str]:
+    """One line on the card: what the frozen rule's own point-in-time backtest says (audit F09 --
+    the card never said the rule it prints is below break-even on history)."""
+    try:
+        from edge import backtest as BT
+        bt = store.get("edge_backtest", BT.BACKTEST_VERSION)
+        if not bt:
+            rows = [r for r in store.scan("edge_backtest") if (r.get("experiments") or {}).get(EID)]
+            bt = max(rows, key=lambda r: r.get("completed_at") or 0) if rows else None
+        e = ((bt or {}).get("experiments") or {}).get(EID)
+        if not e or not e.get("filled"):
+            return None
+        win = bt.get("window") or []
+        span = f" {win[0]}..{win[1]}" if len(win) == 2 else ""
+        mean = (e.get("expectancy_usd") or {}).get("mean")
+        return (f"Rule's own backtest{span}: {e['wins']}/{e['filled']} wins ({e['win_rate']:.0%}) vs "
+                f"{bt.get('break_even', 0.375):.1%} needed"
+                + (f", {mean:+.2f} $/trade" if mean is not None else "") + f" -- {e.get('verdict')}")
+    except Exception:  # noqa: BLE001 - a note, never a reason to lose the card
+        return None
