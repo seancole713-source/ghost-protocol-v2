@@ -247,7 +247,9 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, A
         if research_on:
             rv = _research().verdict(store, day=day.isoformat(), symbol=sym, issued_at=now)
             vsig = dict(signals)
-            vsig["catalyst"] = (D.Signal("catalyst", D.UNKNOWN, evidence={"missing": "not researched before the card"})
+            nr = rv.get("not_researched")
+            vsig["catalyst"] = (D.Signal("catalyst", D.UNKNOWN, evidence={
+                                    "missing": f"not researched ({nr})" if nr else "not researched before the card"})
                                 if rv["catalyst"] is None else
                                 D.Signal("catalyst", D.PASS if rv["catalyst"] else D.FAIL,
                                          evidence={"headline": rv.get("headline"),
@@ -274,6 +276,9 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, A
                "inputs": inputs, "model_prob": model_prob,
                "baseline_verdict": b.verdict, "baseline_reasons": b.reasons, "baseline_missing": b.missing,
                "verified_verdict": v.verdict if v else None,
+               "research_status": (None if not research_on else
+                                   "not_researched" if (rv.get("not_researched") or rv["catalyst"] is None)
+                                   else "researched"),
                "verified_reasons": v.reasons if v else [], "verified_missing": v.missing if v else [],
                "ref_price": ref["price"], "ref_ts": ref["ts"], "prev_close": st["prev_close"],
                "avg_dollars": st["avg_dollars"],

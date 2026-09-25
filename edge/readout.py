@@ -146,7 +146,8 @@ def paper(store, day: Optional[str] = None) -> Dict[str, Any]:
     if not d:
         return {"note": "no forecasts yet"}
     from datetime import datetime
-    from edge.contracts import ET
+    from edge.contracts import COUNTED, ET
+    from edge.ledger import entry_filled_after_window, outside_rule_reason
 
     def _hm(ts):
         return datetime.fromtimestamp(int(ts), tz=ET).strftime("%H:%M:%S ET") if ts else None
@@ -157,12 +158,11 @@ def paper(store, day: Optional[str] = None) -> Dict[str, Any]:
         p = store.get("edge_paper", f"{f['forecast_id']}|paper") or {}
         act = store.get("outcomes", f"{f['forecast_id']}|actual") or {}
         sim = store.get("outcomes", f"{f['forecast_id']}|simulated") or {}
-        rule = store.get("outcomes", f"{f['forecast_id']}|forecast") or {}
         entry = broker.get(f"{f['forecast_id']}-entry") or {}
-        filled_at = entry.get("filled_at")
-        from edge.providers.alpaca import iso_to_epoch
-        late = bool(filled_at and iso_to_epoch(filled_at) and iso_to_epoch(filled_at) > f["entry_expiry"])
-        outside = act.get("outcome") in ("WIN", "LOSS", "TIME_EXIT") and rule.get("outcome") == "NO_FILL"
+        # One judge for both columns, on the broker's own fill time: a late fill never reads as counted.
+        late = entry_filled_after_window(store, f, act)
+        why_outside = outside_rule_reason(store, f, act)
+        outside = bool(why_outside) or (late and act.get("outcome") in COUNTED)
         rows.append({"experiment": f["experiment_id"], "symbol": f["symbol"],
                      "issued": _hm(f.get("issued_at")), "entry_window_ends": _hm(f.get("entry_expiry")),
                      "why": (f.get("evidence") or {}),
@@ -171,12 +171,12 @@ def paper(store, day: Optional[str] = None) -> Dict[str, Any]:
                      "shares": f.get("shares"), "paper_state": p.get("state"), "paper_message": p.get("message"),
                      "simulated": sim.get("outcome"), "simulated_note": sim.get("note"),
                      "actual": act.get("outcome"), "actual_pnl_usd": act.get("pnl_usd"),
-                     "actual_counted": not outside,
+                     "actual_counted": bool(act.get("outcome") in COUNTED and not outside and not late),
                      "broker_entry": {k: entry.get(k) for k in ("status", "submitted_at", "filled_at",
                                                                 "filled_avg_price", "canceled_at")} if entry else None,
                      "filled_after_window": late,
-                     "note": ("broker filled where the rule's record has no entry: outside the rule, not counted"
-                              if outside else None)})
+                     "note": (f"broker fill outside the rule ({why_outside or 'entry filled after the entry window'}): "
+                              "shown, not counted" if outside else None)})
     return {"day": d, "orders": rows, "note": "Alpaca PAPER account only; no real money"}
 
 

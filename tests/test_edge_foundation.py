@@ -179,7 +179,39 @@ def test_report_states_the_interval_and_an_honest_verdict(ledger):
     rep = ledger.report("gap_and_go@v1")
     assert rep["filled"] == 3 and rep["wins"] == 2 and rep["abstentions"] == 1
     assert rep["win_rate_ci"][0] < 0.375 < rep["win_rate_ci"][1]
-    assert rep["verdict"].startswith("undecided")
+    assert rep["verdict"].startswith("too few trades (n=3)") and "is not evidence" in rep["verdict"]
+
+
+def test_three_straight_wins_are_never_edge_shown(ledger):
+    """Audit 2026-09-25: 3/3 wins has a Wilson range (44%-100%) wholly above a 37.5% break-even.
+    Below MIN_FILLED that is not evidence, in the ledger and in both backtests alike."""
+    for i in range(3):
+        f = issue(GAP_AND_GO_V1, symbol=f"W{i}", session_date=DAY, entry_ref=9.4, issued_at=ts(9, 10))
+        ledger.record(f, now=ts(9, 11))
+        ledger.settle(f.forecast_id, Resolution("WIN", pnl_usd=49.35), now=ts(16, 0))
+    rep = ledger.report("gap_and_go@v1")
+    assert rep["win_rate_ci"][0] > rep["break_even"]            # the interval alone would say "edge"
+    assert rep["verdict"] == "too few trades (n=3): Wilson range 44%-100% is not evidence"
+    assert "edge shown" not in rep["verdict"]
+    from edge import backtest as BT, backtest_postsplit as PS
+    sess = [{"day": "2026-09-23", "results": [
+        {"experiment": "gap_and_go_auto@v1", "symbol": f"W{i}", "forecast": "WIN", "simulated": "WIN",
+         "pnl_usd": 49.35, "ambiguous": False, "stress": {}} for i in range(3)]}]
+    assert BT.summarize(sess, 0.375)["experiments"]["gap_and_go_auto@v1"]["verdict"] == rep["verdict"]
+    rows = [{"cost_0bps": {"simulated": "WIN", "pnl_usd": 10.0}} for _ in range(3)]
+    assert PS._summ(rows, 0, 0.375)["verdict"] == rep["verdict"]
+
+
+def test_the_shared_verdict_keeps_its_wording_once_the_sample_is_big_enough():
+    be = 0.375
+    assert stats.break_even_verdict(0, 0, be) == "no filled trades"
+    assert stats.break_even_verdict(29, 29, be).startswith("too few trades (n=29)")
+    assert stats.break_even_verdict(30, 30, be) == "above break-even across the whole interval"
+    assert stats.break_even_verdict(30, 30, be, style="ledger") == "edge shown: the whole interval is above break-even"
+    assert stats.break_even_verdict(0, 40, be) == "below break-even across the whole interval"
+    assert stats.break_even_verdict(0, 40, be, style="ledger") == "no edge: the whole interval is below break-even"
+    assert stats.break_even_verdict(15, 40, be).startswith("undecided")
+    assert stats.break_even_verdict(15, 40, be, style="ledger") == "undecided: the interval straddles break-even (37.5%)"
 
 
 # -------------------------------------------------------------------- stats --

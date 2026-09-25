@@ -137,6 +137,77 @@ def test_expired_entry_is_a_no_fill_with_a_plain_message():
     assert "Entry expired" in p.messages[-1][1]
 
 
+def test_a_target_fill_is_an_actual_win_at_the_real_price():
+    f = fc()
+    p = F.reconcile(f, [
+        E(9, 25, "e1", F.ENTRY, F.ACCEPTED), E(9, 25, "s1", F.STOP, F.ACCEPTED), E(9, 25, "t1", F.TARGET, F.ACCEPTED),
+        E(9, 31, "e1", F.ENTRY, F.FILLED, 105, 9.50),
+        E(10, 14, "t1", F.TARGET, F.FILLED, 105, 9.97),
+        E(10, 14, "s1", F.STOP, F.CANCELED),
+    ])
+    assert p.state == "CLOSED" and p.qty_open == 0 and p.last_exit_role == F.TARGET
+    r = F.to_resolution(f, p)
+    assert r.outcome == "WIN" and r.exit_price == 9.97 and r.entry_fill == 9.50
+    assert r.entry_ts == ts(9, 31) and "entry_after_window" not in r.flags
+    assert r.pnl_usd == pytest.approx(105 * (9.97 - 9.50))
+    assert r.note == "closed via target" and "record:actual" in r.flags
+
+
+def test_a_time_exit_sell_is_an_actual_time_exit_not_a_win_or_loss():
+    f = fc()
+    p = F.reconcile(f, [
+        E(9, 25, "e1", F.ENTRY, F.ACCEPTED), E(9, 25, "s1", F.STOP, F.ACCEPTED),
+        E(9, 31, "e1", F.ENTRY, F.FILLED, 105, 9.50),
+        E(15, 30, "s1", F.STOP, F.CANCELED),
+        E(15, 30, "x1", F.TIME_EXIT_ROLE, F.SUBMITTED),
+    ])
+    assert p.state == "EXIT_PENDING" and F.to_resolution(f, p).outcome == "UNRESOLVED"   # sent is not sold
+    p = F.reconcile(f, [
+        E(9, 25, "e1", F.ENTRY, F.ACCEPTED), E(9, 25, "s1", F.STOP, F.ACCEPTED),
+        E(9, 31, "e1", F.ENTRY, F.FILLED, 105, 9.50),
+        E(15, 30, "s1", F.STOP, F.CANCELED),
+        E(15, 30, "x1", F.TIME_EXIT_ROLE, F.SUBMITTED),
+        E(15, 31, "x1", F.TIME_EXIT_ROLE, F.FILLED, 105, 9.71),      # above entry, below target: still TIME_EXIT
+    ])
+    r = F.to_resolution(f, p)
+    assert p.state == "CLOSED" and r.outcome == "TIME_EXIT" and r.exit_price == 9.71
+    assert r.pnl_usd == pytest.approx(105 * (9.71 - 9.50)) and r.note == "closed via time_exit"
+
+
+def test_a_rejected_entry_is_an_actual_no_fill_never_pending():
+    f = fc()
+    p = F.reconcile(f, [E(9, 11, "e1", F.ENTRY, F.SUBMITTED),
+                        E(9, 11, "e1", F.ENTRY, F.REJECTED, note="insufficient buying power")])
+    assert p.state == "ENTRY_REJECTED" and p.qty_bought == 0
+    assert p.messages[-1][1] == "Entry rejected by the broker. insufficient buying power"
+    r = F.to_resolution(f, p)
+    assert r.outcome == "NO_FILL" and r.note == "entry_rejected" and r.pnl_usd is None
+    # No broker events at all is NOT a rejection: it stays open for a later reconcile.
+    assert F.to_resolution(f, F.reconcile(f, [])).outcome == "UNRESOLVED"
+
+
+@pytest.mark.parametrize("exit_px,outcome", [(9.99, "WIN"), (9.96, "WIN"), (9.21, "LOSS"), (9.10, "LOSS"),
+                                             (9.60, "TIME_EXIT")])
+def test_a_manual_close_is_judged_by_where_it_closed_not_by_intent(exit_px, outcome):
+    f = fc()
+    p = F.reconcile(f, [E(9, 25, "e1", F.ENTRY, F.ACCEPTED), E(9, 31, "e1", F.ENTRY, F.FILLED, 105, 9.50),
+                        E(11, 0, "m1", F.MANUAL, F.FILLED, 105, exit_px)])
+    assert F.to_resolution(f, p).outcome == outcome
+
+
+def test_an_entry_filled_after_the_window_is_flagged_in_the_actual_record():
+    f = fc()                                   # entry window ends 10:30
+    p = F.reconcile(f, [E(9, 25, "e1", F.ENTRY, F.ACCEPTED), E(9, 25, "s1", F.STOP, F.ACCEPTED),
+                        E(10, 31, "e1", F.ENTRY, F.FILLED, 105, 9.55),
+                        E(11, 5, "t1", F.TARGET, F.FILLED, 105, 9.96)])
+    assert F.LATE_WARNING in p.warnings
+    r = F.to_resolution(f, p)
+    assert r.outcome == "WIN" and r.entry_ts == ts(10, 31) and "entry_after_window" in r.flags
+    assert "outside the rule" in r.note
+    assert F.filled_after_window(ts(10, 30), f.entry_expiry)          # at the expiry instant is already late
+    assert not F.filled_after_window(ts(10, 29), f.entry_expiry) and not F.filled_after_window(None, f.entry_expiry)
+
+
 # -------------------------------------------------------------------- radar --
 
 def test_a_name_that_ran_away_is_shown_not_hidden():

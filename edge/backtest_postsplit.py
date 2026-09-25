@@ -182,9 +182,7 @@ def _summ(rows: List[Dict[str, Any]], cost: float, break_even: float) -> Dict[st
     filled = [r[key] for r in rows if r[key]["simulated"] in COUNTED]
     n, wins = len(filled), sum(1 for x in filled if x["simulated"] == WIN)
     lo, hi = stats.wilson(wins, n)
-    verdict = ("no filled trades" if not n else "above break-even across the whole interval" if lo > break_even
-               else "below break-even across the whole interval" if hi < break_even
-               else "undecided: the interval straddles break-even")
+    verdict = stats.break_even_verdict(wins, n, break_even)
     return {"filled": n, "wins": wins, "win_rate": wins / n if n else None,
             "wilson_ci": [lo, hi] if n else None,
             "expectancy_usd": stats.expectancy([x["pnl_usd"] for x in filled if x["pnl_usd"] is not None]),
