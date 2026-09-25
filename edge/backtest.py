@@ -48,12 +48,12 @@ from edge.resolver import resolve_execution, resolve_market
 # in 58 sessions). The no-catalyst baseline was unaffected. v2's record is kept as it was.
 # v4: the resolver no longer fills a stop-limit on a bar that ran through the trigger and past the
 # limit (it waits for price to return to the limit), matching what the paper broker did on day 1.
-BACKTEST_VERSION = "gap_and_go_backtest_v6"
+BACKTEST_VERSION = "gap_and_go_backtest_v7"
 LIMITS = [
     "research evidence on past sessions, NOT the forward record",
     "candidates pre-screened by that day's open >= +1% (small optimistic bias: misses 9:10 gappers that faded before the open)",
     "historical news uses publication time as first-seen (optimistic)",
-    "10 bps per side assumed cost",
+    "10 bps per side assumed cost (stress variants: 25 bps a side, a one-minute entry delay, both)",
     "catalyst check is keyword_v1, same as the live shadow",
 ]
 
@@ -109,6 +109,26 @@ def _premarket_ref(bars: List[tuple], day: date) -> Tuple[Optional[float], Optio
     if last[0] < floor:
         return None, last[0], "last premarket bar older than 30 min at 09:10"
     return last[4], last[0] + 60, ""
+
+
+# Stress variants: is the result robust to real-world friction? Reported beside the base
+# numbers, never instead of them.
+#   cost_25bps  25 bps a side instead of 10. The first four paper fills (2026-09-24) filled on
+#               average ~0.2% worse than the trigger: a tiny sample, so this is a stress
+#               level, not a measured cost.
+#   delay_1bar  the entry order goes live one minute after the open -- a human (or a slow
+#               tick) placing it -- so a trigger in the opening bar is not available.
+STRESS = {"cost_25bps": (25.0, 0), "delay_1bar": (10.0, 60), "cost_25bps_delay_1bar": (25.0, 60)}
+
+
+def _stress(f, rth: List[tuple]) -> Dict[str, Any]:
+    from dataclasses import replace
+    out = {}
+    for name, (bps, delay) in STRESS.items():
+        g = replace(f, window_start=f.window_start + delay) if delay else f
+        x = resolve_execution(g, rth, cost_bps_per_side=bps)
+        out[name] = {"simulated": x.outcome, "pnl_usd": x.pnl_usd}
+    return out
 
 
 def session(get, day: date, prev_rows: List[dict], today_rows: List[dict], rolling: Rolling, *,
@@ -169,7 +189,7 @@ def session(get, day: date, prev_rows: List[dict], today_rows: List[dict], rolli
             m, x = resolve_market(f, rth), resolve_execution(f, rth, cost_bps_per_side=cost_bps)
             results.append({"experiment": spec.experiment_id, "symbol": r["symbol"], "ref": r["ref"],
                             "forecast": m.outcome, "simulated": x.outcome, "pnl_usd": x.pnl_usd,
-                            "ambiguous": x.ambiguous})
+                            "ambiguous": x.ambiguous, "stress": _stress(f, rth)})
     # The model dataset: EVERY priced, gap-qualified, liquid candidate -- not just the
     # ones a rule chose -- with its point-in-time features and its market outcome
     # under the same frozen levels. This is what a model is trained and judged on.
@@ -220,7 +240,22 @@ def summarize(sessions: List[Dict[str, Any]], break_even: float) -> Dict[str, An
             "forecast_record_wins": sum(1 for r in rows if r["forecast"] == WIN),
             "ambiguous_losses": sum(1 for r in filled if r["ambiguous"]),
             "verdict": verdict,
+            "stress": _stress_summary(rows, break_even),
         }
+    return out
+
+
+def _stress_summary(rows: List[Dict[str, Any]], break_even: float) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    for name in STRESS:
+        st = [r["stress"][name] for r in rows if (r.get("stress") or {}).get(name)]
+        filled = [x for x in st if x["simulated"] in COUNTED]
+        n, wins = len(filled), sum(1 for x in filled if x["simulated"] == WIN)
+        lo, hi = stats.wilson(wins, n)
+        pnls = [x["pnl_usd"] for x in filled if x["pnl_usd"] is not None]
+        out[name] = {"filled": n, "wins": wins, "win_rate": wins / n if n else None,
+                     "wilson_ci": [lo, hi] if n else None, "expectancy_usd": stats.expectancy(pnls),
+                     "below_break_even": bool(n and hi < break_even)}
     return out
 
 
