@@ -62,9 +62,22 @@ SHORT_INTEREST_IGNITION = replace(
     eligibility={**_BASE_ELIG, "requires": list(S.STRATEGIES["short_interest_ignition"].required),
                  "short_data": "FINRA consolidated short interest (verified in production 2026-09-22)"},
 )
-INTRADAY_SPECS = (CATALYST_BREAKOUT, INTRADAY_CONTINUATION, CROWDED_SHORT_IGNITION, SHORT_INTEREST_IGNITION)
+INTRADAY_CONTINUATION_V2 = replace(
+    INTRADAY_CONTINUATION, version=2,
+    description="v0 hypothesis: intraday_continuation v1 + a dilution / reverse-split veto (rule E5) -- "
+                "no offering, ATM, registered direct or split in the last 24h.",
+    eligibility={**_BASE_ELIG, "requires": list(S.STRATEGIES["intraday_continuation_v2"].required)},
+)
+INTRADAY_SPECS = (CATALYST_BREAKOUT, INTRADAY_CONTINUATION, INTRADAY_CONTINUATION_V2,
+                  CROWDED_SHORT_IGNITION, SHORT_INTEREST_IGNITION)
+# A later version is recorded BESIDE the version it refines, on the same stocks at the same
+# moment, so the two records compare like for like: whenever v1 is chosen for a stock, v2
+# records its own forecast too if its stricter rule also passes. It is never "the" choice.
+_PAIRED = {INTRADAY_CONTINUATION.experiment_id: INTRADAY_CONTINUATION_V2}
+_SECONDARY = {v.experiment_id for v in _PAIRED.values()}
 _STRATEGY_OF = {CATALYST_BREAKOUT.experiment_id: "catalyst_breakout",
                 INTRADAY_CONTINUATION.experiment_id: "intraday_continuation",
+                INTRADAY_CONTINUATION_V2.experiment_id: "intraday_continuation_v2",
                 CROWDED_SHORT_IGNITION.experiment_id: "crowded_short_ignition",
                 SHORT_INTEREST_IGNITION.experiment_id: "short_interest_ignition"}
 
@@ -260,6 +273,8 @@ def tick(get, ledger: Ledger, *, now: int, top: int = 50, http=None) -> Dict[str
             item.transition(R.WATCHING, ts=now)
         best = None
         for spec in INTRADAY_SPECS:
+            if spec.experiment_id in _SECONDARY:
+                continue
             d = S.decide(_STRATEGY_OF[spec.experiment_id], sig)
             if d.verdict == S.ELIGIBLE and best is None:
                 best = (spec, d)
@@ -271,22 +286,30 @@ def tick(get, ledger: Ledger, *, now: int, top: int = 50, http=None) -> Dict[str
             continue
         spec, d = best
         eid = spec.experiment_id
-        if counts[eid] >= spec.max_per_day:
+
+        def _record(sp):
+            if counts[sp.experiment_id] >= sp.max_per_day:
+                return None
+            try:
+                fc = issue_intraday(sp, symbol=s, session_date=day, entry_ref=price, issued_at=now,
+                                    evidence={"feed": "iex", "rvol": sig["rvol_tod"].value,
+                                              "catalyst": sig["catalyst"].evidence.get("headline")})
+            except Exception:  # noqa: BLE001 - e.g. too late in the session for the entry window
+                return None
+            if store.get("forecasts", fc.forecast_id):
+                return None
+            ledger.record(fc, now=now)
+            counts[sp.experiment_id] += 1
+            issued.append(f"{sp.experiment_id}:{s}")
+            return fc
+
+        pair = _PAIRED.get(eid)
+        if pair is not None and S.decide(_STRATEGY_OF[pair.experiment_id], sig).verdict == S.ELIGIBLE:
+            _record(pair)
+        f = _record(spec)
+        if f is None:
             _save(store, item)
             continue
-        try:
-            f = issue_intraday(spec, symbol=s, session_date=day, entry_ref=price, issued_at=now,
-                               evidence={"feed": "iex", "rvol": sig["rvol_tod"].value,
-                                         "catalyst": sig["catalyst"].evidence.get("headline")})
-        except Exception:  # noqa: BLE001 - e.g. too late in the session for the entry window
-            _save(store, item)
-            continue
-        if store.get("forecasts", f.forecast_id):
-            _save(store, item)
-            continue
-        ledger.record(f, now=now)
-        counts[eid] += 1
-        issued.append(f"{eid}:{s}")
         if item.state in (R.WATCHING, R.SETUP_FORMING):
             if item.state == R.WATCHING:
                 item.transition(R.SETUP_FORMING, ts=now, strategy=_STRATEGY_OF[eid])

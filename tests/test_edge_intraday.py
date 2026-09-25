@@ -102,7 +102,8 @@ def ledger():
 
 def test_each_strategy_fires_on_its_own_evidence(ledger):
     out = I.tick(Market(ts(10, 40)), ledger, now=ts(10, 40))
-    assert set(out["issued"]) == {"catalyst_breakout@v1:CATX", "intraday_continuation@v1:CONT"}
+    assert set(out["issued"]) == {"catalyst_breakout@v1:CATX", "intraday_continuation@v1:CONT",
+                                  "intraday_continuation@v2:CONT"}
     f = ledger.store.scan("forecasts", experiment_id="catalyst_breakout@v1")[0]
     assert f["evidence"]["feed"] == "iex" and f["evidence"]["rvol"] == pytest.approx(4.0)
     assert f["window_start"] == ts(10, 41) and f["entry_expiry"] == ts(11, 1)
@@ -141,3 +142,17 @@ def test_both_intraday_strategies_are_labelled_hypotheses():
     for spec in I.INTRADAY_SPECS:
         assert spec.eligibility["status"] == "UNVALIDATED v0 hypothesis"
         assert spec.eligibility["feed"].startswith("IEX")
+
+
+def test_continuation_v2_vetoes_a_stock_that_just_sold_shares():
+    """2026-09-24: v1 bought GRML the morning after its $12 registered direct offering and was
+    stopped out. v2 is v1 plus the E5 dilution veto; v1 keeps running unchanged beside it."""
+    from edge import catalysts as C, detectors as D, setups as S
+    ok = {k: D.Signal(k, D.PASS) for k in ("liquidity", "vwap_hold", "rvol_tod", "acceleration")}
+    offer = [C.make("GRML", "Greenland Mines Completes $12-Per-Share Equity Financing", source="x", url="u",
+                    published_at=1, first_seen_at=1)]
+    sig = {**ok, "not_dilutive": S.dilution_signal(offer)}
+    assert S.decide("intraday_continuation", sig).verdict == S.ELIGIBLE
+    assert S.decide("intraday_continuation_v2", sig).verdict == S.REJECTED
+    assert S.decide("intraday_continuation_v2", {**ok, "not_dilutive": S.dilution_signal([])}).verdict == S.ELIGIBLE
+    assert I.INTRADAY_CONTINUATION_V2.experiment_id == "intraday_continuation@v2"
