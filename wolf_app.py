@@ -21,6 +21,11 @@ logging.basicConfig(
 )
 LOGGER = logging.getLogger("ghost")
 
+# F33: requests exceptions embed request URLs (Telegram /bot<TOKEN>/, Polygon
+# apiKey=...). Mask credentials in every record the root/uvicorn handlers emit.
+from shared.redaction import install_log_redaction as _install_log_redaction
+_install_log_redaction()
+
 # PR #70: suppress yfinance library noise (JSON parse errors, 429s, delisted warnings).
 # yfinance logs at ERROR level for transient Yahoo API issues that Ghost already
 # handles via circuit breakers. Duplicate logging clutters Railway logs.
@@ -3334,9 +3339,12 @@ def api_health():
 
 
 @APP.post("/api/health/audit")
-def health_audit(x_cron_secret: str = Header(default=""), auto_fix: bool = True):
+def health_audit(x_cron_secret: str = Header(default=""), auto_fix: bool = True, persist: bool = True):
     """
     Deep reliability audit with persistent findings and optional auto-fix hooks.
+
+    ``auto_fix=false&persist=false`` makes the call read-only (no self-heal
+    writes and no history row); release gates in CI must use that form.
 
     Returns structured PASS/FAIL records for each check:
     status, location, evidence, impact, auto_fix, fix_result.
@@ -3413,6 +3421,7 @@ def health_audit(x_cron_secret: str = Header(default=""), auto_fix: bool = True)
             stats_payload=s,
             cockpit_payload=c,
             auto_fix=bool(auto_fix),
+            persist=bool(persist),
         )
         return {"ok": True, "audit": report}
     except Exception as e:

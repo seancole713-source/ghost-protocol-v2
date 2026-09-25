@@ -9,8 +9,8 @@
 - `make test-compile` — runs repository-wide Python compile checks
 - `make test-e2e` — runs Playwright smoke tests (`/cockpit`, API consistency, desktop + mobile)
 - `make verify-live` — validates `/health` and `/api/health` parity on `BASE_URL` (defaults to production URL)
-- `make verify-health-audit` — enforces zero critical unresolved findings from `POST /api/health/audit`
-- `make check-error-signatures` — fails on new runtime error signatures vs `.github/error-signatures-baseline.json`
+- `make verify-health-audit` — enforces zero critical unresolved findings from a read-only `POST /api/health/audit?auto_fix=false&persist=false`; prints `SKIPPED` (exit 0, never `PASS`) when `CRON_SECRET` is unset
+- `make check-error-signatures` — fails on new runtime error signatures vs `.github/error-signatures-baseline.json`; prints `SKIPPED` (exit 0, never `PASS`) when no source can be collected
 - `make release-gates` — runs live parity, go/no-go, health-audit gate, and error-signature gate
 
 ## npm Quality Scripts
@@ -27,8 +27,9 @@
 - `POST /api/health/audit`
   - Runs deep reliability scan with structured findings:
     - `status`, `location`, `evidence`, `impact`, `auto_fix`, `fix_result`
-  - Persists each run into `health_audit_runs`
+  - Persists each run into `health_audit_runs` (unless `persist=false`)
   - Optional query/body flag: `auto_fix` (default `true`) for safe self-heal hooks
+  - `auto_fix=false&persist=false` is read-only; release gates use only that form
 
 - `GET /api/health/audit/history?limit=20`
   - Returns recent persisted health-audit run summaries for recurrence tracking

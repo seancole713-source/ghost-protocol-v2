@@ -219,13 +219,14 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
 
-      # The gate scripts degrade gracefully without CRON_SECRET (public
-      # audit-history check instead of POST /api/health/audit) — warn loudly
-      # but keep the live go/no-go running rather than failing the whole gate.
+      # Without CRON_SECRET the health-audit and error-signature gates cannot
+      # check anything: they print "SKIPPED: <reason>" (exit 0), never PASS.
+      # With it, they call POST /api/health/audit?auto_fix=false&persist=false,
+      # which is read-only (no self-heal writes, no history row).
       - name: Check CRON_SECRET secret
         run: |
           if [ -z "$CRON_SECRET" ]; then
-            echo "::warning::CRON_SECRET repository secret not configured — health-audit POST path skipped, public checks only"
+            echo "::warning::CRON_SECRET repository secret not configured — health-audit and error-signature gates will report SKIPPED (not checked)"
           fi
 
       - name: Run deploy go/no-go

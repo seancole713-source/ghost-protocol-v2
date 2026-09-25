@@ -126,7 +126,10 @@ def run_health_audit(
     stats_payload: Dict[str, Any],
     cockpit_payload: Dict[str, Any],
     auto_fix: bool = True,
+    persist: bool = True,
 ) -> Dict[str, Any]:
+    """Run the audit. ``auto_fix=False, persist=False`` is fully read-only
+    (no self-heal writes, no history row): what CI release gates use."""
     started = time.time()
     findings: List[Dict[str, Any]] = []
     autofix_attempted = 0
@@ -919,9 +922,10 @@ def run_health_audit(
         },
     }
 
-    # Persistent run history (best effort).
-    try:
-        _persist_run(db_conn, report)
-    except Exception:
-        note_suppressed()
+    # Persistent run history (best effort). Skipped for read-only callers.
+    if persist:
+        try:
+            _persist_run(db_conn, report)
+        except Exception:
+            note_suppressed()
     return report

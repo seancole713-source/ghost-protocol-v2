@@ -262,7 +262,10 @@ def _activate_impl(cur, symbol, direction, artifact_sha, registration_id, review
         return {"ok": False, "reason": "no_model_payload"}
     import base64
     import binascii
-    import pickle
+    from core.model_blob_integrity import (
+        ModelBlobIntegrityError, SIGNATURE_FIELD, load_verified_pickle,
+        sign_model_blob,
+    )
     try:
         raw = base64.b64decode(payload, validate=True)
     except (binascii.Error, ValueError) as e:
@@ -273,7 +276,12 @@ def _activate_impl(cur, symbol, direction, artifact_sha, registration_id, review
         if actual_sha != expected_sha:
             return {"ok": False, "reason": "model_sha_mismatch"}
     try:
-        pickle.loads(raw)
+        load_verified_pickle(
+            raw, artifact.get(SIGNATURE_FIELD),
+            context=f"research_artifact:{artifact_sha[:16]}",
+        )
+    except ModelBlobIntegrityError as e:
+        return {"ok": False, "reason": e.reason}
     except Exception as e:
         return {"ok": False, "reason": f"unpickle_failed: {str(e)[:80]}"}
     cur.execute("SELECT value FROM ghost_v3_model WHERE key = %s", (f"model_{symbol}_{direction.lower()}",))
@@ -369,6 +377,7 @@ def _activate_impl(cur, symbol, direction, artifact_sha, registration_id, review
             "precision_gate": calibration_proof,
             "feature_inversions": list(gate_proof.get("feature_inversions") or ()),
             "model_payload_bytes": len(raw),
+            SIGNATURE_FIELD: sign_model_blob(raw),
             "activation_artifact_sha": artifact_sha,
             "activated_at": now,
             "activation_lease_expires_at": lease_expires_at,
@@ -601,7 +610,9 @@ def _validated_live_model(
 ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     import base64
     import binascii
-    import pickle
+    from core.model_blob_integrity import (
+        ModelBlobIntegrityError, SIGNATURE_FIELD, load_verified_pickle,
+    )
 
     try:
         meta = json.loads(meta_json) if isinstance(meta_json, str) else meta_json
@@ -621,7 +632,11 @@ def _validated_live_model(
     if hashlib.sha256(raw).hexdigest() != expected_sha:
         return None, "model_sha_mismatch"
     try:
-        pickle.loads(raw)
+        load_verified_pickle(
+            raw, meta.get(SIGNATURE_FIELD), context=f"live_model:{direction}",
+        )
+    except ModelBlobIntegrityError as e:
+        return None, e.reason
     except Exception:
         return None, "unpickle_failed"
     return meta, None

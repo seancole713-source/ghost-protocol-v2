@@ -20,7 +20,6 @@ The token is part of the URL, so no URL is ever logged.
 from __future__ import annotations
 
 import os
-import re
 from datetime import date, datetime, time as dtime
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
@@ -208,13 +207,15 @@ DUTY_1530 = ("Gap-and-Go v1: SELL anything still open by 2:30pm CT (3:30 ET) -- 
 PROBLEM_NO_CARD = ("PROBLEM: no card by 9:28 ET/8:28 CT -- Ghost's shadow card was not written. "
                    "Treat today as UNKNOWN, not quiet.")
 
-_SECRET = re.compile(r"(?i)((?:api[_-]?key|apikey|token|secret|key|password)=)[^&\s'\"]+")
-_BOT = re.compile(r"/bot[^/\s]+/")
-
-
 def redact(text: Any) -> str:
-    """Error strings can carry a request URL; never forward a key that rides in one."""
-    return _BOT.sub("/bot***/", _SECRET.sub(r"\1***", str(text)))
+    """Error strings can carry a request URL; never forward a key that rides in one.
+
+    Delegates to the stdlib-only shared.redaction (also used by Ghost's core),
+    so both systems mask the same shapes: /bot<token>/, apiKey=, api_key=,
+    token=, key=, Authorization/Bearer, APCA-API-SECRET-KEY.
+    """
+    from shared.redaction import redact as _redact
+    return _redact(text)
 
 
 def problem_text(step: str, result: Dict[str, Any], now: int) -> str:

@@ -125,6 +125,8 @@ def _on(name: str, default: str = "1") -> bool:
 
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
+    from shared.redaction import install_log_redaction
+    install_log_redaction()  # provider errors carry apiKey=/bot<token> URLs
     if not _on("EDGE_STANDALONE", "0"):
         LOG.error("refusing to start: set EDGE_STANDALONE=1, and switch off Ghost's edge jobs first")
         return 2

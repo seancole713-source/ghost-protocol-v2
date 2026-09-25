@@ -30,6 +30,7 @@ import logging
 import threading
 
 from core.prediction_filters import V32_ERA_MIN_ID
+from shared.redaction import redact_exc as _redact_exc
 from dataclasses import asdict
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -572,7 +573,7 @@ def _try_polygon_stats_fallback(out: dict) -> bool:
                         out["market_cap"] = _safe_int(mc)
                         filled = True
             except Exception as _e:
-                LOGGER.info(f"Polygon ref {sym}: {str(_e)[:80]}")
+                LOGGER.info("Polygon ref %s: %s", sym, _redact_exc(_e, 80))
         # Previous day's OHLC + volume
         if any(out.get(k) is None for k in ("open", "high", "low", "volume")):
             try:
@@ -597,7 +598,7 @@ def _try_polygon_stats_fallback(out: dict) -> bool:
                             out["volume"] = _safe_int(bar.get("v"))
                             filled = True
             except Exception as _e:
-                LOGGER.info(f"Polygon prev {sym}: {str(_e)[:80]}")
+                LOGGER.info("Polygon prev %s: %s", sym, _redact_exc(_e, 80))
         # 52-week range — derive from the last 365 daily bars
         if out.get("week52_low") is None or out.get("week52_high") is None:
             try:
@@ -628,11 +629,11 @@ def _try_polygon_stats_fallback(out: dict) -> bool:
                             out["avg_volume"] = _safe_int(sum(vols) / len(vols))
                             filled = True
             except Exception as _e:
-                LOGGER.info(f"Polygon range {sym}: {str(_e)[:80]}")
+                LOGGER.info("Polygon range %s: %s", sym, _redact_exc(_e, 80))
         if filled:
             LOGGER.info(f"Polygon stats fallback {sym}: populated {[k for k in out if out.get(k) is not None]}")
     except Exception as e:
-        LOGGER.warning(f"Polygon stats fallback {sym}: {str(e)[:120]}")
+        LOGGER.warning("Polygon stats fallback %s: %s", sym, _redact_exc(e, 120))
     return filled
 
 
