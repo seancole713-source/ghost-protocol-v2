@@ -26,7 +26,7 @@ OFFICIAL_WATCHLIST: Tuple[str, ...] = (
     "LMND", "LU", "LULU", "MA", "META", "MRVL", "MSFT", "MTZ", "MU", "NAVN",
     "NFLX", "NKE", "NOK", "NVDA", "ODD", "OGC", "OLLI", "OPK", "OPTU", "ORCL", "PFE",
     "PLTK", "PLTR", "PLUG", "PYPL", "QCOM", "RIG", "RIOT", "RKT", "SABR", "SAP",
-    "SATS", "SHOP", "SNAP", "SOUN", "SPCE", "STUB", "SW", "TAL", "TGTX", "TLRY",
+    "SHOP", "SNAP", "SOUN", "SPCE", "STUB", "SW", "TAL", "TGTX", "TLRY",
     "TME", "TRU", "TSLA", "TXN", "UBER", "V", "W", "WMT", "WOLF", "XOM", "XPO", "YMM",
     # 104 symbols (RDFN excluded — delisted into RKT 2025-07). +30 mega-cap/growth
     # names added 2026-07-08 per operator. +26 liquid mega/large caps added
@@ -45,8 +45,27 @@ OFFICIAL_WATCHLIST: Tuple[str, ...] = (
     # GPS removed 2026-09-24: Gap Inc. moved to ticker GAP in Aug 2024; GPS's last
     # trade is 2024-08-21, so every hourly ledger pass walked the full 5-tier price
     # chain for it (ending in a 30 s Stooq connect timeout) and never got a price.
+    # SATS removed 2026-09-25: EchoStar changed its Nasdaq ticker SATS -> ECHO on
+    # 2026-06-24; Alpaca's last SATS trade is 2026-06-23, so no source returns
+    # bars in any recent window (Polygon 429s + empty Stooq fallbacks for GPS and
+    # SATS all day on 2026-09-25). ECHO is NOT auto-added: widening the universe
+    # is an operator call, same as GPS -> GAP.
 )
 OFFICIAL_WATCHLIST_CSV = ",".join(OFFICIAL_WATCHLIST)
+
+# Tickers that no longer trade under this symbol. Rows issued while they were
+# on the watchlist (research predictions, ledgers, hunter evaluations, picks)
+# still name them, and every resolver pass used to walk the full 5-tier OHLCV
+# chain for them. core.signal_engine._fetch_ohlcv refuses these outright.
+RETIRED_SYMBOLS: Dict[str, str] = {
+    "GPS": "Gap Inc. trades as GAP (GPS last traded 2024-08-21)",
+    "SATS": "EchoStar trades as ECHO (ticker change 2026-06-24)",
+}
+
+
+def is_retired_symbol(symbol: str) -> bool:
+    """True when the ticker no longer trades under this symbol."""
+    return (symbol or "").strip().upper() in RETIRED_SYMBOLS
 
 
 @dataclass(frozen=True)

@@ -61,4 +61,8 @@ def test_the_view_joins_the_after_close_grades_and_the_scorecard_compares():
 
 def test_the_phone_card_lists_the_top_10():
     text = N.card_text({"day": "2026-09-24", "forecasts": [], "top10": ["BB", "GLND"]})
-    assert "Top 10" in text and "BB, GLND" in text and "Not a trade recommendation" in text
+    assert "Top 10" in text and "1.BB, 2.GLND" in text and "No trade today" in text
+    ranked = N.card_text({"day": "2026-09-24", "forecasts": [], "top10": ["BB", "GLND"],
+                          "top10_ranked": [{"rank": 1, "symbol": "BB", "score": 72.4},
+                                           {"rank": 2, "symbol": "GLND", "score": 65.0}]})
+    assert "1.BB 72, 2.GLND 65" in ranked

@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional
 
 from edge import resolver as RV
 from edge.contracts import ContractError, issue
+from edge.research_worker import not_researched_reason
 from edge.stats import wilson
 
 DECIDED = (RV.WIN, RV.LOSS, RV.TIME_EXIT)
@@ -59,7 +60,8 @@ def grade_card(get, store, *, day: date, now: int) -> Dict[str, Any]:
         m = RV.resolve_market(f, P._minute_bars(bars.get(r["symbol"]) or []))
         out.append({"symbol": r["symbol"], "outcome": m.outcome, "note": m.note,
                     "auto": r.get("verdict"), "baseline": r.get("baseline_verdict"),
-                    "research": r.get("verified_verdict"), "model_prob": r.get("model_prob"),
+                    "research": r.get("verified_verdict"), "research_status": r.get("research_status"),
+                    "model_prob": r.get("model_prob"),
                     "catalyst": r.get("catalyst")})
     store.put("edge_card_outcomes", ds, {"day": ds, "graded_at": now, "rows": out, "label": COUNTERFACTUAL})
     return {"status": "graded", "rows": len(out),
@@ -91,6 +93,14 @@ def _compare(name: str, yes: List[Dict[str, Any]], no: List[Dict[str, Any]]) -> 
     return {"approved": a, "rejected": b, "verdict": verdict}
 
 
+def _not_researched(store, day: str, row: Dict[str, Any]) -> bool:
+    """A row the research never actually looked at (tool failure, unusable output, no record).
+    Its verified verdict is not research's judgement, so it is neither approved nor rejected."""
+    if row.get("research_status") == "not_researched":
+        return True
+    return bool(not_researched_reason(store.get("edge_research", f"{day}|{str(row.get('symbol') or '').upper()}")))
+
+
 def research_quality(store) -> Dict[str, Any]:
     recs = store.scan("edge_research")
     by_rev: Dict[str, Dict[str, Any]] = {}
@@ -98,8 +108,9 @@ def research_quality(store) -> Dict[str, Any]:
     for rec in recs:
         s = by_rev.setdefault(rec.get("reviewer") or "unknown",
                               {"symbols": 0, "claims": 0, "quarantined": 0, "cost_usd": 0.0,
-                               "dilution_flags": 0, "wrong_entity": 0})
+                               "dilution_flags": 0, "wrong_entity": 0, "not_researched": 0})
         s["symbols"] += 1
+        s["not_researched"] += 1 if not_researched_reason(rec) else 0
         s["cost_usd"] = round(s["cost_usd"] + (rec.get("cost_usd") or 0.0), 4)
         s["dilution_flags"] += 1 if (rec.get("review") or {}).get("dilution_found") else 0
         s["wrong_entity"] += 1 if (rec.get("review") or {}).get("entity_ok") is False else 0
@@ -118,6 +129,10 @@ def scorecard(store) -> Dict[str, Any]:
     days = sorted(store.scan("edge_card_outcomes"), key=lambda d: d["day"])
     rows = [r for d in days for r in d.get("rows") or [] if r.get("outcome")]
     gaps = [r for r in rows if r.get("baseline") == "ELIGIBLE"]    # gap-qualified, liquid, priced
+    # AI research is judged only on rows it actually looked at: a failed search is neither side.
+    gap_days = [(d["day"], r) for d in days for r in d.get("rows") or []
+                if r.get("outcome") and r.get("baseline") == "ELIGIBLE"]
+    researched = [r for dd, r in gap_days if not _not_researched(store, dd, r)]
     out: Dict[str, Any] = {
         "label": COUNTERFACTUAL, "sessions": len(days),
         "window": [days[0]["day"], days[-1]["day"]] if days else None,
@@ -125,9 +140,10 @@ def scorecard(store) -> Dict[str, Any]:
         "keyword_catalyst": _compare("the keyword catalyst filter",
                                      [r for r in gaps if r.get("auto") == "ELIGIBLE"],
                                      [r for r in gaps if r.get("auto") == "REJECTED"]),
-        "ai_research": _compare("AI research",
-                                [r for r in gaps if r.get("research") == "ELIGIBLE"],
-                                [r for r in gaps if r.get("research") == "REJECTED"]),
+        "ai_research": {**_compare("AI research",
+                                   [r for r in researched if r.get("research") == "ELIGIBLE"],
+                                   [r for r in researched if r.get("research") == "REJECTED"]),
+                        "not_researched": len(gap_days) - len(researched)},
         "research_quality": research_quality(store),
         "break_even": 0.375,
     }

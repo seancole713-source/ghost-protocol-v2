@@ -225,14 +225,7 @@ def summarize(sessions: List[Dict[str, Any]], break_even: float) -> Dict[str, An
         lo, hi = stats.wilson(wins, n)
         clo, chi = stats.clustered_bootstrap_ci(by_day) if by_day else (None, None)
         pnls = [r["pnl_usd"] for r in filled if r["pnl_usd"] is not None]
-        verdict = "no filled trades"
-        if n:
-            if lo > break_even:
-                verdict = "above break-even across the whole interval"
-            elif hi < break_even:
-                verdict = "below break-even across the whole interval"
-            else:
-                verdict = "undecided: the interval straddles break-even"
+        verdict = stats.break_even_verdict(wins, n, break_even)
         out["experiments"][eid] = {
             "forecasts": len(rows), "filled": n, "no_fill": sum(1 for r in rows if r["simulated"] == "NO_FILL"),
             "wins": wins, "win_rate": wins / n if n else None, "wilson_ci": [lo, hi] if n else None,

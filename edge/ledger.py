@@ -39,6 +39,64 @@ class Store(Protocol):
 OUTSIDE_RULE = "OUTSIDE_RULE"   # a broker fill the rule's own record never took; shown, not counted
 
 
+def _iso_epoch(s: Any) -> Optional[int]:
+    if not s:
+        return None
+    try:
+        from datetime import datetime
+        return int(datetime.fromisoformat(str(s).replace("Z", "+00:00")).timestamp())
+    except (TypeError, ValueError):
+        return None
+
+
+def broker_entry_fill_times(store: "Store", f: Dict[str, Any],
+                            actual: Optional[Dict[str, Any]] = None) -> List[int]:
+    """Every time the BROKER says this forecast's entry filled: the actual record's own entry_ts
+    and the kept broker order record's filled_at (older actual rows carry no entry_ts)."""
+    out: List[int] = []
+    if actual and actual.get("entry_ts") is not None:
+        out.append(int(actual["entry_ts"]))
+    kept = store.get("edge_paper_orders", f.get("session_date") or "") or {}
+    for o in kept.get("orders") or []:
+        if o.get("client_order_id") == f"{f['forecast_id']}-entry":
+            try:
+                qty = float(o.get("filled_qty") or 0)
+            except (TypeError, ValueError):
+                qty = 0.0
+            t = _iso_epoch(o.get("filled_at")) if qty > 0 else None
+            if t is not None:
+                out.append(t)
+    return out
+
+
+def entry_filled_after_window(store: "Store", f: Dict[str, Any],
+                              actual: Optional[Dict[str, Any]] = None) -> bool:
+    """True when the broker's own entry fill time is at/after the forecast's entry_expiry."""
+    from edge.fills import LATE_FLAG, filled_after_window
+    if actual and LATE_FLAG in (actual.get("flags") or []):
+        return True
+    return any(filled_after_window(t, f["entry_expiry"]) for t in broker_entry_fill_times(store, f, actual))
+
+
+def outside_rule_reason(store: "Store", f: Dict[str, Any],
+                        actual: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Why a filled broker outcome is outside the rule (shown, never counted), or None.
+
+    Judged first on the broker's OWN entry fill time against the forecast's entry_expiry --
+    regardless of what the forecast or simulated record says. 2026-09-23 WHLR: filled after
+    its 20-minute window -> a paper WIN the rule never took. Then, stricter still: a fill
+    where the rule's own record has no entry (prices the rule never saw).
+    """
+    if not actual or actual.get("outcome") not in COUNTED:
+        return None
+    if entry_filled_after_window(store, f, actual):
+        return "entry filled after the entry window"
+    rule = store.get("outcomes", f"{f['forecast_id']}|forecast") or {}
+    if rule.get("outcome") == NO_FILL:
+        return "the rule's own record has no entry"
+    return None
+
+
 class MemoryStore:
     """In-process store for tests and dry runs."""
 
@@ -183,27 +241,58 @@ class Ledger:
         excluded = [f for f in forecasts if self.store.get("exclusions", f["forecast_id"])]
         live = [f for f in forecasts if not self.store.get("exclusions", f["forecast_id"])]
         abstentions = self.store.scan("abstentions", experiment_id=experiment_id)
+        # IEX and SIP forecasts are different data regimes and are never pooled: the headline
+        # records (and everything that reads them, promotion included) count only the current
+        # regime -- SIP as soon as one SIP forecast exists; the other regime is shown beside it.
+        by_feed: Dict[str, List[Dict[str, Any]]] = {}
+        cards: Dict[str, Any] = {}
+        for f in live:
+            by_feed.setdefault(self.feed_of(f, cards), []).append(f)
+        regime = "sip" if "sip" in by_feed else "iex"
         base = {
             "experiment_id": experiment_id, "spec_hash": spec_row["spec_hash"],
             "forecasts": len(forecasts), "excluded": len(excluded),
-            "abstentions": len(abstentions),
-            "records": {rec: self._record_report(spec_row, live, rec) for rec in self.RECORDS},
+            "abstentions": len(abstentions), "feed_regime": regime,
+            "forecasts_in_regime": len(by_feed.get(regime, [])),
+            "records": {rec: self._record_report(spec_row, by_feed.get(regime, []), rec)
+                        for rec in self.RECORDS},
         }
+        others = {feed: {rec: self._record_report(spec_row, fs, rec) for rec in self.RECORDS}
+                  for feed, fs in by_feed.items() if feed != regime}
+        if others:
+            base["other_regimes"] = others
         base.update(base["records"]["simulated"])     # legacy flat view = simulated
         return base
+
+    def feed_of(self, f: Dict[str, Any], cards: Optional[Dict[str, Any]] = None) -> str:
+        """The live data feed a forecast was issued on: its own evidence, else its day's card,
+        else IEX (every forecast before SIP was bought was IEX)."""
+        ev = f.get("evidence") or {}
+        if isinstance(ev, str):
+            try:
+                ev = json.loads(ev)
+            except ValueError:
+                ev = {}
+        if ev.get("feed") in ("iex", "sip"):
+            return ev["feed"]
+        day = f.get("session_date")
+        cards = {} if cards is None else cards
+        if day not in cards:
+            cards[day] = self.store.get("edge_cards", day) or {}
+        return cards[day].get("live_feed") if cards[day].get("live_feed") in ("iex", "sip") else "iex"
 
     def _record_report(self, spec_row: Dict[str, Any], forecasts: List[Dict[str, Any]],
                        record: str) -> Dict[str, Any]:
         outcomes = {f["forecast_id"]: self.store.get("outcomes", f"{f['forecast_id']}|{record}")
                     for f in forecasts}
         if record == "actual":
-            # A broker fill where the rule's own record says there was no entry (it filled after the
-            # entry window, or on prices the rule never saw) is outside the rule: shown, never counted.
-            # 2026-09-23 WHLR: filled after its 20-minute window -> paper WIN the rule never took.
-            for fid, o in list(outcomes.items()):
-                rule = self.store.get("outcomes", f"{fid}|forecast") or {}
-                if o and o["outcome"] in COUNTED and rule.get("outcome") == NO_FILL:
-                    outcomes[fid] = {**o, "outcome": OUTSIDE_RULE}
+            # A broker fill after the entry window (by the broker's own fill time), or where the rule's
+            # own record has no entry, is outside the rule: shown, never counted. See outside_rule_reason.
+            for f in forecasts:
+                o = outcomes.get(f["forecast_id"])
+                why = outside_rule_reason(self.store, f, o)
+                if why:
+                    outcomes[f["forecast_id"]] = {**o, "outcome": OUTSIDE_RULE, "outside_rule": why}
         by = {}
         for o in outcomes.values():
             key = o["outcome"] if o else "PENDING"
@@ -217,14 +306,7 @@ class Ledger:
                  for f in forecasts
                  if f.get("prob") is not None and outcomes.get(f["forecast_id"])
                  and outcomes[f["forecast_id"]]["outcome"] in COUNTED]
-        verdict = "no filled trades yet"
-        if n:
-            if lo > be:
-                verdict = "edge shown: the whole interval is above break-even"
-            elif hi < be:
-                verdict = "no edge: the whole interval is below break-even"
-            else:
-                verdict = f"undecided: the interval straddles break-even ({be:.1%})"
+        verdict = stats.break_even_verdict(wins, n, be, style="ledger", none="no filled trades yet")
         return {
             "by_outcome": by, "filled": n, "wins": wins,
             "win_rate": wins / n if n else None, "win_rate_ci": [lo, hi] if n else None,

@@ -259,3 +259,102 @@ def test_a_failing_claude_call_is_classified_not_hidden(monkeypatch):
     p = W.probe(Boom())
     assert p.status == "NOT_AUTHORIZED" and "invalid x-api-key" in p.note and "research OFF" in p.note
     assert W.probe(Client([reply("", stop="refusal")])).status == "ERROR"
+
+
+# ---- a failed search is "not researched", never a rejection (audit 2026-09-25) ----
+
+NOTHING = json.dumps({"claims": [], "unknowns": ["Server tool use limit exceeded; could not verify any news"]})
+
+
+def searched_and_failed(text, code="max_uses_exceeded"):
+    r = reply(text, searches=0)
+    r.content = [NS(type="server_tool_use", name="web_search"),
+                 NS(type="web_search_tool_result", content=NS(type="web_search_tool_result_error", error_code=code)),
+                 NS(type="text", text=text)]
+    return r
+
+
+def test_a_web_search_error_block_records_not_researched_and_skips_the_review():
+    store, c = MemoryStore(), Client([searched_and_failed(json.dumps({"claims": [], "unknowns": []}))])
+    out = W.research_symbol(c, store, symbol="SHOP", day="2026-09-23", now=ts(8, 35))
+    assert out["status"] == "not_researched" and "max_uses_exceeded" in out["reason"] and len(c.calls) == 1
+    rec = store.get("edge_research", "2026-09-23|SHOP")
+    assert rec["status"] == "not_researched" and rec["author_tool_errors"] == ["max_uses_exceeded"]
+    assert store.get("edge_research_budget", "2026-09-23")["spent_usd"] == pytest.approx(out["cost_usd"])
+    v = W.verdict(store, day="2026-09-23", symbol="SHOP", issued_at=ts(9, 10))
+    assert v["catalyst"] is None and v["dilutive"] is None and "max_uses_exceeded" in v["not_researched"]
+
+
+def test_a_tool_limit_reported_only_in_the_authors_words_is_not_researched_too():
+    store = MemoryStore()
+    out = W.research_symbol(Client([reply(NOTHING, searches=0)]), store, symbol="SHOP", day="2026-09-23",
+                            now=ts(8, 35))
+    assert out["status"] == "not_researched" and "Server tool use limit exceeded" in out["reason"]
+    assert W.verdict(store, day="2026-09-23", symbol="SHOP", issued_at=ts(9, 10))["catalyst"] is None
+
+
+def test_an_older_record_of_a_failed_search_is_read_as_not_researched():
+    store = MemoryStore()      # written before the status existed: 0 claims, the failure only in unknowns
+    store.put("edge_research", "2026-09-23|SHOP", {"day": "2026-09-23", "symbol": "SHOP", "made_at": ts(8, 35),
+              "claims": [], "unknowns": ["Server tool use limit exceeded"], "review": {"dilution_found": None}})
+    assert W.verdict(store, day="2026-09-23", symbol="SHOP", issued_at=ts(9, 10))["catalyst"] is None
+    assert W.not_researched_reason(store.get("edge_research", "2026-09-23|SHOP"))
+
+
+def test_a_search_that_ran_and_found_nothing_is_still_a_rejection():
+    store = MemoryStore()
+    empty = json.dumps({"claims": [], "unknowns": ["no company-specific news for SHOP in the 24 hours before the cutoff"]})
+    out = W.research_symbol(Client([reply(empty)]), store, symbol="SHOP", day="2026-09-23", now=ts(8, 35))
+    assert out["status"] == "researched" and out["claims"] == 0
+    v = W.verdict(store, day="2026-09-23", symbol="SHOP", issued_at=ts(9, 10))
+    assert v["catalyst"] is False and "not_researched" not in v
+
+
+def test_claims_the_reviewer_never_checked_are_unknown_not_rejected():
+    store = MemoryStore()
+    W.research_symbol(Client([reply(AUTHOR_OK), reply("", stop="refusal")]), store,
+                      symbol="SHOP", day="2026-09-23", now=ts(8, 35))
+    rec = store.get("edge_research", "2026-09-23|SHOP")
+    assert rec["claims"][0]["status"] == RS.QUARANTINED and rec["claims"][0]["problems"] == ["no usable review"]
+    v = W.verdict(store, day="2026-09-23", symbol="SHOP", issued_at=ts(9, 10))
+    assert v["catalyst"] is None and "review did not run" in v["not_researched"]
+
+
+def test_the_card_books_a_failed_search_as_missing_data_not_a_rejection(monkeypatch):
+    import sys
+    sys.path.insert(0, "tests")
+    from test_edge_pipeline import FakeAlpaca, ts as pts
+    from edge import pipeline as P, setups as S
+    from edge.ledger import Ledger
+    monkeypatch.setenv("EDGE_RESEARCH_ENABLED", "1")
+    lg = Ledger(MemoryStore())
+    W.research_symbol(Client([searched_and_failed(NOTHING)]), lg.store, symbol="SHOP", day="2026-09-23",
+                      now=pts(8, 40))
+    P.morning_card(FakeAlpaca(), lg, now=pts(9, 10))
+    card = lg.store.get("edge_cards", "2026-09-23")
+    row = {r["symbol"]: r for r in card["rows"]}["SHOP"]
+    assert row["verified_verdict"] == S.DATA_UNAVAILABLE and row["research_status"] == "not_researched"
+    assert row["verified_missing"][0].startswith("catalyst: not researched (web search failed")
+    assert card["verified_forecasts"] == []
+
+
+def test_the_scorecard_counts_not_researched_rows_on_neither_side():
+    from edge import scorecard as SC
+
+    def rows(prefix, n, wins, **stamp):
+        return [{"symbol": f"{prefix}{i}", "outcome": "WIN" if i < wins else "LOSS", "baseline": "ELIGIBLE",
+                 **stamp} for i in range(n)]
+
+    store = MemoryStore()
+    store.put("edge_card_outcomes", "2026-09-23", {"day": "2026-09-23", "rows":
+              rows("A", 10, 6, research="ELIGIBLE", research_status="researched")
+              + rows("R", 10, 2, research="REJECTED", research_status="researched")
+              + rows("N", 7, 5, research="REJECTED", research_status="not_researched")   # tool failed
+              + rows("L", 3, 3, research="REJECTED")})                                   # legacy rows
+    for i in range(3):     # the legacy rows' research records show the failure
+        store.put("edge_research", f"2026-09-23|L{i}", {"day": "2026-09-23", "symbol": f"L{i}", "made_at": 1,
+                  "claims": [], "unknowns": ["web_search failed: Server tool use limit exceeded"], "review": {}})
+    ai = SC.scorecard(store)["ai_research"]
+    assert ai["approved"]["candidates"] == 10 and ai["rejected"]["candidates"] == 10
+    assert ai["rejected"]["wins"] == 2 and ai["not_researched"] == 10
+    assert SC.research_quality(store)["by_reviewer"]["unknown"]["not_researched"] == 3

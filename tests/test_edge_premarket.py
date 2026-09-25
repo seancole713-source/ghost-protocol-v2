@@ -178,4 +178,35 @@ def test_a_network_error_does_not_pin_the_feed_for_the_day(monkeypatch):
 
     store = MemoryStore()
     assert FD.live_feed(down, store, now=ts(8, 0)) == "iex"
-    assert store.get("edge_feed", "2026-09-23") is None          # undecided: asked again next time
+    assert store.get("edge_feed", "2026-09-23")["decided"] is False   # undecided: asked again soon
+    calls = []
+
+    def counting(url, params=None, headers=None, timeout=None):
+        calls.append(url)
+        raise TimeoutError("read timed out")
+
+    FD.live_feed(counting, store, now=ts(8, 1))
+    assert calls == []                                             # inside the short retry window
+    FD.live_feed(counting, store, now=ts(8, 6))
+    assert len(calls) == 1                                         # asked again after 5 minutes
+
+
+def test_sip_bought_after_the_first_morning_check_is_picked_up_within_half_an_hour(monkeypatch):
+    """Audit 2026-09-25: the feed was decided once a day, so SIP bought at 07:45 CT would have
+    left Monday on IEX all day. An IEX answer is now re-asked every 30 minutes; SIP holds."""
+    from edge import feeds as FD
+    monkeypatch.delenv("EDGE_LIVE_FEED", raising=False)
+    store = MemoryStore()
+    assert FD.live_feed(Market(), store, now=ts(8, 0)) == "iex"                # still the free plan
+
+    class Paid(Market):
+        def __call__(self, url, params=None, headers=None, timeout=None):
+            if "/v2/stocks/snapshots" in url and (params or {}).get("feed") == "sip":
+                return NS(status_code=200, json=lambda: {s: {"latestTrade": {"p": 1.0, "t": iso(ts(8, 59))}}
+                                                          for s in params["symbols"].split(",")},
+                          raise_for_status=lambda: None)
+            return super().__call__(url, params, headers, timeout)
+
+    assert FD.live_feed(Paid(), store, now=ts(8, 20)) == "iex"   # bought, but within the 30 minutes
+    assert FD.live_feed(Paid(), store, now=ts(8, 31)) == "sip"   # re-asked: SIP from now on
+    assert FD.live_feed(Market(), store, now=ts(15, 0)) == "sip"  # a SIP answer holds all day

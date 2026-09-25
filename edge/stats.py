@@ -140,3 +140,35 @@ def clustered_bootstrap_ci(results_by_day: Dict[str, Sequence[bool]], *, iters: 
 def bonferroni_alpha(alpha: float, n_candidates: int) -> float:
     """Testing k strategies at once: each must clear alpha / k."""
     return alpha / max(1, n_candidates)
+
+
+MIN_FILLED = 30     # below this many filled trades an interval is reported, never judged
+
+
+def break_even_verdict(wins: int, n: int, break_even: float, *, style: str = "backtest",
+                       none: str = "no filled trades") -> str:
+    """The one verdict every edge report uses: the Wilson interval against break-even.
+
+    Below MIN_FILLED filled trades no interval is "evidence" in either direction --
+    three wins in three trades has a Wilson range that clears almost any break-even
+    and says nothing. The range is still shown so the reader sees how wide it is.
+
+    style "ledger" keeps the forward ledger's wording ("edge shown: ..."), style
+    "backtest" the backtests' ("above break-even across the whole interval").
+    """
+    if n <= 0:
+        return none
+    lo, hi = wilson(wins, n)
+    if n < MIN_FILLED:
+        return f"too few trades (n={n}): Wilson range {lo:.0%}-{hi:.0%} is not evidence"
+    if style == "ledger":
+        if lo > break_even:
+            return "edge shown: the whole interval is above break-even"
+        if hi < break_even:
+            return "no edge: the whole interval is below break-even"
+        return f"undecided: the interval straddles break-even ({break_even:.1%})"
+    if lo > break_even:
+        return "above break-even across the whole interval"
+    if hi < break_even:
+        return "below break-even across the whole interval"
+    return "undecided: the interval straddles break-even"

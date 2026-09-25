@@ -381,3 +381,25 @@ def test_authenticated_rest_workflow_round_trip(monkeypatch):
         audit = client.get(f"/api/agent-workflow/tasks/{task_id}", headers=headers)
         assert audit.status_code == 200
         assert audit.json()["task"]["status"] == "COMPLETED"
+
+
+def test_external_radar_reobservation_reuses_the_days_task():
+    """Every 15-min radar cycle re-observes a live mover with a new run id and
+    move; the second cycle must reuse the first cycle's task, not raise."""
+    now = 1_790_352_000
+
+    def radar(run_id, move, rvol):
+        return {"run_id": run_id, "items": [{
+            "symbol": "OKTA", "market_status": "available",
+            "observed_current_move_pct": move, "observed_peak_move_pct": move,
+            "observed_rvol": rvol,
+        }]}
+
+    first = workflow.enqueue_external_radar_tasks(radar("radar-1", 12.0, 3.0), now_ts=now)
+    second = workflow.enqueue_external_radar_tasks(radar("radar-2", 19.0, 5.0), now_ts=now + 900)
+    assert first["created"] == 1
+    assert second["ok"] is True
+    assert second["created"] == 0 and second["reused"] == 1
+    assert second["task_ids"] == first["task_ids"]
+    task = workflow.get_task(first["task_ids"][0])["task"]
+    assert task["request_payload"]["radar_run_id"] == "radar-1"

@@ -250,20 +250,37 @@ def reconcile(http, ledger: Ledger, *, day: str, experiments, now: int) -> Dict[
         {**{k: o.get(k) for k in keep}, "legs": [{k: g.get(k) for k in keep} for g in o.get("legs") or []]}
         for o in orders if any(str(o.get("client_order_id") or "").startswith(fid) for fid in ids)]})
     settled = {}
-    for f in _forecasts(ledger, day, experiments):
+    todays = _forecasts(ledger, day, experiments)
+    for f in todays:
         prior = ledger.store.get("outcomes", f"{f.forecast_id}|actual")
         if prior and prior.get("outcome") in TERMINAL:
             continue
         rec = ledger.store.get("edge_paper", f"{f.forecast_id}|paper")
+        src = f.forecast_id if rec else (_shared_order(ledger, f, todays) or f.forecast_id)
+        if src != f.forecast_id:
+            rec = ledger.store.get("edge_paper", f"{src}|paper")
         if rec and rec.get("state") == "rejected":
             pos = F.Position(state="ENTRY_REJECTED")
         else:
-            pos = F.reconcile(f, _events_from_orders(orders, f.forecast_id), now=now)
+            pos = F.reconcile(f, _events_from_orders(orders, src), now=now)
         res = F.to_resolution(f, pos)
         ledger.settle(f.forecast_id, res, now=now, record="actual")
         settled[f"{f.experiment_id}:{f.symbol}"] = {"actual": res.outcome, "pnl_usd": res.pnl_usd,
                                                     "warnings": pos.warnings}
     return {"status": "reconciled" if settled else "nothing", "settled": settled}
+
+
+def _shared_order(ledger: Ledger, f: Forecast, todays) -> Optional[str]:
+    """The forecast whose paper order stands for `f`: a twin issued at the same moment on the
+    same stock with identical levels and size that did place an order (a paired later version
+    records beside v1 and shares its order, never a second one). None when there is no twin."""
+    key = (f.symbol, f.issued_at, f.entry_trigger, f.entry_limit, f.target, f.stop, f.shares)
+    for g in todays:
+        if g.forecast_id != f.forecast_id and (g.symbol, g.issued_at, g.entry_trigger, g.entry_limit,
+                                               g.target, g.stop, g.shares) == key \
+                and ledger.store.get("edge_paper", f"{g.forecast_id}|paper"):
+            return g.forecast_id
+    return None
 
 
 def probe(http):

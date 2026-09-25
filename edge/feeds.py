@@ -7,6 +7,11 @@ every live call that day uses SIP; refused (403, the free plan) -> IEX, as befor
 answer is cached per day and stated on every card and forecast.
 
 EDGE_LIVE_FEED=iex|sip forces a feed (e.g. to test, or to fall back); default "auto".
+
+Only a SIP answer holds for the whole day. An IEX answer is re-asked every RECHECK_S, so a
+subscription bought after the first check of the morning is picked up within half an hour
+instead of the next day (audit 2026-09-25). Each forecast and card states its own feed, and
+the ledger never pools IEX and SIP records (edge/ledger.py).
 """
 from __future__ import annotations
 
@@ -17,6 +22,8 @@ from typing import Any, Dict
 from edge.contracts import ET
 
 PROBE_SYMBOL = "SPY"
+RECHECK_S = 1800          # an IEX answer is re-asked after this long; a SIP answer holds all day
+UNDECIDED_RECHECK_S = 300  # a network error is re-asked sooner
 
 
 def live_feed(get, store, *, now: int) -> str:
@@ -26,9 +33,13 @@ def live_feed(get, store, *, now: int) -> str:
     day = datetime.fromtimestamp(now, tz=ET).date().isoformat()
     cached = store.get("edge_feed", day) if store is not None else None
     if cached:
-        return cached["feed"]
+        if cached.get("feed") == "sip":
+            return "sip"
+        ttl = RECHECK_S if cached.get("decided", True) else UNDECIDED_RECHECK_S
+        if now - int(cached.get("checked_at") or 0) < ttl:
+            return cached["feed"]
     rec = check(get, now=now)
-    if store is not None and rec.get("decided"):
+    if store is not None:
         store.put("edge_feed", day, {**rec, "day": day})
     return rec["feed"]
 

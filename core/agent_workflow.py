@@ -581,6 +581,27 @@ def create_task(
     return {"ok": True, "created": created, "task": task}
 
 
+def find_tasks_by_idempotency_keys(keys: Iterable[str]) -> Dict[str, Dict[str, Any]]:
+    """Return existing tasks keyed by idempotency_key (one indexed query)."""
+    wanted = [
+        key for key in dict.fromkeys(str(k or "").strip() for k in keys)
+        if _IDEMPOTENCY_RE.fullmatch(key)
+    ]
+    if not wanted:
+        return {}
+    from core.db import db_conn
+
+    with db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            f"SELECT {_TASK_SELECT} FROM ghost_agent_tasks WHERE idempotency_key = ANY(%s)",
+            (wanted,),
+        )
+        rows = cur.fetchall() or []
+    tasks = (_public_task(row) for row in rows)
+    return {task["idempotency_key"]: task for task in tasks if task.get("idempotency_key")}
+
+
 def _expire_unavailable_tasks(cur, now: int) -> Dict[str, int]:
     cur.execute(
         """UPDATE ghost_agent_tasks
@@ -1570,9 +1591,14 @@ def enqueue_external_radar_tasks(
         return {"ok": True, "status": "disabled", "attempted": 0, "created": 0}
     now = int(time.time()) if now_ts is None else int(now_ts)
     session_date = datetime.fromtimestamp(now, ZoneInfo("America/New_York")).date().isoformat()
-    attempted = 0
-    created = 0
-    task_ids: List[str] = []
+    # The key is deliberately one triage task per symbol per session: the radar
+    # re-observes the same mover every cycle, and each observation (run id,
+    # live move, rvol) differs, so the payload can never match a later cycle.
+    # A symbol that already has today's task therefore REUSES it -- the first
+    # observation is what agents triage. create_task's payload check is left
+    # intact (a genuinely conflicting reuse of a key still fails closed).
+    candidates: List[Dict[str, Any]] = []
+    seen_keys: set = set()
     for item in radar.get("items") or []:
         if not isinstance(item, dict) or item.get("market_status") != "available":
             continue
@@ -1584,40 +1610,82 @@ def enqueue_external_radar_tasks(
         rvol = float(item.get("observed_rvol") or 0.0)
         if max(abs(move), abs(peak)) < 5.0 and rvol < 2.0:
             continue
-        attempted += 1
-        priority = min(95, max(50, int(50 + max(abs(move), abs(peak)) + min(rvol, 10))))
-        result = create_task(
-            task_type="external_mover_triage",
-            symbol=symbol,
-            priority=priority,
-            requested_by="ghost.external_radar",
-            request_payload={
-                "question": "Classify the observed move and identify source-backed catalysts and risks.",
-                "radar_run_id": radar.get("run_id"),
-                "observation": item,
-                "required_output": {
-                    "classifications": [
-                        "earnings_gap", "short_squeeze", "news_breakout",
-                        "momentum_anomaly", "unknown",
-                    ],
-                    "safety": "Research only. Do not recommend or submit a trade.",
+        key = f"external-mover:{symbol}:{session_date}"
+        if key in seen_keys:
+            continue  # same symbol twice in one radar run: one task
+        seen_keys.add(key)
+        candidates.append({
+            "symbol": symbol,
+            "key": key,
+            "item": item,
+            "priority": min(95, max(50, int(50 + max(abs(move), abs(peak)) + min(rvol, 10)))),
+        })
+
+    existing = find_tasks_by_idempotency_keys(c["key"] for c in candidates) if candidates else {}
+
+    def _reusable(task: Optional[Dict[str, Any]], symbol: str) -> bool:
+        return bool(task) and task.get("task_type") == "external_mover_triage" \
+            and task.get("symbol") == symbol
+
+    attempted = len(candidates)
+    created = 0
+    reused = 0
+    errors: List[str] = []
+    task_ids: List[str] = []
+    for cand in candidates:
+        symbol, key = cand["symbol"], cand["key"]
+        prior = existing.get(key)
+        if prior is not None:
+            if _reusable(prior, symbol):
+                reused += 1
+                task_ids.append(prior["task_id"])
+            else:
+                errors.append(f"{symbol}: idempotency_key held by a different task type/symbol")
+            continue
+        try:
+            result = create_task(
+                task_type="external_mover_triage",
+                symbol=symbol,
+                priority=cand["priority"],
+                requested_by="ghost.external_radar",
+                request_payload={
+                    "question": "Classify the observed move and identify source-backed catalysts and risks.",
+                    "radar_run_id": radar.get("run_id"),
+                    "observation": cand["item"],
+                    "required_output": {
+                        "classifications": [
+                            "earnings_gap", "short_squeeze", "news_breakout",
+                            "momentum_anomaly", "unknown",
+                        ],
+                        "safety": "Research only. Do not recommend or submit a trade.",
+                    },
                 },
-            },
-            required_submissions=max(
-                1, min(3, int(os.getenv("AGENT_EVENT_REQUIRED_SUBMISSIONS", "1")))
-            ),
-            max_attempts=5,
-            deadline_at=now + 6 * 3600,
-            idempotency_key=f"external-mover:{symbol}:{session_date}",
-            now_ts=now,
-        )
+                required_submissions=max(
+                    1, min(3, int(os.getenv("AGENT_EVENT_REQUIRED_SUBMISSIONS", "1")))
+                ),
+                max_attempts=5,
+                deadline_at=now + 6 * 3600,
+                idempotency_key=key,
+                now_ts=now,
+            )
+        except AgentWorkflowError as exc:
+            # Lost a race with another writer between the lookup and the insert.
+            raced = find_tasks_by_idempotency_keys([key]).get(key)
+            if _reusable(raced, symbol):
+                reused += 1
+                task_ids.append(raced["task_id"])
+            else:
+                errors.append(f"{symbol}: {str(exc)[:80]}")
+            continue
         created += int(bool(result.get("created")))
         task_ids.append(result["task"]["task_id"])
     return {
-        "ok": True,
+        "ok": not errors,
         "status": "queued" if attempted else "no_significant_movers",
         "attempted": attempted,
         "created": created,
+        "reused": reused,
+        "errors": errors,
         "task_ids": task_ids,
         "advisory_only": True,
         "decision_eligible": False,

@@ -77,6 +77,7 @@ def _clear_module_caches():
             se.invalidate_model_cache()
             se._SIP_FORBIDDEN["until"] = 0.0
             se._STOOQ_DOWN["until"] = 0.0
+            se.reset_no_data_guard()
         except Exception:
             pass
     sgl = sys.modules.get("core.super_ghost_ledger")
@@ -89,6 +90,7 @@ def _clear_module_caches():
     if px is not None:
         try:
             px._SIP_FORBIDDEN["until"] = 0.0
+            px._cross_check_calls.clear()
         except Exception:
             pass
     pg = sys.modules.get("core.precision_gate")

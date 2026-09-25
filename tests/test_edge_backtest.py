@@ -107,7 +107,7 @@ def test_the_report_states_its_limits_and_an_interval():
     assert any("NOT the forward record" in x for x in full["limits"])
     auto = full["experiments"]["gap_and_go_auto@v1"]
     assert auto["filled"] == 1 and auto["wilson_ci"][0] < 0.375 < auto["wilson_ci"][1]
-    assert auto["verdict"].startswith("undecided")
+    assert auto["verdict"].startswith("too few trades (n=1)")
 
 
 def test_it_runs_once_and_paces_polygon():

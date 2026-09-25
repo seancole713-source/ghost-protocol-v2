@@ -28,6 +28,20 @@ SUBMITTED, ACCEPTED, REJECTED = "submitted", "accepted", "rejected"
 PARTIAL, FILLED, CANCELED, EXPIRED, TRIGGERED = "partially_filled", "filled", "canceled", "expired", "triggered"
 
 
+def filled_after_window(fill_ts: Optional[int], entry_expiry: int) -> bool:
+    """Did the BROKER's entry fill land at or after the forecast's entry expiry?
+
+    Judged on the broker's own fill time, never on what a simulation or the market
+    record said: the resolver takes no entry on a bar starting at/after entry_expiry,
+    so neither may the actual record. A fill with no known time is not called late.
+    """
+    return fill_ts is not None and int(fill_ts) >= int(entry_expiry)
+
+
+LATE_FLAG = "entry_after_window"
+LATE_WARNING = "ENTRY FILLED AFTER THE ENTRY WINDOW: outside the rule, not counted"
+
+
 @dataclass(frozen=True)
 class OrderEvent:
     ts: int
@@ -48,6 +62,7 @@ class Position:
     proceeds: float = 0.0
     protected: bool = False
     last_exit_role: Optional[str] = None
+    entry_filled_at: Optional[int] = None     # the broker's FIRST entry fill time
     messages: List[Tuple[int, str]] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
 
@@ -83,7 +98,12 @@ def reconcile(f: Forecast, events: Iterable[OrderEvent], *, now: Optional[int] =
         if e.fill_qty and e.fill_price is not None:
             if e.role == ENTRY:
                 p.qty_bought += e.fill_qty; p.cost += e.fill_qty * e.fill_price
+                if p.entry_filled_at is None:
+                    p.entry_filled_at = int(e.ts)
                 say(f"Bought {e.fill_qty} at {e.fill_price:.2f}.")
+                if filled_after_window(e.ts, f.entry_expiry) and LATE_WARNING not in p.warnings:
+                    p.warnings.append(LATE_WARNING)
+                    say("Entry filled AFTER the entry window: outside the rule, not counted.")
             else:
                 p.qty_sold += e.fill_qty; p.proceeds += e.fill_qty * e.fill_price
                 p.last_exit_role = e.role
@@ -127,9 +147,11 @@ def to_resolution(f: Forecast, p: Position) -> Resolution:
         if p.state in ("ENTRY_EXPIRED", "ENTRY_REJECTED"):
             return Resolution(NO_FILL, note=p.state.lower(), flags=("record:actual",))
         return Resolution(UNRESOLVED, note="no fills reported", flags=("record:actual",))
+    late = filled_after_window(p.entry_filled_at, f.entry_expiry)
+    flags = ("record:actual",) + ((LATE_FLAG,) if late else ())
     if p.state != "CLOSED":
-        return Resolution(UNRESOLVED, entry_fill=round(p.avg_entry, 4),
-                          note=f"position {p.state.lower()} ({p.qty_open} open)", flags=("record:actual",))
+        return Resolution(UNRESOLVED, entry_fill=round(p.avg_entry, 4), entry_ts=p.entry_filled_at,
+                          note=f"position {p.state.lower()} ({p.qty_open} open)", flags=flags)
     role = p.last_exit_role
     exit_px = p.avg_exit
     if role == TARGET:
@@ -141,8 +163,12 @@ def to_resolution(f: Forecast, p: Position) -> Resolution:
     else:   # manual: judge by where it actually closed, not by intent
         outcome = WIN if exit_px >= f.target else LOSS if exit_px <= f.stop else TIME_EXIT
     pnl = round(p.proceeds - p.cost, 2)
+    # A late entry keeps the broker's true outcome on the record (it is what happened), but the
+    # flag and entry_ts make the ledger show it as OUTSIDE_RULE and never count it.
     return Resolution(
-        outcome=outcome, entry_fill=round(p.avg_entry, 4), exit_price=round(exit_px, 4),
+        outcome=outcome, entry_fill=round(p.avg_entry, 4), entry_ts=p.entry_filled_at,
+        exit_price=round(exit_px, 4),
         pnl_usd=pnl, pnl_pct=round((exit_px / p.avg_entry - 1) * 100, 3),
-        note=f"closed via {role}", flags=("record:actual",),
+        note=f"closed via {role}" + ("; entry filled after the entry window (outside the rule)" if late else ""),
+        flags=flags,
     )

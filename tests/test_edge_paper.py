@@ -249,3 +249,161 @@ def test_reconcile_keeps_the_brokers_order_record(ledger):
     from edge import readout as RO
     row = RO.view(ledger.store, "paper", "2026-09-23")["orders"][0]
     assert row["broker_entry"]["status"] == "canceled" and row["filled_after_window"] is False
+
+
+def test_a_paired_v2_forecast_places_no_order_and_is_graded_from_v1s_order():
+    """2026-09-25: BENF and AESI were each bought twice, once for intraday_continuation v1 and once
+    for its paired v2 (same stock, moment and levels). Only v1 places an order now; v2's actual
+    record is read from v1's broker order, so both records still show the real fill."""
+    from edge import intraday as I
+    from edge.contracts import issue_intraday
+    lg = Ledger(MemoryStore())
+    for spec in I.INTRADAY_SPECS:
+        lg.register(spec, now=ts(8, 0))
+    assert I.INTRADAY_CONTINUATION_V2 not in I.PAPER_SPECS and I.INTRADAY_CONTINUATION in I.PAPER_SPECS
+    v1, v2 = (issue_intraday(sp, symbol="BENF", session_date=DAY, entry_ref=2.12, issued_at=ts(10, 26))
+              for sp in (I.INTRADAY_CONTINUATION, I.INTRADAY_CONTINUATION_V2))
+    lg.record(v2, now=ts(10, 26))
+    lg.record(v1, now=ts(10, 26))
+    b = Broker()
+    out = PP.submit(b, lg, day="2026-09-23", experiments=I.PAPER_SPECS)
+    assert out["placed"] == ["BENF"] and len(b.posts) == 1
+    assert b.posts[0]["client_order_id"] == f"{v1.forecast_id}-entry"
+    orders = [{
+        "id": "o1", "client_order_id": f"{v1.forecast_id}-entry", "status": "filled",
+        "submitted_at": iso(ts(10, 26)), "filled_at": iso(ts(10, 30)),
+        "filled_qty": str(v1.shares), "filled_avg_price": f"{v1.entry_trigger:.2f}",
+        "legs": [
+            {"id": "tp", "type": "limit", "status": "canceled", "submitted_at": iso(ts(10, 30)),
+             "canceled_at": iso(ts(10, 50)), "filled_qty": "0"},
+            {"id": "sl", "type": "stop", "status": "filled", "submitted_at": iso(ts(10, 30)),
+             "filled_at": iso(ts(10, 50)), "filled_qty": str(v1.shares), "filled_avg_price": f"{v1.stop:.2f}"},
+        ]}]
+    res = PP.reconcile(Broker(orders=orders), lg, day="2026-09-23", experiments=I.INTRADAY_SPECS, now=ts(16, 25))
+    s1 = res["settled"][f"{I.INTRADAY_CONTINUATION.experiment_id}:BENF"]
+    s2 = res["settled"][f"{I.INTRADAY_CONTINUATION_V2.experiment_id}:BENF"]
+    assert s1["actual"] == s2["actual"] == "LOSS" and s1["pnl_usd"] == s2["pnl_usd"]
+    # a lone forecast with no order and no twin keeps the old answer: unresolved, never a loss
+    lone = issue_intraday(I.INTRADAY_CONTINUATION_V2, symbol="AESI", session_date=DAY, entry_ref=12.8,
+                          issued_at=ts(10, 41))
+    lg.record(lone, now=ts(10, 41))
+    res = PP.reconcile(Broker(orders=orders), lg, day="2026-09-23", experiments=I.INTRADAY_SPECS, now=ts(16, 30))
+    assert res["settled"][f"{I.INTRADAY_CONTINUATION_V2.experiment_id}:AESI"]["actual"] == "UNRESOLVED"
+
+
+def test_iex_and_sip_records_are_never_pooled():
+    """Audit 2026-09-25: the feed was in no spec or report, so Monday's SIP forecasts would have
+    joined the IEX record under the same experiment. The headline record (what promotion reads)
+    is now the current regime only -- SIP once any SIP forecast exists -- and IEX sits beside it."""
+    from edge.resolver import Resolution
+    lg = Ledger(MemoryStore())
+    for spec in EXPERIMENTS:
+        lg.register(spec, now=ts(8, 0))
+    eid = GAP_AND_GO_AUTO.experiment_id
+    old = issue(GAP_AND_GO_AUTO, symbol="SHOP", session_date=DAY, entry_ref=146.71, issued_at=ts(9, 10))
+    lg.record(old, now=ts(9, 11))
+    lg.settle(old.forecast_id, Resolution("WIN", pnl_usd=50.0), now=ts(16, 25))
+    rep = lg.report(eid)
+    assert rep["feed_regime"] == "iex" and rep["records"]["simulated"]["wins"] == 1 and "other_regimes" not in rep
+
+    monday = date(2026, 9, 28)
+    lg.store.put("edge_cards", monday.isoformat(), {"day": monday.isoformat(), "live_feed": "sip"})
+    new = issue(GAP_AND_GO_AUTO, symbol="GLND", session_date=monday, entry_ref=6.1,
+                issued_at=int(datetime(2026, 9, 28, 9, 10, tzinfo=ET).timestamp()))
+    lg.record(new, now=int(datetime(2026, 9, 28, 9, 11, tzinfo=ET).timestamp()))
+    lg.settle(new.forecast_id, Resolution("LOSS", pnl_usd=-30.0),
+              now=int(datetime(2026, 9, 28, 16, 25, tzinfo=ET).timestamp()))
+    rep = lg.report(eid)
+    assert rep["feed_regime"] == "sip" and rep["forecasts_in_regime"] == 1
+    assert rep["records"]["simulated"]["filled"] == 1 and rep["records"]["simulated"]["wins"] == 0
+    assert rep["other_regimes"]["iex"]["simulated"]["wins"] == 1
+
+
+# --------------------------------------------- late broker fill (audit 2026-09-25) --
+
+def _late_fill_case(fill_hm):
+    """Intraday forecast, entry window 09:10-09:30. At 09:29 the trigger is touched but the bar runs
+    straight past the limit: the MARKET record takes the trade (WIN), the simulated order rests
+    unfilled (NO_FILL). The broker fills at `fill_hm`, then its target leg fills."""
+    from edge.intraday import INTRADAY_CONTINUATION
+    from edge.contracts import issue_intraday
+    from edge.resolver import resolve_execution, resolve_market
+    lg = Ledger(MemoryStore())
+    lg.register(INTRADAY_CONTINUATION, now=ts(8, 0))
+    f = issue_intraday(INTRADAY_CONTINUATION, symbol="WHLR", session_date=DAY, entry_ref=5.40, issued_at=ts(9, 9))
+    lg.record(f, now=ts(9, 9))
+    assert (f.window_start, f.entry_expiry) == (ts(9, 10), ts(9, 30))
+    tape = [(ts(9, m), 5.36, 5.38, 5.35, 5.37, 1000) for m in range(10, 29)]
+    tape.append((ts(9, 29), f.entry_trigger - 0.02, f.target + 0.02, f.entry_trigger - 0.03,
+                 f.entry_limit + 0.10, 9000))
+    tape += [(ts(9, 30 + m), f.entry_limit + 0.05, f.target + 0.05, f.entry_limit - 0.01, f.target, 5000)
+             for m in range(5)]
+    tape.append((ts(15, 30), f.target, f.target, f.target, f.target, 100))
+    m, x = resolve_market(f, tape), resolve_execution(f, tape)
+    assert m.outcome == "WIN" and x.outcome == "NO_FILL"          # the rule's records disagree by design
+    lg.settle(f.forecast_id, m, now=ts(16, 20), record="forecast")
+    lg.settle(f.forecast_id, x, now=ts(16, 20), record="simulated")
+    fh, fm = fill_hm
+    orders = [{"id": "w1", "client_order_id": f"{f.forecast_id}-entry", "symbol": "WHLR", "status": "filled",
+               "submitted_at": iso(ts(9, 9)), "filled_at": iso(ts(fh, fm)),
+               "filled_qty": str(f.shares), "filled_avg_price": f"{f.entry_limit:.2f}",
+               "legs": [{"id": "w1-tp", "type": "limit", "status": "filled", "submitted_at": iso(ts(fh, fm)),
+                         "filled_at": iso(ts(9, 44)), "filled_qty": str(f.shares),
+                         "filled_avg_price": f"{f.target:.2f}"},
+                        {"id": "w1-sl", "type": "stop", "status": "canceled", "submitted_at": iso(ts(fh, fm)),
+                         "canceled_at": iso(ts(9, 44)), "filled_qty": "0"}]}]
+    out = PP.reconcile(Broker(orders=orders), lg, day="2026-09-23", experiments=(INTRADAY_CONTINUATION,),
+                       now=ts(16, 25))
+    return lg, f, out
+
+
+def test_a_broker_fill_after_the_entry_window_is_outside_the_rule_whatever_the_simulation_says():
+    lg, f, out = _late_fill_case((9, 31))           # 09:31 fill, 09:30 expiry
+    settled = out["settled"]["intraday_continuation@v1:WHLR"]
+    assert settled["actual"] == "WIN"                                               # what the broker did...
+    assert any("AFTER THE ENTRY WINDOW" in w for w in settled["warnings"])
+    act = lg.report("intraday_continuation@v1")["records"]["actual"]
+    assert act["by_outcome"] == {"OUTSIDE_RULE": 1}                                 # ...is never counted
+    assert act["filled"] == 0 and act["wins"] == 0 and act["verdict"] == "no filled trades yet"
+    from edge import readout as RO
+    row = RO.view(lg.store, "paper", "2026-09-23")["orders"][0]
+    assert row["filled_after_window"] is True and row["actual_counted"] is False
+    assert "after the entry window" in row["note"]
+
+
+def test_the_same_trade_filled_inside_the_window_is_counted():
+    lg, f, out = _late_fill_case((9, 29))
+    act = lg.report("intraday_continuation@v1")["records"]["actual"]
+    assert act["by_outcome"] == {"WIN": 1} and act["filled"] == 1
+    from edge import readout as RO
+    row = RO.view(lg.store, "paper", "2026-09-23")["orders"][0]
+    assert row["filled_after_window"] is False and row["actual_counted"] is True and row["note"] is None
+
+
+def test_an_older_actual_row_without_a_fill_time_is_judged_on_the_kept_broker_record(ledger):
+    from edge.resolver import Resolution
+    f = ledger.fc                                    # entry window ends 10:30
+    ledger.settle(f.forecast_id, Resolution("WIN", pnl_usd=40.0), now=ts(16, 20), record="forecast")
+    ledger.settle(f.forecast_id, Resolution("WIN", entry_fill=148.3, exit_price=155.0, pnl_usd=40.2),
+                  now=ts(16, 25), record="actual")                 # no entry_ts: settled before the fix
+    assert ledger.report("gap_and_go_auto@v1")["records"]["actual"]["by_outcome"] == {"WIN": 1}
+    ledger.store.put("edge_paper_orders", "2026-09-23", {"day": "2026-09-23", "orders": [
+        {"id": "o1", "client_order_id": f"{f.forecast_id}-entry", "status": "filled", "filled_qty": "6",
+         "filled_at": iso(ts(10, 34)), "legs": []}]})
+    act = ledger.report("gap_and_go_auto@v1")["records"]["actual"]
+    assert act["by_outcome"] == {"OUTSIDE_RULE": 1} and act["filled"] == 0
+    from edge import readout as RO
+    row = RO.view(ledger.store, "paper", "2026-09-23")["orders"][0]
+    assert row["filled_after_window"] is True and row["actual_counted"] is False
+
+
+def test_a_broker_rejected_entry_order_settles_as_an_actual_no_fill(ledger):
+    f = ledger.fc
+    orders = [{"id": "o1", "client_order_id": f"{f.forecast_id}-entry", "status": "rejected",
+               "submitted_at": iso(ts(9, 11)), "failed_at": iso(ts(9, 11)), "filled_qty": "0",
+               "reject_reason": "asset not tradable"}]
+    out = PP.reconcile(Broker(orders=orders), ledger, day="2026-09-23", experiments=EXPERIMENTS, now=ts(16, 25))
+    assert out["settled"]["gap_and_go_auto@v1:SHOP"]["actual"] == "NO_FILL"
+    o = ledger.store.get("outcomes", f"{f.forecast_id}|actual")
+    assert o["outcome"] == "NO_FILL" and o["note"] == "entry_rejected"
+    assert ledger.report("gap_and_go_auto@v1")["records"]["actual"]["filled"] == 0

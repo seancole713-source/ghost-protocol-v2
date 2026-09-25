@@ -130,8 +130,61 @@ def cost_usd(usage: Any) -> float:
             + (getattr(usage, "output_tokens", 0) or 0) * PRICE_OUT + searches * PRICE_SEARCH)
 
 
-def _ask(client, prompt: str, *, max_searches: int = 5) -> Tuple[Optional[str], float, str]:
-    """(final text, cost, stop_reason). Continues server-tool pauses; honours refusals."""
+NOT_RESEARCHED = "not_researched"
+# What a failed search looks like when it only surfaces in the model's own words (the tool's
+# error block is the primary signal; this catches the author reporting it, e.g. in "unknowns").
+_TOOL_FAILURE = re.compile(
+    r"tool use limit|server tool|max_uses_exceeded|too_many_requests|"
+    r"(web[ _-]?search|search tool)\b.{0,40}\b(fail|error|unavailable|limit|exceeded)", re.I)
+
+
+def _tool_errors(content: Any) -> List[str]:
+    """Server web-search errors in one response. They do not raise: the result block's content is
+    a single error object (e.g. error_code "max_uses_exceeded") where a success is a list."""
+    out = []
+    for b in content or []:
+        if getattr(b, "type", "") != "web_search_tool_result":
+            continue
+        c = getattr(b, "content", None)
+        if isinstance(c, (list, tuple)):
+            continue
+        code = getattr(c, "error_code", None) if not isinstance(c, dict) else c.get("error_code")
+        out.append(str(code or "unknown_error"))
+    return out
+
+
+def not_researched_reason(rec: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Why a research record is NOT a research result, or None when it is one.
+
+    A search tool that failed, or an author whose output was unusable, found nothing because it
+    could not look -- that is not "no catalyst", and must never be booked as a rejection. Also
+    reads records written before this status existed (claims empty + a tool failure in unknowns).
+    """
+    if not rec:
+        return None
+    if rec.get("status") == NOT_RESEARCHED:
+        return str(rec.get("not_researched_reason") or "research did not run")
+    claims = rec.get("claims") or []
+    if claims:
+        # Claims made, but the reviewer never produced a usable check: every claim sits in
+        # quarantine for THAT reason alone. Unchecked is unknown, not rejected.
+        if all(list(c.get("problems") or []) == ["no usable review"] for c in claims):
+            return f"review did not run (reviewer stop={rec.get('reviewer_stop')})"
+        return None
+    if rec.get("author_tool_errors"):
+        return f"web search failed: {', '.join(rec['author_tool_errors'])}"
+    for u in rec.get("unknowns") or []:
+        if str(u).startswith("author output unusable"):
+            return str(u)
+        if _TOOL_FAILURE.search(str(u)):
+            return f"web search failed: {str(u)[:160]}"
+    return None
+
+
+def _ask(client, prompt: str, *, max_searches: int = 5,
+         tool_errors: Optional[List[str]] = None) -> Tuple[Optional[str], float, str]:
+    """(final text, cost, stop_reason). Continues server-tool pauses; honours refusals.
+    Web-search errors (which arrive as result blocks, not exceptions) are appended to tool_errors."""
     messages: List[Dict[str, Any]] = [{"role": "user", "content": prompt}]
     total = 0.0
     for _ in range(3):
@@ -143,6 +196,8 @@ def _ask(client, prompt: str, *, max_searches: int = 5) -> Tuple[Optional[str], 
             messages=messages,
         )
         total += cost_usd(getattr(resp, "usage", None))
+        if tool_errors is not None:
+            tool_errors.extend(_tool_errors(getattr(resp, "content", None)))
         if resp.stop_reason == "refusal":
             return None, total, "refusal"
         if resp.stop_reason == "pause_turn":
@@ -197,9 +252,27 @@ def research_symbol(client, store, *, symbol: str, day: str, now: int, http=None
     if budget["spent_usd"] >= daily_cap_usd():
         return {"status": "budget_exhausted", "spent_usd": round(budget["spent_usd"], 4)}
     cutoff = datetime.fromtimestamp(now, tz=ET).strftime("%Y-%m-%d %H:%M")
-    text, c1, stop1 = _ask(client, AUTHOR_PROMPT.format(symbol=symbol, cutoff=cutoff, kinds=list(RS.KINDS)))
+    author_errors: List[str] = []
+    text, c1, stop1 = _ask(client, AUTHOR_PROMPT.format(symbol=symbol, cutoff=cutoff, kinds=list(RS.KINDS)),
+                           tool_errors=author_errors)
     raw = _json(text) or {"claims": [], "unknowns": [f"author output unusable (stop={stop1})"]}
     claims = to_claims(symbol, raw, made_at=now)
+    if not claims:
+        # Nothing found BECAUSE the search could not run is not a finding. Record it as
+        # not_researched -- never as a rejection -- and spend nothing on a review.
+        why = not_researched_reason({"claims": [], "author_tool_errors": author_errors,
+                                     "unknowns": raw.get("unknowns") or []})
+        if why:
+            budget["spent_usd"] = round(budget["spent_usd"] + c1, 6)
+            store.put("edge_research_budget", day, budget)
+            store.put("edge_research", key, {
+                "day": day, "symbol": symbol.upper(), "made_at": now, "status": NOT_RESEARCHED,
+                "not_researched_reason": why, "claims": [], "author_tool_errors": author_errors,
+                "unknowns": [str(u) for u in raw.get("unknowns") or []],
+                "review": {}, "author_stop": stop1, "reviewer_stop": "skipped",
+                "cost_usd": round(c1, 4), "reviewer": REVIEWER})
+            return {"status": NOT_RESEARCHED, "symbol": symbol.upper(), "reason": why, "claims": 0,
+                    "usable": 0, "cost_usd": round(c1, 4)}
     review_raw, c2, c_oai, stop2, reviewer = None, 0.0, 0.0, "skipped", REVIEWER
     if claims and http is not None:
         from edge import research_openai as RO
@@ -230,7 +303,8 @@ def research_symbol(client, store, *, symbol: str, day: str, now: int, http=None
     spent = c1 + c2 + c_oai            # the daily cap covers BOTH providers
     budget["spent_usd"] = round(budget["spent_usd"] + spent, 6)
     store.put("edge_research_budget", day, budget)
-    rec = {"day": day, "symbol": symbol.upper(), "made_at": now, "claims": graded,
+    rec = {"day": day, "symbol": symbol.upper(), "made_at": now, "status": "researched", "claims": graded,
+           "author_tool_errors": author_errors,
            "unknowns": [str(u) for u in raw.get("unknowns") or []],
            "review": {"entity_ok": review.entity_ok, "contradictions": review.contradictions,
                       "dilution_found": review.dilution_found, "stale": review.stale, "notes": review.notes},
@@ -245,10 +319,14 @@ def research_symbol(client, store, *, symbol: str, day: str, now: int, http=None
 
 
 def verdict(store, *, day: str, symbol: str, issued_at: int) -> Dict[str, Optional[bool]]:
-    """What the card may use: (catalyst, dilutive), each True / False / None (unknown)."""
+    """What the card may use: (catalyst, dilutive), each True / False / None (unknown).
+    A not_researched record answers None for both -- unknown, never "no catalyst"."""
     rec = store.get("edge_research", f"{day}|{symbol.upper()}")
     if not rec or rec["made_at"] >= issued_at:
         return {"catalyst": None, "dilutive": None}
+    why = not_researched_reason(rec)
+    if why:
+        return {"catalyst": None, "dilutive": None, "not_researched": why}
     usable = [c for c in rec["claims"] if c["status"] != RS.QUARANTINED]
     specific = {"earnings", "guidance", "fda_regulatory", "contract", "m_and_a", "index_inclusion", "analyst_action"}
     dilutive = bool(rec["review"].get("dilution_found")) or any(
