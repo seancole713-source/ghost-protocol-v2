@@ -186,6 +186,8 @@ def card_text(card: Dict[str, Any]) -> str:
                      + ", ".join(f"{i}.{s}" for i, s in enumerate(card["top10"], 1)))
     if card.get("coverage_note"):
         lines.append(str(card["coverage_note"]))
+    if card.get("backtest_note"):
+        lines.append(str(card["backtest_note"]))
     lines.append("Paper only. Real money only by your hand, $1,000 per trade.")
     text = "\n".join(x for x in lines if x)
     return text if len(text) <= CARD_MAX_CHARS else text[:CARD_MAX_CHARS - 3] + "..."

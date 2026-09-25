@@ -369,6 +369,7 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, A
             "degraded": bool(failures), "data_failures": failures,
             "failed_attempts": sum(1 for a in attempts["attempts"] if a.get("at") != now),
             "health_note": "shadow records regardless; the banner is what a LIVE release would say",
+            "backtest_note": backtest_note(store),
             "rows": rows}
     from edge import top10 as T10
     t10 = T10.build(card)                     # learning list, never an order; graded after the close
@@ -962,3 +963,25 @@ def _all_specs(store, I):
     if m is not None:
         specs.append(m[1])
     return tuple(specs)
+
+
+def backtest_note(store) -> Optional[str]:
+    """One line on the card: what the frozen rule's own point-in-time backtest says (audit F09 --
+    the card never said the rule it prints is below break-even on history)."""
+    try:
+        from edge import backtest as BT
+        bt = store.get("edge_backtest", BT.BACKTEST_VERSION)
+        if not bt:
+            rows = [r for r in store.scan("edge_backtest") if (r.get("experiments") or {}).get(EID)]
+            bt = max(rows, key=lambda r: r.get("completed_at") or 0) if rows else None
+        e = ((bt or {}).get("experiments") or {}).get(EID)
+        if not e or not e.get("filled"):
+            return None
+        win = bt.get("window") or []
+        span = f" {win[0]}..{win[1]}" if len(win) == 2 else ""
+        mean = (e.get("expectancy_usd") or {}).get("mean")
+        return (f"Rule's own backtest{span}: {e['wins']}/{e['filled']} wins ({e['win_rate']:.0%}) vs "
+                f"{bt.get('break_even', 0.375):.1%} needed"
+                + (f", {mean:+.2f} $/trade" if mean is not None else "") + f" -- {e.get('verdict')}")
+    except Exception:  # noqa: BLE001 - a note, never a reason to lose the card
+        return None

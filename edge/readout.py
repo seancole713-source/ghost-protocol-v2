@@ -74,6 +74,7 @@ def experiments(store) -> Dict[str, Any]:
         }
         if eid != BASE_EID and BASE_EID in reports:
             by_day = _by_day(store, eid, rep.get("feed_regime"))
+            out[eid]["retirement"] = promotion.retirement(rep)
             out[eid]["promotion"] = promotion.evaluate(rep, baseline=reports[BASE_EID], sessions=len(by_day),
                                                        by_day=by_day, n_candidates=max(1, len(candidates)))
     return out
