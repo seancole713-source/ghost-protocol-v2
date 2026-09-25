@@ -119,6 +119,8 @@ def _trades(card: Dict[str, Any]) -> List[Dict[str, Any]]:
 def _data_warning(card: Dict[str, Any]) -> Optional[str]:
     """A card built on broken data must not read like a quiet day."""
     parts = []
+    if card.get("degraded"):
+        parts.append(f"issued at the last try after {int(card.get('failed_attempts') or 0)} failed attempt(s)")
     banner = str(card.get("health_banner") or "")
     if "paused" in banner.lower() or "incomplete" in banner.lower():
         parts.append(banner)

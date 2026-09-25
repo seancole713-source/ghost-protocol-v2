@@ -153,28 +153,55 @@ def rvol_curve(history: List[tuple], day_open: Dict[str, int]) -> Dict[int, List
     return curve
 
 
+HISTORY_CHUNK = 10      # symbols per 16-day minute-bar request: SIP has far more bars than IEX
+HISTORY_MAX_PAGES = 40
+
+
 def _history(get, store, syms: List[str], day: date, feed: str = "iex") -> Dict[str, Dict[int, List[float]]]:
     """Cumulative volume by minute on `feed`, one value per prior session (up to 10), cached per day.
-    Same feed as today's bars, always: RVOL compares like with like."""
+    Same feed as today's bars, always: RVOL compares like with like.
+
+    Requested HISTORY_CHUNK symbols at a time. One request for ~80 symbols hit the page cap on SIP,
+    and the symbols paged last came back short or empty -- kept all day, so they could never reach
+    10 sessions of RVOL (audit 2026-09-25). A truncated answer is never cached or used: a truncated
+    chunk is re-asked one symbol at a time, and a symbol still truncated is left ABSENT (RVOL
+    unknown this tick, never inflated by a short history) and re-asked on the next tick."""
     out, need = {}, []
     for s in syms:
         c = store.get("edge_rvol", f"{day.isoformat()}|{s}")
-        if c is not None and c.get("feed", "iex") == feed:
+        if c is not None and c.get("feed", "iex") == feed and c.get("complete", True):
             out[s] = {int(k): v for k, v in c["by_minute"].items()}
         else:
             need.append(s)
-    if need:
-        start = day - timedelta(days=16)
-        rows = A.bars_multi(get, need, timeframe="1Min", start=_iso(_at(start, 9, 30)),
-                            end=_iso(_at(day, 0, 0)), feed=feed)
-        for s in need:
-            hist = _bars(rows.get(s) or [])
+    start, end = _iso(_at(day - timedelta(days=16), 9, 30)), _iso(_at(day, 0, 0))
+
+    def fetch(group: List[str]):
+        return A.bars_pages(get, group, timeframe="1Min", start=start, end=end, feed=feed,
+                            max_pages=HISTORY_MAX_PAGES)
+
+    for i in range(0, len(need), HISTORY_CHUNK):
+        chunk = need[i:i + HISTORY_CHUNK]
+        rows, complete = fetch(chunk)
+        if complete:
+            whole = {s: rows.get(s) or [] for s in chunk}
+        else:
+            A.LOG.warning("rvol history truncated for %s; re-asking one symbol at a time", ",".join(chunk))
+            whole = {}
+            for s in chunk:
+                one, ok = fetch([s])
+                if ok:
+                    whole[s] = one.get(s) or []
+                else:
+                    A.LOG.warning("rvol history for %s still truncated; left out this tick (RVOL unknown)", s)
+        for s, raw in whole.items():
+            hist = _bars(raw)
             days = sorted({datetime.fromtimestamp(t[0], tz=ET).date() for t in hist})[-10:]
             opens = {d.isoformat(): _at(d, 9, 30) for d in days}
             curve = rvol_curve([h for h in hist if datetime.fromtimestamp(h[0], tz=ET).date() in set(days)], opens)
             lists = {m: v for m, v in curve.items()}
             store.put("edge_rvol", f"{day.isoformat()}|{s}", {"by_minute": {str(k): v for k, v in lists.items()},
-                                                              "sessions": len(days), "feed": feed})
+                                                              "sessions": len(days), "feed": feed,
+                                                              "complete": True})
             out[s] = lists
     return out
 

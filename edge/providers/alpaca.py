@@ -16,14 +16,16 @@ Also documented: bracket orders do NOT support extended hours.
 """
 from __future__ import annotations
 
+import logging
 import os
 from datetime import date, datetime, time as dtime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from edge.providers import base as B
 
 NAME = "alpaca"
+LOG = logging.getLogger("edge.providers.alpaca")
 
 
 def _base_url() -> str:
@@ -131,12 +133,14 @@ def _get_json(get: B.HttpGet, path: str, params: dict) -> dict:
     return r.json() or {}
 
 
-def bars_multi(get: B.HttpGet, symbols: List[str], *, timeframe: str, start: str, end: Optional[str] = None,
-               feed: str = "sip", max_pages: int = 40) -> Dict[str, List[dict]]:
-    """{symbol: [bar, ...]} for many symbols, following next_page_token."""
+def bars_pages(get: B.HttpGet, symbols: List[str], *, timeframe: str, start: str, end: Optional[str] = None,
+               feed: str = "sip", max_pages: int = 40) -> Tuple[Dict[str, List[dict]], bool]:
+    """({symbol: [bar, ...]}, complete). complete is False when `max_pages` ran out with a
+    next_page_token still pending: the answer is TRUNCATED -- the symbols paged last (Alpaca
+    pages symbol by symbol) are short or missing -- and a caller must not keep it as whole."""
     out: Dict[str, List[dict]] = {s: [] for s in symbols}
     if not symbols:
-        return out
+        return out, True
     params = {"symbols": ",".join(symbols), "timeframe": timeframe, "start": start,
               "feed": feed, "limit": 10000, "adjustment": "raw"}
     if end:
@@ -147,9 +151,19 @@ def bars_multi(get: B.HttpGet, symbols: List[str], *, timeframe: str, start: str
             out.setdefault(sym, []).extend(rows or [])
         tok = p.get("next_page_token")
         if not tok:
-            break
+            return out, True
         params = {**params, "page_token": tok}
-    return out
+    LOG.warning("alpaca bars page cap hit: %d pages of %s %s bars for %d symbols (%s..%s); "
+                "the answer is truncated", max_pages, feed, timeframe, len(symbols), symbols[0], symbols[-1])
+    return out, False
+
+
+def bars_multi(get: B.HttpGet, symbols: List[str], *, timeframe: str, start: str, end: Optional[str] = None,
+               feed: str = "sip", max_pages: int = 40) -> Dict[str, List[dict]]:
+    """{symbol: [bar, ...]} for many symbols, following next_page_token (a hit page cap is
+    logged; use bars_pages to learn whether the answer is complete)."""
+    return bars_pages(get, symbols, timeframe=timeframe, start=start, end=end, feed=feed,
+                      max_pages=max_pages)[0]
 
 
 def snapshots(get: B.HttpGet, symbols: List[str], *, feed: str = "iex") -> Dict[str, dict]:

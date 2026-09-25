@@ -217,3 +217,71 @@ def test_the_quality_lane_adds_liquid_movers_the_gainers_list_never_shows():
     lane = I._quality_lane(get, MS(), now=ts(10, 40), known={"KNOWN"}, universe=None)
     assert set(lane) == {"NBIS", "TWST"}            # PENY under $2, FLAT +1%, KNOWN already listed, ABCDW a warrant
     assert lane["NBIS"] == pytest.approx(9.5, abs=0.1)
+
+
+# ------------------------------- SIP history must never silently drop stocks (audit 2026-09-25) --
+
+class Paged:
+    """Alpaca's multi-symbol bars, paginated as Alpaca does: symbol by symbol, `page` bars a page,
+    next_page_token until done. 12 prior sessions x 390 bars = 4,680 bars per symbol."""
+
+    HIST = None
+
+    def __init__(self, page):
+        self.page, self.requests = page, []
+        if Paged.HIST is None:
+            Paged.HIST = history_bars("X")                         # the same tape for every symbol
+
+    def __call__(self, url, params=None, headers=None, timeout=None):
+        assert url.endswith("/v2/stocks/bars") and params["timeframe"] == "1Min"
+        syms = sorted(params["symbols"].split(","))
+        off = int(params.get("page_token") or 0)
+        if not off:
+            self.requests.append(syms)
+        n = len(Paged.HIST)
+        bars = {}
+        for k in range(off, min(off + self.page, n * len(syms))):
+            bars.setdefault(syms[k // n], []).append(Paged.HIST[k % n])
+        nxt = off + self.page
+        return Resp({"bars": bars, "next_page_token": str(nxt) if nxt < n * len(syms) else None})
+
+
+SYMS = [f"S{i:02d}" for i in range(80)]
+
+
+def test_the_old_single_request_would_drop_the_alphabetically_last_symbols(caplog):
+    from edge.providers import alpaca as A
+    rows, complete = A.bars_pages(Paged(2000), SYMS, timeframe="1Min", start="x", feed="sip")
+    assert complete is False and not rows["S79"]                   # silently empty before the fix
+    assert "page cap hit" in caplog.text
+
+
+def test_history_is_requested_in_chunks_and_every_symbol_gets_its_sessions():
+    store, g = MemoryStore(), Paged(2000)                           # 10 symbols: 24 pages, under the cap
+    out = I._history(g, store, SYMS, DAY, feed="sip")
+    assert all(len(r) <= I.HISTORY_CHUNK for r in g.requests) and len(g.requests) == 8
+    assert set(out) == set(SYMS)
+    for s in ("S00", "S79"):
+        c = store.get("edge_rvol", f"{DAY.isoformat()}|{s}")
+        assert c["sessions"] == 10 and c["complete"] is True and len(out[s][389]) == 10
+
+
+def test_a_truncated_chunk_is_re_asked_one_symbol_at_a_time(caplog):
+    store, g = MemoryStore(), Paged(1000)                           # 10 symbols: 47 pages, over the cap
+    out = I._history(g, store, SYMS[:10], DAY, feed="sip")
+    assert g.requests[0] == SYMS[:10] and g.requests[1:] == [[s] for s in SYMS[:10]]
+    assert "truncated" in caplog.text
+    assert all(store.get("edge_rvol", f"{DAY.isoformat()}|{s}")["sessions"] == 10 for s in SYMS[:10])
+    assert all(len(out[s][389]) == 10 for s in SYMS[:10])
+
+
+def test_a_symbol_still_truncated_is_left_out_and_retried_next_tick_never_cached_short(caplog):
+    store, g = MemoryStore(), Paged(100)                            # even one symbol overflows 40 pages
+    out = I._history(g, store, ["AAA", "BBB"], DAY, feed="sip")
+    assert out == {} and store.get("edge_rvol", f"{DAY.isoformat()}|AAA") is None
+    assert "still truncated" in caplog.text
+    g2 = Paged(5000)                                                # the next tick: the answer fits
+    out = I._history(g2, store, ["AAA", "BBB"], DAY, feed="sip")
+    assert g2.requests == [["AAA", "BBB"]] and store.get("edge_rvol", f"{DAY.isoformat()}|BBB")["sessions"] == 10
+    I._history(g2, store, ["AAA", "BBB"], DAY, feed="sip")
+    assert len(g2.requests) == 1                                    # complete now: cached for the day

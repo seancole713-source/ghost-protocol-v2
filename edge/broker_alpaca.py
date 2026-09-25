@@ -1,13 +1,15 @@
 """Alpaca (paper first) order updates -> edge.fills.OrderEvent. Per Alpaca's docs.
 
 Roles come from OUR client_order_id convention, never inferred from prices:
-  <forecast_id>-entry  <forecast_id>-tp  <forecast_id>-sl  <forecast_id>-tx (time exit)
+  <forecast_id>-entry  <forecast_id>-tp  <forecast_id>-sl  <forecast_id>-tx (time exit;
+  a retried time exit is -tx2, -tx3 ..., because Alpaca refuses a reused client_order_id)
 Alpaca documents that bracket orders do not support extended hours, so an
 entry meant to work pre-market cannot carry broker-held protection; the
 session check below refuses that combination instead of discovering it live.
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any, Dict, Optional
 
@@ -28,6 +30,8 @@ def _epoch(s: Optional[str]) -> int:
 
 def role_of(client_order_id: str) -> str:
     suffix = (client_order_id or "").rsplit("-", 1)[-1]
+    if re.fullmatch(r"tx\d+", suffix):          # a retried time exit: -tx2, -tx3 ... (ids must be unique)
+        return F.TIME_EXIT_ROLE
     return _ROLE.get(suffix, F.MANUAL)
 
 

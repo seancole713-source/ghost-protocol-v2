@@ -74,7 +74,8 @@ def scan(get, store, *, day: date, now: int, top: int = 50) -> Dict[str, Any]:
     ds = day.isoformat()
     if store is not None:
         cached = store.get("edge_pm_scan", ds)
-        if cached and now - int(cached.get("at") or 0) < CACHE_S:
+        # A scan with failed batches is never reused: the card retries it on its next tick.
+        if cached and not cached.get("batch_errors") and now - int(cached.get("at") or 0) < CACHE_S:
             return cached
     base = _base(get, store, day)
     universe = None

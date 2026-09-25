@@ -59,6 +59,8 @@ class FakeAlpaca:
     def __call__(self, url, params=None, headers=None, timeout=None):
         params = params or {}
         self.calls.append((url, dict(params)))
+        if "/v2/aggs/grouped/" in url:      # the premarket scan's prior session: nothing liquid, no error
+            return Resp({"results": []})
         if "screener/stocks/movers" in url:
             if self.phase == "morning":
                 g = [{"symbol": s, "percent_change": 8.0} for s in MORNING_GAINERS]
@@ -498,3 +500,88 @@ def test_the_card_stores_its_top_10_and_the_evening_grades_it(ledger):
     P.run(FakeAlpaca("evening"), ledger, now=ts(16, 25))
     from edge import readout as R
     assert R.view(ledger.store, "top10", card["day"])["graded"] is True
+
+
+# ------------------------------------ one bad data minute must not cost the day (audit 2026-09-25) --
+
+class RateLimited(FakeAlpaca):
+    """Alpaca answers 429 on the card's price snapshots while `failing` is set."""
+
+    def __init__(self, failing=True, **kw):
+        super().__init__(**kw)
+        self.failing = failing
+
+    def __call__(self, url, params=None, headers=None, timeout=None):
+        if self.failing and "/v2/stocks/snapshots" in url and (params or {}).get("feed") != "sip":
+            raise RuntimeError("429 Client Error: Too Many Requests")
+        return super().__call__(url, params=params, headers=headers, timeout=timeout)
+
+
+def test_a_failed_first_card_tick_stores_nothing_and_the_next_tick_issues_once(ledger):
+    out = P.morning_card(RateLimited(), ledger, now=ts(9, 5))
+    assert out["status"] == "retry_pending" and any("snapshots_iex" in f for f in out["failures"])
+    assert ledger.store.get("edge_cards", DAY.isoformat()) is None
+    assert ledger.store.scan("forecasts", experiment_id=P.EID) == []
+    assert ledger.store.scan("abstentions", experiment_id=P.EID) == []
+    out = P.morning_card(RateLimited(failing=False), ledger, now=ts(9, 10))
+    assert out["status"] == "issued" and out["forecasts"] == ["SHOP"] and out["source_errors"] == {}
+    card = ledger.store.get("edge_cards", DAY.isoformat())
+    assert card["degraded"] is False and card["failed_attempts"] == 1
+    assert P.morning_card(FakeAlpaca(), ledger, now=ts(9, 15))["status"] == "already_issued"
+    assert len(ledger.store.scan("forecasts", experiment_id=P.EID)) == 1
+
+
+def test_errors_until_the_last_tick_issue_a_degraded_card_that_names_the_failed_source(ledger):
+    for hm in ((9, 5), (9, 10), (9, 15), (9, 20)):
+        assert P.morning_card(RateLimited(), ledger, now=ts(*hm))["status"] == "retry_pending"
+    out = P.morning_card(RateLimited(), ledger, now=ts(9, 25))
+    assert out["status"] == "issued" and "snapshots_iex" in out["source_errors"]
+    card = ledger.store.get("edge_cards", DAY.isoformat())
+    assert card["degraded"] is True and card["failed_attempts"] == 4
+    assert any("snapshots_iex" in f for f in card["data_failures"])
+    assert card["forecasts"] == [] and card["priced"] == 0          # nothing priced: nothing guessed
+    from edge import notify as N
+    first = N.card_text(card).splitlines()[0]
+    assert first.startswith("DATA WARNING:") and "snapshots_iex" in first and "last try" in first
+
+
+def test_a_failed_daily_bars_call_is_named_and_retried_not_a_crash(ledger):
+    class NoDaily(FakeAlpaca):
+        def __call__(self, url, params=None, headers=None, timeout=None):
+            if url.endswith("/v2/stocks/bars") and (params or {}).get("timeframe") == "1Day":
+                raise RuntimeError("ReadTimeout")
+            return super().__call__(url, params=params, headers=headers, timeout=timeout)
+
+    out = P.morning_card(NoDaily(), ledger, now=ts(9, 5))
+    assert out["status"] == "retry_pending" and "daily_bars" in out["source_errors"]
+    assert ledger.store.get("edge_cards", DAY.isoformat()) is None
+
+
+def test_no_price_for_any_candidate_is_retried_but_a_thin_valid_card_is_not(ledger):
+    class NoPrints(FakeAlpaca):
+        def __call__(self, url, params=None, headers=None, timeout=None):
+            if "/v2/stocks/snapshots" in url and (params or {}).get("feed") != "sip":
+                return Resp({})                                # a 200 with nothing in it
+            return super().__call__(url, params=params, headers=headers, timeout=timeout)
+
+    out = P.morning_card(NoPrints(), ledger, now=ts(9, 5))
+    assert out["status"] == "retry_pending" and "no premarket price for any of 5 candidates" in out["failures"]
+    # STALE's last print is yesterday's: 4/5 priced, no error -- issued on the first tick, as before
+    other = Ledger(MemoryStore())
+    out = P.morning_card(FakeAlpaca(), other, now=ts(9, 5))
+    assert out["status"] == "issued" and out["priced"] == 4 and out["candidates"] == 5
+    assert other.store.get("edge_cards", DAY.isoformat())["degraded"] is False
+
+
+def test_a_retrying_card_tick_is_logged():
+    assert P.noteworthy({"day": "2026-09-23", "card": {"status": "retry_pending"}})
+
+
+def test_a_scan_with_failed_batches_is_not_reused_from_cache():
+    from edge import premarket as PM
+    store = MemoryStore()
+    store.put("edge_pm_scan", DAY.isoformat(), {"day": DAY.isoformat(), "at": ts(9, 4), "batch_errors": 3,
+                                                "gainers": [], "scanned": 300, "priced": 0})
+    g = FakeAlpaca()
+    PM.scan(g, store, day=DAY, now=ts(9, 5))
+    assert any("/v2/aggs/grouped/" in u for u, _ in g.calls)       # recomputed, not the broken cache

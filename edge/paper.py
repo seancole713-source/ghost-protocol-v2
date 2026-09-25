@@ -19,12 +19,12 @@ from __future__ import annotations
 
 import os
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from edge import fills as F
 from edge.broker_alpaca import bracket_request
-from edge.contracts import TERMINAL, Forecast
+from edge.contracts import ET, TERMINAL, Forecast
 from edge.ledger import Ledger
 
 PAPER_HOST = "paper-api.alpaca.markets"
@@ -161,48 +161,204 @@ def cancel_unfilled_entries(http, ledger: Ledger, *, day: str, experiments,
             "canceled": done, "errors": errors}
 
 
-def time_exit(http, ledger: Ledger, *, day: str, experiments) -> Dict[str, Any]:
+TX_LAST_TRY = (15, 50)     # the time-exit window's last 5-minute tick (the window is 15:30-15:55 ET)
+
+
+def _lookup(http, cid: str) -> Tuple[Optional[dict], bool]:
+    """(order, definite) for OUR client order id. definite is False when the broker could not
+    answer (network error, 5xx): 'no such order' and 'cannot tell' are never confused."""
+    try:
+        r = http.get(f"{base_url()}/v2/orders:by_client_order_id", headers=_headers(), timeout=15,
+                     params={"client_order_id": cid, "nested": "true"})
+    except Exception:  # noqa: BLE001
+        return None, False
+    if r.status_code == 200:
+        body = r.json()
+        return (body if isinstance(body, dict) and body else None), True
+    return None, r.status_code == 404
+
+
+def _order_by_id(http, order_id: Optional[str]) -> Optional[dict]:
+    """GET /v2/orders/{id}?nested=true -- the bracket's legs when the by-client-id answer had none."""
+    if not order_id:
+        return None
+    try:
+        r = http.get(f"{base_url()}/v2/orders/{order_id}", headers=_headers(), timeout=15,
+                     params={"nested": "true"})
+    except Exception:  # noqa: BLE001
+        return None
+    if r.status_code != 200:
+        return None
+    body = r.json()
+    return body if isinstance(body, dict) else None
+
+
+def _position_qty(http, symbol: str) -> Optional[int]:
+    """Shares the paper account holds in `symbol`: 0 when it holds none (404), None if unknown."""
+    try:
+        r = http.get(f"{base_url()}/v2/positions/{symbol}", headers=_headers(), timeout=15)
+    except Exception:  # noqa: BLE001
+        return None
+    if r.status_code == 404:
+        return 0
+    if r.status_code != 200:
+        return None
+    try:
+        return int(float((r.json() or {}).get("qty") or 0))
+    except (TypeError, ValueError):
+        return None
+
+
+def _close_own_shares(http, symbol: str, qty: int) -> Tuple[bool, Optional[str]]:
+    """DELETE /v2/positions/{symbol}?qty=N: Alpaca closes N shares only, never the rest."""
+    try:
+        r = http.delete(f"{base_url()}/v2/positions/{symbol}?qty={int(qty)}", headers=_headers(), timeout=15)
+    except Exception:  # noqa: BLE001
+        return False, None
+    if not 200 <= r.status_code < 300:
+        return False, None
+    try:
+        body = r.json()
+    except Exception:  # noqa: BLE001
+        body = None
+    return True, (body.get("id") if isinstance(body, dict) else None)
+
+
+def _et_at(day: str, hh: int, mm: int) -> int:
+    d = datetime.strptime(day[:10], "%Y-%m-%d")
+    return int(datetime(d.year, d.month, d.day, hh, mm, tzinfo=ET).timestamp())
+
+
+def time_exit(http, ledger: Ledger, *, day: str, experiments, now: Optional[int] = None) -> Dict[str, Any]:
     """15:30 ET: for each forecast, cancel ITS OWN open orders, then sell the shares ITS
     entry bought and its legs have not already sold -- never the whole symbol position,
     which two experiments can share. A sell the broker refuses (legs still pending
-    cancel) is retried next tick; the forecast is marked done only when it is flat."""
-    closed, touched, errors = [], False, []
+    cancel) is retried next tick; the forecast is marked done only when the broker's own
+    orders show it flat.
+
+    Audit 2026-09-25, each fixed here:
+      * every sell attempt has its OWN client id (-tx, -tx2, -tx3 ..., counted from the attempts
+        recorded in edge_paper): Alpaca refuses a reused id, so a rejected/expired -tx used to
+        block every retry;
+      * legs missing from the by-client-id answer are read from GET /v2/orders/{id}?nested=true,
+        so a sell is not refused for shares still held by an uncancelled leg;
+      * the legs are cancelled BEFORE the sell, so a failed sell leaves the shares with no stop.
+        On the window's last tick (>= 15:50 ET) a refused sell falls back to closing exactly this
+        forecast's remaining shares (DELETE /v2/positions/{symbol}?qty=N, capped by what the
+        account holds); if that fails too, or the forecast cannot be confirmed flat, a loud
+        NOT FLAT error is recorded and returned under "not_flat"."""
+    closed, touched, errors, not_flat = [], False, [], []
+    last = now is not None and now >= _et_at(day, *TX_LAST_TRY)
+
+    def alarm(f: Forecast, key: str, rec: dict, why: str) -> None:
+        msg = f"{f.symbol} ({f.experiment_id}): {why}"
+        not_flat.append(msg)
+        ledger.store.put("edge_paper", key, {**rec, "exit_alarm": msg, "exit_alarm_at": now})
+
     for f in _forecasts(ledger, day, experiments):
-        rec = ledger.store.get("edge_paper", f"{f.forecast_id}|paper")
+        key = f"{f.forecast_id}|paper"
+        rec = ledger.store.get("edge_paper", key)
         if not rec or rec.get("state") != "submitted" or rec.get("time_exit_done"):
             continue
         entry = _by_client_id(http, f"{f.forecast_id}-entry")
         if entry is None:
             errors.append(f"{f.symbol}: broker has no record yet")
+            if last:
+                alarm(f, key, rec, "the broker gave no record of its entry order; cannot confirm it is flat")
             continue
         legs = entry.get("legs") or []
+        if not legs:
+            legs = (_order_by_id(http, entry.get("id") or rec.get("order_id")) or {}).get("legs") or []
         pending = [o for o in [entry] + legs if o.get("status") in _OPEN]
         if not all(_delete(http, o["id"]) for o in pending):
             errors.append(f"{f.symbol}: cancel failed, retrying")
+            if last:
+                alarm(f, key, rec, "its bracket orders could not be cancelled; the position was not closed")
             continue
         bought = int(float(entry.get("filled_qty") or 0))
         sold = sum(int(float(leg.get("filled_qty") or 0)) for leg in legs)
-        tx = _by_client_id(http, f"{f.forecast_id}-tx")
-        remaining = bought - sold - (int(float(tx.get("filled_qty") or 0)) if tx else 0)
-        if remaining > 0 and not (tx and tx.get("status") in _OPEN):
-            try:
-                r = http.post(f"{base_url()}/v2/orders", headers=_headers(), timeout=15, json={
-                    "symbol": f.symbol, "qty": str(remaining), "side": "sell", "type": "market",
-                    "time_in_force": "day", "client_order_id": f"{f.forecast_id}-tx"})
-                ok = 200 <= r.status_code < 300
-            except Exception:  # noqa: BLE001
-                ok = False
-            if not ok:
-                errors.append(f"{f.symbol}: exit sell refused, retrying")
-                continue
+        tried = list(rec.get("tx_ids") or [])
+        filled_tx, working, unsure = 0, False, False
+        for cid in tried or [f"{f.forecast_id}-tx"]:
+            o, definite = _lookup(http, cid)
+            if o is not None:
+                filled_tx += int(float(o.get("filled_qty") or 0))
+                working = working or o.get("status") in _OPEN
+                if cid not in tried:
+                    tried.append(cid)          # an -tx placed before attempts were recorded
+            elif not definite and cid in tried:
+                unsure = True
+        filled_tx += sum(int(float(x.get("qty") or 0)) for x in rec.get("tx_closes") or [])
+        if unsure:
+            errors.append(f"{f.symbol}: broker could not report its exit orders, retrying")
+            if last:
+                alarm(f, key, rec, "its exit orders could not be read; cannot confirm it is flat")
+            continue
+        remaining = bought - sold - filled_tx
+        if remaining <= 0 and not working:
+            ledger.store.put("edge_paper", key, {**rec, "tx_ids": tried, "time_exit_done": True})
+            touched = True
+            continue
+        if working:
+            # A sell is already working: never a second one on top of it (never sell more than we own).
+            errors.append(f"{f.symbol}: exit sell working, checked next tick")
+            if last:
+                alarm(f, key, rec, f"its exit sell is still working at the last check ({remaining} shares open)")
+            continue
+        cid = f"{f.forecast_id}-tx" if not tried else f"{f.forecast_id}-tx{len(tried) + 1}"
+        rec = {**rec, "tx_ids": tried + [cid]}
+        ledger.store.put("edge_paper", key, rec)      # recorded BEFORE the post: a timed-out post is checked
+        try:
+            r = http.post(f"{base_url()}/v2/orders", headers=_headers(), timeout=15, json={
+                "symbol": f.symbol, "qty": str(remaining), "side": "sell", "type": "market",
+                "time_in_force": "day", "client_order_id": cid})
+            ok = 200 <= r.status_code < 300
+        except Exception:  # noqa: BLE001
+            ok = False
+        if ok:
             closed.append(f.symbol)
-        ledger.store.put("edge_paper", f"{f.forecast_id}|paper", {**rec, "time_exit_done": True})
-        touched = True
-    return {"status": "time_exit" if touched else ("error" if errors else "nothing"),
-            "closed": closed, "errors": errors}
+            touched = True
+            continue
+        if not last:
+            errors.append(f"{f.symbol}: exit sell refused, retrying")
+            continue
+        # Last tick: close exactly this forecast's remaining shares, never more than the account holds.
+        held = _position_qty(http, f.symbol)
+        qty = remaining if held is None else min(remaining, held)
+        if qty <= 0:
+            ledger.store.put("edge_paper", key, {**rec, "time_exit_done": True,
+                                                 "exit_note": "account holds no shares of it at the last check"})
+            touched = True
+            continue
+        done, oid = _close_own_shares(http, f.symbol, qty)
+        if done:
+            ledger.store.put("edge_paper", key, {**rec, "tx_closes": list(rec.get("tx_closes") or []) + [
+                {"qty": qty, "order_id": oid, "at": now}]})
+            closed.append(f.symbol)
+            touched = True
+        else:
+            errors.append(f"{f.symbol}: exit sell and position close both refused")
+            alarm(f, key, rec, f"{remaining} shares still open with NO stop after the time exit "
+                               "(sell and position close both refused) -- close it by hand")
+    status = "error" if not_flat else ("time_exit" if touched else ("error" if errors else "nothing"))
+    out = {"status": status, "closed": closed, "errors": errors, "not_flat": not_flat}
+    if not_flat:
+        out["error"] = "NOT FLAT after the time exit: " + "; ".join(not_flat)
+    return out
 
 
-def _events_from_orders(orders: List[dict], forecast_id: str) -> List[F.OrderEvent]:
+def _is_time_exit(cid: str, forecast_id: str) -> bool:
+    """OUR time-exit ids for this forecast: -tx, then -tx2, -tx3 ... for each retried attempt."""
+    head = f"{forecast_id}-tx"
+    return cid == head or (cid.startswith(head) and cid[len(head):].isdigit())
+
+
+def _close_ids(rec: Optional[dict]) -> set:
+    """Broker order ids of the last-tick position closes (Alpaca names those orders itself)."""
+    return {str(x["order_id"]) for x in (rec or {}).get("tx_closes") or [] if x.get("order_id")}
+
+
+def _events_from_orders(orders: List[dict], forecast_id: str, close_ids=frozenset()) -> List[F.OrderEvent]:
     """Alpaca order snapshots -> OrderEvents. Roles by OUR ids and leg type, never by price."""
     ev: List[F.OrderEvent] = []
 
@@ -229,7 +385,7 @@ def _events_from_orders(orders: List[dict], forecast_id: str) -> List[F.OrderEve
             for leg in o.get("legs") or []:
                 role = F.TARGET if leg.get("type") == "limit" else F.STOP
                 add(leg, role)
-        elif cid == f"{forecast_id}-tx":
+        elif _is_time_exit(cid, forecast_id) or str(o.get("id")) in close_ids:
             add(o, F.TIME_EXIT_ROLE)
     return ev
 
@@ -241,6 +397,7 @@ def reconcile(http, ledger: Ledger, *, day: str, experiments, now: int) -> Dict[
     r.raise_for_status()
     orders = list(r.json() or [])
     ids = [f.forecast_id for f in _forecasts(ledger, day, experiments)]
+    closes = set().union(*[_close_ids(ledger.store.get("edge_paper", f"{fid}|paper")) for fid in ids])
     # Keep the broker's own record of every order (compact) so a simulated/actual mismatch can be
     # explained afterwards -- 2026-09-23 GLND: simulated LOSS, paper NO_FILL, nothing kept to say why.
     keep = ("id", "client_order_id", "symbol", "side", "type", "status", "stop_price", "limit_price",
@@ -248,7 +405,8 @@ def reconcile(http, ledger: Ledger, *, day: str, experiments, now: int) -> Dict[
             "expired_at", "updated_at")
     ledger.store.put("edge_paper_orders", day, {"day": day, "at": now, "orders": [
         {**{k: o.get(k) for k in keep}, "legs": [{k: g.get(k) for k in keep} for g in o.get("legs") or []]}
-        for o in orders if any(str(o.get("client_order_id") or "").startswith(fid) for fid in ids)]})
+        for o in orders if any(str(o.get("client_order_id") or "").startswith(fid) for fid in ids)
+        or str(o.get("id")) in closes]})
     settled = {}
     todays = _forecasts(ledger, day, experiments)
     for f in todays:
@@ -262,7 +420,7 @@ def reconcile(http, ledger: Ledger, *, day: str, experiments, now: int) -> Dict[
         if rec and rec.get("state") == "rejected":
             pos = F.Position(state="ENTRY_REJECTED")
         else:
-            pos = F.reconcile(f, _events_from_orders(orders, src), now=now)
+            pos = F.reconcile(f, _events_from_orders(orders, src, _close_ids(rec)), now=now)
         res = F.to_resolution(f, pos)
         ledger.settle(f.forecast_id, res, now=now, record="actual")
         settled[f"{f.experiment_id}:{f.symbol}"] = {"actual": res.outcome, "pnl_usd": res.pnl_usd,
