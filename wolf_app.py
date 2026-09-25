@@ -2334,12 +2334,18 @@ async def lifespan(app: FastAPI):
                     return
                 store = _EdgeStore(db_conn)
                 store.ensure()
-                if store.get("edge_backtest", _bt.BACKTEST_VERSION):
-                    return
                 days = max(5, min(250, int(os.getenv("EDGE_BACKTEST_DAYS", "60"))))
-                out = _bt.run(_edge_get(), store, end_day=_prev_td(now_et.date() if now_et.hour >= 20
-                                                                   else now_et.date()), days=days)
-                LOGGER.warning("EDGE_BACKTEST %s", _json.dumps(out, default=str)[:6000])
+                end = _prev_td(now_et.date() if now_et.hour >= 20 else now_et.date())
+                if not store.get("edge_backtest", _bt.BACKTEST_VERSION):
+                    out = _bt.run(_edge_get(), store, end_day=end, days=days)
+                    LOGGER.warning("EDGE_BACKTEST %s", _json.dumps(out, default=str)[:6000])
+                    return
+                # One job per tick: the post-split hypothesis runs on the next tick after the
+                # main backtest is stored, once per version.
+                from edge import backtest_postsplit as _ps
+                if not store.get("edge_backtest_postsplit", _ps.VERSION):
+                    out = _ps.run(_edge_get(), store, end_day=end, days=days)
+                    LOGGER.warning("EDGE_BACKTEST_POSTSPLIT %s", _json.dumps(out, default=str)[:6000])
             except Exception as _e:
                 LOGGER.warning("edge backtest job failed: %s", str(_e)[:200])
                 raise
