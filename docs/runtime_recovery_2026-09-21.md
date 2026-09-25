@@ -67,6 +67,8 @@ can it recreate forecasts missed during the outage. Pre-market and regular
 sessions need separate observed validation; regular-session success alone must
 not be called pre-market proof.
 
+**Deploy freeze (F29):** Railway's pre-deploy (`python scripts/runtime_preflight.py --pre-deploy`) fails any deploy on an NYSE trading day (edge/calendar.py) between 08:00 and 16:30 America/New_York so the scheduler is never restarted mid-session; the previous deployment keeps serving. For an emergency fix set `DEPLOY_FREEZE_OVERRIDE=1` on the service, redeploy, then remove it. Boot and CI run the preflight without the flag, and any error in the freeze check itself allows the deploy with a warning.
+
 ## Primary references
 
 - [NumPy 1.26.4 supported Python versions](https://numpy.org/devdocs/release/1.26.4-notes.html)

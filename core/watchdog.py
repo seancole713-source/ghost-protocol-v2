@@ -48,6 +48,7 @@ def run_watchdog():
                 snapshot_price=float(price) if price else None,
                 now=now,
                 expires_at=int(expires_at) if expires_at else None,
+                gap_aware_loss=True,
             )
             if hit not in ("WIN", "LOSS") or not resolved_at:
                 continue

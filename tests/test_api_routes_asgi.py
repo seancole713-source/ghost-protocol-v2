@@ -9,7 +9,10 @@ def _client_with_test_mode(monkeypatch):
 
 
 def test_api_health_route_returns_health_payload(monkeypatch):
-    monkeypatch.setattr(wolf_app, "health", lambda: {"status": "healthy", "score": 100, "issues": []})
+    # F28: public health is the cheap probe (DB ping + heartbeat); it must not
+    # run the full provider-probing health().
+    monkeypatch.setattr(wolf_app, "_health_db_ping", lambda: True)
+    monkeypatch.setattr(wolf_app, "health", lambda: (_ for _ in ()).throw(AssertionError("full health called")))
     with _client_with_test_mode(monkeypatch) as client:
         r = client.get("/api/health")
     assert r.status_code == 200
@@ -289,11 +292,14 @@ def test_security_headers_present(monkeypatch):
 
 
 def test_health_public_is_slim(monkeypatch):
-    """audit v2 #10: public /health and /api/health expose liveness only."""
+    """audit v2 #10: public /health and /api/health expose liveness only --
+    even when a cached full-health result (with internals) is available."""
+    monkeypatch.setattr(wolf_app, "_health_db_ping", lambda: True)
     monkeypatch.setattr(wolf_app, "health", lambda: {
         "status": "healthy", "score": 90, "telegram_configured": True,
         "price_feeds": {"x": 1}, "tasks": [1, 2], "confidence_floor": 0.8,
         "dedup_blocked": 3, "predictions_freshness_min": 12})
+    wolf_app.health_cached()  # warm the admin cache with the full payload
     with _client_with_test_mode(monkeypatch) as client:
         for path in ("/health", "/api/health"):
             b = client.get(path).json()

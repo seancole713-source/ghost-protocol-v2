@@ -626,11 +626,16 @@ def _expire_open_picks_without_v3_model():
             rows = cur.fetchall()
             for pid, sym in rows:
                 if (sym or "").upper() not in model_syms:
+                    # Idempotent: only a still-open row is voided, so a re-run
+                    # (leader handoff, restart) or a race with the resolver can
+                    # never overwrite a WIN/LOSS or re-stamp resolved_at.
                     cur.execute(
-                        "UPDATE predictions SET outcome='EXPIRED', resolved_at=%s WHERE id=%s",
+                        "UPDATE predictions SET outcome='EXPIRED', resolved_at=%s "
+                        "WHERE id=%s AND outcome IS NULL",
                         (now, pid),
                     )
-                    expired += 1
+                    if cur.rowcount == 1:
+                        expired += 1
         return expired
     except Exception:
         return 0
@@ -1525,9 +1530,8 @@ async def lifespan(app: FastAPI):
         pv = _purge_v3_stale_or_weak()
         if pv:
             LOGGER.info(f"Boot v3 purge: removed {pv} stale or sub-floor TP/SL models")
-        expired_orphans = _expire_open_picks_without_v3_model()
-        if expired_orphans:
-            LOGGER.info("Boot pick cleanup: expired %s active picks with no model", expired_orphans)
+        # The orphan-pick expiry writes the predictions ledger, so it runs in
+        # _start_leader_runtime (leader only), never on a booting follower.
     except Exception as _bpe:
         LOGGER.warning("Boot purge failed: "+str(_bpe)[:60])
 
@@ -1587,13 +1591,33 @@ async def lifespan(app: FastAPI):
 
     _leader_runtime_started = False
 
+    _leader_watch_task = None
+
     async def _start_leader_runtime() -> None:
-        nonlocal _leader_runtime_started
+        nonlocal _leader_runtime_started, _leader_watch_task
         if _leader_runtime_started:
             return
         from core import scheduler
+        from core.leader_lock import is_leader, watch_leadership
         from core.prediction import reconcile_outcomes
         from core.news import run_news_cycle
+        # Per-tick guard: the scheduler starts no job while this process is not
+        # the leader (lock session dropped and not yet re-acquired).
+        scheduler.set_dispatch_gate(is_leader)
+        import asyncio as _lr_aio
+
+        _leader_watch_task = _lr_aio.get_running_loop().create_task(watch_leadership())
+        # Ledger write moved off the boot path (was before any leader check):
+        # only the elected leader expires active picks whose model is gone.
+        try:
+            expired_orphans = _expire_open_picks_without_v3_model()
+            if expired_orphans:
+                LOGGER.info(
+                    "Leader pick cleanup: expired %s active picks with no model",
+                    expired_orphans,
+                )
+        except Exception as _eoe:
+            LOGGER.warning("Leader pick cleanup failed: %s", str(_eoe)[:120])
         scheduler.register("morning_card", _morning_card_job, interval_s=86400, timeout_s=600)
         # Market-hours scan loop (roadmap #3a): tick at the market interval; the job
         # self-gates to SCAN_INTERVAL_MARKET_MIN / SCAN_INTERVAL_OFFHOURS_MIN.
@@ -2630,12 +2654,13 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        if _takeover_task is not None and not _takeover_task.done():
-            _takeover_task.cancel()
-            try:
-                await _takeover_task
-            except _aio.CancelledError:
-                pass
+        for _bg_task in (_takeover_task, _leader_watch_task):
+            if _bg_task is not None and not _bg_task.done():
+                _bg_task.cancel()
+                try:
+                    await _bg_task
+                except _aio.CancelledError:
+                    pass
         if _leader_runtime_started:
             from core import scheduler
 
@@ -3011,6 +3036,10 @@ def _model_readiness_summary(model_status: dict | None) -> dict:
 
 
 def health():
+    """FULL (expensive) health: provider feed probes, ledger freshness, model
+    readiness, breaker auto-recovery. Never call it from a public probe or a
+    polled page -- use health_cached() (60 s single-flight cache). The public
+    /health and /api/health use the cheap _health_public() instead."""
     import time as _t
     from core.prices import check_feeds
     from core import scheduler
@@ -3093,7 +3122,9 @@ def health():
         if open_picks >= total_syms > 0:
             dedup_blocked = True
             warnings.append("Dedup blocking all " + str(total_syms) + " symbols")
-        if dedup_blocked:
+        from core.leader_lock import is_leader as _hl_is_leader
+        # Ledger write: only the background-work leader may void picks.
+        if dedup_blocked and _hl_is_leader():
             try:
                 with db_conn() as _fc:
                     _fc.cursor().execute(
@@ -3190,15 +3221,103 @@ def health():
         "model_readiness": model_readiness,
     }
 
-def _health_public():
-    """Slim public health (audit v2 #10): liveness only — no internals
-    (telegram config, confidence floor, dedup, freshness, tasks, price feeds).
-    Full detail moved to the cookie-gated /admin/health.
+_HEALTH_FULL_CACHE: dict = {"t": 0.0, "v": None}
+_HEALTH_FULL_LOCK = threading.Lock()
+_HEALTH_RANK = {"healthy": 0, "degraded": 1, "critical": 2}
 
-    Readiness remains available from the authenticated health surface; this
-    endpoint is intentionally liveness-only."""
-    full = health()
-    return {"status": full.get("status"), "score": full.get("score"), "ts": int(time.time())}
+
+def _health_full_ttl_s() -> float:
+    try:
+        return max(5.0, float(os.getenv("HEALTH_FULL_CACHE_SEC", "60")))
+    except (TypeError, ValueError):
+        return 60.0
+
+
+def health_cached(max_age_s: float | None = None) -> dict:
+    """Full health(), cached and single-flight (F28).
+
+    The full check probes four market-data providers and touches breakers; run
+    per request it tripped the Alpaca circuit breaker during deploys. Callers
+    within the TTL share one result, and concurrent misses wait for the one
+    in-flight computation instead of each probing providers.
+    """
+    ttl = _health_full_ttl_s() if max_age_s is None else max(0.0, float(max_age_s))
+    cached, ts = _HEALTH_FULL_CACHE["v"], _HEALTH_FULL_CACHE["t"]
+    if cached is not None and (time.time() - ts) < ttl:
+        return cached
+    with _HEALTH_FULL_LOCK:
+        cached, ts = _HEALTH_FULL_CACHE["v"], _HEALTH_FULL_CACHE["t"]
+        if cached is not None and (time.time() - ts) < ttl:
+            return cached
+        value = health()
+        _HEALTH_FULL_CACHE["v"], _HEALTH_FULL_CACHE["t"] = value, time.time()
+        return value
+
+
+def _health_db_ping(timeout_ms: int = 2000) -> bool:
+    """SELECT 1 through the existing pool with a short server-side timeout."""
+    try:
+        with db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("SET LOCAL statement_timeout = %s", (str(int(timeout_ms)),))
+            cur.execute("SELECT 1")
+            row = cur.fetchone()
+        return bool(row) and row[0] == 1
+    except Exception as e:
+        LOGGER.warning("health.db_ping failed: %s", str(e)[:120])
+        return False
+
+
+def _health_public():
+    """Cheap public liveness (F28 + audit v2 #10).
+
+    Railway's healthcheck, uptime monitors and the console hit this, so it must
+    never probe market-data providers or write anything: one pooled SELECT 1
+    plus in-memory scheduler/leader heartbeat. When the (60 s cached) full
+    check has run recently, its status/score is folded in (worse-of) so the
+    number keeps its old meaning; internals are never exposed here -- full
+    detail stays behind the cookie-gated /admin/health.
+    """
+    issues = 0
+    warnings = 0
+    db_ok = _health_db_ping()
+    if not db_ok:
+        issues += 1
+    leader = False
+    sched = {"running": False, "tasks": 0, "last_tick_ago_s": None, "dispatching": False}
+    try:
+        from core.leader_lock import is_leader
+        from core.scheduler import heartbeat
+
+        leader = bool(is_leader())
+        sched = heartbeat()
+        stale_after = max(60, int(os.getenv("HEALTH_SCHEDULER_STALE_S", "120")))
+        tick_ago = sched.get("last_tick_ago_s")
+        if sched.get("running") and tick_ago is not None and tick_ago > stale_after:
+            warnings += 1
+    except Exception as e:
+        LOGGER.warning("health.heartbeat failed: %s", str(e)[:120])
+    score = max(0, min(100, 100 - issues * 20 - warnings * 5))
+    status = "healthy" if score >= 80 and not issues else "degraded" if score >= 50 else "critical"
+
+    detail_age_s = None
+    cached, cached_ts = _HEALTH_FULL_CACHE["v"], _HEALTH_FULL_CACHE["t"]
+    if isinstance(cached, dict) and cached_ts:
+        age = time.time() - cached_ts
+        if age <= max(_health_full_ttl_s() * 10, 600.0):
+            detail_age_s = int(age)
+            try:
+                score = min(score, int(cached.get("score", score)))
+            except (TypeError, ValueError):
+                pass
+            c_status = cached.get("status")
+            if _HEALTH_RANK.get(c_status, -1) > _HEALTH_RANK.get(status, 0):
+                status = c_status
+    return {
+        "status": status, "score": score, "ts": int(time.time()),
+        "leader": leader, "scheduler": sched,
+        "detail_age_s": detail_age_s,
+    }
 
 
 @APP.get("/health")
@@ -4039,7 +4158,9 @@ def cockpit_context():
             pass
         return {
             "ok": True,
-            "health": health(),
+            # Polled every 60 s by every open cockpit: shared 60 s cache, so
+            # viewers never multiply provider probes (F28).
+            "health": health_cached(),
             "stats": stats,
             "direction": direction,
             "regime": regime,

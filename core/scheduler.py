@@ -33,6 +33,39 @@ class Task:
 
 _tasks: Dict[str, Task] = {}
 _running = False
+# Per-tick dispatch gate (leader election): when it returns False the loop keeps
+# ticking but starts no task. None = always dispatch.
+_dispatch_gate: Optional[Callable[[], bool]] = None
+_last_tick_ts: float = 0.0
+_gate_closed_ticks = 0
+
+
+def set_dispatch_gate(gate: Optional[Callable[[], bool]]) -> None:
+    """Install a cheap, non-blocking predicate consulted before every dispatch."""
+    global _dispatch_gate
+    _dispatch_gate = gate
+
+
+def _gate_open() -> bool:
+    gate = _dispatch_gate
+    if gate is None:
+        return True
+    try:
+        return bool(gate())
+    except Exception as exc:  # fail closed: an unknown state starts no jobs
+        LOGGER.warning("Scheduler dispatch gate errored: %s", str(exc)[:120])
+        return False
+
+
+def heartbeat() -> dict:
+    """In-memory liveness for the public health probe (no I/O)."""
+    now = time.time()
+    return {
+        "running": _running,
+        "tasks": len(_tasks),
+        "last_tick_ago_s": int(now - _last_tick_ts) if _last_tick_ts else None,
+        "dispatching": _gate_open() if _running else False,
+    }
 
 # P2-2: default task timeout
 _DEFAULT_TASK_TIMEOUT_S = float(
@@ -72,8 +105,19 @@ def start():
 
 async def _loop():
     """Main scheduler loop. Checks tasks every 10s."""
+    global _last_tick_ts, _gate_closed_ticks
     while _running:
         now = time.time()
+        _last_tick_ts = now
+        if not _gate_open():
+            # Not the leader (lock lost / never held): start nothing this tick.
+            # Due tasks stay due and run once leadership returns.
+            _gate_closed_ticks += 1
+            if _gate_closed_ticks == 1 or _gate_closed_ticks % 60 == 0:
+                LOGGER.warning("Scheduler paused: dispatch gate closed (not leader)")
+            await asyncio.sleep(10)
+            continue
+        _gate_closed_ticks = 0
         for task in list(_tasks.values()):
             if now >= task.next_run_at:
                 if task.running:

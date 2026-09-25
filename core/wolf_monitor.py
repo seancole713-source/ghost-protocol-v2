@@ -84,6 +84,12 @@ async def start_wolf_monitor() -> None:
     edgar_last_check = 0.0
 
     while True:
+        # Leader gate: a replica that lost (or never held) the scheduler
+        # leader lock must not send alerts or write state.
+        from core.leader_lock import is_leader
+        if not is_leader():
+            await asyncio.sleep(CHECK_INTERVAL_SEC)
+            continue
         try:
             await _run_checks()
         except Exception as exc:

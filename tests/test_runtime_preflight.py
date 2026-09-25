@@ -67,7 +67,7 @@ def test_ci_and_runtime_use_one_python_pin():
 
 def test_final_image_and_each_boot_require_preflight():
     deploy = json.loads((ROOT / 'railway.json').read_text())['deploy']
-    assert deploy['preDeployCommand'] == ['python scripts/runtime_preflight.py']
+    assert deploy['preDeployCommand'] == ['python scripts/runtime_preflight.py --pre-deploy']
     assert deploy['healthcheckPath'] == '/health'
     # Measured DB schema startup took 118s, before Uvicorn could bind.
     assert 180 <= deploy['healthcheckTimeout'] <= 300

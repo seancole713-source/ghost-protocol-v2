@@ -672,6 +672,12 @@ async def start_squeeze_monitor() -> None:
         asyncio.create_task(maintain_short_cache())
     _ensure_scan_cache_loaded()
     while True:
+        # Leader gate: a replica that lost (or never held) the scheduler
+        # leader lock must not send alerts or write state.
+        from core.leader_lock import is_leader
+        if not is_leader():
+            await asyncio.sleep(CHECK_INTERVAL_SEC)
+            continue
         try:
             await _run_watchlist_scan()
         except Exception as exc:

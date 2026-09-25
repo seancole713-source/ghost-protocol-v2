@@ -80,13 +80,36 @@ def run_checks() -> dict:
             'versions': versions, 'accuracy_proven': False}
 
 
-def main() -> int:
+def deploy_freeze_check() -> int:
+    """Market-hours deploy freeze (Railway pre-deploy only, never on boot/CI).
+
+    Any error loading or running the check allows the deploy with a warning.
+    """
+    try:
+        try:
+            from scripts import deploy_freeze
+        except ImportError:
+            import deploy_freeze  # type: ignore[no-redef]  # run as a script
+        return deploy_freeze.check()
+    except Exception as exc:
+        print(f'[DEPLOY_FREEZE] WARNING: freeze check unavailable ({type(exc).__name__}); '
+              'allowing deploy')
+        return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = sys.argv[1:] if argv is None else argv
     try:
         report = run_checks()
     except Exception as exc:
         print(f'[RUNTIME_PREFLIGHT] FAILED: {type(exc).__name__}: {exc}', file=sys.stderr)
         return 1
     print('[RUNTIME_PREFLIGHT] ' + json.dumps(report, sort_keys=True))
+    # The freeze runs only in Railway's pre-deploy step. Boot (Procfile) and CI
+    # call this script without the flag, so a crash-restart mid-session still
+    # boots.
+    if '--pre-deploy' in args:
+        return deploy_freeze_check()
     return 0
 
 

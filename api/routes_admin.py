@@ -26,10 +26,11 @@ def admin_page(request: Request):
 def admin_health(request: Request):
     """Full health detail, cookie-gated like /api/diagnostics — 404 when
     unauthenticated so internals are not publicly discoverable (audit v2 #10)."""
-    from wolf_app import _ADMIN_COOKIE, _admin_token_valid, health  # late import — shared state + monkeypatch-safe
+    from wolf_app import _ADMIN_COOKIE, _admin_token_valid, health_cached  # late import — shared state + monkeypatch-safe
     if not _admin_token_valid(request.cookies.get(_ADMIN_COOKIE, "")):
         raise HTTPException(status_code=404)
-    return health()
+    # Heavy provider/ledger checks live here, cached 60 s (F28).
+    return health_cached()
 
 
 @router.post("/admin/login", include_in_schema=False)
