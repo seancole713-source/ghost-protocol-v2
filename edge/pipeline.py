@@ -208,10 +208,12 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, A
     syms = sorted(set(cand["symbols"]))
     daily = A.bars_multi(get, syms, timeframe="1Day", start=(day - timedelta(days=45)).isoformat())
     source_errors: Dict[str, str] = dict(cand["errors"])   # a failed source is named on the card, never "no data"
+    from edge import feeds as FD
+    feed = FD.live_feed(get, store, now=now)       # IEX on the free plan; SIP once it is paid for
     try:
-        snaps = A.snapshots(get, syms, feed="iex")
+        snaps = A.snapshots(get, syms, feed=feed)
     except Exception as exc:  # noqa: BLE001 - recorded as missing, never guessed
-        snaps, source_errors["snapshots_iex"] = {}, f"{type(exc).__name__}: {str(exc)[:160]}"
+        snaps, source_errors[f"snapshots_{feed}"] = {}, f"{type(exc).__name__}: {str(exc)[:160]}"
     try:
         items = A.news(get, syms, start=_iso(now - 86_400))
     except Exception as exc:  # noqa: BLE001
@@ -337,7 +339,8 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, A
             "movers_last_updated": updated, "movers_stale": cand["movers_stale"],
             "premarket_scan": cand["scan"], "premarket_scan_top": cand["scan_top"],
             "dropped_non_common": cand["dropped_non_common"],
-            "coverage_note": f"{priced}/{len(rows)} candidates had a fresh IEX premarket price",
+            "live_feed": feed,
+            "coverage_note": f"{priced}/{len(rows)} candidates had a fresh {feed.upper()} premarket price",
             "health": health, "health_banner": H.banner(len(chosen), {EID: blocking[EID]}),
             "source_errors": source_errors, "movers_count": len(syms),
             "health_note": "shadow records regardless; the banner is what a LIVE release would say",
@@ -391,7 +394,8 @@ def research_candidates(get, store, *, day: date, now: int, n: int) -> List[str]
     if not syms:
         return []
     daily = A.bars_multi(get, syms, timeframe="1Day", start=(day - timedelta(days=45)).isoformat())
-    snaps = A.snapshots(get, syms, feed="iex")
+    from edge import feeds as FD
+    snaps = A.snapshots(get, syms, feed=FD.live_feed(get, store, now=now))
     ranked = []
     for s in syms:
         st = _daily_stats(daily.get(s) or [], day)

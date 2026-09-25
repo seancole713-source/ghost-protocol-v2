@@ -156,3 +156,24 @@ def test_continuation_v2_vetoes_a_stock_that_just_sold_shares():
     assert S.decide("intraday_continuation_v2", sig).verdict == S.REJECTED
     assert S.decide("intraday_continuation_v2", {**ok, "not_dilutive": S.dilution_signal([])}).verdict == S.ELIGIBLE
     assert I.INTRADAY_CONTINUATION_V2.experiment_id == "intraday_continuation@v2"
+
+
+def test_the_quality_lane_adds_liquid_movers_the_gainers_list_never_shows():
+    """2026-09-24: the top 50 by % were +20-200% sub-$5 names; NBIS (+9.5% at $248) and
+    TWST (+8.4%) never reached the radar. Most-actives by volume, priced from snapshots."""
+    from edge.ledger import MemoryStore as MS
+
+    def get(url, params=None, headers=None, timeout=None):
+        if "most-actives" in url:
+            return Resp({"most_actives": [{"symbol": s} for s in ("NBIS", "TWST", "PENY", "FLAT", "KNOWN", "ABCDW")]})
+        if "/v2/stocks/snapshots" in url:
+            if params.get("feed") == "sip":
+                raise RuntimeError("403 subscription does not permit querying recent SIP data")
+            px = {"NBIS": (248.14, 226.6), "TWST": (41.0, 37.8), "PENY": (1.10, 0.90), "FLAT": (50.0, 49.5)}
+            return Resp({s: {"latestTrade": {"p": p}, "prevDailyBar": {"c": c}}
+                         for s, (p, c) in px.items() if s in params["symbols"].split(",")})
+        raise AssertionError(url)
+
+    lane = I._quality_lane(get, MS(), now=ts(10, 40), known={"KNOWN"}, universe=None)
+    assert set(lane) == {"NBIS", "TWST"}            # PENY under $2, FLAT +1%, KNOWN already listed, ABCDW a warrant
+    assert lane["NBIS"] == pytest.approx(9.5, abs=0.1)

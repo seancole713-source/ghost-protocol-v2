@@ -351,7 +351,8 @@ def test_an_empty_research_queue_is_retried_not_cached_for_the_day(ledger, monke
     class NoFreshPrice(FakeAlpaca):
         def __call__(self, url, params=None, headers=None, timeout=None):
             if "/v2/stocks/snapshots" in url:
-                calls["n"] += 1
+                if (params or {}).get("feed") == "iex":      # not the once-a-day SIP entitlement check
+                    calls["n"] += 1
                 return Resp({})                      # 08:30 ET: IEX has printed nothing yet
             return super().__call__(url, params=params, headers=headers, timeout=timeout)
 

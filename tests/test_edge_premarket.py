@@ -43,6 +43,8 @@ class Market:
             ]}, raise_for_status=lambda: None, headers={})
         if "/v2/stocks/snapshots" in url:
             syms = params["symbols"].split(",")
+            if params.get("feed") == "sip":                 # the free plan refuses recent SIP data
+                raise RuntimeError("403 Client Error: subscription does not permit querying recent SIP data")
             self.snap_calls.append(syms)
             prints = {"WOR": (68.33, ts(8, 50)), "IONQ": (45.60, ts(8, 55)), "FLAT": (20.1, ts(8, 58)),
                       "OLD": (15.0, ts(16, 0) - 86_400)}      # yesterday's print: never a gap
@@ -141,3 +143,39 @@ def test_the_scan_logs_how_much_of_the_market_iex_can_see():
     assert out["priced"] == 3 and out["quoted"] == 2          # OLD has a fresh quote but no fresh trade
     cov = store.get("edge_pm_coverage", "2026-09-23")["samples"]
     assert cov[-1]["fresh_trade"] == 3 and cov[-1]["fresh_quote"] == 2 and cov[-1]["scanned"] == 4
+
+
+def test_the_live_feed_switches_to_sip_by_itself_once_it_is_paid_for(monkeypatch):
+    """Operator, 2026-09-25: when SIP is bought, nothing else should need to change. The
+    first live call each day asks whether this key may read recent SIP data."""
+    from edge import feeds as FD
+    monkeypatch.delenv("EDGE_LIVE_FEED", raising=False)
+    store = MemoryStore()
+    assert FD.live_feed(Market(), store, now=ts(8, 0)) == "iex"                # free plan: 403
+    assert store.get("edge_feed", "2026-09-23")["feed"] == "iex"
+
+    class Paid(Market):
+        def __call__(self, url, params=None, headers=None, timeout=None):
+            if "/v2/stocks/snapshots" in url and (params or {}).get("feed") == "sip":
+                return NS(status_code=200, json=lambda: {s: {"latestTrade": {"p": 1.0, "t": iso(ts(8, 59))}}
+                                                          for s in params["symbols"].split(",")},
+                          raise_for_status=lambda: None)
+            return super().__call__(url, params, headers, timeout)
+
+    fresh = MemoryStore()
+    assert FD.live_feed(Paid(), fresh, now=ts(8, 0)) == "sip"
+    assert PM.scan(Paid(), fresh, day=DAY, now=ts(9, 5))["feed"] == "sip"
+    monkeypatch.setenv("EDGE_LIVE_FEED", "iex")                                # forced fallback
+    assert FD.live_feed(Paid(), MemoryStore(), now=ts(8, 0)) == "iex"
+
+
+def test_a_network_error_does_not_pin_the_feed_for_the_day(monkeypatch):
+    from edge import feeds as FD
+    monkeypatch.delenv("EDGE_LIVE_FEED", raising=False)
+
+    def down(url, params=None, headers=None, timeout=None):
+        raise TimeoutError("read timed out")
+
+    store = MemoryStore()
+    assert FD.live_feed(down, store, now=ts(8, 0)) == "iex"
+    assert store.get("edge_feed", "2026-09-23") is None          # undecided: asked again next time

@@ -79,7 +79,12 @@ def backtest(store) -> Optional[Dict[str, Any]]:
     if not rows:
         return None
     b = max(rows, key=lambda r: r.get("completed_at") or 0)
-    return {k: v for k, v in b.items() if k != "sessions_detail"}
+    out = {k: v for k, v in b.items() if k != "sessions_detail"}
+    ps = store.scan("edge_backtest_postsplit")
+    if ps:
+        p = max(ps, key=lambda r: r.get("completed_at") or 0)
+        out["post_split_momentum"] = {k: v for k, v in p.items() if k != "trades"}
+    return out
 
 
 def misses(store, day: Optional[str] = None) -> Optional[Dict[str, Any]]:
