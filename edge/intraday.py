@@ -75,6 +75,10 @@ INTRADAY_SPECS = (CATALYST_BREAKOUT, INTRADAY_CONTINUATION, INTRADAY_CONTINUATIO
 # records its own forecast too if its stricter rule also passes. It is never "the" choice.
 _PAIRED = {INTRADAY_CONTINUATION.experiment_id: INTRADAY_CONTINUATION_V2}
 _SECONDARY = {v.experiment_id for v in _PAIRED.values()}
+# Only these place PAPER orders. A paired later version shares its v1 order: same stock, same
+# moment, same levels, so a second bracket would only double the paper exposure (2026-09-25:
+# BENF and AESI were each bought twice). Its "actual" record is read from v1's broker order.
+PAPER_SPECS = tuple(s for s in INTRADAY_SPECS if s.experiment_id not in _SECONDARY)
 _STRATEGY_OF = {CATALYST_BREAKOUT.experiment_id: "catalyst_breakout",
                 INTRADAY_CONTINUATION.experiment_id: "intraday_continuation",
                 INTRADAY_CONTINUATION_V2.experiment_id: "intraday_continuation_v2",

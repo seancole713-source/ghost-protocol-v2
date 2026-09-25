@@ -43,9 +43,13 @@ def today(store, day: Optional[str] = None) -> Dict[str, Any]:
             "rows": compact}
 
 
-def _by_day(store, eid: str) -> Dict[str, list]:
+def _by_day(store, eid: str, regime: Optional[str] = None) -> Dict[str, list]:
+    """Filled simulated outcomes per session -- only the report's feed regime (never IEX + SIP)."""
     out: Dict[str, list] = {}
+    lg, cards = Ledger(store), {}
     for f in store.scan("forecasts", experiment_id=eid):
+        if regime is not None and lg.feed_of(f, cards) != regime:
+            continue
         o = store.get("outcomes", f"{f['forecast_id']}|simulated")
         if o and o.get("outcome") in ("WIN", "LOSS", "TIME_EXIT"):
             out.setdefault(f["session_date"], []).append(o["outcome"] == "WIN")
@@ -62,13 +66,14 @@ def experiments(store) -> Dict[str, Any]:
     for eid, rep in reports.items():
         out[eid] = {
             "forecasts": rep["forecasts"], "abstentions": rep["abstentions"], "excluded": rep["excluded"],
+            "feed_regime": rep.get("feed_regime"), "forecasts_in_regime": rep.get("forecasts_in_regime"),
             "break_even": rep["break_even"],
             "records": {rec: {k: r.get(k) for k in ("by_outcome", "filled", "wins", "win_rate",
                                                      "win_rate_ci", "verdict")}
                         for rec, r in rep["records"].items()},
         }
         if eid != BASE_EID and BASE_EID in reports:
-            by_day = _by_day(store, eid)
+            by_day = _by_day(store, eid, rep.get("feed_regime"))
             out[eid]["promotion"] = promotion.evaluate(rep, baseline=reports[BASE_EID], sessions=len(by_day),
                                                        by_day=by_day, n_candidates=max(1, len(candidates)))
     return out

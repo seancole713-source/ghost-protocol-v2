@@ -640,7 +640,7 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None) -> Dict[str,
         guarded("intraday", lambda: I.tick(get, ledger, now=now, http=http))
         if http is not None:
             guarded("paper_submit_intraday", lambda: _paper().submit(http, ledger, day=ds,
-                                                                      experiments=I.INTRADAY_SPECS))
+                                                                      experiments=I.PAPER_SPECS))
     if http is not None and within((9, 45), (15, 0)):      # intraday entries expire from ~09:50
         guarded("paper_cancel", lambda: _paper().cancel_unfilled_entries(http, ledger, day=ds,
                                                                           experiments=all_specs, now=now))

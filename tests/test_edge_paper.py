@@ -249,3 +249,71 @@ def test_reconcile_keeps_the_brokers_order_record(ledger):
     from edge import readout as RO
     row = RO.view(ledger.store, "paper", "2026-09-23")["orders"][0]
     assert row["broker_entry"]["status"] == "canceled" and row["filled_after_window"] is False
+
+
+def test_a_paired_v2_forecast_places_no_order_and_is_graded_from_v1s_order():
+    """2026-09-25: BENF and AESI were each bought twice, once for intraday_continuation v1 and once
+    for its paired v2 (same stock, moment and levels). Only v1 places an order now; v2's actual
+    record is read from v1's broker order, so both records still show the real fill."""
+    from edge import intraday as I
+    from edge.contracts import issue_intraday
+    lg = Ledger(MemoryStore())
+    for spec in I.INTRADAY_SPECS:
+        lg.register(spec, now=ts(8, 0))
+    assert I.INTRADAY_CONTINUATION_V2 not in I.PAPER_SPECS and I.INTRADAY_CONTINUATION in I.PAPER_SPECS
+    v1, v2 = (issue_intraday(sp, symbol="BENF", session_date=DAY, entry_ref=2.12, issued_at=ts(10, 26))
+              for sp in (I.INTRADAY_CONTINUATION, I.INTRADAY_CONTINUATION_V2))
+    lg.record(v2, now=ts(10, 26))
+    lg.record(v1, now=ts(10, 26))
+    b = Broker()
+    out = PP.submit(b, lg, day="2026-09-23", experiments=I.PAPER_SPECS)
+    assert out["placed"] == ["BENF"] and len(b.posts) == 1
+    assert b.posts[0]["client_order_id"] == f"{v1.forecast_id}-entry"
+    orders = [{
+        "id": "o1", "client_order_id": f"{v1.forecast_id}-entry", "status": "filled",
+        "submitted_at": iso(ts(10, 26)), "filled_at": iso(ts(10, 30)),
+        "filled_qty": str(v1.shares), "filled_avg_price": f"{v1.entry_trigger:.2f}",
+        "legs": [
+            {"id": "tp", "type": "limit", "status": "canceled", "submitted_at": iso(ts(10, 30)),
+             "canceled_at": iso(ts(10, 50)), "filled_qty": "0"},
+            {"id": "sl", "type": "stop", "status": "filled", "submitted_at": iso(ts(10, 30)),
+             "filled_at": iso(ts(10, 50)), "filled_qty": str(v1.shares), "filled_avg_price": f"{v1.stop:.2f}"},
+        ]}]
+    res = PP.reconcile(Broker(orders=orders), lg, day="2026-09-23", experiments=I.INTRADAY_SPECS, now=ts(16, 25))
+    s1 = res["settled"][f"{I.INTRADAY_CONTINUATION.experiment_id}:BENF"]
+    s2 = res["settled"][f"{I.INTRADAY_CONTINUATION_V2.experiment_id}:BENF"]
+    assert s1["actual"] == s2["actual"] == "LOSS" and s1["pnl_usd"] == s2["pnl_usd"]
+    # a lone forecast with no order and no twin keeps the old answer: unresolved, never a loss
+    lone = issue_intraday(I.INTRADAY_CONTINUATION_V2, symbol="AESI", session_date=DAY, entry_ref=12.8,
+                          issued_at=ts(10, 41))
+    lg.record(lone, now=ts(10, 41))
+    res = PP.reconcile(Broker(orders=orders), lg, day="2026-09-23", experiments=I.INTRADAY_SPECS, now=ts(16, 30))
+    assert res["settled"][f"{I.INTRADAY_CONTINUATION_V2.experiment_id}:AESI"]["actual"] == "UNRESOLVED"
+
+
+def test_iex_and_sip_records_are_never_pooled():
+    """Audit 2026-09-25: the feed was in no spec or report, so Monday's SIP forecasts would have
+    joined the IEX record under the same experiment. The headline record (what promotion reads)
+    is now the current regime only -- SIP once any SIP forecast exists -- and IEX sits beside it."""
+    from edge.resolver import Resolution
+    lg = Ledger(MemoryStore())
+    for spec in EXPERIMENTS:
+        lg.register(spec, now=ts(8, 0))
+    eid = GAP_AND_GO_AUTO.experiment_id
+    old = issue(GAP_AND_GO_AUTO, symbol="SHOP", session_date=DAY, entry_ref=146.71, issued_at=ts(9, 10))
+    lg.record(old, now=ts(9, 11))
+    lg.settle(old.forecast_id, Resolution("WIN", pnl_usd=50.0), now=ts(16, 25))
+    rep = lg.report(eid)
+    assert rep["feed_regime"] == "iex" and rep["records"]["simulated"]["wins"] == 1 and "other_regimes" not in rep
+
+    monday = date(2026, 9, 28)
+    lg.store.put("edge_cards", monday.isoformat(), {"day": monday.isoformat(), "live_feed": "sip"})
+    new = issue(GAP_AND_GO_AUTO, symbol="GLND", session_date=monday, entry_ref=6.1,
+                issued_at=int(datetime(2026, 9, 28, 9, 10, tzinfo=ET).timestamp()))
+    lg.record(new, now=int(datetime(2026, 9, 28, 9, 11, tzinfo=ET).timestamp()))
+    lg.settle(new.forecast_id, Resolution("LOSS", pnl_usd=-30.0),
+              now=int(datetime(2026, 9, 28, 16, 25, tzinfo=ET).timestamp()))
+    rep = lg.report(eid)
+    assert rep["feed_regime"] == "sip" and rep["forecasts_in_regime"] == 1
+    assert rep["records"]["simulated"]["filled"] == 1 and rep["records"]["simulated"]["wins"] == 0
+    assert rep["other_regimes"]["iex"]["simulated"]["wins"] == 1

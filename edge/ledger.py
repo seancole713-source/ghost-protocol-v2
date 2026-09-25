@@ -183,14 +183,45 @@ class Ledger:
         excluded = [f for f in forecasts if self.store.get("exclusions", f["forecast_id"])]
         live = [f for f in forecasts if not self.store.get("exclusions", f["forecast_id"])]
         abstentions = self.store.scan("abstentions", experiment_id=experiment_id)
+        # IEX and SIP forecasts are different data regimes and are never pooled: the headline
+        # records (and everything that reads them, promotion included) count only the current
+        # regime -- SIP as soon as one SIP forecast exists; the other regime is shown beside it.
+        by_feed: Dict[str, List[Dict[str, Any]]] = {}
+        cards: Dict[str, Any] = {}
+        for f in live:
+            by_feed.setdefault(self.feed_of(f, cards), []).append(f)
+        regime = "sip" if "sip" in by_feed else "iex"
         base = {
             "experiment_id": experiment_id, "spec_hash": spec_row["spec_hash"],
             "forecasts": len(forecasts), "excluded": len(excluded),
-            "abstentions": len(abstentions),
-            "records": {rec: self._record_report(spec_row, live, rec) for rec in self.RECORDS},
+            "abstentions": len(abstentions), "feed_regime": regime,
+            "forecasts_in_regime": len(by_feed.get(regime, [])),
+            "records": {rec: self._record_report(spec_row, by_feed.get(regime, []), rec)
+                        for rec in self.RECORDS},
         }
+        others = {feed: {rec: self._record_report(spec_row, fs, rec) for rec in self.RECORDS}
+                  for feed, fs in by_feed.items() if feed != regime}
+        if others:
+            base["other_regimes"] = others
         base.update(base["records"]["simulated"])     # legacy flat view = simulated
         return base
+
+    def feed_of(self, f: Dict[str, Any], cards: Optional[Dict[str, Any]] = None) -> str:
+        """The live data feed a forecast was issued on: its own evidence, else its day's card,
+        else IEX (every forecast before SIP was bought was IEX)."""
+        ev = f.get("evidence") or {}
+        if isinstance(ev, str):
+            try:
+                ev = json.loads(ev)
+            except ValueError:
+                ev = {}
+        if ev.get("feed") in ("iex", "sip"):
+            return ev["feed"]
+        day = f.get("session_date")
+        cards = {} if cards is None else cards
+        if day not in cards:
+            cards[day] = self.store.get("edge_cards", day) or {}
+        return cards[day].get("live_feed") if cards[day].get("live_feed") in ("iex", "sip") else "iex"
 
     def _record_report(self, spec_row: Dict[str, Any], forecasts: List[Dict[str, Any]],
                        record: str) -> Dict[str, Any]:
