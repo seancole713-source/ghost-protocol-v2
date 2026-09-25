@@ -332,6 +332,7 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, A
     card = {"day": day.isoformat(), "issued_at": now, "experiment_id": EID,
             "candidates": len(rows), "priced": priced, "eligible": len(eligible),
             "forecasts": [r["symbol"] for r in chosen],
+            "trades": _trades(store, chosen),
             "baseline_forecasts": [r["symbol"] for r in base_chosen],
             "verified_forecasts": [r["symbol"] for r in ver_chosen] if research_on else None,
             "model_forecasts": [r["symbol"] for r in model_chosen] if model is not None else None,
@@ -348,11 +349,24 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, A
     from edge import top10 as T10
     t10 = T10.build(card)                     # learning list, never an order; graded after the close
     card["top10"] = [x["symbol"] for x in t10["list"]]
+    card["top10_ranked"] = [{k: x.get(k) for k in ("rank", "symbol", "score")} for x in t10["list"]]
     store.put("edge_cards", day.isoformat(), card)
     store.put("edge_top10", day.isoformat(), t10)
     return {"status": "issued", **{k: card[k] for k in (
         "day", "candidates", "priced", "eligible", "forecasts", "baseline_forecasts",
         "coverage_note", "health_banner", "source_errors")}}
+
+
+def _trades(store, chosen: List[dict]) -> List[Dict[str, Any]]:
+    """The phone card's trade lines, copied from the RECORDED forecasts (the ledger's levels)."""
+    out = []
+    for r in chosen:
+        f = store.get("forecasts", r.get("forecast_id")) or {}
+        out.append({"symbol": r["symbol"], "ref_price": r.get("ref_price"), "prev_close": r.get("prev_close"),
+                    "catalyst": r.get("catalyst"),
+                    **{k: f.get(k) for k in ("entry_trigger", "entry_limit", "target", "stop", "shares",
+                                             "entry_expiry", "time_exit")}})
+    return out
 
 
 def _issue_top(ledger: Ledger, spec, rows, eligible, *, day: date, now: int, verdict_key: str,
@@ -628,12 +642,13 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None) -> Dict[str,
                                                            text=_notify().card_text(card)))
     if within((9, 28), (9, 45)) and not ledger.store.get("edge_cards", ds):
         out["card_alarm"] = {"status": "error", "error": "no shadow card by 09:28 ET (see earlier card errors)"}
-    card_today = ledger.store.get("edge_cards", ds) or {}
-    operator_has_trade = bool(card_today.get("forecasts"))   # no card trade -> no duty text
-    if notifier is not None and not early and operator_has_trade and within((10, 20), (10, 30)):     # >= 2 ticks wide
+    # The duty reminders go out on EVERY regular trading day. The operator trades from his own
+    # card (the morning-picks skill), which can hold a name when Ghost's shadow card has none;
+    # gating on Ghost's forecasts skipped them on exactly those days. Each text says when to skip.
+    if notifier is not None and not early and within((10, 20), (10, 30)):     # >= 2 ticks wide
         guarded("notify_duty", lambda: _notify().once(notifier, ledger.store, day=ds,
                                                        kind="duty_1030", text=_notify().DUTY_1030))
-    if notifier is not None and not early and operator_has_trade and within((15, 20), (15, 30)):
+    if notifier is not None and not early and within((15, 20), (15, 30)):
         guarded("notify_duty", lambda: _notify().once(notifier, ledger.store, day=ds,
                                                        kind="duty_1530", text=_notify().DUTY_1530))
     if not early and within((9, 45), (14, 30)):
@@ -671,9 +686,40 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None) -> Dict[str,
             if text:
                 guarded("notify_graded", lambda: _notify().once(notifier, ledger.store, day=ds,
                                                                  kind="graded", text=text))
+    if notifier is not None:
+        _problems(notifier, ledger.store, out, ds=ds, now=now, within=within, guarded=guarded)
     if len(out) == 1:
         out["status"] = "idle"
     return out
+
+
+RESOLVE_OK = {"resolved", "nothing_pending"}
+GRADE_OK = {"graded", "already_graded", "no_card"}     # no card: the 09:28 alarm already said so
+
+
+def _problems(notifier, store, out: Dict[str, Any], *, ds: str, now: int, within, guarded) -> None:
+    """PROBLEM alerts to the phone, so a broken day never reads like a quiet one.
+
+    One message per kind per day (`once`): no card by 09:28 ET; any step that ended in
+    "error" between 09:00 and 16:00 ET; grading not done by 17:00 ET. Notification steps
+    are left out -- a Telegram failure cannot be reported through Telegram."""
+    N = _notify()
+    if (out.get("card_alarm") or {}).get("status") == "error":
+        guarded("notify_problem_card_alarm", lambda: N.once(notifier, store, day=ds, kind="problem_card_alarm",
+                                                             text=N.PROBLEM_NO_CARD))
+    if within((9, 0), (16, 0)):
+        for step, res in list(out.items()):
+            if step == "card_alarm" or step.startswith("notify") or not isinstance(res, dict) \
+                    or res.get("status") != "error":
+                continue
+            guarded(f"notify_problem_{step}",
+                    lambda s=step, r=res: N.once(notifier, store, day=ds, kind=f"problem_{s}",
+                                                 text=N.problem_text(s, r, now)))
+    if within((17, 0), (20, 0)):
+        rs, gs = (out.get("resolve") or {}).get("status"), (out.get("card_graded") or {}).get("status")
+        if rs not in RESOLVE_OK or gs not in GRADE_OK:
+            guarded("notify_problem_grading", lambda: N.once(notifier, store, day=ds, kind="problem_grading",
+                                                             text=N.grading_problem_text(rs, gs)))
 
 
 # Caches only -- never the ledger (forecasts, outcomes, abstentions, cards, experiments), which
