@@ -103,6 +103,7 @@ def _clear_module_caches():
     if wa is not None:
         try:
             wa._LOGIN_ATTEMPTS.clear()
+            wa._HEALTH_FULL_CACHE.update({"t": 0.0, "v": None})
         except Exception:
             pass
     # Circuit-breaker singletons are module-global; a test that trips one

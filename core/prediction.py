@@ -2484,6 +2484,7 @@ def reconcile_outcomes():
             snapshot_price=float(price) if price else None,
             now=now,
             expires_at=int(expires_at) if expires_at else None,
+            gap_aware_loss=True,
         )
         if not outcome or not resolved_at:
             continue

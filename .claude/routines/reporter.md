@@ -14,5 +14,20 @@ Grading, the card counterfactuals and paper reconciliation run from 3:20pm CT.
    - AI scorecard lines (keyword filter, AI research, model): the verdicts as written --
      "not enough data" is the honest answer for weeks.
    - Anything a watchdog run flagged today.
-3. If `ghost_edge_note` is available: one note, kind=report, author=evening-reporter.
-4. Push a one-line summary. No hype; small samples are called small.
+3. Grade the operator's scoreboard (audit F03: it was never graded, so the 20-trade decision
+   and the -$300 pause line could never trigger). Scoreboard:
+   https://claude.ai/artifact/6tujj3k9uikamyT8u76xhe via `ArtifactData`. For every
+   `cards/<date>` call (today, and any earlier card with a call but no `grades/<date>-<SYM>`):
+   - `fills/<date>-<SYM>` exists: `placed: false` -> SKIPPED; else
+     `core.gap_and_go.grade_from_fills(...)` (graded_from "operator_fill").
+   - No fill record: grade the RULE, not the operator. If the same symbol and levels were on
+     Ghost's own card that day, use its minute-bar outcome from the `paper` view
+     (`simulated`, graded_from "edge_minute_bars"); otherwise the day's open/high/low with
+     `python3 -m core.gap_and_go grade ...` (graded_from "daily_bar_estimate"; say where the
+     bar came from).
+   - Write all grades in one `batch`: `{date, symbol, outcome, entry_fill, exit_price, shares,
+     pnl_usd, pnl_pct, graded_from, graded_at, note}`.
+   - Report the running record (graded calls of 20), win rate with its interval vs 37.5%, and
+     net P&L vs the -$300 pause line. Pause line reached: say it FIRST and push it.
+4. If `ghost_edge_note` is available: one note, kind=report, author=evening-reporter.
+5. Push a one-line summary. No hype; small samples are called small.

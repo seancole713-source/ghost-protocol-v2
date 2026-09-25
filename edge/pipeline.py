@@ -206,8 +206,11 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, A
     cand = PM.candidates(get, store, day=day, now=now, top=top)   # today's scanned gappers + the screener
     updated = cand["movers_last_updated"]
     syms = sorted(set(cand["symbols"]))
-    daily = A.bars_multi(get, syms, timeframe="1Day", start=(day - timedelta(days=45)).isoformat())
     source_errors: Dict[str, str] = dict(cand["errors"])   # a failed source is named on the card, never "no data"
+    try:
+        daily = A.bars_multi(get, syms, timeframe="1Day", start=(day - timedelta(days=45)).isoformat())
+    except Exception as exc:  # noqa: BLE001 - no prior close, no gap: named, and the card retries
+        daily, source_errors["daily_bars"] = {}, f"{type(exc).__name__}: {str(exc)[:160]}"
     from edge import feeds as FD
     feed = FD.live_feed(get, store, now=now)       # IEX on the free plan; SIP once it is paid for
     try:
@@ -287,6 +290,21 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, A
         if d.verdict == S.ELIGIBLE:
             eligible.append(row)
 
+    priced = sum(1 for r in rows if r["ref_price"])
+    failures = data_failures(source_errors, cand.get("scan") or {}, rows, priced)
+    attempts = store.get("edge_card_attempts", day.isoformat()) or {"day": day.isoformat(), "attempts": []}
+    if failures:
+        # One bad data minute must not cost the day: nothing is stored and nothing is issued, so
+        # the next 5-minute tick tries again. From 09:23 ET (the window's last tick) the card is
+        # issued with what there is, the failed sources named on it.
+        attempts["attempts"] = (attempts["attempts"] + [{"at": now, "failures": failures}])[-20:]
+        store.put("edge_card_attempts", day.isoformat(), attempts)
+        if now < _at(day, *CARD_LAST_TRY):
+            return {"status": "retry_pending", "day": day.isoformat(), "failures": failures,
+                    "candidates": len(rows), "priced": priced, "source_errors": source_errors,
+                    "note": "card data failed by an error; nothing stored or issued, retried next tick "
+                            f"and issued regardless from {CARD_LAST_TRY[0]:02d}:{CARD_LAST_TRY[1]:02d} ET"}
+
     chosen = _issue_top(ledger, SPEC, rows, eligible, day=day, now=now,
                         verdict_key="verdict", reasons_key="reasons", missing_key="missing", id_key="forecast_id")
     base_eligible = [r for r in rows if r["baseline_verdict"] == S.ELIGIBLE]
@@ -325,7 +343,6 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, A
                                 verdict_key="verified_verdict", reasons_key="verified_reasons",
                                 missing_key="verified_missing", id_key="verified_forecast_id")
 
-    priced = sum(1 for r in rows if r["ref_price"])
     health = H.assess([
         H.SourceHealth("movers", now if cand["scan"].get("priced") else updated, 900),
         H.SourceHealth("quotes_iex", now if rows else None, 1800, covered=priced, expected=len(rows) or None,
@@ -349,6 +366,8 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, A
             "coverage_note": f"{priced}/{len(rows)} candidates had a fresh {feed.upper()} premarket price",
             "health": health, "health_banner": H.banner(len(chosen), {EID: blocking[EID]}),
             "source_errors": source_errors, "movers_count": len(syms),
+            "degraded": bool(failures), "data_failures": failures,
+            "failed_attempts": sum(1 for a in attempts["attempts"] if a.get("at") != now),
             "health_note": "shadow records regardless; the banner is what a LIVE release would say",
             "rows": rows}
     from edge import top10 as T10
@@ -360,6 +379,25 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, A
     return {"status": "issued", **{k: card[k] for k in (
         "day", "candidates", "priced", "eligible", "forecasts", "baseline_forecasts",
         "coverage_note", "health_banner", "source_errors")}}
+
+
+CARD_LAST_TRY = (9, 23)      # the window's last 5-minute tick: from here a card with failed data is issued
+
+
+def data_failures(source_errors: Dict[str, str], scan: Dict[str, Any], rows: List[dict],
+                  priced: int) -> List[str]:
+    """Why this tick's card data is broken by an ERROR, not merely thin: a failed source, failed
+    premarket-scan batches, candidates but no prior close for any, or candidates but no price for
+    any. A thin-but-valid card (e.g. 7/26 priced because IEX prints are stale) is not a failure."""
+    out = [f"{k}: {v}" for k, v in sorted(source_errors.items())]
+    batches = int(scan.get("batch_errors") or 0)
+    if batches:
+        out.append(f"premarket_scan: {batches} snapshot batch(es) failed")
+    if rows and not any(r.get("prev_close") for r in rows):
+        out.append(f"no prior close for any of {len(rows)} candidates")
+    if rows and not priced:
+        out.append(f"no premarket price for any of {len(rows)} candidates")
+    return out
 
 
 def _trades(store, chosen: List[dict]) -> List[Dict[str, Any]]:
@@ -577,26 +615,154 @@ def miss_review(get, ledger: Ledger, *, day: date, now: int, top: int = 50,
         fallback_universe = True
     else:
         fallback_universe = False
-    radar, data_down = {}, set()
-    for r in card.get("rows") or []:
-        if fallback_universe:
-            universe.add(r["symbol"])
-        if r["ref_price"] is None:
-            data_down.add(r["symbol"])
-        radar[r["symbol"]] = M.RadarRecord(
-            first_seen_ts=card.get("issued_at"), first_seen_price=r["ref_price"],
-            rejected_reason="; ".join(r["reasons"]) or None,
-            forecast_issued=bool(r.get("forecast_id")), alert_delivered_ts=card.get("issued_at"))
-    rep = M.audit(day.isoformat(), moves, universe=universe, data_down=data_down, catalyst_symbols=set(),
+    radar_rows = store.scan("edge_radar", session_date=day.isoformat())
+    if fallback_universe:
+        universe |= {r["symbol"] for r in card.get("rows") or []} | {r["symbol"] for r in radar_rows}
+    radar, data_down, details = review_records(store, day, card, radar_rows)
+    catalysts = stored_catalysts(store, day, card, radar_rows)
+    rep = M.audit(day.isoformat(), moves, universe=universe, data_down=data_down,
+                  catalyst_symbols=set(catalysts),
                   radar=radar, minute_bars={s: _minute_bars(minute.get(s) or []) for s in syms},
                   rth_open_ts=_at(day, 9, 30), alert_deadline_ts=_at(day, 9, 30))
-    out = {"day": day.isoformat(), "movers": rep.movers, "executable": rep.executable,
+    for row in rep.rows:
+        if row.get("opportunity") == "EXECUTABLE":
+            row.update(details.get(row["symbol"]) or {"seen_by": []})
+            if catalysts.get(row["symbol"]):
+                row["stored_catalyst"] = catalysts[row["symbol"]]
+    out = {"day": day.isoformat(), "labels_version": M.LABELS_VERSION,
+           "movers": rep.movers, "executable": rep.executable,
            "gap_only": rep.gap_only, "unknown_ordering": rep.unknown_ordering, "caught": rep.caught,
-           "recall": rep.recall, "labels": rep.labels, "correct_rejections": rep.correct_rejections,
+           "recall": rep.recall, "caught_by": rep.caught_by,
+           "card_recall": rep.recall_of("card"), "radar_recall": rep.recall_of("radar"),
+           "card_seen": rep.seen_by.get("card", 0), "radar_seen": rep.seen_by.get("radar", 0),
+           "radar_names": len(radar_rows), "card_names": len(card.get("rows") or []),
+           "labels": rep.labels, "correct_rejections": rep.correct_rejections,
            "wrong_rejections": rep.wrong_rejections, "rows": rep.rows,
            "coverage_note": coverage}
     store.put("edge_miss", day.isoformat(), out)
-    return {"status": "reviewed", **{k: out[k] for k in ("movers", "executable", "caught", "recall", "labels", "coverage_note")}}
+    return {"status": "reviewed", **{k: out[k] for k in (
+        "labels_version", "movers", "executable", "caught", "recall", "card_recall", "radar_recall",
+        "labels", "coverage_note")}}
+
+
+def _filled(store, forecast_id: str) -> Dict[str, Any]:
+    """Did a forecast's entry fill? The paper (actual) record decides when it is graded -- the
+    broker is what really happened; the simulated record stands in when there is no paper
+    outcome. A broker fill outside the rule is not the rule's fill. None = not graded yet."""
+    from edge.contracts import COUNTED
+    from edge.ledger import outside_rule_reason
+    act = store.get("outcomes", f"{forecast_id}|actual") or {}
+    sim = store.get("outcomes", f"{forecast_id}|simulated") or {}
+    a, s = act.get("outcome"), sim.get("outcome")
+    filled = None
+    if a in TERMINAL:
+        f = store.get("forecasts", forecast_id) or {}
+        filled = a in COUNTED and not outside_rule_reason(store, f, act)
+    elif s in TERMINAL:
+        filled = s in COUNTED
+    return {"filled": filled, "simulated": s, "actual": a}
+
+
+def _radar_forecasts(item: Dict[str, Any], recorded: Dict[str, List[str]]) -> List[str]:
+    """The intraday forecasts on a radar name: its ENTRY_ELIGIBLE evidence, plus any paper
+    strategy's forecast recorded for it that day (a later strategy does not re-transition)."""
+    ids = [h["evidence"]["forecast_id"] for h in item.get("history") or []
+           if (h.get("evidence") or {}).get("forecast_id")]
+    return ids + [f for f in recorded.get(item["symbol"], []) if f not in ids]
+
+
+def review_records(store, day: date, card: Dict[str, Any], radar_rows: List[Dict[str, Any]]):
+    """One M.RadarRecord per name, merged from the 9am card AND the intraday radar.
+
+    Returns (records, data_down, details). A name either source forecast is judged on its
+    forecasts' fills; otherwise on the most recent evaluation's reason (the radar's, when it
+    saw the name -- the audit measures the move after the open, which is the radar's job).
+    """
+    from edge import intraday as I, radar as R
+    paper_eids = {spec.experiment_id for spec in I.PAPER_SPECS}
+    recorded: Dict[str, List[str]] = {}
+    for f in store.scan("forecasts", session_date=day.isoformat()):
+        if f.get("experiment_id") in paper_eids:
+            recorded.setdefault(f["symbol"], []).append(f["forecast_id"])
+    card_rows = {r["symbol"]: r for r in card.get("rows") or []}
+    radar_by = {r["symbol"]: r for r in radar_rows}
+    card_ts = card.get("issued_at")
+    records, data_down, details = {}, set(), {}
+    for sym in sorted(set(card_rows) | set(radar_by)):
+        c, it = card_rows.get(sym), radar_by.get(sym)
+        seen_by = tuple(src for src, x in (("card", c), ("radar", it)) if x is not None)
+        forecasts = []           # (source, forecast_id, delivered_ts, deadline_ts)
+        if c is not None and c.get("forecast_id"):
+            forecasts.append(("card", c["forecast_id"], card_ts, _at(day, 9, 30)))
+        if it is not None:
+            for fid in _radar_forecasts(it, recorded):
+                f = store.get("forecasts", fid) or {}
+                forecasts.append(("radar", fid, f.get("issued_at"), f.get("entry_expiry")))
+        fills = {fid: _filled(store, fid) for _src, fid, _d, _dl in forecasts}
+        pick = None
+        if forecasts:
+            def rank(x):
+                src, fid, dlv, dl = x
+                on_time = dlv is not None and (dl is None or dlv <= dl)
+                return (not on_time, {True: 0, None: 1, False: 2}[fills[fid]["filled"]])
+            pick = min(forecasts, key=rank)
+        radar_evaluated = it is not None and (
+            bool(it.get("blocker")) or any(h.get("to") == R.WATCHING for h in it.get("history") or []))
+        card_priced = c is not None and c.get("ref_price") is not None
+        if not radar_evaluated and not card_priced:
+            data_down.add(sym)
+        reason = None
+        if it is not None:
+            item = R.RadarItem.from_row(it)
+            last = (it.get("history") or [{}])[-1]
+            reason = item.blocker_text() or last.get("reason") or None
+        if reason is None and c is not None:
+            reason = "; ".join(c.get("reasons") or c.get("missing") or []) or None
+        linked = bool((c or {}).get("catalyst")) or (c or {}).get("research_status") == "researched" \
+            or bool((it or {}).get("catalyst"))
+        seen_ts = [t for t in (card_ts if c is not None else None, (it or {}).get("detected_at")) if t is not None]
+        records[sym] = M.RadarRecord(
+            first_seen_ts=min(seen_ts) if seen_ts else None,
+            first_seen_price=(c or {}).get("ref_price"),
+            rejected_reason=None if pick else reason,
+            forecast_issued=pick is not None,
+            alert_delivered_ts=pick[2] if pick else None,
+            alert_deadline_ts=pick[3] if pick else None,
+            filled=fills[pick[1]]["filled"] if pick else None,
+            catalyst_linked=linked, seen_by=seen_by, forecast_by=pick[0] if pick else None)
+        det: Dict[str, Any] = {"seen_by": list(seen_by)}
+        if it is not None:
+            det.update({"radar_state": it.get("state"), "radar_detected_at": it.get("detected_at"),
+                        "radar_last_reason": ((it.get("history") or [{}])[-1]).get("reason")})
+        if c is not None:
+            det["card_verdict"] = c.get("verdict")
+        if reason and not pick:
+            det["why"] = reason[:220]
+        if forecasts:
+            det["forecasts"] = [{"source": src, "forecast_id": fid, **fills[fid]}
+                                for src, fid, _d, _dl in forecasts]
+        details[sym] = det
+    return records, data_down, details
+
+
+def stored_catalysts(store, day: date, card: Dict[str, Any], radar_rows: List[Dict[str, Any]]) -> Dict[str, str]:
+    """{symbol: headline} for every dated company-specific event the store held that day:
+    the card's news events, reviewed (non-quarantined) research claims, the radar's links."""
+    from edge import research as RS
+    out: Dict[str, str] = {}
+    for r in card.get("rows") or []:
+        for e in (r.get("inputs") or {}).get("events") or []:
+            if e.get("kind") in C.COMPANY_SPECIFIC:
+                out.setdefault(r["symbol"], str(e.get("headline") or "")[:160])
+    for rec in store.scan("edge_research", day=day.isoformat()):
+        for cl in rec.get("claims") or []:
+            if cl.get("kind") in C.COMPANY_SPECIFIC and cl.get("status") != RS.QUARANTINED:
+                out.setdefault(str(rec.get("symbol") or "").upper(), str(cl.get("statement") or "")[:160])
+    for it in radar_rows:
+        if it.get("catalyst"):
+            out.setdefault(it["symbol"], str(it["catalyst"].get("headline") or "")[:160])
+    out.pop("", None)
+    return out
 
 
 def run(get, ledger: Ledger, *, now: int, http=None, notifier=None) -> Dict[str, Any]:
@@ -665,7 +831,11 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None) -> Dict[str,
         guarded("paper_cancel", lambda: _paper().cancel_unfilled_entries(http, ledger, day=ds,
                                                                           experiments=all_specs, now=now))
     if http is not None and within((15, 30), (15, 55)):                        # refused sells retry
-        guarded("paper_exit", lambda: _paper().time_exit(http, ledger, day=ds, experiments=all_specs))
+        guarded("paper_exit", lambda: _paper().time_exit(http, ledger, day=ds, experiments=all_specs, now=now))
+        not_flat = (out.get("paper_exit") or {}).get("not_flat")
+        if not_flat:       # its own PROBLEM kind: an earlier "sell refused, retrying" must not swallow it
+            out["paper_exit_not_flat"] = {"status": "error",
+                                          "error": "NOT FLAT after the time exit: " + "; ".join(not_flat)}
     if within((20, 0), (20, 15)):
         from edge import replay as RP
         guarded("replay", lambda: RP.replay_all(ledger.store))
@@ -763,7 +933,7 @@ def _settled(ledger: Ledger, day: str, specs) -> Dict[str, Any]:
     return out
 
 
-_NEWS = {"issued", "resolved", "graded", "no_movers", "no_candidates_yet", "no_telegram_config", "budget_exhausted",
+_NEWS = {"issued", "retry_pending","resolved", "graded", "no_movers", "no_candidates_yet", "no_telegram_config", "budget_exhausted",
          "early_close", "reviewed", "error", "complete", "submitted", "sent", "closed", "researched",
          "drift", "consistent",
          "entries_checked", "time_exit", "reconciled"}

@@ -160,6 +160,7 @@ def resolve_open_prediction_detail(
     snapshot_price: Optional[float] = None,
     now: Optional[int] = None,
     expires_at: Optional[int] = None,
+    gap_aware_loss: bool = False,
 ) -> Tuple[Optional[str], Optional[int], Optional[float]]:
     """Return outcome, evidence timestamp, and evidence exit price.
 
@@ -167,6 +168,13 @@ def resolve_open_prediction_detail(
     same-bar collision rule. A current snapshot can still prove TP/SL while the
     daily horizon is incomplete. EXPIRED requires every promised daily bar and
     uses the final horizon close, never a later reconciliation quote.
+
+    ``gap_aware_loss`` (core predictions ledger): a LOSS reports the price that
+    was actually observed when it went through the stop -- the resolving bar's
+    open when it gapped past the stop, or the snapshot quote -- instead of the
+    stop itself, so ``core.pnl.resolution_exit`` can book the real loss. WIN
+    evidence stays at the target. Default False keeps the versioned research
+    resolver (tp_sl_bar_path/v1) and shadow ledgers byte-identical.
     """
     required_bars = max(1, int(hold_bars))
     evidence_now = int(time.time()) if now is None else int(now)
@@ -180,6 +188,10 @@ def resolve_open_prediction_detail(
         )
         if outcome:
             exit_price = target if outcome == "WIN" else stop
+            if outcome == "LOSS" and gap_aware_loss and _bar_idx is not None:
+                from core.pnl import stop_fill
+
+                exit_price = stop_fill(direction, stop, fwd[_bar_idx].get("open"))
             return outcome, resolved_at, float(exit_price)
         if len(fwd) >= required_bars:
             try:
@@ -195,6 +207,10 @@ def resolve_open_prediction_detail(
         snap = resolve_tp_sl_snapshot(snapshot_price, target, stop, direction)
         if snap:
             exit_price = target if snap == "WIN" else stop
+            if snap == "LOSS" and gap_aware_loss:
+                from core.pnl import stop_fill
+
+                exit_price = stop_fill(direction, stop, snapshot_price)
             return snap, evidence_now, float(exit_price)
     return None, None, None
 

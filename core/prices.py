@@ -61,23 +61,36 @@ def _note_alpaca_feed_status(feed_name: str, status_code: int) -> None:
     if feed_name == "sip" and status_code == 403:
         _SIP_FORBIDDEN["until"] = time.time() + 6 * 3600
 # Persistent prev_close cache — survives market close when all feeds are down.
-# TTL is 24h so yesterday's close is available for after-hours / pre-market.
+# Each entry is (session_date_iso, close): the value is the close OF THAT
+# SESSION, and a read accepts it only when that session is the one a previous
+# close must come from right now (_expected_prev_session). The old contract was
+# (write_time, close) with a 24h TTL: on 2026-09-25 at 03:19 CDT GLND showed a
+# previous close of 2.90 -- the 9/23 close written the previous morning, still
+# inside 24h -- while the 9/24 close was ~4, so its premarket gap read ~38% high.
 # Backed by ghost_state table for restart survival.
-_prev_close_cache: Dict[str, Tuple[float, float]] = {}
-_PREV_CLOSE_TTL_S = int(os.getenv("PREV_CLOSE_TTL_S", "86400"))  # 24h
+_prev_close_cache: Dict[str, Tuple[str, float]] = {}
 
 # Price sanity guard: reject phantom quotes (wrong security / stale feed) that
 # diverge wildly from an independent source. Catches the MU/SNDK class of bug
 # where Alpaca IEX serves a foreign-listed twin at ~10x the real price. The
 # cross-check is bounded by a per-symbol TTL so it never hammers yfinance.
 PRICE_SANITY_DIVERGENCE_PCT = float(os.getenv("PRICE_SANITY_DIVERGENCE_PCT", "50.0"))
+# Outside regular trading hours the reference yfinance gives (last_price, or
+# previous_close) is the PRIOR regular-session close, and a premarket print is
+# supposed to diverge from it -- that is the gap. The 50% band rejected real
+# 9/24 gappers (PFSA +74.6%, APUS +169%), fell back to the stale close and
+# reported a 0% gap. Outside RTH, or against a reference taken outside RTH,
+# only a ratio beyond this bound is treated as a phantom: the ~10x wrong-
+# security class (MU/SNDK) is still caught, a real +60%..+600% gap is not.
+PRICE_SANITY_EXTENDED_MAX_RATIO = float(os.getenv("PRICE_SANITY_EXTENDED_MAX_RATIO", "8.0"))
 PRICE_SANITY_CROSS_CHECK_TTL_S = int(os.getenv("PRICE_SANITY_CROSS_CHECK_TTL_S", "900"))
 # Fail-closed mode: when no independent reference is available (yfinance down
 # or breaker open), reject the candidate instead of trusting a single feed.
 # Default off (fail-open) so a yfinance outage never starves pricing; enable
 # for strict phantom protection on names with a known-bad feed.
 PRICE_SANITY_FAIL_CLOSED = os.getenv("PRICE_SANITY_FAIL_CLOSED", "0").strip().lower() in ("1", "true", "yes", "on")
-_cross_check_cache: Dict[str, Tuple[float, float]] = {}
+# symbol -> (fetched_at, reference, fetched_in_rth)
+_cross_check_cache: Dict[str, Tuple[Any, ...]] = {}
 # Cross-check call budget. Every symbol priced in one pass got its reference in
 # the same minute, so all references expired together 15 min later and the next
 # pricing pass (portfolio refresh, risk discipline, paper wallet ...) re-fetched
@@ -108,6 +121,133 @@ def _cross_check_budget_ok(now: float) -> bool:
         _cross_check_calls.append(now)
         return True
 
+def _parse_iso_date(value):
+    """``date`` for a YYYY-MM-DD string, else None."""
+    import datetime as _dt
+    try:
+        return _dt.date.fromisoformat(str(value)[:10]) if isinstance(value, str) else None
+    except ValueError:
+        return None
+
+
+def _expected_prev_session(now=None):
+    """The trading session whose close is "the previous close" right now.
+
+    On a trading day D (premarket, RTH, after hours, or overnight in Central
+    time) it is the session before D; on a weekend or holiday it is the session
+    before the most recent one -- the same convention as yfinance's
+    ``previous_close`` and Alpaca's snapshot ``prevDailyBar``. Weekends and NYSE
+    holidays come from core.market_hours via core.daily_bar_contract.
+    """
+    from core.daily_bar_contract import previous_session
+    from core.market_hours import is_market_holiday
+
+    now = now or _now_ct()
+    day = now.date()
+    if is_market_holiday(day):
+        day = previous_session(day)
+    return previous_session(day)
+
+
+def _bar_close_for_session(bars, expected) -> Optional[float]:
+    """Close of the daily bar dated ``expected``; None when no bar is.
+
+    A bar for any other session is never substituted: a stale close would be
+    served as the previous close and inflate or erase the gap.
+    """
+    from core.daily_bar_contract import bar_session_date
+
+    for bar in bars or []:
+        if not isinstance(bar, dict) or bar_session_date(bar.get("t")) != expected:
+            continue
+        try:
+            close = float(bar.get("c") or 0)
+        except (TypeError, ValueError):
+            continue
+        if close > 0:
+            return round(close, 4)
+    return None
+
+
+def _snapshot_prev_close(snapshot, expected) -> Optional[float]:
+    """Previous close from an Alpaca snapshot, verified by bar date.
+
+    Normally ``prevDailyBar`` is the previous session. Early premarket the
+    snapshot lags: no bar exists for today yet, so ``dailyBar`` IS the previous
+    session and ``prevDailyBar`` is the one before it (the GLND 2.90 read).
+    Whichever of the two is dated ``expected`` wins; neither -> None.
+    """
+    snap = snapshot or {}
+    return _bar_close_for_session(
+        [snap.get("dailyBar"), snap.get("prevDailyBar")], expected,
+    )
+
+
+def _alpaca_daily_close(symbol, expected, headers) -> Optional[float]:
+    """Close of the ``expected`` session from Alpaca 1Day bars.
+
+    Newest first with a start date: an ascending ``limit=5`` over a 10-day
+    window returned the OLDEST bars in the window, so ``bars[-2]`` was about a
+    week old (U17).
+    """
+    import datetime as _dt
+
+    if not headers:
+        return None
+    try:
+        start = _dt.datetime(expected.year, expected.month, expected.day, tzinfo=_dt.timezone.utc)
+        start -= _dt.timedelta(days=7)
+        start_s = start.strftime("%Y-%m-%dT%H:%M:%SZ")
+        end_s = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        for feed_name in _alpaca_bar_feeds():
+            r = requests.get(
+                f"https://data.alpaca.markets/v2/stocks/{str(symbol).upper()}/bars",
+                headers=headers,
+                params={
+                    "timeframe": "1Day", "start": start_s, "end": end_s,
+                    "limit": 10, "sort": "desc", "feed": feed_name,
+                },
+                timeout=TIMEOUT,
+            )
+            if r.status_code != 200:
+                _note_alpaca_feed_status(feed_name, r.status_code)
+                continue
+            close = _bar_close_for_session((r.json() or {}).get("bars") or [], expected)
+            if close:
+                return close
+    except Exception as exc:
+        LOGGER.debug("alpaca daily close %s: %s", symbol, str(exc)[:80])
+    return None
+
+
+def _prev_close_cache_get(symbol, expected) -> Optional[float]:
+    """Cached close only when it is the ``expected`` session's close."""
+    entry = _prev_close_cache.get(symbol)
+    if not entry:
+        return None
+    try:
+        session, val = entry
+        val = float(val)
+    except (TypeError, ValueError):
+        return None
+    if _parse_iso_date(session) != expected or val <= 0:
+        return None
+    return val
+
+
+def _prev_close_cache_put(symbol, expected, value) -> None:
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return
+    if value <= 0:
+        return
+    entry = (expected.isoformat(), round(value, 4))
+    if _prev_close_cache.get(symbol) != entry:
+        _prev_close_cache[symbol] = entry
+        _save_prev_close_cache()
+
+
 def _load_prev_close_cache():
     """Load persisted prev_close values from ghost_state on module init."""
     try:
@@ -119,10 +259,21 @@ def _load_prev_close_cache():
             if row and row[0]:
                 import json
                 data = json.loads(row[0])
-                now = time.time()
-                for sym, (ts, val) in data.items():
-                    if now - ts < _PREV_CLOSE_TTL_S and val > 0:
-                        _prev_close_cache[sym] = (ts, val)
+                for sym, entry in data.items():
+                    # Legacy (write_time, close) rows carry no session date and
+                    # cannot be validated: drop them, never guess their session.
+                    try:
+                        session, val = entry
+                    except (TypeError, ValueError):
+                        continue
+                    if _parse_iso_date(session) is None:
+                        continue
+                    try:
+                        val = float(val)
+                    except (TypeError, ValueError):
+                        continue
+                    if val > 0:
+                        _prev_close_cache[sym] = (str(session), val)
     except Exception:
         note_suppressed()
 def _save_prev_close_cache():
@@ -171,6 +322,14 @@ def _cache_set(symbol, price):
     _mem_cache[symbol] = (price, time.time())
 
 
+def _in_rth_now() -> bool:
+    """True during the regular cash session; True on a clock error (strict)."""
+    try:
+        return bool(is_us_rth(_now_ct()))
+    except Exception:
+        return True
+
+
 def _reject_phantom(symbol, price):
     """Reject phantom quotes (wrong security / stale feed) before they corrupt
     features, entries, and models.
@@ -181,6 +340,12 @@ def _reject_phantom(symbol, price):
     diverges by more than PRICE_SANITY_DIVERGENCE_PCT. The cross-check is
     bounded by a per-symbol TTL and gated by the yfinance circuit breaker, so
     it is cheap in the common case and fail-open when yfinance is down.
+
+    The tight band applies only in RTH against a reference also taken in RTH.
+    Outside RTH -- or at the open, against a reference taken in premarket --
+    the reference is the prior regular-session close and a real premarket
+    gap diverges from it by design, so only a ratio beyond
+    PRICE_SANITY_EXTENDED_MAX_RATIO (the ~10x phantom class) is rejected.
 
     Returns (price_or_None, rejected_bool).
     """
@@ -193,18 +358,22 @@ def _reject_phantom(symbol, price):
     if p <= 0:
         return None, False
 
+    in_rth = _in_rth_now()
     # Bound cross-check frequency: reuse a recent reference price per symbol.
     ref = None
+    ref_in_rth = True  # legacy 2-tuple entries: treat as a live RTH reference
     now = time.time()
     cc = _cross_check_cache.get(symbol)
     if cc and now - cc[0] < PRICE_SANITY_CROSS_CHECK_TTL_S:
         ref = cc[1]
+        ref_in_rth = bool(cc[2]) if len(cc) > 2 else True
     elif not _cross_check_budget_ok(now):
         # Over this minute's cross-check budget: a slightly older reference
         # still catches a ~10x phantom; with none, fall through to the same
         # handling as a yfinance outage.
         if cc and now - cc[0] < PRICE_SANITY_STALE_REF_GRACE_S:
             ref = cc[1]
+            ref_in_rth = bool(cc[2]) if len(cc) > 2 else True
     else:
         try:
             from core.circuit_breaker import _yfinance_cb
@@ -215,7 +384,8 @@ def _reject_phantom(symbol, price):
                 ref = getattr(fi, "last_price", None) or getattr(fi, "previous_close", None)
                 if ref and float(ref) > 0:
                     ref = float(ref)
-                    _cross_check_cache[symbol] = (time.time(), ref)
+                    ref_in_rth = in_rth
+                    _cross_check_cache[symbol] = (time.time(), ref, in_rth)
                     _yfinance_cb.record_success()
         except Exception:
             note_suppressed()
@@ -229,10 +399,14 @@ def _reject_phantom(symbol, price):
             return None, True
         return p, False  # fail-open: no independent reference available
     ref = float(ref)
-    if abs(p - ref) / ref * 100.0 > PRICE_SANITY_DIVERGENCE_PCT:
+    if in_rth and ref_in_rth:
+        phantom = abs(p - ref) / ref * 100.0 > PRICE_SANITY_DIVERGENCE_PCT
+    else:
+        phantom = max(p / ref, ref / p) > PRICE_SANITY_EXTENDED_MAX_RATIO
+    if phantom:
         LOGGER.warning(
-            "price sanity %s: rejecting phantom %.2f (independent ref %.2f)",
-            symbol, p, ref,
+            "price sanity %s: rejecting phantom %.2f (independent ref %.2f, %s)",
+            symbol, p, ref, "rth" if in_rth and ref_in_rth else "extended-hours ratio",
         )
         return None, True
     return p, False
@@ -287,35 +461,44 @@ def _alpaca_trade_quote(symbol) -> Tuple[Optional[float], Optional[int]]:
     return None, None
 
 
-def _alpaca_prev_close(symbol) -> Optional[float]:
-    """The prior session's close from Alpaca's snapshot (prevDailyBar), one call.
+def _alpaca_prev_close(symbol, expected=None) -> Optional[float]:
+    """The previous session's close from Alpaca, verified by bar date.
 
     Used when yfinance is unavailable and nothing is cached: without it the
     extended-session quote discarded a good live Alpaca price. On 2026-09-24,
     with the yfinance breaker open, GRAL, GLND, GRML, SKYQ and P all returned
     "no_price_available" while Alpaca had live trades for every one.
+
+    The snapshot's ``prevDailyBar`` alone was one session stale in early
+    premarket (no bar for today yet): the bar dated ``expected`` is used, and
+    when neither snapshot bar is, date-filtered 1Day bars are.
     """
+    expected = expected or _expected_prev_session()
     if not _alpaca_cb.allow():
         return None
+    key = os.getenv("ALPACA_KEY_ID", "")
+    secret = os.getenv("ALPACA_SECRET_KEY", "")
+    if not key or not secret:
+        return None
+    headers = {"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret}
     try:
-        key = os.getenv("ALPACA_KEY_ID", "")
-        secret = os.getenv("ALPACA_SECRET_KEY", "")
-        if not key or not secret:
-            return None
         r = requests.get(
             f"https://data.alpaca.markets/v2/stocks/{symbol.upper()}/snapshot",
-            headers={"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret},
+            headers=headers,
             timeout=TIMEOUT,
         )
         if r.status_code == 200:
             _alpaca_cb.record_success()
-            close = float(((r.json() or {}).get("prevDailyBar") or {}).get("c") or 0)
-            return close if close > 0 else None
-        if r.status_code >= 500 or r.status_code == 429:
+            close = _snapshot_prev_close(r.json() or {}, expected)
+            if close:
+                return close
+        elif r.status_code >= 500 or r.status_code == 429:
             _alpaca_cb.record_failure()
+            return None
     except Exception:
         _alpaca_cb.record_failure()
-    return None
+        return None
+    return _alpaca_daily_close(symbol, expected, headers)
 
 
 def _alpaca(symbol):
@@ -500,23 +683,36 @@ def get_extended_session(symbol: str) -> Dict[str, Any]:
     if not sym:
         return {}
     live_quote, price_as_of_ts = _alpaca_trade_quote(sym)
+    phantom_rejected = False
     if live_quote is not None:
-        live_quote, _rej = _reject_phantom(sym, live_quote)
+        live_quote, phantom_rejected = _reject_phantom(sym, live_quote)
+    if live_quote is None:
+        # A rejected (or absent) print's timestamp belongs to THAT print. The
+        # fallback below is untimed and must never inherit it -- that is how a
+        # stale close was labelled "current_session" with a 0% gap.
+        price_as_of_ts = None
     live = live_quote if live_quote is not None else get_stock_price(sym)
     prev_close = None
+    prev_close_session = None
     pre_market = None
     post_market = None
+    try:
+        expected_prev = _expected_prev_session()
+    except Exception:
+        expected_prev = None
     from core.circuit_breaker import _yfinance_cb
     try:
         if not _yfinance_cb.allow():
-            # yfinance breaker open — fall back to persistent prev_close cache
-            cached = _prev_close_cache.get(sym)
-            if cached:
-                ts, val = cached
-                if time.time() - ts < _PREV_CLOSE_TTL_S and val > 0:
-                    prev_close = val
-            if prev_close is None:
-                prev_close = _alpaca_prev_close(sym)
+            # yfinance breaker open — fall back to the persistent prev_close
+            # cache, accepted only for the previous session's close.
+            if expected_prev is not None:
+                prev_close = _prev_close_cache_get(sym, expected_prev)
+                if prev_close is None:
+                    prev_close = _alpaca_prev_close(sym)
+                    if prev_close:
+                        _prev_close_cache_put(sym, expected_prev, prev_close)
+                if prev_close is not None:
+                    prev_close_session = expected_prev.isoformat()
             if prev_close is None and live_quote is None:
                 return {}
         else:
@@ -570,7 +766,12 @@ def get_extended_session(symbol: str) -> Dict[str, Any]:
     session_price_age_s = None
     session_price_basis = "no_price"
     if session_price and float(session_price) > 0:
-        if session_price_as_of_ts is None:
+        if phantom_rejected and session_price_source is None:
+            # The live print was rejected and this is the untimed fallback
+            # (usually the prior close itself): it says nothing about how this
+            # session is moving, so it carries no gap.
+            session_price_basis = "phantom_rejected"
+        elif session_price_as_of_ts is None:
             session_price_basis = "unverified_time"
         else:
             session_price_age_s = max(0, now_ts - int(session_price_as_of_ts))
@@ -581,7 +782,7 @@ def get_extended_session(symbol: str) -> Dict[str, Any]:
     gap_pct = None
     gap_abs = None
     if (
-        session_price_basis != "prior_session_trade"
+        session_price_basis not in ("prior_session_trade", "phantom_rejected")
         and prev_close and prev_close > 0
         and session_price and float(session_price) > 0
     ):
@@ -593,6 +794,9 @@ def get_extended_session(symbol: str) -> Dict[str, Any]:
         "live_price": round(float(live), 4) if live else None,
         "session_price": round(float(session_price), 4) if session_price else None,
         "previous_close": round(prev_close, 4) if prev_close else None,
+        # Session date the previous close was verified against (Alpaca bar
+        # date / dated cache); None when the source carries no date (yfinance).
+        "previous_close_session": prev_close_session if prev_close else None,
         "gap_abs": gap_abs,
         "gap_pct": gap_pct,
         "pre_market_price": round(float(pre_market), 4) if pre_market else None,
@@ -601,9 +805,12 @@ def get_extended_session(symbol: str) -> Dict[str, Any]:
         "price_source": session_price_source,
         "session_start_ts": session_start_ts,
         "session_price_age_s": session_price_age_s,
-        # current_session | prior_session_trade | unverified_time | no_price.
-        # A prior_session_trade carries NO gap: the last print predates this
-        # session, so there is no observation of how this session is moving.
+        # current_session | prior_session_trade | unverified_time |
+        # phantom_rejected | no_price. A prior_session_trade carries NO gap:
+        # the last print predates this session, so there is no observation of
+        # how this session is moving. phantom_rejected: the live print failed
+        # the sanity guard and session_price is an untimed fallback -- no gap.
+        "phantom_rejected": bool(phantom_rejected),
         "session_price_basis": session_price_basis,
         "requested_at_ts": now_ts,
         "ts": now_ts,
@@ -748,6 +955,8 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
         return {}
 
     cached = _intraday_cache.get(sym)
+    if cached and cached[1].get("market_date") not in (None, _now_ct().date().isoformat()):
+        cached = None  # yesterday's row: its previous close is a session stale
     if cached and (time.time() - cached[0]) < INTRADAY_QUOTE_TTL_S:
         out = dict(cached[1])
         # Always refresh price + change on cache hit when we can get a live trade.
@@ -816,6 +1025,8 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
         session, session_label = "closed", "Closed"
 
     today_open = today_high = today_low = last_price = prev_close = None
+    prev_close_verified = prev_close_from_cache = False
+    expected_prev = _expected_prev_session(now_ct)
     price_as_of_ts = None
     rth_open = rth_high = rth_low = rth_close = None
     feed = None
@@ -863,26 +1074,20 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
                     today_open, today_high, today_low = rth_open, rth_high, rth_low
                 else:
                     today_open, today_high, today_low = ext_open, ext_high, ext_low
-            d_end = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-            d_start = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
-            for feed_name in _alpaca_bar_feeds():
-                url = (
-                    f"https://data.alpaca.markets/v2/stocks/{sym}/bars"
-                    f"?timeframe=1Day&start={d_start}&end={d_end}&limit=5&feed={feed_name}"
-                )
-                r = requests.get(url, headers=headers, timeout=TIMEOUT)
-                if r.status_code != 200:
-                    _note_alpaca_feed_status(feed_name, r.status_code)
-                    continue
-                dbars = r.json().get("bars") or []
-                if len(dbars) >= 2:
-                    prev_close = round(float(dbars[-2].get("c", 0)), 4)
-                elif len(dbars) == 1:
-                    prev_close = round(float(dbars[0].get("o", 0)), 4)
-                if prev_close and prev_close > 0:
-                    break
-            # Free-tier Alpaca may return 401 on 1Day bars. Fall back to the
-            # first 5-min bar's open, which is effectively yesterday's close.
+            # Previous close = the close of the expected previous session,
+            # matched by bar date on newest-first 1Day bars (U17: ascending
+            # limit=5 returned the oldest bars in the window, and bars[-2]
+            # was two sessions back whenever today had no bar yet).
+            prev_close = _alpaca_daily_close(sym, expected_prev, headers)
+            if prev_close:
+                prev_close_verified = True
+            else:
+                prev_close = _prev_close_cache_get(sym, expected_prev)
+                if prev_close:
+                    prev_close_from_cache = True
+            # Free-tier Alpaca may return 401 on 1Day bars. Last resort: the
+            # first 5-min bar's open. It is NOT the previous session's close
+            # (it is this morning's first print), so it is never cached as one.
             if prev_close is None and bars:
                 first_bar = bars[0]
                 o = float(first_bar.get("o", 0))
@@ -942,6 +1147,7 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
                 pc = getattr(fi, "previous_close", None) or getattr(fi, "previousClose", None)
                 if pc:
                     prev_close = round(float(pc), 4)
+                    prev_close_verified = True
                 _yfinance_cb.record_success()
             except Exception:
                 _yfinance_cb.record_failure()
@@ -949,16 +1155,16 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
         pc = _polygon_spot(sym)
         if pc:
             prev_close = round(float(pc), 4)
+            prev_close_verified = True
 
     # Persistent prev_close cache: when all live feeds are down (market closed,
-    # breakers open), fall back to the last known prev_close from earlier today.
+    # breakers open), fall back to the cached close -- only if it is the
+    # expected previous session's close. A value is cached under that session
+    # only when it came from a source that reports the previous close.
     if prev_close is None:
-        cached_pc = _prev_close_cache.get(sym)
-        if cached_pc and (time.time() - cached_pc[0]) < _PREV_CLOSE_TTL_S:
-            prev_close = cached_pc[1]
-    elif prev_close > 0:
-        _prev_close_cache[sym] = (time.time(), prev_close)
-        _save_prev_close_cache()
+        prev_close = _prev_close_cache_get(sym, expected_prev)
+    elif prev_close > 0 and prev_close_verified and not prev_close_from_cache:
+        _prev_close_cache_put(sym, expected_prev, prev_close)
 
     chg_abs = chg_pct = None
     if last_price:

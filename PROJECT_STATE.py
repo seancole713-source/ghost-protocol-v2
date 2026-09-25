@@ -751,7 +751,7 @@ PROD_VERIFY_2026_07_01_PR114 = {
     "changes": [
         "Research pick mode: lowers confidence floor to 0.55 + v3 min_win_proba to 0.40 when < 15 resolved picks",
         "GET /api/system/breakers: per-breaker state, failure count, cooldown, rate-limit",
-        "Prev_close 5-tier chain: Alpaca 1Day → 5-min bar → yfinance → Polygon → 24h cache",
+        "Prev_close 5-tier chain: Alpaca 1Day (dated) → session-dated cache → 5-min bar → yfinance → Polygon",
         "Confidence caps: squeeze_confidence max 95, score_confirmation max 95, extreme short bonus halved",
         "Stooq deprecated (JS challenge wall)",
         "Degraded reasons now include half_open state",

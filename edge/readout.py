@@ -127,6 +127,17 @@ def research(store, day: Optional[str] = None) -> Dict[str, Any]:
                                     for c in r.get("claims") or []]} for r in recs]}
 
 
+def _clock(key: str, ts: Optional[int]) -> Dict[str, Optional[str]]:
+    """An epoch as the operator reads it: Central (where they are) and Eastern (the market)."""
+    if not ts:
+        return {f"{key}_ct": None, f"{key}_et": None}
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    t = datetime.fromtimestamp(int(ts), tz=ZoneInfo("UTC"))
+    return {f"{key}_ct": t.astimezone(ZoneInfo("America/Chicago")).strftime("%H:%M CT"),
+            f"{key}_et": t.astimezone(ZoneInfo("America/New_York")).strftime("%H:%M ET")}
+
+
 def radar(store, day: Optional[str] = None) -> Dict[str, Any]:
     d = _day_of(store, "edge_radar", day, "session_date")
     if not d:
@@ -135,8 +146,13 @@ def radar(store, day: Optional[str] = None) -> Dict[str, Any]:
     out = []
     for it in sorted(items, key=lambda r: -(r.get("detected_move_pct") or 0)):
         last = (it.get("history") or [{}])[-1]
+        b = it.get("blocker") or {}
         out.append({"symbol": it["symbol"], "state": it.get("state"), "strategy": it.get("strategy"),
-                    "detected_move_pct": it.get("detected_move_pct"), "last_reason": last.get("reason")})
+                    "detected_move_pct": it.get("detected_move_pct"), "last_reason": last.get("reason"),
+                    "detected_at": it.get("detected_at"), **_clock("detected_at", it.get("detected_at")),
+                    "last_reasons": b.get("reasons") or [], "last_reasons_strategy": b.get("strategy"),
+                    "last_reasons_at": b.get("at"), **_clock("last_reasons_at", b.get("at")),
+                    "catalyst": (it.get("catalyst") or {}).get("headline")})
     return {"day": d, "states": dict(Counter(i["state"] for i in out)),
             "items": out[:40]}
 

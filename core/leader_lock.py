@@ -32,6 +32,19 @@ LOGGER = logging.getLogger("ghost.leader")
 LEADER_LOCK_KEY = 1_042_007_001
 
 _leader_conn: Optional[psycopg2.extensions.connection] = None
+# True only when election is deliberately off (SCHEDULER_LEADER_LOCK=0) or there
+# is no database to elect through (local dev). Never set on an election ERROR.
+_leader_without_lock = False
+
+# Bounded connect so a boot during a DB blip cannot hang the lifespan, and TCP
+# keepalives so a silently dropped session is noticed by the liveness check.
+_CONNECT_KWARGS = {
+    "connect_timeout": 5,
+    "keepalives": 1,
+    "keepalives_idle": 30,
+    "keepalives_interval": 10,
+    "keepalives_count": 3,
+}
 
 
 def leader_lock_enabled() -> bool:
@@ -40,8 +53,13 @@ def leader_lock_enabled() -> bool:
 
 
 def is_leader() -> bool:
-    """True if this process currently holds the leader lock."""
-    return _leader_conn is not None
+    """True if this process may run background work right now.
+
+    Either it holds the session advisory lock, or election is deliberately
+    disabled. This is the per-tick gate the scheduler and monitors consult, so
+    it must be a cheap in-memory read (no I/O).
+    """
+    return _leader_without_lock or _leader_conn is not None
 
 
 def try_acquire_leader() -> bool:
@@ -51,22 +69,36 @@ def try_acquire_leader() -> bool:
     advisory lock. The connection is held for the process lifetime; the lock is
     released automatically when the process exits or the connection drops.
 
-    Fail-open on error: if the lock cannot be evaluated (no DATABASE_URL, DB
-    down, etc.) we assume leadership rather than silently disabling all
-    background work — the single-instance deployment is the common case and a
-    false "not leader" would stop the scheduler entirely.
+    Fail CLOSED on error: if the lock cannot be evaluated (DB unreachable,
+    connect timeout, ...) this process is NOT the leader. During a rolling
+    deploy the old instance may still hold the lock; assuming leadership on a
+    failed connect would run two schedulers (double cards, double paper
+    orders). The caller retries via ``wait_for_leadership`` so a single
+    instance still becomes leader as soon as the DB answers.
+
+    Idempotent: a process that already holds a live lock returns True without
+    opening a second connection.
     """
-    global _leader_conn
+    global _leader_conn, _leader_without_lock
     if not leader_lock_enabled():
         LOGGER.info("Leader lock disabled (SCHEDULER_LEADER_LOCK=0) — assuming leader")
+        _leader_without_lock = True
         return True
     dsn = os.environ.get("DATABASE_URL")
     if not dsn:
-        LOGGER.warning("No DATABASE_URL — cannot elect leader; assuming leader")
+        # Not an error path: without a database there is nothing to elect
+        # through and nothing shared to double-write (local dev only).
+        LOGGER.warning("No DATABASE_URL — cannot elect leader; assuming single-process leader")
+        _leader_without_lock = True
         return True
+    _leader_without_lock = False
+    if _leader_conn is not None:
+        if _connection_alive(_leader_conn):
+            return True
+        _drop_leader_conn("held lock connection is dead")
     conn: Optional[psycopg2.extensions.connection] = None
     try:
-        conn = psycopg2.connect(dsn)
+        conn = psycopg2.connect(dsn, **_CONNECT_KWARGS)
         conn.autocommit = True
         cur = conn.cursor()
         cur.execute("SELECT pg_try_advisory_lock(%s)", (LEADER_LOCK_KEY,))
@@ -80,13 +112,106 @@ def try_acquire_leader() -> bool:
         LOGGER.info("Another replica holds the leader lock — running HTTP-only (no scheduler/monitors)")
         return False
     except Exception as e:
-        LOGGER.warning("Leader lock acquisition failed (%s) — assuming leader", str(e)[:120])
+        LOGGER.warning(
+            "Leader lock acquisition failed (%s) — NOT leader; will retry",
+            str(e)[:120],
+        )
         if conn is not None:
             try:
                 conn.close()
             except Exception:
                 pass
-        return True
+        return False
+
+
+def _connection_alive(conn) -> bool:
+    """Cheap liveness probe on the dedicated lock connection.
+
+    A session advisory lock lives exactly as long as its session, so a session
+    that still answers ``SELECT 1`` still holds the lock; one that errors (server
+    restart, network drop, idle kill) has already released it server-side.
+    """
+    try:
+        if getattr(conn, "closed", 0):
+            return False
+        cur = conn.cursor()
+        try:
+            cur.execute("SELECT 1")
+            row = cur.fetchone()
+        finally:
+            try:
+                cur.close()
+            except Exception:
+                pass
+        return bool(row) and row[0] == 1
+    except Exception as e:
+        LOGGER.warning("Leader lock connection check failed: %s", str(e)[:120])
+        return False
+
+
+def _drop_leader_conn(reason: str) -> None:
+    global _leader_conn
+    conn, _leader_conn = _leader_conn, None
+    LOGGER.critical("Lost scheduler leader lock (%s) — background work paused", reason)
+    if conn is not None:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def check_leadership() -> str:
+    """Verify (and if needed repair) leadership. Blocking; run off the event loop.
+
+    Returns one of:
+      "leader"      still holding a live lock (or election disabled)
+      "reacquired"  the lock session had dropped and was re-taken
+      "lost"        the lock session dropped and could not be re-taken
+                    (another replica took over, or the DB is unreachable)
+      "follower"    not leader before the check and still not leader
+    While not leader, ``is_leader()`` is False so gated work pauses; a later
+    call re-acquires when the lock is free again.
+    """
+    if _leader_without_lock:
+        return "leader"
+    if _leader_conn is None:
+        return "reacquired" if try_acquire_leader() else "follower"
+    if _connection_alive(_leader_conn):
+        return "leader"
+    _drop_leader_conn("lock connection dropped")
+    if try_acquire_leader():
+        LOGGER.warning("Re-acquired scheduler leader lock after connection drop")
+        return "reacquired"
+    return "lost"
+
+
+def leader_liveness_interval_s() -> float:
+    """How often the leader verifies its lock session (SCHEDULER_LEADER_LIVENESS_S)."""
+    try:
+        interval = float(os.getenv("SCHEDULER_LEADER_LIVENESS_S", "30"))
+    except (TypeError, ValueError):
+        interval = 30.0
+    return max(5.0, min(300.0, interval))
+
+
+async def watch_leadership(*, interval_s: float | None = None) -> None:
+    """Background loop: detect a dropped lock session and re-acquire or relinquish.
+
+    Relinquishing is in-memory: ``is_leader()`` turns False, which stops the
+    scheduler dispatching and the intraday monitors from acting until the lock
+    is re-taken. Runs forever; cancel it on shutdown.
+    """
+    interval = leader_liveness_interval_s() if interval_s is None else max(0.0, interval_s)
+    loop = asyncio.get_running_loop()
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            state = await loop.run_in_executor(None, check_leadership)
+        except Exception as e:  # never let the watcher die silently
+            LOGGER.warning("Leadership check errored: %s", str(e)[:120])
+            continue
+        if state in ("lost", "reacquired"):
+            LOGGER.warning("Scheduler leadership state: %s", state)
 
 
 def leader_retry_interval_s() -> float:
@@ -125,7 +250,8 @@ async def wait_for_leadership(
 
 def release_leader() -> None:
     """Release the leader lock (closes the dedicated connection)."""
-    global _leader_conn
+    global _leader_conn, _leader_without_lock
+    _leader_without_lock = False
     if _leader_conn is not None:
         try:
             _leader_conn.close()

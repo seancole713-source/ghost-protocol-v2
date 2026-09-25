@@ -110,11 +110,12 @@ def test_compute_get_stats_uses_v32_breakdowns(monkeypatch):
     assert payload["scan_symbols"]["stocks"] == ["WOLF"]
 
 
-def test_api_health_alias_calls_health(monkeypatch):
-    # audit v2 #10: /api/health is now a SLIM liveness probe (status/score/ts),
-    # not the full internals dict.
-    monkeypatch.setattr(wolf_app, "health", lambda: {
-        "status": "healthy", "score": 100, "telegram_configured": True, "tasks": [1]})
+def test_api_health_alias_is_slim_liveness(monkeypatch):
+    # audit v2 #10 + F28: /api/health is a SLIM, cheap liveness probe
+    # (status/score/ts + db/leader/scheduler heartbeat), not the full dict,
+    # and it never runs the full health() itself.
+    monkeypatch.setattr(wolf_app, "_health_db_ping", lambda: True)
+    monkeypatch.setattr(wolf_app, "health", lambda: (_ for _ in ()).throw(AssertionError("full health called")))
     out = wolf_app.api_health()
     assert out["status"] == "healthy" and out["score"] == 100
     assert "telegram_configured" not in out and "tasks" not in out

@@ -216,6 +216,155 @@ def test_a_refused_exit_sell_is_retried_not_marked_done(ledger):
     assert not ledger.store.get("edge_paper", f"{f.forecast_id}|paper").get("time_exit_done")
 
 
+# ------------------------------------------------- time-exit safety (audit 2026-09-25) --
+
+class Exchange(Broker):
+    """The Broker fake with memory: a sell it accepts becomes an order the next lookup sees,
+    with `sell_status` (filled / rejected / new). `refuse_sells` refuses that many sell posts;
+    `close_ok` answers DELETE /v2/positions; GET /v2/orders/{id} serves the nested bracket."""
+
+    def __init__(self, orders=None, position_qty=0, sell_status="filled", refuse_sells=0, close_ok=True,
+                 nested=None):
+        super().__init__(orders=orders, position_qty=position_qty)
+        self.sell_status, self.refuse_sells, self.close_ok = sell_status, refuse_sells, close_ok
+        self.nested, self.closes, self.ids_seen = nested or {}, [], set()
+
+    def post(self, url, json=None, headers=None, timeout=None):
+        assert "paper-api.alpaca.markets" in url
+        self.posts.append(json)
+        cid = json["client_order_id"]
+        if cid in self.ids_seen:                              # Alpaca: client_order_id must be unique
+            return R(422, {"message": "client_order_id must be unique"})
+        self.ids_seen.add(cid)
+        if json.get("side") == "sell" and self.refuse_sells:
+            self.refuse_sells -= 1
+            return R(403, {"message": "insufficient qty available for order (held_for_orders)"})
+        o = {"id": f"s{len(self.posts)}", "client_order_id": cid, "status": self.sell_status,
+             "filled_qty": json["qty"] if self.sell_status == "filled" else "0"}
+        self.orders.append(o)
+        return R(200, o)
+
+    def delete(self, url, headers=None, timeout=None):
+        self.deletes.append(url)
+        if "/v2/positions/" in url:
+            self.closes.append(url)
+            return R(200, {"id": "close1", "symbol": "SHOP"}) if self.close_ok else R(403, {"message": "held"})
+        return R(204)
+
+    def get(self, url, params=None, headers=None, timeout=None):
+        tail = url.rsplit("/v2/orders/", 1)[-1] if "/v2/orders/" in url else None
+        if tail and tail in self.nested:
+            assert (params or {}).get("nested") == "true"
+            return R(200, self.nested[tail])
+        return super().get(url, params=params, headers=headers, timeout=timeout)
+
+
+def _filled_entry(f, legs=None, qty="6"):
+    return {"id": "o1", "client_order_id": f"{f.forecast_id}-entry", "status": "filled", "filled_qty": qty,
+            "legs": [{"id": "leg-tp", "status": "canceled", "filled_qty": "0"},
+                     {"id": "leg-sl", "status": "canceled", "filled_qty": "0"}] if legs is None else legs}
+
+
+def test_a_rejected_exit_sell_is_retried_under_a_new_client_id(ledger):
+    f = ledger.fc
+    PP.submit(Broker(), ledger, day="2026-09-23", experiments=EXPERIMENTS)
+    b = Exchange(orders=[_filled_entry(f)], sell_status="rejected")
+    PP.time_exit(b, ledger, day="2026-09-23", experiments=EXPERIMENTS, now=ts(15, 30))
+    b.sell_status = "filled"
+    out = PP.time_exit(b, ledger, day="2026-09-23", experiments=EXPERIMENTS, now=ts(15, 35))
+    sells = [p["client_order_id"] for p in b.posts if p.get("side") == "sell"]
+    assert sells == [f"{f.forecast_id}-tx", f"{f.forecast_id}-tx2"] and out["closed"] == ["SHOP"]
+    PP.time_exit(b, ledger, day="2026-09-23", experiments=EXPERIMENTS, now=ts(15, 40))
+    rec = ledger.store.get("edge_paper", f"{f.forecast_id}|paper")
+    assert rec["time_exit_done"] and rec["tx_ids"] == sells
+    assert len([p for p in b.posts if p.get("side") == "sell"]) == 2              # flat: no third sell
+
+
+def test_a_working_exit_sell_is_never_doubled(ledger):
+    f = ledger.fc
+    PP.submit(Broker(), ledger, day="2026-09-23", experiments=EXPERIMENTS)
+    b = Exchange(orders=[_filled_entry(f)], sell_status="new")
+    PP.time_exit(b, ledger, day="2026-09-23", experiments=EXPERIMENTS, now=ts(15, 30))
+    PP.time_exit(b, ledger, day="2026-09-23", experiments=EXPERIMENTS, now=ts(15, 35))
+    assert len([p for p in b.posts if p.get("side") == "sell"]) == 1
+    assert not ledger.store.get("edge_paper", f"{f.forecast_id}|paper").get("time_exit_done")
+
+
+def test_legs_missing_from_the_client_id_answer_are_read_by_order_id_and_cancelled(ledger):
+    f = ledger.fc
+    PP.submit(Broker(), ledger, day="2026-09-23", experiments=EXPERIMENTS)
+    legs = [{"id": "leg-tp", "status": "new", "filled_qty": "0"},
+            {"id": "leg-sl", "status": "held", "filled_qty": "0"}]
+    b = Exchange(orders=[_filled_entry(f, legs=[])], nested={"o1": {**_filled_entry(f), "legs": legs}})
+    out = PP.time_exit(b, ledger, day="2026-09-23", experiments=EXPERIMENTS, now=ts(15, 30))
+    assert [u.rsplit("/", 1)[-1] for u in b.deletes] == ["leg-tp", "leg-sl"]      # cancelled BEFORE the sell
+    assert out["closed"] == ["SHOP"] and b.posts[-1]["qty"] == "6"
+
+
+def test_the_last_tick_closes_only_this_forecasts_shares_when_the_sell_is_refused(ledger):
+    f = ledger.fc
+    PP.submit(Broker(), ledger, day="2026-09-23", experiments=EXPERIMENTS)
+    b = Exchange(orders=[_filled_entry(f)], refuse_sells=99, position_qty=10)     # 4 more belong to another
+    out = PP.time_exit(b, ledger, day="2026-09-23", experiments=EXPERIMENTS, now=ts(15, 45))
+    assert "retrying" in out["errors"][0] and b.closes == []                     # not the last tick yet
+    out = PP.time_exit(b, ledger, day="2026-09-23", experiments=EXPERIMENTS, now=ts(15, 50))
+    assert b.closes == ["https://paper-api.alpaca.markets/v2/positions/SHOP?qty=6"]
+    assert out["closed"] == ["SHOP"] and out["not_flat"] == [] and out["status"] == "time_exit"
+    sells = [p["client_order_id"] for p in b.posts if p.get("side") == "sell"]
+    assert sells == [f"{f.forecast_id}-tx", f"{f.forecast_id}-tx2"]              # each attempt its own id
+    rec = ledger.store.get("edge_paper", f"{f.forecast_id}|paper")
+    assert rec["tx_closes"][0]["qty"] == 6 and rec["tx_closes"][0]["order_id"] == "close1"
+    # after the close, the broker's close order is this forecast's time exit in the actual record
+    orders = [{**_filled_entry(f), "submitted_at": iso(ts(9, 11)), "filled_at": iso(ts(9, 40)),
+               "filled_avg_price": "148.30"},
+              {"id": "close1", "client_order_id": "alpaca-generated", "symbol": "SHOP", "side": "sell",
+               "status": "filled", "filled_qty": "6", "filled_avg_price": "150.00",
+               "submitted_at": iso(ts(15, 50)), "filled_at": iso(ts(15, 50))}]
+    res = PP.reconcile(Broker(orders=orders), ledger, day="2026-09-23", experiments=EXPERIMENTS, now=ts(16, 25))
+    assert res["settled"]["gap_and_go_auto@v1:SHOP"]["actual"] == "TIME_EXIT"
+    assert "close1" in [o["id"] for o in ledger.store.get("edge_paper_orders", "2026-09-23")["orders"]]
+
+
+def test_the_last_tick_never_closes_more_than_the_account_holds(ledger):
+    f = ledger.fc
+    PP.submit(Broker(), ledger, day="2026-09-23", experiments=EXPERIMENTS)
+    b = Exchange(orders=[_filled_entry(f)], refuse_sells=99, position_qty=4)
+    PP.time_exit(b, ledger, day="2026-09-23", experiments=EXPERIMENTS, now=ts(15, 50))
+    assert b.closes == ["https://paper-api.alpaca.markets/v2/positions/SHOP?qty=4"]
+
+
+def test_not_flat_after_the_last_tick_is_a_loud_problem(ledger, monkeypatch):
+    from edge import pipeline as P
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "42")
+    f = ledger.fc
+    PP.submit(Broker(), ledger, day="2026-09-23", experiments=EXPERIMENTS)
+    b = Exchange(orders=[_filled_entry(f)], refuse_sells=99, position_qty=6, close_ok=False)
+
+    class TG:
+        def __init__(self):
+            self.sent = []
+
+        def post(self, url, json=None, timeout=None):
+            self.sent.append(json["text"])
+            return R(200, {})
+
+    tg = TG()
+    P.run(None, ledger, now=ts(15, 30), http=b, notifier=tg)          # refused: an ordinary retry PROBLEM
+    out = P.run(None, ledger, now=ts(15, 50), http=b, notifier=tg)
+    assert out["paper_exit"]["status"] == "error" and "NOT FLAT" in out["paper_exit"]["error"]
+    assert "6 shares still open with NO stop" in out["paper_exit_not_flat"]["error"]
+    assert any("paper_exit_not_flat" in t and "NOT FLAT" in t for t in tg.sent)  # its own message, not swallowed
+    rec = ledger.store.get("edge_paper", f"{f.forecast_id}|paper")
+    assert "NO stop" in rec["exit_alarm"] and not rec.get("time_exit_done")
+
+
+def test_retried_time_exit_ids_keep_the_time_exit_role():
+    from edge import broker_alpaca as BA, fills as FL
+    assert BA.role_of("abc-tx") == BA.role_of("abc-tx2") == BA.role_of("abc-tx13") == FL.TIME_EXIT_ROLE
+    assert PP._is_time_exit("abc-tx3", "abc") and not PP._is_time_exit("abc-txx", "abc")
+
+
 def test_a_broker_fill_the_rule_never_took_is_shown_but_not_counted(ledger):
     from edge.resolver import Resolution
     f = ledger.fc

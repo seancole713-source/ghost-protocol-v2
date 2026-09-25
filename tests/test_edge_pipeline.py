@@ -59,6 +59,8 @@ class FakeAlpaca:
     def __call__(self, url, params=None, headers=None, timeout=None):
         params = params or {}
         self.calls.append((url, dict(params)))
+        if "/v2/aggs/grouped/" in url:      # the premarket scan's prior session: nothing liquid, no error
+            return Resp({"results": []})
         if "screener/stocks/movers" in url:
             if self.phase == "morning":
                 g = [{"symbol": s, "percent_change": 8.0} for s in MORNING_GAINERS]
@@ -314,6 +316,133 @@ def test_with_a_universe_an_unsurfaced_listed_stock_is_a_detection_failure(monke
     assert rows["NEWX"]["label"] == "DETECTION_FAILURE"
 
 
+# ------------------------------------------- miss review v2: the radar counts --
+
+def _radar_row(sym, *, detected, history, state, blocker=None, catalyst=None):
+    return {"symbol": sym, "session_date": DAY.isoformat(), "detected_at": detected, "detected_move_pct": 9.0,
+            "strategy": None, "state": state, "history": history, "blocker": blocker, "catalyst": catalyst}
+
+
+def _radar_forecast(ledger, sym, *, sim, actual=None):
+    from edge import intraday as I
+    from edge.contracts import issue_intraday
+    ledger.register(I.INTRADAY_CONTINUATION, now=ts(9, 45))
+    fc = issue_intraday(I.INTRADAY_CONTINUATION, symbol=sym, session_date=DAY, entry_ref=5.1, issued_at=ts(10, 0))
+    ledger.record(fc, now=ts(10, 0))
+    ledger.store.put("outcomes", f"{fc.forecast_id}|simulated", {"forecast_id": fc.forecast_id, "outcome": sim})
+    if actual:
+        ledger.store.put("outcomes", f"{fc.forecast_id}|actual", {"forecast_id": fc.forecast_id, "outcome": actual})
+    ledger.store.put("edge_radar", f"{DAY.isoformat()}|{sym}", _radar_row(
+        sym, detected=ts(9, 50), state="ENTRY_ELIGIBLE", history=[
+            {"ts": ts(9, 50), "from": "DETECTED", "to": "WATCHING", "reason": "", "evidence": {}},
+            {"ts": ts(10, 0), "from": "WATCHING", "to": "SETUP_FORMING", "reason": "", "evidence": {}},
+            {"ts": ts(10, 0), "from": "SETUP_FORMING", "to": "ENTRY_ELIGIBLE", "reason": "",
+             "evidence": {"forecast_id": fc.forecast_id, "price": 5.1}}]))
+    return fc
+
+
+def _review_v2(ledger):
+    ledger.store.put("edge_universe", "2026-09-23", {"day": "2026-09-23", "symbols": ["SHOP", "GAPR", "NEWX", "USAR"]})
+    P.morning_card(FakeAlpaca(), ledger, now=ts(9, 10))
+    return P.miss_review(FullMarket("evening"), ledger, day=DAY, now=ts(16, 25))
+
+
+def test_a_radar_only_name_that_expired_is_a_strategy_rejection_not_a_detection_failure(ledger):
+    ledger.store.put("edge_radar", f"{DAY.isoformat()}|NEWX", _radar_row(
+        "NEWX", detected=ts(9, 50), state="EXPIRED",
+        blocker={"strategy": "intraday_continuation", "verdict": "REJECTED",
+                 "reasons": ["rvol_tod 1.4 fails >= 2x"], "at": ts(11, 5)},
+        history=[{"ts": ts(9, 50), "from": "DETECTED", "to": "WATCHING", "reason": "", "evidence": {}},
+                 {"ts": ts(16, 25), "from": "WATCHING", "to": "EXPIRED",
+                  "reason": "session ended without an eligible setup; last blocker: "
+                            "intraday_continuation: rvol_tod 1.4 fails >= 2x", "evidence": {}}]))
+    out = _review_v2(ledger)
+    review = ledger.store.get("edge_miss", "2026-09-23")
+    row = {r["symbol"]: r for r in review["rows"]}["NEWX"]
+    assert row["label"] == "STRATEGY_REJECTION"
+    assert row["seen_by"] == ["radar"] and row["radar_state"] == "EXPIRED" and row["radar_detected_at"] == ts(9, 50)
+    assert row["why"] == "intraday_continuation: rvol_tod 1.4 fails >= 2x"
+    assert review["labels_version"] == out["labels_version"] == "miss_labels_v2"
+    assert (review["radar_seen"], review["card_seen"], review["radar_names"]) == (1, 1, 1)
+    from edge import notify as N
+    assert "radar saw it, rule rejected: 1" in N.misses_text(review)
+
+
+def test_a_radar_forecast_that_filled_is_caught_and_counted_as_radar_recall(ledger):
+    _radar_forecast(ledger, "NEWX", sim="WIN", actual="WIN")
+    out = _review_v2(ledger)
+    review = ledger.store.get("edge_miss", "2026-09-23")
+    rows = {r["symbol"]: r for r in review["rows"]}
+    assert rows["NEWX"]["label"] == "CAUGHT" and rows["NEWX"]["caught_by"] == "radar"
+    assert rows["SHOP"]["label"] == "CAUGHT" and rows["SHOP"]["caught_by"] == "card"   # not graded yet: no fill verdict
+    assert (out["card_recall"], out["radar_recall"], out["recall"]) == (0.5, 0.5, 1.0)
+    assert review["caught_by"] == {"card": 1, "radar": 1}
+    from edge import notify as N
+    assert "by the radar 1/2" in N.misses_text(review)
+
+
+def test_a_forecast_that_never_filled_is_an_execution_failure_not_a_catch(ledger):
+    """2026-09-24 GLND: simulated and paper both NO_FILL, yet v1 counted it CAUGHT."""
+    fc = _radar_forecast(ledger, "NEWX", sim="NO_FILL", actual="NO_FILL")
+    _review_v2(ledger)
+    review = ledger.store.get("edge_miss", "2026-09-23")
+    row = {r["symbol"]: r for r in review["rows"]}["NEWX"]
+    assert row["label"] == "ALERT_EXECUTION_FAILURE" and "caught_by" not in row
+    assert row["forecasts"] == [{"source": "radar", "forecast_id": fc.forecast_id, "filled": False,
+                                 "simulated": "NO_FILL", "actual": "NO_FILL"}]
+    assert review["labels"]["ALERT_EXECUTION_FAILURE"] == 1 and review["caught"] == 1
+
+
+def test_the_paper_record_overrides_a_simulated_fill(ledger):
+    _radar_forecast(ledger, "NEWX", sim="WIN", actual="NO_FILL")        # the broker never filled it
+    _review_v2(ledger)
+    row = {r["symbol"]: r for r in ledger.store.get("edge_miss", "2026-09-23")["rows"]}["NEWX"]
+    assert row["label"] == "ALERT_EXECUTION_FAILURE"
+
+
+def test_a_card_forecast_that_never_filled_is_an_execution_failure(ledger):
+    ledger.store.put("edge_universe", "2026-09-23", {"day": "2026-09-23", "symbols": ["SHOP", "GAPR", "NEWX", "USAR"]})
+    P.morning_card(FakeAlpaca(), ledger, now=ts(9, 10))
+    fid = next(r["forecast_id"] for r in ledger.store.get("edge_cards", "2026-09-23")["rows"]
+               if r["symbol"] == "SHOP")
+    ledger.store.put("outcomes", f"{fid}|simulated", {"forecast_id": fid, "outcome": "NO_FILL"})
+    P.miss_review(FullMarket("evening"), ledger, day=DAY, now=ts(16, 25))
+    row = {r["symbol"]: r for r in ledger.store.get("edge_miss", "2026-09-23")["rows"]}["SHOP"]
+    assert row["label"] == "ALERT_EXECUTION_FAILURE"
+
+
+def test_a_miss_with_a_stored_company_event_and_no_forecast_is_a_catalyst_miss(ledger):
+    ledger.store.put("edge_research", "2026-09-23|NEWX", {
+        "day": "2026-09-23", "symbol": "NEWX", "made_at": ts(8, 40), "status": "researched",
+        "claims": [{"kind": "contract", "statement": "NEWX wins a $40M Army contract", "status": "verified"}]})
+    _review_v2(ledger)
+    row = {r["symbol"]: r for r in ledger.store.get("edge_miss", "2026-09-23")["rows"]}["NEWX"]
+    assert row["label"] == "CATALYST_MISSED"
+    assert row["stored_catalyst"] == "NEWX wins a $40M Army contract"
+
+
+def test_a_seen_name_judged_without_its_stored_catalyst_is_a_catalyst_miss(ledger):
+    ledger.store.put("edge_research", "2026-09-23|NEWX", {
+        "day": "2026-09-23", "symbol": "NEWX", "made_at": ts(8, 40), "status": "researched",
+        "claims": [{"kind": "fda_regulatory", "statement": "FDA clears NEWX device", "status": "single_source"}]})
+    ledger.store.put("edge_radar", f"{DAY.isoformat()}|NEWX", _radar_row(
+        "NEWX", detected=ts(9, 50), state="EXPIRED",
+        blocker={"strategy": "catalyst_breakout", "verdict": "REJECTED",
+                 "reasons": ["no dated company-specific catalyst (sector sympathy does not count)"], "at": ts(10, 0)},
+        history=[{"ts": ts(9, 50), "from": "DETECTED", "to": "WATCHING", "reason": "", "evidence": {}}]))
+    _review_v2(ledger)
+    row = {r["symbol"]: r for r in ledger.store.get("edge_miss", "2026-09-23")["rows"]}["NEWX"]
+    assert row["label"] == "CATALYST_MISSED"
+    # ...but a quarantined claim is not a catalyst the store "held".
+    ledger2 = Ledger(MemoryStore())
+    ledger2.store.put("edge_research", "2026-09-23|NEWX", {
+        "day": "2026-09-23", "symbol": "NEWX", "made_at": ts(8, 40), "status": "researched",
+        "claims": [{"kind": "fda_regulatory", "statement": "FDA clears NEWX device", "status": "quarantined"}]})
+    _review_v2(ledger2)
+    assert {r["symbol"]: r for r in ledger2.store.get("edge_miss", "2026-09-23")["rows"]}["NEWX"]["label"] \
+        == "DETECTION_FAILURE"
+
+
 def test_after_the_close_every_priced_candidate_is_graded_as_a_labelled_counterfactual(ledger):
     from edge import scorecard as SC
     P.morning_card(FakeAlpaca(), ledger, now=ts(9, 10))
@@ -371,3 +500,88 @@ def test_the_card_stores_its_top_10_and_the_evening_grades_it(ledger):
     P.run(FakeAlpaca("evening"), ledger, now=ts(16, 25))
     from edge import readout as R
     assert R.view(ledger.store, "top10", card["day"])["graded"] is True
+
+
+# ------------------------------------ one bad data minute must not cost the day (audit 2026-09-25) --
+
+class RateLimited(FakeAlpaca):
+    """Alpaca answers 429 on the card's price snapshots while `failing` is set."""
+
+    def __init__(self, failing=True, **kw):
+        super().__init__(**kw)
+        self.failing = failing
+
+    def __call__(self, url, params=None, headers=None, timeout=None):
+        if self.failing and "/v2/stocks/snapshots" in url and (params or {}).get("feed") != "sip":
+            raise RuntimeError("429 Client Error: Too Many Requests")
+        return super().__call__(url, params=params, headers=headers, timeout=timeout)
+
+
+def test_a_failed_first_card_tick_stores_nothing_and_the_next_tick_issues_once(ledger):
+    out = P.morning_card(RateLimited(), ledger, now=ts(9, 5))
+    assert out["status"] == "retry_pending" and any("snapshots_iex" in f for f in out["failures"])
+    assert ledger.store.get("edge_cards", DAY.isoformat()) is None
+    assert ledger.store.scan("forecasts", experiment_id=P.EID) == []
+    assert ledger.store.scan("abstentions", experiment_id=P.EID) == []
+    out = P.morning_card(RateLimited(failing=False), ledger, now=ts(9, 10))
+    assert out["status"] == "issued" and out["forecasts"] == ["SHOP"] and out["source_errors"] == {}
+    card = ledger.store.get("edge_cards", DAY.isoformat())
+    assert card["degraded"] is False and card["failed_attempts"] == 1
+    assert P.morning_card(FakeAlpaca(), ledger, now=ts(9, 15))["status"] == "already_issued"
+    assert len(ledger.store.scan("forecasts", experiment_id=P.EID)) == 1
+
+
+def test_errors_until_the_last_tick_issue_a_degraded_card_that_names_the_failed_source(ledger):
+    for hm in ((9, 5), (9, 10), (9, 15), (9, 20)):
+        assert P.morning_card(RateLimited(), ledger, now=ts(*hm))["status"] == "retry_pending"
+    out = P.morning_card(RateLimited(), ledger, now=ts(9, 25))
+    assert out["status"] == "issued" and "snapshots_iex" in out["source_errors"]
+    card = ledger.store.get("edge_cards", DAY.isoformat())
+    assert card["degraded"] is True and card["failed_attempts"] == 4
+    assert any("snapshots_iex" in f for f in card["data_failures"])
+    assert card["forecasts"] == [] and card["priced"] == 0          # nothing priced: nothing guessed
+    from edge import notify as N
+    first = N.card_text(card).splitlines()[0]
+    assert first.startswith("DATA WARNING:") and "snapshots_iex" in first and "last try" in first
+
+
+def test_a_failed_daily_bars_call_is_named_and_retried_not_a_crash(ledger):
+    class NoDaily(FakeAlpaca):
+        def __call__(self, url, params=None, headers=None, timeout=None):
+            if url.endswith("/v2/stocks/bars") and (params or {}).get("timeframe") == "1Day":
+                raise RuntimeError("ReadTimeout")
+            return super().__call__(url, params=params, headers=headers, timeout=timeout)
+
+    out = P.morning_card(NoDaily(), ledger, now=ts(9, 5))
+    assert out["status"] == "retry_pending" and "daily_bars" in out["source_errors"]
+    assert ledger.store.get("edge_cards", DAY.isoformat()) is None
+
+
+def test_no_price_for_any_candidate_is_retried_but_a_thin_valid_card_is_not(ledger):
+    class NoPrints(FakeAlpaca):
+        def __call__(self, url, params=None, headers=None, timeout=None):
+            if "/v2/stocks/snapshots" in url and (params or {}).get("feed") != "sip":
+                return Resp({})                                # a 200 with nothing in it
+            return super().__call__(url, params=params, headers=headers, timeout=timeout)
+
+    out = P.morning_card(NoPrints(), ledger, now=ts(9, 5))
+    assert out["status"] == "retry_pending" and "no premarket price for any of 5 candidates" in out["failures"]
+    # STALE's last print is yesterday's: 4/5 priced, no error -- issued on the first tick, as before
+    other = Ledger(MemoryStore())
+    out = P.morning_card(FakeAlpaca(), other, now=ts(9, 5))
+    assert out["status"] == "issued" and out["priced"] == 4 and out["candidates"] == 5
+    assert other.store.get("edge_cards", DAY.isoformat())["degraded"] is False
+
+
+def test_a_retrying_card_tick_is_logged():
+    assert P.noteworthy({"day": "2026-09-23", "card": {"status": "retry_pending"}})
+
+
+def test_a_scan_with_failed_batches_is_not_reused_from_cache():
+    from edge import premarket as PM
+    store = MemoryStore()
+    store.put("edge_pm_scan", DAY.isoformat(), {"day": DAY.isoformat(), "at": ts(9, 4), "batch_errors": 3,
+                                                "gainers": [], "scanned": 300, "priced": 0})
+    g = FakeAlpaca()
+    PM.scan(g, store, day=DAY, now=ts(9, 5))
+    assert any("/v2/aggs/grouped/" in u for u, _ in g.calls)       # recomputed, not the broken cache

@@ -119,6 +119,8 @@ def _trades(card: Dict[str, Any]) -> List[Dict[str, Any]]:
 def _data_warning(card: Dict[str, Any]) -> Optional[str]:
     """A card built on broken data must not read like a quiet day."""
     parts = []
+    if card.get("degraded"):
+        parts.append(f"issued at the last try after {int(card.get('failed_attempts') or 0)} failed attempt(s)")
     banner = str(card.get("health_banner") or "")
     if "paused" in banner.lower() or "incomplete" in banner.lower():
         parts.append(banner)
@@ -236,22 +238,56 @@ def graded_text(day: str, settled: Dict[str, Any]) -> Optional[str]:
     return f"edge shadow graded {day}:\n" + "\n".join(parts) + "\n(simulated, $1,000 size, 10bps costs)"
 
 
+_MISS_PHRASE = {
+    "UNIVERSE_COVERAGE": "outside the universe",
+    "DATA_INTERRUPTION": "data down",
+    "CATALYST_MISSED": "news on file, never linked",
+    "DETECTION_FAILURE": "never seen",
+    "STRATEGY_REJECTION": "seen, rule rejected",
+    "RISK_LIQUIDITY_EXCLUSION": "liquidity/risk excluded",
+    "ALERT_EXECUTION_FAILURE": "forecast late or never filled",
+}
+
+
+def _miss_phrase(row: Dict[str, Any]) -> str:
+    lab = row.get("label") or ""
+    if lab == "CAUGHT":
+        return f"caught by {row['caught_by']}" if row.get("caught_by") else "caught"
+    if lab in ("STRATEGY_REJECTION", "RISK_LIQUIDITY_EXCLUSION") and row.get("seen_by"):
+        who = "radar" if "radar" in row["seen_by"] else "card"
+        rule = "rule rejected" if lab == "STRATEGY_REJECTION" else "liquidity/risk excluded"
+        return f"{who} saw it, {rule}"
+    return _MISS_PHRASE.get(lab, lab.lower().replace("_", " "))
+
+
 def misses_text(review: Dict[str, Any]) -> Optional[str]:
     """The previous session's +5% movers: what was catchable, what was caught, why not."""
     if not review or not review.get("movers"):
         return None
-    labels = {k: v for k, v in (review.get("labels") or {}).items() if v}
-    top = sorted((r for r in review.get("rows") or [] if r.get("opportunity") == "EXECUTABLE"),
-                 key=lambda r: -(r.get("move_pct") or 0))[:5]
+    ex = [r for r in review.get("rows") or [] if r.get("opportunity") == "EXECUTABLE"]
+    top = sorted(ex, key=lambda r: -(r.get("move_pct") or 0))[:5]
     lines = [f"Movers review {review.get('day')}: {review.get('movers')} stocks hit +5% at their peak, "
              f"{review.get('executable')} were tradeable after the open, caught {review.get('caught')}."]
-    if labels:
-        lines.append("Missed because: " + ", ".join(f"{k.lower().replace('_', ' ')} {v}" for k, v in sorted(labels.items())))
+    if review.get("labels_version") and review.get("executable"):
+        cb, n = review.get("caught_by") or {}, review["executable"]
+        lines.append(f"Caught by the card {cb.get('card', 0)}/{n}, by the radar {cb.get('radar', 0)}/{n} "
+                     f"(the radar saw {review.get('radar_seen', 0)}, the card {review.get('card_seen', 0)}).")
+    if any("seen_by" in r for r in ex):          # v2 review: the reasons are read from the rows
+        counts: Dict[str, int] = {}
+        for r in ex:
+            if r.get("label") and r["label"] != "CAUGHT":
+                counts[_miss_phrase(r)] = counts.get(_miss_phrase(r), 0) + 1
+    else:
+        counts = {_MISS_PHRASE.get(k, k.lower().replace("_", " ")): v
+                  for k, v in (review.get("labels") or {}).items() if v}
+    if counts:
+        lines.append("Missed because: " + "; ".join(
+            f"{k}: {v}" for k, v in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))))
     if top:
         lines.append("Biggest (peak / close): " + ", ".join(
             f"{r['symbol']} +{r['move_pct']:.0f}%"
             + (f" / {r['close_pct']:+.0f}%" if isinstance(r.get("close_pct"), (int, float)) else "")
-            + f" ({(r.get('label') or '').lower().replace('_', ' ')})" for r in top))
+            + f" ({_miss_phrase(r)})" for r in top))
     if review.get("gap_only"):
         lines.append(f"{review['gap_only']} more gained only in the gap -- nothing to buy after the open.")
     return "\n".join(lines)

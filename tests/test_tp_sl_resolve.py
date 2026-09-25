@@ -306,3 +306,51 @@ def test_confidence_equals_up_prob(monkeypatch):
     assert direction == "UP"
     assert conf == 0.623
     assert conf != round(max(0.75, 0.66 + (0.6234 - 0.55) * 4.0), 3)
+
+
+def _gap_rows():
+    return [
+        {"ts": "2026-06-03T00:00:00Z", "open": 10.1, "high": 10.2, "low": 10.0, "close": 10.1},
+        # Gaps from 10.1 to 8.0 at the open, straight through the 9.0 stop.
+        {"ts": "2026-06-04T00:00:00Z", "open": 8.0, "high": 8.3, "low": 7.9, "close": 8.2},
+    ]
+
+
+def test_gap_aware_loss_reports_gap_open_not_stop():
+    ts = int(datetime(2026, 6, 2, 15, 0, tzinfo=timezone.utc).timestamp())
+    now = int(datetime(2026, 6, 8, 21, 0, tzinfo=timezone.utc).timestamp())
+    kwargs = dict(direction="UP", target=11.0, stop=9.0, predicted_at=ts,
+                  hold_bars=3, daily_bars=_gap_rows(), now=now)
+    # Default keeps the versioned research/shadow behaviour: evidence = stop.
+    assert tps.resolve_open_prediction_detail(**kwargs)[2] == 9.0
+    outcome, _ts, exit_price = tps.resolve_open_prediction_detail(
+        **kwargs, gap_aware_loss=True,
+    )
+    assert (outcome, exit_price) == ("LOSS", 8.0)
+
+
+def test_gap_aware_loss_intrabar_touch_still_fills_at_stop():
+    ts = int(datetime(2026, 6, 2, 15, 0, tzinfo=timezone.utc).timestamp())
+    now = int(datetime(2026, 6, 8, 21, 0, tzinfo=timezone.utc).timestamp())
+    rows = [{"ts": "2026-06-03T00:00:00Z", "open": 10.0, "high": 10.2, "low": 8.5, "close": 9.8}]
+    outcome, _ts, exit_price = tps.resolve_open_prediction_detail(
+        direction="UP", target=11.0, stop=9.0, predicted_at=ts, hold_bars=3,
+        daily_bars=rows, now=now, gap_aware_loss=True,
+    )
+    assert (outcome, exit_price) == ("LOSS", 9.0)
+
+
+def test_gap_aware_loss_short_and_snapshot():
+    ts = int(datetime(2026, 6, 2, 15, 0, tzinfo=timezone.utc).timestamp())
+    now = int(datetime(2026, 6, 8, 21, 0, tzinfo=timezone.utc).timestamp())
+    rows = [{"ts": "2026-06-03T00:00:00Z", "open": 12.0, "high": 12.5, "low": 11.8, "close": 12.1}]
+    outcome, _ts, exit_price = tps.resolve_open_prediction_detail(
+        direction="DOWN", target=9.0, stop=10.5, predicted_at=ts, hold_bars=3,
+        daily_bars=rows, now=now, gap_aware_loss=True,
+    )
+    assert (outcome, exit_price) == ("LOSS", 12.0)
+    outcome, _ts, exit_price = tps.resolve_open_prediction_detail(
+        direction="UP", target=11.0, stop=9.0, predicted_at=ts, hold_bars=3,
+        daily_bars=None, snapshot_price=8.4, now=now, gap_aware_loss=True,
+    )
+    assert (outcome, exit_price) == ("LOSS", 8.4)

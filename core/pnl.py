@@ -9,8 +9,29 @@ order and each one risks `stake_fraction` of current equity at its realized
 pnl_pct. With the default stake_fraction=1.0 (WOLF holds one position at a time,
 deduped) equity simply compounds by (1 + pnl_pct/100) per trade.
 """
+import math
 import os
 from typing import Any, Dict, List, Sequence, Tuple
+
+
+def stop_fill(direction: str, stop: float, observed: Any) -> float:
+    """Fill for a stop-loss exit: the WORSE of the stop and the observed price.
+
+    A stop is a trigger, not a guaranteed price. When the market gaps through it
+    (e.g. opens at 8.00 under a 9.50 long stop) the fill is the gap price, not
+    the stop. Longs (UP) take min(stop, observed); shorts (DOWN) take
+    max(stop, observed). A missing/invalid observation falls back to the stop.
+    This can only make a loss larger, never smaller.
+    """
+    try:
+        obs = float(observed)
+    except (TypeError, ValueError):
+        return stop
+    if not math.isfinite(obs) or obs <= 0:
+        return stop
+    if str(direction or "UP").upper() == "DOWN":
+        return max(stop, obs)
+    return min(stop, obs)
 
 
 def resolution_exit(
@@ -23,13 +44,15 @@ def resolution_exit(
 ) -> Tuple[float, float]:
     """Exit fill and pnl_pct for a resolved pick.
 
-    WIN/LOSS use limit fills at target/stop (not the overshooting bar close).
+    WIN fills at target (a limit; a gap beyond target is NOT credited).
+    LOSS fills at the worse of the stop and the observed evidence price
+    (``market_price``), so a gap through the stop books the real loss.
     EXPIRED and WITHDRAWN use the live market price at resolution time.
     """
     if outcome == "WIN":
         exit_price = target
     elif outcome == "LOSS":
-        exit_price = stop
+        exit_price = stop_fill(direction, stop, market_price)
     else:
         exit_price = market_price
 

@@ -11,15 +11,22 @@ caught yesterday's winners and ignores the losers that change would admit. So:
 2. ONE LABEL PER MISS, in a fixed order:
      UNIVERSE_COVERAGE        not in the supported universe
      DATA_INTERRUPTION        in universe, but its data source was down/stale
-     CATALYST_MISSED          a catalyst existed in the store but was not linked
-     DETECTION_FAILURE        never detected by the radar
-     STRATEGY_REJECTION       detected, rejected by a strategy rule
+     CATALYST_MISSED          a company event existed in the store, no forecast was issued,
+                              and the evaluation never linked the event to the name
+                              (never detected, or detected but judged "no catalyst")
+     DETECTION_FAILURE        never detected by the 9am card NOR the intraday radar
+     STRATEGY_REJECTION       detected, rejected by a strategy rule (incl. a radar name
+                              that EXPIRED without an eligible setup)
      RISK_LIQUIDITY_EXCLUSION detected, excluded by liquidity or risk
-     ALERT_EXECUTION_FAILURE  forecast issued, but the alert or the fill failed
-   plus CAUGHT (forecast issued in time).
+     ALERT_EXECUTION_FAILURE  forecast issued, but the alert was late or the entry never filled
+   plus CAUGHT (forecast issued in time AND filled -- or its fill not yet known).
 3. CORRECT REJECTIONS COUNT TOO. Every rejected name that did NOT offer an
    executable move is a rejection the rules got right. Recall is reported
-   beside it, never alone.
+   beside it, never alone -- and per source (the 9am card, the intraday radar).
+
+The labeller is versioned (LABELS_VERSION, stored on every review): v1 read
+only the 9am card, so radar-seen names read as DETECTION_FAILURE, radar
+forecasts never counted, and CAUGHT ignored fills.
 """
 from __future__ import annotations
 
@@ -28,6 +35,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 Bar = Tuple[int, float, float, float, float, float]
 
+LABELS_VERSION = "miss_labels_v2"
 LABELS = ("UNIVERSE_COVERAGE", "DATA_INTERRUPTION", "CATALYST_MISSED", "DETECTION_FAILURE",
           "STRATEGY_REJECTION", "RISK_LIQUIDITY_EXCLUSION", "ALERT_EXECUTION_FAILURE")
 _LIQUIDITY_WORDS = ("liquidity", "avg volume", "dollar volume", "spread", "price ", "risk", "theme")
@@ -45,12 +53,24 @@ class DayMove:
 
 @dataclass
 class RadarRecord:
+    """What the system knew about one name that day, merged across its sources.
+
+    `filled`: True / False from the forecast's graded outcomes, None = not graded yet.
+    `alert_deadline_ts` overrides the audit-wide deadline (a radar forecast's alert is
+    due before its own entry window closes, not before the open).
+    `catalyst_linked`: did the evaluation that saw the name see a company event?
+    None = unknown (never labels CATALYST_MISSED on a seen name).
+    """
     first_seen_ts: Optional[int] = None
     first_seen_price: Optional[float] = None
     rejected_reason: Optional[str] = None
     forecast_issued: bool = False
     alert_delivered_ts: Optional[int] = None
     filled: Optional[bool] = None
+    alert_deadline_ts: Optional[int] = None
+    catalyst_linked: Optional[bool] = None
+    seen_by: Tuple[str, ...] = ()
+    forecast_by: Optional[str] = None
 
 
 def executable_from(entry: float, bars: Sequence[Bar], after_ts: int, *,
@@ -95,10 +115,13 @@ def label(symbol: str, *, universe: Set[str], data_down: Set[str], catalyst_symb
     if r is None or r.first_seen_ts is None:
         return "CATALYST_MISSED" if symbol in catalyst_symbols else "DETECTION_FAILURE"
     if r.forecast_issued:
-        late = alert_deadline_ts is not None and (r.alert_delivered_ts is None or r.alert_delivered_ts > alert_deadline_ts)
+        deadline = r.alert_deadline_ts if r.alert_deadline_ts is not None else alert_deadline_ts
+        late = deadline is not None and (r.alert_delivered_ts is None or r.alert_delivered_ts > deadline)
         if late or r.filled is False:
             return "ALERT_EXECUTION_FAILURE"
         return "CAUGHT"
+    if symbol in catalyst_symbols and r.catalyst_linked is False:
+        return "CATALYST_MISSED"
     if r.rejected_reason and any(w in r.rejected_reason.lower() for w in _LIQUIDITY_WORDS):
         return "RISK_LIQUIDITY_EXCLUSION"
     return "STRATEGY_REJECTION"
@@ -112,6 +135,8 @@ class AuditReport:
     gap_only: int = 0
     unknown_ordering: int = 0
     caught: int = 0
+    caught_by: Dict[str, int] = field(default_factory=dict)
+    seen_by: Dict[str, int] = field(default_factory=dict)
     labels: Dict[str, int] = field(default_factory=lambda: {k: 0 for k in LABELS})
     correct_rejections: int = 0
     wrong_rejections: int = 0
@@ -120,6 +145,14 @@ class AuditReport:
     @property
     def recall(self) -> Optional[float]:
         return self.caught / self.executable if self.executable else None
+
+    def recall_of(self, source: str) -> Optional[float]:
+        """Executable movers caught by forecasts from ONE source ("card" / "radar")."""
+        return self.caught_by.get(source, 0) / self.executable if self.executable else None
+
+    def seen_rate_of(self, source: str) -> Optional[float]:
+        """Executable movers that source at least saw, forecast or not."""
+        return self.seen_by.get(source, 0) / self.executable if self.executable else None
 
     @property
     def rejection_precision(self) -> Optional[float]:
@@ -154,8 +187,14 @@ def audit(session_date: str, moves: Iterable[DayMove], *, universe: Set[str], da
             lab = label(m.symbol, universe=universe, data_down=data_down,
                         catalyst_symbols=catalyst_symbols, radar=radar, alert_deadline_ts=alert_deadline_ts)
             row["label"] = lab
+            r = radar.get(m.symbol)
+            for src in (r.seen_by if r else ()):
+                rep.seen_by[src] = rep.seen_by.get(src, 0) + 1
             if lab == "CAUGHT":
                 rep.caught += 1
+                src = (r.forecast_by if r else None) or "unknown"
+                rep.caught_by[src] = rep.caught_by.get(src, 0) + 1
+                row["caught_by"] = src
             else:
                 rep.labels[lab] += 1
             if lab in ("STRATEGY_REJECTION", "RISK_LIQUIDITY_EXCLUSION"):
