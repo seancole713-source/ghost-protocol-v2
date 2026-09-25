@@ -149,19 +149,20 @@ def rvol_curve(history: List[tuple], day_open: Dict[str, int]) -> Dict[int, List
     return curve
 
 
-def _history(get, store, syms: List[str], day: date) -> Dict[str, Dict[int, List[float]]]:
-    """IEX cumulative volume by minute, one value per prior session (up to 10), cached per day."""
+def _history(get, store, syms: List[str], day: date, feed: str = "iex") -> Dict[str, Dict[int, List[float]]]:
+    """Cumulative volume by minute on `feed`, one value per prior session (up to 10), cached per day.
+    Same feed as today's bars, always: RVOL compares like with like."""
     out, need = {}, []
     for s in syms:
         c = store.get("edge_rvol", f"{day.isoformat()}|{s}")
-        if c is not None:
+        if c is not None and c.get("feed", "iex") == feed:
             out[s] = {int(k): v for k, v in c["by_minute"].items()}
         else:
             need.append(s)
     if need:
         start = day - timedelta(days=16)
         rows = A.bars_multi(get, need, timeframe="1Min", start=_iso(_at(start, 9, 30)),
-                            end=_iso(_at(day, 0, 0)), feed="iex")
+                            end=_iso(_at(day, 0, 0)), feed=feed)
         for s in need:
             hist = _bars(rows.get(s) or [])
             days = sorted({datetime.fromtimestamp(t[0], tz=ET).date() for t in hist})[-10:]
@@ -169,9 +170,39 @@ def _history(get, store, syms: List[str], day: date) -> Dict[str, Dict[int, List
             curve = rvol_curve([h for h in hist if datetime.fromtimestamp(h[0], tz=ET).date() in set(days)], opens)
             lists = {m: v for m, v in curve.items()}
             store.put("edge_rvol", f"{day.isoformat()}|{s}", {"by_minute": {str(k): v for k, v in lists.items()},
-                                                              "sessions": len(days), "feed": "iex"})
+                                                              "sessions": len(days), "feed": feed})
             out[s] = lists
     return out
+
+
+QUALITY_MIN_PCT, QUALITY_MAX = 5.0, 30
+
+
+def _quality_lane(get, store, *, now: int, known: set, universe) -> Dict[str, float]:
+    """Liquid movers the top-gainers screener never shows. 2026-09-24: the top 50 by % were
+    +20-200% sub-$5 names, so NBIS, QMCO, WRBY, TWST (+8-15% on real volume) were never seen.
+    The most-active list (by volume) is priced from snapshots; a common stock at $2-$500
+    up >= 5% on the day joins the radar. The strategies' own rules still decide everything."""
+    from edge import feeds as FD
+    from edge import premarket as PM
+    try:
+        act = A.most_actives(get, top=100)
+        syms = [str(a["symbol"]).upper() for a in act["most_actives"] if a.get("symbol")]
+        syms = [x for x in syms if x not in known and PM.common_stock(x, universe)]
+        snaps = A.snapshots(get, syms, feed=FD.live_feed(get, store, now=now)) if syms else {}
+    except Exception:  # noqa: BLE001 - the lane is additive; the gainers screener still runs
+        return {}
+    out = {}
+    for x in syms:
+        snap = snaps.get(x) or {}
+        px = ((snap.get("latestTrade") or {}).get("p"))
+        prev = ((snap.get("prevDailyBar") or {}).get("c"))
+        if not px or not prev:
+            continue
+        pct = (float(px) / float(prev) - 1) * 100
+        if pct >= QUALITY_MIN_PCT and 2.0 <= float(px) <= 500.0:
+            out[x] = round(pct, 2)
+    return dict(sorted(out.items(), key=lambda kv: -kv[1])[:QUALITY_MAX])
 
 
 def _radar(store, day: str, sym: str, now: int, move: float) -> R.RadarItem:
@@ -201,6 +232,8 @@ def tick(get, ledger: Ledger, *, now: int, top: int = 50, http=None) -> Dict[str
     gainers = {str(g["symbol"]).upper(): float(g.get("percent_change") or 0)
                for g in mv.get("gainers") or []
                if g.get("symbol") and PM.common_stock(str(g["symbol"]), uni)}   # no warrants/rights (E6)
+    quality = _quality_lane(get, store, now=now, known=set(gainers), universe=uni)
+    gainers.update(quality)
     syms = sorted(gainers)
     if not syms:
         return {"status": "no_movers"}
@@ -208,7 +241,9 @@ def tick(get, ledger: Ledger, *, now: int, top: int = 50, http=None) -> Dict[str
     live = ST.maybe_start()              # None unless EDGE_STREAM_ENABLED
     if live is not None:
         ST.watch(syms)
-    today = A.bars_multi(get, syms, timeframe="1Min", start=_iso(_at(day, 9, 30)), end=_iso(now), feed="iex")
+    from edge import feeds as FD
+    feed = FD.live_feed(get, store, now=now)     # IEX on the free plan; SIP once it is paid for
+    today = A.bars_multi(get, syms, timeframe="1Min", start=_iso(_at(day, 9, 30)), end=_iso(now), feed=feed)
     daily_key = f"{ds}"
     daily = store.get("edge_intraday_daily", daily_key) or {}
     missing = [s for s in syms if s not in daily]
@@ -221,7 +256,7 @@ def tick(get, ledger: Ledger, *, now: int, top: int = 50, http=None) -> Dict[str
             daily[s] = {"avg_shares": statistics.mean(vols) if vols else None,
                         "prev_close": float(done[-1]["c"]) if done else None}
         store.put("edge_intraday_daily", daily_key, daily)
-    hist = _history(get, store, syms, day)
+    hist = _history(get, store, syms, day, feed)
     shorts = _short_data(http, store, syms, day)
     try:
         items = A.news(get, syms, start=_iso(now - 86_400))
@@ -292,7 +327,7 @@ def tick(get, ledger: Ledger, *, now: int, top: int = 50, http=None) -> Dict[str
                 return None
             try:
                 fc = issue_intraday(sp, symbol=s, session_date=day, entry_ref=price, issued_at=now,
-                                    evidence={"feed": "iex", "rvol": sig["rvol_tod"].value,
+                                    evidence={"feed": feed, "rvol": sig["rvol_tod"].value,
                                               "catalyst": sig["catalyst"].evidence.get("headline")})
             except Exception:  # noqa: BLE001 - e.g. too late in the session for the entry window
                 return None
@@ -316,7 +351,8 @@ def tick(get, ledger: Ledger, *, now: int, top: int = 50, http=None) -> Dict[str
             item.transition(R.ENTRY_ELIGIBLE, ts=now, strategy=_STRATEGY_OF[eid],
                             evidence={"forecast_id": f.forecast_id, "price": price})
         _save(store, item)
-    return {"status": "issued" if issued else "watched", "movers": len(syms), "issued": issued}
+    return {"status": "issued" if issued else "watched", "movers": len(syms), "issued": issued,
+            "quality_lane": sorted(quality)}
 
 
 def close_day(ledger: Ledger, *, day: date, now: int) -> Dict[str, Any]:

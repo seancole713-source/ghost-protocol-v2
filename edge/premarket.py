@@ -82,11 +82,13 @@ def scan(get, store, *, day: date, now: int, top: int = 50) -> Dict[str, Any]:
         from edge import universe as U
         universe = U.symbols_as_of(store, ds)
     syms = sorted(s for s in base if common_stock(s, universe))
+    from edge import feeds as FD
+    feed = FD.live_feed(get, store, now=now)       # IEX on the free plan; SIP once it is paid for
     session_start, rows, priced, quoted, errors = _at(day, 4, 0), [], 0, 0, 0
     for i in range(0, len(syms), BATCH):
         chunk = syms[i:i + BATCH]
         try:
-            snaps = A.snapshots(get, chunk, feed="iex")
+            snaps = A.snapshots(get, chunk, feed=feed)
         except Exception:  # noqa: BLE001 - one failed batch never sinks the scan; it is counted
             errors += 1
             continue
@@ -107,13 +109,14 @@ def scan(get, store, *, day: date, now: int, top: int = 50) -> Dict[str, Any]:
                 rows.append({"symbol": s, "gap_pct": round(gap, 2), "price": float(px), "ts": ts})
     rows.sort(key=lambda r: -r["gap_pct"])
     out = {"day": ds, "at": now, "scanned": len(syms), "priced": priced, "quoted": quoted, "batch_errors": errors,
-           "gainers": rows[:top], "source": "IEX snapshots of the prior session's liquid common stocks"}
+           "gainers": rows[:top], "feed": feed,
+           "source": f"{feed.upper()} snapshots of the prior session's liquid common stocks"}
     if store is not None:
         store.put("edge_pm_scan", ds, out)
         # Evidence for the SIP decision: how much of the market the free IEX feed can see,
         # by a fresh TRADE (what prices a gap) vs a fresh bid/ask QUOTE, through the morning.
         cov = store.get("edge_pm_coverage", ds) or {"day": ds, "samples": []}
-        cov["samples"] = (cov["samples"] + [{"at": now, "scanned": len(syms), "fresh_trade": priced,
+        cov["samples"] = (cov["samples"] + [{"at": now, "feed": feed, "scanned": len(syms), "fresh_trade": priced,
                                              "fresh_quote": quoted, "batch_errors": errors}])[-100:]
         store.put("edge_pm_coverage", ds, cov)
     return out

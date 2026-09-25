@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import os
 from datetime import date, datetime, time as dtime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 from edge.providers import base as B
@@ -107,6 +107,15 @@ def movers(get: B.HttpGet, top: int = 50) -> Dict[str, List[dict]]:
     p = r.json() or {}
     return {"gainers": list(p.get("gainers") or []), "losers": list(p.get("losers") or []),
             "last_updated": p.get("last_updated")}
+
+
+def most_actives(get: B.HttpGet, top: int = 100) -> Dict[str, Any]:
+    """Whole-market most active stocks by volume: {'most_actives': [{'symbol', 'volume', ...}], ...}."""
+    r = get(_base_url() + "/v1beta1/screener/stocks/most-actives", params={"by": "volume", "top": top},
+            headers=_headers(), timeout=15)
+    r.raise_for_status()
+    p = r.json() or {}
+    return {"most_actives": list(p.get("most_actives") or []), "last_updated": p.get("last_updated")}
 
 
 # ----------------------------------------------------------- data calls --
