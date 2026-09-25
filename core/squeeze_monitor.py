@@ -41,6 +41,7 @@ from core.squeeze_evidence import (
     CONTRACT, EVIDENCE_FIELDS, BarFetch, MarketSnapshot, evidence_status, observation_ts,
 )
 
+from core.yfinance_client import ungated_ticker as _ungated_yf_ticker  # noqa: E402
 LOGGER = logging.getLogger("ghost.squeeze")
 
 CHECK_INTERVAL_SEC = int(os.getenv("SQUEEZE_MONITOR_INTERVAL", "60"))
@@ -1015,7 +1016,7 @@ def _short_context(symbol: str) -> Dict[str, Any]:
             try:
                 import yfinance as yf
 
-                info = yf.Ticker(sym).info or {}
+                info = _ungated_yf_ticker(sym).info or {}
                 sf = info.get("shortPercentOfFloat")
                 dtc = info.get("shortRatio")
                 if sf is not None:
@@ -1521,7 +1522,7 @@ def _fetch_volumes(symbol: str) -> Tuple[Optional[float], Optional[float], Optio
     try:
         import yfinance as yf
 
-        t = yf.Ticker(sym)
+        t = _ungated_yf_ticker(sym)
         hist = t.history(period="30d", interval="1d")
         intraday = t.history(period="1d", interval="5m")
         if hist is None or hist.empty:
@@ -1551,7 +1552,7 @@ def _yf_fetch_metrics(symbol: str) -> Optional[Dict[str, Any]]:
     try:
         import yfinance as yf
 
-        ticker = yf.Ticker(symbol)
+        ticker = _ungated_yf_ticker(symbol)
         daily = ticker.history(period="1mo", interval="1d", auto_adjust=False)
         intraday = ticker.history(period="1d", interval="5m", prepost=True, auto_adjust=False)
         if daily is None or daily.empty or intraday is None or intraday.empty:

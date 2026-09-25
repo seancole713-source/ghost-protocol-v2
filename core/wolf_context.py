@@ -36,6 +36,7 @@ from typing import Optional
 
 import requests
 
+from core.yfinance_client import ungated_ticker as _ungated_yf_ticker  # noqa: E402
 LOGGER = logging.getLogger("ghost.wolf_context")
 
 # ---------------------------------------------------------------------------
@@ -357,7 +358,7 @@ def _fetch_price_change(ticker: str) -> float:
             if _yfinance_cb.allow():
                 try:
                     import yfinance as yf  # type: ignore
-                    t = yf.Ticker(ticker)
+                    t = _ungated_yf_ticker(ticker)
                     hist = t.history(period="2d")
                     if len(hist) >= 2:
                         pct = ((hist["Close"].iloc[-1] - hist["Close"].iloc[-2]) / hist["Close"].iloc[-2]) * 100

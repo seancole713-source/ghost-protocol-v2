@@ -100,6 +100,7 @@ from core.engine_indicators import (  # noqa: F401 — facade re-exports (PR #13
 )
 
 
+from core.yfinance_client import ungated_ticker as _ungated_yf_ticker  # noqa: E402
 LOGGER = logging.getLogger("ghost.signal_v3")
 
 # PR #14 deploy-marker — if this line isn't in Railway logs at app startup,
@@ -237,6 +238,117 @@ def clear_ohlcv_cache() -> None:
     """Drop in-memory OHLCV cache (call at start of each batch train)."""
     with _OHLCV_CACHE_LOCK:
         _OHLCV_CACHE.clear()
+
+
+# ── dead-symbol guard ────────────────────────────────────────────────────────
+# The negative cache above only spaces retries 10 min apart. A symbol that no
+# source has ANY bars for (renamed / delisted, e.g. GPS -> GAP, SATS -> ECHO)
+# still walked the whole SIP -> IEX -> Polygon -> yfinance -> Stooq chain x3
+# retries every resolver pass, all day (Polygon 429s + "Stooq parsed 0 rows").
+#
+# A miss only counts toward the streak when at least two independent sources
+# answered definitively "no bars" (HTTP 200 + empty) and none returned data;
+# outages, 429s and open breakers answer nothing definitive, so they never
+# count. After _no_data_skip_after() such misses in a row for the same request
+# (symbol, period, interval), that request is skipped for the rest of the
+# exchange session day and logged once. Any success clears it. The next day
+# gets exactly one probe before the skip re-arms.
+_TIER_TRACE = threading.local()
+_NO_DATA_LOCK = threading.Lock()
+_NO_DATA_STREAK: Dict[tuple, int] = {}
+_NO_DATA_SKIP_DAY: Dict[tuple, str] = {}
+_NO_DATA_LOGGED: set = set()
+_RETIRED_LOGGED: set = set()
+
+
+def _no_data_skip_after() -> int:
+    """Consecutive all-source misses before a request is skipped for the day (0 = off)."""
+    try:
+        return max(0, int(os.getenv("V3_OHLCV_NO_DATA_SKIP_AFTER", "3")))
+    except ValueError:
+        return 3
+
+
+def _session_day(now: Optional[float] = None) -> str:
+    """Exchange session date (America/Chicago) used to scope the skip."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    try:
+        from core.market_hours import SESSION_TZ
+    except Exception:
+        SESSION_TZ = "America/Chicago"
+    return datetime.fromtimestamp(time.time() if now is None else now, ZoneInfo(SESSION_TZ)).date().isoformat()
+
+
+def _note_tier(tier: str, outcome: str) -> None:
+    """Record one tier's answer ('empty' = definitive no bars, 'error')."""
+    events = getattr(_TIER_TRACE, "events", None)
+    if events is not None:
+        events.append((tier, outcome))
+
+
+def reset_no_data_guard() -> None:
+    """Forget every no-data streak and skip (tests / manual recovery)."""
+    with _NO_DATA_LOCK:
+        _NO_DATA_STREAK.clear()
+        _NO_DATA_SKIP_DAY.clear()
+        _NO_DATA_LOGGED.clear()
+        _RETIRED_LOGGED.clear()
+
+
+def _retired_reason(sym: str) -> Optional[str]:
+    try:
+        from config.symbols import RETIRED_SYMBOLS
+    except Exception:
+        return None
+    return RETIRED_SYMBOLS.get(sym)
+
+
+def _ohlcv_fetch_blocked(sym: str, guard_key: tuple) -> bool:
+    """True when this request must not touch any provider right now."""
+    reason = _retired_reason(sym)
+    if reason:
+        with _NO_DATA_LOCK:
+            first = sym not in _RETIRED_LOGGED
+            _RETIRED_LOGGED.add(sym)
+        if first:
+            LOGGER.warning(
+                "OHLCV %s: retired ticker (%s) — not requesting bars from any source", sym, reason,
+            )
+        return True
+    with _NO_DATA_LOCK:
+        return _NO_DATA_SKIP_DAY.get(guard_key) == _session_day()
+
+
+def _record_ohlcv_outcome(sym: str, guard_key: tuple, *, got_rows: bool, events: list) -> None:
+    """Update the no-data streak for one completed _fetch_ohlcv request."""
+    if got_rows:
+        with _NO_DATA_LOCK:
+            _NO_DATA_STREAK.pop(guard_key, None)
+            _NO_DATA_SKIP_DAY.pop(guard_key, None)
+        return
+    definitive = {tier for tier, outcome in events if outcome == "empty"}
+    if len(definitive) < 2:
+        return  # outage / rate limit / breaker: says nothing about the symbol
+    limit = _no_data_skip_after()
+    if limit <= 0:
+        return
+    day = _session_day()
+    with _NO_DATA_LOCK:
+        streak = _NO_DATA_STREAK.get(guard_key, 0) + 1
+        _NO_DATA_STREAK[guard_key] = streak
+        if streak < limit:
+            return
+        _NO_DATA_SKIP_DAY[guard_key] = day
+        log_key = (sym, day)
+        first = log_key not in _NO_DATA_LOGGED
+        _NO_DATA_LOGGED.add(log_key)
+    if first:
+        LOGGER.warning(
+            "OHLCV %s: no bars from any source %s times in a row (%s said empty) — "
+            "skipping period=%s interval=%s for the rest of %s",
+            sym, streak, ",".join(sorted(definitive)), guard_key[1], guard_key[2], day,
+        )
 
 
 def _ohlcv_key_lock(cache_key) -> "threading.Lock":
@@ -732,6 +844,7 @@ def _fetch_ohlcv_once(symbol, asset_type, period='1y', interval='1d', *, adjustm
             r = _req.get(url, headers=headers, timeout=30)
             if r.status_code != 200:
                 LOGGER.info(f"Alpaca feed={feed} {symbol}: HTTP {r.status_code}")
+                _note_tier("alpaca", "error")
                 if feed == 'sip' and r.status_code == 403:
                     # Free-tier keys are never SIP-entitled — remember and stop
                     # burning one guaranteed-403 call per symbol per sweep.
@@ -745,9 +858,12 @@ def _fetch_ohlcv_once(symbol, asset_type, period='1y', interval='1d', *, adjustm
                      'high': float(b.get('h', 0)), 'low': float(b.get('l', 0)),
                      'close': float(b.get('c', 0)), 'volume': float(b.get('v', 0))}
                     for b in bars if b.get('c', 0) > 0]
+            if not rows:
+                _note_tier("alpaca", "empty" if not bars else "error")
             return rows if rows else None
         except Exception as e:
             LOGGER.warning(f"Alpaca feed={feed} {symbol}: {e}")
+            _note_tier("alpaca", "error")
             return None
 
     rows = None
@@ -870,6 +986,9 @@ def _fetch_ohlcv(symbol, asset_type, period=None, interval='1d', *, adjustment='
     sym = (symbol or "").upper()
     atype = (asset_type or "stock").strip().lower()
     cache_key = (sym, atype, period, str(interval or '1d').lower(), adjustment)
+    guard_key = (sym, period, str(interval or '1d').lower())
+    if _ohlcv_fetch_blocked(sym, guard_key):
+        return None
 
     def _cached():
         with _OHLCV_CACHE_LOCK:
@@ -889,24 +1008,33 @@ def _fetch_ohlcv(symbol, asset_type, period=None, interval='1d', *, adjustment='
         if ok:
             return rows
         retries = _v3_ohlcv_fetch_retries()
-        for attempt in range(retries):
-            raw_rows = _fetch_ohlcv_once(
-                symbol, asset_type, period, interval,
-                **({"adjustment": adjustment} if adjustment != "raw" else {}),
-            )
-            rows = _normalize_daily_ohlcv(raw_rows) if raw_rows else None
-            if rows:
-                with _OHLCV_CACHE_LOCK:
-                    _OHLCV_CACHE[cache_key] = (time.time() + _ohlcv_cache_ttl_s(), rows)
-                return rows
-            if raw_rows:
-                LOGGER.warning("_fetch_ohlcv %s: rejected malformed OHLCV response", sym)
-            if attempt + 1 < retries:
-                delay = 0.5 * (2 ** attempt)
-                LOGGER.info(
-                    f"_fetch_ohlcv {sym}: empty on attempt {attempt + 1}/{retries}, retry in {delay:.1f}s"
+        events: list = []
+        _TIER_TRACE.events = events
+        try:
+            for attempt in range(retries):
+                raw_rows = _fetch_ohlcv_once(
+                    symbol, asset_type, period, interval,
+                    **({"adjustment": adjustment} if adjustment != "raw" else {}),
                 )
-                time.sleep(delay)
+                rows = _normalize_daily_ohlcv(raw_rows) if raw_rows else None
+                if rows:
+                    with _OHLCV_CACHE_LOCK:
+                        _OHLCV_CACHE[cache_key] = (time.time() + _ohlcv_cache_ttl_s(), rows)
+                    _record_ohlcv_outcome(sym, guard_key, got_rows=True, events=events)
+                    return rows
+                if raw_rows:
+                    LOGGER.warning("_fetch_ohlcv %s: rejected malformed OHLCV response", sym)
+                    events.append(("normalize", "error"))
+                if attempt + 1 < retries:
+                    delay = 0.5 * (2 ** attempt)
+                    LOGGER.info(
+                        f"_fetch_ohlcv {sym}: empty on attempt {attempt + 1}/{retries}, retry in {delay:.1f}s"
+                    )
+                    time.sleep(delay)
+        finally:
+            _TIER_TRACE.events = None
+        if not any(tier == "normalize" for tier, _outcome in events):
+            _record_ohlcv_outcome(sym, guard_key, got_rows=False, events=events)
         neg_ttl = _ohlcv_neg_cache_ttl_s()
         if neg_ttl > 0:
             with _OHLCV_CACHE_LOCK:
@@ -943,10 +1071,12 @@ def _try_stooq_ohlcv(symbol, period):
         r = _req.get(url, timeout=(5, 20), headers={"User-Agent": "Mozilla/5.0 (ghost-protocol)"})
         if r.status_code != 200:
             LOGGER.info(f"Stooq {symbol}: HTTP {r.status_code}")
+            _note_tier("stooq", "error")
             return None
         text = (r.text or "").strip()
         if not text or "No data" in text or len(text) < 30:
             LOGGER.info(f"Stooq {symbol}: empty/no-data response (len={len(text)})")
+            _note_tier("stooq", "empty" if "No data" in text else "error")
             return None
         reader = _csv.DictReader(_io.StringIO(text))
         rows = []
@@ -981,6 +1111,7 @@ def _try_stooq_ohlcv(symbol, period):
                 continue
         if not rows:
             LOGGER.info(f"Stooq {symbol}: parsed 0 rows in window (skipped {skipped_pre_cutoff} pre-cutoff)")
+            _note_tier("stooq", "empty")
             return None
         LOGGER.info(f"Stooq {symbol}: parsed {len(rows)} bars in window (skipped {skipped_pre_cutoff} pre-cutoff)")
         return rows
@@ -988,9 +1119,11 @@ def _try_stooq_ohlcv(symbol, period):
         _STOOQ_DOWN["until"] = time.time() + _STOOQ_COOLDOWN_S
         LOGGER.warning(f"Stooq {symbol}: unreachable, skipping Stooq for {_STOOQ_COOLDOWN_S // 3600}h: "
                        f"{type(e).__name__}")
+        _note_tier("stooq", "error")
         return None
     except Exception as e:
         LOGGER.warning(f"Stooq {symbol}: {e}")
+        _note_tier("stooq", "error")
         return None
 
 
@@ -1023,15 +1156,18 @@ def _try_polygon_ohlcv(symbol, period):
         r = _req.get(url, timeout=30)
         if r.status_code != 200:
             LOGGER.info(f"Polygon {symbol}: HTTP {r.status_code} body={r.text[:200]!r}")
+            _note_tier("polygon", "error")
             return None
         data = r.json()
         status = data.get("status")
         if status not in ("OK", "DELAYED"):
             LOGGER.info(f"Polygon {symbol}: status={status} body={str(data)[:200]!r}")
+            _note_tier("polygon", "error")
             return None
         results = data.get("results") or []
         if not results:
             LOGGER.info(f"Polygon {symbol}: status=OK but results=[] (no bars in range)")
+            _note_tier("polygon", "empty")
             return None
         rows = []
         for bar in results:
@@ -1060,11 +1196,13 @@ def _try_polygon_ohlcv(symbol, period):
                 continue
         if not rows:
             LOGGER.info(f"Polygon {symbol}: {len(results)} raw bars returned but all failed parsing")
+            _note_tier("polygon", "error")
             return None
         LOGGER.info(f"Polygon {symbol}: parsed {len(rows)} bars from response")
         return rows
     except Exception as e:
         LOGGER.warning(f"Polygon {symbol}: {e}")
+        _note_tier("polygon", "error")
         return None
 
 
@@ -1102,7 +1240,7 @@ def _try_yfinance_ohlcv(symbol, period):
         period_candidates.append('3mo')
     try:
         import yfinance as yf
-        tk = yf.Ticker(symbol)
+        tk = _ungated_yf_ticker(symbol)
         for p in period_candidates:
             rows = _yf_rows_from_history(tk, period=p)
             if rows:
@@ -1116,7 +1254,9 @@ def _try_yfinance_ohlcv(symbol, period):
             LOGGER.info(f"yfinance {symbol}: {len(rows)} bars (start={start.date()})")
             _yfinance_cb.record_success()
             return rows
-        # Empty history = no data for ticker (delisted/thin) — not a failure
+        # Empty history = no data for ticker (delisted/thin) — not a failure.
+        # Not noted as a definitive "empty" for the dead-symbol guard: Yahoo
+        # also serves empty frames when it is soft-blocking this IP.
         return None
     except Exception as e:
         es = str(e)
@@ -1134,6 +1274,7 @@ def _try_yfinance_ohlcv(symbol, period):
                 _yfinance_cb.record_failure()
             else:
                 LOGGER.warning(f"yfinance fallback {symbol}: {e}")
+                _note_tier("yfinance", "error")
         return None
 
 

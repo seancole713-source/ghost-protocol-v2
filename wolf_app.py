@@ -2089,9 +2089,15 @@ async def lifespan(app: FastAPI):
                     from core.agent_workflow import enqueue_external_radar_tasks
                     queued = enqueue_external_radar_tasks(radar)
                     LOGGER.info(
-                        "agent mover triage attempted=%s created=%s",
+                        "agent mover triage attempted=%s created=%s reused=%s",
                         queued.get("attempted", 0), queued.get("created", 0),
+                        queued.get("reused", 0),
                     )
+                    if queued.get("errors"):
+                        LOGGER.warning(
+                            "agent mover triage errors=%s first=%s",
+                            len(queued["errors"]), str(queued["errors"][0])[:120],
+                        )
                 except Exception as _agent_e:
                     LOGGER.warning("agent mover triage unavailable: %s", str(_agent_e)[:120])
             except Exception as _e:

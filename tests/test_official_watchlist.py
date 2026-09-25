@@ -6,18 +6,32 @@ from config.symbols import (
 )
 
 
-def test_official_watchlist_has_106_symbols():
+def test_official_watchlist_has_105_symbols():
     # 74 + 26 liquid mega/large caps (PR #164) + 4 momentum/explosion names
     # (TRU, OGC, SATS, ALAB — 2026-08-17) + 3 morning-picks coverage-gap
     # names (AFRM, BMNR, GPS — 2026-08-28), less GPS (dead ticker since Gap Inc.
-    # became GAP; removed 2026-09-24) — universe width is the shadow-evidence rate
-    # (one row per symbol per day).
-    assert len(OFFICIAL_WATCHLIST) == 106
-    assert len(set(OFFICIAL_WATCHLIST)) == 106
+    # became GAP; removed 2026-09-24), less SATS (EchoStar became ECHO on
+    # 2026-06-24; removed 2026-09-25) — universe width is the shadow-evidence
+    # rate (one row per symbol per day).
+    assert len(OFFICIAL_WATCHLIST) == 105
+    assert len(set(OFFICIAL_WATCHLIST)) == 105
 
 
 def test_official_watchlist_excludes_dead_gps_ticker():
     assert "GPS" not in OFFICIAL_WATCHLIST
+
+
+def test_official_watchlist_excludes_renamed_sats_ticker():
+    assert "SATS" not in OFFICIAL_WATCHLIST
+
+
+def test_retired_symbols_are_never_on_the_watchlist():
+    from config.symbols import RETIRED_SYMBOLS, is_retired_symbol
+
+    assert {"GPS", "SATS"} <= set(RETIRED_SYMBOLS)
+    assert not set(RETIRED_SYMBOLS) & set(OFFICIAL_WATCHLIST)
+    assert is_retired_symbol("sats") and is_retired_symbol(" GPS ")
+    assert not is_retired_symbol("ECHO") and not is_retired_symbol("GAP")
 
 
 def test_official_watchlist_excludes_delisted_rdfn():

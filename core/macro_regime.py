@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
+from core.yfinance_client import ungated_ticker as _ungated_yf_ticker  # noqa: E402
 LOGGER = logging.getLogger("ghost.macro")
 
 # Cache TTL: 24 hours (macro data doesn't change intraday)
@@ -68,7 +69,7 @@ def _fetch_yfinance_series(ticker: str, period: str = "1mo") -> Optional[float]:
         return None
     try:
         import yfinance as yf
-        tk = yf.Ticker(ticker)
+        tk = _ungated_yf_ticker(ticker)
         h = tk.history(period=period)
         if not h.empty:
             _yfinance_cb.record_success()
@@ -85,7 +86,7 @@ def _fetch_yfinance_return(ticker: str, days: int = 20) -> Optional[float]:
         return None
     try:
         import yfinance as yf
-        tk = yf.Ticker(ticker)
+        tk = _ungated_yf_ticker(ticker)
         h = tk.history(period=f"{days+5}d")
         if len(h) >= days:
             start = float(h["Close"].iloc[-days-1]) if len(h) > days else float(h["Close"].iloc[0])
@@ -137,7 +138,7 @@ def fetch_macro_features() -> Dict[str, float]:
     if _yfinance_cb.allow():
         try:
             import yfinance as yf
-            h = yf.Ticker("SPY").history(period="3mo")
+            h = _ungated_yf_ticker("SPY").history(period="3mo")
             if len(h) >= 50:
                 spy_sma50 = float(h["Close"].iloc[-50:].mean())
                 _yfinance_cb.record_success()
@@ -189,7 +190,7 @@ def _fetch_yfinance_daily_history(ticker: str, period: str = "2y") -> Optional[D
         return None
     try:
         import yfinance as yf
-        h = yf.Ticker(ticker).history(period=period)
+        h = _ungated_yf_ticker(ticker).history(period=period)
         if h.empty:
             return None
         _yfinance_cb.record_success()

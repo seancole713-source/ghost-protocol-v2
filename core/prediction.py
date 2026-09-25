@@ -34,6 +34,7 @@ try:
 except ImportError:
     def get_price(s, t=None): return None
 
+from core.yfinance_client import ungated_ticker as _ungated_yf_ticker  # noqa: E402
 LOGGER = logging.getLogger("ghost.prediction")
 
 # Serialize prediction saves across concurrent cycles (market scan + cron overlap).
@@ -1391,7 +1392,7 @@ def _predict_symbol_ex(symbol, asset_type, regime, scores_out=None):
         if _yfinance_cb.allow():
             try:
                 import yfinance as _yf
-                _hist = _yf.Ticker(symbol).history(period="2d")
+                _hist = _ungated_yf_ticker(symbol).history(period="2d")
                 if not _hist.empty:
                     price = float(_hist["Close"].iloc[-1])
                     _yfinance_cb.record_success()

@@ -5,10 +5,11 @@ Primary: Alpaca real-time trades. Fallback: yfinance (fast_info + history).
 P0-2 (audit): yfinance circuit breaker prevents wasted calls during persistent
 JSON-parse failures overnight. P1-4: staleness flag on cached prices.
 """
-import os, time, logging, requests
+import os, time, logging, requests, threading
 from core.quiet import note_suppressed
 from typing import Dict, Tuple, Any, Optional
 
+from core.yfinance_client import ungated_ticker as _ungated_yf_ticker  # noqa: E402
 LOGGER = logging.getLogger("ghost.prices")
 POLYGON_KEY = os.getenv("POLYGON_API_KEY", "")
 TIMEOUT = float(os.getenv("PRICE_PROVIDER_TIMEOUT_S", "8.0"))
@@ -77,6 +78,35 @@ PRICE_SANITY_CROSS_CHECK_TTL_S = int(os.getenv("PRICE_SANITY_CROSS_CHECK_TTL_S",
 # for strict phantom protection on names with a known-bad feed.
 PRICE_SANITY_FAIL_CLOSED = os.getenv("PRICE_SANITY_FAIL_CLOSED", "0").strip().lower() in ("1", "true", "yes", "on")
 _cross_check_cache: Dict[str, Tuple[float, float]] = {}
+# Cross-check call budget. Every symbol priced in one pass got its reference in
+# the same minute, so all references expired together 15 min later and the next
+# pricing pass (portfolio refresh, risk discipline, paper wallet ...) re-fetched
+# them all at once -- a burst that tripped the shared yfinance rate-limit
+# circuit ("CB yfinance: 15 calls in 60s -- rate-limit circuit OPEN for 600s")
+# every 15 minutes and blocked price-critical yfinance fallbacks with it. At
+# most this many cross-checks run per rolling minute; beyond that a reference
+# up to PRICE_SANITY_STALE_REF_GRACE_S old is reused, else the candidate is
+# handled exactly as when yfinance is unavailable (fail-open / fail-closed).
+PRICE_SANITY_CROSS_CHECK_MAX_PER_MIN = int(os.getenv("PRICE_SANITY_CROSS_CHECK_MAX_PER_MIN", "6"))
+PRICE_SANITY_STALE_REF_GRACE_S = int(
+    os.getenv("PRICE_SANITY_STALE_REF_GRACE_S", str(2 * PRICE_SANITY_CROSS_CHECK_TTL_S))
+)
+_cross_check_calls: list = []
+_cross_check_lock = threading.Lock()
+
+
+def _cross_check_budget_ok(now: float) -> bool:
+    """Take one cross-check slot for this rolling minute, if any is left."""
+    limit = PRICE_SANITY_CROSS_CHECK_MAX_PER_MIN
+    if limit <= 0:
+        return True
+    with _cross_check_lock:
+        cutoff = now - 60.0
+        _cross_check_calls[:] = [t for t in _cross_check_calls if t > cutoff]
+        if len(_cross_check_calls) >= limit:
+            return False
+        _cross_check_calls.append(now)
+        return True
 
 def _load_prev_close_cache():
     """Load persisted prev_close values from ghost_state on module init."""
@@ -165,15 +195,23 @@ def _reject_phantom(symbol, price):
 
     # Bound cross-check frequency: reuse a recent reference price per symbol.
     ref = None
+    now = time.time()
     cc = _cross_check_cache.get(symbol)
-    if cc and time.time() - cc[0] < PRICE_SANITY_CROSS_CHECK_TTL_S:
+    if cc and now - cc[0] < PRICE_SANITY_CROSS_CHECK_TTL_S:
         ref = cc[1]
+    elif not _cross_check_budget_ok(now):
+        # Over this minute's cross-check budget: a slightly older reference
+        # still catches a ~10x phantom; with none, fall through to the same
+        # handling as a yfinance outage.
+        if cc and now - cc[0] < PRICE_SANITY_STALE_REF_GRACE_S:
+            ref = cc[1]
     else:
         try:
             from core.circuit_breaker import _yfinance_cb
             if _yfinance_cb.allow():
-                import yfinance as yf
-                fi = yf.Ticker(symbol).fast_info
+                # allow() above took this call's breaker slot: construct the
+                # Ticker without the process-wide gate counting it again.
+                fi = _ungated_yf_ticker(symbol).fast_info
                 ref = getattr(fi, "last_price", None) or getattr(fi, "previous_close", None)
                 if ref and float(ref) > 0:
                     ref = float(ref)
@@ -296,7 +334,7 @@ def _yfinance_quote(symbol) -> Tuple[Optional[float], Optional[int]]:
         return None, None
     try:
         import yfinance as yf
-        tk = yf.Ticker(symbol)
+        tk = _ungated_yf_ticker(symbol)
         try:
             fi = tk.fast_info
             live = getattr(fi, 'last_price', None) or getattr(fi, 'lastPrice', None)
@@ -483,7 +521,7 @@ def get_extended_session(symbol: str) -> Dict[str, Any]:
                 return {}
         else:
             import yfinance as yf
-            fi = yf.Ticker(sym).fast_info
+            fi = _ungated_yf_ticker(sym).fast_info
             prev_close = getattr(fi, "previous_close", None) or getattr(fi, "previousClose", None)
             pre_market = getattr(fi, "pre_market_price", None) or getattr(fi, "preMarketPrice", None)
             post_market = getattr(fi, "post_market_price", None) or getattr(fi, "postMarketPrice", None)
@@ -879,7 +917,7 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
         if _yfinance_cb.allow():
             try:
                 import yfinance as yf
-                h = yf.Ticker(sym).history(period="1d", interval="5m")
+                h = _ungated_yf_ticker(sym).history(period="1d", interval="5m")
                 if h is not None and not h.empty:
                     today_open = round(float(h["Open"].iloc[0]), 4)
                     today_high = round(float(h["High"].max()), 4)
@@ -900,7 +938,7 @@ def get_intraday_session(symbol: str) -> Dict[str, Any]:
         if _yfinance_cb.allow():
             try:
                 import yfinance as yf
-                fi = yf.Ticker(sym).fast_info
+                fi = _ungated_yf_ticker(sym).fast_info
                 pc = getattr(fi, "previous_close", None) or getattr(fi, "previousClose", None)
                 if pc:
                     prev_close = round(float(pc), 4)
@@ -962,7 +1000,7 @@ def get_vix():
         return None
     try:
         import yfinance as yf
-        h = yf.Ticker("^VIX").history(period="1d")
+        h = _ungated_yf_ticker("^VIX").history(period="1d")
         if not h.empty:
             _yfinance_cb.record_success()
             return float(h["Close"].iloc[-1])

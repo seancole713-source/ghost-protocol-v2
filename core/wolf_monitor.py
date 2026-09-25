@@ -30,6 +30,7 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 
+from core.yfinance_client import ungated_ticker as _ungated_yf_ticker  # noqa: E402
 LOGGER = logging.getLogger("wolf.monitor")
 
 # ── Config ────────────────────────────────────────────────────────────────
@@ -246,7 +247,7 @@ def _sync_yf_fetch() -> Optional[dict]:
         return None
     try:
         import yfinance as yf  # type: ignore
-        t = yf.Ticker(SYMBOL)
+        t = _ungated_yf_ticker(SYMBOL)
         hist = t.history(period="30d")
         if hist.empty or len(hist) < 2:
             return None

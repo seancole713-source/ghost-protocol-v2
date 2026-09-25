@@ -43,7 +43,11 @@ LOGGER = logging.getLogger("ghost.wolf_endpoints")
 # every Ticker() call and records success/failure. No code changes needed
 # in the individual endpoint functions — the patch is transparent.
 import yfinance as _yf
-_original_yf_ticker = _yf.Ticker
+# Idempotent across re-imports: never wrap the wrapper. The original class is
+# published so callers that already took a breaker slot can bypass the second
+# count (core.yfinance_client.ungated_ticker).
+_original_yf_ticker = getattr(_yf, "_ghost_ungated_Ticker", None) or _yf.Ticker
+_yf._ghost_ungated_Ticker = _original_yf_ticker
 
 def _patched_yf_ticker(symbol):
     from core.circuit_breaker import _yfinance_cb
@@ -57,6 +61,7 @@ def _patched_yf_ticker(symbol):
         _yfinance_cb.record_failure()
         return None
 
+_patched_yf_ticker._ghost_breaker_gate = True
 _yf.Ticker = _patched_yf_ticker
 router = APIRouter(prefix="/api/wolf", tags=["wolf"])
 
