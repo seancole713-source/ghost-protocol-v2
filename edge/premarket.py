@@ -82,7 +82,7 @@ def scan(get, store, *, day: date, now: int, top: int = 50) -> Dict[str, Any]:
         from edge import universe as U
         universe = U.symbols_as_of(store, ds)
     syms = sorted(s for s in base if common_stock(s, universe))
-    session_start, rows, priced, errors = _at(day, 4, 0), [], 0, 0
+    session_start, rows, priced, quoted, errors = _at(day, 4, 0), [], 0, 0, 0
     for i in range(0, len(syms), BATCH):
         chunk = syms[i:i + BATCH]
         try:
@@ -91,7 +91,13 @@ def scan(get, store, *, day: date, now: int, top: int = 50) -> Dict[str, Any]:
             errors += 1
             continue
         for s in chunk:
-            t = ((snaps or {}).get(s) or {}).get("latestTrade") or {}
+            snap = (snaps or {}).get(s) or {}
+            q = snap.get("latestQuote") or {}
+            qts = A.iso_to_epoch(q.get("t"))
+            if (qts is not None and qts >= session_start and now - qts <= MAX_AGE_S
+                    and (float(q.get("bp") or 0) > 0 or float(q.get("ap") or 0) > 0)):
+                quoted += 1          # coverage evidence only: a quote never prices a gap here
+            t = snap.get("latestTrade") or {}
             ts, px = A.iso_to_epoch(t.get("t")), t.get("p")
             if ts is None or px is None or ts < session_start or now - ts > MAX_AGE_S:
                 continue
@@ -100,10 +106,16 @@ def scan(get, store, *, day: date, now: int, top: int = 50) -> Dict[str, Any]:
             if MIN_GAP <= gap <= MAX_GAP:
                 rows.append({"symbol": s, "gap_pct": round(gap, 2), "price": float(px), "ts": ts})
     rows.sort(key=lambda r: -r["gap_pct"])
-    out = {"day": ds, "at": now, "scanned": len(syms), "priced": priced, "batch_errors": errors,
+    out = {"day": ds, "at": now, "scanned": len(syms), "priced": priced, "quoted": quoted, "batch_errors": errors,
            "gainers": rows[:top], "source": "IEX snapshots of the prior session's liquid common stocks"}
     if store is not None:
         store.put("edge_pm_scan", ds, out)
+        # Evidence for the SIP decision: how much of the market the free IEX feed can see,
+        # by a fresh TRADE (what prices a gap) vs a fresh bid/ask QUOTE, through the morning.
+        cov = store.get("edge_pm_coverage", ds) or {"day": ds, "samples": []}
+        cov["samples"] = (cov["samples"] + [{"at": now, "scanned": len(syms), "fresh_trade": priced,
+                                             "fresh_quote": quoted, "batch_errors": errors}])[-100:]
+        store.put("edge_pm_coverage", ds, cov)
     return out
 
 
@@ -134,7 +146,7 @@ def candidates(get, store, *, day: date, now: int, top: int = 50) -> Dict[str, A
             seen.add(s)
             ordered.append(s)
     return {"symbols": ordered[:top], "movers_last_updated": updated, "movers_stale": stale,
-            "scan": {k: sc.get(k) for k in ("scanned", "priced", "batch_errors")},
+            "scan": {k: sc.get(k) for k in ("scanned", "priced", "quoted", "batch_errors")},
             "scan_top": sc["gainers"][:10], "dropped_non_common": sorted(set(screener) - seen - {
                 g["symbol"] for g in sc["gainers"]})[:20],
             "errors": notes}
@@ -153,5 +165,6 @@ def probe(get=None):
         return B.Probe("movers.premarket_scan", "alpaca_iex", B.ERROR, note=f"{type(exc).__name__}: {str(exc)[:120]}")
     top = ", ".join(f"{g['symbol']} {g['gap_pct']:+.1f}%" for g in out["gainers"])
     return B.Probe("movers.premarket_scan", "alpaca_iex", B.OK if out["priced"] else B.EMPTY, rows=out["priced"],
-                   note=f"scanned {out['scanned']}, {out['priced']} with a fresh current-session print"
+                   note=f"scanned {out['scanned']}, {out['priced']} with a fresh current-session print, "
+                        f"{out['quoted']} with a fresh quote"
                         f"{', batch errors ' + str(out['batch_errors']) if out['batch_errors'] else ''}; top: {top or 'none'}")

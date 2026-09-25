@@ -74,7 +74,11 @@ def test_missing_prior_baseline_is_not_no_print(monkeypatch, scan):
 
 def test_stale_same_day_bar_cannot_reach_signal_or_ledger(monkeypatch, scan):
     daily, intraday = scan
-    intraday["SPCE"][0]["t"] = (datetime.now(timezone.utc) - timedelta(hours=5)).isoformat()
+    # Stale by AGE, but still in the same exchange session: just past BAR_MAX_AGE_S. A bar
+    # 5 h old failed between ~00:00 and 05:00 ET, when it belongs to the PREVIOUS session and
+    # is dropped earlier as "no intraday print" (seen 2026-09-25 03:10 ET).
+    from core.squeeze_evidence import BAR_MAX_AGE_S
+    intraday["SPCE"][0]["t"] = (datetime.now(timezone.utc) - timedelta(seconds=BAR_MAX_AGE_S + 120)).isoformat()
     monkeypatch.setattr("requests.get", lambda url, **kw: Response(200, daily if "1Day" in url else intraday))
     monkeypatch.setattr(sm, "evaluate_squeeze_signal", lambda *a, **kw: pytest.fail("stale bar reached signal"))
     report = run_scan()

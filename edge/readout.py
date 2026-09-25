@@ -11,7 +11,7 @@ from typing import Any, Dict, Optional
 from edge.ledger import Ledger
 
 VIEWS = ("summary", "today", "experiments", "backtest", "misses", "probe", "universe",
-         "research", "radar", "paper", "models", "scorecard", "notes")
+         "research", "radar", "paper", "models", "scorecard", "notes", "top10")
 
 
 def _latest(store, table: str) -> Optional[Dict[str, Any]]:
@@ -38,6 +38,8 @@ def today(store, day: Optional[str] = None) -> Dict[str, Any]:
             "premarket_scan_top": card.get("premarket_scan_top"),
             "movers_stale": card.get("movers_stale"),
             "source_errors": card.get("source_errors"),
+            "premarket_coverage": (store.get("edge_pm_coverage", card["day"]) or {}).get("samples"),
+            "top10": card.get("top10"),
             "rows": compact}
 
 
@@ -191,6 +193,11 @@ def view(store, name: str = "summary", day: Optional[str] = None, kind: Optional
     if name == "scorecard":
         from edge import scorecard as SC
         return SC.scorecard(store)
+    if name == "top10":
+        from edge import top10 as T10
+        d = day or T10.latest_day(store)
+        return (T10.with_outcomes(store, d) if d else None) or {
+            "note": "no Top 10 yet (built with the card, 09:05-09:28 ET)"}
     if name == "notes":
         from edge import agent_notes as AN
         return AN.recent(store, day=day, kind=kind)
@@ -225,11 +232,11 @@ def view(store, name: str = "summary", day: Optional[str] = None, kind: Optional
 # Railway logs. Each stage's views are logged ONCE per day, right after the tick
 # that produced them, as `EDGE_VIEW <name> <day> <json>`.
 _STAGES = (
-    ("morning", lambda o: (o.get("card") or {}).get("status") == "issued", ("today", "paper", "research")),
+    ("morning", lambda o: (o.get("card") or {}).get("status") == "issued", ("today", "paper", "research", "top10")),
     ("misses", lambda o: (o.get("miss_review") or {}).get("status") not in (None, "error"), ("misses",)),
     ("radar", lambda o: (o.get("radar_close") or {}).get("status") == "closed", ("radar",)),
     ("evening", lambda o: (o.get("card_graded") or {}).get("status") == "graded",
-     ("paper", "experiments", "scorecard")),
+     ("paper", "experiments", "scorecard", "top10")),
 )
 
 
