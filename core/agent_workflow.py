@@ -58,6 +58,27 @@ _MAX_LEASE_SECONDS = 3_600
 
 SUBMISSION_CONTRACT_VERSION = "ghost.agent-evidence/v2"
 
+# F35 (audit 2026-09-25): a worker that released a task (research incomplete,
+# repair budget exhausted, error) re-claimed the SAME task on its next poll
+# (~20 s later), so one struggling agent burned attempt_count toward
+# DEAD_LETTER before any other agent got a turn. After an agent releases a
+# task, that agent may not re-claim it for this many seconds; every other
+# agent still can. Bounded so a typo cannot disable it or starve the task
+# past its deadline window.
+_DEFAULT_RECLAIM_COOLDOWN_SECONDS = 1_800
+_MIN_RECLAIM_COOLDOWN_SECONDS = 300
+_MAX_RECLAIM_COOLDOWN_SECONDS = 6 * 3_600
+
+
+def reclaim_cooldown_seconds() -> int:
+    """Per-agent cooldown after RELEASED (env AGENT_RECLAIM_COOLDOWN_SECONDS)."""
+    raw = os.getenv("AGENT_RECLAIM_COOLDOWN_SECONDS", "").strip()
+    try:
+        value = int(raw) if raw else _DEFAULT_RECLAIM_COOLDOWN_SECONDS
+    except ValueError:
+        value = _DEFAULT_RECLAIM_COOLDOWN_SECONDS
+    return max(_MIN_RECLAIM_COOLDOWN_SECONDS, min(_MAX_RECLAIM_COOLDOWN_SECONDS, value))
+
 DEFAULT_RESPONSE_SCHEMA: Dict[str, Any] = {
     "type": "object",
     "required": ["verdict", "evidence", "risks", "recommended_next_step"],
@@ -657,7 +678,11 @@ def claim_task(
     task_types: Optional[Iterable[str]] = None,
     now_ts: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """Atomically claim the highest-priority task available to this agent."""
+    """Atomically claim the highest-priority task available to this agent.
+
+    A task this agent RELEASED less than ``reclaim_cooldown_seconds()`` ago is
+    not available to it (F35); it stays claimable by every other agent.
+    """
     agent_id = _normalize_agent_id(agent_id)
     lease = _lease_seconds(lease_seconds)
     normalized_types = None
@@ -673,7 +698,8 @@ def claim_task(
         cur = conn.cursor()
         _expire_unavailable_tasks(cur, now)
         where_type = ""
-        query_params: List[Any] = [now, now, agent_id]
+        cooldown = reclaim_cooldown_seconds()
+        query_params: List[Any] = [now, now, agent_id, agent_id, now - cooldown]
         if normalized_types:
             where_type = " AND t.task_type = ANY(%s)"
             query_params.append(normalized_types)
@@ -687,6 +713,11 @@ def claim_task(
                       SELECT 1 FROM ghost_agent_evidence e
                       WHERE e.task_id=t.task_id AND e.agent_id=%s
                         AND e.validation_status='ACCEPTED'
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM ghost_agent_task_events ev
+                      WHERE ev.task_id=t.task_id AND ev.actor=%s
+                        AND ev.event_type='RELEASED' AND ev.event_ts > %s
                   )
                   {where_type}
                 ORDER BY t.priority DESC, t.available_at, t.created_at

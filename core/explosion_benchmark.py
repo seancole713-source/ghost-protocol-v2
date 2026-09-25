@@ -377,6 +377,68 @@ def _first_alert(cur, symbol: str, start_ts: int, peak_ts: int) -> Optional[Dict
     return {"observed_at": row[0], "price": row[1], "kind": row[2], "confidence_pct": row[3]}
 
 
+# F39 (audit 2026-09-25): non-alert observations are purged after 120 days
+# while events are re-detected over BENCHMARK_HISTORY_DAYS (450). A later
+# re-detection then sees no observation (or only a later alert row) and the
+# old upsert overwrote first_observed_ts / promoted_ts with NULL or a LATER
+# time, so recall decayed by itself. The EARLIEST recorded value now wins:
+# a re-run can only fill a NULL or move a timestamp earlier, never erase or
+# delay it. The paired price and the derived fields follow the kept value.
+_E = "ghost_explosion_events"
+_KEEP_OBS = (
+    f"({_E}.first_observed_ts IS NOT NULL AND (EXCLUDED.first_observed_ts IS NULL"
+    f" OR {_E}.first_observed_ts <= EXCLUDED.first_observed_ts))"
+)
+_KEEP_PROMO = (
+    f"({_E}.promoted_ts IS NOT NULL AND (EXCLUDED.promoted_ts IS NULL"
+    f" OR {_E}.promoted_ts <= EXCLUDED.promoted_ts))"
+)
+_KEEP_ALERT = (
+    f"({_E}.first_alert_ts IS NOT NULL AND (EXCLUDED.first_alert_ts IS NULL"
+    f" OR {_E}.first_alert_ts <= EXCLUDED.first_alert_ts))"
+)
+_EVENT_UPSERT_SQL = f"""INSERT INTO ghost_explosion_events
+           (symbol, tier, window_days, move_pct, start_price, peak_price,
+            start_ts, peak_ts, first_observed_ts, first_observed_price,
+            promoted_ts, promoted_price, max_move_captured_pct,
+            alerted_before_10pct, alerted_before_20pct, crossed_10pct_ts,
+            crossed_20pct_ts, first_alert_ts, benchmark_version, created_at)
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+           ON CONFLICT (symbol, tier, start_ts) DO UPDATE SET
+             move_pct=EXCLUDED.move_pct, peak_price=EXCLUDED.peak_price,
+             peak_ts=EXCLUDED.peak_ts,
+             first_observed_ts=CASE WHEN {_KEEP_OBS}
+               THEN {_E}.first_observed_ts ELSE EXCLUDED.first_observed_ts END,
+             first_observed_price=CASE WHEN {_KEEP_OBS}
+               THEN {_E}.first_observed_price ELSE EXCLUDED.first_observed_price END,
+             max_move_captured_pct=CASE
+               WHEN NOT {_KEEP_OBS} THEN EXCLUDED.max_move_captured_pct
+               WHEN EXCLUDED.first_observed_ts = {_E}.first_observed_ts
+                 THEN EXCLUDED.max_move_captured_pct
+               WHEN {_E}.first_observed_price > 0 THEN ROUND(CAST(
+                 (EXCLUDED.peak_price - {_E}.first_observed_price)
+                 / {_E}.first_observed_price * 100.0 AS NUMERIC), 2)
+               ELSE {_E}.max_move_captured_pct END,
+             promoted_ts=CASE WHEN {_KEEP_PROMO}
+               THEN {_E}.promoted_ts ELSE EXCLUDED.promoted_ts END,
+             promoted_price=CASE WHEN {_KEEP_PROMO}
+               THEN {_E}.promoted_price ELSE EXCLUDED.promoted_price END,
+             alerted_before_10pct=CASE WHEN {_KEEP_ALERT}
+               THEN (EXCLUDED.crossed_10pct_ts IS NOT NULL
+                     AND {_E}.first_alert_ts < EXCLUDED.crossed_10pct_ts)
+               ELSE EXCLUDED.alerted_before_10pct END,
+             alerted_before_20pct=CASE WHEN {_KEEP_ALERT}
+               THEN (EXCLUDED.crossed_20pct_ts IS NOT NULL
+                     AND {_E}.first_alert_ts < EXCLUDED.crossed_20pct_ts)
+               ELSE EXCLUDED.alerted_before_20pct END,
+             crossed_10pct_ts=EXCLUDED.crossed_10pct_ts,
+             crossed_20pct_ts=EXCLUDED.crossed_20pct_ts,
+             first_alert_ts=CASE WHEN {_KEEP_ALERT}
+               THEN {_E}.first_alert_ts ELSE EXCLUDED.first_alert_ts END,
+             benchmark_version=EXCLUDED.benchmark_version
+           RETURNING id"""
+
+
 def record_event_with_observations(
     event: Dict[str, Any],
     *,
@@ -417,26 +479,7 @@ def record_event_with_observations(
     alerted_before_20 = bool(first_alert_ts and crossed_20 and first_alert_ts < int(crossed_20))
 
     cur.execute(
-        """INSERT INTO ghost_explosion_events
-           (symbol, tier, window_days, move_pct, start_price, peak_price,
-            start_ts, peak_ts, first_observed_ts, first_observed_price,
-            promoted_ts, promoted_price, max_move_captured_pct,
-            alerted_before_10pct, alerted_before_20pct, crossed_10pct_ts,
-            crossed_20pct_ts, first_alert_ts, benchmark_version, created_at)
-           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-           ON CONFLICT (symbol, tier, start_ts) DO UPDATE SET
-             move_pct=EXCLUDED.move_pct, peak_price=EXCLUDED.peak_price,
-             peak_ts=EXCLUDED.peak_ts, first_observed_ts=EXCLUDED.first_observed_ts,
-             first_observed_price=EXCLUDED.first_observed_price,
-             promoted_ts=EXCLUDED.promoted_ts, promoted_price=EXCLUDED.promoted_price,
-             max_move_captured_pct=EXCLUDED.max_move_captured_pct,
-             alerted_before_10pct=EXCLUDED.alerted_before_10pct,
-             alerted_before_20pct=EXCLUDED.alerted_before_20pct,
-             crossed_10pct_ts=EXCLUDED.crossed_10pct_ts,
-             crossed_20pct_ts=EXCLUDED.crossed_20pct_ts,
-             first_alert_ts=EXCLUDED.first_alert_ts,
-             benchmark_version=EXCLUDED.benchmark_version
-           RETURNING id""",
+        _EVENT_UPSERT_SQL,
         (sym, event["tier"], event["window_days"], event["move_pct"],
          event["start_price"], event["peak_price"], start_ts, peak_ts,
          first_obs_ts, first_obs_px, promoted_ts, promoted_px, max_captured,

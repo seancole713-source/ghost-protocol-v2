@@ -139,3 +139,146 @@ def test_post_alert_ohlc_excludes_pre_alert_bars(monkeypatch):
     assert ohlc["high"] == 10.4  # pre-alert 12.5 high is excluded
     assert ohlc["open"] == 10.2
 
+
+# --- F37 (audit 2026-09-25): explicit grading basis, no silent full-day grade ---
+
+
+def test_missing_intraday_bars_mark_row_unresolved_not_win(monkeypatch):
+    """Acceptance: with no 5-minute bars the row gets basis full_day_approx
+    and is not counted as a win, even though the full-day high hit sell."""
+    import core.squeeze_outcomes as so
+
+    monkeypatch.setattr(so, "_post_alert_ohlc", lambda *a, **k: None)
+    monkeypatch.setattr(
+        so, "_session_ohlc",
+        lambda *a, **k: {"open": 10.0, "high": 12.5, "low": 9.8, "close": 10.1},
+    )
+    meta = so.grade_squeeze_row("WOLF", "2026-06-10", 1781102700, 10.0, 11.0, 9.5)
+    assert meta["outcome"] == "UNRESOLVED"
+    assert meta["grading_basis"] == "full_day_approx"
+    assert meta["hit_target"] is None and meta["hit_stop"] is None
+    assert meta["precision_score"] is None
+    assert meta["session_high"] == 12.5  # kept for display only
+    assert so.is_graded_row(meta) is False
+
+
+def test_post_alert_grade_is_labelled_and_reports_mfe(monkeypatch):
+    import core.squeeze_outcomes as so
+
+    monkeypatch.setattr(
+        so, "_post_alert_ohlc",
+        lambda *a, **k: {"open": 10.2, "high": 10.4, "low": 9.9, "close": 10.1},
+    )
+    monkeypatch.setattr(
+        so, "_session_ohlc", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no fallback")),
+    )
+    meta = so.grade_squeeze_row("WOLF", "2026-06-10", 1781102700, 10.0, 11.0, 9.5)
+    assert meta["grading_basis"] == "post_alert_5m"
+    assert meta["outcome"] == "NEUTRAL"
+    assert meta["post_alert_mfe_pct"] == 4.0
+    assert so.is_graded_row(meta) is True
+
+
+def test_is_graded_row_excludes_full_day_basis_and_unresolved():
+    from core.squeeze_outcomes import is_graded_row
+
+    assert is_graded_row({"outcome": "WIN", "grading_basis": "post_alert_5m"}) is True
+    assert is_graded_row({"outcome": "LOSS", "grading_basis": None}) is True  # legacy row
+    assert is_graded_row({"outcome": "WIN", "grading_basis": "full_day_approx"}) is False
+    assert is_graded_row({"outcome": "UNRESOLVED", "grading_basis": "full_day_approx"}) is False
+    assert is_graded_row({"outcome": None}) is False
+
+
+class _RecordingCursor:
+    def __init__(self, rows=None):
+        self.statements = []
+        self._rows = rows or []
+
+    def execute(self, sql, params=None):
+        self.statements.append((" ".join(sql.split()), params))
+
+    def fetchall(self):
+        return self._rows
+
+    def fetchone(self):
+        return None
+
+
+class _RecordingConnection:
+    def __init__(self, cursor):
+        self._cursor = cursor
+
+    def cursor(self):
+        return self._cursor
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+
+def test_resolve_writes_basis_and_does_not_count_unresolved(monkeypatch):
+    import core.db as db
+    import core.squeeze_outcomes as so
+
+    cursor = _RecordingCursor(rows=[(7, "WOLF", 10.0, 11.0, 9.5, 1781102700)])
+    monkeypatch.setattr(db, "db_conn", lambda: _RecordingConnection(cursor))
+    monkeypatch.setattr(so, "_post_alert_ohlc", lambda *a, **k: None)
+    monkeypatch.setattr(
+        so, "_session_ohlc",
+        lambda *a, **k: {"open": 10.0, "high": 12.5, "low": 9.8, "close": 10.1},
+    )
+    assert so.resolve_squeeze_outcomes("2026-06-10") == 0  # nothing GRADED
+    select = next(sql for sql, _ in cursor.statements if sql.startswith("SELECT id, symbol"))
+    assert "outcome = 'UNRESOLVED' AND grading_basis = 'full_day_approx'" in select
+    sql, params = next((s, p) for s, p in cursor.statements if s.startswith("UPDATE ghost_squeeze_outcomes"))
+    assert "grading_basis = %s" in sql
+    assert params[0] == "UNRESOLVED"
+    assert "full_day_approx" in params
+    assert params[-1] == 7
+
+
+def test_daily_log_summary_excludes_unresolved_from_wins(monkeypatch):
+    import core.db as db
+    from core.squeeze_outcomes import squeeze_daily_log
+
+    def row(rid, outcome, basis):
+        base = [rid, "2026-06-10", "WOLF", "squeeze_active", "telegram", 1781102700 + rid,
+                10.0, 11.0, 9.5, 70, 0.4, 76, 3.0, 9.8,
+                outcome, 10.0, 12.5, 9.8, 10.1, None, None, None, 1.0, -8.2,
+                None, None, None, None, 1781130000, basis, None, 3.6]
+        return tuple(base)
+
+    rows = [
+        row(1, "WIN", "post_alert_5m"),
+        row(2, "UNRESOLVED", "full_day_approx"),
+        row(3, "LOSS", "post_alert_5m"),
+    ]
+    # distinct buy/sell/stop so the candidate/telegram dedupe keeps all three
+    rows = [r[:6] + (10.0 + i, 11.0 + i, 9.5 + i) + r[9:] for i, r in enumerate(rows)]
+    cursor = _RecordingCursor(rows=rows)
+    monkeypatch.setattr(db, "db_conn", lambda: _RecordingConnection(cursor))
+    out = squeeze_daily_log(session_date="2026-06-10")
+    day = out["days"][0]
+    assert day["wins"] == 1 and day["losses"] == 1
+    assert day["resolved"] == 2 and day["unresolved"] == 1
+    unresolved = next(r for r in out["rows"] if r["id"] == 2)
+    assert unresolved["grading_basis"] == "full_day_approx"
+    assert unresolved.get("precision") in (None, {})  # no grade backfilled from full-day
+    assert unresolved["alert_time_fade_pct"] == 3.6
+
+
+def test_loss_streak_ignores_unresolved_rows(monkeypatch):
+    """An UNRESOLVED (full-day) row must neither extend nor break the streak."""
+    import core.db as db
+    from core import squeeze_monitor as sm
+
+    cursor = _RecordingCursor(rows=[("LOSS",), ("LOSS",), ("LOSS",)])
+    monkeypatch.setattr(db, "db_conn", lambda: _RecordingConnection(cursor))
+    assert sm._symbol_loss_streak("wolf") == 3
+    sql, params = cursor.statements[-1]
+    assert "outcome IN ('WIN','LOSS','MIXED','NEUTRAL')" in sql
+    assert "IS NOT NULL" not in sql
+    assert params == ("WOLF",)
+

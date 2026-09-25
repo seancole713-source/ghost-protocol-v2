@@ -60,6 +60,18 @@ REPAIRABLE_CATEGORIES = frozenset({"schema_error", "source_error"})
 STOP_EVENT = threading.Event()
 
 
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def worker_enabled() -> bool:
+    """Kill switch (F34): CODEX_WORKER_ENABLED=0 stops all claiming.
+
+    Read on EVERY loop cycle, not only at boot, so the worker never claims a
+    task (and never bills OpenAI) while the switch is off.
+    """
+    return os.getenv("CODEX_WORKER_ENABLED", "1").strip().lower() in _TRUTHY
+
+
 class WorkerError(RuntimeError):
     """Bounded worker/API failure without credential-bearing context."""
 
@@ -88,6 +100,11 @@ class Config:
     max_tasks_per_day: int = 40
     web_search_max_uses: int = 2
     max_tokens: int = 6144
+    # F34: after this many CONSECUTIVE "no usable source_refs" results the
+    # worker stops claiming for incomplete_pause_seconds (each failure bills
+    # OpenAI and burns a task attempt). An accepted submission resets it.
+    max_consecutive_incomplete: int = 3
+    incomplete_pause_seconds: int = 3600
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -140,6 +157,12 @@ class Config:
             max_tasks_per_day=bounded_int("CODEX_WORKER_MAX_TASKS_PER_DAY", 40, 1, 500),
             web_search_max_uses=bounded_int("CODEX_WORKER_WEB_SEARCH_MAX_USES", 2, 1, 20),
             max_tokens=bounded_int("CODEX_WORKER_MAX_TOKENS", 6144, 512, 8192),
+            max_consecutive_incomplete=bounded_int(
+                "CODEX_WORKER_MAX_CONSECUTIVE_INCOMPLETE", 3, 1, 20
+            ),
+            incomplete_pause_seconds=bounded_int(
+                "CODEX_WORKER_INCOMPLETE_PAUSE_SECONDS", 3600, 300, 86400
+            ),
         )
 
 
@@ -298,6 +321,30 @@ def _source_refs_from_openai_response(payload: Any, now: int) -> list[Dict[str, 
             ref["title"] = title[:300]
         refs.append(ref)
     return refs[:25]
+
+
+def _response_shape(payload: Any) -> Dict[str, Any]:
+    """Counts of Responses-API output item and annotation types (F34).
+
+    Types only -- no text, URLs or ids -- so the log line shows WHY a
+    response produced no url_citation without leaking content.
+    """
+    item_types: Dict[str, int] = {}
+    annotation_types: Dict[str, int] = {}
+    output = payload if isinstance(payload, list) else []
+    for item in output:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("type") or "?")[:40]
+        item_types[name] = item_types.get(name, 0) + 1
+        for block in item.get("content") or []:
+            if not isinstance(block, dict):
+                continue
+            for annotation in block.get("annotations") or []:
+                if isinstance(annotation, dict):
+                    kind = str(annotation.get("type") or "?")[:40]
+                    annotation_types[kind] = annotation_types.get(kind, 0) + 1
+    return {"output_item_types": item_types, "annotation_types": annotation_types}
 
 
 def _normalize_source_refs(
@@ -502,12 +549,16 @@ RESEARCH_DRAFT:
         if not source_refs:
             # Refuse to submit an unsupported envelope -- see
             # ResearchIncompleteError's docstring. Ghost's own validator
-            # would quarantine this as source_error anyway; failing here
-            # instead means it costs a release + retry, not a burned
-            # submission attempt against attempt_count/max_attempts.
+            # would quarantine this as source_error anyway. Note: the claim
+            # itself already counted toward attempt_count/max_attempts, so
+            # the release that follows is NOT free -- core.agent_workflow
+            # keeps this agent off the released task for a cooldown (F35)
+            # and the worker pauses itself after repeated failures (F34).
+            shape = _response_shape(original_body.get("output"))
             raise ResearchIncompleteError(
                 "OpenAI research produced no usable source_refs; refusing to submit "
-                "an evidence envelope with unsupported claims"
+                "an evidence envelope with unsupported claims "
+                f"(citations={len(citations)} shape={json.dumps(shape, sort_keys=True)})"
             )
         confidence = envelope.get("agent_confidence")
         try:
@@ -587,6 +638,8 @@ class CodexWorker:
         self.ghost = ghost or GhostClient(config)
         self.openai = openai or OpenAIClient(config)
         self.budget = RateBudget(config.max_tasks_per_hour, config.max_tasks_per_day)
+        self.consecutive_incomplete = 0
+        self.paused_until = 0.0
 
     def _worker_heartbeat(self, status: str, **kwargs: Any) -> None:
         try:
@@ -594,7 +647,23 @@ class CodexWorker:
         except Exception as exc:
             LOG.warning("worker heartbeat failed status=%s error=%s", status, str(exc)[:240])
 
-    def run_once(self) -> str:
+    def run_once(self, now: Optional[float] = None) -> str:
+        current = time.time() if now is None else now
+        if not worker_enabled():
+            self._worker_heartbeat(
+                "IDLE", metadata={"worker_version": "1.0", "disabled": True},
+            )
+            return "disabled"
+        if current < self.paused_until:
+            self._worker_heartbeat(
+                "IDLE",
+                metadata={
+                    "worker_version": "1.0",
+                    "paused_incomplete": True,
+                    "paused_until": int(self.paused_until),
+                },
+            )
+            return "paused"
         if not self.budget.allowed():
             self._worker_heartbeat("IDLE", metadata={"worker_version": "1.0", "rate_limited": True})
             return "rate_limited"
@@ -618,6 +687,7 @@ class CodexWorker:
         envelope: Optional[Dict[str, Any]] = None
         try:
             envelope = self.openai.research(task, contract)
+            self._require_sources(envelope)
             repair_id: Optional[str] = None
             for repair_number in range(self.config.max_repairs + 1):
                 payload = {
@@ -632,6 +702,7 @@ class CodexWorker:
                     payload["repair_of_evidence_id"] = repair_id
                 last_result = self.ghost.submit(task_id, payload)
                 if last_result.get("accepted"):
+                    self.consecutive_incomplete = 0
                     self._worker_heartbeat(
                         "IDLE", processed_delta=1, accepted_delta=1, quarantined_delta=quarantined,
                     )
@@ -659,6 +730,7 @@ class CodexWorker:
                     },
                     previous=envelope,
                 )
+                self._require_sources(envelope)
             if last_result and last_result.get("lease_retained"):
                 self.ghost.release(task_id, lease_token, "repair_budget_exhausted")
             category = str((last_result or {}).get("quarantine_category") or "unknown")
@@ -676,6 +748,15 @@ class CodexWorker:
                 LOG.warning("release failed task_id=%s error=%s", task_id, str(release_exc)[:240])
             self._worker_heartbeat("IDLE", processed_delta=1, last_error=error)
             LOG.warning("research incomplete task_id=%s error=%s", task_id, error)
+            self.consecutive_incomplete += 1
+            if self.consecutive_incomplete >= self.config.max_consecutive_incomplete:
+                self.paused_until = current + self.config.incomplete_pause_seconds
+                self.consecutive_incomplete = 0
+                LOG.warning(
+                    "pausing claims for %ss after %s consecutive incomplete results",
+                    self.config.incomplete_pause_seconds,
+                    self.config.max_consecutive_incomplete,
+                )
             return "incomplete"
         except Exception as exc:
             error = f"{type(exc).__name__}: {str(exc)[:500]}"
@@ -688,6 +769,18 @@ class CodexWorker:
             return "error"
         finally:
             lease.stop()
+
+    @staticmethod
+    def _require_sources(envelope: Dict[str, Any]) -> None:
+        """Never submit an envelope without source_refs as evidence (F34).
+
+        research() already refuses; this guard also covers repaired envelopes
+        and any alternative research client.
+        """
+        if not isinstance(envelope, dict) or not envelope.get("source_refs"):
+            raise ResearchIncompleteError(
+                "envelope has no usable source_refs; refusing to submit it as evidence"
+            )
 
     def run_forever(self) -> None:
         self._worker_heartbeat("STARTING", metadata={"worker_version": "1.0"})
@@ -718,7 +811,7 @@ def main() -> int:
         level=os.getenv("LOG_LEVEL", "INFO").upper(),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    if os.getenv("CODEX_WORKER_ENABLED", "1").strip().lower() not in {"1", "true", "yes", "on"}:
+    if not worker_enabled():
         LOG.warning("CODEX_WORKER_ENABLED is false; worker not started")
         return 0
     try:

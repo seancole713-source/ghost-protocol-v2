@@ -403,3 +403,45 @@ def test_external_radar_reobservation_reuses_the_days_task():
     assert second["task_ids"] == first["task_ids"]
     task = workflow.get_task(first["task_ids"][0])["task"]
     assert task["request_payload"]["radar_run_id"] == "radar-1"
+
+
+def test_releasing_agent_cannot_reclaim_until_cooldown_but_others_can(monkeypatch):
+    """F35: a release starts a per-agent cooldown on THAT task only."""
+    monkeypatch.setenv("AGENT_RECLAIM_COOLDOWN_SECONDS", "1800")
+    t0 = 1_800_300_000
+    task = workflow.create_task(
+        task_type="external_mover_triage",
+        symbol="BYND",
+        requested_by="ghost.external_radar",
+        request_payload={"question": "Classify the move"},
+        max_attempts=5,
+        idempotency_key="external-mover:BYND:cooldown",
+        now_ts=t0,
+    )["task"]
+
+    codex = workflow.claim_task(agent_id="codex.production", now_ts=t0 + 10)
+    assert codex["claimed"] is True
+    workflow.release_task(
+        task_id=task["task_id"], agent_id="codex.production",
+        lease_token=codex["lease_token"], reason="research incomplete", now_ts=t0 + 20,
+    )
+
+    # The next poll (~20 s later) and every poll inside the cooldown get nothing.
+    for dt in (40, 600, 1_819):
+        again = workflow.claim_task(agent_id="codex.production", now_ts=t0 + dt)
+        assert again["claimed"] is False, dt
+    assert workflow.get_task(task["task_id"])["task"]["attempt_count"] == 1
+
+    # A different agent can claim it immediately.
+    claude = workflow.claim_task(agent_id="claude.production", now_ts=t0 + 60)
+    assert claude["claimed"] is True
+    assert claude["task"]["task_id"] == task["task_id"]
+    workflow.release_task(
+        task_id=task["task_id"], agent_id="claude.production",
+        lease_token=claude["lease_token"], reason="error", now_ts=t0 + 70,
+    )
+
+    # Once the releasing agent's window has passed it may try again.
+    later = workflow.claim_task(agent_id="codex.production", now_ts=t0 + 20 + 1_801)
+    assert later["claimed"] is True
+    assert later["task"]["attempt_count"] == 3

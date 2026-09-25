@@ -343,13 +343,37 @@ def squeeze_trade_levels(
     session_high: float,
     kind: str,
 ) -> Tuple[float, float]:
-    """Return (buy, sell) — sell targets session high when still above TP."""
+    """Return (buy, sell), both anchored on the price AT ALERT TIME.
+
+    F38 (audit 2026-09-25): the sell used to be ``max(buy * (1 + TP),
+    session_high)``. The session high is a price that ALREADY printed before
+    the alert, so after a spike-and-fade the target was the old high (e.g.
+    squeeze_forming alert at 10.60 after an 11.00 high -> sell 11.00, +3.8%,
+    not the configured 2.5% TP) and that inflated target also fed the EV
+    gate (a bigger gain made a faded setup look positive-EV). The target
+    is now the configured take-profit above the alert-time price only.
+    ``session_high`` is kept in the signature for callers; it is reported
+    separately as ``alert_time_fade_pct``.
+    """
     buy = round(buy_price, 2)
     tp_pct = TP_PCT_ACTIVE if kind == "squeeze_active" else TP_PCT_FORMING
-    tp_sell = round(buy * (1.0 + tp_pct / 100.0), 2)
-    high_sell = round(session_high, 2) if session_high > buy else tp_sell
-    sell = max(tp_sell, high_sell) if high_sell > buy else tp_sell
-    return buy, round(sell, 2)
+    sell = round(buy * (1.0 + tp_pct / 100.0), 2)
+    return buy, sell
+
+
+def alert_time_fade_pct(price: float, session_high: float) -> Optional[float]:
+    """How far below the already-printed session high the alert fires (F38).
+
+    0.0 = alerting at the high; 3.6 = price is 3.6% under the high. None when
+    either input is missing or non-positive.
+    """
+    try:
+        px, high = float(price), float(session_high)
+    except (TypeError, ValueError):
+        return None
+    if px <= 0 or high <= 0:
+        return None
+    return round(max(0.0, (high - px) / high * 100.0), 2)
 
 
 def format_squeeze_alert(
@@ -371,12 +395,18 @@ def format_squeeze_alert(
         short_risk=short_ctx.get("squeeze_risk"),
         kind=kind,
     )
+    fade = alert_time_fade_pct(metrics["price"], metrics["session_high"])
+    fade_line = ""
+    if fade is not None and fade > 0:
+        # F38: say plainly when the alert fires below a high already printed.
+        fade_line = f"\nNow {fade:.1f}% below today's high ${float(metrics['session_high']):.2f}"
     return (
         f"📡 SQUEEZE RADAR — {symbol.upper()}\n"
         f"Radar only — not a Ghost gated trade\n"
         f"Buy: ${buy:.2f}\n"
         f"Sell: ${sell:.2f}\n"
         f"Confidence: {conf}%"
+        f"{fade_line}"
     )
 
 
@@ -1575,6 +1605,10 @@ def _symbol_loss_streak(symbol: str) -> int:
 
     Reads ghost_squeeze_outcomes to find the current cold streak.
     Returns 0 if the most recent resolved outcome was not a loss.
+
+    F37: only real grades count. An UNRESOLVED row (no post-alert bars, so
+    grading_basis=full_day_approx) neither extends nor BREAKS the streak --
+    a row that cannot be graded must not reset the breaker.
     """
     try:
         from core.db import db_conn
@@ -1583,7 +1617,7 @@ def _symbol_loss_streak(symbol: str) -> int:
             cur.execute(
                 """
                 SELECT outcome FROM ghost_squeeze_outcomes
-                WHERE symbol = %s AND outcome IS NOT NULL
+                WHERE symbol = %s AND outcome IN ('WIN','LOSS','MIXED','NEUTRAL')
                 ORDER BY alerted_at DESC
                 LIMIT 10
                 """,

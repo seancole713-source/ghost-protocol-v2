@@ -135,10 +135,46 @@ def test_format_squeeze_alert_simple():
     assert "Confidence:" in msg
 
 
-def test_squeeze_trade_levels_uses_session_high():
+def test_squeeze_trade_levels_anchor_on_alert_time_price_not_prior_high():
+    """F38: the target is TP above the alert-time price, never the session
+    high that already printed before the alert."""
     buy, sell = squeeze_trade_levels(4.52, 4.92, "squeeze_active")
     assert buy == 4.52
-    assert sell == 4.92
+    assert sell == round(4.52 * 1.04, 2) == 4.70
+    # Audit repro: close 10, high 11 printed, alert at 10.60.
+    buy, sell = squeeze_trade_levels(10.60, 11.00, "squeeze_forming")
+    assert (buy, sell) == (10.60, round(10.60 * 1.025, 2))
+    assert sell < 11.00
+    # Same target whatever the prior high was.
+    assert squeeze_trade_levels(10.60, 15.0, "squeeze_active") == squeeze_trade_levels(
+        10.60, 10.60, "squeeze_active"
+    )
+
+
+def test_alert_time_fade_pct():
+    from core.squeeze_monitor import alert_time_fade_pct
+
+    assert alert_time_fade_pct(10.60, 11.00) == 3.64
+    assert alert_time_fade_pct(11.00, 11.00) == 0.0
+    assert alert_time_fade_pct(0, 11.0) is None
+    assert alert_time_fade_pct(None, 11.0) is None
+
+
+def test_ev_gate_no_longer_uses_prior_high_as_gain():
+    """F38 repro: close 10, high 11, price 10.6, conf 76. With the old
+    sell=max(TP, 11.00) the EV check passed on a gain the alert could not
+    capture; with the alert-time target the gain is the configured TP."""
+    from core.squeeze_monitor import _check_expected_value
+
+    stop = 10.60 * 0.975
+    old_sell = 11.00
+    assert _check_expected_value(10.60, old_sell, stop, 76) is True
+    buy, sell = squeeze_trade_levels(10.60, 11.00, "squeeze_forming")
+    gain = (sell - buy) / buy
+    assert abs(gain - 0.025) < 0.001
+    # EV now reflects only the TP gain (still computed by the same gate).
+    ev = 0.76 * gain - 0.24 * ((buy - stop) / buy)
+    assert _check_expected_value(buy, sell, stop, 76) is (ev > 0)
 
 
 def test_candidate_to_pick_matches_telegram_fields():
@@ -161,7 +197,9 @@ def test_candidate_to_pick_matches_telegram_fields():
     msg = format_squeeze_alert("SPCE", "squeeze_active", metrics, 3.0, {"squeeze_risk": "high"})
     assert pick["symbol"] == "SPCE"
     assert pick["buy"] == 4.52
-    assert pick["sell"] == 4.92
+    assert pick["sell"] == 4.70  # F38: 4% TP above the alert price, not the 4.92 high
+    assert pick["alert_time_fade_pct"] == round((4.92 - 4.52) / 4.92 * 100, 2)
+    assert "below today's high $4.92" in pick["message"]
     # 0607e8c recalibration: 7.2% move (36) + RVOL 3.0 (12) + high (10) +
     # active (8) = 66. The old >=70 expectation predated the move-weighted
     # rescore that demoted RVOL.
