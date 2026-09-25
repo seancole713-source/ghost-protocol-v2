@@ -577,26 +577,154 @@ def miss_review(get, ledger: Ledger, *, day: date, now: int, top: int = 50,
         fallback_universe = True
     else:
         fallback_universe = False
-    radar, data_down = {}, set()
-    for r in card.get("rows") or []:
-        if fallback_universe:
-            universe.add(r["symbol"])
-        if r["ref_price"] is None:
-            data_down.add(r["symbol"])
-        radar[r["symbol"]] = M.RadarRecord(
-            first_seen_ts=card.get("issued_at"), first_seen_price=r["ref_price"],
-            rejected_reason="; ".join(r["reasons"]) or None,
-            forecast_issued=bool(r.get("forecast_id")), alert_delivered_ts=card.get("issued_at"))
-    rep = M.audit(day.isoformat(), moves, universe=universe, data_down=data_down, catalyst_symbols=set(),
+    radar_rows = store.scan("edge_radar", session_date=day.isoformat())
+    if fallback_universe:
+        universe |= {r["symbol"] for r in card.get("rows") or []} | {r["symbol"] for r in radar_rows}
+    radar, data_down, details = review_records(store, day, card, radar_rows)
+    catalysts = stored_catalysts(store, day, card, radar_rows)
+    rep = M.audit(day.isoformat(), moves, universe=universe, data_down=data_down,
+                  catalyst_symbols=set(catalysts),
                   radar=radar, minute_bars={s: _minute_bars(minute.get(s) or []) for s in syms},
                   rth_open_ts=_at(day, 9, 30), alert_deadline_ts=_at(day, 9, 30))
-    out = {"day": day.isoformat(), "movers": rep.movers, "executable": rep.executable,
+    for row in rep.rows:
+        if row.get("opportunity") == "EXECUTABLE":
+            row.update(details.get(row["symbol"]) or {"seen_by": []})
+            if catalysts.get(row["symbol"]):
+                row["stored_catalyst"] = catalysts[row["symbol"]]
+    out = {"day": day.isoformat(), "labels_version": M.LABELS_VERSION,
+           "movers": rep.movers, "executable": rep.executable,
            "gap_only": rep.gap_only, "unknown_ordering": rep.unknown_ordering, "caught": rep.caught,
-           "recall": rep.recall, "labels": rep.labels, "correct_rejections": rep.correct_rejections,
+           "recall": rep.recall, "caught_by": rep.caught_by,
+           "card_recall": rep.recall_of("card"), "radar_recall": rep.recall_of("radar"),
+           "card_seen": rep.seen_by.get("card", 0), "radar_seen": rep.seen_by.get("radar", 0),
+           "radar_names": len(radar_rows), "card_names": len(card.get("rows") or []),
+           "labels": rep.labels, "correct_rejections": rep.correct_rejections,
            "wrong_rejections": rep.wrong_rejections, "rows": rep.rows,
            "coverage_note": coverage}
     store.put("edge_miss", day.isoformat(), out)
-    return {"status": "reviewed", **{k: out[k] for k in ("movers", "executable", "caught", "recall", "labels", "coverage_note")}}
+    return {"status": "reviewed", **{k: out[k] for k in (
+        "labels_version", "movers", "executable", "caught", "recall", "card_recall", "radar_recall",
+        "labels", "coverage_note")}}
+
+
+def _filled(store, forecast_id: str) -> Dict[str, Any]:
+    """Did a forecast's entry fill? The paper (actual) record decides when it is graded -- the
+    broker is what really happened; the simulated record stands in when there is no paper
+    outcome. A broker fill outside the rule is not the rule's fill. None = not graded yet."""
+    from edge.contracts import COUNTED
+    from edge.ledger import outside_rule_reason
+    act = store.get("outcomes", f"{forecast_id}|actual") or {}
+    sim = store.get("outcomes", f"{forecast_id}|simulated") or {}
+    a, s = act.get("outcome"), sim.get("outcome")
+    filled = None
+    if a in TERMINAL:
+        f = store.get("forecasts", forecast_id) or {}
+        filled = a in COUNTED and not outside_rule_reason(store, f, act)
+    elif s in TERMINAL:
+        filled = s in COUNTED
+    return {"filled": filled, "simulated": s, "actual": a}
+
+
+def _radar_forecasts(item: Dict[str, Any], recorded: Dict[str, List[str]]) -> List[str]:
+    """The intraday forecasts on a radar name: its ENTRY_ELIGIBLE evidence, plus any paper
+    strategy's forecast recorded for it that day (a later strategy does not re-transition)."""
+    ids = [h["evidence"]["forecast_id"] for h in item.get("history") or []
+           if (h.get("evidence") or {}).get("forecast_id")]
+    return ids + [f for f in recorded.get(item["symbol"], []) if f not in ids]
+
+
+def review_records(store, day: date, card: Dict[str, Any], radar_rows: List[Dict[str, Any]]):
+    """One M.RadarRecord per name, merged from the 9am card AND the intraday radar.
+
+    Returns (records, data_down, details). A name either source forecast is judged on its
+    forecasts' fills; otherwise on the most recent evaluation's reason (the radar's, when it
+    saw the name -- the audit measures the move after the open, which is the radar's job).
+    """
+    from edge import intraday as I, radar as R
+    paper_eids = {spec.experiment_id for spec in I.PAPER_SPECS}
+    recorded: Dict[str, List[str]] = {}
+    for f in store.scan("forecasts", session_date=day.isoformat()):
+        if f.get("experiment_id") in paper_eids:
+            recorded.setdefault(f["symbol"], []).append(f["forecast_id"])
+    card_rows = {r["symbol"]: r for r in card.get("rows") or []}
+    radar_by = {r["symbol"]: r for r in radar_rows}
+    card_ts = card.get("issued_at")
+    records, data_down, details = {}, set(), {}
+    for sym in sorted(set(card_rows) | set(radar_by)):
+        c, it = card_rows.get(sym), radar_by.get(sym)
+        seen_by = tuple(src for src, x in (("card", c), ("radar", it)) if x is not None)
+        forecasts = []           # (source, forecast_id, delivered_ts, deadline_ts)
+        if c is not None and c.get("forecast_id"):
+            forecasts.append(("card", c["forecast_id"], card_ts, _at(day, 9, 30)))
+        if it is not None:
+            for fid in _radar_forecasts(it, recorded):
+                f = store.get("forecasts", fid) or {}
+                forecasts.append(("radar", fid, f.get("issued_at"), f.get("entry_expiry")))
+        fills = {fid: _filled(store, fid) for _src, fid, _d, _dl in forecasts}
+        pick = None
+        if forecasts:
+            def rank(x):
+                src, fid, dlv, dl = x
+                on_time = dlv is not None and (dl is None or dlv <= dl)
+                return (not on_time, {True: 0, None: 1, False: 2}[fills[fid]["filled"]])
+            pick = min(forecasts, key=rank)
+        radar_evaluated = it is not None and (
+            bool(it.get("blocker")) or any(h.get("to") == R.WATCHING for h in it.get("history") or []))
+        card_priced = c is not None and c.get("ref_price") is not None
+        if not radar_evaluated and not card_priced:
+            data_down.add(sym)
+        reason = None
+        if it is not None:
+            item = R.RadarItem.from_row(it)
+            last = (it.get("history") or [{}])[-1]
+            reason = item.blocker_text() or last.get("reason") or None
+        if reason is None and c is not None:
+            reason = "; ".join(c.get("reasons") or c.get("missing") or []) or None
+        linked = bool((c or {}).get("catalyst")) or (c or {}).get("research_status") == "researched" \
+            or bool((it or {}).get("catalyst"))
+        seen_ts = [t for t in (card_ts if c is not None else None, (it or {}).get("detected_at")) if t is not None]
+        records[sym] = M.RadarRecord(
+            first_seen_ts=min(seen_ts) if seen_ts else None,
+            first_seen_price=(c or {}).get("ref_price"),
+            rejected_reason=None if pick else reason,
+            forecast_issued=pick is not None,
+            alert_delivered_ts=pick[2] if pick else None,
+            alert_deadline_ts=pick[3] if pick else None,
+            filled=fills[pick[1]]["filled"] if pick else None,
+            catalyst_linked=linked, seen_by=seen_by, forecast_by=pick[0] if pick else None)
+        det: Dict[str, Any] = {"seen_by": list(seen_by)}
+        if it is not None:
+            det.update({"radar_state": it.get("state"), "radar_detected_at": it.get("detected_at"),
+                        "radar_last_reason": ((it.get("history") or [{}])[-1]).get("reason")})
+        if c is not None:
+            det["card_verdict"] = c.get("verdict")
+        if reason and not pick:
+            det["why"] = reason[:220]
+        if forecasts:
+            det["forecasts"] = [{"source": src, "forecast_id": fid, **fills[fid]}
+                                for src, fid, _d, _dl in forecasts]
+        details[sym] = det
+    return records, data_down, details
+
+
+def stored_catalysts(store, day: date, card: Dict[str, Any], radar_rows: List[Dict[str, Any]]) -> Dict[str, str]:
+    """{symbol: headline} for every dated company-specific event the store held that day:
+    the card's news events, reviewed (non-quarantined) research claims, the radar's links."""
+    from edge import research as RS
+    out: Dict[str, str] = {}
+    for r in card.get("rows") or []:
+        for e in (r.get("inputs") or {}).get("events") or []:
+            if e.get("kind") in C.COMPANY_SPECIFIC:
+                out.setdefault(r["symbol"], str(e.get("headline") or "")[:160])
+    for rec in store.scan("edge_research", day=day.isoformat()):
+        for cl in rec.get("claims") or []:
+            if cl.get("kind") in C.COMPANY_SPECIFIC and cl.get("status") != RS.QUARANTINED:
+                out.setdefault(str(rec.get("symbol") or "").upper(), str(cl.get("statement") or "")[:160])
+    for it in radar_rows:
+        if it.get("catalyst"):
+            out.setdefault(it["symbol"], str(it["catalyst"].get("headline") or "")[:160])
+    out.pop("", None)
+    return out
 
 
 def run(get, ledger: Ledger, *, now: int, http=None, notifier=None) -> Dict[str, Any]:

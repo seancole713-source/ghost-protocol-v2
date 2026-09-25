@@ -43,6 +43,36 @@ class RadarItem:
     strategy: Optional[str] = None
     state: str = DETECTED
     history: List[Dict[str, Any]] = field(default_factory=list)
+    # Why the name is not (yet) eligible, kept compact: the closest strategy's decide()
+    # reasons and when they were set -- {"strategy", "verdict", "reasons", "at"}. Replaced
+    # whenever they change; never part of the state machine.
+    blocker: Optional[Dict[str, Any]] = None
+    # The first dated company-specific event the radar linked to the name
+    # ({"kind", "headline", "at"}); None = the radar never saw one.
+    catalyst: Optional[Dict[str, Any]] = None
+
+    @classmethod
+    def from_row(cls, raw: Dict[str, Any]) -> "RadarItem":
+        return cls(raw["symbol"], raw["session_date"], raw["detected_at"], raw["detected_move_pct"],
+                   raw.get("strategy"), raw["state"], raw.get("history") or [],
+                   raw.get("blocker"), raw.get("catalyst"))
+
+    def set_blocker(self, *, strategy: str, verdict: str, reasons: List[str], ts: int) -> bool:
+        """Record the current blocker; keeps the old time when nothing changed. True if it changed."""
+        cur = self.blocker or {}
+        reasons = [str(r) for r in reasons][:4]
+        if (cur.get("strategy"), cur.get("verdict"), cur.get("reasons")) == (strategy, verdict, reasons):
+            return False
+        self.blocker = {"strategy": strategy, "verdict": verdict, "reasons": reasons, "at": ts}
+        return True
+
+    def blocker_text(self, limit: int = 220) -> Optional[str]:
+        b = self.blocker
+        if not b:
+            return None
+        why = "; ".join(b.get("reasons") or []) or str(b.get("verdict") or "").lower()
+        text = f"{b.get('strategy')}: {why}" if b.get("strategy") else why
+        return text if len(text) <= limit else text[:limit - 3] + "..."
 
     def transition(self, to: str, *, ts: int, reason: str = "",
                    strategy: Optional[str] = None, evidence: Optional[Dict[str, Any]] = None) -> None:

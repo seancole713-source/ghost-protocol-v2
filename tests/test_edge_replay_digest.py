@@ -49,8 +49,8 @@ def test_the_digest_says_what_was_catchable_and_why_it_was_missed():
     t = N.misses_text(review)
     assert "14 stocks hit +5% at their peak, 6 were tradeable after the open, caught 1" in t
     assert "Biggest (peak / close)" in t
-    assert "detection failure 3" in t and "data interruption" not in t
-    assert "GRML +44% (detection failure)" in t and "5 more gained only in the gap" in t
+    assert "never seen: 3" in t and "data down" not in t
+    assert "GRML +44% (never seen)" in t and "5 more gained only in the gap" in t
     assert N.misses_text({"movers": 0}) is None
 
 

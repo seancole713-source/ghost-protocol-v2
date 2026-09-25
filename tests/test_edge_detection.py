@@ -172,6 +172,23 @@ def test_labels_follow_the_fixed_order():
         assert M.label(sym, **kw) == lab, sym
 
 
+def test_v2_labels_judge_a_radar_forecast_on_its_own_window_and_its_fill():
+    kw = dict(universe={"R", "NF", "CAT"}, data_down=set(), catalyst_symbols={"CAT"}, alert_deadline_ts=ts(9, 30))
+    radar = {  # an 11:00 radar forecast is not "late" against the 9:30 card deadline
+        "R": M.RadarRecord(ts(10, 50), forecast_issued=True, alert_delivered_ts=ts(11, 0),
+                           alert_deadline_ts=ts(11, 20), filled=True, forecast_by="radar"),
+        "NF": M.RadarRecord(ts(10, 50), forecast_issued=True, alert_delivered_ts=ts(11, 0),
+                            alert_deadline_ts=ts(11, 20), filled=False),
+        "CAT": M.RadarRecord(ts(10, 50), rejected_reason="no dated company-specific catalyst", catalyst_linked=False),
+    }
+    assert M.label("R", radar=radar, **kw) == "CAUGHT"
+    assert M.label("NF", radar=radar, **kw) == "ALERT_EXECUTION_FAILURE"
+    assert M.label("CAT", radar=radar, **kw) == "CATALYST_MISSED"
+    radar["CAT"].catalyst_linked = None          # unknown link: never blamed on the catalyst
+    assert M.label("CAT", radar=radar, **kw) == "STRATEGY_REJECTION"
+    assert M.LABELS_VERSION == "miss_labels_v2"
+
+
 def test_the_audit_reports_recall_beside_correct_rejections():
     moves = [
         M.DayMove("RUN", 10, 10.0, 10.8, 9.95, 10.7),      # executable, caught

@@ -212,9 +212,7 @@ def _quality_lane(get, store, *, now: int, known: set, universe) -> Dict[str, fl
 def _radar(store, day: str, sym: str, now: int, move: float) -> R.RadarItem:
     raw = store.get("edge_radar", f"{day}|{sym}")
     if raw:
-        item = R.RadarItem(raw["symbol"], raw["session_date"], raw["detected_at"], raw["detected_move_pct"],
-                           raw.get("strategy"), raw["state"], raw.get("history") or [])
-        return item
+        return R.RadarItem.from_row(raw)
     return R.RadarItem(sym, day, now, move)
 
 
@@ -310,13 +308,23 @@ def tick(get, ledger: Ledger, *, now: int, top: int = 50, http=None) -> Dict[str
         }
         if item.state == R.DETECTED:
             item.transition(R.WATCHING, ts=now)
-        best = None
+        if item.catalyst is None and sig["catalyst"].state == D.PASS:
+            item.catalyst = {"kind": sig["catalyst"].evidence.get("kind"),
+                             "headline": str(sig["catalyst"].evidence.get("headline") or "")[:160], "at": now}
+        best, closest = None, None
         for spec in INTRADAY_SPECS:
             if spec.experiment_id in _SECONDARY:
                 continue
             d = S.decide(_STRATEGY_OF[spec.experiment_id], sig)
             if d.verdict == S.ELIGIBLE and best is None:
                 best = (spec, d)
+            # The closest miss: fewest failing + missing inputs; ties keep the spec order.
+            if closest is None or len(d.reasons) + len(d.missing) < len(closest.reasons) + len(closest.missing):
+                closest = d
+        undecided = item.state in (R.WATCHING, R.SETUP_FORMING)     # no forecast on this name yet
+        if best is None and closest is not None and undecided:
+            item.set_blocker(strategy=closest.strategy, verdict=closest.verdict,
+                             reasons=closest.reasons + [f"missing {m}" for m in closest.missing], ts=now)
         if best is None:
             if item.state == R.WATCHING and any(v.state == D.PASS for k, v in sig.items() if k != "liquidity"):
                 item.transition(R.SETUP_FORMING, ts=now, strategy=None,
@@ -347,8 +355,12 @@ def tick(get, ledger: Ledger, *, now: int, top: int = 50, http=None) -> Dict[str
             _record(pair)
         f = _record(spec)
         if f is None:
+            if undecided:
+                item.set_blocker(strategy=_STRATEGY_OF[eid], verdict=S.ELIGIBLE, ts=now,
+                                 reasons=["eligible, but no forecast recorded (daily cap, entry window or already recorded)"])
             _save(store, item)
             continue
+        item.blocker = None
         if item.state in (R.WATCHING, R.SETUP_FORMING):
             if item.state == R.WATCHING:
                 item.transition(R.SETUP_FORMING, ts=now, strategy=_STRATEGY_OF[eid])
@@ -364,13 +376,24 @@ def close_day(ledger: Ledger, *, day: date, now: int) -> Dict[str, Any]:
     ds = day.isoformat()
     n = 0
     for raw in ledger.store.scan("edge_radar", session_date=ds):
-        item = R.RadarItem(raw["symbol"], raw["session_date"], raw["detected_at"], raw["detected_move_pct"],
-                           raw.get("strategy"), raw["state"], raw.get("history") or [])
+        item = R.RadarItem.from_row(raw)
         if item.state in (R.DETECTED, R.WATCHING, R.SETUP_FORMING, R.DATA_UNAVAILABLE):
-            item.transition(R.EXPIRED, ts=now, reason="session ended without an eligible setup")
+            item.transition(R.EXPIRED, ts=now, reason=expiry_reason(item))
             _save(ledger.store, item)
             n += 1
     return {"status": "closed" if n else "nothing", "expired": n}
+
+
+EXPIRY_BASE = "session ended without an eligible setup"
+
+
+def expiry_reason(item: R.RadarItem) -> str:
+    """The EXPIRED reason carries the last thing that blocked the name, not one line for all."""
+    last = item.history[-1] if item.history else {}
+    if item.state == R.DATA_UNAVAILABLE and last.get("reason"):
+        return f"{EXPIRY_BASE}; last blocker: data unavailable ({last['reason']})"
+    why = item.blocker_text()
+    return f"{EXPIRY_BASE}; last blocker: {why}" if why else EXPIRY_BASE
 
 
 def _crowded(rec: Dict[str, Any], day: date) -> D.Signal:

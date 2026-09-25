@@ -118,7 +118,47 @@ def test_the_radar_remembers_every_name_and_why(ledger):
     I.close_day(ledger, day=DAY, now=ts(16, 25))
     radar = {r["symbol"]: r for r in ledger.store.scan("edge_radar", session_date="2026-09-23")}
     assert radar["QUIET"]["state"] == R.EXPIRED
-    assert radar["QUIET"]["history"][-1]["reason"] == "session ended without an eligible setup"
+    # The expiry carries the name's own last blocker, not one line for every name.
+    reason = radar["QUIET"]["history"][-1]["reason"]
+    assert reason.startswith("session ended without an eligible setup; last blocker: ")
+    assert "rvol_tod 1.0 fails" in reason
+    assert radar["STALE"]["history"][-1]["reason"] == (
+        "session ended without an eligible setup; last blocker: data unavailable "
+        "(no IEX print in the last 5 minutes)")
+
+
+def test_the_radar_keeps_why_a_name_was_not_eligible_and_when(ledger):
+    I.tick(Market(ts(10, 40)), ledger, now=ts(10, 40))
+    q = ledger.store.get("edge_radar", "2026-09-23|QUIET")
+    b = q["blocker"]
+    assert b["at"] == ts(10, 40) and b["verdict"] == "REJECTED" and b["reasons"]
+    assert any("rvol_tod" in r for r in b["reasons"])
+    I.tick(Market(ts(10, 45)), ledger, now=ts(10, 45))
+    q2 = ledger.store.get("edge_radar", "2026-09-23|QUIET")
+    if q2["blocker"]["reasons"] == b["reasons"]:
+        assert q2["blocker"]["at"] == ts(10, 40)          # unchanged reasons keep the time they were set
+    # A forecast name carries no blocker, and the radar saw CATX's catalyst.
+    catx = ledger.store.get("edge_radar", "2026-09-23|CATX")
+    assert catx["blocker"] is None and catx["catalyst"]["kind"] == "contract"
+    from edge import readout as RO
+    items = {i["symbol"]: i for i in RO.radar(ledger.store, "2026-09-23")["items"]}
+    assert items["QUIET"]["detected_at"] == ts(10, 40)
+    assert (items["QUIET"]["detected_at_et"], items["QUIET"]["detected_at_ct"]) == ("10:40 ET", "09:40 CT")
+    assert items["QUIET"]["last_reasons"] == q2["blocker"]["reasons"]
+    assert items["QUIET"]["last_reasons_at_et"] and items["QUIET"]["last_reasons_at_ct"]
+
+
+def test_a_blocker_keeps_the_time_it_was_set_until_it_changes():
+    it = R.RadarItem("X", "2026-09-23", ts(10, 0), 8.0)
+    assert it.set_blocker(strategy="intraday_continuation", verdict="REJECTED", reasons=["a"], ts=ts(10, 0))
+    assert not it.set_blocker(strategy="intraday_continuation", verdict="REJECTED", reasons=["a"], ts=ts(10, 5))
+    assert it.blocker["at"] == ts(10, 0)
+    assert it.set_blocker(strategy="intraday_continuation", verdict="REJECTED", reasons=["b"], ts=ts(10, 10))
+    assert it.blocker == {"strategy": "intraday_continuation", "verdict": "REJECTED", "reasons": ["b"],
+                          "at": ts(10, 10)}
+    assert it.blocker_text() == "intraday_continuation: b"
+    back = R.RadarItem.from_row(__import__("dataclasses").asdict(it))
+    assert back.blocker == it.blocker and back.state == R.DETECTED
 
 
 def test_a_second_tick_does_not_double_count(ledger):
