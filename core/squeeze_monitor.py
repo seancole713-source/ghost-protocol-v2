@@ -1126,33 +1126,20 @@ def _alpaca_headers() -> Optional[dict]:
 
 
 def _alpaca_prev_close(symbol: str) -> Optional[float]:
-    """Prior session close from Alpaca 1Day bars (no Yahoo)."""
+    """Prior session close from Alpaca 1Day bars (no Yahoo), matched by date.
+
+    Delegates to core.prices: newest-first bars, and only the bar dated the
+    expected previous session counts (an ascending limit=5 request returned
+    the oldest bars in its 10-day window -- U17).
+    """
     headers = _alpaca_headers()
     if not headers:
         return None
-    sym = symbol.upper()
     try:
-        import requests
-
-        end = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        start = (datetime.now(timezone.utc) - timedelta(days=10)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        from core.prices import _alpaca_bar_feeds, _note_alpaca_feed_status
-        for feed in _alpaca_bar_feeds():
-            url = (
-                f"https://data.alpaca.markets/v2/stocks/{sym}/bars"
-                f"?timeframe=1Day&start={start}&end={end}&limit=5&feed={feed}"
-            )
-            r = requests.get(url, headers=headers, timeout=_TIMEOUT)
-            if r.status_code != 200:
-                _note_alpaca_feed_status(feed, r.status_code)
-                continue
-            dbars = r.json().get("bars") or []
-            if len(dbars) >= 2:
-                return round(float(dbars[-2].get("c", 0)), 4)
-            if len(dbars) == 1:
-                return round(float(dbars[0].get("o", 0)), 4)
+        from core.prices import _alpaca_daily_close, _expected_prev_session
+        return _alpaca_daily_close(symbol.upper(), _expected_prev_session(), headers)
     except Exception as exc:
-        LOGGER.debug("[SqueezeMonitor] alpaca prev_close %s: %s", sym, exc)
+        LOGGER.debug("[SqueezeMonitor] alpaca prev_close %s: %s", symbol, exc)
     return None
 
 
