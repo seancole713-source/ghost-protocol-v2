@@ -12,6 +12,13 @@ from core.squeeze_monitor import (
 )
 
 
+
+def _et_today():
+    """The exchange (Eastern) date -- the basis squeeze evidence dates sessions on."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    return datetime.now(ZoneInfo("America/New_York")).date()
+
 def test_rvol_doubles_at_half_session_with_full_day_pace():
     # At 50% of session, 50% of avg daily vol => RVOL ~1.0
     rvol = compute_rvol(session_volume=20_000_000, avg_daily_volume=40_000_000, elapsed_frac=0.5)
@@ -191,7 +198,7 @@ def test_candidate_to_pick_matches_telegram_fields():
     from core.daily_bar_contract import previous_session
     from core.market_hours import session_hm
     metrics.update({"price_as_of_ts": time.time() - 60, "daily_feed": "iex", "intraday_feed": "iex",
-                    "reference_session_date": previous_session(session_hm()[0].date()).isoformat(),
+                    "reference_session_date": previous_session(_et_today()).isoformat(),
                     "bars_complete": True, "session_volume": 1000, "avg_daily_volume": 1000})
     pick = candidate_to_pick("SPCE", "squeeze_active", metrics, 3.0, {"squeeze_risk": "high"})
     msg = format_squeeze_alert("SPCE", "squeeze_active", metrics, 3.0, {"squeeze_risk": "high"})
@@ -433,7 +440,7 @@ def test_no_intraday_print_is_not_counted_as_a_fetch_failure(monkeypatch):
         "AAA": {"session_volume": 1000.0, "avg_daily_volume": 500.0,
                 "peak_move_pct": 1.0, "current_move_pct": 1.0, "price": 10.0,
                 "prior_close": 9.9, "session_high": 10.0, "price_as_of_ts": time.time() - 60,
-                "reference_session_date": previous_session(session_hm()[0].date()).isoformat(),
+                "reference_session_date": previous_session(_et_today()).isoformat(),
                 "daily_feed": "iex", "intraday_feed": "iex", "bars_complete": True},
         "BBB": None, "CCC": None,
     }, statuses={sym: {"status": "ready" if sym == "AAA" else "no_intraday_print"} for sym in syms}))

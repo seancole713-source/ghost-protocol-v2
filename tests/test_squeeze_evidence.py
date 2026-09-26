@@ -268,3 +268,17 @@ def test_disabled_batch_fallback_preserves_successful_empty_status(monkeypatch, 
     report = run_scan()
     assert report["no_intraday_print"] == 1
     assert report["fetch_fail"] == 0
+
+
+def test_evidence_uses_the_exchange_date_between_midnight_et_and_midnight_ct():
+    """23:20 CT Friday is 00:20 ET Saturday. The baseline picker dates bars in ET, so the
+    evidence check must too; mixing in the CT date rejected a valid baseline (and failed CI
+    every night in that hour and on weekends)."""
+    from core.squeeze_evidence import evidence_status
+    now = datetime(2026, 9, 26, 4, 20, tzinfo=timezone.utc).timestamp()
+    metrics = {"price_as_of_ts": now - 60, "price": 120.0, "prior_close": 100.0, "session_high": 120.0,
+               "avg_daily_volume": 1000.0, "session_volume": 1000.0, "current_move_pct": 20.0,
+               "peak_move_pct": 20.0, "reference_session_date": "2026-09-25", "bars_complete": True,
+               "daily_feed": "iex", "intraday_feed": "iex"}
+    assert evidence_status(metrics, now=now) == "ready"
+    assert evidence_status({**metrics, "reference_session_date": "2026-09-24"}, now=now) == "invalid_baseline"

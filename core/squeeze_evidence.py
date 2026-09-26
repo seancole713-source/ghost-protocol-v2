@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import math
 import time
+from zoneinfo import ZoneInfo
 from typing import Any
 
 # A 5-minute aggregate is timestamped at its beginning, not at the last trade.
@@ -55,14 +56,17 @@ def observation_ts(value: Any) -> float | None:
 def evidence_status(metrics: dict[str, Any], *, now: float | None = None) -> str:
     """Recheck clocks at consumption, not just at the beginning of a scan."""
     from core.daily_bar_contract import previous_session
-    from core.market_hours import session_hm
 
     now = time.time() if now is None else now
     ts = observation_ts(metrics.get("price_as_of_ts"))
     if ts is None or ts > now or metrics.get("data_stale") is True:
         return "invalid_quote"
-    current = datetime.fromtimestamp(now, timezone.utc)
-    if now - ts > BAR_MAX_AGE_S or session_hm(datetime.fromtimestamp(ts, timezone.utc))[0].date() != session_hm(current)[0].date():
+    # Exchange session dates are Eastern, the same basis as daily_bar_contract.bar_session_date
+    # (which picks the baseline). Mixing in the Central wall clock here disagreed with it for
+    # the hour between midnight ET and midnight CT and rejected a valid baseline.
+    et = ZoneInfo("America/New_York")
+    today_et = datetime.fromtimestamp(now, et).date()
+    if now - ts > BAR_MAX_AGE_S or datetime.fromtimestamp(ts, et).date() != today_et:
         return "stale_quote"
     try:
         for name in ("price", "prior_close", "session_high", "avg_daily_volume"):
@@ -76,7 +80,7 @@ def evidence_status(metrics: dict[str, Any], *, now: float | None = None) -> str
             return "invalid_quote"
     except (ValueError, TypeError, KeyError, OverflowError):
         return "invalid_quote"
-    expected = previous_session(session_hm(current)[0].date()).isoformat()
+    expected = previous_session(today_et).isoformat()
     if (
         metrics.get("reference_session_date") != expected
         or metrics.get("bars_complete") is not True
