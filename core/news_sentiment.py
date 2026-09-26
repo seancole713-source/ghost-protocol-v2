@@ -29,6 +29,12 @@ def score_headline(text: Optional[str]) -> float:
 def score_articles(articles: List[Dict[str, Any]], *, symbol: Optional[str] = None) -> Dict[str, Any]:
     sym = (symbol or "").upper()
     rows = []
+    try:
+        from core.news_store import dedupe_syndicated
+
+        articles = dedupe_syndicated(list(articles or []))
+    except Exception:
+        note_suppressed()
     for a in articles or []:
         if sym and sym not in (a.get("symbol") or a.get("symbols") or sym):
             if isinstance(a.get("symbols"), list) and sym not in a["symbols"]:

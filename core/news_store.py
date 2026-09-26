@@ -62,6 +62,41 @@ def _article_id(symbol: str, title: str, url: Optional[str], published_at: Optio
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 
 
+def _headline_key(symbol: Any, title: Any) -> str:
+    """(symbol, headline) identity that ignores case, punctuation and spacing."""
+    import re as _re
+
+    norm = _re.sub(r"[^a-z0-9 ]", " ", str(title or "").lower())
+    return f"{str(symbol or '').strip().upper()}|{' '.join(norm.split())}"
+
+
+def dedupe_syndicated(articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Drop syndicated copies of one story before it is counted (audit U57).
+
+    Storage identity is (symbol, url), so the same wire headline carried by
+    several outlets is stored once per outlet -- and was then averaged into a
+    symbol's sentiment once per outlet, letting a widely syndicated story
+    outvote everything else. Rows are kept in the order given (list_articles
+    returns newest first), so the first copy of each headline survives.
+    Rows with an empty headline are kept as they are.
+    """
+    seen: set = set()
+    out: List[Dict[str, Any]] = []
+    for row in articles or []:
+        if not isinstance(row, dict):
+            continue
+        title = row.get("title") or row.get("headline") or ""
+        if not str(title).strip():
+            out.append(row)
+            continue
+        key = _headline_key(row.get("symbol") or ",".join(row.get("symbols") or []), title)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(row)
+    return out
+
+
 def _normalize_article(entry: Dict[str, Any], *, default_origin: str = "import") -> Dict[str, Any]:
     sym = str(entry.get("symbol") or entry.get("ticker") or "").strip().upper()
     title = str(entry.get("title") or entry.get("headline") or "").strip()
@@ -323,7 +358,7 @@ def refresh_symbol_sentiments() -> Dict[str, float]:
     from core.news import _fallback_scores, _score_with_claude, _symbol_sentiment
 
     ensure_news_tables()
-    articles = list_articles(limit=200)
+    articles = dedupe_syndicated(list_articles(limit=200))
     scores: Dict[str, float] = {}
 
     if articles:

@@ -1,4 +1,6 @@
 """Tests for core/earnings_surprise.py — pure mapping + fetch (mocked)."""
+import time
+
 from core import earnings_surprise as es
 
 
@@ -12,6 +14,9 @@ def test_earnings_surprise_to_trigger_uses_relative_surprise(monkeypatch):
             "eps_expected": -0.50,
             "revenue_actual": None,
             "quarter": "2026Q2",
+            # Audit U19: only a calendar-dated, recent report is a trigger.
+            "report_ts": int(time.time()) - 2 * 86400,
+            "report_ts_basis": es.REPORT_TS_BASIS_CALENDAR,
         },
     )
     out = es.earnings_surprise_to_trigger("WOLF")

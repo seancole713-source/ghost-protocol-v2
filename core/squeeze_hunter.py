@@ -75,6 +75,40 @@ STAGE_DESCRIPTIONS = {
     "reversal": "Profit taking / short re-entry / liquidity collapse.",
 }
 
+# Late stages are a description of where a move IS, never a reason to act on
+# it: a name in exhaustion or reversal is shown on the watchlist, not listed as
+# a qualified candidate.
+LATE_STAGES = frozenset({"exhaustion", "reversal"})
+
+# Lifecycle flags for stages 6-7 (audit U01: no caller ever passed them, so
+# exhaustion and reversal could not be emitted and a name that had already
+# round-tripped kept its "expansion" label). Derived from what every caller
+# has: the session's peak move, its current move, and RVOL.
+PARABOLIC_PEAK_MOVE_PCT = 50.0   # the session has already run >= +50%
+HUGE_RVOL = 5.0                  # volume >= 5x the time-of-day norm
+MOMENTUM_FADE_FRACTION = 0.5     # current move has given back >= half the peak
+FADE_MIN_PEAK_MOVE_PCT = 8.0     # a fade needs a real run first (the squeeze bar)
+
+
+def lifecycle_flags(peak_move_pct: Any, current_move_pct: Any, rvol: Any) -> Dict[str, bool]:
+    """Pure: the momentum_declining / price_parabolic / huge_volume inputs.
+
+    ``momentum_declining`` needs a peak of at least FADE_MIN_PEAK_MOVE_PCT and
+    a current move at or below MOMENTUM_FADE_FRACTION of it -- a name that ran
+    and has given back at least half. Missing inputs read as 0, which can
+    never set a flag.
+    """
+    peak = _f(peak_move_pct)
+    current = _f(current_move_pct)
+    return {
+        "momentum_declining": (
+            peak >= FADE_MIN_PEAK_MOVE_PCT and current <= peak * MOMENTUM_FADE_FRACTION
+        ),
+        "price_parabolic": peak >= PARABOLIC_PEAK_MOVE_PCT,
+        "huge_volume": _f(rvol) >= HUGE_RVOL,
+    }
+
+
 # ── Explosion factor weights (operator spec §6) ────────────────────────────
 EXPLOSION_FACTORS = {
     "short_squeeze_potential": 0.20,
@@ -236,13 +270,19 @@ def classify_stage(
     momentum_declining: bool = False,
     price_parabolic: bool = False,
     huge_volume: bool = False,
+    current_move_pct: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Classify which of the 7 squeeze stages a name is currently in.
 
     Rule-based and deterministic. Order matters: later stages are checked
     first so a name that has already exhausted is not mislabeled as setup.
+
+    ``move_pct`` is the session's (peak) move; ``current_move_pct``, when
+    given, is where price is now. Reversal asks whether price is back BELOW
+    the prior close, which only the current move can answer.
     """
     move = _f(move_pct)
+    now_move = move if current_move_pct is None else _f(current_move_pct)
     rv = _f(rvol)
     brk = _f(breakout_pct)
     fuel_s = _f(fuel)
@@ -250,7 +290,7 @@ def classify_stage(
     confirm_s = _f(confirmation)
 
     # Reversal: profit taking / short re-entry / liquidity collapse.
-    if momentum_declining and move < 0:
+    if momentum_declining and now_move < 0:
         return _stage("reversal")
     # Exhaustion: parabolic + declining momentum + huge volume.
     if price_parabolic and momentum_declining and huge_volume:
@@ -358,6 +398,7 @@ def build_explosion_report(
     momentum_declining: bool = False,
     price_parabolic: bool = False,
     huge_volume: bool = False,
+    current_move_pct: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Full explosion report: fuel/trigger/confirmation + pressure + stage +
     explosion score + projection. Pure — no I/O."""
@@ -376,6 +417,7 @@ def build_explosion_report(
         momentum_declining=momentum_declining,
         price_parabolic=price_parabolic,
         huge_volume=huge_volume,
+        current_move_pct=current_move_pct,
     )
     exp_score = explosion_score(factors)
     projection = explosion_projection(exp_score)
@@ -652,6 +694,7 @@ def fetch_explosion_report(
     # the full point-in-time session helper.
     confirm_ctx: Dict[str, Any] = {}
     move_pct = 0.0
+    current_move_pct: Optional[float] = None
     rvol = 0.0
     breakout_pct = 0.0
     reference_price = None
@@ -661,6 +704,8 @@ def fetch_explosion_report(
         metrics = market_metrics or {}
         rvol = _f(metrics.get("rvol"))
         move_pct = _f(metrics.get("peak_move_pct") or metrics.get("current_move_pct"))
+        if metrics.get("current_move_pct") is not None:
+            current_move_pct = _f(metrics.get("current_move_pct"))
         breakout_pct = max(0.0, _f(metrics.get("current_move_pct")))
         price = _f(metrics.get("price"))
         vwap = metrics.get("vwap")
@@ -703,9 +748,10 @@ def fetch_explosion_report(
             price = _f(sess.get("price"))
             prev = _f(sess.get("previous_close"))
             if price and prev and prev > 0:
+                current_move_pct = (price - prev) / prev * 100.0
                 if move_pct == 0.0:
-                    move_pct = (price - prev) / prev * 100.0
-                breakout_pct = max(0.0, (price - prev) / prev * 100.0)
+                    move_pct = current_move_pct
+                breakout_pct = max(0.0, current_move_pct)
             reference_price = reference_validation.get("price")
             reference_price_ts = reference_validation.get("price_as_of_ts")
             confirm_ctx.update({"rvol": rvol, "breakout_pct": breakout_pct})
@@ -739,6 +785,9 @@ def fetch_explosion_report(
         "market_environment": env_score,
     }
 
+    flags = lifecycle_flags(
+        move_pct, move_pct if current_move_pct is None else current_move_pct, rvol,
+    )
     report = build_explosion_report(
         symbol=sym,
         short_ctx=short_ctx,
@@ -748,7 +797,10 @@ def fetch_explosion_report(
         move_pct=move_pct,
         rvol=rvol,
         breakout_pct=breakout_pct,
+        current_move_pct=current_move_pct,
+        **flags,
     )
+    report["lifecycle_flags"] = flags
     report["ok"] = True
     report["short_ctx"] = short_ctx
     report["trigger_ctx"] = trigger_ctx
@@ -773,7 +825,8 @@ def fetch_explosion_report(
         "ratio": round(available_count / len(evidence), 3),
         "sources": evidence,
     }
-    report["qualified"] = report.get("stage") != "none"
+    # A late-stage name (exhaustion / reversal) is shown, never qualified.
+    report["qualified"] = report.get("stage") not in ({"none"} | LATE_STAGES)
     report["reference_price"] = reference_price
     report["reference_price_ts"] = reference_price_ts
     report["reference_validation"] = reference_validation

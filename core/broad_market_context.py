@@ -114,6 +114,26 @@ def build_market_snapshot(
     }
 
 
+def previous_close_before(daily_closes: Any, session_day: Any) -> Optional[float]:
+    """Last daily close from a session strictly BEFORE ``session_day``.
+
+    Audit U49: the snapshot took the second-to-last daily bar. Before the open
+    the current session has no daily bar yet, so that was the close of D-2 and
+    every premarket change was measured over two sessions. The previous close
+    is the last completed session before the one the latest quote belongs to;
+    None (unknown) when the daily history has no such session.
+    """
+    try:
+        for idx, value in zip(reversed(list(daily_closes.index)), reversed(list(daily_closes.values))):
+            day = idx.date() if hasattr(idx, "date") else idx
+            if day < session_day:
+                close = float(value)
+                return close if math.isfinite(close) and close > 0 else None
+    except Exception:  # noqa: BLE001 - malformed frame reads as unknown
+        return None
+    return None
+
+
 def _batch_yahoo_observations(*, received_at: int) -> List[Dict[str, Any]]:
     """One bounded batch download; derive timestamps from actual market bars."""
     import yfinance as yf
@@ -141,9 +161,10 @@ def _batch_yahoo_observations(*, received_at: int) -> List[Dict[str, Any]]:
             price = float(closes.iloc[-1])
             daily_part = daily_frame[symbol] if len(symbols) > 1 else daily_frame
             daily_closes = daily_part["Close"].dropna()
-            previous_close = float(
-                daily_closes.iloc[-2] if len(daily_closes) > 1 else daily_closes.iloc[-1]
-            )
+            session_day = last_index.date() if hasattr(last_index, "date") else last_index
+            previous_close = previous_close_before(daily_closes, session_day)
+            if previous_close is None:
+                raise ValueError("no completed session before the latest quote")
             rows.append(normalize_market_observation(
                 instrument, price=price, previous_close=previous_close,
                 source_ts=observed, received_at=received_at,

@@ -373,9 +373,17 @@ FEATURES_DB_KEY = "ghost_v3_features_json"
 _MODEL_CACHE: dict = {}
 _MODEL_CACHE_LOCK = threading.Lock()
 
-# Free-tier Alpaca keys are never SIP-entitled: after the first 403, skip SIP
-# for a while instead of burning one guaranteed-403 call per symbol per sweep.
-_SIP_FORBIDDEN = {"until": 0.0}
+# Free-tier Alpaca keys may not read RECENT SIP data (a request whose window
+# ends inside the last 15 minutes answers 403), but they may read SIP history
+# older than that. Audit U02: one such 403 used to switch every daily-history
+# fetch to IEX -- a single venue's prints and a few percent of real volume --
+# for 6 hours. Now:
+#   "until"            recent SIP refused: daily bars are asked for on SIP with
+#                      the window ending _SIP_HISTORY_DELAY_S ago instead;
+#   "historical_until" even delayed SIP refused: IEX, as before.
+# Both are re-asked after core.prices' SIP_FORBIDDEN_RECHECK_S (30 min).
+_SIP_FORBIDDEN = {"until": 0.0, "historical_until": 0.0}
+_SIP_HISTORY_DELAY_S = 16 * 60
 # Stooq is unreachable from Railway (every request is a 30 s connect timeout),
 # and it is the last tier, so a dead symbol paid that on every pass. After one
 # connection-level failure, skip Stooq for _STOOQ_COOLDOWN_S.
@@ -834,21 +842,23 @@ def _fetch_ohlcv_once(symbol, asset_type, period='1y', interval='1d', *, adjustm
     start_str = start_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
     end_str = end_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
 
-    def _try_feed(feed):
+    from core.prices import _sip_forbidden_recheck_s
+
+    sip_status = {"code": None}
+
+    def _try_feed(feed, *, window_end=None):
         try:
             url = (
                 f"https://data.alpaca.markets/v2/stocks/{symbol.upper()}/bars"
                 f"?timeframe={timeframe}&limit=10000&feed={feed}"
-                f"&start={start_str}&end={end_str}&adjustment={adjustment}"
+                f"&start={start_str}&end={window_end or end_str}&adjustment={adjustment}"
             )
             r = _req.get(url, headers=headers, timeout=30)
+            if feed == 'sip':
+                sip_status["code"] = r.status_code
             if r.status_code != 200:
                 LOGGER.info(f"Alpaca feed={feed} {symbol}: HTTP {r.status_code}")
                 _note_tier("alpaca", "error")
-                if feed == 'sip' and r.status_code == 403:
-                    # Free-tier keys are never SIP-entitled — remember and stop
-                    # burning one guaranteed-403 call per symbol per sweep.
-                    _SIP_FORBIDDEN["until"] = time.time() + 6 * 3600
                 return None
             # Alpaca returns HTTP 200 with "bars": null for symbols with no
             # data (e.g. delisted) — .get('bars', []) keeps the null, then
@@ -868,8 +878,23 @@ def _fetch_ohlcv_once(symbol, asset_type, period='1y', interval='1d', *, adjustm
 
     rows = None
     feed_used = 'sip'
-    if time.time() >= _SIP_FORBIDDEN["until"]:
+    now_s = time.time()
+    if now_s >= _SIP_FORBIDDEN["until"]:
         rows = _try_feed('sip')
+        if sip_status["code"] == 403:
+            _SIP_FORBIDDEN["until"] = now_s + _sip_forbidden_recheck_s()
+    if (not rows and timeframe == '1Day'
+            and now_s < _SIP_FORBIDDEN["until"]
+            and now_s >= _SIP_FORBIDDEN.get("historical_until", 0.0)):
+        # Recent SIP is refused, SIP history is not: daily bars from the
+        # consolidated tape up to _SIP_HISTORY_DELAY_S ago beat IEX bars up to
+        # now. Intraday timeframes keep IEX -- a 16-minute hole matters there.
+        sip_status["code"] = None
+        delayed_end = (end_dt - timedelta(seconds=_SIP_HISTORY_DELAY_S)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        rows = _try_feed('sip', window_end=delayed_end)
+        feed_used = 'sip_delayed'
+        if sip_status["code"] == 403:
+            _SIP_FORBIDDEN["historical_until"] = now_s + _sip_forbidden_recheck_s()
     if not rows:
         LOGGER.info(f"Alpaca SIP returned nothing for {symbol}, trying IEX fallback")
         rows = _try_feed('iex')

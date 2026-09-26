@@ -34,6 +34,37 @@ BULLISH_WORDS = [
     "breakout","milestone","win","success","positive","optimistic","upside","outperform",
     "holds","holds ground","above","climbing","adds","gains","advances","up "]
 
+
+def _word_pattern(words):
+    """Whole-word matcher (audit U28).
+
+    The keyword fallback used bare substring tests, so "Bank" counted as the
+    bearish "ban", "commission" as "miss", "flower" as "low", "startup" as
+    "up". Each keyword now matches only as a whole word, allowing the plain
+    inflections (s/es/ed/d/ing) the substring test used to cover. Each keyword
+    still counts at most once per headline, as before.
+    """
+    import re as _re
+
+    compiled = []
+    for w in dict.fromkeys(x.strip().lower() for x in words if x and x.strip()):
+        body = r"\s+".join(_re.escape(part) for part in w.split())
+        compiled.append(_re.compile(r"\b" + body + r"(?:s|es|ed|d|ing)?\b"))
+    return compiled
+
+
+_BEARISH_PATTERNS = _word_pattern(BEARISH_WORDS)
+_BULLISH_PATTERNS = _word_pattern(BULLISH_WORDS)
+
+
+def _keyword_hits(text: str):
+    """(bullish_hits, bearish_hits) for one headline, whole-word matches only."""
+    t = (text or "").lower()
+    bull = sum(1 for p in _BULLISH_PATTERNS if p.search(t))
+    bear = sum(1 for p in _BEARISH_PATTERNS if p.search(t))
+    return bull, bear
+
+
 _seen_headlines: set = set()
 _MAX_SEEN_HEADLINES = 5000  # PR #125 audit: cap to prevent unbounded memory growth
 _cached_articles: List[Dict] = []
@@ -72,9 +103,7 @@ def get_all_sentiments() -> Dict[str, float]:
 
 def _keyword_score(text: str) -> float:
     """Fallback keyword-based scoring when Claude unavailable."""
-    t = text.lower()
-    b = sum(1 for w in BEARISH_WORDS if w in t)
-    u = sum(1 for w in BULLISH_WORDS if w in t)
+    u, b = _keyword_hits(text)
     total = b + u
     if total == 0:
         return 0.0
@@ -277,8 +306,7 @@ def get_cached_articles(limit=None) -> List[Dict]:
                 else:
                     # Fall back to keyword scoring on headline
                     title = (a.get("title") or a.get("headline") or "").lower()
-                    bull = sum(1 for w in BULLISH_WORDS if w in title)
-                    bear = sum(1 for w in BEARISH_WORDS if w in title)
+                    bull, bear = _keyword_hits(title)
                     if bear > bull:
                         art["sentiment"] = round(-0.2 - (bear - bull) * 0.1, 2)
                     elif bull > bear:

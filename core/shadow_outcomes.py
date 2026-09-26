@@ -102,6 +102,10 @@ def ensure_shadow_table(cur) -> None:
         cur.execute(
             f"ALTER TABLE ghost_shadow_outcomes ADD COLUMN IF NOT EXISTS {_col} {_type}"
         )
+    # Why a row was closed as UNRESOLVED (audit U24). NULL for every other row.
+    cur.execute(
+        "ALTER TABLE ghost_shadow_outcomes ADD COLUMN IF NOT EXISTS unresolved_reason TEXT"
+    )
     # The original symbol/day constraint allowed an obsolete same-day model to
     # block evidence for its replacement. Preserve one observation per exact
     # direction/model/schema/horizon generation instead.
@@ -583,6 +587,51 @@ def _write_shadow_resolve_offset(offset: int) -> None:
         LOGGER.debug("shadow resolve offset write failed: %s", str(e)[:80])
 
 
+# Audit U24: 230 rows sat pending, the oldest 39 days past their horizon, and
+# fell out of every denominator without a trace -- a row whose symbol has no
+# bars (delisted, renamed, provider gap) can never resolve, and "pending" hid
+# that. Once a row is this far past its expiry with its outcome still undecided
+# it is closed as UNRESOLVED with the reason. UNRESOLVED is never a win, loss or
+# expiry: every scorer reads outcome IN ('WIN','LOSS','EXPIRED'), so the rates
+# are unchanged, and the count is reported next to them so the gap is visible.
+UNRESOLVED = "UNRESOLVED"
+_UNRESOLVED_GRACE_S_DEFAULT = 10 * 86400
+
+
+def _unresolved_grace_s() -> int:
+    try:
+        return max(86400, int(os.getenv("SHADOW_UNRESOLVED_GRACE_S", str(_UNRESOLVED_GRACE_S_DEFAULT))))
+    except (TypeError, ValueError):
+        return _UNRESOLVED_GRACE_S_DEFAULT
+
+
+def unresolved_reason(*, now: int, expires_at: Any, has_bars: bool,
+                      grace_s: Optional[int] = None) -> Optional[str]:
+    """Why an undecided row should be closed as UNRESOLVED now, else None.
+
+    Pure. Only a row more than ``grace_s`` past its expiry qualifies -- inside
+    that window a late bar can still decide it, and it stays pending.
+    """
+    try:
+        exp = int(expires_at)
+    except (TypeError, ValueError):
+        return None
+    if exp <= 0 or now <= exp + (_unresolved_grace_s() if grace_s is None else int(grace_s)):
+        return None
+    return "no_daily_bars" if not has_bars else "incomplete_forward_bars"
+
+
+def _mark_unresolved(sid: Any, reason: str, now: int) -> None:
+    from core.db import db_conn
+
+    with db_conn() as conn:
+        conn.cursor().execute(
+            "UPDATE ghost_shadow_outcomes SET outcome=%s, unresolved_reason=%s, "
+            "resolved_at=%s WHERE id=%s AND outcome IS NULL",
+            (UNRESOLVED, reason, int(now), sid),
+        )
+
+
 def resolve_shadow_rows(max_symbols: int = 60) -> int:
     """Resolve pending shadow rows with the same bar-path rules as live picks.
 
@@ -631,6 +680,7 @@ def resolve_shadow_rows(max_symbols: int = 60) -> int:
     _write_shadow_resolve_offset(next_offset)
 
     resolved = 0
+    unresolved = 0
     for sym in batch:
         rows = by_symbol[sym]
         bars = None
@@ -644,7 +694,13 @@ def resolve_shadow_rows(max_symbols: int = 60) -> int:
             # No bar path means no mature outcome. Leave the row pending rather
             # than manufacturing EXPIRED evidence from a wall-clock deadline.
             # Expiry is valid only after the full promised forward bar horizon
-            # is present and shows neither TP nor SL.
+            # is present and shows neither TP nor SL. Long past the horizon the
+            # row is closed as UNRESOLVED instead (never a win/loss/expiry).
+            for row in rows:
+                reason = unresolved_reason(now=now, expires_at=row[6], has_bars=False)
+                if reason:
+                    _mark_unresolved(row[0], reason, now)
+                    unresolved += 1
             continue
         for (sid, _sym, eval_ts, entry, target, stop, expires_at, direction, hold_bars) in rows:
             row_direction = str(direction or "UP").upper()
@@ -661,6 +717,10 @@ def resolve_shadow_rows(max_symbols: int = 60) -> int:
                 expires_at=int(expires_at) if expires_at else None,
             )
             if not outcome or not resolved_at or resolved_at > now:
+                reason = unresolved_reason(now=now, expires_at=expires_at, has_bars=True)
+                if reason:
+                    _mark_unresolved(sid, reason, now)
+                    unresolved += 1
                 continue
             exit_price, pnl = resolution_exit(
                 outcome, row_direction, float(entry), float(target), float(stop),
@@ -673,6 +733,11 @@ def resolve_shadow_rows(max_symbols: int = 60) -> int:
                     (outcome, exit_price, pnl, int(resolved_at), sid),
                 )
             resolved += 1
+    if unresolved:
+        LOGGER.warning(
+            "Shadow resolve: %d virtual picks closed UNRESOLVED (>%dd past horizon, "
+            "no decidable bar path)", unresolved, _unresolved_grace_s() // 86400,
+        )
     if resolved:
         LOGGER.info("Shadow resolve: %d virtual picks resolved", resolved)
     elif pending:
@@ -696,10 +761,16 @@ def aggregate_shadow_stats(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     symbols: Dict[tuple, Dict[str, Any]] = {}
     buckets: Dict[str, Dict[str, Any]] = {}
     pending = 0
+    unresolved = 0
     for r in rows:
         outcome = r.get("outcome")
         if outcome is None:
             pending += 1
+            continue
+        if outcome == UNRESOLVED:
+            # Closed without a decidable bar path: not a win, loss or expiry,
+            # so it never enters a rate -- but it is counted, not dropped.
+            unresolved += 1
             continue
         sym = str(r.get("symbol") or "").upper()
         direction = str(r.get("direction") or "UP").upper()
@@ -773,6 +844,7 @@ def aggregate_shadow_stats(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     return {
         "resolved": total_resolved,
         "pending": pending,
+        "unresolved": unresolved,
         "buckets": buckets,
         "symbols": sym_out,
     }
@@ -796,8 +868,22 @@ def shadow_diagnostics() -> Dict[str, Any]:
             cur = conn.cursor()
             cur.execute("SELECT COUNT(*) FROM ghost_shadow_outcomes WHERE outcome IS NULL")
             out["pending"] = int(cur.fetchone()[0] or 0)
-            cur.execute("SELECT COUNT(*) FROM ghost_shadow_outcomes WHERE outcome IS NOT NULL")
+            cur.execute(
+                "SELECT COUNT(*) FROM ghost_shadow_outcomes "
+                "WHERE outcome IS NOT NULL AND outcome <> %s", (UNRESOLVED,),
+            )
             out["resolved_total"] = int(cur.fetchone()[0] or 0)
+            cur.execute(
+                "SELECT COUNT(*) FROM ghost_shadow_outcomes WHERE outcome = %s",
+                (UNRESOLVED,),
+            )
+            out["unresolved_total"] = int(cur.fetchone()[0] or 0)
+            cur.execute(
+                "SELECT COUNT(*) FROM ghost_shadow_outcomes "
+                "WHERE outcome IS NULL AND expires_at IS NOT NULL AND expires_at < %s",
+                (now,),
+            )
+            out["pending_past_horizon"] = int(cur.fetchone()[0] or 0)
             cur.execute(
                 "SELECT MIN(eval_ts), MAX(eval_ts), MIN(expires_at), MIN(trade_date), MAX(trade_date) "
                 "FROM ghost_shadow_outcomes WHERE outcome IS NULL"

@@ -76,6 +76,7 @@ def _clear_module_caches():
         try:
             se.invalidate_model_cache()
             se._SIP_FORBIDDEN["until"] = 0.0
+            se._SIP_FORBIDDEN["historical_until"] = 0.0
             se._STOOQ_DOWN["until"] = 0.0
             se.reset_no_data_guard()
         except Exception:

@@ -23,6 +23,24 @@ LOGGER = logging.getLogger("ghost.earnings_surprise")
 _CACHE_TTL_S = int(__import__("os").getenv("EARNINGS_SURPRISE_CACHE_TTL_S", "3600"))
 _cache: Dict[str, tuple] = {}
 
+# yfinance's earnings_history is indexed by the FISCAL QUARTER END, not by the
+# day the quarter was reported (audit U19). Treating the quarter end as the
+# publication time let a result count as "known" weeks before it was public.
+# The real report day comes from the earnings calendar when it answers; when it
+# does not, the latest a US filer may publish -- 90 days after the quarter (the
+# slowest 10-K deadline) -- is used, which can only make a result later, never
+# earlier, than it really was.
+_MAX_REPORT_LAG_S = 90 * 86400
+REPORT_TS_BASIS_CALENDAR = "earnings_calendar"
+REPORT_TS_BASIS_BOUND = "quarter_end_plus_max_filing_lag"
+
+# The Hunter reads a 1-14 day window. A surprise older than this is an
+# already-priced catalyst, not a trigger (audit U19: there was no recency gate,
+# so a three-month-old beat kept feeding the trigger score all quarter).
+TRIGGER_MAX_REPORT_AGE_S = int(
+    __import__("os").getenv("EARNINGS_SURPRISE_MAX_AGE_S", str(14 * 86400))
+)
+
 
 def _f(v: Any) -> Optional[float]:
     try:
@@ -58,6 +76,37 @@ def _report_ts(idx: Any) -> Optional[int]:
         return None
 
 
+def _calendar_report_ts(tk: Any, quarter_end_ts: Optional[int], *,
+                        now_ts: Optional[int] = None) -> Optional[int]:
+    """Day the quarter ending ``quarter_end_ts`` was reported, from the
+    earnings calendar: the first dated row after the quarter end that carries a
+    reported EPS. None when the calendar is unavailable or has no such row."""
+    if quarter_end_ts is None:
+        return None
+    now = int(time.time() if now_ts is None else now_ts)
+    try:
+        cal = tk.get_earnings_dates(limit=12)
+    except Exception as exc:
+        LOGGER.debug("earnings calendar: %s", str(exc)[:80])
+        return None
+    if cal is None or getattr(cal, "empty", True):
+        return None
+    best: Optional[int] = None
+    try:
+        for idx, row in cal.iterrows():
+            ts = _report_ts(idx)
+            if ts is None or ts <= quarter_end_ts or ts > now:
+                continue
+            if _f(row.get("Reported EPS")) is None:
+                continue
+            if best is None or ts < best:
+                best = ts
+    except Exception as exc:
+        LOGGER.debug("earnings calendar rows: %s", str(exc)[:80])
+        return None
+    return best
+
+
 def _latest_quarter_earnings(symbol: str) -> Dict[str, Any]:
     """Latest quarter EPS estimate/actual + revenue from yfinance."""
     out: Dict[str, Any] = {
@@ -86,7 +135,18 @@ def _latest_quarter_earnings(symbol: str) -> Dict[str, Any]:
                     out["available"] = True
                     idx = eh.index[-1]
                     out["quarter"] = str(idx)
-                    out["report_ts"] = _report_ts(idx)
+                    quarter_end_ts = _report_ts(idx)
+                    out["quarter_end_ts"] = quarter_end_ts
+                    report_ts = _calendar_report_ts(tk, quarter_end_ts)
+                    if report_ts is not None:
+                        out["report_ts"] = report_ts
+                        out["report_ts_basis"] = REPORT_TS_BASIS_CALENDAR
+                    elif quarter_end_ts is not None:
+                        out["report_ts"] = quarter_end_ts + _MAX_REPORT_LAG_S
+                        out["report_ts_basis"] = REPORT_TS_BASIS_BOUND
+                    else:
+                        out["report_ts"] = None
+                        out["report_ts_basis"] = None
                     if est is not None and act is not None and est != 0:
                         out["eps_surprise_pct"] = round((act - est) / abs(est) * 100.0, 2)
         except Exception as exc:
@@ -142,10 +202,27 @@ def earnings_surprise_to_trigger(symbol: str) -> Dict[str, Any]:
 
     Uses core.catalyst_freshness.score_earnings_surprise so the relative
     surprise (not absolute sign) drives the score.
+
+    Recency gate (audit U19): only a report dated by the earnings calendar and
+    at most TRIGGER_MAX_REPORT_AGE_S old is a trigger. A stale report, or one
+    whose publication day is not known, is unavailable -- never a neutral or
+    positive score.
+
+    Revenue surprise stays unavailable: no free source here gives a revenue
+    CONSENSUS, and revenue_actual alone cannot form a surprise.
     """
     data = get_earnings_surprise(symbol)
     if not data.get("available"):
         return {"earnings_surprise": 0.0, "earnings_available": False}
+    report_ts = data.get("report_ts")
+    if data.get("report_ts_basis") != REPORT_TS_BASIS_CALENDAR or report_ts is None:
+        return {"earnings_surprise": 0.0, "earnings_available": False,
+                "reason": "report_date_unknown", "quarter": data.get("quarter")}
+    age_s = int(time.time()) - int(report_ts)
+    if age_s < 0 or age_s > TRIGGER_MAX_REPORT_AGE_S:
+        return {"earnings_surprise": 0.0, "earnings_available": False,
+                "reason": "report_not_recent", "report_age_days": round(age_s / 86400, 1),
+                "quarter": data.get("quarter")}
     try:
         from core.catalyst_freshness import score_earnings_surprise
         scored = score_earnings_surprise(
@@ -159,6 +236,8 @@ def earnings_surprise_to_trigger(symbol: str) -> Dict[str, Any]:
             "eps_surprise_pct": scored.get("eps_surprise_pct"),
             "revenue_surprise_pct": scored.get("revenue_surprise_pct"),
             "quarter": data.get("quarter"),
+            "report_ts": report_ts,
+            "report_age_days": round(age_s / 86400, 1),
         }
     except Exception:
         note_suppressed()

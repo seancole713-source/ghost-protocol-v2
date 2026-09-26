@@ -45,9 +45,20 @@ def _intraday_breakout_pct(trade, cached_high, cached_low) -> float:
     return 0.0
 _mem_cache: Dict[str, Tuple[float, float]] = {}
 _intraday_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
-# Free-tier Alpaca keys are never SIP-entitled: after the first 403, skip SIP
-# for a while instead of burning one guaranteed-403 call per request.
+# Free-tier Alpaca keys may not read RECENT SIP data: after a 403, skip SIP
+# for a while instead of burning one guaranteed-403 call per request. The pause
+# was 6 h (audit U02): one 403 at 08:00 kept every consumer on IEX until 14:00,
+# so a SIP subscription bought in the morning -- or a transient 403 -- took most
+# of the session to be noticed. It now re-asks after SIP_FORBIDDEN_RECHECK_S,
+# the same 30 minutes edge/feeds.py uses for the live feed.
 _SIP_FORBIDDEN = {"until": 0.0}
+
+
+def _sip_forbidden_recheck_s() -> float:
+    try:
+        return max(60.0, float(os.getenv("SIP_FORBIDDEN_RECHECK_S", "1800")))
+    except (TypeError, ValueError):
+        return 1800.0
 
 
 def _alpaca_bar_feeds() -> tuple:
@@ -59,7 +70,7 @@ def _alpaca_bar_feeds() -> tuple:
 
 def _note_alpaca_feed_status(feed_name: str, status_code: int) -> None:
     if feed_name == "sip" and status_code == 403:
-        _SIP_FORBIDDEN["until"] = time.time() + 6 * 3600
+        _SIP_FORBIDDEN["until"] = time.time() + _sip_forbidden_recheck_s()
 # Persistent prev_close cache — survives market close when all feeds are down.
 # Each entry is (session_date_iso, close): the value is the close OF THAT
 # SESSION, and a read accepts it only when that session is the one a previous
