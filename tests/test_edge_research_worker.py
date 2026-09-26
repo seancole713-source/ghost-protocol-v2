@@ -358,3 +358,205 @@ def test_the_scorecard_counts_not_researched_rows_on_neither_side():
     assert ai["approved"]["candidates"] == 10 and ai["rejected"]["candidates"] == 10
     assert ai["rejected"]["wins"] == 2 and ai["not_researched"] == 10
     assert SC.research_quality(store)["by_reviewer"]["unknown"]["not_researched"] == 3
+
+
+# ---- 2026-09-26: search limits yield partial results; failed calls are charged and back off (U70) ----
+
+def limited(text, code="max_uses_exceeded", tokens=(30_000, 2_000)):
+    """A response that searched, then hit the per-request search limit, then wrote `text`."""
+    r = reply(text, tokens=tokens, searches=W.AUTHOR_SEARCHES)
+    r.content = [NS(type="server_tool_use", name="web_search"),
+                 NS(type="web_search_tool_result", content=[NS(type="web_search_result", url="https://x.com/a")]),
+                 NS(type="server_tool_use", name="web_search"),
+                 NS(type="web_search_tool_result", content=NS(type="web_search_tool_result_error", error_code=code)),
+                 NS(type="text", text=text)]
+    return r
+
+
+class Raising(Client):
+    """Replays `replies`; an exception instance in the list is raised instead of returned."""
+
+    def _create(self, **kw):
+        self.calls.append(kw)
+        r = self.replies.pop(0)
+        if isinstance(r, BaseException):
+            raise r
+        return r
+
+
+class Timeout(Exception):          # like anthropic.APITimeoutError: no status code, may have been billed
+    pass
+
+
+class RateLimited(Exception):      # like anthropic.RateLimitError: rejected before any work
+    status_code, message = 429, "rate limited"
+
+
+def test_a_search_limit_with_partial_claims_keeps_and_reviews_them():
+    store, c = MemoryStore(), Client([limited(AUTHOR_OK), reply(REVIEW_OK)])
+    out = W.research_symbol(c, store, symbol="SHOP", day="2026-09-23", now=ts(8, 35))
+    assert out["status"] == "researched" and out["claims"] == 1 and out["usable"] == 1
+    rec = store.get("edge_research", "2026-09-23|SHOP")
+    assert rec["partial"] is True and rec["author_tool_errors"] == ["max_uses_exceeded"]
+    assert W.not_researched_reason(rec) is None and len(c.calls) == 2           # reviewed, not dropped
+    assert W.verdict(store, day="2026-09-23", symbol="SHOP", issued_at=ts(9, 10))["catalyst"] is True
+
+
+def test_a_search_limit_that_left_no_json_gets_one_toolless_finish_call():
+    prose = "The search tool hit its usage limit. From what I saw, Shopify announced a Muse deal."
+    store, c = MemoryStore(), Client([limited(prose), reply(AUTHOR_OK, searches=0), reply(REVIEW_OK)])
+    out = W.research_symbol(c, store, symbol="SHOP", day="2026-09-23", now=ts(8, 35))
+    assert out["status"] == "researched" and out["usable"] == 1 and len(c.calls) == 3
+    finish = c.calls[1]
+    assert finish["tool_choice"] == {"type": "none"}
+    assert finish["messages"][-2]["role"] == "assistant" and finish["messages"][-1]["content"] == W.FINISH_PROMPT
+    rec = store.get("edge_research", "2026-09-23|SHOP")
+    assert rec["author_stop"] == "finish:end_turn" and rec["partial"] is True
+    # both author requests are on the cap, plus the review
+    expect = sum(W.cost_usd(r.usage) for r in (limited(prose), reply(AUTHOR_OK, searches=0), reply(REVIEW_OK)))
+    assert store.get("edge_research_budget", "2026-09-23")["spent_usd"] == pytest.approx(expect, abs=1e-6)
+
+
+def test_no_finish_call_without_a_tool_error():
+    store, c = MemoryStore(), Client([reply("no json here")])
+    out = W.research_symbol(c, store, symbol="SHOP", day="2026-09-23", now=ts(8, 35))
+    assert out["status"] == "not_researched" and "author output unusable" in out["reason"] and len(c.calls) == 1
+
+
+def test_one_symbol_per_request_with_bounded_search_and_page_opens():
+    store, c = MemoryStore(), Client([reply(AUTHOR_OK), reply(REVIEW_OK), reply(AUTHOR_OK), reply(REVIEW_OK)])
+    W.research_symbol(c, store, symbol="SHOP", day="2026-09-23", now=ts(8, 35))
+    W.research_symbol(c, store, symbol="USAR", day="2026-09-23", now=ts(8, 40))
+    for kw, mine, other in ((c.calls[0], "SHOP", "USAR"), (c.calls[2], "USAR", "SHOP")):
+        prompt = kw["messages"][0]["content"]
+        assert f"Stock: {mine}." in prompt and other not in prompt
+        assert f"at most {W.AUTHOR_SEARCHES} web searches" in prompt
+        assert "Do NOT run one search per event type" in prompt
+        search, fetch = kw["tools"]
+        assert search == {"type": "web_search_20260209", "name": "web_search", "max_uses": W.AUTHOR_SEARCHES}
+        assert fetch["type"] == "web_fetch_20260209" and fetch["max_uses"] == W.AUTHOR_FETCHES
+        assert fetch["max_content_tokens"] == W.FETCH_MAX_TOKENS
+    assert 5 <= W.AUTHOR_SEARCHES <= 8
+    review = c.calls[1]
+    assert review["tools"] == [{"type": "web_search_20260209", "name": "web_search",
+                                "max_uses": W.REVIEWER_SEARCHES}]
+    assert f"at most {W.REVIEWER_SEARCHES} web searches" in review["messages"][0]["content"]
+
+
+def test_a_page_that_would_not_open_is_not_a_failed_search():
+    text = json.dumps({"claims": [], "unknowns": ["no SHOP news in the window"]})
+    r = reply(text)
+    r.content = [NS(type="web_fetch_tool_result", content=NS(type="web_fetch_tool_error", error_code="url_not_accessible")),
+                 NS(type="web_fetch_tool_result", content=NS(type="web_fetch_result", url="https://x.com")),
+                 NS(type="text", text=text)]
+    store = MemoryStore()
+    out = W.research_symbol(Client([r]), store, symbol="SHOP", day="2026-09-23", now=ts(8, 35))
+    rec = store.get("edge_research", "2026-09-23|SHOP")
+    assert out["status"] == "researched" and rec["author_fetch_errors"] == ["url_not_accessible"]
+    assert rec["author_tool_errors"] == []
+
+
+def test_a_failed_call_is_charged_to_the_cap_and_recorded_not_researched():
+    store, c = MemoryStore(), Raising([Timeout("read timed out")])
+    out = W.research_symbol(c, store, symbol="SHOP", day="2026-09-23", now=ts(8, 35))
+    assert out["status"] == "not_researched" and "Timeout" in out["reason"] and "attempt 1 of 2" in out["reason"]
+    assert store.get("edge_research_budget", "2026-09-23")["spent_usd"] == pytest.approx(W.FAILED_CALL_USD)
+    rec = store.get("edge_research", "2026-09-23|SHOP")
+    assert rec["call_failed"] is True and rec["retry_after"] == ts(8, 35) + W.RETRY_AFTER_S
+    v = W.verdict(store, day="2026-09-23", symbol="SHOP", issued_at=ts(9, 10))
+    assert v["catalyst"] is None and "research call failed" in v["not_researched"]
+
+
+def test_a_failure_after_a_billed_pause_counts_both():
+    paused = reply("", stop="pause_turn")
+    store = MemoryStore()
+    W.research_symbol(Raising([paused, Timeout()]), store, symbol="SHOP", day="2026-09-23", now=ts(8, 35))
+    assert store.get("edge_research_budget", "2026-09-23")["spent_usd"] == pytest.approx(
+        W.cost_usd(paused.usage) + W.FAILED_CALL_USD)
+
+
+def test_a_rejected_call_is_not_charged():
+    store = MemoryStore()
+    W.research_symbol(Raising([RateLimited()]), store, symbol="SHOP", day="2026-09-23", now=ts(8, 35))
+    assert store.get("edge_research_budget", "2026-09-23")["spent_usd"] == 0.0
+    assert store.get("edge_research", "2026-09-23|SHOP")["last_error"].startswith("RateLimited")
+
+
+def test_a_failed_symbol_backs_off_then_retries_once_then_stops():
+    store = MemoryStore()
+    W.research_symbol(Raising([Timeout()]), store, symbol="SHOP", day="2026-09-23", now=ts(8, 30))
+    idle = Raising([])
+    for mm in (35, 40):                                           # every tick inside the backoff: no call
+        out = W.research_symbol(idle, store, symbol="SHOP", day="2026-09-23", now=ts(8, mm))
+        assert out["status"] == "backoff" and not W.due(store, day="2026-09-23", symbol="SHOP", now=ts(8, mm))
+    assert idle.calls == []
+    assert W.due(store, day="2026-09-23", symbol="SHOP", now=ts(8, 45))
+    out = W.research_symbol(Raising([Timeout()]), store, symbol="SHOP", day="2026-09-23", now=ts(8, 45))
+    assert "attempt 2 of 2" in out["reason"] and out["retry_after"] is None
+    assert store.get("edge_research_budget", "2026-09-23")["spent_usd"] == pytest.approx(2 * W.FAILED_CALL_USD)
+    assert store.get("edge_research", "2026-09-23|SHOP")["cost_usd"] == pytest.approx(2 * W.FAILED_CALL_USD)
+    late = Raising([])
+    assert W.research_symbol(late, store, symbol="SHOP", day="2026-09-23", now=ts(9, 30))["status"] == "backoff"
+    assert late.calls == [] and not W.due(store, day="2026-09-23", symbol="SHOP", now=ts(9, 30))
+
+
+def test_a_successful_retry_replaces_the_failure_and_keeps_its_cost():
+    store = MemoryStore()
+    W.research_symbol(Raising([Timeout()]), store, symbol="SHOP", day="2026-09-23", now=ts(8, 30))
+    out = W.research_symbol(Client([reply(AUTHOR_OK), reply(REVIEW_OK)]), store, symbol="SHOP",
+                            day="2026-09-23", now=ts(8, 45))
+    rec = store.get("edge_research", "2026-09-23|SHOP")
+    assert out["status"] == "researched" and rec["attempts"] == 2 and "call_failed" not in rec
+    spent = store.get("edge_research_budget", "2026-09-23")["spent_usd"]
+    assert spent == pytest.approx(W.FAILED_CALL_USD + out["cost_usd"], abs=1e-4)
+    assert rec["cost_usd"] == pytest.approx(spent, abs=1e-4)
+    assert W.research_symbol(Client([]), store, symbol="SHOP", day="2026-09-23",
+                             now=ts(8, 50))["status"] == "already_researched"
+
+
+def test_a_failed_claude_review_keeps_the_claims_unchecked_and_charged():
+    store = MemoryStore()
+    out = W.research_symbol(Raising([reply(AUTHOR_OK), Timeout()]), store, symbol="SHOP", day="2026-09-23",
+                            now=ts(8, 35))
+    rec = store.get("edge_research", "2026-09-23|SHOP")
+    assert rec["reviewer_stop"] == "error" and rec["claims"][0]["problems"] == ["no usable review"]
+    assert "review did not run" in W.not_researched_reason(rec)
+    assert out["cost_usd"] == pytest.approx(W.cost_usd(reply(AUTHOR_OK).usage) + W.FAILED_CALL_USD, abs=1e-4)
+
+
+def test_a_failed_openai_review_is_charged_and_the_claude_reviewer_takes_over(monkeypatch):
+    from edge import research_openai as RO
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    monkeypatch.setenv("EDGE_OPENAI_MODEL", "gpt-6-sol")
+
+    class TimesOut(OAIHttp):
+        def post(self, url, json=None, headers=None, timeout=None):
+            self.posts.append(json)
+            raise TimeoutError("read timed out")
+
+    verdict, cost = RO.review(TimesOut(), symbol="SHOP", claims=[{"kind": "contract"}])
+    assert verdict is None and cost >= RO.MAX_OUT * 10.00 / 1e6          # a full MAX_OUT at $10/1M
+    store, c = MemoryStore(), Client([reply(AUTHOR_OK), reply(REVIEW_OK)])
+    out = W.research_symbol(c, store, symbol="SHOP", day="2026-09-23", now=ts(8, 35), http=TimesOut())
+    assert store.get("edge_research", "2026-09-23|SHOP")["reviewer"] == W.REVIEWER and len(c.calls) == 2
+    assert out["cost_usd"] == pytest.approx(W.cost_usd(reply(AUTHOR_OK).usage) + W.cost_usd(reply(REVIEW_OK).usage)
+                                            + cost, abs=1e-3)
+
+
+def test_the_openai_reviewer_sees_dates_and_the_authors_unknowns(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    monkeypatch.setenv("EDGE_OPENAI_MODEL", "gpt-x")
+    h = OAIHttp(REVIEW_OK)
+    W.research_symbol(Client([reply(AUTHOR_OK)]), MemoryStore(), symbol="SHOP", day="2026-09-23",
+                      now=ts(8, 35), http=h)
+    content = h.posts[0]["messages"][0]["content"]
+    assert '"published_at"' in content and "2026-09-21T08:00:00-04:00" in content and '"unknowns"' in content
+
+
+def test_a_pause_limit_keeps_what_was_written():
+    store = MemoryStore()
+    out = W.research_symbol(Client([reply("", stop="pause_turn"), reply("", stop="pause_turn"),
+                                    reply(AUTHOR_OK, stop="pause_turn"), reply(REVIEW_OK)]),
+                            store, symbol="SHOP", day="2026-09-23", now=ts(8, 35))
+    assert out["status"] == "researched" and out["usable"] == 1
+    assert store.get("edge_research", "2026-09-23|SHOP")["author_stop"] == "pause_limit"
