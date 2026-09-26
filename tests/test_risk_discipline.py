@@ -102,3 +102,52 @@ def test_daily_loss_lock_triggers_on_loss_count(monkeypatch):
     })
     st = rd.daily_loss_lock_state()
     assert st["should_lock"] is True
+
+
+# ── Audit U16: defaults match $1,000 per trade and a $250 daily loss limit ──
+
+def _clear_risk_env(monkeypatch):
+    for name in (
+        "GHOST_ACCOUNT_SIZE", "GHOST_RISK_PCT_PER_TRADE",
+        "GHOST_DAILY_LOSS_LIMIT_USD", "GHOST_TRADE_SIZE_USD",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_default_daily_limit_is_fixed_250_not_derived_from_risk_pct(monkeypatch):
+    from core.risk_discipline import risk_settings
+
+    _clear_risk_env(monkeypatch)
+    monkeypatch.setenv("GHOST_RISK_PCT_PER_TRADE", "10")
+    cfg = risk_settings()
+    assert cfg["daily_loss_limit_usd"] == 250.0  # was $2,500 derived
+    assert cfg["trade_size_usd"] == 1000.0
+
+
+def test_explicit_zero_daily_limit_keeps_legacy_derivation(monkeypatch):
+    from core.risk_discipline import risk_settings
+
+    _clear_risk_env(monkeypatch)
+    monkeypatch.setenv("GHOST_DAILY_LOSS_LIMIT_USD", "0")
+    assert risk_settings()["daily_loss_limit_usd"] == 250.0  # 25000 x 1%
+
+
+def test_sizing_notional_never_exceeds_trade_size(monkeypatch):
+    from core.risk_discipline import position_sizing_plan
+
+    _clear_risk_env(monkeypatch)
+    plan = position_sizing_plan(65.0, 64.0)  # risk budget alone -> ~$16k notional
+    assert plan["ok"] is True
+    assert plan["suggested_notional_usd"] <= 1000.0
+    assert plan["suggested_shares"] == 15
+    assert plan["capped_by_trade_size"] is True
+    assert plan["estimated_loss_at_stop_usd"] <= plan["max_loss_usd"]
+
+
+def test_sizing_refuses_when_one_share_exceeds_trade_size(monkeypatch):
+    from core.risk_discipline import position_sizing_plan
+
+    _clear_risk_env(monkeypatch)
+    plan = position_sizing_plan(1500.0, 1470.0)
+    assert plan["ok"] is False
+    assert "per-trade size" in plan["error"]

@@ -49,6 +49,15 @@ def test_rvol_compares_like_with_like():
     assert s.state == D.PASS and s.value == 3.0
 
 
+def test_rvol_on_a_baseline_of_a_few_prints_is_unknown_never_pass_or_fail():
+    # Audit 2026-09-25 U06: 283x / 318x readings against a baseline of a few hundred IEX shares.
+    thin = D.rvol_time_of_day(28_300, [100] * 12)
+    assert thin.state == D.UNKNOWN and "too thin" in thin.evidence["missing"]
+    assert D.rvol_time_of_day(10, [100] * 12).state == D.UNKNOWN      # would have been FAIL: not a verdict either
+    at_floor = D.rvol_time_of_day(3000, [D.RVOL_MIN_BASELINE_SHARES] * 12)
+    assert at_floor.state == D.PASS and at_floor.value == 3.0
+
+
 def test_orb_needs_a_close_not_a_wick():
     bars = mbars(9, 30, [10.0, 10.1, 10.2, 10.1, 10.0])            # OR 9:30-9:34
     wick = bars + [(ts(9, 35), 10.0, 10.5, 9.9, 10.1, 1000)]          # wick above, close inside
@@ -198,12 +207,17 @@ def test_the_audit_reports_recall_beside_correct_rejections():
     ]
     radar = {"RUN": M.RadarRecord(ts(9, 0), 10.0, forecast_issued=True, alert_delivered_ts=ts(9, 10)),
              "MISS": M.RadarRecord(ts(9, 0), 10.0, rejected_reason="E4 no catalyst"),
-             "FLAT": M.RadarRecord(ts(9, 0), 10.0, rejected_reason="E1 move outside range")}
-    rep = M.audit("2026-09-23", moves, universe={"RUN", "MISS", "GAP", "FLAT"}, data_down=set(),
+             "GAP": M.RadarRecord(ts(9, 0), 13.0, rejected_reason="E1 move outside range"),
+             "FLAT": M.RadarRecord(ts(9, 0), 10.0, rejected_reason="E1 move outside range"),
+             "GONE": M.RadarRecord(ts(9, 0), 10.0, rejected_reason="E4 no catalyst")}   # not in the market list
+    rep = M.audit("2026-09-23", moves, universe={"RUN", "MISS", "GAP", "FLAT", "GONE"}, data_down=set(),
                   catalyst_symbols=set(), radar=radar, alert_deadline_ts=ts(9, 30))
     assert (rep.movers, rep.executable, rep.gap_only, rep.caught) == (3, 2, 1, 1)
     assert rep.recall == 0.5
+    # U54: only GAP (moved, nothing executable) is a correct rejection; FLAT never moved and
+    # GONE cannot be judged -- neither inflates "correct".
     assert (rep.correct_rejections, rep.wrong_rejections) == (1, 1)
+    assert (rep.quiet_rejections, rep.undetermined_rejections) == (1, 1)
     assert rep.rejection_precision == 0.5
 
 

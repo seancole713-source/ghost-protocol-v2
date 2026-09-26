@@ -834,12 +834,16 @@ _OBJECTIVE_RUNTIME_MODE_CACHE: Dict[str, Any] = {"mode": None, "ts": 0.0}
 
 def _objective_mode() -> str:
     from core.accuracy_contract import active_contract, contract_name
+    # Audit U36: a named contract owns the objective mode. The auto-tuner used
+    # to win here, so contract 70 ran (and near_miss reported) "aggressive"
+    # whenever the recent win rate was low; the tuner still records its choice
+    # in ghost_state for display, but it no longer overrides the contract.
+    if contract_name() in ("70", "80"):
+        return active_contract().objective_mode
     if _objective_auto_enabled():
         cached_mode = _objective_runtime_mode()
         if cached_mode in ("aggressive", "balanced", "precision"):
             return cached_mode
-    if contract_name() in ("70", "80"):
-        return active_contract().objective_mode
     mode = (os.getenv("OBJECTIVE_MODE", "precision") or "").strip().lower()
     if mode in ("aggressive", "balanced", "precision"):
         return mode
@@ -1881,7 +1885,10 @@ def run_prediction_cycle(with_diag: bool = False):
                 "confidence": _sv.get("confidence"),
                 "confidence_floor": _sv.get("confidence_floor"),
                 "bootstrap_min_conf": float(_obj_cfg.get("bootstrap_min_conf", 0.75)),
-                "objective_mode": auto_mode_state.get("mode") if isinstance(auto_mode_state, dict) else None,
+                # U36: the mode the objective gate actually used, not the
+                # auto-tuner's suggestion (kept separately for diagnostics).
+                "objective_mode": _obj_cfg.get("mode"),
+                "objective_mode_auto": auto_mode_state.get("mode") if isinstance(auto_mode_state, dict) else None,
                 "skip": skip,
                 "regime_label": _reg.get("label"),
                 "price_vs_sma5_pct": _reg.get("price_vs_sma5_pct"),

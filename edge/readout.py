@@ -31,7 +31,8 @@ def today(store, day: Optional[str] = None) -> Dict[str, Any]:
     return {"day": card["day"], "forecasts": card.get("forecasts"),
             "baseline_forecasts": card.get("baseline_forecasts"),
             "candidates": card.get("candidates"), "priced": card.get("priced"),
-            "health_banner": card.get("health_banner"), "coverage_note": card.get("coverage_note"),
+            "health_banner": card.get("health_banner"), "health_note": card.get("health_note"),
+            "coverage_note": card.get("coverage_note"),
             # Where the candidates came from: today's own premarket scan (counts and its
             # top gappers) vs the movers screener, and any source that failed.
             "premarket_scan": card.get("premarket_scan"),
@@ -169,7 +170,23 @@ def paper(store, day: Optional[str] = None) -> Dict[str, Any]:
     def _hm(ts):
         return datetime.fromtimestamp(int(ts), tz=ET).strftime("%H:%M:%S ET") if ts else None
 
-    broker = {o.get("client_order_id"): o for o in (store.get("edge_paper_orders", d) or {}).get("orders") or []}
+    kept = (store.get("edge_paper_orders", d) or {}).get("orders") or []
+    broker = {o.get("client_order_id"): o for o in kept}
+    exit_keys = ("type", "status", "qty", "filled_qty", "filled_avg_price", "filled_at", "canceled_at")
+
+    def _exits(fid: str, entry: Dict[str, Any], p: Dict[str, Any]) -> list:
+        """Every exit the broker recorded: the bracket's target/stop legs, the 15:30 time-exit
+        sells (-tx, -tx2...) and any last-tick position close (audit 2026-09-25 U63)."""
+        closes = {str(x.get("order_id")) for x in p.get("tx_closes") or [] if x.get("order_id")}
+        out = [{"role": "stop" if "stop" in str(g.get("type") or "") else "target",
+                **{k: g.get(k) for k in exit_keys}} for g in entry.get("legs") or []]
+        for o in kept:
+            cid = str(o.get("client_order_id") or "")
+            if cid.startswith(f"{fid}-tx") or str(o.get("id")) in closes:
+                out.append({"role": "time_exit" if cid.startswith(f"{fid}-tx") else "position_close",
+                            **{k: o.get(k) for k in exit_keys}})
+        return out
+
     rows = []
     for f in sorted(store.scan("forecasts", session_date=d), key=lambda r: r["issued_at"]):
         p = store.get("edge_paper", f"{f['forecast_id']}|paper") or {}
@@ -191,6 +208,7 @@ def paper(store, day: Optional[str] = None) -> Dict[str, Any]:
                      "actual_counted": bool(act.get("outcome") in COUNTED and not outside and not late),
                      "broker_entry": {k: entry.get(k) for k in ("status", "submitted_at", "filled_at",
                                                                 "filled_avg_price", "canceled_at")} if entry else None,
+                     "broker_exits": _exits(f["forecast_id"], entry, p),
                      "filled_after_window": late,
                      "note": (f"broker fill outside the rule ({why_outside or 'entry filled after the entry window'}): "
                               "shown, not counted" if outside else None)})

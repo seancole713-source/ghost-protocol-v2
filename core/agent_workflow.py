@@ -1593,15 +1593,41 @@ def workflow_health() -> Dict[str, Any]:
         cur.execute(
             """SELECT COUNT(*), COUNT(*) FILTER (
                    WHERE last_seen_at >= %s AND status <> 'STOPPED'
-               ) FROM ghost_agent_workers""",
+               ), COUNT(*) FILTER (WHERE status <> 'STOPPED')
+               FROM ghost_agent_workers""",
             (now - 120,),
         )
-        worker_row = cur.fetchone() or (0, 0)
-        worker_counts = {"registered": int(worker_row[0]), "online": int(worker_row[1])}
-    healthy = stale_leases == 0 and counts.get("dead_letter", 0) == 0
+        worker_row = tuple(cur.fetchone() or ())
+        worker_row = worker_row + (0,) * (3 - len(worker_row))
+        worker_counts = {
+            "registered": int(worker_row[0] or 0),
+            "online": int(worker_row[1] or 0),
+            # Workers not deliberately STOPPED are expected to heartbeat.
+            "expected": int(worker_row[2] or 0),
+        }
+    # U08: with every worker offline, queued work silently waits forever while
+    # this reported "healthy". Pending tasks with fewer online workers than
+    # AGENT_WORKFLOW_MIN_ONLINE_WORKERS (default 1) degrade, and so does having
+    # no online worker at all while some are expected to heartbeat.
+    try:
+        min_online = max(0, int(os.getenv("AGENT_WORKFLOW_MIN_ONLINE_WORKERS", "1")))
+    except (TypeError, ValueError):
+        min_online = 1
+    issues: List[str] = []
+    if stale_leases:
+        issues.append("stale_leases")
+    if counts.get("dead_letter", 0):
+        issues.append("dead_letter_tasks")
+    if counts.get("pending", 0) > 0 and worker_counts["online"] < min_online:
+        issues.append("workers_offline")
+    if worker_counts["expected"] > 0 and worker_counts["online"] == 0:
+        issues.append("all_workers_offline")
+    healthy = not issues
     return {
         "ok": healthy,
         "status": "healthy" if healthy else "degraded",
+        "issues": issues,
+        "degraded_reasons": issues,
         "tasks": counts,
         "evidence": validation_counts,
         "quarantine_categories": category_counts,

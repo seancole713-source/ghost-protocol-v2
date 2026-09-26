@@ -250,6 +250,67 @@ def _recent_trading_days(
     return found, statuses
 
 
+# Split-artifact guard (audit U03). On 2026-09-25 the lane stored BCPC +606.69%
+# and TPC +399.82% as fresh movers: close/prior ratios of 7.07 and 5.00 -- whole
+# numbers, the signature of a share-count change (split or consolidation) that
+# the adjusted grouped bar did not carry through to the prior session. Three
+# things together mark such a row, and a real move shows at most two of them:
+#   * close/prior within _SPLIT_RATIO_TOL of a whole multiple n >= 2 (or 1/n);
+#   * the session OPENED at that multiple (a split re-bases the whole session;
+#     a genuine runner opens near the prior close and gets there intraday);
+#   * no dollar-volume surge: a re-based share count trades about the same
+#     dollars as the day before, while a real +100%..+600% move or a halving
+#     trades many times the prior day's dollars.
+# Such a row is not a move of unknown size but a move of unknown EXISTENCE, so
+# it is excluded from the stored movers and named in the result instead.
+_SPLIT_RATIO_TOL = 0.015        # |ratio - n| / n for a whole-number n >= 2
+_SPLIT_OPEN_TOL = 0.20          # the session's open sits at the same multiple
+_SPLIT_MIN_RATIO = 1.9          # a move under ~+90% (or ~-47%) is never checked
+_SPLIT_MAX_DOLLAR_VOLUME_RATIO = 1.5   # latest $ volume / prior $ volume
+
+
+def split_artifact_factor(close: float, prior_close: float,
+                          open_price: Any = None, *,
+                          volume: Any = None, prior_volume: Any = None) -> Optional[int]:
+    """Whole-number split factor that explains close/prior_close, else None.
+
+    Checks both directions: n-for-1 consolidations (ratio ~ n) and 1-for-n
+    forward splits (ratio ~ 1/n). The open and volume tests apply when those
+    inputs are known; each can only clear a row, never flag one on its own.
+    """
+    try:
+        c, p = float(close), float(prior_close)
+    except (TypeError, ValueError):
+        return None
+    if c <= 0 or p <= 0:
+        return None
+    try:
+        o = float(open_price) if open_price is not None else None
+    except (TypeError, ValueError):
+        o = None
+    try:
+        v = float(volume) if volume is not None else None
+        pv = float(prior_volume) if prior_volume is not None else None
+    except (TypeError, ValueError):
+        v = pv = None
+    if v is not None and pv is not None and v > 0 and pv > 0:
+        if (c * v) / (p * pv) > _SPLIT_MAX_DOLLAR_VOLUME_RATIO:
+            return None                 # real money moved: a real move
+    for up in (True, False):
+        r = c / p if up else p / c
+        if r < _SPLIT_MIN_RATIO:
+            continue
+        n = int(round(r))
+        if n < 2 or abs(r - n) / n > _SPLIT_RATIO_TOL:
+            continue
+        if o is not None and o > 0:
+            open_ratio = o / p if up else p / o
+            if abs(open_ratio - n) / n > _SPLIT_OPEN_TOL:
+                continue
+        return n
+    return None
+
+
 def build_market_wide_rows(
     latest: List[Dict[str, Any]],
     prior: List[Dict[str, Any]],
@@ -265,6 +326,7 @@ def build_market_wide_rows(
     now = int(received_ts or time.time())
     thresholds = _store_thresholds()
     prior_close: Dict[str, float] = {}
+    prior_volume: Dict[str, float] = {}
     for bar in prior:
         ticker = str(bar.get("T") or "").strip().upper()
         try:
@@ -273,10 +335,16 @@ def build_market_wide_rows(
             continue
         if ticker and close > 0:
             prior_close[ticker] = close
+            try:
+                prior_volume[ticker] = float(bar.get("v") or 0.0)
+            except (TypeError, ValueError):
+                pass
 
     scanned = 0
     dropped = {"no_prior_close": 0, "bad_bar": 0, "below_price": 0,
-               "below_dollar_volume": 0, "below_move": 0}
+               "below_dollar_volume": 0, "below_move": 0,
+               "suspected_split": 0}
+    suspected_splits: List[Dict[str, Any]] = []
     candidates: List[Tuple[float, Dict[str, Any]]] = []
     largest: Optional[float] = None
 
@@ -302,7 +370,11 @@ def build_market_wide_rows(
             dropped["no_prior_close"] += 1
             continue
         move_pct = (close - base) / base * 100.0
-        if largest is None or abs(move_pct) > abs(largest):
+        factor = split_artifact_factor(
+            close, base, bar.get("o"), volume=volume, prior_volume=prior_volume.get(ticker),
+        )
+        # A suspected split is not the market's largest move either.
+        if factor is None and (largest is None or abs(move_pct) > abs(largest)):
             largest = move_pct
         if close < thresholds["min_price"]:
             dropped["below_price"] += 1
@@ -312,6 +384,15 @@ def build_market_wide_rows(
             continue
         if abs(move_pct) < thresholds["min_abs_move_pct"]:
             dropped["below_move"] += 1
+            continue
+        if factor is not None:
+            # Its size is an artifact of the share count: counted and named,
+            # never stored as a mover.
+            dropped["suspected_split"] += 1
+            suspected_splits.append({
+                "ticker": ticker, "close": close, "prior_close": base,
+                "raw_move_pct": round(move_pct, 2), "factor": factor,
+            })
             continue
         candidates.append((abs(move_pct), {
             "ticker": ticker, "close": close, "volume": volume,
@@ -363,6 +444,8 @@ def build_market_wide_rows(
         "truncated": len(candidates) - len(kept),
         "dropped": dropped,
         "max_abs_move_seen_pct": None if largest is None else round(largest, 2),
+        "suspected_splits": sorted(
+            suspected_splits, key=lambda r: -abs(r["raw_move_pct"]))[:25],
         "thresholds": thresholds,
         "move_basis": "close_to_close",
     }
@@ -437,6 +520,7 @@ def run_market_wide_cycle(*, now_ts: Optional[int] = None, fetcher=None) -> Dict
         "eligible": built["eligible"], "inserted": inserted, "invalid": invalid,
         "truncated": built["truncated"], "dropped": built["dropped"],
         "max_abs_move_seen_pct": built["max_abs_move_seen_pct"],
+        "suspected_splits": built["suspected_splits"],
         "thresholds": built["thresholds"], "move_basis": built["move_basis"],
         "provider_statuses": statuses,
     }

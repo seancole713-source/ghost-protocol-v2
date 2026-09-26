@@ -29,6 +29,7 @@ import os
 import time
 from datetime import datetime, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from core.yfinance_client import ungated_ticker as _ungated_yf_ticker  # noqa: E402
 LOGGER = logging.getLogger("wolf.monitor")
@@ -307,7 +308,8 @@ def _send(key: str, message: str, *, cooldown_s: Optional[int] = None) -> None:
     _last_alert[key] = time.time()
     try:
         from core.telegram import send_telegram_message_once
-        ts = datetime.now(tz=timezone.utc).strftime("%H:%M UTC")
+        # U53: operator-facing stamps are Central Time, like the phone card.
+        ts = datetime.now(tz=timezone.utc).astimezone(ZoneInfo("America/Chicago")).strftime("%H:%M CT")
         full_msg = f"{message}\n\n⏰ {ts}"
         ok = send_telegram_message_once(f"wolf_monitor:{key}", full_msg, cooldown_s=cooldown_s or COOLDOWN.get(key, 1800))
         LOGGER.info(f"[WolfMonitor] Alert sent [{key}]: {'OK' if ok else 'FAILED'}")

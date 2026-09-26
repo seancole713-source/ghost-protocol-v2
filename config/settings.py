@@ -137,7 +137,7 @@ class Settings(BaseSettings):
     NEWS_SYMBOLS_PER_CYCLE: int = 8
     
     # ── Prediction Cycle ────────────────────────────────────────────────
-    PREDICTION_CYCLE_STALE_MIN: int = 2160  # 36h
+    PREDICTION_CYCLE_STALE_MIN: int = 360  # 6h with MARKET_SCAN_ENABLED (default); 2160 (36h) without
     
     # ── Calibration ─────────────────────────────────────────────────────
     V3_MAX_CALIBRATION_BRIER: float = 0.31

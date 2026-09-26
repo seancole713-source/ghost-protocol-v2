@@ -35,7 +35,11 @@ _RULES: List[tuple] = [
     ("dilution_or_offering", "bearish", 0.90, [
         r"registered direct", r"at-the-market", r"\batm program\b",
         r"share(s)? offering", r"stock offering", r"public offering",
-        r"shelf registration", r"secondary offering", r"\bdilut\w+",
+        r"shelf registration", r"secondary offering",
+        # "non-dilutive financing" / "anti-dilution" are the OPPOSITE of a
+        # dilution event (audit U14): a bare \bdilut\w+ matched them because
+        # the hyphen is a word boundary.
+        r"(?<!non-)(?<!non )(?<!anti-)(?<!anti )\bdilut\w+",
         r"repay .{0,40}(debt|notes) .{0,40}(stock|shares|equity)",
         r"convert\w* .{0,30}(notes|debt) .{0,30}(equity|stock|shares)",
     ]),

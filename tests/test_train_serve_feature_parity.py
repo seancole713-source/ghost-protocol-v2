@@ -98,8 +98,41 @@ def test_live_and_research_serve_paths_both_window_features():
     live = (root / "core" / "signal_engine.py").read_text(encoding="utf-8")
     research = (root / "core" / "research_runner.py").read_text(encoding="utf-8")
 
-    assert "_calculate_features(_serving_feature_bars(rows))" in live
-    assert "_calculate_features(_serving_feature_bars(rows))" in research
+    live_flat = "".join(live.split())
+    research_flat = "".join(research.split())
+    # U50: both call sites now also pass the model's recorded training window.
+    assert "_calculate_features(_serving_feature_bars(rows,_meta_feature_window(" in live_flat
+    assert '_calculate_features(_serving_feature_bars(rows,artifact.get("feature_window")' in research_flat
+
+
+# ------------------------------------------ thin-history window parity (U50) --
+
+def test_serving_uses_the_shrunken_training_window_from_meta():
+    """Thin-history symbols train on _effective_backtest_window (< 120 bars);
+    serving must slice the same trailing count, not the default 120."""
+    rows = _bars(100)
+    trained = se._effective_backtest_window(len(rows))
+    assert trained < _backtest_window(), "fixture must exercise the shrunken window"
+    served = se._serving_feature_bars(rows, trained)
+    assert len(served) == trained + 1
+    assert served[-1] is rows[-1]
+    # Training's last labeled row sees exactly rows[i-window:i+1].
+    assert _calculate_features(served) == _calculate_features(rows[len(rows) - 1 - trained:])
+
+
+def test_serving_window_ignores_missing_or_invalid_meta_window():
+    rows = _bars(252)
+    default_len = _backtest_window() + 1
+    for bad in (None, "x", 5, 10_000):
+        assert len(se._serving_feature_bars(rows, bad)) == default_len
+
+
+def test_meta_and_rows_feature_window_helpers():
+    assert se._meta_feature_window(None, {"feature_window": 57}) == 57
+    assert se._meta_feature_window({}, {}) is None
+    assert se._rows_feature_window([{"feature_window": 57}, {"feature_window": 57}]) == 57
+    assert se._rows_feature_window([{"feature_window": 57}, {"feature_window": 80}]) is None
+    assert se._rows_feature_window([{"label": 1}]) is None
 
 
 # ------------------------------------------------- negative-edge floor ban --

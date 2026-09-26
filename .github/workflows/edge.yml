@@ -11,9 +11,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: {python-version: "3.11"}
+        # U23: same interpreter as production (.python-version, 3.12.x), not 3.11.
+        with: {python-version-file: ".python-version"}
       - name: Install edge's own dependencies only
-        run: pip install -r edge/requirements.txt pytest
+        run: pip install -r edge/requirements.txt pytest==9.1.1
       - name: edge imports nothing from Ghost
         run: |
           if grep -rnE "^(from|import) (core|wolf_app|mcp)\b" edge/; then

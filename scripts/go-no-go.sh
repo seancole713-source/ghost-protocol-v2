@@ -8,7 +8,9 @@ echo "BASE_URL=$BASE_URL"
 echo
 
 python3 - <<'PY' "$BASE_URL"
+import os
 import sys
+import time
 
 import requests
 
@@ -24,9 +26,31 @@ def fail_check(name: str, detail: str) -> None:
     raise SystemExit(1)
 
 
-def get_json(path: str) -> dict:
+ATTEMPTS = max(1, int(os.getenv("GO_NO_GO_ATTEMPTS", "3")))
+TIMEOUT_S = float(os.getenv("GO_NO_GO_TIMEOUT_S", "30"))
+
+
+def fetch(path: str) -> requests.Response:
+    """GET with bounded retries (U46): a single slow response or a transient
+    5xx during a deploy is not a NO-GO; a persistent one still is."""
     url = f"{base_url}{path}"
-    resp = requests.get(url, timeout=20)
+    last = ""
+    for attempt in range(1, ATTEMPTS + 1):
+        try:
+            resp = requests.get(url, timeout=TIMEOUT_S)
+            if resp.status_code < 500:
+                return resp
+            last = f"HTTP {resp.status_code}"
+        except requests.RequestException as exc:
+            last = type(exc).__name__
+        if attempt < ATTEMPTS:
+            print(f"RETRY: {path} attempt {attempt}/{ATTEMPTS} ({last})")
+            time.sleep(min(10, 2 * attempt))
+    fail_check(path, f"{last} after {ATTEMPTS} attempts")
+
+
+def get_json(path: str) -> dict:
+    resp = fetch(path)
     if resp.status_code != 200:
         fail_check(path, f"HTTP {resp.status_code}")
     return resp.json()
@@ -69,7 +93,7 @@ pass_check("/api/stats vs /api/cockpit/context")
 
 # /api/diagnostics is admin-gated and returns 404 unauthenticated (by design —
 # it leaks scheduler/model internals). The gate here asserts it stays hidden.
-resp = requests.get(f"{base_url}/api/diagnostics", timeout=20)
+resp = fetch("/api/diagnostics")
 if resp.status_code != 404:
     fail_check("/api/diagnostics", f"expected 404 unauthenticated, got HTTP {resp.status_code}")
 pass_check("/api/diagnostics (hidden without admin session)")
@@ -90,7 +114,7 @@ if ms.get("trained"):
                 fail_check("/api/coverage", f"{name}/{direction} missing wf_acc_min")
 pass_check("/api/coverage")
 
-cockpit = requests.get(f"{base_url}/cockpit", timeout=20)
+cockpit = fetch("/cockpit")
 if cockpit.status_code != 200:
     fail_check("/cockpit", f"HTTP {cockpit.status_code}")
 html = cockpit.text

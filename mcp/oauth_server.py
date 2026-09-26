@@ -62,13 +62,29 @@ def authorization_server_metadata(base: str) -> Dict[str, Any]:
     }
 
 
+_SIGNING_KEY_FALLBACK_WARNED = False
+
+
 def _signing_key() -> bytes:
-    secret = (
-        os.getenv("GHOST_OAUTH_SIGNING_KEY", "").strip()
-        or os.getenv("GHOST_OAUTH_SECRET", "").strip()
-    )
+    """JWT HMAC key: GHOST_OAUTH_SIGNING_KEY, else (legacy) GHOST_OAUTH_SECRET.
+
+    U18: the fallback makes the human-typed connector secret double as the
+    token-signing key. It is kept so existing deployments keep working, but it
+    is logged once so the operator sets a separate random signing key.
+    """
+    global _SIGNING_KEY_FALLBACK_WARNED
+    dedicated = os.getenv("GHOST_OAUTH_SIGNING_KEY", "").strip()
+    if dedicated:
+        return dedicated.encode("utf-8")
+    secret = os.getenv("GHOST_OAUTH_SECRET", "").strip()
     if not secret:
         return b""
+    if not _SIGNING_KEY_FALLBACK_WARNED:
+        _SIGNING_KEY_FALLBACK_WARNED = True
+        LOGGER.warning(
+            "GHOST_OAUTH_SIGNING_KEY is unset: MCP access tokens are signed with "
+            "GHOST_OAUTH_SECRET. Set a separate random GHOST_OAUTH_SIGNING_KEY."
+        )
     return secret.encode("utf-8")
 
 

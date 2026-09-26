@@ -86,7 +86,7 @@ def submit(http, ledger: Ledger, *, day: str, experiments) -> Dict[str, Any]:
     anything is recorded as rejected, the broker is asked whether it already holds OUR
     client_order_id (a timed-out POST that Alpaca accepted is `submitted`, not `rejected`),
     and a transient failure (timeout, 429, 5xx) records nothing so the next tick retries."""
-    url, h, placed, errors = base_url(), _headers(), [], []
+    url, h, placed, errors, refused = base_url(), _headers(), [], [], []
     for f in _forecasts(ledger, day, experiments):
         key = f"{f.forecast_id}|paper"
         if ledger.store.get("edge_paper", key):
@@ -121,8 +121,11 @@ def submit(http, ledger: Ledger, *, day: str, experiments) -> Dict[str, Any]:
             ledger.store.put("edge_paper", key, {"forecast_id": f.forecast_id, "symbol": f.symbol,
                                                  "status_code": code, "state": "rejected", "message": msg})
             errors.append(f"{f.symbol}: HTTP {code} {msg}")
+            refused.append(f"{f.symbol}: HTTP {code} {msg}".strip())
+    # `refused` = definite broker refusals this tick (never retried): the caller raises a PROBLEM
+    # alert, so a paper account that stops accepting orders is not silent (audit 2026-09-25 U60).
     return {"status": "submitted" if placed or errors else "nothing_to_submit",
-            "placed": placed, "errors": errors}
+            "placed": placed, "errors": errors, "refused": refused}
 
 
 def _delete(http, order_id: str) -> bool:

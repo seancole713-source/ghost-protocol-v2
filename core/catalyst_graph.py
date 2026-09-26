@@ -32,10 +32,14 @@ SECTOR_GROUPS: Dict[str, List[str]] = {
     "mrna_vaccine": ["MRNA", "BNTX", "ARCT", "PFE", "NVAX"],
     "cancer_immunotherapy": ["MRNA", "BNTX", "ARCT", "MRK", "BMY"],
     "ev": ["TSLA", "RIVN", "LCID", "NIO", "XPEV"],
-    "meme_retail": ["GME", "AMC", "BBBY", "KOSS", "EXPR"],
+    # BBBY and EXPR removed (audit U68): the meme-era Bed Bath & Beyond was
+    # delisted in 2023 (today's BBBY is the renamed Overstock/Beyond, a different
+    # company) and Express went bankrupt and was delisted in 2024.
+    "meme_retail": ["GME", "AMC", "KOSS"],
     "crypto_miners": ["RIOT", "MARA", "CLSK", "HUT", "BTBT"],
     "semiconductor": ["NVDA", "AMD", "INTC", "MU", "MRVL", "AVGO", "TXN", "QCOM"],
-    "solar": ["FSLR", "ENPH", "SEDG", "RUN", "NOVA"],
+    # NOVA removed (audit U68): Sunnova filed Chapter 11 and was delisted in 2025.
+    "solar": ["FSLR", "ENPH", "SEDG", "RUN"],
     "cannabis": ["TLRY", "CGC", "ACB", "CRON", "SNDL"],
 }
 
@@ -61,13 +65,26 @@ def groups_for_symbol(symbol: str) -> List[str]:
     return list(_SYMBOL_TO_GROUPS.get((symbol or "").upper(), []))
 
 
+def _is_retired(symbol: str) -> bool:
+    try:
+        from config.symbols import is_retired_symbol
+        return is_retired_symbol(symbol)
+    except Exception:  # noqa: BLE001 - config unavailable; the curated table stands
+        return False
+
+
 def peers_of(symbol: str) -> List[str]:
-    """Return the distinct peer symbols (excluding self) across all groups."""
+    """Return the distinct peer symbols (excluding self) across all groups.
+
+    A ticker that no longer trades under its symbol (config.symbols.
+    RETIRED_SYMBOLS) never receives a derived catalyst: there is no tape for it
+    to reprice, and a derived event under a dead ticker is pure noise.
+    """
     sym = (symbol or "").upper()
     peers: set = set()
     for grp in _SYMBOL_TO_GROUPS.get(sym, []):
         for m in SECTOR_GROUPS[grp]:
-            if m.upper() != sym:
+            if m.upper() != sym and not _is_retired(m):
                 peers.add(m.upper())
     return sorted(peers)
 

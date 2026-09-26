@@ -23,14 +23,29 @@ def test_ghost_contract_post_falsification():
     assert c["lanes"]["v3_picks"]["accuracy_claim"] is None
 
 
-def test_regime_calibration_lowers_floor_in_uptrend(monkeypatch):
+def test_regime_calibration_lowers_floor_in_uptrend_only_under_legacy(monkeypatch):
     monkeypatch.setenv("GHOST_REGIME_CALIBRATION", "1")
+    monkeypatch.setenv("GHOST_ACCURACY_CONTRACT", "legacy")
     base = 0.55
     eff = effective_min_win_proba("Trend-up", base=base)
     assert eff < base
     meta = regime_calibration_meta("Trend-up", base=base)
     assert meta["effective_min_win_proba"] == eff
     assert meta["adjustment"] < 0
+
+
+def test_regime_calibration_never_goes_below_named_contract(monkeypatch):
+    """Audit U51: Trend-up used to take contract 70's 0.55 floor to 0.538."""
+    monkeypatch.setenv("GHOST_REGIME_CALIBRATION", "1")
+    for contract, base in (("55", 0.55), ("70", 0.55), ("80", 0.60)):
+        monkeypatch.setenv("GHOST_ACCURACY_CONTRACT", contract)
+        for label in ("Trend-up", "Strong Uptrend", "Uptrend", "Neutral", "Chop"):
+            assert effective_min_win_proba(label, base=base) >= base, (contract, label)
+        meta = regime_calibration_meta("Trend-up", base=base)
+        assert meta["adjustment"] >= 0
+    monkeypatch.setenv("GHOST_ACCURACY_CONTRACT", "70")
+    # Downtrends still tighten.
+    assert effective_min_win_proba("Strong Downtrend", base=0.55) > 0.55
 
 
 def test_regime_calibration_disabled_returns_base(monkeypatch):

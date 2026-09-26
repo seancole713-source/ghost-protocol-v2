@@ -15,33 +15,116 @@ _GETCONN_RETRIES = max(1, int(os.getenv("DB_POOL_GET_RETRIES", "4")))
 _GETCONN_RETRY_DELAY_S = float(os.getenv("DB_POOL_RETRY_DELAY_S", "0.12"))
 
 
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+# U69: psycopg2's pool raises the instant it is exhausted. Request threads
+# (anyio, 40), the default executor (scheduler sync jobs + monitors) and
+# background threads can together exceed DB_POOL_MAX, so a short burst used to
+# surface as 503s after ~0.7 s of retries. Callers now wait up to
+# DB_POOL_WAIT_S for a slot before failing.
+_GETCONN_WAIT_S = max(0.0, _env_float("DB_POOL_WAIT_S", 5.0))
+
+
+def _session_timeout_options() -> str:
+    """libpq ``options`` for pooled sessions (U05).
+
+    Without them one hung statement or lock wait pins a pool slot -- and a
+    scheduler job, whose thread cannot be cancelled -- indefinitely.
+    DB_STATEMENT_TIMEOUT_MS (default 300000 = 5 min) and DB_LOCK_TIMEOUT_MS
+    (default 120000 = 2 min); 0 disables either. Only pooled connections get
+    them: the leader-lock session holds its advisory lock outside the pool.
+    """
+    parts = []
+    for env, default, guc in (
+        ("DB_STATEMENT_TIMEOUT_MS", 300_000, "statement_timeout"),
+        ("DB_LOCK_TIMEOUT_MS", 120_000, "lock_timeout"),
+    ):
+        try:
+            ms = int(os.getenv(env, str(default)))
+        except (TypeError, ValueError):
+            ms = default
+        if ms > 0:
+            parts.append(f"-c {guc}={ms}")
+    return " ".join(parts)
+
+
+def _pool_dsn(dsn: str) -> str:
+    """DATABASE_URL plus the session timeouts, merged with any existing options."""
+    opts = _session_timeout_options()
+    if not opts:
+        return dsn
+    try:
+        from psycopg2.extensions import make_dsn, parse_dsn
+
+        existing = (parse_dsn(dsn).get("options") or "").strip()
+        return make_dsn(dsn, options=(existing + " " + opts).strip())
+    except Exception as exc:  # unparseable DSN: never block boot on this
+        LOGGER.warning("DB session timeouts not applied (dsn parse: %s)", type(exc).__name__)
+        return dsn
+
+
 def init_db():
     global _pool
-    _pool = psycopg2.pool.ThreadedConnectionPool(
-        _POOL_MIN, _POOL_MAX, dsn=os.environ["DATABASE_URL"],
+    dsn = os.environ["DATABASE_URL"]
+    pool_dsn = _pool_dsn(dsn)
+    try:
+        _pool = psycopg2.pool.ThreadedConnectionPool(_POOL_MIN, _POOL_MAX, dsn=pool_dsn)
+    except psycopg2.OperationalError as exc:
+        if pool_dsn == dsn:
+            raise
+        # A pooler that rejects the libpq "options" startup parameter must not
+        # take the app down: fall back to the bare DSN and say so.
+        LOGGER.warning(
+            "DB pool with session timeouts failed (%s); retrying without them",
+            type(exc).__name__,
+        )
+        pool_dsn = dsn
+        _pool = psycopg2.pool.ThreadedConnectionPool(_POOL_MIN, _POOL_MAX, dsn=dsn)
+    LOGGER.info(
+        "DB pool ready (min=%s max=%s session_timeouts=%s)",
+        _POOL_MIN, _POOL_MAX, "on" if pool_dsn != dsn else "off",
     )
-    LOGGER.info("DB pool ready (min=%s max=%s)", _POOL_MIN, _POOL_MAX)
     _ensure_tables()
     _migrate_schema()
+
+
+def _on_event_loop_thread() -> bool:
+    try:
+        import asyncio
+
+        asyncio.get_running_loop()
+        return True
+    except RuntimeError:
+        return False
 
 
 def get_conn():
     if not _pool:
         raise RuntimeError("Call init_db() first")
     last_err: Optional[Exception] = None
-    for attempt in range(_GETCONN_RETRIES):
+    # Never park the event loop: a coroutine that blocks here could be waiting
+    # on a slot another coroutine can only release once the loop runs again.
+    wait_s = 0.0 if _on_event_loop_thread() else _GETCONN_WAIT_S
+    deadline = time.monotonic() + wait_s
+    attempt = 0
+    while True:
         try:
             return _pool.getconn()
         except psycopg2.pool.PoolError as exc:
             last_err = exc
-            if attempt + 1 < _GETCONN_RETRIES:
-                time.sleep(_GETCONN_RETRY_DELAY_S * (attempt + 1))
-            else:
+            attempt += 1
+            if attempt >= _GETCONN_RETRIES and time.monotonic() >= deadline:
                 LOGGER.warning(
-                    "DB pool exhausted after %s attempts (max=%s)",
-                    _GETCONN_RETRIES,
-                    _POOL_MAX,
+                    "DB pool exhausted after %s attempts / %.1fs (max=%s)",
+                    attempt, wait_s, _POOL_MAX,
                 )
+                break
+            time.sleep(min(0.25, _GETCONN_RETRY_DELAY_S * attempt))
     assert last_err is not None
     raise last_err
 
@@ -63,6 +146,7 @@ def pool_stats() -> dict:
         "min": _POOL_MIN,
         "max": _POOL_MAX,
         "retries": _GETCONN_RETRIES,
+        "wait_s": _GETCONN_WAIT_S,
     }
 
 class db_conn:

@@ -30,6 +30,9 @@ class Task:
     running: bool = field(default=False, init=False)
     skipped_overlap_count: int = field(default=0, init=False)
     next_run_at: float = field(default=0.0, init=False)
+    # U04/U05: failures (errors + timeouts) since the last clean run, so health
+    # can see a job that is failing NOW, not just a lifetime ratio.
+    consecutive_failures: int = field(default=0, init=False)
 
 _tasks: Dict[str, Task] = {}
 _running = False
@@ -122,7 +125,20 @@ async def _loop():
             if now >= task.next_run_at:
                 if task.running:
                     task.skipped_overlap_count += 1
-                    LOGGER.debug("Task %s skipped (overlap #%s)", task.name, task.skipped_overlap_count)
+                    # U05: an overlap means the previous run is still going
+                    # past its interval (often a hung sync job whose thread
+                    # cannot be cancelled). Visible at WARNING, rate-limited
+                    # to the first skip and every 10th after it.
+                    _log = (
+                        LOGGER.warning
+                        if task.skipped_overlap_count == 1 or task.skipped_overlap_count % 10 == 0
+                        else LOGGER.debug
+                    )
+                    _log(
+                        "Task %s skipped: previous run still in progress (overlap #%s, running %ss)",
+                        task.name, task.skipped_overlap_count,
+                        int(now - task.last_run) if task.last_run else None,
+                    )
                     continue
                 task.next_run_at = now + task.interval_s
                 asyncio.create_task(_run_task(task))
@@ -151,9 +167,11 @@ async def _run_task(task: Task):
         else:
             await coro
         task.run_count += 1
+        task.consecutive_failures = 0
         LOGGER.debug(f"Task {task.name} completed (run #{task.run_count})")
     except asyncio.TimeoutError:
         task.timeout_count += 1
+        task.consecutive_failures += 1
         task.last_error = f"timeout after {task.timeout_s}s"
         LOGGER.error(f"Task {task.name} TIMEOUT after {task.timeout_s}s (timeout #{task.timeout_count})")
         if executor_future is not None:
@@ -170,6 +188,7 @@ async def _run_task(task: Task):
                 LOGGER.error("Task %s failed after timeout: %s", task.name, exc)
     except Exception as e:
         task.error_count += 1
+        task.consecutive_failures += 1
         task.last_error = str(e)[:200]
         LOGGER.error(f"Task {task.name} failed: {e}")
     finally:
@@ -188,6 +207,9 @@ def status() -> List[dict]:
         "error_count": t.error_count,
         "timeout_count": t.timeout_count,
         "last_error": t.last_error or None,
+        "consecutive_failures": t.consecutive_failures,
+        "skipped_overlap_count": t.skipped_overlap_count,
+        "running": t.running,
         "healthy": (t.error_count == 0 and t.timeout_count == 0) or t.run_count > (t.error_count + t.timeout_count),
     } for t in _tasks.values()]
 

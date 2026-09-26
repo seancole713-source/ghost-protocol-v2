@@ -47,3 +47,26 @@ def test_objective_mode_follows_contract(monkeypatch):
     cfg = _objective_effective_config()
     assert cfg["mode"] == "balanced"
     assert cfg["target_wr"] == 0.70
+
+
+def test_objective_mode_contract_beats_auto_tuner(monkeypatch):
+    """Audit U36: the auto-tuned runtime mode must not override contract 70."""
+    import core.prediction as pred
+
+    monkeypatch.setenv("GHOST_ACCURACY_CONTRACT", "70")
+    monkeypatch.setenv("OBJECTIVE_AUTO_MODE_ENABLED", "1")
+    monkeypatch.setattr(pred, "_objective_runtime_mode", lambda *a, **k: "aggressive")
+    cfg = pred._objective_effective_config()
+    assert cfg["mode"] == "balanced"
+    assert cfg["target_wr"] == 0.70
+    assert cfg["min_samples"] == 12
+    assert cfg["lookback_days"] == 150
+
+
+def test_objective_mode_auto_tuner_still_applies_to_legacy(monkeypatch):
+    import core.prediction as pred
+
+    monkeypatch.setenv("GHOST_ACCURACY_CONTRACT", "legacy")
+    monkeypatch.setenv("OBJECTIVE_AUTO_MODE_ENABLED", "1")
+    monkeypatch.setattr(pred, "_objective_runtime_mode", lambda *a, **k: "precision")
+    assert pred._objective_mode() == "precision"

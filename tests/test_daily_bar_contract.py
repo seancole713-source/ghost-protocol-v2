@@ -102,3 +102,39 @@ def test_performance_log_preserves_feature_clock():
         "feature_timeframe": "completed_daily_bar",
         "feature_bar_ts": "2026-09-15T04:00:00Z",
     }
+
+
+# -- Audit U65: training drops the in-progress daily bar --
+
+@pytest.mark.parametrize("hour,minute", [(8, 0), (12, 0), (15, 4)])
+def test_training_history_drops_todays_partial_bar(hour, minute):
+    from core.daily_bar_contract import drop_incomplete_daily_bars
+
+    rows = [{"ts": "2026-09-14"}, {"ts": "2026-09-15"}, {"ts": "2026-09-16", "close": 999}]
+    assert drop_incomplete_daily_bars(rows, now=ct(9, 16, hour, minute)) == rows[:2]
+
+
+def test_training_history_keeps_bars_after_close_and_tolerates_lagging_feed():
+    from core.daily_bar_contract import drop_incomplete_daily_bars
+
+    rows = [{"ts": "2026-09-14"}, {"ts": "2026-09-15"}, {"ts": "2026-09-16"}]
+    assert drop_incomplete_daily_bars(rows, now=ct(9, 16, 15, 5)) == rows
+    # Unlike completed_daily_bars, a feed missing yesterday still trains.
+    assert drop_incomplete_daily_bars(rows[:1], now=ct(9, 16, 15, 5)) == rows[:1]
+
+
+def test_backtest_symbol_labels_only_completed_bars(monkeypatch):
+    import core.signal_engine as engine
+
+    monkeypatch.setattr("core.market_hours._now_ct", lambda: ct(9, 16, 12))
+    rows = [{"ts": (date(2026, 9, 15) - timedelta(days=i)).isoformat(), "close": 100}
+            for i in reversed(range(3))]
+    rows.append({"ts": "2026-09-16", "close": 999})
+    monkeypatch.setattr(engine, "_fetch_ohlcv", lambda *a, **kw: rows)
+    monkeypatch.setattr(engine, "_min_backtest_bars", lambda: 4)
+    # Four bars fetched, but today's partial one is dropped -> below minimum.
+    assert engine.backtest_symbol("AAA", "stock") == ([], [])
+    monkeypatch.setattr(engine, "_min_backtest_bars", lambda: 3)
+    monkeypatch.setattr(engine, "base_vol_pct", lambda *a: 2.0)
+    monkeypatch.setattr(engine, "_effective_backtest_window", lambda n: 99)
+    assert engine.backtest_symbol("AAA", "stock") == ([], [])  # no label rows, no crash

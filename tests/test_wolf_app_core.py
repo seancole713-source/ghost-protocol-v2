@@ -1161,7 +1161,7 @@ def test_try_yfinance_ohlcv_returns_none_when_yfinance_empty(monkeypatch):
         def __init__(self, sym):
             pass
 
-        def history(self, period=None, interval=None):
+        def history(self, period=None, interval=None, **kwargs):
             return _EmptyDF()
 
     class _FakeYF:
@@ -1351,7 +1351,7 @@ def test_try_yfinance_ohlcv_retries_shorter_period_when_primary_empty(monkeypatc
         def __init__(self, sym):
             pass
 
-        def history(self, period=None, start=None, end=None, interval=None):
+        def history(self, period=None, start=None, end=None, interval=None, **kwargs):
             calls.append(("period" if period else "explicit", period or (start, end)))
             if period == "1y":
                 return _DF([])      # primary empty
@@ -1384,7 +1384,7 @@ def test_try_yfinance_ohlcv_falls_through_to_explicit_dates(monkeypatch):
         def __init__(self, sym):
             pass
 
-        def history(self, period=None, start=None, end=None, interval=None):
+        def history(self, period=None, start=None, end=None, interval=None, **kwargs):
             calls.append(("period" if period else "explicit", period))
             if period:
                 return _DF([])  # all periods empty
@@ -1408,7 +1408,7 @@ def test_try_yfinance_ohlcv_returns_none_when_all_strategies_fail(monkeypatch):
         def __init__(self, sym):
             pass
 
-        def history(self, period=None, start=None, end=None, interval=None):
+        def history(self, period=None, start=None, end=None, interval=None, **kwargs):
             return _DF([])
 
     import sys
@@ -4386,7 +4386,7 @@ def test_get_picks_defaults_to_wolf_and_honors_asset_type(monkeypatch):
     assert any("asset_type = %s" in sql for sql, _ in captured)
     assert captured[0][1] == ("stock",)
     page_sql = [p for sql, p in captured if "LIMIT %s OFFSET %s" in sql][0]
-    assert page_sql[-2:] == (100, 20)
+    assert page_sql[-2:] == (101, 20)  # U47: limit+1 probes has_more
 
 
 def test_get_picks_excludes_junk_from_accuracy(monkeypatch):

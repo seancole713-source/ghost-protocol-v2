@@ -197,7 +197,11 @@ jobs:
           if-no-files-found: ignore
 
   release-gates:
-    if: github.event_name != 'pull_request'
+    # U44: the gates are read-only checks of the LIVE deployment. They used to
+    # be skipped whenever an upstream job (often a flaky browser smoke) failed,
+    # so a red post-merge lane also meant an unchecked deploy. They now run
+    # unless the run was cancelled; the upstream failure still fails the run.
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
     needs: [test, integration, playwright-smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 20

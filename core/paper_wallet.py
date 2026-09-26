@@ -430,9 +430,19 @@ def ensure_paper_tables(cur) -> None:
     """)
 
 
-def _month_key() -> str:
+def _session_today():
+    """The US-equity session date (ET), not the container's UTC date (U53).
+
+    date.today() on a UTC host rolls over at 7 PM ET, so evening marks were
+    booked to tomorrow and month goals flipped early on the last day.
+    """
     import datetime as _dt
-    return _dt.date.today().strftime("%Y-%m")
+    from zoneinfo import ZoneInfo
+    return _dt.datetime.now(ZoneInfo("America/New_York")).date()
+
+
+def _month_key() -> str:
+    return _session_today().strftime("%Y-%m")
 
 
 def _default_goal() -> float:
@@ -1284,7 +1294,7 @@ def run_wallet_cycle() -> Dict[str, Any]:
                 mkt += (float(tqty) * float(p)) if p else float(cost)
             equity = round(cash + mkt, 2)
             import datetime as _dt
-            today = _dt.date.today().isoformat()
+            today = _session_today().isoformat()
             cur.execute("SELECT equity FROM ghost_paper_daily WHERE trade_date < %s "
                         "ORDER BY trade_date DESC LIMIT 1", (today,))
             prev = cur.fetchone()
@@ -1358,12 +1368,17 @@ def wallet_summary() -> Dict[str, Any]:
                      for r in cur.fetchall()]
             equity = round(cash + mkt_value, 2)
             start = float(cfg["starting_balance"])
-            today_pnl = daily[0]["pnl"] if daily else 0.0
+            # U53: "Today P&L" is today's row only, not the last stored day.
+            today_pnl = (
+                daily[0]["pnl"]
+                if daily and str(daily[0]["date"])[:10] == _session_today().isoformat()
+                else 0.0
+            )
 
             # ── Monthly goal progress (the wallet's recurring purpose) ──
             import datetime as _dt
             goal = float(cfg.get("monthly_goal") or _default_goal())
-            todd = _dt.date.today()
+            todd = _session_today()
             if todd.month == 12:
                 days_in_month = 31
             else:

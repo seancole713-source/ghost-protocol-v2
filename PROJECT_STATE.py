@@ -13,7 +13,17 @@ RULES:
   7. SESSION_LOG is the handover log — read it to understand what happened in the
      last session and what's in flight. Update it at the end of every session.
 
-LAST UPDATED: 2026-09-03 - PRs #171 and #172, both MERGED AND DEPLOYED (live f176fa5, verified
+CURRENT STATE, 2026-09-26 (supersedes the 2026-09-03 header below and older entries):
+  main is at 49b2c8f (PRs #224-#227 closed out most of the 2026-09-25 audit).
+  The core v3 engine is RESEARCH-ONLY by default (CORE_ENGINE_MODE=research), so it
+  sends no trade alerts and no sizing. GHOST_ACCURACY_CONTRACT=70 is unproven at
+  current data. The operator product is the frozen Gap-and-Go v1 edge card at
+  $1,000 per trade. Risk defaults: GHOST_TRADE_SIZE_USD=1000 and
+  GHOST_DAILY_LOSS_LIMIT_USD=250. The Codex worker is off (CODEX_WORKER_ENABLED=0).
+  DATABASE_URL is a Railway reference variable. The engine-pause and
+  firing notes below are HISTORY; see PROJECT_STATE.md's current-state box.
+
+LAST UPDATED (historical): 2026-09-03 - PRs #171 and #172, both MERGED AND DEPLOYED (live f176fa5, verified
 by boot banner). #171: train/serve EMA feature skew + restored PR #135's banned negative
 walk-forward edge floor. #172: found the reason the engine pause could never clear — the kill
 windows are COUNTS with no age bound, so a pause suppressed firing, no new outcomes resolved, and

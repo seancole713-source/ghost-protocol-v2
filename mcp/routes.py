@@ -87,6 +87,14 @@ async def mcp_get_root(request: Request):
     }
 
 
+# Declared before /mcp/{path_token}: Starlette matches in order, and the
+# path-token route used to swallow GET /mcp/tools (path_token="tools").
+@router.get("/mcp/tools")
+async def mcp_tools_list(request: Request):
+    require_mcp_auth(request)
+    return {"ok": True, "tools": list_tools()}
+
+
 @router.get("/mcp/{path_token}")
 async def mcp_get_token(path_token: str, request: Request):
     require_mcp_auth(request, path_token=path_token)
@@ -97,12 +105,6 @@ async def mcp_get_token(path_token: str, request: Request):
         "transport": "streamable-http",
         "jsonrpc_post": f"/mcp/{path_token}",
     }
-
-
-@router.get("/mcp/tools")
-async def mcp_tools_list(request: Request):
-    require_mcp_auth(request)
-    return {"ok": True, "tools": list_tools()}
 
 
 @router.get("/mcp/tools/{tool_name}")

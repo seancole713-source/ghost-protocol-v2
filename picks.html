@@ -645,7 +645,10 @@ function loadSystem(){ return guardedLoad('system', async function(){
   var health = results[0], kill = results[1], degraded = results[2], models = results[3];
 
   var html = '<div class="section"><h2>Is Ghost healthy?</h2>';
-  html += '<div class="sysrow"><span class="k">Core service</span><span class="v '+(health.__ok?'ok':'no')+'">'+(health.__ok?'Healthy':'Unknown — treat as unavailable')+'</span></div>';
+  // U41: a 200 only proves the app answered; the payload's status says whether it is healthy.
+  var hStatus = health.__ok ? String(health.status || '').toLowerCase() : '';
+  var hText = hStatus === 'healthy' ? 'Healthy' : (hStatus === 'degraded' ? 'Degraded' : (hStatus === 'critical' ? 'Critical' : 'Unknown — treat as unavailable'));
+  html += '<div class="sysrow"><span class="k">Core service</span><span class="v '+(hStatus==='healthy'?'ok':(hStatus==='degraded'?'mid':'no'))+'">'+esc(hText)+'</span></div>';
   if(kill.__ok){
     var paused = !!(kill.engine_pause && kill.engine_pause.paused);
     html += '<div class="sysrow"><span class="k">Official directional-pick issuance</span><span class="v mid">'+esc(paused?'Safety-paused':modelReadiness(models))+'</span></div>';

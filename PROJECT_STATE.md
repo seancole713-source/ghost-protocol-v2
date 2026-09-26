@@ -1,6 +1,18 @@
 # Ghost Protocol v2 — PROJECT STATE
-**Last updated:** 2026-07-01
+**Last updated:** 2026-09-26 (the current-state box below). The dated sections under it are a historical log; its last full refresh was 2026-07-01.
 **Read this first.** Any agent picking up this project must read this file before touching any code.
+
+> ## CURRENT STATE, as of 2026-09-26 (this box supersedes everything below it)
+> The sections below this box are a dated history. Where they conflict with this box or with the code, the box and the code are right. Do **not** "restore" older settings quoted below, such as `OBJECTIVE_MODE=aggressive`, `MIN_ALERT_CONFIDENCE=0.75`, the "41/44 models" counts or the 661-test totals. They were superseded on purpose.
+> - **Code:** `main` at `49b2c8f` (PR #227), deployed on Railway. The 2026-09-25 combined audit (F01-F41, U01-U70) was worked through in PRs #224-#227. See the per-PR notes in the git log.
+> - **Core v3 engine is research-only by default.** `CORE_ENGINE_MODE=research`: no trade alerts, no "SUPER BUY", and no sizing in operator messages (PR #227). Core picks are research calls, not trades.
+> - **Accuracy contract:** `GHOST_ACCURACY_CONTRACT=70` (fire only on a Wilson-backed 70% precision proof). It is **unproven at current data, not falsified**. New claims use the v2 confirmatory protocol: 42 wins out of 50 forward outcomes (`docs/70_precision_protocol.md`). The objective mode follows the contract (`balanced`), not the runtime auto-tuner (audit U36). Gates are never loosened.
+> - **Operator product:** the Gap-and-Go v1 edge card (`docs/gap_and_go_v1.md`), a frozen rule at $1,000 per trade. It runs with paper execution and a three-way ledger. `retirement_v1` is hashed beside `promotion_v1`, and the card discloses the backtest verdict (PR #226). There is also an observe-all control arm (`docs/control_arm_v1.md`). Duty reminders run every trading day (PR #224).
+> - **Risk defaults** (`core/risk_discipline.py`): `GHOST_TRADE_SIZE_USD=1000` caps the suggested notional per trade. `GHOST_DAILY_LOSS_LIMIT_USD=250` is now a fixed default, no longer derived from account × risk%.
+> - **Agent workers:** the Claude worker is live. The Codex worker is off (`CODEX_WORKER_ENABLED=0`) until its canary passes, and both workers are connected to the repo. Agent evidence is advisory only and never decision-eligible.
+> - **Data:** SIP is re-checked every 30 min, and IEX-era and SIP-era edge records are never pooled (PR #224). The core holiday table covers 2026-2027.
+> - **Ops:** `DATABASE_URL` is a Railway reference variable (`${{Postgres.DATABASE_URL}}`). Deploys are frozen 08:00-16:30 ET on weekdays. Leader election fails closed. `/health` is a cheap liveness probe (PR #225).
+> - **Tests:** `python -m pytest -q`, about 2,800 passed and 49 skipped at this refresh. The edge suite is `python -m pytest -q --noconftest tests/test_edge_*.py -k "not mcp_tool"`.
 
 > ## 🚀 LAUNCH READINESS REVIEW
 > A comprehensive, multi-phase, trust-the-money review prompt lives at **[`LAUNCH_PROMPT.md`](./LAUNCH_PROMPT.md)** at the repo root.

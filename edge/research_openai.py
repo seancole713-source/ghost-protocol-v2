@@ -11,6 +11,12 @@ It has no web access: it reviews the author's claims and quoted source
 sentences for wrong company, internal contradictions, dilution language and
 staleness. Two families agreeing is still not independent EVIDENCE -- both
 read the same citations -- and every record says so.
+
+Having no search tool, it cannot hit a search limit: a reviewer "search hit its
+usage limit" can only come from the Claude fallback reviewer, which runs only
+when this review is unavailable or unusable. A review that
+fails in flight (timeout, dropped connection) is charged at a full-review
+estimate, since it may have been billed (audit U70).
 """
 from __future__ import annotations
 
@@ -35,6 +41,12 @@ def cost_usd(model: str, usage: Optional[Dict[str, Any]]) -> float:
     p_in, p_out = PRICES.get(model, _WORST)
     u = usage or {}
     return ((u.get("prompt_tokens") or 0) * p_in + (u.get("completion_tokens") or 0) * p_out) / 1e6
+
+
+def failed_call_estimate(model: str, prompt: str) -> float:
+    """What a review that failed in flight may have cost: the prompt (~3 chars a token, rounded up)
+    plus a full MAX_OUT of output, at the model's rate."""
+    return cost_usd(model, {"prompt_tokens": len(prompt) // 3 + 1, "completion_tokens": MAX_OUT})
 
 
 def _key() -> str:
@@ -99,7 +111,9 @@ def chat_models(ids: List[str]) -> List[str]:
 
 
 PROMPT = """You are checking claims about the stock {symbol} before they enter a trading-research
-ledger. You cannot browse; judge only from the claims and the quoted source sentences below.
+ledger. You cannot browse; judge only from the claims and the quoted source sentences below. A quote
+may be a search-result headline; "published_at" is null and "unknowns" says so when the author only
+saw a relative date ("1 day ago") -- weigh that when judging staleness.
 
 {claims}
 
@@ -117,18 +131,29 @@ def review(http, *, symbol: str, claims: List[Dict[str, Any]]) -> Tuple[Optional
     if not configured():
         return None, 0.0
     model = os.environ["EDGE_OPENAI_MODEL"].strip()
+    prompt = PROMPT.format(symbol=symbol, claims=json.dumps(claims, indent=1))
     body = {"model": model, "max_completion_tokens": MAX_OUT,
-            "messages": [{"role": "user", "content": PROMPT.format(symbol=symbol, claims=json.dumps(claims, indent=1))}]}
+            "messages": [{"role": "user", "content": prompt}]}
     try:
         r = http.post(f"{API}/chat/completions", json=body, timeout=90,
                       headers={"Authorization": f"Bearer {_key()}", "Content-Type": "application/json"})
-        if r.status_code >= 400:
-            return None, 0.0
-        payload = r.json() or {}
-        cost = cost_usd(model, payload.get("usage"))
-        text = ((payload.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
     except Exception:  # noqa: BLE001
-        return None, 0.0
+        # A timeout or dropped connection may still have been billed: count it as a full review
+        # (the whole prompt plus MAX_OUT) so the daily cap can only over-count (audit U70).
+        return None, failed_call_estimate(model, prompt)
+    if r.status_code >= 400:
+        return None, 0.0                 # rejected, not billed
+    try:
+        payload = r.json() or {}
+    except Exception:  # noqa: BLE001
+        return None, failed_call_estimate(model, prompt)
+    cost = cost_usd(model, payload.get("usage") or {})
+    if not payload.get("usage"):
+        cost = failed_call_estimate(model, prompt)   # answered but did not say what it used
+    try:
+        text = str(((payload.get("choices") or [{}])[0].get("message") or {}).get("content") or "")
+    except (AttributeError, IndexError, TypeError):
+        text = ""
     m = re.search(r"\{.*\}", text, re.S)
     try:
         v = json.loads(m.group(0)) if m else None

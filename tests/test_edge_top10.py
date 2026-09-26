@@ -49,13 +49,18 @@ def test_the_view_joins_the_after_close_grades_and_the_scorecard_compares():
         row("BB", 8.47, 7.94, 60e6, [C.EARNINGS]), row("GLND", 3.10, 2.91, 44e6)]}))
     assert R.view(st, "top10", "2026-09-24")["graded"] is False
     st.put("edge_card_outcomes", "2026-09-24", {"day": "2026-09-24", "rows": [
-        {"symbol": "BB", "outcome": "WIN", "baseline": "ELIGIBLE"},
-        {"symbol": "GLND", "outcome": "NO_FILL", "baseline": "ELIGIBLE"},
-        {"symbol": "OTHER", "outcome": "LOSS", "baseline": "ELIGIBLE"}]})
+        {"symbol": "BB", "outcome": "WIN", "execution": "WIN", "baseline": "ELIGIBLE"},
+        {"symbol": "GLND", "outcome": "WIN", "execution": "NO_FILL", "baseline": "ELIGIBLE"},
+        {"symbol": "OTHER", "outcome": "LOSS", "execution": "LOSS", "baseline": "ELIGIBLE"}]})
+    # A graded day from before the Top 10 existed: its rows are not "not picked" (U12).
+    st.put("edge_card_outcomes", "2026-09-23", {"day": "2026-09-23", "rows": [
+        {"symbol": "EARLY", "outcome": "LOSS", "execution": "LOSS", "baseline": "ELIGIBLE"}]})
     v = R.view(st, "top10")
-    assert v["graded"] is True and {x["symbol"]: x["outcome"] for x in v["list"]} == {"BB": "WIN", "GLND": "NO_FILL"}
+    assert v["graded"] is True and {x["symbol"]: x["outcome"] for x in v["list"]} == {"BB": "WIN", "GLND": "WIN"}
+    assert {x["symbol"]: x["execution"] for x in v["list"]} == {"BB": "WIN", "GLND": "NO_FILL"}
     sc = SC.scorecard(st)["top10"]
-    assert sc["approved"]["wins"] == 1 and sc["rejected"]["decided"] == 1
+    assert sc["approved"]["wins"] == 1 and sc["approved"]["no_fill"] == 1
+    assert sc["rejected"]["decided"] == 1 and sc["sessions"] == 1
     assert sc["verdict"].startswith("not enough data")
 
 
