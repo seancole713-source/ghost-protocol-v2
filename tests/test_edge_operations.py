@@ -257,6 +257,18 @@ def test_empty_screens_say_which_kind_of_empty():
     assert H.banner(0, {"x": ["quotes: STALE"]}).startswith("Trading signals paused.")
 
 
+def test_a_card_that_recorded_forecasts_never_says_signals_paused_beside_them():
+    # Audit 2026-09-25 U52: "Trading signals paused" printed next to a forecast and paper orders.
+    from edge import cards, notify as N
+    b = H.banner(1, {"x": ["quotes_iex: STALE"]})
+    assert "Trading signals paused" not in b
+    assert b.startswith("1 setup recorded (shadow + paper only).")
+    assert "live release would be paused" in b and "quotes_iex: STALE" in b
+    # the phone card still carries it as a data warning; the headline keeps the reason
+    assert "DATA WARNING" in (N._data_warning({"health_banner": b}) or "")
+    assert cards.morning_headline([], b) == b
+
+
 def test_low_coverage_is_stale_even_when_recent():
     now = ts(9, 0)
     s = H.SourceHealth("quotes", now - 5, 120, covered=9, expected=107)   # the 2026-09-22 IEX probe

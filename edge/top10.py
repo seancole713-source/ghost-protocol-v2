@@ -103,7 +103,9 @@ def with_outcomes(store, day: str) -> Optional[Dict[str, Any]]:
     graded = store.get("edge_card_outcomes", day)
     by_sym = {o["symbol"]: o for o in (graded or {}).get("rows") or []}
     out = dict(t)
-    out["list"] = [{**x, "outcome": (by_sym.get(x["symbol"]) or {}).get("outcome")} for x in t.get("list") or []]
+    # outcome = the frictionless forecast grade; execution = the order as written, with costs (U12).
+    out["list"] = [{**x, "outcome": (by_sym.get(x["symbol"]) or {}).get("outcome"),
+                    "execution": (by_sym.get(x["symbol"]) or {}).get("execution")} for x in t.get("list") or []]
     out["graded"] = graded is not None
     return out
 

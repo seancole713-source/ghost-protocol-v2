@@ -37,13 +37,21 @@ def gap(prev_close: Optional[float], price: Optional[float], *, lo: float = 5.0,
     return Signal("gap", PASS if lo <= pct <= hi else FAIL, round(pct, 3), f"{lo:g}..{hi:g}%")
 
 
+# A same-minute baseline below this many shares is a handful of prints, not a volume level:
+# the ratio against it is noise (audit 2026-09-25 U06: IEX readings of 283x and 318x). Such a
+# reading is UNKNOWN -- never PASS, never FAIL. A data-quality floor only: it can block a
+# strategy (UNKNOWN is DATA_UNAVAILABLE), never let one through.
+RVOL_MIN_BASELINE_SHARES = 1_000
+
+
 def rvol_time_of_day(cum_volume_now: Optional[float], same_minute_history: Sequence[float], *,
-                     min_ratio: float = 2.0, min_days: int = 10) -> Signal:
+                     min_ratio: float = 2.0, min_days: int = 10,
+                     min_baseline: float = RVOL_MIN_BASELINE_SHARES) -> Signal:
     """Volume so far vs the MEDIAN cumulative volume at this same minute on prior days.
 
     Daily-average RVOL flatters the open (every stock trades most at 9:31);
     time-of-day RVOL compares like with like. Fewer than `min_days` of history
-    is UNKNOWN, not a guess.
+    is UNKNOWN, not a guess; so is a median baseline under `min_baseline` shares.
     """
     hist = [v for v in same_minute_history if v and v > 0]
     if cum_volume_now is None:
@@ -51,6 +59,10 @@ def rvol_time_of_day(cum_volume_now: Optional[float], same_minute_history: Seque
     if len(hist) < min_days:
         return _unknown("rvol_tod", f"only {len(hist)} days of same-minute history (< {min_days})")
     base = statistics.median(hist)
+    if base < min_baseline:
+        return Signal("rvol_tod", UNKNOWN, evidence={
+            "missing": f"same-minute baseline {base:,.0f} shares (< {min_baseline:,.0f}): too thin for a ratio",
+            "baseline_median": base, "days": len(hist)})
     ratio = cum_volume_now / base
     return Signal("rvol_tod", PASS if ratio >= min_ratio else FAIL, round(ratio, 2), f">= {min_ratio:g}x",
                   {"baseline_median": base, "days": len(hist)})

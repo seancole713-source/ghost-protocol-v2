@@ -342,8 +342,8 @@ def test_the_scorecard_counts_not_researched_rows_on_neither_side():
     from edge import scorecard as SC
 
     def rows(prefix, n, wins, **stamp):
-        return [{"symbol": f"{prefix}{i}", "outcome": "WIN" if i < wins else "LOSS", "baseline": "ELIGIBLE",
-                 **stamp} for i in range(n)]
+        return [{"symbol": f"{prefix}{i}", "outcome": "WIN" if i < wins else "LOSS",
+                 "execution": "WIN" if i < wins else "LOSS", "baseline": "ELIGIBLE", **stamp} for i in range(n)]
 
     store = MemoryStore()
     store.put("edge_card_outcomes", "2026-09-23", {"day": "2026-09-23", "rows":

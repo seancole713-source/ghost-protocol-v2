@@ -10,6 +10,13 @@ resolver: what WOULD have happened had it been traded. That is a counterfactual
 and is labelled as one -- it never enters the forward ledger or any
 experiment's record.
 
+The comparisons are graded as the ORDER would have traded (resolve_execution: the
+stop-limit entry, the conservative fill bar and 10 bps a side), and read against the
+break-even AFTER those costs -- not the frictionless forecast outcome against the
+no-cost 37.5% (audit 2026-09-25 U12). The forecast outcome is kept on every row
+("outcome") for reference. Rows graded before the execution grade existed carry no
+"execution" and are counted, never pooled.
+
 Then the question is asked directly, on the same stocks: among the gap-qualified
 names, did the ones research APPROVED do better than the ones it REJECTED?
 Every rate carries its Wilson interval and a sample-size verdict; nothing reads
@@ -31,6 +38,9 @@ from edge.stats import wilson
 
 DECIDED = (RV.WIN, RV.LOSS, RV.TIME_EXIT)
 MIN_PER_SIDE = 30          # below this a comparison is reported, never judged
+COST_BPS = 10.0            # per side, the simulated-execution record's stated placeholder
+BASIS = (f"simulated execution: the stop-limit order as written, conservative fill bar, "
+         f"{COST_BPS:g} bps a side (edge/resolver.py resolve_execution)")
 COUNTERFACTUAL = ("counterfactual: every priced card candidate graded under the frozen Gap-and-Go levels "
                   "as if traded; never part of any experiment's record")
 
@@ -57,26 +67,34 @@ def grade_card(get, store, *, day: date, now: int) -> Dict[str, Any]:
         except ContractError as exc:
             out.append({"symbol": r["symbol"], "outcome": None, "note": str(exc)})
             continue
-        m = RV.resolve_market(f, P._minute_bars(bars.get(r["symbol"]) or []))
+        mb = P._minute_bars(bars.get(r["symbol"]) or [])
+        m = RV.resolve_market(f, mb)
+        x = RV.resolve_execution(f, mb, cost_bps_per_side=COST_BPS)
         out.append({"symbol": r["symbol"], "outcome": m.outcome, "note": m.note,
+                    "execution": x.outcome, "execution_note": x.note, "execution_pnl_usd": x.pnl_usd,
                     "auto": r.get("verdict"), "baseline": r.get("baseline_verdict"),
                     "research": r.get("verified_verdict"), "research_status": r.get("research_status"),
                     "model_prob": r.get("model_prob"),
                     "catalyst": r.get("catalyst")})
-    store.put("edge_card_outcomes", ds, {"day": ds, "graded_at": now, "rows": out, "label": COUNTERFACTUAL})
+    store.put("edge_card_outcomes", ds, {"day": ds, "graded_at": now, "rows": out, "label": COUNTERFACTUAL,
+                                         "basis": BASIS})
     return {"status": "graded", "rows": len(out),
-            "outcomes": dict(Counter(o["outcome"] for o in out if o["outcome"]))}
+            "outcomes": dict(Counter(o["outcome"] for o in out if o["outcome"])),
+            "execution": dict(Counter(o["execution"] for o in out if o.get("execution")))}
 
 
-def _rate(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
-    decided = [r for r in rows if r.get("outcome") in DECIDED]
-    wins = sum(1 for r in decided if r["outcome"] == RV.WIN)
+def _rate(rows: List[Dict[str, Any]], key: str = "execution") -> Dict[str, Any]:
+    decided = [r for r in rows if r.get(key) in DECIDED]
+    wins = sum(1 for r in decided if r[key] == RV.WIN)
     n = len(decided)
     lo, hi = wilson(wins, n) if n else (None, None)
+    pnl = [r["execution_pnl_usd"] for r in decided
+           if key == "execution" and isinstance(r.get("execution_pnl_usd"), (int, float))]
     return {"candidates": len(rows), "decided": n, "wins": wins,
             "win_rate": round(wins / n, 4) if n else None,
             "win_rate_ci": [round(lo, 4), round(hi, 4)] if n else None,
-            "no_fill": sum(1 for r in rows if r.get("outcome") == RV.NO_FILL)}
+            "no_fill": sum(1 for r in rows if r.get(key) == RV.NO_FILL),
+            **({"avg_pnl_usd": round(sum(pnl) / len(pnl), 2)} if pnl else {})}
 
 
 def _compare(name: str, yes: List[Dict[str, Any]], no: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -125,16 +143,27 @@ def research_quality(store) -> Dict[str, Any]:
             "top_quarantine_reasons": problems.most_common(8)}
 
 
+def break_even_after_costs() -> float:
+    """Gap-and-Go v1's break-even win rate once each side pays COST_BPS (40.0% at 10 bps)."""
+    from edge import control as CA
+    from edge.pipeline import SPEC
+    return round(CA.break_even_after_costs(COST_BPS, spec=SPEC), 4)
+
+
 def scorecard(store) -> Dict[str, Any]:
     days = sorted(store.scan("edge_card_outcomes"), key=lambda d: d["day"])
-    rows = [r for d in days for r in d.get("rows") or [] if r.get("outcome")]
+    # Graded as the order would have traded (U12); legacy rows with only a forecast outcome are
+    # counted and left out -- two bases are never pooled.
+    legacy = sum(1 for d in days for r in d.get("rows") or [] if r.get("outcome") and not r.get("execution"))
+    rows = [r for d in days for r in d.get("rows") or [] if r.get("execution")]
     gaps = [r for r in rows if r.get("baseline") == "ELIGIBLE"]    # gap-qualified, liquid, priced
     # AI research is judged only on rows it actually looked at: a failed search is neither side.
     gap_days = [(d["day"], r) for d in days for r in d.get("rows") or []
-                if r.get("outcome") and r.get("baseline") == "ELIGIBLE"]
+                if r.get("execution") and r.get("baseline") == "ELIGIBLE"]
     researched = [r for dd, r in gap_days if not _not_researched(store, dd, r)]
     out: Dict[str, Any] = {
-        "label": COUNTERFACTUAL, "sessions": len(days),
+        "label": COUNTERFACTUAL, "sessions": len(days), "basis": BASIS,
+        "rows_without_execution_grade": legacy,
         "window": [days[0]["day"], days[-1]["day"]] if days else None,
         "base_rate_all_gappers": _rate(gaps),
         "keyword_catalyst": _compare("the keyword catalyst filter",
@@ -145,14 +174,20 @@ def scorecard(store) -> Dict[str, Any]:
                                    [r for r in researched if r.get("research") == "REJECTED"]),
                         "not_researched": len(gap_days) - len(researched)},
         "research_quality": research_quality(store),
-        "break_even": 0.375,
+        "break_even": break_even_after_costs(),
+        "break_even_before_costs": 0.375,
     }
-    picks = {(t["day"], x["symbol"]) for t in store.scan("edge_top10") for x in t.get("list") or []}
+    top10 = store.scan("edge_top10")
+    top10_days = {t["day"] for t in top10 if t.get("day")}
+    picks = {(t["day"], x["symbol"]) for t in top10 for x in t.get("list") or []}
     if picks:
-        tagged = [(d["day"], r) for d in days for r in d.get("rows") or [] if r.get("outcome")]
-        out["top10"] = _compare("the Top 10 quality ranking",
-                                [r for dd, r in tagged if (dd, r["symbol"]) in picks],
-                                [r for dd, r in tagged if (dd, r["symbol"]) not in picks])
+        # Only sessions that HAD a Top 10: a day before the list existed is not "not picked".
+        tagged = [(d["day"], r) for d in days if d["day"] in top10_days
+                  for r in d.get("rows") or [] if r.get("execution")]
+        out["top10"] = {**_compare("the Top 10 quality ranking",
+                                   [r for dd, r in tagged if (dd, r["symbol"]) in picks],
+                                   [r for dd, r in tagged if (dd, r["symbol"]) not in picks]),
+                        "sessions": len({dd for dd, _ in tagged})}
     scored = [r for r in gaps if r.get("model_prob") is not None]
     if scored:
         out["model"] = _compare("the model (prob >= 0.40)",

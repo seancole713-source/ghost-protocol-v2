@@ -114,6 +114,40 @@ def test_a_broker_refusal_becomes_a_rejected_entry_in_the_actual_record(ledger):
     assert out["settled"][f"gap_and_go_auto@v1:SHOP"]["actual"] == "NO_FILL"
 
 
+def test_a_broker_refusal_is_a_loud_problem_once_not_a_quiet_no_fill(ledger, monkeypatch):
+    # Audit 2026-09-25 U60: a paper account that stops accepting orders sent no alert.
+    from edge import pipeline as P
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "42")
+
+    class TG:
+        def __init__(self):
+            self.sent = []
+
+        def post(self, url, json=None, timeout=None):
+            self.sent.append(json["text"])
+            return R(200, {})
+
+    tg, b = TG(), Broker(reject=True)
+    out = P.run(None, ledger, now=ts(9, 10), http=b, notifier=tg)
+    assert out["paper_submit"]["refused"] == ["SHOP: HTTP 403 insufficient buying power"]
+    assert out["paper_submit_refused"]["status"] == "error"
+    refused = [t for t in tg.sent if t.startswith("PROBLEM") and "REFUSED" in t]
+    assert len(refused) == 1 and "insufficient buying power" in refused[0]
+    P.run(None, ledger, now=ts(9, 15), http=b, notifier=tg)           # recorded rejected: never re-posted
+    assert len(b.posts) == 1 and len([t for t in tg.sent if "REFUSED" in t]) == 1
+
+
+def test_a_transient_broker_failure_retries_without_a_refusal_alert(ledger):
+    class Busy(Broker):
+        def post(self, url, json=None, headers=None, timeout=None):
+            self.posts.append(json)
+            return R(429, {"message": "rate limit"})
+
+    out = PP.submit(Busy(), ledger, day="2026-09-23", experiments=EXPERIMENTS)
+    assert out["refused"] == [] and "retrying next tick" in out["errors"][0]
+
+
 def test_unfilled_entry_is_cancelled_at_1030_and_a_filled_one_is_not(ledger):
     f = ledger.fc
     PP.submit(Broker(), ledger, day="2026-09-23", experiments=EXPERIMENTS)

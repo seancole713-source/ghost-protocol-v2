@@ -27,6 +27,11 @@ PRICE_ACTION = "price_action"          # describes a move; never a catalyst (nev
 # or cutting a rating is not new information for a long: 2026-09-24 "Guggenheim Reiterates Buy
 # on Everpure, Maintains $150 Price Target" qualified P as a catalyst_breakout.
 ANALYST_NO_CHANGE = "analyst_no_change"   # never in COMPANY_SPECIFIC
+# A NEGATIVE regulatory or clinical outcome -- an FDA rejection / complete response letter, a
+# clinical hold, a failed primary endpoint, a panel vote against -- is news against a long, never
+# a reason to buy one (audit 2026-09-25 U14: "FDA rejects" tagged as a strong FDA catalyst).
+# Tightening only: it is neither a catalyst nor dilution. Never in COMPANY_SPECIFIC.
+REGULATORY_SETBACK = "regulatory_setback"
 COMPANY_SPECIFIC = frozenset({EARNINGS, GUIDANCE, FDA, CONTRACT, MNA, INDEX, ANALYST})
 
 # A market wrap -- index moves and/or several stories joined by ";" -- is never one company's catalyst,
@@ -61,6 +66,13 @@ _RULES = [  # first match wins; dilution is checked first on purpose
     (OTHER, r"\bahead of (its |the |q[1-4] )?earnings\b|\bupcoming earnings\b|\bearnings (preview|scheduled|date)\b"),
     (OTHER, r"\b(ind|investigational new drug)\b|\bfda submission\b"),
     (MNA, r"\b(to acquire|acquisition of|merger|to be acquired|takeover|buyout|definitive agreement)\b"),
+    # Lifting a hold or resubmitting after a rejection is the regulatory event moving forward.
+    (FDA, r"\b(lifts?|lifted|removes?|removed|resolves?|resolved)\b.{0,20}\bclinical hold\b|\bresubmi(ts?|tted|ssion)\b"),
+    (REGULATORY_SETBACK,
+     r"\bfda\b.{0,40}\b(rejects?|rejected|rejection|declines?|declined|denies|denied|refuses?|refused)\b"
+     r"|\b(complete response letter|crl|clinical hold|refusal to file|refuse to file|not approvable)\b"
+     r"|\b(fail(s|ed)?|miss(es|ed)?|did not meet|does not meet|not meet)\b.{0,30}\bprimary (end ?point|goal)\b"
+     r"|\b(panel|committee|adcom)\b.{0,30}\bvotes? against\b"),
     (FDA, r"\b(fda|pdufa|breakthrough therapy|phase (1|2|3|i|ii|iii)|(nda|bla|510\(k\)|ema|marketing) (approval|clearance))\b"),
     (EARNINGS, r"\b(earnings|quarterly results|q[1-4] results|eps|revenue (rose|grew|increased|beat))\b"
                r"|\bq[1-4]\b.{0,20}\b(beats?|miss(es)?|results?|revenue|sales)\b"

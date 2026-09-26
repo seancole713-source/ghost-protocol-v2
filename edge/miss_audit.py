@@ -3,11 +3,15 @@
 "List everything that rose 5%" is not a review; it rewards whatever would have
 caught yesterday's winners and ignores the losers that change would admit. So:
 
-1. EXECUTABILITY FIRST. A move counts as an opportunity only if, after a signal
-   could realistically have arrived, a +5% target was still reachable before a
-   -3% stop under the same rules. A stock that gapped +20% and offered nothing
-   after the open was never an intraday opportunity -- it is labelled GAP_ONLY,
-   not a miss.
+1. EXECUTABILITY FIRST. A move counts as an opportunity only if a +5% target was
+   still reachable before a -3% stop. MEASURED FROM ONE ENTRY: the 09:30 open, with
+   no alert or human latency (EXECUTABLE_BASIS) -- an upper bound on what anyone
+   could catch, not "after a signal could realistically have arrived". A later
+   entry (e.g. after a radar detection, or after a -3% dip from the open) is not
+   tried, so a name that dipped first reads GAP_ONLY (audit 2026-09-25 U13; a
+   latency-aware definition would be a new LABELS_VERSION). A stock that gapped +20%
+   and offered nothing after the open was never an intraday opportunity -- it is
+   labelled GAP_ONLY, not a miss.
 2. ONE LABEL PER MISS, in a fixed order:
      UNIVERSE_COVERAGE        not in the supported universe
      DATA_INTERRUPTION        in universe, but its data source was down/stale
@@ -20,9 +24,10 @@ caught yesterday's winners and ignores the losers that change would admit. So:
      RISK_LIQUIDITY_EXCLUSION detected, excluded by liquidity or risk
      ALERT_EXECUTION_FAILURE  forecast issued, but the alert was late or the entry never filled
    plus CAUGHT (forecast issued in time AND filled -- or its fill not yet known).
-3. CORRECT REJECTIONS COUNT TOO. Every rejected name that did NOT offer an
-   executable move is a rejection the rules got right. Recall is reported
-   beside it, never alone -- and per source (the 9am card, the intraday radar).
+3. CORRECT REJECTIONS COUNT TOO. A rejected name that moved (+5% at the peak)
+   but offered no executable move is a rejection the rules got right; a rejected
+   name that never moved is counted apart (quiet), never as "correct". Recall is
+   reported beside it, never alone -- and per source (the 9am card, the intraday radar).
 
 The labeller is versioned (LABELS_VERSION, stored on every review): v1 read
 only the 9am card, so radar-seen names read as DETECTION_FAILURE, radar
@@ -36,6 +41,8 @@ from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 Bar = Tuple[int, float, float, float, float, float]
 
 LABELS_VERSION = "miss_labels_v2"
+EXECUTABLE_BASIS = ("one entry at the 09:30 open, no alert or human latency, +5% target before -3% stop "
+                    "(same bar = stop): an upper bound on catchable moves")
 LABELS = ("UNIVERSE_COVERAGE", "DATA_INTERRUPTION", "CATALYST_MISSED", "DETECTION_FAILURE",
           "STRATEGY_REJECTION", "RISK_LIQUIDITY_EXCLUSION", "ALERT_EXECUTION_FAILURE")
 _LIQUIDITY_WORDS = ("liquidity", "avg volume", "dollar volume", "spread", "price ", "risk", "theme")
@@ -138,8 +145,10 @@ class AuditReport:
     caught_by: Dict[str, int] = field(default_factory=dict)
     seen_by: Dict[str, int] = field(default_factory=dict)
     labels: Dict[str, int] = field(default_factory=lambda: {k: 0 for k in LABELS})
-    correct_rejections: int = 0
+    correct_rejections: int = 0      # rejected, moved +5%, but no executable move (GAP_ONLY)
     wrong_rejections: int = 0
+    quiet_rejections: int = 0        # rejected, never reached +5%: nothing to get right
+    undetermined_rejections: int = 0  # rejected, ordering unknown or not in the reviewed market list
     rows: List[Dict[str, object]] = field(default_factory=list)
 
     @property
@@ -167,9 +176,11 @@ def audit(session_date: str, moves: Iterable[DayMove], *, universe: Set[str], da
     rep = AuditReport(session_date)
     minute_bars = minute_bars or {}
     seen_moves = set()
+    opp_of: Dict[str, str] = {}
     for m in moves:
         seen_moves.add(m.symbol)
         opp = opportunity(m, bars=minute_bars.get(m.symbol), rth_open_ts=rth_open_ts)
+        opp_of[m.symbol] = opp
         if opp == "NONE":
             continue
         rep.movers += 1
@@ -200,9 +211,20 @@ def audit(session_date: str, moves: Iterable[DayMove], *, universe: Set[str], da
             if lab in ("STRATEGY_REJECTION", "RISK_LIQUIDITY_EXCLUSION"):
                 rep.wrong_rejections += 1
         rep.rows.append(row)
-    # Rejected names that offered NO executable move: the rules were right.
+    # A CORRECT rejection is a rejected name that moved (+5% at the peak) yet offered no executable
+    # move (GAP_ONLY): the rules were right about something that looked like an opportunity. A
+    # rejected name that never moved had nothing to get right (quiet), and one whose ordering is
+    # unknown or that is missing from the reviewed market list cannot be judged (undetermined).
+    # Counting those as "correct" inflated the figure (audit 2026-09-25 U54).
     exec_syms = {r["symbol"] for r in rep.rows if r.get("opportunity") == "EXECUTABLE"}
     for sym, r in radar.items():
-        if r.rejected_reason and sym not in exec_syms:
+        if not r.rejected_reason or sym in exec_syms:
+            continue
+        opp = opp_of.get(sym)
+        if opp == "GAP_ONLY":
             rep.correct_rejections += 1
+        elif opp == "NONE":
+            rep.quiet_rejections += 1
+        else:
+            rep.undetermined_rejections += 1
     return rep

@@ -57,7 +57,8 @@ def test_notes_read_back_newest_first_and_filter_by_day_and_kind():
 # ---- scorecard -------------------------------------------------------------
 
 def _rows(n, wins, **stamp):
-    return [{"symbol": f"S{i}", "outcome": "WIN" if i < wins else "LOSS", "baseline": "ELIGIBLE", **stamp}
+    return [{"symbol": f"S{i}", "outcome": "WIN" if i < wins else "LOSS",
+             "execution": "WIN" if i < wins else "LOSS", "baseline": "ELIGIBLE", **stamp}
             for i in range(n)]
 
 
@@ -81,8 +82,26 @@ def test_research_that_separates_winners_is_credited_and_one_that_hurts_is_flagg
 
 
 def test_no_fills_are_counted_but_never_decided():
-    r = SC._rate([{"outcome": "NO_FILL"}, {"outcome": "WIN"}, {"outcome": "LOSS"}])
+    r = SC._rate([{"execution": "NO_FILL"}, {"execution": "WIN"}, {"execution": "LOSS"}])
     assert (r["candidates"], r["decided"], r["no_fill"], r["win_rate"]) == (3, 2, 1, 0.5)
+
+
+def test_the_scorecard_grades_the_order_with_costs_and_never_pools_the_frictionless_grade():
+    # Audit 2026-09-25 U12: graded without the stop-limit or costs, yet read against 37.5%.
+    store = MemoryStore()
+    store.put("edge_card_outcomes", "2026-09-22", {"day": "2026-09-22", "rows": [   # before the fix
+        {"symbol": "OLD", "outcome": "WIN", "baseline": "ELIGIBLE", "auto": "ELIGIBLE"}]})
+    store.put("edge_card_outcomes", "2026-09-23", {"day": "2026-09-23", "rows": [
+        # the forecast touched the target, but the order never filled inside its limit
+        {"symbol": "GAP", "outcome": "WIN", "execution": "NO_FILL", "baseline": "ELIGIBLE", "auto": "ELIGIBLE"},
+        {"symbol": "OK", "outcome": "WIN", "execution": "WIN", "execution_pnl_usd": 47.9,
+         "baseline": "ELIGIBLE", "auto": "ELIGIBLE"}]})
+    sc = SC.scorecard(store)
+    base = sc["base_rate_all_gappers"]
+    assert (base["candidates"], base["decided"], base["wins"], base["no_fill"]) == (2, 1, 1, 1)
+    assert base["avg_pnl_usd"] == 47.9
+    assert sc["rows_without_execution_grade"] == 1 and "10 bps" in sc["basis"]
+    assert sc["break_even"] == 0.4 and sc["break_even_before_costs"] == 0.375
 
 
 def test_research_quality_counts_quarantines_by_reviewer():
@@ -115,7 +134,32 @@ def test_the_paper_view_joins_orders_to_their_forecasts():
     store.put("edge_paper", f"{f.forecast_id}|paper", {"forecast_id": f.forecast_id, "state": "submitted"})
     out = RO.view(store, "paper")
     assert out["day"] == "2026-09-23" and out["orders"][0]["paper_state"] == "submitted"
-    assert "no real money" in out["note"]
+    assert "no real money" in out["note"] and out["orders"][0]["broker_exits"] == []
+
+
+def test_the_paper_view_shows_every_exit_fill_not_only_the_entry():
+    # Audit 2026-09-25 U63: the view showed the entry only; target/stop legs and the time exit were hidden.
+    store = MemoryStore()
+    lg = Ledger(store)
+    lg.register(GAP_AND_GO_AUTO, now=ts(8, 0))
+    f = issue(GAP_AND_GO_AUTO, symbol="SHOP", session_date=date(2026, 9, 23), entry_ref=146.71, issued_at=ts(9, 10))
+    lg.record(f, now=ts(9, 10))
+    store.put("edge_paper", f"{f.forecast_id}|paper", {"forecast_id": f.forecast_id, "state": "submitted",
+                                                       "tx_closes": [{"order_id": "close1", "qty": 2}]})
+    store.put("edge_paper_orders", "2026-09-23", {"day": "2026-09-23", "orders": [
+        {"id": "o1", "client_order_id": f"{f.forecast_id}-entry", "status": "filled", "filled_qty": "6",
+         "filled_avg_price": "148.30", "legs": [
+             {"id": "tp", "type": "limit", "status": "canceled", "filled_qty": "0"},
+             {"id": "sl", "type": "stop", "status": "canceled", "filled_qty": "0"}]},
+        {"id": "t1", "client_order_id": f"{f.forecast_id}-tx", "type": "market", "status": "filled",
+         "filled_qty": "4", "filled_avg_price": "149.10"},
+        {"id": "close1", "client_order_id": "alpaca-own-id", "type": "market", "status": "filled",
+         "filled_qty": "2", "filled_avg_price": "149.00"},
+        {"id": "x", "client_order_id": "someone-else-tx", "type": "market", "status": "filled"}]})
+    exits = RO.view(store, "paper")["orders"][0]["broker_exits"]
+    assert [(e["role"], e["status"], e["filled_avg_price"]) for e in exits] == [
+        ("target", "canceled", None), ("stop", "canceled", None),
+        ("time_exit", "filled", "149.10"), ("position_close", "filled", "149.00")]
 
 
 def test_the_note_mcp_tool_writes_and_refuses_bad_input(monkeypatch):

@@ -81,3 +81,43 @@ def test_non_events_never_qualify(headline):
 @pytest.mark.parametrize("headline,kind", sorted(SELL_SIGNALS.items()))
 def test_dilution_and_splits_are_caught_first(headline, kind):
     assert C.classify(headline) == kind
+
+
+# Audit 2026-09-25 U14: a negative regulatory or clinical outcome is news AGAINST a long.
+# It is neither an E4 catalyst nor dilution (tightening only), and the next step on the
+# same path -- a lifted hold, a resubmission -- is the regulatory event again.
+REGULATORY_SETBACKS = [
+    "FDA Rejects Acme's Lead Drug Candidate",
+    "Acme Receives Complete Response Letter From FDA for ACM-101",
+    "FDA Declines to Approve Acme Therapy",
+    "FDA Places Clinical Hold on Acme Phase 2 Trial",
+    "Acme Phase 3 Trial Fails to Meet Primary Endpoint",
+    "Acme's Phase 2 Study Misses Primary Endpoint",
+    "FDA Advisory Panel Votes Against Acme's Drug",
+]
+REGULATORY_PROGRESS = {
+    "FDA Lifts Clinical Hold on Acme Trial": C.FDA,
+    "Acme Resubmits NDA After Complete Response Letter": C.FDA,
+    "Acme Phase 3 Meets Primary Endpoint": C.FDA,
+    "FDA Approves Acme Drug": C.FDA,
+}
+
+
+@pytest.mark.parametrize("headline", REGULATORY_SETBACKS)
+def test_a_regulatory_setback_is_never_a_catalyst_for_a_long(headline):
+    kind = C.classify(headline)
+    assert kind == C.REGULATORY_SETBACK and kind not in C.COMPANY_SPECIFIC
+    e = C.make("ACME", headline, source="t", url="u", published_at=1, first_seen_at=1)
+    assert not e.company_specific and not e.dilutive
+
+
+@pytest.mark.parametrize("headline,kind", sorted(REGULATORY_PROGRESS.items()))
+def test_regulatory_progress_stays_a_catalyst(headline, kind):
+    assert C.classify(headline) == kind
+
+
+def test_non_dilutive_financing_alone_is_not_dilution():
+    # "non-dilutive" is not an offering word in this tagger; only a real offering or warrants read
+    # as dilution (the operator kept warrant-in-contract headlines as dilution -- not loosened here).
+    assert C.classify("Acme Secures $20 Million Non-Dilutive Financing") != C.OFFERING
+    assert C.classify("Acme Announces Non-Dilutive Funding From BARDA Contract") == C.CONTRACT

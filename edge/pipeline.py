@@ -632,7 +632,7 @@ def miss_review(get, ledger: Ledger, *, day: date, now: int, top: int = 50,
             row.update(details.get(row["symbol"]) or {"seen_by": []})
             if catalysts.get(row["symbol"]):
                 row["stored_catalyst"] = catalysts[row["symbol"]]
-    out = {"day": day.isoformat(), "labels_version": M.LABELS_VERSION,
+    out = {"day": day.isoformat(), "labels_version": M.LABELS_VERSION, "executable_basis": M.EXECUTABLE_BASIS,
            "movers": rep.movers, "executable": rep.executable,
            "gap_only": rep.gap_only, "unknown_ordering": rep.unknown_ordering, "caught": rep.caught,
            "recall": rep.recall, "caught_by": rep.caught_by,
@@ -640,7 +640,8 @@ def miss_review(get, ledger: Ledger, *, day: date, now: int, top: int = 50,
            "card_seen": rep.seen_by.get("card", 0), "radar_seen": rep.seen_by.get("radar", 0),
            "radar_names": len(radar_rows), "card_names": len(card.get("rows") or []),
            "labels": rep.labels, "correct_rejections": rep.correct_rejections,
-           "wrong_rejections": rep.wrong_rejections, "rows": rep.rows,
+           "wrong_rejections": rep.wrong_rejections, "quiet_rejections": rep.quiet_rejections,
+           "undetermined_rejections": rep.undetermined_rejections, "rows": rep.rows,
            "coverage_note": coverage}
     store.put("edge_miss", day.isoformat(), out)
     return {"status": "reviewed", **{k: out[k] for k in (
@@ -810,6 +811,7 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None) -> Dict[str,
         guarded("card", lambda: morning_card(get, ledger, now=now))
         if http is not None:
             guarded("paper_submit", lambda: _paper().submit(http, ledger, day=ds, experiments=EXPERIMENTS))
+            _paper_refused(out, "paper_submit")
         card = ledger.store.get("edge_cards", ds)
         if notifier is not None and card:
             guarded("notify_card", lambda: _notify().once(notifier, ledger.store, day=ds, kind="card",
@@ -830,6 +832,7 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None) -> Dict[str,
         if http is not None:
             guarded("paper_submit_intraday", lambda: _paper().submit(http, ledger, day=ds,
                                                                       experiments=I.PAPER_SPECS))
+            _paper_refused(out, "paper_submit_intraday")
     if http is not None and within((9, 45), (15, 0)):      # intraday entries expire from ~09:50
         guarded("paper_cancel", lambda: _paper().cancel_unfilled_entries(http, ledger, day=ds,
                                                                           experiments=all_specs, now=now))
@@ -872,6 +875,16 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None) -> Dict[str,
     if len(out) == 1:
         out["status"] = "idle"
     return out
+
+
+def _paper_refused(out: Dict[str, Any], step: str) -> None:
+    """A definite broker refusal of a paper entry (403 buying power, 422 rejected...) is an
+    execution fact, not a quiet day: it becomes an "error" entry, so _problems sends one PROBLEM
+    text per kind per day (audit 2026-09-25 U60). Transient failures retry and are not raised."""
+    refused = (out.get(step) or {}).get("refused") or []
+    if refused:
+        out[f"{step}_refused"] = {"status": "error",
+                                  "error": "paper broker REFUSED entry order(s): " + "; ".join(refused)}
 
 
 RESOLVE_OK = {"resolved", "nothing_pending"}

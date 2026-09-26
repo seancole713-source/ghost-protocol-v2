@@ -57,13 +57,21 @@ def release_allowed(required: Iterable[str], report: Dict[str, Dict[str, object]
 
 
 def banner(n_setups: int, blocking: Dict[str, List[str]]) -> str:
-    """The first line of every morning answer."""
+    """The first line of every morning answer.
+
+    The shadow card and paper orders are recorded regardless of this check; the pause is what
+    a LIVE release would do. So a card that issued forecasts never reads "Trading signals
+    paused" beside them (audit 2026-09-25 U52): it says how many setups were recorded and that
+    a live release would have been paused."""
     paused = {k: v for k, v in blocking.items() if v}
-    if paused and len(paused) == len(blocking):
-        return "Trading signals paused. Market-data coverage incomplete: " + "; ".join(
-            sorted({p for v in paused.values() for p in v}))
     head = (f"{n_setups} setup{'s' if n_setups != 1 else ''}." if n_setups
             else "No qualifying setups.")
+    if paused and len(paused) == len(blocking):
+        problems = "; ".join(sorted({p for v in paused.values() for p in v}))
+        if n_setups:
+            return (f"{n_setups} setup{'s' if n_setups != 1 else ''} recorded (shadow + paper only). "
+                    f"A live release would be paused: market-data coverage incomplete: {problems}")
+        return "Trading signals paused. Market-data coverage incomplete: " + problems
     if paused:
         return head + " Partial coverage -- paused: " + ", ".join(sorted(paused)) + "."
     return head + " Coverage healthy."

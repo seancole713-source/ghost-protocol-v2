@@ -363,6 +363,7 @@ def test_a_radar_only_name_that_expired_is_a_strategy_rejection_not_a_detection_
     assert row["seen_by"] == ["radar"] and row["radar_state"] == "EXPIRED" and row["radar_detected_at"] == ts(9, 50)
     assert row["why"] == "intraday_continuation: rvol_tod 1.4 fails >= 2x"
     assert review["labels_version"] == out["labels_version"] == "miss_labels_v2"
+    assert "09:30 open" in review["executable_basis"] and "upper bound" in review["executable_basis"]   # U13
     assert (review["radar_seen"], review["card_seen"], review["radar_names"]) == (1, 1, 1)
     from edge import notify as N
     assert "radar saw it, rule rejected: 1" in N.misses_text(review)
@@ -452,6 +453,9 @@ def test_after_the_close_every_priced_candidate_is_graded_as_a_labelled_counterf
     rec = ledger.store.get("edge_card_outcomes", DAY.isoformat())
     shop = next(r for r in rec["rows"] if r["symbol"] == "SHOP")
     assert shop["outcome"] == "WIN" and shop["auto"] == "ELIGIBLE" and "counterfactual" in rec["label"]
+    # U12: every row also carries the order-as-written grade (stop-limit + 10 bps a side)
+    assert shop["execution"] in ("WIN", "LOSS", "TIME_EXIT", "NO_FILL", "UNRESOLVED")
+    assert "10 bps" in rec["basis"] and "execution" in out
     # never part of any experiment's record
     assert ledger.report(P.EID)["forecasts"] == 1
     again = SC.grade_card(FakeAlpaca("evening"), ledger.store, day=DAY, now=ts(16, 30))
