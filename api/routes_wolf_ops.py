@@ -526,6 +526,14 @@ def wolf_signal_alert_check(x_cron_secret: str = Header(default="")):
     if not _cron_ok(x_cron_secret):
         raise HTTPException(status_code=403)
 
+    from core.engine_mode import core_engine_mode, core_is_research
+    if core_is_research():
+        # CORE_ENGINE_MODE=research (default): a core pick is never pushed as a
+        # BUY/SELL trade alert (Telegram, email or SMS). Picks, ledgers and the
+        # research card are unaffected; set CORE_ENGINE_MODE=live to re-arm.
+        return {"ok": True, "sent": [], "core_engine_mode": core_engine_mode(),
+                "skipped_reason": "core engine is research-only (CORE_ENGINE_MODE=research)"}
+
     conf_floor = float(os.getenv("WOLF_ALERT_CONFIDENCE_FLOOR", "0.80"))
     daily_cap = int(os.getenv("WOLF_ALERT_DAILY_CAP", "2"))
     day_start = int(time.time()) - (int(time.time()) % 86400)

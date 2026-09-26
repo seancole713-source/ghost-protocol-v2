@@ -754,15 +754,24 @@ def _build_daily_card_data(pick: dict) -> dict:
             gs_score = float(_gs.get("score") or 0)
     except Exception:
         pass
+    from core.engine_mode import core_engine_mode, core_is_research
     from core.risk_discipline import position_sizing_plan, pick_action_tier
-    sizing = position_sizing_plan(entry, stop, confidence=conf)
+    if core_is_research():
+        # CORE_ENGINE_MODE=research: a core pick is never sized or tiered.
+        sizing, action, conviction = None, None, None
+    else:
+        sizing = position_sizing_plan(entry, stop, confidence=conf)
+        action = pick_action_tier(conf, gs_score)
+        conviction = conviction_from_confidence(conf)
     return {
         "date": _dt.datetime.now(tz).strftime("%A %b %d, %Y"),
         "model_version": "v3.2",
+        "core_engine_mode": core_engine_mode(),
+        "symbol": pick.get("symbol"),
         "direction": direction,
         "confidence": conf,
-        "conviction": conviction_from_confidence(conf),
-        "pick_action": pick_action_tier(conf, gs_score),
+        "conviction": conviction,
+        "pick_action": action,
         "position_sizing": sizing,
         "current_price": entry,
         "buy_point": entry,
@@ -799,7 +808,11 @@ def _build_silence_card_data(diag: dict) -> dict:
         if label:
             reason = str(label)
         if floor:
-            reason += " (floor " + str(int(round(float(floor) * 100))) + "%)"
+            from core.engine_mode import core_is_research, fmt_raw_prob
+            if core_is_research():
+                reason += " (floor " + fmt_raw_prob(floor) + ", raw prob)"
+            else:
+                reason += " (floor " + str(int(round(float(floor) * 100))) + "%)"
     except Exception:
         pass
     score = "--"
@@ -3541,7 +3554,12 @@ def health_audit_history(limit: int = 20):
 
 def _norm_pred(r):
     _conf = r.get("confidence") or r.get("confidence_score") or 0
-    if _conf >= 0.90:
+    from core.engine_mode import core_is_research
+    if core_is_research():
+        # CORE_ENGINE_MODE=research: API consumers get no %-of-account size
+        # for a core pick (the stored pick row is untouched).
+        _pos = None
+    elif _conf >= 0.90:
         _pos = 5.0
     elif _conf >= 0.85:
         _pos = 4.0

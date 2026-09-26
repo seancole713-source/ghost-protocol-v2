@@ -6,9 +6,18 @@ assembly (querying picks, track record, news influence) lives in wolf_app's
 scheduler jobs; this module only turns those facts into the message text.
 
 Output uses Telegram HTML parse_mode (<b> for headers), matching core.telegram._send.
+
+CORE_ENGINE_MODE (core.engine_mode): every core card has a research-only form,
+used by default. It opens with RESEARCH_HEADER, shows the raw model
+probability labelled "uncalibrated" instead of a confidence percent, and
+carries no action tier, no position size, no share count and no dollar P&L.
+The pre-existing layouts are unchanged and used only when
+CORE_ENGINE_MODE=live is set explicitly.
 """
 import os
 from typing import Any, Dict, List, Optional
+
+from core.engine_mode import RESEARCH_HEADER, core_is_research, fmt_raw_prob
 
 NL = chr(10)
 
@@ -58,7 +67,66 @@ def _signed_pct(v: Optional[float]) -> str:
     return ("+" if v >= 0 else "") + format(float(v), ".1f") + "%"
 
 
-def format_daily_card(d: Dict[str, Any]) -> str:
+def format_research_daily_card(d: Dict[str, Any]) -> str:
+    """Research-only form of the daily card (CORE_ENGINE_MODE=research).
+
+    Same inputs as the live card. Deliberately ignores ``pick_action``,
+    ``position_sizing``, ``conviction`` and ``rates``: the served probability
+    is not calibrated, so it is shown as a bare number, never as a
+    confidence tier or a size.
+    """
+    direction = d.get("direction", "UP")
+    news = d.get("news") or {}
+    infl = int(news.get("influence_pct", 0) or 0)
+    news_summary = news.get("summary")
+    tr = d.get("track_record") or {}
+    last5 = tr.get("last5") or []
+    lines = [
+        "<b>" + RESEARCH_HEADER + "</b>",
+        "<b>GHOST PROTOCOL | Core v3 research note</b>",
+        "Date: " + str(d.get("date", "")),
+        "Model Version: " + str(d.get("model_version") or _app_version()),
+        "",
+        "<b>MODEL CALL (research):</b>",
+    ]
+    if d.get("symbol"):
+        lines.append("Symbol: " + str(d.get("symbol")))
+    lines += [
+        "Direction: " + str(direction),
+        "Raw model probability: " + fmt_raw_prob(d.get("confidence"))
+        + " (uncalibrated - not a win rate)",
+        "",
+        "<b>REFERENCE LEVELS (only used to score the call):</b>",
+        "Reference price: " + _fmt_price(d.get("current_price")),
+        "Model target: " + _fmt_price(d.get("sell_target")),
+        "Model stop: " + _fmt_price(d.get("stop_loss")),
+        "Target distance: " + _signed_pct(d.get("expected_move_pct")),
+        "",
+        "<b>NEWS:</b>",
+    ]
+    if infl > 0 and news_summary:
+        lines.append(str(news_summary))
+    elif infl > 0:
+        lines.append("News moved the raw probability this cycle.")
+    else:
+        lines.append("No material news in last 48hrs.")
+    lines += [
+        "",
+        "<b>RESEARCH RECORD:</b>",
+        "All-time: " + str(tr.get("wins", 0)) + "-" + str(tr.get("losses", 0))
+        + " (" + str(tr.get("win_rate_pct", 0)) + "%)",
+        "Last 5: " + (" ".join(last5) if last5 else "--"),
+        "",
+        "Not sized. Core v3 is research-only until an out-of-sample study "
+        "shows a lane that beats its base rate.",
+    ]
+    return NL.join(lines)
+
+
+def format_daily_card(d: Dict[str, Any], mode: Optional[str] = None) -> str:
+    """Daily card. Research-only form unless CORE_ENGINE_MODE (or ``mode``) is 'live'."""
+    if core_is_research(mode):
+        return format_research_daily_card(d)
     direction = d.get("direction", "UP")
     conf = float(d.get("confidence") or 0)
     conf_pct = int(round(conf * 100))
@@ -138,7 +206,43 @@ def format_daily_card(d: Dict[str, Any]) -> str:
     return NL.join(lines)
 
 
-def format_weekly_summary(d: Dict[str, Any]) -> str:
+def format_research_weekly_summary(d: Dict[str, Any]) -> str:
+    """Research-only weekly record: outcomes only, no followed-pick dollar P&L."""
+    f = d.get("followed") or {}
+    at = d.get("alltime") or {}
+    top = d.get("top_pick") or {}
+    weak = d.get("weakest_pick") or {}
+    nd = d.get("news_driven") or {}
+
+    def _raw(pick: Dict[str, Any]) -> str:
+        pct = pick.get("confidence_pct")
+        try:
+            return fmt_raw_prob(float(pct) / 100.0)
+        except (TypeError, ValueError):
+            return "--"
+
+    lines = [
+        "<b>" + RESEARCH_HEADER + "</b>",
+        "<b>GHOST PROTOCOL | Core v3 weekly research record</b>",
+        "Week of " + str(d.get("week_range", "")),
+        "",
+        "Resolved research calls: " + str(f.get("wins", 0)) + "W / " + str(f.get("losses", 0))
+        + "L — " + str(f.get("win_rate_pct", 0)) + "%",
+        "All-time: " + str(at.get("win_rate_pct", 0)) + "% ("
+        + str(at.get("wins", 0)) + "W/" + str(at.get("losses", 0)) + "L)",
+        "Model retrains in: " + str(d.get("retrain_in_days", "--")) + " days",
+        "",
+        "Highest raw model prob (uncalibrated): " + str(top.get("day", "--")) + " @ " + _raw(top),
+        "Lowest raw model prob (uncalibrated): " + str(weak.get("day", "--")) + " @ " + _raw(weak),
+        "News-moved calls: " + str(nd.get("count", 0)) + " of " + str(nd.get("total", 0)),
+    ]
+    return NL.join(lines)
+
+
+def format_weekly_summary(d: Dict[str, Any], mode: Optional[str] = None) -> str:
+    """Weekly card. Research-only form unless CORE_ENGINE_MODE (or ``mode``) is 'live'."""
+    if core_is_research(mode):
+        return format_research_weekly_summary(d)
     f = d.get("followed") or {}
     at = d.get("alltime") or {}
     pnl = float(f.get("pnl_usd", 0) or 0)
@@ -203,18 +307,26 @@ _SKIP_SHORT = {
 }
 
 
-def format_candidate_lines(candidates: List[Dict[str, Any]]) -> List[str]:
-    """Ranked near-fire leaderboard lines for the silence card."""
+def format_candidate_lines(candidates: List[Dict[str, Any]], raw_prob: bool = False) -> List[str]:
+    """Ranked near-fire leaderboard lines for the silence card.
+
+    ``raw_prob=True`` (research mode) prints the bare, uncalibrated model
+    probability (``p=0.72``) instead of a percent."""
     lines: List[str] = []
     for i, c in enumerate(candidates or [], 1):
         prob = c.get("up_prob")
         if prob is None:
             continue
         sym = str(c.get("symbol") or "?")
-        part = f"{i}. {sym} {float(prob) * 100:.1f}%"
         need = c.get("min_win_proba")
-        if need is not None:
-            part += f" (needs {float(need) * 100:.0f}%)"
+        if raw_prob:
+            part = f"{i}. {sym} p={fmt_raw_prob(prob)}"
+            if need is not None:
+                part += f" (floor {fmt_raw_prob(need)})"
+        else:
+            part = f"{i}. {sym} {float(prob) * 100:.1f}%"
+            if need is not None:
+                part += f" (needs {float(need) * 100:.0f}%)"
         if c.get("fired"):
             part += " — FIRED"
         else:
@@ -224,7 +336,60 @@ def format_candidate_lines(candidates: List[Dict[str, Any]]) -> List[str]:
     return lines
 
 
-def format_silence_card(d: Dict[str, Any]) -> str:
+def format_research_silence_card(d: Dict[str, Any]) -> str:
+    """Research-only form of the no-pick card: no trade-action line, raw probs."""
+    score = d.get("ghost_score", "--")
+    bias = d.get("bias_label") or "composite bias"
+    next_scan = d.get("next_scan_note") or next_scan_note()
+    lines = [
+        "<b>" + RESEARCH_HEADER + "</b>",
+        "<b>GHOST PROTOCOL | Core v3 research note</b>",
+        "Status: no core model call today",
+        "Ghost Score: " + str(score) + "/100 (" + str(bias) + ")",
+        "Trade action: NO TRADE (core v3 is research-only)",
+        "Reason: " + str(d.get("reason", "No qualifying signal")),
+    ]
+    cand_lines = format_candidate_lines(d.get("top_candidates") or [], raw_prob=True)
+    if cand_lines:
+        lines += ["", "<b>Closest candidates (raw model prob, uncalibrated):</b>"] + cand_lines
+    lines.append("Next scan: " + str(next_scan))
+    return NL.join(lines)
+
+
+def format_research_picks_card(picks: List[Dict[str, Any]], day: str,
+                               is_update: bool = False,
+                               week_stats: Optional[Dict[str, Any]] = None) -> str:
+    """Research-only form of the legacy multi-pick morning card
+    (core.telegram.send_morning_card): no $100-in/$-out, no share size."""
+    label = "open research calls" if is_update else "research calls"
+    parts = ["<b>" + RESEARCH_HEADER + "</b>",
+             "<b>Ghost core v3 " + label + " -- " + str(day) + "</b>"]
+    if not picks:
+        parts.append("No core model calls today.")
+    for i, p in enumerate((picks or [])[:10], 1):
+        parts.append("")
+        parts.append(str(i) + ". <b>" + str(p.get("symbol", "")) + " -- "
+                     + str(p.get("direction", "UP")) + "</b> raw model prob "
+                     + fmt_raw_prob(p.get("confidence")) + " (uncalibrated)")
+        parts.append("   Reference: " + _fmt_price(p.get("entry_price"))
+                     + " | model target " + _fmt_price(p.get("target_price"))
+                     + " | model stop " + _fmt_price(p.get("stop_price")))
+    if week_stats:
+        wins = week_stats.get("wins", 0)
+        losses = week_stats.get("losses", 0)
+        if wins + losses > 0:
+            parts.append("")
+            parts.append("Last 7 days: " + str(wins) + "W/" + str(losses) + "L (research record)")
+        parts.append("All-time: " + str(week_stats.get("alltime_wr", 0)) + "% (research record)")
+    parts.append("")
+    parts.append("Not sized. Core v3 is research-only.")
+    return NL.join(parts)
+
+
+def format_silence_card(d: Dict[str, Any], mode: Optional[str] = None) -> str:
+    """No-pick card. Research-only form unless CORE_ENGINE_MODE (or ``mode``) is 'live'."""
+    if core_is_research(mode):
+        return format_research_silence_card(d)
     score = d.get("ghost_score", "--")
     bias = d.get("bias_label") or "composite bias"
     trade_action = d.get("trade_action") or "NO TRADE"

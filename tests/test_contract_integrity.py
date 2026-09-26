@@ -62,6 +62,7 @@ class _AlertCursor:
 def test_alert_candidate_query_excludes_research_picks(monkeypatch):
     """The Telegram/email sweep must filter research picks — they are learning
     probes fired below the accuracy contract, not actionable signals."""
+    monkeypatch.setenv("CORE_ENGINE_MODE", "live")  # pre-research-mode behaviour
     monkeypatch.setenv("CRON_SECRET", "")
     cur = _AlertCursor()
 

@@ -183,7 +183,8 @@ def test_format_candidate_lines():
     assert len(lines) == 2  # missing up_prob dropped
 
 
-def test_silence_card_includes_leaderboard():
+def test_silence_card_includes_leaderboard(monkeypatch):
+    monkeypatch.setenv("CORE_ENGINE_MODE", "live")  # pre-research-mode behaviour
     from core.telegram_cards import format_silence_card
 
     out = format_silence_card({

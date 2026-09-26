@@ -58,7 +58,8 @@ def test_format_silence_card_shows_no_trade():
     assert "BUY NOW" not in out
 
 
-def test_format_daily_card_includes_sizing():
+def test_format_daily_card_includes_sizing(monkeypatch):
+    monkeypatch.setenv("CORE_ENGINE_MODE", "live")  # pre-research-mode behaviour
     from core.telegram_cards import format_daily_card
 
     out = format_daily_card({

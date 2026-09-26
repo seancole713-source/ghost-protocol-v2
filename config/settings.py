@@ -47,6 +47,12 @@ class Settings(BaseSettings):
     V3_SECTOR_FEATURE: str = "off"
     V3_ENSEMBLE: str = "off"
     
+    # ── Core engine role (operator decision 2026-09-26, see core/engine_mode.py) ──
+    # "research" (default): core v3 picks are never sent as trade alerts or
+    # sized; operator copy is research-only. "live" restores the old behaviour
+    # and must be set explicitly. Gates/thresholds are unaffected.
+    CORE_ENGINE_MODE: str = "research"
+
     # ── Objective Mode ──────────────────────────────────────────────────
     OBJECTIVE_MODE: str = "balanced"
     OBJECTIVE_AUTO_MODE_ENABLED: str = "0"
