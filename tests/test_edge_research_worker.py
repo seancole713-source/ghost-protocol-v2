@@ -560,3 +560,22 @@ def test_a_pause_limit_keeps_what_was_written():
                             store, symbol="SHOP", day="2026-09-23", now=ts(8, 35))
     assert out["status"] == "researched" and out["usable"] == 1
     assert store.get("edge_research", "2026-09-23|SHOP")["author_stop"] == "pause_limit"
+
+
+def test_the_scheduler_retries_a_failed_symbol_only_after_its_backoff():
+    """research_step used to skip any symbol with a record, so a failed call's one retry never ran."""
+    from edge import research_worker as RW
+    from edge.ledger import MemoryStore
+    s = MemoryStore()
+    s.put("edge_research", "2026-09-28|GLND", {"status": "not_researched", "call_failed": True,
+                                                "attempts": 1, "retry_after": 1000})
+    assert RW.due(s, day="2026-09-28", symbol="GLND", now=999) is False
+    assert RW.due(s, day="2026-09-28", symbol="GLND", now=1000) is True
+    s.put("edge_research", "2026-09-28|GLND", {"status": "not_researched", "call_failed": True,
+                                                "attempts": RW.MAX_ATTEMPTS, "retry_after": 0})
+    assert RW.due(s, day="2026-09-28", symbol="GLND", now=5000) is False
+    s.put("edge_research", "2026-09-28|WHLR", {"status": "researched"})
+    assert RW.due(s, day="2026-09-28", symbol="WHLR", now=5000) is False
+    import inspect
+    from edge import pipeline as P
+    assert "rw.due(" in inspect.getsource(P.research_step)

@@ -487,7 +487,7 @@ def research_step(get, ledger: Ledger, *, day: date, now: int, client=None) -> D
         return {"status": "no_candidates_yet", "note": "no mover passed gap + liquidity with a fresh IEX "
                                                         "price; retried next tick"}
     for s in queue:
-        if not ledger.store.get("edge_research", f"{day.isoformat()}|{s}"):
+        if rw.due(ledger.store, day=day.isoformat(), symbol=s, now=now):
             import requests as _rq
             return rw.research_symbol(client or rw._client(), ledger.store, symbol=s, day=day.isoformat(), now=now,
                                       http=_rq)
