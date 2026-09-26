@@ -62,13 +62,41 @@ def verify_oauth_bearer(request: Request) -> bool:
     return verify_access_token(bearer, public_base_url(request))
 
 
+def _check_lockout(request: Request) -> str:
+    """Refuse (429) a client locked out for wrong credentials; return its key."""
+    from shared.request_guard import CREDENTIAL_LOCKOUT, client_ip
+
+    ip = client_ip(request)
+    retry = CREDENTIAL_LOCKOUT.retry_after(ip)
+    if retry:
+        raise HTTPException(
+            status_code=429, detail="Too many failed attempts",
+            headers={"Retry-After": str(retry)},
+        )
+    return ip
+
+
 def is_mcp_authenticated(request: Request, *, path_token: str | None = None) -> bool:
+    """True if any credential is valid.
+
+    U18: a WRONG static token (path segment, X-Ghost-Mcp-Token, or non-JWT
+    Bearer) counts toward the shared failed-credential lockout, and a locked
+    client is refused with 429 before any compare. JWTs are not counted: an
+    expired access token is the normal OAuth refresh trigger, and HS256
+    signatures are not guessable online.
+    """
+    ip = _check_lockout(request)
+    presented_static = bool((path_token or "").strip()) or bool(extract_mcp_token(request))
     if verify_mcp_path_token(path_token):
         return True
     if verify_mcp_token(extract_mcp_token(request)):
         return True
     if verify_oauth_bearer(request):
         return True
+    if presented_static:
+        from shared.request_guard import CREDENTIAL_LOCKOUT
+
+        CREDENTIAL_LOCKOUT.record_failure(ip, kind="mcp_token")
     return False
 
 
@@ -100,12 +128,17 @@ def _admin_session_valid(request: Request) -> bool:
 
 def require_portfolio_auth(request: Request) -> None:
     require_https(request)
+    ip = _check_lockout(request)
     if verify_mcp_token(extract_mcp_token(request)):
         return
     if verify_oauth_bearer(request):
         return
     if _admin_session_valid(request):
         return
+    if extract_mcp_token(request):
+        from shared.request_guard import CREDENTIAL_LOCKOUT
+
+        CREDENTIAL_LOCKOUT.record_failure(ip, kind="mcp_token")
     raise HTTPException(status_code=401, detail="Unauthorized")
 
 

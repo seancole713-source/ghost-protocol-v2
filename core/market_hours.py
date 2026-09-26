@@ -36,12 +36,24 @@ _NYSE_FULL_DAY_HOLIDAYS = frozenset({
     "2026-09-07",  # Labor Day
     "2026-11-26",  # Thanksgiving
     "2026-12-25",  # Christmas
+    # U39: 2027 (matches edge/calendar.py, NYSE Group published schedule).
+    "2027-01-01",  # New Year's Day
+    "2027-01-18",  # Martin Luther King Jr. Day
+    "2027-02-15",  # Presidents' Day
+    "2027-03-26",  # Good Friday
+    "2027-05-31",  # Memorial Day
+    "2027-06-18",  # Juneteenth (observed; Jun 19 is a Saturday)
+    "2027-07-05",  # Independence Day (observed; Jul 4 is a Sunday)
+    "2027-09-06",  # Labor Day
+    "2027-11-25",  # Thanksgiving
+    "2027-12-24",  # Christmas (observed; Dec 25 is a Saturday)
 })
 
 # NYSE early-close days (RTH ends 12:00 PM CT instead of 3:00 PM CT).
 _NYSE_HALF_DAYS = frozenset({
     "2026-11-27",  # Day after Thanksgiving
     "2026-12-24",  # Christmas Eve
+    "2027-11-26",  # Day after Thanksgiving
 })
 
 _HALF_DAY_CLOSE_MIN = 12 * 60  # 12:00 PM CT

@@ -107,6 +107,14 @@ def _clear_module_caches():
             wa._HEALTH_FULL_CACHE.update({"t": 0.0, "v": None})
         except Exception:
             pass
+    rg = sys.modules.get("shared.request_guard")
+    if rg is not None:
+        try:
+            # Every TestClient request shares one client key; wrong-secret
+            # tests must not lock later tests out (U18 lockout is global state).
+            rg.CREDENTIAL_LOCKOUT.reset()
+        except Exception:
+            pass
     # Circuit-breaker singletons are module-global; a test that trips one
     # (record_failure) leaks OPEN state into any later test that reads the
     # breaker without patching it — e.g. options_snapshots.record_snapshots now

@@ -40,11 +40,15 @@ async def admin_login(request: Request):
     JSON body {"secret": "..."} (no python-multipart dependency). On success
     sets an HttpOnly, SameSite=Lax cookie valid for 8h and returns {ok:true}.
     """
-    from wolf_app import _ADMIN_COOKIE, _ADMIN_TTL_S, _admin_mint_token, _client_ip, _login_throttled  # late import — shared state + monkeypatch-safe
-    if _login_throttled(_client_ip(request)):
+    from wolf_app import _ADMIN_COOKIE, _ADMIN_TTL_S, _CREDENTIAL_LOCKOUT, _admin_mint_token, _client_ip, _login_throttled  # late import — shared state + monkeypatch-safe
+    ip = _client_ip(request)
+    # U18: the per-minute throttle alone still allowed ~7k guesses/day per
+    # client; wrong secrets also feed the shared failed-credential lockout.
+    locked_for = _CREDENTIAL_LOCKOUT.retry_after(ip)
+    if locked_for or _login_throttled(ip):
         return JSONResponse(
             {"ok": False, "error": "too many attempts"},
-            status_code=429, headers={"Retry-After": "60"},
+            status_code=429, headers={"Retry-After": str(locked_for or 60)},
         )
     expected = os.environ.get("CRON_SECRET", "")
     provided = ""
@@ -54,6 +58,7 @@ async def admin_login(request: Request):
     except Exception:
         provided = ""
     if expected and not hmac.compare_digest(provided.encode("utf-8"), expected.encode("utf-8")):
+        _CREDENTIAL_LOCKOUT.record_failure(ip, kind="admin_login")
         return JSONResponse({"ok": False, "error": "invalid secret"}, status_code=401)
     resp = JSONResponse({"ok": True})
     resp.set_cookie(

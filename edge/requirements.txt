@@ -1,8 +1,11 @@
 # edge's own runtime dependencies, for when it moves to its own repository.
-# Versions match Ghost's pins so both install side by side today.
-requests
-psycopg2-binary
+# Versions match Ghost's pins (requirements.txt) so both install side by side
+# today and edge CI tests exactly what production runs (audit U23).
+requests==2.34.2
+psycopg2-binary==2.9.10
+numpy==1.26.4
+scipy==1.17.1
 scikit-learn==1.5.2
 anthropic==1.8.0
 httpx2==2.12.0
-websockets
+websockets==17.1

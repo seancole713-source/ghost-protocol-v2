@@ -1598,10 +1598,25 @@ def workflow_health() -> Dict[str, Any]:
         )
         worker_row = cur.fetchone() or (0, 0)
         worker_counts = {"registered": int(worker_row[0]), "online": int(worker_row[1])}
-    healthy = stale_leases == 0 and counts.get("dead_letter", 0) == 0
+    # U08: with every worker offline, queued work silently waits forever while
+    # this reported "healthy". Pending tasks with no online worker (or fewer
+    # online than AGENT_WORKFLOW_MIN_ONLINE_WORKERS, default 1) now degrade.
+    try:
+        min_online = max(0, int(os.getenv("AGENT_WORKFLOW_MIN_ONLINE_WORKERS", "1")))
+    except (TypeError, ValueError):
+        min_online = 1
+    issues: List[str] = []
+    if stale_leases:
+        issues.append("stale_leases")
+    if counts.get("dead_letter", 0):
+        issues.append("dead_letter_tasks")
+    if counts.get("pending", 0) > 0 and worker_counts["online"] < min_online:
+        issues.append("workers_offline")
+    healthy = not issues
     return {
         "ok": healthy,
         "status": "healthy" if healthy else "degraded",
+        "issues": issues,
         "tasks": counts,
         "evidence": validation_counts,
         "quarantine_categories": category_counts,

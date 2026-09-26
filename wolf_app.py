@@ -24,6 +24,8 @@ LOGGER = logging.getLogger("ghost")
 # F33: requests exceptions embed request URLs (Telegram /bot<TOKEN>/, Polygon
 # apiKey=...). Mask credentials in every record the root/uvicorn handlers emit.
 from shared.redaction import install_log_redaction as _install_log_redaction
+from shared.request_guard import CREDENTIAL_LOCKOUT as _CREDENTIAL_LOCKOUT
+from shared.request_guard import client_ip as _request_client_ip
 _install_log_redaction()
 
 # PR #70: suppress yfinance library noise (JSON parse errors, 429s, delisted warnings).
@@ -1563,6 +1565,49 @@ def _coverage_maintenance_job():
             except Exception:
                 pass
 
+def _leader_boot_maintenance() -> None:
+    """Boot-time ledger/model cleanup, run only by the background-work leader.
+
+    U25: this used to run in the lifespan before any leader check, so every
+    replica (including a follower booting beside the old leader) deleted model
+    and portfolio rows. It now runs when a process becomes leader (boot or
+    takeover). Every step is idempotent and individually guarded.
+    """
+    # Purge weak / legacy-schema models on startup
+    try:
+        purged = _auto_purge_bad_models()
+        if purged:
+            LOGGER.info(f"Boot purge: removed {purged} legacy ghost_models below floor")
+        pv = _purge_v3_stale_or_weak()
+        if pv:
+            LOGGER.info(f"Boot v3 purge: removed {pv} stale or sub-floor TP/SL models")
+    except Exception as _bpe:
+        LOGGER.warning("Boot purge failed: "+str(_bpe)[:60])
+
+    # PR #26: auto-purge ghost/test rows from user_portfolio on every boot.
+    # The /admin "Purge Ghost Portfolio" button (PR #23) was never run —
+    # the ZZE2E* probe-ticker rows persisted. Self-healing: deletes rows
+    # matching the ghost patterns on each startup so they can't pollute
+    # the investor portfolio totals. Legit WOLF (and any deliberately-added
+    # non-ghost symbol) is untouched.
+    try:
+        with db_conn() as _pc:
+            _pcur = _pc.cursor()
+            _pcur.execute("SELECT id, symbol FROM user_portfolio")
+            _prows = _pcur.fetchall()
+            _purged_ids = []
+            for _rid, _sym in _prows:
+                _up = str(_sym or "").strip().upper()
+                if any(_up.startswith(p) or _up == p for p in _GHOST_PORTFOLIO_PATTERNS):
+                    _pcur.execute("DELETE FROM user_portfolio WHERE id=%s", (int(_rid),))
+                    _purged_ids.append(_rid)
+            if _purged_ids:
+                LOGGER.info("Boot portfolio purge: removed %s ghost rows %s",
+                            len(_purged_ids), _purged_ids[:10])
+    except Exception as _ppe:
+        LOGGER.warning("Boot portfolio purge failed: " + str(_ppe)[:80])
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     LOGGER.info("Ghost Protocol v2 starting...")
@@ -1596,41 +1641,9 @@ async def lifespan(app: FastAPI):
         ensure_news_tables()
     except Exception as _nte:
         LOGGER.warning("News tables init failed: " + str(_nte)[:80])
-    # Purge weak / legacy-schema models on startup
-    try:
-        purged = _auto_purge_bad_models()
-        if purged:
-            LOGGER.info(f"Boot purge: removed {purged} legacy ghost_models below floor")
-        pv = _purge_v3_stale_or_weak()
-        if pv:
-            LOGGER.info(f"Boot v3 purge: removed {pv} stale or sub-floor TP/SL models")
-        # The orphan-pick expiry writes the predictions ledger, so it runs in
-        # _start_leader_runtime (leader only), never on a booting follower.
-    except Exception as _bpe:
-        LOGGER.warning("Boot purge failed: "+str(_bpe)[:60])
-
-    # PR #26: auto-purge ghost/test rows from user_portfolio on every boot.
-    # The /admin "Purge Ghost Portfolio" button (PR #23) was never run —
-    # the ZZE2E* probe-ticker rows persisted. Self-healing: deletes rows
-    # matching the ghost patterns on each startup so they can't pollute
-    # the investor portfolio totals. Legit WOLF (and any deliberately-added
-    # non-ghost symbol) is untouched.
-    try:
-        with db_conn() as _pc:
-            _pcur = _pc.cursor()
-            _pcur.execute("SELECT id, symbol FROM user_portfolio")
-            _prows = _pcur.fetchall()
-            _purged_ids = []
-            for _rid, _sym in _prows:
-                _up = str(_sym or "").strip().upper()
-                if any(_up.startswith(p) or _up == p for p in _GHOST_PORTFOLIO_PATTERNS):
-                    _pcur.execute("DELETE FROM user_portfolio WHERE id=%s", (int(_rid),))
-                    _purged_ids.append(_rid)
-            if _purged_ids:
-                LOGGER.info("Boot portfolio purge: removed %s ghost rows %s",
-                            len(_purged_ids), _purged_ids[:10])
-    except Exception as _ppe:
-        LOGGER.warning("Boot portfolio purge failed: " + str(_ppe)[:80])
+    # U25: the boot model purges and the ghost-portfolio purge DELETE rows, so
+    # they run in _start_leader_runtime (_leader_boot_maintenance), never on a
+    # booting follower that overlaps the old leader during a rolling deploy.
 
     # F31: the boot-time morning-card "self-heal" that lived here ran only when
     # THIS process won the leader lock at boot, so a rolling deploy (new
@@ -1659,6 +1672,10 @@ async def lifespan(app: FastAPI):
         import asyncio as _lr_aio
 
         _leader_watch_task = _lr_aio.get_running_loop().create_task(watch_leadership())
+        try:
+            await _lr_aio.get_running_loop().run_in_executor(None, _leader_boot_maintenance)
+        except Exception as _lbm:
+            LOGGER.warning("Leader boot maintenance failed: %s", str(_lbm)[:120])
         # Ledger write moved off the boot path (was before any leader check):
         # only the elected leader expires active picks whose model is gone.
         try:
@@ -2844,15 +2861,36 @@ def _rate_limit_budget(request: Request, rpm_default: int, rpm_get: int, rpm_wri
 
 
 def _client_ip(request: Request) -> str:
-    # PR #77: prefer request.client.host (set by Railway's trusted proxy).
-    # Only fall back to X-Forwarded-For when client.host is unavailable.
-    # This prevents XFF spoofing from bypassing the per-IP rate limiter.
-    if request.client and request.client.host:
-        return request.client.host
-    xff = request.headers.get("x-forwarded-for")
-    if xff:
-        return xff.split(",")[0].strip()
-    return "unknown"
+    # U26: uvicorn runs with --forwarded-allow-ips="*", which copies the
+    # LEFTMOST (client-chosen) X-Forwarded-For entry into request.client.host,
+    # so keying on it let a spoofed header mint a fresh rate-limit/throttle
+    # bucket per request. The entry appended by the trusted edge proxy
+    # (rightmost, GHOST_TRUSTED_PROXY_HOPS) is used instead.
+    return _request_client_ip(request)
+
+
+@APP.middleware("http")
+async def _cron_secret_lockout_mw(request: Request, call_next):
+    """U18: throttle online guessing of CRON_SECRET via the x-cron-secret header.
+
+    /api/admin, /api/cron and /api/v3/train are exempt from the rate limiter,
+    so a wrong presented secret is counted per client and, past the limit,
+    every request that presents one is refused until the window drains (a
+    correct guess included, so the lockout is not an oracle). Requests without
+    the header are untouched.
+    """
+    provided = request.headers.get("x-cron-secret")
+    if provided:
+        ip = _client_ip(request)
+        retry = _CREDENTIAL_LOCKOUT.retry_after(ip)
+        if retry:
+            return JSONResponse(
+                {"ok": False, "error": "too_many_failed_credentials", "retry_after_s": retry},
+                status_code=429, headers={"Retry-After": str(retry)})
+        secret = os.environ.get("CRON_SECRET", "")
+        if secret and not hmac.compare_digest(provided.encode("utf-8"), secret.encode("utf-8")):
+            _CREDENTIAL_LOCKOUT.record_failure(ip, kind="cron_secret")
+    return await call_next(request)
 
 
 @APP.middleware("http")
@@ -3094,6 +3132,65 @@ def _model_readiness_summary(model_status: dict | None) -> dict:
     }
 
 
+def _prediction_cycle_stale_min() -> int:
+    """Minutes before a silent prediction-cycle heartbeat is an ISSUE (U04).
+
+    The market-scan job runs the cycle every SCAN_INTERVAL_MARKET_MIN (30) /
+    SCAN_INTERVAL_OFFHOURS_MIN (60) minutes around the clock and writes the
+    heartbeat even when it saves no pick, so the old 36 h default let a
+    day and a half of broken forecasting read "healthy". Default: 6 h while the
+    scan loop is enabled, 36 h when only the daily morning card runs cycles.
+    PREDICTION_CYCLE_STALE_MIN overrides either (minimum 60).
+    """
+    scan_on = os.getenv("MARKET_SCAN_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
+    default = 360 if scan_on else 2160
+    try:
+        return max(60, int(os.getenv("PREDICTION_CYCLE_STALE_MIN", str(default))))
+    except (TypeError, ValueError):
+        return default
+
+
+def _scheduler_task_findings(tasks) -> tuple[list, list]:
+    """Score scheduler task state for health() (U04).
+
+    A task failing (error or timeout) 3+ times in a row is an issue; 1-2 in a
+    row is a warning; a run still going after twice max(interval, timeout)
+    (a hung sync job the scheduler cannot cancel) is a warning.
+    """
+    issues, warnings = [], []
+    try:
+        repeat = max(1, int(os.getenv("HEALTH_TASK_FAIL_ISSUE_AFTER", "3")))
+    except (TypeError, ValueError):
+        repeat = 3
+    failing_hard, failing_soft, overrunning = [], [], []
+    for t in tasks or []:
+        if not isinstance(t, dict):
+            continue
+        name = str(t.get("name") or "?")
+        try:
+            streak = int(t.get("consecutive_failures") or 0)
+        except (TypeError, ValueError):
+            streak = 0
+        if streak >= repeat:
+            failing_hard.append(f"{name}x{streak}")
+        elif streak > 0:
+            failing_soft.append(f"{name}x{streak}")
+        if t.get("running") and t.get("last_run_ago_s") is not None:
+            try:
+                budget = 2 * max(float(t.get("interval_s") or 0), float(t.get("timeout_s") or 0))
+                if budget > 0 and float(t["last_run_ago_s"]) > budget:
+                    overrunning.append(f"{name} {int(t['last_run_ago_s'])}s")
+            except (TypeError, ValueError):
+                pass
+    if failing_hard:
+        issues.append("Tasks failing repeatedly: " + ", ".join(failing_hard[:6]))
+    if failing_soft:
+        warnings.append("Tasks failing: " + ", ".join(failing_soft[:6]))
+    if overrunning:
+        warnings.append("Tasks overrunning: " + ", ".join(overrunning[:6]))
+    return issues, warnings
+
+
 def health():
     """FULL (expensive) health: provider feed probes, ledger freshness, model
     readiness, breaker auto-recovery. Never call it from a public probe or a
@@ -3149,7 +3246,7 @@ def health():
             if cyc_scan and cyc_scan[0] is not None:
                 cycle_last_scanned = int(cyc_scan[0])
 
-        cycle_stale_min = max(60, int(os.getenv("PREDICTION_CYCLE_STALE_MIN", "2160")))  # default 36h
+        cycle_stale_min = _prediction_cycle_stale_min()
         if cycle_freshness_min is None:
             warnings.append("Prediction cycle heartbeat missing")
         elif cycle_freshness_min > cycle_stale_min:
@@ -3207,6 +3304,10 @@ def health():
         tasks = scheduler.status()
     except Exception as _se:
         LOGGER.warning("health.scheduler_status failed: " + str(_se)[:120])
+    # U04: scheduler failures used to be listed but never scored.
+    _task_issues, _task_warnings = _scheduler_task_findings(tasks)
+    issues.extend(_task_issues)
+    warnings.extend(_task_warnings)
     # F31: the morning_card task now ticks every few minutes, so its
     # process-local last_run says nothing about the card. Health reads the
     # persisted SEND record (shared across replicas and restarts) instead: a
@@ -3506,19 +3607,13 @@ def health_audit_history(limit: int = 20):
     try:
         with db_conn() as conn:
             cur = conn.cursor()
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS health_audit_runs (
-                    id SERIAL PRIMARY KEY,
-                    run_ts BIGINT NOT NULL,
-                    status TEXT NOT NULL,
-                    coverage_pct FLOAT NOT NULL,
-                    unresolved_count INT NOT NULL,
-                    resolved_count INT NOT NULL,
-                    payload JSONB NOT NULL
-                )
-                """
-            )
+            # U48: a public GET must not run DDL. The table is created by the
+            # (authenticated) POST /api/health/audit writer; before its first
+            # run there is simply no history.
+            cur.execute("SELECT to_regclass('health_audit_runs')")
+            _exists = cur.fetchone()
+            if not _exists or _exists[0] is None:
+                return {"ok": True, "runs": []}
             cur.execute(
                 """
                 SELECT id, run_ts, status, coverage_pct, unresolved_count, resolved_count
@@ -3912,10 +4007,20 @@ _ADMIN_COOKIE = "gp_admin"
 _ADMIN_TTL_S = 28800  # 8 hours
 
 
+def _admin_cookie_key() -> str:
+    """HMAC key for the admin cookie (U61).
+
+    GHOST_ADMIN_COOKIE_KEY when set, so the cookie-signing key is not the same
+    value as the CRON_SECRET login credential; falls back to CRON_SECRET so
+    existing deployments (and live sessions) keep working until it is set.
+    """
+    return os.environ.get("GHOST_ADMIN_COOKIE_KEY", "").strip() or os.environ.get("CRON_SECRET", "")
+
+
 def _admin_mint_token(ttl_s: int = _ADMIN_TTL_S) -> str:
-    secret = os.environ.get("CRON_SECRET", "")
+    key = _admin_cookie_key()
     exp = str(int(time.time()) + ttl_s)
-    sig = hmac.new(secret.encode("utf-8"), exp.encode("utf-8"), "sha256").hexdigest()
+    sig = hmac.new(key.encode("utf-8"), exp.encode("utf-8"), "sha256").hexdigest()
     return exp + "." + sig
 
 
@@ -3936,7 +4041,7 @@ def _admin_token_valid(token: str) -> bool:
         exp_str, sig = token.rsplit(".", 1)
         if int(exp_str) < int(time.time()):
             return False
-        expected = hmac.new(secret.encode("utf-8"), exp_str.encode("utf-8"), "sha256").hexdigest()
+        expected = hmac.new(_admin_cookie_key().encode("utf-8"), exp_str.encode("utf-8"), "sha256").hexdigest()
         return hmac.compare_digest(sig, expected)
     except Exception:
         return False

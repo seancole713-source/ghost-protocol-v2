@@ -1,6 +1,7 @@
 """OAuth discovery + authorize/token routes for Claude MCP registration."""
 from __future__ import annotations
 
+import html as _html
 import secrets
 import urllib.parse
 from typing import Any, Dict, Optional
@@ -8,6 +9,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
+from shared.request_guard import CREDENTIAL_LOCKOUT, client_ip
 from mcp.oauth_server import (
     authorization_server_metadata,
     fetch_cimd_client,
@@ -90,7 +92,12 @@ async def oauth_authorize(
     if not redirect_uri_allowed(redirect_uri, cimd.get("redirect_uris") or []):
         raise HTTPException(status_code=400, detail="invalid redirect_uri")
 
-    client_host = urllib.parse.urlparse(client_id).netloc or "unknown client"
+    # U21: the CIMD client_id is attacker-supplied. Show only its hostname (a
+    # netloc carries userinfo such as "<img onerror=...>@evil.example", which
+    # resolves and fetches fine) and HTML-escape everything interpolated below.
+    client_host = _html.escape(
+        urllib.parse.urlparse(client_id).hostname or "unknown client", quote=True
+    )
     q = urllib.parse.urlencode({
         "response_type": response_type,
         "client_id": client_id,
@@ -100,6 +107,7 @@ async def oauth_authorize(
         "code_challenge": code_challenge,
         "code_challenge_method": code_challenge_method or "S256",
     })
+    q = _html.escape(q, quote=True)
     html = f"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Ghost MCP — Authorize</title>
 <style>body{{background:#0a0a0a;color:#fff;font-family:-apple-system,BlinkMacSystemFont,sans-serif;
@@ -111,7 +119,9 @@ border-radius:8px;font-size:14px;margin-bottom:12px;box-sizing:border-box}}
 button{{width:100%;background:#7c3aed;color:#fff;border:none;padding:11px;border-radius:8px;
 font-weight:700;cursor:pointer}}.err{{color:#ff3b3b;font-size:12px;min-height:16px}}</style></head>
 <body><div class="box"><h1>Authorize Ghost MCP</h1>
-<p><b>{client_host}</b> is requesting read-only access to Ghost Protocol state via MCP.</p>
+<p><b>{client_host}</b> is requesting access to Ghost Protocol via MCP: read tools plus the
+advisory agent-workflow tools (claim tasks, heartbeat, submit evidence, notes). Nothing it
+submits is trade-eligible.</p>
 <form method="post" action="/oauth/authorize" enctype="application/x-www-form-urlencoded">
 <input type="hidden" name="oauth_query" value="{q}">
 <input type="password" name="secret" placeholder="Connector secret (GHOST_OAUTH_SECRET)" autocomplete="off" autofocus>
@@ -127,7 +137,17 @@ async def oauth_authorize_post(request: Request):
     oauth_query = params.get("oauth_query", "")
     if not oauth_query:
         raise HTTPException(status_code=400, detail="oauth_query required")
+    # U18: GHOST_OAUTH_SECRET was guessable at full request rate; wrong
+    # secrets feed the shared failed-credential lockout.
+    ip = client_ip(request)
+    retry = CREDENTIAL_LOCKOUT.retry_after(ip)
+    if retry:
+        raise HTTPException(
+            status_code=429, detail="Too many failed attempts",
+            headers={"Retry-After": str(retry)},
+        )
     if not operator_secret_ok(secret):
+        CREDENTIAL_LOCKOUT.record_failure(ip, kind="oauth_secret")
         raise HTTPException(status_code=401, detail="Invalid operator secret")
 
     parsed = dict(urllib.parse.parse_qsl(oauth_query, keep_blank_values=True))

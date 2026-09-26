@@ -237,9 +237,17 @@ async def wait_for_leadership(
     a background task until the session lock becomes available.
     """
     interval = leader_retry_interval_s() if retry_s is None else max(0.0, retry_s)
+    loop = asyncio.get_running_loop()
     while True:
         await asyncio.sleep(interval)
-        if not try_acquire_leader():
+        # U38: the attempt opens a DB connection (connect_timeout 5 s); run it
+        # off the event loop so a slow/unreachable DB cannot stall HTTP serving.
+        try:
+            acquired = await loop.run_in_executor(None, try_acquire_leader)
+        except Exception as e:  # try_acquire_leader fails closed; belt and braces
+            LOGGER.warning("Leadership retry errored: %s", str(e)[:120])
+            continue
+        if not acquired:
             continue
         LOGGER.info("Acquired scheduler leadership after HTTP-ready handoff")
         result = on_acquired()
