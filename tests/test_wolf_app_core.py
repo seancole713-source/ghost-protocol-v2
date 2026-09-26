@@ -591,6 +591,7 @@ def _patch_signal_alert(monkeypatch, cur, sent_messages):
 
 
 def test_signal_alert_check_skips_when_daily_cap_reached(monkeypatch):
+    monkeypatch.setenv("CORE_ENGINE_MODE", "live")  # pre-research-mode behaviour
     monkeypatch.setenv("CRON_SECRET", "")
     monkeypatch.setenv("WOLF_ALERT_DAILY_CAP", "2")
     sent = []
@@ -604,6 +605,7 @@ def test_signal_alert_check_skips_when_daily_cap_reached(monkeypatch):
 
 
 def test_signal_alert_check_sends_high_conf_and_records(monkeypatch):
+    monkeypatch.setenv("CORE_ENGINE_MODE", "live")  # pre-research-mode behaviour
     monkeypatch.setenv("CRON_SECRET", "")
     monkeypatch.setenv("WOLF_ALERT_DAILY_CAP", "2")
     monkeypatch.setenv("WOLF_ALERT_CONFIDENCE_FLOOR", "0.80")
@@ -648,6 +650,7 @@ def test_signal_alert_check_requires_cron_secret_when_set(monkeypatch):
 def test_cron_signal_check_delegates_and_records_state(monkeypatch):
     """cron_signal_check must call wolf_signal_alert_check and write
     last_signal_cron_ts + last_signal_cron_sent to ghost_state."""
+    monkeypatch.setenv("CORE_ENGINE_MODE", "live")  # pre-research-mode behaviour
     monkeypatch.setenv("CRON_SECRET", "")
     sent_messages = []
 
@@ -3932,7 +3935,8 @@ def test_conviction_and_news_influence():
     assert capped["influence_pct"] <= 95 and capped["model_pct"] >= 5
 
 
-def test_format_daily_card_with_and_without_news():
+def test_format_daily_card_with_and_without_news(monkeypatch):
+    monkeypatch.setenv("CORE_ENGINE_MODE", "live")  # pre-research-mode behaviour
     from core.telegram_cards import format_daily_card
     base = {
         "date": "Monday May 26, 2026", "direction": "UP", "confidence": 0.88,
@@ -3960,7 +3964,8 @@ def test_format_daily_card_with_and_without_news():
     assert "News influence: 35% | Model logic: 65%" in out2
 
 
-def test_format_weekly_summary():
+def test_format_weekly_summary(monkeypatch):
+    monkeypatch.setenv("CORE_ENGINE_MODE", "live")  # pre-research-mode behaviour
     from core.telegram_cards import format_weekly_summary
     out = format_weekly_summary({
         "week_range": "May 19 - May 23",
@@ -3981,13 +3986,15 @@ def test_format_weekly_summary():
     assert "News-Driven Picks: 2 of 5" in out
 
 
-def test_format_weekly_summary_negative_pnl():
+def test_format_weekly_summary_negative_pnl(monkeypatch):
+    monkeypatch.setenv("CORE_ENGINE_MODE", "live")  # pre-research-mode behaviour
     from core.telegram_cards import format_weekly_summary
     out = format_weekly_summary({"followed": {"wins": 1, "losses": 3, "win_rate_pct": 25.0, "pnl_usd": -47.25}})
     assert "-$47.25 on $1,000 deployed" in out
 
 
-def test_format_silence_card():
+def test_format_silence_card(monkeypatch):
+    monkeypatch.setenv("CORE_ENGINE_MODE", "live")  # pre-research-mode behaviour
     from core.telegram_cards import format_silence_card
     out = format_silence_card({"ghost_score": 72, "reason": "Insufficient edge — model confidence 72%"})
     assert "Status: SILENCE — No high-conviction signal today" in out
@@ -3999,6 +4006,7 @@ def test_format_silence_card():
 
 
 def test_build_silence_card_data_fetches_ghost_score(monkeypatch):
+    monkeypatch.setenv("CORE_ENGINE_MODE", "live")  # pre-research-mode behaviour
     monkeypatch.setattr(
         "api.wolf_endpoints.ghost_score_payload_sync",
         lambda **kw: {"ok": True, "score": 65.0},

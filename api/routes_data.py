@@ -84,8 +84,11 @@ def get_picks(symbol: str = "ALL", asset_type: str = None, limit: int = 50, offs
             )
             cols = [d[0] for d in cur.description]
             resolved = [_norm_pred(dict(zip(cols, r))) for r in cur.fetchall()]
+        from core.engine_mode import core_engine_mode
         return {
             "ok": True,
+            # research (default): core picks are research calls, not trades.
+            "core_engine_mode": core_engine_mode(),
             "symbol": symbol,
             "asset_type": asset_type,
             "limit": lim,

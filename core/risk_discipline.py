@@ -130,6 +130,12 @@ def trade_action_from_context(
 ) -> Dict[str, str]:
     """Separate composite bias from actionable trade state."""
     if has_official_pick and pick_confidence:
+        from core.engine_mode import (
+            RESEARCH_TRADE_ACTION, RESEARCH_TRADE_NOTE, core_is_research,
+        )
+        if core_is_research():
+            # CORE_ENGINE_MODE=research: a core pick is never a BUY tier or sized.
+            return {"trade_action": RESEARCH_TRADE_ACTION, "trade_note": RESEARCH_TRADE_NOTE}
         tier = pick_action_tier(pick_confidence, ghost_score)
         return {
             "trade_action": tier,

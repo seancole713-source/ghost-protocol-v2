@@ -1589,7 +1589,11 @@ def ghost_score_payload_sync(*, cache_ttl_s: float = 60, use_cache: bool = True)
             daily_locked=is_daily_loss_locked(),
         )
         payload["bias_label"] = bias_label_from_score(scored["score"])
+        from core.engine_mode import core_engine_mode, core_is_research
+        payload["core_engine_mode"] = core_engine_mode()
         payload["signal_note"] = (
+            "Ghost Score = composite bias only. Core v3 is research-only: no core pick is a trade."
+            if core_is_research() else
             "Ghost Score = composite bias only. Trade only on SUPER BUY / BUY NOW picks."
         )
         payload.update(action)

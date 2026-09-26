@@ -207,6 +207,11 @@ def send_morning_card(picks, week_stats=None, is_update=False):
     import pytz
     tz = pytz.timezone(os.getenv("GHOST_TZ", "America/Chicago"))
     day = datetime.now(tz).strftime("%A %b %d")
+    from core.engine_mode import core_is_research
+    if core_is_research():
+        # CORE_ENGINE_MODE=research: no BUY label, confidence %, $ in/out or size.
+        from core.telegram_cards import format_research_picks_card
+        return _send(format_research_picks_card(picks, day, is_update=is_update, week_stats=week_stats))
     label = "OPEN POSITIONS" if is_update else "PICKS"
     parts = ["<b>Ghost " + label + " -- " + day + "</b>"]
     if not picks:
@@ -259,6 +264,16 @@ def send_morning_card(picks, week_stats=None, is_update=False):
 def send_pick_withdrawn(symbol, reason, entry, exit_price, pnl_pct):
     """Alert when Ghost withdraws an open pick mid-trade."""
     sign = "+" if float(pnl_pct or 0) >= 0 else ""
+    from core.engine_mode import RESEARCH_HEADER, core_is_research
+    if core_is_research():
+        parts = [
+            "<b>" + RESEARCH_HEADER + "</b>",
+            "<b>Core v3 research call withdrawn: " + str(symbol) + "</b>",
+            "Reason: " + str(reason).replace("_", " "),
+            "Reference: " + _fmt(float(entry or 0)) + " → now " + _fmt(float(exit_price or 0)),
+            "Move: " + sign + str(round(float(pnl_pct or 0), 2)) + "% (not a WIN/LOSS — call withdrawn)",
+        ]
+        return _send(NL.join(parts))
     parts = [
         "<b>Ghost withdrew " + str(symbol) + " pick</b>",
         "Reason: " + str(reason).replace("_", " "),
@@ -269,8 +284,18 @@ def send_pick_withdrawn(symbol, reason, entry, exit_price, pnl_pct):
     return _send(NL.join(parts))
 
 def send_position_alert(symbol, direction, outcome, entry, exit_price, pnl_pct, usd_out):
-    label = "TARGET HIT" if outcome == "WIN" else "STOPPED OUT"
     sign = "+" if pnl_pct >= 0 else ""
+    from core.engine_mode import RESEARCH_HEADER, core_is_research
+    if core_is_research():
+        # A resolved core call is research evidence, not a position: no $ out.
+        parts = [
+            "<b>" + RESEARCH_HEADER + "</b>",
+            "<b>" + str(symbol) + " core v3 research call resolved -- " + str(outcome) + "</b>",
+            str(direction) + " | " + _fmt(entry) + " to " + _fmt(exit_price),
+            "Move: " + sign + str(round(pnl_pct, 2)) + "% (research ledger)",
+        ]
+        return _send(NL.join(parts))
+    label = "TARGET HIT" if outcome == "WIN" else "STOPPED OUT"
     parts = [
         "<b>" + symbol + " " + label + " -- " + outcome + "</b>",
         direction + " | " + _fmt(entry) + " to " + _fmt(exit_price),
@@ -306,6 +331,16 @@ def send_weekly_summary(wins_or_stats, losses=None, wr=None, avg_win=None, avg_l
         avg_loss = avg_loss or 0
         alltime_wr = wr
         retrain_days = 14
+    from core.engine_mode import RESEARCH_HEADER, core_is_research
+    if core_is_research():
+        # No "if you followed every pick" dollar framing for a research engine.
+        return _send(NL.join([
+            "<b>" + RESEARCH_HEADER + "</b>",
+            "<b>Ghost core v3 WEEKLY RESEARCH RECORD</b>",
+            "Resolved research calls: " + str(wins) + "W / " + str(losses) + "L -- " + str(wr) + "%",
+            "All-time: " + str(stats.get("alltime_wr", wr)) + "% (research record)",
+            "Model retrains in: " + str(stats.get("retrain_in_days", 14)) + " days",
+        ]))
     # P&L simulation: avg win/loss * $100 per trade
     pnl = (wins * (avg_win or 0) + losses * (avg_loss or 0)) if total else 0
     sign = "+" if pnl >= 0 else ""

@@ -439,8 +439,14 @@ function loadToday(){ return guardedLoad('today', async function(){
   }
 
   if(enriched.length){
-    html += '<div class="section"><h2>Active directional picks</h2>'
-      + '<div class="hint">Open calls awaiting their target, get-out price, or watch-window deadline.</div>';
+    // CORE_ENGINE_MODE (server): anything but an explicit 'live' is research-only.
+    var coreResearch = !(picksResp.__ok && picksResp.core_engine_mode === 'live');
+    html += coreResearch
+      ? '<div class="section"><h2>Core v3 research calls</h2>'
+        + '<div class="hint"><b>RESEARCH ONLY - not a trade (core v3 has no model that beats its base rate).</b> '
+        + 'Open research calls, scored against their model target, model stop, or watch-window deadline. Nothing here is sized.</div>'
+      : '<div class="section"><h2>Active directional picks</h2>'
+        + '<div class="hint">Open calls awaiting their target, get-out price, or watch-window deadline.</div>';
     enriched.forEach(function(e){
       html += pickCard(e.pick.symbol, (e.pick.direction||'UP').toUpperCase(), e.pick.entry_price, e.pick.target_price, e.pick.stop_price, e.report);
     });
