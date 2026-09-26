@@ -167,7 +167,7 @@ def _v3_research_tier_enabled() -> bool:
 
 
 
-def _serving_feature_bars(rows):
+def _serving_feature_bars(rows, trained_window=None):
     """Trailing bar slice matching what training fed to _calculate_features.
 
     backtest_symbol() windows EVERY labeled row to `_backtest_window()`
@@ -191,7 +191,32 @@ def _serving_feature_bars(rows):
     if not rows:
         return rows
     window = _backtest_window()
+    if trained_window is not None:
+        # Audit U50: thin-history symbols train on a SHRUNKEN window
+        # (_effective_backtest_window), e.g. 57 bars, while serving used the
+        # full 120. The model records the window it was fit on; serve with it.
+        try:
+            tw = int(trained_window)
+            if 20 <= tw <= window:
+                window = tw
+        except (TypeError, ValueError):
+            pass
     return rows[max(0, len(rows) - 1 - window):]
+
+
+def _rows_feature_window(rows):
+    """The single feature window a symbol's labeled rows were built with."""
+    windows = {r.get("feature_window") for r in rows or [] if isinstance(r, dict)}
+    windows.discard(None)
+    return int(windows.pop()) if len(windows) == 1 else None
+
+
+def _meta_feature_window(*metas):
+    """The training feature window recorded in model meta, if any (U50)."""
+    for meta in metas:
+        if isinstance(meta, dict) and meta.get("feature_window") is not None:
+            return meta.get("feature_window")
+    return None
 
 
 def _effective_backtest_window(n_bars: int) -> int:
@@ -899,6 +924,12 @@ def _fetch_ohlcv_once(symbol, asset_type, period='1y', interval='1d', *, adjustm
         LOGGER.info(f"Alpaca SIP returned nothing for {symbol}, trying IEX fallback")
         rows = _try_feed('iex')
         feed_used = 'iex'
+    if not rows and timeframe != '1Day':
+        # Audit U56: Polygon/yfinance/Stooq below only serve DAILY bars. An
+        # intraday request (e.g. 5m outcome checks) used to receive daily
+        # bars labelled as 5-minute bars; no data is the honest answer.
+        LOGGER.info(f"Alpaca returned no {interval} bars for {symbol}; daily-only fallbacks skipped")
+        return None
     if not rows:
         # Polygon third tier — paid feed, used by scripts/wolf_backtest.py
         # for the same reason: covers post-restructure WOLF where Alpaca's
@@ -906,7 +937,7 @@ def _fetch_ohlcv_once(symbol, asset_type, period='1y', interval='1d', *, adjustm
         # branch (missing key, HTTP error, non-OK status, empty results,
         # parse failure, or success) so ops can tell exactly what happened.
         LOGGER.info(f"Alpaca IEX returned nothing for {symbol}, trying Polygon fallback")
-        rows = _try_polygon_ohlcv(symbol, period)
+        rows = _try_polygon_ohlcv(symbol, period, adjustment=adjustment)
         feed_used = 'polygon'
     if not rows:
         # yfinance fourth tier — no API key, broad coverage. Post-restructure
@@ -1152,11 +1183,15 @@ def _try_stooq_ohlcv(symbol, period):
         return None
 
 
-def _try_polygon_ohlcv(symbol, period):
+def _try_polygon_ohlcv(symbol, period, *, adjustment="split"):
     """Fetch daily OHLCV from Polygon REST. Same shape as Alpaca path.
 
     Requires POLYGON_API_KEY env. Endpoint:
       /v2/aggs/ticker/{SYM}/range/1/day/{from}/{to}?adjusted=true
+
+    Polygon's ``adjusted`` flag is split-only, so it matches Alpaca's
+    ``adjustment=split``; a ``raw`` request asks for ``adjusted=false`` so the
+    fallback keeps the caller's price basis (audit U56).
 
     Every code path emits an INFO log so ops can tell exactly what happened
     (missing key, HTTP error, status != OK, no results, or success).
@@ -1176,7 +1211,8 @@ def _try_polygon_ohlcv(symbol, period):
         url = (
             f"https://api.polygon.io/v2/aggs/ticker/{symbol.upper()}/range/1/day/"
             f"{start_date.isoformat()}/{end_date.isoformat()}"
-            f"?adjusted=true&sort=asc&limit=5000&apiKey={api_key}"
+            f"?adjusted={'false' if adjustment == 'raw' else 'true'}"
+            f"&sort=asc&limit=5000&apiKey={api_key}"
         )
         r = _req.get(url, timeout=30)
         if r.status_code != 200:
@@ -1311,10 +1347,13 @@ def _yf_rows_from_history(tk, period=None, start=None, end=None):
     standard row shape consumed by backtest_symbol.
     """
     try:
+        # auto_adjust=False: Yahoo's OHLC are then split-adjusted only, the
+        # same basis as Alpaca adjustment=split. The default (True) also
+        # back-adjusts for dividends, a different basis (audit U56).
         if period is not None:
-            h = tk.history(period=period, interval='1d')
+            h = tk.history(period=period, interval='1d', auto_adjust=False)
         else:
-            h = tk.history(start=start, end=end, interval='1d')
+            h = tk.history(start=start, end=end, interval='1d', auto_adjust=False)
         if h is None or getattr(h, "empty", False):
             return None
         rows = []
@@ -1355,6 +1394,12 @@ def _yf_rows_from_history(tk, period=None, start=None, end=None):
 
 def backtest_symbol(symbol, asset_type):
     rows = _fetch_ohlcv(symbol, asset_type, adjustment="split")
+    if rows:
+        # U65: a retrain during the session must not label horizons with
+        # today's in-progress daily bar (serving already uses only completed
+        # bars via completed_daily_bars).
+        from core.daily_bar_contract import drop_incomplete_daily_bars
+        rows = drop_incomplete_daily_bars(rows)
     min_bars = _min_backtest_bars()
     if not rows or len(rows) < min_bars:
         return [], []
@@ -1461,6 +1506,12 @@ def backtest_symbol(symbol, asset_type):
                 "outcome": down_outcome, "direction": "DOWN",
                 "label_resolved_ts": int(down_resolved_ts),
             })
+    # U50: carry the (possibly shrunken) feature window so the stored model
+    # meta can tell serving how many trailing bars training saw.
+    for r in labeled_up:
+        r["feature_window"] = int(window)
+    for r in labeled_down:
+        r["feature_window"] = int(window)
     up_wins = sum(1 for r in labeled_up if r["label"] == 1)
     down_wins = sum(1 for r in labeled_down if r["label"] == 1)
     LOGGER.info(
@@ -2173,6 +2224,7 @@ def _train_one_direction(rows, symbol, direction, active_cols, peer_rows, peers_
         "edge": edge,
         "tier": tier, "gate_fail_reason": fail_reason,
         "trained_at": time.time(), "n_samples": len(rows),
+        "feature_window": _rows_feature_window(rows),
         "engine_version": "v3.2_tp_sl_daily",
         "direction": direction,
         "label_type": LABEL_TYPE,
@@ -3233,7 +3285,9 @@ def predict_live_ex(symbol, asset_type, scores=None, research_mode=False):
     # _serving_feature_bars. `rows` itself stays full-length below for the
     # sector alignment and fundamentals date, which training also computes
     # against full history.
-    features = _calculate_features(_serving_feature_bars(rows))
+    features = _calculate_features(_serving_feature_bars(
+        rows, _meta_feature_window(up_meta, down_meta),
+    ))
     from core.feature_schema import attach_feature_asof
     attach_feature_asof(
         features, rows[-1].get("ts") if rows else None, default_now=True,

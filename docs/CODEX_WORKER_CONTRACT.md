@@ -1,6 +1,9 @@
 # Independent Codex Worker — Interface Contract
 
-Status: **implemented, tested, not yet production-deployed.** The worker is
+Status (2026-09-26): **deployed and connected to the repo, but DISABLED**
+(`CODEX_WORKER_ENABLED=0`, the codex kill switch from audit F34). About 3 of
+about 44 attempts completed before it was switched off. It stays off until a
+canary run passes; the Claude worker carries the queue alone. The worker is
 implemented in `services/codex_worker/worker.py`. This document defines the
 server contract it follows and the production sequencing required to enable
 consensus without stalling the existing Claude-only queue.

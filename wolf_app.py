@@ -636,8 +636,14 @@ def _expire_open_picks_without_v3_model():
                     # Idempotent: only a still-open row is voided, so a re-run
                     # (leader handoff, restart) or a race with the resolver can
                     # never overwrite a WIN/LOSS or re-stamp resolved_at.
+                    # U55: this is an administrative closure, not a market
+                    # outcome -- canonical EXPIRED means a completed horizon.
+                    # Same ADMIN_VOID convention as core/db.py's dedup void.
                     cur.execute(
-                        "UPDATE predictions SET outcome='EXPIRED', resolved_at=%s "
+                        "UPDATE predictions SET outcome='ADMIN_VOID', resolved_at=%s, "
+                        "exit_price=NULL, pnl_pct=NULL, "
+                        "scores=COALESCE(scores, '{}'::jsonb) || "
+                        "'{\"administrative_reason\":\"no_v3_model_at_boot\"}'::jsonb "
                         "WHERE id=%s AND outcome IS NULL",
                         (now, pid),
                     )
@@ -1820,8 +1826,13 @@ async def lifespan(app: FastAPI):
                 raise RuntimeError(f"bull-run resolver failed: {result}")
             return result
 
-        scheduler.register("bull_run_snapshot", _bull_run_snapshot_job, interval_s=900)
-        scheduler.register("bull_run_resolver", _bull_run_resolver_job, interval_s=3600)
+        # U31: the scenario's phases ended 2026-08-19 and its outcome window
+        # 2026-08-25, so the jobs are retired by default. The cron-gated
+        # /api/bull-run/checklist/{snapshot/run,resolve} endpoints still work;
+        # BULL_RUN_JOBS_ENABLED=1 re-schedules them.
+        if os.getenv("BULL_RUN_JOBS_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on"):
+            scheduler.register("bull_run_snapshot", _bull_run_snapshot_job, interval_s=900)
+            scheduler.register("bull_run_resolver", _bull_run_resolver_job, interval_s=3600)
         # Checklist-confidence calibration loop. Snapshots are frozen synchronously
         # inside the prediction transaction (no delayed reconstruction), so only the
         # outcome resolver runs on a schedule: it copies resolved TP/SL outcomes
@@ -3511,12 +3522,14 @@ def api_health():
 
 
 @APP.post("/api/health/audit")
-def health_audit(x_cron_secret: str = Header(default=""), auto_fix: bool = True, persist: bool = True):
+def health_audit(x_cron_secret: str = Header(default=""), auto_fix: bool = False, persist: bool = True):
     """
     Deep reliability audit with persistent findings and optional auto-fix hooks.
 
-    ``auto_fix=false&persist=false`` makes the call read-only (no self-heal
-    writes and no history row); release gates in CI must use that form.
+    Self-heal writes are opt-in (``auto_fix=true``; audit U48 -- the default
+    used to be true, so any caller that forgot the flag wrote production).
+    ``persist=false`` also skips the history row; release gates in CI use
+    ``auto_fix=false&persist=false``.
 
     Returns structured PASS/FAIL records for each check:
     status, location, evidence, impact, auto_fix, fix_result.

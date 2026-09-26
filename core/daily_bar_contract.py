@@ -33,12 +33,35 @@ def previous_session(day: date) -> date:
     return day
 
 
-def completed_daily_bars(rows: list[dict], *, now: datetime | None = None) -> list[dict]:
-    """Require the latest completed session; never score a partial/stale bar."""
+def _latest_completed_session(now: datetime | None = None) -> date:
     current, minute = session_hm(now)
     expected = current.date()
     if is_market_holiday(expected) or minute < _rth_close_for(current) + DAILY_MODEL_ISSUANCE_DELAY_MIN:
         expected = previous_session(expected)
+    return expected
+
+
+def drop_incomplete_daily_bars(rows: list[dict], *, now: datetime | None = None) -> list[dict]:
+    """Training history: drop any bar for a session that has not closed yet.
+
+    Unlike completed_daily_bars() this does not require the latest session to
+    be present (a lagging feed still trains on what it has); it only removes
+    today's in-progress bar, whose partial high/low/close would otherwise label
+    the last horizons (audit U65). Undatable rows are kept in place.
+    """
+    expected = _latest_completed_session(now)
+    kept = []
+    for row in rows or []:
+        day = bar_session_date(row.get("ts"))
+        if day is not None and day > expected:
+            continue
+        kept.append(row)
+    return kept
+
+
+def completed_daily_bars(rows: list[dict], *, now: datetime | None = None) -> list[dict]:
+    """Require the latest completed session; never score a partial/stale bar."""
+    expected = _latest_completed_session(now)
     dated = [(bar_session_date(row.get("ts")), row) for row in rows]
     selected = sorted(
         ((day, row) for day, row in dated if day is not None and day <= expected),

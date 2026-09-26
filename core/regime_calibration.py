@@ -32,13 +32,27 @@ def effective_min_win_proba(
     *,
     base: float,
 ) -> float:
-    """Lower prob floor in confirmed uptrends; raise in downtrends."""
+    """Raise the prob floor in downtrends; never below a named contract's floor.
+
+    Audit U51: the uptrend discounts (-0.012/-0.015) and the 0.58 cap used to
+    take min_win_proba BELOW the accuracy contract (0.55 -> 0.538 in Trend-up;
+    0.60 -> 0.58 under contract 80), bypassing resolve_float's no-weakening
+    rule. On the named contracts (55/70/80) the regime may only tighten the
+    floor. The pre-audit "legacy" escape hatch keeps the old behaviour.
+    """
     if not regime_calibration_enabled():
         return base
     adj = _DEFAULT_ADJ.get(regime_label or "", 0.0)
     floor = float(os.getenv("V3_MIN_WIN_PROBA_FLOOR", "0.50"))
     cap = float(os.getenv("V3_MIN_WIN_PROBA_CAP", "0.58"))
-    return round(max(floor, min(cap, base + adj)), 4)
+    effective = max(floor, min(cap, base + adj))
+    try:
+        from core.accuracy_contract import _NO_WEAKENING_CONTRACTS, contract_name
+        if contract_name() in _NO_WEAKENING_CONTRACTS:
+            effective = max(effective, float(base))
+    except Exception:
+        effective = max(effective, float(base))  # fail closed: never loosen
+    return round(effective, 4)
 
 
 def regime_calibration_meta(regime_label: Optional[str], base: float) -> Dict[str, Any]:

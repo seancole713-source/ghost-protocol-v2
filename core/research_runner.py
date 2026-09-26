@@ -163,7 +163,9 @@ def score_research_artifact(
     # ema_trend_bullish take the same code branch they did at fit time —
     # see core.signal_engine._serving_feature_bars.
     from core.signal_engine import _serving_feature_bars
-    features = _calculate_features(_serving_feature_bars(rows))
+    features = _calculate_features(
+        _serving_feature_bars(rows, artifact.get("feature_window")),
+    )
     attach_feature_asof(features, rows[-1].get("ts") if rows else None, default_now=True)
 
     # 5. Get feature order from artifact

@@ -393,6 +393,8 @@ def test_scheduler_and_migration_are_wired():
     db_source = open("core/db.py", encoding="utf-8").read()
     assert 'scheduler.register("bull_run_snapshot"' in scheduler_source
     assert 'scheduler.register("bull_run_resolver"' in scheduler_source
+    # U31: retired by default (the scenario ended 2026-08-25); opt back in by env.
+    assert 'os.getenv("BULL_RUN_JOBS_ENABLED", "0")' in scheduler_source
     assert "ensure_bull_run_tables" in db_source
 
 

@@ -125,7 +125,7 @@ def run_health_audit(
     diagnostics_payload: Dict[str, Any],
     stats_payload: Dict[str, Any],
     cockpit_payload: Dict[str, Any],
-    auto_fix: bool = True,
+    auto_fix: bool = False,
     persist: bool = True,
 ) -> Dict[str, Any]:
     """Run the audit. ``auto_fix=False, persist=False`` is fully read-only

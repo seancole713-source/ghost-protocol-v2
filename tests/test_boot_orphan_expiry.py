@@ -28,10 +28,11 @@ class _Cur:
             self._rows = [(1, "WOLF"), (2, "GME"), (3, "TSLA")]
         elif sql.startswith("UPDATE predictions"):
             assert "outcome IS NULL" in sql, "expiry must only touch open rows"
+            assert "outcome='ADMIN_VOID'" in sql, "U55: administrative closure, not EXPIRED"
             pid = params[1]
             self.updates.append(pid)
             if self.state.get(pid) is None:
-                self.state[pid] = "EXPIRED"
+                self.state[pid] = "ADMIN_VOID"
                 self.rowcount = 1
             else:
                 self.rowcount = 0
@@ -62,10 +63,10 @@ def test_orphan_expiry_is_idempotent_and_never_overwrites_resolved(monkeypatch):
     monkeypatch.setattr(wolf_app, "db_conn", lambda: _Conn(cur))
 
     assert wolf_app._expire_open_picks_without_v3_model() == 1  # only TSLA
-    assert state == {1: None, 2: "WIN", 3: "EXPIRED"}
+    assert state == {1: None, 2: "WIN", 3: "ADMIN_VOID"}
     # Second run (restart / leader handoff): nothing new is voided.
     assert wolf_app._expire_open_picks_without_v3_model() == 0
-    assert state == {1: None, 2: "WIN", 3: "EXPIRED"}
+    assert state == {1: None, 2: "WIN", 3: "ADMIN_VOID"}
 
 
 def test_orphan_expiry_runs_only_in_leader_runtime():

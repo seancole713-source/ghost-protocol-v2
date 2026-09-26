@@ -134,8 +134,9 @@ Otherwise the heuristic projection stays, with `calibrated: false`.
 
 ## 9. What this explicitly does NOT do
 
-- Does **not** claim 70% accuracy (that is a separate, already-falsified
-  contract — see `docs/70_precision_protocol.md`).
+- Does **not** claim 70% accuracy (that is a separate contract, unproven at
+  current data rather than falsified; its v2 protocol is active for new
+  claims — see `docs/70_precision_protocol.md`).
 - Does **not** fire picks, loosen gates, or alter the production baseline.
 - Does **not** turn the heuristic into a "guaranteed" probability — even a
   calibrated probability is an estimate with a confidence interval.

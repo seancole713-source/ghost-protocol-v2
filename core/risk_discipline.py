@@ -1,9 +1,11 @@
 """Operator risk rules: 1% sizing, portfolio exit alerts, daily loss lock, action labels.
 
-Env (defaults assume $25k account, 1% risk/trade, $250 daily stop):
+Env (defaults match the operator's rule: $1,000 per trade, $250 daily stop):
   GHOST_ACCOUNT_SIZE          — 25000
   GHOST_RISK_PCT_PER_TRADE    — 1.0  (max $ loss if stop hits)
-  GHOST_DAILY_LOSS_LIMIT_USD  — 250  (0 = derive from account × 1%)
+  GHOST_TRADE_SIZE_USD        — 1000 (cap on suggested notional per trade)
+  GHOST_DAILY_LOSS_LIMIT_USD  — 250  (fixed default; an explicit 0 keeps the
+                                      legacy account × risk% derivation)
   GHOST_DAILY_MAX_LOSSES      — 3    (stop new fires after N LOSS resolves today CT)
   GHOST_PORTFOLIO_EXIT_PCT    — 25   (Telegram EXIT if position down this % vs cost)
   GHOST_OPEN_BUFFER_MIN       — 30   (block new fires first N min after 9:30 ET — optional)
@@ -45,16 +47,29 @@ def _env_int(name: str, default: int, lo: int = 0, hi: int = 1_000_000) -> int:
         return default
 
 
+# Audit U16: the operator trades $1,000 per trade with a $250 daily loss limit.
+# The old default derived the daily limit from account x risk% (so
+# GHOST_RISK_PCT_PER_TRADE=10 silently made it $2,500) and sized notional from
+# the account alone (a $25k account at 1% risk with a 2% stop suggested $12,500).
+DEFAULT_TRADE_SIZE_USD = 1000.0
+DEFAULT_DAILY_LOSS_LIMIT_USD = 250.0
+
+
 def risk_settings() -> Dict[str, Any]:
     account = _env_float("GHOST_ACCOUNT_SIZE", 25000.0, 100.0)
     risk_pct = _env_float("GHOST_RISK_PCT_PER_TRADE", 1.0, 0.1, 10.0)
-    daily_limit = _env_float("GHOST_DAILY_LOSS_LIMIT_USD", 0.0, 0.0)
+    trade_size = _env_float("GHOST_TRADE_SIZE_USD", DEFAULT_TRADE_SIZE_USD, 1.0)
+    daily_limit = _env_float(
+        "GHOST_DAILY_LOSS_LIMIT_USD", DEFAULT_DAILY_LOSS_LIMIT_USD, 0.0,
+    )
     if daily_limit <= 0:
+        # Only an explicit 0 keeps the legacy account x risk% derivation.
         daily_limit = round(account * risk_pct / 100.0, 2)
     return {
         "account_size_usd": round(account, 2),
         "risk_pct_per_trade": risk_pct,
         "max_loss_per_trade_usd": round(account * risk_pct / 100.0, 2),
+        "trade_size_usd": round(trade_size, 2),
         "daily_loss_limit_usd": round(daily_limit, 2),
         "daily_max_losses": _env_int("GHOST_DAILY_MAX_LOSSES", 3, 1, 20),
         "portfolio_exit_pct": _env_float("GHOST_PORTFOLIO_EXIT_PCT", 25.0, 1.0, 99.0),
@@ -174,6 +189,7 @@ def position_sizing_plan(
     avg_win_pct: Optional[float] = None,
     avg_loss_pct: Optional[float] = None,
     open_positions: int = 0,
+    trade_size_usd: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Position sizing with Kelly criterion integration (Pillar 8).
 
@@ -230,6 +246,21 @@ def position_sizing_plan(
     shares = int(notional / entry_f) if entry_f > 0 else 0
     if shares < 1:
         shares = 1
+    # U16: the per-trade notional cap only ever shrinks the suggestion.
+    cap = float(trade_size_usd if trade_size_usd is not None else cfg["trade_size_usd"])
+    cap_shares = int(cap / entry_f) if cap > 0 else 0
+    capped = shares > cap_shares
+    if capped:
+        if cap_shares < 1:
+            return {
+                "ok": False,
+                "error": f"one share (${entry_f:.2f}) exceeds the ${cap:.2f} per-trade size",
+                "account_size_usd": account,
+                "risk_pct_per_trade": rp,
+                "max_loss_usd": max_loss,
+                "trade_size_usd": round(cap, 2),
+            }
+        shares = cap_shares
     actual_notional = round(shares * entry_f, 2)
     actual_loss = round(actual_notional * stop_dist_pct / 100.0, 2)
     return {
@@ -240,6 +271,8 @@ def position_sizing_plan(
         "stop_distance_pct": round(stop_dist_pct, 3),
         "suggested_shares": shares,
         "suggested_notional_usd": actual_notional,
+        "trade_size_usd": round(cap, 2),
+        "capped_by_trade_size": capped,
         "estimated_loss_at_stop_usd": actual_loss,
         "pick_action": pick_action_tier(confidence or 0.75) if confidence else None,
         "kelly_fraction": kelly_frac,

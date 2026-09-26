@@ -80,10 +80,15 @@ def get_picks(symbol: str = "ALL", asset_type: str = None, limit: int = 50, offs
             cur.execute(
                 "SELECT * FROM predictions" + where + " AND outcome IS NOT NULL "
                 "ORDER BY predicted_at DESC NULLS LAST, id DESC LIMIT %s OFFSET %s",
-                tuple(params) + (lim, off),
+                # U47: fetch one extra row so has_more reflects the rows this
+                # list actually pages over (every resolved outcome), not the
+                # WIN+LOSS non-research tally used for accuracy.
+                tuple(params) + (lim + 1, off),
             )
             cols = [d[0] for d in cur.description]
             resolved = [_norm_pred(dict(zip(cols, r))) for r in cur.fetchall()]
+            has_more = len(resolved) > lim
+            resolved = resolved[:lim]
         from core.engine_mode import core_engine_mode
         return {
             "ok": True,
@@ -95,7 +100,7 @@ def get_picks(symbol: str = "ALL", asset_type: str = None, limit: int = 50, offs
             "offset": off,
             "active": active,
             "recent": resolved,
-            "has_more": off + len(resolved) < total,
+            "has_more": has_more,
             "accuracy_pct": round(wins / total * 100, 1) if total else 0,
             "wins": wins,
             "losses": losses,
