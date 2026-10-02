@@ -6,8 +6,10 @@ Outcomes (exactly one is printed as the final line):
 - ``PASS: ...``    the audit ran and has zero critical unresolved findings.
 - ``FAIL: ...``    the audit ran and failed, or the endpoint misbehaved (exit 1).
 - ``SKIPPED: ...`` the gate could NOT be checked (no CRON_SECRET in this
-                   environment). Exit 0 so CI stays green, but PASS is never
-                   printed for a check that did not happen.
+                   environment). It is annotated as NOT VERIFIED (warning +
+                   job summary) and exits 0 so PR/fork CI stays green, but
+                   PASS is never printed for a check that did not happen.
+                   On a push to main a missing secret is a FAIL (exit 1).
 
 The audit call is always read-only: ``auto_fix=false&persist=false`` means no
 self-heal writes and no history row on the target deployment.
@@ -37,14 +39,42 @@ def _critical_unresolved(findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     return out
 
 
+def _is_push_to_main() -> bool:
+    return (os.getenv("GITHUB_EVENT_NAME") == "push"
+            and os.getenv("GITHUB_REF") == "refs/heads/main")
+
+
+def _not_verified(gate: str, reason: str) -> bool:
+    """Make an unchecked gate visible: a ``::warning::`` annotation plus a
+    "NOT VERIFIED" entry in the job summary. Returns True when the run is a
+    push to main, where an unchecked release gate must fail the job (PRs and
+    forks without the secret stay green, but never report PASS)."""
+    print(f"::warning::{gate} NOT VERIFIED: {reason}")
+    summary_path = os.getenv("GITHUB_STEP_SUMMARY", "")
+    if summary_path:
+        try:
+            with open(summary_path, "a", encoding="utf-8") as fh:
+                fh.write(f"### {gate}: NOT VERIFIED\n\n{reason}\n\n")
+        except OSError:
+            pass
+    if _is_push_to_main():
+        print(f"::error::{gate} NOT VERIFIED on push to main: {reason}")
+        return True
+    return False
+
+
 def main() -> int:
     base_url = os.getenv("BASE_URL", "https://ghost-protocol-v2-production.up.railway.app").rstrip("/")
     cron_secret = os.getenv("CRON_SECRET", "").strip()
     if not cron_secret:
-        print(
-            "SKIPPED: CRON_SECRET is not set, so POST /api/health/audit cannot be called; "
+        reason = (
+            "CRON_SECRET is not set, so POST /api/health/audit cannot be called; "
             "the zero-critical-findings gate was NOT checked."
         )
+        if _not_verified("Zero-critical health-audit gate", reason):
+            print("FAIL: " + reason)
+            return 1
+        print("SKIPPED: " + reason)
         return 0
 
     url = f"{base_url}/api/health/audit?{AUDIT_QUERY}"

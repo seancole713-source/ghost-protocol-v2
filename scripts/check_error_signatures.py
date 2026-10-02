@@ -10,8 +10,10 @@ Outcomes (the final line is exactly one of):
 - ``PASS: ...``    the audit source was collected and has no unknown signature.
 - ``FAIL: ...``    an unknown signature was found, or an endpoint misbehaved.
 - ``SKIPPED: ...`` no source that covers the application could be collected
-                   (e.g. CRON_SECRET unset). Exit 0 so CI stays green, but a
-                   check that did not happen is never reported as PASS.
+                   (e.g. CRON_SECRET unset). Annotated as NOT VERIFIED
+                   (warning + job summary); exit 0 so PR/fork CI stays green,
+                   but a check that did not happen is never reported as PASS.
+                   On a push to main this is a FAIL (exit 1).
 """
 import json
 import os
@@ -105,6 +107,30 @@ def _print_annotation(level: str, message: str) -> None:
     print(f"::{level}::{message}")
 
 
+def _is_push_to_main() -> bool:
+    return (os.getenv("GITHUB_EVENT_NAME") == "push"
+            and os.getenv("GITHUB_REF") == "refs/heads/main")
+
+
+def _not_verified(gate: str, reason: str) -> bool:
+    """Make an unchecked gate visible: a ``::warning::`` annotation plus a
+    "NOT VERIFIED" entry in the job summary. Returns True when the run is a
+    push to main, where an unchecked release gate must fail the job (PRs and
+    forks without the secret stay green, but never report PASS)."""
+    print(f"::warning::{gate} NOT VERIFIED: {reason}")
+    summary_path = os.getenv("GITHUB_STEP_SUMMARY", "")
+    if summary_path:
+        try:
+            with open(summary_path, "a", encoding="utf-8") as fh:
+                fh.write(f"### {gate}: NOT VERIFIED\n\n{reason}\n\n")
+        except OSError:
+            pass
+    if _is_push_to_main():
+        print(f"::error::{gate} NOT VERIFIED on push to main: {reason}")
+        return True
+    return False
+
+
 def main() -> int:
     base_url = os.getenv("BASE_URL", "https://ghost-protocol-v2-production.up.railway.app").rstrip("/")
     cron_secret = os.getenv("CRON_SECRET", "").strip()
@@ -154,12 +180,15 @@ def main() -> int:
         return 1
 
     if not covered:
-        _print_annotation("warning", "error-signature gate SKIPPED: " + ", ".join(skipped) + " not collected")
-        print(
-            "SKIPPED: error signatures were NOT checked ("
+        reason = (
+            "error signatures were NOT checked ("
             + ", ".join(skipped)
             + " not collectible; set CRON_SECRET for the read-only health audit)."
         )
+        if _not_verified("Production error-signature gate", reason):
+            print("FAIL: " + reason)
+            return 1
+        print("SKIPPED: " + reason)
         return 0
 
     if not signatures:

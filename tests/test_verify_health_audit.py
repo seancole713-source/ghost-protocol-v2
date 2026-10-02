@@ -15,6 +15,10 @@ class _Resp:
 @pytest.fixture(autouse=True)
 def _base(monkeypatch):
     monkeypatch.setenv("BASE_URL", "https://example.test")
+    # The suite itself runs in GitHub Actions (including on push to main):
+    # start every test from a neutral, non-CI event context.
+    for key in ("GITHUB_EVENT_NAME", "GITHUB_REF", "GITHUB_STEP_SUMMARY"):
+        monkeypatch.delenv(key, raising=False)
 
 
 def _capture(monkeypatch, payload=None, exc=None):
@@ -123,3 +127,45 @@ def test_health_audit_persist_false_skips_history_write(monkeypatch):
     assert persisted == []
     ha.run_health_audit(auto_fix=False, **kwargs)
     assert len(persisted) == 1
+
+
+# ── CI: a missing secret is NOT VERIFIED, visibly; fatal on push to main ─────
+
+def test_missing_secret_on_pr_warns_not_verified_and_writes_summary(monkeypatch, capsys, tmp_path):
+    summary = tmp_path / "summary.md"
+    monkeypatch.delenv("CRON_SECRET", raising=False)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    monkeypatch.setenv("GITHUB_REF", "refs/pull/1/merge")
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    _capture(monkeypatch)
+    assert vha.main() == 0
+    out = capsys.readouterr().out
+    assert "::warning::" in out and "NOT VERIFIED" in out
+    assert out.strip().splitlines()[-1].startswith("SKIPPED:")
+    assert "PASS" not in out
+    assert "NOT VERIFIED" in summary.read_text()
+
+
+def test_missing_secret_on_push_to_main_fails(monkeypatch, capsys, tmp_path):
+    summary = tmp_path / "summary.md"
+    monkeypatch.delenv("CRON_SECRET", raising=False)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "push")
+    monkeypatch.setenv("GITHUB_REF", "refs/heads/main")
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    calls = _capture(monkeypatch)
+    assert vha.main() == 1
+    out = capsys.readouterr().out
+    assert "NOT VERIFIED" in out
+    assert out.strip().splitlines()[-1].startswith("FAIL:")
+    assert "PASS" not in out
+    assert "NOT VERIFIED" in summary.read_text()
+    assert calls == []
+
+
+def test_missing_secret_on_push_to_other_branch_does_not_fail(monkeypatch, capsys):
+    monkeypatch.delenv("CRON_SECRET", raising=False)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "push")
+    monkeypatch.setenv("GITHUB_REF", "refs/heads/feature")
+    _capture(monkeypatch)
+    assert vha.main() == 0
+    assert "NOT VERIFIED" in capsys.readouterr().out

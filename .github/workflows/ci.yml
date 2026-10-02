@@ -224,13 +224,22 @@ jobs:
         run: python -m pip install -r requirements.txt
 
       # Without CRON_SECRET the health-audit and error-signature gates cannot
-      # check anything: they print "SKIPPED: <reason>" (exit 0), never PASS.
-      # With it, they call POST /api/health/audit?auto_fix=false&persist=false,
-      # which is read-only (no self-heal writes, no history row).
+      # check anything: each emits a "NOT VERIFIED" warning annotation and job
+      # summary entry and prints "SKIPPED: <reason>", never PASS. On a push to
+      # main an unchecked gate FAILS its step (exit 1); manual dispatches stay
+      # warning-only. With the secret, they call
+      # POST /api/health/audit?auto_fix=false&persist=false, which is
+      # read-only (no self-heal writes, no history row).
       - name: Check CRON_SECRET secret
         run: |
           if [ -z "$CRON_SECRET" ]; then
-            echo "::warning::CRON_SECRET repository secret not configured — health-audit and error-signature gates will report SKIPPED (not checked)"
+            echo "::warning::CRON_SECRET repository secret not configured — health-audit and error-signature gates are NOT VERIFIED (fails the job on push to main)"
+            {
+              echo "### Release gates: NOT VERIFIED"
+              echo
+              echo "CRON_SECRET is not available to this run, so the zero-critical health-audit gate and the production error-signature gate cannot check the deployment."
+              echo
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Run deploy go/no-go
