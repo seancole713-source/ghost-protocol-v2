@@ -938,7 +938,7 @@ body{background:radial-gradient(1200px 620px at 50% -8%,#15131f 0%,#0a0a0a 58%) 
       <div class="sq-head">
         <div>
           <div class="sq-title">Intraday squeeze radar</div>
-          <div class="sq-sub">Scorecard + probability targets · <b>Buy</b> / <b>Sell</b> at alert · <b>Live vs alert</b> updates each scan. Scans all <b>43</b> symbols; panel refreshes every <b>3 min</b>.</div>
+          <div class="sq-sub">Scorecard (unvalidated) · <b>Watch level</b> / <b>Upside reference</b> / <b>Invalidation level</b> at alert · <b>Live vs alert</b> updates each scan. Scans all <b>43</b> symbols; panel refreshes every <b>3 min</b>.</div>
         </div>
         <div class="sq-meta" id="sq-meta">Loading…</div>
       </div>
@@ -1921,7 +1921,7 @@ function _renderV3SqueezeAlerts(picks, watching){
   el.innerHTML = '<div class="v3-sq-alerts">'
     + '<div class="v3-sq-alerts-h">Telegram squeeze alerts today · intraday radar (not v3)</div>'
     + '<table aria-label="Ghost market and performance data" class="sq-table"><thead><tr>'
-    + '<th>Stock</th><th>Buy</th><th>Sell</th><th>Score</th><th>P(+3% 60m)</th><th title="Setup score (unvalidated) — a heuristic ranking, not a probability or win rate">Setup score (unvalidated)</th><th>Peak</th>'
+    + '<th>Stock</th><th>Watch level</th><th>Upside reference</th><th>Score (heuristic)</th><th title="Heuristic proxy from the squeeze scorecard. Not a validated probability; no forward record backs it.">P(+3% 60m) · unvalidated proxy</th><th title="Setup score (unvalidated) — a heuristic ranking, not a probability or win rate">Setup score (unvalidated)</th><th>Peak</th>'
     + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
 }
 
@@ -3052,7 +3052,7 @@ function _sqDriftSummaryBlock(rows, title){
   }).join('');
   return '<div class="sq-drift-block"><div class="sq-drift-block-h">' + escHtml(title) + '</div>'
     + '<table aria-label="Ghost market and performance data" class="sq-table"><thead><tr>'
-    + '<th>Stock</th><th>Alert buy</th><th>Live now</th><th>Gap</th>'
+    + '<th>Stock</th><th>Watch level at alert</th><th>Live now</th><th>Gap</th>'
     + '</tr></thead><tbody>' + body + '</tbody></table></div>';
 }
 
@@ -3146,7 +3146,7 @@ function _renderSqueezePicks(data){
       if(sessionAlerts.length){
         alertBlock = '<div class="sq-section-label">Telegram alerts this session</div>'
           + '<table aria-label="Ghost market and performance data" class="sq-table"><thead><tr>'
-          + '<th>Stock</th><th>Buy</th><th>Sell</th><th>Live vs alert</th><th>Score</th><th>P(+3% 60m)</th><th title="Setup score (unvalidated) — a heuristic ranking, not a probability or win rate">Setup score (unvalidated)</th><th>Peak</th>'
+          + '<th>Stock</th><th>Watch level</th><th>Upside reference</th><th>Live vs alert</th><th>Score (heuristic)</th><th title="Heuristic proxy from the squeeze scorecard. Not a validated probability; no forward record backs it.">P(+3% 60m) · unvalidated proxy</th><th title="Setup score (unvalidated) — a heuristic ranking, not a probability or win rate">Setup score (unvalidated)</th><th>Peak</th>'
           + '</tr></thead><tbody>'
           + sessionAlerts.slice(0, 8).map(function(p){
             return '<tr class="sq-forming"><td><span class="sq-sym">' + escHtml(p.symbol) + '</span></td>'
@@ -3160,15 +3160,15 @@ function _renderSqueezePicks(data){
           }).join('')
           + '</tbody></table>';
       }
-      var driftBlock = _sqDriftSummaryBlock(data.live_drift, 'Ghost prediction vs live · Telegram alert buy');
+      var driftBlock = _sqDriftSummaryBlock(data.live_drift, 'Ghost alert level vs live · Telegram alert watch level');
       wrap.innerHTML = driftBlock
         + '<div class="sq-empty pb12"><b>' + emptyTitle + '</b><br>' + msg + '</div>'
         + alertBlock
         + '<div class="sq-section-label">'
         + (stale ? 'Last session snapshot (not live) · ' : '')
-        + 'Top movers · buy / sell now (scorecard v1)</div>'
+        + 'Top movers · watch / reference levels now (scorecard v1, unvalidated)</div>'
         + '<table aria-label="Ghost market and performance data" class="sq-table"><thead><tr>'
-        + '<th>Stock</th><th>Buy</th><th>Sell</th><th>Stop</th><th>Score</th><th>P(+3% 60m)</th><th>Peak</th><th>RVOL</th>'
+        + '<th>Stock</th><th>Watch level</th><th>Upside reference</th><th>Invalidation level</th><th>Setup score (unvalidated)</th><th title="Heuristic proxy from the squeeze scorecard. Not a validated probability; no forward record backs it.">P(+3% 60m) · unvalidated proxy</th><th>Peak</th><th>RVOL</th>'
         + '</tr></thead><tbody>' + lrows + '</tbody></table>';
     } else {
       wrap.innerHTML = '<div class="sq-empty"><b>' + emptyTitle + '</b><br>' + msg + '</div>';
@@ -3178,7 +3178,7 @@ function _renderSqueezePicks(data){
       + (data && data.enabled === false ? 'radar disabled' : 'radar enabled');
     return;
   }
-  var driftBlock = _sqDriftSummaryBlock(data.live_drift, 'Ghost prediction vs live · first Telegram alert buy');
+  var driftBlock = _sqDriftSummaryBlock(data.live_drift, 'Ghost alert level vs live · first Telegram alert watch level');
   var rows = picks.map(function(p){
     var cls = p.kind === 'squeeze_active' ? 'sq-active' : 'sq-forming';
     return '<tr class="' + cls + '">'
@@ -3195,7 +3195,7 @@ function _renderSqueezePicks(data){
   }).join('');
   wrap.innerHTML = driftBlock
     + '<table aria-label="Ghost market and performance data" class="sq-table"><thead><tr>'
-    + '<th>Stock</th><th>Buy</th><th>Sell</th><th>Stop</th><th>Score</th><th>P(+3% 60m)</th><th>Live vs alert</th><th title="Setup score (unvalidated) — a heuristic ranking, not a probability or win rate">Setup score (unvalidated)</th><th>Peak · RVOL</th>'
+    + '<th>Stock</th><th>Watch level</th><th>Upside reference</th><th>Invalidation level</th><th>Score (heuristic)</th><th title="Heuristic proxy from the squeeze scorecard. Not a validated probability; no forward record backs it.">P(+3% 60m) · unvalidated proxy</th><th>Live vs alert</th><th title="Setup score (unvalidated) — a heuristic ranking, not a probability or win rate">Setup score (unvalidated)</th><th>Peak · RVOL</th>'
     + '</tr></thead><tbody>' + rows + '</tbody></table>';
   if(foot){
     var probNote = scMeta && scMeta.probabilities_note ? scMeta.probabilities_note : 'Heuristic probability targets';
@@ -3286,7 +3286,7 @@ function _renderSqueezeDailyLog(data, focusDay){
     wrap.innerHTML = '<div class="sq-empty"><b>No squeeze predictions logged for ' + escHtml(focus) + '</b><br>'
       + 'Telegram alerts and scorecard candidates are recorded here once the radar fires.</div>';
   } else {
-    var driftBlock = _sqDriftSummaryBlock(data.live_drift, 'Intraday · alert buy vs live now (Telegram)');
+    var driftBlock = _sqDriftSummaryBlock(data.live_drift, 'Intraday · alert watch level vs live now (Telegram)');
     var body = rows.map(function(r){
       var src = r.source === 'telegram' ? 'Telegram' : 'Candidate';
       var closeGap = r.target_gap_pct;
@@ -3297,26 +3297,26 @@ function _renderSqueezeDailyLog(data, focusDay){
       return '<tr>'
         + '<td><span class="sq-sym">' + escHtml(r.symbol) + '</span>'
         + '<div class="fs10-c64748b-mt2">' + escHtml(src) + ' · ' + escHtml(r.kind || '') + '</div></td>'
-        + '<td class="sq-num">' + _fmtUsd(r.buy) + '<br><span class="fs10-c64748b">sell ' + _fmtUsd(r.sell) + '</span>'
-        + '<br><span class="fs10-c64748b">stop ' + _fmtUsd(r.stop) + '</span></td>'
+        + '<td class="sq-num">' + _fmtUsd(r.buy) + '<br><span class="fs10-c64748b">upside ref ' + _fmtUsd(r.sell) + '</span>'
+        + '<br><span class="fs10-c64748b">invalidation ' + _fmtUsd(r.stop) + '</span></td>'
         + '<td class="sq-num">' + liveCell + '</td>'
         + '<td>' + _sqActualLine(r) + '</td>'
         + '<td>' + _sqOutcomeBadge(r.outcome)
-        + (r.close_pnl_pct != null ? '<div class="mt4 fs10">Close vs buy: <span class="' + (r.close_pnl_pct >= 0 ? 'sq-gap-pos' : 'sq-gap-neg') + '">' + _sqPct(r.close_pnl_pct, 2) + '</span></div>' : '')
-        + (closeGap != null ? '<div class="fs10-c64748b">Close vs sell: <span class="' + gapCls.trim() + '">' + _sqPct(closeGap, 2) + '</span></div>' : '')
+        + (r.close_pnl_pct != null ? '<div class="mt4 fs10">Close vs watch level: <span class="' + (r.close_pnl_pct >= 0 ? 'sq-gap-pos' : 'sq-gap-neg') + '">' + _sqPct(r.close_pnl_pct, 2) + '</span></div>' : '')
+        + (closeGap != null ? '<div class="fs10-c64748b">Close vs upside ref: <span class="' + gapCls.trim() + '">' + _sqPct(closeGap, 2) + '</span></div>' : '')
         + '</td>'
         + '<td class="sq-score">' + (r.squeeze_score != null ? Math.round(r.squeeze_score) : '—')
-        + '<div class="fs10-c64748b-mt2">P(+3%) ' + (r.p_continue_3pct_60m != null ? Math.round(r.p_continue_3pct_60m) + '%' : '—') + '</div></td>'
+        + '<div class="fs10-c64748b-mt2" title="Heuristic proxy, not a validated probability">P(+3%, unvalidated) ' + (r.p_continue_3pct_60m != null ? Math.round(r.p_continue_3pct_60m) + '%' : '—') + '</div></td>'
         + '<td class="fs11-c64748b">RVOL ' + (r.rvol != null ? Number(r.rvol).toFixed(1) + '×' : '—')
         + '<br>peak +' + (r.peak_move_pct != null ? Number(r.peak_move_pct).toFixed(1) : '—') + '%'
-        + (r.hit_target ? '<br><span class="sq-gap-pos">hit sell</span>' : '')
-        + (r.hit_stop ? '<br><span class="sq-gap-neg">hit stop</span>' : '')
+        + (r.hit_target ? '<br><span class="sq-gap-pos">hit upside ref</span>' : '')
+        + (r.hit_stop ? '<br><span class="sq-gap-neg">hit invalidation</span>' : '')
         + '</td>'
         + '</tr>';
     }).join('');
     wrap.innerHTML = driftBlock
       + '<table aria-label="Ghost market and performance data" class="sq-table"><thead><tr>'
-      + '<th>Stock</th><th>Ghost predicted</th><th>Live vs alert</th><th>Market (EOD)</th><th>Outcome</th><th>Score</th><th>Context</th>'
+      + '<th>Stock</th><th>Ghost levels</th><th>Live vs alert</th><th>Market (EOD)</th><th>Outcome</th><th>Setup score (unvalidated)</th><th>Context</th>'
       + '</tr></thead><tbody>' + body + '</tbody></table>';
   }
   if(foot && data.note){
