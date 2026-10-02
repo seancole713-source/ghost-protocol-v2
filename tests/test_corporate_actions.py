@@ -256,3 +256,110 @@ def test_disabled_makes_no_request(monkeypatch):
         raise AssertionError("no request may be made while disabled")
     monkeypatch.setattr(ca.requests, "get", _boom)
     assert ca.ex_dividends_on("2026-09-18") == ({}, "disabled")
+
+
+# ------------------------------------- 2026-10-02: "type=HTTPError" every run --
+# Production: "corporate actions unavailable day=2026-09-30 type=HTTPError" at
+# 21:35, 03:35 and 08:10 UTC (the 6 h negative-cache TTL) while the edge probe got
+# HTTP 200 from the same dividends endpoint: not an entitlement problem. 2026-09-30
+# is a quarter-end ex-date (several 1000-row pages) and 08:10 sat inside an hourly
+# burst of Polygon 429s from the core scan (free tier: 5 requests a minute).
+
+class _HttpResponse(_Response):
+    """raise_for_status like requests: an HTTPError whose message embeds the URL."""
+
+    def raise_for_status(self):
+        import requests
+        if self.status_code >= 400:
+            err = requests.HTTPError(
+                f"{self.status_code} Client Error for url: https://api.polygon.io/v3/reference/"
+                f"dividends?apiKey=SECRET-KEY-VALUE")
+            err.response = self
+            raise err
+
+
+def _pages(monkeypatch, statuses, calls):
+    """Page i answers statuses[i]; every OK page links to the next one."""
+    def _get(url, params=None, headers=None, timeout=None):
+        i = len(calls)
+        calls.append(url)
+        status = statuses[min(i, len(statuses) - 1)]
+        payload = {"results": [{"ticker": f"T{i}", "cash_amount": 0.5, "currency": "USD"}],
+                   "next_url": f"https://api.polygon.io/v3/reference/dividends?cursor=c{i + 1}"}
+        return _HttpResponse(payload, status)
+    monkeypatch.setattr(ca.requests, "get", _get)
+
+
+def test_a_429_mid_pagination_is_rate_limited_never_a_partial_list(monkeypatch):
+    from core.circuit_breaker import _polygon_corp_actions_cb
+    calls = []
+    _pages(monkeypatch, [200, 429], calls)
+    found, status = ca.ex_dividends_on("2026-09-30")
+    assert (found, status) == ({}, "provider_rate_limited")      # page 1 alone is not "the day"
+    assert _polygon_corp_actions_cb.state == "closed"             # a 429 is not a provider fault
+    from core import polygon_rate
+    assert polygon_rate.BUDGET.cooling_down()                     # shared with the core scan
+
+
+def test_rate_limited_is_cached_for_a_minute_not_six_hours(monkeypatch):
+    calls = []
+    _pages(monkeypatch, [429], calls)
+    t = [1_790_900_000.0]
+    monkeypatch.setattr(ca.time, "time", lambda: t[0])
+    assert ca.ex_dividends_on("2026-09-30")[1] == "provider_rate_limited"
+    assert ca.ex_dividends_on("2026-09-30")[1] == "provider_rate_limited"
+    assert len(calls) == 1
+    from core import polygon_rate
+    polygon_rate.BUDGET.reset()
+    t[0] += ca._RATE_LIMITED_TTL_S + 1
+    _stub_polygon(monkeypatch, {"results": []}, calls=calls)
+    assert ca.ex_dividends_on("2026-09-30")[1] == "available"
+    assert len(calls) == 2
+
+
+def test_no_budget_means_no_request(monkeypatch):
+    from core import polygon_rate
+    monkeypatch.setattr(polygon_rate.BUDGET, "try_acquire", lambda: False)
+    def _boom(*a, **kw):
+        raise AssertionError("no request without a budget token")
+    monkeypatch.setattr(ca.requests, "get", _boom)
+    assert ca.ex_dividends_on("2026-09-30") == ({}, "provider_rate_limited")
+
+
+def test_an_http_error_logs_its_status_code_and_never_the_key(monkeypatch, caplog):
+    import logging
+    calls = []
+    _pages(monkeypatch, [502], calls)
+    caplog.set_level(logging.INFO, logger="ghost.corporate_actions")
+    assert ca.ex_dividends_on("2026-09-30")[1] == "provider_request_failed"
+    assert "day=2026-09-30 type=HTTPError http_status=502" in caplog.text
+    assert "SECRET-KEY-VALUE" not in caplog.text and "test-key" not in caplog.text
+
+
+def test_a_403_backs_off_for_the_day_and_is_rechecked_next_session(monkeypatch):
+    calls = []
+    _stub_polygon(monkeypatch, {}, status_code=403, calls=calls)
+    today = ["2026-10-02"]
+    monkeypatch.setattr(ca, "_today", lambda: today[0])
+    assert ca.ex_dividends_on("2026-09-30")[1] == "provider_not_authorized"
+    ca._CACHE.clear()
+    assert ca.ex_dividends_on("2026-10-01")[1] == "provider_not_authorized"
+    assert len(calls) == 1                                        # not re-asked the same day
+    today[0] = "2026-10-05"
+    ca._CACHE.clear()
+    _stub_polygon(monkeypatch, {"results": []}, calls=calls)
+    assert ca.ex_dividends_on("2026-10-02")[1] == "available"     # plan upgrade picked up
+    assert len(calls) == 2 and ca._NOT_AUTHORIZED == {}
+
+
+def test_every_page_of_a_healthy_quarter_end_is_read(monkeypatch):
+    calls = []
+    def _get(url, params=None, headers=None, timeout=None):
+        calls.append(url)
+        i = len(calls)
+        nxt = f"https://api.polygon.io/v3/reference/dividends?cursor=c{i}" if i < 3 else None
+        return _Response({"results": [{"ticker": f"T{i}", "cash_amount": 0.5, "currency": "USD"}],
+                          "next_url": nxt})
+    monkeypatch.setattr(ca.requests, "get", _get)
+    found, status = ca.ex_dividends_on("2026-09-30")
+    assert status == "available" and sorted(found) == ["T1", "T2", "T3"]

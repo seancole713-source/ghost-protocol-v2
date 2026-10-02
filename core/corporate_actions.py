@@ -45,6 +45,18 @@ Every failure path -- no key, 403, timeout, breaker open, unparseable row --
 returns coverage state and NO adjustment. A missing dividend feed must leave
 the discovery lane exactly as it was, never suppress a row, and never let an
 absent lookup be mistaken for "no dividend".
+
+RATE LIMIT
+----------
+Every page shares core.polygon_rate's per-minute budget with the other core
+Polygon callers. A quarter-end ex-date (e.g. 2026-09-30) spans several pages,
+and the free tier allows 5 requests a minute: production logged
+"corporate actions unavailable day=2026-09-30 type=HTTPError" every ~6 hours
+(the negative-cache TTL) while the dividends endpoint itself answered 200 to
+the edge probe. A 429 (or no budget left) is "provider_rate_limited": cached
+for a minute, no breaker failure, and never a partial list. Every HTTP
+failure logs its status code (never the URL, which carries the key). A 401/403
+is an entitlement verdict and is not re-asked until the next exchange day.
 """
 from __future__ import annotations
 
@@ -76,6 +88,7 @@ _NOT_AUTHORIZED: Dict[str, Any] = {}
 
 _MAX_PAGES = 6
 _PAGE_LIMIT = 1000
+_RATE_LIMITED_TTL_S = 60
 
 
 def _enabled() -> bool:
@@ -168,16 +181,37 @@ def _parse_results(payload: Any) -> Dict[str, Dict[str, Any]]:
     return out
 
 
+def _today() -> Optional[str]:
+    return session_date(time.time())
+
+
+def _http_status(exc: BaseException) -> Optional[int]:
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    return status if isinstance(status, int) else None
+
+
+def _not_authorized_today() -> bool:
+    """A 401/403 is remembered for the rest of its exchange day, then re-asked
+    once (a plan upgrade is picked up without a restart)."""
+    if not _NOT_AUTHORIZED:
+        return False
+    if _NOT_AUTHORIZED.get("day") not in (None, _today()):
+        _NOT_AUTHORIZED.clear()
+        return False
+    return True
+
+
 def _fetch_day(day: str, *, timeout_s: float = 6.0) -> Tuple[Dict[str, Dict[str, Any]], str]:
     """One bounded, paginated read of every US ex-dividend on `day`."""
     key = _api_key()
     if not key:
         return {}, "no_api_key"
-    if _NOT_AUTHORIZED:
+    if _not_authorized_today():
         return {}, "provider_not_authorized"
     from core.circuit_breaker import _polygon_corp_actions_cb
     if not _polygon_corp_actions_cb.allow():
         return {}, "provider_breaker_open"
+    from core import polygon_rate
 
     found: Dict[str, Dict[str, Any]] = {}
     url: Optional[str] = _ENDPOINT
@@ -188,6 +222,10 @@ def _fetch_day(day: str, *, timeout_s: float = 6.0) -> Tuple[Dict[str, Dict[str,
         for _ in range(_MAX_PAGES):
             if not url:
                 break
+            if not polygon_rate.try_acquire():
+                # Out of the shared per-minute budget: no partial list, ask again
+                # next minute. Not a provider fault, so no breaker failure.
+                return {}, "provider_rate_limited"
             response = requests.get(
                 url, params=params,
                 headers={"User-Agent": "GhostProtocol/2.5"},
@@ -201,14 +239,19 @@ def _fetch_day(day: str, *, timeout_s: float = 6.0) -> Tuple[Dict[str, Dict[str,
                     "status_code": response.status_code,
                     "endpoint": _ENDPOINT,
                     "observed_at": int(time.time()),
+                    "day": _today(),
                 })
                 LOGGER.warning(
                     "CORPORATE ACTIONS: Polygon returned %d for the dividends "
-                    "reference endpoint; ex-dividend labelling is OFF until the "
-                    "plan covers it. Discovery moves stay unadjusted and are "
-                    "reported as unadjusted.", response.status_code,
+                    "reference endpoint; ex-dividend labelling is OFF for the "
+                    "rest of the day (re-checked next session). Discovery moves "
+                    "stay unadjusted and are reported as unadjusted.", response.status_code,
                 )
                 return {}, "provider_not_authorized"
+            if response.status_code == 429:
+                polygon_rate.note_rate_limited("dividends")
+                LOGGER.info("corporate actions rate limited day=%s http_status=429; retry next minute", day)
+                return {}, "provider_rate_limited"
             response.raise_for_status()
             payload = response.json()
             found.update(_parse_results(payload))
@@ -219,7 +262,10 @@ def _fetch_day(day: str, *, timeout_s: float = 6.0) -> Tuple[Dict[str, Dict[str,
         return found, "available"
     except Exception as exc:  # noqa: BLE001 - advisory lane, never a gate
         _polygon_corp_actions_cb.record_failure()
-        LOGGER.warning("corporate actions unavailable day=%s type=%s", day, type(exc).__name__)
+        # The status code, never str(exc): a requests HTTPError embeds the URL,
+        # which carries apiKey=<KEY>.
+        LOGGER.warning("corporate actions unavailable day=%s type=%s http_status=%s",
+                       day, type(exc).__name__, _http_status(exc))
         return {}, "provider_request_failed"
 
 
@@ -231,8 +277,10 @@ def ex_dividends_on(day: str) -> Tuple[Dict[str, Dict[str, Any]], str]:
         return {}, "invalid_day"
     cached = _CACHE.get(day)
     now = time.time()
-    if cached is not None and now - cached[0] < _cache_ttl_s():
-        return cached[1], cached[2]
+    if cached is not None:
+        ttl = _RATE_LIMITED_TTL_S if cached[2] == "provider_rate_limited" else _cache_ttl_s()
+        if now - cached[0] < ttl:
+            return cached[1], cached[2]
     found, status = _fetch_day(day)
     _CACHE[day] = (now, found, status)
     return found, status
