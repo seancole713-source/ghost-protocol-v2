@@ -263,3 +263,11 @@ def test_news_available_runs_no_ddl_and_reads_missing_table_as_unavailable(monke
 def test_startup_migration_creates_news_event_tables():
     src = inspect.getsource(dbmod._migrate_schema)
     assert "from core.news_events import ensure_news_tables" in src
+
+
+def test_news_ingest_cycle_runs_no_schema_ddl():
+    """The 15-minute ingest used to run CREATE/ALTER and a table-wide dedupe DELETE every cycle."""
+    import inspect
+    from core import news_ingest
+    src = inspect.getsource(news_ingest)
+    assert "ensure_news_tables" not in src

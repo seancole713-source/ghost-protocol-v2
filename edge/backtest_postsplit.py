@@ -116,7 +116,7 @@ def run(get, store, *, end_day: date, days: int = 60, warmup: int = 6,
         all_splits = split_index(PG.splits(get, session_days[0] - timedelta(days=LOOKBACK_SPLIT_DAYS),
                                            end_day, sleep=sleep))
     except Exception as exc:  # noqa: BLE001
-        return {"status": "error", "why": f"split list unavailable: {type(exc).__name__}: {str(exc)[:120]}"}
+        return {"status": "error", "why": f"split list unavailable: {redact_exc(exc, 160)}"}
     splits = reverse_splits(all_splits)
     spec = _spec()
     rolling, closes, trades, skipped = Rolling(), {}, [], []
