@@ -449,8 +449,8 @@ def test_retried_time_exit_ids_keep_the_time_exit_role():
 def test_a_broker_fill_the_rule_never_took_is_shown_but_not_counted(ledger):
     from edge.resolver import Resolution
     f = ledger.fc
-    ledger.settle(f.forecast_id, Resolution("NO_FILL"), now=ts(16, 25), record="forecast")
-    ledger.settle(f.forecast_id, Resolution("NO_FILL"), now=ts(16, 25), record="simulated")
+    ledger.settle(f.forecast_id, Resolution("NO_FILL", resolver_version="resolver_v2"), now=ts(16, 25), record="forecast")
+    ledger.settle(f.forecast_id, Resolution("NO_FILL", resolver_version="resolver_v2"), now=ts(16, 25), record="simulated")
     ledger.settle(f.forecast_id, Resolution("WIN", entry_fill=5.44, exit_price=5.78, pnl_usd=62.22),
                   now=ts(16, 25), record="actual")
     act = ledger.report("gap_and_go_auto@v1")["records"]["actual"]
@@ -532,7 +532,7 @@ def test_iex_and_sip_records_are_never_pooled():
     eid = GAP_AND_GO_AUTO.experiment_id
     old = issue(GAP_AND_GO_AUTO, symbol="SHOP", session_date=DAY, entry_ref=146.71, issued_at=ts(9, 10))
     lg.record(old, now=ts(9, 11))
-    lg.settle(old.forecast_id, Resolution("WIN", pnl_usd=50.0), now=ts(16, 25))
+    lg.settle(old.forecast_id, Resolution("WIN", pnl_usd=50.0, resolver_version="resolver_v2"), now=ts(16, 25))
     rep = lg.report(eid)
     assert rep["feed_regime"] == "iex" and rep["records"]["simulated"]["wins"] == 1 and "other_regimes" not in rep
 
@@ -541,7 +541,7 @@ def test_iex_and_sip_records_are_never_pooled():
     new = issue(GAP_AND_GO_AUTO, symbol="GLND", session_date=monday, entry_ref=6.1,
                 issued_at=int(datetime(2026, 9, 28, 9, 10, tzinfo=ET).timestamp()))
     lg.record(new, now=int(datetime(2026, 9, 28, 9, 11, tzinfo=ET).timestamp()))
-    lg.settle(new.forecast_id, Resolution("LOSS", pnl_usd=-30.0),
+    lg.settle(new.forecast_id, Resolution("LOSS", pnl_usd=-30.0, resolver_version="resolver_v2"),
               now=int(datetime(2026, 9, 28, 16, 25, tzinfo=ET).timestamp()))
     rep = lg.report(eid)
     assert rep["feed_regime"] == "sip" and rep["forecasts_in_regime"] == 1
@@ -613,7 +613,7 @@ def test_the_same_trade_filled_inside_the_window_is_counted():
 def test_an_older_actual_row_without_a_fill_time_is_judged_on_the_kept_broker_record(ledger):
     from edge.resolver import Resolution
     f = ledger.fc                                    # entry window ends 10:30
-    ledger.settle(f.forecast_id, Resolution("WIN", pnl_usd=40.0), now=ts(16, 20), record="forecast")
+    ledger.settle(f.forecast_id, Resolution("WIN", pnl_usd=40.0, resolver_version="resolver_v2"), now=ts(16, 20), record="forecast")
     ledger.settle(f.forecast_id, Resolution("WIN", entry_fill=148.3, exit_price=155.0, pnl_usd=40.2),
                   now=ts(16, 25), record="actual")                 # no entry_ts: settled before the fix
     assert ledger.report("gap_and_go_auto@v1")["records"]["actual"]["by_outcome"] == {"WIN": 1}

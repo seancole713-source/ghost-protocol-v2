@@ -136,6 +136,9 @@ def test_the_backtest_builds_the_model_dataset_and_tries_to_qualify_a_model():
     assert ds["features"] and ds["rows"]
     row = ds["rows"][0]
     assert set(row["features"]) >= {"gap_855", "pre_trend", "catalyst_company"}
+    # NEW-02: each training row names the resolver that graded it; the model trains on one cohort.
+    from edge.resolver import RESOLVER_VERSION
+    assert {r["resolver_version"] for r in ds["rows"]} == {RESOLVER_VERSION}
     full = store.get("edge_backtest", BT.BACKTEST_VERSION)
     assert full["model"]["status"] == "not_qualified"       # one session can never qualify
     assert "dataset" not in full["sessions_detail"][0]

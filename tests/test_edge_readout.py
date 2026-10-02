@@ -24,7 +24,7 @@ def seeded():
         lg.register(spec, now=ts(8, 0))
     f = issue(GAP_AND_GO_AUTO, symbol="SHOP", session_date=date(2026, 9, 23), entry_ref=146.71, issued_at=ts(9, 10))
     lg.record(f, now=ts(9, 11))
-    lg.settle(f.forecast_id, Resolution("WIN", pnl_usd=48.0), now=ts(16, 25), record="simulated")
+    lg.settle(f.forecast_id, Resolution("WIN", pnl_usd=48.0, resolver_version="resolver_v2"), now=ts(16, 25), record="simulated")
     store.put("edge_cards", "2026-09-23", {"day": "2026-09-23", "forecasts": ["SHOP"], "baseline_forecasts": ["SHOP", "USAR"],
                                            "health_banner": "1 setup. Coverage healthy.", "rows": [{"symbol": "SHOP", "verdict": "ELIGIBLE"}]})
     store.put("edge_backtest", "v1", {"window": ["2026-06-26", "2026-09-18"], "experiments": {}, "limits": ["NOT the forward record"],

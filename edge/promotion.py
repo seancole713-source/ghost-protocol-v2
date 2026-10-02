@@ -43,12 +43,26 @@ RETIREMENT = {
 RETIREMENT_HASH = hashlib.sha256(json.dumps(RETIREMENT, sort_keys=True).encode()).hexdigest()[:16]
 
 
+# The SAMPLE both rule sets read (audit NEW-02) is a data-selection matter, not a criterion, so it
+# lives outside the hashed dicts above: Ledger.report's headline records and readout._by_day are
+# ONE feed regime and ONE resolver cohort -- the current resolver (edge/resolver.py
+# RESOLVER_VERSION). resolver_v1 outcomes are never pooled with resolver_v2 ones; see
+# docs/resolver_versions.md "Cohort rule". It can only shrink the sample, never loosen a bar.
+
+
+def _cohort_unmet(*reports: Dict[str, Any]) -> List[str]:
+    """A report whose headline is not the current resolver's cohort is not judged on."""
+    from edge.resolver import RESOLVER_VERSION
+    return [f"report is the {r['resolver_version']} cohort, not the current {RESOLVER_VERSION}"
+            for r in reports if r.get("resolver_version") not in (None, RESOLVER_VERSION)]
+
+
 def evaluate(report: Dict[str, Any], *, baseline: Dict[str, Any], sessions: int,
              by_day: Dict[str, List[bool]], n_candidates: int) -> Dict[str, Any]:
     sim = report["records"]["simulated"]
     act = report["records"]["actual"]
     be = report["break_even"]
-    unmet = []
+    unmet = _cohort_unmet(report, baseline)
     if (sim.get("filled") or 0) < CRITERIA["min_simulated_filled"]:
         unmet.append(f"simulated trades {sim.get('filled') or 0}/{CRITERIA['min_simulated_filled']}")
     if (act.get("filled") or 0) < CRITERIA["min_paper_filled"]:
@@ -76,7 +90,7 @@ def evaluate(report: Dict[str, Any], *, baseline: Dict[str, Any], sessions: int,
     stage = "proposable" if not unmet else (
         "paper" if (act.get("filled") or 0) and (sim.get("filled") or 0) else "shadow")
     return {"stage": stage, "unmet": unmet, "criteria_version": CRITERIA["version"],
-            "criteria_hash": CRITERIA_HASH,
+            "criteria_hash": CRITERIA_HASH, "resolver_version": report.get("resolver_version"),
             "live": "never automatic -- requires the operator's explicit decision"}
 
 
@@ -90,7 +104,10 @@ def retirement(report: Dict[str, Any]) -> Dict[str, Any]:
     be = report.get("break_even")
     ci = sim.get("win_rate_ci") or [None, None]
     out = {"retirement_version": RETIREMENT["version"], "retirement_hash": RETIREMENT_HASH,
-           "feed_regime": report.get("feed_regime")}
+           "feed_regime": report.get("feed_regime"), "resolver_version": report.get("resolver_version")}
+    wrong_cohort = _cohort_unmet(report)
+    if wrong_cohort:
+        return {**out, "retire": False, "why": wrong_cohort[0]}
     if n < RETIREMENT["min_simulated_filled"] or be is None or ci[1] is None:
         return {**out, "retire": False,
                 "why": f"too few simulated trades to judge ({n}/{RETIREMENT['min_simulated_filled']})"}

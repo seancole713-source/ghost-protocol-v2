@@ -173,7 +173,7 @@ def test_report_states_the_interval_and_an_honest_verdict(ledger):
     for i, (outcome, pnl) in enumerate([("WIN", 49.35), ("LOSS", -29.4), ("WIN", 49.35)]):
         f = issue(GAP_AND_GO_V1, symbol=f"S{i}", session_date=DAY, entry_ref=9.4, issued_at=ts(9, 10))
         ledger.record(f, now=ts(9, 11))
-        ledger.settle(f.forecast_id, Resolution(outcome, pnl_usd=pnl), now=ts(16, 0))
+        ledger.settle(f.forecast_id, Resolution(outcome, pnl_usd=pnl, resolver_version="resolver_v2"), now=ts(16, 0))
     ledger.abstain(experiment_id="gap_and_go@v1", symbol="USAR", session_date="2026-09-23",
                    reasons=["E4 sympathy, no company catalyst"], now=ts(9, 12))
     rep = ledger.report("gap_and_go@v1")
@@ -188,7 +188,7 @@ def test_three_straight_wins_are_never_edge_shown(ledger):
     for i in range(3):
         f = issue(GAP_AND_GO_V1, symbol=f"W{i}", session_date=DAY, entry_ref=9.4, issued_at=ts(9, 10))
         ledger.record(f, now=ts(9, 11))
-        ledger.settle(f.forecast_id, Resolution("WIN", pnl_usd=49.35), now=ts(16, 0))
+        ledger.settle(f.forecast_id, Resolution("WIN", pnl_usd=49.35, resolver_version="resolver_v2"), now=ts(16, 0))
     rep = ledger.report("gap_and_go@v1")
     assert rep["win_rate_ci"][0] > rep["break_even"]            # the interval alone would say "edge"
     assert rep["verdict"] == "too few trades (n=3): Wilson range 44%-100% is not evidence"
