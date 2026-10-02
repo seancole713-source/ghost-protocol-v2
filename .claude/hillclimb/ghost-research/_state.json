@@ -1,0 +1,10 @@
+{
+  "flow": "ghost-research",
+  "metrics": [
+    {"id": "catalyst_correct", "label": "Catalyst right", "kind": "binary"},
+    {"id": "pit_ok", "label": "Cites in window", "kind": "binary"},
+    {"id": "trap_ok", "label": "No trap used", "kind": "binary"}
+  ],
+  "perf_fields": ["latency_s", "web_searches", "cost_usd"],
+  "harness_paths": ["run_eval.py", "grading.py", "cases.jsonl", "../../../edge/research_worker.py", "../../../edge/research.py"]
+}
