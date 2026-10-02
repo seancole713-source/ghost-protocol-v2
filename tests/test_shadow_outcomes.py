@@ -1,5 +1,7 @@
 """Tests for shadow scoring (core.shadow_outcomes) — pure helpers, no DB."""
 import json
+
+import pytest
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -913,3 +915,191 @@ def test_seed_passes_new_rows_to_checklist_after_the_transaction(monkeypatch):
     assert row["shadow_outcome_id"] == 777
     assert row["symbol"] == "WOLF"
     assert row["eval_ts"] == eval_ts
+
+
+# ── shadow resolver deadlocks (prod: hourly 40P01 at a fixed minute) ────────
+
+class _Deadlock(Exception):
+    pgcode = "40P01"
+
+    def __str__(self):
+        return "deadlock detected"
+
+
+def _shadow_resolve_fake_db(monkeypatch, pending_rows, *, deadlock_on_update=0,
+                            locked_ids=None):
+    """Fake pool: every ``with db_conn()`` is a transaction that records SQL,
+    commits on clean exit, and rolls back when the body raises."""
+    state = {"txns": [], "committed": [], "deadlocks_left": deadlock_on_update}
+
+    class _Cur:
+        def __init__(self, txn):
+            self.txn = txn
+            self.last_sql = ""
+
+        def execute(self, sql, params=None):
+            norm = " ".join(sql.split())
+            self.last_sql = norm
+            self.txn.append((norm, params))
+            if norm.startswith("UPDATE ghost_shadow_outcomes") and state["deadlocks_left"]:
+                state["deadlocks_left"] -= 1
+                raise _Deadlock()
+
+        def fetchall(self):
+            if "FOR UPDATE SKIP LOCKED" in self.last_sql:
+                ids = self.txn[-1][1][0]
+                held = set(locked_ids or ())
+                return [(i,) for i in ids if i not in held]
+            if "outcome IS NULL" in self.last_sql:
+                return list(pending_rows)
+            return []
+
+        def fetchone(self):
+            return None
+
+    class _Ctx:
+        def __enter__(self):
+            self.txn = []
+            state["txns"].append(self.txn)
+            conn = type("C", (), {"cursor": lambda _self: _Cur(self.txn)})()
+            return conn
+
+        def __exit__(self, exc_type, *a):
+            if exc_type is None:
+                state["committed"].append(self.txn)
+            return False
+
+    monkeypatch.setattr("core.db.db_conn", lambda: _Ctx())
+    return state
+
+
+def _resolvable_rows(ids):
+    import datetime as _dt
+
+    entry_ts = int(_dt.datetime(2026, 5, 20, 15, 0, tzinfo=_dt.timezone.utc).timestamp())
+    expires = int(_dt.datetime(2026, 5, 28, 21, 0, tzinfo=_dt.timezone.utc).timestamp())
+    return [(i, "STUB", entry_ts + i, 10.0, 10.2, 9.87, expires, "UP", 3) for i in ids]
+
+
+def _flat_bars(monkeypatch):
+    import core.signal_engine as _se
+
+    monkeypatch.setattr(
+        _se, "_fetch_ohlcv",
+        lambda sym, atype, period="3m": [
+            {"ts": f"2026-05-2{d}", "high": 10.05, "low": 9.95, "close": 10.0}
+            for d in (1, 2, 3, 4, 5, 6)
+        ],
+    )
+
+
+def test_shadow_resolver_retries_once_after_deadlock(monkeypatch):
+    from core import shadow_outcomes as so
+
+    monkeypatch.setattr(so, "_DEADLOCK_RETRY_BACKOFF_S", 0.0)
+    state = _shadow_resolve_fake_db(
+        monkeypatch, _resolvable_rows([30, 10, 20]), deadlock_on_update=1,
+    )
+    _flat_bars(monkeypatch)
+
+    assert so.resolve_shadow_rows(max_symbols=5) == 3
+
+    write_txns = [t for t in state["txns"] if any("pg_advisory_xact_lock" in s for s, _ in t)]
+    assert len(write_txns) == 2                       # deadlocked attempt + retry
+    assert write_txns[0] not in state["committed"]    # first attempt rolled back
+    final = write_txns[1]
+    assert final in state["committed"]
+    updates = [p for s, p in final if s.startswith("UPDATE ghost_shadow_outcomes")]
+    assert [p[-1] for p in updates] == [10, 20, 30]   # primary-key order
+    assert all("outcome IS NULL" in s for s, _ in final if s.startswith("UPDATE"))
+
+
+def test_shadow_resolver_gives_up_after_bounded_deadlock_retries(monkeypatch):
+    from core import shadow_outcomes as so
+
+    monkeypatch.setattr(so, "_DEADLOCK_RETRY_BACKOFF_S", 0.0)
+    state = _shadow_resolve_fake_db(
+        monkeypatch, _resolvable_rows([1]), deadlock_on_update=99,
+    )
+    _flat_bars(monkeypatch)
+
+    with pytest.raises(_Deadlock):
+        so.resolve_shadow_rows(max_symbols=5)
+    write_txns = [t for t in state["txns"] if any("pg_advisory_xact_lock" in s for s, _ in t)]
+    assert len(write_txns) == so._DEADLOCK_RETRY_ATTEMPTS
+
+
+def test_shadow_resolver_skips_rows_locked_by_another_writer(monkeypatch):
+    from core import shadow_outcomes as so
+
+    state = _shadow_resolve_fake_db(
+        monkeypatch, _resolvable_rows([1, 2]), locked_ids={2},
+    )
+    _flat_bars(monkeypatch)
+
+    assert so.resolve_shadow_rows(max_symbols=5) == 1
+    final = state["committed"][-1]
+    lock_sql = [s for s, _ in final if "FOR UPDATE" in s]
+    assert lock_sql and "ORDER BY id FOR UPDATE SKIP LOCKED" in lock_sql[0]
+    updated = [p[-1] for s, p in final if s.startswith("UPDATE")]
+    assert updated == [1]
+
+
+def test_shadow_cycle_runs_no_ddl_and_holds_no_txn_across_fetch(monkeypatch):
+    from core import shadow_outcomes as so
+
+    state = _shadow_resolve_fake_db(monkeypatch, _resolvable_rows([5]))
+    import core.signal_engine as _se
+
+    def _fetch(sym, atype, period="3m"):
+        # Every transaction opened so far has already been exited.
+        assert len(state["committed"]) == len(state["txns"])
+        return [
+            {"ts": f"2026-05-2{d}", "high": 10.05, "low": 9.95, "close": 10.0}
+            for d in (1, 2, 3, 4, 5, 6)
+        ]
+
+    monkeypatch.setattr(_se, "_fetch_ohlcv", _fetch)
+    monkeypatch.setattr(so, "seed_shadow_rows", lambda: 0)
+
+    out = so.run_shadow_cycle()
+
+    assert out["resolved"] == 1
+    for txn in state["txns"]:
+        for sql, _ in txn:
+            head = sql.split(" ", 1)[0].upper()
+            assert head not in ("CREATE", "ALTER", "DROP"), sql
+
+
+def test_shadow_cycle_retries_seed_on_deadlock(monkeypatch):
+    from core import shadow_outcomes as so
+
+    monkeypatch.setattr(so, "_DEADLOCK_RETRY_BACKOFF_S", 0.0)
+    calls = {"n": 0}
+
+    def _seed():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise _Deadlock()
+        return 4
+
+    monkeypatch.setattr(so, "seed_shadow_rows", _seed)
+    monkeypatch.setattr(so, "resolve_shadow_rows", lambda: 0)
+    monkeypatch.setattr("core.db.db_conn", lambda: (_ for _ in ()).throw(RuntimeError("no db")))
+
+    assert so.run_shadow_cycle()["seeded"] == 4
+    assert calls["n"] == 2
+
+
+def test_deadlock_retry_does_not_retry_other_errors():
+    from core.db import run_with_deadlock_retry
+
+    calls = {"n": 0}
+
+    def _boom():
+        calls["n"] += 1
+        raise ValueError("constraint violation")
+
+    with pytest.raises(ValueError):
+        run_with_deadlock_retry(_boom, label="t", attempts=3, backoff_s=0.0)
+    assert calls["n"] == 1

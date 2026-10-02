@@ -453,11 +453,13 @@ def resolve_predictions(*, limit: int = 200, now: Optional[int] = None) -> Dict[
         "resolved_1d_at, resolved_5d_at, resolved_20d_at"
     )
     try:
-        from core.db import db_conn
+        from core.db import db_conn, run_with_deadlock_retry
 
+        # Phase 1 (read): one short statement. Schema is owned by the startup
+        # migration; per-cycle CREATE INDEX IF NOT EXISTS took a SHARE lock that
+        # was then held across every network fetch below.
         with db_conn() as conn:
             cur = conn.cursor()
-            ensure_ledger_table(cur)
             cur.execute(
                 f"""
                 SELECT {cols} FROM super_ghost_predictions
@@ -468,37 +470,57 @@ def resolve_predictions(*, limit: int = 200, now: Optional[int] = None) -> Dict[
                 (max(1, min(1000, int(limit))),),
             )
             rows = cur.fetchall()
-            # Group symbols so we fetch each price series once.
-            by_symbol: Dict[str, List[Dict[str, Any]]] = {}
-            for r in rows:
-                rec = {
-                    "id": r[0], "symbol": r[1], "created_at": r[2], "reference_price": r[3],
-                    "direction": r[4], "target_price": r[5], "stop_loss": r[6],
-                    "resolved_1d_at": r[7], "resolved_5d_at": r[8], "resolved_20d_at": r[9],
-                }
-                by_symbol.setdefault((r[1] or "").upper(), []).append(rec)
+        # Group symbols so we fetch each price series once.
+        by_symbol: Dict[str, List[Dict[str, Any]]] = {}
+        for r in rows:
+            rec = {
+                "id": r[0], "symbol": r[1], "created_at": r[2], "reference_price": r[3],
+                "direction": r[4], "target_price": r[5], "stop_loss": r[6],
+                "resolved_1d_at": r[7], "resolved_5d_at": r[8], "resolved_20d_at": r[9],
+            }
+            by_symbol.setdefault((r[1] or "").upper(), []).append(rec)
 
-            for sym, recs in by_symbol.items():
-                series = _ohlc_series(sym, period="6mo")
-                if not series:
-                    continue
-                for rec in recs:
-                    updates = _resolve_one(rec, series, now)
-                    if not updates:
-                        continue
+        # Phase 2 (network, no transaction open): compute every row's updates.
+        pending_updates: List[Tuple[int, Dict[str, Any]]] = []
+        for sym, recs in by_symbol.items():
+            series = _ohlc_series(sym, period="6mo")
+            if not series:
+                continue
+            for rec in recs:
+                updates = _resolve_one(rec, series, now)
+                if updates:
+                    pending_updates.append((int(rec["id"]), updates))
+        # Deterministic primary-key order so concurrent writers acquire row
+        # locks in the same order.
+        pending_updates.sort(key=lambda item: item[0])
+
+        # Phase 3 (write): one short transaction, retried on deadlock. Each
+        # UPDATE writes the same values on replay, so a retry is idempotent.
+        def _write() -> Tuple[int, int]:
+            n_updated = 0
+            n_filled = 0
+            with db_conn() as conn:
+                cur = conn.cursor()
+                for row_id, updates in pending_updates:
                     set_clauses = []
                     params: List[Any] = []
                     for k, v in updates.items():
                         set_clauses.append(f"{k} = %s")
                         params.append(v)
                         if k.startswith("resolved_") and k.endswith("d_at"):
-                            horizons_filled += 1
-                    params.append(rec["id"])
+                            n_filled += 1
+                    params.append(row_id)
                     cur.execute(
                         f"UPDATE super_ghost_predictions SET {', '.join(set_clauses)} WHERE id = %s",
                         params,
                     )
-                    updated += 1
+                    n_updated += 1
+            return n_updated, n_filled
+
+        if pending_updates:
+            updated, horizons_filled = run_with_deadlock_retry(
+                _write, label="super ghost resolve write",
+            )
     except Exception as exc:
         LOGGER.warning("resolve_predictions: %s", str(exc)[:160])
         return {"ok": False, "error": str(exc)[:160], "resolved": 0, "updated": 0}

@@ -247,6 +247,40 @@ def ensure_ghost_state(cur=None):
         conn.commit()
 
 
+DEADLOCK_SQLSTATE = "40P01"
+
+
+def is_deadlock_error(exc: BaseException) -> bool:
+    """True for a Postgres deadlock (SQLSTATE 40P01)."""
+    return (
+        getattr(exc, "pgcode", None) == DEADLOCK_SQLSTATE
+        or "deadlock detected" in str(exc).lower()
+    )
+
+
+def run_with_deadlock_retry(fn, *, label: str, attempts: int = 3, backoff_s: float = 0.25):
+    """Run ``fn`` -- one complete, idempotent transaction -- retrying on 40P01.
+
+    Only deadlocks are retried, at most ``attempts`` times in total; any other
+    error, or the final deadlock, propagates. ``fn`` must open and commit its
+    own transaction (``with db_conn()``) so a deadlocked attempt is fully
+    rolled back before the next one starts.
+    """
+    attempts = max(1, int(attempts))
+    for attempt in range(1, attempts + 1):
+        try:
+            return fn()
+        except Exception as exc:
+            if not is_deadlock_error(exc) or attempt >= attempts:
+                raise
+            LOGGER.info(
+                "%s: deadlock detected (attempt %d/%d), retrying",
+                label, attempt, attempts,
+            )
+            time.sleep(max(0.0, backoff_s) * attempt)
+    return None
+
+
 _SCHEMA_BACKFILL_MARKER = "schema_backfills_v1"
 
 

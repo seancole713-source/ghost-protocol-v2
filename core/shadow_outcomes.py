@@ -20,7 +20,6 @@ import os
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
-from core.db import ensure_ghost_state
 
 LOGGER = logging.getLogger("ghost.shadow")
 
@@ -221,6 +220,25 @@ def _eval_entry_price(ev: Dict[str, Any]) -> Optional[float]:
 
 # Advisory-lock key for the shadow seeder — arbitrary constant, unique app-wide.
 _SEED_ADVISORY_LOCK_KEY = 749_301_552
+# Serializes the resolver's write transaction across every caller (hourly
+# scheduler, post-reconcile hook, admin endpoint).
+_RESOLVE_ADVISORY_LOCK_KEY = 749_301_553
+
+# Bounded retry for SQLSTATE 40P01. Every retried unit is a single short
+# transaction whose writes are idempotent (ON CONFLICT DO NOTHING / guarded by
+# outcome IS NULL), so a rolled-back attempt can be replayed safely.
+_DEADLOCK_RETRY_ATTEMPTS = 3
+_DEADLOCK_RETRY_BACKOFF_S = 0.25
+
+
+def _with_deadlock_retry(fn, *, label: str):
+    """Run ``fn`` (one whole transaction), retrying only on deadlock."""
+    from core.db import run_with_deadlock_retry
+
+    return run_with_deadlock_retry(
+        fn, label=label,
+        attempts=_DEADLOCK_RETRY_ATTEMPTS, backoff_s=_DEADLOCK_RETRY_BACKOFF_S,
+    )
 
 
 def _score_dict(ev: Dict[str, Any]) -> Dict[str, Any]:
@@ -317,7 +335,9 @@ def seed_shadow_rows(days_back: int = 3) -> int:
         if not (row and row[0]):
             LOGGER.debug("shadow seed: another seeder holds the lock, skipping")
             return 0
-        ensure_shadow_table(cur)
+        # Schema is owned by the startup migration (core.db._migrate_schema).
+        # Running CREATE INDEX / ALTER TABLE here took SHARE then ACCESS
+        # EXCLUSIVE locks per cycle, which deadlocked concurrent shadow cycles.
         try:
             # Evidence for BOTH lanes: a DOWN-only evaluation has no up_prob
             # yet is valid forward proof. Identity/priceability are enforced
@@ -559,7 +579,6 @@ def _read_shadow_resolve_offset() -> int:
     try:
         with db_conn() as conn:
             cur = conn.cursor()
-            ensure_ghost_state(cur)
             cur.execute(
                 "SELECT val FROM ghost_state WHERE key=%s",
                 (_SHADOW_RESOLVE_OFFSET_KEY,),
@@ -577,7 +596,6 @@ def _write_shadow_resolve_offset(offset: int) -> None:
     try:
         with db_conn() as conn:
             cur = conn.cursor()
-            ensure_ghost_state(cur)
             cur.execute(
                 "INSERT INTO ghost_state(key,val) VALUES(%s,%s) "
                 "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
@@ -621,15 +639,54 @@ def unresolved_reason(*, now: int, expires_at: Any, has_bars: bool,
     return "no_daily_bars" if not has_bars else "incomplete_forward_bars"
 
 
-def _mark_unresolved(sid: Any, reason: str, now: int) -> None:
+_MARK_UNRESOLVED_SQL = (
+    "UPDATE ghost_shadow_outcomes SET outcome=%s, unresolved_reason=%s, "
+    "resolved_at=%s WHERE id=%s AND outcome IS NULL"
+)
+_MARK_RESOLVED_SQL = (
+    "UPDATE ghost_shadow_outcomes "
+    "SET outcome=%s, exit_price=%s, pnl_pct=%s, resolved_at=%s "
+    "WHERE id=%s AND outcome IS NULL"
+)
+
+
+def _apply_shadow_decisions(decisions: Dict[int, tuple]) -> tuple:
+    """Write every decided row in ONE short transaction, in primary-key order.
+
+    ``decisions`` maps row id -> (kind, params), kind in {"resolved",
+    "unresolved"}. No network I/O happens inside this transaction. Resolver
+    writers are serialized by an advisory lock, row locks are taken in sorted
+    id order, and rows another writer currently holds are skipped (they stay
+    pending and are retried next cycle). Updates are guarded by
+    ``outcome IS NULL`` so a replay after a rolled-back attempt is a no-op for
+    already-decided rows.
+    """
     from core.db import db_conn
 
+    ids = sorted(int(sid) for sid in decisions)
+    if not ids:
+        return 0, 0
+    resolved = 0
+    unresolved = 0
     with db_conn() as conn:
-        conn.cursor().execute(
-            "UPDATE ghost_shadow_outcomes SET outcome=%s, unresolved_reason=%s, "
-            "resolved_at=%s WHERE id=%s AND outcome IS NULL",
-            (UNRESOLVED, reason, int(now), sid),
+        cur = conn.cursor()
+        cur.execute("SELECT pg_advisory_xact_lock(%s)", (_RESOLVE_ADVISORY_LOCK_KEY,))
+        cur.execute(
+            "SELECT id FROM ghost_shadow_outcomes "
+            "WHERE id = ANY(%s) AND outcome IS NULL "
+            "ORDER BY id FOR UPDATE SKIP LOCKED",
+            (ids,),
         )
+        locked = sorted(int(r[0]) for r in (cur.fetchall() or []) if int(r[0]) in decisions)
+        for sid in locked:
+            kind, params = decisions[sid]
+            if kind == "resolved":
+                cur.execute(_MARK_RESOLVED_SQL, params)
+                resolved += 1
+            else:
+                cur.execute(_MARK_UNRESOLVED_SQL, params)
+                unresolved += 1
+    return resolved, unresolved
 
 
 def resolve_shadow_rows(max_symbols: int = 60) -> int:
@@ -652,9 +709,10 @@ def resolve_shadow_rows(max_symbols: int = 60) -> int:
 
     now = int(time.time())
     default_hold = label_hold_bars()
+    # Read phase: one short read-only statement. Schema is owned by the
+    # startup migration; no DDL runs in the per-cycle path.
     with db_conn() as conn:
         cur = conn.cursor()
-        ensure_shadow_table(cur)
         cur.execute(
             "SELECT id, symbol, eval_ts, entry_price, target_price, stop_price, expires_at, "
             "direction, hold_bars FROM ghost_shadow_outcomes "
@@ -679,8 +737,8 @@ def resolve_shadow_rows(max_symbols: int = 60) -> int:
     next_offset = (offset + len(batch)) % n_symbols if n_symbols else 0
     _write_shadow_resolve_offset(next_offset)
 
-    resolved = 0
-    unresolved = 0
+    # Network phase: decide outcomes in memory, holding no transaction.
+    decisions: Dict[int, tuple] = {}
     for sym in batch:
         rows = by_symbol[sym]
         bars = None
@@ -699,8 +757,9 @@ def resolve_shadow_rows(max_symbols: int = 60) -> int:
             for row in rows:
                 reason = unresolved_reason(now=now, expires_at=row[6], has_bars=False)
                 if reason:
-                    _mark_unresolved(row[0], reason, now)
-                    unresolved += 1
+                    decisions[int(row[0])] = (
+                        "unresolved", (UNRESOLVED, reason, int(now), row[0]),
+                    )
             continue
         for (sid, _sym, eval_ts, entry, target, stop, expires_at, direction, hold_bars) in rows:
             row_direction = str(direction or "UP").upper()
@@ -719,20 +778,21 @@ def resolve_shadow_rows(max_symbols: int = 60) -> int:
             if not outcome or not resolved_at or resolved_at > now:
                 reason = unresolved_reason(now=now, expires_at=expires_at, has_bars=True)
                 if reason:
-                    _mark_unresolved(sid, reason, now)
-                    unresolved += 1
+                    decisions[int(sid)] = (
+                        "unresolved", (UNRESOLVED, reason, int(now), sid),
+                    )
                 continue
             exit_price, pnl = resolution_exit(
                 outcome, row_direction, float(entry), float(target), float(stop),
                 evidence_price if evidence_price is not None else float(entry),
             )
-            with db_conn() as conn:
-                conn.cursor().execute(
-                    "UPDATE ghost_shadow_outcomes "
-                    "SET outcome=%s, exit_price=%s, pnl_pct=%s, resolved_at=%s WHERE id=%s",
-                    (outcome, exit_price, pnl, int(resolved_at), sid),
-                )
-            resolved += 1
+            decisions[int(sid)] = (
+                "resolved", (outcome, exit_price, pnl, int(resolved_at), sid),
+            )
+    # Write phase: one short transaction, PK-ordered, retried on deadlock.
+    resolved, unresolved = _with_deadlock_retry(
+        lambda: _apply_shadow_decisions(decisions), label="shadow resolve write",
+    ) or (0, 0)
     if unresolved:
         LOGGER.warning(
             "Shadow resolve: %d virtual picks closed UNRESOLVED (>%dd past horizon, "
@@ -997,7 +1057,7 @@ def run_shadow_cycle() -> Dict[str, int]:
     if not shadow_enabled():
         return {"seeded": 0, "resolved": 0}
     try:
-        seeded = seed_shadow_rows()
+        seeded = _with_deadlock_retry(seed_shadow_rows, label="shadow seed") or 0
     except Exception as e:
         LOGGER.warning("shadow seed failed: %s", str(e)[:100])
         seeded = 0
@@ -1013,7 +1073,6 @@ def run_shadow_cycle() -> Dict[str, int]:
 
         with db_conn() as conn:
             cur = conn.cursor()
-            ensure_ghost_state(cur)
             cur.execute(
                 "INSERT INTO ghost_state(key,val) VALUES('last_shadow_cycle', %s) "
                 "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
