@@ -3514,10 +3514,14 @@ async function loadPortfolio(){
   var tc = data.total_cost || 0;
   var tv = data.total_value;
   var tgl = data.total_gain_loss;
-  tw.innerHTML = '<div class="port-totals">'
+  var qc = data.quote_coverage || null;
+  var partialNote = (data.totals_partial && qc)
+    ? '<div class="info-box">Prices available for '+Number(qc.priced||0)+' of '+Number(qc.total||0)+' positions. Totals hidden until every position is priced.</div>'
+    : '';
+  tw.innerHTML = partialNote + '<div class="port-totals">'
     + '<div class="ptot"><div class="ptot-lbl">TOTAL INVESTED</div><div class="ptot-val">$'+tc.toLocaleString('en-US',{maximumFractionDigits:2})+'</div></div>'
     + '<div class="ptot"><div class="ptot-lbl">CURRENT VALUE</div><div class="ptot-val">'+(tv!=null?'$'+tv.toLocaleString('en-US',{maximumFractionDigits:2}):'—')+'</div></div>'
-    + '<div class="ptot"><div class="ptot-lbl">TOTAL G/L</div><div class="ptot-val '+(tgl>=0?'pos':'neg')+'">'
+    + '<div class="ptot"><div class="ptot-lbl">TOTAL G/L</div><div class="ptot-val '+(tgl==null?'':(tgl>=0?'pos':'neg'))+'">'
     + (tgl!=null?(tgl>=0?'+$':'-$')+Math.abs(tgl).toLocaleString('en-US',{maximumFractionDigits:2}):'—')+'</div></div>'
     + '</div>';
   pw.innerHTML = ps.map(function(p){

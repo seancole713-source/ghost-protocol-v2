@@ -1098,10 +1098,10 @@ async function loadFeatureDrift(){
     var g = await _fetchJson('/api/ghost/drift?symbol=WOLF');
     if(!g || g.ok !== true){el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml((g&&g.error)||'unavailable') + '</div>';return}
     if(g.enabled === false){el.innerHTML = '<div class="kv">Feature drift monitor disabled (<code>GHOST_FEATURE_DRIFT</code>).</div>';return}
-    if(g.status === 'insufficient_samples'){el.innerHTML = '<div class="kv">Insufficient snapshots (' + (g.samples||0) + ') — need more feature history.</div>';return}
+    if(g.status === 'insufficient_samples' || g.status === 'insufficient_data'){el.innerHTML = '<div class="kv">Insufficient snapshots (' + (g.samples||0) + ') — need more feature history.</div>';return}
     var alerts = g.alerts || [];
     if(!alerts.length){el.innerHTML = '<div class="kv"><span class="ok">&#10003;</span> Stable · ' + (g.samples||0) + ' samples</div>';return}
-    var rows = alerts.map(function(a){return '<tr><td><code>' + escHtml(a.feature) + '</code></td><td>' + a.z_shift + '</td><td>' + a.recent_mean + '</td><td>' + a.baseline_mean + '</td></tr>';}).join('');
+    var rows = alerts.map(function(a){return '<tr><td><code>' + escHtml(a.feature) + '</code></td><td>' + (a.z_shift == null ? '&infin;' : a.z_shift) + '</td><td>' + a.recent_mean + '</td><td>' + a.baseline_mean + '</td></tr>';}).join('');
     el.innerHTML = '<div class="kv"><span class="warn">&#9888;</span> ' + alerts.length + ' drift alert(s)</div>'
       + '<table aria-label="Ghost operator data" class="tbl"><thead><tr><th>Feature</th><th>Z</th><th>Recent</th><th>Baseline</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }catch(e){el.innerHTML = '<div class="kv"><span class="fail">&#10007;</span> ' + escHtml(String(e)) + '</div>'}
