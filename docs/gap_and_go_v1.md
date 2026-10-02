@@ -110,6 +110,14 @@ add value on history. The backtest is research evidence, not the forward record,
 known optimistic biases (see `edge/backtest.py` LIMITS). Ghost prints the latest backtest line
 on every morning card so this is never out of sight.
 
+Those numbers come from a backtest version up to `gap_and_go_backtest_v7`. Those versions took
+the previous close and the 20-day volume from split-ADJUSTED Polygon daily bars, and the
+reference and fills from RAW Alpaca minute bars. On names split after the session, the gap was
+computed across two price bases (audit EDGE-09). `gap_and_go_backtest_v8` uses one basis: prices
+and volume as traded, restated only for splits executed by the decision day
+(`price_basis: raw_as_traded`). It is a new record and is never pooled with v7's. Until v8 has
+run, the card's backtest line names the older version it quotes.
+
 ## Retirement (written down before the forward results)
 
 Ghost's shadow record retires the rule (recommends it to the operator; code never stops it)
