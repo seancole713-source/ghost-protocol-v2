@@ -7,18 +7,18 @@
 <style>
 :root{
   --ground:#F6F4F1; --surface:#FFFFFF; --surface-2:#EDE9E4; --sunken:#E4DFD8;
-  --ink:#1A1922; --ink-2:#56535F; --ink-3:#8B8794;
+  --ink:#1A1922; --ink-2:#56535F; --ink-3:#66626F;
   --line:#E1DCD5; --line-2:#CFC8BF;
   --accent:#3E3A8F; --accent-soft:#E6E4F5;
   --good:#0E7565; --good-soft:#DDEFEB;
   --bad:#A33D2D; --bad-soft:#F6E3DE;
-  --warn:#8F6410; --warn-soft:#F5EAD3;
+  --warn:#7A550C; --warn-soft:#F5EAD3;
   --shadow:0 1px 2px rgba(26,25,34,.05),0 8px 24px -12px rgba(26,25,34,.18);
 }
 @media (prefers-color-scheme: dark){
   :root:not([data-theme="light"]){
     --ground:#131319; --surface:#1C1C23; --surface-2:#24242D; --sunken:#101015;
-    --ink:#F3F1ED; --ink-2:#A9A6B3; --ink-3:#6F6C7B;
+    --ink:#F3F1ED; --ink-2:#A9A6B3; --ink-3:#9390A0;
     --line:#2C2C37; --line-2:#3A3A47;
     --accent:#9C98F2; --accent-soft:#25243A;
     --good:#4ECBB3; --good-soft:#12302C;
@@ -29,7 +29,7 @@
 }
 :root[data-theme="dark"]{
   --ground:#131319; --surface:#1C1C23; --surface-2:#24242D; --sunken:#101015;
-  --ink:#F3F1ED; --ink-2:#A9A6B3; --ink-3:#6F6C7B;
+  --ink:#F3F1ED; --ink-2:#A9A6B3; --ink-3:#9390A0;
   --line:#2C2C37; --line-2:#3A3A47;
   --accent:#9C98F2; --accent-soft:#25243A;
   --good:#4ECBB3; --good-soft:#12302C;
@@ -80,6 +80,8 @@ a{color:inherit}
   letter-spacing:-.02em;margin:0}
 .verdict .a.no{color:var(--ink)}
 .verdict .a.yes{color:var(--good)}
+.verdict .a.mid{color:var(--warn);font-size:clamp(28px,8vw,38px);line-height:1.08}
+.verdict .a .cov{display:block;margin-top:6px;font-family:"IBM Plex Sans",ui-sans-serif,system-ui,sans-serif;font-size:15px;line-height:1.4;letter-spacing:0;color:var(--ink-2)}
 .verdict .because{font-size:14.5px;color:var(--ink-2);line-height:1.5}
 .verdict .because b{color:var(--ink);font-weight:600}
 
@@ -147,7 +149,7 @@ a{color:inherit}
 .ledger{display:flex;flex-direction:column;gap:1px;background:var(--line);border:1px solid var(--line);border-radius:12px;overflow:hidden}
 .row{background:var(--surface);padding:13px 14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .row .sym{font-family:"IBM Plex Mono",monospace;font-weight:600;font-size:13.5px;width:52px;flex-shrink:0}
-.row .what{flex:1;min-width:170px;font-size:13px;color:var(--ink-2)}
+.row .what{flex:1;min-width:170px;font-size:13px;color:var(--ink-2);overflow-wrap:anywhere}
 .row .what b{color:var(--ink);font-weight:600}
 .pill{font-size:10.5px;padding:3px 7px;border-radius:5px;font-weight:600;flex-shrink:0}
 .pill.ok{background:var(--good-soft);color:var(--good)}
@@ -157,6 +159,8 @@ a{color:inherit}
 /* card wrapper section */
 .section{display:flex;flex-direction:column;gap:12px}
 .section h2{margin:0;font-family:"Newsreader",Georgia,serif;font-size:18px;font-weight:500}
+.section h3{margin:6px 0 0;font-size:15px;font-weight:600}
+.section .hint a{color:var(--accent)}
 .hint{font-size:13px;color:var(--ink-3);line-height:1.5}
 
 .empty{background:var(--surface);border:1px dashed var(--line-2);border-radius:14px;padding:22px 18px;text-align:center;color:var(--ink-3);font-size:13.5px}
@@ -343,6 +347,27 @@ function pickCard(sym, direction, entry, target, stop, report){
 }
 
 /* -------------------------------------------------------------- Today --- */
+function scanCoverage(squeeze){
+  // P2 audit: a fresh scan is not a clean "No" when most symbols had no usable
+  // evidence (stale, failed, skipped, or no intraday print on the feed).
+  var scanned = Number(squeeze.scanned_symbols != null ? squeeze.scanned_symbols : squeeze.symbols);
+  var usable = Number(squeeze.usable_symbols != null ? squeeze.usable_symbols : squeeze.fetch_ok);
+  var known = squeeze.symbols != null || squeeze.scanned_symbols != null;
+  known = known && (squeeze.fetch_ok != null || squeeze.usable_symbols != null)
+    && isFinite(scanned) && scanned > 0 && isFinite(usable) && usable >= 0;
+  if(!known) return {known:false, usable:null, scanned:null, degraded:true};
+  usable = Math.min(Math.round(usable), Math.round(scanned));
+  scanned = Math.round(scanned);
+  var degraded = typeof squeeze.coverage_degraded === 'boolean'
+    ? squeeze.coverage_degraded
+    : (usable / scanned) < 0.8;
+  return {known:true, usable:usable, scanned:scanned, degraded:degraded};
+}
+function coverageText(cov){
+  if(!cov.known) return 'symbol coverage unknown';
+  return cov.usable+' of '+cov.scanned+' symbol'+(cov.scanned===1?'':'s')+' usable';
+}
+
 function loadToday(){ return guardedLoad('today', async function(){
   var el = document.getElementById('view-today');
   var results = await Promise.all([
@@ -350,8 +375,9 @@ function loadToday(){ return guardedLoad('today', async function(){
     getJson('/api/picks?limit=5'),
     getJson('/api/wolf/kill-status'),
     getJson('/api/v3/status'),
+    getJson('/api/forecasts/research?limit=5'),
   ]);
-  var squeeze = results[0], picksResp = results[1], kill = results[2], models = results[3];
+  var squeeze = results[0], picksResp = results[1], kill = results[2], models = results[3], research = results[4];
   var html = '';
 
   var scanTs = squeeze.__ok ? timestampMs(squeeze.last_scan_ts) : null;
@@ -361,6 +387,7 @@ function loadToday(){ return guardedLoad('today', async function(){
     && squeeze.snapshot_stale !== true && scanTs != null
     && scanAgeMs >= 0 && scanAgeMs < 300000
   );
+  var coverage = scanCoverage(squeeze);
   var squeezeAlerts = (squeezeFresh && Array.isArray(squeeze.picks)) ? squeeze.picks : [];
   var discovery = (squeeze.__ok && squeeze.external_discovery && squeeze.external_discovery.ok !== false)
     ? squeeze.external_discovery : null;
@@ -382,7 +409,12 @@ function loadToday(){ return guardedLoad('today', async function(){
     return Number(b.observed_peak_move_pct||-9999) - Number(a.observed_peak_move_pct||-9999);
   });
   var activePicks = (picksResp.__ok && Array.isArray(picksResp.active)) ? picksResp.active : [];
+  // CORE_ENGINE_MODE (server): anything but an explicit 'live' is research-only.
+  var coreResearch = !(picksResp.__ok && picksResp.core_engine_mode === 'live');
   var paused = kill.__ok ? !!(kill.engine_pause && kill.engine_pause.paused) : null;
+  var researchForecasts = (research.__ok && research.ok === true && research.trading_eligible === false
+    && Array.isArray(research.forecasts))
+    ? research.forecasts.filter(function(f){ return f && f.trading_eligible === false; }) : [];
 
   // Enrich active picks only with their immutable issue-time checklist.
   var enriched = [];
@@ -394,11 +426,20 @@ function loadToday(){ return guardedLoad('today', async function(){
     }));
     top.forEach(function(p, i){ enriched.push({pick:p, report: checklists[i].__ok ? checklists[i] : null}); });
   }
+  // Approved = core engine explicitly live AND the row is not a research pick.
+  var approved = coreResearch ? [] : enriched.filter(function(e){ return e.pick.research_pick !== true; });
+  var researchCalls = coreResearch ? enriched : enriched.filter(function(e){ return e.pick.research_pick === true; });
 
   html += '<div class="verdict"><div class="q">Did Ghost find a squeeze today?</div>';
   if(squeezeAlerts.length){
     html += '<p class="a yes">Yes.</p>';
-    html += '<p class="because"><b>'+squeezeAlerts.length+'</b> fresh unusual-volume alert'+(squeezeAlerts.length===1?'':'s')+' from the latest scan.</p>';
+    html += '<p class="because"><b>'+squeezeAlerts.length+'</b> fresh unusual-volume alert'+(squeezeAlerts.length===1?'':'s')+' from the latest scan ('+esc(coverageText(coverage))+').</p>';
+    if(coverage.degraded){
+      html += '<p class="because">Coverage is degraded: symbols without usable evidence were not checked.</p>';
+    }
+  } else if(squeezeFresh && coverage.degraded){
+    html += '<p class="a mid">Insufficient coverage <span class="cov">('+esc(coverageText(coverage))+')</span></p>';
+    html += '<p class="because">The latest scan is fresh, but too few symbols had usable evidence (stale, failed, skipped, or no intraday print on the feed). No alert is not evidence that nothing is moving.</p>';
   } else {
     html += '<p class="a no">No.</p>';
     if(!squeeze.__ok){
@@ -412,7 +453,7 @@ function loadToday(){ return guardedLoad('today', async function(){
     } else if(!squeezeFresh){
       html += '<p class="because">The latest squeeze scan is stale. Cached alerts are not described as current.</p>';
     } else {
-      html += '<p class="because">The fresh scan found no unusual-volume alerts across '+Number(squeeze.symbols||0)+' symbol'+(Number(squeeze.symbols||0)===1?'':'s')+'.</p>';
+      html += '<p class="because">The fresh scan found no unusual-volume alerts ('+esc(coverageText(coverage))+').</p>';
     }
   }
   if(paused === null){
@@ -427,35 +468,70 @@ function loadToday(){ return guardedLoad('today', async function(){
   }
   html += '</div>';
 
+  /* 1 — Approved core picks */
+  html += '<div class="section" id="today-approved"><h2>Approved core picks</h2>'
+    + '<div class="hint">Active directional picks from the core engine in live mode. Open calls awaiting their target, get-out price, or watch-window deadline.</div>';
+  if(approved.length){
+    approved.forEach(function(e){
+      html += pickCard(e.pick.symbol, (e.pick.direction||'UP').toUpperCase(), e.pick.entry_price, e.pick.target_price, e.pick.stop_price, e.report);
+    });
+  } else if(!picksResp.__ok){
+    html += '<div class="empty">Core picks are unavailable right now. This is a data error, not evidence that there are no picks.</div>';
+  } else if(coreResearch){
+    html += '<div class="empty">None. The core engine is research-only, so no pick is approved.</div>';
+  } else {
+    html += '<div class="empty">No active approved picks.</div>';
+  }
+  html += '</div>';
+
+  /* 2 — Experimental / paper forecasts */
+  html += '<div class="section" id="today-experimental"><h2>Experimental / paper forecasts</h2>'
+    + '<div class="hint"><b>RESEARCH ONLY - not a trade.</b> Recorded research forecasts and research-only core calls. Not approved picks, not trading eligible, and accuracy is not proven. Prices are frozen references, not entries. <a href="/console#research">All research forecasts</a></div>';
+  if(!research.__ok || research.ok !== true){
+    html += '<div class="empty">Research forecasts unavailable. This is a data error, not evidence that there are zero forecasts.</div>';
+  } else if(researchForecasts.length){
+    html += '<div class="ledger">';
+    researchForecasts.slice(0,5).forEach(function(f){
+      html += '<div class="row"><span class="sym">'+esc(f.symbol||'—')+'</span>'
+        + '<span class="what"><b>'+esc(f.direction||'Unknown')+'</b> · reference '+money(f.entry_reference)
+        + ' · target ref '+money(f.target_reference)+' · stop ref '+money(f.stop_reference)
+        + '<br><span class="src">Research #'+esc(f.id)+' · trading eligible: no</span></span>'
+        + '<span class="pill wait">Paper</span></div>';
+    });
+    html += '</div>';
+    if(Number(research.total_open) > researchForecasts.length){
+      html += '<div class="hint">Showing '+Math.min(5, researchForecasts.length)+' of '+Number(research.total_open)+' open research forecasts.</div>';
+    }
+  } else {
+    html += '<div class="empty">No open recorded research forecasts.</div>';
+  }
+  if(researchCalls.length){
+    html += '<h3>Core v3 research calls</h3>'
+      + '<div class="hint">Open research calls, scored against their model target, model stop, or watch-window deadline. Nothing here is sized.</div>';
+    researchCalls.forEach(function(e){
+      html += pickCard(e.pick.symbol, (e.pick.direction||'UP').toUpperCase(), e.pick.entry_price, e.pick.target_price, e.pick.stop_price, e.report);
+    });
+  }
+  html += '</div>';
+
+  /* 3 — Unvalidated radar observations */
+  html += '<div class="section" id="today-radar"><h2>Unvalidated radar observations</h2>'
+    + '<div class="hint">Radar output has no validated hit rate. Nothing here is a prediction, probability, or approved pick. Scan coverage: '+esc(coverageText(coverage))+'.</div>';
+
   if(squeezeAlerts.length){
-    html += '<div class="section"><h2>Fresh unusual activity</h2>'
+    html += '<h3>Fresh unusual activity</h3>'
       + '<div class="hint">Same-day moves. These are alerts, not predictions — Ghost does not have a proven confidence number for same-day moves, so none is shown.</div>';
     squeezeAlerts.slice(0,5).forEach(function(p){
       var alertSymbol = esc(p.symbol||'');
       html += '<div class="alert"><div class="k">Worth a look</div>'
         + '<div class="t">unusual volume on '+alertSymbol+', worth a look.</div></div>';
     });
-    html += '</div>';
-  }
-
-  if(enriched.length){
-    // CORE_ENGINE_MODE (server): anything but an explicit 'live' is research-only.
-    var coreResearch = !(picksResp.__ok && picksResp.core_engine_mode === 'live');
-    html += coreResearch
-      ? '<div class="section"><h2>Core v3 research calls</h2>'
-        + '<div class="hint"><b>RESEARCH ONLY - not a trade (core v3 has no model that beats its base rate).</b> '
-        + 'Open research calls, scored against their model target, model stop, or watch-window deadline. Nothing here is sized.</div>'
-      : '<div class="section"><h2>Active directional picks</h2>'
-        + '<div class="hint">Open calls awaiting their target, get-out price, or watch-window deadline.</div>';
-    enriched.forEach(function(e){
-      html += pickCard(e.pick.symbol, (e.pick.direction||'UP').toUpperCase(), e.pick.entry_price, e.pick.target_price, e.pick.stop_price, e.report);
-    });
-    html += '</div>';
   }
 
   if(externalRadarRows.length){
-    html += '<div class="section"><h2>Externally discovered activity — observed by Ghost</h2>'
-      + '<div class="hint">Batch market observations made only after an external provider surfaced the symbol. Advisory only: not a prediction, candidate, alert, trade recommendation, or evidence Ghost found the move before it began.</div>';
+    html += '<h3>Externally discovered activity — observed by Ghost</h3>'
+      + '<div class="hint">Batch market observations made only after an external provider surfaced the symbol. Advisory only: not a prediction, candidate, alert, trade recommendation, or evidence Ghost found the move before it began.</div>'
+      + '<div class="ledger">';
     externalRadarRows.slice(0,8).forEach(function(item){
       var origins = Array.isArray(item.origins) ? item.origins : [];
       var screens = origins.map(function(origin){ return origin.screen; }).filter(Boolean).join(', ') || 'external source';
@@ -472,8 +548,9 @@ function loadToday(){ return guardedLoad('today', async function(){
   }
 
   if(externalRows.length){
-    html += '<div class="section"><h2>External source coverage — advisory only</h2>'
-      + '<div class="hint">Fresh provider rows awaiting or complementing Ghost\'s separate batch observation lane. These names cannot trigger candidates, alerts, outcomes, or wallet entries.</div>';
+    html += '<h3>External source coverage — advisory only</h3>'
+      + '<div class="hint">Fresh provider rows awaiting or complementing Ghost\'s separate batch observation lane. These names cannot trigger candidates, alerts, outcomes, or wallet entries.</div>'
+      + '<div class="ledger">';
     externalRows.slice(0,8).forEach(function(item){
       var sourceAge = item.source_age_s == null ? 'source time unknown' : Math.max(0,Math.round(Number(item.source_age_s)/60))+' min old';
       var scope = item.in_official_watchlist === true ? 'already in official watchlist' : 'quarantined outside watchlist';
@@ -486,9 +563,12 @@ function loadToday(){ return guardedLoad('today', async function(){
     html += '</div>';
   }
 
-  if(!squeezeAlerts.length && !enriched.length && !externalRows.length && !externalRadarRows.length){
-    html += '<div class="empty">No fresh squeeze alerts, active directional picks, or external observations to show.</div>';
+  if(!squeezeAlerts.length && !externalRows.length && !externalRadarRows.length){
+    html += '<div class="empty">'+(squeezeFresh && coverage.degraded
+      ? 'No radar observations to show — but coverage is insufficient ('+esc(coverageText(coverage))+').'
+      : 'No fresh squeeze alerts or external observations to show.')+'</div>';
   }
+  html += '</div>';
 
   el.innerHTML = html;
   });

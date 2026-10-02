@@ -3694,7 +3694,23 @@ def _norm_pred(r):
         "exit_price": r.get("exit_price"),
         "pnl_pct": r.get("pnl_pct") or r.get("pnl"),
         "asset_type": r.get("asset_type","stock"),
+        # Same rule as prediction_filters.non_research_where(): research picks
+        # feed the learning loop and are never shown as approved picks.
+        "research_pick": _scores_research_pick(r.get("scores")),
     }
+
+
+def _scores_research_pick(scores) -> bool:
+    """True when a prediction's scores JSON marks it ``research_pick`` (SQL:
+    ``scores->>'research_pick' = 'true'``)."""
+    if isinstance(scores, str):
+        try:
+            scores = json.loads(scores)
+        except (TypeError, ValueError):
+            return False
+    if not isinstance(scores, dict):
+        return False
+    return str(scores.get("research_pick")).lower() == "true"
 
 
 

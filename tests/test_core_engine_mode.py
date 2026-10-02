@@ -310,3 +310,17 @@ def test_norm_pred_hides_pos_size_in_research(monkeypatch):
     assert wolf_app._norm_pred(row)["pos_size_pct"] is None
     monkeypatch.setenv("CORE_ENGINE_MODE", "live")
     assert wolf_app._norm_pred(row)["pos_size_pct"] == 5.0
+
+
+def test_norm_pred_flags_research_picks_for_the_today_page():
+    """P2 audit: the Today page shows 'Approved core picks' only for rows that
+    are not research picks (same rule as non_research_where)."""
+    import wolf_app
+
+    base = {"id": 1, "symbol": "WOLF", "direction": "UP", "confidence": 0.8,
+            "entry_price": 65.0, "target_price": 68.0, "stop_price": 63.0}
+    assert wolf_app._norm_pred(base)["research_pick"] is False
+    assert wolf_app._norm_pred({**base, "scores": {"research_pick": True}})["research_pick"] is True
+    assert wolf_app._norm_pred({**base, "scores": '{"research_pick": "true"}'})["research_pick"] is True
+    assert wolf_app._norm_pred({**base, "scores": {"research_pick": False}})["research_pick"] is False
+    assert wolf_app._norm_pred({**base, "scores": "not json"})["research_pick"] is False

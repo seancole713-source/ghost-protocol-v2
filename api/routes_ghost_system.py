@@ -943,7 +943,8 @@ def squeeze_hunter_endpoint(symbol: str):
 
 @router.get("/api/squeeze/picks")
 def squeeze_picks_endpoint():
-    """Live short-squeeze picks — same fields as Telegram alerts (buy/sell/confidence)."""
+    """Live squeeze radar rows — same levels as Telegram alerts (watch/upside/invalidation
+    levels and the unvalidated setup score carried in ``confidence_pct``)."""
     try:
         from core.market_hours import (
             is_us_after_hours,

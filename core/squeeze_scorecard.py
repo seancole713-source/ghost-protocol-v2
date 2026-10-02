@@ -226,6 +226,11 @@ def scorecard_legend() -> Dict[str, Any]:
             "confirm": "Time-adjusted RVOL + price vs session VWAP (participation)",
         },
         "squeeze_score": "35% setup + 25% trigger + 40% confirmation (0–100)",
+        "confidence_pct_note": (
+            "Legacy field name: confidence_pct is the radar alert's setup score "
+            "(unvalidated, 0–95) — a heuristic ranking, not a confidence, "
+            "probability, or win rate."
+        ),
         "probabilities_note": (
             "Unvalidated research estimates for planning only — not calibrated "
             "forecasts, alert confidence, or decision-eligible trade signals."

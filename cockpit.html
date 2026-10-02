@@ -1915,13 +1915,13 @@ function _renderV3SqueezeAlerts(picks, watching){
       + '<td class="sq-num">' + _fmtUsd(p.sell) + '</td>'
       + '<td class="sq-score">' + _sqScore(p) + '</td>'
       + '<td class="sq-prob">' + _sqProb(p, 'p_continue_3pct_60m') + '</td>'
-      + '<td class="sq-conf">' + (p.confidence_pct != null ? p.confidence_pct + '%' : '—') + '</td>'
+      + '<td class="sq-conf">' + (p.confidence_pct != null ? escHtml(p.confidence_pct) + '/95' : '—') + '</td>'
       + '<td class="sq-num">+' + (p.peak_move_pct != null ? Number(p.peak_move_pct).toFixed(1) : '—') + '%</td></tr>';
   }).join('');
   el.innerHTML = '<div class="v3-sq-alerts">'
     + '<div class="v3-sq-alerts-h">Telegram squeeze alerts today · intraday radar (not v3)</div>'
     + '<table aria-label="Ghost market and performance data" class="sq-table"><thead><tr>'
-    + '<th>Stock</th><th>Buy</th><th>Sell</th><th>Score</th><th>P(+3% 60m)</th><th>Conf</th><th>Peak</th>'
+    + '<th>Stock</th><th>Buy</th><th>Sell</th><th>Score</th><th>P(+3% 60m)</th><th title="Setup score (unvalidated) — a heuristic ranking, not a probability or win rate">Setup score (unvalidated)</th><th>Peak</th>'
     + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
 }
 
@@ -3146,7 +3146,7 @@ function _renderSqueezePicks(data){
       if(sessionAlerts.length){
         alertBlock = '<div class="sq-section-label">Telegram alerts this session</div>'
           + '<table aria-label="Ghost market and performance data" class="sq-table"><thead><tr>'
-          + '<th>Stock</th><th>Buy</th><th>Sell</th><th>Live vs alert</th><th>Score</th><th>P(+3% 60m)</th><th>Conf</th><th>Peak</th>'
+          + '<th>Stock</th><th>Buy</th><th>Sell</th><th>Live vs alert</th><th>Score</th><th>P(+3% 60m)</th><th title="Setup score (unvalidated) — a heuristic ranking, not a probability or win rate">Setup score (unvalidated)</th><th>Peak</th>'
           + '</tr></thead><tbody>'
           + sessionAlerts.slice(0, 8).map(function(p){
             return '<tr class="sq-forming"><td><span class="sq-sym">' + escHtml(p.symbol) + '</span></td>'
@@ -3155,7 +3155,7 @@ function _renderSqueezePicks(data){
               + _sqDriftCell(p)
               + '<td class="sq-score">' + _sqScore(p) + '</td>'
               + '<td class="sq-prob">' + _sqProb(p, 'p_continue_3pct_60m') + '</td>'
-              + '<td class="sq-conf">' + (p.confidence_pct != null ? p.confidence_pct + '%' : '—') + '</td>'
+              + '<td class="sq-conf">' + (p.confidence_pct != null ? escHtml(p.confidence_pct) + '/95' : '—') + '</td>'
               + '<td class="sq-num">+' + (p.peak_move_pct != null ? Number(p.peak_move_pct).toFixed(1) : '—') + '%</td></tr>';
           }).join('')
           + '</tbody></table>';
@@ -3186,7 +3186,7 @@ function _renderSqueezePicks(data){
       + '<span class="sq-kind ' + _sqKindClass(p.kind) + '">' + _sqKindLabel(p.kind) + '</span></td>'
       + _sqTradeCells(p, true)
       + _sqDriftCell(p)
-      + '<td class="sq-conf">' + (p.confidence_pct != null ? p.confidence_pct + '%' : '—') + '</td>'
+      + '<td class="sq-conf">' + (p.confidence_pct != null ? escHtml(p.confidence_pct) + '/95' : '—') + '</td>'
       + '<td class="fs11-c64748b">RVOL ' + (p.rvol != null ? Number(p.rvol).toFixed(1) + '×' : '—')
       + ' · peak +' + (p.peak_move_pct != null ? Number(p.peak_move_pct).toFixed(1) : '—') + '%'
       + (p.above_vwap === true ? ' · above VWAP' : (p.above_vwap === false ? ' · below VWAP' : ''))
@@ -3195,7 +3195,7 @@ function _renderSqueezePicks(data){
   }).join('');
   wrap.innerHTML = driftBlock
     + '<table aria-label="Ghost market and performance data" class="sq-table"><thead><tr>'
-    + '<th>Stock</th><th>Buy</th><th>Sell</th><th>Stop</th><th>Score</th><th>P(+3% 60m)</th><th>Live vs alert</th><th>Conf</th><th>Peak · RVOL</th>'
+    + '<th>Stock</th><th>Buy</th><th>Sell</th><th>Stop</th><th>Score</th><th>P(+3% 60m)</th><th>Live vs alert</th><th title="Setup score (unvalidated) — a heuristic ranking, not a probability or win rate">Setup score (unvalidated)</th><th>Peak · RVOL</th>'
     + '</tr></thead><tbody>' + rows + '</tbody></table>';
   if(foot){
     var probNote = scMeta && scMeta.probabilities_note ? scMeta.probabilities_note : 'Heuristic probability targets';
@@ -4627,7 +4627,7 @@ function _mvrTier(em,label,rng,rows,big){
     out+='<div class="mvr-row"><div class="mvr-logo'+(big?' big':'')+'">'+init+'</div>'
       +'<div class="mvr-meta"><div class="mvr-nm">'+_mvrEsc(p.symbol)+'</div><div class="mvr-sb">'+_mvrEsc(buy)+'</div></div>'
       +'<div class="mvr-right"><div class="mvr-pk'+(big?' big':'')+'">'+peak+'</div>'
-      +'<div class="mvr-cf">'+(conf!=null?('conf <b>'+conf+'%</b>'):'')+'</div></div></div>';
+      +'<div class="mvr-cf">'+(conf!=null?('setup score <b>'+conf+'/95</b> (unvalidated)'):'')+'</div></div></div>';
   });
   return out+'</div>';
 }
