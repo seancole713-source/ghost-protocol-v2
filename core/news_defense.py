@@ -6,7 +6,14 @@ fire new ones. Defense first, offense only after shadow proof (merged plan §5).
 Flags:
   NEWS_DEFENSE_ENABLED  (default 0)     — master switch, ships OFF
   NEWS_DEFENSE_MODE     (default warn)  — warn: log + ghost_state note only
-                                          withdraw: mark the pick WITHDRAWN
+                                          withdraw: ALSO annotate the pick
+                                          (scores.news_defense_flag + reason)
+
+The tripwire never erases a result. "withdraw" used to set outcome='WITHDRAWN'
+on an open pick, which removed it from every counted sample after entry --
+exactly the picks a bearish surprise would have turned into losses. It now
+only records the flag on the pick; the resolver still settles it WIN/LOSS and
+it stays counted.
 Thresholds:
   NEWS_DEFENSE_MIN_MATERIALITY (default 0.85)
   NEWS_DEFENSE_MAX_EVENT_AGE_S (default 21600 = 6h)
@@ -44,6 +51,17 @@ def _min_materiality() -> float:
 
 def _max_event_age_s() -> int:
     return int(os.getenv("NEWS_DEFENSE_MAX_EVENT_AGE_S", "21600"))
+
+
+def flag_pick(cur, act: Dict[str, Any], now: int) -> None:
+    """Record the threat ON the pick (scores JSONB). Never touches outcome/exit/pnl."""
+    note = {"news_defense_flag": True, "news_defense_reason": act.get("reason"),
+            "news_defense_event_type": act.get("event_type"),
+            "news_defense_event_asof_ts": act.get("event_asof_ts"), "news_defense_flagged_at": now}
+    cur.execute(
+        "UPDATE predictions SET scores = COALESCE(scores, '{}'::jsonb) || %s::jsonb "
+        "WHERE id=%s AND NOT (COALESCE(scores, '{}'::jsonb) ? 'news_defense_flag')",
+        (json.dumps(note, default=str), act["pick_id"]))
 
 
 def decide_defense(active_picks: List[Dict[str, Any]],
@@ -117,9 +135,7 @@ def run_defense_check() -> Dict[str, Any]:
                 LOGGER.warning("[news_defense] %s pick %s threatened: %s",
                                act["symbol"], act["pick_id"], act["reason"])
                 if mode == "withdraw":
-                    cur.execute(
-                        """UPDATE predictions SET outcome='WITHDRAWN'
-                           WHERE id=%s AND outcome IS NULL""", (act["pick_id"],))
+                    flag_pick(cur, act, now)      # annotate only; the result stays counted
             ensure_ghost_state(cur)
             cur.execute(
                 "INSERT INTO ghost_state(key,val) VALUES('news_defense_last', %s) "
