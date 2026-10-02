@@ -457,7 +457,9 @@ def _research_predictions(args: Dict[str, Any]) -> Dict[str, Any]:
             contract_id=contract_id, artifact_sha=artifact_sha, limit=limit,
         )
     else:
-        rows = get_pending_predictions(contract_id=contract_id, limit=limit)
+        rows = get_pending_predictions(
+            contract_id=contract_id, artifact_sha=artifact_sha, limit=limit,
+        )
     return {"ok": True, "predictions": rows, "count": len(rows), "resolved": resolved}
 
 

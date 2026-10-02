@@ -165,6 +165,7 @@ async def list_research_predictions(
         else:
             rows = get_pending_predictions(
                 contract_id=contract_id or None,
+                artifact_sha=artifact_sha or None,
                 limit=limit,
             )
         return JSONResponse(content={
