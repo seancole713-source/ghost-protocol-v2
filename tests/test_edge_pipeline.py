@@ -139,6 +139,44 @@ def test_the_card_is_written_once_and_only_before_the_open(ledger):
     assert P.morning_card(FakeAlpaca(), other, now=ts(9, 31))["status"] == "outside_card_window"
 
 
+def test_a_card_tick_that_reaches_issuance_after_the_open_refuses_its_forecasts(ledger):
+    """EDGE-01: the tick starts at 09:27, the slow fetches run past 09:30. The forecasts must not
+    be recorded with the 09:27 tick time: the trusted clock is read again at issuance, and a
+    forecast whose real issuance is at/after the window open is refused (late_refused)."""
+    wall = iter([ts(9, 31)] * 50)
+    out = P.morning_card(FakeAlpaca(), ledger, now=ts(9, 27), clock=lambda: next(wall))
+    assert out["status"] == "issued" and out["forecasts"] == [] and out["baseline_forecasts"] == []
+    assert out["late_refused"] and all("09:31:00 ET" in m for m in out["late_refused"])
+    assert ledger.store.scan("forecasts") == []
+    abst = {a["symbol"]: a["reasons"] for a in ledger.store.scan("abstentions", experiment_id=P.EID)}
+    assert abst["SHOP"] == [P.LATE_REASON]            # the name it would have chosen, refused on record
+    card = ledger.store.get("edge_cards", DAY.isoformat())
+    assert card["late_refused"] == out["late_refused"] and card["data_as_of"] == ts(9, 27)
+
+
+def test_a_card_forecast_carries_its_real_issuance_time_and_its_data_cutoff(ledger):
+    """EDGE-01: issued_at / recorded_at are the trusted clock at issuance, not the tick start;
+    the tick start is kept as the data cutoff (evidence.data_as_of)."""
+    wall = iter(range(ts(9, 12), ts(9, 12) + 100))
+    out = P.morning_card(FakeAlpaca(), ledger, now=ts(9, 10), clock=lambda: next(wall))
+    assert out["forecasts"] == ["SHOP"] and out["late_refused"] == []
+    f = ledger.store.scan("forecasts", experiment_id=P.EID)[0]
+    assert ts(9, 12) <= f["issued_at"] <= f["recorded_at"] < ts(9, 30)
+    assert f["evidence"]["data_as_of"] == ts(9, 10)
+
+
+def test_a_record_that_slips_past_the_open_is_refused_even_after_a_timely_issue(ledger):
+    reads = iter([ts(9, 29)] + [ts(9, 30)] * 50)     # issued 09:29, recorded 09:30
+    out = P.morning_card(FakeAlpaca(), ledger, now=ts(9, 20), clock=lambda: next(reads))
+    assert out["forecasts"] == [] and out["late_refused"]
+    assert ledger.store.scan("forecasts") == []
+
+
+def test_the_scheduler_tick_passes_its_clock_to_the_card(ledger):
+    out = P.run(FakeAlpaca(), ledger, now=ts(9, 27), clock=lambda: ts(9, 31))
+    assert out["card"]["forecasts"] == [] and out["card"]["late_refused"]
+
+
 def test_weekends_and_holidays_do_nothing(ledger, monkeypatch):
     sat = int(datetime(2026, 9, 26, 9, 10, tzinfo=ET).timestamp())
     assert P.run(FakeAlpaca(), ledger, now=sat)["status"] == "market_closed"
@@ -458,8 +496,52 @@ def test_after_the_close_every_priced_candidate_is_graded_as_a_labelled_counterf
     assert "10 bps" in rec["basis"] and "execution" in out
     # never part of any experiment's record
     assert ledger.report(P.EID)["forecasts"] == 1
+    # The fake's bars end at 10:20, so some rows are UNRESOLVED (data missing): a later tick
+    # re-grades only those (EDGE-08); terminal rows are kept exactly as written.
+    terminal = {r["symbol"]: r for r in rec["rows"] if "UNRESOLVED" not in (r["outcome"], r.get("execution"))}
+    assert out["pending"] == len(rec["rows"]) - len(terminal) > 0
     again = SC.grade_card(FakeAlpaca("evening"), ledger.store, day=DAY, now=ts(16, 30))
-    assert again["status"] == "already_graded"
+    assert again["status"] == "graded" and again["regraded"] == again["pending"] == out["pending"]
+    after = ledger.store.get("edge_card_outcomes", DAY.isoformat())
+    assert {r["symbol"]: r for r in after["rows"] if r["symbol"] in terminal} == terminal
+    assert after["graded_at"] == ts(16, 25) and after["updated_at"] == ts(16, 30)
+
+
+def test_the_card_grade_retries_unresolved_rows_and_stops_once_all_are_terminal(ledger):
+    """EDGE-08: a day row with UNRESOLVED rows is not 'already_graded'; once every row is
+    terminal it is, and nothing is fetched again."""
+    from edge import scorecard as SC
+    P.morning_card(FakeAlpaca(), ledger, now=ts(9, 10))
+
+    class Truncated(FakeAlpaca):          # minute bars missing entirely on the first pass
+        def __call__(self, url, params=None, headers=None, timeout=None):
+            if url.endswith("/v2/stocks/bars") and (params or {}).get("timeframe") == "1Min":
+                return Resp({"bars": {}})
+            return super().__call__(url, params, headers, timeout)
+
+    first = SC.grade_card(Truncated("evening"), ledger.store, day=DAY, now=ts(16, 25))
+    assert first["status"] == "graded" and first["pending"] == first["rows"] == 4
+
+    class Whole(FakeAlpaca):              # the whole session, through the 15:30 time exit
+        def __call__(self, url, params=None, headers=None, timeout=None):
+            if url.endswith("/v2/stocks/bars") and (params or {}).get("timeframe") == "1Min":
+                out = {}
+                for s in params["symbols"].split(","):
+                    px = PRE.get(s, 10.0)
+                    out[s] = [{"t": iso(t), "o": px, "h": px, "l": px, "c": px, "v": 100}
+                              for t in range(ts(9, 30), ts(15, 35), 300)]
+                return Resp({"bars": out})
+            return super().__call__(url, params, headers, timeout)
+
+    second = SC.grade_card(Whole("evening"), ledger.store, day=DAY, now=ts(16, 30))
+    assert second["status"] == "graded" and second["pending"] == 0 and second["regraded"] == 4
+    rows = ledger.store.get("edge_card_outcomes", DAY.isoformat())["rows"]
+    assert all(r["outcome"] != "UNRESOLVED" and r["execution"] != "UNRESOLVED" for r in rows)
+    assert all(r["resolver_version"] == "resolver_v2" for r in rows)
+    third = Whole("evening")
+    assert SC.grade_card(third, ledger.store, day=DAY, now=ts(16, 35)) == {"status": "already_graded",
+                                                                           "pending": 0}
+    assert third.calls == []
 
 
 def test_the_evening_tick_grades_the_card(ledger):

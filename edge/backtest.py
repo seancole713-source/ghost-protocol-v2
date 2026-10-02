@@ -41,7 +41,7 @@ from edge import catalysts as C, detectors as D, features as FX, setups as S, st
 from edge.contracts import COUNTED, ET, WIN, issue
 from edge.pipeline import GAP_AND_GO_AUTO, GAP_BASELINE, previous_trading_day, trading_day
 from edge.providers import alpaca as A, polygon as PG
-from edge.resolver import resolve_execution, resolve_market
+from edge.resolver import RESOLVER_VERSION, resolve_execution, resolve_market
 
 # v3: v2's historical news query had no `end`, so Alpaca paged back from NOW and the capped
 # pages held no news from the session studied -- the catalyst rule saw almost none (1 forecast
@@ -210,7 +210,8 @@ def session(get, day: date, prev_rows: List[dict], today_rows: List[dict], rolli
 
 
 def summarize(sessions: List[Dict[str, Any]], break_even: float) -> Dict[str, Any]:
-    out: Dict[str, Any] = {"version": BACKTEST_VERSION, "sessions": len(sessions), "limits": LIMITS,
+    out: Dict[str, Any] = {"version": BACKTEST_VERSION, "resolver_version": RESOLVER_VERSION,
+                           "sessions": len(sessions), "limits": LIMITS,
                            "break_even": break_even, "experiments": {}}
     for eid in (GAP_AND_GO_AUTO.experiment_id, GAP_BASELINE.experiment_id):
         rows = [r for s in sessions for r in s["results"] if r["experiment"] == eid]

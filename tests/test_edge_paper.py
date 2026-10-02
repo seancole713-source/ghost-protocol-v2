@@ -258,10 +258,11 @@ class Exchange(Broker):
     `close_ok` answers DELETE /v2/positions; GET /v2/orders/{id} serves the nested bracket."""
 
     def __init__(self, orders=None, position_qty=0, sell_status="filled", refuse_sells=0, close_ok=True,
-                 nested=None):
+                 nested=None, close_status="filled"):
         super().__init__(orders=orders, position_qty=position_qty)
         self.sell_status, self.refuse_sells, self.close_ok = sell_status, refuse_sells, close_ok
         self.nested, self.closes, self.ids_seen = nested or {}, [], set()
+        self.close_status = close_status          # what GET /v2/orders/close1 then reports
 
     def post(self, url, json=None, headers=None, timeout=None):
         assert "paper-api.alpaca.markets" in url
@@ -282,7 +283,13 @@ class Exchange(Broker):
         self.deletes.append(url)
         if "/v2/positions/" in url:
             self.closes.append(url)
-            return R(200, {"id": "close1", "symbol": "SHOP"}) if self.close_ok else R(403, {"message": "held"})
+            if not self.close_ok:
+                return R(403, {"message": "held"})
+            qty, oid = url.rsplit("qty=", 1)[-1], f"close{len(self.closes)}"
+            self.nested[oid] = {"id": oid, "symbol": "SHOP", "side": "sell", "qty": qty,
+                                "status": self.close_status,
+                                "filled_qty": qty if self.close_status == "filled" else "0"}
+            return R(200, {"id": oid, "symbol": "SHOP", "status": "accepted"})
         return R(204)
 
     def get(self, url, params=None, headers=None, timeout=None):
@@ -357,6 +364,46 @@ def test_the_last_tick_closes_only_this_forecasts_shares_when_the_sell_is_refuse
     res = PP.reconcile(Broker(orders=orders), ledger, day="2026-09-23", experiments=EXPERIMENTS, now=ts(16, 25))
     assert res["settled"]["gap_and_go_auto@v1:SHOP"]["actual"] == "TIME_EXIT"
     assert "close1" in [o["id"] for o in ledger.store.get("edge_paper_orders", "2026-09-23")["orders"]]
+
+
+def test_an_accepted_position_close_is_not_flat_until_its_order_shows_the_fill(ledger):
+    """EDGE-04: the fallback close's accepted quantity used to count as sold, so the forecast was
+    marked time_exit_done without the broker ever showing a fill. The close order is read back;
+    while it is working the forecast stays in flight and NOT FLAT is raised."""
+    f = ledger.fc
+    PP.submit(Broker(), ledger, day="2026-09-23", experiments=EXPERIMENTS)
+    b = Exchange(orders=[_filled_entry(f)], refuse_sells=99, position_qty=6, close_status="accepted")
+    out = PP.time_exit(b, ledger, day="2026-09-23", experiments=EXPERIMENTS, now=ts(15, 50))
+    assert b.closes == ["https://paper-api.alpaca.markets/v2/positions/SHOP?qty=6"]
+    assert out["status"] == "error" and "6 shares accepted, 0 confirmed filled (accepted)" in out["not_flat"][0]
+    rec = ledger.store.get("edge_paper", f"{f.forecast_id}|paper")
+    assert rec["tx_closes"][0]["order_id"] == "close1" and not rec.get("time_exit_done")
+    assert "not confirmed flat" in rec["exit_alarm"]
+    # a later check: still working -> still in flight, never a second close on top of it
+    out = PP.time_exit(b, ledger, day="2026-09-23", experiments=EXPERIMENTS, now=ts(15, 54))
+    assert b.closes == ["https://paper-api.alpaca.markets/v2/positions/SHOP?qty=6"] and out["not_flat"]
+    assert not ledger.store.get("edge_paper", f"{f.forecast_id}|paper").get("time_exit_done")
+    # partly filled and done: 2 of 6 sold, 4 still open -> not flat, a close for the 4 remaining
+    b.nested["close1"] = {**b.nested["close1"], "status": "canceled", "filled_qty": "2"}
+    b.close_status = "filled"
+    out = PP.time_exit(b, ledger, day="2026-09-23", experiments=EXPERIMENTS, now=ts(15, 54))
+    assert b.closes[-1].endswith("?qty=4")
+    # the broker now shows every share sold: flat, done, nothing more sent
+    PP.time_exit(b, ledger, day="2026-09-23", experiments=EXPERIMENTS, now=ts(15, 54))
+    rec = ledger.store.get("edge_paper", f"{f.forecast_id}|paper")
+    assert rec["time_exit_done"] and len(b.closes) == 2
+
+
+def test_an_unreadable_close_order_is_never_counted_as_filled(ledger):
+    f = ledger.fc
+    PP.submit(Broker(), ledger, day="2026-09-23", experiments=EXPERIMENTS)
+    b = Exchange(orders=[_filled_entry(f)], refuse_sells=99, position_qty=6)
+    ledger.store.put("edge_paper", f"{f.forecast_id}|paper", {
+        **ledger.store.get("edge_paper", f"{f.forecast_id}|paper"), "tx_ids": [f"{f.forecast_id}-tx"],
+        "tx_closes": [{"qty": 6, "order_id": None, "at": ts(15, 50)}]})
+    out = PP.time_exit(b, ledger, day="2026-09-23", experiments=EXPERIMENTS, now=ts(15, 54))
+    assert out["not_flat"] and "cannot confirm it is flat" in out["not_flat"][0]
+    assert not ledger.store.get("edge_paper", f"{f.forecast_id}|paper").get("time_exit_done")
 
 
 def test_the_last_tick_never_closes_more_than_the_account_holds(ledger):

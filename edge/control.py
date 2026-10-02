@@ -34,7 +34,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from edge import stats
 from edge.contracts import COUNTED, ET, GAP_AND_GO_V1, WIN, ContractError, FrozenSpecError, issue_intraday
-from edge.resolver import resolve_execution
+from edge.resolver import RESOLVER_VERSION, resolve_execution
 
 # The levels, copied (not referenced) so a later change to an intraday spec cannot move the
 # control silently. tests/test_edge_control.py checks they still equal the intraday specs'.
@@ -136,8 +136,12 @@ def reference(bars: List[tuple], at: int) -> Optional[Tuple[float, int]]:
     return last[4], last[0]
 
 
-def grade_symbol(symbol: str, day: date, first_seen: int, bars: List[tuple]) -> Dict[str, Any]:
-    """Every variant's simulated outcome for one name. Pure: bars in, results out."""
+def grade_symbol(symbol: str, day: date, first_seen: int, bars: List[tuple], *,
+                 complete: bool = True) -> Dict[str, Any]:
+    """Every variant's simulated outcome for one name. Pure: bars in, results out.
+
+    `complete`: the bars are a whole provider answer (_fetch never keeps a truncated one), so an
+    empty entry window is a real NO_FILL to the resolver, not missing data."""
     refs, variants = {}, {}
     for name, delay in DELAYS.items():
         at = int(first_seen) + delay
@@ -161,7 +165,7 @@ def grade_symbol(symbol: str, day: date, first_seen: int, bars: List[tuple]) -> 
                       "limit": f.entry_limit, "target": f.target, "stop": f.stop, "shares": f.shares,
                       "entry_expiry": f.entry_expiry}
         for c in COSTS_BPS:
-            r = resolve_execution(f, bars, cost_bps_per_side=c)
+            r = resolve_execution(f, bars, cost_bps_per_side=c, complete=complete)
             variants[f"{name}_{c}bps"] = {"outcome": r.outcome, "pnl_usd": r.pnl_usd, "pnl_pct": r.pnl_pct,
                                           "entry_fill": r.entry_fill, "exit_price": r.exit_price,
                                           "ambiguous": r.ambiguous, "note": r.note}
@@ -219,8 +223,8 @@ def grade_day(get, store, *, day: date, now: int) -> Dict[str, Any]:
     radar = store.scan("edge_radar", session_date=ds)
     if not radar:            # e.g. an early close: nothing detected, nothing to grade
         store.put("edge_control", ds, {"day": ds, "graded_at": now, "feed": None, "design_version": DESIGN["version"],
-                                       "design_hash": DESIGN_HASH, "complete": True, "truncated": [],
-                                       "rows": [], "label": LABEL})
+                                       "design_hash": DESIGN_HASH, "resolver_version": RESOLVER_VERSION,
+                                       "complete": True, "truncated": [], "rows": [], "label": LABEL})
         return {"status": "no_radar"}
     approvals = _approvals(store, ds)
     if prior:
@@ -250,7 +254,8 @@ def grade_day(get, store, *, day: date, now: int) -> Dict[str, Any]:
         rows.append(row)
     complete = not bad
     store.put("edge_control", ds, {"day": ds, "graded_at": now, "feed": feed, "design_version": DESIGN["version"],
-                                   "design_hash": DESIGN_HASH, "complete": complete, "truncated": bad,
+                                   "design_hash": DESIGN_HASH, "resolver_version": RESOLVER_VERSION,
+                                   "complete": complete, "truncated": bad,
                                    "rows": rows, "label": LABEL})
     return {"status": "graded" if complete else "partial", "feed": feed, "rows": len(rows),
             "approved": sum(1 for r in rows if r["approved"]), "truncated": bad}

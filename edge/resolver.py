@@ -30,7 +30,19 @@ Order model (a buy stop-limit, then an OCO bracket):
              open), or the time exit (the open of the first bar at/after it).
   * The FILL BAR itself: its internal path is unknown, so a stop touch there
              is a LOSS and a target touch there counts only if the stop was
-             not also touched.
+             not also touched AND the fill provably came first: the fill was
+             the bar's first trade (it opened at/below the limit) or the bar
+             climbed from below through the trigger. A bar that opened ABOVE
+             the limit and filled on a dip back to it may have printed its
+             high before the fill; that touch is not counted and the record is
+             marked ambiguous (resolver_v2).
+  * MISSING ENTRY-WINDOW DATA: no bar between the window start and the entry
+             expiry is "no fill" only when the provider said its answer was
+             complete; otherwise it is UNRESOLVED and retried (resolver_v2).
+
+Versions (docs/resolver_versions.md). Every resolution made here carries
+RESOLVER_VERSION; rows stored without one were made by resolver_v1. Stored
+outcomes are never re-graded under a newer version.
 """
 from __future__ import annotations
 
@@ -42,6 +54,11 @@ from edge.contracts import (
 )
 
 Bar = Tuple[int, float, float, float, float, float]
+
+# resolver_v1: everything before 2026-10-02 (no version field on its rows).
+# resolver_v2: a fill-bar target touch counts only when the fill provably came first (EDGE-02);
+#              an empty entry window is UNRESOLVED unless the bars are known complete (EDGE-03).
+RESOLVER_VERSION = "resolver_v2"
 
 
 @dataclass(frozen=True)
@@ -58,6 +75,7 @@ class Resolution:
     max_favorable_pct: Optional[float] = None   # best run-up while open
     note: str = ""
     flags: Tuple[str, ...] = field(default_factory=tuple)
+    resolver_version: Optional[str] = None      # set by the resolvers below; None = not a bar resolution
 
     @property
     def counted(self) -> bool:
@@ -76,22 +94,27 @@ def _exit(f: Forecast, entry: float, entry_ts: int, price: float, ts: int, outco
     )
 
 
-def resolve_market(f: Forecast, bars: Iterable[Bar], *, bar_seconds: int = 60) -> Resolution:
-    """Forecast outcome: entry at the trigger the moment it trades, no limit, no costs."""
+def resolve_market(f: Forecast, bars: Iterable[Bar], *, bar_seconds: int = 60,
+                   complete: Optional[bool] = None) -> Resolution:
+    """Forecast outcome: entry at the trigger the moment it trades, no limit, no costs.
+
+    `complete` is the provider's own word on the bars: True only when it said the answer was
+    whole (edge.providers.alpaca.bars_pages). Anything else cannot turn a missing entry window
+    into a NO_FILL."""
     loose = replace(f, entry_limit=float("inf"))
-    r = _walk(loose, bars, bar_seconds=bar_seconds, market=True)
+    r = _walk(loose, bars, bar_seconds=bar_seconds, market=True, complete=complete)
     return replace(r, flags=tuple(r.flags) + ("record:forecast",))
 
 
 def resolve_execution(f: Forecast, bars: Iterable[Bar], *, bar_seconds: int = 60,
-                      cost_bps_per_side: float = 10.0) -> Resolution:
+                      cost_bps_per_side: float = 10.0, complete: Optional[bool] = None) -> Resolution:
     """Simulated execution: the order as written, plus a cost on each side.
 
     10 bps a side is a placeholder for spread + slippage on liquid names. It is
     stated on every record so it can be replaced by measured costs, never
     silently tuned.
     """
-    r = _walk(f, bars, bar_seconds=bar_seconds, market=False)
+    r = _walk(f, bars, bar_seconds=bar_seconds, market=False, complete=complete)
     if r.entry_fill is None or r.exit_price is None:
         return replace(r, flags=tuple(r.flags) + ("record:simulated", f"cost_bps:{cost_bps_per_side:g}"))
     cost = cost_bps_per_side / 10_000
@@ -104,23 +127,37 @@ def resolve_execution(f: Forecast, bars: Iterable[Bar], *, bar_seconds: int = 60
     )
 
 
-def resolve(f: Forecast, bars: Iterable[Bar], *, bar_seconds: int = 60) -> Resolution:
+def resolve(f: Forecast, bars: Iterable[Bar], *, bar_seconds: int = 60,
+            complete: Optional[bool] = None) -> Resolution:
     """Simulated execution without costs -- the order mechanics alone."""
-    return _walk(f, bars, bar_seconds=bar_seconds, market=False)
+    return _walk(f, bars, bar_seconds=bar_seconds, market=False, complete=complete)
 
 
-def _walk(f: Forecast, bars: Iterable[Bar], *, bar_seconds: int, market: bool) -> Resolution:
+def _walk(f: Forecast, bars: Iterable[Bar], *, bar_seconds: int, market: bool,
+          complete: Optional[bool] = None) -> Resolution:
+    r = _resolve_bars(f, bars, bar_seconds=bar_seconds, market=market, complete=complete)
+    return replace(r, resolver_version=RESOLVER_VERSION)
+
+
+def _resolve_bars(f: Forecast, bars: Iterable[Bar], *, bar_seconds: int, market: bool,
+                  complete: Optional[bool]) -> Resolution:
     rows: List[Bar] = sorted(
         (b for b in bars if b[0] >= f.window_start - bar_seconds), key=lambda b: b[0],
     )
     rows = [b for b in rows if b[0] >= f.window_start]
     if not rows:
         return Resolution(UNRESOLVED, note="no bars in the window")
+    if complete is not True and not any(b[0] < f.entry_expiry for b in rows):
+        # No bar at all while the entry could fill. With a whole answer that is a session with no
+        # trades (a real NO_FILL); with a truncated or unknown one it is missing data, retried.
+        return Resolution(UNRESOLVED, note="no bars in the entry window and the data is not known "
+                                           "complete; resolve again when data arrives")
 
     triggered = False
     entry: Optional[float] = None
     entry_ts: Optional[int] = None
     lo = hi = None
+    unordered = False        # a fill-bar target touch that may have come before the fill
     for i, (ts, o, h, l, c, _v) in enumerate(rows):
         if entry is None:
             if ts >= f.entry_expiry:
@@ -153,26 +190,45 @@ def _walk(f: Forecast, bars: Iterable[Bar], *, bar_seconds: int, market: bool) -
                 return _exit(f, entry, entry_ts, f.stop, ts, LOSS, lo, hi,
                              ambiguous=True, note="stop touched in the fill bar")
             if h >= f.target:
-                return _exit(f, entry, entry_ts, f.target, ts, WIN, lo, hi,
-                             note="target touched in the fill bar")
+                if o <= f.entry_limit:
+                    # The fill was the bar's first trade (it opened at/below the limit), or the bar
+                    # climbed from below through the trigger to the target: the fill came first.
+                    return _exit(f, entry, entry_ts, f.target, ts, WIN, lo, hi,
+                                 note="target touched in the fill bar")
+                # Opened ABOVE the limit and filled on a dip back to it: the high may be the open,
+                # before the fill. Not counted; the later bars decide, and the record says so.
+                unordered = True
             continue
 
         if ts >= f.time_exit:
-            return _exit(f, entry, entry_ts, o, ts, TIME_EXIT, lo, hi, note="time exit")
+            return _exit(f, entry, entry_ts, o, ts, TIME_EXIT, lo, hi, ambiguous=unordered,
+                         note=_unordered("time exit", unordered))
         lo, hi = min(lo, l), max(hi, h)
         hit_stop, hit_target = l <= f.stop, h >= f.target
         if hit_stop and hit_target:
             return _exit(f, entry, entry_ts, min(o, f.stop), ts, LOSS, lo, hi, ambiguous=True,
-                         note="one bar touched both levels; graded LOSS")
+                         note=_unordered("one bar touched both levels; graded LOSS", unordered))
         if hit_stop:
-            return _exit(f, entry, entry_ts, min(o, f.stop), ts, LOSS, lo, hi)
+            return _exit(f, entry, entry_ts, min(o, f.stop), ts, LOSS, lo, hi, ambiguous=unordered,
+                         note=_unordered("", unordered))
         if hit_target:
-            return _exit(f, entry, entry_ts, max(o, f.target), ts, WIN, lo, hi)
+            # A target touched in a LATER bar is after the fill whatever the fill bar did: not ambiguous.
+            return _exit(f, entry, entry_ts, max(o, f.target), ts, WIN, lo, hi,
+                         note=_unordered("", unordered))
 
     if entry is None:
         last_ts = rows[-1][0]
         if last_ts + bar_seconds >= f.entry_expiry:
             return Resolution(NO_FILL, note="never filled before expiry")
         return Resolution(UNRESOLVED, note="bars end before the entry expired")
-    return Resolution(UNRESOLVED, entry_fill=round(entry, 4), entry_ts=entry_ts,
-                      note="bars end before an exit; resolve again when data arrives")
+    return Resolution(UNRESOLVED, entry_fill=round(entry, 4), entry_ts=entry_ts, ambiguous=unordered,
+                      note=_unordered("bars end before an exit; resolve again when data arrives", unordered))
+
+
+UNORDERED_NOTE = "fill-bar target touch not counted: the bar opened above the limit, so its high may precede the fill"
+
+
+def _unordered(note: str, unordered: bool) -> str:
+    if not unordered:
+        return note
+    return f"{note}; {UNORDERED_NOTE}" if note else UNORDERED_NOTE

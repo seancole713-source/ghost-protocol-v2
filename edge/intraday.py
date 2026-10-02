@@ -25,7 +25,7 @@ from __future__ import annotations
 import statistics
 from dataclasses import asdict, replace
 from datetime import date, datetime, time as dtime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from edge import catalysts as C, detectors as D, radar as R, setups as S
 from edge.contracts import ET, GAP_AND_GO_V1, issue_intraday
@@ -86,32 +86,61 @@ _STRATEGY_OF = {CATALYST_BREAKOUT.experiment_id: "catalyst_breakout",
                 SHORT_INTEREST_IGNITION.experiment_id: "short_interest_ignition"}
 
 
-def _short_data(http, store, syms: List[str], day: date, *, max_borrow_calls: int = 10) -> Dict[str, Dict[str, Any]]:
-    """Per-symbol short interest + borrow, cached per day. Anything unfetched stays unknown."""
+SHORT_RETRY_S = 600     # a FAILED short-interest / borrow fetch is retried after 10 minutes
+
+
+def _short_due(rec: Dict[str, Any], field: str, now: int) -> bool:
+    """Fetch `field` ("si" / "borrow") now? Never fetched: yes. An answer -- a value, or the
+    source's definite "no record" -- is kept all day. A transient failure (timeout, 429, 5xx,
+    a refused query) is retried once SHORT_RETRY_S has passed since that attempt; it is never
+    cached as "no data" for the rest of the session. Rows written before statuses existed are
+    kept as they were."""
+    if field not in rec:
+        return True
+    if rec.get(f"{field}_status") != "error":
+        return False
+    return now - int(rec.get(f"{field}_at") or 0) >= SHORT_RETRY_S
+
+
+def _short_data(http, store, syms: List[str], day: date, *, now: Optional[int] = None,
+                max_borrow_calls: int = 10) -> Dict[str, Dict[str, Any]]:
+    """Per-symbol short interest + borrow, cached per day. Anything unfetched stays unknown.
+
+    Each field carries its attempt time and status: "ok" (a value), "none" (the source has no
+    record -- terminal for the day) or "error" (a transient failure, retried after
+    SHORT_RETRY_S). The value of a failed field stays None, i.e. UNKNOWN, never zero."""
+    import time as _time
     from edge.providers import shortdata as SD
+    now = int(now if now is not None else _time.time())
     ds = day.isoformat()
     cache = store.get("edge_short", ds) or {}
     if http is None:
         return cache
-    need_si = [s for s in syms if s not in cache or "si" not in cache[s]]
+    need_si = [s for s in syms if _short_due(cache.get(s, {}), "si", now)]
     if need_si:
         try:
             rows = SD.fetch_finra_si_for(http, need_si)
         except Exception as exc:  # noqa: BLE001 - recorded, never guessed
             rows = None
-            store.put("edge_short_errors", ds, {"finra": f"{type(exc).__name__}: {str(exc)[:120]}"})
+            store.put("edge_short_errors", ds, {"finra": f"{type(exc).__name__}: {str(exc)[:120]}", "at": now})
         for s in need_si:
-            cache.setdefault(s, {})["si"] = (rows or {}).get(s) if rows is not None else None
+            rec = cache.setdefault(s, {})
+            rec["si"] = (rows or {}).get(s) if rows is not None else None
+            rec["si_status"] = "error" if rows is None else ("ok" if rec["si"] is not None else "none")
+            rec["si_at"] = now
     calls = 0
     for s in syms:
-        if "borrow" in cache.get(s, {}):
+        if not _short_due(cache.get(s, {}), "borrow", now):
             continue
         if calls >= max_borrow_calls:
             break
+        rec = cache.setdefault(s, {})
         try:
-            cache.setdefault(s, {})["borrow"] = SD.fetch_borrow(http, s)
-        except Exception:  # noqa: BLE001
-            cache.setdefault(s, {})["borrow"] = None
+            rec["borrow"] = SD.fetch_borrow(http, s)
+            rec["borrow_status"] = "ok" if rec["borrow"] is not None else "none"
+        except Exception:  # noqa: BLE001 - transient: unknown now, asked again after SHORT_RETRY_S
+            rec["borrow"], rec["borrow_status"] = None, "error"
+        rec["borrow_at"] = now
         calls += 1
     store.put("edge_short", ds, cache)
     return cache
@@ -123,6 +152,10 @@ def _at(day: date, hh: int, mm: int) -> int:
 
 def _iso(ts: int) -> str:
     return datetime.fromtimestamp(ts, tz=ET).isoformat()
+
+
+def _hm(ts: int) -> str:
+    return datetime.fromtimestamp(ts, tz=ET).strftime("%H:%M:%S ET")
 
 
 def _bars(rows: List[dict]) -> List[tuple]:
@@ -247,11 +280,20 @@ def _save(store, item: R.RadarItem) -> None:
     store.put("edge_radar", f"{item.session_date}|{item.symbol}", asdict(item))
 
 
-def tick(get, ledger: Ledger, *, now: int, top: int = 50, http=None) -> Dict[str, Any]:
+ISSUE_UNTIL = (14, 30)      # the radar's issuance window ends here; a later forecast is refused
+
+
+def tick(get, ledger: Ledger, *, now: int, top: int = 50, http=None,
+         clock: Optional[Callable[[], float]] = None) -> Dict[str, Any]:
+    """One radar pass. `now` is when the tick started -- the data cutoff its fetches answer for.
+    `clock` is the trusted wall clock, read again at each issuance: a forecast is issued and
+    recorded at the time it actually is, after every slow fetch, and refused (late_refused) when
+    that is past the issuance window. Without a clock (tests, replays) the tick time is used."""
+    clock = clock or (lambda: now)
     day = datetime.fromtimestamp(now, tz=ET).date()
     ds = day.isoformat()
     store = ledger.store
-    if not (_at(day, 9, 45) <= now < _at(day, 14, 30)):
+    if not (_at(day, 9, 45) <= now < _at(day, *ISSUE_UNTIL)):
         return {"status": "outside_intraday_window"}
     for spec in INTRADAY_SPECS:
         ledger.register(spec, now=now)
@@ -286,13 +328,14 @@ def tick(get, ledger: Ledger, *, now: int, top: int = 50, http=None) -> Dict[str
                         "prev_close": float(done[-1]["c"]) if done else None}
         store.put("edge_intraday_daily", daily_key, daily)
     hist = _history(get, store, syms, day, feed)
-    shorts = _short_data(http, store, syms, day)
+    shorts = _short_data(http, store, syms, day, now=now)
     try:
         items = A.news(get, syms, start=_iso(now - 86_400))
     except Exception:  # noqa: BLE001 - recorded as unknown, never guessed
         items = None
 
     issued: List[str] = []
+    late_refused: List[str] = []
     counts = {spec.experiment_id: len(store.scan("forecasts", experiment_id=spec.experiment_id, session_date=ds))
               for spec in INTRADAY_SPECS}
     open_ts = _at(day, 9, 30)
@@ -361,18 +404,38 @@ def tick(get, ledger: Ledger, *, now: int, top: int = 50, http=None) -> Dict[str
         spec, d = best
         eid = spec.experiment_id
 
+        # The trusted clock, read AFTER the slow fetches: the forecast's issued_at, its window
+        # (which opens the minute after) and its recorded_at are the time it really is.
+        issued_at = int(clock())
+        if issued_at >= _at(day, *ISSUE_UNTIL):
+            msg = (f"{eid}:{s} issued at {_hm(issued_at)}, after the {ISSUE_UNTIL[0]:02d}:{ISSUE_UNTIL[1]:02d} ET "
+                   f"issuance window (tick started {_hm(now)})")
+            A.LOG.warning("intraday forecast refused as late: %s", msg)
+            late_refused.append(msg)
+            if undecided:
+                item.set_blocker(strategy=_STRATEGY_OF[eid], verdict=S.ELIGIBLE, ts=issued_at,
+                                 reasons=["eligible, but refused: the tick reached issuance after the window"])
+            _save(store, item)
+            continue
+
         def _record(sp):
             if counts[sp.experiment_id] >= sp.max_per_day:
                 return None
             try:
-                fc = issue_intraday(sp, symbol=s, session_date=day, entry_ref=price, issued_at=now,
-                                    evidence={"feed": feed, "rvol": sig["rvol_tod"].value,
+                fc = issue_intraday(sp, symbol=s, session_date=day, entry_ref=price, issued_at=issued_at,
+                                    evidence={"feed": feed, "rvol": sig["rvol_tod"].value, "data_as_of": now,
                                               "catalyst": sig["catalyst"].evidence.get("headline")})
             except Exception:  # noqa: BLE001 - e.g. too late in the session for the entry window
                 return None
             if store.get("forecasts", fc.forecast_id):
                 return None
-            ledger.record(fc, now=now)
+            recorded_at = int(clock())
+            if recorded_at >= fc.window_start:
+                msg = f"{sp.experiment_id}:{s} recorded at {_hm(recorded_at)}, after its window opened"
+                A.LOG.warning("intraday forecast refused as late: %s", msg)
+                late_refused.append(msg)
+                return None
+            ledger.record(fc, now=recorded_at)
             counts[sp.experiment_id] += 1
             issued.append(f"{sp.experiment_id}:{s}")
             return fc
@@ -395,6 +458,7 @@ def tick(get, ledger: Ledger, *, now: int, top: int = 50, http=None) -> Dict[str
                             evidence={"forecast_id": f.forecast_id, "price": price})
         _save(store, item)
     return {"status": "issued" if issued else "watched", "movers": len(syms), "issued": issued,
+            "late_refused": late_refused,
             "quality_lane": sorted(quality)}
 
 

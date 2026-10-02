@@ -73,7 +73,8 @@ class Service:
         try:
             out = pipeline.run(self.get, self.ledger, now=now,
                                http=self.http if _on("EDGE_PAPER_ENABLED") else None,
-                               notifier=self.notifier if _on("EDGE_TELEGRAM_ENABLED") else None)
+                               notifier=self.notifier if _on("EDGE_TELEGRAM_ENABLED") else None,
+                               clock=self.clock)       # re-read at issuance, after the slow fetches
         finally:
             if claim is not None:
                 self.store.release("edge_shadow", owner=owner)

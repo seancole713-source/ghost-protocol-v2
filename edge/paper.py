@@ -249,7 +249,10 @@ def time_exit(http, ledger: Ledger, *, day: str, experiments, now: Optional[int]
         On the window's last tick (>= 15:50 ET) a refused sell falls back to closing exactly this
         forecast's remaining shares (DELETE /v2/positions/{symbol}?qty=N, capped by what the
         account holds); if that fails too, or the forecast cannot be confirmed flat, a loud
-        NOT FLAT error is recorded and returned under "not_flat"."""
+        NOT FLAT error is recorded and returned under "not_flat".
+      * (EDGE-04) an ACCEPTED position close is not a filled one: its order is read back by id and
+        only its filled_qty counts; a close still working, partly filled or unreadable keeps the
+        forecast in flight (never time_exit_done) and raises NOT FLAT on the last tick."""
     closed, touched, errors, not_flat = [], False, [], []
     last = now is not None and now >= _et_at(day, *TX_LAST_TRY)
 
@@ -291,7 +294,15 @@ def time_exit(http, ledger: Ledger, *, day: str, experiments, now: Optional[int]
                     tried.append(cid)          # an -tx placed before attempts were recorded
             elif not definite and cid in tried:
                 unsure = True
-        filled_tx += sum(int(float(x.get("qty") or 0)) for x in rec.get("tx_closes") or [])
+        for x in rec.get("tx_closes") or []:
+            # A position close the broker ACCEPTED is not one it FILLED: count only what its own
+            # order record says was filled, and keep a still-working close in flight (EDGE-04).
+            o = _order_by_id(http, x.get("order_id"))
+            if o is None:
+                unsure = True
+                continue
+            filled_tx += int(float(o.get("filled_qty") or 0))
+            working = working or o.get("status") in _OPEN
         if unsure:
             errors.append(f"{f.symbol}: broker could not report its exit orders, retrying")
             if last:
@@ -335,10 +346,19 @@ def time_exit(http, ledger: Ledger, *, day: str, experiments, now: Optional[int]
             continue
         done, oid = _close_own_shares(http, f.symbol, qty)
         if done:
-            ledger.store.put("edge_paper", key, {**rec, "tx_closes": list(rec.get("tx_closes") or []) + [
-                {"qty": qty, "order_id": oid, "at": now}]})
+            rec = {**rec, "tx_closes": list(rec.get("tx_closes") or []) + [{"qty": qty, "order_id": oid, "at": now}]}
+            ledger.store.put("edge_paper", key, rec)
             closed.append(f.symbol)
             touched = True
+            # Accepted is not filled: confirm from the close order's own record. Anything short of
+            # the full quantity filled is NOT FLAT -- the close stays in flight (tx_closes, checked
+            # again on any later tick) and the alarm stands until the broker shows it flat.
+            o = _order_by_id(http, oid)
+            got = int(float((o or {}).get("filled_qty") or 0))
+            if got < qty:
+                alarm(f, key, rec, f"position close for {qty} shares accepted, {got} confirmed filled "
+                                   f"({(o or {}).get('status') or 'no order record'}); not confirmed flat "
+                                   "-- check it by hand")
         else:
             errors.append(f"{f.symbol}: exit sell and position close both refused")
             alarm(f, key, rec, f"{remaining} shares still open with NO stop after the time exit "

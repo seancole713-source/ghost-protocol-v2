@@ -2375,7 +2375,8 @@ async def lifespan(app: FastAPI):
                 try:
                     out = _edge_run(_edge_get(), _EdgeLedger(store), now=int(_time.time()),
                                     http=_requests if paper_on else None,
-                                    notifier=_requests if tg_on else None)
+                                    notifier=_requests if tg_on else None,
+                                    clock=_time.time)   # re-read at issuance, after the slow fetches
                 finally:
                     store.release("edge_shadow", owner=_owner)
                 if _edge_noteworthy(out):

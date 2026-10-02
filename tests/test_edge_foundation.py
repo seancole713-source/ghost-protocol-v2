@@ -274,3 +274,137 @@ def test_a_bar_that_runs_through_the_stop_limit_band_is_not_a_fill():
     r = resolve(f, bars((9, 30, 9.40, 9.95, 9.38, 9.90), (9, 31, 9.90, 9.92, 9.55, 9.60),
                         (9, 45, 9.80, 9.99, 9.78, 9.97)))
     assert r.outcome == "WIN" and r.entry_fill == 9.59
+
+
+# ------------------------------------------------------- resolver_v2 (audit) --
+
+def test_a_fill_bar_high_that_may_precede_the_fill_is_not_a_win():
+    """EDGE-02: O=H=11, L=C=10.20 with the limit at 10.20 and the target at 10.61. The bar's
+    high is its open -- BEFORE the dip that filled the order -- so the target touch is not
+    counted; the record is marked ambiguous and later bars decide."""
+    from edge.resolver import RESOLVER_VERSION, resolve_execution, resolve_market
+    f = fc(ref=10.0)
+    assert (f.entry_trigger, f.entry_limit, f.target, f.stop) == (10.10, 10.20, 10.61, 9.80)
+    audit_bar = (9, 30, 11.00, 11.00, 10.20, 10.20)
+    alone = resolve(f, bars(audit_bar))
+    assert alone.outcome == "UNRESOLVED" and alone.entry_fill == 10.20 and alone.ambiguous
+    assert RESOLVER_VERSION == "resolver_v2" and alone.resolver_version == RESOLVER_VERSION
+    # drifts to the 15:30 time exit: a TIME_EXIT, flagged ambiguous -- never the old clean WIN
+    r = resolve(f, bars(audit_bar, (12, 0, 10.20, 10.40, 10.10, 10.30), (15, 30, 10.30, 10.35, 10.25, 10.30)))
+    assert r.outcome == "TIME_EXIT" and r.ambiguous and "may precede the fill" in r.note
+    # a later stop: a LOSS, ambiguous (the conservative grade)
+    r = resolve(f, bars(audit_bar, (10, 0, 10.10, 10.15, 9.70, 9.75)))
+    assert r.outcome == "LOSS" and r.ambiguous
+    # a target in a LATER bar is after the fill whatever the fill bar did: a plain WIN
+    r = resolve(f, bars(audit_bar, (10, 0, 10.30, 10.70, 10.25, 10.65)))
+    assert r.outcome == "WIN" and not r.ambiguous
+    # the simulated-execution record (costs) applies the same rule
+    assert resolve_execution(f, bars(audit_bar)).outcome == "UNRESOLVED"
+    # the forecast record enters at the trigger the moment it trades -- at the open here, so the
+    # whole bar is after it and the touch counts there (unchanged)
+    assert resolve_market(f, bars(audit_bar)).outcome == "WIN"
+
+
+def test_a_fill_bar_target_still_counts_when_the_fill_provably_came_first():
+    f = fc(ref=10.0)        # trigger 10.10, limit 10.20, target 10.61
+    # opened inside the band: the fill is the bar's first trade, the high comes after it
+    r = resolve(f, bars((9, 30, 10.15, 10.70, 10.12, 10.65)))
+    assert r.outcome == "WIN" and r.entry_fill == 10.15 and not r.ambiguous
+    # opened below the trigger and closed inside the band: the climb passes the trigger first
+    r = resolve(f, bars((9, 30, 10.00, 10.70, 9.95, 10.18)))
+    assert r.outcome == "WIN" and r.entry_fill == 10.10 and not r.ambiguous
+
+
+def test_a_missing_entry_window_is_unresolved_unless_the_data_is_known_complete():
+    """EDGE-03: bars only AFTER the 10:30 entry expiry used to finalize as a terminal NO_FILL.
+    Unknown or truncated data -> UNRESOLVED (retryable); a whole answer -> NO_FILL."""
+    from edge.resolver import resolve_execution, resolve_market
+    f = fc()
+    late = bars((11, 0, 9.40, 9.45, 9.30, 9.35), (15, 30, 9.35, 9.40, 9.30, 9.38))
+    for complete in (None, False):
+        for r in (resolve(f, late, complete=complete), resolve_market(f, late, complete=complete),
+                  resolve_execution(f, late, complete=complete)):
+            assert r.outcome == "UNRESOLVED" and "entry window" in r.note
+    assert resolve(f, late, complete=True).outcome == "NO_FILL"
+    # an entry window WITH bars is judged as before, complete or not
+    seen = bars((9, 30, 9.40, 9.45, 9.30, 9.35), (10, 30, 9.35, 9.60, 9.30, 9.55))
+    assert resolve(f, seen).outcome == resolve(f, seen, complete=True).outcome == "NO_FILL"
+
+
+class _Bars:
+    """A requests-like answer for the minute-bar endpoint."""
+    status_code = 200
+
+    def __init__(self, payload):
+        self.payload = payload
+
+    def json(self):
+        return self.payload
+
+    def raise_for_status(self):
+        pass
+
+
+def _iso(t):
+    return datetime.fromtimestamp(t, tz=ET).isoformat()
+
+
+def test_resolve_day_carries_the_providers_completeness_flag(ledger, monkeypatch):
+    """EDGE-03 end to end: resolve_day uses bars_pages; a truncated answer with no entry-window
+    bars leaves the forecast UNRESOLVED (retried next tick); the new rows carry the version."""
+    from edge import pipeline as P
+    monkeypatch.setattr(P, "_all_specs", lambda store, I: [GAP_AND_GO_V1])
+    ledger.register(GAP_AND_GO_V1, now=ts(9, 0))
+    f = fc()
+    ledger.record(f, now=ts(9, 10))
+    afternoon = [{"t": _iso(ts(13, 0)), "o": 9.4, "h": 9.45, "l": 9.3, "c": 9.35, "v": 10}]
+    truncated = lambda *a, **k: _Bars({"bars": {"ABCD": afternoon}, "next_page_token": "more"})  # noqa: E731
+    out = P.resolve_day(truncated, ledger, day=DAY, now=ts(16, 25))
+    assert out["bars_complete"] is False
+    row = ledger.store.get("outcomes", f"{f.forecast_id}|simulated")
+    assert row["outcome"] == "UNRESOLVED" and row["resolver_version"] == "resolver_v2"
+    whole = lambda *a, **k: _Bars({"bars": {"ABCD": afternoon}})  # noqa: E731
+    out = P.resolve_day(whole, ledger, day=DAY, now=ts(16, 30))
+    assert out["bars_complete"] is True
+    assert ledger.store.get("outcomes", f"{f.forecast_id}|simulated")["outcome"] == "NO_FILL"
+    assert ledger.store.get("outcomes", f"{f.forecast_id}|forecast")["outcome"] == "NO_FILL"
+
+
+def test_resolve_day_never_rewrites_a_final_record(ledger, monkeypatch):
+    """A record already final (e.g. under resolver_v1) is left exactly as written while the
+    forecast's UNRESOLVED record is retried -- no 'outcome already final' crash."""
+    from edge import pipeline as P
+    monkeypatch.setattr(P, "_all_specs", lambda store, I: [GAP_AND_GO_V1])
+    ledger.register(GAP_AND_GO_V1, now=ts(9, 0))
+    f = fc()
+    ledger.record(f, now=ts(9, 10))
+    v1 = {"forecast_id": f.forecast_id, "record": "forecast", "outcome": "LOSS", "exit_price": 9.21}
+    ledger.store.put("outcomes", f"{f.forecast_id}|forecast", v1)
+    day = [{"t": _iso(ts(9, 30)), "o": 9.4, "h": 9.45, "l": 9.3, "c": 9.35, "v": 1},
+           {"t": _iso(ts(10, 30)), "o": 9.35, "h": 9.4, "l": 9.3, "c": 9.35, "v": 1}]
+    out = P.resolve_day(lambda *a, **k: _Bars({"bars": {"ABCD": day}}), ledger, day=DAY, now=ts(16, 25))
+    assert out["status"] == "resolved"
+    assert ledger.store.get("outcomes", f"{f.forecast_id}|forecast") == v1
+    assert ledger.store.get("outcomes", f"{f.forecast_id}|simulated")["outcome"] == "NO_FILL"
+
+
+def test_isotonic_ties_are_pooled_before_pav():
+    """EDGE-05: identical scores with labels [0, 1] calibrate to 0.5, not 0."""
+    steps = stats.isotonic_fit([0.5, 0.5], [0, 1])
+    assert stats.isotonic_apply(steps, 0.5) == pytest.approx(0.5)
+    assert steps == [(0.5, 0.5)]
+
+
+def test_isotonic_is_invariant_to_the_order_of_tied_inputs():
+    import itertools
+    xs = [0.2, 0.5, 0.5, 0.5, 0.8, 0.8]
+    ys = [0, 1, 0, 1, 1, 0]
+    want = stats.isotonic_fit(xs, ys)
+    for perm in itertools.permutations(range(len(xs))):
+        got = stats.isotonic_fit([xs[i] for i in perm], [ys[i] for i in perm])
+        assert got == pytest.approx(want)
+    # 0.5 holds 2/3 and 0.8 holds 1/2: a violation, pooled by weight to (2 + 1) / (3 + 2) = 0.6
+    assert want == pytest.approx([(0.2, 0.0), (0.8, 0.6)])
+    assert stats.isotonic_apply(want, 0.5) == pytest.approx(0.6)
+    vals = [v for _, v in want]
+    assert vals == sorted(vals) and len({x for x, _ in want}) == len(want)   # one step per score

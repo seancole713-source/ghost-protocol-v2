@@ -102,10 +102,16 @@ def isotonic_fit(xs: Sequence[float], ys: Sequence[float]) -> List[Tuple[float, 
     Returns (x_upper_bound, calibrated_value) steps. Fit on a calibration split
     only -- never on the data it will be judged on.
     """
-    pts = sorted(zip(xs, ys))
+    # Identical scores are ONE point weighted by their count: PAV on raw ties sorted (x, y) put
+    # the 0-labels first, so [0.5, 0.5] with labels [0, 1] calibrated 0.5 to 0 (audit EDGE-05).
+    agg: Dict[float, List[float]] = {}
+    for x, y in zip(xs, ys):
+        a = agg.setdefault(float(x), [0.0, 0.0])
+        a[0] += float(y)
+        a[1] += 1.0
     blocks: List[List[float]] = []   # [sum_y, count, max_x]
-    for x, y in pts:
-        blocks.append([float(y), 1.0, float(x)])
+    for x in sorted(agg):
+        blocks.append([agg[x][0], agg[x][1], x])
         while len(blocks) > 1 and blocks[-2][0] / blocks[-2][1] > blocks[-1][0] / blocks[-1][1]:
             s, c, mx = blocks.pop()
             blocks[-1][0] += s; blocks[-1][1] += c; blocks[-1][2] = mx

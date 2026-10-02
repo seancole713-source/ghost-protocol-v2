@@ -45,22 +45,36 @@ COUNTERFACTUAL = ("counterfactual: every priced card candidate graded under the 
                   "as if traded; never part of any experiment's record")
 
 
+def _pending(row: Dict[str, Any]) -> bool:
+    """A graded row still waiting on data: either grade UNRESOLVED. Terminal rows (and rows a
+    contract refused, outcome None) are final and never re-graded."""
+    return RV.UNRESOLVED in (row.get("outcome"), row.get("execution"))
+
+
 def grade_card(get, store, *, day: date, now: int) -> Dict[str, Any]:
-    """Grade every priced row of the day's card once, after the close."""
+    """Grade every priced row of the day's card after the close. A row is graded once to a
+    terminal outcome: rows left UNRESOLVED by missing data are re-graded on later ticks, rows
+    already terminal are kept exactly as written."""
     from edge import pipeline as P
     ds = day.isoformat()
     if now < P._at(day, 16, 20):
         return {"status": "too_early"}
-    if store.get("edge_card_outcomes", ds):
-        return {"status": "already_graded"}
+    prior = store.get("edge_card_outcomes", ds)
+    if prior and not any(_pending(o) for o in prior.get("rows") or []):
+        return {"status": "already_graded", "pending": 0}
     card = store.get("edge_cards", ds)
     if not card:
         return {"status": "no_card"}
+    kept = {o["symbol"]: o for o in (prior or {}).get("rows") or [] if not _pending(o)}
     rows = [r for r in card.get("rows") or [] if r.get("ref_price")]
-    bars = P.A.bars_multi(get, sorted({r["symbol"] for r in rows}), timeframe="1Min",
-                          start=P._iso(P._at(day, 9, 30)), end=P._iso(P._at(day, 16, 0))) if rows else {}
+    todo = sorted({r["symbol"] for r in rows} - set(kept))
+    bars, complete = (P.A.bars_pages(get, todo, timeframe="1Min", start=P._iso(P._at(day, 9, 30)),
+                                     end=P._iso(P._at(day, 16, 0))) if todo else ({}, True))
     out = []
     for r in rows:
+        if r["symbol"] in kept:
+            out.append(kept[r["symbol"]])
+            continue
         try:
             f = issue(P.SPEC, symbol=r["symbol"], session_date=day, entry_ref=r["ref_price"],
                       issued_at=card["issued_at"])
@@ -68,17 +82,20 @@ def grade_card(get, store, *, day: date, now: int) -> Dict[str, Any]:
             out.append({"symbol": r["symbol"], "outcome": None, "note": str(exc)})
             continue
         mb = P._minute_bars(bars.get(r["symbol"]) or [])
-        m = RV.resolve_market(f, mb)
-        x = RV.resolve_execution(f, mb, cost_bps_per_side=COST_BPS)
+        m = RV.resolve_market(f, mb, complete=complete)
+        x = RV.resolve_execution(f, mb, cost_bps_per_side=COST_BPS, complete=complete)
         out.append({"symbol": r["symbol"], "outcome": m.outcome, "note": m.note,
                     "execution": x.outcome, "execution_note": x.note, "execution_pnl_usd": x.pnl_usd,
                     "auto": r.get("verdict"), "baseline": r.get("baseline_verdict"),
                     "research": r.get("verified_verdict"), "research_status": r.get("research_status"),
                     "model_prob": r.get("model_prob"),
-                    "catalyst": r.get("catalyst")})
-    store.put("edge_card_outcomes", ds, {"day": ds, "graded_at": now, "rows": out, "label": COUNTERFACTUAL,
-                                         "basis": BASIS})
-    return {"status": "graded", "rows": len(out),
+                    "catalyst": r.get("catalyst"), "resolver_version": x.resolver_version})
+    pending = sum(1 for o in out if _pending(o))
+    store.put("edge_card_outcomes", ds, {"day": ds, "graded_at": (prior or {}).get("graded_at", now),
+                                         "updated_at": now, "rows": out, "pending": pending,
+                                         "label": COUNTERFACTUAL, "basis": BASIS})
+    return {"status": "graded", "rows": len(out), "pending": pending,
+            "regraded": len(todo) if prior else 0,
             "outcomes": dict(Counter(o["outcome"] for o in out if o["outcome"])),
             "execution": dict(Counter(o["execution"] for o in out if o.get("execution")))}
 
