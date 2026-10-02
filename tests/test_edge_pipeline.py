@@ -691,6 +691,16 @@ def test_research_runs_until_the_card_deadline_not_9am(ledger, monkeypatch, hhmm
     assert P.RESEARCH_WINDOW[1] == P.CARD_WINDOW[1] == (9, 28)
 
 
+def test_research_is_stamped_with_the_real_clock_not_the_tick_start(ledger, monkeypatch):
+    """Research runs after the card inside a tick: it must be timed on the trusted clock, or research that
+    finished after a card was issued could look like it finished before (verdict() compares the two)."""
+    monkeypatch.setenv("EDGE_RESEARCH_ENABLED", "1")
+    seen = {}
+    monkeypatch.setattr(P, "research_step", lambda *a, **k: seen.update(now=k["now"]) or {"status": "nothing"})
+    P.run(FakeAlpaca(), ledger, now=ts(9, 10), clock=lambda: ts(9, 12))
+    assert seen["now"] == ts(9, 12)
+
+
 def test_the_research_queue_takes_in_movers_that_qualify_later(ledger, monkeypatch):
     rankings = {"now": ["SHOP"]}
     monkeypatch.setattr(P, "_rank_research_candidates", lambda *a, **k: list(rankings["now"]))

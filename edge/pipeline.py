@@ -264,7 +264,7 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50,
         b = S.decide("gap_baseline", signals)
         v = None
         if research_on:
-            rv = _research().verdict(store, day=day.isoformat(), symbol=sym, issued_at=now)
+            rv = _research().verdict(store, day=day.isoformat(), symbol=sym, issued_at=int(clock()))
             vsig = dict(signals)
             nr = rv.get("not_researched")
             vsig["catalyst"] = (D.Signal("catalyst", D.UNKNOWN, evidence={
@@ -908,7 +908,7 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None,
     # Research runs AFTER the card step in a tick, so a slow research call can never crowd the card;
     # what it finds serves a card built on a later tick, never one already issued.
     if within(*RESEARCH_WINDOW) and _research().enabled():
-        guarded("research", lambda: research_step(get, ledger, day=day, now=now))
+        guarded("research", lambda: research_step(get, ledger, day=day, now=int(clock()) if clock else now))
     if within(CARD_WINDOW[1], (9, 45)) and not ledger.store.get("edge_cards", ds):
         out["card_alarm"] = {"status": "error", "error": "no shadow card by 09:28 ET (see earlier card errors)"}
     # The duty reminders go out on EVERY regular trading day. The operator trades from his own
