@@ -244,8 +244,9 @@ def view(store, name: str = "summary", day: Optional[str] = None, kind: Optional
         return (T10.with_outcomes(store, d) if d else None) or {
             "note": "no Top 10 yet (built with the card, 09:05-09:28 ET)"}
     if name == "control":
-        from edge import control as CA
-        return CA.view(store, day)
+        # v2 (point-in-time) is the primary result; v1 rides along labelled exploratory.
+        from edge import control_v2 as CA2
+        return CA2.view(store, day)
     if name == "notes":
         from edge import agent_notes as AN
         return AN.recent(store, day=day, kind=kind)
@@ -261,7 +262,7 @@ def view(store, name: str = "summary", day: Optional[str] = None, kind: Optional
         return store.get("edge_probe", "latest") or {"note": "no probe stored yet"}
     if name == "universe":
         return universe(store) or {"note": "no universe snapshot yet (06:00-07:00 ET)"}
-    from edge import control as CA, scorecard as SC
+    from edge import control_v2 as CA2, scorecard as SC
     t, sc = today(store), SC.scorecard(store)
     return {
         "today": {k: t.get(k) for k in ("day", "forecasts", "baseline_forecasts", "health_banner", "note")},
@@ -272,7 +273,8 @@ def view(store, name: str = "summary", day: Optional[str] = None, kind: Optional
             "day", "movers", "executable", "caught", "recall", "labels", "coverage_note")})(misses(store)),
         "ai_scorecard": {"sessions": sc.get("sessions"),
                          **{k: (sc.get(k) or {}).get("verdict") for k in ("keyword_catalyst", "ai_research", "model")}},
-        "control_arm": CA.summary(store)["headline"],
+        "control_arm": CA2.summary(store)["headline"],
+        "control_arm_v1_exploratory": CA2.v1_exploratory(store)["headline"],
         "note": "shadow and paper only; nothing here is a trade recommendation",
     }
 

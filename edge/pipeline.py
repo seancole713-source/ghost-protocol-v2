@@ -11,7 +11,9 @@ Three steps, each idempotent (safe to re-run; a marker stops repeats):
                                   and abstentions RECORDED before the open
   16:20-20:00 ET  resolve_day     grade from consolidated minute bars:
                                   "forecast" and "simulated" records; then the
-                                  control arm grades every radar name once
+                                  control arm grades every radar name once:
+                                  v2 point-in-time, the primary (edge/control_v2.py,
+                                  docs/control_arm_v2.md), and v1 exploratory
                                   (edge/control.py, docs/control_arm_v1.md)
 
 Why the miss review waits for the next morning: this account's Polygon plan is
@@ -917,9 +919,12 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None,
         guarded("radar_close", lambda: I.close_day(ledger, day=day, now=now))
         from edge import scorecard as SC
         guarded("card_graded", lambda: SC.grade_card(get, ledger.store, day=day, now=now))
-        # The observe-all control arm (docs/control_arm_v1.md): every radar name graded once.
-        from edge import control as CA
+        # The observe-all control arm: every radar name graded once. v2 (docs/control_arm_v2.md) is
+        # the point-in-time design and the primary result; v1 (docs/control_arm_v1.md) keeps running
+        # unchanged and is reported as exploratory.
+        from edge import control as CA, control_v2 as CA2
         guarded("control", lambda: CA.grade_day(get, ledger.store, day=day, now=now))
+        guarded("control_v2", lambda: CA2.grade_day(get, ledger.store, day=day, now=now))
         if http is not None:
             guarded("paper_reconcile", lambda: _paper().reconcile(http, ledger, day=ds,
                                                                   experiments=all_specs, now=now))
@@ -1062,8 +1067,13 @@ def backtest_note(store) -> Optional[str]:
         win = bt.get("window") or []
         span = f" {win[0]}..{win[1]}" if len(win) == 2 else ""
         mean = (e.get("expectancy_usd") or {}).get("mean")
+        # A record from an older backtest version says so: v7 and earlier mixed split-adjusted
+        # daily bars with raw minute bars (EDGE-09), and versions are never pooled.
+        old = bt.get("version") != BT.BACKTEST_VERSION
         return (f"Rule's own backtest{span}: {e['wins']}/{e['filled']} wins ({e['win_rate']:.0%}) vs "
                 f"{bt.get('break_even', 0.375):.1%} needed"
-                + (f", {mean:+.2f} $/trade" if mean is not None else "") + f" -- {e.get('verdict')}")
+                + (f", {mean:+.2f} $/trade" if mean is not None else "") + f" -- {e.get('verdict')}"
+                + (f" [older {bt.get('version') or 'backtest'}, {bt.get('price_basis') or 'mixed price basis'}; "
+                   f"{BT.BACKTEST_VERSION} not run yet]" if old else ""))
     except Exception:  # noqa: BLE001 - a note, never a reason to lose the card
         return None

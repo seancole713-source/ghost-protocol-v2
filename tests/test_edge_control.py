@@ -165,7 +165,7 @@ def test_approved_and_unapproved_are_labelled_and_unapproved_never_become_picks(
     # A control row is never a forecast, a paper order or an experiment.
     assert len(seeded.scan("forecasts")) == before
     assert seeded.scan("edge_paper") == [] and seeded.scan("experiments") == []
-    day = RO.view(seeded, "control", DS)["day"]
+    day = CA.view(seeded, DS)["day"]
     assert {r["symbol"]: r["label"] for r in day["rows"]}["LOSR"] == "UNAPPROVED (control, not a pick)"
 
 
@@ -329,10 +329,16 @@ def test_the_readout_view_and_the_evening_log(seeded):
     empty = RO.view(MemoryStore(), "control")
     assert empty["day"] is None and empty["regimes"] == {}
     CA.grade_day(FakeBars(), seeded, day=DAY, now=ts(16, 25))
-    v = RO.view(seeded, "control")
+    v = CA.view(seeded)
     assert v["design_hash"] == CA.DESIGN_HASH and v["day"]["day"] == DS and v["day"]["approved"] == 1
     assert v["headline"].startswith("control arm (IEX, 1 sessions, human_25bps)")
-    assert RO.view(seeded, "summary")["control_arm"] == v["headline"]
+    # The readout's primary result is v2 (tests/test_edge_control_v2.py); v1 rides along, labelled
+    # exploratory, with its numbers unchanged.
+    ro = RO.view(seeded, "control")
+    assert ro["exploratory_v1"]["design_hash"] == CA.DESIGN_HASH
+    assert ro["exploratory_v1"]["headline"] == (
+        "exploratory (full-session approval, not point-in-time): " + v["headline"])
+    assert RO.view(seeded, "summary")["control_arm_v1_exploratory"] == ro["exploratory_v1"]["headline"]
     evening = {"day": DS, "card_graded": {"status": "graded"}}
     assert "control" in [n for n, _, _ in RO.views_to_log(seeded, evening, now=ts(16, 25))]
 

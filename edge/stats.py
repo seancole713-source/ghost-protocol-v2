@@ -160,6 +160,50 @@ def clustered_bootstrap_ci(results_by_day: Dict[str, Sequence[bool]], *, iters: 
     return lo, hi
 
 
+def clustered_diff_ci(by_day: Dict[str, Tuple[int, int, int, int]], *, iters: int = 4000, seed: int = 7,
+                      alpha: float = 0.05) -> Optional[Dict[str, Tuple[float, float]]]:
+    """Session-clustered bootstrap for two arms that share each session's market.
+
+    `by_day` is {day: (wins_a, filled_a, wins_b, filled_b)}. Whole SESSIONS are resampled with
+    replacement -- the same draw for both arms, since both traded that day's market -- and each
+    draw gives arm A's pooled win rate and the difference A - B. Returns
+    {"a": (low, high), "difference": (low, high)} at `alpha` (two-sided percentiles), or None when
+    either arm has no fills at all or fewer than half the draws hold fills in both arms. The
+    rows of one day are not independent; this interval is honestly wide when sessions are few.
+    """
+    return clustered_diff_cis(by_day, (alpha,), iters=iters, seed=seed)[alpha]
+
+
+def clustered_diff_cis(by_day: Dict[str, Tuple[int, int, int, int]], alphas: Sequence[float], *,
+                       iters: int = 4000, seed: int = 7) -> Dict[float, Optional[Dict[str, Tuple[float, float]]]]:
+    """clustered_diff_ci at several alphas from ONE set of draws: {alpha: result}."""
+    import random
+    days = [tuple(int(x) for x in v) for v in by_day.values() if v[1] or v[3]]
+    if not days or not sum(d[1] for d in days) or not sum(d[3] for d in days):
+        return {a: None for a in alphas}
+    rng = random.Random(seed)
+    a_rates, diffs = [], []
+    m = len(days)
+    for _ in range(iters):
+        ka = na = kb = nb = 0
+        for _ in range(m):
+            d = days[rng.randrange(m)]
+            ka += d[0]; na += d[1]; kb += d[2]; nb += d[3]
+        if na and nb:
+            a_rates.append(ka / na)
+            diffs.append(ka / na - kb / nb)
+    if len(diffs) < iters / 2:
+        return {a: None for a in alphas}
+    a_rates.sort()
+    diffs.sort()
+    n = len(diffs)
+
+    def pct(xs, alpha):
+        return xs[int(alpha / 2 * n)], xs[min(n - 1, int((1 - alpha / 2) * n))]
+
+    return {a: {"a": pct(a_rates, a), "difference": pct(diffs, a)} for a in alphas}
+
+
 def bonferroni_alpha(alpha: float, n_candidates: int) -> float:
     """Testing k strategies at once: each must clear alpha / k."""
     return alpha / max(1, n_candidates)
