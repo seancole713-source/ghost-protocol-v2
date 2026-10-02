@@ -19,6 +19,7 @@ def test_radar_headers_use_the_notification_wording():
     assert HTML.count("<th>Watch level</th>") >= 4
     assert HTML.count("<th>Upside reference</th>") >= 4
     assert HTML.count("<th>Invalidation level</th>") >= 2
-    assert HTML.count("<th>Setup score (unvalidated)</th>") >= 4
+    assert HTML.count("<th>Score (heuristic)</th>") >= 4             # squeeze_score column
+    assert HTML.count(">Setup score (unvalidated)</th>") >= 3       # confidence_pct (N/95) column
     assert HTML.count("P(+3% 60m) · unvalidated proxy</th>") >= 4
     assert "Not a validated probability" in HTML

@@ -3168,7 +3168,7 @@ function _renderSqueezePicks(data){
         + (stale ? 'Last session snapshot (not live) · ' : '')
         + 'Top movers · watch / reference levels now (scorecard v1, unvalidated)</div>'
         + '<table aria-label="Ghost market and performance data" class="sq-table"><thead><tr>'
-        + '<th>Stock</th><th>Watch level</th><th>Upside reference</th><th>Invalidation level</th><th>Setup score (unvalidated)</th><th title="Heuristic proxy from the squeeze scorecard. Not a validated probability; no forward record backs it.">P(+3% 60m) · unvalidated proxy</th><th>Peak</th><th>RVOL</th>'
+        + '<th>Stock</th><th>Watch level</th><th>Upside reference</th><th>Invalidation level</th><th>Score (heuristic)</th><th title="Heuristic proxy from the squeeze scorecard. Not a validated probability; no forward record backs it.">P(+3% 60m) · unvalidated proxy</th><th>Peak</th><th>RVOL</th>'
         + '</tr></thead><tbody>' + lrows + '</tbody></table>';
     } else {
       wrap.innerHTML = '<div class="sq-empty"><b>' + emptyTitle + '</b><br>' + msg + '</div>';
