@@ -4,6 +4,9 @@ from __future__ import annotations
 import json
 import logging
 import secrets
+import threading
+import time
+from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Union
 
 from mcp.ghost_server import invoke_tool, list_tools
@@ -14,23 +17,55 @@ JsonRpcMessage = Dict[str, Any]
 JsonRpcResponse = Dict[str, Any]
 
 # In-process session ids returned on initialize (Streamable HTTP convention).
-_sessions: set[str] = set()
+# SEC-02 (audit): ``initialize`` is reachable without auth on POST /mcp, so the
+# registry is bounded — entries expire after a TTL and the oldest are evicted
+# past a hard cap — and a batch may mint at most one session.
+_SESSION_TTL_S = 3600.0
+_MAX_SESSIONS = 1024
+# Upper bound on messages in one JSON-RPC batch; larger batches are rejected
+# whole with a single Invalid Request error.
+MAX_BATCH_SIZE = 32
+
+_sessions: "OrderedDict[str, float]" = OrderedDict()
+_sessions_lock = threading.Lock()
 
 
-def create_session_id() -> str:
+def _expire_sessions(now: float) -> None:
+    """Drop expired and over-cap sessions (oldest first). Caller holds the lock."""
+    cutoff = now - _SESSION_TTL_S
+    while _sessions:
+        created = next(iter(_sessions.values()))
+        if created > cutoff and len(_sessions) <= _MAX_SESSIONS:
+            break
+        _sessions.popitem(last=False)
+
+
+def create_session_id(now: Optional[float] = None) -> str:
+    now = time.monotonic() if now is None else now
     sid = secrets.token_urlsafe(16)
-    _sessions.add(sid)
+    with _sessions_lock:
+        _sessions[sid] = now
+        _expire_sessions(now)
     return sid
 
 
-def session_known(session_id: str | None) -> bool:
+def session_known(session_id: str | None, now: Optional[float] = None) -> bool:
     if not session_id:
         return False
-    return session_id in _sessions
+    now = time.monotonic() if now is None else now
+    with _sessions_lock:
+        _expire_sessions(now)
+        return session_id in _sessions
+
+
+def session_count() -> int:
+    with _sessions_lock:
+        return len(_sessions)
 
 
 def clear_sessions_for_tests() -> None:
-    _sessions.clear()
+    with _sessions_lock:
+        _sessions.clear()
 
 
 def _ok(msg_id: Any, result: Any) -> JsonRpcResponse:
@@ -107,11 +142,16 @@ def process_jsonrpc_body(body: Any) -> tuple[Optional[Union[JsonRpcResponse, Lis
     new_session: Optional[str] = None
 
     if isinstance(body, list):
+        if len(body) > MAX_BATCH_SIZE:
+            return _err(None, -32600, f"Invalid Request: batch exceeds {MAX_BATCH_SIZE} messages"), None
         responses: List[JsonRpcResponse] = []
         for item in body:
             if not isinstance(item, dict):
                 continue
-            if item.get("method") == "initialize" and item.get("id") is not None:
+            # Only one session id can be returned per HTTP response, so a
+            # batch of initialize calls mints at most one session.
+            if (new_session is None and item.get("method") == "initialize"
+                    and item.get("id") is not None):
                 new_session = create_session_id()
             out = dispatch_message(item)
             if out is not None:
