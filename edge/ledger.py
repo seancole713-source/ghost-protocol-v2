@@ -36,6 +36,35 @@ class Store(Protocol):
     def scan(self, table: str, **where: Any) -> List[Dict[str, Any]]: ...
 
 
+def put_new(store: "Store", table: str, key: str, row: Dict[str, Any]) -> Dict[str, Any]:
+    """Write `row` only if (table, key) is absent; return the row actually stored.
+
+    A frozen record is written once. Two runners (an overlapping redeploy, a lease that
+    expired mid-tick) can both read "absent" and both write; the store's atomic
+    first-writer-wins insert makes the second write a no-op instead of an overwrite.
+    A store without it (a test double) falls back to read-then-write."""
+    atomic = getattr(store, "put_new", None)
+    if callable(atomic):
+        return atomic(table, key, row)
+    existing = store.get(table, key)
+    if existing is not None:
+        return existing
+    store.put(table, key, row)
+    return dict(row)
+
+
+def put_unless_final(store: "Store", table: str, key: str, row: Dict[str, Any]) -> Dict[str, Any]:
+    """Write `row` unless the stored row's outcome is already TERMINAL; return the stored row."""
+    atomic = getattr(store, "put_unless_final", None)
+    if callable(atomic):
+        return atomic(table, key, row, final=TERMINAL)
+    existing = store.get(table, key)
+    if existing is not None and existing.get("outcome") in TERMINAL:
+        return existing
+    store.put(table, key, row)
+    return dict(row)
+
+
 OUTSIDE_RULE = "OUTSIDE_RULE"   # a broker fill the rule's own record never took; shown, not counted
 
 
@@ -110,6 +139,17 @@ class MemoryStore:
     def put(self, table, key, row):
         self._t.setdefault(table, {})[key] = dict(row)
 
+    def put_new(self, table, key, row):
+        cur = self._t.setdefault(table, {}).setdefault(key, dict(row))
+        return dict(cur)
+
+    def put_unless_final(self, table, key, row, *, final):
+        rows = self._t.setdefault(table, {})
+        cur = rows.get(key)
+        if cur is None or cur.get("outcome") not in final:
+            rows[key] = dict(row)
+        return dict(rows[key])
+
     def claim(self, name, *, owner, ttl_s, now=None):
         import time as _time
         now = int(now if now is not None else _time.time())
@@ -152,8 +192,12 @@ class Ledger:
             return existing
         row = {"experiment_id": eid, "spec_hash": h, "spec": spec.canonical(),
                "registered_at": int(now), "status": "active"}
-        self.store.put("experiments", eid, row)
-        return row
+        stored = put_new(self.store, "experiments", eid, row)
+        if stored["spec_hash"] != h:      # another runner registered a different spec first
+            raise FrozenSpecError(
+                f"{eid} is frozen (hash {stored['spec_hash'][:12]}); "
+                f"register the change as v{spec.version + 1}")
+        return stored
 
     def _spec_hash(self, eid: str) -> str:
         row = self.store.get("experiments", eid)
@@ -170,14 +214,12 @@ class Ledger:
         if f.issued_at > int(now):
             raise ContractError("issued_at is in the future relative to the recording time")
         row = {**f.to_dict(), "recorded_at": int(now)}
-        existing = self.store.get("forecasts", f.forecast_id)
-        if existing:
-            same = {k: v for k, v in existing.items() if k != "recorded_at"} == f.to_dict()
+        stored = put_new(self.store, "forecasts", f.forecast_id, row)
+        if stored != row:     # already recorded -- by an earlier run or a concurrent runner
+            same = {k: v for k, v in stored.items() if k != "recorded_at"} == f.to_dict()
             if not same:
                 raise ContractError("a different forecast already exists for this symbol and session")
-            return existing
-        self.store.put("forecasts", f.forecast_id, row)
-        return row
+        return stored
 
     def abstain(self, *, experiment_id: str, symbol: str, session_date: str,
                 reasons: List[str], now: int) -> Dict[str, Any]:
@@ -186,7 +228,7 @@ class Ledger:
         row = {"key": key, "experiment_id": experiment_id, "symbol": symbol.upper(),
                "session_date": session_date, "reasons": list(reasons), "recorded_at": int(now)}
         if not self.store.get("abstentions", key):
-            self.store.put("abstentions", key, row)
+            put_new(self.store, "abstentions", key, row)
         return row
 
     # --------------------------------------------------------------- outcomes
@@ -208,8 +250,12 @@ class Ledger:
             raise ContractError(f"outcome already final ({prior['outcome']}); it cannot be rewritten")
         row = {"forecast_id": forecast_id, "record": record, **asdict(r),
                "flags": list(r.flags), "settled_at": int(now)}
-        self.store.put("outcomes", key, row)
-        return row
+        stored = put_unless_final(self.store, "outcomes", key, row)
+        if stored != row and stored.get("outcome") in TERMINAL and (
+                stored["outcome"] != r.outcome or stored.get("exit_price") != r.exit_price):
+            # a concurrent runner settled this record first; its final outcome stands
+            raise ContractError(f"outcome already final ({stored['outcome']}); it cannot be rewritten")
+        return stored
 
     def exclude(self, forecast_id: str, *, reason: str, now: int) -> Dict[str, Any]:
         """Remove a forecast from the counted sample -- with a reason, on the record.
@@ -228,8 +274,7 @@ class Ledger:
                 raise ContractError("a settled outcome cannot be excluded")
         row = {"forecast_id": forecast_id, "outcome": EXCLUDED, "reason": reason,
                "excluded_at": int(now)}
-        self.store.put("exclusions", forecast_id, row)
-        return row
+        return put_new(self.store, "exclusions", forecast_id, row)
 
     # ----------------------------------------------------------------- report
     def report(self, experiment_id: str) -> Dict[str, Any]:
