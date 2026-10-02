@@ -2974,8 +2974,10 @@ async def _latency_slo_mw(request: Request, call_next):
     try:
         path = request.url.path
         if not any(path.startswith(p) for p in _SLO_EXCLUDE_PREFIXES):
-            from core.latency_slo import record
-            record(path, elapsed_ms)
+            from core.latency_slo import record, route_label
+            # SEC-01: store the route TEMPLATE, never the raw path — the raw
+            # /mcp/<token> path carries a credential and is client-chosen.
+            record(route_label(request.scope), elapsed_ms)
     except Exception:
         pass
     return resp

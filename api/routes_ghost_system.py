@@ -1163,11 +1163,27 @@ def system_degraded_endpoint():
 
 
 @router.get("/api/system/latency")
-def system_latency_endpoint():
-    """Request latency SLOs — p50/p95/p99 per route over 5-min window. P3 audit."""
+def system_latency_endpoint(request: Request, x_cron_secret: str = Header(default="")):
+    """Request latency SLOs — p50/p95/p99 over a 5-min window. P3 audit.
+
+    SEC-01: the overall summary stays public; the per-route breakdown is
+    operator detail and needs the admin cookie or the cron secret.
+    """
     try:
         from core.latency_slo import all_stats, slowest_routes
+        from wolf_app import _ADMIN_COOKIE, _admin_token_valid, _cron_ok  # late import — shared state
         stats = all_stats()
+        detailed = (
+            _cron_ok(x_cron_secret, strict=True)
+            or _admin_token_valid(request.cookies.get(_ADMIN_COOKIE, ""))
+        )
+        if not detailed:
+            return {
+                "ok": True,
+                "overall": stats["overall"],
+                "window_sec": stats["window_sec"],
+                "detail": "per-route breakdown requires admin login or cron secret",
+            }
         return {
             "ok": True,
             **stats,
