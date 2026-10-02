@@ -19,6 +19,10 @@ LOGGER = logging.getLogger("ghost.performance_log")
 
 _RETENTION_DAYS = max(7, int(os.getenv("GHOST_PERF_RETENTION_DAYS", "90")))
 _PERF_CYCLE_LOCK_ID = 8723492
+# The write path runs the schema DDL once per process, not every cycle: each
+# ALTER TABLE ... ADD COLUMN IF NOT EXISTS takes an ACCESS EXCLUSIVE lock on a
+# multi-GB table, and the historical backfill UPDATE is a full sequential scan.
+_PERF_TABLES_READY = False
 
 
 def perf_log_enabled() -> bool:
@@ -27,7 +31,7 @@ def perf_log_enabled() -> bool:
     )
 
 
-def ensure_perf_tables(cur) -> None:
+def ensure_perf_tables(cur, *, backfill: bool = True) -> None:
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS ghost_perf_cycles (
@@ -97,10 +101,12 @@ def ensure_perf_tables(cur) -> None:
             f"ALTER TABLE ghost_perf_symbol_evals ADD COLUMN IF NOT EXISTS {column} FLOAT"
         )
     # confidence is the only stage safely reconstructible for historical rows.
-    cur.execute(
-        "UPDATE ghost_perf_symbol_evals SET confidence_final=confidence "
-        "WHERE confidence_final IS NULL AND confidence IS NOT NULL"
-    )
+    # Boot-time only (core.db init): unindexed, so it scans the whole table.
+    if backfill:
+        cur.execute(
+            "UPDATE ghost_perf_symbol_evals SET confidence_final=confidence "
+            "WHERE confidence_final IS NULL AND confidence IS NOT NULL"
+        )
     cur.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_perf_evals_symbol_ts
@@ -203,8 +209,13 @@ def symbol_eval_from_scan(
         "prob_model_raw": scores.get("prob_model_raw"),
         "prob_train_calibrated": scores.get("prob_train_calibrated"),
         "prob_live_recalibrated": scores.get("prob_live_recalibrated"),
+        # The engine sets scores["confidence_final"]=None on non-fired rows; write
+        # the value the schema backfill would set (confidence) instead of NULL, so a
+        # row is written once rather than inserted and then rewritten by the backfill.
         "confidence_final": (
-            pick.get("confidence") if pick else scores.get("confidence_final", scores.get("confidence"))
+            pick.get("confidence") if pick else (
+                scores.get("confidence_final") if scores.get("confidence_final") is not None
+                else scores.get("confidence"))
         ),
         "confidence_floor": scores.get("confidence_floor"),
         "min_win_proba": meta.get("min_win_proba"),
@@ -248,7 +259,9 @@ def log_prediction_cycle(
     # prediction cycles are process-guarded, but this lock is the database-level
     # backstop that prevents concurrent performance writers from deadlocking.
     cur.execute("SELECT pg_advisory_xact_lock(%s)", (_PERF_CYCLE_LOCK_ID,))
-    ensure_perf_tables(cur)
+    global _PERF_TABLES_READY
+    if not _PERF_TABLES_READY:
+        ensure_perf_tables(cur, backfill=False)
     now = int(time.time())
     cur.execute(
         """
@@ -346,6 +359,7 @@ def log_prediction_cycle(
         skip_ensure=True,
     )
     maybe_prune(cur)
+    _PERF_TABLES_READY = True
     return cycle_id
 
 
