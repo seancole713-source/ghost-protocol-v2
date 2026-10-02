@@ -58,7 +58,7 @@ def test_notes_read_back_newest_first_and_filter_by_day_and_kind():
 
 def _rows(n, wins, **stamp):
     return [{"symbol": f"S{i}", "outcome": "WIN" if i < wins else "LOSS",
-             "execution": "WIN" if i < wins else "LOSS", "baseline": "ELIGIBLE", **stamp}
+             "execution": "WIN" if i < wins else "LOSS", "baseline": "ELIGIBLE", "resolver_version": "resolver_v2", **stamp}
             for i in range(n)]
 
 
@@ -93,9 +93,10 @@ def test_the_scorecard_grades_the_order_with_costs_and_never_pools_the_frictionl
         {"symbol": "OLD", "outcome": "WIN", "baseline": "ELIGIBLE", "auto": "ELIGIBLE"}]})
     store.put("edge_card_outcomes", "2026-09-23", {"day": "2026-09-23", "rows": [
         # the forecast touched the target, but the order never filled inside its limit
-        {"symbol": "GAP", "outcome": "WIN", "execution": "NO_FILL", "baseline": "ELIGIBLE", "auto": "ELIGIBLE"},
+        {"symbol": "GAP", "outcome": "WIN", "execution": "NO_FILL", "baseline": "ELIGIBLE", "auto": "ELIGIBLE",
+         "resolver_version": "resolver_v2"},
         {"symbol": "OK", "outcome": "WIN", "execution": "WIN", "execution_pnl_usd": 47.9,
-         "baseline": "ELIGIBLE", "auto": "ELIGIBLE"}]})
+         "baseline": "ELIGIBLE", "auto": "ELIGIBLE", "resolver_version": "resolver_v2"}]})
     sc = SC.scorecard(store)
     base = sc["base_rate_all_gappers"]
     assert (base["candidates"], base["decided"], base["wins"], base["no_fill"]) == (2, 1, 1, 1)

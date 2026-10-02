@@ -15,7 +15,10 @@ stop-limit entry, the conservative fill bar and 10 bps a side), and read against
 break-even AFTER those costs -- not the frictionless forecast outcome against the
 no-cost 37.5% (audit 2026-09-25 U12). The forecast outcome is kept on every row
 ("outcome") for reference. Rows graded before the execution grade existed carry no
-"execution" and are counted, never pooled.
+"execution" and are counted, never pooled. Rows graded by different resolver versions are never
+pooled either (audit NEW-02): every comparison is made on the current resolver's rows; a row
+without "resolver_version" was graded by resolver_v1 and sits in its own labelled cohort
+("other_resolvers").
 
 Then the question is asked directly, on the same stocks: among the gap-qualified
 names, did the ones research APPROVED do better than the ones it REJECTED?
@@ -33,6 +36,8 @@ from typing import Any, Dict, List, Optional
 
 from edge import research as RS, resolver as RV
 from edge.contracts import ContractError, issue
+from edge.ledger import COHORT_RULE, resolver_label, resolver_of
+from edge.resolver import RESOLVER_VERSION
 from edge.research_worker import not_researched_reason
 from edge.stats import wilson
 from shared.redaction import redact
@@ -168,21 +173,19 @@ def break_even_after_costs() -> float:
     return round(CA.break_even_after_costs(COST_BPS, spec=SPEC), 4)
 
 
-def scorecard(store) -> Dict[str, Any]:
-    days = sorted(store.scan("edge_card_outcomes"), key=lambda d: d["day"])
-    # Graded as the order would have traded (U12); legacy rows with only a forecast outcome are
-    # counted and left out -- two bases are never pooled.
-    legacy = sum(1 for d in days for r in d.get("rows") or [] if r.get("outcome") and not r.get("execution"))
-    rows = [r for d in days for r in d.get("rows") or [] if r.get("execution")]
+def _comparisons(store, days: List[Dict[str, Any]], cohort: str) -> Dict[str, Any]:
+    """Every comparison, on the execution-graded rows of ONE resolver cohort only (NEW-02).
+    A row graded before resolver_v2 carries no resolver_version and is resolver_v1 (legacy)."""
+    def graded(d: Dict[str, Any]) -> List[Dict[str, Any]]:
+        return [r for r in d.get("rows") or [] if r.get("execution") and resolver_of(r) == cohort]
+
+    rows = [r for d in days for r in graded(d)]
     gaps = [r for r in rows if r.get("baseline") == "ELIGIBLE"]    # gap-qualified, liquid, priced
     # AI research is judged only on rows it actually looked at: a failed search is neither side.
-    gap_days = [(d["day"], r) for d in days for r in d.get("rows") or []
-                if r.get("execution") and r.get("baseline") == "ELIGIBLE"]
+    gap_days = [(d["day"], r) for d in days for r in graded(d) if r.get("baseline") == "ELIGIBLE"]
     researched = [r for dd, r in gap_days if not _not_researched(store, dd, r)]
     out: Dict[str, Any] = {
-        "label": COUNTERFACTUAL, "sessions": len(days), "basis": BASIS,
-        "rows_without_execution_grade": legacy,
-        "window": [days[0]["day"], days[-1]["day"]] if days else None,
+        "graded_rows": len(rows), "graded_sessions": len({d["day"] for d in days if graded(d)}),
         "base_rate_all_gappers": _rate(gaps),
         "keyword_catalyst": _compare("the keyword catalyst filter",
                                      [r for r in gaps if r.get("auto") == "ELIGIBLE"],
@@ -191,17 +194,13 @@ def scorecard(store) -> Dict[str, Any]:
                                    [r for r in researched if r.get("research") == "ELIGIBLE"],
                                    [r for r in researched if r.get("research") == "REJECTED"]),
                         "not_researched": len(gap_days) - len(researched)},
-        "research_quality": research_quality(store),
-        "break_even": break_even_after_costs(),
-        "break_even_before_costs": 0.375,
     }
     top10 = store.scan("edge_top10")
     top10_days = {t["day"] for t in top10 if t.get("day")}
     picks = {(t["day"], x["symbol"]) for t in top10 for x in t.get("list") or []}
     if picks:
         # Only sessions that HAD a Top 10: a day before the list existed is not "not picked".
-        tagged = [(d["day"], r) for d in days if d["day"] in top10_days
-                  for r in d.get("rows") or [] if r.get("execution")]
+        tagged = [(d["day"], r) for d in days if d["day"] in top10_days for r in graded(d)]
         out["top10"] = {**_compare("the Top 10 quality ranking",
                                    [r for dd, r in tagged if (dd, r["symbol"]) in picks],
                                    [r for dd, r in tagged if (dd, r["symbol"]) not in picks]),
@@ -211,6 +210,32 @@ def scorecard(store) -> Dict[str, Any]:
         out["model"] = _compare("the model (prob >= 0.40)",
                                 [r for r in scored if r["model_prob"] >= 0.40],
                                 [r for r in scored if r["model_prob"] < 0.40])
+    return out
+
+
+def scorecard(store) -> Dict[str, Any]:
+    days = sorted(store.scan("edge_card_outcomes"), key=lambda d: d["day"])
+    # Graded as the order would have traded (U12); legacy rows with only a forecast outcome are
+    # counted and left out -- two bases are never pooled.
+    legacy = sum(1 for d in days for r in d.get("rows") or [] if r.get("outcome") and not r.get("execution"))
+    # Resolver versions are never pooled either (NEW-02): the headline comparisons are the current
+    # resolver's rows; every older cohort is reported beside them, labelled.
+    cohorts = {resolver_of(r) for d in days for r in d.get("rows") or [] if r.get("execution")}
+    out: Dict[str, Any] = {
+        "label": COUNTERFACTUAL, "sessions": len(days), "basis": BASIS,
+        "rows_without_execution_grade": legacy,
+        "window": [days[0]["day"], days[-1]["day"]] if days else None,
+        "resolver_version": RESOLVER_VERSION, "resolver_label": resolver_label(RESOLVER_VERSION),
+        "cohort_rule": COHORT_RULE,
+        **_comparisons(store, days, RESOLVER_VERSION),
+        "research_quality": research_quality(store),
+        "break_even": break_even_after_costs(),
+        "break_even_before_costs": 0.375,
+    }
+    older = sorted(cohorts - {RESOLVER_VERSION})
+    if older:
+        out["other_resolvers"] = {v: {"label": resolver_label(v), "headline": False,
+                                      **_comparisons(store, days, v)} for v in older}
     if not days:
         out["note"] = "no graded cards yet: the first is graded after 16:20 ET on the first card day"
     return out

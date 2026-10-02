@@ -27,7 +27,7 @@ from edge import stats
 from edge.contracts import (
     COUNTED, EXCLUDED, NO_FILL, TERMINAL, WIN, ContractError, ExperimentSpec, Forecast, FrozenSpecError,
 )
-from edge.resolver import Resolution
+from edge.resolver import RESOLVER_VERSION, Resolution
 
 
 class Store(Protocol):
@@ -66,6 +66,57 @@ def put_unless_final(store: "Store", table: str, key: str, row: Dict[str, Any]) 
 
 
 OUTSIDE_RULE = "OUTSIDE_RULE"   # a broker fill the rule's own record never took; shown, not counted
+
+# Resolver-version cohorts (docs/resolver_versions.md, audit NEW-02). An outcome stored without
+# `resolver_version` was graded by resolver_v1. Cohorts are never pooled: every headline record,
+# and everything that reads it (promotion, retirement, calibration), is the CURRENT resolver's
+# cohort inside the current feed regime; older cohorts are shown beside it, labelled.
+LEGACY_RESOLVER = "resolver_v1"
+RESOLVER_LABELS = {
+    "resolver_v1": ("resolver_v1 (legacy: fill-bar target touches may be optimistic; "
+                    "missing data finalized as NO_FILL)"),
+    "resolver_v2": ("resolver_v2 (current: a fill-bar target touch counts only when the fill provably "
+                    "came first; missing entry-window data stays UNRESOLVED)"),
+}
+COHORT_RULE = ("one resolver version and one feed regime per record: the headline is the current "
+               f"resolver ({RESOLVER_VERSION}) in the current feed regime; other cohorts are shown "
+               "beside it, never pooled into it")
+GRADED_RECORDS = ("forecast", "simulated")     # judged by the bar resolver; "actual" is the broker's
+
+
+def resolver_of(outcome: Optional[Dict[str, Any]]) -> str:
+    """The resolver version that graded a stored outcome row (or a card grade): its own tag, else
+    resolver_v1 -- every row written before versioning existed. Mirrors Ledger.feed_of."""
+    return (outcome or {}).get("resolver_version") or LEGACY_RESOLVER
+
+
+def resolver_label(version: str) -> str:
+    """A cohort as a reader should see it, its known biases included."""
+    if version in RESOLVER_LABELS:
+        return RESOLVER_LABELS[version]
+    parts = version.split("+")
+    if len(parts) > 1:
+        return ("mixed: " + " / ".join(RESOLVER_LABELS.get(p, p) for p in parts)
+                + " -- this forecast's records were finalized by different resolvers")
+    return version
+
+
+def resolver_cohort(store: "Store", f: Dict[str, Any]) -> str:
+    """The resolver cohort a forecast belongs to, from its FINAL resolver-graded records.
+
+    A record not final yet (pending, UNRESOLVED) will be graded by the current resolver, so a
+    forecast with no final record is in the current cohort. One whose forecast and simulated
+    records were finalized by different versions is a "mixed" cohort of its own (never the
+    current one). The broker's "actual" record is not a resolver grade; it follows its forecast's
+    cohort, so all three records of a cohort describe the same forecasts."""
+    versions = set()
+    for rec in GRADED_RECORDS:
+        o = store.get("outcomes", f"{f['forecast_id']}|{rec}")
+        if o and o.get("outcome") in TERMINAL:
+            versions.add(resolver_of(o))
+    if not versions:
+        return RESOLVER_VERSION
+    return "+".join(sorted(versions))
 
 
 def _iso_epoch(s: Any) -> Optional[int]:
@@ -289,25 +340,58 @@ class Ledger:
         # IEX and SIP forecasts are different data regimes and are never pooled: the headline
         # records (and everything that reads them, promotion included) count only the current
         # regime -- SIP as soon as one SIP forecast exists; the other regime is shown beside it.
+        # Inside a regime, resolver versions are never pooled either (audit NEW-02): the headline
+        # is the CURRENT resolver's cohort; older cohorts sit under other_resolvers, labelled.
         by_feed: Dict[str, List[Dict[str, Any]]] = {}
         cards: Dict[str, Any] = {}
         for f in live:
             by_feed.setdefault(self.feed_of(f, cards), []).append(f)
         regime = "sip" if "sip" in by_feed else "iex"
+        in_regime = by_feed.get(regime, [])
+        by_res = self._by_resolver(in_regime)
+        current = by_res.pop(RESOLVER_VERSION, [])
         base = {
             "experiment_id": experiment_id, "spec_hash": spec_row["spec_hash"],
             "forecasts": len(forecasts), "excluded": len(excluded),
             "abstentions": len(abstentions), "feed_regime": regime,
-            "forecasts_in_regime": len(by_feed.get(regime, [])),
-            "records": {rec: self._record_report(spec_row, by_feed.get(regime, []), rec)
-                        for rec in self.RECORDS},
+            "forecasts_in_regime": len(in_regime),
+            "resolver_version": RESOLVER_VERSION, "resolver_label": resolver_label(RESOLVER_VERSION),
+            "forecasts_in_cohort": len(current), "cohort_rule": COHORT_RULE,
+            "records": {rec: self._record_report(spec_row, current, rec) for rec in self.RECORDS},
         }
-        others = {feed: {rec: self._record_report(spec_row, fs, rec) for rec in self.RECORDS}
-                  for feed, fs in by_feed.items() if feed != regime}
+        if by_res:
+            base["other_resolvers"] = self._cohorts(spec_row, by_res)
+        others: Dict[str, Any] = {}
+        for feed, fs in by_feed.items():
+            if feed == regime:
+                continue
+            res = self._by_resolver(fs)
+            cur = res.pop(RESOLVER_VERSION, [])
+            others[feed] = {rec: self._record_report(spec_row, cur, rec) for rec in self.RECORDS}
+            if res:
+                others[feed]["other_resolvers"] = self._cohorts(spec_row, res)
         if others:
             base["other_regimes"] = others
         base.update(base["records"]["simulated"])     # legacy flat view = simulated
         return base
+
+    resolver_of = staticmethod(resolver_of)
+
+    def cohort_of(self, f: Dict[str, Any]) -> str:
+        """The resolver cohort a forecast belongs to (see resolver_cohort)."""
+        return resolver_cohort(self.store, f)
+
+    def _by_resolver(self, forecasts: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+        out: Dict[str, List[Dict[str, Any]]] = {}
+        for f in forecasts:
+            out.setdefault(self.cohort_of(f), []).append(f)
+        return out
+
+    def _cohorts(self, spec_row: Dict[str, Any], by_res: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Any]:
+        """Non-current resolver cohorts: each reported on its own, labelled, never in a headline."""
+        return {v: {"label": resolver_label(v), "forecasts": len(fs), "headline": False,
+                    "records": {rec: self._record_report(spec_row, fs, rec) for rec in self.RECORDS}}
+                for v, fs in sorted(by_res.items())}
 
     def feed_of(self, f: Dict[str, Any], cards: Optional[Dict[str, Any]] = None) -> str:
         """The live data feed a forecast was issued on: its own evidence, else its day's card,

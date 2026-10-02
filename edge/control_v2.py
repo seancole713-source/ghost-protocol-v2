@@ -195,7 +195,7 @@ def grade_day(get, store, *, day: date, now: int) -> Dict[str, Any]:
         else:
             from edge import feeds as FD
             feed = FD.live_feed(get, store, now=now)
-    kept = {r["symbol"]: r for r in (prior or {}).get("rows") or [] if r.get("arms")}
+    kept = V1.tag_kept_rows(prior, {r["symbol"]: r for r in (prior or {}).get("rows") or [] if r.get("arms")})
     todo = sorted({str(it["symbol"]).upper() for it in radar} - set(kept))
     bars, bad = V1._fetch(get, todo, day, feed) if todo else ({}, [])
     rows = []
@@ -211,6 +211,7 @@ def grade_day(get, store, *, day: date, now: int) -> Dict[str, Any]:
             row.update({"data": DATA_TRUNCATED, "arms": None})
         else:
             row.update(grade_row(sym, day, int(it["detected_at"]), appr.get(sym) or [], bars.get(sym) or []))
+            row["resolver_version"] = V1.RESOLVER_VERSION
         rows.append(row)
     complete = not bad
     store.put("edge_control_v2", ds, {**base, "feed": feed, "complete": complete, "truncated": bad, "rows": rows})
@@ -282,16 +283,34 @@ def evaluate(variant: str, a: Dict[str, Any], u: Dict[str, Any],
 
 
 def summary(store) -> Dict[str, Any]:
-    """Approved vs unapproved comparisons, per feed regime (never pooled) and variant, cumulative."""
+    """Approved vs unapproved comparisons, per feed regime (never pooled) and variant, cumulative.
+
+    Resolver versions are never pooled either (audit NEW-02): `regimes`, the headline and every
+    decision read only rows graded by the current resolver; each older cohort is reported under
+    `other_resolvers`, labelled legacy. The frozen design and its criteria are untouched."""
     days = sorted(store.scan("edge_control_v2"), key=lambda d: d.get("day") or "")
+    cohorts = V1.resolver_cohorts(days, lambda r: r.get("arms"))
+    current = V1.current_regime(cohorts)
+    out = _regimes(cohorts.pop(V1.RESOLVER_VERSION, []))
+    base = {"design_version": DESIGN["version"], "design_hash": DESIGN_HASH, "primary": True,
+            "break_even": DESIGN["break_even"], "min_approved_fills": DESIGN["min_approved_fills"],
+            "alpha_per_variant": round(DESIGN["alpha"] / DESIGN["tests"], 4),
+            "hypothesis": DESIGN["hypothesis"], "success": DESIGN["success"], "kill": DESIGN["kill"],
+            "intervals": DESIGN["intervals"], "days": len(days), "current_regime": current,
+            "resolver_version": V1.RESOLVER_VERSION, "regimes": out,
+            "headline": headline(out, current), "label": LABEL}
+    if cohorts:
+        base["other_resolvers"] = V1.legacy_cohorts(cohorts, _regimes)
+    return base
+
+
+def _regimes(pairs: List[Tuple[str, Dict[str, Any]]]) -> Dict[str, Any]:
+    """{feed: per-variant comparison and decision} for one resolver cohort's (day, row) pairs."""
     regimes: Dict[str, Dict[str, Any]] = {}
-    for d in days:
-        for r in d.get("rows") or []:
-            if not r.get("arms"):
-                continue
-            g = regimes.setdefault(r.get("feed") or "iex", {"days": set(), "rows": []})
-            g["days"].add(d["day"])
-            g["rows"].append((d["day"], r))
+    for day, r in pairs:
+        g = regimes.setdefault(r.get("feed") or "iex", {"days": set(), "rows": []})
+        g["days"].add(day)
+        g["rows"].append((day, r))
     out: Dict[str, Any] = {}
     for feed, g in sorted(regimes.items()):
         per = {}
@@ -322,19 +341,17 @@ def summary(store) -> Dict[str, Any]:
                      "graded_names": len(rows),
                      "approved_names": sum(1 for r in rows if r["arms"].get(APPROVED)),
                      "decision": overall, "variants": per}
-    current = "sip" if "sip" in out else ("iex" if "iex" in out else None)
-    return {"design_version": DESIGN["version"], "design_hash": DESIGN_HASH, "primary": True,
-            "break_even": DESIGN["break_even"], "min_approved_fills": DESIGN["min_approved_fills"],
-            "alpha_per_variant": round(DESIGN["alpha"] / DESIGN["tests"], 4),
-            "hypothesis": DESIGN["hypothesis"], "success": DESIGN["success"], "kill": DESIGN["kill"],
-            "intervals": DESIGN["intervals"], "days": len(days), "current_regime": current, "regimes": out,
-            "headline": headline(out, current), "label": LABEL}
+    return out
 
 
 def headline(regimes: Dict[str, Any], current: Optional[str]) -> str:
     """One line for the evening report."""
     if not current:
         return "control arm v2 (point-in-time): nothing graded yet (runs after the close, 16:20-20:00 ET)"
+    if current not in regimes:
+        return (f"control arm v2 (point-in-time; {current.upper()}): nothing graded under "
+                f"{V1.RESOLVER_VERSION} yet; older resolver cohorts are shown separately, labelled "
+                "legacy, and decide nothing")
     g = regimes[current]
     v = DESIGN["headline_variant"]
     p = g["variants"][v]
@@ -353,8 +370,15 @@ def headline(regimes: Dict[str, Any], current: Optional[str]) -> str:
 def v1_exploratory(store) -> Dict[str, Any]:
     """v1, unchanged numbers, labelled for what it is."""
     s = V1.summary(store)
-    return {"label": V1_LABEL, "design_version": s["design_version"], "design_hash": s["design_hash"],
-            "headline": f"{V1_LABEL}: {s['headline']}",
+    out = {"label": V1_LABEL, "design_version": s["design_version"], "design_hash": s["design_hash"],
+           "resolver_version": s["resolver_version"],
+           # older resolver cohorts: counted, labelled, never in the regimes below (NEW-02)
+           **({"other_resolvers": {v: {"label": c["label"], "days": c["days"],
+                                       "regimes": {f: {"sessions": g["sessions"], "graded_names": g["graded_names"]}
+                                                   for f, g in c["regimes"].items()}}
+                                   for v, c in s["other_resolvers"].items()}}
+              if s.get("other_resolvers") else {})}
+    return {**out, "headline": f"{V1_LABEL}: {s['headline']}",
             "regimes": {f: {"sessions": g["sessions"], "decision": g["decision"],
                             "variants": {v: {"approved": p["approved"]["win_rate"],
                                              "approved_filled": p["approved"]["filled"],

@@ -104,8 +104,13 @@ def with_outcomes(store, day: str) -> Optional[Dict[str, Any]]:
     by_sym = {o["symbol"]: o for o in (graded or {}).get("rows") or []}
     out = dict(t)
     # outcome = the frictionless forecast grade; execution = the order as written, with costs (U12).
+    # resolver_version = which resolver graded it; a grade without one is resolver_v1 (NEW-02).
+    from edge.ledger import resolver_of
     out["list"] = [{**x, "outcome": (by_sym.get(x["symbol"]) or {}).get("outcome"),
-                    "execution": (by_sym.get(x["symbol"]) or {}).get("execution")} for x in t.get("list") or []]
+                    "execution": (by_sym.get(x["symbol"]) or {}).get("execution"),
+                    "resolver_version": (resolver_of(by_sym[x["symbol"]])
+                                         if (by_sym.get(x["symbol"]) or {}).get("outcome") else None)}
+                   for x in t.get("list") or []]
     out["graded"] = graded is not None
     return out
 

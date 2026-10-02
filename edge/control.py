@@ -91,6 +91,38 @@ DESIGN = {
 DESIGN_HASH = hashlib.sha256(json.dumps(DESIGN, sort_keys=True).encode()).hexdigest()[:16]
 LABEL = ("control arm: every radar name graded at the intraday specs' frozen levels, approved or "
          "not; UNAPPROVED rows are a control, never a pick, never traded")
+LEGACY_NOTE = "legacy cohort: shown for reference, never the headline and never the decision"
+
+
+def row_resolver(day_rec: Dict[str, Any], row: Dict[str, Any]) -> str:
+    """The resolver version that graded a control row (audit NEW-02): the row's own tag, else its
+    day's, else resolver_v1 -- a day graded before resolver_version was recorded. Used by both
+    control arms' readouts; it selects rows, it never re-grades them."""
+    return row.get("resolver_version") or day_rec.get("resolver_version") or "resolver_v1"
+
+
+def resolver_cohorts(days: List[Dict[str, Any]], has_result) -> Dict[str, List[Tuple[str, Dict[str, Any]]]]:
+    """{resolver version: [(day, row)]} over every graded row. Cohorts are never pooled."""
+    out: Dict[str, List[Tuple[str, Dict[str, Any]]]] = {}
+    for d in days:
+        for r in d.get("rows") or []:
+            if has_result(r):
+                out.setdefault(row_resolver(d, r), []).append((d["day"], r))
+    return out
+
+
+def current_regime(cohorts: Dict[str, List[Tuple[str, Dict[str, Any]]]]) -> Optional[str]:
+    """The current feed regime, as before: SIP once any graded row is SIP (of any cohort)."""
+    feeds = {r.get("feed") or "iex" for pairs in cohorts.values() for _, r in pairs}
+    return "sip" if "sip" in feeds else ("iex" if "iex" in feeds else None)
+
+
+def tag_kept_rows(prior: Optional[Dict[str, Any]], kept: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """A day re-graded for missing data keeps its graded rows exactly as written; each one that
+    has no resolver tag is labelled with the version its day recorded when it was graded (none =
+    resolver_v1), so the new day-level tag can never relabel an older row."""
+    version = row_resolver(prior or {}, {})
+    return {s: (r if r.get("resolver_version") else {**r, "resolver_version": version}) for s, r in kept.items()}
 
 
 # ------------------------------------------------------------------ helpers
@@ -233,7 +265,7 @@ def grade_day(get, store, *, day: date, now: int) -> Dict[str, Any]:
     else:
         from edge import feeds as FD
         feed = FD.live_feed(get, store, now=now)
-    kept = {r["symbol"]: r for r in (prior or {}).get("rows") or [] if r.get("variants")}
+    kept = tag_kept_rows(prior, {r["symbol"]: r for r in (prior or {}).get("rows") or [] if r.get("variants")})
     todo = sorted({str(it["symbol"]).upper() for it in radar} - set(kept))
     bars, bad = _fetch(get, todo, day, feed) if todo else ({}, [])
     rows = []
@@ -252,6 +284,7 @@ def grade_day(get, store, *, day: date, now: int) -> Dict[str, Any]:
             row.update({"data": DATA_TRUNCATED, "variants": None})
         else:
             row.update(grade_symbol(sym, day, int(it["detected_at"]), bars.get(sym) or []))
+            row["resolver_version"] = RESOLVER_VERSION
         rows.append(row)
     complete = not bad
     store.put("edge_control", ds, {"day": ds, "graded_at": now, "feed": feed, "design_version": DESIGN["version"],
@@ -316,16 +349,40 @@ def evaluate(variant: str, a: Dict[str, Any], u: Dict[str, Any]) -> Dict[str, An
 
 
 def summary(store) -> Dict[str, Any]:
-    """Approved vs unapproved, per feed regime (never pooled) and per variant, cumulative."""
+    """Approved vs unapproved, per feed regime (never pooled) and per variant, cumulative.
+
+    Resolver versions are never pooled either (audit NEW-02): `regimes`, the headline and every
+    decision read only rows graded by the current resolver; each older cohort is reported under
+    `other_resolvers`, labelled legacy. The frozen design and its criteria are untouched."""
     days = sorted(store.scan("edge_control"), key=lambda d: d.get("day") or "")
+    cohorts = resolver_cohorts(days, lambda r: r.get("variants"))
+    current = current_regime(cohorts)
+    out = _regimes(cohorts.pop(RESOLVER_VERSION, []))
+    base = {"design_version": DESIGN["version"], "design_hash": DESIGN_HASH,
+            "break_even": DESIGN["break_even"], "min_approved_fills": DESIGN["min_approved_fills"],
+            "alpha_per_variant": round(DESIGN["alpha"] / DESIGN["tests"], 4),
+            "hypothesis": DESIGN["hypothesis"], "success": DESIGN["success"], "kill": DESIGN["kill"],
+            "days": len(days), "current_regime": current, "resolver_version": RESOLVER_VERSION,
+            "regimes": out, "headline": headline(out, current), "label": LABEL}
+    if cohorts:
+        base["other_resolvers"] = legacy_cohorts(cohorts, _regimes)
+    return base
+
+
+def legacy_cohorts(cohorts: Dict[str, List[Tuple[str, Dict[str, Any]]]], regimes_of) -> Dict[str, Any]:
+    from edge.ledger import resolver_label
+    return {v: {"label": resolver_label(v), "note": LEGACY_NOTE, "headline": False,
+                "days": len({d for d, _ in pairs}), "regimes": regimes_of(pairs)}
+            for v, pairs in sorted(cohorts.items())}
+
+
+def _regimes(pairs: List[Tuple[str, Dict[str, Any]]]) -> Dict[str, Any]:
+    """{feed: per-variant comparison and decision} for one resolver cohort's (day, row) pairs."""
     regimes: Dict[str, Dict[str, Any]] = {}
-    for d in days:
-        for r in d.get("rows") or []:
-            if not r.get("variants"):
-                continue
-            g = regimes.setdefault(r.get("feed") or "iex", {"days": set(), "rows": []})
-            g["days"].add(d["day"])
-            g["rows"].append(r)
+    for day, r in pairs:
+        g = regimes.setdefault(r.get("feed") or "iex", {"days": set(), "rows": []})
+        g["days"].add(day)
+        g["rows"].append(r)
     out: Dict[str, Any] = {}
     for feed, g in sorted(regimes.items()):
         per = {}
@@ -345,19 +402,16 @@ def summary(store) -> Dict[str, Any]:
         out[feed] = {"sessions": len(g["days"]), "first_day": min(g["days"]), "last_day": max(g["days"]),
                      "graded_names": len(g["rows"]), "approved_names": sum(1 for r in g["rows"] if r["approved"]),
                      "decision": overall, "variants": per}
-    current = "sip" if "sip" in out else ("iex" if "iex" in out else None)
-    return {"design_version": DESIGN["version"], "design_hash": DESIGN_HASH,
-            "break_even": DESIGN["break_even"], "min_approved_fills": DESIGN["min_approved_fills"],
-            "alpha_per_variant": round(DESIGN["alpha"] / DESIGN["tests"], 4),
-            "hypothesis": DESIGN["hypothesis"], "success": DESIGN["success"], "kill": DESIGN["kill"],
-            "days": len(days), "current_regime": current, "regimes": out,
-            "headline": headline(out, current), "label": LABEL}
+    return out
 
 
 def headline(regimes: Dict[str, Any], current: Optional[str]) -> str:
     """One line for the evening report."""
     if not current:
         return "control arm: nothing graded yet (runs after the close, 16:20-20:00 ET)"
+    if current not in regimes:
+        return (f"control arm ({current.upper()}): nothing graded under {RESOLVER_VERSION} yet; older "
+                "resolver cohorts are shown separately, labelled legacy, and decide nothing")
     g = regimes[current]
     v = DESIGN["headline_variant"]
     p = g["variants"][v]

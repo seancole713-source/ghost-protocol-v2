@@ -196,6 +196,28 @@ def test_bars_come_in_batches_of_ten_and_a_truncated_symbol_is_never_kept(seeded
     assert CA.grade_day(again, seeded, day=DAY, now=ts(16, 35))["status"] == "already_graded"
 
 
+def test_a_day_regraded_across_a_resolver_change_keeps_its_rows_in_their_cohorts(seeded):
+    """Audit NEW-02: each graded row records its resolver. A partial day graded before versioning
+    and completed after it keeps its old rows (never re-graded) as resolver_v1; only the rows
+    graded now are the current cohort -- the day's new tag never relabels them."""
+    CA.grade_day(FakeBars(truncate={"LOSR"}), seeded, day=DAY, now=ts(16, 25))
+    rec = seeded.get("edge_control", DS)
+    assert {r.get("resolver_version") for r in rec["rows"] if r.get("variants")} == {CA.RESOLVER_VERSION}
+    # as if that partial grade ran before resolver_version existed
+    rec.pop("resolver_version")
+    for r in rec["rows"]:
+        r.pop("resolver_version", None)
+    seeded.put("edge_control", DS, rec)
+    old = {r["symbol"]: r["variants"] for r in rec["rows"] if r.get("variants")}
+    assert CA.grade_day(FakeBars(), seeded, day=DAY, now=ts(16, 30))["status"] == "graded"
+    rows = rows_of(seeded)
+    assert rows["LOSR"]["resolver_version"] == CA.RESOLVER_VERSION
+    assert all(rows[s]["resolver_version"] == "resolver_v1" and rows[s]["variants"] == v for s, v in old.items())
+    s = CA.summary(seeded)
+    assert s["regimes"]["iex"]["graded_names"] == 1
+    assert s["other_resolvers"]["resolver_v1"]["regimes"]["iex"]["graded_names"] == len(old)
+
+
 def test_feed_regimes_are_recorded_per_row_and_never_pooled(seeded, monkeypatch):
     get = FakeBars()
     CA.grade_day(get, seeded, day=DAY, now=ts(16, 25))
@@ -235,7 +257,8 @@ def test_a_day_without_radar_names_is_stored_as_empty():
 
 # ------------------------------------------------------------------ summary math
 def synth(store, day, feed, approved, n_win, n_loss, extra=()):
-    rows = store.get("edge_control", day) or {"day": day, "feed": feed, "complete": True, "rows": []}
+    rows = store.get("edge_control", day) or {"day": day, "feed": feed, "complete": True, "rows": [],
+                                              "resolver_version": CA.RESOLVER_VERSION}
     for i in range(n_win + n_loss):
         win = i < n_win
         v = {"outcome": "WIN" if win else "LOSS", "pnl_usd": 48.0 if win else -32.0}

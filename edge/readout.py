@@ -9,6 +9,7 @@ from collections import Counter
 from typing import Any, Dict, Optional
 
 from edge.ledger import Ledger
+from edge.resolver import RESOLVER_VERSION
 
 VIEWS = ("summary", "today", "experiments", "backtest", "misses", "probe", "universe",
          "research", "radar", "paper", "models", "scorecard", "notes", "top10", "control")
@@ -44,17 +45,26 @@ def today(store, day: Optional[str] = None) -> Dict[str, Any]:
             "rows": compact}
 
 
-def _by_day(store, eid: str, regime: Optional[str] = None) -> Dict[str, list]:
-    """Filled simulated outcomes per session -- only the report's feed regime (never IEX + SIP)."""
+def _by_day(store, eid: str, regime: Optional[str] = None,
+            resolver: str = RESOLVER_VERSION) -> Dict[str, list]:
+    """Filled simulated outcomes per session -- only the report's feed regime (never IEX + SIP)
+    and only one resolver cohort, the current one by default (never resolver_v1 + v2, NEW-02).
+    This is the day-clustered sample promotion judges, so it is the same cohort as the headline."""
     out: Dict[str, list] = {}
     lg, cards = Ledger(store), {}
     for f in store.scan("forecasts", experiment_id=eid):
         if regime is not None and lg.feed_of(f, cards) != regime:
             continue
+        if lg.cohort_of(f) != resolver:
+            continue
         o = store.get("outcomes", f"{f['forecast_id']}|simulated")
         if o and o.get("outcome") in ("WIN", "LOSS", "TIME_EXIT"):
             out.setdefault(f["session_date"], []).append(o["outcome"] == "WIN")
     return out
+
+
+def _compact(r: Dict[str, Any]) -> Dict[str, Any]:
+    return {k: r.get(k) for k in ("by_outcome", "filled", "wins", "win_rate", "win_rate_ci", "verdict")}
 
 
 def experiments(store) -> Dict[str, Any]:
@@ -68,13 +78,18 @@ def experiments(store) -> Dict[str, Any]:
         out[eid] = {
             "forecasts": rep["forecasts"], "abstentions": rep["abstentions"], "excluded": rep["excluded"],
             "feed_regime": rep.get("feed_regime"), "forecasts_in_regime": rep.get("forecasts_in_regime"),
+            "resolver_version": rep.get("resolver_version"), "forecasts_in_cohort": rep.get("forecasts_in_cohort"),
             "break_even": rep["break_even"],
-            "records": {rec: {k: r.get(k) for k in ("by_outcome", "filled", "wins", "win_rate",
-                                                     "win_rate_ci", "verdict")}
-                        for rec, r in rep["records"].items()},
+            "records": {rec: _compact(r) for rec, r in rep["records"].items()},
         }
+        if rep.get("other_resolvers"):
+            # Older resolver cohorts stay visible, labelled -- never in the headline above.
+            out[eid]["other_resolvers"] = {
+                v: {"label": c["label"], "forecasts": c["forecasts"],
+                    "records": {rec: _compact(r) for rec, r in c["records"].items()}}
+                for v, c in rep["other_resolvers"].items()}
         if eid != BASE_EID and BASE_EID in reports:
-            by_day = _by_day(store, eid, rep.get("feed_regime"))
+            by_day = _by_day(store, eid, rep.get("feed_regime"), rep.get("resolver_version") or RESOLVER_VERSION)
             out[eid]["retirement"] = promotion.retirement(rep)
             out[eid]["promotion"] = promotion.evaluate(rep, baseline=reports[BASE_EID], sessions=len(by_day),
                                                        by_day=by_day, n_candidates=max(1, len(candidates)))

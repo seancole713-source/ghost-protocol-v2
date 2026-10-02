@@ -278,7 +278,9 @@ def session(get, day: date, prev_rows: List[dict], today_rows: List[dict], rolli
         x = resolve_execution(f, rth, cost_bps_per_side=cost_bps)
         dataset.append({"day": day.isoformat(), "symbol": r["symbol"], "features": r["features"],
                         "avg_dollars": r["avg_dollars"], "market": m.outcome, "simulated": x.outcome,
-                        "pnl_usd": x.pnl_usd, "catalyst_ok": r["main"] == S.ELIGIBLE})
+                        "pnl_usd": x.pnl_usd, "catalyst_ok": r["main"] == S.ELIGIBLE,
+                        # which resolver graded it: the model trains on one cohort only (NEW-02)
+                        "resolver_version": m.resolver_version})
     priced = sum(1 for r in rows if r["ref"])
     return {"day": day.isoformat(), "candidates": len(rows), "priced": priced, "results": results,
             "dataset": dataset, "price_basis": PRICE_BASIS,
