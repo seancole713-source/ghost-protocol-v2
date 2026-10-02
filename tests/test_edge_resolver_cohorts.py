@@ -289,3 +289,101 @@ def test_the_stored_history_is_never_rewritten_by_the_cohort_split():
     RO.experiments(lg.store)
     assert lg.store.get("outcomes", f"{old.forecast_id}|simulated") == before
     assert "resolver_version" not in before or before["resolver_version"] is None
+
+
+# ---- the control arms (control_arm_v1 and v2 summaries) ----------------------------------
+
+def _control_day(store, table, day, rows, version):
+    """A graded control day; version None = a day graded before resolver_version was recorded."""
+    from edge import control as CA, control_v2 as CA2
+    built = []
+    for i, (approved, outcome) in enumerate(rows):
+        v = {"outcome": outcome, "pnl_usd": 48.0 if outcome == "WIN" else -32.0}
+        if table == "edge_control":
+            built.append({"symbol": f"S{i}", "feed": "iex", "approved": approved,
+                          "label": CA.APPROVED if approved else CA.UNAPPROVED,
+                          "variants": {k: dict(v) for k in CA.VARIANTS}})
+        else:
+            arm = {"variants": {k: dict(v) for k in CA2.VARIANTS}}
+            arms = ({CA2.APPROVED: arm, CA2.UNAPPROVED: {"variants": {k: {"outcome": CA2.APPROVED_BY_ENTRY}
+                                                                     for k in CA2.VARIANTS}}}
+                    if approved else {CA2.UNAPPROVED: arm})
+            built.append({"symbol": f"S{i}", "feed": "iex", "arms": arms})
+    rec = {"day": day, "feed": "iex", "complete": True, "rows": built}
+    if version:
+        rec["resolver_version"] = version
+    store.put(table, day, rec)
+
+
+def test_control_v1_summary_decides_on_current_resolver_days_only():
+    from edge import control as CA
+    st = MemoryStore()
+    _control_day(st, "edge_control", "2026-09-29", [(True, "WIN")] * 3 + [(False, "LOSS")] * 3, None)
+    _control_day(st, "edge_control", "2026-10-02", [(True, "LOSS"), (False, "WIN")], V2)
+    s = CA.summary(st)
+    assert s["design_hash"] == CA.DESIGN_HASH == "605453cd49128631"          # design untouched
+    assert s["resolver_version"] == V2 and s["current_regime"] == "iex" and s["days"] == 2
+    g = s["regimes"]["iex"]
+    assert g["sessions"] == 1 and g["graded_names"] == 2
+    p = g["variants"][CA.DESIGN["headline_variant"]]
+    assert (p["approved"]["filled"], p["approved"]["wins"]) == (1, 0)        # not 4 fills, 3 wins
+    assert (p["unapproved"]["filled"], p["unapproved"]["wins"]) == (1, 1)
+    assert "1 sessions" in s["headline"]
+    old = s["other_resolvers"][V1]
+    assert old["headline"] is False and old["days"] == 1 and old["label"].startswith("resolver_v1 (legacy")
+    assert "never the decision" in old["note"]
+    assert old["regimes"]["iex"]["variants"][CA.DESIGN["headline_variant"]]["approved"]["wins"] == 3
+
+
+def test_control_headline_with_only_legacy_days_decides_nothing():
+    from edge import control as CA, control_v2 as CA2
+    st = MemoryStore()
+    _control_day(st, "edge_control", "2026-09-29", [(True, "WIN"), (False, "LOSS")], None)
+    _control_day(st, "edge_control_v2", "2026-09-29", [(True, "WIN"), (False, "LOSS")], None)
+    for s in (CA.summary(st), CA2.summary(st)):
+        assert s["regimes"] == {} and s["current_regime"] == "iex"
+        assert f"nothing graded under {V2}" in s["headline"] and "legacy" in s["headline"]
+        assert s["other_resolvers"][V1]["days"] == 1
+
+
+def test_control_v2_summary_decides_on_current_resolver_days_only():
+    from edge import control_v2 as CA2
+    st = MemoryStore()
+    _control_day(st, "edge_control_v2", "2026-09-29", [(True, "WIN")] * 3 + [(False, "LOSS")] * 3, None)
+    _control_day(st, "edge_control_v2", "2026-10-02", [(True, "LOSS"), (False, "WIN")], V2)
+    _control_day(st, "edge_control", "2026-09-29", [(True, "WIN")], None)
+    s = CA2.summary(st)
+    assert s["design_hash"] == CA2.DESIGN_HASH == "3baa238954712ba2"
+    g = s["regimes"]["iex"]
+    p = g["variants"][CA2.DESIGN["headline_variant"]]
+    assert g["sessions"] == 1 and (p["approved"]["filled"], p["approved"]["wins"]) == (1, 0)
+    assert p["sessions_with_fills"] == 1                         # the clustered sample is one cohort too
+    assert s["other_resolvers"][V1]["regimes"]["iex"]["sessions"] == 1
+    ex = CA2.v1_exploratory(st)
+    assert ex["regimes"] == {} and ex["other_resolvers"][V1]["days"] == 1
+
+
+def test_a_rows_own_resolver_tag_outranks_its_days():
+    from edge import control as CA
+    st = MemoryStore()
+    _control_day(st, "edge_control", "2026-10-02", [(True, "WIN"), (True, "LOSS")], V2)
+    rec = st.get("edge_control", "2026-10-02")
+    rec["rows"][0]["resolver_version"] = V1          # graded before the day was re-graded under v2
+    st.put("edge_control", "2026-10-02", rec)
+    s = CA.summary(st)
+    hv = CA.DESIGN["headline_variant"]
+    assert s["regimes"]["iex"]["variants"][hv]["approved"]["filled"] == 1
+    assert s["other_resolvers"][V1]["regimes"]["iex"]["variants"][hv]["approved"]["wins"] == 1
+
+
+def test_a_regraded_day_keeps_its_older_rows_in_their_own_cohort():
+    """A day left partial by truncated data is re-graded later; its kept rows are not re-graded and
+    are labelled with the version their day recorded (none = resolver_v1), outcomes untouched."""
+    from edge import control as CA
+    row = {"symbol": "OLD", "variants": {k: {"outcome": "WIN"} for k in CA.VARIANTS}}
+    tagged = {"symbol": "TAG", "resolver_version": V2, "variants": {}}
+    kept = CA.tag_kept_rows({"day": "2026-09-29"}, {"OLD": row, "TAG": tagged})
+    assert kept["OLD"]["resolver_version"] == V1 and kept["OLD"]["variants"] == row["variants"]
+    assert kept["TAG"] is tagged and "resolver_version" not in row          # the stored dict is not mutated
+    assert CA.tag_kept_rows({"resolver_version": V2}, {"OLD": row})["OLD"]["resolver_version"] == V2
+    assert CA.tag_kept_rows(None, {"OLD": row})["OLD"]["resolver_version"] == V1

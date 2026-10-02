@@ -56,6 +56,16 @@ is *read* together changes.
     current-resolver rows; card rows graded before resolver_v2 have no
     `resolver_version`, are resolver_v1 and are reported under `other_resolvers`.
     The Top 10 view shows each entry's grading version.
+  * both control arms (`edge/control.py` and `edge/control_v2.py` `summary()`):
+    `regimes`, the headline and every SUCCESS/KILL decision read only rows graded by
+    the current resolver, within the feed regime chosen as before. A row's version is
+    its own `resolver_version`, else its day's, else resolver_v1 (a day graded before
+    the version was recorded). Older cohorts are reported under `other_resolvers`,
+    labelled legacy, and decide nothing. Each newly graded control row now records
+    its version; when a partial day is completed later, rows it keeps (never
+    re-graded) are labelled with the version their day recorded, so the day's new tag
+    cannot relabel them. The `control_arm_v1` / `control_arm_v2` designs and hashes
+    (605453cd49128631 / 3baa238954712ba2) are unchanged.
 * This is a measurement correction. It can only shrink and clean the sample; no
   threshold moves. The `promotion_v1` and `retirement_v1` criteria dicts and their
   hashes are unchanged; the cohort filter lives in the data selection, not in them.

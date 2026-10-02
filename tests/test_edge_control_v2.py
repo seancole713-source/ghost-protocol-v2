@@ -146,7 +146,8 @@ def test_v2_success_criteria_are_v1s():
 
 # ------------------------------------------------------------------ session-clustered intervals
 def synth(st, day, approved, n_win, n_loss, feed="iex"):
-    rec = st.get("edge_control_v2", day) or {"day": day, "feed": feed, "complete": True, "rows": []}
+    rec = st.get("edge_control_v2", day) or {"day": day, "feed": feed, "complete": True, "rows": [],
+                                             "resolver_version": V2.V1.RESOLVER_VERSION}
     for i in range(n_win + n_loss):
         v = {"outcome": "WIN" if i < n_win else "LOSS", "pnl_usd": 48.0 if i < n_win else -32.0}
         arm = {"variants": {k: dict(v) for k in V2.VARIANTS}}
