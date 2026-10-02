@@ -941,6 +941,11 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None,
     if http is not None and within((9, 45), (15, 0)):      # intraday entries expire from ~09:50
         guarded("paper_cancel", lambda: _paper().cancel_unfilled_entries(http, ledger, day=ds,
                                                                           experiments=all_specs, now=now))
+        unprotected = (out.get("paper_cancel") or {}).get("unprotected")
+        if unprotected:    # its own PROBLEM kind, like NOT FLAT: a routine retry must not swallow it
+            out["paper_cancel_unprotected"] = {"status": "error",
+                                               "error": "UNPROTECTED after the entry deadline: "
+                                                        + "; ".join(unprotected)}
     if http is not None and within((15, 30), (15, 55)):                        # refused sells retry
         guarded("paper_exit", lambda: _paper().time_exit(http, ledger, day=ds, experiments=all_specs, now=now))
         not_flat = (out.get("paper_exit") or {}).get("not_flat")

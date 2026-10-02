@@ -2423,7 +2423,7 @@ async def lifespan(app: FastAPI):
                 from edge.pipeline import paper_guard as _edge_paper_guard
                 from edge.store_pg import PostgresStore as _EdgeStore
                 out = _edge_paper_guard(_requests, _EdgeLedger(_EdgeStore(db_conn)), now=int(_time.time()))
-                if out.get("canceled") or out.get("errors"):
+                if out.get("canceled") or out.get("errors") or out.get("unprotected") or out.get("protected"):
                     LOGGER.warning("EDGE_PAPER_GUARD %s", _json.dumps(out, default=str)[:1000])
             except Exception as _e:
                 LOGGER.warning("edge paper guard failed: %s", str(_e)[:200])
@@ -3414,6 +3414,17 @@ def health():
     except Exception as _mr:
         LOGGER.warning("health.model_readiness failed: " + str(_mr)[:120])
 
+    # 9c. Pipeline readiness (audit I02): did today's due jobs complete (edge
+    # morning card, intraday ticks, agent workflow, scan coverage)? Reported
+    # beside liveness and deliberately NOT added to issues/warnings, so it can
+    # never move the score, status or the Railway healthcheck.
+    pipeline_readiness = None
+    try:
+        from core.pipeline_readiness import build_readiness
+        pipeline_readiness = build_readiness()
+    except Exception as _pr:
+        LOGGER.warning("health.pipeline_readiness failed: " + str(_pr)[:120])
+
     score = max(0, min(100, 100 - len(issues)*20 - len(warnings)*5))
     status_str = "healthy" if score >= 80 and not issues else "degraded" if score >= 50 else "critical"
     return {
@@ -3428,6 +3439,7 @@ def health():
         "degraded": degraded, "degraded_reasons": degraded_reasons,
         "dead_letter_count": dead_letter_count,
         "model_readiness": model_readiness,
+        "readiness": pipeline_readiness,
     }
 
 _HEALTH_FULL_CACHE: dict = {"t": 0.0, "v": None}
@@ -3538,6 +3550,46 @@ def health_public_route():
 def api_health():
     """Public liveness probe for external monitors — slimmed (no internals)."""
     return _health_public()
+
+
+_READINESS_CACHE: dict = {"t": 0.0, "v": None}
+_READINESS_LOCK = threading.Lock()
+
+
+def _readiness_cached(ttl_s: float = 30.0) -> dict:
+    """Pipeline readiness (audit I02), cached and single-flight like health_cached."""
+    cached, ts = _READINESS_CACHE["v"], _READINESS_CACHE["t"]
+    if cached is not None and (time.time() - ts) < ttl_s:
+        return cached
+    with _READINESS_LOCK:
+        cached, ts = _READINESS_CACHE["v"], _READINESS_CACHE["t"]
+        if cached is not None and (time.time() - ts) < ttl_s:
+            return cached
+        from core.pipeline_readiness import build_readiness
+        value = build_readiness()
+        _READINESS_CACHE["v"], _READINESS_CACHE["t"] = value, time.time()
+        return value
+
+
+@APP.get("/api/readiness")
+def api_readiness(request: Request):
+    """Pipeline readiness: due-job completion for today's ET session.
+
+    Separate from liveness by design (audit I02): /health and /api/health keep
+    their score and HTTP status (Railway's healthcheck), and this endpoint
+    always answers 200 -- "not_ready" is a reported state, not a failed probe.
+    Public callers get per-component status only; the full detail (worker
+    counts, error text) needs the admin cookie, like /admin/health.
+    """
+    try:
+        from core.pipeline_readiness import slim
+        full = _readiness_cached()
+        if _admin_token_valid(request.cookies.get(_ADMIN_COOKIE, "")):
+            return full
+        return slim(full)
+    except Exception:  # noqa: BLE001
+        LOGGER.warning("api_readiness failed", exc_info=True)
+        return {"ready": False, "status": "unknown", "error": "readiness_unavailable"}
 
 
 

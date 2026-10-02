@@ -1,6 +1,7 @@
 """Paper execution: a real broker's records, and no possible path to live money."""
 from __future__ import annotations
 
+import copy
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
@@ -42,12 +43,22 @@ class R:
             raise RuntimeError(self.status_code)
 
 
+FINAL = ("filled", "canceled", "expired", "rejected")
+
+
 class Broker:
-    """A tiny Alpaca paper account: records every call, serves canned orders."""
+    """A tiny Alpaca paper account: records every call and serves its orders as FRESH copies (a
+    read is a snapshot, never a live view of the broker). DELETE /v2/orders/{id} is modelled: the
+    order ends canceled (a bracket parent takes its working legs with it), or filled if the
+    shares filling during the cancel complete it. Knobs, by order id:
+      fill_on_cancel[id] = n   n more shares fill while the cancel is in flight (the race)
+      cancel_mode[id] = "pending" (acknowledged, still pending_cancel until ack(id)) | "refuse"
+                        (422, order unchanged) | "error" (no answer) | "ignore" (204, keeps working)"""
 
     def __init__(self, orders=None, position_qty=0, reject=False):
         self.posts, self.deletes, self.orders = [], [], orders or []
         self.position_qty, self.reject = position_qty, reject
+        self.fill_on_cancel, self.cancel_mode = {}, {}
 
     def post(self, url, json=None, headers=None, timeout=None):
         assert "paper-api.alpaca.markets" in url
@@ -56,14 +67,60 @@ class Broker:
             return R(403, {"message": "insufficient buying power"})
         return R(200, {"id": f"o{len(self.posts)}", **json})
 
+    def _all(self):
+        return list(self.orders)
+
+    def _find(self, oid):
+        for o in self._all():
+            if str(o.get("id")) == oid:
+                return o
+            for g in o.get("legs") or []:
+                if str(g.get("id")) == oid:
+                    return g
+        return None
+
+    def ack(self, oid):
+        """A pending cancel completes."""
+        o = self._find(oid)
+        o["status"] = "canceled"
+        for g in o.get("legs") or []:
+            if g.get("status") not in FINAL:
+                g["status"] = "canceled"
+
     def delete(self, url, headers=None, timeout=None):
         self.deletes.append(url)
+        oid = url.rsplit("/", 1)[-1]
+        mode = self.cancel_mode.get(oid)
+        if mode == "error":
+            raise ConnectionError("connection reset")
+        if mode == "refuse":
+            return R(422, {"message": "order is not cancelable"})
+        o = self._find(oid)
+        if o is None:
+            return R(404, {"message": "order not found"})
+        if o.get("status") in FINAL:
+            return R(422, {"message": "order is not cancelable"})
+        n = self.fill_on_cancel.pop(oid, 0)
+        if n:                                                  # a fill lands while the cancel is in flight
+            o["filled_qty"] = str(int(float(o.get("filled_qty") or 0)) + n)
+        if mode == "ignore":
+            return R(204)
+        if o.get("qty") is not None and int(float(o["filled_qty"])) >= int(float(o["qty"])):
+            o["status"] = "filled"                             # the cancel lost the race
+            return R(204)
+        if mode == "pending":
+            o["status"] = "pending_cancel"
+            return R(204)
+        self.ack(oid)
         return R(204)
 
     def get(self, url, params=None, headers=None, timeout=None):
         if "by_client_order_id" in url:
             hit = [o for o in self.orders if o.get("client_order_id") == (params or {}).get("client_order_id")]
-            return R(200, hit[0]) if hit else R(404, {"message": "order not found"})
+            return R(200, copy.deepcopy(hit[0])) if hit else R(404, {"message": "order not found"})
+        if "/v2/orders/" in url:
+            o = self._find(url.rsplit("/", 1)[-1])
+            return R(200, copy.deepcopy(o)) if o else R(404, {"message": "order not found"})
         if "/v2/positions/" in url:
             return R(200, {"qty": str(self.position_qty)}) if self.position_qty else R(404, {})
         if (params or {}).get("status") == "open":
@@ -258,11 +315,30 @@ class Exchange(Broker):
     `close_ok` answers DELETE /v2/positions; GET /v2/orders/{id} serves the nested bracket."""
 
     def __init__(self, orders=None, position_qty=0, sell_status="filled", refuse_sells=0, close_ok=True,
-                 nested=None, close_status="filled"):
+                 nested=None, close_status="filled", oco_status="new", refuse_oco=None, oco_timeout=False):
         super().__init__(orders=orders, position_qty=position_qty)
         self.sell_status, self.refuse_sells, self.close_ok = sell_status, refuse_sells, close_ok
         self.nested, self.closes, self.ids_seen = nested or {}, [], set()
         self.close_status = close_status          # what GET /v2/orders/close1 then reports
+        # A protective OCO post: accepted as `oco_status`, refused with HTTP `refuse_oco`, or accepted
+        # and then the answer lost (`oco_timeout`).
+        self.oco_status, self.refuse_oco, self.oco_timeout = oco_status, refuse_oco, oco_timeout
+
+    def _all(self):
+        return list(self.orders) + list(self.nested.values())
+
+    def _oco(self, json):
+        n = len(self.posts)
+        o = {"id": f"p{n}", "client_order_id": json["client_order_id"], "order_class": "oco", "side": "sell",
+             "type": "limit", "limit_price": json["take_profit"]["limit_price"], "qty": json["qty"],
+             "status": self.oco_status, "filled_qty": "0",
+             "legs": [{"id": f"p{n}-sl", "order_class": "oco", "side": "sell", "type": "stop",
+                       "stop_price": json["stop_loss"]["stop_price"], "qty": json["qty"],
+                       "status": "canceled" if self.oco_status in FINAL else "held", "filled_qty": "0"}]}
+        self.orders.append(o)
+        if self.oco_timeout:
+            raise TimeoutError("read timed out")              # the broker took it; the answer was lost
+        return R(200, o)
 
     def post(self, url, json=None, headers=None, timeout=None):
         assert "paper-api.alpaca.markets" in url
@@ -270,7 +346,11 @@ class Exchange(Broker):
         cid = json["client_order_id"]
         if cid in self.ids_seen:                              # Alpaca: client_order_id must be unique
             return R(422, {"message": "client_order_id must be unique"})
+        if json.get("order_class") == "oco" and self.refuse_oco:
+            return R(self.refuse_oco, {"message": "stop price must be below the market"})
         self.ids_seen.add(cid)
+        if json.get("order_class") == "oco":
+            return self._oco(json)
         if json.get("side") == "sell" and self.refuse_sells:
             self.refuse_sells -= 1
             return R(403, {"message": "insufficient qty available for order (held_for_orders)"})
@@ -280,23 +360,23 @@ class Exchange(Broker):
         return R(200, o)
 
     def delete(self, url, headers=None, timeout=None):
+        if "/v2/positions/" not in url:
+            return super().delete(url, headers=headers, timeout=timeout)
         self.deletes.append(url)
-        if "/v2/positions/" in url:
-            self.closes.append(url)
-            if not self.close_ok:
-                return R(403, {"message": "held"})
-            qty, oid = url.rsplit("qty=", 1)[-1], f"close{len(self.closes)}"
-            self.nested[oid] = {"id": oid, "symbol": "SHOP", "side": "sell", "qty": qty,
-                                "status": self.close_status,
-                                "filled_qty": qty if self.close_status == "filled" else "0"}
-            return R(200, {"id": oid, "symbol": "SHOP", "status": "accepted"})
-        return R(204)
+        self.closes.append(url)
+        if not self.close_ok:
+            return R(403, {"message": "held"})
+        qty, oid = url.rsplit("qty=", 1)[-1], f"close{len(self.closes)}"
+        self.nested[oid] = {"id": oid, "symbol": "SHOP", "side": "sell", "qty": qty,
+                            "status": self.close_status,
+                            "filled_qty": qty if self.close_status == "filled" else "0"}
+        return R(200, {"id": oid, "symbol": "SHOP", "status": "accepted"})
 
     def get(self, url, params=None, headers=None, timeout=None):
         tail = url.rsplit("/v2/orders/", 1)[-1] if "/v2/orders/" in url else None
         if tail and tail in self.nested:
             assert (params or {}).get("nested") == "true"
-            return R(200, self.nested[tail])
+            return R(200, copy.deepcopy(self.nested[tail]))
         return super().get(url, params=params, headers=headers, timeout=timeout)
 
 
@@ -637,3 +717,304 @@ def test_a_broker_rejected_entry_order_settles_as_an_actual_no_fill(ledger):
     o = ledger.store.get("outcomes", f"{f.forecast_id}|actual")
     assert o["outcome"] == "NO_FILL" and o["note"] == "entry_rejected"
     assert ledger.report("gap_and_go_auto@v1")["records"]["actual"]["filled"] == 0
+
+
+# ------------------------ F01: a partly filled entry at its deadline / F02: cancel-fill race --
+
+def _partial_entry(f, filled="5", qty="99", status="partially_filled"):
+    """A bracket entry part-filled at its deadline: both legs still wait 'held' -- Alpaca
+    activates a bracket's legs only once its entry is FULLY filled."""
+    return {"id": "o1", "client_order_id": f"{f.forecast_id}-entry", "symbol": "SHOP", "side": "buy",
+            "type": "stop_limit", "order_class": "bracket", "qty": qty, "status": status, "filled_qty": filled,
+            "legs": [{"id": "leg-tp", "type": "limit", "side": "sell", "qty": qty, "status": "held",
+                      "filled_qty": "0"},
+                     {"id": "leg-sl", "type": "stop", "side": "sell", "qty": qty, "status": "held",
+                      "filled_qty": "0"}]}
+
+
+def _cancel(b, lg, hm):
+    return PP.cancel_unfilled_entries(b, lg, day="2026-09-23", experiments=EXPERIMENTS, now=ts(*hm))
+
+
+def _exit(b, lg, hm):
+    return PP.time_exit(b, lg, day="2026-09-23", experiments=EXPERIMENTS, now=ts(*hm))
+
+
+def _rec(lg):
+    return lg.store.get("edge_paper", f"{lg.fc.forecast_id}|paper")
+
+
+def _ocos(b):
+    return [p for p in b.posts if p.get("order_class") == "oco"]
+
+
+def _market_sells(b):
+    return [p for p in b.posts if p.get("side") == "sell" and p.get("type") == "market"]
+
+
+class TG:
+    def __init__(self):
+        self.sent = []
+
+    def post(self, url, json=None, timeout=None):
+        self.sent.append(json["text"])
+        return R(200, {})
+
+
+def test_a_partly_filled_entry_is_cancelled_at_its_deadline_and_its_shares_protected(ledger):
+    """F01: 5 of 99 filled at the deadline. The old step cancelled only an entry with NOTHING filled,
+    marked this one checked for good, and left the 94 working -- while the 5 had no stop."""
+    f = ledger.fc
+    PP.submit(Broker(), ledger, day="2026-09-23", experiments=EXPERIMENTS)
+    b = Exchange(orders=[_partial_entry(f)])
+    assert _cancel(b, ledger, (10, 29))["status"] == "nothing" and b.deletes == []     # before its deadline
+    out = _cancel(b, ledger, (10, 30))
+    assert b.deletes == ["https://paper-api.alpaca.markets/v2/orders/o1"]               # the unfilled remainder
+    assert b._find("o1")["status"] == "canceled"
+    (oco,) = _ocos(b)
+    assert (oco["qty"], oco["side"], oco["client_order_id"]) == ("5", "sell", f"{f.forecast_id}-px")
+    assert (oco["take_profit"]["limit_price"], oco["stop_loss"]["stop_price"]) == (f"{f.target:.2f}",
+                                                                                    f"{f.stop:.2f}")
+    assert out["status"] == "entries_checked" and out["canceled"] == ["SHOP"] and out["unprotected"] == []
+    assert "5 shares protected by its OCO exit" in out["protected"][0]
+    rec = _rec(ledger)
+    assert rec["entry_cancel_checked"] and rec["protection"] == "oco" and rec["protect_qty"] == 5
+    assert _cancel(b, ledger, (10, 31))["status"] == "nothing"                         # idempotent
+    assert len(_ocos(b)) == 1 and len(b.deletes) == 1
+    # 15:30: the OCO is cancelled and confirmed gone, then exactly the 5 owned are sold
+    out = _exit(b, ledger, (15, 30))
+    assert [p["qty"] for p in _market_sells(b)] == ["5"] and out["closed"] == ["SHOP"]
+    assert b._find("p1")["status"] == "canceled"
+    _exit(b, ledger, (15, 35))
+    assert _rec(ledger)["time_exit_done"] and len(_market_sells(b)) == 1
+
+
+def test_a_fill_during_the_entry_cancel_is_protected_too(ledger):
+    f = ledger.fc
+    PP.submit(Broker(), ledger, day="2026-09-23", experiments=EXPERIMENTS)
+    b = Exchange(orders=[_partial_entry(f)])
+    b.fill_on_cancel["o1"] = 2                       # 2 more fill while the cancel is in flight
+    _cancel(b, ledger, (10, 30))
+    assert [p["qty"] for p in _ocos(b)] == ["7"] and _rec(ledger)["protect_qty"] == 7
+
+
+def test_an_entry_that_completes_during_its_cancel_keeps_its_bracket(ledger):
+    f = ledger.fc
+    PP.submit(Broker(), ledger, day="2026-09-23", experiments=EXPERIMENTS)
+    b = Exchange(orders=[_partial_entry(f)])
+    b.fill_on_cancel["o1"] = 94                      # the cancel lost the race: fully filled
+    out = _cancel(b, ledger, (10, 30))
+    assert _ocos(b) == [] and out["canceled"] == []
+    assert _rec(ledger)["entry_cancel_checked"] and _rec(ledger)["protection"] == "bracket"
+
+
+def test_a_pending_entry_cancel_stays_in_flight_until_the_broker_shows_it_final(ledger):
+    f = ledger.fc
+    PP.submit(Broker(), ledger, day="2026-09-23", experiments=EXPERIMENTS)
+    b = Exchange(orders=[_partial_entry(f)])
+    b.cancel_mode["o1"] = "pending"                  # 204, but the order is only pending_cancel
+    out = _cancel(b, ledger, (10, 30))
+    assert out["status"] == "pending" and "entry cancel pending (pending_cancel, 5 filled)" in out["pending"][0]
+    assert not _rec(ledger).get("entry_cancel_checked") and _ocos(b) == []
+    assert _rec(ledger)["entry_cancel"] == {"requested_at": ts(10, 30), "tries": 1}
+    _cancel(b, ledger, (10, 31))
+    assert len(b.deletes) == 1                       # an acknowledged cancel is not sent again
+    b.ack("o1")
+    _cancel(b, ledger, (10, 32))
+    assert [p["qty"] for p in _ocos(b)] == ["5"] and _rec(ledger)["entry_cancel_checked"]
+
+
+def test_a_refused_entry_cancel_is_retried_then_raised_as_unprotected(ledger):
+    f = ledger.fc
+    PP.submit(Broker(), ledger, day="2026-09-23", experiments=EXPERIMENTS)
+    b = Exchange(orders=[_partial_entry(f)])
+    b.cancel_mode["o1"] = "refuse"
+    out = _cancel(b, ledger, (10, 30))
+    assert out["status"] == "error" and "entry cancel refused" in out["errors"][0] and out["unprotected"] == []
+    _cancel(b, ledger, (10, 31))
+    assert len(b.deletes) == 2 and not _rec(ledger).get("entry_cancel_checked")
+    out = _cancel(b, ledger, (10, 35))               # PROTECT_GRACE past the deadline: a loud alarm
+    assert out["status"] == "error" and "UNPROTECTED" in out["error"]
+    assert "5 filled" in out["unprotected"][0] and "5 min after its entry deadline" in out["unprotected"][0]
+    assert "entry cancel refused" in _rec(ledger)["protect_alarm"] and _ocos(b) == []
+
+
+def test_a_refused_protective_exit_is_flattened(ledger):
+    f = ledger.fc
+    PP.submit(Broker(), ledger, day="2026-09-23", experiments=EXPERIMENTS)
+    b = Exchange(orders=[_partial_entry(f)], refuse_oco=403)
+    out = _cancel(b, ledger, (10, 30))
+    assert [(p["qty"], p["client_order_id"]) for p in _market_sells(b)] == [("5", f"{f.forecast_id}-pf")]
+    assert out["unprotected"] == [] and out["status"] == "entries_checked"
+    rec = _rec(ledger)
+    assert rec["entry_cancel_checked"] and rec["protection"] == "flattened"
+    _exit(b, ledger, (15, 30))                       # the flatten's fill counts: nothing left to sell
+    assert len(_market_sells(b)) == 1 and _rec(ledger)["time_exit_done"]
+
+
+def test_protective_exit_and_flatten_both_refused_is_a_loud_problem(ledger, monkeypatch):
+    from edge import pipeline as P
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "t")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "42")
+    f = ledger.fc
+    PP.submit(Broker(), ledger, day="2026-09-23", experiments=EXPERIMENTS)
+    b = Exchange(orders=[_partial_entry(f)], refuse_oco=403, refuse_sells=99)
+    out = _cancel(b, ledger, (10, 30))
+    assert out["status"] == "error" and "5 shares owned with NO stop" in out["unprotected"][0]
+    assert "both refused" in out["unprotected"][0]
+    rec = _rec(ledger)
+    assert not rec.get("entry_cancel_checked") and "NO stop" in rec["protect_alarm"]
+    tg = TG()
+    out = P.run(None, ledger, now=ts(10, 31), http=b, notifier=tg)        # its own PROBLEM kind
+    assert "UNPROTECTED" in out["paper_cancel_unprotected"]["error"]
+    assert any("paper_cancel_unprotected" in t and "UNPROTECTED" in t for t in tg.sent)
+    for hm in ((10, 32), (10, 33), (10, 34)):
+        out = _cancel(b, ledger, hm)
+    assert len(_market_sells(b)) == PP.MAX_TRIES and out["unprotected"]      # bounded, alarm stands
+    assert len(_ocos(b)) == 1
+
+
+class Crash(BaseException):
+    """The process dies (deploy, OOM) -- nothing after this point runs."""
+
+
+class DiesAfterPost(Exchange):
+    died = False
+
+    def post(self, url, json=None, headers=None, timeout=None):
+        r = super().post(url, json=json, headers=headers, timeout=timeout)
+        if json.get("order_class") == "oco" and not self.died:
+            self.died = True
+            raise Crash()                            # the broker has the OCO; we never saw the answer
+        return r
+
+
+def test_a_restart_between_cancel_and_protection_never_doubles_the_protective_exit(ledger):
+    f = ledger.fc
+    PP.submit(Broker(), ledger, day="2026-09-23", experiments=EXPERIMENTS)
+    b = DiesAfterPost(orders=[_partial_entry(f)])
+    b.cancel_mode["o1"] = "pending"
+    _cancel(b, ledger, (10, 30))                     # cancel asked, still pending
+    b.ack("o1")
+    restarted = Ledger(ledger.store)                 # restart: only the stored record survives
+    with pytest.raises(Crash):
+        _cancel(b, restarted, (10, 31))
+    assert _rec(ledger)["protect_ids"] == [f"{f.forecast_id}-px"]                 # recorded BEFORE the post
+    assert not _rec(ledger).get("entry_cancel_checked")
+    out = _cancel(b, Ledger(ledger.store), (10, 32))
+    assert len(_ocos(b)) == 1 and "protected by its OCO exit" in out["protected"][0]
+    assert _rec(ledger)["entry_cancel_checked"] and _rec(ledger)["protection"] == "oco"
+
+
+def test_an_entry_fill_during_the_time_exit_cancel_is_sold_not_marked_flat(ledger):
+    """F02: an entry still working at 15:30 fills while its cancel is in flight. The old step counted
+    from reads taken BEFORE the cancel (0 bought), set time_exit_done, and left 4 shares open."""
+    f = ledger.fc
+    PP.submit(Broker(), ledger, day="2026-09-23", experiments=EXPERIMENTS)
+    b = Exchange(orders=[_partial_entry(f, filled="0", qty="6", status="new")])
+    b.fill_on_cancel["o1"] = 4
+    out = _exit(b, ledger, (15, 30))
+    assert [p["qty"] for p in _market_sells(b)] == ["4"] and out["closed"] == ["SHOP"]
+    assert not _rec(ledger).get("time_exit_done")   # done only once the broker shows the sell filled
+    _exit(b, ledger, (15, 35))
+    assert _rec(ledger)["time_exit_done"] and len(_market_sells(b)) == 1
+
+
+@pytest.mark.parametrize("leg_fill, sells", [(6, []), (2, ["4"])])
+def test_an_exit_leg_fill_during_the_time_exit_cancel_is_counted(ledger, leg_fill, sells):
+    """The old step would have sold all 6 again on top of the leg's fill: a short."""
+    f = ledger.fc
+    PP.submit(Broker(), ledger, day="2026-09-23", experiments=EXPERIMENTS)
+    legs = [{"id": "leg-tp", "type": "limit", "qty": "6", "status": "new", "filled_qty": "0"},
+            {"id": "leg-sl", "type": "stop", "qty": "6", "status": "held", "filled_qty": "0"}]
+    b = Exchange(orders=[_filled_entry(f, legs=legs)])
+    b.fill_on_cancel["leg-tp"] = leg_fill
+    out = _exit(b, ledger, (15, 30))
+    assert [p["qty"] for p in _market_sells(b)] == sells and out["not_flat"] == []
+    _exit(b, ledger, (15, 35))
+    assert _rec(ledger)["time_exit_done"] and [p["qty"] for p in _market_sells(b)] == sells
+
+
+def test_a_delayed_cancel_acknowledgement_keeps_the_time_exit_in_flight(ledger):
+    f = ledger.fc
+    PP.submit(Broker(), ledger, day="2026-09-23", experiments=EXPERIMENTS)
+    legs = [{"id": "leg-tp", "type": "limit", "qty": "6", "status": "new", "filled_qty": "0"},
+            {"id": "leg-sl", "type": "stop", "qty": "6", "status": "held", "filled_qty": "0"}]
+    b = Exchange(orders=[_filled_entry(f, legs=legs)])
+    b.cancel_mode.update({"leg-tp": "pending", "leg-sl": "pending"})        # 204 is not proof
+    out = _exit(b, ledger, (15, 30))
+    assert _market_sells(b) == [] and "cancel pending" in out["errors"][0] and out["not_flat"] == []
+    assert not _rec(ledger).get("time_exit_done")
+    out = _exit(b, ledger, (15, 50))                 # the last tick: still pending -> NOT FLAT
+    assert "still working after the cancel" in out["not_flat"][0] and "6 shares owned" in out["not_flat"][0]
+    assert len(b.deletes) == 2 and not _rec(ledger).get("time_exit_done")    # not re-sent
+    b.ack("leg-tp")
+    b.ack("leg-sl")
+    _exit(b, ledger, (15, 54))
+    assert [p["qty"] for p in _market_sells(b)] == ["6"]
+
+
+def test_a_failed_leg_cancel_at_the_time_exit_is_not_flat_on_the_last_tick(ledger):
+    f = ledger.fc
+    PP.submit(Broker(), ledger, day="2026-09-23", experiments=EXPERIMENTS)
+    legs = [{"id": "leg-tp", "type": "limit", "qty": "6", "status": "new", "filled_qty": "0"}]
+    b = Exchange(orders=[_filled_entry(f, legs=legs)])
+    b.cancel_mode["leg-tp"] = "error"                # no answer to the cancel
+    out = _exit(b, ledger, (15, 50))
+    assert _market_sells(b) == [] and "cancel failed" in out["errors"][0]
+    assert "could not be cancelled" in out["not_flat"][0] and not _rec(ledger).get("time_exit_done")
+
+
+class Garbled(Exchange):
+    """The broker answers the entry lookup with something that is not an order."""
+
+    def get(self, url, params=None, headers=None, timeout=None):
+        if "by_client_order_id" in url and params["client_order_id"].endswith("-entry"):
+            return R(200, [])
+        return super().get(url, params=params, headers=headers, timeout=timeout)
+
+
+def test_an_unreadable_broker_answer_is_never_read_as_flat_or_unfilled(ledger):
+    f = ledger.fc
+    PP.submit(Broker(), ledger, day="2026-09-23", experiments=EXPERIMENTS)
+    b = Garbled(orders=[_partial_entry(f)])
+    out = _cancel(b, ledger, (10, 30))
+    assert out["status"] == "error" and "could not report its entry order" in out["errors"][0]
+    assert b.deletes == [] and not _rec(ledger).get("entry_cancel_checked")
+    assert "could not report its entry order" in _cancel(b, ledger, (10, 35))["unprotected"][0]
+    out = _exit(b, ledger, (15, 50))
+    assert "cannot confirm it is flat" in out["not_flat"][0] and _market_sells(b) == []
+    assert not _rec(ledger).get("time_exit_done")
+
+
+def test_an_unknown_order_status_stays_in_flight(ledger):
+    f = ledger.fc
+    PP.submit(Broker(), ledger, day="2026-09-23", experiments=EXPERIMENTS)
+    b = Exchange(orders=[_partial_entry(f, filled="3", qty="6", status="mystery_state")])
+    b.cancel_mode["o1"] = "ignore"                   # 204, yet the broker keeps reporting the odd status
+    out = _exit(b, ledger, (15, 30))
+    assert _market_sells(b) == [] and "mystery_state" in out["errors"][0]
+    assert not _rec(ledger).get("time_exit_done")
+
+
+def test_a_protective_exit_is_graded_from_the_brokers_record(ledger):
+    from edge import broker_alpaca as BA, fills as FL, readout as RO
+    f = ledger.fc
+    PP.submit(Broker(), ledger, day="2026-09-23", experiments=EXPERIMENTS)
+    fid = f.forecast_id
+    entry = {**_partial_entry(f), "status": "canceled", "filled_avg_price": "148.30",
+             "submitted_at": iso(ts(9, 11)), "filled_at": iso(ts(10, 2)), "canceled_at": iso(ts(10, 30))}
+    entry["legs"] = [{**g, "status": "canceled", "submitted_at": iso(ts(9, 11)), "canceled_at": iso(ts(10, 30))}
+                     for g in entry["legs"]]
+    oco = {"id": "p1", "client_order_id": f"{fid}-px", "type": "limit", "side": "sell", "qty": "5",
+           "status": "canceled", "filled_qty": "0", "submitted_at": iso(ts(10, 30)), "canceled_at": iso(ts(11, 0)),
+           "legs": [{"id": "p1-sl", "type": "stop", "side": "sell", "qty": "5", "status": "filled",
+                     "filled_qty": "5", "filled_avg_price": "143.10", "submitted_at": iso(ts(10, 30)),
+                     "filled_at": iso(ts(11, 0))}]}
+    out = PP.reconcile(Broker(orders=[entry, oco]), ledger, day="2026-09-23", experiments=EXPERIMENTS,
+                       now=ts(16, 25))
+    row = out["settled"]["gap_and_go_auto@v1:SHOP"]
+    assert row["actual"] == "LOSS" and row["pnl_usd"] == pytest.approx(5 * (143.10 - 148.30))
+    roles = [x["role"] for x in RO.view(ledger.store, "paper", "2026-09-23")["orders"][0]["broker_exits"]]
+    assert "protective_stop" in roles and "protective_target" in roles
+    assert BA.role_of(f"{fid}-px") == BA.role_of(f"{fid}-px2") == FL.TARGET

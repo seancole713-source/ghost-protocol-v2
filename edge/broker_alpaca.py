@@ -3,6 +3,9 @@
 Roles come from OUR client_order_id convention, never inferred from prices:
   <forecast_id>-entry  <forecast_id>-tp  <forecast_id>-sl  <forecast_id>-tx (time exit;
   a retried time exit is -tx2, -tx3 ..., because Alpaca refuses a reused client_order_id)
+  <forecast_id>-px (the protective OCO placed for a PARTLY filled entry; its parent order is
+  the take-profit limit) and <forecast_id>-pf (a flatten when that protection fails), each
+  numbered -px2, -pf2 ... on a retry
 Alpaca documents that bracket orders do not support extended hours, so an
 entry meant to work pre-market cannot carry broker-held protection; the
 session check below refuses that combination instead of discovering it live.
@@ -32,6 +35,8 @@ def role_of(client_order_id: str) -> str:
     suffix = (client_order_id or "").rsplit("-", 1)[-1]
     if re.fullmatch(r"tx\d+", suffix):          # a retried time exit: -tx2, -tx3 ... (ids must be unique)
         return F.TIME_EXIT_ROLE
+    if re.fullmatch(r"px\d*", suffix):          # the protective OCO's parent is its take-profit limit
+        return F.TARGET
     return _ROLE.get(suffix, F.MANUAL)
 
 
@@ -68,6 +73,20 @@ def bracket_request(forecast_id: str, symbol: str, shares: int, *, entry_stop: f
         "stop_price": f"{entry_stop:.2f}", "limit_price": f"{entry_limit:.2f}",
         "time_in_force": "day", "order_class": "bracket",
         "client_order_id": f"{forecast_id}-entry",
+        "take_profit": {"limit_price": f"{target:.2f}"},
+        "stop_loss": {"stop_price": f"{stop:.2f}"},
+    }
+
+
+def oco_exit_request(client_order_id: str, symbol: str, qty: int, *, target: float,
+                     stop: float) -> Dict[str, Any]:
+    """A protective exit for shares ALREADY held: Alpaca's OCO (one-cancels-other) sell -- a
+    take-profit limit at the target (the parent order) and a stop at the stop (its leg). Used when
+    a bracket entry is only partly filled: Alpaca activates a bracket's own legs only once its
+    entry is FULLY filled, so the filled part would otherwise hold no stop."""
+    return {
+        "symbol": symbol, "qty": str(int(qty)), "side": "sell", "type": "limit",
+        "time_in_force": "day", "order_class": "oco", "client_order_id": client_order_id,
         "take_profit": {"limit_price": f"{target:.2f}"},
         "stop_loss": {"stop_price": f"{stop:.2f}"},
     }

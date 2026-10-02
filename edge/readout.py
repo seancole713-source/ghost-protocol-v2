@@ -5,7 +5,9 @@ from, and none of them shows a win rate without its interval.
 """
 from __future__ import annotations
 
+import time
 from collections import Counter
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, Optional
 
 from edge.ledger import Ledger
@@ -23,13 +25,50 @@ def _latest(store, table: str) -> Optional[Dict[str, Any]]:
     return max(rows, key=lambda r: r.get(key) or "") if key else rows[-1]
 
 
-def today(store, day: Optional[str] = None) -> Dict[str, Any]:
+CARD_DUE_ET = (9, 28)  # the shadow card is written 09:05-09:28 ET
+
+
+def current_session(store=None, now: Optional[int] = None) -> str:
+    """Today's ET session date if it trades, else the most recent trading day."""
+    from edge import calendar as CAL
+    from edge.contracts import ET
+    now = int(time.time()) if now is None else int(now)
+    d: date = datetime.fromtimestamp(now, tz=ET).date()
+    for _ in range(14):
+        if CAL.session(d, store, now)["trading"]:
+            return d.isoformat()
+        d -= timedelta(days=1)
+    return datetime.fromtimestamp(now, tz=ET).date().isoformat()
+
+
+def _stale_note(requested: str, served: str, now: int) -> str:
+    from edge.contracts import ET
+    et = datetime.fromtimestamp(now, tz=ET)
+    head = f"no card for {requested}; serving the latest card ({served}) -- it is NOT today's"
+    if et.date().isoformat() == requested and (et.hour, et.minute) < CARD_DUE_ET:
+        return head + " (today's card is written 09:05-09:28 ET and is not due yet)"
+    return head + " (today's card was due by 09:28 ET and is missing)"
+
+
+def today(store, day: Optional[str] = None, now: Optional[int] = None) -> Dict[str, Any]:
+    """The shadow card. Never silently serves another session as today's: the result always
+    carries requested_session (the asked-for day, else today's ET session) and served_session,
+    and stale=True with a note when they differ. (audit I02)"""
+    now = int(time.time()) if now is None else int(now)
+    requested = day or current_session(store, now)
     card = store.get("edge_cards", day) if day else _latest(store, "edge_cards")
     if not card:
-        return {"card": None, "note": "no shadow card recorded yet (first one is written 09:05-09:28 ET)"}
+        note = (f"no shadow card recorded for {day}" if day else
+                "no shadow card recorded yet (first one is written 09:05-09:28 ET)")
+        return {"requested_session": requested, "served_session": None, "stale": False,
+                "card": None, "note": note}
+    served = card.get("day")
+    stale = bool(served != requested)
     compact = [{k: r.get(k) for k in ("symbol", "verdict", "reasons", "missing", "baseline_verdict",
                                       "ref_price", "catalyst")} for r in card.get("rows") or []]
-    return {"day": card["day"], "forecasts": card.get("forecasts"),
+    return {"requested_session": requested, "served_session": served, "stale": stale,
+            **({"note": _stale_note(requested, served, now)} if stale else {}),
+            "day": card["day"], "forecasts": card.get("forecasts"),
             "baseline_forecasts": card.get("baseline_forecasts"),
             "candidates": card.get("candidates"), "priced": card.get("priced"),
             "health_banner": card.get("health_banner"), "health_note": card.get("health_note"),
@@ -197,7 +236,12 @@ def paper(store, day: Optional[str] = None) -> Dict[str, Any]:
                 **{k: g.get(k) for k in exit_keys}} for g in entry.get("legs") or []]
         for o in kept:
             cid = str(o.get("client_order_id") or "")
-            if cid.startswith(f"{fid}-tx") or str(o.get("id")) in closes:
+            if cid.startswith(f"{fid}-px"):          # protective OCO for a partly filled entry
+                out += [{"role": "protective_" + ("stop" if "stop" in str(g.get("type") or "") else "target"),
+                         **{k: g.get(k) for k in exit_keys}} for g in [o] + list(o.get("legs") or [])]
+            elif cid.startswith(f"{fid}-pf"):        # flatten when that protection failed
+                out.append({"role": "flatten", **{k: o.get(k) for k in exit_keys}})
+            elif cid.startswith(f"{fid}-tx") or str(o.get("id")) in closes:
                 out.append({"role": "time_exit" if cid.startswith(f"{fid}-tx") else "position_close",
                             **{k: o.get(k) for k in exit_keys}})
         return out
@@ -239,15 +283,17 @@ def models(store) -> Dict[str, Any]:
             "note": "a model forecasts only if it QUALIFIED out of sample; otherwise none is used"}
 
 
-def view(store, name: str = "summary", day: Optional[str] = None, kind: Optional[str] = None) -> Dict[str, Any]:
+def view(store, name: str = "summary", day: Optional[str] = None, kind: Optional[str] = None,
+         now: Optional[int] = None) -> Dict[str, Any]:
     """One named view. Every string is passed through shared.redaction on the way out: stored
     provider errors (source_errors, notes, skipped days) can embed a request URL whose query
     carries an API key (Polygon's apiKey=), and this is what MCP and the Railway log read."""
     from shared.redaction import redact_obj
-    return redact_obj(_view(store, name, day, kind))
+    return redact_obj(_view(store, name, day, kind, now))
 
 
-def _view(store, name: str, day: Optional[str], kind: Optional[str]) -> Dict[str, Any]:
+def _view(store, name: str, day: Optional[str], kind: Optional[str],
+          now: Optional[int] = None) -> Dict[str, Any]:
     if name not in VIEWS:
         return {"error": f"view must be one of {VIEWS}"}
     if name == "research":
@@ -274,7 +320,7 @@ def _view(store, name: str, day: Optional[str], kind: Optional[str]) -> Dict[str
         from edge import agent_notes as AN
         return AN.recent(store, day=day, kind=kind)
     if name == "today":
-        return today(store, day)
+        return today(store, day, now)
     if name == "experiments":
         return experiments(store)
     if name == "backtest":
@@ -286,9 +332,10 @@ def _view(store, name: str, day: Optional[str], kind: Optional[str]) -> Dict[str
     if name == "universe":
         return universe(store) or {"note": "no universe snapshot yet (06:00-07:00 ET)"}
     from edge import control_v2 as CA2, scorecard as SC
-    t, sc = today(store), SC.scorecard(store)
+    t, sc = today(store, None, now), SC.scorecard(store)
     return {
-        "today": {k: t.get(k) for k in ("day", "forecasts", "baseline_forecasts", "health_banner", "note")},
+        "today": {k: t.get(k) for k in ("requested_session", "served_session", "stale", "day", "forecasts",
+                                        "baseline_forecasts", "health_banner", "note")},
         "experiments": experiments(store),
         "backtest": (lambda b: b and {"window": b.get("window"), "experiments": b.get("experiments"),
                                       "limits": b.get("limits")})(backtest(store)),

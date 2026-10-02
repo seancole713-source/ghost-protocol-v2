@@ -430,18 +430,26 @@ function loadToday(){ return guardedLoad('today', async function(){
   var approved = coreResearch ? [] : enriched.filter(function(e){ return e.pick.research_pick !== true; });
   var researchCalls = coreResearch ? enriched : enriched.filter(function(e){ return e.pick.research_pick === true; });
 
+  // I01: unusual volume is unvalidated radar, not a squeeze. Nothing in the
+  // alert payload establishes short covering, so this page never answers
+  // "yes, squeeze". "Insufficient coverage" and "unknown" stay distinct from
+  // a fresh, well-covered scan that found no activity.
   html += '<div class="verdict"><div class="q">Did Ghost find a squeeze today?</div>';
   if(squeezeAlerts.length){
-    html += '<p class="a yes">Yes.</p>';
+    html += '<p class="a mid">Unusual activity detected</p>';
     html += '<p class="because"><b>'+squeezeAlerts.length+'</b> fresh unusual-volume alert'+(squeezeAlerts.length===1?'':'s')+' from the latest scan ('+esc(coverageText(coverage))+').</p>';
+    html += '<p class="because">Unvalidated radar, not a confirmed squeeze: no short-covering evidence is attached to these alerts.</p>';
     if(coverage.degraded){
       html += '<p class="because">Coverage is degraded: symbols without usable evidence were not checked.</p>';
     }
   } else if(squeezeFresh && coverage.degraded){
     html += '<p class="a mid">Insufficient coverage <span class="cov">('+esc(coverageText(coverage))+')</span></p>';
     html += '<p class="because">The latest scan is fresh, but too few symbols had usable evidence (stale, failed, skipped, or no intraday print on the feed). No alert is not evidence that nothing is moving.</p>';
+  } else if(squeezeFresh){
+    html += '<p class="a no">No unusual activity.</p>';
+    html += '<p class="because">The fresh scan found no unusual-volume alerts ('+esc(coverageText(coverage))+').</p>';
   } else {
-    html += '<p class="a no">No.</p>';
+    html += '<p class="a mid">Unknown.</p>';
     if(!squeeze.__ok){
       html += '<p class="because">Squeeze radar status is unavailable. No current alert can be confirmed.</p>';
     } else if(squeeze.enabled !== true){
@@ -450,10 +458,8 @@ function loadToday(){ return guardedLoad('today', async function(){
       html += '<p class="because">Squeeze radar is off-session or paused. There is no live scan right now.</p>';
     } else if(squeeze.scan_ok !== true){
       html += '<p class="because">The latest squeeze scan failed. No current alert can be confirmed.</p>';
-    } else if(!squeezeFresh){
-      html += '<p class="because">The latest squeeze scan is stale. Cached alerts are not described as current.</p>';
     } else {
-      html += '<p class="because">The fresh scan found no unusual-volume alerts ('+esc(coverageText(coverage))+').</p>';
+      html += '<p class="because">The latest squeeze scan is stale. Cached alerts are not described as current.</p>';
     }
   }
   if(paused === null){
@@ -680,6 +686,9 @@ function loadRecord(){ return guardedLoad('record', async function(){
     + '<div class="tile"><span class="k">Expired</span><span class="v">'+expired+'</span><span class="s">Reached neither price in the watch window</span></div>';
   if(wallet.__ok && wallet.total_value != null){
     html += '<div class="tile"><span class="k">Separate paper wallet</span><span class="v">'+money(wallet.total_value)+'</span><span class="s">Simulated balance, separate from the finished-call count above. Started at '+money(wallet.starting_balance||10000)+'</span></div>';
+  } else if(wallet.__ok && wallet.totals_partial){
+    var wqc = wallet.quote_coverage || {};
+    html += '<div class="tile"><span class="k">Separate paper wallet</span><span class="v">—</span><span class="s">Partial valuation: '+Number(wqc.priced||0)+' of '+Number(wqc.total||0)+' open positions have a quote. Balance hidden until every position is priced.</span></div>';
   }
   html += '</div>';
 

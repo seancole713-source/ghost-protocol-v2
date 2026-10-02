@@ -247,17 +247,34 @@ def store_auth_code(
         )
 
 
+# Single-statement consume: the row lock taken by DELETE serializes concurrent
+# redemptions, and a second DELETE re-checks after the first commits and finds
+# nothing, so a code can be returned to at most one caller (audit F07).
+_CONSUME_AUTH_CODE_SQL = "DELETE FROM ghost_state WHERE key=%s RETURNING val"
+
+
 def pop_auth_code(code: str) -> Optional[Dict[str, Any]]:
+    """Atomically consume an authorization code; None unless THIS call consumed it.
+
+    The code is single-use: it is deleted by the redeeming request whether or
+    not the later expiry / client / redirect / PKCE binding checks pass. The
+    expiry check is applied here; the caller must still enforce the bindings.
+    """
     from core.db import db_conn
 
+    if not code:
+        return None
     key = _state_key("code", code)
     with db_conn() as conn:
         cur = conn.cursor()
-        cur.execute("SELECT val FROM ghost_state WHERE key=%s", (key,))
-        row = cur.fetchone()
-        if not row:
+        cur.execute(_CONSUME_AUTH_CODE_SQL, (key,))
+        rows = cur.fetchall() or []
+        if cur.rowcount != 1 or len(rows) != 1:
+            if cur.rowcount and cur.rowcount > 1:
+                LOGGER.error("authorization code consume touched %s rows", cur.rowcount)
+                raise RuntimeError("authorization code consume was not unique")
             return None
-        cur.execute("DELETE FROM ghost_state WHERE key=%s", (key,))
+        row = rows[0]
     try:
         data = json.loads(row[0])
         if int(data.get("exp") or 0) < int(time.time()):

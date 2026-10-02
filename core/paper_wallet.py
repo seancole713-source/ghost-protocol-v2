@@ -655,35 +655,108 @@ def _cash(cur, cfg: Dict[str, Any]) -> float:
     return float(cfg["starting_balance"]) + realized - deployed
 
 
-def _live_prices(symbols: List[str]) -> Dict[str, Optional[float]]:
-    """Prices for the wallet's candidate/open symbols.
+def _usable_price(value: Any) -> Optional[float]:
+    """A quote the wallet may value or trade on: finite and > 0, else None.
+
+    Zero, negative, NaN, inf and non-numeric quotes are all "no quote" — they
+    must never become a fill price or a market value. (audit F08)
+    """
+    try:
+        px = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(px) or px <= 0:
+        return None
+    return px
+
+
+def _bad_price_reason(value: Any) -> str:
+    if value is None:
+        return "no_quote"
+    try:
+        px = float(value)
+    except (TypeError, ValueError):
+        return "non_numeric"
+    if not math.isfinite(px):
+        return "non_finite"
+    return "non_positive"
+
+
+_STALE_QUOTE_STATUSES = frozenset({"stale", "reference_only"})
+
+
+def _live_quotes(symbols: List[str]) -> Dict[str, Dict[str, Any]]:
+    """Per-symbol quote truth for the wallet's candidate/open symbols.
 
     The batch endpoint is cache-first with a small fresh budget (anti-breaker),
     which starved the wallet — it needs a real price for every symbol it might
     trade, not just the 6 the batch refreshes. So: batch first, then a bounded
     get_price() fallback (the same 5-tier spot chain the single-symbol endpoint
     uses, breaker-protected) for any symbol the batch left null. (PR #143)
+
+    Every requested symbol gets a row: ``price`` is a usable float or None
+    (never a substitute), with ``source``, ``age_seconds``, ``quote_status``,
+    ``stale`` and, when unpriced, ``missing_reason``. (audit F08)
     """
     if not symbols:
         return {}
-    out: Dict[str, Optional[float]] = {}
+    wanted = [s.upper() for s in symbols if s]
+    out: Dict[str, Dict[str, Any]] = {}
+    rows: Dict[str, Any] = {}
     try:
         from core.market_sessions import get_market_sessions
-        sess = get_market_sessions(symbols, max_fresh=len(symbols))
-        out = {s: r.get("price") for s, r in sess["sessions"].items()}
+        sess = get_market_sessions(wanted, max_fresh=len(wanted))
+        rows = {str(k).upper(): v for k, v in (sess.get("sessions") or {}).items()}
     except Exception as exc:
         LOGGER.warning("paper wallet batch prices: %s", str(exc)[:100])
-    missing = [s for s in symbols if not out.get(s.upper()) and not out.get(s)]
+    for sym in wanted:
+        row = rows.get(sym) or {}
+        raw = row.get("price")
+        px = _usable_price(raw)
+        status = str(row.get("quote_status") or "unknown")
+        if px is not None and status == "future_timestamp":
+            # An observation clock in the future cannot be verified; do not
+            # value or trade on it.
+            px, reason = None, "future_timestamp"
+        else:
+            reason = None if px is not None else _bad_price_reason(raw)
+        age = row.get("freshness_seconds")
+        out[sym] = {
+            "price": px,
+            "source": row.get("price_source") or row.get("feed") or ("market_sessions" if row else None),
+            "age_seconds": int(age) if isinstance(age, (int, float)) and math.isfinite(age) else None,
+            "quote_status": status if px is not None else "missing",
+            "stale": bool(px is not None and (status in _STALE_QUOTE_STATUSES
+                                              or row.get("data_stale") is True)),
+            "missing_reason": reason,
+        }
+    missing = [s for s in wanted if out[s]["price"] is None]
     if missing:
         try:
             from core.prices import get_price
             for s in missing[:40]:
                 p = get_price(s)
-                if p and p > 0:
-                    out[s.upper()] = round(float(p), 4)
+                px = _usable_price(p)
+                if px is not None:
+                    out[s] = {
+                        "price": round(px, 4),
+                        "source": "spot_fallback",
+                        "age_seconds": None,
+                        "quote_status": "unknown",
+                        "stale": False,
+                        "missing_reason": None,
+                    }
+                elif p is not None and out[s].get("missing_reason") == "no_quote":
+                    out[s]["missing_reason"] = _bad_price_reason(p)
         except Exception as exc:
             LOGGER.warning("paper wallet spot fallback: %s", str(exc)[:100])
     return out
+
+
+def _live_prices(symbols: List[str]) -> Dict[str, Optional[float]]:
+    """Usable prices only (finite, > 0); symbols without one are absent."""
+    return {s: q["price"] for s, q in _live_quotes(symbols).items()
+            if q.get("price") is not None}
 
 
 def _session_gate_enabled() -> bool:
@@ -1289,9 +1362,18 @@ def run_wallet_cycle() -> Dict[str, Any]:
                 """SELECT symbol, SUM(qty), SUM(qty*entry_price)
                    FROM ghost_paper_trades WHERE status='open' GROUP BY symbol""")
             mkt = 0.0
+            unpriced_syms = []
             for sym, tqty, cost in cur.fetchall():
                 p = prices.get(sym.upper())
-                mkt += (float(tqty) * float(p)) if p else float(cost)
+                if p:
+                    mkt += float(tqty) * float(p)
+                else:
+                    # The daily equity row needs a number; an unpriced symbol is
+                    # carried at cost here, and that is made visible in diag
+                    # rather than silent. wallet_summary never does this. (F08)
+                    mkt += float(cost)
+                    unpriced_syms.append(sym.upper())
+            diag["snapshot_unpriced_at_cost"] = unpriced_syms
             equity = round(cash + mkt, 2)
             import datetime as _dt
             today = _session_today().isoformat()
@@ -1317,6 +1399,79 @@ def run_wallet_cycle() -> Dict[str, Any]:
         return {"ok": False, "error": str(exc)[:140]}
 
 
+def wallet_valuation(open_rows, quotes: Dict[str, Dict[str, Any]],
+                     cash: float) -> Dict[str, Any]:
+    """Value open positions from quote truth only. Pure; never raises on data.
+
+    A position without a usable quote has current_price/value/pnl = None and
+    ``quote_missing: True`` — it is never valued at its entry price. Cost basis
+    (``cost_basis`` / ``invested``) stays separate from market value. Totals
+    (market_value, equity) are null whenever any position is unpriced, and
+    ``quote_coverage`` / ``priced_subset`` report the partial view (mirrors the
+    DATA-01 portfolio fix in core.portfolio_routes._portfolio_totals). Stale
+    quotes still value the position but are flagged per position and counted
+    in coverage. (audit F08)
+    """
+    positions: List[Dict[str, Any]] = []
+    invested = priced_cost = priced_value = 0.0
+    n_priced = n_stale = 0
+    for tid, book, sym, qty, entry, ets, tgt, stp, exp in open_rows:
+        q = quotes.get(str(sym).upper()) or {}
+        cur_p = _usable_price(q.get("price"))
+        qty_f = float(qty)
+        entry_f = float(entry)
+        cost = qty_f * entry_f
+        invested += cost
+        stale = bool(cur_p is not None and q.get("stale"))
+        if cur_p is not None:
+            value = round(qty_f * cur_p, 2)
+            n_priced += 1
+            n_stale += int(stale)
+            priced_cost += cost
+            priced_value += value
+            pnl = round(value - cost, 2)
+            pnl_pct = round((cur_p / entry_f - 1) * 100, 2) if entry_f else None
+        else:
+            value = pnl = pnl_pct = None
+        positions.append({
+            "id": tid, "book": book, "symbol": sym, "qty": qty,
+            "entry_price": entry, "entry_ts": ets,
+            "cost_basis": round(cost, 2),
+            "current_price": cur_p,
+            "value": value, "pnl": pnl, "pnl_pct": pnl_pct,
+            "quote_missing": cur_p is None,
+            "quote_stale": stale,
+            "quote_status": q.get("quote_status") if cur_p is not None else "missing",
+            "quote_source": q.get("source"),
+            "quote_age_seconds": q.get("age_seconds"),
+            "quote_missing_reason": (q.get("missing_reason") or "no_quote") if cur_p is None else None,
+            "target_price": tgt, "stop_price": stp, "expires_at": exp,
+        })
+    total = len(positions)
+    complete = n_priced == total  # an empty book is fully valued (equity = cash)
+    market_value = round(priced_value, 2) if complete else None
+    return {
+        "positions": positions,
+        "invested": round(invested, 2),
+        "market_value": market_value,
+        "equity": round(cash + priced_value, 2) if complete else None,
+        "totals_partial": not complete,
+        "quote_coverage": {
+            "priced": n_priced,
+            "total": total,
+            "stale": n_stale,
+            "missing": total - n_priced,
+            "ratio": round(n_priced / total, 4) if total else None,
+        },
+        "priced_subset": {
+            "label": "priced positions only",
+            "cost": round(priced_cost, 2),
+            "value": round(priced_value, 2) if n_priced else None,
+            "pnl": round(priced_value - priced_cost, 2) if n_priced else None,
+        },
+    }
+
+
 def wallet_summary() -> Dict[str, Any]:
     """Everything the Wallet tab renders. Read-only; never raises."""
     from core.db import db_conn
@@ -1333,22 +1488,10 @@ def wallet_summary() -> Dict[str, Any]:
                    ORDER BY entry_ts DESC""")
             open_rows = cur.fetchall()
             open_syms = sorted({r[2].upper() for r in open_rows})
-            prices = _live_prices(open_syms)
-            positions = []
-            invested = mkt_value = 0.0
-            for tid, book, sym, qty, entry, ets, tgt, stp, exp in open_rows:
-                cur_p = prices.get(sym.upper()) or entry
-                val = round(qty * cur_p, 2)
-                cost = qty * entry
-                invested += cost
-                mkt_value += val
-                positions.append({
-                    "id": tid, "book": book, "symbol": sym, "qty": qty,
-                    "entry_price": entry, "entry_ts": ets, "current_price": cur_p,
-                    "value": val, "pnl": round(val - cost, 2),
-                    "pnl_pct": round((cur_p / entry - 1) * 100, 2) if entry else None,
-                    "target_price": tgt, "stop_price": stp, "expires_at": exp,
-                })
+            quotes = _live_quotes(open_syms)
+            val = wallet_valuation(open_rows, quotes, cash)
+            positions = val["positions"]
+            invested = val["invested"]
             cur.execute(
                 """SELECT id, book, symbol, qty, entry_price, entry_ts, exit_price,
                           exit_ts, exit_reason, pnl, pnl_pct, target_price, stop_price
@@ -1366,7 +1509,9 @@ def wallet_summary() -> Dict[str, Any]:
                         "ORDER BY trade_date DESC LIMIT 14")
             daily = [{"date": r[0], "equity": float(r[1]), "pnl": float(r[2])}
                      for r in cur.fetchall()]
-            equity = round(cash + mkt_value, 2)
+            # None when any open position is unpriced: a missing quote is
+            # never valued at cost. (audit F08)
+            equity = val["equity"]
             start = float(cfg["starting_balance"])
             # U53: "Today P&L" is today's row only, not the last stored day.
             today_pnl = (
@@ -1385,11 +1530,17 @@ def wallet_summary() -> Dict[str, Any]:
                 days_in_month = (_dt.date(todd.year, todd.month + 1, 1) - _dt.date(todd.year, todd.month, 1)).days
             day_of_month = todd.day
             days_left = max(0, days_in_month - day_of_month)
-            gained = equity - start
-            needed = goal - start
-            progress_pct = round(gained / needed * 100, 1) if needed > 0 else 0.0
-            remaining = round(goal - equity, 2)
-            need_per_day = round(remaining / days_left, 2) if days_left > 0 else remaining
+            if equity is None:
+                progress_pct = pct_of_goal = remaining = need_per_day = None
+                reached = None
+            else:
+                gained = equity - start
+                needed = goal - start
+                progress_pct = round(gained / needed * 100, 1) if needed > 0 else 0.0
+                remaining = round(goal - equity, 2)
+                need_per_day = round(remaining / days_left, 2) if days_left > 0 else remaining
+                pct_of_goal = round(equity / goal * 100, 1) if goal > 0 else 0.0
+                reached = bool(equity >= goal)
             cur.execute("SELECT month, start_balance, goal, final_equity, hit_goal, return_pct "
                         "FROM ghost_paper_monthly ORDER BY month DESC LIMIT 12")
             months = [dict(zip(("month", "start_balance", "goal", "final_equity",
@@ -1402,11 +1553,19 @@ def wallet_summary() -> Dict[str, Any]:
                 "starting_balance": start,
                 "reset_ts": cfg.get("reset_ts"),
                 "cash": round(cash, 2),
+                # Cost basis of open positions (what was paid) — always known.
                 "invested": round(invested, 2),
-                "market_value": round(mkt_value, 2),
+                # Market value / equity / P&L are null unless every open
+                # position has a usable quote; see quote_coverage and
+                # priced_subset for the partial view. (audit F08)
+                "market_value": val["market_value"],
                 "total_value": equity,
-                "total_pnl": round(equity - start, 2),
-                "total_pnl_pct": round((equity / start - 1) * 100, 2) if start else 0.0,
+                "total_pnl": round(equity - start, 2) if equity is not None else None,
+                "total_pnl_pct": (round((equity / start - 1) * 100, 2) if start else 0.0)
+                                 if equity is not None else None,
+                "totals_partial": val["totals_partial"],
+                "quote_coverage": val["quote_coverage"],
+                "priced_subset": val["priced_subset"],
                 "today_pnl": today_pnl,
                 "realized_pnl": round(float(realized), 2),
                 "closed_trades": int(n_closed or 0),
@@ -1452,9 +1611,12 @@ def wallet_summary() -> Dict[str, Any]:
                     # when underwater (honest but confusing next to a bar). Also
                     # expose pct_of_goal = equity/goal, always positive, so the
                     # bar and the number agree. (PR #150 audit)
-                    "pct_of_goal": round(equity / goal * 100, 1) if goal > 0 else 0.0,
-                    "reached": bool(equity >= goal),
+                    "pct_of_goal": pct_of_goal,
+                    "reached": reached,
                     "remaining": remaining,
+                    # True when equity is unknown because an open position has
+                    # no usable quote — progress fields are then null.
+                    "valuation_partial": val["totals_partial"],
                     "day_of_month": day_of_month,
                     "days_in_month": days_in_month,
                     "days_left": days_left,

@@ -196,3 +196,22 @@ def test_muted_and_warning_tokens_meet_wcag_aa():
         for fg in ("ink-2", "ink-3", "warn"):
             for bg in ("ground", "surface", "surface-2", "warn-soft"):
                 assert ratio(tokens[fg], tokens[bg]) >= 4.5, (fg, bg, tokens[fg], tokens[bg])
+
+
+def test_unusual_volume_is_not_called_a_squeeze():
+    """I01: fresh unusual-volume alerts are unvalidated radar. With no
+    short-covering evidence in the payload, the verdict must never say "Yes"
+    (squeeze found); no-activity, insufficient-coverage and unknown stay
+    distinct."""
+    src = _today_source()
+    verdict = src[src.index("Did Ghost find a squeeze today?") : src.index("if(paused === null){")]
+    assert "Yes." not in verdict
+    assert 'class="a yes"' not in verdict
+    assert "<p class=\"a mid\">Unusual activity detected</p>" in verdict
+    assert "Unvalidated radar, not a confirmed squeeze" in verdict
+    assert "Insufficient coverage <span class=\"cov\">" in verdict
+    assert "<p class=\"a no\">No unusual activity.</p>" in verdict
+    assert "<p class=\"a mid\">Unknown.</p>" in verdict
+    # A clean "no activity" requires a fresh scan with adequate coverage.
+    assert verdict.index("squeezeFresh && coverage.degraded") < verdict.index("No unusual activity.")
+    assert "squeeze confirmed" not in verdict.lower()
