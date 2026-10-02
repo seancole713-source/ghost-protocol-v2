@@ -136,7 +136,7 @@ def test_anthropic_client_repairs_non_json_first_pass_without_second_web_search(
     assert "tools" not in session.calls[1]
     assert result["raw_response"]["format_repaired"] is True
     assert [r["locator"] for r in result["source_refs"]] == ["https://example.com/release"]
-    assert result["raw_response"]["source_policy"] == "cited_only/v3"
+    assert result["raw_response"]["source_policy"] == "cited_or_retrieved/v4"
     assert result["unverified_refs"] == []
 
 
@@ -189,15 +189,60 @@ def test_an_uncited_model_url_is_marked_unverified_never_a_source():
     result = worker.AnthropicClient(_config(), session=session).research(
         {"task_id": "canary"}, {"required_response_schema": {"type": "object"}},
     )
-    assert [r["locator"] for r in result["source_refs"]] == ["https://example.com/release"]
+    # v4: the cited page, plus a page this run's search RETRIEVED that the model lists.
+    assert [r["locator"] for r in result["source_refs"]] == [
+        "https://example.com/release", "https://unrelated.example/other-ticker"]
     attested = result["source_refs"][0]
     assert attested["kind"] == "official_release" and attested["title"] == "Official release"
-    # An uncited raw search hit is not attested either (F36): unverified, like an invented URL.
+    assert [r["attestation"] for r in result["source_refs"]] == ["cited", "retrieved"]
+    # A URL nothing retrieved is never a source: unverified.
     unverified = [r["locator"] for r in result["unverified_refs"]]
-    assert unverified == ["https://invented.example/story", "https://unrelated.example/other-ticker"]
+    assert unverified == ["https://invented.example/story"]
     assert all(r["attested"] is False for r in result["unverified_refs"])
     assert result["raw_response"]["unverified_refs"] == result["unverified_refs"]
-    assert result["raw_response"]["source_policy"] == "cited_only/v3"
+    assert result["raw_response"]["source_policy"] == "cited_or_retrieved/v4"
+    assert result["raw_response"]["retrieved_source_count"] == 1
+
+
+class _JsonOnlySession:
+    """The production shape on 2026-10-02: searches ran, the answer is a JSON text block
+    with NO inline citations. Under v3 this had zero sources and was quarantined 5x."""
+    def __init__(self, listed):
+        self.headers, self.calls, self.listed = {}, [], listed
+
+    def post(self, _url, json, timeout):
+        self.calls.append(json)
+        import json as _j
+        body = {"summary": "s", "claims": {"verdict": "insufficient", "evidence": [{"fact": "f"}],
+                                          "risks": ["r"], "recommended_next_step": "monitor"},
+                "agent_confidence": 0.3, "source_refs": self.listed}
+        return _FakeResponse({
+            "id": "msg_research", "model": "claude", "stop_reason": "end_turn", "usage": {},
+            "content": [
+                {"type": "server_tool_use", "name": "web_search", "input": {"query": "BTCT"}},
+                {"type": "web_search_tool_result", "content": [
+                    {"type": "web_search_result", "url": "https://news.example/btct", "title": "BTCT news"},
+                    {"type": "web_search_result", "url": "https://other.example/x", "title": "unrelated"},
+                ]},
+                {"type": "text", "text": _j.dumps(body)},
+            ]})
+
+
+def test_a_json_only_answer_keeps_the_retrieved_pages_it_lists():
+    listed = [{"kind": "news", "locator": "https://news.example/btct", "title": "BTCT news"},
+              {"kind": "news", "locator": "https://invented.example/fake"}]
+    result = worker.AnthropicClient(_config(), session=_JsonOnlySession(listed)).research(
+        {"task_id": "canary"}, {"required_response_schema": {"type": "object"}})
+    assert [r["locator"] for r in result["source_refs"]] == ["https://news.example/btct"]
+    assert result["source_refs"][0]["attestation"] == "retrieved"
+    assert [r["locator"] for r in result["unverified_refs"]] == ["https://invented.example/fake"]
+
+
+def test_retrieved_pages_the_model_does_not_list_are_never_stored():
+    """F36 still holds: raw hits are not sources unless the model cites or lists them."""
+    result = worker.AnthropicClient(_config(), session=_JsonOnlySession([])).research(
+        {"task_id": "canary"}, {"required_response_schema": {"type": "object"}})
+    assert result["source_refs"] == [] and result["unverified_refs"] == []
 
 
 class _FakeGhost:
