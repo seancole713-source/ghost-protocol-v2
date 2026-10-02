@@ -55,6 +55,15 @@ _MAX_SOURCES = 25
 _MAX_SUMMARY_CHARS = 8_000
 _MIN_LEASE_SECONDS = 60
 _MAX_LEASE_SECONDS = 3_600
+# A worker is shown offline after this long without a beat. AGENT-02: a worker
+# mid-research (a provider call can take 240 s) only renews its TASK lease, so
+# heartbeat_task() refreshes the worker's last_seen_at too, and the workers
+# beat more often than this.
+WORKER_ONLINE_SECONDS = 120
+# last_error prefix of a task dead-lettered with attempts exhausted short of its
+# required accepted submissions (AGENT-03). Not a new status: DEAD_LETTER is
+# terminal and already in the table's CHECK constraint.
+INCOMPLETE_CONSENSUS = "incomplete_consensus"
 
 SUBMISSION_CONTRACT_VERSION = "ghost.agent-evidence/v2"
 
@@ -658,6 +667,23 @@ def _expire_unavailable_tasks(cur, now: int) -> Dict[str, int]:
         else:
             requeued += 1
         _event(cur, item["task_id"], event_type, "ghost.workflow", now)
+
+    # AGENT-03: a PENDING task whose attempts are spent can never be claimed again
+    # (claim_task requires attempt_count < max_attempts). Terminalize it instead of
+    # leaving it stranded -- this also recovers rows stranded before the fix.
+    cur.execute(
+        """UPDATE ghost_agent_tasks
+           SET status='DEAD_LETTER', updated_at=%s,
+               last_error=LEFT(%s || COALESCE(': ' || last_error, ''), 1000)
+           WHERE status='PENDING' AND attempt_count >= max_attempts
+           RETURNING task_id""",
+        (now, f"{INCOMPLETE_CONSENSUS}: attempts exhausted"),
+    )
+    exhausted_rows = cur.fetchall() or []
+    for row in exhausted_rows:
+        task_id = row[0] if not isinstance(row, Mapping) else row["task_id"]
+        dead_letter += 1
+        _event(cur, task_id, "DEAD_LETTER", "ghost.workflow", now, {"reason": "attempts_exhausted"})
     return {"expired": len(expired_rows), "requeued": requeued, "dead_letter": dead_letter}
 
 
@@ -802,6 +828,13 @@ def heartbeat_task(
         cur.execute(
             "UPDATE ghost_agent_tasks SET lease_expires_at=%s, updated_at=%s WHERE task_id=%s",
             (lease_expires, now, task_id),
+        )
+        # AGENT-02: an agent renewing a live lease is alive. Without this the worker
+        # read offline (> WORKER_ONLINE_SECONDS) during every long provider call.
+        cur.execute(
+            """UPDATE ghost_agent_workers SET last_seen_at=GREATEST(last_seen_at, %s)
+               WHERE agent_id=%s""",
+            (now, agent_id),
         )
         _event(cur, task_id, "HEARTBEAT", agent_id, now, {"lease_expires_at": lease_expires})
     return {"ok": True, "task_id": task_id, "lease_expires_at": lease_expires}
@@ -1241,13 +1274,19 @@ def submit_evidence(
         elif lease_retained:
             next_status = "CLAIMED"
             completed_at = None
-        elif validation_status == "QUARANTINED" and attempts >= max_attempts:
+        elif attempts >= max_attempts:
+            # AGENT-03: no attempts left and not complete. An ACCEPTED submission that
+            # leaves consensus short used to go PENDING, which claim_task() can never
+            # pick up (attempt_count >= max_attempts) -- stranded forever. Terminal now.
             next_status = "DEAD_LETTER"
             completed_at = None
         else:
             next_status = "PENDING"
             completed_at = None
         last_error = "; ".join(reasons)[:1_000] if reasons else None
+        if next_status == "DEAD_LETTER" and validation_status == "ACCEPTED":
+            last_error = (f"{INCOMPLETE_CONSENSUS}: {accepted_count} of {required} required "
+                          f"submissions accepted; {attempts} of {max_attempts} attempts used")
         if lease_retained:
             cur.execute(
                 """UPDATE ghost_agent_tasks
@@ -1514,7 +1553,7 @@ def workflow_dashboard(*, limit: int = 30, now_ts: Optional[int] = None) -> Dict
         for worker in workers:
             age = max(0, now - int(worker.get("last_seen_at") or 0))
             worker["heartbeat_age_seconds"] = age
-            worker["online"] = age <= 120 and worker.get("status") != "STOPPED"
+            worker["online"] = age <= WORKER_ONLINE_SECONDS and worker.get("status") != "STOPPED"
         cur.execute(
             f"SELECT {_TASK_SELECT} FROM ghost_agent_tasks "
             "ORDER BY created_at DESC LIMIT %s",
@@ -1595,7 +1634,7 @@ def workflow_health() -> Dict[str, Any]:
                    WHERE last_seen_at >= %s AND status <> 'STOPPED'
                ), COUNT(*) FILTER (WHERE status <> 'STOPPED')
                FROM ghost_agent_workers""",
-            (now - 120,),
+            (now - WORKER_ONLINE_SECONDS,),
         )
         worker_row = tuple(cur.fetchone() or ())
         worker_row = worker_row + (0,) * (3 - len(worker_row))

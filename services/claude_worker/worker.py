@@ -19,6 +19,10 @@ import requests
 
 LOG = logging.getLogger("ghost.claude_worker")
 REPAIRABLE_CATEGORIES = frozenset({"schema_error", "source_error"})
+# Ghost shows a worker offline after 120 s without a beat, and a provider call
+# can run 240 s. The task heartbeat also refreshes the worker's last_seen
+# (AGENT-02), so it must beat well inside that window whatever the env says.
+LEASE_HEARTBEAT_MAX_SECONDS = 60
 STOP_EVENT = threading.Event()
 
 
@@ -496,7 +500,7 @@ class LeaseHeartbeat:
         self.ghost = ghost
         self.task_id = task_id
         self.lease_token = lease_token
-        self.interval = interval
+        self.interval = min(int(interval), LEASE_HEARTBEAT_MAX_SECONDS)
         self.stop_event = threading.Event()
         self.thread = threading.Thread(target=self._run, name="lease-heartbeat", daemon=True)
 

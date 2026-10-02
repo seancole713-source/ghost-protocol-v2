@@ -502,3 +502,8 @@ def test_incomplete_error_reports_response_shape_without_content():
         "annotation_types": {"url_citation": 1},
     }
     assert "secret text" not in str(shape) and "https://" not in str(shape)
+
+
+def test_the_lease_heartbeat_beats_inside_the_offline_window():
+    """AGENT-02: same cadence cap as the Claude worker."""
+    assert worker.LeaseHeartbeat(None, "t", "l", 600).interval == worker.LEASE_HEARTBEAT_MAX_SECONDS == 60

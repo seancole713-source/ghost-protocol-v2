@@ -289,3 +289,10 @@ def test_rate_budget_enforces_hourly_and_daily_caps():
     assert budget.allowed(5000) is True
     budget.record(5000)
     assert budget.allowed(5100) is False
+
+
+def test_the_lease_heartbeat_beats_inside_the_offline_window():
+    """AGENT-02: Ghost shows a worker offline after 120 s; the task heartbeat (which now
+    refreshes last_seen) must beat well inside that, whatever the env configures."""
+    assert worker.LeaseHeartbeat(None, "t", "l", 600).interval == worker.LEASE_HEARTBEAT_MAX_SECONDS == 60
+    assert worker.LeaseHeartbeat(None, "t", "l", 30).interval == 30
