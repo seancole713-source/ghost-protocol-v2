@@ -48,3 +48,29 @@ def test_off_unless_enabled(monkeypatch):
 def test_garbage_frames_are_ignored():
     st = ST.StreamState()
     assert st.handle("not json") == [] and st.handle(frame({"T": "t", "S": "X"})) == []
+
+
+def test_a_new_session_drops_the_prior_sessions_bars_and_trades():
+    st = ST.StreamState()
+    st.handle(frame({"T": "b", "S": "SHOP", "o": 1, "h": 1, "l": 1, "c": 1, "v": 10, "t": "2026-09-23T19:59:00Z"},
+                    {"T": "t", "S": "OLD", "p": 5.0, "s": 1, "t": "2026-09-23T19:59:30Z"}))
+    assert set(st.minute_bars) == {"SHOP", "OLD"}
+    st.handle(frame({"T": "t", "S": "SHOP", "p": 2.0, "s": 1, "t": "2026-09-24T13:31:00Z"}))
+    assert set(st.minute_bars) == {"SHOP"} and len(st.minute_bars["SHOP"]) == 1
+    assert "OLD" not in st.last_trade
+    # a late frame from the prior session is not kept
+    st.handle(frame({"T": "b", "S": "OLD", "o": 1, "h": 1, "l": 1, "c": 1, "v": 1, "t": "2026-09-23T19:58:00Z"}))
+    assert "OLD" not in st.minute_bars
+
+
+def test_minute_bars_are_capped_per_symbol():
+    from datetime import datetime, timezone
+    st = ST.StreamState()
+    base = ST._epoch("2026-09-23T08:00:00Z")     # 04:00 ET
+    msgs = [{"T": "b", "S": "SHOP", "o": 1, "h": 1, "l": 1, "c": 1, "v": 1,
+             "t": datetime.fromtimestamp(base + 60 * i, tz=timezone.utc).isoformat()}
+            for i in range(ST.MAX_BARS_PER_SYMBOL + 25)]
+    st.handle(frame(*msgs))
+    bars = st.minute_bars["SHOP"]
+    assert len(bars) == ST.MAX_BARS_PER_SYMBOL
+    assert min(bars) == int(base) + 60 * 25          # the oldest were dropped, the newest kept
