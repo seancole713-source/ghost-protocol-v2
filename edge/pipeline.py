@@ -47,6 +47,7 @@ from edge.contracts import ET, GAP_AND_GO_V1, TERMINAL, issue
 from edge.ledger import Ledger
 from edge.providers import alpaca as A
 from edge.resolver import resolve_execution, resolve_market
+from shared.redaction import redact_exc
 
 LOG = logging.getLogger("edge.pipeline")
 
@@ -226,17 +227,17 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50,
     try:
         daily = A.bars_multi(get, syms, timeframe="1Day", start=(day - timedelta(days=45)).isoformat())
     except Exception as exc:  # noqa: BLE001 - no prior close, no gap: named, and the card retries
-        daily, source_errors["daily_bars"] = {}, f"{type(exc).__name__}: {str(exc)[:160]}"
+        daily, source_errors["daily_bars"] = {}, redact_exc(exc, 200)
     from edge import feeds as FD
     feed = FD.live_feed(get, store, now=now)       # IEX on the free plan; SIP once it is paid for
     try:
         snaps = A.snapshots(get, syms, feed=feed)
     except Exception as exc:  # noqa: BLE001 - recorded as missing, never guessed
-        snaps, source_errors[f"snapshots_{feed}"] = {}, f"{type(exc).__name__}: {str(exc)[:160]}"
+        snaps, source_errors[f"snapshots_{feed}"] = {}, redact_exc(exc, 200)
     try:
         items = A.news(get, syms, start=_iso(now - 86_400))
     except Exception as exc:  # noqa: BLE001
-        items, source_errors["news"] = None, f"{type(exc).__name__}: {str(exc)[:160]}"
+        items, source_errors["news"] = None, redact_exc(exc, 200)
     events = _events(items, set(syms), now)
     sip_pre = {}
     if model is not None:
@@ -245,7 +246,7 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50,
             sip_pre = A.bars_multi(get, syms, timeframe="1Min", start=_iso(_at(day, 4, 0)),
                                    end=_iso(_at(day, *FX.CUTOFF)), feed="sip")
         except Exception as exc:  # noqa: BLE001 - no features -> the model abstains, recorded
-            sip_pre, source_errors["sip_premarket_bars"] = {}, f"{type(exc).__name__}: {str(exc)[:160]}"
+            sip_pre, source_errors["sip_premarket_bars"] = {}, redact_exc(exc, 200)
 
     rows, eligible = [], []
     for sym in syms:
@@ -882,7 +883,7 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None,
         try:
             out[key] = step()
         except Exception as exc:  # noqa: BLE001 - each step fails alone, errors kept
-            out[key] = {"status": "error", "error": f"{type(exc).__name__}: {str(exc)[:160]}"}
+            out[key] = {"status": "error", "error": redact_exc(exc, 200)}
 
     def within(a, b):
         return _at(day, *a) <= now < _at(day, *b)

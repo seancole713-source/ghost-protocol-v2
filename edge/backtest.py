@@ -51,6 +51,7 @@ from edge.contracts import COUNTED, ET, WIN, issue
 from edge.pipeline import GAP_AND_GO_AUTO, GAP_BASELINE, previous_trading_day, trading_day
 from edge.providers import alpaca as A, polygon as PG
 from edge.resolver import RESOLVER_VERSION, resolve_execution, resolve_market
+from shared.redaction import redact_exc
 
 # v3: v2's historical news query had no `end`, so Alpaca paged back from NOW and the capped
 # pages held no news from the session studied -- the catalyst rule saw almost none (1 forecast
@@ -350,7 +351,7 @@ def run(get, store, *, end_day: date, days: int = 60, warmup: int = 20,
         # list, no run -- nothing is stored, and the next night tries again.
         splits = split_index(PG.splits(get, sessions_days[0], end_day, sleep=sleep))
     except Exception as exc:  # noqa: BLE001
-        return {"status": "error", "why": f"split list unavailable: {type(exc).__name__}: {str(exc)[:120]}"}
+        return {"status": "error", "why": f"split list unavailable: {redact_exc(exc, 160)}"}
     rolling, prev_rows, prev_day, results, skipped = Rolling(), None, None, [], []
     for i, day in enumerate(sessions_days):
         if i:
@@ -367,7 +368,7 @@ def run(get, store, *, end_day: date, days: int = 60, warmup: int = 20,
             try:
                 results.append(session(get, day, prev_rows, rows, rolling, splits=splits, prev_day=prev_day))
             except Exception as exc:  # noqa: BLE001
-                skipped.append({"day": day.isoformat(), "why": f"{type(exc).__name__}: {str(exc)[:80]}"})
+                skipped.append({"day": day.isoformat(), "why": redact_exc(exc, 120)})
         rolling.push(rows, day)
         prev_rows, prev_day = rows, day
     summary = summarize(results, GAP_AND_GO_AUTO.break_even_win_rate())
@@ -377,7 +378,7 @@ def run(get, store, *, end_day: date, days: int = 60, warmup: int = 20,
         from edge import models as MD
         summary["model"] = MD.train_and_register(store, dataset)
     except Exception as exc:  # noqa: BLE001 - a failed model never blocks the backtest record
-        summary["model"] = {"status": "error", "error": f"{type(exc).__name__}: {str(exc)[:160]}"}
+        summary["model"] = {"status": "error", "error": redact_exc(exc, 200)}
     summary.update({"window": [results[0]["day"], results[-1]["day"]] if results else None,
                     "skipped": skipped, "splits_in_window": sum(len(v) for v in splits.values()),
                     "completed_at": int(time.time())})

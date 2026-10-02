@@ -35,6 +35,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from edge import stats
 from edge.contracts import COUNTED, ET, GAP_AND_GO_V1, WIN, ContractError, FrozenSpecError, issue_intraday
 from edge.resolver import RESOLVER_VERSION, resolve_execution
+from shared.redaction import redact
 
 # The levels, copied (not referenced) so a later change to an intraday spec cannot move the
 # control silently. tests/test_edge_control.py checks they still equal the intraday specs'.
@@ -157,9 +158,9 @@ def grade_symbol(symbol: str, day: date, first_seen: int, bars: List[tuple], *,
             f = issue_intraday(CONTROL_SPEC, symbol=symbol, session_date=day, entry_ref=ref[0],
                                issued_at=at - 60)
         except ContractError as exc:
-            refs[name] = {"at": at, "price": ref[0], "bar": ref[1], "note": str(exc)}
+            refs[name] = {"at": at, "price": ref[0], "bar": ref[1], "note": redact(exc)}
             for c in COSTS_BPS:
-                variants[f"{name}_{c}bps"] = {"outcome": NO_REFERENCE, "note": str(exc)}
+                variants[f"{name}_{c}bps"] = {"outcome": NO_REFERENCE, "note": redact(exc)}
             continue
         refs[name] = {"at": at, "price": ref[0], "bar": ref[1], "trigger": f.entry_trigger,
                       "limit": f.entry_limit, "target": f.target, "stop": f.stop, "shares": f.shares,

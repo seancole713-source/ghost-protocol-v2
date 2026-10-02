@@ -35,6 +35,7 @@ from edge import research as RS, resolver as RV
 from edge.contracts import ContractError, issue
 from edge.research_worker import not_researched_reason
 from edge.stats import wilson
+from shared.redaction import redact
 
 DECIDED = (RV.WIN, RV.LOSS, RV.TIME_EXIT)
 MIN_PER_SIDE = 30          # below this a comparison is reported, never judged
@@ -79,7 +80,7 @@ def grade_card(get, store, *, day: date, now: int) -> Dict[str, Any]:
             f = issue(P.SPEC, symbol=r["symbol"], session_date=day, entry_ref=r["ref_price"],
                       issued_at=card["issued_at"])
         except ContractError as exc:
-            out.append({"symbol": r["symbol"], "outcome": None, "note": str(exc)})
+            out.append({"symbol": r["symbol"], "outcome": None, "note": redact(exc)})
             continue
         mb = P._minute_bars(bars.get(r["symbol"]) or [])
         m = RV.resolve_market(f, mb, complete=complete)

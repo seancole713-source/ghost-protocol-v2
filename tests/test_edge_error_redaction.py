@@ -53,3 +53,16 @@ def test_the_feed_check_stores_no_key():
 def test_premarket_error_notes_store_no_key():
     out = PM.candidates(_boom, None, day=date(2026, 9, 23), now=1)
     assert out["errors"] and FAKE not in repr(out["errors"])
+
+
+def test_stored_error_rows_are_redacted_at_the_source(monkeypatch):
+    """The card's source errors, short-data errors and control/scorecard notes are stored rows:
+    they are redacted when written, not only when read out."""
+    import inspect
+    from edge import backtest, control, intraday, paper, pipeline, scorecard
+    for mod in (pipeline, intraday, control, scorecard, backtest, paper):
+        src = inspect.getsource(mod)
+        assert "{str(exc)[" not in src, mod.__name__
+        assert '"note": str(exc)' not in src, mod.__name__
+    from shared.redaction import redact_exc
+    assert FAKE not in redact_exc(_HTTPError(f"403 for url: {URL}"), 200)

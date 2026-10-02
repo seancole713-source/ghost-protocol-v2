@@ -23,3 +23,11 @@ def test_radar_headers_use_the_notification_wording():
     assert HTML.count(">Setup score (unvalidated)</th>") >= 3       # confidence_pct (N/95) column
     assert HTML.count("P(+3% 60m) · unvalidated proxy</th>") >= 4
     assert "Not a validated probability" in HTML
+
+
+def test_admin_radar_tables_use_the_same_neutral_wording():
+    from pathlib import Path
+    admin = (Path(__file__).resolve().parents[1] / "admin.html").read_text(encoding="utf-8")
+    assert "<th>Buy</th>" not in admin and "<th>Sell</th>" not in admin
+    assert admin.count("<th>Watch level</th>") >= 3
+    assert "P(+3%) · unvalidated proxy</th>" in admin

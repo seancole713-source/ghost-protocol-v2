@@ -31,6 +31,7 @@ from edge import catalysts as C, detectors as D, radar as R, setups as S
 from edge.contracts import ET, GAP_AND_GO_V1, issue_intraday
 from edge.ledger import Ledger
 from edge.providers import alpaca as A
+from shared.redaction import redact_exc
 
 _BASE_ELIG = {"candidates": "Alpaca movers screener, top 50 gainers, every 5 min 09:45-14:30 ET",
               "feed": "IEX real-time bars (degraded); graded on SIP", "entry_window_min": 20,
@@ -122,7 +123,7 @@ def _short_data(http, store, syms: List[str], day: date, *, now: Optional[int] =
             rows = SD.fetch_finra_si_for(http, need_si)
         except Exception as exc:  # noqa: BLE001 - recorded, never guessed
             rows = None
-            store.put("edge_short_errors", ds, {"finra": f"{type(exc).__name__}: {str(exc)[:120]}", "at": now})
+            store.put("edge_short_errors", ds, {"finra": redact_exc(exc, 160), "at": now})
         for s in need_si:
             rec = cache.setdefault(s, {})
             rec["si"] = (rows or {}).get(s) if rows is not None else None

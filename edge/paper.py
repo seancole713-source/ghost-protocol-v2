@@ -26,6 +26,7 @@ from edge import fills as F
 from edge.broker_alpaca import bracket_request
 from edge.contracts import ET, TERMINAL, Forecast
 from edge.ledger import Ledger
+from shared.redaction import redact_exc
 
 PAPER_HOST = "paper-api.alpaca.markets"
 
@@ -471,7 +472,7 @@ def probe(http):
     try:
         r = http.get(f"{base_url()}/v2/account", headers=_headers(), timeout=15)
     except Exception as exc:  # noqa: BLE001
-        return B.Probe("broker.paper", "alpaca_paper", B.ERROR, note=f"{type(exc).__name__}: {str(exc)[:80]}")
+        return B.Probe("broker.paper", "alpaca_paper", B.ERROR, note=redact_exc(exc, 120))
     if r.status_code >= 400:
         return B.Probe("broker.paper", "alpaca_paper", B.classify(r.status_code), http_status=r.status_code,
                        note="the paper host refused these keys (live keys are refused here by design)")
