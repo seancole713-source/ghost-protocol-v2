@@ -301,14 +301,38 @@ def test_get_conn_does_not_park_the_event_loop(monkeypatch):
 
     monkeypatch.setattr(db, "_pool", FakePool())
     monkeypatch.setattr(db, "_GETCONN_WAIT_S", 30.0)
-    monkeypatch.setattr(db.time, "sleep", lambda _s: None)
+    slept = []
+    monkeypatch.setattr(db.time, "sleep", lambda s: slept.append(s))
 
     async def on_loop():
         with pytest.raises(db.psycopg2.pool.PoolError):
             db.get_conn()
 
     asyncio.run(on_loop())
-    assert calls["n"] == db._GETCONN_RETRIES
+    # OPS-03: fail on the first exhausted attempt; never time.sleep on the loop.
+    assert calls["n"] == 1
+    assert slept == []
+
+
+def test_get_conn_with_zero_wait_budget_never_sleeps(monkeypatch):
+    import core.db as db
+
+    calls = {"n": 0}
+
+    class FakePool:
+        def getconn(self):
+            calls["n"] += 1
+            raise db.psycopg2.pool.PoolError("connection pool exhausted")
+
+    def no_sleep(_s):
+        raise AssertionError("time.sleep called with a zero wait budget")
+
+    monkeypatch.setattr(db, "_pool", FakePool())
+    monkeypatch.setattr(db, "_GETCONN_WAIT_S", 0.0)
+    monkeypatch.setattr(db.time, "sleep", no_sleep)
+    with pytest.raises(db.psycopg2.pool.PoolError):
+        db.get_conn()
+    assert calls["n"] == 1
 
 
 # ── U05 / U04: scheduler overlap visibility + failure streaks ─────────────

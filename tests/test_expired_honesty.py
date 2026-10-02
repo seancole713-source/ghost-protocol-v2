@@ -110,6 +110,68 @@ class TestWinrateWhere:
         db._migrate_schema()
         assert not marked
 
+    def _migrate_with(self, monkeypatch, *, done, fail_backfill=False, mark_ok=True):
+        import core.db as db
+
+        executed = []
+
+        class Cursor:
+            def execute(self, sql, params=None):
+                executed.append(sql)
+                if fail_backfill and db._is_backfill(sql):
+                    raise RuntimeError("backfill unavailable")
+
+            def fetchone(self):
+                return None
+
+        class Conn:
+            def __init__(self):
+                self.cur = Cursor()
+                self.commits = 0
+
+            def cursor(self):
+                return self.cur
+
+            def commit(self):
+                self.commits += 1
+
+            def rollback(self):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        marked = []
+
+        def fake_mark(cur):
+            marked.append(True)
+            return mark_ok
+
+        monkeypatch.setattr(db, "db_conn", lambda: Conn())
+        monkeypatch.setattr(db, "_mark_backfills_done", fake_mark)
+        monkeypatch.setattr(db, "_backfills_already_done", lambda cur: done)
+        db._migrate_schema()
+        return marked, executed
+
+    def test_backfill_marker_is_written_after_first_successful_run(self, monkeypatch):
+        """OPS-02: a fresh marker + every gated backfill succeeding must persist
+        completion, so the run-once backfills do not repeat on every boot."""
+        import core.db as db
+
+        marked, executed = self._migrate_with(monkeypatch, done=False)
+        assert marked == [True]
+        assert sum(1 for s in executed if db._is_backfill(s) and "UPDATE predictions" in s) == 3
+
+    def test_backfills_skipped_and_marker_untouched_once_done(self, monkeypatch):
+        import core.db as db
+
+        marked, executed = self._migrate_with(monkeypatch, done=True)
+        assert not marked
+        assert not any(db._is_backfill(s) and "UPDATE predictions" in s for s in executed)
+
     def test_fragment_math(self):
         """Simulate the denominator against a mixed population."""
         rows = [

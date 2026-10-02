@@ -118,6 +118,14 @@ def get_conn():
         except psycopg2.pool.PoolError as exc:
             last_err = exc
             attempt += 1
+            # OPS-03: with no wait budget (event-loop thread, or DB_POOL_WAIT_S=0)
+            # fail on the first exhausted attempt — the retry loop below calls
+            # time.sleep, which would block every coroutine on the loop.
+            if wait_s <= 0:
+                LOGGER.warning(
+                    "DB pool exhausted (max=%s); no wait on this thread", _POOL_MAX,
+                )
+                break
             if attempt >= _GETCONN_RETRIES and time.monotonic() >= deadline:
                 LOGGER.warning(
                     "DB pool exhausted after %s attempts / %.1fs (max=%s)",
@@ -389,7 +397,10 @@ def _migrate_schema():
     with db_conn() as conn:
         cur = conn.cursor()
         backfills_done = _backfills_already_done(cur)
-        backfills_complete = backfills_done
+        # Accumulator: starts True and flips False on any gated-step failure.
+        # (It used to start as backfills_done, i.e. False on a fresh marker,
+        # so the marker was never written and the backfills re-ran every boot.)
+        backfills_complete = True
         for sql in migrations:
             try:
                 # Run-once gate (checklist #17): the three idempotent full-table
@@ -406,8 +417,10 @@ def _migrate_schema():
                 if _is_backfill(sql):
                     backfills_complete = False
         if not backfills_done and backfills_complete:
-            _mark_backfills_done(cur)
-            conn.commit()
+            if _mark_backfills_done(cur):
+                conn.commit()
+            else:
+                conn.rollback()
     try:
         from core.performance_log import ensure_perf_tables
         with db_conn() as conn:
