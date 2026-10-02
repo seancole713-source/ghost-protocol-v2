@@ -16,22 +16,26 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from core.binomial_stats import wilson_lower_bound, wilson_pass, wilson_upper_bound
+
 LOGGER = logging.getLogger("ghost.research_proof")
 
 
 # ── Wilson interval ─────────────────────────────────────────────────────────
 
 def wilson_interval(wins: int, n: int, z: float = 1.96) -> Dict[str, float]:
-    """95% Wilson score interval for a binomial proportion."""
+    """95% Wilson score interval, rounded for display only.
+
+    Admission decisions must use ``binomial_stats.wilson_pass`` on the
+    unrounded bound, never this rounded payload.
+    """
     if n <= 0:
         return {"point": 0.0, "low": 0.0, "high": 0.0}
-    p = wins / n
-    denom = 1 + z * z / n
-    centre = p + z * z / (2 * n)
-    margin = z * math.sqrt((p * (1 - p) + z * z / (4 * n)) / n)
-    low = max(0.0, (centre - margin) / denom)
-    high = min(1.0, (centre + margin) / denom)
-    return {"point": round(p, 4), "low": round(low, 4), "high": round(high, 4)}
+    return {
+        "point": round(wins / n, 4),
+        "low": round(wilson_lower_bound(wins, n, z), 4),
+        "high": round(wilson_upper_bound(wins, n, z), 4),
+    }
 
 
 # ── proof computation ──────────────────────────────────────────────────────
@@ -113,7 +117,7 @@ def compute_proof(
 
     proven = (
         actionable >= min_support
-        and wilson["low"] >= target_wilson_low
+        and wilson_pass(wins, actionable, target_wilson_low, z_score)
     )
 
     return ProofResult(

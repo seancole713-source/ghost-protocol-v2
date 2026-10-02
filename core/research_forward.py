@@ -310,6 +310,9 @@ def _update_status_impl(cur, registration_id: str) -> Dict[str, Any]:
     proof = _evaluate_impl(cur, registration_id)
     if not proof.get("ok"):
         return proof
+    if proof.get("persisted_status") in _TERMINAL_STATUSES:
+        # Terminal registrations are historical; never rewrite them.
+        return proof
     status = str(proof["status"])
     terminal = status in _TERMINAL_STATUSES
     transition_ts = int(time.time())
@@ -650,7 +653,12 @@ def _evaluate_impl(cur, registration_id) -> Dict[str, Any]:
         }
 
     evaluation_now = int(time.time())
-    evidence_window_end = closed_at_ts or evaluation_now
+    # The registered calendar deadline is a frozen issuance horizon: only
+    # predictions issued on/before it may count, regardless of how many
+    # outcomes later accumulate or whether the row is still COLLECTING.
+    deadline_ts = registered_at_ts + max_calendar_days * 86400
+    evidence_window_end = min(closed_at_ts or evaluation_now, deadline_ts)
+    past_deadline = evaluation_now > deadline_ts
 
     # Count forward outcomes: predictions issued after registration,
     # matching exact artifact/contract/direction/threshold, with resolutions.
@@ -746,13 +754,18 @@ def _evaluate_impl(cur, registration_id) -> Dict[str, Any]:
 
     # Status
     status = v2_confirmatory_status(wins, n)
-    if status == "COLLECTING":
-        # Check calendar deadline
-        elapsed = evaluation_now - registered_at_ts
-        if elapsed > max_calendar_days * 86400:
-            status = "INCOMPLETE"
+    if status == "COLLECTING" and past_deadline:
+        # Deadline passed without enough in-window outcomes.
+        status = "INCOMPLETE"
+    persisted_status_superseded = False
     if persisted_status in _TERMINAL_STATUSES:
-        status = persisted_status
+        if persisted_status == "PROVEN" and status != "PROVEN":
+            # Read-time guard: a persisted PROVEN that the in-window evidence
+            # no longer supports is never reported as proven. The stored row
+            # is left untouched.
+            persisted_status_superseded = True
+        else:
+            status = persisted_status
 
     # Wilson display
     wilson = exact_wilson_display(wins, n)
@@ -815,6 +828,8 @@ def _evaluate_impl(cur, registration_id) -> Dict[str, Any]:
     all_secondary_pass = all(g["passed"] for g in secondary_gates.values())
     if status == "PROVEN" and not all_secondary_pass:
         status = "FALSIFIED"
+        if persisted_status == "PROVEN":
+            persisted_status_superseded = True
 
     return {
         "ok": True,
@@ -824,6 +839,8 @@ def _evaluate_impl(cur, registration_id) -> Dict[str, Any]:
         "direction": direction,
         "threshold": threshold,
         "registered_at_ts": registered_at_ts,
+        "deadline_ts": deadline_ts,
+        "past_deadline": past_deadline,
         "n": n,
         "wins": wins,
         "losses": losses,
@@ -840,6 +857,7 @@ def _evaluate_impl(cur, registration_id) -> Dict[str, Any]:
         "all_secondary_pass": all_secondary_pass,
         "status": status,
         "persisted_status": persisted_status,
+        "persisted_status_superseded": persisted_status_superseded,
         "closed_at_ts": closed_at_ts,
         "blocked_prediction_id": blocked_prediction_id,
         "freeze_ts": freeze_ts,
