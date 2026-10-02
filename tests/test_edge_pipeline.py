@@ -736,11 +736,77 @@ def test_research_written_after_the_card_never_reaches_it_and_reads_not_research
     row = {r["symbol"]: r for r in ledger.store.get("edge_cards", DAY.isoformat())["rows"]}["SHOP"]
     assert row["research_status"] == "not_researched"
     assert row["verified_verdict"] != "ELIGIBLE"
-    # The same record, finished before a later card, would have been used.
+    # The same record, finished before 09:05 ET (frozen v1: "made before 09:05 ET"), is used.
     ledger2 = Ledger(MemoryStore())
     ledger2.store.put("edge_research", "2026-09-23|SHOP", {
-        "day": "2026-09-23", "symbol": "SHOP", "made_at": ts(9, 4), "finished_at": ts(9, 5),
+        "day": "2026-09-23", "symbol": "SHOP", "made_at": ts(9, 3), "finished_at": ts(9, 4),
         "status": "researched", "claims": [claim], "review": review})
     P.morning_card(FakeAlpaca(), ledger2, now=ts(9, 10))
     row2 = {r["symbol"]: r for r in ledger2.store.get("edge_cards", DAY.isoformat())["rows"]}["SHOP"]
     assert row2["research_status"] == "researched"
+
+
+# ---- frozen specs: the fingerprints never move; a refused spec never takes the card down ----------
+
+FROZEN_HASHES = {   # spec_hash() of every frozen experiment as registered in production (7a1edea)
+    "catalyst_breakout@v1": "e2f4657bada0a994d115a4f355c89ac096466ec50b9371633400ccf289dcc372",
+    "crowded_short_ignition@v1": "42240af1bb9b8f4a510b84f5d911b800d423eda0daea25789a9e0065b61c1299",
+    "gap_and_go@v1": "6b99e5306855af2f6dbd40bd8df069bbf7d2131f4c05d8435c7eb2b080b11cc0",
+    "gap_and_go_auto@v1": "b2e4106e868a14e5651b96b6bd890a97aabbd328425b87ba0214a5032d76ae20",
+    "gap_and_go_verified@v1": "01ce0bde8477be8b2044c724626de71378b0b3a65434a8592ba8f12fd328682f",
+    "gap_baseline@v1": "038b5e8aca95950e33bbd7ecc5a01eb1cfa797db687889c5de677aef6f20c014",
+    "intraday_continuation@v1": "de33cf2976757efc0275f80d029f8b453f4af886c0058c33f38f504c11a7a527",
+    "intraday_continuation@v2": "c109c89824413df2ed9cdba804978ac264bfc64e07b990d1951a8157b760a118",
+    "short_interest_ignition@v1": "adf8c21524fd43be9b7cc5c99d3439d5aecbed0d36943d095a092ff7475f25f9",
+}
+
+
+def test_no_frozen_experiment_spec_changes_its_fingerprint():
+    """2026-10-02: an edited eligibility sentence changed gap_and_go_verified@v1's hash; the
+    ledger refused it in production and the whole morning card failed. Any edit to a frozen spec
+    is a new version (@v2), never an in-place change."""
+    from edge import intraday as I
+    from edge.contracts import ExperimentSpec
+    specs = {v.experiment_id: v.spec_hash() for m in (P, I) for v in vars(m).values()
+             if isinstance(v, ExperimentSpec)}
+    for eid, h in FROZEN_HASHES.items():
+        assert specs.get(eid) == h, f"{eid} changed: register the change as a new version"
+
+
+def test_a_refused_frozen_spec_skips_only_its_own_experiment(ledger, monkeypatch, caplog):
+    from dataclasses import replace
+    monkeypatch.setenv("EDGE_RESEARCH_ENABLED", "1")
+    monkeypatch.setattr(P._research(), "verdict", lambda *a, **k: {"catalyst": None, "dilutive": None})
+    # The verified experiment is already registered under a different hash (as if its spec moved).
+    ledger.register(replace(P.GAP_VERIFIED, description="an older wording"), now=ts(8, 0))
+    out = P.morning_card(FakeAlpaca(), ledger, now=ts(9, 10))
+    assert out["status"] == "issued" and out["forecasts"] == ["SHOP"]     # the card still issues
+    card = ledger.store.get("edge_cards", DAY.isoformat())
+    assert P.VERIFIED_EID in card["refused_specs"]
+    assert not ledger.store.scan("forecasts", experiment_id=P.VERIFIED_EID)
+
+
+def test_v1_verified_uses_only_research_made_before_0905(ledger, monkeypatch):
+    """Research now runs to the card deadline, but gap_and_go_verified@v1 is frozen as
+    'research made before 09:05 ET': the verdict cutoff is capped at 09:05."""
+    monkeypatch.setenv("EDGE_RESEARCH_ENABLED", "1")
+    seen = []
+    monkeypatch.setattr(P._research(), "verdict",
+                        lambda store, **k: seen.append(k["issued_at"]) or {"catalyst": None, "dilutive": None})
+    P.morning_card(FakeAlpaca(), ledger, now=ts(9, 20), clock=lambda: ts(9, 21))
+    assert seen and max(seen) == ts(9, 5)
+
+
+def test_upgrade_over_production_registrations_issues_the_card(ledger, monkeypatch):
+    """Audit NEW-01: fresh-store tests never exercised an upgrade. Seed the store with the
+    experiment rows exactly as production holds them (hashes registered before this release);
+    the new code must register over them without a FrozenSpecError and issue the card."""
+    monkeypatch.setenv("EDGE_RESEARCH_ENABLED", "1")
+    monkeypatch.setattr(P._research(), "verdict", lambda *a, **k: {"catalyst": None, "dilutive": None})
+    for spec in P.EXPERIMENTS:
+        ledger.store.put("experiments", spec.experiment_id, {
+            "experiment_id": spec.experiment_id, "spec_hash": FROZEN_HASHES[spec.experiment_id],
+            "spec": {}, "registered_at": ts(8, 0, date(2026, 9, 22)), "status": "active"})
+    out = P.morning_card(FakeAlpaca(), ledger, now=ts(9, 10))
+    assert out["status"] == "issued" and out["forecasts"] == ["SHOP"]
+    assert ledger.store.get("edge_cards", DAY.isoformat())["refused_specs"] == {}

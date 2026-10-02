@@ -212,7 +212,13 @@ def _find_json_object(text: str) -> Dict[str, Any]:
 CITED_SOURCE_TYPES = frozenset({"web_search_result_location"})
 # v3 (AGENT-01): the model's own source_refs no longer ADD sources; only
 # provider citations do, and un-attested model refs are kept as unverified_refs.
-SOURCE_POLICY = "cited_only/v3"
+# v4: the final answer is a JSON block, which carries no inline citations, so under
+# v3 almost every submission had zero sources and was quarantined (2026-10-02). A
+# page the provider actually RETRIEVED in this run's web search and that the model
+# lists as a source is attested too (attestation="retrieved"; inline citations are
+# attestation="cited"). Raw hits the model does not list are still never stored
+# (F36), and a URL nothing retrieved stays unverified.
+SOURCE_POLICY = "cited_or_retrieved/v4"
 
 
 def _iter_citations(content: Any) -> Iterable[Dict[str, Any]]:
@@ -250,6 +256,41 @@ def _source_refs_from_response(content: Any, now: int) -> list[Dict[str, Any]]:
     return refs[:25]
 
 
+def _retrieved_results(content: Any) -> Dict[str, Dict[str, Any]]:
+    """Pages the provider returned in ``web_search_tool_result`` blocks, by URL."""
+    out: Dict[str, Dict[str, Any]] = {}
+    for block in content if isinstance(content, list) else []:
+        if not isinstance(block, dict) or block.get("type") != "web_search_tool_result":
+            continue
+        for hit in block.get("content") or []:
+            if not isinstance(hit, dict) or hit.get("type") != "web_search_result":
+                continue
+            locator = str(hit.get("url") or "").strip()
+            parsed = urlparse(locator)
+            if locator and parsed.scheme in {"http", "https"} and parsed.netloc and locator not in out:
+                out[locator] = hit
+    return out
+
+
+def _attested_refs(values: Any, cited: list[Dict[str, Any]], retrieved: Dict[str, Dict[str, Any]],
+                   now: int) -> list[Dict[str, Any]]:
+    """Cited pages, then pages the model lists that this run's search retrieved (v4)."""
+    out = [{**c, "attestation": "cited"} for c in cited]
+    seen = {str(c.get("locator") or "") for c in cited}
+    for locator in _model_refs_by_locator(values):
+        hit = retrieved.get(locator)
+        if hit is None or locator in seen:
+            continue
+        seen.add(locator)
+        ref: Dict[str, Any] = {"kind": "web_search", "locator": locator[:2048], "retrieved_ts": now,
+                               "attestation": "retrieved"}
+        title = str(hit.get("title") or "").strip()
+        if title:
+            ref["title"] = title[:300]
+        out.append(ref)
+    return out
+
+
 def _model_refs_by_locator(values: Any) -> Dict[str, Dict[str, Any]]:
     by_locator: Dict[str, Dict[str, Any]] = {}
     for item in values if isinstance(values, list) else []:
@@ -284,6 +325,8 @@ def _normalize_source_refs(values: Any, cited: list[Dict[str, Any]], now: int) -
             "locator": locator[:2048],
             "retrieved_ts": now,
         }
+        if attested.get("attestation"):
+            ref["attestation"] = str(attested["attestation"])[:16]
         for key in ("title", "note"):
             value = str(item.get(key) or "").strip()
             if value:
@@ -463,8 +506,10 @@ RESEARCH_DRAFT:
             ).strip()
             envelope = _find_json_object(text)
             format_repaired = True
-        source_refs = _normalize_source_refs(envelope.get("source_refs"), citations, now)
-        unverified_refs = _unverified_refs(envelope.get("source_refs"), citations)
+        attested = _attested_refs(envelope.get("source_refs"), citations,
+                                  _retrieved_results(original_body.get("content")), now)
+        source_refs = _normalize_source_refs(envelope.get("source_refs"), attested, now)
+        unverified_refs = _unverified_refs(envelope.get("source_refs"), attested)
         confidence = envelope.get("agent_confidence")
         try:
             confidence = float(confidence) if confidence is not None else None
@@ -489,6 +534,7 @@ RESEARCH_DRAFT:
                 "research_usage": original_body.get("usage"),
                 "text": text[:50000],
                 "citation_count": len(citations),
+                "retrieved_source_count": sum(1 for r in source_refs if r.get("attestation") == "retrieved"),
                 "source_policy": SOURCE_POLICY,
                 "format_repaired": format_repaired,
             },

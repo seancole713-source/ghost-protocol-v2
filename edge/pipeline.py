@@ -43,7 +43,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from edge import catalysts as C, detectors as D, health as H, miss_audit as M, setups as S
 from edge import universe as U
-from edge.contracts import ET, GAP_AND_GO_V1, TERMINAL, issue
+from edge.contracts import ET, GAP_AND_GO_V1, TERMINAL, FrozenSpecError, issue
 from edge.ledger import Ledger
 from edge.providers import alpaca as A
 from edge.resolver import resolve_execution, resolve_market
@@ -86,8 +86,7 @@ GAP_VERIFIED = replace(
     description="Gap-and-Go v1 levels; catalyst and dilution judged from reviewed, cited Claude research "
                 "made before the card (edge/research_worker.py).",
     eligibility={**GAP_AND_GO_V1.eligibility,
-                 "catalyst": "reviewed Claude research claim, company-specific, finished before the card "
-                             "was issued (09:05-09:28 ET)",
+                 "catalyst": "reviewed Claude research claim, company-specific, made before 09:05 ET",
                  "reference_price": "IEX latest trade, current session, <=30 min old",
                  "candidates": "Alpaca movers screener, top 50 gainers"},
 )
@@ -210,10 +209,17 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50,
             "health_banner": EARLY_CLOSE_NOTE, "rows": []})
         return {"status": "early_close", "day": day.isoformat(), "note": EARLY_CLOSE_NOTE}
     research_on = _research().enabled()
+    refused_specs: Dict[str, str] = {}
     for spec in EXPERIMENTS:
         if spec is GAP_VERIFIED and not research_on:
             continue
-        ledger.register(spec, now=now)
+        try:
+            ledger.register(spec, now=now)
+        except FrozenSpecError as exc:
+            # A changed frozen spec refuses only its own experiment; it must never take the
+            # whole card (and every other experiment's forecast) down with it.
+            LOG.error("frozen spec refused, experiment skipped today: %s", exc)
+            refused_specs[spec.experiment_id] = str(exc)[:200]
     from edge import features as FX, models as MD
     model = MD.current(store)            # (artifact, spec) only if a model QUALIFIED out of sample
     if model is not None:
@@ -265,7 +271,10 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50,
         b = S.decide("gap_baseline", signals)
         v = None
         if research_on:
-            rv = _research().verdict(store, day=day.isoformat(), symbol=sym, issued_at=int(clock()))
+            # Frozen v1 rule: research counts only if made before 09:05 ET, even though research now
+            # runs to the card deadline (later research serves the operator card, never v1).
+            rv = _research().verdict(store, day=day.isoformat(), symbol=sym,
+                                     issued_at=min(int(clock()), _at(day, 9, 5)))
             vsig = dict(signals)
             nr = rv.get("not_researched")
             vsig["catalyst"] = (D.Signal("catalyst", D.UNKNOWN, evidence={
@@ -322,12 +331,14 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50,
                     "note": "card data failed by an error; nothing stored or issued, retried next tick "
                             f"and issued regardless from {CARD_LAST_TRY[0]:02d}:{CARD_LAST_TRY[1]:02d} ET"}
 
-    chosen = _issue_top(ledger, SPEC, rows, eligible, day=day, now=now, clock=clock, late=late,
-                        verdict_key="verdict", reasons_key="reasons", missing_key="missing", id_key="forecast_id")
+    chosen = [] if SPEC.experiment_id in refused_specs else _issue_top(
+        ledger, SPEC, rows, eligible, day=day, now=now, clock=clock, late=late,
+        verdict_key="verdict", reasons_key="reasons", missing_key="missing", id_key="forecast_id")
     base_eligible = [r for r in rows if r["baseline_verdict"] == S.ELIGIBLE]
-    base_chosen = _issue_top(ledger, GAP_BASELINE, rows, base_eligible, day=day, now=now, clock=clock, late=late,
-                             verdict_key="baseline_verdict", reasons_key="baseline_reasons",
-                             missing_key="baseline_missing", id_key="baseline_forecast_id")
+    base_chosen = [] if GAP_BASELINE.experiment_id in refused_specs else _issue_top(
+        ledger, GAP_BASELINE, rows, base_eligible, day=day, now=now, clock=clock, late=late,
+        verdict_key="baseline_verdict", reasons_key="baseline_reasons",
+        missing_key="baseline_missing", id_key="baseline_forecast_id")
     model_chosen = []
     if model is not None and ledger.store.scan("forecasts", experiment_id=model[1].experiment_id,
                                                session_date=day.isoformat()):
@@ -360,7 +371,7 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50,
             ledger.abstain(experiment_id=mspec.experiment_id, symbol=r["symbol"], session_date=day.isoformat(),
                            reasons=list(why), now=now)
     ver_chosen = []
-    if research_on:
+    if research_on and VERIFIED_EID not in refused_specs:
         ver_chosen = _issue_top(ledger, GAP_VERIFIED, rows,
                                 [r for r in rows if r["verified_verdict"] == S.ELIGIBLE], day=day, now=now,
                                 clock=clock, late=late,
@@ -376,7 +387,7 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50,
     ], now)
     blocking = {eid: H.release_allowed(req, health) for eid, req in REQUIRES.items()}
     card = {"day": day.isoformat(), "issued_at": now, "data_as_of": now, "written_at": int(clock()),
-            "experiment_id": EID, "late_refused": late,
+            "experiment_id": EID, "late_refused": late, "refused_specs": refused_specs,
             "candidates": len(rows), "priced": priced, "eligible": len(eligible),
             "forecasts": [r["symbol"] for r in chosen],
             "trades": _trades(store, chosen),
