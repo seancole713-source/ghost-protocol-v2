@@ -179,6 +179,7 @@ def grade_day(get, store, *, day: date, now: int) -> Dict[str, Any]:
         return {"status": "already_graded", "rows": len(prior.get("rows") or [])}
     register(store, now=now)
     base = {"day": ds, "graded_at": now, "design_version": DESIGN["version"], "design_hash": DESIGN_HASH,
+            "resolver_version": V1.RESOLVER_VERSION,
             "label": LABEL}
     radar = store.scan("edge_radar", session_date=ds)
     if not radar:
