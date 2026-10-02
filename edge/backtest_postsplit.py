@@ -19,6 +19,16 @@ says whether the split matters, not just whether momentum does.
 Costs: these are thin, volatile names. Results are stated at 10, 25 and 50 bps a side.
 Limits, stated not hidden: a proxy for time-of-day RVOL (not the 10-session curve); SIP
 minute bars; the 10:00 decision uses bars that closed by 10:00.
+
+Price basis (v2, the same fix as edge.backtest v8 / EDGE-09): every series is raw as traded --
+Polygon grouped daily with adjusted=false, Alpaca minute bars with adjustment=raw -- and a prior
+session's close and share volume are restated onto the decision day's basis only for splits
+executed after that session and on or before the decision day (edge.backtest.share_factor).
+v1 took the prior-day / 5-day returns, the $1 floor and the 20-day share volume from
+split-ADJUSTED daily bars (restated for splits executed long afterwards: a later 1-for-10
+reverse split made a $0.40 name read $4.00 and cut its average share volume by ten, so the RVOL
+proxy against raw minute volume read 10x) while the minute bars stayed raw. v1's record is kept
+as it was and is never pooled with v2's. The rule itself is unchanged.
 """
 from __future__ import annotations
 
@@ -29,19 +39,23 @@ from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 from edge import stats
+from edge.backtest import (MINUTE_ADJUSTMENT, PRICE_BASIS, PRICE_BASIS_DETAIL, Splits, share_factor,
+                           split_index)
 from edge.contracts import COUNTED, ET, WIN, ContractError, issue_intraday
 from edge.providers import alpaca as A, polygon as PG
-from edge.resolver import resolve_execution
+from edge.resolver import RESOLVER_VERSION, resolve_execution
 from shared.redaction import redact_exc
 
-VERSION = "post_split_momentum_backtest_v1"
+# v2: one raw-as-traded price basis with point-in-time split restatement (see the module doc).
+VERSION = "post_split_momentum_backtest_v2"
 LOOKBACK_SPLIT_DAYS, MIN_PRIOR_DAY, MIN_5DAY, MIN_PRIOR_DOLLARS = 120, 25.0, 50.0, 2_000_000.0
 RVOL_MIN, NEAR_HIGH = 5.0, 0.98
 COSTS = (10.0, 25.0, 50.0)
 LIMITS = ["research evidence on past sessions, NOT the forward record",
           "RVOL is a proxy: 09:30-10:00 volume vs 20-day average daily volume x 30/390",
           "costs stated at 10 / 25 / 50 bps a side; thin names can cost more",
-          "split list from Polygon reference splits; an unlisted split is a miss, not a pass"]
+          "split list from Polygon reference splits; an unlisted split is a miss, not a pass",
+          "prices and volume as traded (raw), restated only for splits executed by the session"]
 
 
 def _spec():
@@ -55,25 +69,13 @@ def _at(day: date, hh: int, mm: int) -> int:
     return int(datetime(day.year, day.month, day.day, hh, mm, tzinfo=ET).timestamp())
 
 
-def reverse_splits(get, start: date, end: date, *, sleep=time.sleep) -> Dict[str, List[date]]:
-    """{ticker: [execution dates]} of reverse splits executed in [start, end]."""
+def reverse_splits(splits: Splits) -> Dict[str, List[date]]:
+    """{ticker: [execution dates]} of the REVERSE splits (share multiplier < 1) in `splits`."""
     out: Dict[str, List[date]] = {}
-    url = PG._base_url() + "/v3/reference/splits"
-    params: Optional[Dict[str, Any]] = {"execution_date.gte": start.isoformat(),
-                                        "execution_date.lte": end.isoformat(), "limit": 1000,
-                                        "apiKey": PG._key()}
-    for _ in range(20):
-        r = PG._get_patiently(get, url, params, sleep=sleep)
-        r.raise_for_status()
-        p = r.json() or {}
-        for s in p.get("results") or []:
-            t, frm, to = str(s.get("ticker") or "").upper(), s.get("split_from"), s.get("split_to")
-            if t and frm and to and float(to) < float(frm) and s.get("execution_date"):
-                out.setdefault(t, []).append(date.fromisoformat(s["execution_date"]))
-        nxt = p.get("next_url")
-        if not nxt:
-            break
-        url, params = nxt, {"apiKey": PG._key()}
+    for t, rows in (splits or {}).items():
+        for ex, mult in rows:
+            if mult < 1.0:
+                out.setdefault(t, []).append(ex)
     return out
 
 
@@ -107,14 +109,22 @@ def run(get, store, *, end_day: date, days: int = 60, warmup: int = 6,
             session_days.append(d)
         d -= timedelta(days=1)
     session_days.reverse()
-    splits = reverse_splits(get, session_days[0] - timedelta(days=LOOKBACK_SPLIT_DAYS), end_day, sleep=sleep)
+    try:
+        # The whole split list (forward and reverse): it picks the universe AND restates prior
+        # sessions onto each decision day's basis. A partial list would leave names on mixed
+        # bases, so no list, no run -- nothing is stored and the next night tries again.
+        all_splits = split_index(PG.splits(get, session_days[0] - timedelta(days=LOOKBACK_SPLIT_DAYS),
+                                           end_day, sleep=sleep))
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "error", "why": f"split list unavailable: {type(exc).__name__}: {str(exc)[:120]}"}
+    splits = reverse_splits(all_splits)
     spec = _spec()
     rolling, closes, trades, skipped = Rolling(), {}, [], []
     for i, day in enumerate(session_days):
         if i:
             sleep(pace)
         try:
-            rows = PG.grouped_daily(get, day)
+            rows = PG.grouped_daily(get, day, adjusted=False)
         except Exception as exc:  # noqa: BLE001
             skipped.append({"day": day.isoformat(), "why": type(exc).__name__})
             continue
@@ -122,7 +132,7 @@ def run(get, store, *, end_day: date, days: int = 60, warmup: int = 6,
             continue
         if i >= 20 + warmup:
             try:
-                trades.extend(_session(get, day, closes, rolling, splits, spec))
+                trades.extend(_session(get, day, closes, rolling, splits, spec, all_splits=all_splits))
             except Exception as exc:  # noqa: BLE001
                 skipped.append({"day": day.isoformat(), "why": redact_exc(exc, 120)})
         for r in rows:
@@ -130,24 +140,40 @@ def run(get, store, *, end_day: date, days: int = 60, warmup: int = 6,
             if t and c:
                 closes.setdefault(t, []).append((day, float(c), float(r.get("v") or 0)))
                 del closes[t][:-7]
-        rolling.push(rows)
-    out = {"version": VERSION, "window": [session_days[20 + warmup].isoformat(), end_day.isoformat()],
+        rolling.push(rows, day)
+    out = {"version": VERSION, "resolver_version": RESOLVER_VERSION,
+           "price_basis": PRICE_BASIS, "price_basis_detail": PRICE_BASIS_DETAIL,
+           "window": [session_days[20 + warmup].isoformat(), end_day.isoformat()],
            "limits": LIMITS, "break_even": spec.break_even_win_rate(), "skipped": skipped,
-           "reverse_split_tickers": len(splits), "arms": {}}
+           "reverse_split_tickers": len(splits),
+           "splits_in_window": sum(len(v) for v in all_splits.values()), "arms": {}}
     for arm in ("post_split", "control_no_split"):
         rows = [t for t in trades if t["arm"] == arm]
         out["arms"][arm] = {"signals": len(rows), **{f"cost_{int(c)}bps": _summ(rows, c, out["break_even"])
                                                     for c in COSTS}}
     store.put("edge_backtest_postsplit", VERSION, {**out, "trades": trades[:2000], "completed_at": int(time.time())})
-    return {"status": "complete", **{k: out[k] for k in ("version", "window", "arms")}}
+    return {"status": "complete", **{k: out[k] for k in ("version", "window", "arms", "price_basis")}}
 
 
-def _session(get, day: date, closes, rolling, splits, spec) -> List[Dict[str, Any]]:
+def _restated(all_splits: Optional[Splits], t: str, hist: List[tuple], day: date) -> Tuple[List[tuple], float]:
+    """`hist` [(session, close, shares)] as traded, restated onto `day`'s basis for splits executed
+    after each session and on or before `day`; with the factor applied to the latest session."""
+    out, f1 = [], 1.0
+    for d, c, v in hist:
+        f = share_factor(all_splits, t, d, day)
+        out.append((d, c / f, v * f))
+        f1 = f
+    return out, f1
+
+
+def _session(get, day: date, closes, rolling, splits, spec, *,
+             all_splits: Optional[Splits] = None) -> List[Dict[str, Any]]:
     from edge.backtest import _bars
-    cands = []
-    for t, hist in closes.items():
-        if not t.isalpha() or len(t) > 5 or len(hist) < 6:
+    cands, factors = [], {}
+    for t, raw_hist in closes.items():
+        if not t.isalpha() or len(t) > 5 or len(raw_hist) < 6:
             continue
+        hist, f1 = _restated(all_splits, t, raw_hist, day)
         (_, c1, v1), (_, c0, _v0) = hist[-1], hist[-2]
         c5 = hist[-6][1]
         prior = (c1 / c0 - 1) * 100 if c0 else 0
@@ -156,14 +182,17 @@ def _session(get, day: date, closes, rolling, splits, spec) -> List[Dict[str, An
             continue
         recent = [x for x in splits.get(t, []) if day - timedelta(days=LOOKBACK_SPLIT_DAYS) <= x < day]
         cands.append((t, "post_split" if recent else "control_no_split", round(prior, 1), round(five, 1)))
+        if any(share_factor(all_splits, t, d, day) != 1.0 for d, _c, _v in raw_hist):
+            factors[t] = {"raw_prior_close": raw_hist[-1][1], "prior_share_factor": f1}
     if not cands:
         return []
     bars = A.bars_multi(get, [c[0] for c in cands], timeframe="1Min", start=datetime.fromtimestamp(
-        _at(day, 9, 30), tz=ET).isoformat(), end=datetime.fromtimestamp(_at(day, 16, 0), tz=ET).isoformat())
+        _at(day, 9, 30), tz=ET).isoformat(), end=datetime.fromtimestamp(_at(day, 16, 0), tz=ET).isoformat(),
+        adjustment=MINUTE_ADJUSTMENT)
     out = []
     for t, arm, prior, five in cands:
         b = _bars(bars.get(t) or [])
-        sh, _dol = rolling.avg(t)
+        sh, _dol = rolling.avg(t, as_of=day, splits=all_splits)
         sig = _signal(b, day, sh or 0)
         if sig is None:
             continue
@@ -174,7 +203,8 @@ def _session(get, day: date, closes, rolling, splits, spec) -> List[Dict[str, An
             continue
         res = {f"cost_{int(c)}bps": resolve_execution(f, b, cost_bps_per_side=c) for c in COSTS}
         out.append({"day": day.isoformat(), "symbol": t, "arm": arm, "prior_day_pct": prior, "five_day_pct": five,
-                    **ev, **{k: {"simulated": x.outcome, "pnl_usd": x.pnl_usd} for k, x in res.items()}})
+                    **ev, **{k: {"simulated": x.outcome, "pnl_usd": x.pnl_usd} for k, x in res.items()},
+                    **({"split_restated": factors[t]} if t in factors else {})})
     return out
 
 
