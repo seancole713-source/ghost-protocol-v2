@@ -256,12 +256,9 @@ def rebuild_regime_calibration(*, symbol: Optional[str] = None, horizon: int = 5
     h = horizon if horizon in HORIZONS else 5
     try:
         from core.db import db_conn
-        from core.super_ghost_ledger import ensure_ledger_table
 
         with db_conn() as conn:
             cur = conn.cursor()
-            ensure_ledger_table(cur)
-            ensure_regime_calibration_tables(cur)
             rows = _resolved_rows(cur, symbol=symbol, horizon=h, limit=limit)
             grouped: Dict[Tuple[str, int, str, str, str], List[Dict[str, Any]]] = {}
             for row in rows:
@@ -354,7 +351,6 @@ def get_regime_calibration_profile(symbol: str, direction: str, report_or_regime
         from core.db import db_conn
         with db_conn() as conn:
             cur = conn.cursor()
-            ensure_regime_calibration_tables(cur)
             seen = set()
             for csym, crb, csb in candidates:
                 key = (csym, crb, csb)
@@ -470,7 +466,6 @@ def regime_calibration_summary(*, symbol: Optional[str] = None, horizon: int = 5
         from core.db import db_conn
         with db_conn() as conn:
             cur = conn.cursor()
-            ensure_regime_calibration_tables(cur)
             params: List[Any] = [h]
             where = "horizon_days=%s"
             if symbol:
@@ -500,6 +495,10 @@ def regime_calibration_summary(*, symbol: Optional[str] = None, horizon: int = 5
                     "primary_mistake_type": payload.get("primary_mistake_type"), "available": bool((r[5] or 0) >= MIN_REGIME_SAMPLES),
                 })
     except Exception as exc:
+        from core.db import missing_schema_result
+        missing = missing_schema_result(exc, {"profiles": []})
+        if missing:
+            return missing
         return {"ok": False, "error": str(exc)[:180], "profiles": []}
     return {
         "ok": True,

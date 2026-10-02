@@ -227,12 +227,9 @@ def rebuild_range_calibration(*, symbol: Optional[str] = None, horizon: int = 5,
     h = horizon if horizon in HORIZONS else 5
     try:
         from core.db import db_conn
-        from core.super_ghost_precision import ensure_precision_tables
 
         with db_conn() as conn:
             cur = conn.cursor()
-            ensure_precision_tables(cur)
-            ensure_range_calibration_tables(cur)
             precision_profiles = _read_precision_profiles(cur, symbol=symbol, horizon=h, limit=limit)
             now = _now()
             profiles = []
@@ -278,7 +275,6 @@ def get_range_calibration_profile(symbol: str, direction: str, *, horizon: int =
         from core.db import db_conn
         with db_conn() as conn:
             cur = conn.cursor()
-            ensure_range_calibration_tables(cur)
             cur.execute(
                 """
                 SELECT sample_count, avg_precision_score, direction_win_rate,
@@ -444,7 +440,6 @@ def range_calibration_summary(*, symbol: Optional[str] = None, horizon: int = 5,
         from core.db import db_conn
         with db_conn() as conn:
             cur = conn.cursor()
-            ensure_range_calibration_tables(cur)
             params: List[Any] = [h]
             where = "horizon_days=%s"
             if symbol:
@@ -474,6 +469,10 @@ def range_calibration_summary(*, symbol: Optional[str] = None, horizon: int = 5,
                     "available": bool((r[3] or 0) >= MIN_CALIBRATION_SAMPLES),
                 })
     except Exception as exc:
+        from core.db import missing_schema_result
+        missing = missing_schema_result(exc, {"profiles": []})
+        if missing:
+            return missing
         return {"ok": False, "error": str(exc)[:180], "profiles": []}
     return {
         "ok": True,

@@ -316,6 +316,37 @@ def run_with_deadlock_retry(fn, *, label: str, attempts: int = 3, backoff_s: flo
     return None
 
 
+# Schema-missing SQLSTATEs: 42P01 undefined_table, 42703 undefined_column.
+_MISSING_SCHEMA_SQLSTATES = ("42P01", "42703")
+SCHEMA_MISSING_REASON = "schema_not_migrated"
+
+
+def is_missing_schema_error(exc: BaseException) -> bool:
+    """True when a statement failed because a table/column does not exist.
+
+    Read paths do not run DDL (the startup migration owns the schema); they
+    use this to answer "empty, schema not migrated" instead of creating the
+    table, which took SHARE locks on every read.
+    """
+    if getattr(exc, "pgcode", None) in _MISSING_SCHEMA_SQLSTATES:
+        return True
+    msg = str(exc).lower()
+    return "does not exist" in msg and ("relation" in msg or "column" in msg)
+
+
+def missing_schema_result(exc: BaseException, empty: dict) -> Optional[dict]:
+    """``empty`` + ok/reason when ``exc`` is a missing-schema error, else None."""
+    if not is_missing_schema_error(exc):
+        return None
+    out = dict(empty)
+    out.update({
+        "ok": True,
+        "reason": SCHEMA_MISSING_REASON,
+        "detail": "table not created yet; the startup migration owns this schema",
+    })
+    return out
+
+
 _SCHEMA_BACKFILL_MARKER = "schema_backfills_v1"
 
 
@@ -511,6 +542,15 @@ def _migrate_schema():
             ensure_shadow_table(cur)
     except Exception as e:
         LOGGER.warning("Shadow outcomes table: " + str(e)[:80])
+    try:
+        # Structured news tables: read per prediction by the shadow news
+        # models and by GET /api/news/events, which no longer run this DDL.
+        from core.news_events import ensure_news_tables as ensure_news_event_tables
+        with db_conn() as conn:
+            cur = conn.cursor()
+            ensure_news_event_tables(cur)
+    except Exception as e:
+        LOGGER.warning("News event tables: " + str(e)[:80])
     try:
         from core.super_ghost_ledger import ensure_ledger_table
         with db_conn() as conn:

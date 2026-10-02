@@ -202,7 +202,6 @@ def ensure_feature_store_tables(cur) -> None:
 
 
 def persist_feature_snapshot(cur, report: Dict[str, Any], *, ledger_id: Optional[int] = None, prediction_ts: Optional[int] = None, extra_sources: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    ensure_feature_store_tables(cur)
     snap = build_feature_snapshot(report, prediction_ts=prediction_ts, extra_sources=extra_sources)
     cur.execute(
         """
@@ -238,7 +237,6 @@ def latest_snapshots(*, symbol: Optional[str] = None, limit: int = 50) -> Dict[s
         from core.db import db_conn
         with db_conn() as conn:
             cur = conn.cursor()
-            ensure_feature_store_tables(cur)
             where = "1=1"
             params: List[Any] = []
             if symbol:
@@ -261,6 +259,10 @@ def latest_snapshots(*, symbol: Optional[str] = None, limit: int = 50) -> Dict[s
             for r in rows
         ]}
     except Exception as exc:
+        from core.db import missing_schema_result
+        missing = missing_schema_result(exc, {"symbol": (symbol or "ALL").upper(), "count": 0, "snapshots": []})
+        if missing:
+            return missing
         return {"ok": False, "error": str(exc)[:160], "snapshots": []}
 
 
@@ -269,7 +271,6 @@ def leakage_audit(*, symbol: Optional[str] = None, limit: int = 200) -> Dict[str
         from core.db import db_conn
         with db_conn() as conn:
             cur = conn.cursor()
-            ensure_feature_store_tables(cur)
             where = "1=1"
             params: List[Any] = []
             if symbol:
@@ -298,4 +299,8 @@ def leakage_audit(*, symbol: Optional[str] = None, limit: int = 200) -> Dict[str
                 })
         return {"ok": True, "symbol": (symbol or "ALL").upper(), "checked": total, "leak_count": len(leaks), "status": "leak" if leaks else "clean", "leaks": leaks[:20]}
     except Exception as exc:
+        from core.db import missing_schema_result
+        missing = missing_schema_result(exc, {"symbol": (symbol or "ALL").upper(), "checked": 0, "leak_count": 0, "status": "unknown", "leaks": []})
+        if missing:
+            return missing
         return {"ok": False, "error": str(exc)[:160], "checked": 0, "leak_count": 0, "leaks": []}

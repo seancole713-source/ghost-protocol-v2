@@ -422,7 +422,8 @@ def news_available(*, max_stale_s: int = 24 * 3600, cur=None) -> bool:
             from core.db import db_conn
             with db_conn() as conn:
                 c = conn.cursor()
-                ensure_news_tables(c)
+                # No DDL: called per prediction (shadow models); the startup
+                # migration owns the schema. A missing table reads as False.
                 c.execute(sql)
                 row = c.fetchone()
         latest = row[0] if row else None

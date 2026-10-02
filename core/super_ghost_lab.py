@@ -388,12 +388,9 @@ def run_lab(*, symbol: Optional[str] = None, horizon: int = 5, limit: int = 1000
     h = horizon if horizon in HORIZONS else 5
     try:
         from core.db import db_conn
-        from core.super_ghost_ledger import ensure_ledger_table
 
         with db_conn() as conn:
             cur = conn.cursor()
-            ensure_ledger_table(cur)
-            ensure_lab_tables(cur)
             rows = _resolved_rows(cur, symbol=symbol, horizon=h, limit=limit)
             out = benchmark_candidates(rows, horizon=h)
             if persist:
@@ -444,7 +441,6 @@ def latest_lab_summary(*, symbol: Optional[str] = None, horizon: int = 5) -> Dic
         from core.db import db_conn
         with db_conn() as conn:
             cur = conn.cursor()
-            ensure_lab_tables(cur)
             where = "horizon_days = %s"
             params: List[Any] = [h]
             if symbol:
@@ -480,4 +476,8 @@ def latest_lab_summary(*, symbol: Optional[str] = None, horizon: int = 5) -> Dic
             })
             return payload
     except Exception as exc:
+        from core.db import missing_schema_result
+        missing = missing_schema_result(exc, {"available": False, "symbol": (symbol or "ALL").upper(), "horizon_days": h, "message": "No lab run persisted yet.", "candidate_manifest": candidate_manifest()})
+        if missing:
+            return missing
         return {"ok": False, "error": str(exc)[:160], "available": False}

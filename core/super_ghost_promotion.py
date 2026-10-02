@@ -338,7 +338,6 @@ def run_promotion_review(*, symbol: Optional[str] = None, horizon: int = 5, cand
             from core.db import db_conn
             with db_conn() as conn:
                 cur = conn.cursor()
-                ensure_promotion_tables(cur)
                 cur.execute(
                     """
                     INSERT INTO super_ghost_promotion_reviews (
@@ -368,7 +367,6 @@ def latest_promotion_reviews(*, symbol: Optional[str] = None, limit: int = 20) -
         from core.db import db_conn
         with db_conn() as conn:
             cur = conn.cursor()
-            ensure_promotion_tables(cur)
             where = "1=1"
             params: List[Any] = []
             if symbol:
@@ -392,4 +390,8 @@ def latest_promotion_reviews(*, symbol: Optional[str] = None, limit: int = 20) -
             for r in rows
         ], "requirements": DEFAULT_REQUIREMENTS}
     except Exception as exc:
+        from core.db import missing_schema_result
+        missing = missing_schema_result(exc, {"reviews": [], "requirements": DEFAULT_REQUIREMENTS})
+        if missing:
+            return missing
         return {"ok": False, "error": str(exc)[:160], "reviews": [], "requirements": DEFAULT_REQUIREMENTS}
