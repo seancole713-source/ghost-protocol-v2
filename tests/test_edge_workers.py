@@ -53,6 +53,31 @@ def test_reviewer_findings_quarantine():
     assert st == RS.QUARANTINED and "pilot" in why[0]
 
 
+def test_only_an_affirmative_complete_review_clears_a_claim():
+    """Audit EDGE-06: entity_ok None used to pass (only False rejected), so an empty review cleared claims."""
+    st, why = RS.reviewed_status(claim(), RS.Review("openai"))
+    assert st == RS.QUARANTINED and RS.unchecked(why)
+    assert any("entity not confirmed" in p for p in why) and any("dilution not checked" in p for p in why)
+    assert any("staleness not checked" in p for p in why)
+    full = RS.Review("openai", entity_ok=True, dilution_found=False, stale=False)
+    assert RS.reviewed_status(claim(), full) == (RS.SINGLE_SOURCE, [])
+    # A real finding is a rejection, not merely unchecked.
+    st, why = RS.reviewed_status(claim(), RS.Review("openai", entity_ok=False))
+    assert st == RS.QUARANTINED and not RS.unchecked(why)
+
+
+def test_a_reviewer_reply_is_type_checked_and_missing_answers_stay_unknown():
+    assert RS.review_gaps(RS.parse_review({}, reviewer="x"))           # empty reply: incomplete
+    r = RS.parse_review({"entity_ok": "true", "contradictions": "none", "dilution_found": 0, "stale": False},
+                        reviewer="x")
+    assert r.entity_ok is None and r.dilution_found is None and r.stale is False
+    assert len(r.schema_errors) == 3 and len(RS.review_gaps(r)) == 5
+    assert RS.parse_review(["not", "a", "dict"], reviewer="x").schema_errors == ["reply is not a JSON object"]
+    ok = RS.parse_review({"entity_ok": True, "contradictions": [], "dilution_found": False, "stale": False},
+                         reviewer="x")
+    assert RS.review_gaps(ok) == []
+
+
 def test_agreement_is_recorded_as_correlated_not_as_proof():
     ag = RS.agreement([claim(), claim(author="openai")])
     row = ag["SHOP:contract"]

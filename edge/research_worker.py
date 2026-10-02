@@ -251,8 +251,11 @@ def not_researched_reason(rec: Optional[Dict[str, Any]]) -> Optional[str]:
     if claims:
         # Claims made, but the reviewer never produced a usable check: every claim sits in
         # quarantine for THAT reason alone. Unchecked is unknown, not rejected.
-        if all(list(c.get("problems") or []) == ["no usable review"] for c in claims):
+        if all(list(c.get("problems") or []) == [RS.NO_USABLE_REVIEW] for c in claims):
             return f"review did not run (reviewer stop={rec.get('reviewer_stop')})"
+        # ... or it ran but left checks unanswered (an empty or partial reply): unknown too (EDGE-06).
+        if all(RS.unchecked(list(c.get("problems") or [])) for c in claims):
+            return f"review incomplete (reviewer stop={rec.get('reviewer_stop')})"
         return None
     if rec.get("author_tool_errors"):
         return f"web search failed: {', '.join(rec['author_tool_errors'])}"
@@ -475,16 +478,12 @@ def research_symbol(client, store, *, symbol: str, day: str, now: int, http=None
             # The author's work is kept and charged; its claims stay unchecked ("review did not run").
             rtext, c2, stop2 = None, exc.cost, "error"
         review_raw = _json(rtext)
-    review = RS.Review(reviewer=reviewer,
-                       entity_ok=(review_raw or {}).get("entity_ok"),
-                       contradictions=[str(x) for x in (review_raw or {}).get("contradictions") or []],
-                       dilution_found=(review_raw or {}).get("dilution_found"),
-                       stale=(review_raw or {}).get("stale"),
-                       notes=str((review_raw or {}).get("notes") or ""))
+    # Type-checked: a missing or mistyped answer stays None (unknown) and leaves the claim unchecked.
+    review = RS.parse_review(review_raw or {}, reviewer=reviewer)
     graded = []
     for c in claims:
         status, problems = (RS.reviewed_status(c, review) if review_raw is not None
-                            else (RS.QUARANTINED, ["no usable review"]))
+                            else (RS.QUARANTINED, [RS.NO_USABLE_REVIEW]))
         graded.append({"kind": c.kind, "statement": c.statement, "status": status, "problems": problems,
                        "urls": [x.url for x in c.citations]})
     spent = c1 + c2 + c_oai            # the daily cap covers BOTH providers
@@ -515,9 +514,31 @@ def verdict(store, *, day: str, symbol: str, issued_at: int) -> Dict[str, Option
     why = not_researched_reason(rec)
     if why:
         return {"catalyst": None, "dilutive": None, "not_researched": why}
-    usable = [c for c in rec["claims"] if c["status"] != RS.QUARANTINED]
     specific = {"earnings", "guidance", "fda_regulatory", "contract", "m_and_a", "index_inclusion", "analyst_action"}
-    dilutive = bool(rec["review"].get("dilution_found")) or any(
-        c["kind"] in ("offering_dilution", "reverse_split") for c in usable)
-    return {"catalyst": any(c["kind"] in specific for c in usable), "dilutive": dilutive,
-            "headline": next((c["statement"] for c in usable if c["kind"] in specific), None)}
+    diluting = ("offering_dilution", "reverse_split")
+    claims = rec.get("claims") or []
+    review = RS.parse_review(rec.get("review") or {}, reviewer=str(rec.get("reviewer") or ""))
+    # A claim counts only under an affirmative, complete review. A record written before that rule
+    # (audit EDGE-06) may carry a passing status from an empty review: re-checked here -> unknown.
+    complete = not RS.review_gaps(review)
+    usable = [c for c in claims if c["status"] != RS.QUARANTINED and complete]
+    pending = [c for c in claims if (c["status"] != RS.QUARANTINED and not complete)
+               or (c["status"] == RS.QUARANTINED and RS.unchecked(list(c.get("problems") or [])))]
+    headline = next((c["statement"] for c in usable if c["kind"] in specific), None)
+    out: Dict[str, Any] = {"headline": headline}
+    if headline is not None:
+        out["catalyst"] = True
+    elif any(c["kind"] in specific for c in pending):
+        out["catalyst"] = None            # a catalyst claim nobody finished checking: unknown
+        out["not_researched"] = "review incomplete: a catalyst claim was not fully checked"
+    else:
+        out["catalyst"] = False
+    # Dilution: True on any finding; False ONLY when a reviewer answered the dilution check "no" and
+    # no dilution claim is left unchecked. Unanswered is unknown, never "no dilution".
+    if review.dilution_found is True or any(c["kind"] in diluting for c in usable):
+        out["dilutive"] = True
+    elif review.dilution_found is False and not any(c["kind"] in diluting for c in pending):
+        out["dilutive"] = False
+    else:
+        out["dilutive"] = None
+    return out

@@ -320,6 +320,63 @@ def test_claims_the_reviewer_never_checked_are_unknown_not_rejected():
     assert v["catalyst"] is None and "review did not run" in v["not_researched"]
 
 
+def test_an_empty_review_never_makes_a_claim_usable():
+    """Audit EDGE-06: a reviewer reply of {} used to yield usable=1, catalyst=True, dilutive=False."""
+    store = MemoryStore()
+    out = W.research_symbol(Client([reply(AUTHOR_OK), reply("{}")]), store,
+                            symbol="SHOP", day="2026-09-23", now=ts(8, 35))
+    assert out["status"] == "researched" and out["usable"] == 0
+    rec = store.get("edge_research", "2026-09-23|SHOP")
+    assert rec["claims"][0]["status"] == RS.QUARANTINED and RS.unchecked(rec["claims"][0]["problems"])
+    assert "review incomplete" in W.not_researched_reason(rec)
+    v = W.verdict(store, day="2026-09-23", symbol="SHOP", issued_at=ts(9, 10))
+    assert v["catalyst"] is None and v["dilutive"] is None and "review incomplete" in v["not_researched"]
+
+
+@pytest.mark.parametrize("review", [
+    {"entity_ok": True, "contradictions": [], "dilution_found": None, "stale": False},     # dilution unchecked
+    {"entity_ok": True, "contradictions": [], "dilution_found": False, "stale": None},     # staleness unchecked
+    {"entity_ok": None, "contradictions": [], "dilution_found": False, "stale": False},    # entity unconfirmed
+    {"entity_ok": "yes", "contradictions": [], "dilution_found": False, "stale": False},   # mistyped
+    {"entity_ok": True, "dilution_found": False, "stale": False},                          # contradictions missing
+])
+def test_a_partial_review_leaves_the_claim_unchecked_not_clean(review):
+    store = MemoryStore()
+    out = W.research_symbol(Client([reply(AUTHOR_OK), reply(json.dumps(review))]), store,
+                            symbol="SHOP", day="2026-09-23", now=ts(8, 35))
+    assert out["usable"] == 0
+    v = W.verdict(store, day="2026-09-23", symbol="SHOP", issued_at=ts(9, 10))
+    assert v["catalyst"] is None
+    if review.get("dilution_found") is not False:
+        assert v["dilutive"] is None                 # unanswered dilution is unknown, not "no dilution"
+
+
+def test_an_old_record_cleared_by_an_empty_review_is_reread_as_unknown():
+    store = MemoryStore()      # written before EDGE-06: a passing status under an all-null review
+    store.put("edge_research", "2026-09-23|SHOP", {
+        "day": "2026-09-23", "symbol": "SHOP", "made_at": ts(8, 35), "status": "researched",
+        "claims": [{"kind": "earnings", "statement": "beat", "status": RS.SINGLE_SOURCE, "problems": []}],
+        "review": {"entity_ok": None, "contradictions": [], "dilution_found": None, "stale": None, "notes": ""}})
+    v = W.verdict(store, day="2026-09-23", symbol="SHOP", issued_at=ts(9, 10))
+    assert v["catalyst"] is None and v["dilutive"] is None
+
+
+def test_found_nothing_is_no_catalyst_but_dilution_stays_unknown_without_a_review():
+    store = MemoryStore()
+    empty = json.dumps({"claims": [], "unknowns": ["no company-specific news for SHOP"]})
+    W.research_symbol(Client([reply(empty)]), store, symbol="SHOP", day="2026-09-23", now=ts(8, 35))
+    v = W.verdict(store, day="2026-09-23", symbol="SHOP", issued_at=ts(9, 10))
+    assert v["catalyst"] is False and v["dilutive"] is None
+
+
+def test_a_complete_review_still_clears_and_answers_dilution():
+    store = MemoryStore()
+    W.research_symbol(Client([reply(AUTHOR_OK), reply(REVIEW_OK)]), store,
+                      symbol="SHOP", day="2026-09-23", now=ts(8, 35))
+    v = W.verdict(store, day="2026-09-23", symbol="SHOP", issued_at=ts(9, 10))
+    assert v["catalyst"] is True and v["dilutive"] is False and "not_researched" not in v
+
+
 def test_the_card_books_a_failed_search_as_missing_data_not_a_rejection(monkeypatch):
     import sys
     sys.path.insert(0, "tests")
