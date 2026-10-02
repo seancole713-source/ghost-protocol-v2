@@ -23,6 +23,7 @@ sets the goal; evidence still has to earn the pass.
 """
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass
 from typing import Dict, Optional
@@ -181,9 +182,15 @@ def _env_float(key: str, default: float) -> float:
     if raw is None or str(raw).strip() == "":
         return default
     try:
-        return float(raw)
+        val = float(raw)
     except Exception:
         return default
+    # GATE-01: "nan"/"inf" parse as floats but defeat max()/min() clamps
+    # (max(nan, 0.70) is nan; max(0.50, nan) is 0.50), so a NaN target used to
+    # resolve to the lo bound. Non-finite env values are rejected outright.
+    if not math.isfinite(val):
+        return default
+    return val
 
 
 def _env_int(key: str, default: int) -> int:
@@ -201,6 +208,8 @@ def resolve_float(env_key: str, field: str, *, lo: Optional[float] = None, hi: O
     spec = active_contract()
     default = float(getattr(spec, field))
     val = _env_float(env_key, default)
+    if not math.isfinite(val):
+        val = default
     if contract_name() in _NO_WEAKENING_CONTRACTS and field in _FLOOR_FIELDS:
         val = max(val, default)
     if lo is not None:

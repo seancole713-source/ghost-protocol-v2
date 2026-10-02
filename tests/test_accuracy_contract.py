@@ -14,6 +14,28 @@ def test_contract_70_clamps_weak_env_overrides(monkeypatch):
     assert resolve_float("KILL_WINRATE_FLOOR", "kill_winrate_floor") == 0.45  # P3 audit: kill = provably worse than coin-flip
 
 
+def test_non_finite_env_cannot_lower_the_precision_target(monkeypatch):
+    """GATE-01: V3_PRECISION_TARGET=nan used to resolve to the 0.50 lo bound."""
+    monkeypatch.setenv("GHOST_ACCURACY_CONTRACT", "70")
+    from core.accuracy_contract import resolve_float
+    from core.precision_gate import precision_target
+
+    for bad in ("nan", "NaN", "-nan", "inf", "-inf", "infinity"):
+        monkeypatch.setenv("V3_PRECISION_TARGET", bad)
+        assert resolve_float("V3_PRECISION_TARGET", "precision_target", lo=0.50, hi=0.95) == 0.70, bad
+        assert precision_target() == 0.70, bad
+        monkeypatch.setenv("KILL_WINRATE_FLOOR", bad)
+        assert resolve_float("KILL_WINRATE_FLOOR", "kill_winrate_floor") == 0.45, bad
+
+
+def test_non_finite_env_falls_back_to_default_on_legacy(monkeypatch):
+    monkeypatch.setenv("GHOST_ACCURACY_CONTRACT", "legacy")
+    monkeypatch.setenv("V3_MIN_HOLDOUT_ACC", "nan")
+    from core.accuracy_contract import CONTRACTS, resolve_float
+
+    assert resolve_float("V3_MIN_HOLDOUT_ACC", "min_holdout_acc", lo=0.0) == CONTRACTS["legacy"].min_holdout_acc
+
+
 def test_legacy_contract_allows_weak_env(monkeypatch):
     monkeypatch.setenv("GHOST_ACCURACY_CONTRACT", "legacy")
     monkeypatch.setenv("V3_MIN_HOLDOUT_ACC", "0.38")
