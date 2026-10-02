@@ -100,8 +100,24 @@ def test_the_daily_cap_stops_spending(monkeypatch):
 def test_research_made_after_the_card_is_never_used():
     store = MemoryStore()
     W.research_symbol(Client([reply(AUTHOR_OK), reply(REVIEW_OK)]), store, symbol="SHOP", day="2026-09-23", now=ts(9, 20))
-    assert W.verdict(store, day="2026-09-23", symbol="SHOP", issued_at=ts(9, 10)) == {"catalyst": None, "dilutive": None}
+    v = W.verdict(store, day="2026-09-23", symbol="SHOP", issued_at=ts(9, 10))
+    assert (v["catalyst"], v["dilutive"]) == (None, None) and "after the card" in v["not_researched"]
     assert W.verdict(store, day="2026-09-23", symbol="SHOP", issued_at=ts(9, 25))["catalyst"] is True
+
+
+def test_research_that_started_before_the_card_but_finished_after_it_is_never_used():
+    """The window now runs to the card deadline: a record STARTED before issuance but WRITTEN after it
+    (a slow call, a second runner) is hindsight for that card."""
+    store = MemoryStore()
+    W.research_symbol(Client([reply(AUTHOR_OK), reply(REVIEW_OK)]), store, symbol="SHOP", day="2026-09-23",
+                      now=ts(9, 8))
+    rec = store.get("edge_research", "2026-09-23|SHOP")
+    assert rec["finished_at"] >= rec["made_at"]
+    rec["finished_at"] = ts(9, 11)                 # the calls took three minutes
+    store.put("edge_research", "2026-09-23|SHOP", rec)
+    late = W.verdict(store, day="2026-09-23", symbol="SHOP", issued_at=ts(9, 10))
+    assert late["catalyst"] is None and late["dilutive"] is None
+    assert W.verdict(store, day="2026-09-23", symbol="SHOP", issued_at=ts(9, 15))["catalyst"] is True
 
 
 def test_off_by_default():

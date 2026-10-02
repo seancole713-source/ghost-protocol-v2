@@ -120,7 +120,7 @@ def _day_of(store, table: str, day: Optional[str], field: str = "day") -> Option
 def research(store, day: Optional[str] = None) -> Dict[str, Any]:
     d = _day_of(store, "edge_research", day)
     if not d:
-        return {"note": "no research yet (08:30-09:04 ET on trading days, when EDGE_RESEARCH_ENABLED)"}
+        return {"note": "no research yet (08:30-09:28 ET on trading days, when EDGE_RESEARCH_ENABLED)"}
     recs = sorted(store.scan("edge_research", day=d), key=lambda r: r["made_at"])
     return {"day": d, "spent_usd": (store.get("edge_research_budget", d) or {}).get("spent_usd"),
             "symbols": [{"symbol": r["symbol"], "reviewer": r.get("reviewer"), "cost_usd": r.get("cost_usd"),

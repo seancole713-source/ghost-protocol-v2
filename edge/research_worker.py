@@ -2,8 +2,10 @@
 Claude reviews, and only reviewed, cited claims can feed a decision.
 
 Why before: a claim made after a forecast was issued is hindsight -- the claim
-contract (edge/research.py) quarantines it. So the worker runs 08:30-09:04 ET,
-one mover per scheduler tick, and the 09:05 card reads what it found.
+contract (edge/research.py) quarantines it. So the worker runs from 08:30 ET up to
+the card deadline (09:28 ET, edge/pipeline.RESEARCH_WINDOW), one mover per
+scheduler tick, after that tick's card step; a card reads only what FINISHED
+before it was issued, and a mover not researched in time stays not_researched.
 
 Author and reviewer are both Claude, with web search. They share a model and
 read the same web, so their agreement is recorded as CORRELATED, never as
@@ -29,8 +31,10 @@ allowance, and what it found before a limit is reported and reviewed, not droppe
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
+import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -55,7 +59,7 @@ REVIEWER_SEARCHES = 4
 # over-count. Rejections before any work (4xx incl. 429, and 529 overloaded) are not billed.
 FAILED_CALL_USD = 0.35
 # A symbol whose call failed is retried at most MAX_ATTEMPTS times a day, no sooner than RETRY_AFTER_S
-# after the failure. The research window is 08:30-09:00 ET, so that is one retry at most.
+# after the failure. The research window is 08:30-09:28 ET; MAX_ATTEMPTS keeps it to one retry.
 RETRY_AFTER_S, MAX_ATTEMPTS = 15 * 60, 2
 
 AUTHOR_PROMPT = """You research one stock for a trading-research ledger. Your output is checked
@@ -427,6 +431,13 @@ def research_symbol(client, store, *, symbol: str, day: str, now: int, http=None
     if budget["spent_usd"] >= daily_cap_usd():
         return {"status": "budget_exhausted", "spent_usd": round(budget["spent_usd"], 4)}
     cutoff = datetime.fromtimestamp(now, tz=ET).strftime("%Y-%m-%d %H:%M")
+    started = time.monotonic()
+
+    def finished_at() -> int:
+        # When the record was WRITTEN, on the same clock as `now`: research that finished after a
+        # card was issued is never that card's evidence, even if it started before (verdict()).
+        return now + int(math.ceil(time.monotonic() - started))
+
     author_errors: List[str] = []
     fetch_errors: List[str] = []
     try:
@@ -447,7 +458,8 @@ def research_symbol(client, store, *, symbol: str, day: str, now: int, http=None
         if why:
             _charge(store, day, c1)
             store.put("edge_research", key, {
-                "day": day, "symbol": symbol.upper(), "made_at": now, "status": NOT_RESEARCHED,
+                "day": day, "symbol": symbol.upper(), "made_at": now, "finished_at": finished_at(),
+                "status": NOT_RESEARCHED,
                 "not_researched_reason": why, "claims": [], "author_tool_errors": author_errors,
                 "author_fetch_errors": fetch_errors, "attempts": attempts,
                 "unknowns": [str(u) for u in raw.get("unknowns") or []],
@@ -488,7 +500,8 @@ def research_symbol(client, store, *, symbol: str, day: str, now: int, http=None
                        "urls": [x.url for x in c.citations]})
     spent = c1 + c2 + c_oai            # the daily cap covers BOTH providers
     _charge(store, day, spent)
-    rec = {"day": day, "symbol": symbol.upper(), "made_at": now, "status": "researched", "claims": graded,
+    rec = {"day": day, "symbol": symbol.upper(), "made_at": now, "finished_at": finished_at(),
+           "status": "researched", "claims": graded,
            "author_tool_errors": author_errors, "author_fetch_errors": fetch_errors, "attempts": attempts,
            # Claims made before a search limit / error: what it found, reviewed like any other.
            "partial": bool(author_errors or fetch_errors or stop1.startswith("finish:")),
@@ -507,10 +520,15 @@ def research_symbol(client, store, *, symbol: str, day: str, now: int, http=None
 
 def verdict(store, *, day: str, symbol: str, issued_at: int) -> Dict[str, Optional[bool]]:
     """What the card may use: (catalyst, dilutive), each True / False / None (unknown).
-    A not_researched record answers None for both -- unknown, never "no catalyst"."""
+    A not_researched record answers None for both -- unknown, never "no catalyst".
+    Research that started OR finished at/after `issued_at` is hindsight for that forecast: unknown."""
     rec = store.get("edge_research", f"{day}|{symbol.upper()}")
-    if not rec or rec["made_at"] >= issued_at:
+    if not rec:
         return {"catalyst": None, "dilutive": None}
+    done = max(int(rec["made_at"]), int(rec.get("finished_at") or rec["made_at"]))
+    if done >= issued_at:
+        return {"catalyst": None, "dilutive": None,
+                "not_researched": "research finished after the card was issued"}
     why = not_researched_reason(rec)
     if why:
         return {"catalyst": None, "dilutive": None, "not_researched": why}

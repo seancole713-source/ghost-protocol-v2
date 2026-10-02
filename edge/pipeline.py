@@ -85,7 +85,8 @@ GAP_VERIFIED = replace(
     description="Gap-and-Go v1 levels; catalyst and dilution judged from reviewed, cited Claude research "
                 "made before the card (edge/research_worker.py).",
     eligibility={**GAP_AND_GO_V1.eligibility,
-                 "catalyst": "reviewed Claude research claim, company-specific, made before 09:05 ET",
+                 "catalyst": "reviewed Claude research claim, company-specific, finished before the card "
+                             "was issued (09:05-09:28 ET)",
                  "reference_price": "IEX latest trade, current session, <=30 min old",
                  "candidates": "Alpaca movers screener, top 50 gainers"},
 )
@@ -198,7 +199,7 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50,
         return {"status": "market_closed", "day": day.isoformat()}
     if store.get("edge_cards", day.isoformat()):
         return {"status": "already_issued", "day": day.isoformat()}
-    if not (_at(day, 9, 5) <= now < _at(day, 9, 28)):
+    if not (_at(day, *CARD_WINDOW[0]) <= now < _at(day, *CARD_WINDOW[1])):
         return {"status": "outside_card_window", "day": day.isoformat()}
     from edge import calendar as CAL
     if CAL.session(day, store, now)["early_close"]:
@@ -406,6 +407,17 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50,
 
 
 CARD_LAST_TRY = (9, 23)      # the window's last 5-minute tick: from here a card with failed data is issued
+# The card is built from 09:05 and must be decided by 09:28 ET. Research runs from 08:30 up to that
+# same deadline, so a mover that qualifies after 09:00 can still be reviewed for any card built
+# later in the window; the daily USD cap is unchanged. Research finished after a card was issued is
+# never used by that card (research_worker.verdict), and a name not researched in time stays
+# not_researched -- unknown, never a rejection.
+CARD_WINDOW = ((9, 5), (9, 28))
+RESEARCH_WINDOW = ((8, 30), CARD_WINDOW[1])
+# The research queue is re-ranked at most this often, so a mover that only qualifies later
+# (no fresh premarket print at 08:30, a late gap) joins it instead of the queue freezing at its
+# first answer for the day.
+RESEARCH_QUEUE_REFRESH_S = 10 * 60
 
 
 def data_failures(source_errors: Dict[str, str], scan: Dict[str, Any], rows: List[dict],
@@ -503,10 +515,30 @@ def _issue_top(ledger: Ledger, spec, rows, eligible, *, day: date, now: int, ver
 
 
 def research_candidates(get, store, *, day: date, now: int, n: int) -> List[str]:
-    """The movers most likely to reach the card: gap +5..40%, liquid, by dollar volume. Cached per day."""
+    """The movers most likely to reach the card: gap +5..40%, liquid, by dollar volume. Cached, and
+    re-ranked every RESEARCH_QUEUE_REFRESH_S: newly qualifying movers go first, names already
+    queued are kept (their records decide whether they are still due)."""
     cached = store.get("edge_research_queue", day.isoformat())
-    if cached:
+    if cached and now - int(cached.get("at") or 0) < RESEARCH_QUEUE_REFRESH_S:
         return cached["symbols"]
+    prior = list((cached or {}).get("symbols") or [])
+    try:
+        fresh = _rank_research_candidates(get, store, day=day, now=now, n=n)
+    except Exception:  # noqa: BLE001 - a failed re-rank keeps the queue it had; none -> the step errors
+        if prior:
+            return prior
+        raise
+    out = fresh + [s for s in prior if s not in fresh]
+    # Cache only a NON-empty queue. At 08:30 ET the free IEX feed often has no fresh
+    # premarket prints yet; caching that empty answer stopped research for the whole day
+    # (2026-09-23). An empty queue is recomputed on the next tick (3 calls per 5 min).
+    if out:
+        store.put("edge_research_queue", day.isoformat(), {"symbols": out, "at": now,
+                                                            "movers": len(fresh)})
+    return out
+
+
+def _rank_research_candidates(get, store, *, day: date, now: int, n: int) -> List[str]:
     from edge import premarket as PM
     syms = sorted(set(PM.candidates(get, store, day=day, now=now, top=50)["symbols"]))
     if not syms:
@@ -522,14 +554,7 @@ def research_candidates(get, store, *, day: date, now: int, n: int) -> List[str]
         liq = D.liquidity(price=ref["price"] or st["prev_close"], avg_shares=st["avg_shares"])
         if g is not None and g.state == D.PASS and liq.state == D.PASS:
             ranked.append((-(st["avg_dollars"] or 0), s))
-    out = [s for _, s in sorted(ranked)[:n]]
-    # Cache only a NON-empty queue. At 08:30 ET the free IEX feed often has no fresh
-    # premarket prints yet; caching that empty answer stopped research for the whole day
-    # (2026-09-23). An empty queue is recomputed on the next tick (3 calls per 5 min).
-    if out:
-        store.put("edge_research_queue", day.isoformat(), {"symbols": out, "at": now,
-                                                            "movers": len(syms)})
-    return out
+    return [s for _, s in sorted(ranked)[:n]]
 
 
 def research_step(get, ledger: Ledger, *, day: date, now: int, client=None) -> Dict[str, Any]:
@@ -871,9 +896,7 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None,
         text = _notify().misses_text(review) if review else None
         if notifier is not None and text:
             guarded("notify_misses", lambda: _notify().once(notifier, ledger.store, day=ds, kind="misses", text=text))
-    if within((8, 30), (9, 0)) and _research().enabled():   # ends 5 min early: a slow call cannot crowd the card
-        guarded("research", lambda: research_step(get, ledger, day=day, now=now))
-    if within((9, 5), (9, 28)):
+    if within(*CARD_WINDOW):
         guarded("card", lambda: morning_card(get, ledger, now=now, clock=clock))
         if http is not None:
             guarded("paper_submit", lambda: _paper().submit(http, ledger, day=ds, experiments=EXPERIMENTS))
@@ -882,7 +905,11 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None,
         if notifier is not None and card:
             guarded("notify_card", lambda: _notify().once(notifier, ledger.store, day=ds, kind="card",
                                                            text=_notify().card_text(card)))
-    if within((9, 28), (9, 45)) and not ledger.store.get("edge_cards", ds):
+    # Research runs AFTER the card step in a tick, so a slow research call can never crowd the card;
+    # what it finds serves a card built on a later tick, never one already issued.
+    if within(*RESEARCH_WINDOW) and _research().enabled():
+        guarded("research", lambda: research_step(get, ledger, day=day, now=now))
+    if within(CARD_WINDOW[1], (9, 45)) and not ledger.store.get("edge_cards", ds):
         out["card_alarm"] = {"status": "error", "error": "no shadow card by 09:28 ET (see earlier card errors)"}
     # The duty reminders go out on EVERY regular trading day. The operator trades from his own
     # card (the morning-picks skill), which can hold a name when Ghost's shadow card has none;

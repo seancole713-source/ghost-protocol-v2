@@ -671,3 +671,66 @@ def test_a_scan_with_failed_batches_is_not_reused_from_cache():
     g = FakeAlpaca()
     PM.scan(g, store, day=DAY, now=ts(9, 5))
     assert any("/v2/aggs/grouped/" in u for u, _ in g.calls)       # recomputed, not the broken cache
+
+
+# ---- research window: 08:30 up to the card deadline (09:28 ET) --------------------------------
+
+@pytest.mark.parametrize("hhmm,runs", [((8, 25), False), ((8, 30), True), ((9, 0), True), ((9, 4), True),
+                                       ((9, 10), True), ((9, 27), True), ((9, 28), False)])
+def test_research_runs_until_the_card_deadline_not_9am(ledger, monkeypatch, hhmm, runs):
+    """It used to stop at 09:00 while cards are built 09:05-09:28: a mover qualifying later got no review."""
+    monkeypatch.setenv("EDGE_RESEARCH_ENABLED", "1")
+    order = []
+    monkeypatch.setattr(P, "research_step", lambda *a, **k: order.append("research") or {"status": "nothing"})
+    real_card = P.morning_card
+    monkeypatch.setattr(P, "morning_card", lambda *a, **k: order.append("card") or real_card(*a, **k))
+    P.run(FakeAlpaca(), ledger, now=ts(*hhmm))
+    assert ("research" in order) is runs
+    if runs and "card" in order:
+        assert order.index("card") < order.index("research")      # a slow call cannot crowd the card
+    assert P.RESEARCH_WINDOW[1] == P.CARD_WINDOW[1] == (9, 28)
+
+
+def test_the_research_queue_takes_in_movers_that_qualify_later(ledger, monkeypatch):
+    rankings = {"now": ["SHOP"]}
+    monkeypatch.setattr(P, "_rank_research_candidates", lambda *a, **k: list(rankings["now"]))
+    assert P.research_candidates(None, ledger.store, day=DAY, now=ts(8, 30), n=5) == ["SHOP"]
+    rankings["now"] = ["LATE", "SHOP"]
+    # Inside the refresh interval the cached queue stands ...
+    assert P.research_candidates(None, ledger.store, day=DAY, now=ts(8, 35), n=5) == ["SHOP"]
+    # ... after it, a mover that qualified later joins (first), and queued names are kept.
+    assert P.research_candidates(None, ledger.store, day=DAY, now=ts(9, 10), n=5) == ["LATE", "SHOP"]
+    rankings["now"] = ["NEWER"]
+    assert P.research_candidates(None, ledger.store, day=DAY, now=ts(9, 20), n=5) == ["NEWER", "LATE", "SHOP"]
+
+
+def test_a_failed_queue_refresh_keeps_the_queue_it_had(ledger, monkeypatch):
+    monkeypatch.setattr(P, "_rank_research_candidates", lambda *a, **k: ["SHOP"])
+    P.research_candidates(None, ledger.store, day=DAY, now=ts(8, 30), n=5)
+
+    def boom(*a, **k):
+        raise RuntimeError("snapshots down")
+    monkeypatch.setattr(P, "_rank_research_candidates", boom)
+    assert P.research_candidates(None, ledger.store, day=DAY, now=ts(9, 0), n=5) == ["SHOP"]
+
+
+def test_research_written_after_the_card_never_reaches_it_and_reads_not_researched(ledger, monkeypatch):
+    monkeypatch.setenv("EDGE_RESEARCH_ENABLED", "1")
+    claim = {"kind": "contract", "statement": "Shopify x Meta checkout", "status": "verified", "problems": []}
+    review = {"entity_ok": True, "contradictions": [], "dilution_found": False, "stale": False, "notes": ""}
+    # Started 09:04, before the 09:05 card -- but only WRITTEN at 09:07.
+    ledger.store.put("edge_research", "2026-09-23|SHOP", {
+        "day": "2026-09-23", "symbol": "SHOP", "made_at": ts(9, 4), "finished_at": ts(9, 7),
+        "status": "researched", "claims": [claim], "review": review})
+    P.morning_card(FakeAlpaca(), ledger, now=ts(9, 5))
+    row = {r["symbol"]: r for r in ledger.store.get("edge_cards", DAY.isoformat())["rows"]}["SHOP"]
+    assert row["research_status"] == "not_researched"
+    assert row["verified_verdict"] != "ELIGIBLE"
+    # The same record, finished before a later card, would have been used.
+    ledger2 = Ledger(MemoryStore())
+    ledger2.store.put("edge_research", "2026-09-23|SHOP", {
+        "day": "2026-09-23", "symbol": "SHOP", "made_at": ts(9, 4), "finished_at": ts(9, 5),
+        "status": "researched", "claims": [claim], "review": review})
+    P.morning_card(FakeAlpaca(), ledger2, now=ts(9, 10))
+    row2 = {r["symbol"]: r for r in ledger2.store.get("edge_cards", DAY.isoformat())["rows"]}["SHOP"]
+    assert row2["research_status"] == "researched"
