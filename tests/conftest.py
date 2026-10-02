@@ -87,6 +87,12 @@ def _clear_module_caches():
             sgl._AUTO_LOG_FAILED.clear()
         except Exception:
             pass
+    prl = sys.modules.get("core.polygon_rate")
+    if prl is not None:
+        try:
+            prl.BUDGET.reset()
+        except Exception:
+            pass
     px = sys.modules.get("core.prices")
     if px is not None:
         try:

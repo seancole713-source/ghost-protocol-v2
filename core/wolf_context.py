@@ -334,7 +334,8 @@ def _fetch_price_change(ticker: str) -> float:
     pct = 0.0
     try:
         polygon_key = os.getenv("POLYGON_API_KEY", "")
-        if polygon_key:
+        from core import polygon_rate
+        if polygon_key and polygon_rate.try_acquire():
             from datetime import date
             today = date.today().isoformat()
             yesterday = (date.today() - timedelta(days=3)).isoformat()  # go back a few days to handle weekends
@@ -343,6 +344,8 @@ def _fetch_price_change(ticker: str) -> float:
                 f"{yesterday}/{today}?adjusted=true&sort=desc&limit=2&apiKey={polygon_key}"
             )
             resp = requests.get(url, timeout=8)
+            if resp.status_code == 429:
+                polygon_rate.note_rate_limited("price change")
             data = resp.json()
             results = data.get("results", [])
             if len(results) >= 2:

@@ -98,6 +98,11 @@ def _degraded_status() -> Dict[str, Any]:
     }
 
 
+def peek_degraded() -> Dict[str, Any]:
+    """Current degraded-mode status without re-evaluating or transitioning."""
+    return _degraded_status()
+
+
 def is_degraded() -> bool:
     """Fast check — returns cached state, does not re-evaluate."""
     return _degraded

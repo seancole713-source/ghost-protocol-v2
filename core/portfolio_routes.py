@@ -83,11 +83,38 @@ def build_portfolio_payload() -> dict:
         if prev is None or p["quantity"] > prev["quantity"]:
             deduped[sym] = p
     positions = list(deduped.values())
-    tc = sum(p["cost_basis"] for p in positions)
-    tv = sum(p["current_value"] for p in positions if p["current_value"])
-    return {"ok":True,"positions":positions,"total_cost":round(tc,2),
-        "total_value":round(tv,2) if tv else None,
-        "total_gain_loss":round(tv-tc,2) if tv else None}
+    return {"ok": True, "positions": positions, **_portfolio_totals(positions)}
+
+
+def _portfolio_totals(positions: list) -> dict:
+    """Totals that never treat a missing quote as zero value.
+
+    Value and P&L are computed only over positions with a quote (the "priced"
+    subset). Whole-portfolio total_value / total_gain_loss are null unless every
+    position is priced, so an unquoted position can never read as a loss.
+    """
+    total_cost = sum(p["cost_basis"] for p in positions)
+    priced = [p for p in positions if p.get("current_value") is not None]
+    priced_cost = sum(p["cost_basis"] for p in priced)
+    priced_value = sum(p["current_value"] for p in priced)
+    complete = bool(positions) and len(priced) == len(positions)
+    return {
+        "total_cost": round(total_cost, 2),
+        "total_value": round(priced_value, 2) if complete else None,
+        "total_gain_loss": round(priced_value - priced_cost, 2) if complete else None,
+        "totals_partial": not complete,
+        "quote_coverage": {
+            "priced": len(priced),
+            "total": len(positions),
+            "ratio": round(len(priced) / len(positions), 4) if positions else None,
+        },
+        "priced_subset": {
+            "label": "priced positions only",
+            "cost": round(priced_cost, 2),
+            "value": round(priced_value, 2) if priced else None,
+            "gain_loss": round(priced_value - priced_cost, 2) if priced else None,
+        },
+    }
 
 
 @portfolio_router.get("/api/portfolio")

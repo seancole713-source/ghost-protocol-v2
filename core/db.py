@@ -1,3 +1,4 @@
+import contextvars
 import logging
 import os
 import time
@@ -118,6 +119,14 @@ def get_conn():
         except psycopg2.pool.PoolError as exc:
             last_err = exc
             attempt += 1
+            # OPS-03: with no wait budget (event-loop thread, or DB_POOL_WAIT_S=0)
+            # fail on the first exhausted attempt — the retry loop below calls
+            # time.sleep, which would block every coroutine on the loop.
+            if wait_s <= 0:
+                LOGGER.warning(
+                    "DB pool exhausted (max=%s); no wait on this thread", _POOL_MAX,
+                )
+                break
             if attempt >= _GETCONN_RETRIES and time.monotonic() >= deadline:
                 LOGGER.warning(
                     "DB pool exhausted after %s attempts / %.1fs (max=%s)",
@@ -149,9 +158,43 @@ def pool_stats() -> dict:
         "wait_s": _GETCONN_WAIT_S,
     }
 
+_PASSIVE_INSPECTION: "contextvars.ContextVar[bool]" = contextvars.ContextVar(
+    "ghost_passive_inspection", default=False,
+)
+
+
+def in_passive_inspection() -> bool:
+    """True inside ``passive_inspection()``: no writes, DDL, repairs or probes."""
+    return bool(_PASSIVE_INSPECTION.get())
+
+
+class passive_inspection:
+    """Scope for read-only inspection (e.g. the CI health-audit gate).
+
+    Every ``db_conn()`` transaction opened inside the scope starts with
+    ``SET TRANSACTION READ ONLY`` so Postgres itself rejects any write or DDL,
+    and callers consult ``in_passive_inspection()`` to skip self-heal writes
+    and provider probes. Context-local: other threads/requests are unaffected.
+    """
+
+    def __enter__(self):
+        self._token = _PASSIVE_INSPECTION.set(True)
+        return self
+
+    def __exit__(self, *exc):
+        _PASSIVE_INSPECTION.reset(self._token)
+        return False
+
+
 class db_conn:
     def __enter__(self):
         self.conn = get_conn()
+        if _PASSIVE_INSPECTION.get():
+            try:
+                self.conn.cursor().execute("SET TRANSACTION READ ONLY")
+            except Exception:
+                put_conn(self.conn)
+                raise
         return self.conn
     def __exit__(self, exc_type, *_):
         # try/finally: a commit/rollback failure must still return the
@@ -237,6 +280,71 @@ def ensure_ghost_state(cur=None):
         c = conn.cursor()
         c.execute("CREATE TABLE IF NOT EXISTS ghost_state (key TEXT PRIMARY KEY, val TEXT)")
         conn.commit()
+
+
+DEADLOCK_SQLSTATE = "40P01"
+
+
+def is_deadlock_error(exc: BaseException) -> bool:
+    """True for a Postgres deadlock (SQLSTATE 40P01)."""
+    return (
+        getattr(exc, "pgcode", None) == DEADLOCK_SQLSTATE
+        or "deadlock detected" in str(exc).lower()
+    )
+
+
+def run_with_deadlock_retry(fn, *, label: str, attempts: int = 3, backoff_s: float = 0.25):
+    """Run ``fn`` -- one complete, idempotent transaction -- retrying on 40P01.
+
+    Only deadlocks are retried, at most ``attempts`` times in total; any other
+    error, or the final deadlock, propagates. ``fn`` must open and commit its
+    own transaction (``with db_conn()``) so a deadlocked attempt is fully
+    rolled back before the next one starts.
+    """
+    attempts = max(1, int(attempts))
+    for attempt in range(1, attempts + 1):
+        try:
+            return fn()
+        except Exception as exc:
+            if not is_deadlock_error(exc) or attempt >= attempts:
+                raise
+            LOGGER.info(
+                "%s: deadlock detected (attempt %d/%d), retrying",
+                label, attempt, attempts,
+            )
+            time.sleep(max(0.0, backoff_s) * attempt)
+    return None
+
+
+# Schema-missing SQLSTATEs: 42P01 undefined_table, 42703 undefined_column.
+_MISSING_SCHEMA_SQLSTATES = ("42P01", "42703")
+SCHEMA_MISSING_REASON = "schema_not_migrated"
+
+
+def is_missing_schema_error(exc: BaseException) -> bool:
+    """True when a statement failed because a table/column does not exist.
+
+    Read paths do not run DDL (the startup migration owns the schema); they
+    use this to answer "empty, schema not migrated" instead of creating the
+    table, which took SHARE locks on every read.
+    """
+    if getattr(exc, "pgcode", None) in _MISSING_SCHEMA_SQLSTATES:
+        return True
+    msg = str(exc).lower()
+    return "does not exist" in msg and ("relation" in msg or "column" in msg)
+
+
+def missing_schema_result(exc: BaseException, empty: dict) -> Optional[dict]:
+    """``empty`` + ok/reason when ``exc`` is a missing-schema error, else None."""
+    if not is_missing_schema_error(exc):
+        return None
+    out = dict(empty)
+    out.update({
+        "ok": True,
+        "reason": SCHEMA_MISSING_REASON,
+        "detail": "table not created yet; the startup migration owns this schema",
+    })
+    return out
 
 
 _SCHEMA_BACKFILL_MARKER = "schema_backfills_v1"
@@ -389,7 +497,10 @@ def _migrate_schema():
     with db_conn() as conn:
         cur = conn.cursor()
         backfills_done = _backfills_already_done(cur)
-        backfills_complete = backfills_done
+        # Accumulator: starts True and flips False on any gated-step failure.
+        # (It used to start as backfills_done, i.e. False on a fresh marker,
+        # so the marker was never written and the backfills re-ran every boot.)
+        backfills_complete = True
         for sql in migrations:
             try:
                 # Run-once gate (checklist #17): the three idempotent full-table
@@ -406,8 +517,10 @@ def _migrate_schema():
                 if _is_backfill(sql):
                     backfills_complete = False
         if not backfills_done and backfills_complete:
-            _mark_backfills_done(cur)
-            conn.commit()
+            if _mark_backfills_done(cur):
+                conn.commit()
+            else:
+                conn.rollback()
     try:
         from core.performance_log import ensure_perf_tables
         with db_conn() as conn:
@@ -429,6 +542,15 @@ def _migrate_schema():
             ensure_shadow_table(cur)
     except Exception as e:
         LOGGER.warning("Shadow outcomes table: " + str(e)[:80])
+    try:
+        # Structured news tables: read per prediction by the shadow news
+        # models and by GET /api/news/events, which no longer run this DDL.
+        from core.news_events import ensure_news_tables as ensure_news_event_tables
+        with db_conn() as conn:
+            cur = conn.cursor()
+            ensure_news_event_tables(cur)
+    except Exception as e:
+        LOGGER.warning("News event tables: " + str(e)[:80])
     try:
         from core.super_ghost_ledger import ensure_ledger_table
         with db_conn() as conn:

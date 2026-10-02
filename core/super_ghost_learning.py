@@ -459,12 +459,9 @@ def learn_from_ledger(*, symbol: Optional[str] = None, horizon: int = 5, limit: 
     h = horizon if horizon in LEARNING_HORIZONS else 5
     try:
         from core.db import db_conn
-        from core.super_ghost_ledger import ensure_ledger_table
 
         with db_conn() as conn:
             cur = conn.cursor()
-            ensure_ledger_table(cur)
-            ensure_learning_tables(cur)
             rows = _resolved_rows(cur, symbol=symbol, horizon=h, limit=limit)
             lessons = [classify_lesson(r, horizon=h) for r in rows]
             now = _now()
@@ -552,7 +549,6 @@ def get_learning_profile(symbol: str, direction: str, *, horizon: int = 5) -> Di
         from core.db import db_conn
         with db_conn() as conn:
             cur = conn.cursor()
-            ensure_learning_tables(cur)
             cur.execute(
                 """
                 SELECT sample_count, direction_win_rate, avg_realized_return_pct,
@@ -649,7 +645,6 @@ def get_pooled_learning_profile(direction: str, *, horizon: int = 5) -> Dict[str
         from core.db import db_conn
         with db_conn() as conn:
             cur = conn.cursor()
-            ensure_learning_tables(cur)
             cur.execute(
                 """
                 SELECT sample_count, direction_win_rate, target_move_multiplier
@@ -692,7 +687,6 @@ def learning_summary(*, symbol: Optional[str] = None, horizon: int = 5, limit: i
         from core.db import db_conn
         with db_conn() as conn:
             cur = conn.cursor()
-            ensure_learning_tables(cur)
             params: List[Any] = []
             where = "horizon_days=%s"
             params.append(h)
@@ -742,4 +736,8 @@ def learning_summary(*, symbol: Optional[str] = None, horizon: int = 5, limit: i
             ]
         return {"ok": True, "horizon_days": h, "symbol": (symbol or "ALL").upper(), "profiles": profiles, "recent_lessons": lessons, "min_samples_for_adjustment": MIN_PROFILE_SAMPLES}
     except Exception as exc:
+        from core.db import missing_schema_result
+        missing = missing_schema_result(exc, {"horizon_days": h, "symbol": (symbol or "ALL").upper(), "profiles": [], "recent_lessons": [], "min_samples_for_adjustment": MIN_PROFILE_SAMPLES})
+        if missing:
+            return missing
         return {"ok": False, "error": str(exc)[:160], "profiles": [], "recent_lessons": []}

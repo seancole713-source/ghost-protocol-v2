@@ -224,6 +224,14 @@ def persist_hunter_evaluation(
     ts = int(issued_ts or _now())
     fav = int(feature_available_ts) if feature_available_ts is not None else int(reference_price_ts)
     rpts = int(reference_price_ts)
+    if rpts > ts or fav > ts:
+        # Evidence observed after the recorded decision time is hindsight; a
+        # sample like that can never be a prospective calibration row.
+        LOGGER.warning(
+            "persist_hunter_evaluation %s: evidence after issuance "
+            "(reference_ts=%s feature_ts=%s issued_ts=%s)", sym, rpts, fav, ts,
+        )
+        return {"status": "future_evidence", "evaluation_id": None}
 
     def _impl(c) -> Dict[str, Any]:
         c.execute(
@@ -363,8 +371,20 @@ def resolve_hunter_evaluation(
         return False
 
 
+# Read-time timeline guard. Rows persisted before issuance-time validation
+# existed may carry evidence observed after their recorded issued_ts; they are
+# excluded from measurement/calibration reads (never rewritten in place).
+HUNTER_TIMELINE_VALID_SQL = (
+    "COALESCE(e.reference_price_ts, e.issued_ts) <= e.issued_ts "
+    "AND COALESCE(e.feature_available_ts, e.issued_ts) <= e.issued_ts"
+)
+
+
 def recent_evaluations(symbol: Optional[str] = None, limit: int = 50) -> Dict[str, Any]:
-    """Read recent Hunter evaluations (with full resolution evidence)."""
+    """Read recent Hunter evaluations (with full resolution evidence).
+
+    Rows whose evidence postdates their issuance are excluded.
+    """
     lim = max(1, min(200, int(limit)))
     cols = (
         "e.id, e.symbol, e.scoring_version, e.session_date, e.issued_ts, "
@@ -393,7 +413,7 @@ def recent_evaluations(symbol: Optional[str] = None, limit: int = 50) -> Dict[st
                     SELECT {cols}
                     FROM ghost_squeeze_hunter_evaluations e
                     LEFT JOIN ghost_squeeze_hunter_resolutions r ON r.evaluation_id = e.id
-                    WHERE e.symbol = %s
+                    WHERE e.symbol = %s AND {HUNTER_TIMELINE_VALID_SQL}
                     ORDER BY e.issued_ts DESC LIMIT %s
                     """,
                     (symbol.upper(), lim),
@@ -404,12 +424,17 @@ def recent_evaluations(symbol: Optional[str] = None, limit: int = 50) -> Dict[st
                     SELECT {cols}
                     FROM ghost_squeeze_hunter_evaluations e
                     LEFT JOIN ghost_squeeze_hunter_resolutions r ON r.evaluation_id = e.id
+                    WHERE {HUNTER_TIMELINE_VALID_SQL}
                     ORDER BY e.issued_ts DESC LIMIT %s
                     """,
                     (lim,),
                 )
             rows = cur.fetchall()
-        return {"ok": True, "rows": [dict(zip(keys, r)) for r in rows]}
+        return {
+            "ok": True,
+            "rows": [dict(zip(keys, r)) for r in rows],
+            "timeline_filter": "evidence_ts <= issued_ts",
+        }
     except Exception as exc:
         LOGGER.warning("recent_evaluations: %s", str(exc)[:160])
         return {"ok": False, "error": "database_unavailable", "rows": []}
@@ -629,11 +654,11 @@ def resolve_hunter_predictions(*, limit: int = 200, now: Optional[int] = None) -
         with db_conn() as conn:
             cur = conn.cursor()
             cur.execute(
-                """
+                f"""
                 SELECT e.id, e.symbol, e.issued_ts, e.reference_price
                 FROM ghost_squeeze_hunter_evaluations e
                 LEFT JOIN ghost_squeeze_hunter_resolutions r ON r.evaluation_id = e.id
-                WHERE r.id IS NULL
+                WHERE r.id IS NULL AND {HUNTER_TIMELINE_VALID_SQL}
                 ORDER BY e.issued_ts ASC
                 LIMIT %s
                 """,
@@ -745,8 +770,9 @@ def issue_hunter_samples(*, symbols: Optional[list] = None, now_ts: Optional[int
 
     This is the ONLY path that should persist Hunter evaluations. It issues
     only during the frozen post-close window (15:05–16:00 CT) so every day's
-    sample is drawn from the same population. It uses the ACTUAL issuance time
-    (honest `issued_ts`) and the stable `session_date` for the idempotency key.
+    sample is drawn from the same population. Each symbol's `issued_ts` is its
+    own decision time, recorded after that symbol's evidence was collected,
+    and the stable `session_date` is the idempotency key.
     Samples with a missing reference price are NOT persisted (counted as
     `invalid_reference`, not `inserted`).
     """
@@ -763,13 +789,13 @@ def issue_hunter_samples(*, symbols: Optional[list] = None, now_ts: Optional[int
             symbols = sorted(watchlist_symbols())
         except Exception:
             symbols = []
-    now = int(now_ts or _now())
     existing = _existing_session_symbols(date_key)
 
     attempted = 0
     inserted = 0
     duplicate = 0
     invalid_reference = 0
+    future_evidence = 0
     persistence_failed = 0
     for sym in symbols:
         sym = str(sym).strip().upper()
@@ -779,7 +805,9 @@ def issue_hunter_samples(*, symbols: Optional[list] = None, now_ts: Optional[int
         attempted += 1
         try:
             from core.squeeze_hunter import fetch_explosion_report
-            rep = fetch_explosion_report(sym, persist=True, issued_ts=now)
+            # No frozen batch timestamp: each symbol's issued_ts is its own
+            # decision time, taken after that symbol's evidence is collected.
+            rep = fetch_explosion_report(sym, persist=True, issued_ts=None)
             status = (rep.get("persistence") or {}).get("status")
             if status == "inserted":
                 inserted += 1
@@ -787,6 +815,8 @@ def issue_hunter_samples(*, symbols: Optional[list] = None, now_ts: Optional[int
                 duplicate += 1
             elif status == "invalid_reference":
                 invalid_reference += 1
+            elif status == "future_evidence":
+                future_evidence += 1
             else:
                 persistence_failed += 1
         except Exception:
@@ -798,6 +828,7 @@ def issue_hunter_samples(*, symbols: Optional[list] = None, now_ts: Optional[int
         "inserted": inserted,
         "duplicate": duplicate,
         "invalid_reference": invalid_reference,
+        "future_evidence": future_evidence,
         "persistence_failed": persistence_failed,
         "session_date": date_key,
     }

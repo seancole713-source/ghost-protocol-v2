@@ -110,3 +110,57 @@ def test_the_probe_marks_it_runnable_on_verified_free_data():
     from edge import probe as P
     caps = {B.SHORT_INTEREST: {"status": B.OK}, B.QUOTE_IEX: {"status": B.OK}, B.MINUTE_BARS: {"status": B.OK}}
     assert P.assess(caps)["short_interest_ignition"]["state"] == "DEGRADED"      # IEX quotes only
+
+
+class FlakyHttp:
+    """FINRA / iBorrowDesk that fail (timeout) until `up` is set, then answer."""
+
+    def __init__(self):
+        self.up, self.posts, self.gets = False, 0, 0
+
+    def post(self, url, json=None, headers=None, timeout=None):
+        self.posts += 1
+        if not self.up:
+            raise TimeoutError("finra read timed out")
+        return R(200, FINRA_ROWS)
+
+    def get(self, url, headers=None, timeout=None):
+        self.gets += 1
+        if not self.up:
+            raise ConnectionError("reset")
+        if "NOREC" in url:
+            return R(404, {})
+        return R(200, {"real_time": [{"fee": 48.2, "available": 15000, "time": "t"}], "daily": []})
+
+
+def test_a_transient_short_data_failure_is_retried_after_the_backoff_not_cached_all_day():
+    """EDGE-11: a timeout at 10:00 used to cache si=None / borrow=None for the whole session."""
+    from edge.intraday import SHORT_RETRY_S, _short_data
+    from edge.ledger import MemoryStore
+    store, http, day = MemoryStore(), FlakyHttp(), date(2026, 9, 23)
+    t0 = 1_790_000_000
+    first = _short_data(http, store, ["GME", "NOREC"], day, now=t0)
+    assert first["GME"]["si"] is None and first["GME"]["si_status"] == "error"
+    assert first["GME"]["borrow"] is None and first["GME"]["borrow_status"] == "error"
+    assert _crowded(first["GME"], day).state == D.UNKNOWN              # unknown, never zero
+    http.up = True
+    _short_data(http, store, ["GME", "NOREC"], day, now=t0 + 60)        # inside the backoff: no call
+    assert (http.posts, http.gets) == (1, 2)
+    later = _short_data(http, store, ["GME", "NOREC"], day, now=t0 + SHORT_RETRY_S)
+    assert later["GME"]["si"]["days_to_cover"] == 7.5 and later["GME"]["si_status"] == "ok"
+    assert later["GME"]["borrow"]["borrow_fee_pct"] == 48.2 and later["GME"]["borrow_status"] == "ok"
+    # the source's definite "no record" is terminal for the day: never asked again
+    assert later["NOREC"]["si"] is None and later["NOREC"]["si_status"] == "none"
+    assert later["NOREC"]["borrow"] is None and later["NOREC"]["borrow_status"] == "none"
+    calls = (http.posts, http.gets)
+    _short_data(http, store, ["GME", "NOREC"], day, now=t0 + 5 * SHORT_RETRY_S)
+    assert (http.posts, http.gets) == calls
+
+
+def test_a_cached_row_from_before_statuses_is_kept_as_it_was():
+    from edge.intraday import _short_data
+    from edge.ledger import MemoryStore
+    store, http = MemoryStore(), FlakyHttp()
+    store.put("edge_short", "2026-09-23", {"GME": {"si": None, "borrow": None}})
+    _short_data(http, store, ["GME"], date(2026, 9, 23), now=1_790_000_000)
+    assert (http.posts, http.gets) == (0, 0)

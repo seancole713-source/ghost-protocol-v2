@@ -383,3 +383,80 @@ def test_registration_requires_declared_slippage_and_commission():
             **common,
             round_trip_slippage_bps=10.0,
         )
+
+
+def _late_outcome_rows(registered_at, *, start_day, count=50):
+    rows = []
+    for idx in range(count):
+        issued = registered_at + (start_day + idx) * 86400
+        rows.append((
+            idx + 1, "WOLF", issued, 0.84, {"entry_price": 100.0}, "UP",
+            "WIN", 103.0, time.strftime("%Y-%m-%d", time.gmtime(issued)),
+        ))
+    return rows
+
+
+def test_outcomes_issued_after_deadline_never_count_toward_proof():
+    """PROOF-01: 180-day-old registration, 50 wins issued days 125-174."""
+    registered_at = int(time.time()) - 180 * 86400
+    cur = _ProofCursor(
+        prediction_rows=_late_outcome_rows(registered_at, start_day=125),
+    )
+    cur.registered_at = registered_at
+
+    proof = evaluate_forward_proof("fwd_test", cur=cur)
+
+    assert proof["n"] == 0
+    assert proof["status"] == "INCOMPLETE"
+    assert proof["past_deadline"] is True
+    assert proof["deadline_ts"] == registered_at + 120 * 86400
+    prediction_query = next(
+        params for sql, params in cur.executed
+        if "FROM ghost_research_predictions" in sql
+    )
+    assert prediction_query[4] == registered_at + 120 * 86400
+
+
+def test_deadline_straddling_outcomes_only_count_in_window_rows():
+    registered_at = int(time.time()) - 180 * 86400
+    # Days 100..149: only days 100..120 (21 rows) are issued on/before the
+    # day-120 deadline.
+    cur = _ProofCursor(
+        prediction_rows=_late_outcome_rows(registered_at, start_day=100),
+    )
+    cur.registered_at = registered_at
+
+    proof = evaluate_forward_proof("fwd_test", cur=cur)
+
+    assert proof["n"] == 21
+    assert proof["status"] == "INCOMPLETE"
+
+
+def test_persisted_proven_is_not_reported_when_in_window_evidence_disagrees():
+    registered_at = int(time.time()) - 180 * 86400
+    cur = _ProofCursor(
+        persisted_status="PROVEN",
+        closed_at=registered_at + 175 * 86400,
+        prediction_rows=_late_outcome_rows(registered_at, start_day=125),
+    )
+    cur.registered_at = registered_at
+
+    proof = evaluate_forward_proof("fwd_test", cur=cur)
+
+    assert proof["status"] != "PROVEN"
+    assert proof["persisted_status"] == "PROVEN"
+    assert proof["persisted_status_superseded"] is True
+
+
+def test_status_update_never_rewrites_terminal_registration():
+    registered_at = int(time.time()) - 180 * 86400
+    cur = _ProofCursor(
+        persisted_status="PROVEN",
+        closed_at=registered_at + 175 * 86400,
+        prediction_rows=_late_outcome_rows(registered_at, start_day=125),
+    )
+    cur.registered_at = registered_at
+
+    update_forward_proof_status("fwd_test", cur=cur)
+
+    assert not any(sql.startswith("UPDATE ") for sql, _ in cur.executed)

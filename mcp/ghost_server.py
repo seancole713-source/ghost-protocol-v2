@@ -457,7 +457,9 @@ def _research_predictions(args: Dict[str, Any]) -> Dict[str, Any]:
             contract_id=contract_id, artifact_sha=artifact_sha, limit=limit,
         )
     else:
-        rows = get_pending_predictions(contract_id=contract_id, limit=limit)
+        rows = get_pending_predictions(
+            contract_id=contract_id, artifact_sha=artifact_sha, limit=limit,
+        )
     return {"ok": True, "predictions": rows, "count": len(rows), "resolved": resolved}
 
 
@@ -635,7 +637,8 @@ EDGE_TOOLS: Mapping[str, Dict[str, Any]] = {
             "data-readiness probe, the universe snapshot, the pre-card AI research, the intraday "
             "radar, the Alpaca PAPER orders, the model registry, the AI scorecard (does research "
             "add edge?), the daily Top 10 quality ranking (graded after the close), the observe-all "
-            "control arm (every radar name graded: approved vs unapproved, per feed) and the "
+            "control arm (every radar name graded: approved vs unapproved, per feed; v2 point-in-time "
+            "is primary, v1 exploratory) and the "
             "scheduled agents' notes. Read-only; shadow and paper only -- "
             "never a trade recommendation."
         ),

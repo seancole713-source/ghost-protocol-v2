@@ -19,7 +19,7 @@ from typing import Any, Dict, List
 
 import requests
 
-from core.news_events import ensure_news_tables, store_article_and_events
+from core.news_events import store_article_and_events
 
 LOGGER = logging.getLogger("ghost.news_ingest")
 
@@ -183,7 +183,8 @@ def run_news_ingest_cycle(symbols: List[str] | None = None,
         from core.db import db_conn
         with db_conn() as conn:
             cur = conn.cursor()
-            ensure_news_tables(cur)
+            # Schema (tables, columns, dedupe + unique index) is owned by the boot
+            # migration (core.db): no DDL or table-wide DELETE on the 15-minute cycle.
             for art in articles:
                 res = store_article_and_events(cur, art)
                 stored_articles += 1 if res["article_stored"] else 0

@@ -37,3 +37,31 @@ test("clear safety latch does not imply an approved model", async ({ page }) => 
   await page.getByRole("tab", {name:"System",exact:true}).click();
   await expect(page.locator("#view-system")).toContainText("No approved models");
 });
+
+test("Today: degraded coverage is not a clean No, and the three lanes stay separate", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const nowSec = Math.floor(Date.now() / 1000);
+  await page.route("**/api/squeeze/picks", route => route.fulfill({json:{
+    ok: true, enabled: true, radar_active: true, scan_ok: true, snapshot_stale: false,
+    last_scan_ts: nowSec - 30, symbols: 105, fetch_ok: 6,
+    scanned_symbols: 105, usable_symbols: 6, coverage_degraded: true, picks: [],
+  }}));
+  await page.route("**/api/picks?limit=5", route => route.fulfill({json:{
+    ok: true, core_engine_mode: "research", active: [],
+  }}));
+  await page.route("**/api/forecasts/research?limit=5", route => route.fulfill({json:{
+    ok: true, trading_eligible: false, accuracy_proven: false, total_open: 1,
+    forecasts: [{ id: 7, symbol: "<b>XSS</b>", direction: "UP", entry_reference: 10,
+      target_reference: 11, stop_reference: 9.5, trading_eligible: false }],
+  }}));
+  await page.goto("/picks");
+  const today = page.locator("#view-today");
+  await expect(today).toContainText("Insufficient coverage (6 of 105 symbols usable)");
+  await expect(today.locator(".verdict .a")).not.toHaveText(/^No\.?$/);
+  await expect(today.getByRole("heading", { name: "Approved core picks" })).toBeVisible();
+  await expect(today.getByRole("heading", { name: "Experimental / paper forecasts" })).toBeVisible();
+  await expect(today.getByRole("heading", { name: "Unvalidated radar observations" })).toBeVisible();
+  await expect(today).toContainText("<b>XSS</b>"); // rendered as text, not markup
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+  expect(overflow).toBeLessThanOrEqual(0);
+});

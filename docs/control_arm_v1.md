@@ -6,6 +6,13 @@ refused (`edge_control_design/control_arm_v1`).
 
 Design hash: `605453cd49128631`
 
+> **Status (2026-10-02): exploratory (full-session approval, not point-in-time).** v1 is
+> superseded as the primary result by `docs/control_arm_v2.md` (hash `3baa238954712ba2`). v1
+> labels a name approved on ANY forecast that session and grades it from `first_seen`. A name
+> seen at 09:45 and approved at 13:00 is graded from 09:46 as approved, so the label uses
+> information from after the entry (audit EDGE-10). The design below is unchanged and v1 keeps
+> grading with the same numbers. The readout reports it under `exploratory_v1`.
+
 ## Why
 
 Each intraday strategy gets at most about 3 fills a day, so comparing one strategy with

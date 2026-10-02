@@ -112,11 +112,31 @@ def test_news_sentiment_lexicon():
     assert score_headline("WOLF beats earnings, strong rally upgrade") > 0
     assert score_headline("WOLF misses, downgrade, weak decline") < 0
     out = score_articles(
-        [{"title": "WOLF surges on contract win"}, {"title": "WOLF slips on delay"}],
+        [
+            {"title": "WOLF surges on contract win", "symbol": "WOLF"},
+            {"title": "WOLF slips on delay", "symbols": ["wolf", "AMC"]},
+        ],
         symbol="WOLF",
     )
     assert out["count"] == 2
     assert out["model"] == "lexicon_v1"
+
+
+def test_news_sentiment_requires_requested_symbol_tag():
+    """DATA-03: a scalar symbol "OTHER" must not contribute to WOLF."""
+    out = score_articles(
+        [
+            {"title": "OTHER surges on record contract win", "symbol": "OTHER"},
+            {"title": "Untagged rally headline"},
+            {"title": "WOLF bankruptcy fears", "symbol": "WOLF"},
+            {"title": "OLF upgrade", "symbol": "OLF"},
+            {"title": "Basket strong", "symbols": "AMC, WOLF"},
+        ],
+        symbol="WOLF",
+    )
+    assert out["count"] == 2
+    titles = [row["title"] for row in out["articles"]]
+    assert titles == ["WOLF bankruptcy fears", "Basket strong"]
 
 
 def test_feature_drift_disabled(monkeypatch):
@@ -142,7 +162,50 @@ def test_feature_drift_with_mock_db(monkeypatch):
     with patch("core.db.db_conn", return_value=cm):
         out = compute_drift("WOLF", window=14)
     assert out["ok"] is True
-    assert out["status"] in ("stable", "alert", "insufficient_samples")
+    assert out["status"] in ("stable", "alert", "insufficient_data")
+
+
+def _drift_with_payloads(payloads, window=14):
+    from core.feature_drift import compute_drift
+
+    conn = MagicMock()
+    cur = MagicMock()
+    cur.fetchall.return_value = [(p,) for p in payloads]
+    conn.cursor.return_value = cur
+    cm = MagicMock()
+    cm.__enter__ = MagicMock(return_value=conn)
+    cm.__exit__ = MagicMock(return_value=False)
+    with patch("core.db.db_conn", return_value=cm):
+        return compute_drift("WOLF", window=window)
+
+
+def test_feature_drift_empty_baseline_is_insufficient_not_stable(monkeypatch):
+    """DATA-02: 14 rows with a 14-row window has no baseline at all."""
+    monkeypatch.setenv("GHOST_FEATURE_DRIFT", "1")
+    out = _drift_with_payloads([{"rsi": 50.0 + i} for i in range(14)])
+    assert out["status"] == "insufficient_data"
+    assert out["alerts"] == []
+
+
+def test_feature_drift_requires_per_feature_support(monkeypatch):
+    monkeypatch.setenv("GHOST_FEATURE_DRIFT", "1")
+    # rsi present only twice in the baseline window.
+    payloads = [{"rsi": 50.0 + (i % 3)} for i in range(14)]
+    payloads += [{"rsi": 50.0 + (i % 3)} if i < 2 else {"adx": 20.0} for i in range(14)]
+    out = _drift_with_payloads(payloads)
+    assert out["status"] == "insufficient_data"
+    assert "rsi" in out["features_insufficient"]
+
+
+def test_feature_drift_zero_variance_baseline_shift_alerts(monkeypatch):
+    monkeypatch.setenv("GHOST_FEATURE_DRIFT", "1")
+    payloads = [{"rsi": 70.0} for _ in range(14)] + [{"rsi": 50.0} for _ in range(14)]
+    out = _drift_with_payloads(payloads)
+    assert out["status"] == "alert"
+    assert out["alerts"][0]["reason"] == "zero_variance_baseline_shift"
+
+    flat = [{"rsi": 50.0} for _ in range(28)]
+    assert _drift_with_payloads(flat)["status"] == "stable"
 
 
 def test_options_flow_mock_yfinance():

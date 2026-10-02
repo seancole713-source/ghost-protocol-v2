@@ -532,7 +532,7 @@ def run_shadow_models(report: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 def store_shadow_predictions(cur, parent_ledger_id: int, report: Dict[str, Any]) -> Dict[str, Any]:
-    ensure_shadow_tables(cur)
+    # No DDL here: runs per prediction; the startup migration owns the schema.
     preds = run_shadow_models(report)
     created = int(report.get("ts") or _now())
     count = 0
@@ -592,7 +592,6 @@ def resolve_shadow_predictions(*, symbol: Optional[str] = None, limit: int = 100
         from core.db import db_conn
         with db_conn() as conn:
             cur = conn.cursor()
-            ensure_shadow_tables(cur)
             where = "sp.resolved_at IS NULL AND p.resolved_5d_at IS NOT NULL AND p.price_5d IS NOT NULL AND p.return_5d_pct IS NOT NULL"
             params: List[Any] = []
             if symbol:
@@ -701,7 +700,6 @@ def shadow_summary(*, symbol: Optional[str] = None, limit: int = 50) -> Dict[str
         from core.db import db_conn
         with db_conn() as conn:
             cur = conn.cursor()
-            ensure_shadow_tables(cur)
             where = "1=1"
             params: List[Any] = []
             if symbol:
@@ -725,6 +723,10 @@ def shadow_summary(*, symbol: Optional[str] = None, limit: int = 50) -> Dict[str
             for r in rows
         ]}
     except Exception as exc:
+        from core.db import missing_schema_result
+        missing = missing_schema_result(exc, {"symbol": (symbol or "ALL").upper(), "manifest": shadow_manifest(), "count": 0, "rows": []})
+        if missing:
+            return missing
         return {"ok": False, "error": str(exc)[:160], "manifest": shadow_manifest(), "rows": []}
 
 
@@ -733,7 +735,6 @@ def shadow_model_profiles() -> Dict[str, Any]:
         from core.db import db_conn
         with db_conn() as conn:
             cur = conn.cursor()
-            ensure_shadow_tables(cur)
             cur.execute(
                 """
                 SELECT model_id, model_family, horizon_days, sample_count, actionable_count,
@@ -750,4 +751,8 @@ def shadow_model_profiles() -> Dict[str, Any]:
             for r in rows
         ], "manifest": shadow_manifest()}
     except Exception as exc:
+        from core.db import missing_schema_result
+        missing = missing_schema_result(exc, {"profiles": [], "manifest": shadow_manifest()})
+        if missing:
+            return missing
         return {"ok": False, "error": str(exc)[:160], "profiles": [], "manifest": shadow_manifest()}

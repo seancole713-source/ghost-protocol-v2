@@ -24,9 +24,21 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
+from zoneinfo import ZoneInfo
 
 URL = "wss://stream.data.alpaca.markets/v2/{feed}"
 FATAL_CODES = {401, 402, 404, 406, 409}   # auth failed / not authorized / limit / insufficient sub
+# The stream runs for weeks in one process: minute bars are kept for the CURRENT ET session
+# only (a new session drops every older bar), and never more than one full extended-hours
+# day (04:00-20:00 ET = 960 minutes) per symbol.
+MAX_BARS_PER_SYMBOL = 960
+
+
+_ET = ZoneInfo("America/New_York")
+
+
+def _session_day(ts: float):
+    return datetime.fromtimestamp(ts, tz=_ET).date()
 
 
 def _epoch(s: Optional[str]) -> Optional[float]:
@@ -49,7 +61,32 @@ class StreamState:
     last_trade: Dict[str, Dict[str, float]] = field(default_factory=dict)
     minute_bars: Dict[str, Dict[int, List[float]]] = field(default_factory=dict)   # sym -> {minute_ts: [o,h,l,c,v]}
     subscribed: Set[str] = field(default_factory=set)
+    session: Optional[Any] = None          # the ET date the kept bars belong to
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def _current(self, ts: float) -> bool:
+        """Advance to ts's ET session (dropping every older bar and trade); False if ts is
+        from an earlier session than the one kept. Caller holds the lock."""
+        day = _session_day(ts)
+        if self.session is not None and day < self.session:
+            return False
+        if day != self.session:
+            self.session = day
+            for sym in list(self.minute_bars):
+                bars = self.minute_bars[sym]
+                for k in [k for k in bars if _session_day(k) < day]:
+                    del bars[k]
+                if not bars:
+                    del self.minute_bars[sym]
+            for sym in [s for s, t in self.last_trade.items() if _session_day(t["ts"]) < day]:
+                del self.last_trade[sym]
+        return True
+
+    def _cap(self, sym: str) -> None:
+        bars = self.minute_bars.get(sym)
+        if bars and len(bars) > MAX_BARS_PER_SYMBOL:
+            for k in sorted(bars)[:len(bars) - MAX_BARS_PER_SYMBOL]:
+                del bars[k]
 
     def handle(self, raw: str, *, now: Optional[float] = None) -> List[str]:
         """Apply one websocket frame. Returns actions for the connection: 'auth', 'stop'."""
@@ -79,7 +116,7 @@ class StreamState:
                 elif t == "t":
                     ts = _epoch(m.get("t"))
                     sym, px, sz = m.get("S"), m.get("p"), m.get("s") or 0
-                    if sym and px is not None and ts is not None:
+                    if sym and px is not None and ts is not None and self._current(ts):
                         self.last_trade[sym] = {"price": float(px), "ts": ts}
                         minute = int(ts // 60 * 60)
                         bar = self.minute_bars.setdefault(sym, {}).get(minute)
@@ -88,12 +125,14 @@ class StreamState:
                         else:
                             bar[1], bar[2] = max(bar[1], px), min(bar[2], px)
                             bar[3], bar[4] = float(px), bar[4] + float(sz)
+                        self._cap(sym)
                 elif t == "b":
                     ts = _epoch(m.get("t"))
                     sym = m.get("S")
-                    if sym and ts is not None:
+                    if sym and ts is not None and self._current(ts):
                         self.minute_bars.setdefault(sym, {})[int(ts)] = [
                             float(m["o"]), float(m["h"]), float(m["l"]), float(m["c"]), float(m.get("v") or 0)]
+                        self._cap(sym)
         return actions
 
     def price(self, sym: str, *, max_age_s: float = 120.0, now: Optional[float] = None) -> Optional[Dict[str, float]]:

@@ -870,6 +870,7 @@ def _fetch_ohlcv_once(symbol, asset_type, period='1y', interval='1d', *, adjustm
     from core.prices import _sip_forbidden_recheck_s
 
     sip_status = {"code": None}
+    alpaca_429 = {"hit": False}
 
     def _try_feed(feed, *, window_end=None):
         try:
@@ -881,6 +882,8 @@ def _fetch_ohlcv_once(symbol, asset_type, period='1y', interval='1d', *, adjustm
             r = _req.get(url, headers=headers, timeout=30)
             if feed == 'sip':
                 sip_status["code"] = r.status_code
+            if r.status_code == 429:
+                alpaca_429["hit"] = True
             if r.status_code != 200:
                 LOGGER.info(f"Alpaca feed={feed} {symbol}: HTTP {r.status_code}")
                 _note_tier("alpaca", "error")
@@ -920,7 +923,15 @@ def _fetch_ohlcv_once(symbol, asset_type, period='1y', interval='1d', *, adjustm
         feed_used = 'sip_delayed'
         if sip_status["code"] == 403:
             _SIP_FORBIDDEN["historical_until"] = now_s + _sip_forbidden_recheck_s()
-    if not rows:
+    if not rows and alpaca_429["hit"]:
+        # Alpaca's limit is per account across feeds: after a SIP 429 an IEX
+        # request is a guaranteed second 429. Before the last attempt, re-ask
+        # Alpaca (the source that works once the minute rolls) instead of
+        # sending the burst on to the per-minute-limited Polygon tier.
+        if not getattr(_TIER_TRACE, "final_attempt", True):
+            LOGGER.info(f"Alpaca {symbol}: HTTP 429, retrying Alpaca before the fallbacks")
+            return None
+    elif not rows:
         LOGGER.info(f"Alpaca SIP returned nothing for {symbol}, trying IEX fallback")
         rows = _try_feed('iex')
         feed_used = 'iex'
@@ -1068,6 +1079,9 @@ def _fetch_ohlcv(symbol, asset_type, period=None, interval='1d', *, adjustment='
         _TIER_TRACE.events = events
         try:
             for attempt in range(retries):
+                # Read by _fetch_ohlcv_once: on an Alpaca 429 before the last
+                # attempt it re-asks Alpaca rather than burning the fallbacks.
+                _TIER_TRACE.final_attempt = attempt + 1 >= retries
                 raw_rows = _fetch_ohlcv_once(
                     symbol, asset_type, period, interval,
                     **({"adjustment": adjustment} if adjustment != "raw" else {}),
@@ -1089,6 +1103,7 @@ def _fetch_ohlcv(symbol, asset_type, period=None, interval='1d', *, adjustment='
                     time.sleep(delay)
         finally:
             _TIER_TRACE.events = None
+            _TIER_TRACE.final_attempt = True
         if not any(tier == "normalize" for tier, _outcome in events):
             _record_ohlcv_outcome(sym, guard_key, got_rows=False, events=events)
         neg_ttl = _ohlcv_neg_cache_ttl_s()
@@ -1202,6 +1217,13 @@ def _try_polygon_ohlcv(symbol, period, *, adjustment="split"):
     if not api_key:
         LOGGER.info(f"Polygon {symbol}: POLYGON_API_KEY not set on this deployment, skipping")
         return None
+    from core import polygon_rate
+    if not polygon_rate.try_acquire():
+        # Out of the per-minute budget (POLYGON_MAX_RPM) or cooling down after
+        # a 429: go straight to the next fallback. Says nothing about the symbol.
+        LOGGER.debug(f"Polygon {symbol}: skipped (per-minute request budget)")
+        _note_tier("polygon", "error")
+        return None
     days_map = {'3m': 90, '6m': 180, '1y': 365, '2y': 730, '5y': 1825}
     lookback_days = days_map.get(period, 365)
     end_date = datetime.now(timezone.utc).date()
@@ -1215,6 +1237,10 @@ def _try_polygon_ohlcv(symbol, period, *, adjustment="split"):
             f"&sort=asc&limit=5000&apiKey={api_key}"
         )
         r = _req.get(url, timeout=30)
+        if r.status_code == 429:
+            polygon_rate.note_rate_limited("daily bars")   # logs once per cooldown
+            _note_tier("polygon", "error")
+            return None
         if r.status_code != 200:
             LOGGER.info(f"Polygon {symbol}: HTTP {r.status_code} body={r.text[:200]!r}")
             _note_tier("polygon", "error")

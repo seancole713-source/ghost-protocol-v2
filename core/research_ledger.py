@@ -347,22 +347,30 @@ def get_pending_predictions(
     contract_id: Optional[str] = None,
     limit: int = 200,
     cur=None,
+    artifact_sha: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """Get unresolved research predictions using an indexed anti-join."""
+    """Get unresolved research predictions using an indexed anti-join.
+
+    Filters are applied in SQL before LIMIT so a filtered page is never a
+    post-filtered slice of an unfiltered page.
+    """
     if cur is not None:
-        return _get_pending_impl(cur, contract_id, limit)
+        return _get_pending_impl(cur, contract_id, limit, artifact_sha)
     from core.db import db_conn
     with db_conn() as conn:
         c = conn.cursor()
-        return _get_pending_impl(c, contract_id, limit)
+        return _get_pending_impl(c, contract_id, limit, artifact_sha)
 
 
-def _get_pending_impl(cur, contract_id, limit) -> List[Dict[str, Any]]:
+def _get_pending_impl(cur, contract_id, limit, artifact_sha=None) -> List[Dict[str, Any]]:
     where = "WHERE r.prediction_id IS NULL"
     params: List[Any] = []
     if contract_id:
         where += " AND p.contract_id = %s"
         params.append(contract_id)
+    if artifact_sha:
+        where += " AND p.artifact_sha = %s"
+        params.append(artifact_sha)
     cur.execute(
         f"""
         SELECT p.id, p.contract_id, p.artifact_sha, p.symbol, p.direction,

@@ -812,12 +812,10 @@ def get_news_events(symbol: str = "", limit: int = 50, scope: str = "all"):
         )[:lim]
         return {"ok": True, "symbol": symbol.upper(), "scope": scope,
                 "available": news_available(), "events": events}
-    from core.db import db_conn
-    from core.news_events import ensure_news_tables
+    from core.db import db_conn, missing_schema_result
     try:
         with db_conn() as conn:
             cur = conn.cursor()
-            ensure_news_tables(cur)
             provenance_sql = ""
             if scope == "direct":
                 provenance_sql = " WHERE derived=FALSE"
@@ -838,6 +836,9 @@ def get_news_events(symbol: str = "", limit: int = 50, scope: str = "all"):
                 event["decision_eligible"] = not bool(event["derived"])
         return {"ok": True, "scope": scope, "available": news_available(), "events": events}
     except Exception as exc:
+        missing = missing_schema_result(exc, {"scope": scope, "available": False, "events": []})
+        if missing:
+            return missing
         return JSONResponse(status_code=200, content={"ok": False, "error": str(exc)[:120]})
 
 

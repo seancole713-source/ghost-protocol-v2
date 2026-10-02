@@ -120,7 +120,7 @@ def _day_of(store, table: str, day: Optional[str], field: str = "day") -> Option
 def research(store, day: Optional[str] = None) -> Dict[str, Any]:
     d = _day_of(store, "edge_research", day)
     if not d:
-        return {"note": "no research yet (08:30-09:04 ET on trading days, when EDGE_RESEARCH_ENABLED)"}
+        return {"note": "no research yet (08:30-09:28 ET on trading days, when EDGE_RESEARCH_ENABLED)"}
     recs = sorted(store.scan("edge_research", day=d), key=lambda r: r["made_at"])
     return {"day": d, "spent_usd": (store.get("edge_research_budget", d) or {}).get("spent_usd"),
             "symbols": [{"symbol": r["symbol"], "reviewer": r.get("reviewer"), "cost_usd": r.get("cost_usd"),
@@ -225,6 +225,14 @@ def models(store) -> Dict[str, Any]:
 
 
 def view(store, name: str = "summary", day: Optional[str] = None, kind: Optional[str] = None) -> Dict[str, Any]:
+    """One named view. Every string is passed through shared.redaction on the way out: stored
+    provider errors (source_errors, notes, skipped days) can embed a request URL whose query
+    carries an API key (Polygon's apiKey=), and this is what MCP and the Railway log read."""
+    from shared.redaction import redact_obj
+    return redact_obj(_view(store, name, day, kind))
+
+
+def _view(store, name: str, day: Optional[str], kind: Optional[str]) -> Dict[str, Any]:
     if name not in VIEWS:
         return {"error": f"view must be one of {VIEWS}"}
     if name == "research":
@@ -244,8 +252,9 @@ def view(store, name: str = "summary", day: Optional[str] = None, kind: Optional
         return (T10.with_outcomes(store, d) if d else None) or {
             "note": "no Top 10 yet (built with the card, 09:05-09:28 ET)"}
     if name == "control":
-        from edge import control as CA
-        return CA.view(store, day)
+        # v2 (point-in-time) is the primary result; v1 rides along labelled exploratory.
+        from edge import control_v2 as CA2
+        return CA2.view(store, day)
     if name == "notes":
         from edge import agent_notes as AN
         return AN.recent(store, day=day, kind=kind)
@@ -261,7 +270,7 @@ def view(store, name: str = "summary", day: Optional[str] = None, kind: Optional
         return store.get("edge_probe", "latest") or {"note": "no probe stored yet"}
     if name == "universe":
         return universe(store) or {"note": "no universe snapshot yet (06:00-07:00 ET)"}
-    from edge import control as CA, scorecard as SC
+    from edge import control_v2 as CA2, scorecard as SC
     t, sc = today(store), SC.scorecard(store)
     return {
         "today": {k: t.get(k) for k in ("day", "forecasts", "baseline_forecasts", "health_banner", "note")},
@@ -272,7 +281,8 @@ def view(store, name: str = "summary", day: Optional[str] = None, kind: Optional
             "day", "movers", "executable", "caught", "recall", "labels", "coverage_note")})(misses(store)),
         "ai_scorecard": {"sessions": sc.get("sessions"),
                          **{k: (sc.get(k) or {}).get("verdict") for k in ("keyword_catalyst", "ai_research", "model")}},
-        "control_arm": CA.summary(store)["headline"],
+        "control_arm": CA2.summary(store)["headline"],
+        "control_arm_v1_exploratory": CA2.v1_exploratory(store)["headline"],
         "note": "shadow and paper only; nothing here is a trade recommendation",
     }
 

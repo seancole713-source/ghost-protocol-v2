@@ -7,7 +7,7 @@ was knowable at 09:10 ET that day:
   reference price  the last premarket minute bar that began before 09:10 ET
                    (consolidated SIP bars, which include extended hours), no
                    older than 30 min -- else DATA_UNAVAILABLE
-  previous close   the prior session's grouped-daily close
+  previous close   the prior session's grouped-daily close, AS TRADED
   liquidity        20-day averages from PRIOR sessions only
   catalysts        news published before 09:10 ET, through the same keyword
                    model the live shadow uses
@@ -26,8 +26,17 @@ Limits, printed on every report:
   * this is not the forward ledger and never enters it: the ledger refuses
     anything recorded after its window opened, by design.
 
-Data: Polygon grouped daily (one paced call per session) + Alpaca SIP minute
-bars and news (multi-symbol, far higher rate limit). Runs overnight.
+Price basis (PRICE_BASIS, recorded on every result): every series is on ONE basis, the prices
+and volume as traded on the session being decided. Polygon grouped daily is asked with
+adjusted=false and Alpaca minute bars with adjustment=raw. Prior-session values (the previous
+close, the 20-day share volume) are restated ONLY for splits executed after them and on or
+before the decision day -- splits a trader on that day already knew. Polygon's default
+adjusted=true restates for splits executed long afterwards while the minute bars stayed raw:
+before v8 a later 2-for-1 split doubled a name's "gap" and a later 1-for-10 reverse split
+turned it into -90% (EDGE-09).
+
+Data: Polygon grouped daily (one paced call per session) + Polygon reference splits (one call
+per run) + Alpaca SIP minute bars and news (multi-symbol, far higher rate limit). Runs overnight.
 """
 from __future__ import annotations
 
@@ -41,20 +50,38 @@ from edge import catalysts as C, detectors as D, features as FX, setups as S, st
 from edge.contracts import COUNTED, ET, WIN, issue
 from edge.pipeline import GAP_AND_GO_AUTO, GAP_BASELINE, previous_trading_day, trading_day
 from edge.providers import alpaca as A, polygon as PG
-from edge.resolver import resolve_execution, resolve_market
+from edge.resolver import RESOLVER_VERSION, resolve_execution, resolve_market
+from shared.redaction import redact_exc
 
 # v3: v2's historical news query had no `end`, so Alpaca paged back from NOW and the capped
 # pages held no news from the session studied -- the catalyst rule saw almost none (1 forecast
 # in 58 sessions). The no-catalyst baseline was unaffected. v2's record is kept as it was.
 # v4: the resolver no longer fills a stop-limit on a bar that ran through the trigger and past the
 # limit (it waits for price to return to the limit), matching what the paper broker did on day 1.
-BACKTEST_VERSION = "gap_and_go_backtest_v7"
+# v8: one price basis (EDGE-09). v7 took the previous close and the 20-day volume from Polygon's
+# split-ADJUSTED grouped daily and the reference/execution prices from RAW Alpaca minute bars, so
+# on any name split after the session the gap was computed across two bases. v8 is raw as traded
+# on both sides, restated only for splits executed by the decision day. v7's record is kept as it
+# was and is never pooled with v8's.
+BACKTEST_VERSION = "gap_and_go_backtest_v8"
+PRICE_BASIS = "raw_as_traded"
+PRICE_BASIS_DETAIL = {
+    "basis": PRICE_BASIS,
+    "daily": "Polygon grouped daily, adjusted=false",
+    "minute": "Alpaca 1-minute bars, adjustment=raw",
+    "volume": "shares as traded; dollar volume as traded (unchanged by any split)",
+    "restatement": ("prior-session close and share volume restated only for splits executed after "
+                    "that session and on or before the decision day (Polygon reference splits)"),
+}
+MINUTE_ADJUSTMENT = "raw"
 LIMITS = [
     "research evidence on past sessions, NOT the forward record",
     "candidates pre-screened by that day's open >= +1% (small optimistic bias: misses 9:10 gappers that faded before the open)",
     "historical news uses publication time as first-seen (optimistic)",
     "10 bps per side assumed cost (stress variants: 25 bps a side, a one-minute entry delay, both)",
     "catalyst check is keyword_v1, same as the live shadow",
+    "prices and volume as traded (raw), restated only for splits executed by the session; "
+    "an unlisted split is a miss",
 ]
 
 
@@ -66,13 +93,40 @@ def _iso(ts: int) -> str:
     return datetime.fromtimestamp(ts, tz=ET).isoformat()
 
 
+Splits = Dict[str, List[Tuple[date, float]]]     # {ticker: [(execution_date, share multiplier)]}
+
+
+def split_index(rows: List[Dict[str, Any]]) -> Splits:
+    """{ticker: [(execution_date, split_to / split_from)]} from Polygon reference splits."""
+    out: Splits = {}
+    for s in rows:
+        out.setdefault(s["ticker"], []).append((s["execution_date"], s["split_to"] / s["split_from"]))
+    return out
+
+
+def share_factor(splits: Optional[Splits], ticker: str, after: Optional[date], as_of: date) -> float:
+    """Share multiplier carrying a value from session `after` onto session `as_of`'s basis:
+    the product of every split executed after `after` and on or before `as_of` (known by then).
+    Shares multiply by it, prices divide by it; dollar volume is unchanged. `after=None` (an
+    unknown prior day) counts only splits executed on `as_of` itself."""
+    f = 1.0
+    for ex, mult in (splits or {}).get(ticker) or []:
+        if ex <= as_of and (ex == as_of if after is None else ex > after):
+            f *= mult
+    return f
+
+
 class Rolling:
-    """Per-ticker 20-session history of (volume, dollar volume) from PRIOR days."""
+    """Per-ticker 20-session history of (volume, dollar volume) from PRIOR days.
+
+    Volumes are pushed as traded, with their session. `avg(..., as_of=, splits=)` restates the
+    share volume onto `as_of`'s basis for splits executed by then (dollar volume needs none);
+    without `splits` the history is averaged as pushed."""
 
     def __init__(self, n: int = 20) -> None:
         self.n, self.h = n, {}
 
-    def push(self, rows: List[dict]) -> None:
+    def push(self, rows: List[dict], day: Optional[date] = None) -> None:
         for r in rows:
             t = r.get("T")
             if not t:
@@ -80,15 +134,20 @@ class Rolling:
             v = float(r.get("v") or 0)
             px = float(r.get("vw") or r.get("c") or 0)
             q = self.h.setdefault(t, [])
-            q.append((v, v * px))
+            q.append((v, v * px, day))
             if len(q) > self.n:
                 del q[0]
 
-    def avg(self, t: str, *, min_days: int = 10) -> Tuple[Optional[float], Optional[float]]:
+    def avg(self, t: str, *, min_days: int = 10, as_of: Optional[date] = None,
+            splits: Optional[Splits] = None) -> Tuple[Optional[float], Optional[float]]:
         q = self.h.get(t) or []
         if len(q) < min_days:
             return None, None
-        return statistics.mean(x for x, _ in q), statistics.mean(y for _, y in q)
+        if splits and as_of is not None:
+            shares = [v * share_factor(splits, t, d, as_of) if d is not None else v for v, _, d in q]
+        else:
+            shares = [v for v, _, _ in q]
+        return statistics.mean(shares), statistics.mean(y for _, y, _ in q)
 
 
 def _bars(rows: List[dict]) -> List[tuple]:
@@ -132,9 +191,22 @@ def _stress(f, rth: List[tuple]) -> Dict[str, Any]:
 
 
 def session(get, day: date, prev_rows: List[dict], today_rows: List[dict], rolling: Rolling, *,
-            max_symbols: int = 400, cost_bps: float = 10.0) -> Dict[str, Any]:
-    """Decide and resolve one past session. Pure given its inputs + two Alpaca calls."""
-    prev_close = {r["T"]: float(r["c"]) for r in prev_rows if r.get("T") and r.get("c")}
+            max_symbols: int = 400, cost_bps: float = 10.0, splits: Optional[Splits] = None,
+            prev_day: Optional[date] = None) -> Dict[str, Any]:
+    """Decide and resolve one past session. Pure given its inputs + two Alpaca calls.
+
+    `prev_rows` / `today_rows` are grouped daily bars AS TRADED (adjusted=false). A split
+    executed after `prev_day` and on or before `day` restates the previous close onto `day`'s
+    basis -- the basis of `day`'s own open and minute bars (PRICE_BASIS)."""
+    prev_close, restated = {}, {}
+    for r in prev_rows:
+        t = r.get("T")
+        if not t or not r.get("c"):
+            continue
+        f = share_factor(splits, t, prev_day, day)
+        prev_close[t] = float(r["c"]) / f
+        if f != 1.0:
+            restated[t] = {"raw_prev_close": float(r["c"]), "share_factor": f}
     cands = []
     for r in today_rows:
         t = r.get("T")
@@ -143,7 +215,7 @@ def session(get, day: date, prev_rows: List[dict], today_rows: List[dict], rolli
         pc, op = prev_close[t], float(r.get("o") or 0)
         if pc <= 0 or not (1.01 <= op / pc <= 1.5) or not (2.0 <= pc <= 500.0):
             continue
-        sh, dol = rolling.avg(t)
+        sh, dol = rolling.avg(t, as_of=day, splits=splits)
         if dol is None or dol < 5_000_000:
             continue
         cands.append((dol, t, sh))
@@ -151,8 +223,9 @@ def session(get, day: date, prev_rows: List[dict], today_rows: List[dict], rolli
     cands = cands[:max_symbols]
     syms = [t for _, t, _ in cands]
     if not syms:
-        return {"day": day.isoformat(), "candidates": 0, "results": []}
-    minute = A.bars_multi(get, syms, timeframe="1Min", start=_iso(_at(day, 4, 0)), end=_iso(_at(day, 16, 0)))
+        return {"day": day.isoformat(), "candidates": 0, "results": [], "price_basis": PRICE_BASIS}
+    minute = A.bars_multi(get, syms, timeframe="1Min", start=_iso(_at(day, 4, 0)), end=_iso(_at(day, 16, 0)),
+                          adjustment=MINUTE_ADJUSTMENT)
     news = A.news(get, syms, start=_iso(_at(day, 9, 10) - 86_400), end=_iso(_at(day, 9, 10)), limit=50)
     issued_at = _at(day, 9, 10)
     events: Dict[str, List[C.CatalystEvent]] = {s: [] for s in syms}
@@ -179,7 +252,8 @@ def session(get, day: date, prev_rows: List[dict], today_rows: List[dict], rolli
         rows.append({"symbol": t, "avg_dollars": dol, "ref": ref, "bars": b, "features": fx,
                      "main": S.decide("premarket_continuation", sig).verdict,
                      "base": S.decide("gap_baseline", sig).verdict,
-                     "gap_ok": sig["gap"].state == D.PASS, "liquid": sig["liquidity"].state == D.PASS})
+                     "gap_ok": sig["gap"].state == D.PASS, "liquid": sig["liquidity"].state == D.PASS,
+                     "prev_close": prev_close[t], "gap_pct": sig["gap"].value, "avg_shares": sh})
     results = []
     for spec, key in ((GAP_AND_GO_AUTO, "main"), (GAP_BASELINE, "base")):
         chosen = sorted([r for r in rows if r[key] == S.ELIGIBLE], key=lambda r: -r["avg_dollars"])[:spec.max_per_day]
@@ -188,6 +262,7 @@ def session(get, day: date, prev_rows: List[dict], today_rows: List[dict], rolli
             rth = [x for x in r["bars"] if x[0] >= _at(day, 9, 30)]
             m, x = resolve_market(f, rth), resolve_execution(f, rth, cost_bps_per_side=cost_bps)
             results.append({"experiment": spec.experiment_id, "symbol": r["symbol"], "ref": r["ref"],
+                            "prev_close": r["prev_close"], "gap_pct": r["gap_pct"], "avg_shares": r["avg_shares"],
                             "forecast": m.outcome, "simulated": x.outcome, "pnl_usd": x.pnl_usd,
                             "ambiguous": x.ambiguous, "stress": _stress(f, rth)})
     # The model dataset: EVERY priced, gap-qualified, liquid candidate -- not just the
@@ -206,11 +281,17 @@ def session(get, day: date, prev_rows: List[dict], today_rows: List[dict], rolli
                         "pnl_usd": x.pnl_usd, "catalyst_ok": r["main"] == S.ELIGIBLE})
     priced = sum(1 for r in rows if r["ref"])
     return {"day": day.isoformat(), "candidates": len(rows), "priced": priced, "results": results,
-            "dataset": dataset}
+            "dataset": dataset, "price_basis": PRICE_BASIS,
+            # Every candidate whose previous close was restated for a split, with the gap it got.
+            "split_restated": {r["symbol"]: {**restated[r["symbol"]], "prev_close": r["prev_close"],
+                                             "ref": r["ref"], "gap_pct": r["gap_pct"]}
+                               for r in rows if r["symbol"] in restated}}
 
 
 def summarize(sessions: List[Dict[str, Any]], break_even: float) -> Dict[str, Any]:
-    out: Dict[str, Any] = {"version": BACKTEST_VERSION, "sessions": len(sessions), "limits": LIMITS,
+    out: Dict[str, Any] = {"version": BACKTEST_VERSION, "resolver_version": RESOLVER_VERSION,
+                           "price_basis": PRICE_BASIS, "price_basis_detail": PRICE_BASIS_DETAIL,
+                           "sessions": len(sessions), "limits": LIMITS,
                            "break_even": break_even, "experiments": {}}
     for eid in (GAP_AND_GO_AUTO.experiment_id, GAP_BASELINE.experiment_id):
         rows = [r for s in sessions for r in s["results"] if r["experiment"] == eid]
@@ -265,12 +346,18 @@ def run(get, store, *, end_day: date, days: int = 60, warmup: int = 20,
             sessions_days.append(d)
         d -= timedelta(days=1)
     sessions_days.reverse()
-    rolling, prev_rows, results, skipped = Rolling(), None, [], []
+    try:
+        # One basis needs the whole split list: a partial one would leave some names mixed. No
+        # list, no run -- nothing is stored, and the next night tries again.
+        splits = split_index(PG.splits(get, sessions_days[0], end_day, sleep=sleep))
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "error", "why": f"split list unavailable: {redact_exc(exc, 160)}"}
+    rolling, prev_rows, prev_day, results, skipped = Rolling(), None, None, [], []
     for i, day in enumerate(sessions_days):
         if i:
             sleep(pace)
         try:
-            rows = PG.grouped_daily(get, day)
+            rows = PG.grouped_daily(get, day, adjusted=False)
         except Exception as exc:  # noqa: BLE001
             skipped.append({"day": day.isoformat(), "why": type(exc).__name__})
             continue
@@ -279,11 +366,11 @@ def run(get, store, *, end_day: date, days: int = 60, warmup: int = 20,
             continue
         if prev_rows is not None and i > warmup:
             try:
-                results.append(session(get, day, prev_rows, rows, rolling))
+                results.append(session(get, day, prev_rows, rows, rolling, splits=splits, prev_day=prev_day))
             except Exception as exc:  # noqa: BLE001
-                skipped.append({"day": day.isoformat(), "why": f"{type(exc).__name__}: {str(exc)[:80]}"})
-        rolling.push(rows)
-        prev_rows = rows
+                skipped.append({"day": day.isoformat(), "why": redact_exc(exc, 120)})
+        rolling.push(rows, day)
+        prev_rows, prev_day = rows, day
     summary = summarize(results, GAP_AND_GO_AUTO.break_even_win_rate())
     dataset = [row for sess in results for row in sess.get("dataset") or []]
     summary["dataset_rows"] = len(dataset)
@@ -291,12 +378,14 @@ def run(get, store, *, end_day: date, days: int = 60, warmup: int = 20,
         from edge import models as MD
         summary["model"] = MD.train_and_register(store, dataset)
     except Exception as exc:  # noqa: BLE001 - a failed model never blocks the backtest record
-        summary["model"] = {"status": "error", "error": f"{type(exc).__name__}: {str(exc)[:160]}"}
+        summary["model"] = {"status": "error", "error": redact_exc(exc, 200)}
     summary.update({"window": [results[0]["day"], results[-1]["day"]] if results else None,
-                    "skipped": skipped, "completed_at": int(time.time())})
+                    "skipped": skipped, "splits_in_window": sum(len(v) for v in splits.values()),
+                    "completed_at": int(time.time())})
     store.put("edge_backtest", BACKTEST_VERSION, {**summary, "sessions_detail": [
         {k: v for k, v in sess.items() if k != "dataset"} for sess in results]})
-    store.put("edge_dataset", BACKTEST_VERSION, {"rows": dataset, "features": list(FX.FEATURES)})
+    store.put("edge_dataset", BACKTEST_VERSION, {"rows": dataset, "features": list(FX.FEATURES),
+                                                 "price_basis": PRICE_BASIS})
     return {"status": "complete", **{k: summary[k] for k in ("sessions", "window", "experiments",
-                                                              "dataset_rows")},
+                                                              "dataset_rows", "price_basis")},
             "model": {k: v for k, v in (summary.get("model") or {}).items() if k != "evaluation"}}

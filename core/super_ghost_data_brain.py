@@ -377,7 +377,6 @@ def persist_data_brain(symbol: str) -> Dict[str, Any]:
         from core.db import db_conn
         with db_conn() as conn:
             cur = conn.cursor()
-            ensure_data_brain_tables(cur)
             cur.execute(
                 """
                 INSERT INTO super_ghost_data_brain_snapshots
@@ -399,7 +398,6 @@ def latest_data_brain_snapshots(*, symbol: Optional[str] = None, limit: int = 20
         from core.db import db_conn
         with db_conn() as conn:
             cur = conn.cursor()
-            ensure_data_brain_tables(cur)
             where = "1=1"
             params: List[Any] = []
             if symbol:
@@ -421,4 +419,8 @@ def latest_data_brain_snapshots(*, symbol: Optional[str] = None, limit: int = 20
             for r in rows
         ]}
     except Exception as exc:
+        from core.db import missing_schema_result
+        missing = missing_schema_result(exc, {"symbol": (symbol or "ALL").upper(), "snapshots": []})
+        if missing:
+            return missing
         return {"ok": False, "error": str(exc)[:160], "snapshots": []}

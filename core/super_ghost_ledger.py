@@ -7,7 +7,11 @@ horizons, producing the honest accuracy + "if-followed" performance that turns
 Ghost from "smart analysis" into a measurable prediction product.
 
 Design mirrors core/squeeze_outcomes.py and core/performance_log.py:
-- Non-destructive CREATE TABLE IF NOT EXISTS.
+- Non-destructive CREATE TABLE IF NOT EXISTS, run only by the startup
+  migration (core.db._migrate_schema). Read and per-cycle paths never run
+  DDL: CREATE INDEX IF NOT EXISTS takes a SHARE lock per call, which collided
+  with concurrent writers. A read before the migration returns empty with
+  reason "schema_not_migrated".
 - JSONB columns for the rich checklist / drivers / ai brief / risk plan.
 - Best-effort, never raises into callers; logging failures degrade silently.
 - Resolution reads realized OHLC via the same price path used elsewhere.
@@ -75,7 +79,7 @@ def _f(v: Any) -> Optional[float]:
 
 
 def ensure_ledger_table(cur) -> None:
-    """Create the ledger table + indexes. Safe to call repeatedly."""
+    """Create the ledger table + indexes. Startup migration only (core.db)."""
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS super_ghost_predictions (
@@ -181,7 +185,6 @@ def log_prediction(report: Dict[str, Any], *, created_at: Optional[int] = None) 
 
         with db_conn() as conn:
             cur = conn.cursor()
-            ensure_ledger_table(cur)
             cur.execute(
                 """
                 INSERT INTO super_ghost_predictions (
@@ -453,11 +456,13 @@ def resolve_predictions(*, limit: int = 200, now: Optional[int] = None) -> Dict[
         "resolved_1d_at, resolved_5d_at, resolved_20d_at"
     )
     try:
-        from core.db import db_conn
+        from core.db import db_conn, run_with_deadlock_retry
 
+        # Phase 1 (read): one short statement. Schema is owned by the startup
+        # migration; per-cycle CREATE INDEX IF NOT EXISTS took a SHARE lock that
+        # was then held across every network fetch below.
         with db_conn() as conn:
             cur = conn.cursor()
-            ensure_ledger_table(cur)
             cur.execute(
                 f"""
                 SELECT {cols} FROM super_ghost_predictions
@@ -468,37 +473,57 @@ def resolve_predictions(*, limit: int = 200, now: Optional[int] = None) -> Dict[
                 (max(1, min(1000, int(limit))),),
             )
             rows = cur.fetchall()
-            # Group symbols so we fetch each price series once.
-            by_symbol: Dict[str, List[Dict[str, Any]]] = {}
-            for r in rows:
-                rec = {
-                    "id": r[0], "symbol": r[1], "created_at": r[2], "reference_price": r[3],
-                    "direction": r[4], "target_price": r[5], "stop_loss": r[6],
-                    "resolved_1d_at": r[7], "resolved_5d_at": r[8], "resolved_20d_at": r[9],
-                }
-                by_symbol.setdefault((r[1] or "").upper(), []).append(rec)
+        # Group symbols so we fetch each price series once.
+        by_symbol: Dict[str, List[Dict[str, Any]]] = {}
+        for r in rows:
+            rec = {
+                "id": r[0], "symbol": r[1], "created_at": r[2], "reference_price": r[3],
+                "direction": r[4], "target_price": r[5], "stop_loss": r[6],
+                "resolved_1d_at": r[7], "resolved_5d_at": r[8], "resolved_20d_at": r[9],
+            }
+            by_symbol.setdefault((r[1] or "").upper(), []).append(rec)
 
-            for sym, recs in by_symbol.items():
-                series = _ohlc_series(sym, period="6mo")
-                if not series:
-                    continue
-                for rec in recs:
-                    updates = _resolve_one(rec, series, now)
-                    if not updates:
-                        continue
+        # Phase 2 (network, no transaction open): compute every row's updates.
+        pending_updates: List[Tuple[int, Dict[str, Any]]] = []
+        for sym, recs in by_symbol.items():
+            series = _ohlc_series(sym, period="6mo")
+            if not series:
+                continue
+            for rec in recs:
+                updates = _resolve_one(rec, series, now)
+                if updates:
+                    pending_updates.append((int(rec["id"]), updates))
+        # Deterministic primary-key order so concurrent writers acquire row
+        # locks in the same order.
+        pending_updates.sort(key=lambda item: item[0])
+
+        # Phase 3 (write): one short transaction, retried on deadlock. Each
+        # UPDATE writes the same values on replay, so a retry is idempotent.
+        def _write() -> Tuple[int, int]:
+            n_updated = 0
+            n_filled = 0
+            with db_conn() as conn:
+                cur = conn.cursor()
+                for row_id, updates in pending_updates:
                     set_clauses = []
                     params: List[Any] = []
                     for k, v in updates.items():
                         set_clauses.append(f"{k} = %s")
                         params.append(v)
                         if k.startswith("resolved_") and k.endswith("d_at"):
-                            horizons_filled += 1
-                    params.append(rec["id"])
+                            n_filled += 1
+                    params.append(row_id)
                     cur.execute(
                         f"UPDATE super_ghost_predictions SET {', '.join(set_clauses)} WHERE id = %s",
                         params,
                     )
-                    updated += 1
+                    n_updated += 1
+            return n_updated, n_filled
+
+        if pending_updates:
+            updated, horizons_filled = run_with_deadlock_retry(
+                _write, label="super ghost resolve write",
+            )
     except Exception as exc:
         LOGGER.warning("resolve_predictions: %s", str(exc)[:160])
         return {"ok": False, "error": str(exc)[:160], "resolved": 0, "updated": 0}
@@ -542,7 +567,6 @@ def get_history(*, symbol: Optional[str] = None, limit: int = 100, include_paylo
 
         with db_conn() as conn:
             cur = conn.cursor()
-            ensure_ledger_table(cur)
             if symbol:
                 cur.execute(
                     f"SELECT {select} FROM super_ghost_predictions WHERE symbol = %s ORDER BY created_at DESC LIMIT %s",
@@ -555,6 +579,10 @@ def get_history(*, symbol: Optional[str] = None, limit: int = 100, include_paylo
                 )
             raw = cur.fetchall()
     except Exception as exc:
+        from core.db import missing_schema_result
+        missing = missing_schema_result(exc, {"enabled": True, "count": 0, "rows": []})
+        if missing:
+            return missing
         return {"ok": False, "error": str(exc)[:160], "rows": []}
     rows = [_row_to_dict(r, cols) for r in raw]
     return {"ok": True, "enabled": True, "count": len(rows), "rows": rows}
@@ -580,12 +608,12 @@ def get_accuracy(*, symbol: Optional[str] = None, horizon: int = 5) -> Dict[str,
         horizon = 5
     correct_col = f"correct_{horizon}d"
     ret_col = f"return_{horizon}d_pct"
+    schema_missing = None
     try:
         from core.db import db_conn
 
         with db_conn() as conn:
             cur = conn.cursor()
-            ensure_ledger_table(cur)
             where = f"{correct_col} IS NOT NULL"
             params: List[Any] = []
             if symbol:
@@ -607,7 +635,11 @@ def get_accuracy(*, symbol: Optional[str] = None, horizon: int = 5) -> Dict[str,
             )
             total_logged = int(cur.fetchone()[0])
     except Exception as exc:
-        return {"ok": False, "error": str(exc)[:160]}
+        from core.db import missing_schema_result
+        schema_missing = missing_schema_result(exc, {})
+        if not schema_missing:
+            return {"ok": False, "error": str(exc)[:160]}
+        raw, total_logged = [], 0
 
     def _bucket() -> Dict[str, Any]:
         return {"n": 0, "wins": 0, "returns": []}
@@ -656,7 +688,7 @@ def get_accuracy(*, symbol: Optional[str] = None, horizon: int = 5) -> Dict[str,
             "avg_return_pct": round(sum(rets) / len(rets), 3) if rets else None,
         }
 
-    return {
+    out = {
         "ok": True,
         "enabled": True,
         "symbol": (symbol or "ALL").upper(),
@@ -673,6 +705,9 @@ def get_accuracy(*, symbol: Optional[str] = None, horizon: int = 5) -> Dict[str,
             "win_rate_wilson_low is a 95% small-sample floor; trust it over raw win_rate at low N."
         ),
     }
+    if schema_missing:
+        out.update(schema_missing)
+    return out
 
 
 def get_if_followed(*, symbol: Optional[str] = None, horizon: int = 5) -> Dict[str, Any]:
@@ -683,12 +718,12 @@ def get_if_followed(*, symbol: Optional[str] = None, horizon: int = 5) -> Dict[s
         horizon = 5
     ret_col = f"return_{horizon}d_pct"
     correct_col = f"correct_{horizon}d"
+    schema_missing = None
     try:
         from core.db import db_conn
 
         with db_conn() as conn:
             cur = conn.cursor()
-            ensure_ledger_table(cur)
             where = f"{ret_col} IS NOT NULL AND direction IN ('UP','DOWN')"
             params: List[Any] = []
             if symbol:
@@ -704,7 +739,11 @@ def get_if_followed(*, symbol: Optional[str] = None, horizon: int = 5) -> Dict[s
             )
             raw = cur.fetchall()
     except Exception as exc:
-        return {"ok": False, "error": str(exc)[:160]}
+        from core.db import missing_schema_result
+        schema_missing = missing_schema_result(exc, {})
+        if not schema_missing:
+            return {"ok": False, "error": str(exc)[:160]}
+        raw = []
 
     trades = []
     for direction, action, grade, ret, correct in raw:
@@ -735,7 +774,7 @@ def get_if_followed(*, symbol: Optional[str] = None, horizon: int = 5) -> Dict[s
             return None
         return round(sum(1 for x in ts if x["return_pct"] > 0) / len(ts), 4)
 
-    return {
+    out = {
         "ok": True,
         "enabled": True,
         "symbol": (symbol or "ALL").upper(),
@@ -760,6 +799,9 @@ def get_if_followed(*, symbol: Optional[str] = None, horizon: int = 5) -> Dict[s
             "This is a measurement of Ghost's directional calls, NOT a trade recommendation."
         ),
     }
+    if schema_missing:
+        out.update(schema_missing)
+    return out
 
 
 def run_resolver_job() -> Dict[str, Any]:

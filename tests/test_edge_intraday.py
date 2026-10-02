@@ -109,6 +109,31 @@ def test_each_strategy_fires_on_its_own_evidence(ledger):
     assert f["window_start"] == ts(10, 41) and f["entry_expiry"] == ts(11, 1)
 
 
+def test_an_intraday_forecast_is_stamped_with_the_clock_at_issuance_not_the_tick_start(ledger):
+    """EDGE-01: the tick starts 10:40, its fetches take until 10:44. The forecast is issued and
+    recorded at 10:44 and its window opens 10:45 -- never a 10:41 window recorded at 10:44. A
+    paired later version shares the same issuance moment (and so its v1 paper order)."""
+    out = I.tick(Market(ts(10, 40)), ledger, now=ts(10, 40), clock=lambda: ts(10, 44))
+    assert "catalyst_breakout@v1:CATX" in out["issued"] and out["late_refused"] == []
+    f = ledger.store.scan("forecasts", experiment_id="catalyst_breakout@v1")[0]
+    assert (f["issued_at"], f["recorded_at"], f["window_start"]) == (ts(10, 44), ts(10, 44), ts(10, 45))
+    assert f["entry_expiry"] == ts(11, 5) and f["evidence"]["data_as_of"] == ts(10, 40)
+    v1 = ledger.store.scan("forecasts", experiment_id="intraday_continuation@v1")[0]
+    v2 = ledger.store.scan("forecasts", experiment_id="intraday_continuation@v2")[0]
+    assert v1["issued_at"] == v2["issued_at"] == ts(10, 44)
+
+
+def test_an_intraday_tick_that_reaches_issuance_after_the_window_refuses(ledger):
+    """EDGE-01: a tick that started inside the 09:45-14:30 window but reached issuance after it
+    records nothing; each refusal is counted (late_refused) and kept on the radar."""
+    out = I.tick(Market(ts(10, 40)), ledger, now=ts(10, 40), clock=lambda: ts(14, 31))
+    assert out["issued"] == [] and len(out["late_refused"]) >= 2
+    assert all("14:31:00 ET" in m for m in out["late_refused"])
+    assert ledger.store.scan("forecasts") == []
+    catx = ledger.store.get("edge_radar", "2026-09-23|CATX")
+    assert catx["state"] != R.ENTRY_ELIGIBLE and "refused" in catx["blocker"]["reasons"][0]
+
+
 def test_the_radar_remembers_every_name_and_why(ledger):
     I.tick(Market(ts(10, 40)), ledger, now=ts(10, 40))
     radar = {r["symbol"]: r for r in ledger.store.scan("edge_radar", session_date="2026-09-23")}

@@ -194,4 +194,4 @@ def test_full_health_dedup_expiry_write_is_leader_only():
     import inspect
 
     src = inspect.getsource(wolf_app.health)
-    assert "if dedup_blocked and _hl_is_leader():" in src
+    assert "if dedup_blocked and not passive and _hl_is_leader():" in src

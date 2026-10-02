@@ -272,12 +272,9 @@ def score_precision_from_ledger(*, symbol: Optional[str] = None, horizon: int = 
     h = horizon if horizon in HORIZONS else 5
     try:
         from core.db import db_conn
-        from core.super_ghost_ledger import ensure_ledger_table
 
         with db_conn() as conn:
             cur = conn.cursor()
-            ensure_ledger_table(cur)
-            ensure_precision_tables(cur)
             rows = _resolved_rows(cur, symbol=symbol, horizon=h, limit=limit)
             events = [score_ledger_row(r, horizon=h) for r in rows]
             now = _now()
@@ -371,7 +368,6 @@ def precision_summary(*, symbol: Optional[str] = None, horizon: int = 5, limit: 
         from core.db import db_conn
         with db_conn() as conn:
             cur = conn.cursor()
-            ensure_precision_tables(cur)
             params: List[Any] = [h]
             where = "horizon_days=%s"
             if symbol:
@@ -426,6 +422,10 @@ def precision_summary(*, symbol: Optional[str] = None, horizon: int = 5, limit: 
                     "errors_pct": payload.get("errors_pct"), "overall_score": payload.get("overall_score"),
                 })
     except Exception as exc:
+        from core.db import missing_schema_result
+        missing = missing_schema_result(exc, {"profiles": [], "recent_events": []})
+        if missing:
+            return missing
         return {"ok": False, "error": str(exc)[:180], "profiles": [], "recent_events": []}
 
     primary = profiles[0] if profiles else None

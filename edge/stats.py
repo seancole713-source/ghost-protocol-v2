@@ -102,10 +102,16 @@ def isotonic_fit(xs: Sequence[float], ys: Sequence[float]) -> List[Tuple[float, 
     Returns (x_upper_bound, calibrated_value) steps. Fit on a calibration split
     only -- never on the data it will be judged on.
     """
-    pts = sorted(zip(xs, ys))
+    # Identical scores are ONE point weighted by their count: PAV on raw ties sorted (x, y) put
+    # the 0-labels first, so [0.5, 0.5] with labels [0, 1] calibrated 0.5 to 0 (audit EDGE-05).
+    agg: Dict[float, List[float]] = {}
+    for x, y in zip(xs, ys):
+        a = agg.setdefault(float(x), [0.0, 0.0])
+        a[0] += float(y)
+        a[1] += 1.0
     blocks: List[List[float]] = []   # [sum_y, count, max_x]
-    for x, y in pts:
-        blocks.append([float(y), 1.0, float(x)])
+    for x in sorted(agg):
+        blocks.append([agg[x][0], agg[x][1], x])
         while len(blocks) > 1 and blocks[-2][0] / blocks[-2][1] > blocks[-1][0] / blocks[-1][1]:
             s, c, mx = blocks.pop()
             blocks[-1][0] += s; blocks[-1][1] += c; blocks[-1][2] = mx
@@ -152,6 +158,50 @@ def clustered_bootstrap_ci(results_by_day: Dict[str, Sequence[bool]], *, iters: 
     lo = rates[int(alpha / 2 * iters)]
     hi = rates[min(iters - 1, int((1 - alpha / 2) * iters))]
     return lo, hi
+
+
+def clustered_diff_ci(by_day: Dict[str, Tuple[int, int, int, int]], *, iters: int = 4000, seed: int = 7,
+                      alpha: float = 0.05) -> Optional[Dict[str, Tuple[float, float]]]:
+    """Session-clustered bootstrap for two arms that share each session's market.
+
+    `by_day` is {day: (wins_a, filled_a, wins_b, filled_b)}. Whole SESSIONS are resampled with
+    replacement -- the same draw for both arms, since both traded that day's market -- and each
+    draw gives arm A's pooled win rate and the difference A - B. Returns
+    {"a": (low, high), "difference": (low, high)} at `alpha` (two-sided percentiles), or None when
+    either arm has no fills at all or fewer than half the draws hold fills in both arms. The
+    rows of one day are not independent; this interval is honestly wide when sessions are few.
+    """
+    return clustered_diff_cis(by_day, (alpha,), iters=iters, seed=seed)[alpha]
+
+
+def clustered_diff_cis(by_day: Dict[str, Tuple[int, int, int, int]], alphas: Sequence[float], *,
+                       iters: int = 4000, seed: int = 7) -> Dict[float, Optional[Dict[str, Tuple[float, float]]]]:
+    """clustered_diff_ci at several alphas from ONE set of draws: {alpha: result}."""
+    import random
+    days = [tuple(int(x) for x in v) for v in by_day.values() if v[1] or v[3]]
+    if not days or not sum(d[1] for d in days) or not sum(d[3] for d in days):
+        return {a: None for a in alphas}
+    rng = random.Random(seed)
+    a_rates, diffs = [], []
+    m = len(days)
+    for _ in range(iters):
+        ka = na = kb = nb = 0
+        for _ in range(m):
+            d = days[rng.randrange(m)]
+            ka += d[0]; na += d[1]; kb += d[2]; nb += d[3]
+        if na and nb:
+            a_rates.append(ka / na)
+            diffs.append(ka / na - kb / nb)
+    if len(diffs) < iters / 2:
+        return {a: None for a in alphas}
+    a_rates.sort()
+    diffs.sort()
+    n = len(diffs)
+
+    def pct(xs, alpha):
+        return xs[int(alpha / 2 * n)], xs[min(n - 1, int((1 - alpha / 2) * n))]
+
+    return {a: {"a": pct(a_rates, a), "difference": pct(diffs, a)} for a in alphas}
 
 
 def bonferroni_alpha(alpha: float, n_candidates: int) -> float:

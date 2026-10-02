@@ -94,6 +94,27 @@ class FailureLockout:
         while dq and dq[0] <= cutoff:
             dq.popleft()
 
+    def _evict(self, now: float, window: int, limit: int) -> None:
+        """Enforce the key cap. Caller holds the lock.
+
+        SEC-03 (audit): only EMPTY buckets used to be dropped, but a bucket is
+        only pruned when its own key fails again, so stale one-failure buckets
+        stayed non-empty forever and the map grew past the cap. Expire old
+        entries across every key first; if still over the cap, evict the
+        least-recently-failed keys, unlocked keys before locked ones.
+        """
+        for k in list(self._fails.keys()):
+            dq = self._fails[k]
+            self._prune(dq, now, window)
+            if not dq:
+                del self._fails[k]
+        excess = len(self._fails) - self._MAX_KEYS
+        if excess <= 0:
+            return
+        victims = sorted(self._fails.items(), key=lambda kv: (len(kv[1]) >= limit, kv[1][-1]))
+        for k, _dq in victims[:excess]:
+            del self._fails[k]
+
     def retry_after(self, key: str, now: Optional[float] = None) -> int:
         """Seconds until ``key`` may present a credential again (0 = allowed)."""
         limit, window = self._cfg()
@@ -119,8 +140,7 @@ class FailureLockout:
             dq.append(now)
             locked = len(dq) >= limit
             if len(self._fails) > self._MAX_KEYS:
-                for stale in [k for k, v in list(self._fails.items()) if not v]:
-                    self._fails.pop(stale, None)
+                self._evict(now, window, limit)
         if locked and len(dq) == limit:
             # Log the transition once; the key and kind are not secrets.
             LOGGER.warning(

@@ -382,6 +382,8 @@ def build_ask_context(include_portfolio: bool = False) -> Dict[str, Any]:
                         for p in (pf.get("positions") or [])[:20]
                     ],
                     "total_gain_loss": pf.get("total_gain_loss"),
+                    "totals_partial": pf.get("totals_partial"),
+                    "quote_coverage": pf.get("quote_coverage"),
                 }
         else:
             ctx["portfolio"] = {"note": "portfolio context excluded (public endpoint)"}

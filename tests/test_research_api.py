@@ -76,6 +76,67 @@ def test_list_pending_predictions(client):
     assert data["ok"] is True
 
 
+class _PendingCursor:
+    def __init__(self):
+        self.executed = []
+
+    def execute(self, sql, params=None):
+        self.executed.append((" ".join(sql.split()), list(params or [])))
+
+    def fetchall(self):
+        return []
+
+
+def test_pending_predictions_filter_artifact_sha_before_limit():
+    """API-01: artifact_sha is a SQL predicate, not ignored or post-filtered."""
+    from core.research_ledger import get_pending_predictions
+
+    cur = _PendingCursor()
+    get_pending_predictions(
+        contract_id="c1", artifact_sha="a" * 64, limit=7, cur=cur,
+    )
+    sql, params = cur.executed[0]
+    assert "p.artifact_sha = %s" in sql
+    assert sql.index("p.artifact_sha = %s") < sql.index("LIMIT")
+    assert params == ["c1", "a" * 64, 7]
+
+
+def test_rest_pending_predictions_pass_artifact_filter(client, monkeypatch):
+    import core.research_ledger as ledger
+
+    seen = {}
+
+    def _pending(**kwargs):
+        seen.update(kwargs)
+        return []
+
+    monkeypatch.setattr(ledger, "get_pending_predictions", _pending)
+    r = client.get(
+        "/api/research/predictions?resolved=false&artifact_sha=" + "b" * 64,
+    )
+    assert r.json()["ok"] is True
+    assert seen["artifact_sha"] == "b" * 64
+
+
+def test_mcp_pending_predictions_pass_artifact_filter(monkeypatch):
+    import core.research_ledger as ledger
+    from mcp import ghost_server
+
+    seen = {}
+
+    def _pending(**kwargs):
+        seen.update(kwargs)
+        return []
+
+    monkeypatch.setattr(ledger, "get_pending_predictions", _pending)
+    out = ghost_server._research_predictions(
+        {"resolved": False, "artifact_sha": "c" * 64, "limit": 5},
+    )
+    assert out["ok"] is True
+    assert seen["artifact_sha"] == "c" * 64
+    assert seen["limit"] == 5
+
+
 # ── proof endpoint ─────────────────────────────────────────────────────────
 
 @pytest.mark.integration

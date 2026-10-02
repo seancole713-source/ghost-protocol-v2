@@ -4247,6 +4247,60 @@ def test_get_portfolio_dedupes_duplicate_symbol_lots(monkeypatch):
     assert out["positions"][0]["quantity"] == 440.0
 
 
+def test_portfolio_missing_quote_is_not_counted_as_zero_value(monkeypatch):
+    """DATA-01: two $100 positions, one quoted, must not report a $100 loss."""
+    import core.portfolio_routes as pr
+    rows = [
+        (1, "AAA", "stock", 10.0, 10.0, "", "", None),
+        (2, "BBB", "stock", 10.0, 10.0, "", "", None),
+    ]
+
+    class _Cur:
+        def execute(self, sql, params=None):
+            self.last = sql
+
+        def fetchall(self):
+            return rows if "user_portfolio" in getattr(self, "last", "") else []
+
+        def fetchone(self):
+            return None
+
+    class _Conn:
+        def cursor(self):
+            return _Cur()
+
+        def commit(self):
+            pass
+
+    class _Ctx:
+        def __enter__(self):
+            return _Conn()
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(pr, "db_conn", lambda: _Ctx())
+    monkeypatch.setattr(
+        "core.prices.get_price", lambda s, a=None: 10.0 if s == "AAA" else None,
+    )
+
+    out = pr.build_portfolio_payload()
+    assert out["total_cost"] == 200.0
+    assert out["total_value"] is None
+    assert out["total_gain_loss"] is None
+    assert out["totals_partial"] is True
+    assert out["quote_coverage"] == {"priced": 1, "total": 2, "ratio": 0.5}
+    assert out["priced_subset"]["cost"] == 100.0
+    assert out["priced_subset"]["value"] == 100.0
+    assert out["priced_subset"]["gain_loss"] == 0.0
+
+    monkeypatch.setattr("core.prices.get_price", lambda s, a=None: 12.0)
+    full = pr.build_portfolio_payload()
+    assert full["totals_partial"] is False
+    assert full["total_value"] == 240.0
+    assert full["total_gain_loss"] == 40.0
+
+
 def test_is_ghost_symbol():
     from core.portfolio_routes import _is_ghost_symbol
     assert _is_ghost_symbol("ZZE2E1779572554878") is True

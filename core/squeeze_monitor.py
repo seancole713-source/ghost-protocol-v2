@@ -87,7 +87,10 @@ PREMARKET_VOL_FRACTION = float(os.getenv("SQUEEZE_PREMARKET_VOL_FRACTION", "0.05
 _TIMEOUT = float(os.getenv("PRICE_PROVIDER_TIMEOUT_S", "8.0"))
 
 COOLDOWN_SEC = int(os.getenv("SQUEEZE_ALERT_COOLDOWN", "7200"))
+# Minimum heuristic setup score (0-95) for a radar Telegram alert. The env
+# name predates the P1 relabel; the value is a score cutoff, not a confidence.
 MIN_TELEGRAM_CONFIDENCE = int(os.getenv("SQUEEZE_TELEGRAM_MIN_CONFIDENCE", "75"))
+SETUP_SCORE_LABEL = "Setup score (unvalidated)"
 REPRICE_ALERT_PCT = float(os.getenv("SQUEEZE_REPRICE_ALERT_PCT", "1.5"))
 _last_alert: Dict[str, float] = {}
 _short_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
@@ -386,14 +389,28 @@ def format_squeeze_alert(
     """Telegram body for radar-only squeeze alerts.
 
     These are NOT Ghost v3 high-conviction trades. The label is intentionally
-    explicit so low/medium-confidence radar cannot be mistaken for a real pick.
+    explicit so radar cannot be mistaken for a real pick.
+
+    P1 audit: the 0-95 number from ``squeeze_confidence`` is a heuristic
+    setup score with no chronological outcome validation (the radar API
+    labels it ``unvalidated_proxy``). It is published as "Setup score
+    (unvalidated)", never as confidence or a probability, and the levels are
+    neutral reference prices -- not validated buy/sell instructions.
     """
     buy, sell = squeeze_trade_levels(metrics["price"], metrics["session_high"], kind)
-    conf = squeeze_confidence(
+    score = squeeze_confidence(
         metrics["peak_move_pct"],
         rvol,
         short_risk=short_ctx.get("squeeze_risk"),
         kind=kind,
+    )
+    from core.squeeze_scorecard import compute_stop
+
+    prior_close = metrics.get("prior_close") or 0
+    stop = compute_stop(
+        metrics["price"],
+        vwap=metrics.get("vwap"),
+        prior_close=prior_close if prior_close > 0 else None,
     )
     fade = alert_time_fade_pct(metrics["price"], metrics["session_high"])
     fade_line = ""
@@ -403,9 +420,10 @@ def format_squeeze_alert(
     return (
         f"📡 SQUEEZE RADAR — {symbol.upper()}\n"
         f"Radar only — not a Ghost gated trade\n"
-        f"Buy: ${buy:.2f}\n"
-        f"Sell: ${sell:.2f}\n"
-        f"Confidence: {conf}%"
+        f"Watch level: ${buy:.2f}\n"
+        f"Upside reference: ${sell:.2f}\n"
+        f"Invalidation level: ${stop:.2f}\n"
+        f"{SETUP_SCORE_LABEL}: {score}/95 — not a probability"
         f"{fade_line}"
     )
 
@@ -456,10 +474,56 @@ def candidate_to_pick(
         short_risk=short_ctx.get("squeeze_risk"),
         kind=kind,
     )
+    # Legacy field name kept for API/ledger compatibility. P1: it is a
+    # heuristic setup score (0-95), not a calibrated confidence/probability.
     row["confidence_pct"] = conf
+    row["confidence_pct_label"] = SETUP_SCORE_LABEL
+    row["confidence_pct_status"] = "unvalidated_heuristic_score"
     row["short_risk"] = short_ctx.get("squeeze_risk")
     row["message"] = format_squeeze_alert(symbol, kind, metrics, rvol, short_ctx)
     return row
+
+
+def scan_coverage(report: Dict[str, Any]) -> Dict[str, Any]:
+    """Usable-evidence coverage of a scan snapshot (display only, never a gate).
+
+    P2 audit: a fresh, successful scan with no alerts was described as "no
+    alerts across 105 symbols" when only 6 symbols had usable evidence (the
+    rest were stale, failed, skipped or had no intraday print on the feed).
+    ``usable_symbols`` counts symbols whose evidence was ``ready``;
+    ``coverage_degraded`` is True when fewer than SQUEEZE_MIN_USABLE_COVERAGE
+    (default 80%) of scanned symbols were usable, or the counts are missing --
+    then "no alerts" must not be read as "nothing is moving".
+    """
+    try:
+        min_cov = float(os.getenv("SQUEEZE_MIN_USABLE_COVERAGE", "0.8"))
+    except ValueError:
+        min_cov = 0.8
+    min_cov = min(1.0, max(0.0, min_cov))
+    scanned = report.get("symbols")
+    usable = report.get("fetch_ok")
+    try:
+        scanned_n = int(scanned) if scanned is not None else None
+        usable_n = int(usable) if usable is not None else None
+    except (TypeError, ValueError):
+        scanned_n = usable_n = None
+    if scanned_n is None or usable_n is None or scanned_n <= 0 or usable_n < 0:
+        return {
+            "scanned_symbols": scanned_n,
+            "usable_symbols": usable_n,
+            "usable_coverage_pct": None,
+            "coverage_degraded": True,
+            "min_usable_coverage_pct": round(min_cov * 100, 1),
+        }
+    usable_n = min(usable_n, scanned_n)
+    ratio = usable_n / scanned_n
+    return {
+        "scanned_symbols": scanned_n,
+        "usable_symbols": usable_n,
+        "usable_coverage_pct": round(ratio * 100, 1),
+        "coverage_degraded": ratio < min_cov,
+        "min_usable_coverage_pct": round(min_cov * 100, 1),
+    }
 
 
 def get_squeeze_picks() -> Dict[str, Any]:
@@ -525,8 +589,10 @@ def get_squeeze_picks() -> Dict[str, Any]:
             "ok": False, "status": "unavailable", "items": [],
             "advisory_only": True, "decision_eligible": False,
         }
+    coverage = scan_coverage(st)
     return {
         "scan_ok": bool(st.get("ok") and st.get("status") == "complete" and not snapshot_stale),
+        **coverage,
         "data_contract": st.get("data_contract"),
         "data_degraded": snapshot_stale or any((st.get(key) or 0) > 0 for key in (
             "fetch_fail", "fetch_skipped", "invalid_baseline", "invalid_quote", "stale_quote",
@@ -1638,25 +1704,47 @@ def _symbol_loss_streak(symbol: str) -> int:
 _MAX_LOSS_STREAK = int(os.getenv("SQUEEZE_MAX_LOSS_STREAK", "3"))
 
 
-def _check_expected_value(
+def required_setup_score(buy: float, sell: float, stop: float) -> Optional[float]:
+    """Reward/risk-scaled setup-score floor for a radar alert (0-100 scale).
+
+    ``100 * risk / (reward + risk)`` with reward = sell - buy and
+    risk = buy - stop. None when the levels are degenerate (no upside
+    reference above the watch level, or no invalidation level below it);
+    such a setup is never alert-eligible.
+
+    P1 audit: this replaced an "expected value" gate that converted the
+    heuristic score into a win probability (win_prob = score / 100) and
+    computed EV from it. The score is uncalibrated, so no EV or probability
+    is computed any more. The cutoff is algebraically identical to the old
+    one -- ``p*g - (1-p)*l > 0`` is exactly ``100*p > 100*l/(g+l)`` -- so
+    alert eligibility is unchanged (no gate is loosened); it is simply stated
+    as a score threshold that rises as the invalidation distance grows
+    relative to the upside reference.
+    """
+    if buy <= 0 or sell <= buy or stop >= buy:
+        return None
+    reward = sell - buy
+    risk = buy - stop
+    return 100.0 * risk / (reward + risk)
+
+
+def _score_clears_reward_risk_floor(
     buy: float,
     sell: float,
     stop: float,
-    confidence_pct: int,
+    setup_score: int,
 ) -> bool:
-    """Simple EV gate: expected gain must exceed expected loss.
+    """True only when the setup score is strictly above ``required_setup_score``.
 
-    win_prob from confidence_pct, gain = (sell - buy) / buy,
-    loss = (buy - stop) / buy. Requires EV > 0 to pass.
+    Evaluated as ``score * (reward + risk) > 100 * risk`` -- the same
+    inequality (and float behaviour) as the former EV gate, without
+    labelling the score a probability.
     """
-    if buy <= 0 or sell <= buy or stop >= buy:
+    if required_setup_score(buy, sell, stop) is None:
         return False
-    win_prob = confidence_pct / 100.0
-    loss_prob = 1.0 - win_prob
-    gain_pct = (sell - buy) / buy
-    loss_pct = (buy - stop) / buy
-    ev = win_prob * gain_pct - loss_prob * loss_pct
-    return ev > 0.0
+    reward = sell - buy
+    risk = buy - stop
+    return float(setup_score) * (reward + risk) > 100.0 * risk
 
 
 def _maybe_alert(
@@ -1686,29 +1774,34 @@ def _maybe_alert(
         kind=kind,
     )
     if conf < MIN_TELEGRAM_CONFIDENCE:
-        LOGGER.info("[SqueezeMonitor] suppress low-confidence %s %s conf=%s", symbol, kind, conf)
+        LOGGER.info("[SqueezeMonitor] suppress low setup score %s %s score=%s", symbol, kind, conf)
         return False
 
     # PR #161: per-symbol loss streak breaker — suppress if on cold streak
     streak = _symbol_loss_streak(symbol)
     if streak >= _MAX_LOSS_STREAK:
         LOGGER.info(
-            "[SqueezeMonitor] suppress cold-streak %s %s streak=%s conf=%s",
+            "[SqueezeMonitor] suppress cold-streak %s %s streak=%s score=%s",
             symbol, kind, streak, conf,
         )
         return False
 
-    # PR #161: EV gate — don't alert if expected value is negative
+    # PR #161 reward/risk floor (P1 audit: formerly an "EV" gate that treated
+    # the uncalibrated score as a win probability). Same cutoff, stated as a
+    # setup-score threshold -- see required_setup_score().
     from core.squeeze_scorecard import compute_stop
     stop = compute_stop(
         metrics["price"],
         vwap=metrics.get("vwap"),
         prior_close=metrics.get("prior_close") if metrics.get("prior_close", 0) > 0 else None,
     )
-    if not _check_expected_value(buy, sell, stop, conf):
+    if not _score_clears_reward_risk_floor(buy, sell, stop, conf):
+        floor = required_setup_score(buy, sell, stop)
         LOGGER.info(
-            "[SqueezeMonitor] suppress negative-EV %s %s buy=%.2f sell=%.2f stop=%.2f conf=%s",
+            "[SqueezeMonitor] suppress below reward/risk score floor %s %s "
+            "watch=%.2f upside=%.2f invalidation=%.2f score=%s floor=%s",
             symbol, kind, buy, sell, stop, conf,
+            "n/a" if floor is None else f"{floor:.1f}",
         )
         return False
 

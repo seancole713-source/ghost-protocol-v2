@@ -144,11 +144,16 @@ def _v32_stats_start_ts(cur):
     except Exception:
         pass
 
+    from core.db import in_passive_inspection
+
+    passive = in_passive_inspection()
+
     # Ensure state table exists (shared with other lightweight state keys)
-    try:
-        ensure_ghost_state(cur)
-    except Exception:
-        pass
+    if not passive:
+        try:
+            ensure_ghost_state(cur)
+        except Exception:
+            pass
 
     # Correct bad persisted cutover (Apr 8 = 1775606400 -> Apr 5 = 1775347200)
     CORRECT_V32_TS = 1775347200  # 2026-04-05 00:00 UTC — v3.2 deploy date
@@ -156,6 +161,9 @@ def _v32_stats_start_ts(cur):
         cur.execute("SELECT val FROM ghost_state WHERE key='v32_stats_start_ts'")
         _row = cur.fetchone()
         if _row and int(_row[0]) >= 1775606400:
+            if passive:
+                # Report the corrected value without persisting it.
+                return CORRECT_V32_TS
             cur.execute("UPDATE ghost_state SET val=%s WHERE key='v32_stats_start_ts'", (str(CORRECT_V32_TS),))
             LOGGER.info("v32_stats_start_ts corrected to Apr 5 2026")
     except Exception:
@@ -225,7 +233,7 @@ def _v32_stats_start_ts(cur):
     else:
         final_ts = sticky_ts or candidate_ts or 0
 
-    if final_ts > 0 and final_ts != sticky_ts:
+    if final_ts > 0 and final_ts != sticky_ts and not passive:
         try:
             cur.execute(
                 "INSERT INTO ghost_state(key,val) VALUES('v32_stats_start_ts',%s) "
@@ -2375,7 +2383,8 @@ async def lifespan(app: FastAPI):
                 try:
                     out = _edge_run(_edge_get(), _EdgeLedger(store), now=int(_time.time()),
                                     http=_requests if paper_on else None,
-                                    notifier=_requests if tg_on else None)
+                                    notifier=_requests if tg_on else None,
+                                    clock=_time.time)   # re-read at issuance, after the slow fetches
                 finally:
                     store.release("edge_shadow", owner=_owner)
                 if _edge_noteworthy(out):
@@ -2974,8 +2983,10 @@ async def _latency_slo_mw(request: Request, call_next):
     try:
         path = request.url.path
         if not any(path.startswith(p) for p in _SLO_EXCLUDE_PREFIXES):
-            from core.latency_slo import record
-            record(path, elapsed_ms)
+            from core.latency_slo import record, route_label
+            # SEC-01: store the route TEMPLATE, never the raw path — the raw
+            # /mcp/<token> path carries a credential and is client-chosen.
+            record(route_label(request.scope), elapsed_ms)
     except Exception:
         pass
     return resp
@@ -3206,10 +3217,18 @@ def health():
     """FULL (expensive) health: provider feed probes, ledger freshness, model
     readiness, breaker auto-recovery. Never call it from a public probe or a
     polled page -- use health_cached() (60 s single-flight cache). The public
-    /health and /api/health use the cheap _health_public() instead."""
+    /health and /api/health use the cheap _health_public() instead.
+
+    Inside ``core.db.passive_inspection()`` it is a pure inspection: feeds are
+    read from breaker state (no provider probes), no picks are voided, breakers
+    are not auto-recovered, degraded mode is read without re-evaluation, and
+    every DB transaction is READ ONLY. Issues (critical findings) are still
+    computed from the same reads."""
     import time as _t
-    from core.prices import check_feeds
+    from core.db import in_passive_inspection
+    from core.prices import check_feeds, passive_feed_status
     from core import scheduler
+    passive = in_passive_inspection()
     issues = []
     warnings = []
 
@@ -3225,7 +3244,7 @@ def health():
     # 2. Price feeds
     feeds = {"alpaca_stock": False, "yfinance": False, "summary": "0/2 feeds responding"}
     try:
-        feeds = check_feeds()
+        feeds = passive_feed_status() if passive else check_feeds()
         feeds_ok = sum(1 for k,v in feeds.items() if k != "summary" and v)
         if feeds_ok < 2:
             warnings.append(feeds.get("summary", "<2 feeds responding"))
@@ -3290,8 +3309,9 @@ def health():
             dedup_blocked = True
             warnings.append("Dedup blocking all " + str(total_syms) + " symbols")
         from core.leader_lock import is_leader as _hl_is_leader
-        # Ledger write: only the background-work leader may void picks.
-        if dedup_blocked and _hl_is_leader():
+        # Ledger write: only the background-work leader may void picks, and
+        # never from a passive (read-only) inspection.
+        if dedup_blocked and not passive and _hl_is_leader():
             try:
                 with db_conn() as _fc:
                     _fc.cursor().execute(
@@ -3348,8 +3368,8 @@ def health():
     degraded = False
     degraded_reasons = []
     try:
-        from core.degraded_mode import check_degraded
-        d = check_degraded()
+        from core.degraded_mode import check_degraded, peek_degraded
+        d = peek_degraded() if passive else check_degraded()
         degraded = d.get("degraded", False)
         if degraded:
             degraded_reasons = d.get("reasons", [])
@@ -3357,14 +3377,15 @@ def health():
     except Exception:
         pass
 
-    # 8b. Auto-recover stale breakers (PR #114)
-    try:
-        from core.circuit_breaker import auto_recover_breakers
-        ar = auto_recover_breakers()
-        if ar.get("recovered"):
-            warnings.append("Auto-recovered breakers: " + ", ".join(ar["recovered"]))
-    except Exception:
-        pass
+    # 8b. Auto-recover stale breakers (PR #114) -- a repair, never passive.
+    if not passive:
+        try:
+            from core.circuit_breaker import auto_recover_breakers
+            ar = auto_recover_breakers()
+            if ar.get("recovered"):
+                warnings.append("Auto-recovered breakers: " + ", ".join(ar["recovered"]))
+        except Exception:
+            pass
 
     # 9. Dead-letter queue (P1-2 audit)
     dead_letter_count = 0
@@ -3537,6 +3558,17 @@ def health_audit(x_cron_secret: str = Header(default=""), auto_fix: bool = False
     if not _cron_ok(x_cron_secret):
         raise HTTPException(status_code=403)
 
+    import contextlib as _contextlib
+    from core.db import passive_inspection
+
+    # auto_fix=false&persist=false (the CI release gate) is passive: every DB
+    # transaction is READ ONLY and no self-heal, DDL or provider probe runs.
+    passive = not auto_fix and not persist
+    with (passive_inspection() if passive else _contextlib.nullcontext()):
+        return _health_audit_impl(auto_fix=bool(auto_fix), persist=bool(persist), passive=passive)
+
+
+def _health_audit_impl(*, auto_fix: bool, persist: bool, passive: bool):
     import asyncio as _asyncio
     from core.health_audit import run_health_audit
 
@@ -3591,7 +3623,19 @@ def health_audit(x_cron_secret: str = Header(default=""), auto_fix: bool = False
 
         stage = "cockpit"
         try:
-            c = cockpit_context()
+            if passive:
+                # cockpit_context() goes through health_cached() and the v3
+                # status path; the audit only compares stats + activity, so read
+                # those directly (READ ONLY) instead.
+                with db_conn() as conn:
+                    cur = conn.cursor()
+                    c = {
+                        "ok": True,
+                        "stats": _compute_get_stats(cur),
+                        "activity": _cockpit_activity_on_cursor(cur),
+                    }
+            else:
+                c = cockpit_context()
             if isinstance(c, JSONResponse):
                 c = {"ok": False, "error": "cockpit_context returned JSONResponse error"}
         except Exception as _ce:
@@ -3608,6 +3652,8 @@ def health_audit(x_cron_secret: str = Header(default=""), auto_fix: bool = False
             auto_fix=bool(auto_fix),
             persist=bool(persist),
         )
+        if passive:
+            report["mode"] = "passive_read_only"
         return {"ok": True, "audit": report}
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)[:200], "stage": stage}, status_code=500)
@@ -3692,7 +3738,23 @@ def _norm_pred(r):
         "exit_price": r.get("exit_price"),
         "pnl_pct": r.get("pnl_pct") or r.get("pnl"),
         "asset_type": r.get("asset_type","stock"),
+        # Same rule as prediction_filters.non_research_where(): research picks
+        # feed the learning loop and are never shown as approved picks.
+        "research_pick": _scores_research_pick(r.get("scores")),
     }
+
+
+def _scores_research_pick(scores) -> bool:
+    """True when a prediction's scores JSON marks it ``research_pick`` (SQL:
+    ``scores->>'research_pick' = 'true'``)."""
+    if isinstance(scores, str):
+        try:
+            scores = json.loads(scores)
+        except (TypeError, ValueError):
+            return False
+    if not isinstance(scores, dict):
+        return False
+    return str(scores.get("research_pick")).lower() == "true"
 
 
 

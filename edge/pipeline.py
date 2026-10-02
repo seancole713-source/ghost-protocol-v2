@@ -11,7 +11,9 @@ Three steps, each idempotent (safe to re-run; a marker stops repeats):
                                   and abstentions RECORDED before the open
   16:20-20:00 ET  resolve_day     grade from consolidated minute bars:
                                   "forecast" and "simulated" records; then the
-                                  control arm grades every radar name once
+                                  control arm grades every radar name once:
+                                  v2 point-in-time, the primary (edge/control_v2.py,
+                                  docs/control_arm_v2.md), and v1 exploratory
                                   (edge/control.py, docs/control_arm_v1.md)
 
 Why the miss review waits for the next morning: this account's Polygon plan is
@@ -32,11 +34,12 @@ DATA_UNAVAILABLE -- which is itself evidence for the purchase decision.
 """
 from __future__ import annotations
 
+import logging
 import os
 import statistics
 from dataclasses import replace
 from datetime import date, datetime, time as dtime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from edge import catalysts as C, detectors as D, health as H, miss_audit as M, setups as S
 from edge import universe as U
@@ -44,6 +47,9 @@ from edge.contracts import ET, GAP_AND_GO_V1, TERMINAL, issue
 from edge.ledger import Ledger
 from edge.providers import alpaca as A
 from edge.resolver import resolve_execution, resolve_market
+from shared.redaction import redact_exc
+
+LOG = logging.getLogger("edge.pipeline")
 
 GAP_AND_GO_AUTO = replace(
     GAP_AND_GO_V1, name="gap_and_go_auto",
@@ -80,7 +86,8 @@ GAP_VERIFIED = replace(
     description="Gap-and-Go v1 levels; catalyst and dilution judged from reviewed, cited Claude research "
                 "made before the card (edge/research_worker.py).",
     eligibility={**GAP_AND_GO_V1.eligibility,
-                 "catalyst": "reviewed Claude research claim, company-specific, made before 09:05 ET",
+                 "catalyst": "reviewed Claude research claim, company-specific, finished before the card "
+                             "was issued (09:05-09:28 ET)",
                  "reference_price": "IEX latest trade, current session, <=30 min old",
                  "candidates": "Alpaca movers screener, top 50 gainers"},
 )
@@ -178,14 +185,22 @@ def _events(items: Optional[List[dict]], symbols: set, now: int) -> Optional[Dic
     return {s: C.dedupe(v) for s, v in out.items()}
 
 
-def morning_card(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, Any]:
+def morning_card(get, ledger: Ledger, *, now: int, top: int = 50,
+                 clock: Optional[Callable[[], float]] = None) -> Dict[str, Any]:
+    """The pre-open card. `now` is when the tick started: the data cutoff every fetch answers for
+    (kept on each forecast as evidence.data_as_of). `clock` is the trusted wall clock, read again
+    immediately before each issuance and each recording, after the slow fetches: a forecast is
+    stamped with the time it really was issued and recorded, and refused (late_refused, logged)
+    when that is at/after its window opens. Without a clock (tests, replays) the tick time is used."""
+    clock = clock or (lambda: now)
+    late: List[str] = []
     day = _et(now).date()
     store = ledger.store
     if not trading_day(day, store, now):
         return {"status": "market_closed", "day": day.isoformat()}
     if store.get("edge_cards", day.isoformat()):
         return {"status": "already_issued", "day": day.isoformat()}
-    if not (_at(day, 9, 5) <= now < _at(day, 9, 28)):
+    if not (_at(day, *CARD_WINDOW[0]) <= now < _at(day, *CARD_WINDOW[1])):
         return {"status": "outside_card_window", "day": day.isoformat()}
     from edge import calendar as CAL
     if CAL.session(day, store, now)["early_close"]:
@@ -212,17 +227,17 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, A
     try:
         daily = A.bars_multi(get, syms, timeframe="1Day", start=(day - timedelta(days=45)).isoformat())
     except Exception as exc:  # noqa: BLE001 - no prior close, no gap: named, and the card retries
-        daily, source_errors["daily_bars"] = {}, f"{type(exc).__name__}: {str(exc)[:160]}"
+        daily, source_errors["daily_bars"] = {}, redact_exc(exc, 200)
     from edge import feeds as FD
     feed = FD.live_feed(get, store, now=now)       # IEX on the free plan; SIP once it is paid for
     try:
         snaps = A.snapshots(get, syms, feed=feed)
     except Exception as exc:  # noqa: BLE001 - recorded as missing, never guessed
-        snaps, source_errors[f"snapshots_{feed}"] = {}, f"{type(exc).__name__}: {str(exc)[:160]}"
+        snaps, source_errors[f"snapshots_{feed}"] = {}, redact_exc(exc, 200)
     try:
         items = A.news(get, syms, start=_iso(now - 86_400))
     except Exception as exc:  # noqa: BLE001
-        items, source_errors["news"] = None, f"{type(exc).__name__}: {str(exc)[:160]}"
+        items, source_errors["news"] = None, redact_exc(exc, 200)
     events = _events(items, set(syms), now)
     sip_pre = {}
     if model is not None:
@@ -231,7 +246,7 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, A
             sip_pre = A.bars_multi(get, syms, timeframe="1Min", start=_iso(_at(day, 4, 0)),
                                    end=_iso(_at(day, *FX.CUTOFF)), feed="sip")
         except Exception as exc:  # noqa: BLE001 - no features -> the model abstains, recorded
-            sip_pre, source_errors["sip_premarket_bars"] = {}, f"{type(exc).__name__}: {str(exc)[:160]}"
+            sip_pre, source_errors["sip_premarket_bars"] = {}, redact_exc(exc, 200)
 
     rows, eligible = [], []
     for sym in syms:
@@ -250,7 +265,7 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, A
         b = S.decide("gap_baseline", signals)
         v = None
         if research_on:
-            rv = _research().verdict(store, day=day.isoformat(), symbol=sym, issued_at=now)
+            rv = _research().verdict(store, day=day.isoformat(), symbol=sym, issued_at=int(clock()))
             vsig = dict(signals)
             nr = rv.get("not_researched")
             vsig["catalyst"] = (D.Signal("catalyst", D.UNKNOWN, evidence={
@@ -307,10 +322,10 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, A
                     "note": "card data failed by an error; nothing stored or issued, retried next tick "
                             f"and issued regardless from {CARD_LAST_TRY[0]:02d}:{CARD_LAST_TRY[1]:02d} ET"}
 
-    chosen = _issue_top(ledger, SPEC, rows, eligible, day=day, now=now,
+    chosen = _issue_top(ledger, SPEC, rows, eligible, day=day, now=now, clock=clock, late=late,
                         verdict_key="verdict", reasons_key="reasons", missing_key="missing", id_key="forecast_id")
     base_eligible = [r for r in rows if r["baseline_verdict"] == S.ELIGIBLE]
-    base_chosen = _issue_top(ledger, GAP_BASELINE, rows, base_eligible, day=day, now=now,
+    base_chosen = _issue_top(ledger, GAP_BASELINE, rows, base_eligible, day=day, now=now, clock=clock, late=late,
                              verdict_key="baseline_verdict", reasons_key="baseline_reasons",
                              missing_key="baseline_missing", id_key="baseline_forecast_id")
     model_chosen = []
@@ -324,13 +339,19 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, A
         gap_ok.sort(key=lambda r: -r["model_prob"])
         model_chosen = gap_ok[:mspec.max_per_day]
         chosen_syms = {r["symbol"] for r in model_chosen}
-        for r in model_chosen:
-            f = issue(mspec, symbol=r["symbol"], session_date=day, entry_ref=r["ref_price"], issued_at=now,
-                      prob=r["model_prob"], evidence={"model_sha": mspec.eligibility["model_sha"]})
-            ledger.record(f, now=now)
+        for r in list(model_chosen):
+            f = _issue_on_time(ledger, mspec, symbol=r["symbol"], day=day, entry_ref=r["ref_price"],
+                               now=now, clock=clock, late=late, prob=r["model_prob"],
+                               evidence={"model_sha": mspec.eligibility["model_sha"]})
+            if f is None:
+                model_chosen.remove(r)
+                continue
             r["model_forecast_id"] = f.forecast_id
         for r in rows:
             if r["symbol"] in chosen_syms:
+                if r not in model_chosen:
+                    ledger.abstain(experiment_id=mspec.experiment_id, symbol=r["symbol"],
+                                   session_date=day.isoformat(), reasons=[LATE_REASON], now=now)
                 continue
             why = (r["baseline_reasons"] or r["baseline_missing"] or
                    (["model could not score it (incomplete features)"] if r["model_prob"] is None else
@@ -342,6 +363,7 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, A
     if research_on:
         ver_chosen = _issue_top(ledger, GAP_VERIFIED, rows,
                                 [r for r in rows if r["verified_verdict"] == S.ELIGIBLE], day=day, now=now,
+                                clock=clock, late=late,
                                 verdict_key="verified_verdict", reasons_key="verified_reasons",
                                 missing_key="verified_missing", id_key="verified_forecast_id")
 
@@ -353,7 +375,8 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, A
                        error=None if items is not None else "news request failed"),
     ], now)
     blocking = {eid: H.release_allowed(req, health) for eid, req in REQUIRES.items()}
-    card = {"day": day.isoformat(), "issued_at": now, "experiment_id": EID,
+    card = {"day": day.isoformat(), "issued_at": now, "data_as_of": now, "written_at": int(clock()),
+            "experiment_id": EID, "late_refused": late,
             "candidates": len(rows), "priced": priced, "eligible": len(eligible),
             "forecasts": [r["symbol"] for r in chosen],
             "trades": _trades(store, chosen),
@@ -381,10 +404,21 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50) -> Dict[str, A
     store.put("edge_top10", day.isoformat(), t10)
     return {"status": "issued", **{k: card[k] for k in (
         "day", "candidates", "priced", "eligible", "forecasts", "baseline_forecasts",
-        "coverage_note", "health_banner", "source_errors")}}
+        "coverage_note", "health_banner", "source_errors", "late_refused")}}
 
 
 CARD_LAST_TRY = (9, 23)      # the window's last 5-minute tick: from here a card with failed data is issued
+# The card is built from 09:05 and must be decided by 09:28 ET. Research runs from 08:30 up to that
+# same deadline, so a mover that qualifies after 09:00 can still be reviewed for any card built
+# later in the window; the daily USD cap is unchanged. Research finished after a card was issued is
+# never used by that card (research_worker.verdict), and a name not researched in time stays
+# not_researched -- unknown, never a rejection.
+CARD_WINDOW = ((9, 5), (9, 28))
+RESEARCH_WINDOW = ((8, 30), CARD_WINDOW[1])
+# The research queue is re-ranked at most this often, so a mover that only qualifies later
+# (no fresh premarket print at 08:30, a late gap) joins it instead of the queue freezing at its
+# first answer for the day.
+RESEARCH_QUEUE_REFRESH_S = 10 * 60
 
 
 def data_failures(source_errors: Dict[str, str], scan: Dict[str, Any], rows: List[dict],
@@ -415,11 +449,43 @@ def _trades(store, chosen: List[dict]) -> List[Dict[str, Any]]:
     return out
 
 
+LATE_REASON = ("refused: the card reached issuance at/after the 09:30 ET window open "
+               "(slow data fetches); a forecast recorded then would be hindsight")
+
+
+def _issue_on_time(ledger: Ledger, spec, *, symbol: str, day: date, entry_ref: float, now: int,
+                   clock: Callable[[], float], late: List[str], prob: Optional[float] = None,
+                   evidence: Optional[Dict[str, Any]] = None):
+    """Issue and record one premarket forecast at the time it REALLY is (the trusted clock, read
+    after the tick's slow fetches), or refuse it as late. `now` (the tick start) is only the data
+    cutoff and is kept as evidence.data_as_of. Returns the forecast, or None when refused."""
+    window_start = _at(day, 9, 30)
+    issued_at = int(clock())
+    if issued_at < window_start:
+        f = issue(spec, symbol=symbol, session_date=day, entry_ref=entry_ref, issued_at=issued_at,
+                  prob=prob, evidence={**(evidence or {}), "data_as_of": now})
+        recorded_at = int(clock())
+        if recorded_at < f.window_start:
+            ledger.record(f, now=recorded_at)
+            return f
+        issued_at = recorded_at
+    msg = (f"{spec.experiment_id}:{symbol} at {_et(issued_at).strftime('%H:%M:%S')} ET, at/after the "
+           f"09:30 ET window open (tick started {_et(now).strftime('%H:%M:%S')} ET)")
+    LOG.warning("forecast refused as late: %s", msg)
+    late.append(msg)
+    return None
+
+
 def _issue_top(ledger: Ledger, spec, rows, eligible, *, day: date, now: int, verdict_key: str,
-               reasons_key: str, missing_key: str, id_key: str) -> List[dict]:
-    """Record the top N eligible by dollar volume; an abstention with reasons for the rest."""
+               reasons_key: str, missing_key: str, id_key: str,
+               clock: Optional[Callable[[], float]] = None, late: Optional[List[str]] = None) -> List[dict]:
+    """Record the top N eligible by dollar volume; an abstention with reasons for the rest.
+    A chosen name that reaches issuance too late is refused and recorded as an abstention."""
+    clock = clock or (lambda: now)
+    late = late if late is not None else []
     prior = {f["symbol"]: f for f in ledger.store.scan("forecasts", experiment_id=spec.experiment_id,
                                                          session_date=day.isoformat())}
+    refused: set = set()
     if prior:
         # An earlier tick recorded this experiment's forecasts but died before writing the
         # card. Forecasts are immutable: keep them, never issue a second set.
@@ -428,27 +494,52 @@ def _issue_top(ledger: Ledger, spec, rows, eligible, *, day: date, now: int, ver
             r[id_key] = prior[r["symbol"]]["forecast_id"]
     else:
         eligible = sorted(eligible, key=lambda r: -(r["avg_dollars"] or 0))
-        chosen = eligible[:spec.max_per_day]
-        for r in chosen:
-            f = issue(spec, symbol=r["symbol"], session_date=day, entry_ref=r["ref_price"], issued_at=now,
-                      evidence={k: r[k] for k in ("prev_close", "avg_dollars", "catalyst", "ref_ts")})
-            ledger.record(f, now=now)
+        top, chosen = eligible[:spec.max_per_day], []
+        for r in top:
+            f = _issue_on_time(ledger, spec, symbol=r["symbol"], day=day, entry_ref=r["ref_price"], now=now,
+                               clock=clock, late=late,
+                               evidence={k: r[k] for k in ("prev_close", "avg_dollars", "catalyst", "ref_ts")})
+            if f is None:
+                refused.add(r["symbol"])
+                continue
             r[id_key] = f.forecast_id
+            chosen.append(r)
     chosen_syms = {r["symbol"] for r in chosen}
     for r in rows:
         if r["symbol"] in chosen_syms:
             continue
-        why = r[reasons_key] or r[missing_key] or ["eligible, ranked below the top 2 by dollar volume"]
+        why = ([LATE_REASON] if r["symbol"] in refused else
+               r[reasons_key] or r[missing_key] or ["eligible, ranked below the top 2 by dollar volume"])
         ledger.abstain(experiment_id=spec.experiment_id, symbol=r["symbol"],
                        session_date=day.isoformat(), reasons=list(why), now=now)
     return chosen
 
 
 def research_candidates(get, store, *, day: date, now: int, n: int) -> List[str]:
-    """The movers most likely to reach the card: gap +5..40%, liquid, by dollar volume. Cached per day."""
+    """The movers most likely to reach the card: gap +5..40%, liquid, by dollar volume. Cached, and
+    re-ranked every RESEARCH_QUEUE_REFRESH_S: newly qualifying movers go first, names already
+    queued are kept (their records decide whether they are still due)."""
     cached = store.get("edge_research_queue", day.isoformat())
-    if cached:
+    if cached and now - int(cached.get("at") or 0) < RESEARCH_QUEUE_REFRESH_S:
         return cached["symbols"]
+    prior = list((cached or {}).get("symbols") or [])
+    try:
+        fresh = _rank_research_candidates(get, store, day=day, now=now, n=n)
+    except Exception:  # noqa: BLE001 - a failed re-rank keeps the queue it had; none -> the step errors
+        if prior:
+            return prior
+        raise
+    out = fresh + [s for s in prior if s not in fresh]
+    # Cache only a NON-empty queue. At 08:30 ET the free IEX feed often has no fresh
+    # premarket prints yet; caching that empty answer stopped research for the whole day
+    # (2026-09-23). An empty queue is recomputed on the next tick (3 calls per 5 min).
+    if out:
+        store.put("edge_research_queue", day.isoformat(), {"symbols": out, "at": now,
+                                                            "movers": len(fresh)})
+    return out
+
+
+def _rank_research_candidates(get, store, *, day: date, now: int, n: int) -> List[str]:
     from edge import premarket as PM
     syms = sorted(set(PM.candidates(get, store, day=day, now=now, top=50)["symbols"]))
     if not syms:
@@ -464,14 +555,7 @@ def research_candidates(get, store, *, day: date, now: int, n: int) -> List[str]
         liq = D.liquidity(price=ref["price"] or st["prev_close"], avg_shares=st["avg_shares"])
         if g is not None and g.state == D.PASS and liq.state == D.PASS:
             ranked.append((-(st["avg_dollars"] or 0), s))
-    out = [s for _, s in sorted(ranked)[:n]]
-    # Cache only a NON-empty queue. At 08:30 ET the free IEX feed often has no fresh
-    # premarket prints yet; caching that empty answer stopped research for the whole day
-    # (2026-09-23). An empty queue is recomputed on the next tick (3 calls per 5 min).
-    if out:
-        store.put("edge_research_queue", day.isoformat(), {"symbols": out, "at": now,
-                                                            "movers": len(syms)})
-    return out
+    return [s for _, s in sorted(ranked)[:n]]
 
 
 def research_step(get, ledger: Ledger, *, day: date, now: int, client=None) -> Dict[str, Any]:
@@ -516,17 +600,22 @@ def resolve_day(get, ledger: Ledger, *, day: date, now: int) -> Dict[str, Any]:
     if not pending:
         return {"status": "nothing_pending", "forecasts": len(fcs)}
     syms = sorted({f["symbol"] for f in pending})
-    bars = A.bars_multi(get, syms, timeframe="1Min", start=_iso(_at(day, 9, 30)), end=_iso(_at(day, 16, 0)))
+    # bars_pages, not bars_multi: the provider's completeness flag travels into the resolver, so a
+    # missing entry window on a truncated answer is UNRESOLVED (retried), never a terminal NO_FILL.
+    bars, complete = A.bars_pages(get, syms, timeframe="1Min", start=_iso(_at(day, 9, 30)),
+                                  end=_iso(_at(day, 16, 0)))
     settled = {}
     for row in pending:
         f = Forecast(**{k: row[k] for k in Forecast.__dataclass_fields__})
         b = _minute_bars(bars.get(f.symbol) or [])
-        m, x = resolve_market(f, b), resolve_execution(f, b)
-        ledger.settle(f.forecast_id, m, now=now, record="forecast")
-        ledger.settle(f.forecast_id, x, now=now, record="simulated")
+        m, x = resolve_market(f, b, complete=complete), resolve_execution(f, b, complete=complete)
+        for rec, r in (("forecast", m), ("simulated", x)):
+            # A record already final stays as written, whatever resolver version made it.
+            if (ledger.store.get("outcomes", f"{f.forecast_id}|{rec}") or {}).get("outcome") not in TERMINAL:
+                ledger.settle(f.forecast_id, r, now=now, record=rec)
         settled[f"{f.experiment_id}:{f.symbol}"] = {"forecast": m.outcome, "simulated": x.outcome,
                                                    "pnl_usd": x.pnl_usd}
-    return {"status": "resolved", "settled": settled}
+    return {"status": "resolved", "settled": settled, "bars_complete": complete}
 
 
 _COMMON = __import__("re").compile(r"^[A-Z]{1,5}$")
@@ -760,7 +849,7 @@ def stored_catalysts(store, day: date, card: Dict[str, Any], radar_rows: List[Di
                 out.setdefault(r["symbol"], str(e.get("headline") or "")[:160])
     for rec in store.scan("edge_research", day=day.isoformat()):
         for cl in rec.get("claims") or []:
-            if cl.get("kind") in C.COMPANY_SPECIFIC and cl.get("status") != RS.QUARANTINED:
+            if cl.get("kind") in C.COMPANY_SPECIFIC and not RS.is_quarantined(cl.get("status")):
                 out.setdefault(str(rec.get("symbol") or "").upper(), str(cl.get("statement") or "")[:160])
     for it in radar_rows:
         if it.get("catalyst"):
@@ -769,12 +858,15 @@ def stored_catalysts(store, day: date, card: Dict[str, Any], radar_rows: List[Di
     return out
 
 
-def run(get, ledger: Ledger, *, now: int, http=None, notifier=None) -> Dict[str, Any]:
+def run(get, ledger: Ledger, *, now: int, http=None, notifier=None,
+        clock: Optional[Callable[[], float]] = None) -> Dict[str, Any]:
     """One scheduler tick. Each window is checked independently -- they overlap
     (the intraday radar runs across the 10:25 reminder and the 10:30 cancels).
 
     `http` (requests-like) turns on PAPER execution; `notifier` turns on phone
-    messages. None leaves the shadow as forecasts only.
+    messages. None leaves the shadow as forecasts only. `clock` is the trusted wall clock the
+    card and the intraday radar read again at issuance (production passes time.time); without it
+    the tick time stands in (tests, replays).
     """
     from edge import intraday as I
     day = _et(now).date()
@@ -791,7 +883,7 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None) -> Dict[str,
         try:
             out[key] = step()
         except Exception as exc:  # noqa: BLE001 - each step fails alone, errors kept
-            out[key] = {"status": "error", "error": f"{type(exc).__name__}: {str(exc)[:160]}"}
+            out[key] = {"status": "error", "error": redact_exc(exc, 200)}
 
     def within(a, b):
         return _at(day, *a) <= now < _at(day, *b)
@@ -805,10 +897,8 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None) -> Dict[str,
         text = _notify().misses_text(review) if review else None
         if notifier is not None and text:
             guarded("notify_misses", lambda: _notify().once(notifier, ledger.store, day=ds, kind="misses", text=text))
-    if within((8, 30), (9, 0)) and _research().enabled():   # ends 5 min early: a slow call cannot crowd the card
-        guarded("research", lambda: research_step(get, ledger, day=day, now=now))
-    if within((9, 5), (9, 28)):
-        guarded("card", lambda: morning_card(get, ledger, now=now))
+    if within(*CARD_WINDOW):
+        guarded("card", lambda: morning_card(get, ledger, now=now, clock=clock))
         if http is not None:
             guarded("paper_submit", lambda: _paper().submit(http, ledger, day=ds, experiments=EXPERIMENTS))
             _paper_refused(out, "paper_submit")
@@ -816,7 +906,11 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None) -> Dict[str,
         if notifier is not None and card:
             guarded("notify_card", lambda: _notify().once(notifier, ledger.store, day=ds, kind="card",
                                                            text=_notify().card_text(card)))
-    if within((9, 28), (9, 45)) and not ledger.store.get("edge_cards", ds):
+    # Research runs AFTER the card step in a tick, so a slow research call can never crowd the card;
+    # what it finds serves a card built on a later tick, never one already issued.
+    if within(*RESEARCH_WINDOW) and _research().enabled():
+        guarded("research", lambda: research_step(get, ledger, day=day, now=int(clock()) if clock else now))
+    if within(CARD_WINDOW[1], (9, 45)) and not ledger.store.get("edge_cards", ds):
         out["card_alarm"] = {"status": "error", "error": "no shadow card by 09:28 ET (see earlier card errors)"}
     # The duty reminders go out on EVERY regular trading day. The operator trades from his own
     # card (the morning-picks skill), which can hold a name when Ghost's shadow card has none;
@@ -828,7 +922,7 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None) -> Dict[str,
         guarded("notify_duty", lambda: _notify().once(notifier, ledger.store, day=ds,
                                                        kind="duty_1530", text=_notify().DUTY_1530))
     if not early and within((9, 45), (14, 30)):
-        guarded("intraday", lambda: I.tick(get, ledger, now=now, http=http))
+        guarded("intraday", lambda: I.tick(get, ledger, now=now, http=http, clock=clock))
         if http is not None:
             guarded("paper_submit_intraday", lambda: _paper().submit(http, ledger, day=ds,
                                                                       experiments=I.PAPER_SPECS))
@@ -853,9 +947,12 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None) -> Dict[str,
         guarded("radar_close", lambda: I.close_day(ledger, day=day, now=now))
         from edge import scorecard as SC
         guarded("card_graded", lambda: SC.grade_card(get, ledger.store, day=day, now=now))
-        # The observe-all control arm (docs/control_arm_v1.md): every radar name graded once.
-        from edge import control as CA
+        # The observe-all control arm: every radar name graded once. v2 (docs/control_arm_v2.md) is
+        # the point-in-time design and the primary result; v1 (docs/control_arm_v1.md) keeps running
+        # unchanged and is reported as exploratory.
+        from edge import control as CA, control_v2 as CA2
         guarded("control", lambda: CA.grade_day(get, ledger.store, day=day, now=now))
+        guarded("control_v2", lambda: CA2.grade_day(get, ledger.store, day=day, now=now))
         if http is not None:
             guarded("paper_reconcile", lambda: _paper().reconcile(http, ledger, day=ds,
                                                                   experiments=all_specs, now=now))
@@ -998,8 +1095,13 @@ def backtest_note(store) -> Optional[str]:
         win = bt.get("window") or []
         span = f" {win[0]}..{win[1]}" if len(win) == 2 else ""
         mean = (e.get("expectancy_usd") or {}).get("mean")
+        # A record from an older backtest version says so: v7 and earlier mixed split-adjusted
+        # daily bars with raw minute bars (EDGE-09), and versions are never pooled.
+        old = bt.get("version") != BT.BACKTEST_VERSION
         return (f"Rule's own backtest{span}: {e['wins']}/{e['filled']} wins ({e['win_rate']:.0%}) vs "
                 f"{bt.get('break_even', 0.375):.1%} needed"
-                + (f", {mean:+.2f} $/trade" if mean is not None else "") + f" -- {e.get('verdict')}")
+                + (f", {mean:+.2f} $/trade" if mean is not None else "") + f" -- {e.get('verdict')}"
+                + (f" [older {bt.get('version') or 'backtest'}, {bt.get('price_basis') or 'mixed price basis'}; "
+                   f"{BT.BACKTEST_VERSION} not run yet]" if old else ""))
     except Exception:  # noqa: BLE001 - a note, never a reason to lose the card
         return None

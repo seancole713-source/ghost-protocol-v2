@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import time
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 DDL = """
 CREATE TABLE IF NOT EXISTS edge_rows (
@@ -53,6 +53,52 @@ class PostgresStore:
                 (table, key, json.dumps(row, default=str), int(time.time())),
             )
             conn.commit()
+
+    def put_new(self, table: str, key: str, row: Dict[str, Any]) -> Dict[str, Any]:
+        """First writer wins: insert only when (table, key) is absent, in one statement.
+
+        Returns the row that is stored -- ours, or the one another runner (a lease handoff,
+        an overlapping redeploy) committed first. Never overwrites."""
+        with self._connect() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO edge_rows (tbl, key, row, known_at) VALUES (%s, %s, %s::jsonb, %s) "
+                "ON CONFLICT (tbl, key) DO NOTHING RETURNING key",
+                (table, key, json.dumps(row, default=str), int(time.time())),
+            )
+            if cur.fetchone():
+                conn.commit()
+                return dict(row)              # our write landed
+            cur.execute("SELECT row FROM edge_rows WHERE tbl=%s AND key=%s", (table, key))
+            got = cur.fetchone()
+            conn.commit()
+        if not got:
+            return dict(row)
+        return got[0] if isinstance(got[0], dict) else json.loads(got[0])
+
+    def put_unless_final(self, table: str, key: str, row: Dict[str, Any],
+                         *, final: Iterable[str]) -> Dict[str, Any]:
+        """Insert, or replace a stored row whose `outcome` is NOT in `final` -- atomically.
+
+        The conflict-update's WHERE is re-checked against the locked current row, so a
+        final row written by a concurrent runner is never replaced. Returns the stored row."""
+        with self._connect() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO edge_rows (tbl, key, row, known_at) VALUES (%s, %s, %s::jsonb, %s) "
+                "ON CONFLICT (tbl, key) DO UPDATE SET row = EXCLUDED.row, known_at = EXCLUDED.known_at "
+                "WHERE NOT (COALESCE(edge_rows.row->>'outcome', '') = ANY(%s::text[])) RETURNING key",
+                (table, key, json.dumps(row, default=str), int(time.time()), sorted(final)),
+            )
+            if cur.fetchone():
+                conn.commit()
+                return dict(row)              # our write landed
+            cur.execute("SELECT row FROM edge_rows WHERE tbl=%s AND key=%s", (table, key))
+            got = cur.fetchone()
+            conn.commit()
+        if not got:
+            return dict(row)
+        return got[0] if isinstance(got[0], dict) else json.loads(got[0])
 
     def scan(self, table: str, **where: Any) -> List[Dict[str, Any]]:
         clauses, params = ["tbl=%s"], [table]

@@ -100,6 +100,21 @@ def redact(text: Any) -> str:
     return s
 
 
+def redact_obj(obj: Any) -> Any:
+    """Deep copy of a JSON-shaped value (dict / list / tuple / str / scalar) with every
+    string passed through :func:`redact`. Keys and non-string scalars are kept as they are.
+    For read-outs that return stored provider error text (which may embed request URLs)."""
+    if isinstance(obj, str):
+        return redact(obj)
+    if isinstance(obj, dict):
+        return {k: redact_obj(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [redact_obj(v) for v in obj]
+    if isinstance(obj, tuple):
+        return tuple(redact_obj(v) for v in obj)
+    return obj
+
+
 def redact_exc(exc: BaseException, limit: int = 200) -> str:
     """``TypeName: redacted message`` trimmed to ``limit`` characters."""
     return (type(exc).__name__ + ": " + redact(exc))[:limit]

@@ -255,8 +255,6 @@ def extract_feature_rows(report: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 def log_prediction_memory(cur, ledger_id: int, report: Dict[str, Any]) -> Dict[str, Any]:
     """Persist model/feature attribution rows for a freshly logged prediction."""
-    ensure_memory_tables(cur)
-    ensure_default_model(cur)
     symbol = str(report.get("symbol") or "").upper()
     pred = report.get("prediction") or {}
     now = int(report.get("ts") or _now())
@@ -355,7 +353,6 @@ def score_features_from_ledger(*, symbol: Optional[str] = None, horizon: int = 5
         from core.db import db_conn
         with db_conn() as conn:
             cur = conn.cursor()
-            ensure_memory_tables(cur)
             where = f"p.{resolved_col} IS NOT NULL AND p.{ret_col} IS NOT NULL"
             params: List[Any] = []
             if symbol:
@@ -542,8 +539,6 @@ def list_models() -> Dict[str, Any]:
         from core.db import db_conn
         with db_conn() as conn:
             cur = conn.cursor()
-            ensure_memory_tables(cur)
-            ensure_default_model(cur)
             cur.execute(
                 """
                 SELECT model_id, model_name, model_type, version, status, feature_set_id,
@@ -558,6 +553,10 @@ def list_models() -> Dict[str, Any]:
             for r in rows
         ]}
     except Exception as exc:
+        from core.db import missing_schema_result
+        missing = missing_schema_result(exc, {"models": []})
+        if missing:
+            return missing
         return {"ok": False, "error": str(exc)[:160], "models": []}
 
 
@@ -566,7 +565,6 @@ def recent_features(*, symbol: Optional[str] = None, limit: int = 100) -> Dict[s
         from core.db import db_conn
         with db_conn() as conn:
             cur = conn.cursor()
-            ensure_memory_tables(cur)
             where = "1=1"
             params: List[Any] = []
             if symbol:
@@ -590,6 +588,10 @@ def recent_features(*, symbol: Optional[str] = None, limit: int = 100) -> Dict[s
             for r in rows
         ]}
     except Exception as exc:
+        from core.db import missing_schema_result
+        missing = missing_schema_result(exc, {"symbol": (symbol or "ALL").upper(), "count": 0, "features": []})
+        if missing:
+            return missing
         return {"ok": False, "error": str(exc)[:160], "features": []}
 
 
@@ -599,7 +601,6 @@ def feature_profile(*, symbol: Optional[str] = None, horizon: int = 5, limit: in
         from core.db import db_conn
         with db_conn() as conn:
             cur = conn.cursor()
-            ensure_memory_tables(cur)
             where = "horizon_days=%s"
             params: List[Any] = [h]
             if symbol:
@@ -623,4 +624,8 @@ def feature_profile(*, symbol: Optional[str] = None, horizon: int = 5, limit: in
             for r in rows
         ]}
     except Exception as exc:
+        from core.db import missing_schema_result
+        missing = missing_schema_result(exc, {"symbol": (symbol or "ALL").upper(), "profiles": []})
+        if missing:
+            return missing
         return {"ok": False, "error": str(exc)[:160], "profiles": []}

@@ -274,9 +274,10 @@ def test_issue_hunter_samples_issues_on_trading_day(monkeypatch):
     assert out["attempted"] == 2
     assert out["inserted"] == 2
     assert out["session_date"] == "2026-08-03"
-    # Both calls used persist=True and the ACTUAL issuance time (not midnight).
+    # Both calls used persist=True and no frozen batch timestamp: each symbol's
+    # issued_ts is its own decision time, taken after its evidence fetch.
     assert all(c[1] is True for c in calls)
-    assert calls[0][2] == mon
+    assert all(c[2] is None for c in calls)
 
 
 def test_issue_hunter_samples_skips_outside_window(monkeypatch):
@@ -327,3 +328,141 @@ def test_issue_hunter_samples_skips_already_persisted_before_fetch(monkeypatch):
     assert out["attempted"] == 0
     assert out["duplicate"] == 1
     assert calls == []
+
+
+# ── Hunter issuance timeline: evidence must never postdate issued_ts ───────
+
+def test_persist_rejects_reference_observed_after_issuance():
+    """Prod Sept 2: reference ts +6..+47s after recorded issued_ts."""
+    cur = _FakeCursor(fetchone_result=(1,))
+    out = hl.persist_hunter_evaluation(
+        symbol="MU", report={}, reference_price=100.0,
+        reference_price_ts=1_047, session_date="2026-09-02",
+        issued_ts=1_000, cur=cur,
+    )
+    assert out == {"status": "future_evidence", "evaluation_id": None}
+    assert not any("INSERT" in sql for sql in cur.executed)
+
+
+def test_persist_rejects_feature_observed_after_issuance():
+    cur = _FakeCursor(fetchone_result=(1,))
+    out = hl.persist_hunter_evaluation(
+        symbol="MU", report={}, reference_price=100.0,
+        reference_price_ts=990, feature_available_ts=1_006,
+        session_date="2026-09-02", issued_ts=1_000, cur=cur,
+    )
+    assert out["status"] == "future_evidence"
+
+
+def test_persist_accepts_evidence_at_or_before_issuance():
+    cur = _FakeCursor(fetchone_result=(7,))
+    out = hl.persist_hunter_evaluation(
+        symbol="MU", report={}, reference_price=100.0,
+        reference_price_ts=1_000, session_date="2026-09-02",
+        issued_ts=1_000, cur=cur,
+    )
+    assert out == {"status": "inserted", "evaluation_id": 7}
+
+
+def test_issue_hunter_samples_counts_future_evidence(monkeypatch):
+    monkeypatch.setattr(hl, "_existing_session_symbols", lambda session_date: set())
+    monkeypatch.setattr(
+        "core.squeeze_hunter.fetch_explosion_report",
+        lambda sym, persist=False, issued_ts=None: {
+            "persistence": {"status": "future_evidence", "evaluation_id": None},
+        },
+    )
+    mon = int(datetime(2026, 8, 3, 20, 5, 0, tzinfo=timezone.utc).timestamp())
+    out = hl.issue_hunter_samples(symbols=["HTZ"], now_ts=mon)
+    assert out["future_evidence"] == 1
+    assert out["inserted"] == 0
+    assert out["persistence_failed"] == 0
+
+
+def test_sampler_records_decision_time_after_each_symbols_evidence(monkeypatch):
+    """Slow per-symbol fetches must not leave evidence after issued_ts."""
+    import core.catalyst_scoring as cs
+    import core.earnings_surprise as es
+    import core.options_flow as of
+    import core.prices as prices
+    import core.squeeze_hunter as sh
+    import core.squeeze_hunter_ledger as ledger
+    import core.squeeze_monitor as sm
+
+    clock = {"t": 1_788_379_500}  # 2026-09-02 ~15:05 CT
+
+    def _tick(seconds=1):
+        clock["t"] += seconds
+        return clock["t"]
+
+    monkeypatch.setattr(sh.time, "time", lambda: clock["t"])
+    monkeypatch.setattr(sm, "_short_context", lambda s: _tick(5) and {}, raising=False)
+    monkeypatch.setattr(sm, "get_squeeze_picks", lambda: {"picks": []}, raising=False)
+    monkeypatch.setattr(cs, "fetch_event_context", lambda s, **k: {"available": False})
+    monkeypatch.setattr(es, "earnings_surprise_to_trigger", lambda s: {}, raising=False)
+    monkeypatch.setattr(of, "probe_options_flow", lambda s: {}, raising=False)
+    monkeypatch.setattr(sh, "_fetch_market_regime", lambda: None)
+
+    def _session(sym):
+        observed = _tick(20)  # quote observed after a slow fetch
+        _tick(3)
+        return {"price": 50.0, "previous_close": 49.0, "price_as_of_ts": observed,
+                "session": "afterhours", "market_date": "2026-09-02"}
+
+    monkeypatch.setattr(prices, "get_intraday_session", _session)
+    persisted = []
+
+    def _persist(**kwargs):
+        persisted.append(kwargs)
+        return {"status": "inserted", "evaluation_id": len(persisted)}
+
+    monkeypatch.setattr(ledger, "persist_hunter_evaluation", _persist)
+    monkeypatch.setattr(ledger, "_existing_session_symbols", lambda d: set())
+    monkeypatch.setattr(ledger, "_in_sampling_window", lambda ts=None: True)
+    monkeypatch.setattr(ledger, "_session_date_key", lambda ts=None: "2026-09-02")
+
+    out = ledger.issue_hunter_samples(symbols=["AVGO", "PLUG", "MU", "PLTR"])
+
+    assert out["inserted"] == 4
+    assert len(persisted) == 4
+    for row in persisted:
+        assert row["reference_price_ts"] is not None
+        assert row["reference_price_ts"] <= row["issued_ts"]
+        assert row["feature_available_ts"] <= row["issued_ts"]
+    issued = [row["issued_ts"] for row in persisted]
+    assert issued == sorted(issued) and len(set(issued)) == 4
+
+
+def test_measurement_reads_exclude_future_evidence_rows(monkeypatch):
+    executed = []
+
+    class _Cur:
+        def execute(self, sql, params=None):
+            executed.append(" ".join(sql.split()))
+
+        def fetchall(self):
+            return []
+
+    class _Conn:
+        def cursor(self):
+            return _Cur()
+
+        def commit(self):
+            pass
+
+    class _Ctx:
+        def __enter__(self):
+            return _Conn()
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr("core.db.db_conn", lambda: _Ctx())
+    assert hl.recent_evaluations()["ok"] is True
+    assert hl.recent_evaluations(symbol="MU")["ok"] is True
+    hl.resolve_hunter_predictions(now=2_000_000_000)
+    reads = [sql for sql in executed if "FROM ghost_squeeze_hunter_evaluations" in sql]
+    assert len(reads) == 3
+    for sql in reads:
+        assert "COALESCE(e.reference_price_ts, e.issued_ts) <= e.issued_ts" in sql
+        assert "COALESCE(e.feature_available_ts, e.issued_ts) <= e.issued_ts" in sql

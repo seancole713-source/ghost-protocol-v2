@@ -50,7 +50,8 @@ def check(get, *, now: int) -> Dict[str, Any]:
     try:
         snaps = A.snapshots(get, [PROBE_SYMBOL], feed="sip")
     except Exception as exc:  # noqa: BLE001 - 403 on the free plan; a network error is undecided
-        msg = f"{type(exc).__name__}: {str(exc)[:120]}"
+        from shared.redaction import redact_exc
+        msg = redact_exc(exc, 160)        # a request URL can carry a key in its query
         decided = "403" in msg or "forbidden" in msg.lower() or "subscription" in msg.lower()
         return {"feed": "iex", "decided": decided, "why": msg, "checked_at": now}
     ok = bool((snaps or {}).get(PROBE_SYMBOL))

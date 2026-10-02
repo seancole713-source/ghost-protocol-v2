@@ -378,3 +378,68 @@ def test_auto_log_watchlist_backs_off_symbols_that_cannot_be_built(monkeypatch):
     now[0] += ledger._AUTO_LOG_FAIL_BACKOFF_S
     ledger.auto_log_watchlist()
     assert built == [dead, dead]                            # retried after the backoff
+
+
+def test_resolve_predictions_writes_in_pk_order_outside_fetch_and_retries_deadlock(monkeypatch):
+    """Prod: SuperGhostLedger's bulk update coincided with shadow deadlocks.
+
+    The resolver now reads in one short transaction, fetches prices with no
+    transaction open, then writes every row in primary-key order in one short
+    transaction that is retried once on SQLSTATE 40P01.
+    """
+    import core.db as dbmod
+
+    t0 = 1_700_000_000
+    rows = [
+        (9, "WOLF", t0, 100.0, "UP", 110.0, 95.0, None, None, None),
+        (3, "AMC", t0, 100.0, "UP", 110.0, 95.0, None, None, None),
+    ]
+    state = {"open": 0, "txns": [], "deadlocks_left": 1}
+
+    class _Deadlock(Exception):
+        pgcode = "40P01"
+
+    class _Cur:
+        def __init__(self, txn):
+            self.txn = txn
+            self._rows = []
+
+        def execute(self, sql, params=None):
+            norm = " ".join(sql.split())
+            assert not norm.upper().startswith(("CREATE", "ALTER")), norm
+            self.txn.append((norm, params))
+            self._rows = list(rows) if "FROM super_ghost_predictions" in norm else []
+            if norm.startswith("UPDATE") and state["deadlocks_left"]:
+                state["deadlocks_left"] -= 1
+                raise _Deadlock("deadlock detected")
+
+        def fetchall(self):
+            return self._rows
+
+    class _Ctx:
+        def __enter__(self):
+            state["open"] += 1
+            self.txn = []
+            state["txns"].append(self.txn)
+            return type("C", (), {"cursor": lambda _s: _Cur(self.txn)})()
+
+        def __exit__(self, *a):
+            state["open"] -= 1
+            return False
+
+    def _series(sym, period="6mo"):
+        assert state["open"] == 0, "network fetch inside a transaction"
+        return _series_from_closes(t0, [100 + i for i in range(1, 21)])
+
+    monkeypatch.setattr(dbmod, "db_conn", lambda: _Ctx())
+    monkeypatch.setattr(ledger, "_ohlc_series", _series)
+    monkeypatch.setattr("core.db.time.sleep", lambda s: None)
+
+    out = ledger.resolve_predictions(now=t0 + 40 * 86400)
+
+    assert out["ok"] is True
+    assert out["updated"] == 2
+    write_txns = [t for t in state["txns"] if any(s.startswith("UPDATE") for s, _ in t)]
+    assert len(write_txns) == 2                    # deadlocked attempt + retry
+    ids = [p[-1] for s, p in write_txns[-1] if s.startswith("UPDATE")]
+    assert ids == [3, 9]

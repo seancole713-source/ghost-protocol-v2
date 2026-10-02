@@ -838,6 +838,10 @@ def fetch_explosion_report(
     report["evaluation_id"] = None
     report["persistence"] = {"status": "not_requested", "evaluation_id": None}
     if persist:
+        # Decision time is taken AFTER every evidence fetch above, so no
+        # reference/feature timestamp can postdate the recorded issuance.
+        decision_ts = int(issued_ts) if issued_ts is not None else int(time.time())
+        report["issued_ts"] = decision_ts
         try:
             from core.squeeze_hunter_ledger import persist_hunter_evaluation
             persistence = persist_hunter_evaluation(
@@ -849,7 +853,7 @@ def fetch_explosion_report(
                 reference_price=reference_price,
                 reference_price_ts=reference_price_ts,
                 session_date=reference_validation.get("market_date"),
-                issued_ts=issued_ts,
+                issued_ts=decision_ts,
                 feature_available_ts=reference_price_ts,
             )
         except Exception:

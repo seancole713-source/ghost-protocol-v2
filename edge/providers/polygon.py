@@ -136,12 +136,47 @@ def _get_patiently(get: B.HttpGet, url: str, params: Dict[str, Any], *, timeout:
     return r
 
 
-def grouped_daily(get: B.HttpGet, day: date, *, sleep=None) -> List[Dict[str, Any]]:
-    """Every US stock's daily bar for one session: [{T, o, h, l, c, v, vw, t}]."""
+def grouped_daily(get: B.HttpGet, day: date, *, sleep=None, adjusted: bool = True) -> List[Dict[str, Any]]:
+    """Every US stock's daily bar for one session: [{T, o, h, l, c, v, vw, t}].
+
+    `adjusted=True` (Polygon's default) restates the bar for EVERY split known today, including
+    splits executed long after `day` -- a basis no one trading on `day` could have seen. A
+    point-in-time study asks for `adjusted=False` (the prices and volume as traded) and restates
+    for splits executed by the decision day itself (`splits` below)."""
     r = _get_patiently(get, _base_url() + f"/v2/aggs/grouped/locale/us/market/stocks/{day.isoformat()}",
-                       {"adjusted": "true", "apiKey": _key()}, sleep=sleep)
+                       {"adjusted": "true" if adjusted else "false", "apiKey": _key()}, sleep=sleep)
     r.raise_for_status()
     return list((r.json() or {}).get("results") or [])
+
+
+def splits(get: B.HttpGet, start: date, end: date, *, sleep=None, max_pages: int = 20) -> List[Dict[str, Any]]:
+    """Every split executed in [start, end]: [{ticker, execution_date (date), split_from, split_to}].
+
+    split_to / split_from is the share multiplier: a 2-for-1 forward split is from 1 to 2 (shares
+    x2, price /2), a 1-for-10 reverse split from 10 to 1. Raises when the list is incomplete
+    (an HTTP error, or `max_pages` ran out): a caller restating prices must not use a partial list."""
+    url = _base_url() + "/v3/reference/splits"
+    params: Dict[str, Any] = {"execution_date.gte": start.isoformat(), "execution_date.lte": end.isoformat(),
+                              "limit": 1000, "apiKey": _key()}
+    out: List[Dict[str, Any]] = []
+    for _ in range(max_pages):
+        r = _get_patiently(get, url, params, sleep=sleep)
+        r.raise_for_status()
+        p = r.json() or {}
+        for s in p.get("results") or []:
+            t, frm, to, ex = str(s.get("ticker") or "").upper(), s.get("split_from"), s.get("split_to"), \
+                s.get("execution_date")
+            try:
+                frm, to, ex = float(frm), float(to), date.fromisoformat(str(ex))
+            except (TypeError, ValueError):
+                continue
+            if t and frm > 0 and to > 0:
+                out.append({"ticker": t, "execution_date": ex, "split_from": frm, "split_to": to})
+        nxt = p.get("next_url")
+        if not nxt:
+            return out
+        url, params = nxt, {"apiKey": _key()}
+    raise RuntimeError(f"polygon splits: page cap ({max_pages}) hit; the split list is incomplete")
 
 
 def minute_bars(get: B.HttpGet, symbol: str, day: date) -> List[tuple]:

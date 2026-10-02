@@ -37,6 +37,14 @@ def test_wilson_interval_88_pct_60_n():
     assert wi["low"] >= 0.70
 
 
+def test_compute_proof_compares_unrounded_wilson_bound():
+    """PROOF-02: 76/96 has Wilson low 0.69999568, which rounds to 0.7000."""
+    preds = [{"outcome": "WIN"}] * 76 + [{"outcome": "LOSS"}] * 20
+    result = compute_proof(preds, min_support=10)
+    assert result.wilson["low"] == 0.70  # display rounding only
+    assert result.proven is False
+
+
 # ── compute_proof ──────────────────────────────────────────────────────────
 
 def test_compute_proof_all_wins():

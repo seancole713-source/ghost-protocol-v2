@@ -57,6 +57,8 @@ import requests
 
 LOG = logging.getLogger("ghost.codex_worker")
 REPAIRABLE_CATEGORIES = frozenset({"schema_error", "source_error"})
+# Same as the Claude worker (AGENT-02): beat inside Ghost's 120 s offline window.
+LEASE_HEARTBEAT_MAX_SECONDS = 60
 STOP_EVENT = threading.Event()
 
 
@@ -591,7 +593,7 @@ class LeaseHeartbeat:
         self.ghost = ghost
         self.task_id = task_id
         self.lease_token = lease_token
-        self.interval = interval
+        self.interval = min(int(interval), LEASE_HEARTBEAT_MAX_SECONDS)
         self.stop_event = threading.Event()
         self.thread = threading.Thread(target=self._run, name="lease-heartbeat", daemon=True)
 

@@ -134,15 +134,19 @@ def _get_json(get: B.HttpGet, path: str, params: dict) -> dict:
 
 
 def bars_pages(get: B.HttpGet, symbols: List[str], *, timeframe: str, start: str, end: Optional[str] = None,
-               feed: str = "sip", max_pages: int = 40) -> Tuple[Dict[str, List[dict]], bool]:
+               feed: str = "sip", max_pages: int = 40,
+               adjustment: str = "raw") -> Tuple[Dict[str, List[dict]], bool]:
     """({symbol: [bar, ...]}, complete). complete is False when `max_pages` ran out with a
     next_page_token still pending: the answer is TRUNCATED -- the symbols paged last (Alpaca
-    pages symbol by symbol) are short or missing -- and a caller must not keep it as whole."""
+    pages symbol by symbol) are short or missing -- and a caller must not keep it as whole.
+
+    `adjustment` is Alpaca's corporate-action basis: "raw" (default) is prices and volume as
+    traded; "split" / "dividend" / "all" restate history for actions known TODAY."""
     out: Dict[str, List[dict]] = {s: [] for s in symbols}
     if not symbols:
         return out, True
     params = {"symbols": ",".join(symbols), "timeframe": timeframe, "start": start,
-              "feed": feed, "limit": 10000, "adjustment": "raw"}
+              "feed": feed, "limit": 10000, "adjustment": adjustment}
     if end:
         params["end"] = end
     for _ in range(max_pages):
@@ -159,11 +163,11 @@ def bars_pages(get: B.HttpGet, symbols: List[str], *, timeframe: str, start: str
 
 
 def bars_multi(get: B.HttpGet, symbols: List[str], *, timeframe: str, start: str, end: Optional[str] = None,
-               feed: str = "sip", max_pages: int = 40) -> Dict[str, List[dict]]:
+               feed: str = "sip", max_pages: int = 40, adjustment: str = "raw") -> Dict[str, List[dict]]:
     """{symbol: [bar, ...]} for many symbols, following next_page_token (a hit page cap is
     logged; use bars_pages to learn whether the answer is complete)."""
     return bars_pages(get, symbols, timeframe=timeframe, start=start, end=end, feed=feed,
-                      max_pages=max_pages)[0]
+                      max_pages=max_pages, adjustment=adjustment)[0]
 
 
 def snapshots(get: B.HttpGet, symbols: List[str], *, feed: str = "iex") -> Dict[str, dict]:

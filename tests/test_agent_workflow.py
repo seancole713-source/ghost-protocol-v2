@@ -415,6 +415,119 @@ def test_claim_excludes_tasks_this_agent_released_within_cooldown(monkeypatch):
     ]
 
 
+_TASK_ID = "agt_" + "c" * 32
+_AGENT = "claude.production.worker"
+_TOKEN = "lease-token"
+
+
+class _ScriptedCursor:
+    """Answers each query by its shape; records every statement."""
+
+    def __init__(self, *, task=None, accepted=0, exhausted=()):
+        self.sql, self.last = [], ""
+        self.task, self.accepted, self.exhausted = task, accepted, list(exhausted)
+
+    def execute(self, sql, params=None):
+        self.last = " ".join(sql.split())
+        self.sql.append((self.last, params))
+
+    def fetchone(self):
+        s = self.last
+        if s.startswith("SELECT status, claimed_by") and "FROM ghost_agent_tasks" in s:
+            return self.task
+        if s.startswith("INSERT INTO ghost_agent_evidence ("):
+            params = self.sql[-1][1]
+            return {"evidence_id": params[0], "task_id": params[1], "agent_id": params[2],
+                    "validation_status": params[13]}
+        if "COUNT(DISTINCT agent_id)" in s:
+            return (self.accepted,)
+        if s.startswith("SELECT COUNT(*) FROM ghost_agent_evidence"):
+            return (0,)
+        return None
+
+    def fetchall(self):
+        if "WHERE status='PENDING' AND attempt_count >= max_attempts" in self.last:
+            return [(task_id,) for task_id in self.exhausted]
+        return []
+
+
+def _install(monkeypatch, cur):
+    class _Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def cursor(self):
+            return cur
+
+    import core.db as db
+    monkeypatch.setattr(db, "db_conn", lambda: _Conn())
+
+
+def _claimed_task(now, **kw):
+    import hashlib
+    task = {"status": "CLAIMED", "claimed_by": _AGENT,
+            "lease_token_sha256": hashlib.sha256(_TOKEN.encode()).hexdigest(),
+            "lease_expires_at": now + 600, "lease_id": "lease_x", "required_response_schema": None,
+            "required_submissions": 2, "attempt_count": 3, "max_attempts": 3}
+    task.update(kw)
+    return task
+
+
+def test_a_task_heartbeat_keeps_the_worker_online(monkeypatch):
+    """AGENT-02: only the TASK lease was renewed mid-research, so a worker in a 240 s
+    provider call read offline after 120 s. The task heartbeat now refreshes last_seen."""
+    now = 1_800_000_000
+    cur = _ScriptedCursor(task=_claimed_task(now))
+    _install(monkeypatch, cur)
+    workflow.heartbeat_task(task_id=_TASK_ID, agent_id=_AGENT, lease_token=_TOKEN, now_ts=now)
+    touch = [(s, p) for s, p in cur.sql if s.startswith("UPDATE ghost_agent_workers")]
+    assert touch and "last_seen_at=GREATEST(last_seen_at, %s)" in touch[0][0]
+    assert touch[0][1] == (now, _AGENT)
+    assert workflow.WORKER_ONLINE_SECONDS == 120
+
+
+def test_an_accepted_submission_short_of_consensus_with_no_attempts_left_is_terminal(monkeypatch):
+    """AGENT-03: it used to go PENDING, which claim_task() never picks up
+    (attempt_count >= max_attempts) and maintenance never touched: stranded forever."""
+    now = int(time.time())
+    cur = _ScriptedCursor(task=_claimed_task(now), accepted=1)
+    _install(monkeypatch, cur)
+    out = workflow.submit_evidence(
+        task_id=_TASK_ID, agent_id=_AGENT, lease_token=_TOKEN, agent_provider="anthropic",
+        model_name="m", prompt_version="v1", summary="Source-backed summary of the event.",
+        claims=_valid_claims(), source_refs=_valid_sources(now), now_ts=now)
+    assert out["accepted"] is True and out["task_status"] == "DEAD_LETTER"
+    update = next(p for s, p in cur.sql if s.startswith("UPDATE ghost_agent_tasks SET status=%s"))
+    assert update[0] == "DEAD_LETTER"
+    assert update[3].startswith(workflow.INCOMPLETE_CONSENSUS) and "1 of 2" in update[3]
+
+
+def test_an_accepted_submission_short_of_consensus_with_attempts_left_stays_pending(monkeypatch):
+    now = int(time.time())
+    cur = _ScriptedCursor(task=_claimed_task(now, attempt_count=1), accepted=1)
+    _install(monkeypatch, cur)
+    out = workflow.submit_evidence(
+        task_id=_TASK_ID, agent_id=_AGENT, lease_token=_TOKEN, agent_provider="anthropic",
+        model_name="m", prompt_version="v1", summary="Source-backed summary of the event.",
+        claims=_valid_claims(), source_refs=_valid_sources(now), now_ts=now)
+    assert out["task_status"] == "PENDING"
+
+
+def test_maintenance_dead_letters_pending_tasks_with_no_attempts_left(monkeypatch):
+    """AGENT-03: rows already stranded PENDING with exhausted attempts are terminalized."""
+    cur = _ScriptedCursor(exhausted=[_TASK_ID])
+    _install(monkeypatch, cur)
+    out = workflow.maintain_workflow(now_ts=1_800_000_000)
+    assert out["dead_letter"] == 1
+    sweep = next(s for s, _ in cur.sql if "WHERE status='PENDING' AND attempt_count >= max_attempts" in s)
+    assert "SET status='DEAD_LETTER'" in sweep
+    events = [p for s, p in cur.sql if s.startswith("INSERT INTO ghost_agent_task_events")]
+    assert events[-1][:2] == (_TASK_ID, "DEAD_LETTER")
+
+
 def test_mcp_lists_and_invokes_agent_workflow_tools(monkeypatch):
     names = {tool["name"] for tool in ghost_server.list_tools()}
     assert "ghost_agent_tasks" in names

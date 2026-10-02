@@ -53,6 +53,10 @@ def baseline(tmp_path, monkeypatch):
     path.write_text(json.dumps({"allowed_patterns": []}))
     monkeypatch.setenv("ERROR_SIGNATURE_BASELINE", str(path))
     monkeypatch.setenv("BASE_URL", "https://example.test")
+    # The suite runs in GitHub Actions (including on push to main): start from
+    # a neutral, non-CI event context.
+    for key in ("GITHUB_EVENT_NAME", "GITHUB_REF", "GITHUB_STEP_SUMMARY"):
+        monkeypatch.delenv(key, raising=False)
     return path
 
 
@@ -128,3 +132,34 @@ def test_main_known_signature_passes(monkeypatch, capsys, baseline):
     _route(monkeypatch, audit_payload=payload)
     assert sig.main() == 0
     assert "PASS: only known error signatures detected" in capsys.readouterr().out
+
+
+# ── CI: a missing secret is NOT VERIFIED, visibly; fatal on push to main ─────
+
+def test_main_without_cron_secret_on_pr_reports_not_verified(monkeypatch, capsys, baseline, tmp_path):
+    summary = tmp_path / "summary.md"
+    monkeypatch.delenv("CRON_SECRET", raising=False)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    monkeypatch.setenv("GITHUB_REF", "refs/pull/1/merge")
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    _route(monkeypatch)
+    assert sig.main() == 0
+    out = capsys.readouterr().out
+    assert "::warning::" in out and "NOT VERIFIED" in out
+    assert out.strip().splitlines()[-1].startswith("SKIPPED:")
+    assert "PASS" not in out
+    assert "NOT VERIFIED" in summary.read_text()
+
+
+def test_main_without_cron_secret_on_push_to_main_fails(monkeypatch, capsys, baseline, tmp_path):
+    summary = tmp_path / "summary.md"
+    monkeypatch.delenv("CRON_SECRET", raising=False)
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "push")
+    monkeypatch.setenv("GITHUB_REF", "refs/heads/main")
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    _route(monkeypatch)
+    assert sig.main() == 1
+    out = capsys.readouterr().out
+    assert out.strip().splitlines()[-1].startswith("FAIL:")
+    assert "PASS" not in out
+    assert "NOT VERIFIED" in summary.read_text()

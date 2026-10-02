@@ -137,9 +137,32 @@ def test_format_squeeze_alert_simple():
         {"squeeze_risk": "high"},
     )
     assert "SPCE" in msg
-    assert "Buy: $4.52" in msg
-    assert "Sell: $" in msg
-    assert "Confidence:" in msg
+    assert "Watch level: $4.52" in msg
+    assert "Upside reference: $4.70" in msg
+    # No vwap/prior close: invalidation is the 2.5% buffer under the alert price.
+    assert "Invalidation level: $4.41" in msg
+    assert "Setup score (unvalidated): " in msg
+    assert "/95 — not a probability" in msg
+
+
+def test_radar_alert_never_claims_confidence_or_trade_instructions():
+    """P1 audit: the radar score is an unvalidated proxy. The message must not
+    call it confidence/probability nor issue Buy/Sell instructions."""
+    msg = format_squeeze_alert(
+        "SPCE",
+        "squeeze_forming",
+        {"price": 10.60, "session_high": 11.00, "peak_move_pct": 6.0,
+         "prior_close": 10.0, "vwap": 10.40},
+        3.0,
+        {"squeeze_risk": "high"},
+    )
+    lowered = msg.lower()
+    for banned in ("confidence", "probability:", "win prob", "expected value", "buy:", "sell:"):
+        assert banned not in lowered, banned
+    assert "Radar only — not a Ghost gated trade" in msg
+    # Invalidation uses the same compute_stop anchors as the eligibility check.
+    from core.squeeze_scorecard import compute_stop
+    assert f"Invalidation level: ${compute_stop(10.60, vwap=10.40, prior_close=10.0):.2f}" in msg
 
 
 def test_squeeze_trade_levels_anchor_on_alert_time_price_not_prior_high():
@@ -167,21 +190,118 @@ def test_alert_time_fade_pct():
     assert alert_time_fade_pct(None, 11.0) is None
 
 
-def test_ev_gate_no_longer_uses_prior_high_as_gain():
-    """F38 repro: close 10, high 11, price 10.6, conf 76. With the old
-    sell=max(TP, 11.00) the EV check passed on a gain the alert could not
-    capture; with the alert-time target the gain is the configured TP."""
-    from core.squeeze_monitor import _check_expected_value
+def _legacy_ev_gate(buy, sell, stop, score):
+    """The pre-P1 gate, reproduced verbatim to prove the cutoff is unchanged."""
+    if buy <= 0 or sell <= buy or stop >= buy:
+        return False
+    win_prob = score / 100.0
+    gain_pct = (sell - buy) / buy
+    loss_pct = (buy - stop) / buy
+    return win_prob * gain_pct - (1.0 - win_prob) * loss_pct > 0.0
+
+
+def test_reward_risk_floor_no_longer_uses_prior_high_as_gain():
+    """F38 repro: close 10, high 11, price 10.6, score 76. The old sell=max(TP,
+    11.00) cleared the floor on an upside the alert could not capture; with
+    the alert-time reference the reward is the configured TP."""
+    from core.squeeze_monitor import _score_clears_reward_risk_floor
 
     stop = 10.60 * 0.975
     old_sell = 11.00
-    assert _check_expected_value(10.60, old_sell, stop, 76) is True
+    assert _score_clears_reward_risk_floor(10.60, old_sell, stop, 76) is True
     buy, sell = squeeze_trade_levels(10.60, 11.00, "squeeze_forming")
     gain = (sell - buy) / buy
     assert abs(gain - 0.025) < 0.001
-    # EV now reflects only the TP gain (still computed by the same gate).
-    ev = 0.76 * gain - 0.24 * ((buy - stop) / buy)
-    assert _check_expected_value(buy, sell, stop, 76) is (ev > 0)
+    assert _score_clears_reward_risk_floor(buy, sell, stop, 76) is _legacy_ev_gate(buy, sell, stop, 76)
+
+
+def test_required_setup_score_is_reward_risk_share():
+    from core.squeeze_monitor import required_setup_score
+
+    # reward 1, risk 1 -> the score must exceed 50.
+    assert required_setup_score(10.0, 11.0, 9.0) == 50.0
+    # reward 0.25, risk 0.25 (2.5% TP, 2.5% buffer) -> 50 as well.
+    assert abs(required_setup_score(10.0, 10.25, 9.75) - 50.0) < 1e-9
+    # Wider invalidation -> stricter floor.
+    assert required_setup_score(10.0, 10.25, 9.50) > required_setup_score(10.0, 10.25, 9.75)
+    # Degenerate levels are never eligible.
+    assert required_setup_score(10.0, 10.0, 9.0) is None
+    assert required_setup_score(10.0, 11.0, 10.0) is None
+    assert required_setup_score(0.0, 1.0, -1.0) is None
+
+
+def test_score_floor_matches_legacy_ev_cutoff_exactly():
+    """P1 audit: EV/win_prob were removed, but eligibility must not loosen.
+    Exhaustive grid: the new floor never admits an alert the old EV gate
+    rejected. The only allowed disagreement is an exact tie (EV exactly 0 in
+    exact arithmetic), where the old gate's admission was a float-rounding
+    artifact -- the new floor rejects ties, i.e. it is never more permissive."""
+    import itertools
+    from fractions import Fraction as F
+
+    from core.squeeze_monitor import _score_clears_reward_risk_floor
+
+    def exact_tie(buy, sell, stop, score):
+        b, s_, st = F(str(buy)), F(str(sell)), F(str(stop))
+        return F(score) * (s_ - st) == 100 * (b - st)
+
+    prices = [0.37, 1.0, 2.13, 4.52, 10.6, 37.25, 182.4]
+    tps = [0.0, 0.01, 0.025, 0.04, 0.08]
+    buffers = [0.0, 0.005, 0.025, 0.04, 0.1, 0.3]
+    for price, tp, buf, score in itertools.product(prices, tps, buffers, range(0, 96)):
+        buy = round(price, 2)
+        sell = round(buy * (1 + tp), 2)
+        stop = round(buy * (1 - buf), 2)
+        new_ok = _score_clears_reward_risk_floor(buy, sell, stop, score)
+        old_ok = _legacy_ev_gate(buy, sell, stop, score)
+        assert not (new_ok and not old_ok), ("loosened", buy, sell, stop, score)
+        if new_ok != old_ok:
+            assert exact_tie(buy, sell, stop, score), (buy, sell, stop, score)
+
+
+def test_alert_gate_has_no_win_prob_or_expected_value():
+    import inspect
+
+    import core.squeeze_monitor as sm
+
+    src = inspect.getsource(sm._maybe_alert) + inspect.getsource(sm._score_clears_reward_risk_floor)
+    for banned in ("win_prob", "loss_prob", "expected_value", "negative-EV", " ev "):
+        assert banned not in src, banned
+    assert not hasattr(sm, "_check_expected_value")
+
+
+def test_maybe_alert_suppresses_below_score_floor(monkeypatch):
+    """End-to-end through _maybe_alert: a setup whose invalidation is far
+    below the watch level needs a higher score and is suppressed."""
+    import time as _time
+
+    import core.squeeze_monitor as sm
+    from core.daily_bar_contract import previous_session
+
+    sent = []
+    monkeypatch.setattr(sm, "_send_telegram", lambda key, msg: sent.append(msg) or True)
+    monkeypatch.setattr(sm, "_symbol_loss_streak", lambda symbol: 0)
+    monkeypatch.setattr(sm, "MIN_TELEGRAM_CONFIDENCE", 0)
+    sm._last_alert.clear()
+    base = {
+        "price": 10.00, "session_high": 10.00, "peak_move_pct": 8.0, "current_move_pct": 8.0,
+        "price_as_of_ts": _time.time() - 60, "daily_feed": "iex", "intraday_feed": "iex",
+        "reference_session_date": previous_session(_et_today()).isoformat(),
+        "bars_complete": True, "session_volume": 1000, "avg_daily_volume": 1000,
+    }
+    symbol = sorted(__import__("config.symbols", fromlist=["V3_WHITELIST_STOCKS"]).V3_WHITELIST_STOCKS)[0]
+    # VWAP/prior close far below -> invalidation 9.0*0.995; reward 0.40 (4%).
+    far = dict(base, vwap=9.0, prior_close=9.0)
+    score = squeeze_confidence(8.0, 1.0, short_risk=None, kind="squeeze_active")
+    floor = sm.required_setup_score(10.0, 10.40, round(9.0 * 0.995, 2))
+    assert score <= floor
+    assert sm._maybe_alert(symbol, "squeeze_active", far, 1.0, {}) is False
+    assert sent == []
+    # Tight invalidation (2.5% buffer) -> floor ~38.5, score clears it.
+    near = dict(base, vwap=None, prior_close=9.80)
+    assert sm._maybe_alert(symbol, "squeeze_active", near, 1.0, {}) is True
+    assert sent and "Setup score (unvalidated)" in sent[0]
+    sm._last_alert.clear()
 
 
 def test_candidate_to_pick_matches_telegram_fields():
@@ -213,7 +333,9 @@ def test_candidate_to_pick_matches_telegram_fields():
     assert pick["confidence_pct"] == 66
     assert pick["squeeze_score"] > 0
     assert "p_continue_3pct_60m" in pick["probabilities"]
-    assert "Buy: $4.52" in pick["message"]
+    assert "Watch level: $4.52" in pick["message"]
+    assert pick["confidence_pct_label"] == "Setup score (unvalidated)"
+    assert pick["confidence_pct_status"] == "unvalidated_heuristic_score"
     assert pick["message"] == msg
     assert pick["message"] == msg
     assert prefilter_candidate(0.5, 0.2, 0.8) is False
@@ -524,3 +646,49 @@ def test_get_squeeze_picks_exposes_the_new_fetch_outcome_counts(monkeypatch):
     assert board["no_intraday_print"] == 86
     assert board["no_intraday_print_symbols"] == ["ZZZ"]
     assert board["fetch_skipped"] == 0
+    # P2 audit: no-print symbols are not usable evidence, so 21/107 is
+    # degraded coverage even though fetch_fail is zero.
+    assert board["usable_symbols"] == 21
+    assert board["scanned_symbols"] == 107
+    assert board["usable_coverage_pct"] == 19.6
+    assert board["coverage_degraded"] is True
+
+
+def test_scan_coverage_reports_usable_of_scanned(monkeypatch):
+    from core.squeeze_monitor import scan_coverage
+
+    monkeypatch.delenv("SQUEEZE_MIN_USABLE_COVERAGE", raising=False)
+    audit = scan_coverage({"symbols": 105, "fetch_ok": 6})
+    assert audit == {
+        "scanned_symbols": 105, "usable_symbols": 6, "usable_coverage_pct": 5.7,
+        "coverage_degraded": True, "min_usable_coverage_pct": 80.0,
+    }
+    full = scan_coverage({"symbols": 105, "fetch_ok": 100})
+    assert full["coverage_degraded"] is False and full["usable_coverage_pct"] == 95.2
+    assert scan_coverage({"symbols": 100, "fetch_ok": 80})["coverage_degraded"] is False
+    assert scan_coverage({"symbols": 100, "fetch_ok": 79})["coverage_degraded"] is True
+    # Missing / zero counts are never treated as full coverage.
+    for report in ({}, {"symbols": 0, "fetch_ok": 0}, {"symbols": 10}, {"fetch_ok": 3},
+                   {"symbols": "x", "fetch_ok": 1}):
+        assert scan_coverage(report)["coverage_degraded"] is True, report
+    # Usable can never exceed scanned.
+    assert scan_coverage({"symbols": 5, "fetch_ok": 9})["usable_symbols"] == 5
+    monkeypatch.setenv("SQUEEZE_MIN_USABLE_COVERAGE", "0.05")
+    assert scan_coverage({"symbols": 105, "fetch_ok": 6})["coverage_degraded"] is False
+    monkeypatch.setenv("SQUEEZE_MIN_USABLE_COVERAGE", "bogus")
+    assert scan_coverage({"symbols": 105, "fetch_ok": 6})["min_usable_coverage_pct"] == 80.0
+
+
+def test_coverage_is_display_only_and_does_not_change_scan_ok(monkeypatch):
+    import core.squeeze_monitor as sm
+
+    monkeypatch.setattr(sm, "_last_scan_report", {
+        "status": "complete", "ts": 1, "ok": True, "fetch_ok": 6, "symbols": 105,
+        "picks": [], "candidates": [], "leaders": [],
+    })
+    monkeypatch.setattr(sm, "_alert_history", [])
+    board = sm.get_squeeze_picks()
+    assert board["coverage_degraded"] is True
+    # scan_ok keeps its own definition (stale here: ts=1); coverage never flips it.
+    assert board["scan_ok"] is False
+    assert board["scorecard"]["confidence_pct_note"].startswith("Legacy field name")

@@ -26,6 +26,21 @@ def score_headline(text: Optional[str]) -> float:
     return round((bull - bear) / max(bull + bear, 1), 3)
 
 
+def _article_symbols(article: Dict[str, Any]) -> set:
+    """Normalized symbol tags from scalar or list ``symbol``/``symbols`` fields."""
+    tags: set = set()
+    for field in ("symbol", "symbols"):
+        value = article.get(field) if isinstance(article, dict) else None
+        if value is None:
+            continue
+        items = value if isinstance(value, (list, tuple, set)) else str(value).split(",")
+        for item in items:
+            tag = str(item or "").strip().upper()
+            if tag:
+                tags.add(tag)
+    return tags
+
+
 def score_articles(articles: List[Dict[str, Any]], *, symbol: Optional[str] = None) -> Dict[str, Any]:
     sym = (symbol or "").upper()
     rows = []
@@ -36,9 +51,10 @@ def score_articles(articles: List[Dict[str, Any]], *, symbol: Optional[str] = No
     except Exception:
         note_suppressed()
     for a in articles or []:
-        if sym and sym not in (a.get("symbol") or a.get("symbols") or sym):
-            if isinstance(a.get("symbols"), list) and sym not in a["symbols"]:
-                continue
+        if sym and sym not in _article_symbols(a):
+            # A requested symbol must be explicitly tagged on the article;
+            # untagged or other-symbol articles never contribute.
+            continue
         title = a.get("title") or a.get("headline") or ""
         s = score_headline(title)
         rows.append({"title": title[:120], "sentiment": s})
