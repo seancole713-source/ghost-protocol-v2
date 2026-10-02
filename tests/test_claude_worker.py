@@ -43,6 +43,7 @@ def test_source_normalization_uses_citations_and_deduplicates():
             "kind": "filing",
             "locator": "https://example.com/release",
             "retrieved_ts": now,
+            "title": "Official release",       # the provider's citation title is kept
         }
     ]
 
@@ -59,6 +60,11 @@ class _FakeResponse:
 
 
 class _FormatRepairSession:
+    repair_text = (
+        '{"summary":"Insufficient fresh evidence.","claims":{"verdict":"insufficient","evidence":[{}],'
+        '"risks":["limited source"],"recommended_next_step":"monitor"},"source_refs":[],"agent_confidence":0.4}'
+    )
+
     def __init__(self):
         self.headers = {}
         self.calls = []
@@ -111,7 +117,7 @@ class _FormatRepairSession:
                 "content": [
                     {
                         "type": "text",
-                        "text": '{"summary":"Insufficient fresh evidence.","claims":{"verdict":"insufficient","evidence":[{}],"risks":["limited source"],"recommended_next_step":"monitor"},"source_refs":[],"agent_confidence":0.4}',
+                        "text": self.repair_text,
                     }
                 ],
             }
@@ -130,12 +136,13 @@ def test_anthropic_client_repairs_non_json_first_pass_without_second_web_search(
     assert "tools" not in session.calls[1]
     assert result["raw_response"]["format_repaired"] is True
     assert [r["locator"] for r in result["source_refs"]] == ["https://example.com/release"]
-    assert result["raw_response"]["source_policy"] == "cited_only/v2"
+    assert result["raw_response"]["source_policy"] == "cited_only/v3"
+    assert result["unverified_refs"] == []
 
 
 def test_raw_search_results_are_not_stored_as_sources():
-    """F36 acceptance: 10 raw results + 2 cited -> only the 2 cited plus the
-    model's own refs."""
+    """F36 acceptance: 10 raw results + 2 cited -> only the 2 cited. AGENT-01:
+    the model's own uncited ref is NOT a source; it is kept as unverified."""
     now = 1_800_000_000
     raw_hits = [
         {"type": "web_search_result", "url": f"https://hit{i}.example/page", "title": f"hit {i}"}
@@ -159,12 +166,38 @@ def test_raw_search_results_are_not_stored_as_sources():
     assert [r["locator"] for r in cited] == [
         "https://hit1.example/page", "https://hit4.example/page",
     ]
-    refs = worker._normalize_source_refs(
-        [{"kind": "filing", "locator": "https://sec.example/8k", "title": "8-K"}], cited, now,
-    )
+    model_refs = [{"kind": "filing", "locator": "https://sec.example/8k", "title": "8-K"}]
+    refs = worker._normalize_source_refs(model_refs, cited, now)
     assert [r["locator"] for r in refs] == [
-        "https://sec.example/8k", "https://hit1.example/page", "https://hit4.example/page",
+        "https://hit1.example/page", "https://hit4.example/page",
     ]
+    assert worker._unverified_refs(model_refs, cited) == [
+        {"locator": "https://sec.example/8k", "attested": False, "kind": "filing", "title": "8-K"},
+    ]
+
+
+def test_an_uncited_model_url_is_marked_unverified_never_a_source():
+    """AGENT-01: the envelope's source_refs used to be the model's own refs
+    PLUS citations, so an uncited (possibly invented) URL was scored as a source."""
+    session = _FormatRepairSession()
+    session.repair_text = (
+        '{"summary":"s","claims":{"verdict":"supports"},"agent_confidence":0.5,'
+        '"source_refs":[{"kind":"news","locator":"https://invented.example/story","title":"made up"},'
+        '{"kind":"official_release","locator":"https://example.com/release","title":"model title"},'
+        '{"kind":"news","locator":"https://unrelated.example/other-ticker"}]}'
+    )
+    result = worker.AnthropicClient(_config(), session=session).research(
+        {"task_id": "canary"}, {"required_response_schema": {"type": "object"}},
+    )
+    assert [r["locator"] for r in result["source_refs"]] == ["https://example.com/release"]
+    attested = result["source_refs"][0]
+    assert attested["kind"] == "official_release" and attested["title"] == "Official release"
+    # An uncited raw search hit is not attested either (F36): unverified, like an invented URL.
+    unverified = [r["locator"] for r in result["unverified_refs"]]
+    assert unverified == ["https://invented.example/story", "https://unrelated.example/other-ticker"]
+    assert all(r["attested"] is False for r in result["unverified_refs"])
+    assert result["raw_response"]["unverified_refs"] == result["unverified_refs"]
+    assert result["raw_response"]["source_policy"] == "cited_only/v3"
 
 
 class _FakeGhost:

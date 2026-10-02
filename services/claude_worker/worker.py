@@ -206,7 +206,9 @@ def _find_json_object(text: str) -> Dict[str, Any]:
 # A citation is an entry of a text block's ``citations`` list (type
 # ``web_search_result_location`` for web search).
 CITED_SOURCE_TYPES = frozenset({"web_search_result_location"})
-SOURCE_POLICY = "cited_only/v2"
+# v3 (AGENT-01): the model's own source_refs no longer ADD sources; only
+# provider citations do, and un-attested model refs are kept as unverified_refs.
+SOURCE_POLICY = "cited_only/v3"
 
 
 def _iter_citations(content: Any) -> Iterable[Dict[str, Any]]:
@@ -244,22 +246,37 @@ def _source_refs_from_response(content: Any, now: int) -> list[Dict[str, Any]]:
     return refs[:25]
 
 
+def _model_refs_by_locator(values: Any) -> Dict[str, Dict[str, Any]]:
+    by_locator: Dict[str, Dict[str, Any]] = {}
+    for item in values if isinstance(values, list) else []:
+        if isinstance(item, dict):
+            locator = str(item.get("locator") or item.get("url") or "").strip()
+            if locator and locator not in by_locator:
+                by_locator[locator] = item
+    return by_locator
+
+
 def _normalize_source_refs(values: Any, cited: list[Dict[str, Any]], now: int) -> list[Dict[str, Any]]:
-    """The model's own source_refs plus the provider citations (cited only)."""
-    combined = list(values) if isinstance(values, list) else []
-    combined.extend(cited)
+    """Sources = the provider-attested citations ONLY (AGENT-01, same rule as the
+    Codex worker). ``values`` is model-authored JSON and cannot establish
+    provenance: it may label an attested locator (kind/title/note/timestamps)
+    but never adds one. Un-attested model refs go to _unverified_refs()."""
+    model_by_locator = _model_refs_by_locator(values)
     refs: list[Dict[str, Any]] = []
     seen: set[str] = set()
-    for item in combined:
-        if not isinstance(item, dict):
+    for attested in cited:
+        if not isinstance(attested, dict):
             continue
-        locator = str(item.get("locator") or item.get("url") or "").strip()
+        locator = str(attested.get("locator") or attested.get("url") or "").strip()
         parsed = urlparse(locator)
         if not locator or locator in seen or parsed.scheme not in {"http", "https"} or not parsed.netloc:
             continue
         seen.add(locator)
+        model_item = model_by_locator.get(locator, {})
+        # The provider's own fields win; the model only fills what it left empty, plus the kind label.
+        item = {**model_item, **{k: v for k, v in attested.items() if v not in (None, "") and k != "kind"}}
         ref: Dict[str, Any] = {
-            "kind": str(item.get("kind") or "web_search")[:64],
+            "kind": str(model_item.get("kind") or attested.get("kind") or "web_search")[:64],
             "locator": locator[:2048],
             "retrieved_ts": now,
         }
@@ -275,6 +292,25 @@ def _normalize_source_refs(values: Any, cited: list[Dict[str, Any]], now: int) -
                 pass
         refs.append(ref)
     return refs[:25]
+
+
+def _unverified_refs(values: Any, cited: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+    """Model-listed refs no provider citation attests (AGENT-01). Kept for audit
+    only -- never submitted as source_refs, never scored as a source."""
+    attested = {
+        str(c.get("locator") or c.get("url") or "").strip() for c in cited if isinstance(c, dict)
+    }
+    out: list[Dict[str, Any]] = []
+    for locator, item in _model_refs_by_locator(values).items():
+        if locator in attested:
+            continue
+        ref: Dict[str, Any] = {"locator": locator[:2048], "attested": False}
+        for key in ("kind", "title"):
+            value = str(item.get(key) or "").strip()
+            if value:
+                ref[key] = value[:300]
+        out.append(ref)
+    return out[:25]
 
 
 class AnthropicClient:
@@ -424,6 +460,7 @@ RESEARCH_DRAFT:
             envelope = _find_json_object(text)
             format_repaired = True
         source_refs = _normalize_source_refs(envelope.get("source_refs"), citations, now)
+        unverified_refs = _unverified_refs(envelope.get("source_refs"), citations)
         confidence = envelope.get("agent_confidence")
         try:
             confidence = float(confidence) if confidence is not None else None
@@ -433,8 +470,13 @@ RESEARCH_DRAFT:
             "summary": str(envelope.get("summary") or "").strip(),
             "claims": envelope.get("claims") if isinstance(envelope.get("claims"), dict) else {},
             "source_refs": source_refs,
+            # Model-listed URLs no citation attests: audit only, never scored as sources. The
+            # submit endpoint ignores unknown top-level fields, so raw_response carries the copy
+            # that is stored.
+            "unverified_refs": unverified_refs,
             "agent_confidence": confidence,
             "raw_response": {
+                "unverified_refs": unverified_refs,
                 "message_id": body.get("id"),
                 "research_message_id": original_body.get("id"),
                 "model": body.get("model"),
