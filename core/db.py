@@ -1,3 +1,4 @@
+import contextvars
 import logging
 import os
 import time
@@ -157,9 +158,43 @@ def pool_stats() -> dict:
         "wait_s": _GETCONN_WAIT_S,
     }
 
+_PASSIVE_INSPECTION: "contextvars.ContextVar[bool]" = contextvars.ContextVar(
+    "ghost_passive_inspection", default=False,
+)
+
+
+def in_passive_inspection() -> bool:
+    """True inside ``passive_inspection()``: no writes, DDL, repairs or probes."""
+    return bool(_PASSIVE_INSPECTION.get())
+
+
+class passive_inspection:
+    """Scope for read-only inspection (e.g. the CI health-audit gate).
+
+    Every ``db_conn()`` transaction opened inside the scope starts with
+    ``SET TRANSACTION READ ONLY`` so Postgres itself rejects any write or DDL,
+    and callers consult ``in_passive_inspection()`` to skip self-heal writes
+    and provider probes. Context-local: other threads/requests are unaffected.
+    """
+
+    def __enter__(self):
+        self._token = _PASSIVE_INSPECTION.set(True)
+        return self
+
+    def __exit__(self, *exc):
+        _PASSIVE_INSPECTION.reset(self._token)
+        return False
+
+
 class db_conn:
     def __enter__(self):
         self.conn = get_conn()
+        if _PASSIVE_INSPECTION.get():
+            try:
+                self.conn.cursor().execute("SET TRANSACTION READ ONLY")
+            except Exception:
+                put_conn(self.conn)
+                raise
         return self.conn
     def __exit__(self, exc_type, *_):
         # try/finally: a commit/rollback failure must still return the

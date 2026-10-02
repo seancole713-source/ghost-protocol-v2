@@ -783,7 +783,11 @@ async def diagnostics(request: Request = None):
                     _ok("confidence.calibration", f"high {_hi_wr}% WR vs low {_lo_wr}% WR — calibrated")
 
         # ── 8. Price feeds ────────────────────────────────────────────────
-        _feeds = check_feeds()
+        # Passive inspection (read-only health audit) never probes providers:
+        # availability comes from circuit-breaker state instead.
+        from core.db import in_passive_inspection
+        from core.prices import passive_feed_status
+        _feeds = passive_feed_status() if in_passive_inspection() else check_feeds()
         _working = sum(1 for v in _feeds.values() if v is True)
         _total = sum(1 for v in _feeds.values() if isinstance(v, bool))
         if _working == 0:

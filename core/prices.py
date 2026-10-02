@@ -1249,3 +1249,31 @@ def check_feeds():
     r["summary"] = (f"{probe} priceable ({working}/4 feeds)" if priceable
                     else f"{probe} NOT priceable ({working}/4 feeds)")
     return r
+
+
+def passive_feed_status():
+    """Feed availability from in-memory circuit-breaker state only.
+
+    Never calls a provider and never advances breaker state (``status()`` is
+    read-only), so read-only inspection (the passive health audit) can still
+    flag "no live feed available" without probing. Same shape as
+    ``check_feeds()``; a feed counts as up unless its breaker is open.
+    """
+    from core.circuit_breaker import all_breaker_status
+
+    states = {
+        name: (status or {}).get("state")
+        for name, status in (all_breaker_status() or {}).items()
+    }
+    _al = states.get("alpaca") != "open"
+    _yf = states.get("yfinance") != "open"
+    _pg = states.get("polygon") != "open"
+    priceable = bool(_al or _yf)
+    working = sum(1 for v in (_al, _yf, _pg) if v)
+    return {
+        "alpaca_stock": _al, "yfinance": _yf, "polygon": _pg,
+        "priceable": priceable, "mode": "passive_breaker_state",
+        "summary": (f"breaker state: {working}/3 feeds not circuit-open (not probed)"
+                    if priceable else
+                    f"breaker state: NOT priceable, {working}/3 feeds not circuit-open (not probed)"),
+    }
