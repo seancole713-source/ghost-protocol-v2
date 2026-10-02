@@ -32,6 +32,12 @@ ANALYST_NO_CHANGE = "analyst_no_change"   # never in COMPANY_SPECIFIC
 # a reason to buy one (audit 2026-09-25 U14: "FDA rejects" tagged as a strong FDA catalyst).
 # Tightening only: it is neither a catalyst nor dilution. Never in COMPANY_SPECIFIC.
 REGULATORY_SETBACK = "regulatory_setback"
+# "Earnings" is not always an earnings RESULT. A preview or a date announcement says a report is
+# coming, not what it said; product news can merely contain the word: 2026-10 "Robinhood launches
+# earnings contracts on its prediction markets hub" was tagged an EARNINGS catalyst for HOOD.
+# Tightening only: neither is in COMPANY_SPECIFIC.
+EARNINGS_SCHEDULED = "earnings_scheduled"   # preview / date / call announcement
+PRODUCT_NEWS = "product_news"               # a product or feature that mentions earnings
 COMPANY_SPECIFIC = frozenset({EARNINGS, GUIDANCE, FDA, CONTRACT, MNA, INDEX, ANALYST})
 
 # A market wrap -- index moves and/or several stories joined by ";" -- is never one company's catalyst,
@@ -62,8 +68,12 @@ _RULES = [  # first match wins; dilution is checked first on purpose
     (OFFERING, r"\b(public offering|registered direct|direct offering|at-the-market|atm program|private placement|"
                r"priced .* offering|warrants?|equity financing|equity offering|share offering|pre-funded)\b"),
     (REVERSE_SPLIT, r"\breverse (stock |share )?split\b|\b1[- ]for[- ]\d+\b|\bshare consolidation\b"),
-    # Previews and filings are not results or decisions (rule E4 needs the event itself).
-    (OTHER, r"\bahead of (its |the |q[1-4] )?earnings\b|\bupcoming earnings\b|\bearnings (preview|scheduled|date)\b"),
+    # Previews, report dates and filings are not results or decisions (rule E4 needs the event itself).
+    (EARNINGS_SCHEDULED,
+     r"\bahead of (its |the |q[1-4] )?earnings\b|\bupcoming earnings\b|\bearnings (preview|scheduled|date)\b"
+     r"|\b(to (report|announce|release|post|host)|will (report|announce|release|post|host)|sets? (the )?date|"
+     r"date (of|for)|schedules?|scheduled)\b.{0,60}\b(earnings|results|conference call)\b"
+     r"|\bconference call to discuss\b|\bearnings (this|next) week\b|\bearnings\b.{0,40}\bwhat to expect\b"),
     (OTHER, r"\b(ind|investigational new drug)\b|\bfda submission\b"),
     (MNA, r"\b(to acquire|acquisition of|merger|to be acquired|takeover|buyout|definitive agreement)\b"),
     # Lifting a hold or resubmitting after a rejection is the regulatory event moving forward.
@@ -74,6 +84,13 @@ _RULES = [  # first match wins; dilution is checked first on purpose
      r"|\b(fail(s|ed)?|miss(es|ed)?|did not meet|does not meet|not meet)\b.{0,30}\bprimary (end ?point|goal)\b"
      r"|\b(panel|committee|adcom)\b.{0,30}\bvotes? against\b"),
     (FDA, r"\b(fda|pdufa|breakthrough therapy|phase (1|2|3|i|ii|iii)|(nda|bla|510\(k\)|ema|marketing) (approval|clearance))\b"),
+    # A product or feature named after earnings ("earnings contracts", "earnings prediction markets",
+    # "earnings calls feature") is not a report -- unless the headline also carries a result.
+    (PRODUCT_NEWS,
+     r"^(?!.*\b(beats?|miss(es|ed)?|tops|results|eps|revenue|profit|loss|quarterly)\b).*("
+     r"\bearnings[- ](calls?[- ]|event[- ])?(contracts?|prediction[- ]markets?|predictions?|markets?|bets?|"
+     r"wagers?|hub|features?|tools?|products?)\b"
+     r"|\bprediction[- ]markets?\b.{0,40}\bearnings\b)"),
     (EARNINGS, r"\b(earnings|quarterly results|q[1-4] results|eps|revenue (rose|grew|increased|beat))\b"
                r"|\bq[1-4]\b.{0,20}\b(beats?|miss(es)?|results?|revenue|sales)\b"
                r"|\breports? (slower|weaker|stronger|record) (growth|sales)\b"),

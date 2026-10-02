@@ -121,3 +121,45 @@ def test_non_dilutive_financing_alone_is_not_dilution():
     # as dilution (the operator kept warrant-in-contract headlines as dilution -- not loosened here).
     assert C.classify("Acme Secures $20 Million Non-Dilutive Financing") != C.OFFERING
     assert C.classify("Acme Announces Non-Dilutive Funding From BARDA Contract") == C.CONTRACT
+
+
+# 2026-10: the HOOD headline about Robinhood launching EARNINGS CONTRACTS in its prediction-market
+# product was tagged an earnings catalyst. "Earnings" in a headline can be a result, a preview /
+# report date, or just a product name; only a result is rule E4's earnings event.
+EARNINGS_PRODUCT_NEWS = [
+    "Robinhood launches earnings contracts on its prediction markets hub",
+    "Robinhood Launches Earnings Contracts in Prediction Markets",
+    "Robinhood adds earnings calls feature to app",
+    "Kalshi launches earnings prediction markets",
+    "Robinhood rolls out prediction markets on company earnings",
+]
+EARNINGS_SCHEDULE = [
+    "Robinhood to Report Q3 Earnings on Oct 29",
+    "Robinhood Announces Date of Third Quarter 2026 Financial Results",
+    "Acme to Host Conference Call to Discuss Second Quarter Results on August 5",
+    "HOOD Q3 earnings preview: what to expect",
+    "What Is Going On With BlackBerry Stock Ahead Of Earnings?",
+]
+EARNINGS_RESULTS = [
+    "Robinhood reports Q3 results, EPS tops estimates",
+    "Robinhood Q3 earnings beat as prediction markets revenue surges",
+    "Robinhood prediction markets revenue drives Q3 earnings beat",
+    "Robinhood Q3 EPS $0.61 vs $0.55 est",
+]
+
+
+@pytest.mark.parametrize("headline", EARNINGS_PRODUCT_NEWS)
+def test_product_news_that_mentions_earnings_is_not_an_earnings_result(headline):
+    kind = C.classify(headline)
+    assert kind == C.PRODUCT_NEWS and kind not in C.COMPANY_SPECIFIC
+
+
+@pytest.mark.parametrize("headline", EARNINGS_SCHEDULE)
+def test_an_earnings_preview_or_date_is_not_an_earnings_result(headline):
+    kind = C.classify(headline)
+    assert kind == C.EARNINGS_SCHEDULED and kind not in C.COMPANY_SPECIFIC
+
+
+@pytest.mark.parametrize("headline", EARNINGS_RESULTS)
+def test_an_earnings_result_is_still_earnings_even_beside_product_words(headline):
+    assert C.classify(headline) == C.EARNINGS
