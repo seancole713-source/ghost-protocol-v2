@@ -89,7 +89,7 @@ def test_register_and_load_roundtrip_uses_ghost_state_only(monkeypatch):
     monkeypatch.setattr(db, "db_conn", lambda: _Conn())
     monkeypatch.setattr(db, "ensure_ghost_state", lambda c=None: None)
 
-    payload = reg.register_universe(["good", "GOOD"], min_n=8, min_wilson_low=0.7, now_ts=42)
+    payload = reg.register_universe(["good", "GOOD"], min_n=8, min_wilson_low=0.7)
     assert payload["registered_at_ts"] == 42
     assert payload["symbols"] == ["GOOD"]
     joined = "\n".join(sql for sql, _ in writes)
@@ -159,7 +159,7 @@ def test_register_slices_roundtrip_uses_ghost_state_only(monkeypatch):
     out = reg.register_slices(
         [{"dims": ["symbol"], "key": {"symbol": "GOOD"}},
          {"dims": ["symbol"], "key": {"symbol": "GOOD"}}],
-        min_n=8, min_wilson_low=0.7, now_ts=42,
+        min_n=8, min_wilson_low=0.7,
     )
     assert out["mode"] == "slices"
     assert out["slices"] == [{"dims": ["symbol"], "key": {"symbol": "GOOD"}}]
@@ -206,6 +206,8 @@ def test_register_slices_preserves_selection_evidence_for_audit(monkeypatch):
     writes = []
 
     class _Cur:
+        rowcount = 1  # first registration: the INSERT lands
+
         def execute(self, sql, params=None):
             writes.append((sql, params))
         def fetchone(self): return None
@@ -230,7 +232,8 @@ def test_register_slices_preserves_selection_evidence_for_audit(monkeypatch):
         "multiple_comparisons_correction": "sidak",
         "rows": ["must_not_be_persisted"],
     }
-    payload = reg.register_slices([selected], min_n=8, min_wilson_low=0.7, now_ts=42, cur=_Cur())
+    monkeypatch.setattr(reg, "_server_now", lambda: 42)
+    payload = reg.register_slices([selected], min_n=8, min_wilson_low=0.7, cur=_Cur())
     ev = payload["slices"][0]["selection_evidence"]
     assert ev["n"] == 60
     assert ev["wins"] == 52

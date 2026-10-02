@@ -310,3 +310,56 @@ def test_a_symbol_still_truncated_is_left_out_and_retried_next_tick_never_cached
     assert g2.requests == [["AAA", "BBB"]] and store.get("edge_rvol", f"{DAY.isoformat()}|BBB")["sessions"] == 10
     I._history(g2, store, ["AAA", "BBB"], DAY, feed="sip")
     assert len(g2.requests) == 1                                    # complete now: cached for the day
+
+
+# ------------------------------------ Task #64: one 429 must not drop the tick --
+
+class _R429:
+    status_code = 429
+    headers = {}
+
+    def json(self):
+        return {"message": "too many requests"}
+
+    def raise_for_status(self):
+        raise RuntimeError("429 Client Error: Too Many Requests")
+
+
+class Throttled(Market):
+    """The radar's 1-minute bars call answers 429 `times` times, then the normal market."""
+
+    def __init__(self, now, times):
+        super().__init__(now)
+        self.left = times
+
+    def __call__(self, url, params=None, headers=None, timeout=None):
+        p = params or {}
+        if url.endswith("/v2/stocks/bars") and p.get("timeframe") == "1Min" \
+                and str(p.get("start", "")).startswith(DAY.isoformat()) and self.left > 0:
+            self.left -= 1
+            return _R429()
+        return super().__call__(url, params=params, headers=headers, timeout=timeout)
+
+
+def test_one_429_on_the_radar_bars_is_retried_and_the_tick_completes(ledger, monkeypatch):
+    from edge.providers import alpaca as A
+    waits = []
+    monkeypatch.setattr(A, "_sleep", waits.append)
+    out = I.tick(Throttled(ts(10, 40), times=1), ledger, now=ts(10, 40))
+    assert out["status"] in ("issued", "watched") and out["movers"] == 4
+    assert waits == [1.0]
+    beat = ledger.store.get(I.TICK_TABLE, DAY.isoformat())
+    assert beat["status"] == out["status"] and beat["last_ok_at"] == ts(10, 40)
+    assert beat["source_errors"] == {}
+
+
+def test_a_persistent_429_is_a_named_source_error_not_no_data(ledger, monkeypatch):
+    from edge.providers import alpaca as A
+    monkeypatch.setattr(A, "_sleep", lambda s: None)
+    with pytest.raises(A.RateLimited):
+        I.tick(Throttled(ts(10, 40), times=99), ledger, now=ts(10, 40))
+    beat = ledger.store.get(I.TICK_TABLE, DAY.isoformat())
+    assert beat["status"] == "error" and beat["errors"] == 1 and beat["last_ok_at"] is None
+    assert beat["source_errors"]["alpaca"]["kind"] == "rate_limited"
+    assert beat["source_errors"]["alpaca"]["path"] == "/v2/stocks/bars"
+    assert "RateLimited" in beat["error"] and "no_movers" not in beat["error"]

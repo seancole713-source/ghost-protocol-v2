@@ -284,12 +284,53 @@ def _save(store, item: R.RadarItem) -> None:
 ISSUE_UNTIL = (14, 30)      # the radar's issuance window ends here; a later forecast is refused
 
 
+TICK_TABLE = "edge_intraday_tick"    # one row per session: the radar's last tick, for readiness
+
+
+def _beat(store, ds: str, now: int, **fields) -> None:
+    """Record this tick's outcome for the session (read by core.pipeline_readiness)."""
+    try:
+        prev = store.get(TICK_TABLE, ds) or {}
+        row = {"day": ds, "last_tick_at": now, "ticks": int(prev.get("ticks") or 0) + 1,
+               "last_ok_at": prev.get("last_ok_at"), "errors": int(prev.get("errors") or 0), **fields}
+        if fields.get("status") == "error":
+            row["errors"] += 1
+        else:
+            row["last_ok_at"] = now
+        store.put(TICK_TABLE, ds, row)
+    except Exception:  # noqa: BLE001 - bookkeeping must never fail the tick
+        A.LOG.warning("intraday tick heartbeat not recorded", exc_info=False)
+
+
 def tick(get, ledger: Ledger, *, now: int, top: int = 50, http=None,
          clock: Optional[Callable[[], float]] = None) -> Dict[str, Any]:
     """One radar pass. `now` is when the tick started -- the data cutoff its fetches answer for.
     `clock` is the trusted wall clock, read again at each issuance: a forecast is issued and
     recorded at the time it actually is, after every slow fetch, and refused (late_refused) when
-    that is past the issuance window. Without a clock (tests, replays) the tick time is used."""
+    that is past the issuance window. Without a clock (tests, replays) the tick time is used.
+
+    Every in-window tick leaves a heartbeat row (TICK_TABLE). A persistent Alpaca 429 (after
+    the provider's bounded retries) is recorded as a NAMED source error -- rate_limited, which
+    endpoint -- never as "no data", and still raises so the pipeline reports the failed step."""
+    ds = datetime.fromtimestamp(now, tz=ET).date().isoformat()
+    try:
+        out = _tick(get, ledger, now=now, top=top, http=http, clock=clock)
+    except A.RateLimited as exc:
+        _beat(ledger.store, ds, now, status="error", error=redact_exc(exc, 200),
+              source_errors={"alpaca": {"kind": "rate_limited", "path": exc.path,
+                                        "attempts": exc.attempts, "waited_s": round(exc.waited_s, 1)}})
+        raise
+    except Exception as exc:
+        _beat(ledger.store, ds, now, status="error", error=redact_exc(exc, 200))
+        raise
+    if out.get("status") != "outside_intraday_window":
+        _beat(ledger.store, ds, now, status=out.get("status"), error=None,
+              movers=out.get("movers"), source_errors={})
+    return out
+
+
+def _tick(get, ledger: Ledger, *, now: int, top: int = 50, http=None,
+          clock: Optional[Callable[[], float]] = None) -> Dict[str, Any]:
     clock = clock or (lambda: now)
     day = datetime.fromtimestamp(now, tz=ET).date()
     ds = day.isoformat()

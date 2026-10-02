@@ -235,3 +235,64 @@ def test_the_probe_runs_once_a_day_and_never_during_the_session():
     assert PR.due(at(24, 16, 30), at(23, 17, 0)) is True    # after the close, new day
     assert PR.due(at(24, 20, 0), at(24, 17, 0)) is False    # already ran today
     assert PR.due(at(26, 12, 0), at(25, 17, 0)) is True     # Saturday midday is fine
+
+
+# ------------------------------------------- Alpaca 429: bounded retry (Task #64) --
+
+class _Hdr(Resp):
+    def __init__(self, code=200, payload=None, headers=None):
+        super().__init__(code, payload)
+        self.headers = headers or {}
+
+
+def _seq(*resps):
+    calls = []
+
+    def get(url, params=None, headers=None, timeout=None):
+        calls.append(url)
+        return resps[min(len(calls) - 1, len(resps) - 1)]
+    return get, calls
+
+
+def test_alpaca_bars_survive_one_429_honoring_retry_after(monkeypatch):
+    waits = []
+    monkeypatch.setattr(alpaca, "_sleep", waits.append)
+    get, calls = _seq(_Hdr(429, {"message": "too many requests"}, {"Retry-After": "2"}),
+                      _Hdr(200, {"bars": {"AAA": [{"t": "x", "c": 1}]}}))
+    out = alpaca.bars_multi(get, ["AAA"], timeframe="1Min", start="2026-10-02T09:30:00-04:00", feed="iex")
+    assert out == {"AAA": [{"t": "x", "c": 1}]}
+    assert waits == [2.0] and len(calls) == 2
+
+
+def test_alpaca_429_without_retry_after_backs_off_then_succeeds(monkeypatch):
+    waits = []
+    monkeypatch.setattr(alpaca, "_sleep", waits.append)
+    get, calls = _seq(_Hdr(429, {}), _Hdr(429, {}), _Hdr(200, {"bars": {}}))
+    assert alpaca.bars_multi(get, ["AAA"], timeframe="1Min", start="s", feed="iex") == {"AAA": []}
+    assert waits == [1.0, 3.0] and len(calls) == 3
+
+
+def test_alpaca_persistent_429_is_a_named_rate_limit_error_with_bounded_wait(monkeypatch):
+    waits = []
+    monkeypatch.setattr(alpaca, "_sleep", waits.append)
+    get, calls = _seq(_Hdr(429, {}, {"Retry-After": "30"}))
+    with pytest.raises(alpaca.RateLimited) as ei:
+        alpaca.bars_multi(get, ["AAA"] * 14, timeframe="1Min", start="s", feed="iex")
+    assert sum(waits) <= alpaca.RETRY_429_BUDGET_S          # Retry-After 30 is capped by the budget
+    assert len(calls) <= alpaca.RETRY_429_MAX + 1
+    assert ei.value.path == "/v2/stocks/bars"
+    assert "rate limited (429)" in str(ei.value) and "/v2/stocks/bars" in str(ei.value)
+    waits.clear()
+    get, calls = _seq(_Hdr(429, {}))
+    with pytest.raises(alpaca.RateLimited) as ei:
+        alpaca.movers(get)
+    assert len(calls) == 3 and waits == [1.0, 3.0] and ei.value.attempts == 3
+
+
+def test_alpaca_non_429_errors_are_not_retried(monkeypatch):
+    waits = []
+    monkeypatch.setattr(alpaca, "_sleep", waits.append)
+    get, calls = _seq(_Hdr(500, {}))
+    with pytest.raises(RuntimeError):
+        alpaca.bars_multi(get, ["AAA"], timeframe="1Min", start="s", feed="iex")
+    assert waits == [] and len(calls) == 1

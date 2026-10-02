@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from edge import fills as F
-from edge.broker_alpaca import bracket_request
+from edge.broker_alpaca import bracket_request, oco_exit_request
 from edge.contracts import ET, TERMINAL, Forecast
 from edge.ledger import Ledger
 from shared.redaction import redact_exc
@@ -62,10 +62,6 @@ def _forecasts(ledger: Ledger, day: str, experiments) -> List[Forecast]:
         for row in ledger.store.scan("forecasts", experiment_id=spec.experiment_id, session_date=day):
             out.append(Forecast(**{k: row[k] for k in Forecast.__dataclass_fields__}))
     return out
-
-
-_OPEN = {"new", "accepted", "pending_new", "accepted_for_bidding", "held", "partially_filled",
-         "pending_replace", "calculated"}
 
 
 def _by_client_id(http, cid: str) -> Optional[dict]:
@@ -137,32 +133,279 @@ def _delete(http, order_id: str) -> bool:
     return r.status_code in (200, 204) or r.status_code == 404
 
 
+# Final order states: filled_qty can no longer change. Everything else -- pending_cancel, held,
+# done_for_day, an unknown status -- is still in flight. A 2xx to a cancel is the broker taking
+# the REQUEST, not a cancellation: an order is only ever judged final from a fresh read of it.
+_FINAL = frozenset({"filled", "canceled", "expired", "rejected"})
+PROTECT_GRACE = 300        # seconds past the entry deadline an unresolved entry may go before it is an alarm
+MAX_TRIES = 3              # protective-exit / flatten posts per forecast before only the alarm remains
+
+
+def _final(o: Optional[dict]) -> bool:
+    return str((o or {}).get("status") or "") in _FINAL
+
+
+def _num(o: Optional[dict], k: str) -> Optional[int]:
+    try:
+        return int(float((o or {}).get(k) or 0))
+    except (TypeError, ValueError):
+        return None
+
+
+def _filled(o: Optional[dict]) -> int:
+    return _num(o, "filled_qty") or 0
+
+
+def _legs_of(http, o: dict, *, needed: bool, order_id: Optional[str] = None) -> Tuple[List[dict], bool]:
+    """(legs, readable) of a bracket / OCO parent, from the nested answer or GET /v2/orders/{id}.
+    Legs that cannot be read are fatal only when `needed` (they could have sold shares)."""
+    legs = o.get("legs")
+    if legs:
+        return [g for g in legs if isinstance(g, dict)], True
+    full = _order_by_id(http, o.get("id") or order_id)
+    if full is not None:
+        return [g for g in full.get("legs") or [] if isinstance(g, dict)], True
+    return [], not needed
+
+
+def _snapshot(http, f: Forecast, rec: dict) -> Tuple[Optional[dict], str]:
+    """FRESH broker reads of every order through which this forecast holds or sells shares: its
+    entry, the bracket legs, any protective OCO (-px...) with its leg, any flatten (-pf...).
+    (None, why) when any of them cannot be read -- 'cannot tell' is never 'nothing there'.
+    bought/sold are the broker's cumulative filled quantities on those reads."""
+    entry, definite = _lookup(http, f"{f.forecast_id}-entry")
+    if entry is None:
+        return None, ("the broker has no record of its entry order" if definite
+                      else "the broker could not report its entry order")
+    # The entry's legs can only have sold shares once the entry bought some.
+    legs, ok = _legs_of(http, entry, needed=_filled(entry) > 0, order_id=rec.get("order_id"))
+    if not ok:
+        return None, "its bracket legs could not be read"
+    protect, flatten = [], []
+    for field, out in (("protect_ids", protect), ("flatten_ids", flatten)):
+        for cid in rec.get(field) or []:
+            o, definite = _lookup(http, cid)
+            if o is None:
+                if not definite:
+                    return None, f"its exit order {cid} could not be read"
+                continue                    # definitely never placed (a post that did not land)
+            out.append(o)
+            if field == "protect_ids":
+                sub, ok = _legs_of(http, o, needed=o.get("status") != "rejected")
+                if not ok:
+                    return None, f"the legs of its protective order {cid} could not be read"
+                out.extend(sub)
+    exits = legs + protect + flatten
+    if any(_num(o, "filled_qty") is None for o in [entry] + exits):
+        return None, "the broker reported a fill quantity that cannot be read"
+    return {"entry": entry, "legs": legs, "protect": protect, "flatten": flatten, "exits": exits,
+            "owned": [entry] + exits, "bought": _filled(entry), "sold": sum(_filled(o) for o in exits)}, ""
+
+
+def _cancel_all(http, orders: List[dict]) -> List[str]:
+    """Ask the broker to cancel every order still working (pending_cancel is already asked).
+    Returns the ids whose cancel request was refused or failed; the caller re-reads either way."""
+    refused = []
+    for o in orders:
+        if _final(o) or o.get("status") == "pending_cancel":
+            continue
+        if not o.get("id") or not _delete(http, o["id"]):
+            refused.append(str(o.get("id")))
+    return refused
+
+
+def _remaining(o: dict) -> int:
+    return (_num(o, "qty") or 0) - _filled(o)
+
+
+def _legs_protect(legs: List[dict], qty: int) -> bool:
+    """Do the bracket's OWN legs protect `qty` shares? Only once activated: until the entry is
+    FULLY filled every leg waits 'held'. A live stop leg sized to exactly what is owned."""
+    live = [g for g in legs if not _final(g) and g.get("status") != "pending_cancel"]
+    if qty <= 0 or not live or all(g.get("status") == "held" for g in live):
+        return False
+    return any("stop" in str(g.get("type") or "") for g in live) and all(_remaining(g) == qty for g in live)
+
+
+def _post(http, body: dict) -> Tuple[Optional[int], bool]:
+    """(HTTP status, accepted). None status = no answer (timeout): the caller looks the id up."""
+    try:
+        r = http.post(f"{base_url()}/v2/orders", json=body, headers=_headers(), timeout=15)
+    except Exception:  # noqa: BLE001
+        return None, False
+    return r.status_code, 200 <= r.status_code < 300
+
+
+def _protect_entry(http, f: Forecast, rec: dict, now: Optional[int], save, note: dict) -> Tuple[str, str]:
+    """One tick of the entry-deadline step for one forecast (F01). Returns (kind, message), kind:
+    done | canceled (entry final; nothing owned or every owned share protected or flat),
+    protected (a protective order confirmed working), pending (in flight, re-checked next tick),
+    error (retry next tick), alarm (shares owned with NO confirmed protection). note["canceled"]
+    is set when this tick's cancel is what ended the entry."""
+    snap, why = _snapshot(http, f, rec)
+    if snap is None:
+        return "error", f"{f.symbol}: {why}, retrying"
+    entry, canceled_now = snap["entry"], False
+    if not _final(entry):
+        # Cancel the unfilled REMAINDER whether or not part of it has filled: Alpaca activates the
+        # bracket legs only once the entry is FULLY filled, so a partly filled entry left working
+        # holds shares with no stop, and its remainder can keep filling past the rule's window.
+        asked = entry.get("status") == "pending_cancel"
+        ok = asked or bool(entry.get("id")) and _delete(http, entry["id"])
+        c = dict(rec.get("entry_cancel") or {})
+        rec = save(entry_cancel={"requested_at": c.get("requested_at") or now,
+                                 "tries": int(c.get("tries") or 0) + (0 if asked else 1)})
+        snap, why = _snapshot(http, f, rec)                    # fresh: a fill during the cancel counts
+        if snap is None:
+            return "error", f"{f.symbol}: {why}, retrying"
+        entry = snap["entry"]
+        if not _final(entry):
+            return ("pending" if ok else "error"), (
+                f"{f.symbol}: entry cancel {'pending' if ok else 'refused'} ({entry.get('status')}, "
+                f"{_filled(entry)} filled), re-checked next tick")
+        canceled_now = note["canceled"] = entry.get("status") == "canceled"
+    bought = snap["bought"]
+    if bought == 0 or entry.get("status") == "filled":
+        # Nothing owned, or a FULL fill: the bracket's own legs are live and protect it to 15:30.
+        save(entry_cancel_checked=True, protection="none" if bought == 0 else "bracket")
+        return ("canceled" if canceled_now else "done"), ""
+    # A PARTIAL fill. Its bracket legs never activate, and left alone they could later sell the
+    # full requested size: they are cancelled, and a protective exit for exactly the shares owned
+    # (an OCO at the forecast's target and stop) takes their place; failing that, it is flattened.
+    owned = bought - snap["sold"]
+    if _legs_protect(snap["legs"], owned):
+        save(entry_cancel_checked=True, protection="bracket", protect_qty=owned)
+        return "protected", f"{f.symbol}: {owned} shares protected by the bracket legs"
+    live_legs = [g for g in snap["legs"] if not _final(g)]
+    if live_legs:
+        refused = _cancel_all(http, live_legs)
+        snap, why = _snapshot(http, f, rec)
+        if snap is None:
+            return "error", f"{f.symbol}: {why}, retrying"
+        still = [g for g in snap["legs"] if not _final(g)]
+        if still:
+            return ("error" if refused else "pending"), (
+                f"{f.symbol}: bracket leg cancel {'refused' if refused else 'pending'} "
+                f"({', '.join(str(g.get('status')) for g in still)}), re-checked next tick")
+        owned = bought - snap["sold"]
+    live_prot = [o for o in snap["protect"] if not _final(o)]
+    live_flat = [o for o in snap["flatten"] if not _final(o)]
+    if owned < 0:
+        return "alarm", f"{f.symbol}: its exits sold {-owned} shares more than its entry bought -- check it by hand"
+    if owned == 0 and not live_prot and not live_flat:
+        save(entry_cancel_checked=True, protection="flat")
+        return "done", ""
+    if live_flat:
+        return "pending", f"{f.symbol}: flatten of {owned} shares working, re-checked next tick"
+    parents = [o for o in live_prot if str(o.get("client_order_id") or "").startswith(f"{f.forecast_id}-px")]
+    if any(_remaining(o) == owned and o.get("status") != "pending_cancel" for o in parents):
+        save(entry_cancel_checked=True, protection="oco", protect_qty=owned)
+        return "protected", f"{f.symbol}: {owned} shares protected by its OCO exit"
+    if live_prot:
+        # Working but not sized to what is owned (or already being cancelled): replace it.
+        _cancel_all(http, live_prot)
+        return "pending", f"{f.symbol}: protective order does not match the {owned} shares owned; replacing"
+    tried = list(rec.get("protect_ids") or [])
+    # An earlier protective exit the broker refused outright, or that ended without covering the shares.
+    failed = bool(rec.get("protect_refused")) or any(_final(o) for o in snap["protect"])
+    if not failed and len(tried) < MAX_TRIES:
+        cid = f"{f.forecast_id}-px" + (str(len(tried) + 1) if tried else "")
+        rec = save(protect_ids=tried + [cid], protect_qty=owned)  # recorded BEFORE the post
+        code, accepted = _post(http, oco_exit_request(cid, f.symbol, owned, target=f.target, stop=f.stop))
+        if accepted or _transient(code):
+            o, _ = _lookup(http, cid)                          # confirm from the broker's own record
+            if o is not None and not _final(o) and _remaining(o) == owned:
+                save(entry_cancel_checked=True, protection="oco")
+                return "protected", f"{f.symbol}: {owned} shares protected by its OCO exit"
+            if o is None or not _final(o):
+                return "pending", f"{f.symbol}: protective exit for {owned} shares not yet confirmed, re-checked next tick"
+        else:
+            rec = save(protect_refused=code)                   # a definite refusal is not retried
+        # definitely refused, or the broker shows it rejected: flatten below
+    return _flatten(http, f, rec, owned, save)
+
+
+def _flatten(http, f: Forecast, rec: dict, owned: int, save) -> Tuple[str, str]:
+    """Protection could not be placed: sell exactly the shares owned at market (-pf, -pf2 ...)."""
+    tried = list(rec.get("flatten_ids") or [])
+    if len(tried) >= MAX_TRIES:
+        return "alarm", (f"{f.symbol}: {owned} shares owned with NO stop after the entry deadline "
+                         f"(protective exit failed, {len(tried)} flatten attempts failed) -- close it by hand")
+    cid = f"{f.forecast_id}-pf" + (str(len(tried) + 1) if tried else "")
+    save(flatten_ids=tried + [cid])                            # recorded BEFORE the post
+    code, accepted = _post(http, {"symbol": f.symbol, "qty": str(owned), "side": "sell", "type": "market",
+                                  "time_in_force": "day", "client_order_id": cid})
+    o, _ = _lookup(http, cid) if (accepted or _transient(code)) else (None, True)
+    if o is not None and _filled(o) >= owned:
+        save(entry_cancel_checked=True, protection="flattened")
+        return "done", f"{f.symbol}: protective exit failed; {owned} shares flattened"
+    if o is None and not (accepted or _transient(code)):
+        return "alarm", (f"{f.symbol}: {owned} shares owned with NO stop after the entry deadline "
+                         "(protective exit and flatten both refused) -- close it by hand")
+    return "alarm", (f"{f.symbol}: protective exit failed; flatten of {owned} shares placed, "
+                     f"{_filled(o)} confirmed filled ({(o or {}).get('status') or 'no order record'}) "
+                     "-- not confirmed flat")
+
+
 def cancel_unfilled_entries(http, ledger: Ledger, *, day: str, experiments,
                             now: Optional[int] = None) -> Dict[str, Any]:
-    """At each forecast's OWN entry expiry (10:30 ET for the morning card, issuance
-    + 20 min intraday), an entry that has not filled is cancelled with its legs. Only
-    THIS forecast's order is touched; a failed cancel is retried next tick. A partly
-    filled entry is left alone: its legs protect the filled shares until the time exit."""
-    done, touched, errors = [], False, []
+    """At each forecast's OWN entry expiry (10:30 ET for the morning card, issuance + 20 min
+    intraday), the entry's unfilled remainder is cancelled -- filled or not -- and only THIS
+    forecast's orders are touched.
+
+    F01 (a partly filled entry used to be left working, permanently marked checked, with its
+    filled shares unprotected because Alpaca activates bracket legs only on a FULL fill):
+      * the cancel is a request: the entry is re-read until the broker shows it final (canceled /
+        filled / expired / rejected); entry_cancel_checked is set only after that and after every
+        owned share is protected or flat;
+      * a partial fill gets a protective OCO (target + stop) for exactly the filled quantity, read
+        back from the broker; if that is refused it is flattened (-pf); if neither can be confirmed
+        it is returned under "unprotected" (a PROBLEM alert) and checked again next tick;
+      * an entry still unresolved PROTECT_GRACE seconds past its deadline is an alarm too.
+    Every step is stored in the edge_paper record (ids recorded before each post), so a re-run tick
+    or a restart picks up where the last one stopped and never doubles an order."""
+    done, touched, errors, pending, protected, unprotected = [], False, [], [], [], []
     for f in _forecasts(ledger, day, experiments):
-        rec = ledger.store.get("edge_paper", f"{f.forecast_id}|paper")
+        key = f"{f.forecast_id}|paper"
+        rec = ledger.store.get("edge_paper", key)
         if not rec or rec.get("state") != "submitted" or rec.get("entry_cancel_checked"):
             continue
         if now is not None and now < f.entry_expiry:
             continue
-        o = _by_client_id(http, f"{f.forecast_id}-entry")
-        if o is None:
-            errors.append(f"{f.symbol}: broker has no record yet")
-            continue
-        if o.get("status") in _OPEN and float(o.get("filled_qty") or 0) == 0:
-            if not _delete(http, o["id"]):
-                errors.append(f"{f.symbol}: cancel failed, retrying")
-                continue
+        box = {"rec": rec}
+
+        def save(_box=box, _key=key, **kv) -> dict:
+            _box["rec"] = {**_box["rec"], **kv}
+            ledger.store.put("edge_paper", _key, _box["rec"])
+            return _box["rec"]
+
+        note = {"canceled": False}
+        kind, msg = _protect_entry(http, f, rec, now, save, note)
+        if note["canceled"]:
             done.append(f.symbol)
-        ledger.store.put("edge_paper", f"{f.forecast_id}|paper", {**rec, "entry_cancel_checked": True})
-        touched = True
-    return {"status": "entries_checked" if touched else ("error" if errors else "nothing"),
-            "canceled": done, "errors": errors}
+        overdue = now is not None and now - f.entry_expiry >= PROTECT_GRACE
+        if kind in ("pending", "error") and overdue:
+            kind, msg = "alarm", (f"{msg} -- still unresolved {(now - f.entry_expiry) // 60} min after its entry "
+                                  "deadline; any filled shares may have no stop")
+        if kind == "alarm":
+            msg = f"{msg} ({f.experiment_id})"
+            unprotected.append(msg)
+            save(protect_alarm=msg, protect_alarm_at=now)
+        elif kind == "error":
+            errors.append(msg)
+        elif kind == "pending":
+            pending.append(msg)
+        else:
+            touched = True
+            if kind == "protected":
+                protected.append(msg)
+    status = "error" if unprotected else ("entries_checked" if touched else
+                                          "error" if errors else "pending" if pending else "nothing")
+    out = {"status": status, "canceled": done, "errors": errors, "pending": pending,
+           "protected": protected, "unprotected": unprotected}
+    if unprotected:
+        out["error"] = "UNPROTECTED after the entry deadline: " + "; ".join(unprotected)
+    return out
 
 
 TX_LAST_TRY = (15, 50)     # the time-exit window's last 5-minute tick (the window is 15:30-15:55 ET)
@@ -177,8 +420,12 @@ def _lookup(http, cid: str) -> Tuple[Optional[dict], bool]:
     except Exception:  # noqa: BLE001
         return None, False
     if r.status_code == 200:
-        body = r.json()
-        return (body if isinstance(body, dict) and body else None), True
+        try:
+            body = r.json()
+        except Exception:  # noqa: BLE001
+            body = None
+        # A 200 that is not an order is an answer we cannot read, never "no such order".
+        return (body, True) if isinstance(body, dict) and body else (None, False)
     return None, r.status_code == 404
 
 
@@ -193,7 +440,10 @@ def _order_by_id(http, order_id: Optional[str]) -> Optional[dict]:
         return None
     if r.status_code != 200:
         return None
-    body = r.json()
+    try:
+        body = r.json()
+    except Exception:  # noqa: BLE001
+        return None
     return body if isinstance(body, dict) else None
 
 
@@ -253,7 +503,13 @@ def time_exit(http, ledger: Ledger, *, day: str, experiments, now: Optional[int]
         NOT FLAT error is recorded and returned under "not_flat".
       * (EDGE-04) an ACCEPTED position close is not a filled one: its order is read back by id and
         only its filled_qty counts; a close still working, partly filled or unreadable keeps the
-        forecast in flight (never time_exit_done) and raises NOT FLAT on the last tick."""
+        forecast in flight (never time_exit_done) and raises NOT FLAT on the last tick.
+      * (F02) the shares owned are counted only from FRESH broker reads taken AFTER the cancels,
+        once the entry and every exit it owns (bracket legs, protective OCO, flatten) is final:
+        a fill that lands while the cancel is in flight is counted, never lost. An order still
+        working (pending_cancel, a refused cancel, an unknown status) or unreadable keeps the
+        forecast in flight, retried next tick, NOT FLAT on the last tick. A 2xx to a cancel is
+        the broker taking the request, not proof the order is gone."""
     closed, touched, errors, not_flat = [], False, [], []
     last = now is not None and now >= _et_at(day, *TX_LAST_TRY)
 
@@ -267,30 +523,44 @@ def time_exit(http, ledger: Ledger, *, day: str, experiments, now: Optional[int]
         rec = ledger.store.get("edge_paper", key)
         if not rec or rec.get("state") != "submitted" or rec.get("time_exit_done"):
             continue
-        entry = _by_client_id(http, f"{f.forecast_id}-entry")
-        if entry is None:
-            errors.append(f"{f.symbol}: broker has no record yet")
+        snap, why = _snapshot(http, f, rec)
+        if snap is None:
+            errors.append(f"{f.symbol}: {why}, retrying")
             if last:
-                alarm(f, key, rec, "the broker gave no record of its entry order; cannot confirm it is flat")
+                alarm(f, key, rec, f"{why}; cannot confirm it is flat")
             continue
-        legs = entry.get("legs") or []
-        if not legs:
-            legs = (_order_by_id(http, entry.get("id") or rec.get("order_id")) or {}).get("legs") or []
-        pending = [o for o in [entry] + legs if o.get("status") in _OPEN]
-        if not all(_delete(http, o["id"]) for o in pending):
-            errors.append(f"{f.symbol}: cancel failed, retrying")
-            if last:
-                alarm(f, key, rec, "its bracket orders could not be cancelled; the position was not closed")
-            continue
-        bought = int(float(entry.get("filled_qty") or 0))
-        sold = sum(int(float(leg.get("filled_qty") or 0)) for leg in legs)
+        working = [o for o in snap["owned"] if not _final(o)]
+        if working:
+            refused = _cancel_all(http, working)
+            snap, why = _snapshot(http, f, rec)       # fresh reads AFTER the cancels (F02)
+            if snap is None:
+                errors.append(f"{f.symbol}: {why} after cancelling, retrying")
+                if last:
+                    alarm(f, key, rec, f"{why} after its orders were cancelled; cannot confirm it is flat")
+                continue
+            still = [o for o in snap["owned"] if not _final(o)]
+            if still:
+                held = f"{snap['bought'] - snap['sold']} shares owned so far"
+                if set(refused) & {str(o.get("id")) for o in still}:
+                    errors.append(f"{f.symbol}: cancel failed, retrying")
+                    if last:
+                        alarm(f, key, rec, f"its bracket orders could not be cancelled ({held}); "
+                                           "the position was not closed")
+                else:
+                    states = ", ".join(f"{o.get('id')} {o.get('status') or 'unknown'}" for o in still)
+                    errors.append(f"{f.symbol}: cancel pending ({states}), retrying next tick")
+                    if last:
+                        alarm(f, key, rec, f"its orders are still working after the cancel ({states}; {held}); "
+                                           "cannot confirm it is flat")
+                continue
+        bought, sold = snap["bought"], snap["sold"]
         tried = list(rec.get("tx_ids") or [])
         filled_tx, working, unsure = 0, False, False
         for cid in tried or [f"{f.forecast_id}-tx"]:
             o, definite = _lookup(http, cid)
             if o is not None:
                 filled_tx += int(float(o.get("filled_qty") or 0))
-                working = working or o.get("status") in _OPEN
+                working = working or not _final(o)          # pending_cancel / unknown: still in flight
                 if cid not in tried:
                     tried.append(cid)          # an -tx placed before attempts were recorded
             elif not definite and cid in tried:
@@ -303,14 +573,20 @@ def time_exit(http, ledger: Ledger, *, day: str, experiments, now: Optional[int]
                 unsure = True
                 continue
             filled_tx += int(float(o.get("filled_qty") or 0))
-            working = working or o.get("status") in _OPEN
+            working = working or not _final(o)
         if unsure:
             errors.append(f"{f.symbol}: broker could not report its exit orders, retrying")
             if last:
                 alarm(f, key, rec, "its exit orders could not be read; cannot confirm it is flat")
             continue
         remaining = bought - sold - filled_tx
-        if remaining <= 0 and not working:
+        if remaining < 0 and not working:
+            # Reconciled exposure must be ZERO to be done: more sold than bought is a short.
+            errors.append(f"{f.symbol}: its exits sold {-remaining} more shares than its entry bought")
+            alarm(f, key, rec, f"its exits sold {-remaining} more shares than its entry bought "
+                               "(a short position) -- check it by hand")
+            continue
+        if remaining == 0 and not working:
             ledger.store.put("edge_paper", key, {**rec, "tx_ids": tried, "time_exit_done": True})
             touched = True
             continue
@@ -377,6 +653,12 @@ def _is_time_exit(cid: str, forecast_id: str) -> bool:
     return cid == head or (cid.startswith(head) and cid[len(head):].isdigit())
 
 
+def _is_ours(cid: str, forecast_id: str, tag: str) -> bool:
+    """OUR numbered ids: <forecast_id>-<tag>, then -<tag>2, -<tag>3 ... for each retried attempt."""
+    head = f"{forecast_id}-{tag}"
+    return cid == head or (cid.startswith(head) and cid[len(head):].isdigit())
+
+
 def _close_ids(rec: Optional[dict]) -> set:
     """Broker order ids of the last-tick position closes (Alpaca names those orders itself)."""
     return {str(x["order_id"]) for x in (rec or {}).get("tx_closes") or [] if x.get("order_id")}
@@ -409,6 +691,13 @@ def _events_from_orders(orders: List[dict], forecast_id: str, close_ids=frozense
             for leg in o.get("legs") or []:
                 role = F.TARGET if leg.get("type") == "limit" else F.STOP
                 add(leg, role)
+        elif _is_ours(cid, forecast_id, "px"):
+            # The protective OCO for a partly filled entry: its parent is the take-profit limit,
+            # its leg the stop -- the same roles as the bracket legs it replaces.
+            for leg in [o] + list(o.get("legs") or []):
+                add(leg, F.TARGET if leg.get("type") == "limit" else F.STOP)
+        elif _is_ours(cid, forecast_id, "pf"):
+            add(o, F.MANUAL)            # a flatten when protection failed: judged by where it closed
         elif _is_time_exit(cid, forecast_id) or str(o.get("id")) in close_ids:
             add(o, F.TIME_EXIT_ROLE)
     return ev

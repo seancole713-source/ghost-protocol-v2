@@ -65,3 +65,21 @@ test("Today: degraded coverage is not a clean No, and the three lanes stay separ
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
   expect(overflow).toBeLessThanOrEqual(0);
 });
+
+test("Today: unusual-volume alerts read as unvalidated activity, never a confirmed squeeze", async ({ page }) => {
+  const nowSec = Math.floor(Date.now() / 1000);
+  await page.route("**/api/squeeze/picks", route => route.fulfill({json:{
+    ok: true, enabled: true, radar_active: true, scan_ok: true, snapshot_stale: false,
+    last_scan_ts: nowSec - 30, symbols: 105, fetch_ok: 100,
+    scanned_symbols: 105, usable_symbols: 100, coverage_degraded: false,
+    picks: [{ symbol: "ABCD", kind: "squeeze_active", price: 4.2 }],
+  }}));
+  await page.route("**/api/picks?limit=5", route => route.fulfill({json:{
+    ok: true, core_engine_mode: "research", active: [],
+  }}));
+  await page.goto("/picks");
+  const verdict = page.locator("#view-today .verdict");
+  await expect(verdict.locator(".a")).toHaveText("Unusual activity detected");
+  await expect(verdict).toContainText("not a confirmed squeeze");
+  await expect(verdict.locator(".a")).not.toHaveText(/^Yes\.?$/);
+});

@@ -37,6 +37,25 @@ HUNTER_SCORING_VERSION = "1"
 # but tuned to the Hunter's 1-14 day window).
 HUNTER_HORIZONS = (1, 5, 14)
 
+# Resolver generation stamped on every NEW resolution row. v1 (rows with a
+# NULL resolver_version) only counted forward bars and could finalize the
+# 14-day outcome from a still-trading partial daily bar (audit F03). v2 only
+# resolves once every one of the 14 forward exchange sessions has closed (plus
+# a provider publication delay) and each session has exactly one bar. Old rows
+# are kept as audit evidence; measurement reads select the v2 cohort only.
+HUNTER_RESOLVER_VERSION = "hunter_resolver_v2"
+
+# Minutes after the (half-day aware) cash close before a daily bar is treated
+# as final. Providers publish the official closing print with a lag, and the
+# resolver runs hourly, so waiting costs nothing while an early read would be
+# frozen forever by the append-only insert.
+HUNTER_RESOLUTION_PUBLICATION_DELAY_MIN = 120
+
+# Once the 14th forward session has been final for this long and the provider
+# still lacks one of the window's sessions, the row is terminal (no outcome)
+# so it cannot block the resolver queue forever.
+HUNTER_INCOMPLETE_HISTORY_GRACE_S = 7 * 86400
+
 
 def _now() -> int:
     return int(time.time())
@@ -137,9 +156,16 @@ def ensure_hunter_tables(cur) -> None:
             max_favorable_pct FLOAT,
             max_adverse_pct FLOAT,
             reason VARCHAR(200),
+            resolver_version VARCHAR(32),
             created_at BIGINT NOT NULL
         )
         """
+    )
+    # F03: resolver generation. Legacy rows keep NULL (never backfilled) so
+    # they stay out of the corrected measurement cohort.
+    cur.execute(
+        "ALTER TABLE ghost_squeeze_hunter_resolutions "
+        "ADD COLUMN IF NOT EXISTS resolver_version VARCHAR(32)"
     )
     # P0 migration: add the extra forecast labels + excursion columns to a
     # resolution table created before they existed.
@@ -325,6 +351,7 @@ def resolve_hunter_evaluation(
     resolved_ts: Optional[int] = None,
     evidence_available_ts: Optional[int] = None,
     reason: str = "",
+    resolver_version: str = HUNTER_RESOLVER_VERSION,
     cur=None,
 ) -> bool:
     """Append one resolution for a Hunter evaluation. Idempotent by evaluation_id.
@@ -344,15 +371,17 @@ def resolve_hunter_evaluation(
                 (evaluation_id, resolved_ts, evidence_available_ts,
                  return_1d_pct, return_5d_pct, return_14d_pct,
                  hit_plus_20, hit_plus_50, hit_plus_100, hit_minus_20,
-                 max_favorable_pct, max_adverse_pct, reason, created_at)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                 max_favorable_pct, max_adverse_pct, reason, resolver_version,
+                 created_at)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON CONFLICT (evaluation_id) DO NOTHING
             """,
             (
                 evaluation_id, rts, eats,
                 return_1d_pct, return_5d_pct, return_14d_pct,
                 hit_plus_20, hit_plus_50, hit_plus_100, hit_minus_20,
-                max_favorable_pct, max_adverse_pct, reason, now,
+                max_favorable_pct, max_adverse_pct, reason, resolver_version,
+                now,
             ),
         )
         return c.rowcount > 0
@@ -379,11 +408,23 @@ HUNTER_TIMELINE_VALID_SQL = (
     "AND COALESCE(e.feature_available_ts, e.issued_ts) <= e.issued_ts"
 )
 
+# Read-time cohort filter (F03): measurement/calibration reads only join
+# resolutions written by the corrected resolver generation. Legacy rows
+# (NULL / older resolver_version) remain in the table as audit evidence but
+# are never pooled with corrected outcomes.
+HUNTER_CORRECTED_RESOLUTION_JOIN = (
+    "LEFT JOIN ghost_squeeze_hunter_resolutions r "
+    "ON r.evaluation_id = e.id AND r.resolver_version = %s"
+)
+
 
 def recent_evaluations(symbol: Optional[str] = None, limit: int = 50) -> Dict[str, Any]:
     """Read recent Hunter evaluations (with full resolution evidence).
 
-    Rows whose evidence postdates their issuance are excluded.
+    Rows whose evidence postdates their issuance are excluded. Outcome
+    columns come only from the corrected resolver generation
+    (``HUNTER_RESOLVER_VERSION``); an evaluation resolved only by a legacy
+    resolver reads as unresolved here (the legacy row is kept for audit).
     """
     lim = max(1, min(200, int(limit)))
     cols = (
@@ -394,7 +435,7 @@ def recent_evaluations(symbol: Optional[str] = None, limit: int = 50) -> Dict[st
         "e.planning_levels, "
         "r.return_1d_pct, r.return_5d_pct, r.return_14d_pct, "
         "r.hit_plus_20, r.hit_plus_50, r.hit_plus_100, r.hit_minus_20, "
-        "r.max_favorable_pct, r.max_adverse_pct, r.reason"
+        "r.max_favorable_pct, r.max_adverse_pct, r.reason, r.resolver_version"
     )
     keys = ("id", "symbol", "scoring_version", "session_date", "issued_ts",
             "feature_available_ts", "reference_price", "reference_price_ts",
@@ -402,7 +443,7 @@ def recent_evaluations(symbol: Optional[str] = None, limit: int = 50) -> Dict[st
             "squeeze_pressure_score", "pressure_band", "stage", "explosion_score",
             "planning_levels", "return_1d_pct", "return_5d_pct", "return_14d_pct",
             "hit_plus_20", "hit_plus_50", "hit_plus_100", "hit_minus_20",
-            "max_favorable_pct", "max_adverse_pct", "reason")
+            "max_favorable_pct", "max_adverse_pct", "reason", "resolver_version")
     try:
         from core.db import db_conn
         with db_conn() as conn:
@@ -412,28 +453,29 @@ def recent_evaluations(symbol: Optional[str] = None, limit: int = 50) -> Dict[st
                     f"""
                     SELECT {cols}
                     FROM ghost_squeeze_hunter_evaluations e
-                    LEFT JOIN ghost_squeeze_hunter_resolutions r ON r.evaluation_id = e.id
+                    {HUNTER_CORRECTED_RESOLUTION_JOIN}
                     WHERE e.symbol = %s AND {HUNTER_TIMELINE_VALID_SQL}
                     ORDER BY e.issued_ts DESC LIMIT %s
                     """,
-                    (symbol.upper(), lim),
+                    (HUNTER_RESOLVER_VERSION, symbol.upper(), lim),
                 )
             else:
                 cur.execute(
                     f"""
                     SELECT {cols}
                     FROM ghost_squeeze_hunter_evaluations e
-                    LEFT JOIN ghost_squeeze_hunter_resolutions r ON r.evaluation_id = e.id
+                    {HUNTER_CORRECTED_RESOLUTION_JOIN}
                     WHERE {HUNTER_TIMELINE_VALID_SQL}
                     ORDER BY e.issued_ts DESC LIMIT %s
                     """,
-                    (lim,),
+                    (HUNTER_RESOLVER_VERSION, lim),
                 )
             rows = cur.fetchall()
         return {
             "ok": True,
             "rows": [dict(zip(keys, r)) for r in rows],
             "timeline_filter": "evidence_ts <= issued_ts",
+            "resolution_cohort": HUNTER_RESOLVER_VERSION,
         }
     except Exception as exc:
         LOGGER.warning("recent_evaluations: %s", str(exc)[:160])
@@ -539,50 +581,137 @@ def _bars_after(series: list, issued_ts: int) -> list:
     return out
 
 
+def _bar_session_day(bar: Dict[str, Any]):
+    """Exchange session date of a daily bar via the shared daily-bar contract.
+
+    String labels go through ``core.daily_bar_contract.bar_session_date``
+    (midnight-UTC labels are dates, real timestamps map to the NY date).
+    Numeric epochs are treated the same way: an exact midnight-UTC epoch is a
+    date label, anything else is converted to the America/New_York date.
+    """
+    from datetime import datetime, timezone
+    from core.daily_bar_contract import bar_session_date
+
+    ts = bar.get("ts")
+    if ts is None or isinstance(ts, bool):
+        return None
+    if isinstance(ts, (int, float)):
+        try:
+            stamp = datetime.fromtimestamp(int(ts), timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+        return bar_session_date(stamp.isoformat())
+    return bar_session_date(ts)
+
+
+def _forward_window(series: list, issued_ts: int, now: int) -> Dict[str, Any]:
+    """The 14 COMPLETED forward exchange sessions after the evaluation's session.
+
+    Status values:
+      ok            -- every one of the 14 expected sessions has closed (plus
+                       the publication delay) and has exactly one valid bar;
+      pending       -- the 14th session has not closed / published yet;
+      incomplete    -- the sessions have closed but the provider lacks at least
+                       one of them (never shift a later bar into its slot);
+      ambiguous     -- conflicting duplicate bars for one session date.
+    """
+    from datetime import date, datetime, timezone
+    from zoneinfo import ZoneInfo
+    from core.daily_bar_contract import latest_completed_session, next_session
+    from core.market_hours import SESSION_TZ
+
+    eval_iso = _session_date(issued_ts)
+    if eval_iso is None:
+        return {"status": "pending", "bars": [], "sessions": []}
+    eval_day = date.fromisoformat(eval_iso)
+    expected = []
+    day = eval_day
+    for _ in range(max(HUNTER_HORIZONS)):
+        day = next_session(day)
+        expected.append(day)
+    now_dt = datetime.fromtimestamp(int(now), timezone.utc).astimezone(ZoneInfo(SESSION_TZ))
+    completed_through = latest_completed_session(
+        now_dt, delay_min=HUNTER_RESOLUTION_PUBLICATION_DELAY_MIN,
+    )
+    if expected[-1] > completed_through:
+        return {"status": "pending", "bars": [], "sessions": expected}
+
+    wanted = set(expected)
+    by_day: Dict[Any, Dict[str, Any]] = {}
+    for bar in series or []:
+        day = _bar_session_day(bar)
+        if day is None or day not in wanted:
+            continue
+        try:
+            o, h, lo, c = (float(bar[k]) for k in ("open", "high", "low", "close"))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if min(o, h, lo, c) <= 0 or h < lo:
+            continue
+        clean = {"ts": bar.get("ts"), "session_date": day.isoformat(),
+                 "open": o, "high": h, "low": lo, "close": c}
+        prior = by_day.get(day)
+        if prior is not None and any(prior[k] != clean[k] for k in ("open", "high", "low", "close")):
+            return {"status": "ambiguous", "bars": [], "sessions": expected}
+        by_day[day] = clean
+    if any(day not in by_day for day in expected):
+        return {"status": "incomplete", "bars": [], "sessions": expected}
+    return {"status": "ok", "bars": [by_day[day] for day in expected], "sessions": expected}
+
+
+def _session_final_ts(day) -> int:
+    """Epoch at which ``day``'s daily bar is treated as final (close + delay)."""
+    from datetime import datetime, time as dtime, timedelta
+    from zoneinfo import ZoneInfo
+    from core.market_hours import SESSION_TZ, _rth_close_for
+
+    local = datetime.combine(day, dtime(12, 0), ZoneInfo(SESSION_TZ))
+    close_min = _rth_close_for(local) + HUNTER_RESOLUTION_PUBLICATION_DELAY_MIN
+    midnight = datetime.combine(day, dtime(0, 0), ZoneInfo(SESSION_TZ))
+    return int((midnight + timedelta(minutes=close_min)).timestamp())
+
+
 def _resolve_one(eval_id: int, symbol: str, issued_ts: int, ref: Optional[float],
                  series: list, now: int) -> Optional[Dict[str, Any]]:
     """Compute a FULL 1/5/14-day resolution for one evaluation.
 
-    Returns None (no resolution yet) unless all 14 forward bars are available,
-    so a partial resolution is never written and later runs are not blocked by
-    a prematurely-inserted row. hit_plus_20/50/100 and hit_minus_20 are only
-    asserted once the full 14-day window has elapsed.
+    Returns None (no resolution yet) unless all 14 forward exchange sessions
+    have CLOSED (half-day aware, plus the publication delay) and each has
+    exactly one valid daily bar. A still-trading partial bar is never read,
+    and a missing session is never filled by shifting a later bar, so the
+    append-only row can only ever hold the completed-bar outcome.
     """
     if ref is None or ref <= 0:
         return None
-    fwd = _bars_after(series, issued_ts)
-    if len(fwd) < 14:
-        return None  # not enough forward bars yet — wait for a later run
+    window_info = _forward_window(series, issued_ts, now)
+    if window_info["status"] != "ok":
+        return None
+    window = window_info["bars"]
 
     def _ret_at(idx: int) -> Optional[float]:
-        px = fwd[idx].get("close")
-        if px is not None:
-            return round((float(px) - ref) / ref * 100.0, 3)
-        return None
+        return round((window[idx]["close"] - ref) / ref * 100.0, 3)
 
     r1 = _ret_at(0)
     r5 = _ret_at(4)
     r14 = _ret_at(13)
 
-    window = fwd[:14]
-    highs = [float(b["high"]) for b in window if b.get("high") is not None]
-    lows = [float(b["low"]) for b in window if b.get("low") is not None]
-    max_fav = round((max(highs) - ref) / ref * 100.0, 3) if highs else None
-    max_adv = round((min(lows) - ref) / ref * 100.0, 3) if lows else None
+    max_fav = round((max(b["high"] for b in window) - ref) / ref * 100.0, 3)
+    max_adv = round((min(b["low"] for b in window) - ref) / ref * 100.0, 3)
 
     return {
         "evaluation_id": eval_id,
         "return_1d_pct": r1,
         "return_5d_pct": r5,
         "return_14d_pct": r14,
-        "hit_plus_20": (max_fav is not None and max_fav >= 20.0),
-        "hit_plus_50": (max_fav is not None and max_fav >= 50.0),
-        "hit_plus_100": (max_fav is not None and max_fav >= 100.0),
-        "hit_minus_20": (max_adv is not None and max_adv <= -20.0),
+        "hit_plus_20": max_fav >= 20.0,
+        "hit_plus_50": max_fav >= 50.0,
+        "hit_plus_100": max_fav >= 100.0,
+        "hit_minus_20": max_adv <= -20.0,
         "max_favorable_pct": max_fav,
         "max_adverse_pct": max_adv,
         "resolved_ts": now,
         "evidence_available_ts": now,
+        "resolver_version": HUNTER_RESOLVER_VERSION,
     }
 
 
@@ -617,7 +746,23 @@ def _resolve_one_row(cur, rec: Dict[str, Any], sym: str, series: list, now: int)
     upd = _resolve_one(rec["id"], sym, rec["issued_ts"],
                        rec["reference_price"], series, now)
     if not upd:
-        return "skip"  # not enough forward bars yet
+        window = _forward_window(series, rec["issued_ts"], now)
+        if (
+            window["status"] in ("incomplete", "ambiguous")
+            and now - _session_final_ts(window["sessions"][-1]) >= HUNTER_INCOMPLETE_HISTORY_GRACE_S
+        ):
+            # Every session has long closed but the provider still lacks (or
+            # contradicts) one of them: no honest outcome exists. Terminal,
+            # outcome-less, so the queue is never blocked.
+            resolve_hunter_evaluation(
+                evaluation_id=rec["id"],
+                reason=f"{window['status']}_session_history",
+                resolved_ts=now,
+                evidence_available_ts=now,
+                cur=cur,
+            )
+            return "terminal"
+        return "skip"  # window not closed yet (or transiently incomplete)
     inserted = resolve_hunter_evaluation(
         evaluation_id=upd["evaluation_id"],
         return_1d_pct=upd["return_1d_pct"],

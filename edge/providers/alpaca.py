@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time as _time
 from datetime import date, datetime, time as dtime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
@@ -101,10 +102,60 @@ def probe(get: Optional[B.HttpGet] = None, *, today: Optional[date] = None,
     ]
 
 
+# ------------------------------------------------------------ 429 retry --
+# The data key's per-minute allowance is SHARED with Ghost's core scan. One 429
+# on the radar's bars call (Task #64, 12:09 CT) dropped a whole intraday tick.
+# A 429 is contention, not a verdict about the data: wait it out, briefly and
+# boundedly, then fail with an error that names the rate limit.
+RETRY_429_MAX = 2               # retries after the first attempt
+RETRY_429_BUDGET_S = 10.0       # total seconds one call may spend waiting out 429s
+RETRY_429_BACKOFF_S = (1.0, 3.0)
+_sleep = _time.sleep            # patched by tests
+
+
+class RateLimited(RuntimeError):
+    """Alpaca kept answering 429 after the bounded retries: a named source error."""
+
+    def __init__(self, path: str, attempts: int, waited_s: float) -> None:
+        self.path, self.attempts, self.waited_s = path, attempts, waited_s
+        super().__init__(f"alpaca rate limited (429) on {path} after {attempts} attempts "
+                         f"({waited_s:.1f}s waited); the limit is shared with the core scan")
+
+
+def _retry_after_s(r) -> Optional[float]:
+    try:
+        v = (getattr(r, "headers", None) or {}).get("Retry-After")
+        return max(0.0, float(v)) if v is not None else None
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def _get_with_429_retry(get: B.HttpGet, path: str, *, params: dict, timeout: int):
+    """GET that retries a 429 at most RETRY_429_MAX times, honoring Retry-After, never
+    waiting more than RETRY_429_BUDGET_S in total. A persistent 429 raises RateLimited."""
+    waited = 0.0
+    attempts = 0
+    for attempt in range(RETRY_429_MAX + 1):
+        attempts = attempt + 1
+        r = get(_base_url() + path, params=params, headers=_headers(), timeout=timeout)
+        if getattr(r, "status_code", 200) != 429:
+            return r
+        if attempt == RETRY_429_MAX:
+            break
+        ra = _retry_after_s(r)
+        wait = ra if ra is not None else RETRY_429_BACKOFF_S[min(attempt, len(RETRY_429_BACKOFF_S) - 1)]
+        wait = min(wait, RETRY_429_BUDGET_S - waited)
+        if wait <= 0:
+            break
+        LOG.warning("alpaca 429 on %s; retry %d/%d in %.1fs", path, attempt + 1, RETRY_429_MAX, wait)
+        _sleep(wait)
+        waited += wait
+    raise RateLimited(path, attempts, waited)
+
+
 def movers(get: B.HttpGet, top: int = 50) -> Dict[str, List[dict]]:
     """Whole-market top gainers and losers: {'gainers': [...], 'losers': [...]}."""
-    r = get(_base_url() + "/v1beta1/screener/stocks/movers", params={"top": top},
-            headers=_headers(), timeout=15)
+    r = _get_with_429_retry(get, "/v1beta1/screener/stocks/movers", params={"top": top}, timeout=15)
     r.raise_for_status()
     p = r.json() or {}
     return {"gainers": list(p.get("gainers") or []), "losers": list(p.get("losers") or []),
@@ -113,8 +164,8 @@ def movers(get: B.HttpGet, top: int = 50) -> Dict[str, List[dict]]:
 
 def most_actives(get: B.HttpGet, top: int = 100) -> Dict[str, Any]:
     """Whole-market most active stocks by volume: {'most_actives': [{'symbol', 'volume', ...}], ...}."""
-    r = get(_base_url() + "/v1beta1/screener/stocks/most-actives", params={"by": "volume", "top": top},
-            headers=_headers(), timeout=15)
+    r = _get_with_429_retry(get, "/v1beta1/screener/stocks/most-actives",
+                            params={"by": "volume", "top": top}, timeout=15)
     r.raise_for_status()
     p = r.json() or {}
     return {"most_actives": list(p.get("most_actives") or []), "last_updated": p.get("last_updated")}
@@ -128,7 +179,7 @@ def most_actives(get: B.HttpGet, top: int = 100) -> Dict[str, Any]:
 #     which is why premarket prices are treated as degraded evidence.
 
 def _get_json(get: B.HttpGet, path: str, params: dict) -> dict:
-    r = get(_base_url() + path, params=params, headers=_headers(), timeout=20)
+    r = _get_with_429_retry(get, path, params=params, timeout=20)
     r.raise_for_status()
     return r.json() or {}
 

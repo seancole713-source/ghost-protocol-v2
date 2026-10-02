@@ -64,3 +64,51 @@ def test_the_mcp_tool_is_listed_and_routes_to_the_readout(monkeypatch):
     monkeypatch.setattr(db, "db_conn", object(), raising=False)
     out = ghost_server.invoke_tool("ghost_edge_report", {"view": "today"})
     assert out["forecasts"] == ["SHOP"]
+    # I02: the MCP readout says which session it served and that it is not today's.
+    assert out["served_session"] == "2026-09-23"
+    assert out["requested_session"] != "2026-09-23" and out["stale"] is True
+
+
+def _at(y, m, d, hh, mm):
+    return int(datetime(y, m, d, hh, mm, tzinfo=ET).timestamp())
+
+
+def test_today_never_silently_serves_yesterdays_card():
+    """I02: Oct 2 had no card; the today view served Oct 1 with no marker."""
+    store = MemoryStore()
+    store.put("edge_cards", "2026-10-01", {"day": "2026-10-01", "forecasts": ["AAA"], "rows": []})
+    out = RO.view(store, "today", now=_at(2026, 10, 2, 11, 0))   # Fri, after the card window
+    assert out["requested_session"] == "2026-10-02"
+    assert out["served_session"] == "2026-10-01"
+    assert out["stale"] is True
+    assert "NOT today's" in out["note"] and "was due by 09:28 ET and is missing" in out["note"]
+    s = RO.view(store, "summary", now=_at(2026, 10, 2, 11, 0))
+    assert s["today"]["stale"] is True and s["today"]["requested_session"] == "2026-10-02"
+
+
+def test_today_before_the_card_window_says_not_due_yet():
+    store = MemoryStore()
+    store.put("edge_cards", "2026-10-01", {"day": "2026-10-01", "rows": []})
+    out = RO.view(store, "today", now=_at(2026, 10, 2, 8, 0))
+    assert out["stale"] is True and "not due yet" in out["note"]
+
+
+def test_today_matching_session_is_not_stale_and_weekend_maps_to_friday():
+    store = MemoryStore()
+    store.put("edge_cards", "2026-10-02", {"day": "2026-10-02", "forecasts": [], "rows": []})
+    out = RO.view(store, "today", now=_at(2026, 10, 2, 10, 0))
+    assert out["requested_session"] == out["served_session"] == "2026-10-02"
+    assert out["stale"] is False and "note" not in out
+    sat = RO.view(store, "today", now=_at(2026, 10, 3, 12, 0))   # Saturday
+    assert sat["requested_session"] == "2026-10-02" and sat["stale"] is False
+
+
+def test_today_explicit_day_is_the_requested_session():
+    store = MemoryStore()
+    store.put("edge_cards", "2026-10-01", {"day": "2026-10-01", "rows": []})
+    out = RO.view(store, "today", "2026-10-01", now=_at(2026, 10, 2, 11, 0))
+    assert out["requested_session"] == out["served_session"] == "2026-10-01"
+    assert out["stale"] is False
+    missing = RO.view(store, "today", "2026-09-30", now=_at(2026, 10, 2, 11, 0))
+    assert missing["card"] is None and missing["served_session"] is None
+    assert missing["requested_session"] == "2026-09-30"

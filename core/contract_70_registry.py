@@ -19,6 +19,7 @@ in-sample selection.
 from __future__ import annotations
 
 import json
+import re
 import time
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -29,6 +30,30 @@ from core.watcher import (
 )
 
 _REGISTRY_KEY = "contract_70_forward_registry"
+# Append-only audit of every registration attempt (registered, idempotent
+# retry, refused change, superseded record). Rows are only ever INSERTed.
+_HISTORY_TABLE = "ghost_contract_70_registry_history"
+_DEFAULT_VERSION_ID = "v1"
+_LEGACY_VERSION_ID = "legacy_unversioned"
+_VERSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+class Contract70RegistrationRefused(Exception):
+    """A registration would change the frozen experiment without a new version.
+
+    ``details`` is JSON-safe and names the existing version and its
+    registration timestamp so the caller can report why it was refused.
+    """
+
+    def __init__(self, reason: str, details: Optional[Dict[str, Any]] = None):
+        super().__init__(reason)
+        self.reason = reason
+        self.details = dict(details or {})
+
+
+def _server_now() -> int:
+    """Registration timestamps are created here only, never taken from callers."""
+    return int(time.time())
 
 
 def select_candidate_universe(
@@ -220,41 +245,32 @@ def register_universe(
     *,
     min_n: int,
     min_wilson_low: float,
-    now_ts: Optional[int] = None,
+    version_id: Optional[str] = None,
     cur=None,
 ) -> Dict[str, Any]:
-    """Persist (or refresh) the frozen candidate universe in ghost_state.
+    """Freeze the candidate universe in ghost_state (write-once per version).
 
-    Idempotent-ish: re-registering overwrites the record and resets the forward
-    window to the new timestamp. Kept deliberately explicit so a human/cron
-    decides WHEN to freeze; this module never auto-registers on read.
+    * An identical re-registration is idempotent: the EXISTING record (with
+      its original ``registered_at_ts``) is returned and the forward window is
+      never reset, no matter how the forward outcomes have gone since.
+    * A changed universe or threshold is refused
+      (:class:`Contract70RegistrationRefused`) unless an explicit, previously
+      unused ``version_id`` is given; then the previous record is preserved as
+      ``superseded`` in the append-only history table.
+    * ``registered_at_ts`` is always created server-side.
+
+    The returned dict is the active record plus a non-persisted
+    ``registration_status`` (``registered`` | ``already_registered`` |
+    ``registered_new_version``).
     """
-    ts = int(now_ts if now_ts is not None else time.time())
     payload = {
-        "registered_at_ts": ts,
         "symbols": sorted({str(s).upper() for s in (symbols or [])}),
         "min_n": int(min_n),
         "min_wilson_low": float(min_wilson_low),
         "prob_floor": 0.70,
         "target": 0.70,
     }
-    from core.db import db_conn, ensure_ghost_state
-
-    def _write(c):
-        ensure_ghost_state(c)
-        c.execute(
-            "INSERT INTO ghost_state(key,val) VALUES(%s,%s) "
-            "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
-            (_REGISTRY_KEY, json.dumps(payload)),
-        )
-
-    if cur is not None:
-        _write(cur)
-    else:
-        with db_conn() as conn:
-            _write(conn.cursor())
-            conn.commit()
-    return payload
+    return _register(payload, version_id=version_id, cur=cur)
 
 
 def register_slices(
@@ -262,10 +278,15 @@ def register_slices(
     *,
     min_n: int,
     min_wilson_low: float,
-    now_ts: Optional[int] = None,
+    version_id: Optional[str] = None,
     cur=None,
 ) -> Dict[str, Any]:
     """Persist frozen slice definitions in ghost_state for forward proof.
+
+    Same write-once rules as :func:`register_universe`: identical retries
+    return the existing record, a changed slice set or threshold needs an
+    explicit new ``version_id`` (the old record is kept as superseded), and
+    the timestamp is server-created.
 
     This is the slice-aware counterpart to ``register_universe``. It preserves
     the anti-look-ahead contract by recording the exact slice dimensions and the
@@ -273,7 +294,6 @@ def register_slices(
     frozen dimensions and resolve after this timestamp. It writes only
     ``ghost_state`` and never changes model, gate, wallet, or broker state.
     """
-    ts = int(now_ts if now_ts is not None else time.time())
     clean: List[Dict[str, Any]] = []
     seen = set()
     for item in slices or []:
@@ -306,7 +326,6 @@ def register_slices(
         seen.add(sig)
         clean.append(spec)
     payload = {
-        "registered_at_ts": ts,
         "mode": "slices",
         "slices": clean,
         # Convenience only: legacy UIs can still show the symbol subset, but
@@ -317,23 +336,183 @@ def register_slices(
         "min_wilson_low": float(min_wilson_low),
         "target": 0.70,
     }
+    return _register(payload, version_id=version_id, cur=cur)
+
+
+def _definition(record: Dict[str, Any]) -> Dict[str, Any]:
+    """The frozen experiment: what is scored and against which thresholds.
+
+    Selection evidence, timestamps and version metadata are provenance, not
+    definition, so a retry with refreshed evidence is still "identical".
+    """
+    mode = "slices" if record.get("mode") == "slices" else "universe"
+    target = record.get("target")
+    out: Dict[str, Any] = {
+        "mode": mode,
+        "min_n": int(record.get("min_n") or 0),
+        "min_wilson_low": round(float(record.get("min_wilson_low") or 0.0), 6),
+        "target": round(float(0.70 if target is None else target), 6),
+    }
+    if mode == "slices":
+        out["slices"] = sorted(
+            json.dumps({"dims": list(s.get("dims") or []), "key": dict(s.get("key") or {})},
+                       sort_keys=True)
+            for s in (record.get("slices") or []) if isinstance(s, dict)
+        )
+    else:
+        floor = record.get("prob_floor")
+        out["symbols"] = sorted({str(x).upper() for x in (record.get("symbols") or [])})
+        out["prob_floor"] = round(float(0.70 if floor is None else floor), 6)
+    return out
+
+
+def _version_of(record: Dict[str, Any]) -> str:
+    return str(record.get("version_id") or _LEGACY_VERSION_ID)
+
+
+def _ensure_history(c) -> None:
+    c.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {_HISTORY_TABLE} (
+            id BIGSERIAL PRIMARY KEY,
+            event VARCHAR(40) NOT NULL,
+            version_id VARCHAR(64),
+            record TEXT NOT NULL,
+            created_at_ts BIGINT NOT NULL
+        )
+        """
+    )
+
+
+def _log_attempt(c, event: str, version_id: Optional[str], record: Dict[str, Any], ts: int) -> None:
+    c.execute(
+        f"INSERT INTO {_HISTORY_TABLE} (event, version_id, record, created_at_ts) "
+        "VALUES (%s,%s,%s,%s)",
+        (event, version_id, json.dumps(record, sort_keys=True), int(ts)),
+    )
+
+
+def _read_current(c):
+    c.execute("SELECT val FROM ghost_state WHERE key=%s FOR UPDATE", (_REGISTRY_KEY,))
+    row = c.fetchone()
+    if not (row and row[0]):
+        return None, None
+    try:
+        return json.loads(row[0]), row[0]
+    except Exception:
+        return None, row[0]
+
+
+def _register(payload: Dict[str, Any], *, version_id: Optional[str], cur=None) -> Dict[str, Any]:
+    requested = None if version_id is None else str(version_id).strip()
+    if requested is not None and not _VERSION_ID_RE.match(requested):
+        raise ValueError("version_id must be 1-64 chars of [A-Za-z0-9._-]")
     from core.db import db_conn, ensure_ghost_state
 
-    def _write(c):
+    def _impl(c) -> Dict[str, Any]:
         ensure_ghost_state(c)
-        c.execute(
-            "INSERT INTO ghost_state(key,val) VALUES(%s,%s) "
-            "ON CONFLICT(key) DO UPDATE SET val=EXCLUDED.val",
-            (_REGISTRY_KEY, json.dumps(payload)),
-        )
+        _ensure_history(c)
+        # Serialize registrations (also covers the no-row-yet case a row lock
+        # cannot); the writes below are compare-and-swap regardless.
+        c.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (_REGISTRY_KEY,))
+        now = _server_now()
+        attempt = dict(payload)
+        for _ in range(3):
+            current, raw = _read_current(c)
+            if raw is not None and current is None:
+                _log_attempt(c, "refused_unreadable_record", requested, attempt, now)
+                return {"refused": "existing registry record is unreadable; refusing to overwrite",
+                        "details": {}}
+            if current is None:
+                record = dict(attempt, registered_at_ts=now,
+                              version_id=requested or _DEFAULT_VERSION_ID)
+                c.execute(
+                    "INSERT INTO ghost_state(key,val) VALUES(%s,%s) "
+                    "ON CONFLICT(key) DO NOTHING",
+                    (_REGISTRY_KEY, json.dumps(record)),
+                )
+                if c.rowcount == 1:
+                    _log_attempt(c, "registered", record["version_id"], record, now)
+                    return {"record": record, "status": "registered"}
+                continue  # lost a race: re-read the winner and compare
+            if _definition(current) == _definition(attempt):
+                _log_attempt(c, "idempotent_retry", requested, attempt, now)
+                return {"record": current, "status": "already_registered"}
+            details = {
+                "existing_version_id": _version_of(current),
+                "existing_registered_at_ts": current.get("registered_at_ts"),
+                "requested_version_id": requested,
+            }
+            if requested is None:
+                _log_attempt(c, "refused_changed_definition", None, attempt, now)
+                return {"refused": "registration differs from the frozen experiment; "
+                                   "an explicit new version_id is required",
+                        "details": details}
+            c.execute(
+                f"SELECT 1 FROM {_HISTORY_TABLE} WHERE version_id=%s "
+                "AND event IN ('registered','superseded') LIMIT 1",
+                (requested,),
+            )
+            if requested == _version_of(current) or c.fetchone():
+                _log_attempt(c, "refused_reused_version", requested, attempt, now)
+                return {"refused": "version_id was already used; pick a new one",
+                        "details": details}
+            record = dict(attempt, registered_at_ts=now, version_id=requested,
+                          supersedes={"version_id": _version_of(current),
+                                      "registered_at_ts": current.get("registered_at_ts")})
+            c.execute(
+                "UPDATE ghost_state SET val=%s WHERE key=%s AND val=%s",
+                (json.dumps(record), _REGISTRY_KEY, raw),
+            )
+            if c.rowcount != 1:
+                continue  # concurrently changed: re-read and decide again
+            _log_attempt(c, "superseded", _version_of(current),
+                         dict(current, superseded_by=requested, superseded_at_ts=now), now)
+            _log_attempt(c, "registered", requested, record, now)
+            return {"record": record, "status": "registered_new_version"}
+        _log_attempt(c, "refused_concurrent_change", requested, attempt, now)
+        return {"refused": "registry changed concurrently; retry", "details": {}}
 
     if cur is not None:
-        _write(cur)
+        result = _impl(cur)
     else:
         with db_conn() as conn:
-            _write(conn.cursor())
+            result = _impl(conn.cursor())
             conn.commit()
-    return payload
+    if "refused" in result:
+        # Raised after the attempt was logged (and, for an owned connection,
+        # committed) so refused attempts stay in the audit history.
+        raise Contract70RegistrationRefused(result["refused"], result.get("details"))
+    out = dict(result["record"])
+    out["registration_status"] = result["status"]
+    return out
+
+
+def registry_history(limit: int = 50, cur=None) -> List[Dict[str, Any]]:
+    """Every registration attempt, newest first (append-only audit)."""
+    from core.db import db_conn
+
+    def _read(c) -> List[Dict[str, Any]]:
+        _ensure_history(c)
+        c.execute(
+            f"SELECT id, event, version_id, record, created_at_ts FROM {_HISTORY_TABLE} "
+            "ORDER BY id DESC LIMIT %s",
+            (max(1, min(500, int(limit))),),
+        )
+        out = []
+        for row in c.fetchall() or []:
+            try:
+                rec = json.loads(row[3])
+            except Exception:
+                rec = None
+            out.append({"id": row[0], "event": row[1], "version_id": row[2],
+                        "record": rec, "created_at_ts": row[4]})
+        return out
+
+    if cur is not None:
+        return _read(cur)
+    with db_conn() as conn:
+        return _read(conn.cursor())
 
 
 def load_registry(cur=None) -> Optional[Dict[str, Any]]:

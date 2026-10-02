@@ -307,6 +307,30 @@ def watcher_snapshots_endpoint(limit: int = 20):
         return JSONResponse({"ok": False, "read_only": True, "error": str(e)[:200]}, status_code=500)
 
 
+_CONTRACT_70_STATUS = {
+    "already_registered": "already_registered",
+    "registered_new_version": "registered_new_version",
+}
+_CONTRACT_70_NOTES = {
+    "already_registered": "Identical registration already frozen; the existing record and its "
+                          "forward window were returned unchanged.",
+    "registered_new_version": "New registration version frozen; the previous record is preserved "
+                              "as superseded in the registration history.",
+}
+
+
+def _contract_70_register_or_409(fn, items, **kwargs):
+    """Run a write-once registration; a changed experiment is a 409, not a write."""
+    from core.contract_70_registry import Contract70RegistrationRefused
+
+    try:
+        return fn(items, **kwargs)
+    except Contract70RegistrationRefused as exc:
+        raise HTTPException(status_code=409, detail={"error": exc.reason, **exc.details})
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)[:200])
+
+
 @router.post("/api/watcher/contract-70/register")
 def watcher_contract_70_register_endpoint(
     request: Request,
@@ -316,13 +340,19 @@ def watcher_contract_70_register_endpoint(
     days: int = 30,
     limit: int = 5000,
     mode: str = "slice",
+    version_id: str = "",
 ):
     """Pre-register a forward-only 70+ proof universe.
 
     This endpoint is intentionally conservative:
 
     * admin/cron gated;
-    * writes only the frozen universe row in ``ghost_state``;
+    * writes only the frozen universe row in ``ghost_state`` (plus an
+      append-only attempt history);
+    * write-once: an identical retry returns the existing registration
+      unchanged (the forward window is never reset), and a changed
+      universe/slice/threshold is refused with 409 unless an explicit new
+      ``version_id`` is supplied, which preserves the old record as superseded;
     * refuses criteria weaker than the 70+ contract defaults;
     * does not auto-register an empty/cherry-picked universe;
     * can freeze either a qualified slice (default) or legacy symbol universe; and
@@ -348,6 +378,8 @@ def watcher_contract_70_register_endpoint(
     days_i = max(1, min(365, int(days or 30)))
     limit_i = max(1, min(50000, int(limit or 5000)))
     mode_i = str(mode or "slice").strip().lower()
+    version_i = str(version_id or "").strip()
+    reg_kwargs = {"version_id": version_i} if version_i else {}
     if mode_i not in ("slice", "slices", "symbol", "symbols", "universe"):
         raise HTTPException(status_code=422, detail="mode must be slice or symbol")
     try:
@@ -379,16 +411,19 @@ def watcher_contract_70_register_endpoint(
             # Register the strongest proven slice only. Freezing all overlapping
             # qualified slices would double-count future rows and blur the proof.
             picked = [qualified[0]]
-            payload = register_slices(picked, min_n=min_n_i, min_wilson_low=min_wilson_f)
+            payload = _contract_70_register_or_409(
+                register_slices, picked, min_n=min_n_i, min_wilson_low=min_wilson_f, **reg_kwargs,
+            )
+            reg_status = payload.pop("registration_status", "registered")
             return {
                 "ok": True,
                 "registered": True,
-                "status": "registered_slice",
+                "status": _CONTRACT_70_STATUS.get(reg_status, "registered_slice"),
                 "criteria": criteria,
                 "candidate_count": len(picked),
                 "slices": [{"dims": s.get("dims") or [], "key": s.get("key") or {}} for s in picked],
                 "registry": payload,
-                "note": "Forward proof started. Only future resolved rows matching the frozen slice count.",
+                "note": _CONTRACT_70_NOTES.get(reg_status, "Forward proof started. Only future resolved rows matching the frozen slice count."),
             }
 
         from core.contract_70_registry import register_universe, select_candidate_universe
@@ -413,16 +448,19 @@ def watcher_contract_70_register_endpoint(
                 "note": "No symbol currently has enough own 70+ evidence with Wilson lower bound >= the registration bar; forward proof was not started.",
             }
 
-        payload = register_universe(picked, min_n=min_n_i, min_wilson_low=min_wilson_f)
+        payload = _contract_70_register_or_409(
+            register_universe, picked, min_n=min_n_i, min_wilson_low=min_wilson_f, **reg_kwargs,
+        )
+        reg_status = payload.pop("registration_status", "registered")
         return {
             "ok": True,
             "registered": True,
-            "status": "registered_symbols",
+            "status": _CONTRACT_70_STATUS.get(reg_status, "registered_symbols"),
             "criteria": criteria,
             "candidate_count": len(picked),
             "symbols": picked,
             "registry": payload,
-            "note": "Forward proof started. Only future resolved 70+ rows for the frozen universe count.",
+            "note": _CONTRACT_70_NOTES.get(reg_status, "Forward proof started. Only future resolved 70+ rows for the frozen universe count."),
         }
     except HTTPException:
         raise

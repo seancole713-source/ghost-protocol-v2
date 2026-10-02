@@ -33,12 +33,32 @@ def previous_session(day: date) -> date:
     return day
 
 
-def _latest_completed_session(now: datetime | None = None) -> date:
+def next_session(day: date) -> date:
+    day += timedelta(days=1)
+    while is_market_holiday(day):
+        day += timedelta(days=1)
+    return day
+
+
+def _latest_completed_session(
+    now: datetime | None = None, *, delay_min: int = DAILY_MODEL_ISSUANCE_DELAY_MIN,
+) -> date:
     current, minute = session_hm(now)
     expected = current.date()
-    if is_market_holiday(expected) or minute < _rth_close_for(current) + DAILY_MODEL_ISSUANCE_DELAY_MIN:
+    if is_market_holiday(expected) or minute < _rth_close_for(current) + int(delay_min):
         expected = previous_session(expected)
     return expected
+
+
+def latest_completed_session(
+    now: datetime | None = None, *, delay_min: int = DAILY_MODEL_ISSUANCE_DELAY_MIN,
+) -> date:
+    """Latest exchange session whose daily bar is final at ``now``.
+
+    A session counts as completed only once its (half-day aware) cash close
+    plus ``delay_min`` minutes of provider publication delay has passed.
+    """
+    return _latest_completed_session(now, delay_min=delay_min)
 
 
 def drop_incomplete_daily_bars(rows: list[dict], *, now: datetime | None = None) -> list[dict]:

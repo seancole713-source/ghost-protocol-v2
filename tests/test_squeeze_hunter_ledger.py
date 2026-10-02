@@ -5,19 +5,28 @@ from core import squeeze_hunter_ledger as hl
 
 
 def _noon_utc(day_offset: int) -> int:
-    """A noon-UTC timestamp `day_offset` days after 2026-08-01 (noon UTC).
+    """A noon-UTC timestamp `day_offset` CALENDAR days after Mon 2026-08-03.
 
-    Noon UTC = 06:00 CT, safely inside a single exchange session day, so each
-    +1 day lands on a distinct session date regardless of provider convention.
+    Noon UTC = 07:00 CT, safely inside a single exchange session day.
     """
-    base = datetime(2026, 8, 1, 12, 0, 0, tzinfo=timezone.utc)
+    base = datetime(2026, 8, 3, 12, 0, 0, tzinfo=timezone.utc)
     return int((base.timestamp()) + day_offset * 86400)
 
 
+def _session_noon(k: int) -> int:
+    """Noon UTC of the k-th exchange session after Mon 2026-08-03 (k >= 1)."""
+    from core.daily_bar_contract import next_session
+
+    day = datetime(2026, 8, 3).date()
+    for _ in range(k):
+        day = next_session(day)
+    return int(datetime(day.year, day.month, day.day, 12, tzinfo=timezone.utc).timestamp())
+
+
 def _series(n: int) -> list:
-    """n daily bars, one per session day, starting the day after day 0."""
+    """n daily bars, one per exchange session, starting the session after day 0."""
     return [
-        {"ts": _noon_utc(i + 1), "open": 100, "high": 100 + (i + 1),
+        {"ts": _session_noon(i + 1), "open": 100, "high": 100 + (i + 1),
          "low": 90, "close": 100 + (i + 1)}
         for i in range(n)
     ]
@@ -196,7 +205,7 @@ def test_enforce_hunter_constraints_sets_session_date_not_null():
 
 def test_resolve_one_computes_returns():
     """Pure resolution: 1/5/14-day returns + hit thresholds + excursions."""
-    series = _series(20)
+    series = _series(14)
     # ref = 100; day 1 close = 101 (+1%), day 5 close = 105 (+5%), day 14 close = 114 (+14%).
     out = hl._resolve_one(1, "HTZ", _noon_utc(0), 100.0, series, now=_noon_utc(20))
     assert out["return_1d_pct"] == 1.0
@@ -213,7 +222,7 @@ def test_resolve_one_computes_returns():
 
 def test_resolve_one_hit_plus_20():
     series = [
-        {"ts": _noon_utc(i + 1), "open": 100, "high": 100 + i * 10, "low": 90, "close": 100}
+        {"ts": _session_noon(i + 1), "open": 100, "high": 100 + i * 10, "low": 90, "close": 100}
         for i in range(20)
     ]
     out = hl._resolve_one(1, "HTZ", _noon_utc(0), 100.0, series, now=_noon_utc(20))

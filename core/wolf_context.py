@@ -672,16 +672,18 @@ def _fetch_gnews_headlines(query: str, max_items: int = 10) -> list[str]:
         return []
 
 
-def _get_catalyst_news_score(direction: str) -> tuple[float, list[str]]:
-    """
-    Scan recent WOLF/customer/sector headlines for catalysts.
-    Returns (confidence_adj, reasons).
-    """
-    cached = _cache_get("catalyst_news")
+# Only direction-NEUTRAL headline evidence is cached. The direction-specific
+# alignment penalty is applied after every read, so the adjustment for UP or
+# DOWN never depends on which direction happened to populate the cache first
+# (audit F09: a cached post-penalty value used to leak across directions).
+_CATALYST_EVIDENCE_CACHE_KEY = "catalyst_news_evidence:v2"
+
+
+def _catalyst_news_evidence() -> dict:
+    """Fetch + score the catalyst headlines once; direction-neutral result."""
+    cached = _cache_get(_CATALYST_EVIDENCE_CACHE_KEY)
     if cached is not None:
-        adj, reasons = cached
-        # Flip sign if direction is different — the raw score is direction-neutral
-        return adj, reasons
+        return cached
 
     queries = [
         "Wolfspeed WOLF semiconductor",
@@ -701,12 +703,28 @@ def _get_catalyst_news_score(direction: str) -> tuple[float, list[str]]:
                 headline_samples.append(h[:80])
 
     if not all_scores:
-        _cache_set("catalyst_news", (0.0, []))
-        return 0.0, []
+        evidence = {"n": 0, "avg_score": 0.0, "strong_bull": 0, "strong_bear": 0,
+                    "headline_samples": []}
+    else:
+        evidence = {
+            "n": len(all_scores),
+            "avg_score": sum(all_scores) / len(all_scores),
+            "strong_bull": sum(1 for s in all_scores if s > 0.3),
+            "strong_bear": sum(1 for s in all_scores if s < -0.3),
+            "headline_samples": headline_samples,
+        }
+    _cache_set(_CATALYST_EVIDENCE_CACHE_KEY, evidence)
+    return evidence
 
-    avg_score = sum(all_scores) / len(all_scores)
-    strong_bull = sum(1 for s in all_scores if s > 0.3)
-    strong_bear = sum(1 for s in all_scores if s < -0.3)
+
+def _catalyst_adjustment(evidence: dict, direction: str) -> tuple[float, list[str]]:
+    """Pure: confidence adjustment + reasons for one direction from neutral evidence."""
+    if not evidence or not evidence.get("n"):
+        return 0.0, []
+    avg_score = float(evidence["avg_score"])
+    strong_bull = int(evidence["strong_bull"])
+    strong_bear = int(evidence["strong_bear"])
+    headline_samples = list(evidence.get("headline_samples") or [])
 
     adj = 0.0
     reasons: list[str] = []
@@ -728,11 +746,21 @@ def _get_catalyst_news_score(direction: str) -> tuple[float, list[str]]:
     elif direction == "DOWN" and avg_score > 0.15:
         adj -= 0.02
 
-    adj = round(max(-0.06, min(0.06, adj)), 4)
-    _cache_set("catalyst_news", (adj, reasons))
+    return round(max(-0.06, min(0.06, adj)), 4), reasons
 
-    LOGGER.info(
-        f"Catalyst news: avg_score={avg_score:+.2f}, bull={strong_bull}, "
-        f"bear={strong_bear}, adj={adj:+.3f}"
-    )
+
+def _get_catalyst_news_score(direction: str) -> tuple[float, list[str]]:
+    """
+    Scan recent WOLF/customer/sector headlines for catalysts.
+    Returns (confidence_adj, reasons) for ``direction``. The headline
+    evidence is cached direction-neutrally; alignment is applied per call.
+    """
+    evidence = _catalyst_news_evidence()
+    adj, reasons = _catalyst_adjustment(evidence, direction)
+    if evidence.get("n"):
+        LOGGER.info(
+            f"Catalyst news: avg_score={evidence['avg_score']:+.2f}, "
+            f"bull={evidence['strong_bull']}, bear={evidence['strong_bear']}, "
+            f"direction={direction}, adj={adj:+.3f}"
+        )
     return adj, reasons
