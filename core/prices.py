@@ -573,12 +573,18 @@ def _polygon_spot(symbol):
     """
     if not POLYGON_KEY:
         return None
+    from core import polygon_rate
+    if not polygon_rate.try_acquire():
+        return None
     try:
         r = requests.get(
             f"https://api.polygon.io/v2/aggs/ticker/{symbol.upper()}/prev",
             params={"adjusted": "true", "apiKey": POLYGON_KEY},
             timeout=TIMEOUT,
         )
+        if r.status_code == 429:
+            polygon_rate.note_rate_limited("prev close")
+            return None
         if r.status_code == 200:
             data = r.json()
             results = data.get("results", [])
