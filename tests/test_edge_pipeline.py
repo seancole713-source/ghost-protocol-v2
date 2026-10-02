@@ -795,3 +795,18 @@ def test_v1_verified_uses_only_research_made_before_0905(ledger, monkeypatch):
                         lambda store, **k: seen.append(k["issued_at"]) or {"catalyst": None, "dilutive": None})
     P.morning_card(FakeAlpaca(), ledger, now=ts(9, 20), clock=lambda: ts(9, 21))
     assert seen and max(seen) == ts(9, 5)
+
+
+def test_upgrade_over_production_registrations_issues_the_card(ledger, monkeypatch):
+    """Audit NEW-01: fresh-store tests never exercised an upgrade. Seed the store with the
+    experiment rows exactly as production holds them (hashes registered before this release);
+    the new code must register over them without a FrozenSpecError and issue the card."""
+    monkeypatch.setenv("EDGE_RESEARCH_ENABLED", "1")
+    monkeypatch.setattr(P._research(), "verdict", lambda *a, **k: {"catalyst": None, "dilutive": None})
+    for spec in P.EXPERIMENTS:
+        ledger.store.put("experiments", spec.experiment_id, {
+            "experiment_id": spec.experiment_id, "spec_hash": FROZEN_HASHES[spec.experiment_id],
+            "spec": {}, "registered_at": ts(8, 0, date(2026, 9, 22)), "status": "active"})
+    out = P.morning_card(FakeAlpaca(), ledger, now=ts(9, 10))
+    assert out["status"] == "issued" and out["forecasts"] == ["SHOP"]
+    assert ledger.store.get("edge_cards", DAY.isoformat())["refused_specs"] == {}
