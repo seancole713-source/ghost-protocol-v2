@@ -521,9 +521,9 @@ def verdict(store, *, day: str, symbol: str, issued_at: int) -> Dict[str, Option
     # A claim counts only under an affirmative, complete review. A record written before that rule
     # (audit EDGE-06) may carry a passing status from an empty review: re-checked here -> unknown.
     complete = not RS.review_gaps(review)
-    usable = [c for c in claims if c["status"] != RS.QUARANTINED and complete]
-    pending = [c for c in claims if (c["status"] != RS.QUARANTINED and not complete)
-               or (c["status"] == RS.QUARANTINED and RS.unchecked(list(c.get("problems") or [])))]
+    usable = [c for c in claims if not RS.is_quarantined(c.get("status")) and complete]
+    pending = [c for c in claims if (not RS.is_quarantined(c.get("status")) and not complete)
+               or (RS.is_quarantined(c.get("status")) and RS.unchecked(list(c.get("problems") or [])))]
     headline = next((c["statement"] for c in usable if c["kind"] in specific), None)
     out: Dict[str, Any] = {"headline": headline}
     if headline is not None:

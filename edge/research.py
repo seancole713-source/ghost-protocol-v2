@@ -23,6 +23,12 @@ VERIFIED, SINGLE_SOURCE, QUARANTINED = "verified", "single_source", "quarantined
 # never clean and never rejected. Every such problem starts with REVIEW_INCOMPLETE.
 REVIEW_INCOMPLETE = "review incomplete"
 NO_USABLE_REVIEW = "no usable review"
+
+
+def is_quarantined(status: object) -> bool:
+    """Is a STORED claim status the quarantine status? Case-insensitive, so a historical row written
+    as "QUARANTINED" is never counted as usable or missed by a tally (audit EDGE-07)."""
+    return str(status or "").strip().lower() == QUARANTINED
 _PERCENT_CONFIDENCE = re.compile(r"\b\d{1,3}(\.\d+)?\s*%\s*(chance|probability|likely|confiden)", re.I)
 
 

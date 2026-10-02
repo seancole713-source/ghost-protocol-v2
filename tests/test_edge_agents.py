@@ -108,9 +108,24 @@ def test_research_quality_counts_quarantines_by_reviewer():
     store = MemoryStore()
     store.put("edge_research", "2026-09-23|SHOP", {"day": "2026-09-23", "symbol": "SHOP", "made_at": 1,
               "reviewer": "openai:gpt-4.1", "cost_usd": 0.4, "review": {"dilution_found": True, "entity_ok": True},
-              "claims": [{"status": "USABLE"}, {"status": "QUARANTINED", "problems": ["stale"]}]})
+              "claims": [{"status": "single_source"}, {"status": "quarantined", "problems": ["stale"]}]})
     q = SC.research_quality(store)["by_reviewer"]["openai:gpt-4.1"]
     assert (q["claims"], q["quarantined"], q["quarantine_rate"], q["dilution_flags"]) == (2, 1, 0.5, 1)
+
+
+def test_research_quality_counts_the_stored_lowercase_status_and_historical_mixed_case():
+    """Audit EDGE-07: research.py stores "quarantined" but the tally compared "QUARANTINED", so
+    production showed 5 quarantined MSGY claims as 0."""
+    from edge import research as RS
+    store = MemoryStore()
+    statuses = [RS.QUARANTINED] * 5 + ["QUARANTINED", " Quarantined ", RS.VERIFIED, RS.SINGLE_SOURCE, None]
+    store.put("edge_research", "2026-09-30|MSGY", {
+        "day": "2026-09-30", "symbol": "MSGY", "made_at": 1, "reviewer": "claude/reviewer", "review": {},
+        "claims": [{"status": s, "problems": ["reviewer: stale"]} for s in statuses]})
+    q = SC.research_quality(store)["by_reviewer"]["claude/reviewer"]
+    assert (q["claims"], q["quarantined"], q["quarantine_rate"]) == (10, 7, 0.7)
+    assert SC.research_quality(store)["top_quarantine_reasons"] == [("reviewer: stale", 7)]
+    assert not RS.is_quarantined(RS.VERIFIED) and not RS.is_quarantined(None)
 
 
 # ---- views -----------------------------------------------------------------

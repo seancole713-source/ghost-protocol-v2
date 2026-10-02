@@ -361,6 +361,15 @@ def test_an_old_record_cleared_by_an_empty_review_is_reread_as_unknown():
     assert v["catalyst"] is None and v["dilutive"] is None
 
 
+def test_a_historical_upper_case_quarantine_is_never_read_as_usable():
+    store = MemoryStore()
+    store.put("edge_research", "2026-09-23|SHOP", {
+        "day": "2026-09-23", "symbol": "SHOP", "made_at": ts(8, 35), "status": "researched",
+        "claims": [{"kind": "earnings", "statement": "beat", "status": "QUARANTINED", "problems": ["no citation"]}],
+        "review": {"entity_ok": True, "contradictions": [], "dilution_found": False, "stale": False}})
+    assert W.verdict(store, day="2026-09-23", symbol="SHOP", issued_at=ts(9, 10))["catalyst"] is False
+
+
 def test_found_nothing_is_no_catalyst_but_dilution_stays_unknown_without_a_review():
     store = MemoryStore()
     empty = json.dumps({"claims": [], "unknowns": ["no company-specific news for SHOP"]})

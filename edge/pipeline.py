@@ -823,7 +823,7 @@ def stored_catalysts(store, day: date, card: Dict[str, Any], radar_rows: List[Di
                 out.setdefault(r["symbol"], str(e.get("headline") or "")[:160])
     for rec in store.scan("edge_research", day=day.isoformat()):
         for cl in rec.get("claims") or []:
-            if cl.get("kind") in C.COMPANY_SPECIFIC and cl.get("status") != RS.QUARANTINED:
+            if cl.get("kind") in C.COMPANY_SPECIFIC and not RS.is_quarantined(cl.get("status")):
                 out.setdefault(str(rec.get("symbol") or "").upper(), str(cl.get("statement") or "")[:160])
     for it in radar_rows:
         if it.get("catalyst"):

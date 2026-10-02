@@ -31,7 +31,7 @@ from collections import Counter
 from datetime import date
 from typing import Any, Dict, List, Optional
 
-from edge import resolver as RV
+from edge import research as RS, resolver as RV
 from edge.contracts import ContractError, issue
 from edge.research_worker import not_researched_reason
 from edge.stats import wilson
@@ -151,7 +151,7 @@ def research_quality(store) -> Dict[str, Any]:
         s["wrong_entity"] += 1 if (rec.get("review") or {}).get("entity_ok") is False else 0
         for c in rec.get("claims") or []:
             s["claims"] += 1
-            if c.get("status") == "QUARANTINED":
+            if RS.is_quarantined(c.get("status")):     # stored lowercase; was compared as "QUARANTINED"
                 s["quarantined"] += 1
                 problems.update(str(p)[:80] for p in c.get("problems") or [])
     for s in by_rev.values():
