@@ -26,6 +26,7 @@ from datetime import date, datetime
 from typing import Any, Dict, Optional
 
 from edge.contracts import ET
+from shared.redaction import redact_exc
 
 COMMON = re.compile(r"^[A-Z]{1,5}$")
 MIN_PRICE, MAX_PRICE, MIN_PRIOR_DOLLARS = 2.0, 500.0, 2_000_000.0
@@ -135,13 +136,13 @@ def candidates(get, store, *, day: date, now: int, top: int = 50) -> Dict[str, A
     try:
         sc = scan(get, store, day=day, now=now, top=top)
     except Exception as exc:  # noqa: BLE001 - the screener still answers; the card names the failure
-        sc, notes["premarket_scan"] = {"gainers": [], "scanned": 0, "priced": 0}, f"{type(exc).__name__}: {str(exc)[:120]}"
+        sc, notes["premarket_scan"] = {"gainers": [], "scanned": 0, "priced": 0}, redact_exc(exc, 160)
     mv, updated = {}, None
     try:
         mv = A.movers(get, top=top)
         updated = A.iso_to_epoch(mv.get("last_updated"))
     except Exception as exc:  # noqa: BLE001
-        notes["movers"] = f"{type(exc).__name__}: {str(exc)[:120]}"
+        notes["movers"] = redact_exc(exc, 160)
     screener = [str(g["symbol"]).upper() for g in mv.get("gainers") or [] if g.get("symbol")]
     stale = updated is None or now - updated > 900
     ordered, seen = [], set()
@@ -166,7 +167,7 @@ def probe(get=None):
     try:
         out = scan(get, None, day=B.et_today(), now=now, top=5)
     except Exception as exc:  # noqa: BLE001
-        return B.Probe("movers.premarket_scan", "alpaca_iex", B.ERROR, note=f"{type(exc).__name__}: {str(exc)[:120]}")
+        return B.Probe("movers.premarket_scan", "alpaca_iex", B.ERROR, note=redact_exc(exc, 160))
     top = ", ".join(f"{g['symbol']} {g['gap_pct']:+.1f}%" for g in out["gainers"])
     return B.Probe("movers.premarket_scan", "alpaca_iex", B.OK if out["priced"] else B.EMPTY, rows=out["priced"],
                    note=f"scanned {out['scanned']}, {out['priced']} with a fresh current-session print, "

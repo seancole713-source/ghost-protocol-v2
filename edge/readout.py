@@ -225,6 +225,14 @@ def models(store) -> Dict[str, Any]:
 
 
 def view(store, name: str = "summary", day: Optional[str] = None, kind: Optional[str] = None) -> Dict[str, Any]:
+    """One named view. Every string is passed through shared.redaction on the way out: stored
+    provider errors (source_errors, notes, skipped days) can embed a request URL whose query
+    carries an API key (Polygon's apiKey=), and this is what MCP and the Railway log read."""
+    from shared.redaction import redact_obj
+    return redact_obj(_view(store, name, day, kind))
+
+
+def _view(store, name: str, day: Optional[str], kind: Optional[str]) -> Dict[str, Any]:
     if name not in VIEWS:
         return {"error": f"view must be one of {VIEWS}"}
     if name == "research":

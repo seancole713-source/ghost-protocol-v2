@@ -32,6 +32,7 @@ from edge import stats
 from edge.contracts import COUNTED, ET, WIN, ContractError, issue_intraday
 from edge.providers import alpaca as A, polygon as PG
 from edge.resolver import resolve_execution
+from shared.redaction import redact_exc
 
 VERSION = "post_split_momentum_backtest_v1"
 LOOKBACK_SPLIT_DAYS, MIN_PRIOR_DAY, MIN_5DAY, MIN_PRIOR_DOLLARS = 120, 25.0, 50.0, 2_000_000.0
@@ -123,7 +124,7 @@ def run(get, store, *, end_day: date, days: int = 60, warmup: int = 6,
             try:
                 trades.extend(_session(get, day, closes, rolling, splits, spec))
             except Exception as exc:  # noqa: BLE001
-                skipped.append({"day": day.isoformat(), "why": f"{type(exc).__name__}: {str(exc)[:80]}"})
+                skipped.append({"day": day.isoformat(), "why": redact_exc(exc, 120)})
         for r in rows:
             t, c = r.get("T"), r.get("c")
             if t and c:
