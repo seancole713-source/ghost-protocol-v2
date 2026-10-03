@@ -1611,6 +1611,17 @@ def workflow_health() -> Dict[str, Any]:
             (now,),
         )
         stale_leases = int((cur.fetchone() or (0,))[0])
+        # Dead letters alarm only while recent: a lifetime count held readiness red forever over one old
+        # task. The lifetime total stays visible in tasks["dead_letter"].
+        try:
+            dl_hours = max(1, int(os.getenv("AGENT_WORKFLOW_DEAD_LETTER_WINDOW_HOURS", "24")))
+        except (TypeError, ValueError):
+            dl_hours = 24
+        cur.execute(
+            "SELECT COUNT(*) FROM ghost_agent_tasks WHERE status='DEAD_LETTER' AND updated_at >= %s",
+            (now - dl_hours * 3600,),
+        )
+        dead_letter_recent = int((cur.fetchone() or (0,))[0])
         cur.execute(
             """SELECT validation_status, COUNT(*) FROM ghost_agent_evidence
                GROUP BY validation_status"""
@@ -1655,7 +1666,7 @@ def workflow_health() -> Dict[str, Any]:
     issues: List[str] = []
     if stale_leases:
         issues.append("stale_leases")
-    if counts.get("dead_letter", 0):
+    if dead_letter_recent:
         issues.append("dead_letter_tasks")
     if counts.get("pending", 0) > 0 and worker_counts["online"] < min_online:
         issues.append("workers_offline")
@@ -1668,6 +1679,8 @@ def workflow_health() -> Dict[str, Any]:
         "issues": issues,
         "degraded_reasons": issues,
         "tasks": counts,
+        "dead_letter_recent": dead_letter_recent,
+        "dead_letter_window_hours": dl_hours,
         "evidence": validation_counts,
         "quarantine_categories": category_counts,
         "workers": worker_counts,
