@@ -1,0 +1,24 @@
+{
+ "n_rows": 0,
+ "errors": 0,
+ "tp": 0,
+ "fn": 0,
+ "tn": 0,
+ "fp": 0,
+ "unknown": 0,
+ "precision": null,
+ "recall": null,
+ "specificity": null,
+ "catalyst_accuracy": null,
+ "accuracy_ci95": null,
+ "majority_baseline": null,
+ "dilution": {
+  "tp": 7,
+  "fn": 0,
+  "tn": 2,
+  "fp": 0,
+  "unknown": 1
+ },
+ "pit_ok": 1.0,
+ "trap_ok": 1.0
+}
