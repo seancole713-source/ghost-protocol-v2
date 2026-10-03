@@ -145,6 +145,20 @@ def backtest(store) -> Optional[Dict[str, Any]]:
     if ps:
         p = max(ps, key=lambda r: r.get("completed_at") or 0)
         out["post_split_momentum"] = {k: v for k, v in p.items() if k != "trades"}
+    from edge import backtest_second_day as SD
+    sd = store.scan(SD.TABLE)
+    if sd:
+        s = max(sd, key=lambda r: r.get("completed_at") or 0)
+        out["second_day_open"] = {k: v for k, v in s.items() if k != "trades"}
+    else:
+        prog = store.get(SD.PROGRESS_TABLE, SD.VERSION)
+        if prog:
+            out["second_day_open"] = {"status": "in_progress", "version": SD.VERSION,
+                                      **{k: prog.get(k) for k in ("start", "end", "done_through", "ticks")}}
+    e8 = store.scan("edge_backtest_edgar8k")
+    if e8:
+        e = max(e8, key=lambda r: r.get("completed_at") or 0)
+        out["edgar_8k_breakout"] = {k: v for k, v in e.items() if k not in ("trades_prereg", "picks_full")}
     return out
 
 

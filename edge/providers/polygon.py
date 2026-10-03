@@ -179,6 +179,39 @@ def splits(get: B.HttpGet, start: date, end: date, *, sleep=None, max_pages: int
     raise RuntimeError(f"polygon splits: page cap ({max_pages}) hit; the split list is incomplete")
 
 
+def tickers(get: B.HttpGet, as_of: date, *, ticker_type: Optional[str] = None, sleep=None,
+            pace_s: float = 0.0, max_pages: int = 40) -> List[Dict[str, Any]]:
+    """Every stock ticker listed on `as_of` -- point in time, through Polygon's `date` parameter
+    (names delisted since are included, names listed later are not): [{ticker, type, cik, name}].
+
+    `ticker_type` narrows to one Polygon reference type ("CS" = common stock; warrants, units and
+    rights are WARRANT, UNIT and RIGHT). `pace_s` spaces the pages (the key is shared). Raises when
+    the list is incomplete (an HTTP error, or `max_pages` ran out): a partial list is not a list."""
+    import time as _time
+    sleep = sleep or _time.sleep
+    url = _base_url() + "/v3/reference/tickers"
+    params: Dict[str, Any] = {"market": "stocks", "date": as_of.isoformat(), "active": "true",
+                              "limit": 1000, "apiKey": _key()}
+    if ticker_type:
+        params["type"] = ticker_type
+    out: List[Dict[str, Any]] = []
+    for page in range(max_pages):
+        if page and pace_s > 0:
+            sleep(pace_s)
+        r = _get_patiently(get, url, params, sleep=sleep)
+        r.raise_for_status()
+        p = r.json() or {}
+        for t in p.get("results") or []:
+            sym = str(t.get("ticker") or "").upper()
+            if sym:
+                out.append({"ticker": sym, "type": t.get("type"), "cik": t.get("cik"), "name": t.get("name")})
+        nxt = p.get("next_url")
+        if not nxt:
+            return out
+        url, params = nxt, {"apiKey": _key()}
+    raise RuntimeError(f"polygon tickers: page cap ({max_pages}) hit; the ticker list is incomplete")
+
+
 def minute_bars(get: B.HttpGet, symbol: str, day: date) -> List[tuple]:
     """Minute bars as edge.resolver Bars: (ts_s, o, h, l, c, v), ts = bar start."""
     r = _get_patiently(get, _base_url() + f"/v2/aggs/ticker/{symbol.upper()}/range/1/minute/{day}/{day}",
