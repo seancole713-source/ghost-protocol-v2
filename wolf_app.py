@@ -2473,14 +2473,21 @@ async def lifespan(app: FastAPI):
                     out = _ps.run(_edge_get(), store, end_day=end, days=days)
                     LOGGER.warning("EDGE_BACKTEST_POSTSPLIT %s", _json.dumps(out, default=str)[:6000])
                     return
-                # Then the preregistered second_day_open@v1 replay (EDGE_BT2_START .. 2026-10-02),
-                # once per version. It is resumable: each tick works until its budget (inside this
-                # job's timeout), stores its per-day progress, and the next tick continues.
+                # Then the two preregistered 2026-10-03 hypotheses, run side by side (operator: "run
+                # both, then see what works"): second_day_open@v1 and edgar_8k_breakout@v1. Both are
+                # resumable multi-tick replays, once per version; while both are pending they take
+                # alternate ticks, so neither waits for the other to finish.
+                from edge import backtest_edgar8k as _e8k
                 from edge import backtest_second_day as _sd
-                if not store.get(_sd.TABLE, _sd.VERSION):
+                sd_due = not store.get(_sd.TABLE, _sd.VERSION)
+                e8_due = not store.get(_e8k.TABLE, _e8k.VERSION)
+                if sd_due and (not e8_due or int(_time.time() // 1800) % 2 == 0):
                     budget = float(os.getenv("EDGE_BT2_BUDGET_S", "2700"))
                     out = _sd.run(_edge_get(), store, end_day=_sd.WINDOW_END, budget_s=budget)
                     LOGGER.warning("EDGE_BACKTEST_SECOND_DAY %s", _json.dumps(out, default=str)[:6000])
+                elif e8_due:
+                    out = _e8k.run(_edge_get(), store, end_day=_e8k.END_DAY)
+                    LOGGER.warning("EDGE_BACKTEST_EDGAR8K %s", _json.dumps(out, default=str)[:6000])
             except Exception as _e:
                 LOGGER.warning("edge backtest job failed: %s", str(_e)[:200])
                 raise
