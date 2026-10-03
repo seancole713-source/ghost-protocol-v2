@@ -29,11 +29,18 @@ def _iso_to_epoch(s: Any) -> Optional[int]:
 
 
 def _date_only(s: Any) -> Optional[date]:
-    """'2026-10-01' carries a day but no time: it must be judged as a whole day, never as midnight."""
+    """'2026-10-01' carries a day but no time: it must be judged as a whole day, never as midnight.
+    So does an exact-midnight stamp ('2026-10-01T00:00:00-04:00'): authors write it as a placeholder
+    for a filing whose time they did not see (eval v1, ON's SEC exhibit, published 10/1 4:34 pm)."""
+    txt = str(s)
     try:
-        return date.fromisoformat(str(s)) if len(str(s)) == 10 else None
+        if len(txt) == 10:
+            return date.fromisoformat(txt)
+        d = datetime.fromisoformat(txt.replace("Z", "+00:00"))
     except ValueError:
         return None
+    local = d if d.tzinfo is None else d.astimezone(ET)
+    return local.date() if (local.hour, local.minute, local.second) == (0, 0, 0) else None
 
 
 def in_window(published_at: Any, cut: int) -> Optional[bool]:
