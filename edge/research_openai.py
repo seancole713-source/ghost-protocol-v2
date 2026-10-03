@@ -122,7 +122,9 @@ saw a relative date ("1 day ago") -- weigh that when judging staleness.
 Reply with ONLY a JSON object:
 {{"entity_ok": bool (are the claims about {symbol} itself, not a namesake or a sector?),
   "contradictions": [str] (claims contradicted by their own quotes or by each other),
-  "dilution_found": bool (do the quotes mention an offering, ATM, registered direct, warrants?),
+  "dilution_found": bool (do the quotes show the COMPANY issuing new shares -- a primary offering,
+    ATM, registered direct, PIPE, warrants or convertibles? A secondary offering in which only
+    existing holders sell is NOT dilution; a deal that mixes both is),
   "stale": bool (do the quotes show the event was public before {prior_close} ET?),
   "notes": str}}"""
 

@@ -71,7 +71,10 @@ before the cutoff and within the 24 hours before it.
 Find dated, company-specific events for {symbol}: earnings or guidance, FDA/regulatory
 decisions, material contracts, M&A, index inclusion, analyst actions with a price target.
 Also look specifically for anything dilutive (offerings, ATM programs, registered directs,
-warrants) and for reverse splits, and report those as claims too.
+warrants) and for reverse splits, and report those as claims too. Dilution means the COMPANY
+issues new shares: a primary offering, ATM program, registered direct, PIPE, warrants or
+convertibles. A secondary offering in which only existing holders sell adds no new shares and is
+NOT dilution: report it with kind "other", never "offering_dilution". A deal that mixes both is.
 
 Search budget: at most {searches} web searches and {fetches} page opens for this whole task;
 anything past that fails. Search one query at a time, in this order:
@@ -112,7 +115,8 @@ Check, and only report what you verified (null for what you could not check):
 - entity_ok: are the claims about {symbol} itself, not a similarly named company or a sector?
 - contradictions: statements a primary source (company release, SEC filing) contradicts.
 - dilution_found: is there an offering, ATM program, registered direct or warrant issue in the
-  last 30 days that the claims do not mention?
+  last 30 days that the claims do not mention? Count only new shares issued by the company: a
+  secondary sale by existing holders alone is not dilution.
 - stale: were the events already public before the prior trading day's close?
 
 Reply with ONLY a JSON object:
