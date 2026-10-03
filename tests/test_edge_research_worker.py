@@ -662,3 +662,28 @@ def test_the_scheduler_retries_a_failed_symbol_only_after_its_backoff():
     import inspect
     from edge import pipeline as P
     assert "rw.due(" in inspect.getsource(P.research_step)
+
+
+def test_the_openai_reviewer_is_told_the_cutoff_and_the_prior_close():
+    """Eval 2026-10-03: without them gpt-6-sol judged ON's 10/1 4:34 pm deal 'stale' against its own
+    today (10/3) for a 10/2 08:34 cutoff."""
+    from edge import research_openai as RO
+    sent = {}
+
+    class H:
+        def post(self, url, json=None, **kw):
+            sent["prompt"] = json["messages"][0]["content"]
+            return NS(status_code=200, json=lambda: {"usage": {"prompt_tokens": 10, "completion_tokens": 5},
+                      "choices": [{"message": {"content": REVIEW_OK}}]})
+    import os
+    os.environ["OPENAI_API_KEY"], os.environ["EDGE_OPENAI_MODEL"] = "k", "gpt-6-sol"
+    try:
+        store = MemoryStore()
+        now = int(datetime(2026, 10, 2, 8, 34, tzinfo=ET).timestamp())          # a Friday
+        W.research_symbol(Client([reply(AUTHOR_OK)]), store, symbol="ON", day="2026-10-02", now=now, http=H())
+        assert "Research cutoff: 2026-10-02 08:34" in sent["prompt"]
+        assert "closed at 2026-10-01 16:00" in sent["prompt"]
+        # Monday's prior close is Friday's, not Sunday's.
+        assert W._prior_close(None, int(datetime(2026, 10, 5, 8, 34, tzinfo=ET).timestamp())) == "2026-10-02 16:00"
+    finally:
+        del os.environ["OPENAI_API_KEY"], os.environ["EDGE_OPENAI_MODEL"]
