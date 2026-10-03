@@ -97,3 +97,36 @@ def test_a_date_only_citation_is_judged_as_a_whole_day_not_midnight():
     assert G.in_window("2026-10-01T17:22:00-04:00", cut) is True
     assert G.in_window("2026-10-02T09:00:00", cut) is False  # naive = Eastern, after the cutoff
     assert G.in_window(None, cut) is None
+
+
+def test_the_openai_reviewer_path_is_used_recorded_and_its_fallback_flagged(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "stub")
+    monkeypatch.setenv("EDGE_OPENAI_MODEL", "gpt-6-sol")
+    case = CASES["r01"]
+    author = R._Stub([R._reply(_author(case, 3600))])                # no Claude review reply needed
+    out = R.run_case(case, 0, lambda c: author, allow_missing_model=False,
+                     http_factory=lambda c: R._StubHttp(R.CLEAN_REVIEW))
+    row = out["row"]
+    assert row["meta"]["reviewer"] == "openai:gpt-6-sol" and row["meta"]["reviewer_fallback"] is False
+    assert row["meta"]["reviewer_calls"][0]["served_model"] == "gpt-6-sol"
+    assert any("[reviewer:openai" in t["content"] for t in out["trace"] if t["role"] == "user")
+    # An unusable OpenAI reply makes the worker fall back to Claude, as in production: flagged, not hidden.
+    both = R._Stub([R._reply(_author(case, 3600)), R._reply(REVIEW)])
+    row = R.run_case(case, 0, lambda c: both, allow_missing_model=False,
+                     http_factory=lambda c: R._StubHttp(None, status=500))["row"]
+    assert row["meta"]["reviewer_fallback"] is True
+
+
+def test_a_substituted_reviewer_model_fails_the_attempt(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "stub")
+    monkeypatch.setenv("EDGE_OPENAI_MODEL", "gpt-6-sol")
+
+    class Swapped(R._StubHttp):
+        def post(self, url, **kw):
+            r = super().post(url, **kw)
+            r._p["model"] = "gpt-4.1"
+            return r
+    case = CASES["r01"]
+    out = R.run_case(case, 0, lambda c: R._Stub([R._reply(_author(case, 3600))]), allow_missing_model=False,
+                     http_factory=lambda c: Swapped(R.CLEAN_REVIEW))
+    assert out["error"]["failure_class"] == "served_model_mismatch"

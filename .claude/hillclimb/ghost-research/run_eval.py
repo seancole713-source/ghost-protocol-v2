@@ -65,6 +65,41 @@ class Recorder:
         return resp
 
 
+class HttpRecorder:
+    """Wraps the `requests`-like object the worker hands the OpenAI reviewer: records the request and
+    the reply (model, usage, text) so the trace shows the review and the served model is checked."""
+
+    def __init__(self, inner):
+        self.inner, self.calls = inner, []
+
+    def get(self, url, **kw):
+        return self.inner.get(url, **kw)
+
+    def post(self, url, **kw):
+        body = kw.get("json") or {}
+        entry = {"url": url, "model": body.get("model"),
+                 "prompt": ((body.get("messages") or [{}])[0] or {}).get("content")}
+        try:
+            r = self.inner.post(url, **kw)
+        except Exception as exc:  # noqa: BLE001 - the worker handles it; we only record it
+            entry["error"] = f"{type(exc).__name__}: {str(exc)[:160]}"
+            self.calls.append(entry)
+            raise
+        entry["status"] = getattr(r, "status_code", None)
+        try:
+            payload = r.json() or {}
+        except Exception:  # noqa: BLE001
+            payload = {}
+        entry["served_model"] = payload.get("model")
+        entry["usage"] = payload.get("usage")
+        try:
+            entry["text"] = str(((payload.get("choices") or [{}])[0].get("message") or {}).get("content") or "")
+        except (AttributeError, IndexError, TypeError):
+            entry["text"] = ""
+        self.calls.append(entry)
+        return r
+
+
 def _usage_totals(calls) -> Dict[str, int]:
     t = {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
     for c in calls:
@@ -107,15 +142,19 @@ def _author_raw(calls) -> Optional[Dict[str, Any]]:
     return W._json(text)
 
 
-def run_case(case: Dict[str, Any], rep: int, client_factory, *, allow_missing_model: bool) -> Dict[str, Any]:
-    """-> {"row": {...}, "trace": [...]} on a scorable result, or {"error": {...}}."""
+def run_case(case: Dict[str, Any], rep: int, client_factory, *, allow_missing_model: bool,
+             http_factory=None) -> Dict[str, Any]:
+    """-> {"row": {...}, "trace": [...]} on a scorable result, or {"error": {...}}.
+    With http_factory the worker gets an HTTP client and uses the OpenAI reviewer, as production does
+    (edge/pipeline.research_step passes `requests`); without it, the Claude reviewer."""
     rec_client = Recorder(client_factory(case), allow_missing_model=allow_missing_model)
+    rec_http = HttpRecorder(http_factory(case)) if http_factory else None
     store = MemoryStore()                                   # fresh state per (case, rep)
     now = G.cutoff_epoch(case["cutoff_et"])
     base = {"prompt_id": case["id"], "rep": rep}
     t0 = time.monotonic()
     try:
-        out = W.research_symbol(rec_client, store, symbol=case["symbol"], day=case["day"], now=now, http=None)
+        out = W.research_symbol(rec_client, store, symbol=case["symbol"], day=case["day"], now=now, http=rec_http)
     except ServedModelMismatch as exc:
         return {"error": {**base, "failure_class": "served_model_mismatch", "detail": str(exc),
                           "usage": _usage_totals(rec_client.calls)}}
@@ -126,6 +165,12 @@ def run_case(case: Dict[str, Any], rep: int, client_factory, *, allow_missing_mo
     if rec_client.mismatch:
         return {"error": {**base, "failure_class": "served_model_mismatch", "detail": rec_client.mismatch,
                           "usage": _usage_totals(rec_client.calls)}}
+    for h in (rec_http.calls if rec_http else []):
+        want_m, got_m = str(h.get("model") or ""), str(h.get("served_model") or "")
+        if got_m and not got_m.startswith(want_m):        # a dated snapshot of the asked model is fine
+            return {"error": {**base, "failure_class": "served_model_mismatch",
+                              "detail": f"reviewer asked {want_m}, served {got_m}",
+                              "usage": _usage_totals(rec_client.calls)}}
     rec = store.get("edge_research", f"{case['day']}|{case['symbol'].upper()}") or {}
     usage, searches = _usage_totals(rec_client.calls), _searches(rec_client.calls)
     if rec.get("author_stop") == "refusal":
@@ -149,9 +194,19 @@ def run_case(case: Dict[str, Any], rep: int, client_factory, *, allow_missing_mo
            "usage": usage,
            "meta": {**graded["meta"], "expected_catalyst": case["expected"]["catalyst"], "failure_class": failure,
                     "worker_cost_usd": rec.get("cost_usd"), "gold_source": case["gold_source"],
-                    "gold_verified": case["gold_verified"], "reviewer": rec.get("reviewer")}}
+                    "gold_verified": case["gold_verified"], "reviewer": rec.get("reviewer"),
+                    # Production falls back to the Claude reviewer when the OpenAI review is unusable;
+                    # the eval keeps that behaviour and flags it.
+                    "reviewer_fallback": bool(rec_http is not None and rec.get("claims")
+                                              and not str(rec.get("reviewer") or "").startswith("openai:")),
+                    "reviewer_calls": [{k: h.get(k) for k in ("model", "served_model", "status", "usage", "error")}
+                                       for h in (rec_http.calls if rec_http else [])]}}
     row["cost_usd"] = rec.get("cost_usd")
-    return {"row": row, "trace": _trace(rec_client.calls)}
+    trace = _trace(rec_client.calls)
+    for h in (rec_http.calls if rec_http else []):
+        trace.append({"role": "user", "content": f"[reviewer:openai {h.get('model')}]\n{h.get('prompt')}"})
+        trace.append({"role": "assistant", "content": h.get("text") or h.get("error") or ""})
+    return {"row": row, "trace": trace}
 
 
 # ---------- dry-run stubs: no network ----------
@@ -184,6 +239,32 @@ def stub_factory(mode: str):
     return make
 
 
+class _StubResp:
+    def __init__(self, payload, status=200):
+        self.status_code, self._p = status, payload
+
+    def json(self):
+        return self._p
+
+
+class _StubHttp:
+    """Answers the OpenAI reviewer with a clean review (or an HTTP error), no network."""
+
+    def __init__(self, review: Optional[Dict[str, Any]], status: int = 200):
+        self.review, self.status = review, status
+
+    def post(self, url, **kw):
+        model = (kw.get("json") or {}).get("model")
+        return _StubResp({"model": model, "usage": {"prompt_tokens": 2000, "completion_tokens": 300},
+                          "choices": [{"message": {"content": json.dumps(self.review)}}]}, self.status)
+
+    def get(self, url, **kw):
+        return _StubResp({}, 200)
+
+
+CLEAN_REVIEW = {"entity_ok": True, "contradictions": [], "dilution_found": False, "stale": False, "notes": ""}
+
+
 # ---------- harness integrity gate ----------
 def harness_sha(state: Dict[str, Any]) -> str:
     h = hashlib.sha256()
@@ -203,6 +284,8 @@ def main(argv=None) -> int:
     ap.add_argument("--ids", default="", help="comma-separated case ids; default all scored cases")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--dry-run", choices=["oracle", "empty", "constant_none"], help="stub client, no network, no spend")
+    ap.add_argument("--reviewer", choices=["openai", "claude"], default="openai",
+                    help="openai = production's reviewer (needs OPENAI_API_KEY); claude = the fallback reviewer")
     ap.add_argument("--out", default="")
     ap.add_argument("--approve-harness", action="store_true", help="operator-only: record the harness sha")
     a = ap.parse_args(argv)
@@ -219,9 +302,18 @@ def main(argv=None) -> int:
     if a.dry_run:
         out = Path(a.out or HERE / "_dryrun" / a.dry_run)
         factory, allow_missing = stub_factory(a.dry_run), False
+        http_factory = None
+        if a.reviewer == "openai":
+            os.environ.setdefault("OPENAI_API_KEY", "dry-run-stub")   # stub HTTP only; never sent anywhere
+            os.environ.setdefault("EDGE_OPENAI_MODEL", "gpt-6-sol")
+            http_factory = lambda case: _StubHttp(CLEAN_REVIEW)  # noqa: E731
     else:
         if not (os.getenv("ANTHROPIC_API_KEY") or "").strip():
             print("ANTHROPIC_API_KEY is not set: a live run cannot start (no spend happened).", file=sys.stderr)
+            return 3
+        if a.reviewer == "openai" and not (os.getenv("OPENAI_API_KEY") or "").strip():
+            print("OPENAI_API_KEY is not set: the production (OpenAI) reviewer cannot run (no spend happened). "
+                  "Set it, or pass --reviewer claude.", file=sys.stderr)
             return 3
         sha_file, sha = HERE / ".harness_sha", harness_sha(state)
         if a.approve_harness:
@@ -233,6 +325,11 @@ def main(argv=None) -> int:
         os.environ.setdefault("EDGE_RESEARCH_DAILY_USD", "1000")      # per-case stores are fresh; no shared cap
         client = W._client()
         factory, allow_missing = (lambda case: client), False
+        http_factory = None
+        if a.reviewer == "openai":
+            import requests
+            os.environ.setdefault("EDGE_OPENAI_MODEL", "gpt-6-sol")      # production's reviewer model
+            http_factory = lambda case: requests  # noqa: E731
 
     (out / "traces").mkdir(parents=True, exist_ok=True)
     res_p, err_p = out / "results.jsonl", out / "errors.jsonl"
@@ -249,7 +346,7 @@ def main(argv=None) -> int:
         case, rep = item
         for attempt in range(4):                     # jittered backoff on 429 / overloaded, retries counted
             try:
-                r = run_case(case, rep, factory, allow_missing_model=allow_missing)
+                r = run_case(case, rep, factory, allow_missing_model=allow_missing, http_factory=http_factory)
             except Exception as exc:  # noqa: BLE001
                 r = {"error": {"prompt_id": case["id"], "rep": rep, "failure_class": "harness_error", "detail": repr(exc)}}
             det = str((r.get("error") or {}).get("detail", ""))
