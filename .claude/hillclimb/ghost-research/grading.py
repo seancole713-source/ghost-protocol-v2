@@ -62,14 +62,19 @@ def grade_case(case: Dict[str, Any], *, rec: Dict[str, Any], verdict: Dict[str, 
     use = usable_claims(rec)
     haystack = " ".join(c.get("statement", "") + " " + " ".join(c.get("urls") or []) for c in use).lower()
     hit = [t for t in case.get("trap_terms") or [] if t.lower() in haystack]
+    grade = {"catalyst_correct": int(outcome in ("tp", "tn")), "pit_ok": int(not bad), "trap_ok": int(not hit)}
+    want_d, got_d = case["expected"].get("dilution"), verdict.get("dilutive")
+    d_outcome = None
+    if want_d is not None:
+        # Unknown (None) is its own outcome and counts as wrong: "could not check" is never "no dilution".
+        d_outcome = "unknown" if got_d is None else ("tp" if got_d else "fn") if want_d else ("fp" if got_d else "tn")
+        grade["dilution_correct"] = int(d_outcome in ("tp", "tn"))
     return {
-        "grade": {"catalyst_correct": int(outcome in ("tp", "tn")),
-                  "pit_ok": int(not bad),
-                  "trap_ok": int(not hit)},
+        "grade": grade,
         "meta": {"outcome": outcome, "verdict": {k: verdict.get(k) for k in ("catalyst", "dilutive", "headline", "not_researched")},
                  "out_of_window_cites": bad, "undated_cites": len(cites) - len(dated),
                  "trap_hits": hit, "n_claims": len(rec.get("claims") or []), "n_usable": len(use),
-                 "dilution_reported_unscored": verdict.get("dilutive")},
+                 "dilution_outcome": d_outcome, "dilution_reported": got_d},
     }
 
 
@@ -101,6 +106,8 @@ def summarize(rows: List[Dict[str, Any]], errors: int = 0) -> Dict[str, Any]:
             1 for r in ok if r["meta"]["outcome"] == "unknown" and r["meta"].get("expected_catalyst") is False)),
         "catalyst_accuracy": rate(acc, n), "accuracy_ci95": wilson(acc, n) if n else None,
         "majority_baseline": (max(exp_pos, n - exp_pos) / n) if n else None,
+        "dilution": {k: sum(1 for r in ok if r["meta"].get("dilution_outcome") == k)
+                     for k in ("tp", "fn", "tn", "fp", "unknown")},
         "pit_ok": rate(sum(r["grade"]["pit_ok"] for r in ok), n),
         "trap_ok": rate(sum(r["grade"]["trap_ok"] for r in ok), n),
     }

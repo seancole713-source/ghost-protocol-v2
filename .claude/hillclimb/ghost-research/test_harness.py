@@ -74,3 +74,15 @@ def test_summary_recomputes_from_rows_and_reports_majority_baseline():
              "meta": {"outcome": o, "expected_catalyst": o in ("tp", "fn")}} for o in ("tp", "fn", "tn", "tn", "tn")]
     s = G.summarize(rows)
     assert s["recall"] == 0.5 and s["specificity"] == 1.0 and s["majority_baseline"] == 0.6
+
+
+def test_dilution_is_graded_only_when_the_case_has_a_dilution_label():
+    case = dict(CASES["r02"], expected={"catalyst": True, "dilution": True})
+    rec = {"claims": []}
+    g = G.grade_case(case, rec=rec, verdict={"catalyst": True, "dilutive": None}, author_raw=None)
+    assert g["grade"]["dilution_correct"] == 0 and g["meta"]["dilution_outcome"] == "unknown"   # unknown != no
+    g = G.grade_case(case, rec=rec, verdict={"catalyst": True, "dilutive": True}, author_raw=None)
+    assert g["grade"]["dilution_correct"] == 1
+    trap = dict(case, expected={"catalyst": False, "dilution": False})       # a secondary sale is not dilution
+    assert G.grade_case(trap, rec=rec, verdict={"catalyst": False, "dilutive": True}, author_raw=None)["meta"]["dilution_outcome"] == "fp"
+    assert "dilution_correct" not in G.grade_case(CASES["r03"], rec=rec, verdict={"catalyst": False}, author_raw=None)["grade"]
