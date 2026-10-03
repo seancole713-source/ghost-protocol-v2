@@ -121,12 +121,22 @@ catalyst, so a change to it changes which names a frozen rule selects. It is
 versioned and cohorted exactly like the resolver (operator decision 2026-10-03,
 option 1):
 
-* The current version is `CLASSIFIER_VERSION` (`headlines_v2`). Every new forecast
-  carries `classifier_version` in its evidence, and every card row, card grade,
-  control-arm day and row, Top 10 list and backtest dataset row carries it too.
-* A row **without** the tag is dated by its session day: 2026-10-02 or later ran
-  `headlines_v2` (#229 deployed before that session; the classifier is unchanged
-  since), anything earlier ran `headlines_v1` (`classifier_of`, and
+* The current version is `CLASSIFIER_VERSION` (`headlines_v3`, from session 2026-10-05).
+  Every new forecast carries `classifier_version` in its evidence, and every card row,
+  card grade, control-arm day and row, Top 10 list and backtest dataset row carries it too.
+* Versions so far:
+  - `headlines_v1`: sessions before 2026-10-02. Product news that mentioned "earnings"
+    could count as an earnings catalyst (HOOD 2026-09-30).
+  - `headlines_v2`: 2026-10-02 to 2026-10-03 (#229). Earnings previews/dates and
+    earnings-named products are not catalysts.
+  - `headlines_v3`: from 2026-10-05 (operator decision 2026-10-03). As v2, plus a
+    company's monthly, preliminary, unaudited or record revenue/sales, or a revenue
+    milestone, counts as a results (`earnings`) catalyst ("DataMeds AI's Corexa Pharmacy
+    Surpasses $1 Million In Monthly Revenue", MEDS 2026-10-01); a scheduled revenue or
+    sales release ("to report Q3 sales on ...") is `earnings_scheduled`, not a catalyst.
+* A row **without** the tag is dated by its session day: tags began with `headlines_v2`,
+  so an untagged row from 2026-10-02 on ran `headlines_v2`, anything earlier
+  `headlines_v1`; every `headlines_v3` row is tagged (`classifier_of`, and
   `edge/ledger.py row_classifier` / `forecast_classifier`).
 * The cohort name is the resolver version, qualified when the classifier is not the
   current one (`edge/ledger.py cohort_key`): `resolver_v2~headlines_v1`. Every reader
