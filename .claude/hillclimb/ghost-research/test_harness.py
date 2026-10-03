@@ -130,3 +130,10 @@ def test_a_substituted_reviewer_model_fails_the_attempt(monkeypatch):
     out = R.run_case(case, 0, lambda c: R._Stub([R._reply(_author(case, 3600))]), allow_missing_model=False,
                      http_factory=lambda c: Swapped(R.CLEAN_REVIEW))
     assert out["error"]["failure_class"] == "served_model_mismatch"
+
+
+def test_an_exact_midnight_stamp_is_a_date_placeholder_not_a_time():
+    cut = G.cutoff_epoch("2026-10-02 08:34")
+    assert G.in_window("2026-10-01T00:00:00-04:00", cut) is True      # eval v1 r01: SEC exhibit
+    assert G.in_window("2026-09-30T00:00:00-04:00", cut) is False
+    assert G.in_window("2026-10-01T00:01:00-04:00", cut) is False     # a real time is still judged as one

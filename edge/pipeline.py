@@ -311,7 +311,8 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50,
                "verified_reasons": v.reasons if v else [], "verified_missing": v.missing if v else [],
                "ref_price": ref["price"], "ref_ts": ref["ts"], "prev_close": st["prev_close"],
                "avg_dollars": st["avg_dollars"],
-               "catalyst": signals["catalyst"].evidence.get("headline")}
+               "catalyst": signals["catalyst"].evidence.get("headline"),
+               "classifier_version": C.CLASSIFIER_VERSION}
         rows.append(row)
         if d.verdict == S.ELIGIBLE:
             eligible.append(row)

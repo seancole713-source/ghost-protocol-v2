@@ -115,6 +115,12 @@ def forecast_id_for(experiment_id: str, symbol: str, session_date: str) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()[:24]
 
 
+def _tagged(evidence: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Evidence stamped with the headline classifier that decided it (never pooled across versions)."""
+    from edge.catalysts import CLASSIFIER_VERSION
+    return {"classifier_version": CLASSIFIER_VERSION, **dict(evidence or {})}
+
+
 def issue(
     spec: ExperimentSpec, *, symbol: str, session_date: date, entry_ref: float,
     issued_at: int, prob: Optional[float] = None,
@@ -150,7 +156,7 @@ def issue(
         time_exit=_clock(session_date, spec.time_exit_et),
         entry_ref=_cents(ref), entry_trigger=trigger, entry_limit=limit,
         target=target, stop=stop, shares=shares, prob=prob,
-        evidence=dict(evidence or {}),
+        evidence=_tagged(evidence),
     )
 
 
@@ -212,5 +218,5 @@ def issue_intraday(
         symbol=symbol.upper(), session_date=day, issued_at=int(issued_at),
         window_start=window_start, entry_expiry=window_start + minutes * 60, time_exit=time_exit,
         entry_ref=_cents(ref), entry_trigger=trigger, entry_limit=limit,
-        target=target, stop=stop, shares=shares, prob=prob, evidence=dict(evidence or {}),
+        target=target, stop=stop, shares=shares, prob=prob, evidence=_tagged(evidence),
     )

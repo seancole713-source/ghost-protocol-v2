@@ -113,3 +113,29 @@ were. A backtest run from now on records `resolver_version` in its summary. To
 measure history under resolver_v2, bump the backtest version (a new record), as
 v4 did for the earlier resolver change. That would also re-run overnight model
 training, so it is the operator's decision.
+
+## Headline classifier (task #65)
+
+The headline classifier (`edge/catalysts.py classify`) decides what counts as a
+catalyst, so a change to it changes which names a frozen rule selects. It is
+versioned and cohorted exactly like the resolver (operator decision 2026-10-03,
+option 1):
+
+* The current version is `CLASSIFIER_VERSION` (`headlines_v2`). Every new forecast
+  carries `classifier_version` in its evidence, and every card row carries it too.
+* A forecast or card row **without** the tag is dated: session 2026-10-02 or later
+  ran `headlines_v2` (#229 deployed before that session; the classifier is unchanged
+  since), anything earlier ran `headlines_v1`.
+* `Ledger.cohort_of` qualifies a non-current classifier: `resolver_v2~headlines_v1`.
+  Only the unqualified current resolver is a headline, so forecasts decided by an older
+  classifier are reported under `other_resolvers`, labelled, and are never in the
+  headline, promotion, retirement or readout.
+* Stored forecasts and outcomes are never rewritten. HOOD 2026-09-30 stays a recorded
+  Gap-and-Go v1 forecast in the `headlines_v1` cohort.
+* `edge/replay.py` flags drift only for rows decided by the current classifier. Rows from
+  an older one that decide differently today are listed under
+  `explained_by_classifier_change`, not as drift.
+* The frozen specs (numbers, hashes) are unchanged. The next classifier change must
+  bump `CLASSIFIER_VERSION` and add a `CLASSIFIER_LABELS` entry.
+* Not split by classifier yet: control-arm days and model-training rows, which are
+  day- and outcome-level and still cohort by resolver only.
