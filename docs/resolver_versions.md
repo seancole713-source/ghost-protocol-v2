@@ -122,10 +122,16 @@ versioned and cohorted exactly like the resolver (operator decision 2026-10-03,
 option 1):
 
 * The current version is `CLASSIFIER_VERSION` (`headlines_v2`). Every new forecast
-  carries `classifier_version` in its evidence, and every card row carries it too.
-* A forecast or card row **without** the tag is dated: session 2026-10-02 or later
-  ran `headlines_v2` (#229 deployed before that session; the classifier is unchanged
-  since), anything earlier ran `headlines_v1`.
+  carries `classifier_version` in its evidence, and every card row, card grade,
+  control-arm day and row, Top 10 list and backtest dataset row carries it too.
+* A row **without** the tag is dated by its session day: 2026-10-02 or later ran
+  `headlines_v2` (#229 deployed before that session; the classifier is unchanged
+  since), anything earlier ran `headlines_v1` (`classifier_of`, and
+  `edge/ledger.py row_classifier` / `forecast_classifier`).
+* The cohort name is the resolver version, qualified when the classifier is not the
+  current one (`edge/ledger.py cohort_key`): `resolver_v2~headlines_v1`. Every reader
+  below uses it, so the headline is always the current resolver **and** the current
+  classifier.
 * `Ledger.cohort_of` qualifies a non-current classifier: `resolver_v2~headlines_v1`.
   Only the unqualified current resolver is a headline, so forecasts decided by an older
   classifier are reported under `other_resolvers`, labelled, and are never in the
@@ -137,5 +143,37 @@ option 1):
   `explained_by_classifier_change`, not as drift.
 * The frozen specs (numbers, hashes) are unchanged. The next classifier change must
   bump `CLASSIFIER_VERSION` and add a `CLASSIFIER_LABELS` entry.
-* Not split by classifier yet: control-arm days and model-training rows, which are
-  day- and outcome-level and still cohort by resolver only.
+* **Both control arms** (`edge/control.py`, `edge/control_v2.py`): APPROVED means an
+  intraday forecast was issued, and the classifier decides which names get one, so
+  the arms split by classifier too. A newly graded day records `classifier_version`
+  on the day and on each graded row: the tag its session's intraday forecasts carry
+  (`session_classifier`), else the session day's date. Forecasts of one session
+  tagged by two classifiers (a deploy mid-session) make a mixed cohort, e.g.
+  `resolver_v2~headlines_v1+headlines_v2`, never the headline. A row's classifier is
+  its own tag, else its day's, else its session date (`row_classifier`); rows kept
+  when a partial day is completed keep the classifier their day recorded
+  (`tag_kept_rows`). `regimes`, the headline and every SUCCESS/KILL decision read
+  only the current resolver and classifier; other cohorts are under
+  `other_resolvers`, labelled legacy, and decide nothing. The tag is stored beside
+  the design, never in it: `control_arm_v1` / `control_arm_v2` and their hashes
+  (605453cd49128631 / 3baa238954712ba2) are unchanged.
+* **Model training** (`edge/models.py training_rows`): the catalyst features
+  (`catalyst_company`, `catalyst_policy`, `dilutive`) come from the classifier, so a
+  row is fit, calibrated and tested only when it is the current resolver **and** the
+  current classifier. New backtest dataset rows (and the backtest summary) carry
+  `classifier_version`; an untagged row is dated by its `day`, so historical rows
+  without the tag never enter (conservative: a backtest re-run tags its rows).
+  `evaluate` reports `classifier_version`; `rows_other_resolvers` counts every row
+  left out, by resolver or classifier.
+* **The card scorecard** (`edge/scorecard.py`): the keyword verdict, the dilution
+  check, the Top 10 score and the model's features all read the classifier, so every
+  comparison (base rate, keyword catalyst, AI research, Top 10, model) reads one
+  cohort. Each newly graded card row records its card's `classifier_version`; older
+  cohorts (e.g. a 2026-09-30 row graded by resolver_v2: `resolver_v2~headlines_v1`)
+  are under `other_resolvers`, labelled.
+* **The Top 10** (`edge/top10.py`): one list is one day and one classifier and pools
+  nothing itself; it records the classifier its card was scored with
+  (`classifier_version`, shown by `with_outcomes`). Days are read together only in
+  the scorecard's Top 10 comparison, which is split as above.
+* Not affected: `edge/backtest_postsplit.py` (no catalysts) and the radar population
+  the control arms grade (every detected name, whatever the classifier said).

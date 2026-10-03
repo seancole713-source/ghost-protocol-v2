@@ -279,8 +279,10 @@ def session(get, day: date, prev_rows: List[dict], today_rows: List[dict], rolli
         dataset.append({"day": day.isoformat(), "symbol": r["symbol"], "features": r["features"],
                         "avg_dollars": r["avg_dollars"], "market": m.outcome, "simulated": x.outcome,
                         "pnl_usd": x.pnl_usd, "catalyst_ok": r["main"] == S.ELIGIBLE,
-                        # which resolver graded it: the model trains on one cohort only (NEW-02)
-                        "resolver_version": m.resolver_version})
+                        # which resolver graded it and which headline classifier made its catalyst
+                        # features: the model trains on one cohort only (NEW-02, task #65)
+                        "resolver_version": m.resolver_version,
+                        "classifier_version": C.CLASSIFIER_VERSION})
     priced = sum(1 for r in rows if r["ref"])
     return {"day": day.isoformat(), "candidates": len(rows), "priced": priced, "results": results,
             "dataset": dataset, "price_basis": PRICE_BASIS,
@@ -292,6 +294,7 @@ def session(get, day: date, prev_rows: List[dict], today_rows: List[dict], rolli
 
 def summarize(sessions: List[Dict[str, Any]], break_even: float) -> Dict[str, Any]:
     out: Dict[str, Any] = {"version": BACKTEST_VERSION, "resolver_version": RESOLVER_VERSION,
+                           "classifier_version": C.CLASSIFIER_VERSION,
                            "price_basis": PRICE_BASIS, "price_basis_detail": PRICE_BASIS_DETAIL,
                            "sessions": len(sessions), "limits": LIMITS,
                            "break_even": break_even, "experiments": {}}

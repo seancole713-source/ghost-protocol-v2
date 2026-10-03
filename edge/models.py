@@ -13,9 +13,11 @@ the frozen levels). Three rules decide whether it is ever used:
      top-2 the frozen rule uses, on the same untouched test days, with at least
      40 test trades. Otherwise it is recorded as NOT QUALIFIED and never
      produces a forecast.
-  4. ONE RESOLVER COHORT. Only rows graded by the current resolver (their
-     "resolver_version"; none = resolver_v1) are fit, calibrated or tested
-     (training_rows, audit NEW-02). Older grades are never pooled in.
+  4. ONE COHORT. Only rows graded by the current resolver (their
+     "resolver_version"; none = resolver_v1) AND whose catalyst features the
+     current headline classifier made (their "classifier_version"; none = dated
+     by the row's day) are fit, calibrated or tested (training_rows, audit
+     NEW-02, task #65). Older grades and classifiers are never pooled in.
 
 A qualified model is frozen: coefficients, scaler, calibration steps and the
 training window are hashed into its own experiment spec
@@ -36,13 +38,15 @@ MIN_TEST_TRADES = 40
 
 
 def training_rows(rows: List[dict]) -> List[dict]:
-    """The one resolver cohort a model is trained, calibrated and judged on: rows graded by the
-    CURRENT resolver (audit NEW-02). A row without "resolver_version" was graded by resolver_v1
-    (e.g. the stored gap_and_go_backtest_v7 dataset) and never enters fitting, isotonic
-    calibration or the out-of-sample test beside resolver_v2 rows."""
-    from edge.ledger import resolver_of
+    """The one cohort a model is trained, calibrated and judged on: rows graded by the CURRENT
+    resolver (audit NEW-02) whose catalyst features (catalyst_company, catalyst_policy, dilutive)
+    the CURRENT headline classifier made (task #65). A row without "resolver_version" was graded by
+    resolver_v1 (e.g. the stored gap_and_go_backtest_v7 dataset); a row without
+    "classifier_version" is dated by its day (2026-10-02 on = headlines_v2, earlier =
+    headlines_v1). Neither ever enters fitting, isotonic calibration or the out-of-sample test."""
+    from edge.ledger import cohort_key, resolver_of, row_classifier
     from edge.resolver import RESOLVER_VERSION
-    return [r for r in rows if resolver_of(r) == RESOLVER_VERSION]
+    return [r for r in rows if cohort_key(resolver_of(r), row_classifier(r, r.get("day"))) == RESOLVER_VERSION]
 
 
 def _triggered(rows: List[dict]) -> List[dict]:
@@ -88,9 +92,10 @@ def predict(art: Dict[str, Any], feats: Dict[str, Any]) -> Optional[float]:
 
 
 def evaluate(dataset: List[dict], *, min_train_days: int = 20, test_days: int = 5) -> Dict[str, Any]:
+    from edge.catalysts import CLASSIFIER_VERSION
     from edge.resolver import RESOLVER_VERSION
     offered = len(dataset)
-    dataset = training_rows(dataset)      # one resolver cohort, train AND test (NEW-02)
+    dataset = training_rows(dataset)      # one resolver + classifier cohort, train AND test (NEW-02, #65)
     days = sorted({r["day"] for r in dataset})
     brier_m = brier_b = 0.0
     n_scored = 0
@@ -140,7 +145,9 @@ def evaluate(dataset: List[dict], *, min_train_days: int = 20, test_days: int = 
     return {"scored": n_scored, "brier_skill": bss, "model_trades": len(model_hits), "model_win_rate": mr,
             "model_win_rate_ci": [lo, hi] if model_hits else None, "baseline_trades": len(base_hits),
             "baseline_win_rate": br, "qualified": not unmet, "unmet": unmet,
-            "resolver_version": RESOLVER_VERSION, "cohort_rows": len(dataset),
+            "resolver_version": RESOLVER_VERSION, "classifier_version": CLASSIFIER_VERSION,
+            "cohort_rows": len(dataset),
+            # rows of any other cohort: an older resolver or an older headline classifier
             "rows_other_resolvers": offered - len(dataset),
             "method": "walk-forward by date; isotonic fit on the last 25% of TRAIN days only"}
 

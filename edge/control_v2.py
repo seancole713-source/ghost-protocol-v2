@@ -178,8 +178,9 @@ def grade_day(get, store, *, day: date, now: int) -> Dict[str, Any]:
     if prior and prior.get("complete"):
         return {"status": "already_graded", "rows": len(prior.get("rows") or [])}
     register(store, now=now)
+    classifier = V1.session_classifier(store, ds)   # decided the approvals; not part of the frozen design
     base = {"day": ds, "graded_at": now, "design_version": DESIGN["version"], "design_hash": DESIGN_HASH,
-            "resolver_version": V1.RESOLVER_VERSION,
+            "resolver_version": V1.RESOLVER_VERSION, "classifier_version": classifier,
             "label": LABEL}
     radar = store.scan("edge_radar", session_date=ds)
     if not radar:
@@ -212,6 +213,7 @@ def grade_day(get, store, *, day: date, now: int) -> Dict[str, Any]:
         else:
             row.update(grade_row(sym, day, int(it["detected_at"]), appr.get(sym) or [], bars.get(sym) or []))
             row["resolver_version"] = V1.RESOLVER_VERSION
+            row["classifier_version"] = classifier
         rows.append(row)
     complete = not bad
     store.put("edge_control_v2", ds, {**base, "feed": feed, "complete": complete, "truncated": bad, "rows": rows})
@@ -285,8 +287,9 @@ def evaluate(variant: str, a: Dict[str, Any], u: Dict[str, Any],
 def summary(store) -> Dict[str, Any]:
     """Approved vs unapproved comparisons, per feed regime (never pooled) and variant, cumulative.
 
-    Resolver versions are never pooled either (audit NEW-02): `regimes`, the headline and every
-    decision read only rows graded by the current resolver; each older cohort is reported under
+    Resolver versions are never pooled either (audit NEW-02), nor headline classifiers (task #65):
+    `regimes`, the headline and every decision read only rows graded by the current resolver whose
+    approvals the current classifier decided; each older cohort is reported under
     `other_resolvers`, labelled legacy. The frozen design and its criteria are untouched."""
     days = sorted(store.scan("edge_control_v2"), key=lambda d: d.get("day") or "")
     cohorts = V1.resolver_cohorts(days, lambda r: r.get("arms"))
@@ -297,7 +300,8 @@ def summary(store) -> Dict[str, Any]:
             "alpha_per_variant": round(DESIGN["alpha"] / DESIGN["tests"], 4),
             "hypothesis": DESIGN["hypothesis"], "success": DESIGN["success"], "kill": DESIGN["kill"],
             "intervals": DESIGN["intervals"], "days": len(days), "current_regime": current,
-            "resolver_version": V1.RESOLVER_VERSION, "regimes": out,
+            "resolver_version": V1.RESOLVER_VERSION, "classifier_version": V1.CLASSIFIER_VERSION,
+            "regimes": out,
             "headline": headline(out, current), "label": LABEL}
     if cohorts:
         base["other_resolvers"] = V1.legacy_cohorts(cohorts, _regimes)
@@ -350,8 +354,8 @@ def headline(regimes: Dict[str, Any], current: Optional[str]) -> str:
         return "control arm v2 (point-in-time): nothing graded yet (runs after the close, 16:20-20:00 ET)"
     if current not in regimes:
         return (f"control arm v2 (point-in-time; {current.upper()}): nothing graded under "
-                f"{V1.RESOLVER_VERSION} yet; older resolver cohorts are shown separately, labelled "
-                "legacy, and decide nothing")
+                f"{V1.RESOLVER_VERSION} with {V1.CLASSIFIER_VERSION} yet; older resolver and classifier "
+                "cohorts are shown separately, labelled legacy, and decide nothing")
     g = regimes[current]
     v = DESIGN["headline_variant"]
     p = g["variants"][v]
@@ -371,7 +375,7 @@ def v1_exploratory(store) -> Dict[str, Any]:
     """v1, unchanged numbers, labelled for what it is."""
     s = V1.summary(store)
     out = {"label": V1_LABEL, "design_version": s["design_version"], "design_hash": s["design_hash"],
-           "resolver_version": s["resolver_version"],
+           "resolver_version": s["resolver_version"], "classifier_version": s["classifier_version"],
            # older resolver cohorts: counted, labelled, never in the regimes below (NEW-02)
            **({"other_resolvers": {v: {"label": c["label"], "days": c["days"],
                                        "regimes": {f: {"sessions": g["sessions"], "graded_names": g["graded_names"]}

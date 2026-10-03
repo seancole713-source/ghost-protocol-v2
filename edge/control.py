@@ -33,6 +33,7 @@ from statistics import NormalDist
 from typing import Any, Dict, List, Optional, Tuple
 
 from edge import stats
+from edge.catalysts import CLASSIFIER_VERSION
 from edge.contracts import COUNTED, ET, GAP_AND_GO_V1, WIN, ContractError, FrozenSpecError, issue_intraday
 from edge.resolver import RESOLVER_VERSION, resolve_execution
 from shared.redaction import redact
@@ -101,13 +102,45 @@ def row_resolver(day_rec: Dict[str, Any], row: Dict[str, Any]) -> str:
     return row.get("resolver_version") or day_rec.get("resolver_version") or "resolver_v1"
 
 
+def row_classifier(day_rec: Dict[str, Any], row: Dict[str, Any]) -> str:
+    """The headline classifier whose approvals labelled a control row (task #65): APPROVED means an
+    intraday forecast was issued, and the classifier decides which names get one. The row's own
+    tag, else its day's, else dated by the session day (2026-10-02 on = headlines_v2, earlier =
+    headlines_v1). Selects rows; never re-grades or rewrites them."""
+    from edge.ledger import row_classifier as tagged
+    return tagged({"classifier_version": row.get("classifier_version") or day_rec.get("classifier_version")},
+                  day_rec.get("day"))
+
+
+def row_cohort(day_rec: Dict[str, Any], row: Dict[str, Any]) -> str:
+    """A control row's cohort: its resolver version, qualified by its classifier when that is not
+    the current one ("resolver_v2~headlines_v1"). Only the unqualified current resolver is the
+    headline."""
+    from edge.ledger import cohort_key
+    return cohort_key(row_resolver(day_rec, row), row_classifier(day_rec, row))
+
+
+def session_classifier(store, ds: str) -> str:
+    """The classifier that decided a session's approvals, recorded when the day is graded: the tag
+    its intraday forecasts carry (every forecast is tagged when issued), else dated by the session
+    day. Forecasts of one session tagged with two classifiers (a deploy mid-session) make a mixed
+    cohort, never the current one."""
+    from edge import intraday as I
+    from edge.catalysts import classifier_of
+    from edge.ledger import forecast_classifier
+    ids = {s.experiment_id for s in I.INTRADAY_SPECS}
+    tags = {forecast_classifier(f) for f in store.scan("forecasts", session_date=ds) if f.get("experiment_id") in ids}
+    return "+".join(sorted(tags)) if tags else classifier_of(None, ds)
+
+
 def resolver_cohorts(days: List[Dict[str, Any]], has_result) -> Dict[str, List[Tuple[str, Dict[str, Any]]]]:
-    """{resolver version: [(day, row)]} over every graded row. Cohorts are never pooled."""
+    """{cohort: [(day, row)]} over every graded row; a cohort is the resolver version, qualified
+    by the headline classifier when that is not the current one (row_cohort). Never pooled."""
     out: Dict[str, List[Tuple[str, Dict[str, Any]]]] = {}
     for d in days:
         for r in d.get("rows") or []:
             if has_result(r):
-                out.setdefault(row_resolver(d, r), []).append((d["day"], r))
+                out.setdefault(row_cohort(d, r), []).append((d["day"], r))
     return out
 
 
@@ -120,9 +153,16 @@ def current_regime(cohorts: Dict[str, List[Tuple[str, Dict[str, Any]]]]) -> Opti
 def tag_kept_rows(prior: Optional[Dict[str, Any]], kept: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     """A day re-graded for missing data keeps its graded rows exactly as written; each one that
     has no resolver tag is labelled with the version its day recorded when it was graded (none =
-    resolver_v1), so the new day-level tag can never relabel an older row."""
+    resolver_v1), and each one with no classifier tag with the classifier its day recorded (none =
+    dated by the session day), so the new day-level tags can never relabel an older row."""
     version = row_resolver(prior or {}, {})
-    return {s: (r if r.get("resolver_version") else {**r, "resolver_version": version}) for s, r in kept.items()}
+    classifier = row_classifier(prior or {}, {})
+    out = {}
+    for s, r in kept.items():
+        tags = {**({} if r.get("resolver_version") else {"resolver_version": version}),
+                **({} if r.get("classifier_version") else {"classifier_version": classifier})}
+        out[s] = {**r, **tags} if tags else r
+    return out
 
 
 # ------------------------------------------------------------------ helpers
@@ -254,9 +294,11 @@ def grade_day(get, store, *, day: date, now: int) -> Dict[str, Any]:
         return {"status": "already_graded", "rows": len(prior.get("rows") or [])}
     register(store, now=now)
     radar = store.scan("edge_radar", session_date=ds)
+    classifier = session_classifier(store, ds)   # decided the approvals; not part of the frozen design
     if not radar:            # e.g. an early close: nothing detected, nothing to grade
         store.put("edge_control", ds, {"day": ds, "graded_at": now, "feed": None, "design_version": DESIGN["version"],
                                        "design_hash": DESIGN_HASH, "resolver_version": RESOLVER_VERSION,
+                                       "classifier_version": classifier,
                                        "complete": True, "truncated": [], "rows": [], "label": LABEL})
         return {"status": "no_radar"}
     approvals = _approvals(store, ds)
@@ -285,11 +327,12 @@ def grade_day(get, store, *, day: date, now: int) -> Dict[str, Any]:
         else:
             row.update(grade_symbol(sym, day, int(it["detected_at"]), bars.get(sym) or []))
             row["resolver_version"] = RESOLVER_VERSION
+            row["classifier_version"] = classifier
         rows.append(row)
     complete = not bad
     store.put("edge_control", ds, {"day": ds, "graded_at": now, "feed": feed, "design_version": DESIGN["version"],
                                    "design_hash": DESIGN_HASH, "resolver_version": RESOLVER_VERSION,
-                                   "complete": complete, "truncated": bad,
+                                   "classifier_version": classifier, "complete": complete, "truncated": bad,
                                    "rows": rows, "label": LABEL})
     return {"status": "graded" if complete else "partial", "feed": feed, "rows": len(rows),
             "approved": sum(1 for r in rows if r["approved"]), "truncated": bad}
@@ -351,8 +394,9 @@ def evaluate(variant: str, a: Dict[str, Any], u: Dict[str, Any]) -> Dict[str, An
 def summary(store) -> Dict[str, Any]:
     """Approved vs unapproved, per feed regime (never pooled) and per variant, cumulative.
 
-    Resolver versions are never pooled either (audit NEW-02): `regimes`, the headline and every
-    decision read only rows graded by the current resolver; each older cohort is reported under
+    Resolver versions are never pooled either (audit NEW-02), nor headline classifiers (task #65):
+    `regimes`, the headline and every decision read only rows graded by the current resolver whose
+    approvals the current classifier decided; each older cohort is reported under
     `other_resolvers`, labelled legacy. The frozen design and its criteria are untouched."""
     days = sorted(store.scan("edge_control"), key=lambda d: d.get("day") or "")
     cohorts = resolver_cohorts(days, lambda r: r.get("variants"))
@@ -363,7 +407,8 @@ def summary(store) -> Dict[str, Any]:
             "alpha_per_variant": round(DESIGN["alpha"] / DESIGN["tests"], 4),
             "hypothesis": DESIGN["hypothesis"], "success": DESIGN["success"], "kill": DESIGN["kill"],
             "days": len(days), "current_regime": current, "resolver_version": RESOLVER_VERSION,
-            "regimes": out, "headline": headline(out, current), "label": LABEL}
+            "classifier_version": CLASSIFIER_VERSION, "regimes": out, "headline": headline(out, current),
+            "label": LABEL}
     if cohorts:
         base["other_resolvers"] = legacy_cohorts(cohorts, _regimes)
     return base
@@ -410,8 +455,9 @@ def headline(regimes: Dict[str, Any], current: Optional[str]) -> str:
     if not current:
         return "control arm: nothing graded yet (runs after the close, 16:20-20:00 ET)"
     if current not in regimes:
-        return (f"control arm ({current.upper()}): nothing graded under {RESOLVER_VERSION} yet; older "
-                "resolver cohorts are shown separately, labelled legacy, and decide nothing")
+        return (f"control arm ({current.upper()}): nothing graded under {RESOLVER_VERSION} with "
+                f"{CLASSIFIER_VERSION} yet; older resolver and classifier cohorts are shown separately, "
+                "labelled legacy, and decide nothing")
     g = regimes[current]
     v = DESIGN["headline_variant"]
     p = g["variants"][v]

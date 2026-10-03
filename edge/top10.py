@@ -14,6 +14,10 @@ The score uses only what the card knows at issue time, all point-in-time:
   price                    $2-$500, as rule E2
 Premarket relative volume is NOT in it: the free IEX feed cannot measure it honestly
 before the open. Weights are fixed and versioned (METHOD); changing them is a new METHOD.
+The catalyst points read the headline classifier's kinds, so each list records the classifier
+that classified its card ("classifier_version"; none = dated by the day, task #65). One list is
+one day and one classifier; the scorecard's Top 10 comparison is where days are read together,
+and it splits them by classifier (edge/scorecard.py).
 """
 from __future__ import annotations
 
@@ -89,7 +93,10 @@ def build(card: Dict[str, Any]) -> Dict[str, Any]:
                            "avg_dollars": r.get("avg_dollars"), "catalyst": r.get("catalyst"), **s})
     ranked.sort(key=lambda x: (-x["score"], -(x.get("avg_dollars") or 0)))
     top = [{"rank": i + 1, **x} for i, x in enumerate(ranked[:SIZE])]
+    from edge.ledger import row_classifier
+    tagged = next((r for r in card.get("rows") or [] if r.get("classifier_version")), None)
     return {"day": card.get("day"), "issued_at": card.get("issued_at"), "method": METHOD,
+            "classifier_version": row_classifier(tagged, card.get("day")),
             "considered": len(ranked), "candidates": len(card.get("rows") or []), "list": top,
             "note": ("a learning list, never a trade: graded after the close at the frozen Gap-and-Go "
                      "levels; only priced gainers can be ranked")}
@@ -105,7 +112,9 @@ def with_outcomes(store, day: str) -> Optional[Dict[str, Any]]:
     out = dict(t)
     # outcome = the frictionless forecast grade; execution = the order as written, with costs (U12).
     # resolver_version = which resolver graded it; a grade without one is resolver_v1 (NEW-02).
-    from edge.ledger import resolver_of
+    # classifier_version = which headline classifier the list was scored with (task #65).
+    from edge.ledger import resolver_of, row_classifier
+    out["classifier_version"] = row_classifier(t, day)
     out["list"] = [{**x, "outcome": (by_sym.get(x["symbol"]) or {}).get("outcome"),
                     "execution": (by_sym.get(x["symbol"]) or {}).get("execution"),
                     "resolver_version": (resolver_of(by_sym[x["symbol"]])

@@ -43,18 +43,22 @@ def test_an_exhausted_gap_and_a_bad_price_are_penalised():
     assert any("exhausted" in r for r in T.score(row("X", 1.5, 1.0, 50e6))["reasons"])
 
 
+# Graded by the current resolver, on a card decided by the current headline classifier (NEW-02, #65).
+CURRENT = {"resolver_version": "resolver_v2", "classifier_version": "headlines_v2"}
+
+
 def test_the_view_joins_the_after_close_grades_and_the_scorecard_compares():
     st = MemoryStore()
     st.put("edge_top10", "2026-09-24", T.build({"day": "2026-09-24", "rows": [
         row("BB", 8.47, 7.94, 60e6, [C.EARNINGS]), row("GLND", 3.10, 2.91, 44e6)]}))
     assert R.view(st, "top10", "2026-09-24")["graded"] is False
     st.put("edge_card_outcomes", "2026-09-24", {"day": "2026-09-24", "rows": [
-        {"symbol": "BB", "outcome": "WIN", "execution": "WIN", "baseline": "ELIGIBLE", "resolver_version": "resolver_v2"},
-        {"symbol": "GLND", "outcome": "WIN", "execution": "NO_FILL", "baseline": "ELIGIBLE", "resolver_version": "resolver_v2"},
-        {"symbol": "OTHER", "outcome": "LOSS", "execution": "LOSS", "baseline": "ELIGIBLE", "resolver_version": "resolver_v2"}]})
+        {"symbol": "BB", "outcome": "WIN", "execution": "WIN", "baseline": "ELIGIBLE", **CURRENT},
+        {"symbol": "GLND", "outcome": "WIN", "execution": "NO_FILL", "baseline": "ELIGIBLE", **CURRENT},
+        {"symbol": "OTHER", "outcome": "LOSS", "execution": "LOSS", "baseline": "ELIGIBLE", **CURRENT}]})
     # A graded day from before the Top 10 existed: its rows are not "not picked" (U12).
     st.put("edge_card_outcomes", "2026-09-23", {"day": "2026-09-23", "rows": [
-        {"symbol": "EARLY", "outcome": "LOSS", "execution": "LOSS", "baseline": "ELIGIBLE", "resolver_version": "resolver_v2"}]})
+        {"symbol": "EARLY", "outcome": "LOSS", "execution": "LOSS", "baseline": "ELIGIBLE", **CURRENT}]})
     v = R.view(st, "top10")
     assert v["graded"] is True and {x["symbol"]: x["outcome"] for x in v["list"]} == {"BB": "WIN", "GLND": "WIN"}
     assert {x["symbol"]: x["execution"] for x in v["list"]} == {"BB": "WIN", "GLND": "NO_FILL"}
