@@ -363,3 +363,53 @@ def test_a_persistent_429_is_a_named_source_error_not_no_data(ledger, monkeypatc
     assert beat["source_errors"]["alpaca"]["kind"] == "rate_limited"
     assert beat["source_errors"]["alpaca"]["path"] == "/v2/stocks/bars"
     assert "RateLimited" in beat["error"] and "no_movers" not in beat["error"]
+
+
+# ---------------- Task #59: an ELIGIBLE name with no forecast says exactly why (VEEA 2026-10-01) --
+
+def _prior_catalyst_forecasts(ledger, syms, at):
+    for s in syms:
+        f = issue_intraday(I.CATALYST_BREAKOUT, symbol=s, session_date=DAY, entry_ref=50.0, issued_at=at)
+        ledger.record(f, now=at)
+
+
+def test_an_eligible_name_over_the_daily_cap_names_the_cap(ledger):
+    """2026-10-01: VEEA (+88%, catalyst "Veea Announces Agreement With TROLLEE Holdings ...") turned
+    catalyst_breakout ELIGIBLE at 11:34 ET; ACN (09:48) and SNPS (09:53) had already used the
+    2-a-day cap. The radar said only "daily cap, entry window or already recorded". The cap is the
+    rule working as designed -- unchanged -- but the record now names it."""
+    for spec in I.INTRADAY_SPECS:
+        ledger.register(spec, now=ts(9, 45))
+    _prior_catalyst_forecasts(ledger, ["ACN", "SNPS"], ts(9, 48))
+    out = I.tick(Market(ts(10, 40)), ledger, now=ts(10, 40))
+    assert "catalyst_breakout@v1:CATX" not in out["issued"]
+    assert len(ledger.store.scan("forecasts", experiment_id="catalyst_breakout@v1")) == 2   # cap unchanged
+    catx = ledger.store.get("edge_radar", "2026-09-23|CATX")
+    assert catx["blocker"]["verdict"] == "ELIGIBLE"
+    assert catx["blocker"]["reasons"] == [
+        "eligible, but no forecast recorded: daily cap reached (2 of 2 catalyst_breakout@v1 forecasts today)"]
+    assert any(m.startswith("catalyst_breakout@v1:CATX: daily cap reached") for m in out["not_recorded"])
+    beat = ledger.store.get(I.TICK_TABLE, DAY.isoformat())
+    assert beat["not_recorded"] == out["not_recorded"]
+
+
+def test_a_refused_contract_is_named_never_swallowed(ledger, monkeypatch):
+    """The old `except Exception: return None` hid WHY a contract was refused."""
+    def refuse(*a, **k):
+        raise ContractError("too late in the session for this setup's entry window")
+    monkeypatch.setattr(I, "issue_intraday", refuse)
+    out = I.tick(Market(ts(10, 40)), ledger, now=ts(10, 40))
+    assert out["issued"] == []
+    catx = ledger.store.get("edge_radar", "2026-09-23|CATX")
+    assert catx["blocker"]["reasons"] == ["eligible, but no forecast recorded: contract refused: "
+                                          "too late in the session for this setup's entry window"]
+
+
+def test_an_unexpected_build_error_is_named_and_the_tick_goes_on(ledger, monkeypatch):
+    def boom(*a, **k):
+        raise KeyError("rvol")
+    monkeypatch.setattr(I, "issue_intraday", boom)
+    out = I.tick(Market(ts(10, 40)), ledger, now=ts(10, 40))
+    assert out["status"] == "watched" and out["movers"] == 4
+    catx = ledger.store.get("edge_radar", "2026-09-23|CATX")
+    assert catx["blocker"]["reasons"][0].startswith("eligible, but no forecast recorded: forecast not built: ")
