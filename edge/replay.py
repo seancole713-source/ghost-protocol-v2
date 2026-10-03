@@ -10,7 +10,7 @@ code, and that is a new version, not a fix.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from edge import catalysts as C, detectors as D, setups as S
 
@@ -32,24 +32,34 @@ def _signals(inp: Dict[str, Any]) -> Dict[str, D.Signal]:
     }
 
 
-def replay_card(card: Dict[str, Any]) -> List[Dict[str, Any]]:
+def replay_card(card: Dict[str, Any], explained: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
+    """Drift = a verdict today's code decides differently with the SAME headline classifier. A row
+    decided under an older classifier differs by design (the classifier is versioned and its
+    forecasts are a separate cohort, task #65): it goes to `explained`, never to drift."""
     drift = []
     for row in card.get("rows") or []:
         inp = row.get("inputs")
         if inp is None:
             continue                     # a card from before inputs were stored
+        cls = C.classifier_of({"classifier_version": row.get("classifier_version")}, card.get("day"))
         sig = _signals(inp)
         for strategy, key in (("premarket_continuation", "verdict"), ("gap_baseline", "baseline_verdict")):
             now = S.decide(strategy, sig).verdict
             if row.get(key) is not None and now != row[key]:
-                drift.append({"day": card.get("day"), "symbol": row["symbol"], "strategy": strategy,
-                              "recorded": row[key], "replayed": now})
+                d = {"day": card.get("day"), "symbol": row["symbol"], "strategy": strategy,
+                     "recorded": row[key], "replayed": now}
+                if cls == C.CLASSIFIER_VERSION:
+                    drift.append(d)
+                elif explained is not None:
+                    explained.append({**d, "classifier": cls, "current_classifier": C.CLASSIFIER_VERSION})
     return drift
 
 
 def replay_all(store, *, last_n: int = 30) -> Dict[str, Any]:
     cards = sorted(store.scan("edge_cards"), key=lambda c: c.get("day") or "")[-last_n:]
-    drift = [d for c in cards for d in replay_card(c)]
+    explained: List[Dict[str, Any]] = []
+    drift = [d for c in cards for d in replay_card(c, explained)]
     checked = sum(1 for c in cards for r in c.get("rows") or [] if r.get("inputs") is not None)
     return {"status": "drift" if drift else "consistent", "cards": len(cards), "rows_checked": checked,
-            "drift": drift[:50]}
+            "drift": drift[:50], "classifier": C.CLASSIFIER_VERSION,
+            "explained_by_classifier_change": explained[:50]}

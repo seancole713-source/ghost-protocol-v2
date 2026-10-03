@@ -92,6 +92,10 @@ def resolver_of(outcome: Optional[Dict[str, Any]]) -> str:
 
 def resolver_label(version: str) -> str:
     """A cohort as a reader should see it, its known biases included."""
+    if "~" in version:
+        from edge.catalysts import CLASSIFIER_LABELS
+        res, cls = version.split("~", 1)
+        return f"{resolver_label(res)}; decided by {CLASSIFIER_LABELS.get(cls, cls)}"
     if version in RESOLVER_LABELS:
         return RESOLVER_LABELS[version]
     parts = version.split("+")
@@ -378,8 +382,20 @@ class Ledger:
     resolver_of = staticmethod(resolver_of)
 
     def cohort_of(self, f: Dict[str, Any]) -> str:
-        """The resolver cohort a forecast belongs to (see resolver_cohort)."""
-        return resolver_cohort(self.store, f)
+        """The cohort a forecast belongs to: its resolver cohort (see resolver_cohort), qualified by
+        the headline classifier when that is not the current one ("resolver_v2~headlines_v1"). Only
+        the unqualified current resolver is a headline, so a forecast decided by an older classifier
+        is reported beside it, labelled, never pooled into it (task #65, docs/resolver_versions.md)."""
+        from edge.catalysts import CLASSIFIER_VERSION, classifier_of
+        res = resolver_cohort(self.store, f)
+        ev = f.get("evidence") or {}
+        if isinstance(ev, str):
+            try:
+                ev = json.loads(ev)
+            except ValueError:
+                ev = {}
+        cls = classifier_of(ev, f.get("session_date"))
+        return res if cls == CLASSIFIER_VERSION else f"{res}~{cls}"
 
     def _by_resolver(self, forecasts: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
         out: Dict[str, List[Dict[str, Any]]] = {}

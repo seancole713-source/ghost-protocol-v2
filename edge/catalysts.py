@@ -20,6 +20,30 @@ from typing import Dict, Iterable, List, Optional
 EARNINGS, GUIDANCE, FDA, CONTRACT, MNA = "earnings", "guidance", "fda_regulatory", "contract", "m_and_a"
 INDEX, ANALYST, OFFERING, REVERSE_SPLIT, POLICY, OTHER = (
     "index_inclusion", "analyst_action", "offering_dilution", "reverse_split", "policy_macro", "other")
+# The headline classifier is versioned like the resolver (docs/resolver_versions.md, "Headline
+# classifier"): a change in what counts as a catalyst changes which names a frozen rule selects, so
+# forecasts made under different classifiers are never pooled. Forecasts carry their version in
+# evidence; one without it is dated: session 2026-10-02 or later ran this classifier (#229, deployed
+# before that session; the file is unchanged since), anything earlier ran an older one.
+CLASSIFIER_VERSION = "headlines_v2"
+CLASSIFIER_SINCE = "2026-10-02"
+LEGACY_CLASSIFIER = "headlines_v1"
+CLASSIFIER_LABELS = {
+    "headlines_v1": ("headlines_v1 (legacy, sessions before 2026-10-02: product news that mentioned "
+                     "'earnings' could count as an earnings catalyst, e.g. HOOD 2026-09-30)"),
+    "headlines_v2": ("headlines_v2 (current, from 2026-10-02: earnings previews/dates and "
+                     "earnings-named products are not catalysts)"),
+}
+
+
+def classifier_of(evidence: Optional[Dict] = None, session_date: Optional[str] = None) -> str:
+    """The classifier a forecast or card row was decided with: its own tag, else by session date."""
+    tag = (evidence or {}).get("classifier_version") if isinstance(evidence, dict) else None
+    if tag:
+        return str(tag)
+    return CLASSIFIER_VERSION if (session_date or "") >= CLASSIFIER_SINCE else LEGACY_CLASSIFIER
+
+
 DILUTIVE = frozenset({OFFERING})
 MECHANICAL = frozenset({REVERSE_SPLIT})
 PRICE_ACTION = "price_action"          # describes a move; never a catalyst (never in COMPANY_SPECIFIC)
