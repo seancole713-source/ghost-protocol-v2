@@ -372,9 +372,9 @@ def _tick(get, ledger: Ledger, *, now: int, top: int = 50, http=None,
     hist = _history(get, store, syms, day, feed)
     shorts = _short_data(http, store, syms, day, now=now)
     try:
-        items = A.news(get, syms, start=_iso(now - 86_400))
+        items, news_unknown = A.news_complete(get, syms, start=_iso(now - 86_400))
     except Exception:  # noqa: BLE001 - recorded as unknown, never guessed
-        items = None
+        items, news_unknown = None, set()
 
     issued: List[str] = []
     late_refused: List[str] = []
@@ -403,7 +403,7 @@ def _tick(get, ledger: Ledger, *, now: int, top: int = 50, http=None,
         cum_now = sum(b[5] for b in bars)
         history_at_minute = hist.get(s, {}).get(minute) or []
         ev = None
-        if items is not None:
+        if items is not None and s not in news_unknown:     # a page-capped answer is not "no news"
             evs = [C.make(s, str(n.get("headline") or ""), source=str(n.get("source") or ""), url=str(n.get("url") or ""),
                           published_at=A.iso_to_epoch(n.get("created_at")) or now,
                           first_seen_at=now, tickers=[x.upper() for x in n.get("symbols") or []])
@@ -424,6 +424,11 @@ def _tick(get, ledger: Ledger, *, now: int, top: int = 50, http=None,
         if item.catalyst is None and sig["catalyst"].state == D.PASS:
             item.catalyst = {"kind": sig["catalyst"].evidence.get("kind"),
                              "headline": str(sig["catalyst"].evidence.get("headline") or "")[:160], "at": now}
+        if item.catalyst is None and ev is not None:
+            seen = sorted(ev, key=lambda e: -e.published_at)
+            latest = [{"kind": e.kind, "headline": e.headline[:120]} for e in seen[:3]]
+            if (item.news_seen or {}).get("latest") != latest or (item.news_seen or {}).get("items") != len(ev):
+                item.news_seen = {"items": len(ev), "latest": latest, "at": now}
         best, closest = None, None
         for spec in INTRADAY_SPECS:
             if spec.experiment_id in _SECONDARY:

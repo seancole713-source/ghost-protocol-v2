@@ -413,3 +413,69 @@ def test_an_unexpected_build_error_is_named_and_the_tick_goes_on(ledger, monkeyp
     assert out["status"] == "watched" and out["movers"] == 4
     catx = ledger.store.get("edge_radar", "2026-09-23|CATX")
     assert catx["blocker"]["reasons"][0].startswith("eligible, but no forecast recorded: forecast not built: ")
+
+
+# ------------- Task #59: "no catalyst" must say what the feed carried, and a capped feed is unknown --
+
+class NewsMarket(Market):
+    """The market above, with its own news tape: `stories` [(symbols, headline, hh, mm)], and
+    every news page answering with a next_page_token when `capped`."""
+
+    def __init__(self, now, stories, capped=False):
+        super().__init__(now)
+        self.stories, self.capped, self.news_requests = stories, capped, []
+
+    def __call__(self, url, params=None, headers=None, timeout=None):
+        if "/v1beta1/news" in url:
+            asked = set(params["symbols"].split(","))
+            if "page_token" not in params:
+                self.news_requests.append(sorted(asked))
+            news = [{"headline": h, "created_at": iso(ts(hh, mm)), "symbols": list(syms), "source": "x", "url": "u"}
+                    for syms, h, hh, mm in self.stories if asked & set(syms)]
+            return Resp({"news": news, "next_page_token": "more" if self.capped else None})
+        return super().__call__(url, params=params, headers=headers, timeout=timeout)
+
+
+def test_a_name_with_no_catalyst_keeps_the_headlines_the_feed_carried(ledger):
+    """2026-10-01 MEDS (+37%): "no dated company-specific catalyst" -- with nothing on record to
+    tell whether the feed never carried its 06:00 release or the classifier read it as not
+    company-specific. The release as published ("DataMeds AI's Corexa Pharmacy Surpasses $1
+    Million In Monthly Revenue") is tagged "other" by the keyword classifier. The radar now keeps
+    what the feed carried and how each story was read; the classifier itself is unchanged."""
+    meds = "DataMeds AI's Corexa Pharmacy Surpasses $1 Million In Monthly Revenue"
+    m = NewsMarket(ts(10, 40), [(["CATX"], "CATX wins contract award from Navy", 8, 0),
+                                (["QUIET"], meds, 6, 0)])
+    I.tick(m, ledger, now=ts(10, 40))
+    q = ledger.store.get("edge_radar", "2026-09-23|QUIET")
+    assert q["catalyst"] is None
+    assert q["news_seen"] == {"items": 1, "latest": [{"kind": "other", "headline": meds}], "at": ts(10, 40)}
+    cont = ledger.store.get("edge_radar", "2026-09-23|CONT")
+    assert cont["news_seen"] == {"items": 0, "latest": [], "at": ts(10, 40)}      # the feed had no story
+    catx = ledger.store.get("edge_radar", "2026-09-23|CATX")
+    assert catx["catalyst"]["kind"] == "contract" and catx["news_seen"] is None
+    from edge import readout as RO
+    items = {i["symbol"]: i for i in RO.radar(ledger.store, "2026-09-23")["items"]}
+    assert items["QUIET"]["news_seen"]["latest"][0]["kind"] == "other"
+
+
+def test_a_page_capped_news_answer_is_unknown_never_no_catalyst(ledger, caplog):
+    """The radar asked for every mover's 24h news in one request capped at 8 pages, newest first;
+    a capped answer lost the oldest (pre-market) releases and read as "no catalyst"."""
+    m = NewsMarket(ts(10, 40), [(["CATX"], "CATX wins contract award from Navy", 8, 0)], capped=True)
+    out = I.tick(m, ledger, now=ts(10, 40))
+    assert "page cap hit" in caplog.text
+    assert m.news_requests[0] == ["CATX", "CONT", "QUIET", "STALE"]
+    assert m.news_requests[1:] == [["CATX"], ["CONT"], ["QUIET"], ["STALE"]]   # re-asked one at a time
+    assert not any(x.startswith("catalyst_breakout") for x in out["issued"])
+    q = ledger.store.get("edge_radar", "2026-09-23|QUIET")
+    assert not any("no dated company-specific catalyst" in r for r in q["blocker"]["reasons"])
+    assert q["news_seen"] is None
+
+
+def test_news_is_asked_in_chunks_and_a_complete_chunk_is_used_whole():
+    from edge.providers import alpaca as A
+    m = NewsMarket(ts(10, 40), [(["S05"], "S05 wins contract award from Navy", 8, 0)])
+    syms = [f"S{i:02d}" for i in range(45)]
+    items, unknown = A.news_complete(m, syms, start=iso(ts(10, 40) - 86_400))
+    assert [len(r) for r in m.news_requests] == [20, 20, 5] and unknown == set()
+    assert [n["headline"] for n in items] == ["S05 wins contract award from Navy"]

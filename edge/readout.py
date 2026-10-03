@@ -208,7 +208,8 @@ def radar(store, day: Optional[str] = None) -> Dict[str, Any]:
                     "detected_at": it.get("detected_at"), **_clock("detected_at", it.get("detected_at")),
                     "last_reasons": b.get("reasons") or [], "last_reasons_strategy": b.get("strategy"),
                     "last_reasons_at": b.get("at"), **_clock("last_reasons_at", b.get("at")),
-                    "catalyst": (it.get("catalyst") or {}).get("headline")})
+                    "catalyst": (it.get("catalyst") or {}).get("headline"),
+                    "news_seen": it.get("news_seen")})
     return {"day": d, "states": dict(Counter(i["state"] for i in out)),
             "items": out[:40]}
 

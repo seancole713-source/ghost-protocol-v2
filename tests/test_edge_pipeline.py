@@ -810,3 +810,23 @@ def test_upgrade_over_production_registrations_issues_the_card(ledger, monkeypat
     out = P.morning_card(FakeAlpaca(), ledger, now=ts(9, 10))
     assert out["status"] == "issued" and out["forecasts"] == ["SHOP"]
     assert ledger.store.get("edge_cards", DAY.isoformat())["refused_specs"] == {}
+
+
+class CappedNews(FakeAlpaca):
+    """Task #59: every news page answers with a next_page_token -- the page cap is always hit."""
+
+    def __call__(self, url, params=None, headers=None, timeout=None):
+        r = super().__call__(url, params=params, headers=headers, timeout=timeout)
+        if "/v1beta1/news" in url:
+            r._p = {**r._p, "next_page_token": "more"}
+        return r
+
+
+def test_a_page_capped_news_answer_leaves_the_card_catalyst_unknown_never_none(ledger):
+    """A capped answer lost the oldest releases; "no dated company-specific catalyst" would be a
+    guess. Those names read catalyst UNKNOWN (missing), never FAIL."""
+    out = P.morning_card(CappedNews(), ledger, now=ts(9, 10))
+    assert out["status"] == "issued" and out["forecasts"] == []
+    abst = {a["symbol"]: a for a in ledger.store.scan("abstentions", experiment_id=P.EID)}
+    assert not any("sector sympathy" in r for r in abst["USAR"]["reasons"])
+    assert "catalyst: catalyst feed" in abst["USAR"]["reasons"]          # unknown, not "none"
