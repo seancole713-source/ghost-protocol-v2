@@ -24,3 +24,9 @@ test-results/
 
 # Editor / IDE local config
 .vscode/
+
+# research eval outputs
+.claude/hillclimb/**/traces/
+.claude/hillclimb/**/_dryrun/
+.claude/hillclimb/**/report.html
+.claude/hillclimb/**/.harness_sha

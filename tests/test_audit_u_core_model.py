@@ -200,7 +200,7 @@ def test_health_audit_auto_fix_defaults_off():
 
 # -- U08: agent workflow health degrades when every expected worker is offline --
 
-def _workflow_db(monkeypatch, workers_row):
+def _workflow_db(monkeypatch, workers_row, recent_dead_letters=0):
     import core.db as db
 
     class _Cur:
@@ -213,6 +213,8 @@ def _workflow_db(monkeypatch, workers_row):
         def fetchone(self):
             if "FROM ghost_agent_workers" in self._sql:
                 return workers_row
+            if "status='DEAD_LETTER'" in self._sql:
+                return (recent_dead_letters,)
             return (0,)
 
     class _Conn:
@@ -245,6 +247,17 @@ def test_workflow_health_ok_when_one_worker_online_or_all_stopped(monkeypatch):
     assert workflow_health()["status"] == "healthy"
     _workflow_db(monkeypatch, (2, 0, 0))  # both deliberately STOPPED
     assert workflow_health()["status"] == "healthy"
+
+
+def test_only_a_recent_dead_letter_degrades_health(monkeypatch):
+    from core.agent_workflow import workflow_health
+
+    _workflow_db(monkeypatch, (2, 1, 2), recent_dead_letters=0)   # an old dead letter is not counted here
+    out = workflow_health()
+    assert out["status"] == "healthy" and out["dead_letter_recent"] == 0
+    _workflow_db(monkeypatch, (2, 1, 2), recent_dead_letters=1)
+    out = workflow_health()
+    assert out["status"] == "degraded" and "dead_letter_tasks" in out["issues"]
 
 
 # -- U41 / U42: console copy tells the truth about health and the Wilson minimum --
