@@ -7,7 +7,7 @@ edge.research_worker.verdict() -- the exact function the card reads.
 from __future__ import annotations
 
 import math
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
@@ -20,10 +20,32 @@ def cutoff_epoch(cutoff_et: str) -> int:
 
 
 def _iso_to_epoch(s: Any) -> Optional[int]:
+    """A full timestamp -> epoch. A naive one is read as US/Eastern, not the grading machine's zone."""
     try:
-        return int(datetime.fromisoformat(str(s).replace("Z", "+00:00")).timestamp())
+        d = datetime.fromisoformat(str(s).replace("Z", "+00:00"))
     except (TypeError, ValueError):
         return None
+    return int((d if d.tzinfo else d.replace(tzinfo=ET)).timestamp())
+
+
+def _date_only(s: Any) -> Optional[date]:
+    """'2026-10-01' carries a day but no time: it must be judged as a whole day, never as midnight."""
+    try:
+        return date.fromisoformat(str(s)) if len(str(s)) == 10 else None
+    except ValueError:
+        return None
+
+
+def in_window(published_at: Any, cut: int) -> Optional[bool]:
+    """Inside [cutoff-24h, cutoff]? None when undated. A date-only stamp passes when that ET day overlaps
+    the window (it could have been published inside it); its day being wholly outside fails."""
+    d = _date_only(published_at)
+    if d is not None:
+        lo = datetime.fromtimestamp(cut - DAY_S, tz=ET).date()
+        hi = datetime.fromtimestamp(cut, tz=ET).date()
+        return lo <= d <= hi
+    ts = _iso_to_epoch(published_at)
+    return None if ts is None else (cut - DAY_S <= ts <= cut)
 
 
 def author_citations(author_raw: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -33,7 +55,7 @@ def author_citations(author_raw: Optional[Dict[str, Any]]) -> List[Dict[str, Any
             continue
         for x in c.get("citations") or []:
             if isinstance(x, dict):
-                out.append({"url": str(x.get("url") or ""), "published": _iso_to_epoch(x.get("published_at"))})
+                out.append({"url": str(x.get("url") or ""), "published_at": x.get("published_at")})
     return out
 
 
@@ -57,8 +79,9 @@ def grade_case(case: Dict[str, Any], *, rec: Dict[str, Any], verdict: Dict[str, 
     else:
         outcome = "fp" if got else "tn"
     cites = author_citations(author_raw)
-    dated = [c for c in cites if c["published"] is not None]
-    bad = [c["url"] for c in dated if not (cut - DAY_S <= c["published"] <= cut)]
+    judged = [(c, in_window(c["published_at"], cut)) for c in cites]
+    dated = [c for c, ok in judged if ok is not None]
+    bad = [c["url"] for c, ok in judged if ok is False]
     use = usable_claims(rec)
     haystack = " ".join(c.get("statement", "") + " " + " ".join(c.get("urls") or []) for c in use).lower()
     hit = [t for t in case.get("trap_terms") or [] if t.lower() in haystack]
@@ -72,7 +95,7 @@ def grade_case(case: Dict[str, Any], *, rec: Dict[str, Any], verdict: Dict[str, 
     return {
         "grade": grade,
         "meta": {"outcome": outcome, "verdict": {k: verdict.get(k) for k in ("catalyst", "dilutive", "headline", "not_researched")},
-                 "out_of_window_cites": bad, "undated_cites": len(cites) - len(dated),
+                 "out_of_window_cites": bad, "citations": cites, "undated_cites": len(cites) - len(dated),
                  "trap_hits": hit, "n_claims": len(rec.get("claims") or []), "n_usable": len(use),
                  "dilution_outcome": d_outcome, "dilution_reported": got_d},
     }

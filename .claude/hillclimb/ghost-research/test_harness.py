@@ -86,3 +86,14 @@ def test_dilution_is_graded_only_when_the_case_has_a_dilution_label():
     trap = dict(case, expected={"catalyst": False, "dilution": False})       # a secondary sale is not dilution
     assert G.grade_case(trap, rec=rec, verdict={"catalyst": False, "dilutive": True}, author_raw=None)["meta"]["dilution_outcome"] == "fp"
     assert "dilution_correct" not in G.grade_case(CASES["r03"], rec=rec, verdict={"catalyst": False}, author_raw=None)["grade"]
+
+
+def test_a_date_only_citation_is_judged_as_a_whole_day_not_midnight():
+    cut = G.cutoff_epoch("2026-10-02 08:34")                 # ON pilot: SEC exhibit stamped "2026-10-01"
+    assert G.in_window("2026-10-01", cut) is True            # the day overlaps the window
+    assert G.in_window("2026-10-02", cut) is True
+    assert G.in_window("2026-09-30", cut) is False           # wholly before the window
+    assert G.in_window("2026-10-03", cut) is False           # after the cutoff: hindsight
+    assert G.in_window("2026-10-01T17:22:00-04:00", cut) is True
+    assert G.in_window("2026-10-02T09:00:00", cut) is False  # naive = Eastern, after the cutoff
+    assert G.in_window(None, cut) is None
