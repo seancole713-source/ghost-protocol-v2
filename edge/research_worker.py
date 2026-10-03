@@ -414,6 +414,20 @@ def _call_failed(store, *, key: str, day: str, symbol: str, now: int, attempts: 
             "cost_usd": round(exc.cost, 4), "retry_after": retry_after}
 
 
+def _prior_close(store, now: int) -> str:
+    """The last regular-session close strictly before the day of `now` (US/Eastern), as text."""
+    from datetime import timedelta
+    from edge import calendar as K
+    d = datetime.fromtimestamp(now, tz=ET).date()
+    for _ in range(10):
+        d -= timedelta(days=1)
+        s = K.session(d, store, now)
+        if s.get("trading") and s.get("close"):
+            hh, mm = s["close"]
+            return f"{d.isoformat()} {hh:02d}:{mm:02d}"
+    return "the prior trading day's close"
+
+
 def research_symbol(client, store, *, symbol: str, day: str, now: int, http=None) -> Dict[str, Any]:
     """Research ONE symbol in one author request (plus one review). Every dollar it spends -- failed
     calls included -- goes on the day's cap; a failed call backs off instead of re-running next tick."""
@@ -431,6 +445,7 @@ def research_symbol(client, store, *, symbol: str, day: str, now: int, http=None
     if budget["spent_usd"] >= daily_cap_usd():
         return {"status": "budget_exhausted", "spent_usd": round(budget["spent_usd"], 4)}
     cutoff = datetime.fromtimestamp(now, tz=ET).strftime("%Y-%m-%d %H:%M")
+    prior_close = _prior_close(store, now)
     started = time.monotonic()
 
     def finished_at() -> int:
@@ -471,7 +486,7 @@ def research_symbol(client, store, *, symbol: str, day: str, now: int, http=None
     if claims and http is not None:
         from edge import research_openai as RO
         if RO.configured():
-            review_raw, c_oai = RO.review(http, symbol=symbol, claims=[
+            review_raw, c_oai = RO.review(http, symbol=symbol, cutoff=cutoff, prior_close=prior_close, claims=[
                 {"kind": c.kind, "statement": c.statement,
                  "quotes": [x.quote for x in c.citations], "urls": [x.url for x in c.citations],
                  "published_at": [_epoch_to_iso(x.published_at) for x in c.citations],

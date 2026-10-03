@@ -111,7 +111,9 @@ def chat_models(ids: List[str]) -> List[str]:
 
 
 PROMPT = """You are checking claims about the stock {symbol} before they enter a trading-research
-ledger. You cannot browse; judge only from the claims and the quoted source sentences below. A quote
+ledger. Research cutoff: {cutoff} (US/Eastern). The prior regular session closed at {prior_close}
+(US/Eastern); use these times, not today's date, when judging staleness.
+You cannot browse; judge only from the claims and the quoted source sentences below. A quote
 may be a search-result headline; "published_at" is null and "unknowns" says so when the author only
 saw a relative date ("1 day ago") -- weigh that when judging staleness.
 
@@ -121,17 +123,21 @@ Reply with ONLY a JSON object:
 {{"entity_ok": bool (are the claims about {symbol} itself, not a namesake or a sector?),
   "contradictions": [str] (claims contradicted by their own quotes or by each other),
   "dilution_found": bool (do the quotes mention an offering, ATM, registered direct, warrants?),
-  "stale": bool (do the quotes show the event was public before the prior session's close?),
+  "stale": bool (do the quotes show the event was public before {prior_close} ET?),
   "notes": str}}"""
 
 
-def review(http, *, symbol: str, claims: List[Dict[str, Any]]) -> Tuple[Optional[Dict[str, Any]], float]:
+def review(http, *, symbol: str, claims: List[Dict[str, Any]], cutoff: str = "unknown",
+           prior_close: str = "the prior trading day's close") -> Tuple[Optional[Dict[str, Any]], float]:
     """(the reviewer's JSON verdict or None if unavailable / unusable, cost in USD).
     On None the caller falls back to the Claude reviewer; the cost is still counted."""
     if not configured():
         return None, 0.0
     model = os.environ["EDGE_OPENAI_MODEL"].strip()
-    prompt = PROMPT.format(symbol=symbol, claims=json.dumps(claims, indent=1))
+    # Without the cutoff and the prior close the reviewer judged "stale" against its own sense of
+    # today (eval 2026-10-03: ON's 10/1 4:34 pm deal was called stale for a 10/2 08:34 cutoff).
+    prompt = PROMPT.format(symbol=symbol, claims=json.dumps(claims, indent=1), cutoff=cutoff,
+                           prior_close=prior_close)
     body = {"model": model, "max_completion_tokens": MAX_OUT,
             "messages": [{"role": "user", "content": prompt}]}
     try:

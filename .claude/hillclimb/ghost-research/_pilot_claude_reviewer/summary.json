@@ -1,0 +1,27 @@
+{
+ "n_rows": 3,
+ "errors": 0,
+ "tp": 1,
+ "fn": 0,
+ "tn": 1,
+ "fp": 0,
+ "unknown": 1,
+ "precision": 1.0,
+ "recall": 1.0,
+ "specificity": 0.5,
+ "catalyst_accuracy": 0.6666666666666666,
+ "accuracy_ci95": [
+  0.20765495512648788,
+  0.9385096847238393
+ ],
+ "majority_baseline": 0.6666666666666666,
+ "dilution": {
+  "tp": 0,
+  "fn": 0,
+  "tn": 0,
+  "fp": 0,
+  "unknown": 0
+ },
+ "pit_ok": 0.6666666666666666,
+ "trap_ok": 1.0
+}
