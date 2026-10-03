@@ -25,23 +25,33 @@ INDEX, ANALYST, OFFERING, REVERSE_SPLIT, POLICY, OTHER = (
 # forecasts made under different classifiers are never pooled. Forecasts carry their version in
 # evidence; one without it is dated: session 2026-10-02 or later ran this classifier (#229, deployed
 # before that session; the file is unchanged since), anything earlier ran an older one.
-CLASSIFIER_VERSION = "headlines_v2"
-CLASSIFIER_SINCE = "2026-10-02"
+CLASSIFIER_VERSION = "headlines_v3"
+CLASSIFIER_SINCE = "2026-10-05"        # first session decided by headlines_v3 (every row it makes is tagged)
+UNTAGGED_V2_SINCE = "2026-10-02"       # an UNTAGGED row from this session on ran headlines_v2
 LEGACY_CLASSIFIER = "headlines_v1"
 CLASSIFIER_LABELS = {
     "headlines_v1": ("headlines_v1 (legacy, sessions before 2026-10-02: product news that mentioned "
                      "'earnings' could count as an earnings catalyst, e.g. HOOD 2026-09-30)"),
-    "headlines_v2": ("headlines_v2 (current, from 2026-10-02: earnings previews/dates and "
-                     "earnings-named products are not catalysts)"),
+    "headlines_v2": ("headlines_v2 (2026-10-02 to 2026-10-03: earnings previews/dates and "
+                     "earnings-named products are not catalysts; revenue-milestone releases were not "
+                     "catalysts, e.g. MEDS 2026-10-01)"),
+    "headlines_v3": ("headlines_v3 (current, from 2026-10-05: as headlines_v2, plus a company's "
+                     "monthly/preliminary/record revenue or a revenue milestone counts as a results "
+                     "catalyst)"),
 }
 
 
 def classifier_of(evidence: Optional[Dict] = None, session_date: Optional[str] = None) -> str:
-    """The classifier a forecast or card row was decided with: its own tag, else by session date."""
+    """The classifier a forecast or card row was decided with: its own tag, else by session date:
+    from CLASSIFIER_SINCE the current one (a session with nothing to tag -- no intraday forecast,
+    an empty card -- still ran it), from UNTAGGED_V2_SINCE headlines_v2, earlier headlines_v1."""
     tag = (evidence or {}).get("classifier_version") if isinstance(evidence, dict) else None
     if tag:
         return str(tag)
-    return CLASSIFIER_VERSION if (session_date or "") >= CLASSIFIER_SINCE else LEGACY_CLASSIFIER
+    day = session_date or ""
+    if day >= CLASSIFIER_SINCE:
+        return CLASSIFIER_VERSION
+    return "headlines_v2" if day >= UNTAGGED_V2_SINCE else LEGACY_CLASSIFIER
 
 
 DILUTIVE = frozenset({OFFERING})
@@ -96,7 +106,7 @@ _RULES = [  # first match wins; dilution is checked first on purpose
     (EARNINGS_SCHEDULED,
      r"\bahead of (its |the |q[1-4] )?earnings\b|\bupcoming earnings\b|\bearnings (preview|scheduled|date)\b"
      r"|\b(to (report|announce|release|post|host)|will (report|announce|release|post|host)|sets? (the )?date|"
-     r"date (of|for)|schedules?|scheduled)\b.{0,60}\b(earnings|results|conference call)\b"
+     r"date (of|for)|schedules?|scheduled)\b.{0,60}\b(earnings|results|conference call|revenue|sales)\b"
      r"|\bconference call to discuss\b|\bearnings (this|next) week\b|\bearnings\b.{0,40}\bwhat to expect\b"),
     (OTHER, r"\b(ind|investigational new drug)\b|\bfda submission\b"),
     (MNA, r"\b(to acquire|acquisition of|merger|to be acquired|takeover|buyout|definitive agreement)\b"),
@@ -115,6 +125,13 @@ _RULES = [  # first match wins; dilution is checked first on purpose
      r"\bearnings[- ](calls?[- ]|event[- ])?(contracts?|prediction[- ]markets?|predictions?|markets?|bets?|"
      r"wagers?|hub|features?|tools?|products?)\b"
      r"|\bprediction[- ]markets?\b.{0,40}\bearnings\b)"),
+    # headlines_v3 (operator decision 2026-10-03): a company reporting its own monthly, preliminary
+    # or record revenue, or a revenue milestone, is a results event. 2026-10-01 "DataMeds AI's Corexa
+    # Pharmacy Surpasses $1 Million In Monthly Revenue" (MEDS +37%) read as OTHER under headlines_v2.
+    (EARNINGS, r"\b(monthly|preliminary|unaudited|record) ([\w-]+ ){0,2}(revenue|sales|net sales)\b"
+               r"|\b(surpass(es|ed)?|exceed(s|ed)?|tops|cross(es|ed)?|reach(es|ed)?|hits|achiev(es|ed))\b"
+               r".{0,40}\b(revenue|sales)\b"
+               r"|\b(revenue|sales) (milestone|record)\b"),
     (EARNINGS, r"\b(earnings|quarterly results|q[1-4] results|eps|revenue (rose|grew|increased|beat))\b"
                r"|\bq[1-4]\b.{0,20}\b(beats?|miss(es)?|results?|revenue|sales)\b"
                r"|\breports? (slower|weaker|stronger|record) (growth|sales)\b"),

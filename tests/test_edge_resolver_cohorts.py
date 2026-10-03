@@ -14,6 +14,7 @@ from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from edge import models as MD, promotion, readout as RO, scorecard as SC, top10 as T
+from edge.catalysts import CLASSIFIER_VERSION
 from edge.contracts import issue
 from edge.ledger import LEGACY_RESOLVER, Ledger, MemoryStore, resolver_cohort, resolver_of
 from edge.pipeline import EXPERIMENTS, GAP_AND_GO_AUTO
@@ -23,7 +24,9 @@ ET = ZoneInfo("America/New_York")
 EID = GAP_AND_GO_AUTO.experiment_id
 V1, V2 = "resolver_v1", "resolver_v2"
 # An untagged row from a session before 2026-10-02 was also decided by headlines_v1 (task #65), so it
-# sits in the qualified cohort, never in the bare resolver_v1 one.
+# sits in the qualified cohort, never in the bare resolver_v1 one. A row of the current cohort carries
+# the current classifier's tag (every row headlines_v3 decides is tagged); an untagged row from
+# 2026-10-02 on would be the headlines_v2 legacy cohort, not the current one.
 V1_OLD = f"{V1}~headlines_v1"
 
 
@@ -208,7 +211,7 @@ def _dataset(version, *, invert=False, days=60, per_day=8, seed=7):
                    "avg_dollars": 10 ** feats["log_dollar_volume"],
                    "market": "WIN" if win != invert else "LOSS"}
             if version:      # a row made by a backtest run today: both tags
-                row.update(resolver_version=version, classifier_version="headlines_v2")
+                row.update(resolver_version=version, classifier_version=CLASSIFIER_VERSION)
             rows.append(row)
     return rows
 
@@ -233,8 +236,8 @@ def _card_rows(prefix, n, wins, version, **stamp):
     for i in range(n):
         r = {"symbol": f"{prefix}{i}", "outcome": "WIN" if i < wins else "LOSS",
              "execution": "WIN" if i < wins else "LOSS", "baseline": "ELIGIBLE", **stamp}
-        if version:
-            r["resolver_version"] = version
+        if version:      # graded by a versioned resolver today: decided by the current classifier too
+            r.update(resolver_version=version, classifier_version=CLASSIFIER_VERSION)
         rows.append(r)
     return rows
 
@@ -244,7 +247,7 @@ def test_the_scorecard_separates_resolver_cohorts_and_legacy_rows_have_no_versio
     st = MemoryStore()
     st.put("edge_card_outcomes", "2026-09-29", {"day": "2026-09-29", "rows":
            _card_rows("OLD", 4, 4, None, auto="ELIGIBLE", research="ELIGIBLE", model_prob=0.6)})
-    st.put("edge_card_outcomes", "2026-10-02", {"day": "2026-10-02", "rows":
+    st.put("edge_card_outcomes", "2026-10-05", {"day": "2026-10-05", "rows":
            _card_rows("NEW", 2, 0, V2, auto="ELIGIBLE", research="ELIGIBLE", model_prob=0.6)})
     sc = SC.scorecard(st)
     assert sc["resolver_version"] == V2 and sc["sessions"] == 2
@@ -263,13 +266,13 @@ def test_the_scorecard_separates_resolver_cohorts_and_legacy_rows_have_no_versio
 def test_the_top10_comparison_and_view_separate_resolver_cohorts():
     st = MemoryStore()
     for d, version, (pick_win, other_win) in (("2026-09-29", None, ("WIN", "WIN")),
-                                               ("2026-10-02", V2, ("LOSS", "LOSS"))):
+                                               ("2026-10-05", V2, ("LOSS", "LOSS"))):
         st.put("edge_top10", d, {"day": d, "list": [{"rank": 1, "symbol": "PICK"}]})
         rows = [{"symbol": "PICK", "outcome": pick_win, "execution": pick_win, "baseline": "ELIGIBLE"},
                 {"symbol": "REST", "outcome": other_win, "execution": other_win, "baseline": "ELIGIBLE"}]
         for r in rows:
             if version:
-                r["resolver_version"] = version
+                r.update(resolver_version=version, classifier_version=CLASSIFIER_VERSION)
         st.put("edge_card_outcomes", d, {"day": d, "rows": rows})
     sc = SC.scorecard(st)
     assert sc["top10"]["sessions"] == 1
@@ -278,9 +281,9 @@ def test_the_top10_comparison_and_view_separate_resolver_cohorts():
     old = sc["other_resolvers"][V1_OLD]["top10"]
     assert old["sessions"] == 1 and old["approved"]["wins"] == 1 and old["rejected"]["wins"] == 1
     assert T.with_outcomes(st, "2026-09-29")["list"][0]["resolver_version"] == V1
-    assert T.with_outcomes(st, "2026-10-02")["list"][0]["resolver_version"] == V2
-    st.put("edge_top10", "2026-10-05", {"day": "2026-10-05", "list": [{"rank": 1, "symbol": "PICK"}]})
-    assert T.with_outcomes(st, "2026-10-05")["list"][0]["resolver_version"] is None      # not graded yet
+    assert T.with_outcomes(st, "2026-10-05")["list"][0]["resolver_version"] == V2
+    st.put("edge_top10", "2026-10-06", {"day": "2026-10-06", "list": [{"rank": 1, "symbol": "PICK"}]})
+    assert T.with_outcomes(st, "2026-10-06")["list"][0]["resolver_version"] is None      # not graded yet
 
 
 def test_the_stored_history_is_never_rewritten_by_the_cohort_split():
@@ -297,7 +300,8 @@ def test_the_stored_history_is_never_rewritten_by_the_cohort_split():
 # ---- the control arms (control_arm_v1 and v2 summaries) ----------------------------------
 
 def _control_day(store, table, day, rows, version):
-    """A graded control day; version None = a day graded before resolver_version was recorded."""
+    """A graded control day; version None = a day graded before resolver_version was recorded (and
+    before classifier tags). A versioned day records the current classifier, as grading does today."""
     from edge import control as CA, control_v2 as CA2
     built = []
     for i, (approved, outcome) in enumerate(rows):
@@ -314,7 +318,7 @@ def _control_day(store, table, day, rows, version):
             built.append({"symbol": f"S{i}", "feed": "iex", "arms": arms})
     rec = {"day": day, "feed": "iex", "complete": True, "rows": built}
     if version:
-        rec["resolver_version"] = version
+        rec.update(resolver_version=version, classifier_version=CLASSIFIER_VERSION)
     store.put(table, day, rec)
 
 
@@ -322,7 +326,7 @@ def test_control_v1_summary_decides_on_current_resolver_days_only():
     from edge import control as CA
     st = MemoryStore()
     _control_day(st, "edge_control", "2026-09-29", [(True, "WIN")] * 3 + [(False, "LOSS")] * 3, None)
-    _control_day(st, "edge_control", "2026-10-02", [(True, "LOSS"), (False, "WIN")], V2)
+    _control_day(st, "edge_control", "2026-10-05", [(True, "LOSS"), (False, "WIN")], V2)
     s = CA.summary(st)
     assert s["design_hash"] == CA.DESIGN_HASH == "605453cd49128631"          # design untouched
     assert s["resolver_version"] == V2 and s["current_regime"] == "iex" and s["days"] == 2
@@ -353,7 +357,7 @@ def test_control_v2_summary_decides_on_current_resolver_days_only():
     from edge import control_v2 as CA2
     st = MemoryStore()
     _control_day(st, "edge_control_v2", "2026-09-29", [(True, "WIN")] * 3 + [(False, "LOSS")] * 3, None)
-    _control_day(st, "edge_control_v2", "2026-10-02", [(True, "LOSS"), (False, "WIN")], V2)
+    _control_day(st, "edge_control_v2", "2026-10-05", [(True, "LOSS"), (False, "WIN")], V2)
     _control_day(st, "edge_control", "2026-09-29", [(True, "WIN")], None)
     s = CA2.summary(st)
     assert s["design_hash"] == CA2.DESIGN_HASH == "3baa238954712ba2"
@@ -369,10 +373,10 @@ def test_control_v2_summary_decides_on_current_resolver_days_only():
 def test_a_rows_own_resolver_tag_outranks_its_days():
     from edge import control as CA
     st = MemoryStore()
-    _control_day(st, "edge_control", "2026-10-02", [(True, "WIN"), (True, "LOSS")], V2)
-    rec = st.get("edge_control", "2026-10-02")
+    _control_day(st, "edge_control", "2026-10-05", [(True, "WIN"), (True, "LOSS")], V2)
+    rec = st.get("edge_control", "2026-10-05")
     rec["rows"][0]["resolver_version"] = V1          # graded before the day was re-graded under v2
-    st.put("edge_control", "2026-10-02", rec)
+    st.put("edge_control", "2026-10-05", rec)
     s = CA.summary(st)
     hv = CA.DESIGN["headline_variant"]
     assert s["regimes"]["iex"]["variants"][hv]["approved"]["filled"] == 1
@@ -384,7 +388,7 @@ def test_a_regraded_day_keeps_its_older_rows_in_their_own_cohort():
     are labelled with the version their day recorded (none = resolver_v1), outcomes untouched."""
     from edge import control as CA
     row = {"symbol": "OLD", "variants": {k: {"outcome": "WIN"} for k in CA.VARIANTS}}
-    tagged = {"symbol": "TAG", "resolver_version": V2, "classifier_version": "headlines_v2", "variants": {}}
+    tagged = {"symbol": "TAG", "resolver_version": V2, "classifier_version": CLASSIFIER_VERSION, "variants": {}}
     kept = CA.tag_kept_rows({"day": "2026-09-29"}, {"OLD": row, "TAG": tagged})
     assert kept["OLD"]["resolver_version"] == V1 and kept["OLD"]["variants"] == row["variants"]
     assert kept["TAG"] is tagged and "resolver_version" not in row          # the stored dict is not mutated
