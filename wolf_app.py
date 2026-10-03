@@ -2472,6 +2472,15 @@ async def lifespan(app: FastAPI):
                 if not store.get("edge_backtest_postsplit", _ps.VERSION):
                     out = _ps.run(_edge_get(), store, end_day=end, days=days)
                     LOGGER.warning("EDGE_BACKTEST_POSTSPLIT %s", _json.dumps(out, default=str)[:6000])
+                    return
+                # Then the preregistered second_day_open@v1 replay (EDGE_BT2_START .. 2026-10-02),
+                # once per version. It is resumable: each tick works until its budget (inside this
+                # job's timeout), stores its per-day progress, and the next tick continues.
+                from edge import backtest_second_day as _sd
+                if not store.get(_sd.TABLE, _sd.VERSION):
+                    budget = float(os.getenv("EDGE_BT2_BUDGET_S", "2700"))
+                    out = _sd.run(_edge_get(), store, end_day=_sd.WINDOW_END, budget_s=budget)
+                    LOGGER.warning("EDGE_BACKTEST_SECOND_DAY %s", _json.dumps(out, default=str)[:6000])
             except Exception as _e:
                 LOGGER.warning("edge backtest job failed: %s", str(_e)[:200])
                 raise
