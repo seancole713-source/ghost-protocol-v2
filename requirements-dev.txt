@@ -5,3 +5,5 @@ pytest-asyncio==1.4.0
 # config/settings.py (documentation-only, never imported at runtime) needs
 # this to resolve for IDE type-checkers; production never installs it.
 pydantic-settings==2.7.1
+# Checks the hand-typed NYSE holiday/early-close tables (edge/calendar.py, replays) in tests only.
+exchange_calendars==4.13.2
