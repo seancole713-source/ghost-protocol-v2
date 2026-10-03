@@ -258,7 +258,8 @@ def test_a_day_without_radar_names_is_stored_as_empty():
 # ------------------------------------------------------------------ summary math
 def synth(store, day, feed, approved, n_win, n_loss, extra=()):
     rows = store.get("edge_control", day) or {"day": day, "feed": feed, "complete": True, "rows": [],
-                                              "resolver_version": CA.RESOLVER_VERSION}
+                                              "resolver_version": CA.RESOLVER_VERSION,
+                                              "classifier_version": CA.CLASSIFIER_VERSION}
     for i in range(n_win + n_loss):
         win = i < n_win
         v = {"outcome": "WIN" if win else "LOSS", "pnl_usd": 48.0 if win else -32.0}

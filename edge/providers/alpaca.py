@@ -227,12 +227,13 @@ def snapshots(get: B.HttpGet, symbols: List[str], *, feed: str = "iex") -> Dict[
     return _get_json(get, "/v2/stocks/snapshots", {"symbols": ",".join(symbols), "feed": feed})
 
 
-def news(get: B.HttpGet, symbols: List[str], *, start: str, end: Optional[str] = None, limit: int = 50,
-         max_pages: int = 8) -> List[dict]:
-    """Newest first. A PAST window must pass `end`: without it Alpaca pages back from NOW, and
-    the capped pages hold only recent articles -- none from the session being studied."""
+def news_pages(get: B.HttpGet, symbols: List[str], *, start: str, end: Optional[str] = None,
+               limit: int = 50, max_pages: int = 8) -> Tuple[List[dict], bool]:
+    """(items newest first, complete). complete is False when `max_pages` ran out with a
+    next_page_token pending: the OLDEST items in the window are missing, so "no story for this
+    symbol" is not known -- a caller must not read it as "no catalyst"."""
     if not symbols:
-        return []
+        return [], True
     params = {"symbols": ",".join(symbols), "start": start, "limit": limit, "sort": "desc"}
     if end:
         params["end"] = end
@@ -242,9 +243,44 @@ def news(get: B.HttpGet, symbols: List[str], *, start: str, end: Optional[str] =
         out.extend(p.get("news") or [])
         tok = p.get("next_page_token")
         if not tok:
-            break
+            return out, True
         params = {**params, "page_token": tok}
-    return out
+    LOG.warning("alpaca news page cap hit: %d pages for %d symbols (%s..%s); the oldest items are missing",
+                max_pages, len(symbols), symbols[0], symbols[-1])
+    return out, False
+
+
+def news(get: B.HttpGet, symbols: List[str], *, start: str, end: Optional[str] = None, limit: int = 50,
+         max_pages: int = 8) -> List[dict]:
+    """Newest first. A PAST window must pass `end`: without it Alpaca pages back from NOW, and
+    the capped pages hold only recent articles -- none from the session being studied."""
+    return news_pages(get, symbols, start=start, end=end, limit=limit, max_pages=max_pages)[0]
+
+
+NEWS_CHUNK = 20     # symbols per news request: a whole movers list can overflow the page cap
+
+
+def news_complete(get: B.HttpGet, symbols: List[str], *, start: str, end: Optional[str] = None,
+                  chunk: int = NEWS_CHUNK, max_pages: int = 8) -> Tuple[List[dict], set]:
+    """(items, symbols whose news is UNKNOWN). Task #59 (2026-10-01): the radar asked for ~60
+    movers' 24h news in one request capped at 8 pages of 50, newest first; a capped answer
+    silently lost the oldest -- pre-market -- releases, and the name read "no dated company-
+    specific catalyst". Asked `chunk` symbols at a time; a truncated chunk is re-asked one
+    symbol at a time, and a symbol still truncated is reported unknown, never as "no news"."""
+    items: List[dict] = []
+    unknown: set = set()
+    for i in range(0, len(symbols), chunk):
+        group = symbols[i:i + chunk]
+        rows, ok = news_pages(get, group, start=start, end=end, max_pages=max_pages)
+        if ok:
+            items.extend(rows)
+            continue
+        for s in group:
+            one, ok = news_pages(get, [s], start=start, end=end, max_pages=max_pages)
+            items.extend(one)
+            if not ok:
+                unknown.add(s)
+    return items, unknown
 
 
 def iso_to_epoch(s: Optional[str]) -> Optional[int]:

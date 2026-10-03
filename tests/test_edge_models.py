@@ -31,7 +31,8 @@ def dataset(signal: bool, *, days=60, per_day=8, seed=7):
             win = rng.random() < p
             rows.append({"day": d.isoformat(), "symbol": f"S{i}", "features": feats,
                          "avg_dollars": 10 ** feats["log_dollar_volume"],
-                         "market": "WIN" if win else "LOSS", "resolver_version": "resolver_v2"})
+                         "market": "WIN" if win else "LOSS", "resolver_version": "resolver_v2",
+                         "classifier_version": "headlines_v2"})
     return rows
 
 

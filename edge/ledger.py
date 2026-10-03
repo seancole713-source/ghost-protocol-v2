@@ -90,12 +90,46 @@ def resolver_of(outcome: Optional[Dict[str, Any]]) -> str:
     return (outcome or {}).get("resolver_version") or LEGACY_RESOLVER
 
 
+def cohort_key(resolver: str, classifier: str) -> str:
+    """One cohort name for a resolver version and the headline classifier that decided the rows
+    (task #65): the resolver alone when the classifier is the current one, else qualified
+    ("resolver_v2~headlines_v1"). Only the unqualified current resolver is ever a headline."""
+    from edge.catalysts import CLASSIFIER_VERSION
+    return resolver if classifier == CLASSIFIER_VERSION else f"{resolver}~{classifier}"
+
+
+def row_classifier(row: Optional[Dict[str, Any]], session_date: Optional[str]) -> str:
+    """The headline classifier of a stored row that carries its tag flat ("classifier_version":
+    card rows, card grades, backtest dataset rows, control rows): its own tag, else dated by the
+    session day (edge/catalysts.py classifier_of)."""
+    from edge.catalysts import classifier_of
+    tag = (row or {}).get("classifier_version")
+    return classifier_of({"classifier_version": tag} if tag else None, session_date)
+
+
+def forecast_classifier(f: Dict[str, Any]) -> str:
+    """The headline classifier a stored forecast was decided with: the tag in its evidence, else
+    dated by its session day."""
+    from edge.catalysts import classifier_of
+    ev = f.get("evidence") or {}
+    if isinstance(ev, str):
+        try:
+            ev = json.loads(ev)
+        except ValueError:
+            ev = {}
+    return classifier_of(ev, f.get("session_date"))
+
+
 def resolver_label(version: str) -> str:
     """A cohort as a reader should see it, its known biases included."""
     if "~" in version:
         from edge.catalysts import CLASSIFIER_LABELS
         res, cls = version.split("~", 1)
-        return f"{resolver_label(res)}; decided by {CLASSIFIER_LABELS.get(cls, cls)}"
+        parts = cls.split("+")
+        decided = (CLASSIFIER_LABELS.get(cls, cls) if len(parts) == 1 else
+                   "mixed: " + " / ".join(CLASSIFIER_LABELS.get(p, p) for p in parts)
+                   + " -- the session's approvals were decided by different classifiers")
+        return f"{resolver_label(res)}; decided by {decided}"
     if version in RESOLVER_LABELS:
         return RESOLVER_LABELS[version]
     parts = version.split("+")
@@ -386,16 +420,7 @@ class Ledger:
         the headline classifier when that is not the current one ("resolver_v2~headlines_v1"). Only
         the unqualified current resolver is a headline, so a forecast decided by an older classifier
         is reported beside it, labelled, never pooled into it (task #65, docs/resolver_versions.md)."""
-        from edge.catalysts import CLASSIFIER_VERSION, classifier_of
-        res = resolver_cohort(self.store, f)
-        ev = f.get("evidence") or {}
-        if isinstance(ev, str):
-            try:
-                ev = json.loads(ev)
-            except ValueError:
-                ev = {}
-        cls = classifier_of(ev, f.get("session_date"))
-        return res if cls == CLASSIFIER_VERSION else f"{res}~{cls}"
+        return cohort_key(resolver_cohort(self.store, f), forecast_classifier(f))
 
     def _by_resolver(self, forecasts: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
         out: Dict[str, List[Dict[str, Any]]] = {}

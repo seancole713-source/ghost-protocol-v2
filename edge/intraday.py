@@ -28,7 +28,7 @@ from datetime import date, datetime, time as dtime, timedelta
 from typing import Any, Callable, Dict, List, Optional
 
 from edge import catalysts as C, detectors as D, radar as R, setups as S
-from edge.contracts import ET, GAP_AND_GO_V1, issue_intraday
+from edge.contracts import ET, GAP_AND_GO_V1, ContractError, issue_intraday
 from edge.ledger import Ledger
 from edge.providers import alpaca as A
 from shared.redaction import redact_exc
@@ -325,7 +325,7 @@ def tick(get, ledger: Ledger, *, now: int, top: int = 50, http=None,
         raise
     if out.get("status") != "outside_intraday_window":
         _beat(ledger.store, ds, now, status=out.get("status"), error=None,
-              movers=out.get("movers"), source_errors={})
+              movers=out.get("movers"), not_recorded=out.get("not_recorded") or [], source_errors={})
     return out
 
 
@@ -372,12 +372,13 @@ def _tick(get, ledger: Ledger, *, now: int, top: int = 50, http=None,
     hist = _history(get, store, syms, day, feed)
     shorts = _short_data(http, store, syms, day, now=now)
     try:
-        items = A.news(get, syms, start=_iso(now - 86_400))
+        items, news_unknown = A.news_complete(get, syms, start=_iso(now - 86_400))
     except Exception:  # noqa: BLE001 - recorded as unknown, never guessed
-        items = None
+        items, news_unknown = None, set()
 
     issued: List[str] = []
     late_refused: List[str] = []
+    not_recorded: List[str] = []     # eligible, no forecast: each with its own reason (cap, contract...)
     counts = {spec.experiment_id: len(store.scan("forecasts", experiment_id=spec.experiment_id, session_date=ds))
               for spec in INTRADAY_SPECS}
     open_ts = _at(day, 9, 30)
@@ -402,7 +403,7 @@ def _tick(get, ledger: Ledger, *, now: int, top: int = 50, http=None,
         cum_now = sum(b[5] for b in bars)
         history_at_minute = hist.get(s, {}).get(minute) or []
         ev = None
-        if items is not None:
+        if items is not None and s not in news_unknown:     # a page-capped answer is not "no news"
             evs = [C.make(s, str(n.get("headline") or ""), source=str(n.get("source") or ""), url=str(n.get("url") or ""),
                           published_at=A.iso_to_epoch(n.get("created_at")) or now,
                           first_seen_at=now, tickers=[x.upper() for x in n.get("symbols") or []])
@@ -423,6 +424,11 @@ def _tick(get, ledger: Ledger, *, now: int, top: int = 50, http=None,
         if item.catalyst is None and sig["catalyst"].state == D.PASS:
             item.catalyst = {"kind": sig["catalyst"].evidence.get("kind"),
                              "headline": str(sig["catalyst"].evidence.get("headline") or "")[:160], "at": now}
+        if item.catalyst is None and ev is not None:
+            seen = sorted(ev, key=lambda e: -e.published_at)
+            latest = [{"kind": e.kind, "headline": e.headline[:120]} for e in seen[:3]]
+            if (item.news_seen or {}).get("latest") != latest or (item.news_seen or {}).get("items") != len(ev):
+                item.news_seen = {"items": len(ev), "latest": latest, "at": now}
         best, closest = None, None
         for spec in INTRADAY_SPECS:
             if spec.experiment_id in _SECONDARY:
@@ -461,35 +467,44 @@ def _tick(get, ledger: Ledger, *, now: int, top: int = 50, http=None,
             continue
 
         def _record(sp):
-            if counts[sp.experiment_id] >= sp.max_per_day:
-                return None
+            """(forecast, None) or (None, the one reason it was not recorded). 2026-10-01: VEEA turned
+            ELIGIBLE at 11:34 and the radar said only "daily cap, entry window or already recorded"
+            -- it was the cap (ACN 09:48, SNPS 09:53), but the record could not say which, and a
+            refused contract was swallowed without a trace. Each refusal now names itself."""
+            n = counts[sp.experiment_id]
+            if n >= sp.max_per_day:
+                return None, f"daily cap reached ({n} of {sp.max_per_day} {sp.experiment_id} forecasts today)"
             try:
                 fc = issue_intraday(sp, symbol=s, session_date=day, entry_ref=price, issued_at=issued_at,
                                     evidence={"feed": feed, "rvol": sig["rvol_tod"].value, "data_as_of": now,
                                               "catalyst": sig["catalyst"].evidence.get("headline")})
-            except Exception:  # noqa: BLE001 - e.g. too late in the session for the entry window
-                return None
+            except ContractError as exc:   # e.g. too late in the session for the entry window
+                return None, f"contract refused: {exc}"
+            except Exception as exc:  # noqa: BLE001 - one name's failure must not cost the tick; named
+                A.LOG.warning("intraday forecast %s:%s not built: %s", sp.experiment_id, s, redact_exc(exc, 160))
+                return None, f"forecast not built: {redact_exc(exc, 120)}"
             if store.get("forecasts", fc.forecast_id):
-                return None
+                return None, f"already recorded today ({sp.experiment_id})"
             recorded_at = int(clock())
             if recorded_at >= fc.window_start:
                 msg = f"{sp.experiment_id}:{s} recorded at {_hm(recorded_at)}, after its window opened"
                 A.LOG.warning("intraday forecast refused as late: %s", msg)
                 late_refused.append(msg)
-                return None
+                return None, f"refused as late: recorded at {_hm(recorded_at)}, after its window opened"
             ledger.record(fc, now=recorded_at)
             counts[sp.experiment_id] += 1
             issued.append(f"{sp.experiment_id}:{s}")
-            return fc
+            return fc, None
 
         pair = _PAIRED.get(eid)
         if pair is not None and S.decide(_STRATEGY_OF[pair.experiment_id], sig).verdict == S.ELIGIBLE:
             _record(pair)
-        f = _record(spec)
+        f, why_not = _record(spec)
         if f is None:
-            if undecided:
+            if undecided:            # a name that already has its forecast is not a miss
+                not_recorded.append(f"{eid}:{s}: {why_not}")
                 item.set_blocker(strategy=_STRATEGY_OF[eid], verdict=S.ELIGIBLE, ts=now,
-                                 reasons=["eligible, but no forecast recorded (daily cap, entry window or already recorded)"])
+                                 reasons=[f"eligible, but no forecast recorded: {why_not}"])
             _save(store, item)
             continue
         item.blocker = None
@@ -500,7 +515,7 @@ def _tick(get, ledger: Ledger, *, now: int, top: int = 50, http=None,
                             evidence={"forecast_id": f.forecast_id, "price": price})
         _save(store, item)
     return {"status": "issued" if issued else "watched", "movers": len(syms), "issued": issued,
-            "late_refused": late_refused,
+            "late_refused": late_refused, "not_recorded": not_recorded,
             "quality_lane": sorted(quality)}
 
 

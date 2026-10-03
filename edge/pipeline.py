@@ -240,11 +240,15 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50,
         snaps = A.snapshots(get, syms, feed=feed)
     except Exception as exc:  # noqa: BLE001 - recorded as missing, never guessed
         snaps, source_errors[f"snapshots_{feed}"] = {}, redact_exc(exc, 200)
+    news_unknown: set = set()
     try:
-        items = A.news(get, syms, start=_iso(now - 86_400))
+        items, news_unknown = A.news_complete(get, syms, start=_iso(now - 86_400))
     except Exception as exc:  # noqa: BLE001
         items, source_errors["news"] = None, redact_exc(exc, 200)
     events = _events(items, set(syms), now)
+    if events is not None:
+        for s in news_unknown:          # a page-capped answer is UNKNOWN for them, never "no news"
+            events[s] = None
     sip_pre = {}
     if model is not None:
         # Same bars, same cutoff, same builder as training: no train/serve skew.

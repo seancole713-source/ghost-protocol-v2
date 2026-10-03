@@ -18,7 +18,11 @@ no-cost 37.5% (audit 2026-09-25 U12). The forecast outcome is kept on every row
 "execution" and are counted, never pooled. Rows graded by different resolver versions are never
 pooled either (audit NEW-02): every comparison is made on the current resolver's rows; a row
 without "resolver_version" was graded by resolver_v1 and sits in its own labelled cohort
-("other_resolvers").
+("other_resolvers"). Nor are headline classifiers (task #65): the keyword verdict, the dilution
+check, the Top 10 score and the model's catalyst features all read the classifier, so a row is
+in the headline only when its card was decided by the current one (its "classifier_version";
+none = dated by the card's day, 2026-10-02 on = headlines_v2, earlier = headlines_v1). Other
+classifiers are cohorts of their own ("resolver_v2~headlines_v1"), labelled.
 
 Then the question is asked directly, on the same stocks: among the gap-qualified
 names, did the ones research APPROVED do better than the ones it REJECTED?
@@ -36,7 +40,8 @@ from typing import Any, Dict, List, Optional
 
 from edge import research as RS, resolver as RV
 from edge.contracts import ContractError, issue
-from edge.ledger import COHORT_RULE, resolver_label, resolver_of
+from edge.catalysts import CLASSIFIER_VERSION
+from edge.ledger import COHORT_RULE, cohort_key, resolver_label, resolver_of, row_classifier
 from edge.resolver import RESOLVER_VERSION
 from edge.research_worker import not_researched_reason
 from edge.stats import wilson
@@ -95,7 +100,9 @@ def grade_card(get, store, *, day: date, now: int) -> Dict[str, Any]:
                     "auto": r.get("verdict"), "baseline": r.get("baseline_verdict"),
                     "research": r.get("verified_verdict"), "research_status": r.get("research_status"),
                     "model_prob": r.get("model_prob"),
-                    "catalyst": r.get("catalyst"), "resolver_version": x.resolver_version})
+                    "catalyst": r.get("catalyst"), "resolver_version": x.resolver_version,
+                    # the classifier that decided the card row (never pooled across, task #65)
+                    "classifier_version": row_classifier(r, ds)})
     pending = sum(1 for o in out if _pending(o))
     store.put("edge_card_outcomes", ds, {"day": ds, "graded_at": (prior or {}).get("graded_at", now),
                                          "updated_at": now, "rows": out, "pending": pending,
@@ -173,11 +180,18 @@ def break_even_after_costs() -> float:
     return round(CA.break_even_after_costs(COST_BPS, spec=SPEC), 4)
 
 
+def row_cohort(row: Dict[str, Any], day: Optional[str]) -> str:
+    """A graded card row's cohort: its resolver version, qualified by the headline classifier that
+    decided its card when that is not the current one (NEW-02, task #65)."""
+    return cohort_key(resolver_of(row), row_classifier(row, day))
+
+
 def _comparisons(store, days: List[Dict[str, Any]], cohort: str) -> Dict[str, Any]:
-    """Every comparison, on the execution-graded rows of ONE resolver cohort only (NEW-02).
-    A row graded before resolver_v2 carries no resolver_version and is resolver_v1 (legacy)."""
+    """Every comparison, on the execution-graded rows of ONE cohort only (NEW-02, task #65).
+    A row graded before resolver_v2 carries no resolver_version and is resolver_v1 (legacy); a
+    row without classifier_version is dated by its day."""
     def graded(d: Dict[str, Any]) -> List[Dict[str, Any]]:
-        return [r for r in d.get("rows") or [] if r.get("execution") and resolver_of(r) == cohort]
+        return [r for r in d.get("rows") or [] if r.get("execution") and row_cohort(r, d.get("day")) == cohort]
 
     rows = [r for d in days for r in graded(d)]
     gaps = [r for r in rows if r.get("baseline") == "ELIGIBLE"]    # gap-qualified, liquid, priced
@@ -220,13 +234,13 @@ def scorecard(store) -> Dict[str, Any]:
     legacy = sum(1 for d in days for r in d.get("rows") or [] if r.get("outcome") and not r.get("execution"))
     # Resolver versions are never pooled either (NEW-02): the headline comparisons are the current
     # resolver's rows; every older cohort is reported beside them, labelled.
-    cohorts = {resolver_of(r) for d in days for r in d.get("rows") or [] if r.get("execution")}
+    cohorts = {row_cohort(r, d.get("day")) for d in days for r in d.get("rows") or [] if r.get("execution")}
     out: Dict[str, Any] = {
         "label": COUNTERFACTUAL, "sessions": len(days), "basis": BASIS,
         "rows_without_execution_grade": legacy,
         "window": [days[0]["day"], days[-1]["day"]] if days else None,
         "resolver_version": RESOLVER_VERSION, "resolver_label": resolver_label(RESOLVER_VERSION),
-        "cohort_rule": COHORT_RULE,
+        "classifier_version": CLASSIFIER_VERSION, "cohort_rule": COHORT_RULE,
         **_comparisons(store, days, RESOLVER_VERSION),
         "research_quality": research_quality(store),
         "break_even": break_even_after_costs(),

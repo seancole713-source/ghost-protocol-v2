@@ -22,6 +22,9 @@ from edge.resolver import RESOLVER_VERSION, Resolution
 ET = ZoneInfo("America/New_York")
 EID = GAP_AND_GO_AUTO.experiment_id
 V1, V2 = "resolver_v1", "resolver_v2"
+# An untagged row from a session before 2026-10-02 was also decided by headlines_v1 (task #65), so it
+# sits in the qualified cohort, never in the bare resolver_v1 one.
+V1_OLD = f"{V1}~headlines_v1"
 
 
 def ts(d: date, hh: int, mm: int) -> int:
@@ -204,8 +207,8 @@ def _dataset(version, *, invert=False, days=60, per_day=8, seed=7):
             row = {"day": d.isoformat(), "symbol": f"S{i}", "features": feats,
                    "avg_dollars": 10 ** feats["log_dollar_volume"],
                    "market": "WIN" if win != invert else "LOSS"}
-            if version:
-                row["resolver_version"] = version
+            if version:      # a row made by a backtest run today: both tags
+                row.update(resolver_version=version, classifier_version="headlines_v2")
             rows.append(row)
     return rows
 
@@ -251,7 +254,7 @@ def test_the_scorecard_separates_resolver_cohorts_and_legacy_rows_have_no_versio
     assert sc["keyword_catalyst"]["approved"]["decided"] == 2
     assert sc["ai_research"]["approved"]["decided"] == 2
     assert sc["model"]["approved"]["decided"] == 2
-    legacy = sc["other_resolvers"][V1]
+    legacy = sc["other_resolvers"][V1_OLD]
     assert legacy["headline"] is False and legacy["label"].startswith("resolver_v1 (legacy")
     assert (legacy["base_rate_all_gappers"]["decided"], legacy["base_rate_all_gappers"]["wins"]) == (4, 4)
     assert legacy["graded_sessions"] == 1
@@ -272,7 +275,7 @@ def test_the_top10_comparison_and_view_separate_resolver_cohorts():
     assert sc["top10"]["sessions"] == 1
     assert (sc["top10"]["approved"]["decided"], sc["top10"]["approved"]["wins"]) == (1, 0)
     assert (sc["top10"]["rejected"]["decided"], sc["top10"]["rejected"]["wins"]) == (1, 0)
-    old = sc["other_resolvers"][V1]["top10"]
+    old = sc["other_resolvers"][V1_OLD]["top10"]
     assert old["sessions"] == 1 and old["approved"]["wins"] == 1 and old["rejected"]["wins"] == 1
     assert T.with_outcomes(st, "2026-09-29")["list"][0]["resolver_version"] == V1
     assert T.with_outcomes(st, "2026-10-02")["list"][0]["resolver_version"] == V2
@@ -329,7 +332,7 @@ def test_control_v1_summary_decides_on_current_resolver_days_only():
     assert (p["approved"]["filled"], p["approved"]["wins"]) == (1, 0)        # not 4 fills, 3 wins
     assert (p["unapproved"]["filled"], p["unapproved"]["wins"]) == (1, 1)
     assert "1 sessions" in s["headline"]
-    old = s["other_resolvers"][V1]
+    old = s["other_resolvers"][V1_OLD]
     assert old["headline"] is False and old["days"] == 1 and old["label"].startswith("resolver_v1 (legacy")
     assert "never the decision" in old["note"]
     assert old["regimes"]["iex"]["variants"][CA.DESIGN["headline_variant"]]["approved"]["wins"] == 3
@@ -343,7 +346,7 @@ def test_control_headline_with_only_legacy_days_decides_nothing():
     for s in (CA.summary(st), CA2.summary(st)):
         assert s["regimes"] == {} and s["current_regime"] == "iex"
         assert f"nothing graded under {V2}" in s["headline"] and "legacy" in s["headline"]
-        assert s["other_resolvers"][V1]["days"] == 1
+        assert s["other_resolvers"][V1_OLD]["days"] == 1
 
 
 def test_control_v2_summary_decides_on_current_resolver_days_only():
@@ -358,9 +361,9 @@ def test_control_v2_summary_decides_on_current_resolver_days_only():
     p = g["variants"][CA2.DESIGN["headline_variant"]]
     assert g["sessions"] == 1 and (p["approved"]["filled"], p["approved"]["wins"]) == (1, 0)
     assert p["sessions_with_fills"] == 1                         # the clustered sample is one cohort too
-    assert s["other_resolvers"][V1]["regimes"]["iex"]["sessions"] == 1
+    assert s["other_resolvers"][V1_OLD]["regimes"]["iex"]["sessions"] == 1
     ex = CA2.v1_exploratory(st)
-    assert ex["regimes"] == {} and ex["other_resolvers"][V1]["days"] == 1
+    assert ex["regimes"] == {} and ex["other_resolvers"][V1_OLD]["days"] == 1
 
 
 def test_a_rows_own_resolver_tag_outranks_its_days():
@@ -381,7 +384,7 @@ def test_a_regraded_day_keeps_its_older_rows_in_their_own_cohort():
     are labelled with the version their day recorded (none = resolver_v1), outcomes untouched."""
     from edge import control as CA
     row = {"symbol": "OLD", "variants": {k: {"outcome": "WIN"} for k in CA.VARIANTS}}
-    tagged = {"symbol": "TAG", "resolver_version": V2, "variants": {}}
+    tagged = {"symbol": "TAG", "resolver_version": V2, "classifier_version": "headlines_v2", "variants": {}}
     kept = CA.tag_kept_rows({"day": "2026-09-29"}, {"OLD": row, "TAG": tagged})
     assert kept["OLD"]["resolver_version"] == V1 and kept["OLD"]["variants"] == row["variants"]
     assert kept["TAG"] is tagged and "resolver_version" not in row          # the stored dict is not mutated

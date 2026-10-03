@@ -50,12 +50,18 @@ class RadarItem:
     # The first dated company-specific event the radar linked to the name
     # ({"kind", "headline", "at"}); None = the radar never saw one.
     catalyst: Optional[Dict[str, Any]] = None
+    # What the news feed carried for the name while no company-specific catalyst was linked:
+    # {"items": n, "latest": [{"kind", "headline"}, ...up to 3], "at"}. items 0 = the feed had
+    # no story; a story here was classified as not company-specific. None = never answered.
+    # Task #59: MEDS 2026-10-01 read "no dated company-specific catalyst" and the record could
+    # not say whether the feed missed its release or the classifier did.
+    news_seen: Optional[Dict[str, Any]] = None
 
     @classmethod
     def from_row(cls, raw: Dict[str, Any]) -> "RadarItem":
         return cls(raw["symbol"], raw["session_date"], raw["detected_at"], raw["detected_move_pct"],
                    raw.get("strategy"), raw["state"], raw.get("history") or [],
-                   raw.get("blocker"), raw.get("catalyst"))
+                   raw.get("blocker"), raw.get("catalyst"), raw.get("news_seen"))
 
     def set_blocker(self, *, strategy: str, verdict: str, reasons: List[str], ts: int) -> bool:
         """Record the current blocker; keeps the old time when nothing changed. True if it changed."""
