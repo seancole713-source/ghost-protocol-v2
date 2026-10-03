@@ -77,9 +77,11 @@ def grade_case(case: Dict[str, Any], *, rec: Dict[str, Any], verdict: Dict[str, 
     finished but nothing could be concluded) as wrong, and records it as outcome "unknown", so it is
     never mistaken for a correct "no catalyst". Runs that could not look at all never reach here."""
     cut = cutoff_epoch(case["cutoff_et"])
-    want = case["expected"]["catalyst"]
+    want = case["expected"].get("catalyst")
     got = verdict.get("catalyst")
-    if got is None:
+    if want is None:
+        outcome = "n/a"                  # a dilution-only case: the catalyst answer is not graded
+    elif got is None:
         outcome = "unknown"
     elif want is True:
         outcome = "tp" if got else "fn"
@@ -92,7 +94,9 @@ def grade_case(case: Dict[str, Any], *, rec: Dict[str, Any], verdict: Dict[str, 
     use = usable_claims(rec)
     haystack = " ".join(c.get("statement", "") + " " + " ".join(c.get("urls") or []) for c in use).lower()
     hit = [t for t in case.get("trap_terms") or [] if t.lower() in haystack]
-    grade = {"catalyst_correct": int(outcome in ("tp", "tn")), "pit_ok": int(not bad), "trap_ok": int(not hit)}
+    grade = {"pit_ok": int(not bad), "trap_ok": int(not hit)}
+    if want is not None:
+        grade["catalyst_correct"] = int(outcome in ("tp", "tn"))
     want_d, got_d = case["expected"].get("dilution"), verdict.get("dilutive")
     d_outcome = None
     if want_d is not None:
@@ -120,7 +124,8 @@ def wilson(k: int, n: int, z: float = 1.96):
 
 def summarize(rows: List[Dict[str, Any]], errors: int = 0) -> Dict[str, Any]:
     """Headline from raw rows: confusion matrix on catalyst, majority-class baseline, intervals."""
-    ok = [r for r in rows if r.get("status") == "ok"]
+    allok = [r for r in rows if r.get("status") == "ok"]
+    ok = [r for r in allok if "catalyst_correct" in r["grade"]]      # rows with a catalyst label
     o = [r["meta"]["outcome"] for r in ok]
     tp, fn, tn, fp, unk = (o.count(x) for x in ("tp", "fn", "tn", "fp", "unknown"))
     pos, neg = tp + fn, tn + fp
@@ -136,8 +141,8 @@ def summarize(rows: List[Dict[str, Any]], errors: int = 0) -> Dict[str, Any]:
             1 for r in ok if r["meta"]["outcome"] == "unknown" and r["meta"].get("expected_catalyst") is False)),
         "catalyst_accuracy": rate(acc, n), "accuracy_ci95": wilson(acc, n) if n else None,
         "majority_baseline": (max(exp_pos, n - exp_pos) / n) if n else None,
-        "dilution": {k: sum(1 for r in ok if r["meta"].get("dilution_outcome") == k)
+        "dilution": {k: sum(1 for r in allok if r["meta"].get("dilution_outcome") == k)
                      for k in ("tp", "fn", "tn", "fp", "unknown")},
-        "pit_ok": rate(sum(r["grade"]["pit_ok"] for r in ok), n),
-        "trap_ok": rate(sum(r["grade"]["trap_ok"] for r in ok), n),
+        "pit_ok": rate(sum(r["grade"]["pit_ok"] for r in allok), len(allok)),
+        "trap_ok": rate(sum(r["grade"]["trap_ok"] for r in allok), len(allok)),
     }

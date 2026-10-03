@@ -687,3 +687,16 @@ def test_the_openai_reviewer_is_told_the_cutoff_and_the_prior_close():
         assert W._prior_close(None, int(datetime(2026, 10, 5, 8, 34, tzinfo=ET).timestamp())) == "2026-10-02 16:00"
     finally:
         del os.environ["OPENAI_API_KEY"], os.environ["EDGE_OPENAI_MODEL"]
+
+
+def test_dilution_means_new_shares_from_the_company_in_every_prompt():
+    """Eval v2 (2026-10-03): PMTS's selling-stockholder secondary was called dilution 2/2 -- the author
+    tagged it offering_dilution and the reviewer answered 'mentions an offering' while noting it added
+    no shares. Every prompt now defines dilution as new shares issued by the company."""
+    from edge import research_openai as RO
+    author = W.AUTHOR_PROMPT.format(symbol="X", cutoff="c", kinds=list(RS.KINDS), searches=1, fetches=1)
+    claude_review = W.REVIEWER_PROMPT.format(symbol="X", cutoff="c", searches=1, claims="[]")
+    openai_review = RO.PROMPT.format(symbol="X", claims="[]", cutoff="c", prior_close="p")
+    assert 'never "offering_dilution"' in author and "existing holders" in author
+    assert "secondary sale by existing holders alone is not dilution" in claude_review
+    assert "existing holders sell is NOT dilution" in openai_review

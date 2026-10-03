@@ -185,14 +185,15 @@ def run_case(case: Dict[str, Any], rep: int, client_factory, *, allow_missing_mo
     verdict = W.verdict(store, day=case["day"], symbol=case["symbol"], issued_at=now + 6 * 3600)
     graded = G.grade_case(case, rec=rec, verdict=verdict, author_raw=_author_raw(rec_client.calls))
     if failure == "refusal":
-        graded["grade"]["catalyst_correct"] = 0
-        graded["meta"]["outcome"] = "unknown"
+        if "catalyst_correct" in graded["grade"]:
+            graded["grade"]["catalyst_correct"] = 0
+            graded["meta"]["outcome"] = "unknown"
     stop = str(rec.get("author_stop") or "")
     row = {**base, "prompt": f"Research {case['symbol']} as of {case['cutoff_et']} ET ({case['day']}).",
            "tags": case["tags"], "status": "truncated" if stop == "max_tokens" else "ok", "stop_reason": stop,
            "model": W.MODEL, "grade": graded["grade"], "latency_s": round(latency, 2), "web_searches": searches,
            "usage": usage,
-           "meta": {**graded["meta"], "expected_catalyst": case["expected"]["catalyst"], "failure_class": failure,
+           "meta": {**graded["meta"], "expected_catalyst": case["expected"].get("catalyst"), "failure_class": failure,
                     "worker_cost_usd": rec.get("cost_usd"), "gold_source": case["gold_source"],
                     "gold_verified": case["gold_verified"], "reviewer": rec.get("reviewer"),
                     # Production falls back to the Claude reviewer when the OpenAI review is unusable;
@@ -228,7 +229,17 @@ def stub_factory(mode: str):
         iso = lambda s: time.strftime("%Y-%m-%dT%H:%M:%S-04:00", time.gmtime(cut - s - 4 * 3600))  # noqa: E731
         if mode == "empty":
             return _Stub([_reply("")] * 4)                    # no answer at all
-        if mode == "constant_none" or case["expected"]["catalyst"] is not True:
+        if mode == "oracle" and case["expected"].get("dilution") is not None:
+            # The right answer reports the event as a claim and the reviewer answers the dilution check;
+            # a secondary sale by holders is reported, but as "other", and is not dilution.
+            dil = case["expected"]["dilution"]
+            claim = {"kind": (case["oracle_kind"] or "offering_dilution") if dil else "other",
+                     "value": None, "unit": None, "unknowns": [],
+                     "statement": f"{case['symbol']} announced a dated {'dilutive' if dil else 'secondary'} event.",
+                     "citations": [{"url": "https://www.sec.gov/a", "quote": "q1", "published_at": iso(3600)}]}
+            review = {"entity_ok": True, "contradictions": [], "dilution_found": dil, "stale": False, "notes": ""}
+            return _Stub([_reply(json.dumps({"claims": [claim], "unknowns": []})), _reply(json.dumps(review))])
+        if mode == "constant_none" or case["expected"].get("catalyst") is not True:
             return _Stub([_reply(json.dumps({"claims": [], "unknowns": ["no company-specific event inside the window"]}))])
         claim = {"kind": case["oracle_kind"] or "contract", "statement": f"{case['symbol']} announced a dated event.",
                  "value": None, "unit": None, "unknowns": [],
@@ -292,7 +303,8 @@ def main(argv=None) -> int:
 
     state = json.loads((HERE / "_state.json").read_text())
     cases = [json.loads(x) for x in (HERE / "cases.jsonl").read_text().splitlines() if x.strip()]
-    cases = [c for c in cases if c["scored"] and c["cutoff_et"] and c["expected"]["catalyst"] is not None]
+    cases = [c for c in cases if c["scored"] and c["cutoff_et"]
+             and (c["expected"].get("catalyst") is not None or c["expected"].get("dilution") is not None)]
     if a.ids:
         want = set(a.ids.split(","))
         cases = [c for c in cases if c["id"] in want]
