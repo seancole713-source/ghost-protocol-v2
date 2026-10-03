@@ -439,23 +439,25 @@ class NewsMarket(Market):
 def test_a_name_with_no_catalyst_keeps_the_headlines_the_feed_carried(ledger):
     """2026-10-01 MEDS (+37%): "no dated company-specific catalyst" -- with nothing on record to
     tell whether the feed never carried its 06:00 release or the classifier read it as not
-    company-specific. The release as published ("DataMeds AI's Corexa Pharmacy Surpasses $1
-    Million In Monthly Revenue") is tagged "other" by the keyword classifier. The radar now keeps
-    what the feed carried and how each story was read; the classifier itself is unchanged."""
-    meds = "DataMeds AI's Corexa Pharmacy Surpasses $1 Million In Monthly Revenue"
+    company-specific. The radar now keeps what the feed carried and how each story was read.
+    (That release, "DataMeds AI's Corexa Pharmacy Surpasses $1 Million In Monthly Revenue", is an
+    earnings catalyst since headlines_v3, so the uncatalysed story here is a sector move instead.)"""
+    from edge import catalysts as C
+    sector = "Healthcare Shares Climb In Early Trade"        # describes a move; names no company event
+    assert C.classify(sector) == C.PRICE_ACTION and C.PRICE_ACTION not in C.COMPANY_SPECIFIC
     m = NewsMarket(ts(10, 40), [(["CATX"], "CATX wins contract award from Navy", 8, 0),
-                                (["QUIET"], meds, 6, 0)])
+                                (["QUIET"], sector, 6, 0)])
     I.tick(m, ledger, now=ts(10, 40))
     q = ledger.store.get("edge_radar", "2026-09-23|QUIET")
     assert q["catalyst"] is None
-    assert q["news_seen"] == {"items": 1, "latest": [{"kind": "other", "headline": meds}], "at": ts(10, 40)}
+    assert q["news_seen"] == {"items": 1, "latest": [{"kind": C.PRICE_ACTION, "headline": sector}], "at": ts(10, 40)}
     cont = ledger.store.get("edge_radar", "2026-09-23|CONT")
     assert cont["news_seen"] == {"items": 0, "latest": [], "at": ts(10, 40)}      # the feed had no story
     catx = ledger.store.get("edge_radar", "2026-09-23|CATX")
     assert catx["catalyst"]["kind"] == "contract" and catx["news_seen"] is None
     from edge import readout as RO
     items = {i["symbol"]: i for i in RO.radar(ledger.store, "2026-09-23")["items"]}
-    assert items["QUIET"]["news_seen"]["latest"][0]["kind"] == "other"
+    assert items["QUIET"]["news_seen"]["latest"][0]["kind"] == C.PRICE_ACTION
 
 
 def test_a_page_capped_news_answer_is_unknown_never_no_catalyst(ledger, caplog):

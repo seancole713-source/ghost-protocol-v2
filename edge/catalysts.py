@@ -42,13 +42,16 @@ CLASSIFIER_LABELS = {
 
 
 def classifier_of(evidence: Optional[Dict] = None, session_date: Optional[str] = None) -> str:
-    """The classifier a forecast or card row was decided with: its own tag, else by session date.
-    Tags began with headlines_v2 (2026-10-03), so an untagged row is v2 from 2026-10-02, else v1;
-    every row headlines_v3 or later decides carries its tag."""
+    """The classifier a forecast or card row was decided with: its own tag, else by session date:
+    from CLASSIFIER_SINCE the current one (a session with nothing to tag -- no intraday forecast,
+    an empty card -- still ran it), from UNTAGGED_V2_SINCE headlines_v2, earlier headlines_v1."""
     tag = (evidence or {}).get("classifier_version") if isinstance(evidence, dict) else None
     if tag:
         return str(tag)
-    return "headlines_v2" if (session_date or "") >= UNTAGGED_V2_SINCE else LEGACY_CLASSIFIER
+    day = session_date or ""
+    if day >= CLASSIFIER_SINCE:
+        return CLASSIFIER_VERSION
+    return "headlines_v2" if day >= UNTAGGED_V2_SINCE else LEGACY_CLASSIFIER
 
 
 DILUTIVE = frozenset({OFFERING})
