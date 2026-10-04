@@ -498,3 +498,61 @@ def test_the_report_reaches_the_backtest_view(done):
     e = view["edgar_8k_breakout"]
     assert e["version"] == E.VERSION and "trades_prereg" not in e and "picks_full" not in e
     assert e["windows"]["full"]["gate"]["verdict"] in ("PASS", "FAIL")
+
+
+# ---- EdgarTools cross-check (operator decision 2026-10-03) -------------------------------------
+import pytest as _pytest
+
+_XC_SAMPLE = """<html><body><pre>&lt;SEC-HEADER&gt;0001104659-26-012345.hdr.sgml : 20260930
+&lt;ACCEPTANCE-DATETIME&gt;20260930163412
+ACCESSION NUMBER:		0001104659-26-012345
+CONFORMED SUBMISSION TYPE:	8-K
+PUBLIC DOCUMENT COUNT:		3
+ITEM INFORMATION:		Entry into a Material Definitive Agreement
+ITEM INFORMATION:		Financial Statements and Exhibits
+FILED AS OF DATE:		20260930
+&lt;/SEC-HEADER&gt;
+&lt;DOCUMENT&gt;
+&lt;TYPE&gt;EX-99.1
+&lt;DESCRIPTION&gt;PRESS RELEASE
+&lt;/DOCUMENT&gt;
+</pre></body></html>"""
+
+
+def test_crosscheck_agrees_with_edgartools_on_an_escaped_index_header():
+    _pytest.importorskip("edgar")
+    from edge import backtest_edgar8k as E
+    ours = E.parse_header(_XC_SAMPLE)
+    cc = E.crosscheck_header(_XC_SAMPLE, ours)
+    assert ours["items"] == ["1.01", "9.01"] and ours["accepted"] == "2026-09-30T16:34:12"
+    assert cc == {"status": "agree", "diffs": []}
+
+
+def test_crosscheck_reports_every_field_that_disagrees():
+    _pytest.importorskip("edgar")
+    from edge import backtest_edgar8k as E
+    wrong = {**E.parse_header(_XC_SAMPLE), "items": ["8.01"], "accepted": "2026-09-30T12:34:12", "form": "8-K/A"}
+    cc = E.crosscheck_header(_XC_SAMPLE, wrong)
+    assert cc["status"] == "disagree" and len(cc["diffs"]) == 3
+
+
+def test_crosscheck_without_edgartools_is_unavailable_never_a_crash(monkeypatch):
+    import builtins
+    from edge import backtest_edgar8k as E
+    real = builtins.__import__
+
+    def fake(name, *a, **k):
+        if name.startswith("edgar"):
+            raise ImportError("not installed")
+        return real(name, *a, **k)
+    monkeypatch.setattr(builtins, "__import__", fake)
+    assert E.crosscheck_header(_XC_SAMPLE, E.parse_header(_XC_SAMPLE)) == {"status": "unavailable"}
+
+
+def test_crosscheck_verdict_untrusted_above_1pct_and_too_few_is_not_judged():
+    from edge import backtest_edgar8k as E
+    assert E.crosscheck_verdict({"agree": 99, "disagree": 1})["trusted"] is True
+    bad = E.crosscheck_verdict({"agree": 97, "disagree": 3, "examples": [{"accession": "x", "diffs": ["d"]}]})
+    assert bad["trusted"] is False and "untrusted" in bad["note"] and bad["examples"]
+    assert E.crosscheck_verdict({"agree": 10})["trusted"] is None
+    assert E.crosscheck_verdict({"unavailable": 5})["trusted"] is None

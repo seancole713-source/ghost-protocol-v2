@@ -24,3 +24,4 @@ scikit-learn==1.5.2
 vaderSentiment==3.3.2
 shap==0.46.0
 anthropic==1.8.0
+edgartools==5.60.0     # SEC filing parser: cross-checks the 8-K replay's own header parser (edge/backtest_edgar8k.py)

@@ -344,6 +344,63 @@ def parse_header(text: str) -> Dict[str, Any]:
     return out
 
 
+# ---- independent cross-check of parse_header (operator decision 2026-10-03) ------------------
+# parse_header was written from EDGAR's documented format without ever seeing a live SEC answer
+# (the build sandbox cannot reach sec.gov). Every header the run fetches is ALSO parsed by EdgarTools
+# (MIT, widely used) from the same text -- no extra SEC request -- and the two must agree on form,
+# acceptance time and item numbers. Too much disagreement means the replay's 8-K selection cannot be
+# trusted, and both windows' gates are forced to FAIL (crosscheck_verdict).
+CROSSCHECK_MAX_DISAGREE = 0.01        # above 1% of checked headers disagreeing: untrusted
+CROSSCHECK_MIN_CHECKED = 50           # fewer checked than this: too few to judge (reported, not forced)
+CROSSCHECK_EXAMPLES = 25
+
+
+def crosscheck_header(text: str, ours: Dict[str, Any]) -> Dict[str, Any]:
+    """{"status": "agree" | "disagree" | "error" | "unavailable", "diffs": [...]} for one header."""
+    try:
+        from edgar.sgml import FilingHeader
+    except Exception:  # noqa: BLE001 - the checker is optional where it is not installed
+        return {"status": "unavailable"}
+    try:
+        t = html.unescape(text or "")
+        a, b = t.find("<SEC-HEADER>"), t.find("</SEC-HEADER>")
+        if a < 0:
+            return {"status": "error", "diffs": ["no <SEC-HEADER> block"]}
+        hdr = FilingHeader.parse_from_sgml_text(t[a:(b + len("</SEC-HEADER>")) if b > a else len(t)])
+        theirs_form = str(hdr.form or "").strip().upper() or None
+        acc = hdr.acceptance_datetime
+        theirs_acc = acc.strftime("%Y-%m-%dT%H:%M:%S") if hasattr(acc, "strftime") else None
+        raw = str(hdr.filing_metadata.get("ITEM INFORMATION") or "") if hdr.filing_metadata else ""
+        theirs_items = sorted({n for n in (item_number(x) for x in raw.split(", ")) if n})
+    except Exception as exc:  # noqa: BLE001 - a checker crash is counted, never fatal
+        return {"status": "error", "diffs": [f"edgartools: {type(exc).__name__}: {str(exc)[:80]}"]}
+    diffs = []
+    if theirs_form != ours.get("form"):
+        diffs.append(f"form ours={ours.get('form')} edgartools={theirs_form}")
+    if theirs_acc != ours.get("accepted"):
+        diffs.append(f"accepted ours={ours.get('accepted')} edgartools={theirs_acc}")
+    if theirs_items != sorted(ours.get("items") or []):
+        diffs.append(f"items ours={sorted(ours.get('items') or [])} edgartools={theirs_items}")
+    return {"status": "disagree" if diffs else "agree", "diffs": diffs}
+
+
+def crosscheck_verdict(cc: Dict[str, Any]) -> Dict[str, Any]:
+    """Summary of the run's cross-check counters, and whether the 8-K selection can be trusted."""
+    checked = int(cc.get("agree") or 0) + int(cc.get("disagree") or 0)
+    rate = (int(cc.get("disagree") or 0) / checked) if checked else None
+    if int(cc.get("unavailable") or 0) and not checked:
+        trusted, why = None, "EdgarTools not installed: parser not cross-checked"
+    elif checked < CROSSCHECK_MIN_CHECKED:
+        trusted, why = None, f"only {checked} headers cross-checked (< {CROSSCHECK_MIN_CHECKED}): too few to judge"
+    else:
+        trusted = rate <= CROSSCHECK_MAX_DISAGREE
+        why = (f"{rate:.1%} of {checked} headers disagree with EdgarTools"
+               + ("" if trusted else f" (> {CROSSCHECK_MAX_DISAGREE:.0%}): 8-K selection untrusted"))
+    return {**{k: int(cc.get(k) or 0) for k in ("agree", "disagree", "error", "unavailable")},
+            "checked": checked, "disagree_rate": rate, "trusted": trusted, "note": why,
+            "examples": list(cc.get("examples") or [])[:CROSSCHECK_EXAMPLES]}
+
+
 EXCLUDED_ITEMS = ("3.02", "2.03", "1.03", "3.01")
 DILUTION_EXHIBIT_RE = re.compile(r"underwrit|securities\s+purchase|registered\s+direct|at[\s-]*the[\s-]*market|"
                                  r"placement\s+agen|registration\s+rights", re.I)
@@ -884,6 +941,13 @@ class _Run:
         if code == 404:
             code, text = self.sec(submission_url(cik, acc))
         h = parse_header(text) if code == 200 else {"ok": False, "status": code, "parser": PARSER_VERSION}
+        if code == 200:
+            cc = crosscheck_header(text, h)
+            h["crosscheck"] = cc["status"]
+            tally = self.prog.setdefault("crosscheck", {})
+            tally[cc["status"]] = int(tally.get(cc["status"]) or 0) + 1
+            if cc["status"] in ("disagree", "error") and len(tally.setdefault("examples", [])) < CROSSCHECK_EXAMPLES:
+                tally["examples"].append({"accession": acc, "diffs": cc.get("diffs", [])})
         h["accession"] = acc
         self.store.put(T_HEADER, acc, h)
         self.prog["headers_fetched"] = int(self.prog.get("headers_fetched") or 0) + 1
@@ -1036,6 +1100,11 @@ class _Run:
                  "early_close_sessions": sum(1 for r in days if r["status"] == "early_close"),
                  "cs_snapshots": self.snap_days,
                  "cs_snapshot_unavailable": sorted(self.meta.get("snapshot_unavailable") or {})}
+        xcheck = crosscheck_verdict(self.prog.get("crosscheck") or {})
+        if xcheck["trusted"] is False:
+            for v in out_w.values():
+                v["gate"]["verdict"] = "FAIL"
+                v["gate"]["reasons"].append(f"parser cross-check failed: {xcheck['note']}")
         prereg = [t for r in days if PREREG_START.isoformat() <= r["day"] <= PREREG_END.isoformat()
                   for t in r.get("picks", []) + r.get("twins", [])]
         res = {"version": VERSION, "hypothesis": SPEC.experiment_id, "spec_hash": SPEC.spec_hash(),
@@ -1045,6 +1114,7 @@ class _Run:
                "window": [self.start.isoformat(), self.end.isoformat()], "windows": out_w,
                "data_availability": avail, "calls": self.prog.get("calls"),
                "headers_needed": self.prog.get("headers_needed"),
+               "parser_crosscheck": xcheck,
                "completed_at": int(time.time()),
                "trades_prereg": prereg[:3000],
                "picks_full": [t for r in days for t in r.get("picks", [])][:3000]}
@@ -1055,7 +1125,8 @@ class _Run:
                                              ("fills", "wins", "win_rate", "wilson_ci", "expectancy_usd_10bps",
                                               "expectancy_usd_25bps")},
                                 "twins_fills": v["arms"]["no_8k_twin"]["fills"]} for k, v in out_w.items()},
-                "data_availability": avail, "calls": res["calls"]}
+                "data_availability": avail, "calls": res["calls"],
+                "parser_crosscheck": {k: xcheck[k] for k in ("checked", "disagree", "trusted", "note")}}
 
     @staticmethod
     def window_report(days: List[Dict[str, Any]], lo: date, hi: date) -> Dict[str, Any]:
@@ -1088,6 +1159,7 @@ class _Run:
                 "edgar_indexes": f"{self.ix}/{len(self.index_dates)}",
                 "headers_needed": self.prog.get("headers_needed"),
                 "headers_fetched": self.prog.get("headers_fetched", 0),
+                "parser_crosscheck": crosscheck_verdict(self.prog.get("crosscheck") or {})["note"],
                 "sessions_decided": decided, "calls": self.prog.get("calls")}
 
 
