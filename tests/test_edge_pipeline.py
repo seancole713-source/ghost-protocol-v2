@@ -753,6 +753,7 @@ FROZEN_HASHES = {   # spec_hash() of every frozen experiment as registered in pr
     "crowded_short_ignition@v1": "42240af1bb9b8f4a510b84f5d911b800d423eda0daea25789a9e0065b61c1299",
     "gap_and_go@v1": "6b99e5306855af2f6dbd40bd8df069bbf7d2131f4c05d8435c7eb2b080b11cc0",
     "gap_and_go_auto@v1": "b2e4106e868a14e5651b96b6bd890a97aabbd328425b87ba0214a5032d76ae20",
+    "gap_and_go_sipref@v1": "3c495b065ceeb7f68a5b18438b7315ef4445e0aeba48a1041fcb41ba339744fd",
     "gap_and_go_verified@v1": "01ce0bde8477be8b2044c724626de71378b0b3a65434a8592ba8f12fd328682f",
     "gap_baseline@v1": "038b5e8aca95950e33bbd7ecc5a01eb1cfa797db687889c5de677aef6f20c014",
     "intraday_continuation@v1": "de33cf2976757efc0275f80d029f8b453f4af886c0058c33f38f504c11a7a527",
@@ -830,3 +831,47 @@ def test_a_page_capped_news_answer_leaves_the_card_catalyst_unknown_never_none(l
     abst = {a["symbol"]: a for a in ledger.store.scan("abstentions", experiment_id=P.EID)}
     assert not any("sector sympathy" in r for r in abst["USAR"]["reasons"])
     assert "catalyst: catalyst feed" in abst["USAR"]["reasons"]          # unknown, not "none"
+
+
+# ---- gap_and_go_sipref@v1: IEX blind spot, priced from 15-min-delayed SIP (operator 2026-10-05) ----
+
+class SipFake(FakeAlpaca):
+    """STALE has a dated catalyst but its last IEX print is from the prior session; the full-market
+    feed, 15 minutes delayed, has it at $22.00 (+10%) in the 08:50-08:55 ET bar."""
+
+    def __init__(self, sip_ts=None):
+        super().__init__("morning")
+        self.sip_ts = sip_ts if sip_ts is not None else ts(8, 50)
+
+    def __call__(self, url, params=None, headers=None, timeout=None):
+        params = params or {}
+        if "/v2/aggs/grouped/" in url:
+            self.calls.append((url, dict(params)))
+            return Resp({"results": [{"T": "STALE", "c": 20.0, "v": 2_000_000}]})
+        if url.endswith("/v2/stocks/bars") and params.get("timeframe") == "5Min":
+            self.calls.append((url, dict(params)))
+            assert params["feed"] == "sip"
+            return Resp({"bars": {"STALE": [{"t": iso(self.sip_ts), "c": 22.0, "v": 40_000}]}})
+        return super().__call__(url, params, headers, timeout)
+
+
+def test_sipref_forecasts_a_gapper_iex_cannot_price_and_auto_still_does_not(ledger):
+    P.morning_card(SipFake(), ledger, now=ts(9, 10))
+    card = ledger.store.get("edge_cards", DAY.isoformat())
+    assert card["forecasts"] == ["SHOP"]                          # gap_and_go_auto@v1: unchanged, IEX only
+    assert sorted(card["sipref_forecasts"]) == ["SHOP", "STALE"]  # the new version also sees STALE
+    f = {x["symbol"]: x for x in ledger.store.scan("forecasts", experiment_id=P.SIPREF_EID)}
+    assert f["STALE"]["entry_ref"] == 22.0 and f["SHOP"]["entry_ref"] == PRE["SHOP"]
+    assert f["STALE"]["evidence"]["sipref_source"] == "sip_delayed"
+    assert f["STALE"]["evidence"]["ref_ts"] == ts(8, 54)          # bar end 08:55, capped at the readable end (now-16 min)
+    assert f["SHOP"]["evidence"]["sipref_source"] == "iex"
+    row = {r["symbol"]: r for r in card["rows"]}["STALE"]
+    assert row["verdict"] != "ELIGIBLE" and row["sipref_verdict"] == "ELIGIBLE"
+
+
+def test_sipref_never_uses_a_delayed_price_older_than_30_minutes(ledger):
+    P.morning_card(SipFake(sip_ts=ts(8, 30)), ledger, now=ts(9, 10))   # bar ends 08:35: 35 min old
+    card = ledger.store.get("edge_cards", DAY.isoformat())
+    assert card["sipref_forecasts"] == ["SHOP"]
+    abst = {a["symbol"]: a["reasons"] for a in ledger.store.scan("abstentions", experiment_id=P.SIPREF_EID)}
+    assert "STALE" in abst

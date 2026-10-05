@@ -218,7 +218,10 @@ def candidates(get, store, *, day: date, now: int, top: int = 50) -> Dict[str, A
             ordered.append(s)
     return {"symbols": ordered[:top], "movers_last_updated": updated, "movers_stale": stale,
             "scan": {k: sc.get(k) for k in ("scanned", "priced", "quoted", "batch_errors", "sip_delayed_priced")},
-            "scan_top": sc["gainers"][:10], "dropped_non_common": sorted(set(screener) - seen - {
+            "scan_top": sc["gainers"][:10],
+            "sip_ref": {g["symbol"]: {"price": g["price"], "ts": g["ts"]}
+                        for g in sc["gainers"] if g.get("source") == "sip_delayed"},
+            "dropped_non_common": sorted(set(screener) - seen - {
                 g["symbol"] for g in sc["gainers"]})[:20],
             "errors": notes}
 
