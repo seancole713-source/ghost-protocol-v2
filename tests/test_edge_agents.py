@@ -281,3 +281,20 @@ def test_nightly_prune_touches_caches_only_never_the_ledger():
     out = P.prune(PostgresStore(lambda: Conn()), now=10 * 86_400)
     assert out["deleted"]["edge_rvol"] == 7
     assert ("DELETE FROM edge_rows WHERE tbl = %s AND known_at < %s", ("edge_rvol", 7 * 86_400)) in sql
+
+
+def test_the_paper_view_says_what_each_order_is_doing_now():
+    """2026-10-05: every order read "submitted" all day; CBRS and NU had filled hours earlier."""
+    assert RO.paper_status({}, {}) is None
+    assert RO.paper_status({"state": "rejected"}, {}) == "rejected"
+    assert RO.paper_status({"state": "submitted"}, {}).startswith("entry order working")
+    assert RO.paper_status({"state": "submitted", "entry_cancel": {"requested_at": 1}}, {}).startswith(
+        "entry cancel requested")
+    assert RO.paper_status({"state": "submitted", "entry_cancel_checked": True, "protection": "none"},
+                           {}).startswith("entry not filled")
+    assert RO.paper_status({"state": "submitted", "entry_cancel_checked": True, "protection": "bracket"},
+                           {}).startswith("filled")
+    assert RO.paper_status({"state": "submitted", "time_exit_done": True}, {}) == "closed at the time exit"
+    assert RO.paper_status({"state": "submitted"}, {"outcome": "TIME_EXIT"}) == "closed: TIME_EXIT"
+    assert RO.paper_status({"state": "submitted", "protect_alarm": "AB: 10 shares unprotected"},
+                           {}).startswith("PROBLEM")

@@ -230,6 +230,36 @@ def radar(store, day: Optional[str] = None) -> Dict[str, Any]:
             "items": out[:40]}
 
 
+_PROTECTION_STATUS = {
+    "none": "entry not filled: cancelled at the entry deadline",
+    "bracket": "filled: target and stop working",
+    "oco": "partly filled: protected by a target/stop order",
+    "flattened": "partly filled: sold flat at the entry deadline",
+    "flat": "partly filled: already flat",
+}
+
+
+def paper_status(p: Dict[str, Any], act: Dict[str, Any]) -> Optional[str]:
+    """What the paper order is doing NOW, in words. 2026-10-05: the view said "submitted" for every
+    order all day (that field is only the submit result), so filled CBRS/NU orders read as unfilled
+    until the after-close reconcile. The paper steps' own records say more as the day goes on."""
+    if not p:
+        return None
+    if p.get("state") != "submitted":
+        return p.get("state")
+    if act.get("outcome"):
+        return f"closed: {act['outcome']}"
+    if p.get("time_exit_done"):
+        return "closed at the time exit"
+    if p.get("protect_alarm"):
+        return "PROBLEM: " + str(p["protect_alarm"])[:160]
+    if p.get("entry_cancel_checked"):
+        return _PROTECTION_STATUS.get(p.get("protection"), "entry deadline handled")
+    if p.get("entry_cancel"):
+        return "entry cancel requested at the deadline, waiting for the broker"
+    return "entry order working: buys only if the price reaches the trigger"
+
+
 def paper(store, day: Optional[str] = None) -> Dict[str, Any]:
     d = _day_of(store, "forecasts", day, "session_date")
     if not d:
@@ -279,6 +309,7 @@ def paper(store, day: Optional[str] = None) -> Dict[str, Any]:
                      "entry_trigger": f.get("entry_trigger"), "entry_limit": f.get("entry_limit"),
                      "target": f.get("target"), "stop": f.get("stop"),
                      "shares": f.get("shares"), "paper_state": p.get("state"), "paper_message": p.get("message"),
+                     "paper_status": paper_status(p, act),
                      "simulated": sim.get("outcome"), "simulated_note": sim.get("note"),
                      "actual": act.get("outcome"), "actual_pnl_usd": act.get("pnl_usd"),
                      "actual_counted": bool(act.get("outcome") in COUNTED and not outside and not late),
