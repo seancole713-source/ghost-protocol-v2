@@ -272,3 +272,25 @@ def test_no_sip_request_before_the_delayed_data_covers_the_session():
     m = SipMarket()
     PM.scan(m, MemoryStore(), day=DAY, now=ts(4, 10))
     assert m.bar_calls == []
+
+
+def test_the_probe_reports_what_the_delayed_sip_scan_can_see(monkeypatch):
+    """The post-install self-test (EDGE_SCAN_SELFTEST) logs this probe: it must count and name the
+    names only the 15-min-delayed SIP feed could price."""
+    from edge.providers import base as B
+    monkeypatch.setattr(B, "et_today", lambda: DAY)
+    import time
+    monkeypatch.setattr(time, "time", lambda: ts(9, 5))
+    p = PM.probe(SipMarket())
+    assert p.status == "OK" and p.rows == 3 + 2
+    assert "2 priced from 15-min-delayed SIP" in p.note and "BIGG +55.8% (delayed SIP)" in p.note
+
+
+def test_the_post_install_scan_self_test_is_wired_once_per_commit_outside_quiet_hours():
+    from pathlib import Path
+    src = (Path(__file__).resolve().parents[1] / "wolf_app.py").read_text()
+    body = src[src.index("def _edge_scan_selftest"):src.index("def _edge_probe_job")]
+    assert "RAILWAY_GIT_COMMIT_SHA" in body and '"scan_selftest"' in body
+    assert "_QS <= (t.hour, t.minute) < _QE" in body and "EDGE_SCAN_SELFTEST" in body
+    job = src[src.index("def _edge_probe_job"):]
+    assert job.index("_edge_scan_selftest()") < job.index("rep = _edge_probe_run(")

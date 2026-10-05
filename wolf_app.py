@@ -2295,6 +2295,34 @@ async def lifespan(app: FastAPI):
         # pricing is not rate-limited), results written to the log as
         # EDGE_PROBE_SUMMARY lines. edge/ is the independent build and imports
         # nothing from Ghost's engine; this is its only hook.
+        def _edge_scan_selftest():
+            """Once per deployed commit, outside the probe's quiet hours: run the premarket scan
+            against live data and log what it can see (IEX vs 15-min-delayed SIP), so a scanner
+            change is proven on the day it ships instead of at the next morning's card."""
+            try:
+                import time as _time
+                from core.db import db_conn as _sdb
+                from edge import premarket as _epm
+                from edge.probe import QUIET_END as _QE, QUIET_START as _QS
+                from edge.store_pg import PostgresStore as _SStore
+                sha = (os.getenv("RAILWAY_GIT_COMMIT_SHA") or "")[:7]
+                now = int(_time.time())
+                from datetime import datetime as _sdt
+                from edge.contracts import ET as _SET
+                t = _sdt.fromtimestamp(now, tz=_SET)
+                if not sha or (t.weekday() < 5 and _QS <= (t.hour, t.minute) < _QE):
+                    return
+                st = _SStore(_sdb)
+                if (st.get("edge_probe", "scan_selftest") or {}).get("sha") == sha:
+                    return
+                p = _epm.probe()
+                LOGGER.warning("EDGE_SCAN_SELFTEST %s %s rows=%s %s", sha, p.status, p.rows, (p.note or "")[:900])
+                st.put("edge_probe", "scan_selftest", {"sha": sha, "at": now, "status": p.status,
+                                                       "rows": p.rows, "note": p.note})
+            except Exception as exc:  # noqa: BLE001 - a self-test never breaks the probe job
+                from shared.redaction import redact_exc as _rx
+                LOGGER.warning("EDGE_SCAN_SELFTEST failed: %s", _rx(exc, 200))
+
         def _edge_probe_job():
             if os.getenv("EDGE_PROBE_ENABLED", "1").strip().lower() not in {"1", "true", "yes", "on"}:
                 return
@@ -2310,6 +2338,7 @@ async def lifespan(app: FastAPI):
                 except Exception:  # noqa: BLE001 - no record yet: run
                     _last = None
                 if not _edge_probe_due(int(_time.time()), _last):
+                    _edge_scan_selftest()
                     return
                 rep = _edge_probe_run(http=_rq)
                 for ln in _edge_lines(rep):

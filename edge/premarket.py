@@ -237,8 +237,13 @@ def probe(get=None):
         out = scan(get, None, day=B.et_today(), now=now, top=5)
     except Exception as exc:  # noqa: BLE001
         return B.Probe("movers.premarket_scan", "alpaca_iex", B.ERROR, note=redact_exc(exc, 160))
-    top = ", ".join(f"{g['symbol']} {g['gap_pct']:+.1f}%" for g in out["gainers"])
-    return B.Probe("movers.premarket_scan", "alpaca_iex", B.OK if out["priced"] else B.EMPTY, rows=out["priced"],
-                   note=f"scanned {out['scanned']}, {out['priced']} with a fresh current-session print, "
-                        f"{out['quoted']} with a fresh quote"
+    top = ", ".join(f"{g['symbol']} {g['gap_pct']:+.1f}%"
+                    + (" (delayed SIP)" if g.get("source") == "sip_delayed" else "") for g in out["gainers"])
+    sip_n = out.get("sip_delayed_priced") or 0
+    sip_err = out.get("sip_delayed_batch_errors") or 0
+    return B.Probe("movers.premarket_scan", "alpaca_iex", B.OK if (out["priced"] or sip_n) else B.EMPTY,
+                   rows=out["priced"] + sip_n,
+                   note=f"scanned {out['scanned']}, {out['priced']} with a fresh current-session IEX print, "
+                        f"{out['quoted']} with a fresh quote, {sip_n} priced from 15-min-delayed SIP"
+                        f"{' (SIP batch errors ' + str(sip_err) + ')' if sip_err else ''}"
                         f"{', batch errors ' + str(out['batch_errors']) if out['batch_errors'] else ''}; top: {top or 'none'}")
