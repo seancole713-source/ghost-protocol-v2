@@ -25,8 +25,9 @@ INDEX, ANALYST, OFFERING, REVERSE_SPLIT, POLICY, OTHER = (
 # forecasts made under different classifiers are never pooled. Forecasts carry their version in
 # evidence; one without it is dated: session 2026-10-02 or later ran this classifier (#229, deployed
 # before that session; the file is unchanged since), anything earlier ran an older one.
-CLASSIFIER_VERSION = "headlines_v3"
-CLASSIFIER_SINCE = "2026-10-05"        # first session decided by headlines_v3 (every row it makes is tagged)
+CLASSIFIER_VERSION = "headlines_v4"
+CLASSIFIER_SINCE = "2026-10-06"        # first session decided by headlines_v4 (every row it makes is tagged)
+UNTAGGED_V3_SINCE = "2026-10-05"       # an UNTAGGED row from this session on ran headlines_v3
 UNTAGGED_V2_SINCE = "2026-10-02"       # an UNTAGGED row from this session on ran headlines_v2
 LEGACY_CLASSIFIER = "headlines_v1"
 CLASSIFIER_LABELS = {
@@ -35,22 +36,28 @@ CLASSIFIER_LABELS = {
     "headlines_v2": ("headlines_v2 (2026-10-02 to 2026-10-03: earnings previews/dates and "
                      "earnings-named products are not catalysts; revenue-milestone releases were not "
                      "catalysts, e.g. MEDS 2026-10-01)"),
-    "headlines_v3": ("headlines_v3 (current, from 2026-10-05: as headlines_v2, plus a company's "
+    "headlines_v3": ("headlines_v3 (2026-10-05: as headlines_v2, plus a company's "
                      "monthly/preliminary/record revenue or a revenue milestone counts as a results "
-                     "catalyst)"),
+                     "catalyst; an earnings-call transcript re-post could count as earnings, e.g. RXO "
+                     "2026-10-05)"),
+    "headlines_v4": ("headlines_v4 (current, from 2026-10-06: as headlines_v3, plus a transcript of an "
+                     "earnings or conference call is a re-post of an old event, never a catalyst)"),
 }
 
 
 def classifier_of(evidence: Optional[Dict] = None, session_date: Optional[str] = None) -> str:
     """The classifier a forecast or card row was decided with: its own tag, else by session date:
     from CLASSIFIER_SINCE the current one (a session with nothing to tag -- no intraday forecast,
-    an empty card -- still ran it), from UNTAGGED_V2_SINCE headlines_v2, earlier headlines_v1."""
+    an empty card -- still ran it), from UNTAGGED_V3_SINCE headlines_v3, from UNTAGGED_V2_SINCE
+    headlines_v2, earlier headlines_v1."""
     tag = (evidence or {}).get("classifier_version") if isinstance(evidence, dict) else None
     if tag:
         return str(tag)
     day = session_date or ""
     if day >= CLASSIFIER_SINCE:
         return CLASSIFIER_VERSION
+    if day >= UNTAGGED_V3_SINCE:
+        return "headlines_v3"
     return "headlines_v2" if day >= UNTAGGED_V2_SINCE else LEGACY_CLASSIFIER
 
 
@@ -172,10 +179,24 @@ class CatalystEvent:
         return self.kind in DILUTIVE
 
 
+# headlines_v4: a transcript re-posts an earnings or conference call that already happened -- it is
+# not a new event. 2026-10-05: "Transcript: RXO Q2 2026 Earnings Conference Call" (Q2 reported in
+# August) read as EARNINGS and approved an RXO catalyst_breakout forecast; the real news that morning
+# was C.H. Robinson's offer to buy RXO.
+# A transcript headline that also carries the result ("Earnings call transcript: Darden Q1 meets EPS
+# view, shares slip") is same-day results coverage and keeps its kind.
+_TRANSCRIPT = re.compile(r"^(?!.*\b(beats?|meets?|miss(es|ed)?|tops|eps|guidance|outlook|revenue (rose|grew|"
+                         r"fell|increased|beat))\b)"
+                         r".*(^\W*transcripts?\b|\b(call|earnings|conference|webcast|presentation|"
+                         r"remarks|q[1-4]( \d{4})?( results)?) transcripts?\b|\btranscripts? of\b)")
+
+
 def classify(headline: str) -> str:
     h = headline.lower()
     if _MARKET_WRAP.search(h):
         return PRICE_ACTION
+    if _TRANSCRIPT.search(h):
+        return OTHER
     for kind, pattern in _RULES:
         if re.search(pattern, h):
             return kind

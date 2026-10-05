@@ -25,7 +25,7 @@ ET = ZoneInfo("America/New_York")
 EID = GAP_AND_GO_AUTO.experiment_id
 HOOD = "Robinhood Announces Cboe Earnings Contracts On Company Metrics In Prediction Markets Hub, Rolling Out In Coming Weeks"
 MEDS = "DataMeds AI's Corexa Pharmacy Surpasses $1 Million In Monthly Revenue"
-H1, H2, H3 = "headlines_v1", "headlines_v2", "headlines_v3"
+H1, H2, H3 = "headlines_v1", "headlines_v2", "headlines_v4"   # H3 = the current classifier
 
 
 def ts(d: date, hh: int, mm: int) -> int:

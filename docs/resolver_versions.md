@@ -121,7 +121,7 @@ catalyst, so a change to it changes which names a frozen rule selects. It is
 versioned and cohorted exactly like the resolver (operator decision 2026-10-03,
 option 1):
 
-* The current version is `CLASSIFIER_VERSION` (`headlines_v3`, from session 2026-10-05).
+* The current version is `CLASSIFIER_VERSION` (`headlines_v4`, from session 2026-10-06).
   Every new forecast carries `classifier_version` in its evidence, and every card row,
   card grade, control-arm day and row, Top 10 list and backtest dataset row carries it too.
 * Versions so far:
@@ -134,9 +134,15 @@ option 1):
     milestone, counts as a results (`earnings`) catalyst ("DataMeds AI's Corexa Pharmacy
     Surpasses $1 Million In Monthly Revenue", MEDS 2026-10-01); a scheduled revenue or
     sales release ("to report Q3 sales on ...") is `earnings_scheduled`, not a catalyst.
+    Session 2026-10-05 only.
+  - `headlines_v4`: from 2026-10-06. As v3, plus a transcript of an earnings or
+    conference call is a re-post of an old event, never a catalyst ("Transcript: RXO Q2
+    2026 Earnings Conference Call" approved an RXO forecast on 2026-10-05), unless the
+    headline also carries the same-day result ("... meets EPS view").
 * A row **without** the tag is dated by its session day: tags began with `headlines_v2`,
   so an untagged row from 2026-10-02 on ran `headlines_v2`, anything earlier
-  `headlines_v1`; every `headlines_v3` row is tagged (`classifier_of`, and
+  `headlines_v1`; an untagged row from 2026-10-05 ran `headlines_v3`; every row the
+  current classifier decides is tagged (`classifier_of`, and
   `edge/ledger.py row_classifier` / `forecast_classifier`).
 * The cohort name is the resolver version, qualified when the classifier is not the
   current one (`edge/ledger.py cohort_key`): `resolver_v2~headlines_v1`. Every reader
