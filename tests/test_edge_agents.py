@@ -59,7 +59,7 @@ def test_notes_read_back_newest_first_and_filter_by_day_and_kind():
 def _rows(n, wins, **stamp):
     return [{"symbol": f"S{i}", "outcome": "WIN" if i < wins else "LOSS",
              "execution": "WIN" if i < wins else "LOSS", "baseline": "ELIGIBLE", "resolver_version": "resolver_v2",
-             "classifier_version": "headlines_v3", **stamp}
+             "classifier_version": "headlines_v4", **stamp}
             for i in range(n)]
 
 
@@ -95,10 +95,10 @@ def test_the_scorecard_grades_the_order_with_costs_and_never_pools_the_frictionl
     store.put("edge_card_outcomes", "2026-09-23", {"day": "2026-09-23", "rows": [
         # the forecast touched the target, but the order never filled inside its limit
         {"symbol": "GAP", "outcome": "WIN", "execution": "NO_FILL", "baseline": "ELIGIBLE", "auto": "ELIGIBLE",
-         "resolver_version": "resolver_v2", "classifier_version": "headlines_v3"},
+         "resolver_version": "resolver_v2", "classifier_version": "headlines_v4"},
         {"symbol": "OK", "outcome": "WIN", "execution": "WIN", "execution_pnl_usd": 47.9,
          "baseline": "ELIGIBLE", "auto": "ELIGIBLE", "resolver_version": "resolver_v2",
-         "classifier_version": "headlines_v3"}]})
+         "classifier_version": "headlines_v4"}]})
     sc = SC.scorecard(store)
     base = sc["base_rate_all_gappers"]
     assert (base["candidates"], base["decided"], base["wins"], base["no_fill"]) == (2, 1, 1, 1)
@@ -281,3 +281,20 @@ def test_nightly_prune_touches_caches_only_never_the_ledger():
     out = P.prune(PostgresStore(lambda: Conn()), now=10 * 86_400)
     assert out["deleted"]["edge_rvol"] == 7
     assert ("DELETE FROM edge_rows WHERE tbl = %s AND known_at < %s", ("edge_rvol", 7 * 86_400)) in sql
+
+
+def test_the_paper_view_says_what_each_order_is_doing_now():
+    """2026-10-05: every order read "submitted" all day; CBRS and NU had filled hours earlier."""
+    assert RO.paper_status({}, {}) is None
+    assert RO.paper_status({"state": "rejected"}, {}) == "rejected"
+    assert RO.paper_status({"state": "submitted"}, {}).startswith("entry order working")
+    assert RO.paper_status({"state": "submitted", "entry_cancel": {"requested_at": 1}}, {}).startswith(
+        "entry cancel requested")
+    assert RO.paper_status({"state": "submitted", "entry_cancel_checked": True, "protection": "none"},
+                           {}).startswith("entry not filled")
+    assert RO.paper_status({"state": "submitted", "entry_cancel_checked": True, "protection": "bracket"},
+                           {}).startswith("filled")
+    assert RO.paper_status({"state": "submitted", "time_exit_done": True}, {}) == "closed at the time exit"
+    assert RO.paper_status({"state": "submitted"}, {"outcome": "TIME_EXIT"}) == "closed: TIME_EXIT"
+    assert RO.paper_status({"state": "submitted", "protect_alarm": "AB: 10 shares unprotected"},
+                           {}).startswith("PROBLEM")

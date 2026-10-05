@@ -163,3 +163,15 @@ def test_an_earnings_preview_or_date_is_not_an_earnings_result(headline):
 @pytest.mark.parametrize("headline", EARNINGS_RESULTS)
 def test_an_earnings_result_is_still_earnings_even_beside_product_words(headline):
     assert C.classify(headline) == C.EARNINGS
+
+
+def test_a_call_transcript_repost_is_not_a_catalyst():
+    """headlines_v4 (2026-10-05): "Transcript: RXO Q2 2026 Earnings Conference Call" -- a re-post of
+    an August call -- read as EARNINGS and approved an RXO catalyst_breakout forecast. A transcript
+    is not a new event, unless the headline also carries the same-day result."""
+    from edge import catalysts as C
+    for h in ("Transcript: RXO Q2 2026 Earnings Conference Call", "RXO Q2 2026 Earnings Call Transcript",
+              "Acme earnings transcript highlights strong demand", "Transcript of remarks by Acme CEO"):
+        assert C.classify(h) not in C.COMPANY_SPECIFIC, h
+    assert C.classify("Earnings call transcript: Darden Restaurants Q1 2026 meets EPS view, shares slip") == C.EARNINGS
+    assert C.classify("C.H. Robinson to acquire RXO") == C.MNA
