@@ -68,6 +68,7 @@ Limits: see LIMITS (printed on every report).
 from __future__ import annotations
 
 import html
+import json
 import logging
 import math
 import os
@@ -232,6 +233,21 @@ _IDX_RE = re.compile(r"^(8-K(?:/A)?)\s+(.+?)\s+(\d{1,10})\s+(\d{8}|\d{4}-\d{2}-\
 
 def daily_index_url(d: date) -> str:
     return f"{SEC_BASE}/Archives/edgar/daily-index/{d.year}/QTR{(d.month - 1) // 3 + 1}/form.{d:%Y%m%d}.idx"
+
+
+def daily_index_listing_url(d: date) -> str:
+    """The quarter's directory listing: which form.YYYYMMDD.idx files EDGAR actually published."""
+    return f"{SEC_BASE}/Archives/edgar/daily-index/{d.year}/QTR{(d.month - 1) // 3 + 1}/index.json"
+
+
+def parse_listing(text: str) -> Optional[Set[str]]:
+    """form.*.idx names in an EDGAR directory listing (index.json), or None when it cannot be read."""
+    try:
+        items = json.loads(text)["directory"]["item"]
+    except (ValueError, KeyError, TypeError):
+        return None
+    names = {str(i.get("name")) for i in items if isinstance(i, dict) and str(i.get("name", "")).startswith("form.")}
+    return names or None
 
 
 def parse_daily_index(text: str) -> List[List[Any]]:
@@ -627,6 +643,7 @@ class _Run:
         self._map_cache: Dict[Tuple[str, str], Any] = {}
         self.index_dates = _weekdays(self.S[self.first - 1], end)
         self.ix = int(self.prog.get("index_next") or 0)
+        self._listings: Dict[str, Optional[Set[str]]] = {}
 
     # ---- plumbing
     def check_time(self) -> None:
@@ -658,8 +675,9 @@ class _Run:
             if code == 404:
                 return 404, ""
             if code is not None:
-                err = f"HTTP {code}" + (" (the SEC refuses requests without a descriptive User-Agent: "
-                                        "set EDGAR_USER_AGENT)" if code == 403 else "")
+                err = f"HTTP {code}" + (" (the SEC answers 403 for a file it never published, or for a "
+                                        "request without a descriptive User-Agent: EDGAR_USER_AGENT)"
+                                        if code == 403 else "")
             if attempt < len(SEC_BACKOFF_S):
                 self.sleep(SEC_BACKOFF_S[attempt])
         raise _Transient(f"sec {url.rsplit('/', 1)[-1]}: {err}")
@@ -865,11 +883,36 @@ class _Run:
         return {**base, "status": "ok", "passing": passing, "rs_excluded": sorted(rs_excluded)}
 
     # ---- phase 2: EDGAR daily indexes
+    def sec_closed(self, d: date) -> bool:
+        """True when EDGAR published no index for weekday `d`: the SEC was closed (a federal holiday the
+        market trades through, e.g. Columbus Day or Veterans Day, or a market holiday). EDGAR answers 403,
+        not 404, for that missing file, which read as a transient refusal and stalled the run on
+        2024-10-14. Decided from the quarter's directory listing, and only for a day earlier than the
+        listing's latest file, so a listing fetched before the quarter ended never hides a later day.
+        When the listing cannot be read, nothing is skipped: the index itself is fetched as before."""
+        url = daily_index_listing_url(d)
+        if url not in self._listings:
+            try:
+                code, text = self.sec(url)
+            except _Transient:
+                code, text = None, ""
+            self._listings[url] = parse_listing(text) if code == 200 else None
+        names = self._listings[url]
+        name = f"form.{d:%Y%m%d}.idx"
+        return bool(names) and name not in names and name < max(names)
+
     def index_step(self) -> bool:
         while self.ix < len(self.index_dates):
             d = self.index_dates[self.ix]
             if self.store.get(T_INDEX, d.isoformat()) is None:
                 self.check_time()
+                if self.sec_closed(d):
+                    self.store.put(T_INDEX, d.isoformat(), {"date": d.isoformat(), "status": "not_published",
+                                                           "rows": [], "parser": PARSER_VERSION})
+                    self.prog["sec_closed_days"] = sorted(set(self.prog.get("sec_closed_days") or [])
+                                                          | {d.isoformat()})
+                    self.ix += 1
+                    return True
                 code, text = self.sec(daily_index_url(d))
                 self.store.put(T_INDEX, d.isoformat(), {"date": d.isoformat(), "status": code,
                                                        "rows": parse_daily_index(text) if code == 200 else [],
@@ -1157,6 +1200,7 @@ class _Run:
                                           if self.prog.get("daily_next") else None),
                 "daily_done": bool(self.prog.get("daily_done")),
                 "edgar_indexes": f"{self.ix}/{len(self.index_dates)}",
+                "sec_closed_days": len(self.prog.get("sec_closed_days") or []),
                 "headers_needed": self.prog.get("headers_needed"),
                 "headers_fetched": self.prog.get("headers_fetched", 0),
                 "parser_crosscheck": crosscheck_verdict(self.prog.get("crosscheck") or {})["note"],
