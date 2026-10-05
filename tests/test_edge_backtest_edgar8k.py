@@ -147,8 +147,11 @@ def bar_rows(d, path):
 
 
 class Market:
-    def __init__(self, *, daily_403=(), alpaca_403=False):
+    def __init__(self, *, daily_403=(), alpaca_403=False, sec_like=False, published=(PREV, D), listed=None):
         self.calls, self.daily_403, self.alpaca_403 = [], set(daily_403), alpaca_403
+        self.sec_like = sec_like          # the real EDGAR: a listing per quarter, 403 for an unpublished index
+        self.published = set(published)                         # index files that exist
+        self.listed = set(published if listed is None else listed)  # what the quarter's listing shows
 
     def kind(self, url):
         for k in ("/v3/reference/splits", "/v3/reference/tickers", "/v2/aggs/grouped/", "company_tickers.json",
@@ -188,9 +191,14 @@ class Market:
             return Resp(text=json.dumps({str(i): r for i, r in enumerate(rows)}))
         if k == "/daily-index/":
             assert headers and headers.get("User-Agent")
+            if url.endswith("/index.json"):
+                if not self.sec_like:
+                    return Resp(status=404, text="")
+                items = [{"name": f"form.{d:%Y%m%d}.idx", "type": "file"} for d in sorted(self.listed)]
+                return Resp({"directory": {"name": "daily-index", "item": items}})
             d = datetime.strptime(url.rsplit(".", 2)[-2], "%Y%m%d").date()
-            if d not in (PREV, D):
-                return Resp(status=404, text="")
+            if d not in (PREV, D) or (self.sec_like and d not in self.published):
+                return Resp(status=403 if self.sec_like else 404, text="")
             return Resp(text=daily_index(d))
         if k == "-index-headers.html":
             acc = url.rsplit("/", 1)[-1].replace("-index-headers.html", "")
@@ -448,6 +456,38 @@ def test_it_resumes_across_ticks_without_refetching():
     assert prog["headers_needed"] == 11 and prog["headers_fetched"] == 11
     # once complete: once per version
     assert E.run(Market(), store, start_day=D, end_day=D, pace_s=0)["status"] == "already_run"
+
+
+def test_a_day_the_sec_published_no_index_is_skipped_not_retried_forever():
+    """EDGAR answers 403 (not 404) for an index it never published -- a federal holiday the market
+    trades through, such as Columbus Day 2024-10-14 -- which stalled the production run at 6/519. The
+    quarter's listing says which days exist; an unlisted day before its latest file is recorded and
+    skipped, never fetched."""
+    later = date(2026, 9, 18)
+    store, get, out = run(get=Market(sec_like=True, published=(D, later)))
+    assert out["status"] == "complete"
+    idx = [u.rsplit("/", 1)[-1] for k, u in get.calls if k == "/daily-index/" and u.endswith(".idx")]
+    assert idx == [f"form.{D:%Y%m%d}.idx"]
+    prog = store.get(E.T_META, E.VERSION + ":progress")
+    assert prog["sec_closed_days"] == [PREV.isoformat()]
+    assert store.get(E.T_INDEX, PREV.isoformat())["status"] == "not_published"
+    assert get.count("/daily-index/") == 2                     # one listing for the quarter, one index
+
+
+def test_a_listing_never_hides_a_day_after_its_latest_file():
+    """A listing read before the quarter ended stops at that day; later days are fetched, not skipped."""
+    store, get, out = run(get=Market(sec_like=True, listed=(PREV,)))
+    idx = [u.rsplit("/", 1)[-1] for k, u in get.calls if k == "/daily-index/" and u.endswith(".idx")]
+    assert idx == [f"form.{PREV:%Y%m%d}.idx", f"form.{D:%Y%m%d}.idx"]
+    assert out["status"] == "complete" and out["windows"] == run()[2]["windows"]
+    assert not store.get(E.T_META, E.VERSION + ":progress").get("sec_closed_days")
+
+
+def test_sec_listing_helpers():
+    assert E.daily_index_listing_url(date(2024, 10, 14)).endswith("/daily-index/2024/QTR4/index.json")
+    assert E.parse_listing('{"directory": {"item": [{"name": "form.20241011.idx"}, {"name": "x.idx"}]}}') \
+        == {"form.20241011.idx"}
+    assert E.parse_listing("<html>") is None and E.parse_listing('{"directory": {"item": []}}') is None
 
 
 def test_a_second_call_continues_from_the_cache():
