@@ -210,3 +210,65 @@ def test_sip_bought_after_the_first_morning_check_is_picked_up_within_half_an_ho
     assert FD.live_feed(Paid(), store, now=ts(8, 20)) == "iex"   # bought, but within the 30 minutes
     assert FD.live_feed(Paid(), store, now=ts(8, 31)) == "sip"   # re-asked: SIP from now on
     assert FD.live_feed(Market(), store, now=ts(15, 0)) == "sip"  # a SIP answer holds all day
+
+
+class SipMarket(Market):
+    """2026-10-05: IEX priced 42 of 3,251 names; the day's real gappers (PCVX +50%) never reached
+    the card. The free plan serves SIP bars older than 15 minutes; this market has them."""
+
+    def __init__(self):
+        super().__init__()
+        self.bar_calls = []
+
+    def __call__(self, url, params=None, headers=None, timeout=None):
+        params = params or {}
+        if "/v2/aggs/grouped/" in url:
+            r = super().__call__(url, params, headers, timeout)
+            rows = r.json()["results"] + [{"T": "BIGG", "c": 56.48, "v": 2_000_000},
+                                          {"T": "LATE", "c": 10.0, "v": 1_000_000}]
+            return NS(status_code=200, json=lambda: {"results": rows}, raise_for_status=lambda: None, headers={})
+        if "/v2/stocks/bars" in url:
+            assert params["feed"] == "sip" and params["timeframe"] == "5Min"
+            self.bar_calls.append(params)
+            bars = {"BIGG": [{"t": iso(ts(8, 35)), "c": 80.0, "v": 50_000},
+                             {"t": iso(ts(8, 40)), "c": 88.0, "v": 70_000}],   # ends 08:45: 20 min old at 09:05
+                    "LATE": [{"t": iso(ts(8, 20)), "c": 13.0, "v": 9_000}],   # ends 08:25: 40 min old, skipped
+                    "WOR": [{"t": iso(ts(8, 40)), "c": 99.0, "v": 1_000}]}    # IEX already priced it: IEX wins
+            syms = params["symbols"].split(",")
+            return NS(status_code=200, json=lambda: {"bars": {s: b for s, b in bars.items() if s in syms}},
+                      raise_for_status=lambda: None)
+        return super().__call__(url, params, headers, timeout)
+
+
+def test_the_scan_finds_gappers_iex_cannot_see_from_delayed_sip_bars():
+    m = SipMarket()
+    out = PM.scan(m, MemoryStore(), day=DAY, now=ts(9, 5))
+    got = {g["symbol"]: g for g in out["gainers"]}
+    assert round(got["BIGG"]["gap_pct"]) == 56 and got["BIGG"]["source"] == "sip_delayed"
+    assert got["BIGG"]["ts"] == ts(8, 45) and got["BIGG"]["price"] == 88.0
+    assert got["BIGG"]["recent_volume"] == 120_000
+    assert "LATE" not in got                                   # its last bar is older than 30 minutes
+    assert got["WOR"]["source"] == "iex" and round(got["WOR"]["gap_pct"]) == 16
+    assert out["sip_delayed_priced"] == 2 and out["sip_delayed_batch_errors"] == 0
+    # never asks for SIP data the free plan refuses: every request ends >= 16 minutes before now
+    assert all(datetime.fromisoformat(c["end"]).timestamp() <= ts(9, 5) - 16 * 60 for c in m.bar_calls)
+    assert all(datetime.fromisoformat(c["start"]).timestamp() == ts(8, 35) for c in m.bar_calls)
+    assert PM.candidates(SipMarket(), MemoryStore(), day=DAY, now=ts(9, 5))["symbols"][0] == "BIGG"
+
+
+def test_a_failed_sip_batch_is_counted_and_never_holds_the_card():
+    class Broken(SipMarket):
+        def __call__(self, url, params=None, headers=None, timeout=None):
+            if "/v2/stocks/bars" in url:
+                raise RuntimeError("503")
+            return super().__call__(url, params, headers, timeout)
+
+    out = PM.scan(Broken(), MemoryStore(), day=DAY, now=ts(9, 5))
+    assert out["sip_delayed_batch_errors"] == 1 and out["batch_errors"] == 0
+    assert [g["symbol"] for g in out["gainers"]] == ["WOR", "IONQ"]
+
+
+def test_no_sip_request_before_the_delayed_data_covers_the_session():
+    m = SipMarket()
+    PM.scan(m, MemoryStore(), day=DAY, now=ts(4, 10))
+    assert m.bar_calls == []
