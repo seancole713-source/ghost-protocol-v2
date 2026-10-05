@@ -175,6 +175,9 @@ def card_text(card: Dict[str, Any]) -> str:
         lines.append("No trade today -- nothing passed the Gap-and-Go rule.")
     base = card.get("baseline_forecasts") or []
     lines.append("Baseline (no catalyst check): " + (", ".join(base) if base else "none"))
+    if card.get("sipref_forecasts") is not None:
+        sip = card.get("sipref_forecasts") or []
+        lines.append("Delayed full-market price version (paper): " + (", ".join(sip) if sip else "none"))
     ranked = card.get("top10_ranked")
     if ranked:
         lines.append("Top 10 (learning list, not trades): " + ", ".join(

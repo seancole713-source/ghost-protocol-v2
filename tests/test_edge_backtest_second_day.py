@@ -464,6 +464,7 @@ PINNED_FROZEN_HASHES = {
     "crowded_short_ignition@v1": "42240af1bb9b8f4a510b84f5d911b800d423eda0daea25789a9e0065b61c1299",
     "gap_and_go@v1": "6b99e5306855af2f6dbd40bd8df069bbf7d2131f4c05d8435c7eb2b080b11cc0",
     "gap_and_go_auto@v1": "b2e4106e868a14e5651b96b6bd890a97aabbd328425b87ba0214a5032d76ae20",
+    "gap_and_go_sipref@v1": "3c495b065ceeb7f68a5b18438b7315ef4445e0aeba48a1041fcb41ba339744fd",
     "gap_and_go_verified@v1": "01ce0bde8477be8b2044c724626de71378b0b3a65434a8592ba8f12fd328682f",
     "gap_baseline@v1": "038b5e8aca95950e33bbd7ecc5a01eb1cfa797db687889c5de677aef6f20c014",
     "intraday_continuation@v1": "de33cf2976757efc0275f80d029f8b453f4af886c0058c33f38f504c11a7a527",

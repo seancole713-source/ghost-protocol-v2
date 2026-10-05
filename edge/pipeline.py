@@ -91,7 +91,26 @@ GAP_VERIFIED = replace(
                  "candidates": "Alpaca movers screener, top 50 gainers"},
 )
 VERIFIED_EID = GAP_VERIFIED.experiment_id
-EXPERIMENTS = (SPEC, GAP_BASELINE, GAP_VERIFIED)
+
+# Operator decision 2026-10-05: on the free plan IEX priced 42 of 3,251 names, so the day's real
+# gappers (PCVX, ALEC, RXO, PTC) could never be forecast. This is gap_and_go_auto with ONE change,
+# registered as its own experiment so neither record moves: when IEX has no fresh print, the
+# reference price may be the 15-minute-delayed full-market (SIP) 5-minute bar close found by the
+# premarket scan, still current-session and <= 30 min old. Same catalyst check, levels and ranking.
+GAP_SIPREF = replace(
+    GAP_AND_GO_V1, name="gap_and_go_sipref",
+    description="Gap-and-Go v1 levels, fully automated: keyword_v1 catalyst check on Alpaca news; "
+                "IEX premarket reference price <=30 min old, else the 15-min-delayed SIP 5-minute bar "
+                "close <=30 min old; no fresh price, no forecast.",
+    eligibility={**GAP_AND_GO_V1.eligibility,
+                 "catalyst": "keyword_v1 company-specific kind on Alpaca news <24h",
+                 "reference_price": "IEX latest trade, current session, <=30 min old; else the "
+                                    "15-min-delayed SIP 5-minute bar close (timestamped at the bar's end), "
+                                    "current session, <=30 min old",
+                 "candidates": "IEX + delayed-SIP premarket scan, then the Alpaca movers screener"},
+)
+SIPREF_EID = GAP_SIPREF.experiment_id
+EXPERIMENTS = (SPEC, GAP_BASELINE, GAP_VERIFIED, GAP_SIPREF)
 
 # What each experiment needs to be released LIVE. Shadow records regardless;
 # the banner is what a live release would have said, kept beside the record.
@@ -164,6 +183,18 @@ def _reference(snap: Optional[dict], *, now: int, day: date) -> Dict[str, Any]:
     if now - ts > 1800:
         return {"price": None, "ts": ts, "why": f"IEX print {int((now - ts) / 60)} min old"}
     return {"price": float(px), "ts": ts, "why": ""}
+
+
+def _sip_fallback(ref: Dict[str, Any], sip: Optional[dict], *, now: int, day: date) -> Dict[str, Any]:
+    """gap_and_go_sipref's reference: the IEX one when IEX has a fresh print, else the delayed-SIP
+    bar close the premarket scan found -- current session and <= 30 min old, or none."""
+    if ref["price"]:
+        return {**ref, "source": "iex"}
+    if sip and sip.get("price") and sip.get("ts") is not None:
+        ts = int(sip["ts"])
+        if ts >= _at(day, 4, 0) and now - ts <= 1800:
+            return {"price": float(sip["price"]), "ts": ts, "why": "", "source": "sip_delayed"}
+    return {**ref, "source": None}
 
 
 def _events(items: Optional[List[dict]], symbols: set, now: int) -> Optional[Dict[str, List[C.CatalystEvent]]]:
@@ -258,10 +289,12 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50,
         except Exception as exc:  # noqa: BLE001 - no features -> the model abstains, recorded
             sip_pre, source_errors["sip_premarket_bars"] = {}, redact_exc(exc, 200)
 
+    sip_ref = cand.get("sip_ref") or {}
     rows, eligible = [], []
     for sym in syms:
         st = _daily_stats(daily.get(sym) or [], day)
         ref = _reference(snaps.get(sym), now=now, day=day)
+        ref2 = _sip_fallback(ref, sip_ref.get(sym), now=now, day=day)
         ev = None if events is None else events.get(sym, [])
         usable = None if ev is None else C.usable_at(ev, sym, issued_at=now)
         signals = {
@@ -273,6 +306,14 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50,
         }
         d = S.decide("premarket_continuation", signals)
         b = S.decide("gap_baseline", signals)
+        if ref2["source"] == "iex":
+            d2 = d
+        else:
+            sig2 = dict(signals)
+            if ref2["price"]:
+                sig2["gap"] = D.gap(st["prev_close"], ref2["price"])
+                sig2["liquidity"] = D.liquidity(price=ref2["price"], avg_shares=st["avg_shares"])
+            d2 = S.decide("premarket_continuation", sig2)
         v = None
         if research_on:
             # Frozen v1 rule: research counts only if made before 09:05 ET, even though research now
@@ -314,6 +355,8 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50,
                                    else "researched"),
                "verified_reasons": v.reasons if v else [], "verified_missing": v.missing if v else [],
                "ref_price": ref["price"], "ref_ts": ref["ts"], "prev_close": st["prev_close"],
+               "sipref_verdict": d2.verdict, "sipref_reasons": d2.reasons, "sipref_missing": d2.missing,
+               "sipref_price": ref2["price"], "sipref_ts": ref2["ts"], "sipref_source": ref2["source"],
                "avg_dollars": st["avg_dollars"],
                "catalyst": signals["catalyst"].evidence.get("headline"),
                "classifier_version": C.CLASSIFIER_VERSION}
@@ -383,6 +426,12 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50,
                                 verdict_key="verified_verdict", reasons_key="verified_reasons",
                                 missing_key="verified_missing", id_key="verified_forecast_id")
 
+    sip_chosen = [] if SIPREF_EID in refused_specs else _issue_top(
+        ledger, GAP_SIPREF, rows, [r for r in rows if r["sipref_verdict"] == S.ELIGIBLE], day=day, now=now,
+        clock=clock, late=late, verdict_key="sipref_verdict", reasons_key="sipref_reasons",
+        missing_key="sipref_missing", id_key="sipref_forecast_id", ref_key="sipref_price", ts_key="sipref_ts",
+        extra_evidence=("sipref_source",))
+
     health = H.assess([
         H.SourceHealth("movers", now if cand["scan"].get("priced") else updated, 900),
         H.SourceHealth("quotes_iex", now if rows else None, 1800, covered=priced, expected=len(rows) or None,
@@ -398,6 +447,7 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50,
             "trades": _trades(store, chosen),
             "baseline_forecasts": [r["symbol"] for r in base_chosen],
             "verified_forecasts": [r["symbol"] for r in ver_chosen] if research_on else None,
+            "sipref_forecasts": [r["symbol"] for r in sip_chosen],
             "model_forecasts": [r["symbol"] for r in model_chosen] if model is not None else None,
             "model_experiment": model[1].experiment_id if model is not None else None,
             "movers_last_updated": updated, "movers_stale": cand["movers_stale"],
@@ -494,7 +544,9 @@ def _issue_on_time(ledger: Ledger, spec, *, symbol: str, day: date, entry_ref: f
 
 def _issue_top(ledger: Ledger, spec, rows, eligible, *, day: date, now: int, verdict_key: str,
                reasons_key: str, missing_key: str, id_key: str,
-               clock: Optional[Callable[[], float]] = None, late: Optional[List[str]] = None) -> List[dict]:
+               clock: Optional[Callable[[], float]] = None, late: Optional[List[str]] = None,
+               ref_key: str = "ref_price", ts_key: str = "ref_ts",
+               extra_evidence: tuple = ()) -> List[dict]:
     """Record the top N eligible by dollar volume; an abstention with reasons for the rest.
     A chosen name that reaches issuance too late is refused and recorded as an abstention."""
     clock = clock or (lambda: now)
@@ -512,9 +564,11 @@ def _issue_top(ledger: Ledger, spec, rows, eligible, *, day: date, now: int, ver
         eligible = sorted(eligible, key=lambda r: -(r["avg_dollars"] or 0))
         top, chosen = eligible[:spec.max_per_day], []
         for r in top:
-            f = _issue_on_time(ledger, spec, symbol=r["symbol"], day=day, entry_ref=r["ref_price"], now=now,
-                               clock=clock, late=late,
-                               evidence={k: r[k] for k in ("prev_close", "avg_dollars", "catalyst", "ref_ts")})
+            ev = {k: r[k] for k in ("prev_close", "avg_dollars", "catalyst")}
+            ev["ref_ts"] = r[ts_key]
+            ev.update({k: r[k] for k in extra_evidence})
+            f = _issue_on_time(ledger, spec, symbol=r["symbol"], day=day, entry_ref=r[ref_key], now=now,
+                               clock=clock, late=late, evidence=ev)
             if f is None:
                 refused.add(r["symbol"])
                 continue
