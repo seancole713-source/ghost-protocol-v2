@@ -66,12 +66,15 @@ def today(store, day: Optional[str] = None, now: Optional[int] = None) -> Dict[s
     stale = bool(served != requested)
     compact = [{k: r.get(k) for k in ("symbol", "verdict", "reasons", "missing", "baseline_verdict",
                                       "ref_price", "catalyst", "sipref_verdict", "sipref_price",
-                                      "sipref_source")} for r in card.get("rows") or []]
+                                      "sipref_source", "assist_verdict", "assist_catalyst_source")}
+               for r in card.get("rows") or []]
     return {"requested_session": requested, "served_session": served, "stale": stale,
             **({"note": _stale_note(requested, served, now)} if stale else {}),
             "day": card["day"], "forecasts": card.get("forecasts"),
             "baseline_forecasts": card.get("baseline_forecasts"),
             "sipref_forecasts": card.get("sipref_forecasts"),
+            "assist_forecasts": card.get("assist_forecasts"),
+            "orb": store.get("edge_orb", card["day"]),
             "candidates": card.get("candidates"), "priced": card.get("priced"),
             "health_banner": card.get("health_banner"), "health_note": card.get("health_note"),
             "coverage_note": card.get("coverage_note"),

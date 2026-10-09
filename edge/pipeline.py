@@ -110,7 +110,45 @@ GAP_SIPREF = replace(
                  "candidates": "IEX + delayed-SIP premarket scan, then the Alpaca movers screener"},
 )
 SIPREF_EID = GAP_SIPREF.experiment_id
-EXPERIMENTS = (SPEC, GAP_BASELINE, GAP_VERIFIED, GAP_SIPREF)
+
+# Operator decision 2026-10-09 ("Ghost + Claude"): gap_and_go_sipref with ONE change -- rule E4's
+# catalyst may also come from a claim the operator's research agent submitted (source link and
+# publish time, server-stamped when received) BEFORE the card's data cutoff (edge/agent_catalysts.py).
+# A claim of an offering is dilution (E5). Same candidates, prices, levels and ranking as sipref,
+# so the two records differ only by the agent's input.
+GAP_ASSIST = replace(
+    GAP_AND_GO_V1, name="gap_and_go_assist",
+    description="gap_and_go_sipref, plus a catalyst may come from a research agent's claim (source link, "
+                "publish time <24h) received before the card's data cutoff; an agent offering claim is dilution.",
+    eligibility={**GAP_SIPREF.eligibility,
+                 "catalyst": "keyword_v1 company-specific kind on Alpaca news <24h, OR a research-agent claim "
+                             "(company-specific kind, https source, published <24h, server-received before "
+                             "the card's data cutoff)",
+                 "exclude": GAP_AND_GO_V1.eligibility["exclude"] + ["a research-agent offering/dilution claim"]},
+)
+ASSIST_EID = GAP_ASSIST.experiment_id
+EXPERIMENTS = (SPEC, GAP_BASELINE, GAP_VERIFIED, GAP_SIPREF, GAP_ASSIST)
+
+# Operator decision 2026-10-09: entries 1% above the premarket price often never trigger (the
+# gapper fades at the open: BB, GLND, HOOD, OPCH, ACHR). Same names as gap_and_go_sipref's card
+# (top 2 by dollar volume), but nothing is placed before the open: at the first edge tick from
+# 09:45 ET the buy-stop goes just above the 09:30-09:45 ET opening-range high. +5% / -3% from that
+# trigger, cancel 10:30 ET, flat 15:30 ET. Issued at 09:45 (edge/orb.py), not on the 09:05 card.
+GAP_ORB = replace(
+    GAP_AND_GO_V1, name="gap_and_go_orb",
+    description="gap_and_go_sipref's card names (top 2 by avg dollar volume), entered on a break of the "
+                "09:30-09:45 ET opening-range high (IEX 1-minute bars); +5% / -3% from the trigger, cancel "
+                "10:30 ET, flat 15:30 ET.",
+    trigger_mult=1.001, limit_mult=1.011,
+    eligibility={**GAP_SIPREF.eligibility,
+                 "names": "the 09:05 card's gap_and_go_sipref-eligible rows, top 2 by avg dollar volume",
+                 "entry": "buy-stop 0.1% above the 09:30-09:45 ET opening-range high (IEX 1-minute bars, "
+                          ">= 7 of 15 bars), limit 1.1% above it",
+                 "issue_window": "first edge tick 09:45:00-09:47:00 ET; missed -> abstain",
+                 "entry_window_min": 44},
+)
+ORB_EID = GAP_ORB.experiment_id
+LATE_EXPERIMENTS = (GAP_ORB,)        # issued after the open (edge/orb.py), never on the 09:05 card
 
 # What each experiment needs to be released LIVE. Shadow records regardless;
 # the banner is what a live release would have said, kept beside the record.
@@ -215,6 +253,28 @@ def _events(items: Optional[List[dict]], symbols: set, now: int) -> Optional[Dic
     return {s: C.dedupe(v) for s, v in out.items()}
 
 
+def _assist_decision(store, *, day: str, symbol: str, cutoff: int, signals: Dict[str, Any]) -> Dict[str, Any]:
+    """gap_and_go_assist@v1: the sipref signals, with the catalyst passing on the keyword check OR a
+    research-agent claim received before `cutoff`; an agent offering claim fails E5 (dilution)."""
+    from edge import agent_catalysts as AC
+    claims = AC.usable(store, day=day, symbol=symbol, issued_at=cutoff)
+    sig = dict(signals)
+    source = "keyword" if signals["catalyst"].state == D.PASS else None
+    good = [c for c in claims if c["kind"] in C.COMPANY_SPECIFIC]
+    if source is None and good:
+        c0 = good[0]
+        sig["catalyst"] = D.Signal("catalyst", D.PASS, evidence={
+            "headline": c0["headline"], "source_url": c0["source_url"], "published_at": c0["published_at"],
+            "first_seen_at": c0["first_seen_at"], "kind": c0["kind"], "author": c0["author"]})
+        source = "agent"
+    if any(c["kind"] == C.OFFERING for c in claims):
+        sig["not_dilutive"] = D.Signal("not_dilutive", D.FAIL, evidence={
+            "reasons": ["research agent reported an offering/dilution"]})
+    return {"decision": S.decide("premarket_continuation", sig), "source": source,
+            "claims": [{k: c[k] for k in ("kind", "headline", "source_url", "published_at", "first_seen_at")}
+                       for c in claims][:5]}
+
+
 def morning_card(get, ledger: Ledger, *, now: int, top: int = 50,
                  clock: Optional[Callable[[], float]] = None) -> Dict[str, Any]:
     """The pre-open card. `now` is when the tick started: the data cutoff every fetch answers for
@@ -314,6 +374,8 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50,
                 sig2["gap"] = D.gap(st["prev_close"], ref2["price"])
                 sig2["liquidity"] = D.liquidity(price=ref2["price"], avg_shares=st["avg_shares"])
             d2 = S.decide("premarket_continuation", sig2)
+        a2 = _assist_decision(store, day=day.isoformat(), symbol=sym, cutoff=now,
+                              signals=sig2 if ref2["source"] != "iex" else signals)
         v = None
         if research_on:
             # Frozen v1 rule: research counts only if made before 09:05 ET, even though research now
@@ -357,6 +419,9 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50,
                "ref_price": ref["price"], "ref_ts": ref["ts"], "prev_close": st["prev_close"],
                "sipref_verdict": d2.verdict, "sipref_reasons": d2.reasons, "sipref_missing": d2.missing,
                "sipref_price": ref2["price"], "sipref_ts": ref2["ts"], "sipref_source": ref2["source"],
+               "assist_verdict": a2["decision"].verdict, "assist_reasons": a2["decision"].reasons,
+               "assist_missing": a2["decision"].missing, "assist_catalyst_source": a2["source"],
+               "assist_claims": a2["claims"],
                "avg_dollars": st["avg_dollars"],
                "catalyst": signals["catalyst"].evidence.get("headline"),
                "classifier_version": C.CLASSIFIER_VERSION}
@@ -431,6 +496,11 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50,
         clock=clock, late=late, verdict_key="sipref_verdict", reasons_key="sipref_reasons",
         missing_key="sipref_missing", id_key="sipref_forecast_id", ref_key="sipref_price", ts_key="sipref_ts",
         extra_evidence=("sipref_source",))
+    assist_chosen = [] if ASSIST_EID in refused_specs else _issue_top(
+        ledger, GAP_ASSIST, rows, [r for r in rows if r["assist_verdict"] == S.ELIGIBLE], day=day, now=now,
+        clock=clock, late=late, verdict_key="assist_verdict", reasons_key="assist_reasons",
+        missing_key="assist_missing", id_key="assist_forecast_id", ref_key="sipref_price", ts_key="sipref_ts",
+        extra_evidence=("sipref_source", "assist_catalyst_source", "assist_claims"))
 
     health = H.assess([
         H.SourceHealth("movers", now if cand["scan"].get("priced") else updated, 900),
@@ -448,6 +518,7 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50,
             "baseline_forecasts": [r["symbol"] for r in base_chosen],
             "verified_forecasts": [r["symbol"] for r in ver_chosen] if research_on else None,
             "sipref_forecasts": [r["symbol"] for r in sip_chosen],
+            "assist_forecasts": [r["symbol"] for r in assist_chosen],
             "model_forecasts": [r["symbol"] for r in model_chosen] if model is not None else None,
             "model_experiment": model[1].experiment_id if model is not None else None,
             "movers_last_updated": updated, "movers_stale": cand["movers_stale"],
@@ -991,6 +1062,12 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None,
     if notifier is not None and not early and within((15, 20), (15, 30)):
         guarded("notify_duty", lambda: _notify().once(notifier, ledger.store, day=ds,
                                                        kind="duty_1530", text=_notify().DUTY_1530))
+    if not early and within((9, 45), (9, 47)):
+        from edge import orb as ORB
+        guarded("orb", lambda: ORB.step(get, ledger, now=now, clock=clock))
+    if http is not None and not early and within((9, 45), (10, 30)):          # idempotent; retries
+        guarded("paper_submit_orb", lambda: _paper().submit(http, ledger, day=ds, experiments=LATE_EXPERIMENTS))
+        _paper_refused(out, "paper_submit_orb")
     if not early and within((9, 45), (14, 30)):
         guarded("intraday", lambda: I.tick(get, ledger, now=now, http=http, clock=clock))
         if http is not None:
@@ -1151,7 +1228,7 @@ def _notify():
 def _all_specs(store, I):
     """Every experiment the shadow runs today, including a qualified model's."""
     from edge import models as MD
-    specs = list(EXPERIMENTS) + list(I.INTRADAY_SPECS)
+    specs = list(EXPERIMENTS) + list(LATE_EXPERIMENTS) + list(I.INTRADAY_SPECS)
     m = MD.current(store)
     if m is not None:
         specs.append(m[1])

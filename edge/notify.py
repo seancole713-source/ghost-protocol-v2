@@ -178,6 +178,9 @@ def card_text(card: Dict[str, Any]) -> str:
     if card.get("sipref_forecasts") is not None:
         sip = card.get("sipref_forecasts") or []
         lines.append("Delayed full-market price version (paper): " + (", ".join(sip) if sip else "none"))
+    if card.get("assist_forecasts") is not None:
+        ast = card.get("assist_forecasts") or []
+        lines.append("Ghost + Claude news version (paper): " + (", ".join(ast) if ast else "none"))
     ranked = card.get("top10_ranked")
     if ranked:
         lines.append("Top 10 (learning list, not trades): " + ", ".join(

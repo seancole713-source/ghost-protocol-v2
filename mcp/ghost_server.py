@@ -628,6 +628,22 @@ def _edge_note(args: Dict[str, Any]) -> Dict[str, Any]:
         return {"status": "refused", "error": str(exc)}
 
 
+def _edge_catalyst(args: Dict[str, Any]) -> Dict[str, Any]:
+    import time
+
+    from core.db import db_conn
+    from edge import agent_catalysts as AC
+    from edge.store_pg import PostgresStore
+
+    try:
+        return AC.write(PostgresStore(db_conn), symbol=args.get("symbol"), headline=args.get("headline"),
+                        kind=args.get("kind"), source_url=args.get("source_url"),
+                        published_at=args.get("published_at"), author=args.get("author"),
+                        now=int(time.time()))
+    except AC.ClaimError as exc:
+        return {"status": "refused", "error": str(exc)}
+
+
 EDGE_TOOLS: Mapping[str, Dict[str, Any]] = {
     "ghost_edge_report": {
         "description": (
@@ -678,6 +694,31 @@ EDGE_TOOLS: Mapping[str, Dict[str, Any]] = {
             "additionalProperties": False,
         },
     },
+    "ghost_edge_catalyst": {
+        "description": (
+            "Submit one dated company catalyst a research agent found for a premarket gapper. Read by ONE "
+            "paper experiment only (gap_and_go_assist@v1): it counts for a card only if received before "
+            "that card's data cutoff (09:05 ET; the server stamps receipt) and published within 24h. "
+            "kind 'offering_dilution' marks dilution. Append-only; never read by any other experiment, "
+            "gate or the operator's rule. Paper research, never a trade."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "description": "US ticker, e.g. HUM"},
+                "headline": {"type": "string", "description": "the source's headline, at most 300 characters"},
+                "kind": {"type": "string", "enum": ["earnings", "guidance", "fda_regulatory", "contract",
+                                                    "m_and_a", "index_inclusion", "analyst_action",
+                                                    "offering_dilution"]},
+                "source_url": {"type": "string", "description": "https:// link to the source"},
+                "published_at": {"type": "string",
+                                 "description": "the source's publish time, ISO 8601 with a time zone"},
+                "author": {"type": "string", "description": "the agent's name, e.g. claude-morning-research"},
+            },
+            "required": ["symbol", "headline", "kind", "source_url", "published_at", "author"],
+            "additionalProperties": False,
+        },
+    },
 }
 
 
@@ -685,6 +726,7 @@ _MARKET_DATA_HANDLERS: Mapping[str, Callable[[Dict[str, Any]], Any]] = {
     "ghost_symbol_quote": _symbol_quote,
     "ghost_edge_report": _edge_report,
     "ghost_edge_note": _edge_note,
+    "ghost_edge_catalyst": _edge_catalyst,
 }
 
 
