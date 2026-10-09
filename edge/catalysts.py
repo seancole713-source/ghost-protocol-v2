@@ -25,8 +25,9 @@ INDEX, ANALYST, OFFERING, REVERSE_SPLIT, POLICY, OTHER = (
 # forecasts made under different classifiers are never pooled. Forecasts carry their version in
 # evidence; one without it is dated: session 2026-10-02 or later ran this classifier (#229, deployed
 # before that session; the file is unchanged since), anything earlier ran an older one.
-CLASSIFIER_VERSION = "headlines_v4"
-CLASSIFIER_SINCE = "2026-10-06"        # first session decided by headlines_v4 (every row it makes is tagged)
+CLASSIFIER_VERSION = "headlines_v5"
+CLASSIFIER_SINCE = "2026-10-12"        # first session decided by headlines_v5 (every row it makes is tagged)
+UNTAGGED_V4_SINCE = "2026-10-06"       # an UNTAGGED row from this session on ran headlines_v4
 UNTAGGED_V3_SINCE = "2026-10-05"       # an UNTAGGED row from this session on ran headlines_v3
 UNTAGGED_V2_SINCE = "2026-10-02"       # an UNTAGGED row from this session on ran headlines_v2
 LEGACY_CLASSIFIER = "headlines_v1"
@@ -40,8 +41,14 @@ CLASSIFIER_LABELS = {
                      "monthly/preliminary/record revenue or a revenue milestone counts as a results "
                      "catalyst; an earnings-call transcript re-post could count as earnings, e.g. RXO "
                      "2026-10-05)"),
-    "headlines_v4": ("headlines_v4 (current, from 2026-10-06: as headlines_v3, plus a transcript of an "
-                     "earnings or conference call is a re-post of an old event, never a catalyst)"),
+    "headlines_v4": ("headlines_v4 (2026-10-06 to 2026-10-09: as headlines_v3, plus a transcript of an "
+                     "earnings or conference call is a re-post of an old event, never a catalyst; "
+                     "'raises fiscal 2027 revenue guidance', 'wins order', CMS star ratings and "
+                     "'offering of common stock' were not recognized, e.g. HAE 2026-10-08)"),
+    "headlines_v5": ("headlines_v5 (current, from 2026-10-12: as headlines_v4, plus guidance raised/cut "
+                     "with words between the verb and 'guidance', 'sees ... vs est' guidance, contract "
+                     "wins/orders/awards, CMS star ratings as a regulatory decision, and more offering "
+                     "phrasings as dilution)"),
 }
 
 
@@ -56,6 +63,8 @@ def classifier_of(evidence: Optional[Dict] = None, session_date: Optional[str] =
     day = session_date or ""
     if day >= CLASSIFIER_SINCE:
         return CLASSIFIER_VERSION
+    if day >= UNTAGGED_V4_SINCE:
+        return "headlines_v4"
     if day >= UNTAGGED_V3_SINCE:
         return "headlines_v3"
     return "headlines_v2" if day >= UNTAGGED_V2_SINCE else LEGACY_CLASSIFIER
@@ -107,7 +116,10 @@ _RULES = [  # first match wins; dilution is checked first on purpose
     # 2026-09-24: "Greenland Mines Completes $12-Per-Share Equity Financing" (a registered direct
     # with pre-funded warrants) did not read as dilution.
     (OFFERING, r"\b(public offering|registered direct|direct offering|at-the-market|atm program|private placement|"
-               r"priced .* offering|warrants?|equity financing|equity offering|share offering|pre-funded)\b"),
+               r"priced .* offering|warrants?|equity financing|equity offering|share offering|pre-funded)\b"
+               # headlines_v5: 2026-10-08 "BiOptio... Commences ~$4M Offering Of Common Stock" (BIAF) read as OTHER.
+               r"|\b(offering of (\$[\d.]+[mb]? (of )?)?(its )?(common )?(stock|shares)|commences? .{0,30}\boffering"
+               r"|pricing of .{0,40}\boffering|proposed .{0,20}\boffering)\b"),
     (REVERSE_SPLIT, r"\breverse (stock |share )?split\b|\b1[- ]for[- ]\d+\b|\bshare consolidation\b"),
     # Previews, report dates and filings are not results or decisions (rule E4 needs the event itself).
     (EARNINGS_SCHEDULED,
@@ -125,6 +137,12 @@ _RULES = [  # first match wins; dilution is checked first on purpose
      r"|\b(fail(s|ed)?|miss(es|ed)?|did not meet|does not meet|not meet)\b.{0,30}\bprimary (end ?point|goal)\b"
      r"|\b(panel|committee|adcom)\b.{0,30}\bvotes? against\b"),
     (FDA, r"\b(fda|pdufa|breakthrough therapy|phase (1|2|3|i|ii|iii)|(nda|bla|510\(k\)|ema|marketing) (approval|clearance))\b"),
+    # headlines_v5: a Medicare (CMS) star-ratings release is a regulatory decision on the company's
+    # plans (2026-10-09 "Humana Announces Improved CMS Star Ratings", HUM +16%, read as OTHER).
+    # A cut or decline is news against a long (2026-10-09 ALHC -23% on its ratings): never a catalyst.
+    (REGULATORY_SETBACK, r"\bstar ratings?\b.{0,40}\b(cut|lower(ed)?|declin\w*|drop\w*|fall\w*|downgrad\w*)\b"
+                         r"|\b(cut|lower(ed|s)?|declin\w*|drop\w*|downgrad\w*)\b.{0,40}\bstar ratings?\b"),
+    (FDA, r"\b(cms|medicare( advantage)?)\b.{0,40}\bstar ratings?\b|\bstar ratings?\b.{0,40}\b(cms|medicare)\b"),
     # A product or feature named after earnings ("earnings contracts", "earnings prediction markets",
     # "earnings calls feature") is not a report -- unless the headline also carries a result.
     (PRODUCT_NEWS,
@@ -144,7 +162,15 @@ _RULES = [  # first match wins; dilution is checked first on purpose
                r"|\breports? (slower|weaker|stronger|record) (growth|sales)\b"),
     (GUIDANCE, r"\b(raises|lifts|boosts|cuts|lowers) (its )?(full-year |annual |fy\d{2,4} |fiscal \d{4} )?"
                r"(guidance|outlook|forecast)\b|\b(outlook|guidance|forecast) (tops|beats|exceeds|trails|misses)\b"),
-    (CONTRACT, r"\b(contract|award(ed)?|partnership|collaboration|agreement with|order from)\b"),
+    # headlines_v5: words between the verb and "guidance" (2026-10-08 "Haemonetics Raises Fiscal 2027
+    # Revenue Guidance" read as OTHER), and Benzinga's "Sees FY27 Revenue $X vs $Y Est" format.
+    # ("Wall Street raises Everpure targets after upbeat outlook" stays an analyst action.)
+    (GUIDANCE, r"\b(raises|lifts|boosts|ups|increases|cuts|lowers)\b(?:(?!\b(targets?|pts?)\b).){0,40}"
+               r"\b(guidance|outlook|forecast)\b"
+               r"|\bsees\b.{0,40}\b(revenue|sales|eps)\b.{0,60}\b(vs\.? .{0,20}\best|prior)\b"),
+    (CONTRACT, r"\b(contract|award(ed|s)?|partnership|collaboration|agreement with|order from)\b"
+               # headlines_v5: "wins/secures/receives/lands ... order(s)"
+               r"|\b(wins|won|secures|secured|receives|received|lands|landed|books|booked)\b.{0,40}\b(orders?|deal)\b"),
     (INDEX, r"\b(added to|join(s|ing)?) the (s&p|russell|nasdaq)|index inclusion\b"),
     (ANALYST, r"\b(upgrade[sd]?|raise[sd]? (\w+ ){0,2}(price )?targets?|initiat(es|ed) coverage)\b"),
     (ANALYST_NO_CHANGE, r"\b(reiterat\w*|maintain\w*|keeps|affirm\w*|downgrade[sd]?|"

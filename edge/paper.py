@@ -703,8 +703,8 @@ def _events_from_orders(orders: List[dict], forecast_id: str, close_ids=frozense
     return ev
 
 
-def reconcile(http, ledger: Ledger, *, day: str, experiments, now: int) -> Dict[str, Any]:
-    """After the close: broker records -> the 'actual' record."""
+def _fetch_and_keep_orders(http, ledger: Ledger, *, day: str, experiments, now: int) -> List[dict]:
+    """The broker's orders for `day`, and a compact copy of ours kept in edge_paper_orders."""
     r = http.get(f"{base_url()}/v2/orders", headers=_headers(), timeout=20,
                  params={"status": "all", "after": f"{day}T00:00:00Z", "nested": "true", "limit": 500})
     r.raise_for_status()
@@ -720,6 +720,22 @@ def reconcile(http, ledger: Ledger, *, day: str, experiments, now: int) -> Dict[
         {**{k: o.get(k) for k in keep}, "legs": [{k: g.get(k) for k in keep} for g in o.get("legs") or []]}
         for o in orders if any(str(o.get("client_order_id") or "").startswith(fid) for fid in ids)
         or str(o.get("id")) in closes]})
+    return orders
+
+
+def snapshot_orders(http, ledger: Ledger, *, day: str, experiments, now: int) -> Dict[str, Any]:
+    """During the session: refresh the kept broker records only (no outcome is settled), so the
+    paper view shows fills, fill prices and target/stop hits as they happen. 2026-10-09: every
+    filled order read "target and stop working" with no fill price until the after-close reconcile."""
+    if not _forecasts(ledger, day, experiments):
+        return {"status": "nothing"}
+    orders = _fetch_and_keep_orders(http, ledger, day=day, experiments=experiments, now=now)
+    return {"status": "snapshot", "orders": len(orders)}
+
+
+def reconcile(http, ledger: Ledger, *, day: str, experiments, now: int) -> Dict[str, Any]:
+    """After the close: broker records -> the 'actual' record."""
+    orders = _fetch_and_keep_orders(http, ledger, day=day, experiments=experiments, now=now)
     settled = {}
     todays = _forecasts(ledger, day, experiments)
     for f in todays:

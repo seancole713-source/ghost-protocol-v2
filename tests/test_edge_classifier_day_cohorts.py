@@ -29,7 +29,7 @@ from edge.resolver import RESOLVER_VERSION  # noqa: E402
 from test_edge_control import FakeBars, forecast, radar_row, ts  # noqa: E402
 from test_edge_resolver_cohorts import _dataset  # noqa: E402
 
-V2, H1, H2, H3 = "resolver_v2", "headlines_v1", "headlines_v2", "headlines_v4"   # H3 = the current classifier
+V2, H1, H2, H3 = "resolver_v2", "headlines_v1", "headlines_v2", "headlines_v5"   # H3 = the current classifier
 OLD = f"{V2}~{H1}"            # graded by the current resolver, decided by the oldest classifier
 LEG = f"{V2}~{H2}"            # graded by the current resolver, decided by headlines_v2 (legacy now)
 
@@ -307,13 +307,15 @@ def test_card_grades_carry_the_classifier_of_their_card():
 def test_an_untagged_session_from_the_current_start_is_the_current_classifier():
     """A session from CLASSIFIER_SINCE with no intraday forecast (or an empty card) has nothing to tag;
     it still ran the current classifier and must not be filed as an older cohort. An untagged
-    2026-10-05 session ran headlines_v3 (current then, legacy from headlines_v4 on 2026-10-06)."""
+    2026-10-05 session ran headlines_v3 and an untagged 2026-10-06..09 session headlines_v4 (each
+    current then, legacy once the next version started)."""
     from edge import control as CA2, top10 as T2
     from edge.catalysts import CLASSIFIER_SINCE, CLASSIFIER_VERSION, classifier_of
     from edge.ledger import MemoryStore as MS
-    assert CLASSIFIER_SINCE == "2026-10-06"
-    assert classifier_of(None, "2026-10-06") == CLASSIFIER_VERSION == "headlines_v4"
+    assert CLASSIFIER_SINCE == "2026-10-12"
+    assert classifier_of(None, "2026-10-12") == CLASSIFIER_VERSION == "headlines_v5"
+    assert classifier_of(None, "2026-10-09") == classifier_of(None, "2026-10-06") == "headlines_v4"
     assert classifier_of(None, "2026-10-05") == "headlines_v3"
     assert classifier_of(None, "2026-10-03") == "headlines_v2" and classifier_of(None, "2026-10-01") == "headlines_v1"
-    assert CA2.session_classifier(MS(), "2026-10-06") == CLASSIFIER_VERSION
-    assert T2.build({"day": "2026-10-06", "rows": []})["classifier_version"] == CLASSIFIER_VERSION
+    assert CA2.session_classifier(MS(), "2026-10-12") == CLASSIFIER_VERSION
+    assert T2.build({"day": "2026-10-12", "rows": []})["classifier_version"] == CLASSIFIER_VERSION

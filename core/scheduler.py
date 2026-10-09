@@ -33,6 +33,23 @@ class Task:
     # U04/U05: failures (errors + timeouts) since the last clean run, so health
     # can see a job that is failing NOW, not just a lifetime ratio.
     consecutive_failures: int = field(default=0, init=False)
+    # Wall-clock alignment: when set, runs land on multiples of align_s (epoch seconds) plus
+    # offset_s instead of drifting with the deploy time. 2026-10-09: the 5-min edge tick ran
+    # at :x4:20/:x9:20, so the 09:45 ET radar window's first tick came at 09:49:20.
+    align_s: Optional[int] = None
+    offset_s: float = 0.0
+
+
+def _next_aligned(t: float, align_s: int, offset_s: float) -> float:
+    """The first wall-clock boundary (k * align_s + offset_s) strictly after t."""
+    k = (t - offset_s) // align_s + 1
+    return k * align_s + offset_s
+
+
+def _next_due(task: "Task", now: float) -> float:
+    if task.align_s:
+        return _next_aligned(now, task.align_s, task.offset_s)
+    return now + task.interval_s
 
 _tasks: Dict[str, Task] = {}
 _running = False
@@ -82,14 +99,19 @@ def register(
     interval_s: int,
     timeout_s: Optional[float] = None,
     initial_delay_s: Optional[float] = None,
+    align_s: Optional[int] = None,
+    offset_s: float = 0.0,
 ):
-    """Register a task without launching the entire fleet simultaneously."""
+    """Register a task without launching the entire fleet simultaneously. With align_s, the
+    task runs on wall-clock boundaries (first one after the initial delay), not now + interval."""
     task = Task(
         name=name, fn=fn, interval_s=interval_s,
         timeout_s=timeout_s if timeout_s is not None else _DEFAULT_TASK_TIMEOUT_S,
+        align_s=align_s, offset_s=offset_s,
     )
     delay = interval_s if initial_delay_s is None else max(0.0, float(initial_delay_s))
-    task.next_run_at = time.time() + delay
+    now = time.time()
+    task.next_run_at = _next_aligned(now + delay - 1e-6, align_s, offset_s) if align_s else now + delay
     _tasks[name] = task
     LOGGER.info(
         "Task registered: %s every %ss timeout=%ss initial_delay=%ss",
@@ -140,7 +162,7 @@ async def _loop():
                         int(now - task.last_run) if task.last_run else None,
                     )
                     continue
-                task.next_run_at = now + task.interval_s
+                task.next_run_at = _next_due(task, now)
                 asyncio.create_task(_run_task(task))
         await asyncio.sleep(10)
 
