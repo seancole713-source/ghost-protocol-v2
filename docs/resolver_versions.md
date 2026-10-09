@@ -121,7 +121,7 @@ catalyst, so a change to it changes which names a frozen rule selects. It is
 versioned and cohorted exactly like the resolver (operator decision 2026-10-03,
 option 1):
 
-* The current version is `CLASSIFIER_VERSION` (`headlines_v4`, from session 2026-10-06).
+* The current version is `CLASSIFIER_VERSION` (`headlines_v5`, from session 2026-10-12).
   Every new forecast carries `classifier_version` in its evidence, and every card row,
   card grade, control-arm day and row, Top 10 list and backtest dataset row carries it too.
 * Versions so far:
@@ -138,10 +138,20 @@ option 1):
   - `headlines_v4`: from 2026-10-06. As v3, plus a transcript of an earnings or
     conference call is a re-post of an old event, never a catalyst ("Transcript: RXO Q2
     2026 Earnings Conference Call" approved an RXO forecast on 2026-10-05), unless the
-    headline also carries the same-day result ("... meets EPS view").
+    headline also carries the same-day result ("... meets EPS view"). Sessions 2026-10-06
+    to 2026-10-09.
+  - `headlines_v5`: from 2026-10-12. As v4, plus phrasings of catalysts rule E4 already
+    counts that v4 read as OTHER: guidance raised/cut with words between the verb and
+    "guidance" ("Haemonetics Raises Fiscal 2027 Revenue Guidance", HAE 2026-10-08) and
+    "Sees FY.. Revenue ... Prior/vs Est"; contract wins, orders and awards; a CMS /
+    Medicare star-ratings release as a regulatory decision (HUM 2026-10-09), a ratings
+    cut as a regulatory setback. Tightening: "offering of common stock", "commences ...
+    offering", "pricing of ... offering" and "proposed ... offering" are dilution (BIAF
+    2026-10-08). Patents are not on rule E4's list and stay OTHER.
 * A row **without** the tag is dated by its session day: tags began with `headlines_v2`,
   so an untagged row from 2026-10-02 on ran `headlines_v2`, anything earlier
-  `headlines_v1`; an untagged row from 2026-10-05 ran `headlines_v3`; every row the
+  `headlines_v1`; an untagged row from 2026-10-05 ran `headlines_v3`, from 2026-10-06
+  `headlines_v4`; every row the
   current classifier decides is tagged (`classifier_of`, and
   `edge/ledger.py row_classifier` / `forecast_classifier`).
 * The cohort name is the resolver version, qualified when the classifier is not the

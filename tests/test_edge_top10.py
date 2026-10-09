@@ -44,7 +44,7 @@ def test_an_exhausted_gap_and_a_bad_price_are_penalised():
 
 
 # Graded by the current resolver, on a card decided by the current headline classifier (NEW-02, #65).
-CURRENT = {"resolver_version": "resolver_v2", "classifier_version": "headlines_v4"}
+CURRENT = {"resolver_version": "resolver_v2", "classifier_version": "headlines_v5"}
 
 
 def test_the_view_joins_the_after_close_grades_and_the_scorecard_compares():

@@ -175,3 +175,38 @@ def test_a_call_transcript_repost_is_not_a_catalyst():
         assert C.classify(h) not in C.COMPANY_SPECIFIC, h
     assert C.classify("Earnings call transcript: Darden Restaurants Q1 2026 meets EPS view, shares slip") == C.EARNINGS
     assert C.classify("C.H. Robinson to acquire RXO") == C.MNA
+
+
+@pytest.mark.parametrize("headline,kind", [
+    # 2026-10-08 HAE: the card rejected it "no dated company-specific catalyst".
+    ("Haemonetics Raises Fiscal 2027 Revenue Guidance", "guidance"),
+    ("Haemonetics Sees FY2027 Revenue Growth 6%-8%, Prior 4%-6%", "guidance"),
+    ("Acme Lowers Full-Year 2026 Sales Outlook", "guidance"),
+    # 2026-10-09 HUM +16%: a Medicare star-ratings release is a regulatory decision.
+    ("Humana Announces Improved CMS Star Ratings For 2027", "fda_regulatory"),
+    ("Kopin Obtains Additional $18.6M U.S. Army IBAS Award", "contract"),
+    ("Acme Wins $40M Order From U.S. Navy", "contract"),
+    ("Acme Secures Multi-Year Supply Deal With Ford", "contract"),
+])
+def test_headlines_v5_recognises_more_real_catalysts(headline, kind):
+    """headlines_v5 (from 2026-10-12): phrasings of catalysts the frozen rule already counts
+    (guidance, regulatory decision, contract) that headlines_v4 read as OTHER."""
+    assert C.classify(headline) == kind
+    assert kind in C.COMPANY_SPECIFIC
+
+
+@pytest.mark.parametrize("headline,kind", [
+    # 2026-10-08 BIAF closed -8.44% after "Commences ~$4M Offering Of Common Stock" read as OTHER.
+    ("Bioaffinity Technologies Commences ~$4M Offering Of Common Stock", "offering_dilution"),
+    ("Acme Announces Pricing Of $25 Million Underwritten Offering", "offering_dilution"),
+    ("Acme Announces Proposed Public Offering", "offering_dilution"),
+    # A ratings CUT is news against a long (ALHC -23% on 2026-10-09), never a catalyst.
+    ("Alignment Healthcare Shares Fall After Star Ratings Cut By Medicare", "regulatory_setback"),
+    # Not on rule E4's list (patents), not company news (analyst targets), not results (reaffirm).
+    ("Japan Patent Office Intends To Grant Patent To Bioaffinity", "other"),
+    ("Wall Street raises Everpure targets after upbeat outlook", "analyst_action"),
+    ("Acme Reaffirms Guidance", "other"),
+    ("Apple Launches New Product Offering", "other"),
+])
+def test_headlines_v5_does_not_loosen_what_counts(headline, kind):
+    assert C.classify(headline) == kind
