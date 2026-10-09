@@ -59,7 +59,7 @@ def test_notes_read_back_newest_first_and_filter_by_day_and_kind():
 def _rows(n, wins, **stamp):
     return [{"symbol": f"S{i}", "outcome": "WIN" if i < wins else "LOSS",
              "execution": "WIN" if i < wins else "LOSS", "baseline": "ELIGIBLE", "resolver_version": "resolver_v2",
-             "classifier_version": "headlines_v4", **stamp}
+             "classifier_version": "headlines_v5", **stamp}
             for i in range(n)]
 
 
@@ -95,10 +95,10 @@ def test_the_scorecard_grades_the_order_with_costs_and_never_pools_the_frictionl
     store.put("edge_card_outcomes", "2026-09-23", {"day": "2026-09-23", "rows": [
         # the forecast touched the target, but the order never filled inside its limit
         {"symbol": "GAP", "outcome": "WIN", "execution": "NO_FILL", "baseline": "ELIGIBLE", "auto": "ELIGIBLE",
-         "resolver_version": "resolver_v2", "classifier_version": "headlines_v4"},
+         "resolver_version": "resolver_v2", "classifier_version": "headlines_v5"},
         {"symbol": "OK", "outcome": "WIN", "execution": "WIN", "execution_pnl_usd": 47.9,
          "baseline": "ELIGIBLE", "auto": "ELIGIBLE", "resolver_version": "resolver_v2",
-         "classifier_version": "headlines_v4"}]})
+         "classifier_version": "headlines_v5"}]})
     sc = SC.scorecard(store)
     base = sc["base_rate_all_gappers"]
     assert (base["candidates"], base["decided"], base["wins"], base["no_fill"]) == (2, 1, 1, 1)
@@ -298,3 +298,15 @@ def test_the_paper_view_says_what_each_order_is_doing_now():
     assert RO.paper_status({"state": "submitted"}, {"outcome": "TIME_EXIT"}) == "closed: TIME_EXIT"
     assert RO.paper_status({"state": "submitted", "protect_alarm": "AB: 10 shares unprotected"},
                            {}).startswith("PROBLEM")
+    # The broker's own record wins over the paper steps' flags once it says more (2026-10-09).
+    sub = {"state": "submitted", "entry_cancel_checked": True, "protection": "bracket"}
+    assert RO.paper_status(sub, {}, {"status": "filled", "filled_avg_price": "454.5"}, []) == \
+        "filled at $454.50: target and stop working"
+    assert RO.paper_status(sub, {}, {"status": "filled", "filled_avg_price": "454.5"},
+                           [{"role": "target", "status": "filled", "filled_avg_price": "477.23",
+                             "filled_at": "2026-10-09T15:00:00Z"}]) == \
+        "closed: target hit at $477.23 (bought at $454.50)"
+    assert RO.paper_status(sub, {"outcome": "WIN"}, {"status": "filled"}, []) == "closed: WIN"
+    assert RO.paper_status({"state": "submitted", "protect_alarm": "X"}, {}, {"status": "filled"},
+                           []).startswith("PROBLEM")
+    assert RO.paper_status(sub, {}, {"status": "canceled"}, []).startswith("filled")      # falls back

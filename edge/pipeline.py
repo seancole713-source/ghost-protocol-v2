@@ -1005,6 +1005,9 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None,
             out["paper_cancel_unprotected"] = {"status": "error",
                                                "error": "UNPROTECTED after the entry deadline: "
                                                         + "; ".join(unprotected)}
+    if http is not None and within((9, 35), (16, 20)):    # live fills/exits for the paper view
+        guarded("paper_snapshot", lambda: _paper().snapshot_orders(http, ledger, day=ds,
+                                                                    experiments=all_specs, now=now))
     if http is not None and within((15, 30), (15, 55)):                        # refused sells retry
         guarded("paper_exit", lambda: _paper().time_exit(http, ledger, day=ds, experiments=all_specs, now=now))
         not_flat = (out.get("paper_exit") or {}).get("not_flat")

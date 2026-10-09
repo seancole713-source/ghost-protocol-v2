@@ -239,20 +239,54 @@ _PROTECTION_STATUS = {
 }
 
 
-def paper_status(p: Dict[str, Any], act: Dict[str, Any]) -> Optional[str]:
+_EXIT_WORDS = {"target": "target hit", "protective_target": "target hit", "stop": "stopped out",
+               "protective_stop": "stopped out", "time_exit": "sold at the time exit",
+               "position_close": "position closed", "flatten": "sold flat"}
+
+
+def _px(v: Any) -> str:
+    try:
+        return f"${float(v):,.2f}"
+    except (TypeError, ValueError):
+        return "?"
+
+
+def _broker_status(entry: Optional[Dict[str, Any]], exits: list) -> Optional[str]:
+    """The broker's own record, refreshed every tick in the session (paper.snapshot_orders)."""
+    if not entry:
+        return None
+    done = [x for x in exits if x.get("status") == "filled"]
+    if done:
+        last = max(done, key=lambda x: str(x.get("filled_at") or ""))
+        return (f"closed: {_EXIT_WORDS.get(last.get('role'), 'sold')} at {_px(last.get('filled_avg_price'))}"
+                f" (bought at {_px(entry.get('filled_avg_price'))})")
+    st = entry.get("status")
+    if st == "filled":
+        return f"filled at {_px(entry.get('filled_avg_price'))}: target and stop working"
+    if st == "partially_filled":
+        return f"partly filled at {_px(entry.get('filled_avg_price'))}: entry still working"
+    return None
+
+
+def paper_status(p: Dict[str, Any], act: Dict[str, Any], entry: Optional[Dict[str, Any]] = None,
+                 exits: Optional[list] = None) -> Optional[str]:
     """What the paper order is doing NOW, in words. 2026-10-05: the view said "submitted" for every
     order all day (that field is only the submit result), so filled CBRS/NU orders read as unfilled
-    until the after-close reconcile. The paper steps' own records say more as the day goes on."""
+    until the after-close reconcile. The paper steps' own records say more as the day goes on, and
+    since 2026-10-09 so does the broker's own record (fill price, target/stop hit)."""
     if not p:
         return None
     if p.get("state") != "submitted":
         return p.get("state")
     if act.get("outcome"):
         return f"closed: {act['outcome']}"
-    if p.get("time_exit_done"):
-        return "closed at the time exit"
     if p.get("protect_alarm"):
         return "PROBLEM: " + str(p["protect_alarm"])[:160]
+    live = _broker_status(entry, exits or [])
+    if live:
+        return live
+    if p.get("time_exit_done"):
+        return "closed at the time exit"
     if p.get("entry_cancel_checked"):
         return _PROTECTION_STATUS.get(p.get("protection"), "entry deadline handled")
     if p.get("entry_cancel"):
@@ -299,6 +333,7 @@ def paper(store, day: Optional[str] = None) -> Dict[str, Any]:
         act = store.get("outcomes", f"{f['forecast_id']}|actual") or {}
         sim = store.get("outcomes", f"{f['forecast_id']}|simulated") or {}
         entry = broker.get(f"{f['forecast_id']}-entry") or {}
+        exits = _exits(f["forecast_id"], entry, p)
         # One judge for both columns, on the broker's own fill time: a late fill never reads as counted.
         late = entry_filled_after_window(store, f, act)
         why_outside = outside_rule_reason(store, f, act)
@@ -309,13 +344,13 @@ def paper(store, day: Optional[str] = None) -> Dict[str, Any]:
                      "entry_trigger": f.get("entry_trigger"), "entry_limit": f.get("entry_limit"),
                      "target": f.get("target"), "stop": f.get("stop"),
                      "shares": f.get("shares"), "paper_state": p.get("state"), "paper_message": p.get("message"),
-                     "paper_status": paper_status(p, act),
+                     "paper_status": paper_status(p, act, entry, exits),
                      "simulated": sim.get("outcome"), "simulated_note": sim.get("note"),
                      "actual": act.get("outcome"), "actual_pnl_usd": act.get("pnl_usd"),
                      "actual_counted": bool(act.get("outcome") in COUNTED and not outside and not late),
                      "broker_entry": {k: entry.get(k) for k in ("status", "submitted_at", "filled_at",
                                                                 "filled_avg_price", "canceled_at")} if entry else None,
-                     "broker_exits": _exits(f["forecast_id"], entry, p),
+                     "broker_exits": exits,
                      "filled_after_window": late,
                      "note": (f"broker fill outside the rule ({why_outside or 'entry filled after the entry window'}): "
                               "shown, not counted" if outside else None)})

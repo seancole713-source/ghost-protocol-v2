@@ -1018,3 +1018,38 @@ def test_a_protective_exit_is_graded_from_the_brokers_record(ledger):
     roles = [x["role"] for x in RO.view(ledger.store, "paper", "2026-09-23")["orders"][0]["broker_exits"]]
     assert "protective_stop" in roles and "protective_target" in roles
     assert BA.role_of(f"{fid}-px") == BA.role_of(f"{fid}-px2") == FL.TARGET
+
+
+def test_the_session_snapshot_shows_fills_and_exits_live_without_settling(ledger):
+    """2026-10-09: HUM, FSLY, AAOI, NIO and NAUT had filled by 10:30 ET, yet the paper view showed
+    no fill price and no exit until the after-close reconcile. The in-session snapshot refreshes
+    the broker's record each tick; it never settles an outcome (that stays with the reconcile)."""
+    f = ledger.fc
+    PP.submit(Broker(), ledger, day="2026-09-23", experiments=EXPERIMENTS)
+    from edge import readout as RO
+    filled = [{"id": "o1", "client_order_id": f"{f.forecast_id}-entry", "status": "filled",
+               "filled_qty": str(f.shares), "filled_avg_price": "148.30", "filled_at": iso(ts(9, 31)),
+               "legs": [{"id": "tp", "type": "limit", "status": "new", "filled_qty": "0"},
+                        {"id": "sl", "type": "stop", "status": "new", "filled_qty": "0"}]}]
+    out = PP.snapshot_orders(Broker(orders=filled), ledger, day="2026-09-23", experiments=EXPERIMENTS,
+                             now=ts(10, 0))
+    assert out["status"] == "snapshot"
+    assert ledger.store.get("outcomes", f"{f.forecast_id}|actual") is None        # nothing settled
+    row = RO.view(ledger.store, "paper", "2026-09-23")["orders"][0]
+    assert row["paper_status"] == "filled at $148.30: target and stop working"
+    assert row["broker_entry"]["filled_avg_price"] == "148.30"
+
+    filled[0]["legs"][1].update(status="filled", filled_qty=str(f.shares), filled_avg_price="143.10",
+                                filled_at=iso(ts(10, 2)))
+    filled[0]["legs"][0].update(status="canceled")
+    PP.snapshot_orders(Broker(orders=filled), ledger, day="2026-09-23", experiments=EXPERIMENTS, now=ts(10, 5))
+    row = RO.view(ledger.store, "paper", "2026-09-23")["orders"][0]
+    assert row["paper_status"] == "closed: stopped out at $143.10 (bought at $148.30)"
+    assert row["actual"] is None
+
+
+def test_the_snapshot_does_nothing_on_a_day_without_forecasts():
+    lg = Ledger(MemoryStore())
+    b = Broker()
+    assert PP.snapshot_orders(b, lg, day="2026-09-23", experiments=EXPERIMENTS, now=ts(10, 0)) == {"status": "nothing"}
+    assert lg.store.get("edge_paper_orders", "2026-09-23") is None
