@@ -2438,6 +2438,10 @@ async def lifespan(app: FastAPI):
             interval_s=300,
             timeout_s=240,
             initial_delay_s=60,
+            # On the clock (:x0:05, :x5:05): the 09:45 ET radar window's first tick is 09:45:05,
+            # not up to 5 min later depending on when the container started (2026-10-09: 09:49:20).
+            align_s=300,
+            offset_s=5,
         )
 
         # Every minute, cancel an unfilled PAPER entry the minute its entry window ends. The
