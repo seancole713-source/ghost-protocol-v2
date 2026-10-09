@@ -6,6 +6,8 @@ import os
 import sys
 import threading
 import time
+from shared.native_threads import cap_native_threads as _cap_native_threads
+_cap_native_threads()  # before any numpy/xgboost import: libgomp pool crash
 import config.symbols  # noqa: F401 — pin official watchlist before engine imports
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
