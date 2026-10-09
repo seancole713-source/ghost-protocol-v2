@@ -309,4 +309,8 @@ def test_the_paper_view_says_what_each_order_is_doing_now():
     assert RO.paper_status(sub, {"outcome": "WIN"}, {"status": "filled"}, []) == "closed: WIN"
     assert RO.paper_status({"state": "submitted", "protect_alarm": "X"}, {}, {"status": "filled"},
                            []).startswith("PROBLEM")
-    assert RO.paper_status(sub, {}, {"status": "canceled"}, []).startswith("filled")      # falls back
+    assert RO.paper_status(sub, {}, {"status": "canceled", "filled_qty": "0"}, []).startswith("entry not filled")
+    # 2026-10-09: four never-filled orders read "closed at the time exit" after 15:30.
+    never = {"state": "submitted", "entry_cancel_checked": True, "protection": "none", "time_exit_done": True}
+    assert RO.paper_status(never, {}).startswith("entry not filled")
+    assert RO.paper_status({**never, "protection": "bracket"}, {}) == "closed at the time exit"

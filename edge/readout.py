@@ -261,6 +261,8 @@ def _broker_status(entry: Optional[Dict[str, Any]], exits: list) -> Optional[str
         return (f"closed: {_EXIT_WORDS.get(last.get('role'), 'sold')} at {_px(last.get('filled_avg_price'))}"
                 f" (bought at {_px(entry.get('filled_avg_price'))})")
     st = entry.get("status")
+    if st in ("canceled", "expired") and not float(entry.get("filled_qty") or 0):
+        return "entry not filled: cancelled at the entry deadline"
     if st == "filled":
         return f"filled at {_px(entry.get('filled_avg_price'))}: target and stop working"
     if st == "partially_filled":
@@ -285,6 +287,10 @@ def paper_status(p: Dict[str, Any], act: Dict[str, Any], entry: Optional[Dict[st
     live = _broker_status(entry, exits or [])
     if live:
         return live
+    # An entry cancelled unfilled stays "not filled" after 15:30: the time-exit step marks every
+    # order done, and on 2026-10-09 four never-filled orders read "closed at the time exit".
+    if p.get("entry_cancel_checked") and p.get("protection") == "none":
+        return _PROTECTION_STATUS["none"]
     if p.get("time_exit_done"):
         return "closed at the time exit"
     if p.get("entry_cancel_checked"):
