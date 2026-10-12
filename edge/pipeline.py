@@ -553,6 +553,7 @@ CARD_LAST_TRY = (9, 23)      # the window's last 5-minute tick: from here a card
 # not_researched -- unknown, never a rejection.
 CARD_WINDOW = ((9, 0), (9, 28))
 RESEARCH_WINDOW = ((8, 30), CARD_WINDOW[1])
+RESEARCH_PAUSE_FROM = (8, 55)     # the last tick before the card runs no research (see run())
 # The research queue is re-ranked at most this often, so a mover that only qualifies later
 # (no fresh premarket print at 08:30, a late gap) joins it instead of the queue freezing at its
 # first answer for the day.
@@ -1050,7 +1051,13 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None,
                                                            text=_notify().card_text(card)))
     # Research runs AFTER the card step in a tick, so a slow research call can never crowd the card;
     # what it finds serves a card built on a later tick, never one already issued.
-    if within(*RESEARCH_WINDOW) and _research().enabled():
+    # No research in the tick just before the card: a slow research call (2026-10-12: about 6 min on
+    # WFF from 08:55) overran into the next tick, which the scheduler skips as an overlap, so the
+    # card slipped a full tick past its window start.
+    research_pause = within(RESEARCH_PAUSE_FROM, CARD_WINDOW[0])
+    if within(*RESEARCH_WINDOW) and research_pause:
+        out["research"] = {"status": "paused_before_card"}
+    elif within(*RESEARCH_WINDOW) and _research().enabled():
         guarded("research", lambda: research_step(get, ledger, day=day, now=int(clock()) if clock else now))
     if within(CARD_WINDOW[1], (9, 45)) and not ledger.store.get("edge_cards", ds):
         out["card_alarm"] = {"status": "error", "error": "no shadow card by 09:28 ET (see earlier card errors)"}
