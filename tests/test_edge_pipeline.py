@@ -877,3 +877,11 @@ def test_sipref_never_uses_a_delayed_price_older_than_30_minutes(ledger):
     assert card["sipref_forecasts"] == ["SHOP"]
     abst = {a["symbol"]: a["reasons"] for a in ledger.store.scan("abstentions", experiment_id=P.SIPREF_EID)}
     assert "STALE" in abst
+
+
+def test_the_card_window_opens_at_0900_et_so_the_operator_has_it_by_800_ct(ledger):
+    """Operator decision 2026-10-12: the card is written from 09:00 ET (8:00 CT), not 09:05, so it
+    can be checked before the 8:30 CT open. The miss review's window closes where the card's opens."""
+    assert P.CARD_WINDOW[0] == (9, 0)
+    assert P.morning_card(FakeAlpaca(), Ledger(MemoryStore()), now=ts(8, 59))["status"] == "outside_card_window"
+    assert P.morning_card(FakeAlpaca(), ledger, now=ts(9, 0))["status"] == "issued"

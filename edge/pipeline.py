@@ -7,7 +7,7 @@ miss reviews that no amount of later building can backfill honestly.
 Three steps, each idempotent (safe to re-run; a marker stops repeats):
   07:00-09:04 ET  miss_review     the PREVIOUS session's movers vs what that
                                   morning's radar saw -- full market
-  09:05-09:28 ET  morning_card    candidates -> signals -> decisions; forecasts
+  09:00-09:28 ET  morning_card    candidates -> signals -> decisions; forecasts
                                   and abstentions RECORDED before the open
   16:20-20:00 ET  resolve_day     grade from consolidated minute bars:
                                   "forecast" and "simulated" records; then the
@@ -545,12 +545,13 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50,
 
 
 CARD_LAST_TRY = (9, 23)      # the window's last 5-minute tick: from here a card with failed data is issued
-# The card is built from 09:05 and must be decided by 09:28 ET. Research runs from 08:30 up to that
+# The card is built from 09:00 ET (8:00 CT; operator decision 2026-10-12: time to check it before
+# the open -- it was 09:05 until then) and must be decided by 09:28 ET. Research runs from 08:30 up to that
 # same deadline, so a mover that qualifies after 09:00 can still be reviewed for any card built
 # later in the window; the daily USD cap is unchanged. Research finished after a card was issued is
 # never used by that card (research_worker.verdict), and a name not researched in time stays
 # not_researched -- unknown, never a rejection.
-CARD_WINDOW = ((9, 5), (9, 28))
+CARD_WINDOW = ((9, 0), (9, 28))
 RESEARCH_WINDOW = ((8, 30), CARD_WINDOW[1])
 # The research queue is re-ranked at most this often, so a mover that only qualifies later
 # (no fresh premarket print at 08:30, a late gap) joins it instead of the queue freezing at its
@@ -1031,7 +1032,7 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None,
 
     if within((6, 0), (7, 0)):
         guarded("universe", lambda: U.step(get, ledger.store, day=ds, now=now))
-    if within((7, 0), (9, 5)):
+    if within((7, 0), CARD_WINDOW[0]):
         prev = previous_trading_day(day, ledger.store)
         guarded("miss_review", lambda: miss_review(get, ledger, day=prev, now=now))
         review = ledger.store.get("edge_miss", prev.isoformat())
