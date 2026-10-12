@@ -25,7 +25,7 @@ def _latest(store, table: str) -> Optional[Dict[str, Any]]:
     return max(rows, key=lambda r: r.get(key) or "") if key else rows[-1]
 
 
-CARD_DUE_ET = (9, 28)  # the shadow card is written 09:05-09:28 ET
+CARD_DUE_ET = (9, 28)  # the shadow card is written 09:00-09:28 ET
 
 
 def current_session(store=None, now: Optional[int] = None) -> str:
@@ -46,7 +46,7 @@ def _stale_note(requested: str, served: str, now: int) -> str:
     et = datetime.fromtimestamp(now, tz=ET)
     head = f"no card for {requested}; serving the latest card ({served}) -- it is NOT today's"
     if et.date().isoformat() == requested and (et.hour, et.minute) < CARD_DUE_ET:
-        return head + " (today's card is written 09:05-09:28 ET and is not due yet)"
+        return head + " (today's card is written 09:00-09:28 ET and is not due yet)"
     return head + " (today's card was due by 09:28 ET and is missing)"
 
 
@@ -59,7 +59,7 @@ def today(store, day: Optional[str] = None, now: Optional[int] = None) -> Dict[s
     card = store.get("edge_cards", day) if day else _latest(store, "edge_cards")
     if not card:
         note = (f"no shadow card recorded for {day}" if day else
-                "no shadow card recorded yet (first one is written 09:05-09:28 ET)")
+                "no shadow card recorded yet (first one is written 09:00-09:28 ET)")
         return {"requested_session": requested, "served_session": None, "stale": False,
                 "card": None, "note": note}
     served = card.get("day")
@@ -403,7 +403,7 @@ def _view(store, name: str, day: Optional[str], kind: Optional[str],
         from edge import top10 as T10
         d = day or T10.latest_day(store)
         return (T10.with_outcomes(store, d) if d else None) or {
-            "note": "no Top 10 yet (built with the card, 09:05-09:28 ET)"}
+            "note": "no Top 10 yet (built with the card, 09:00-09:28 ET)"}
     if name == "control":
         # v2 (point-in-time) is the primary result; v1 rides along labelled exploratory.
         from edge import control_v2 as CA2

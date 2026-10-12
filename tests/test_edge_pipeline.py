@@ -877,3 +877,24 @@ def test_sipref_never_uses_a_delayed_price_older_than_30_minutes(ledger):
     assert card["sipref_forecasts"] == ["SHOP"]
     abst = {a["symbol"]: a["reasons"] for a in ledger.store.scan("abstentions", experiment_id=P.SIPREF_EID)}
     assert "STALE" in abst
+
+
+def test_the_card_window_opens_at_0900_et_so_the_operator_has_it_by_800_ct(ledger):
+    """Operator decision 2026-10-12: the card is written from 09:00 ET (8:00 CT), not 09:05, so it
+    can be checked before the 8:30 CT open. The miss review's window closes where the card's opens."""
+    assert P.CARD_WINDOW[0] == (9, 0)
+    assert P.morning_card(FakeAlpaca(), Ledger(MemoryStore()), now=ts(8, 59))["status"] == "outside_card_window"
+    assert P.morning_card(FakeAlpaca(), ledger, now=ts(9, 0))["status"] == "issued"
+
+
+def test_no_research_in_the_tick_before_the_card(ledger, monkeypatch):
+    """2026-10-12: research on the 08:55 tick ran ~6 min, the 09:00 tick was skipped as an overlap
+    and the card slipped to 09:05. The last tick before the card runs no research; the ticks
+    before it and the card ticks still do."""
+    monkeypatch.setenv("EDGE_RESEARCH_ENABLED", "1")
+    calls = []
+    monkeypatch.setattr(P, "research_step", lambda *a, **k: calls.append(k["now"]) or {"status": "ok"})
+    out = P.run(FakeAlpaca(), ledger, now=ts(8, 55) + 5)
+    assert out["research"] == {"status": "paused_before_card"} and calls == []
+    P.run(FakeAlpaca(), ledger, now=ts(8, 50) + 5)
+    assert calls == [ts(8, 50) + 5]

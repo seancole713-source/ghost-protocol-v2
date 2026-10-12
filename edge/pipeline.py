@@ -7,7 +7,7 @@ miss reviews that no amount of later building can backfill honestly.
 Three steps, each idempotent (safe to re-run; a marker stops repeats):
   07:00-09:04 ET  miss_review     the PREVIOUS session's movers vs what that
                                   morning's radar saw -- full market
-  09:05-09:28 ET  morning_card    candidates -> signals -> decisions; forecasts
+  09:00-09:28 ET  morning_card    candidates -> signals -> decisions; forecasts
                                   and abstentions RECORDED before the open
   16:20-20:00 ET  resolve_day     grade from consolidated minute bars:
                                   "forecast" and "simulated" records; then the
@@ -545,13 +545,15 @@ def morning_card(get, ledger: Ledger, *, now: int, top: int = 50,
 
 
 CARD_LAST_TRY = (9, 23)      # the window's last 5-minute tick: from here a card with failed data is issued
-# The card is built from 09:05 and must be decided by 09:28 ET. Research runs from 08:30 up to that
+# The card is built from 09:00 ET (8:00 CT; operator decision 2026-10-12: time to check it before
+# the open -- it was 09:05 until then) and must be decided by 09:28 ET. Research runs from 08:30 up to that
 # same deadline, so a mover that qualifies after 09:00 can still be reviewed for any card built
 # later in the window; the daily USD cap is unchanged. Research finished after a card was issued is
 # never used by that card (research_worker.verdict), and a name not researched in time stays
 # not_researched -- unknown, never a rejection.
-CARD_WINDOW = ((9, 5), (9, 28))
+CARD_WINDOW = ((9, 0), (9, 28))
 RESEARCH_WINDOW = ((8, 30), CARD_WINDOW[1])
+RESEARCH_PAUSE_FROM = (8, 55)     # the last tick before the card runs no research (see run())
 # The research queue is re-ranked at most this often, so a mover that only qualifies later
 # (no fresh premarket print at 08:30, a late gap) joins it instead of the queue freezing at its
 # first answer for the day.
@@ -1031,7 +1033,7 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None,
 
     if within((6, 0), (7, 0)):
         guarded("universe", lambda: U.step(get, ledger.store, day=ds, now=now))
-    if within((7, 0), (9, 5)):
+    if within((7, 0), CARD_WINDOW[0]):
         prev = previous_trading_day(day, ledger.store)
         guarded("miss_review", lambda: miss_review(get, ledger, day=prev, now=now))
         review = ledger.store.get("edge_miss", prev.isoformat())
@@ -1049,7 +1051,13 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None,
                                                            text=_notify().card_text(card)))
     # Research runs AFTER the card step in a tick, so a slow research call can never crowd the card;
     # what it finds serves a card built on a later tick, never one already issued.
-    if within(*RESEARCH_WINDOW) and _research().enabled():
+    # No research in the tick just before the card: a slow research call (2026-10-12: about 6 min on
+    # WFF from 08:55) overran into the next tick, which the scheduler skips as an overlap, so the
+    # card slipped a full tick past its window start.
+    research_pause = within(RESEARCH_PAUSE_FROM, CARD_WINDOW[0])
+    if within(*RESEARCH_WINDOW) and research_pause:
+        out["research"] = {"status": "paused_before_card"}
+    elif within(*RESEARCH_WINDOW) and _research().enabled():
         guarded("research", lambda: research_step(get, ledger, day=day, now=int(clock()) if clock else now))
     if within(CARD_WINDOW[1], (9, 45)) and not ledger.store.get("edge_cards", ds):
         out["card_alarm"] = {"status": "error", "error": "no shadow card by 09:28 ET (see earlier card errors)"}

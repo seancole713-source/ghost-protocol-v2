@@ -1,7 +1,7 @@
 """Phone messages -- few, plain, and never louder than the evidence.
 
 Each kind at most once per trading day (a stored marker). Times ET (CT = ET - 1h):
-  card       09:05-09:28 ET  the shadow card as a trade: levels, size, risk, clock in CT
+  card       09:00-09:28 ET  the shadow card as a trade: levels, size, risk, clock in CT
   duty_1030  10:20-10:30 ET  the operator's Gap-and-Go duty: cancel unfilled entries
   duty_1530  15:20-15:30 ET  the operator's duty: sell anything still open
   graded     16:20-20:00 ET  what the shadow's forecasts did
