@@ -14,7 +14,7 @@ from edge.ledger import Ledger
 from edge.resolver import RESOLVER_VERSION
 
 VIEWS = ("summary", "today", "experiments", "backtest", "misses", "probe", "universe",
-         "research", "radar", "paper", "models", "scorecard", "notes", "top10", "control")
+         "research", "radar", "paper", "models", "scorecard", "notes", "top10", "control", "operations")
 
 
 def _latest(store, table: str) -> Optional[Dict[str, Any]]:
@@ -196,7 +196,10 @@ def research(store, day: Optional[str] = None) -> Dict[str, Any]:
         return {"note": "no research yet (08:30-09:28 ET on trading days, when EDGE_RESEARCH_ENABLED)"}
     recs = sorted(store.scan("edge_research", day=d), key=lambda r: r["made_at"])
     return {"day": d, "spent_usd": (store.get("edge_research_budget", d) or {}).get("spent_usd"),
+            "budget": store.get("edge_research_budget", d),
             "symbols": [{"symbol": r["symbol"], "reviewer": r.get("reviewer"), "cost_usd": r.get("cost_usd"),
+                         "independence": r.get("independence"),
+                         "independent_review": r.get("independent_review"),
                          "review": r.get("review"), "unknowns": (r.get("unknowns") or [])[:5],
                          "claims": [{k: c.get(k) for k in ("kind", "statement", "status", "problems")}
                                     for c in r.get("claims") or []]} for r in recs]}
@@ -316,7 +319,7 @@ def paper(store, day: Optional[str] = None) -> Dict[str, Any]:
 
     kept = (store.get("edge_paper_orders", d) or {}).get("orders") or []
     broker = {o.get("client_order_id"): o for o in kept}
-    exit_keys = ("type", "status", "qty", "filled_qty", "filled_avg_price", "filled_at", "canceled_at")
+    exit_keys = ("id", "client_order_id", "type", "status", "qty", "filled_qty", "filled_avg_price", "filled_at", "canceled_at")
 
     def _exits(fid: str, entry: Dict[str, Any], p: Dict[str, Any]) -> list:
         """Every exit the broker recorded: the bracket's target/stop legs, the 15:30 time-exit
@@ -337,7 +340,14 @@ def paper(store, day: Optional[str] = None) -> Dict[str, Any]:
         return out
 
     rows = []
-    for f in sorted(store.scan("forecasts", session_date=d), key=lambda r: r["issued_at"]):
+    forecasts = sorted(store.scan("forecasts", session_date=d), key=lambda r: r["issued_at"])
+    def shared_source(f):
+        fields = ("symbol", "issued_at", "entry_trigger", "entry_limit", "target", "stop", "shares")
+        return next((g["forecast_id"] for g in forecasts if g["forecast_id"] != f["forecast_id"]
+                     and all(g.get(k) == f.get(k) for k in fields)
+                     and store.get("edge_paper", f"{g['forecast_id']}|paper")), None)
+
+    for f in forecasts:
         p = store.get("edge_paper", f"{f['forecast_id']}|paper") or {}
         act = store.get("outcomes", f"{f['forecast_id']}|actual") or {}
         sim = store.get("outcomes", f"{f['forecast_id']}|simulated") or {}
@@ -347,7 +357,8 @@ def paper(store, day: Optional[str] = None) -> Dict[str, Any]:
         late = entry_filled_after_window(store, f, act)
         why_outside = outside_rule_reason(store, f, act)
         outside = bool(why_outside) or (late and act.get("outcome") in COUNTED)
-        rows.append({"experiment": f["experiment_id"], "symbol": f["symbol"],
+        rows.append({"forecast_id": f["forecast_id"], "experiment": f["experiment_id"], "symbol": f["symbol"],
+                     "shared_order_source": shared_source(f) if not p else None,
                      "issued": _hm(f.get("issued_at")), "entry_window_ends": _hm(f.get("entry_expiry")),
                      "why": (f.get("evidence") or {}),
                      "entry_trigger": f.get("entry_trigger"), "entry_limit": f.get("entry_limit"),
@@ -357,13 +368,15 @@ def paper(store, day: Optional[str] = None) -> Dict[str, Any]:
                      "simulated": sim.get("outcome"), "simulated_note": sim.get("note"),
                      "actual": act.get("outcome"), "actual_pnl_usd": act.get("pnl_usd"),
                      "actual_counted": bool(act.get("outcome") in COUNTED and not outside and not late),
-                     "broker_entry": {k: entry.get(k) for k in ("status", "submitted_at", "filled_at",
+                     "broker_entry": {k: entry.get(k) for k in ("id", "client_order_id", "qty", "filled_qty", "status", "submitted_at", "filled_at",
                                                                 "filled_avg_price", "canceled_at")} if entry else None,
                      "broker_exits": exits,
                      "filled_after_window": late,
                      "note": (f"broker fill outside the rule ({why_outside or 'entry filled after the entry window'}): "
-                              "shown, not counted" if outside else None)})
-    return {"day": d, "orders": rows, "note": "Alpaca PAPER account only; no real money"}
+                              "excluded from rule accuracy, included in financial P&L" if outside else None)})
+    from edge.accounting import paper_summary
+    return {"day": d, "orders": rows, "financial_summary": paper_summary(rows),
+            "note": "Alpaca PAPER account only; no real money"}
 
 
 def models(store) -> Dict[str, Any]:
@@ -413,6 +426,9 @@ def _view(store, name: str, day: Optional[str], kind: Optional[str],
         return AN.recent(store, day=day, kind=kind)
     if name == "today":
         return today(store, day, now)
+    if name == "operations":
+        from edge.operations import report
+        return report(store, now=int(time.time()) if now is None else now)
     if name == "experiments":
         return experiments(store)
     if name == "backtest":
@@ -425,10 +441,12 @@ def _view(store, name: str, day: Optional[str], kind: Optional[str],
         return universe(store) or {"note": "no universe snapshot yet (06:00-07:00 ET)"}
     from edge import control_v2 as CA2, scorecard as SC
     t, sc = today(store, None, now), SC.scorecard(store)
+    from edge.operations import report as operations_report
     return {
         "today": {k: t.get(k) for k in ("requested_session", "served_session", "stale", "day", "forecasts",
                                         "baseline_forecasts", "health_banner", "note")},
         "experiments": experiments(store),
+        "operations": operations_report(store, now=int(time.time()) if now is None else now),
         "backtest": (lambda b: b and {"window": b.get("window"), "experiments": b.get("experiments"),
                                       "limits": b.get("limits")})(backtest(store)),
         "latest_misses": (lambda m: m and {k: m.get(k) for k in (

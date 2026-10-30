@@ -130,9 +130,12 @@ Reply with ONLY a JSON object:
 
 
 def review(http, *, symbol: str, claims: List[Dict[str, Any]], cutoff: str = "unknown",
-           prior_close: str = "the prior trading day's close") -> Tuple[Optional[Dict[str, Any]], float]:
+           prior_close: str = "the prior trading day's close", diagnostic=None,
+           budget_left: Optional[float] = None) -> Tuple[Optional[Dict[str, Any]], float]:
     """(the reviewer's JSON verdict or None if unavailable / unusable, cost in USD).
     On None the caller falls back to the Claude reviewer; the cost is still counted."""
+    diagnostic = diagnostic if diagnostic is not None else {}
+    diagnostic.update(status="not_configured")
     if not configured():
         return None, 0.0
     model = os.environ["EDGE_OPENAI_MODEL"].strip()
@@ -140,20 +143,27 @@ def review(http, *, symbol: str, claims: List[Dict[str, Any]], cutoff: str = "un
     # today (eval 2026-10-03: ON's 10/1 4:34 pm deal was called stale for a 10/2 08:34 cutoff).
     prompt = PROMPT.format(symbol=symbol, claims=json.dumps(claims, indent=1), cutoff=cutoff,
                            prior_close=prior_close)
+    if budget_left is not None and failed_call_estimate(model, prompt) > budget_left:
+        diagnostic.update(status="budget_headroom")
+        return None, 0.0
     body = {"model": model, "max_completion_tokens": MAX_OUT,
             "messages": [{"role": "user", "content": prompt}]}
     try:
         r = http.post(f"{API}/chat/completions", json=body, timeout=90,
                       headers={"Authorization": f"Bearer {_key()}", "Content-Type": "application/json"})
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         # A timeout or dropped connection may still have been billed: count it as a full review
         # (the whole prompt plus MAX_OUT) so the daily cap can only over-count (audit U70).
+        diagnostic.update(status="transport_error", error_type=type(exc).__name__)
         return None, failed_call_estimate(model, prompt)
     if r.status_code >= 400:
+        diagnostic.update(status="authentication_failed" if r.status_code == 401 else "http_error",
+                          http_status=r.status_code)
         return None, 0.0                 # rejected, not billed
     try:
         payload = r.json() or {}
     except Exception:  # noqa: BLE001
+        diagnostic.update(status="invalid_response")
         return None, failed_call_estimate(model, prompt)
     cost = cost_usd(model, payload.get("usage") or {})
     if not payload.get("usage"):
@@ -167,4 +177,6 @@ def review(http, *, symbol: str, claims: List[Dict[str, Any]], cutoff: str = "un
         v = json.loads(m.group(0)) if m else None
     except (json.JSONDecodeError, ValueError):
         v = None
+    diagnostic.update(status="completed" if isinstance(v, dict) else "invalid_response",
+                      http_status=r.status_code)
     return (v if isinstance(v, dict) else None), cost

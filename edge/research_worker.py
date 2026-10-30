@@ -39,6 +39,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from edge import research as RS
+from edge import research_budget as RB
 from edge.contracts import ET
 
 MODEL = "claude-opus-5-5"
@@ -153,7 +154,8 @@ def enabled() -> bool:
 
 def daily_cap_usd() -> float:
     try:
-        return max(0.0, float(os.getenv("EDGE_RESEARCH_DAILY_USD", "3")))
+        cap = float(os.getenv("EDGE_RESEARCH_DAILY_USD", "3"))
+        return max(0.0, cap) if math.isfinite(cap) else 0.0
     except ValueError:
         return 3.0
 
@@ -290,7 +292,7 @@ def _text(resp: Any) -> str:
 
 def _ask(client, prompt: str, *, max_searches: int = 5, max_fetches: int = 0,
          tool_errors: Optional[List[str]] = None, fetch_errors: Optional[List[str]] = None,
-         finish: bool = False) -> Tuple[Optional[str], float, str]:
+         finish: bool = False, budget_left: Optional[float] = None) -> Tuple[Optional[str], float, str]:
     """(final text, cost, stop_reason). ONE request's worth of research: continues server-tool pauses,
     honours refusals. Web-search / page-open errors (result blocks, not exceptions) are appended to
     tool_errors / fetch_errors. With finish=True, a reply left without usable JSON by such an error
@@ -303,6 +305,8 @@ def _ask(client, prompt: str, *, max_searches: int = 5, max_fetches: int = 0,
 
     def create(**extra):
         nonlocal total
+        if budget_left is not None and total + RB.CALL_HEADROOM_USD > budget_left:
+            raise CallFailed(total, "budget_headroom: no further paid call admitted")
         try:
             resp = client.beta.messages.create(
                 model=MODEL, max_tokens=16000,
@@ -386,9 +390,7 @@ def to_claims(symbol: str, raw: Dict[str, Any], *, made_at: int) -> List[RS.Clai
 
 
 def _charge(store, day: str, usd: float) -> None:
-    budget = store.get("edge_research_budget", day) or {"spent_usd": 0.0}
-    budget["spent_usd"] = round(budget["spent_usd"] + usd, 6)
-    store.put("edge_research_budget", day, budget)
+    RB.charge(store, day, usd)
 
 
 def due(store, *, day: str, symbol: str, now: int) -> bool:
@@ -433,6 +435,32 @@ def _prior_close(store, now: int) -> str:
 
 
 def research_symbol(client, store, *, symbol: str, day: str, now: int, http=None) -> Dict[str, Any]:
+    prev = store.get("edge_research", f"{day}|{symbol.upper()}")
+    if prev and not due(store, day=day, symbol=symbol, now=now):
+        return _research_symbol(client, store, symbol=symbol, day=day, now=now, http=http)
+    token, allowance = RB.reserve(store, day, daily_cap_usd())
+    if token is None:
+        return {"status": "budget_exhausted", "reason": "insufficient unreserved research headroom"}
+    lease = f"research:{day}:{symbol.upper()}"
+    if not store.claim(lease, owner=token, ttl_s=1200, now=now):
+        RB.release(store, day, token)
+        return {"status": "in_progress", "symbol": symbol.upper()}
+    try:
+        result = _research_symbol(client, store, symbol=symbol, day=day, now=now, http=http,
+                                  budget_left=allowance)
+    except Exception:
+        # An unexpected failure may follow a paid call but precede its charge.
+        # Keep the hold rather than funding another call with uncertain money.
+        raise
+    else:
+        RB.release(store, day, token)
+        return result
+    finally:
+        store.release(lease, owner=token)
+
+
+def _research_symbol(client, store, *, symbol: str, day: str, now: int, http=None,
+                     budget_left: Optional[float] = None) -> Dict[str, Any]:
     """Research ONE symbol in one author request (plus one review). Every dollar it spends -- failed
     calls included -- goes on the day's cap; a failed call backs off instead of re-running next tick."""
     key = f"{day}|{symbol.upper()}"
@@ -463,7 +491,8 @@ def research_symbol(client, store, *, symbol: str, day: str, now: int, http=None
         text, c1, stop1 = _ask(client, AUTHOR_PROMPT.format(symbol=symbol, cutoff=cutoff, kinds=list(RS.KINDS),
                                                             searches=AUTHOR_SEARCHES, fetches=AUTHOR_FETCHES),
                                max_searches=AUTHOR_SEARCHES, max_fetches=AUTHOR_FETCHES,
-                               tool_errors=author_errors, fetch_errors=fetch_errors, finish=True)
+                               tool_errors=author_errors, fetch_errors=fetch_errors, finish=True,
+                               budget_left=budget_left)
     except CallFailed as exc:
         return _call_failed(store, key=key, day=day, symbol=symbol, now=now, attempts=attempts,
                             prior_usd=prior_usd, exc=exc)
@@ -487,10 +516,13 @@ def research_symbol(client, store, *, symbol: str, day: str, now: int, http=None
             return {"status": NOT_RESEARCHED, "symbol": symbol.upper(), "reason": why, "claims": 0,
                     "usable": 0, "cost_usd": round(c1, 4)}
     review_raw, c2, c_oai, stop2, reviewer = None, 0.0, 0.0, "skipped", REVIEWER
+    review_diagnostic: Dict[str, Any] = {}
     if claims and http is not None:
         from edge import research_openai as RO
         if RO.configured():
-            review_raw, c_oai = RO.review(http, symbol=symbol, cutoff=cutoff, prior_close=prior_close, claims=[
+            review_raw, c_oai = RO.review(http, symbol=symbol, cutoff=cutoff, prior_close=prior_close,
+                diagnostic=review_diagnostic,
+                budget_left=None if budget_left is None else max(0, budget_left - c1), claims=[
                 {"kind": c.kind, "statement": c.statement,
                  "quotes": [x.quote for x in c.citations], "urls": [x.url for x in c.citations],
                  "published_at": [_epoch_to_iso(x.published_at) for x in c.citations],
@@ -504,7 +536,8 @@ def research_symbol(client, store, *, symbol: str, day: str, now: int, http=None
                 symbol=symbol, cutoff=cutoff, searches=REVIEWER_SEARCHES,
                 claims=json.dumps([{"kind": c.kind, "statement": c.statement, "unknowns": list(c.unknowns),
                                     "urls": [x.url for x in c.citations]} for c in claims], indent=1)),
-                max_searches=REVIEWER_SEARCHES)
+                max_searches=REVIEWER_SEARCHES,
+                budget_left=None if budget_left is None else max(0, budget_left - c1 - c_oai))
         except CallFailed as exc:
             # The author's work is kept and charged; its claims stay unchecked ("review did not run").
             rtext, c2, stop2 = None, exc.cost, "error"
@@ -529,6 +562,7 @@ def research_symbol(client, store, *, symbol: str, day: str, now: int, http=None
                       "dilution_found": review.dilution_found, "stale": review.stale, "notes": review.notes},
            "author_stop": stop1, "reviewer_stop": stop2, "cost_usd": round(spent + prior_usd, 4),
            "reviewer": reviewer,
+           "independent_review": review_diagnostic,
            "independence": ("reviewer is a different model family, but both read the same citations: "
                             "agreement is still not independent evidence") if reviewer.startswith("openai:")
                            else "author and reviewer share a model: agreement is correlated, not independent"}

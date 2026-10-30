@@ -219,7 +219,16 @@ class MemoryStore:
     """In-process store for tests and dry runs."""
 
     def __init__(self) -> None:
+        from threading import RLock
         self._t: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        self._mutation_lock = RLock()
+
+    def mutate(self, table, key, change):
+        from copy import deepcopy
+        with self._mutation_lock:
+            updated = change(deepcopy(self._t.get(table, {}).get(key)))
+            self.put(table, key, updated)
+            return deepcopy(updated)
 
     def get(self, table, key):
         row = self._t.get(table, {}).get(key)

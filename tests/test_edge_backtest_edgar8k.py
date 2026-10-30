@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import html
 import json
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -136,8 +136,8 @@ def bar_rows(d, path):
     }[path]
     assert trig
     rows, t = [], ts(d, 9, 30)
-    for o, h, l, c in steps:
-        rows.append({"t": iso(t), "o": o, "h": h, "l": l, "c": c, "v": 10_000})
+    for o, h, low, c in steps:
+        rows.append({"t": iso(t), "o": o, "h": h, "l": low, "c": c, "v": 10_000})
         t += 60
     last = steps[-1][3]
     while t <= ts(d, 15, 35):
@@ -541,7 +541,6 @@ def test_the_report_reaches_the_backtest_view(done):
 
 
 # ---- EdgarTools cross-check (operator decision 2026-10-03) -------------------------------------
-import pytest as _pytest
 
 _XC_SAMPLE = """<html><body><pre>&lt;SEC-HEADER&gt;0001104659-26-012345.hdr.sgml : 20260930
 &lt;ACCEPTANCE-DATETIME&gt;20260930163412
@@ -560,7 +559,7 @@ FILED AS OF DATE:		20260930
 
 
 def test_crosscheck_agrees_with_edgartools_on_an_escaped_index_header():
-    _pytest.importorskip("edgar")
+    pytest.importorskip("edgar")
     from edge import backtest_edgar8k as E
     ours = E.parse_header(_XC_SAMPLE)
     cc = E.crosscheck_header(_XC_SAMPLE, ours)
@@ -569,7 +568,7 @@ def test_crosscheck_agrees_with_edgartools_on_an_escaped_index_header():
 
 
 def test_crosscheck_reports_every_field_that_disagrees():
-    _pytest.importorskip("edgar")
+    pytest.importorskip("edgar")
     from edge import backtest_edgar8k as E
     wrong = {**E.parse_header(_XC_SAMPLE), "items": ["8.01"], "accepted": "2026-09-30T12:34:12", "form": "8-K/A"}
     cc = E.crosscheck_header(_XC_SAMPLE, wrong)
@@ -596,3 +595,25 @@ def test_crosscheck_verdict_untrusted_above_1pct_and_too_few_is_not_judged():
     assert bad["trusted"] is False and "untrusted" in bad["note"] and bad["examples"]
     assert E.crosscheck_verdict({"agree": 10})["trusted"] is None
     assert E.crosscheck_verdict({"unavailable": 5})["trusted"] is None
+
+
+def test_real_sec_tagged_header_crosscheck():
+    from pathlib import Path
+    pytest.importorskip("edgar")
+    text = (Path(__file__).parent / "fixtures/edgar/aapl-20241031-index-headers.html").read_text()
+    ours = E.parse_header(text)
+    assert ours["form"] == "8-K"
+    assert ours["accepted"] == "2024-10-31T16:30:25"
+    assert ours["items"] == ["2.02", "9.01"]
+    assert E.crosscheck_header(text, ours) == {"status": "agree", "diffs": []}
+    assert E.crosscheck_header(text, {**ours, "items": ["8.01"]})["status"] == "disagree"
+
+
+def test_crosscheck_errors_cannot_hide_among_successes():
+    assert E.crosscheck_verdict({"agree": 100, "error": 1})["trusted"] is False
+    assert E.crosscheck_verdict({"agree": 100, "unavailable": 1})["trusted"] is False
+
+
+def test_crosscheck_truncated_header_is_error():
+    pytest.importorskip("edgar")
+    assert E.crosscheck_header("<SEC-HEADER>\n<TYPE>8-K", {})["status"] == "error"

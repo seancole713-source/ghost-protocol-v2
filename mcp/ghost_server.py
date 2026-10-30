@@ -664,7 +664,7 @@ EDGE_TOOLS: Mapping[str, Dict[str, Any]] = {
                 "view": {"type": "string", "enum": ["summary", "today", "experiments", "backtest",
                                                     "misses", "probe", "universe", "research", "radar",
                                                     "paper", "models", "scorecard", "notes", "top10",
-                                                    "control"],
+                                                    "control", "operations"],
                          "description": "Which view; default summary"},
                 "day": {"type": "string",
                         "description": "YYYY-MM-DD for today/misses/research/radar/paper/notes/top10/control; default latest"},
