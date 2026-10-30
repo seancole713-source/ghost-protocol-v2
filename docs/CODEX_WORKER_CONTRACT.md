@@ -1,10 +1,14 @@
 # Independent Codex Worker — Interface Contract
 
-Status (2026-09-26): **deployed and connected to the repo, but DISABLED**
-(`CODEX_WORKER_ENABLED=0`, the codex kill switch from audit F34). About 3 of
-about 44 attempts completed before it was switched off. It stays off until a
-canary run passes; the Claude worker carries the queue alone. The worker is
-implemented in `services/codex_worker/worker.py`. This document defines the
+Status update (2026-10-30): **enabled for bounded advisory research**, one task/hour
+and four/day, after the operator replaced its API credential. Worker 1.1 separates
+native-cited research from JSON formatting; a non-submitting live FDXF canary
+returned four provider-attested citations. Its new prompt version is
+`external-mover-triage/native-citations-v2`; older evidence keeps its original label.
+See PR #249 and `docs/reports/evidence_reliability_2026-10-30.md` for rollout status.
+These process-local task limits are not an account-wide billing cap. Consensus
+requirements and trading gates are unchanged. The worker is implemented in
+`services/codex_worker/worker.py`. This document defines the
 server contract it follows and the production sequencing required to enable
 consensus without stalling the existing Claude-only queue.
 

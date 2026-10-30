@@ -40,6 +40,7 @@ import requests
 
 
 WORKER_VERSION = "1.1"
+PROMPT_VERSION = "external-mover-triage/native-citations-v2"
 LOG = logging.getLogger("ghost.codex_worker")
 REPAIRABLE_CATEGORIES = frozenset({"schema_error", "source_error"})
 # Same as the Claude worker (AGENT-02): beat inside Ghost's 120 s offline window.
@@ -77,7 +78,7 @@ class Config:
     openai_api_key: str
     agent_id: str = "codex.production.worker"
     model: str = "gpt-5"
-    prompt_version: str = "external-mover-triage/v1"
+    prompt_version: str = PROMPT_VERSION
     poll_seconds: int = 20
     lease_seconds: int = 900
     heartbeat_seconds: int = 120
@@ -131,7 +132,7 @@ class Config:
             agent_id=agent_id,
             model=os.getenv("CODEX_WORKER_MODEL", "gpt-5").strip(),
             prompt_version=os.getenv(
-                "CODEX_WORKER_PROMPT_VERSION", "external-mover-triage/v1"
+                "CODEX_WORKER_PROMPT_VERSION", PROMPT_VERSION
             ).strip(),
             poll_seconds=bounded_int("CODEX_WORKER_POLL_SECONDS", 20, 5, 300),
             lease_seconds=bounded_int("CODEX_WORKER_LEASE_SECONDS", 900, 300, 3600),

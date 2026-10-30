@@ -34,6 +34,15 @@ def test_agent_id_defaults_distinct_from_claude_worker():
     assert cfg.agent_id == "codex.production.worker"
 
 
+def test_new_citation_prompt_has_a_distinct_audit_version(monkeypatch):
+    monkeypatch.setenv("GHOST_BASE_URL", "https://ghost.example")
+    monkeypatch.setenv("GHOST_MCP_TOKEN", "t")
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    monkeypatch.delenv("CODEX_WORKER_PROMPT_VERSION", raising=False)
+    assert _config().prompt_version == worker.Config.from_env().prompt_version == worker.PROMPT_VERSION
+    assert worker.PROMPT_VERSION == "external-mover-triage/native-citations-v2"
+
+
 def test_from_env_rejects_agent_id_starting_with_claude(monkeypatch):
     monkeypatch.setenv("GHOST_BASE_URL", "https://ghost.example")
     monkeypatch.setenv("GHOST_MCP_TOKEN", "t")
