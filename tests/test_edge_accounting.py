@@ -210,3 +210,124 @@ def test_paper_readout_exposes_missing_snapshot_for_submitted_actual_loss():
     assert out["financial_summary"]["unreconciled_orders"] == 1
     assert out["financial_summary"]["issues"]
     assert store._t == before
+
+
+def readout_for_snapshots(orders):
+    """Exercise the production readout boundary, with no broker or database."""
+    from edge.ledger import MemoryStore
+    from edge.readout import paper
+
+    store = MemoryStore()
+    day = "2026-10-22"
+    store.put("forecasts", "f1", {
+        "forecast_id": "f1", "experiment_id": "test", "symbol": "ABC",
+        "session_date": day, "issued_at": 100, "entry_expiry": 200,
+        "entry_trigger": 10, "entry_limit": 10.1, "target": 11, "stop": 8,
+        "shares": 10,
+    })
+    store.put("edge_paper", "f1|paper", {"state": "submitted", "order_id": "entry1"})
+    store.put("edge_paper_orders", day, {"orders": orders})
+    before = deepcopy(store._t)
+    result = paper(store, day)
+    assert store._t == before
+    return result
+
+
+def entry_snapshot():
+    r = row()
+    return dict(r["broker_entry"], client_order_id="f1-entry", legs=r["broker_exits"])
+
+
+def test_readout_preserves_same_client_conflicting_entry_prices_in_both_orders():
+    a, b = entry_snapshot(), entry_snapshot()
+    b["filled_avg_price"] = "9"
+    summaries = []
+    for snapshots in ([a, b], [b, a]):
+        out = readout_for_snapshots(snapshots)
+        summary = out["financial_summary"]
+        assert summary["completed_orders"] == 0
+        assert summary["unreconciled_orders"] == 1 and summary["issues"]
+        assert len(out["orders"][0]["broker_snapshots"]) == 2
+        summaries.append(summary)
+    assert summaries[0] == summaries[1]
+
+
+def test_readout_links_broker_and_client_aliases_without_double_counting():
+    from itertools import permutations
+
+    both = entry_snapshot()
+    both["legs"][0]["client_order_id"] = "f1-exit"
+    broker_only, client_only = deepcopy(both), deepcopy(both)
+    del broker_only["client_order_id"]
+    del broker_only["legs"][0]["client_order_id"]
+    del client_only["id"]
+    del client_only["legs"][0]["id"]
+    summaries = []
+    for snapshots in permutations([both, broker_only, client_only]):
+        out = readout_for_snapshots(list(snapshots))["financial_summary"]
+        assert out["broker_orders"] == out["completed_orders"] == 1
+        assert out["gross_pnl_usd"] == 10
+        assert out["duplicate_order_rows_excluded"] == 2
+        assert out["issues"] == []
+        summaries.append(out)
+    assert all(s == summaries[0] for s in summaries)
+
+
+def test_readout_different_or_missing_exit_sets_never_use_first_snapshot():
+    for kind in ("empty", "partial", "different_complete"):
+        a, b = entry_snapshot(), entry_snapshot()
+        if kind == "empty":
+            b["legs"] = []
+        elif kind == "partial":
+            b["legs"][0]["filled_qty"] = "5"
+        else:
+            b["legs"][0]["id"] = "another-exit"
+        summaries = []
+        for snapshots in ([a, b], [b, a]):
+            out = readout_for_snapshots(snapshots)["financial_summary"]
+            assert out["completed_orders"] == out["gross_pnl_usd"] == 0
+            assert out["unreconciled_orders"] == 1 and out["issues"]
+            summaries.append(out)
+        assert summaries[0] == summaries[1]
+
+
+def test_readout_conflicting_broker_ids_for_one_client_are_unreconciled():
+    a, b = entry_snapshot(), entry_snapshot()
+    b["id"] = "different-broker-id"
+    out = readout_for_snapshots([a, b])["financial_summary"]
+    assert out["broker_orders"] == out["unreconciled_orders"] == 1
+    assert out["completed_orders"] == 0 and out["issues"]
+
+
+def test_identity_links_do_not_escape_the_store_snapshot():
+    first = readout_for_snapshots([entry_snapshot()])["financial_summary"]
+    other = entry_snapshot()
+    other["filled_avg_price"] = "9"
+    second = readout_for_snapshots([other])["financial_summary"]
+    assert first["gross_pnl_usd"] == 10
+    assert second["gross_pnl_usd"] == 20
+    assert first["completed_orders"] == second["completed_orders"] == 1
+    assert first["issues"] == second["issues"] == []
+
+
+def test_duplicate_helper_rows_with_different_complete_exit_sets_are_unreconciled():
+    a, b = row(), row()
+    b["broker_exits"][0]["id"] = "other-exit"
+    for snapshots in ([a, b], [b, a]):
+        out = paper_summary(snapshots)
+        assert out["completed_orders"] == out["gross_pnl_usd"] == 0
+        assert out["unreconciled_orders"] == 1 and out["issues"]
+
+
+def test_helper_broker_and_client_aliases_count_one_cash_order():
+    both = row()
+    both["broker_entry"]["client_order_id"] = "entry-client"
+    both["broker_exits"][0]["client_order_id"] = "exit-client"
+    client_only = deepcopy(both)
+    del client_only["broker_entry"]["id"]
+    del client_only["broker_exits"][0]["id"]
+    for snapshots in ([both, client_only], [client_only, both]):
+        out = paper_summary(snapshots)
+        assert out["completed_orders"] == out["broker_orders"] == 1
+        assert out["gross_pnl_usd"] == 10
+        assert out["duplicate_order_rows_excluded"] == 1 and out["issues"] == []

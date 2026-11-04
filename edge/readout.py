@@ -5,6 +5,7 @@ from, and none of them shows a win rate without its interval.
 """
 from __future__ import annotations
 
+import json
 import time
 from collections import Counter
 from datetime import date, datetime, timedelta
@@ -318,7 +319,10 @@ def paper(store, day: Optional[str] = None) -> Dict[str, Any]:
         return datetime.fromtimestamp(int(ts), tz=ET).strftime("%H:%M:%S ET") if ts else None
 
     kept = (store.get("edge_paper_orders", d) or {}).get("orders") or []
-    broker = {o.get("client_order_id"): o for o in kept}
+    from edge.accounting import order_snapshot_groups
+    # Keep all snapshots and attested ID aliases. A dict comprehension here
+    # erased contradictory same-client evidence before accounting could see it.
+    snapshot_groups = order_snapshot_groups(kept)
     exit_keys = ("id", "client_order_id", "type", "status", "qty", "filled_qty", "filled_avg_price", "filled_at", "canceled_at")
 
     def _exits(fid: str, entry: Dict[str, Any], p: Dict[str, Any]) -> list:
@@ -351,7 +355,16 @@ def paper(store, day: Optional[str] = None) -> Dict[str, Any]:
         p = store.get("edge_paper", f"{f['forecast_id']}|paper") or {}
         act = store.get("outcomes", f"{f['forecast_id']}|actual") or {}
         sim = store.get("outcomes", f"{f['forecast_id']}|simulated") or {}
-        entry = broker.get(f"{f['forecast_id']}-entry") or {}
+        entries = []
+        for _, positions, _ in snapshot_groups:
+            snapshots = [kept[i] for i in positions]
+            if any(o.get("client_order_id") == f"{f['forecast_id']}-entry"
+                   or (p.get("order_id") and o.get("id") == p["order_id"])
+                   for o in snapshots):
+                entries.extend(snapshots)
+        # Display is deterministic too; accounting receives every snapshot.
+        entries.sort(key=lambda o: json.dumps(o, sort_keys=True, default=str))
+        entry = entries[0] if entries else {}
         exits = _exits(f["forecast_id"], entry, p)
         # One judge for both columns, on the broker's own fill time: a late fill never reads as counted.
         late = entry_filled_after_window(store, f, act)
@@ -371,6 +384,10 @@ def paper(store, day: Optional[str] = None) -> Dict[str, Any]:
                      "broker_entry": {k: entry.get(k) for k in ("id", "client_order_id", "qty", "filled_qty", "status", "submitted_at", "filled_at",
                                                                 "filled_avg_price", "canceled_at")} if entry else None,
                      "broker_exits": exits,
+                     "broker_snapshots": [{"entry": {k: e.get(k) for k in
+                         ("id", "client_order_id", "qty", "filled_qty", "status", "submitted_at",
+                          "filled_at", "filled_avg_price", "canceled_at")},
+                         "exits": _exits(f["forecast_id"], e, p)} for e in entries],
                      "filled_after_window": late,
                      "note": (f"broker fill outside the rule ({why_outside or 'entry filled after the entry window'}): "
                               "excluded from rule accuracy, included in financial P&L" if outside else None)})

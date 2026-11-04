@@ -33,17 +33,27 @@ test("truth toggle receives real clicks during and after delayed attribution lay
         })),
       },
     };
+    let release!: () => void;
+    const barrier = new Promise<void>(resolve => { release = resolve; });
+    (window as any).releaseAttribution = release;
+    (window as any).attributionWaiting = false;
     window.fetch = async () => {
-      await new Promise(resolve => setTimeout(resolve, 150));
+      (window as any).attributionWaiting = true;
+      await barrier;
       return new Response(JSON.stringify(data));
     };
     (window as any).loadAttribution();
   });
   const button = page.locator("#truth-toggle");
   const body = page.locator("#truth-body");
+  await expect.poll(() => page.evaluate(() => (window as any).attributionWaiting)).toBe(true);
+  await expect(page.locator("#attr-components tbody tr")).toHaveCount(0);
   await button.click();
   await expect(button).toHaveAttribute("aria-expanded", "false");
   await expect(body).toBeHidden();
+  // Response stays blocked until after the real click and its assertions.
+  await expect(page.locator("#attr-components tbody tr")).toHaveCount(0);
+  await page.evaluate(() => (window as any).releaseAttribution());
   await expect(page.locator("#attr-components tbody tr")).toHaveCount(10);
   for (let i = 0; i < 3; i++) {
     await button.click();

@@ -71,3 +71,52 @@ health-audit gate; current secret configuration was not read or changed.
 Current live revision, worker and performance observations belong to the parent
 status assessment. No live-money promotion, predictive accuracy claim or tenant
 isolation certification follows from these engineering repairs.
+
+## Follow-up independent review — supersedes initial repair completeness
+
+Independent review of initial commit `760883e` found remaining failures at the
+readout boundary, alias handling and differing exit sets. The initial commit
+alone is not release-ready. These were reproduced, then repaired:
+
+- `edge/readout.py` no longer collapses same-client entry snapshots with a dict
+  comprehension. It retains all snapshots and attached exit evidence in the
+  additive `broker_snapshots` field while retaining one display row per forecast.
+  The representative displayed snapshot is deterministic; financial validation
+  sees every snapshot, including broker-ID-only aliases reachable through an
+  attested ID/client-ID pair or the submitted order ID.
+- Accounting links typed broker/client aliases only within one supplied
+  account/store snapshot. There is no global identity map. Multiple broker IDs
+  tied to one client ID (or multiple client IDs tied to one broker ID) are an
+  explicit conflict, not silently accepted. Entry and exit aliases cannot double
+  count one order. Separate store calls do not influence one another. This is
+  snapshot-local identity handling, not certification of application tenancy.
+- Every duplicate entry snapshot must independently contain the same set of
+  filled exits. Missing, partial, contradictory or different complete exit sets
+  are unreconciled. The implementation does not union partial snapshots into
+  invented complete evidence. Identical snapshots and numeric-equivalent fills
+  remain deduplicated. Gross P&L and counts do not depend on input ordering.
+- The browser regression now has an explicit Promise barrier. It asserts that
+  attribution is waiting and has no rendered rows, performs the real click and
+  collapse assertions, verifies the response is still blocked, then releases it
+  and checks post-render click round trips. No timing delay is used as proof.
+
+Reproduction against exact `760883e`: five of the six initial follow-up cases
+failed, including full-readout conflicting snapshots and different exit sets.
+A separate direct-helper alias regression confirmed two cash orders counted
+instead of one. All 22 final accounting tests pass, including both-order checks,
+six alias permutations and readout no-write assertions. The repaired browser test
+passes desktop and mobile Chromium (2 tests, 2.4 seconds), with all network blocked.
+No existing assertion was removed or weakened.
+
+Final full edge-suite result follows below. The earlier 715-test result documents
+only the initial repair and is not the final completeness claim.
+
+Final verification after all follow-up changes:
+
+- Edge suite: **722 passed, 7 skipped, 3 deselected**, 10.29 seconds.
+- Skips: one optional `exchange_calendars` test, four optional EdgarTools tests,
+  and two tests requiring an explicit disposable PostgreSQL database. Production
+  dependencies were not installed or altered; pinned-runtime CI remains required.
+- Accounting subset: **22 passed**, including full-readout alias and contradiction
+  paths. Browser subset: **2 passed**, desktop/mobile with the explicit barrier.
+- Ruff on all changed Python code and tests; diff whitespace checks: pass.
