@@ -120,3 +120,31 @@ Final verification after all follow-up changes:
 - Accounting subset: **22 passed**, including full-readout alias and contradiction
   paths. Browser subset: **2 passed**, desktop/mobile with the explicit barrier.
 - Ruff on all changed Python code and tests; diff whitespace checks: pass.
+
+## Exit alias selection follow-up — supersedes head 1e45aff
+
+Independent review found that role-based top-level exit selection still dropped
+broker-only aliases before accounting. Exact `1e45aff` reproduced the supplied
+case through `paper()`: entry 10 at $10; named time-exit 10 at $11; same exit
+broker ID with no client ID at $8; no `tx_closes`. It reported +$10 and no issue.
+
+Exit selection now indexes all retained top-level snapshots and nested legs.
+Once any member is attested as a bracket, protective, flatten, time-exit or
+position-close order, the complete snapshot-local alias group is passed to
+accounting. A broker-only contradictory snapshot cannot disappear because it
+lacks the naming prefix. Protective children and bracket legs are indexed too.
+The fix preserves evidence rather than changing cash reconciliation thresholds.
+
+Regressions exercise all six input permutations for named time-exit, protective
+and flatten paths with contradictory prices and quantities; identical aliases
+still count once. Additional full-readout cases cover protective-child and
+bracket-child broker-only contradictions, plus a client-only position-close
+alias linked through `tx_closes`. Every contradictory case is unreconciled and
+excluded from completed P&L. Store fixtures are unchanged after each read.
+
+Final verification: **727 edge tests passed, 7 skipped, 3 deselected** (10.32s);
+**27 accounting tests passed** (0.11s); Ruff and diff checks pass. Skip reasons
+remain the optional calendar/EdgarTools dependencies and the two disposable-DB
+cases documented above. Browser code is unchanged from its verified barrier
+version; no redundant browser run was performed for this Python-only repair.
+No production, trading, credential, safety-gate or deployment-freeze changes.

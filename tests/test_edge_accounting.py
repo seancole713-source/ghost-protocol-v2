@@ -212,7 +212,7 @@ def test_paper_readout_exposes_missing_snapshot_for_submitted_actual_loss():
     assert store._t == before
 
 
-def readout_for_snapshots(orders):
+def readout_for_snapshots(orders, paper_record=None):
     """Exercise the production readout boundary, with no broker or database."""
     from edge.ledger import MemoryStore
     from edge.readout import paper
@@ -225,7 +225,7 @@ def readout_for_snapshots(orders):
         "entry_trigger": 10, "entry_limit": 10.1, "target": 11, "stop": 8,
         "shares": 10,
     })
-    store.put("edge_paper", "f1|paper", {"state": "submitted", "order_id": "entry1"})
+    store.put("edge_paper", "f1|paper", {"state": "submitted", "order_id": "entry1", **(paper_record or {})})
     store.put("edge_paper_orders", day, {"orders": orders})
     before = deepcopy(store._t)
     result = paper(store, day)
@@ -331,3 +331,74 @@ def test_helper_broker_and_client_aliases_count_one_cash_order():
         assert out["completed_orders"] == out["broker_orders"] == 1
         assert out["gross_pnl_usd"] == 10
         assert out["duplicate_order_rows_excluded"] == 1 and out["issues"] == []
+
+
+def test_top_level_exit_alias_conflicts_reach_readout_accounting():
+    from itertools import permutations, product
+
+    for suffix, (field, value) in product(("tx", "px", "pf"),
+                                         (("filled_avg_price", "8"), ("filled_qty", "5"))):
+        entry = entry_snapshot()
+        entry["legs"] = []
+        exit_order = {"id": "time-exit", "client_order_id": f"f1-{suffix}",
+                      "filled_qty": "10", "filled_avg_price": "11", "type": "limit"}
+        hidden = dict(exit_order)
+        hidden[field] = value
+        del hidden["client_order_id"]
+        summaries = []
+        for orders in permutations([entry, exit_order, hidden]):
+            out = readout_for_snapshots(list(orders))
+            assert len(out["orders"][0]["broker_exits"]) == 2
+            summary = out["financial_summary"]
+            assert summary["completed_orders"] == summary["gross_pnl_usd"] == 0
+            assert summary["unreconciled_orders"] == 1 and summary["issues"]
+            summaries.append(summary)
+        assert all(s == summaries[0] for s in summaries)
+
+
+def test_top_level_exit_alias_identical_snapshots_count_once():
+    for suffix in ("tx", "px", "pf"):
+        entry = entry_snapshot()
+        entry["legs"] = []
+        exit_order = {"id": "exit1", "client_order_id": f"f1-{suffix}",
+                      "filled_qty": "10", "filled_avg_price": "11"}
+        alias = dict(exit_order)
+        del alias["client_order_id"]
+        for orders in ([entry, exit_order, alias], [alias, exit_order, entry]):
+            out = readout_for_snapshots(orders)["financial_summary"]
+            assert out["completed_orders"] == 1 and out["gross_pnl_usd"] == 10
+            assert out["unreconciled_orders"] == 0 and out["issues"] == []
+
+
+def test_protective_child_broker_alias_conflict_is_not_hidden():
+    entry = entry_snapshot()
+    entry["legs"] = []
+    protective = {"id": "protective", "client_order_id": "f1-px", "filled_qty": "0",
+                  "legs": [{"id": "child", "filled_qty": "10", "filled_avg_price": "11"}]}
+    hidden = {"id": "child", "filled_qty": "10", "filled_avg_price": "8"}
+    for orders in ([entry, protective, hidden], [hidden, protective, entry]):
+        out = readout_for_snapshots(orders)["financial_summary"]
+        assert out["completed_orders"] == out["gross_pnl_usd"] == 0
+        assert out["unreconciled_orders"] == 1 and out["issues"]
+
+
+def test_bracket_child_broker_alias_conflict_reaches_accounting():
+    entry = entry_snapshot()
+    hidden = {"id": "exit1", "filled_qty": "10", "filled_avg_price": "8"}
+    for orders in ([entry, hidden], [hidden, entry]):
+        out = readout_for_snapshots(orders)["financial_summary"]
+        assert out["completed_orders"] == out["gross_pnl_usd"] == 0
+        assert out["unreconciled_orders"] == 1 and out["issues"]
+
+
+def test_position_close_client_only_alias_conflict_reaches_accounting():
+    entry = entry_snapshot()
+    entry["legs"] = []
+    close = {"id": "position-close", "client_order_id": "manual-close",
+             "filled_qty": "10", "filled_avg_price": "11"}
+    hidden = {"client_order_id": "manual-close", "filled_qty": "10", "filled_avg_price": "8"}
+    record = {"tx_closes": [{"order_id": "position-close"}]}
+    for orders in ([entry, close, hidden], [hidden, close, entry]):
+        out = readout_for_snapshots(orders, record)["financial_summary"]
+        assert out["completed_orders"] == out["gross_pnl_usd"] == 0
+        assert out["unreconciled_orders"] == 1 and out["issues"]

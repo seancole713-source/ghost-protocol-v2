@@ -325,22 +325,52 @@ def paper(store, day: Optional[str] = None) -> Dict[str, Any]:
     snapshot_groups = order_snapshot_groups(kept)
     exit_keys = ("id", "client_order_id", "type", "status", "qty", "filled_qty", "filled_avg_price", "filled_at", "canceled_at")
 
+    # Include nested legs in the exit alias index: a broker-only top-level
+    # snapshot may attest a contradiction to a named protective/bracket leg.
+    exit_snapshots = []
+
+    def collect(order):
+        exit_snapshots.append(order)
+        for leg in order.get("legs") or []:
+            collect(leg)
+
+    for order in kept:
+        collect(order)
+    exit_groups = order_snapshot_groups(exit_snapshots)
+    exit_group_for = {id(exit_snapshots[i]): n for n, (_, positions, _) in enumerate(exit_groups)
+                      for i in positions}
+
     def _exits(fid: str, entry: Dict[str, Any], p: Dict[str, Any]) -> list:
-        """Every exit the broker recorded: the bracket's target/stop legs, the 15:30 time-exit
-        sells (-tx, -tx2...) and any last-tick position close (audit 2026-09-25 U63)."""
+        """Select exit groups by attested role, then retain every alias snapshot."""
         closes = {str(x.get("order_id")) for x in p.get("tx_closes") or [] if x.get("order_id")}
-        out = [{"role": "stop" if "stop" in str(g.get("type") or "") else "target",
-                **{k: g.get(k) for k in exit_keys}} for g in entry.get("legs") or []]
-        for o in kept:
-            cid = str(o.get("client_order_id") or "")
-            if cid.startswith(f"{fid}-px"):          # protective OCO for a partly filled entry
-                out += [{"role": "protective_" + ("stop" if "stop" in str(g.get("type") or "") else "target"),
-                         **{k: g.get(k) for k in exit_keys}} for g in [o] + list(o.get("legs") or [])]
-            elif cid.startswith(f"{fid}-pf"):        # flatten when that protection failed
-                out.append({"role": "flatten", **{k: o.get(k) for k in exit_keys}})
-            elif cid.startswith(f"{fid}-tx") or str(o.get("id")) in closes:
-                out.append({"role": "time_exit" if cid.startswith(f"{fid}-tx") else "position_close",
-                            **{k: o.get(k) for k in exit_keys}})
+        selected = {}
+
+        def include(order, role):
+            selected.setdefault(exit_group_for[id(order)], role)
+
+        for leg in entry.get("legs") or []:
+            include(leg, "bracket")
+        for n, (_, positions, _) in enumerate(exit_groups):
+            snapshots = [exit_snapshots[i] for i in positions]
+            clients = [str(o.get("client_order_id") or "") for o in snapshots]
+            if any(cid.startswith(f"{fid}-px") for cid in clients):
+                selected[n] = "protective"
+                for order in snapshots:
+                    for leg in order.get("legs") or []:
+                        include(leg, "protective")
+            elif any(cid.startswith(f"{fid}-pf") for cid in clients):
+                selected[n] = "flatten"
+            elif any(cid.startswith(f"{fid}-tx") for cid in clients):
+                selected[n] = "time_exit"
+            elif any(str(o.get("id")) in closes for o in snapshots):
+                selected[n] = "position_close"
+        out = []
+        for n, role in selected.items():
+            for i in exit_groups[n][1]:
+                order = exit_snapshots[i]
+                kind = "stop" if "stop" in str(order.get("type") or "") else "target"
+                label = kind if role == "bracket" else "protective_" + kind if role == "protective" else role
+                out.append({"role": label, **{k: order.get(k) for k in exit_keys}})
         return out
 
     rows = []

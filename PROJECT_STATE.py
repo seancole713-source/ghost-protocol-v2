@@ -46,8 +46,8 @@ SESSION_LOG = {
     "release_repair_2026_11_04": {
         "report": "docs/reports/release_repair_2026-11-04.md",
         "status": "LOCAL ONLY, based on PR #249 head c5f4272; not merged or deployed",
-        "repair": "Paper readout retains all same-client snapshots; snapshot-local broker/client alias groups prevent duplicate cash counting. Missing identity, conflicting fill prices/quantities and differing/partial exit sets are unreconciled. No outcome rewrites.",
-        "verification": "Follow-up: all 22 accounting tests pass, including end-to-end readout permutations; desktop/mobile offline Chromium passes with an explicit loading barrier. Final edge-suite counts are in the report. Ruff and diff check pass. No production or broker calls.",
+        "repair": "Paper readout retains all same-client entry snapshots and complete attested exit alias groups, including top-level broker-only and nested protective/bracket legs. Snapshot-local broker/client links prevent duplicate cash counting. Missing identity, conflicting fills and differing/partial exit sets are unreconciled. No outcome rewrites.",
+        "verification": "Final follow-up: 727 edge tests passed, 7 skipped, 3 deselected; all 27 accounting tests pass, including full-readout exit-alias permutations. Prior unchanged desktop/mobile offline Chromium tests pass with an explicit barrier. Ruff and diff check pass. No production or broker calls.",
         "release": "The October 30 main attempt was old a6e3615 and blocked by the intended market-hours freeze after runtime preflight passed. Freeze unchanged. Existing live mobile failure not reproduced offline; exact-deployment browser and authenticated release gates remain unverified.",
     },
     "runtime_recovery_2026_09_21": {
