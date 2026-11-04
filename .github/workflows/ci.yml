@@ -235,3 +235,33 @@ jobs:
 
       - name: Alert on new ERROR signatures
         run: python3 scripts/check_error_signatures.py
+
+  browser-offline-candidate:
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Evidence for the exact reviewed candidate, not this workflow commit.
+          ref: 6014ebd7e36f42143fd5b09215466870f2c53fca
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Prove desktop and mobile layout with every request blocked
+        run: >-
+          npx playwright test e2e/cockpit.layout.spec.ts
+          --project=desktop-chromium --project=mobile-chromium
+          --workers=1 --reporter=line
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: offline-candidate-browser-results
+          path: test-results/
+          if-no-files-found: ignore
