@@ -14,23 +14,59 @@ def _number(value):
 
 
 def paper_summary(rows):
+    rows = list(rows)
+    entry_fills, exit_fills, conflicts = {}, {}, set()
+    for row in rows:
+        entry = row.get("broker_entry") or {}
+        identity = entry.get("id") or entry.get("client_order_id")
+        if not identity:
+            continue
+        fill = (_number(entry.get("filled_qty")), _number(entry.get("filled_avg_price")))
+        if identity in entry_fills and entry_fills[identity] != fill:
+            conflicts.add(identity)
+        entry_fills[identity] = fill
+        for order in row.get("broker_exits") or []:
+            oid = order.get("id") or order.get("client_order_id")
+            if not oid:
+                continue
+            key = (identity, oid)
+            fill = (_number(order.get("filled_qty")), _number(order.get("filled_avg_price")))
+            if key in exit_fills and exit_fills[key] != fill:
+                conflicts.add(identity)
+            exit_fills[key] = fill
     seen, completed, issues = set(), [], []
-    shared = unfilled = unsettled = duplicates = 0
+    shared = unfilled = unsettled = duplicates = missing_entries = 0
     for row in rows:
         entry = row.get("broker_entry") or {}
         if not entry:
-            shared += bool(row.get("shared_order_source"))
+            if row.get("shared_order_source"):
+                shared += 1
+            elif (
+                row.get("paper_state") == "submitted"
+                or row.get("actual") in {"WIN", "LOSS"}
+                or row.get("broker_exits")
+                or (row.get("actual_pnl_usd") is not None and row.get("actual") != "NO_FILL")
+            ):
+                # Forecasts without an order are normal. An observed order or
+                # financial result without its entry snapshot cannot reconcile.
+                missing_entries += 1
+                unsettled += 1
+                identity = row.get("forecast_id") or "unknown forecast"
+                issues.append(f"{identity}: broker entry evidence missing")
             continue
-        identity = (
-            entry.get("id") or entry.get("client_order_id") or row.get("forecast_id")
-        )
+        identity = entry.get("id") or entry.get("client_order_id")
         if not identity:
-            issues.append("entry lacks order identity")
+            unsettled += 1
+            issues.append(f"{row.get('forecast_id') or 'unknown forecast'}: entry lacks broker order identity")
             continue
         if identity in seen:
             duplicates += 1
             continue
         seen.add(identity)
+        if identity in conflicts:
+            unsettled += 1
+            issues.append(f"{identity}: conflicting broker fill snapshots")
+            continue
         qty, price = (
             _number(entry.get("filled_qty")),
             _number(entry.get("filled_avg_price")),
@@ -86,6 +122,7 @@ def paper_summary(rows):
         "completed_orders": n,
         "unfilled_orders": unfilled,
         "unreconciled_orders": unsettled,
+        "missing_entry_orders": missing_entries,
         "shared_results_excluded": shared,
         "duplicate_order_rows_excluded": duplicates,
         "profitable_orders": sum(r["pnl"] > 0 for r in completed),

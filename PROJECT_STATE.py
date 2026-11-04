@@ -43,6 +43,13 @@ of the pause, and the only proven serveable model (ITRI/DOWN) is off via V3_DOWN
 # ============================================================
 
 SESSION_LOG = {
+    "release_repair_2026_11_04": {
+        "report": "docs/reports/release_repair_2026-11-04.md",
+        "status": "LOCAL ONLY, based on PR #249 head c5f4272; not merged or deployed",
+        "repair": "Paper readout exposes missing entry evidence and broker identity; conflicting duplicate entry/exit fill snapshots are excluded from reconciled totals; identical duplicates still count once.",
+        "verification": "715 edge tests passed, 7 skipped, 3 deselected; two offline Chromium desktop/mobile regressions passed; Ruff and diff check passed. No production or broker calls.",
+        "release": "The October 30 main attempt was old a6e3615 and blocked by the intended market-hours freeze after runtime preflight passed. Freeze unchanged. Existing live mobile failure not reproduced offline; exact-deployment browser and authenticated release gates remain unverified.",
+    },
     "runtime_recovery_2026_09_21": {
         "report": "docs/runtime_recovery_2026-09-21.md",
         "incident": "PR #203 c459895 crashed: Python 3.13 / NumPy 1.26.4 extension required missing GLIBC_2.38. Public forecast endpoints returned 502, not zero picks.",
