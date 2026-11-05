@@ -198,3 +198,120 @@ def test_recent_scores_filters_by_symbol_and_task():
     assert "symbol = %s" in executed_sql
     assert "task_id = %s" in executed_sql
     assert cur.params[-1] == ("BRNX", "agt_x", 5)
+
+
+def test_malformed_claims_reach_versioned_shadow_storage(monkeypatch):
+    from contextlib import contextmanager
+    import core.db as core_db
+
+    cur = _Cursor(fetchall_rows=[
+        ("evd_self", "a", {"verdict": ["supports"]}, []),
+        ("evd_sibling", "b", {"classification": {"kind": "gap"}}, []),
+    ], fetchone_rows=[None, (42,)])
+
+    class Connection:
+        def cursor(self):
+            return cur
+        def commit(self):
+            pass
+
+    @contextmanager
+    def connection():
+        yield Connection()
+
+    monkeypatch.setattr(core_db, "db_conn", connection)
+    result = sel.score_and_store_evidence(
+        evidence_id="evd_self", task_id="task", symbol="TEST",
+        claims={"verdict": ["supports"]}, source_refs=[], now_ts=1800000000,
+    )
+    assert result["ok"] is True
+    assert result["scoring_version"] == "evidence_score_v1"
+    assert result["dimensions"]["contradiction"] == 0.2
+    inserts = [params for sql, params in zip(cur.executed, cur.params)
+               if "INSERT INTO ghost_shadow_evidence_scores" in sql]
+    assert len(inserts) == 1
+    assert inserts[0][3] == "evidence_score_v1"
+
+
+def _sqlite_versioned_ledger(monkeypatch):
+    """Execute real selection/storage SQL locally; not a PostgreSQL substitute."""
+    import sqlite3
+    from contextlib import contextmanager
+    import core.db as core_db
+
+    db = sqlite3.connect(":memory:")
+    db.executescript('''
+        CREATE TABLE ghost_agent_tasks (task_id TEXT PRIMARY KEY, status TEXT, symbol TEXT);
+        CREATE TABLE ghost_agent_evidence (
+            evidence_id TEXT PRIMARY KEY, task_id TEXT, validation_status TEXT,
+            claims TEXT, source_refs TEXT, submitted_at INT, agent_id TEXT);
+        CREATE TABLE ghost_shadow_evidence_scores (
+            id INTEGER PRIMARY KEY, evidence_id TEXT, task_id TEXT, symbol TEXT,
+            scoring_version TEXT, composite_score FLOAT, dimensions_json TEXT,
+            detail_json TEXT, weights_json TEXT, sibling_count INT, scored_at INT,
+            created_at INT, UNIQUE(evidence_id, scoring_version));
+    ''')
+
+    class Cursor:
+        def __init__(self):
+            self.cur = db.cursor()
+        def execute(self, sql, params=()):
+            return self.cur.execute(sql.replace("%s", "?"), params)
+        def fetchall(self):
+            return self.cur.fetchall()
+        def fetchone(self):
+            return self.cur.fetchone()
+
+    class Connection:
+        def cursor(self):
+            return Cursor()
+        def commit(self):
+            db.commit()
+
+    @contextmanager
+    def connection():
+        yield Connection()
+
+    monkeypatch.setattr(core_db, "db_conn", connection)
+    monkeypatch.setattr(sel, "ensure_shadow_evidence_tables", lambda cur: None)
+    return db
+
+
+
+def test_narrow_repair_only_scores_unscored_accepted_completed_rows(monkeypatch):
+    db = _sqlite_versioned_ledger(monkeypatch)
+    try:
+        for name, validation, status in (
+            ("stored", "ACCEPTED", "COMPLETED"),
+            ("broken", "ACCEPTED", "COMPLETED"),
+            ("rejected", "REJECTED", "COMPLETED"),
+            ("incomplete", "ACCEPTED", "RUNNING"),
+        ):
+            db.execute("INSERT INTO ghost_agent_tasks VALUES (?, ?, 'TEST')", (name, status))
+            db.execute("INSERT INTO ghost_agent_evidence VALUES (?, ?, ?, ?, '[]', 1, 'agent')",
+                       (name, name, validation, '{"verdict": ["supports"]}'))
+        db.execute("INSERT INTO ghost_shadow_evidence_scores (evidence_id, task_id, scoring_version, composite_score, scored_at) VALUES ('stored', 'stored', 'evidence_score_v1', 0.99, 100)")
+        monkeypatch.setattr(sel, "_now", lambda: 200)
+        assert sel.score_pending_evidence() == {"ok": True, "scored": 1, "failed": 0, "scanned": 1}
+        before = db.execute("SELECT * FROM ghost_shadow_evidence_scores ORDER BY id").fetchall()
+        assert [(row[1], row[4], row[5], row[10]) for row in before] == [
+            ("stored", "evidence_score_v1", 0.99, 100),
+            ("broken", "evidence_score_v1", before[1][5], 200),
+        ]
+        # Later scoring time and sibling evidence do not refresh either score.
+        db.execute("INSERT INTO ghost_agent_evidence VALUES ('sibling', 'broken', 'ACCEPTED', ?, '[]', 2, 'b')",
+                   ('{"verdict": "rejects"}',))
+        monkeypatch.setattr(sel, "_now", lambda: 900)
+        result = sel.score_and_store_evidence(
+            evidence_id="broken", task_id="broken", symbol="TEST",
+            claims={"verdict": ["supports"]}, source_refs=[],
+        )
+        assert result["idempotent"] is True
+        assert result["scored_at"] == 200
+        assert result["sibling_count"] == 0
+        assert db.execute("SELECT * FROM ghost_shadow_evidence_scores ORDER BY id").fetchall() == before
+        assert sel.score_pending_evidence()["scored"] == 1  # new sibling only
+        assert sel.score_pending_evidence()["scanned"] == 0
+        assert {r[0] for r in db.execute("SELECT scoring_version FROM ghost_shadow_evidence_scores")} == {"evidence_score_v1"}
+    finally:
+        db.close()

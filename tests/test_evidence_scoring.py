@@ -247,3 +247,34 @@ def test_brnx_style_insufficient_call_scores_moderately_not_high_not_zero():
     )
     honest_insufficient = es.score_evidence(claims=claims, source_refs=refs, now_ts=NOW)
     assert 0.25 < honest_insufficient["composite_score"] < confident["composite_score"]
+
+
+def test_malformed_conclusions_are_scored_conservatively_without_crashing():
+    for field in ("verdict", "classification"):
+        for invalid in (["supports"], {"value": "supports"}, 7, True):
+            claims = {"verdict": "supports", "classification": "short_squeeze", field: invalid}
+            result = es.score_evidence(claims=claims, source_refs=[], now_ts=NOW)
+            contradiction = result["detail"]["contradiction"]
+            assert contradiction["score"] == 0.2
+            assert contradiction["invalid_conclusion_fields"] == 1
+            missing = dict(claims, **{field: None})
+            assert result["dimensions"]["catalyst_relevance"] == es.score_evidence(
+                claims=missing, source_refs=[], now_ts=NOW,
+            )["dimensions"]["catalyst_relevance"]
+
+
+def test_malformed_sibling_cannot_hide_a_valid_conflict():
+    siblings = [
+        {"verdict": ["supports"], "classification": {"value": "short_squeeze"}},
+        {"agent_id": "valid", "verdict": "rejects", "classification": "short_squeeze"},
+    ]
+    result = es.score_contradiction("supports", "short_squeeze", sibling_evidence=siblings)
+    assert result["score"] == 0.2
+    assert result["invalid_conclusion_fields"] == 2
+    assert [row["agent_id"] for row in result["conflicts"]] == ["valid"]
+
+
+def test_falsy_legacy_conclusions_keep_their_existing_missing_value_scores():
+    for value in (None, "", [], {}, False, 0):
+        assert es.score_contradiction(value, value) == es.score_contradiction(None, None)
+        assert es.score_catalyst_relevance(value, value) == es.score_catalyst_relevance(None, None)

@@ -211,6 +211,7 @@ def test_rate_limit_stops_remaining_chunks_and_fallback(monkeypatch, scan):
     assert len(calls) == 1
     assert report["fetch_fail"] == 1
     assert report["fetch_skipped"] == 2
+    assert report["fetch_issue_reasons"] == {"http_429": 1, "rate_limited_batch": 2}
     assert report["no_intraday_print"] == 0
 
 
@@ -319,3 +320,15 @@ def test_evidence_uses_the_exchange_date_between_midnight_et_and_midnight_ct():
                "daily_feed": "iex", "intraday_feed": "iex"}
     assert evidence_status(metrics, now=now) == "ready"
     assert evidence_status({**metrics, "reference_session_date": "2026-09-24"}, now=now) == "invalid_baseline"
+
+
+def test_fetch_issue_diagnostics_keep_busy_and_provider_failures_distinct():
+    assert sm._fetch_issue_reasons({
+        "A": {"status": "fetch_skipped", "reason": "batch_busy"},
+        "B": {"status": "fetch_skipped", "reason": "batch_still_running"},
+        "C": {"status": "fetch_fail", "reason": "http_429"},
+        "D": {"status": "fetch_skipped", "reason": "rate_limited_batch"},
+        "E": {"status": "stale_quote", "reason": "stale_quote"},
+        "F": {"status": "fetch_fail", "reason": "https://private.example/token"},
+    }) == {"batch_busy": 1, "batch_still_running": 1, "http_429": 1,
+           "rate_limited_batch": 1, "other": 1}
