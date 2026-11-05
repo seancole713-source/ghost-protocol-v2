@@ -265,3 +265,27 @@ jobs:
           name: offline-candidate-browser-results
           path: test-results/
           if-no-files-found: ignore
+
+
+  browser-readonly-safety:
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Verify actual-candidate portfolio network guard without an app
+        run: >-
+          npx playwright test e2e/portfolio-readonly.spec.ts
+          --project=desktop-chromium --project=mobile-chromium
+          --workers=1 --reporter=line

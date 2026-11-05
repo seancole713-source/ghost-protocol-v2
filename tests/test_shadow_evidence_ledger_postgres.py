@@ -240,3 +240,53 @@ def test_real_ddl_version_uniqueness_and_schema_isolation(pg_ledger):
     with pg_ledger() as conn:
         conn.cursor().execute(insert, ("constraint_fixture_other_version",))
     assert len(_rows(pg_ledger)) == 2  # constraint permits distinct versions; no v2 model used
+
+
+@pytest.mark.parametrize("method", ["POST", "DELETE"])
+def test_portfolio_mutation_auth_only_in_disposable_app(pg_ledger, monkeypatch, method):
+    """No live BASE_URL: actual handlers, test-only credentials, owned PG schema.
+
+    Positive controls prove these requests reach writes when authorized, so an
+    auth regression cannot silently pass a test that only exercises a stub.
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from core import portfolio_routes
+
+    monkeypatch.setenv("GHOST_TEST_MODE", "1")
+    monkeypatch.setenv("GHOST_MCP_TOKEN", "disposable-portfolio-auth-token")
+    monkeypatch.setenv("CRON_SECRET", "disposable-portfolio-cookie-secret")
+    monkeypatch.setenv("GHOST_DEV_MODE", "0")
+    monkeypatch.setattr(portfolio_routes, "db_conn", pg_ledger)
+    with pg_ledger() as conn:
+        with conn.cursor() as cur:
+            cur.execute(portfolio_routes._CREATE_TABLE)
+            cur.execute("""INSERT INTO user_portfolio
+                (symbol,asset_type,quantity,buy_price,buy_date,notes)
+                VALUES ('TEST_OWNED','stock',1,1,'2026-01-15','isolated auth fixture')
+                RETURNING id""")
+            position_id = cur.fetchone()[0]
+
+    def positions():
+        with pg_ledger() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM user_portfolio ORDER BY id")
+                return cur.fetchall()
+
+    app = FastAPI()
+    app.include_router(portfolio_routes.portfolio_router)
+    payload = {"symbol": "ZZE2E_ISOLATED", "asset_type": "stock", "quantity": 1,
+               "buy_price": 1, "buy_date": "2026-01-15"}
+    path = "/api/portfolio" if method == "POST" else f"/api/portfolio/{position_id}"
+    kwargs = {"json": payload} if method == "POST" else {}
+    before = positions()
+    # Minimal app: no production startup, scheduler, broker or live HTTP calls.
+    with TestClient(app, base_url="https://testserver") as client:
+        denied = client.request(method, path, **kwargs)
+        assert denied.status_code == 401
+        assert positions() == before
+        allowed = client.request(method, path, headers={"x-ghost-mcp-token": "disposable-portfolio-auth-token"}, **kwargs)
+        assert allowed.status_code == 200
+        assert allowed.json()["ok"] is True
+    after = positions()
+    assert len(after) == len(before) + (1 if method == "POST" else -1)
