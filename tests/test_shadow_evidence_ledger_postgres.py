@@ -21,6 +21,31 @@ from core import shadow_evidence_ledger as ledger
 pytestmark = pytest.mark.integration
 
 
+def _disposable_backend(name, address, params, environ):
+    """A loopback DSN can terminate at a private Docker service in GitHub CI."""
+    if name != "ghost_ci_test" or not address:
+        return False
+    try:
+        server = ipaddress.ip_address(address)
+    except ValueError:
+        return False
+    if server.is_loopback:
+        return True
+    # Only the known GitHub integration job may use a bridged backend. Keep
+    # loopback-only DSN validation above; never allow a remote DSN/private host.
+    known_ci = (
+        environ.get("GITHUB_ACTIONS") == "true"
+        and environ.get("GITHUB_REPOSITORY") == "seancole713-source/ghost-protocol-v2"
+        and environ.get("GITHUB_JOB") == "integration"
+        and params.get("user") == "ghost_ci"
+        and params.get("port", "5432") == "5432"
+    )
+    return known_ci and server.version == 4 and any(
+        server in ipaddress.ip_network(network)
+        for network in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+    )
+
+
 @pytest.fixture(scope="session")
 def _integration_database_session():
     """Fail closed before any DDL, including the inherited pytest bootstrap."""
@@ -36,10 +61,10 @@ def _integration_database_session():
         pytest.fail("requires the disposable loopback ghost_ci_test database")
     with closing(psycopg2.connect(dsn, connect_timeout=3)) as conn, conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT current_database(), inet_server_addr()::text")
+            cur.execute("SELECT current_database(), host(inet_server_addr())")
             name, address = cur.fetchone()
-            if name != "ghost_ci_test" or not address or not ipaddress.ip_address(address).is_loopback:
-                pytest.fail("database identity is not the disposable loopback CI target")
+            if not _disposable_backend(name, address, params, os.environ):
+                pytest.fail("database identity is not the disposable local CI target")
     yield dsn
 
 
