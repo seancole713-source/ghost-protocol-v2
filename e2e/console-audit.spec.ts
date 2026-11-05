@@ -11,7 +11,7 @@
  * Run:  npx playwright test --config=playwright.config.ts e2e/console-audit.spec.ts
  */
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./safe-test";
 import { attachStrictClientMonitors } from "./error-collectors";
 
 // ── helpers ──────────────────────────────────────────────────────────

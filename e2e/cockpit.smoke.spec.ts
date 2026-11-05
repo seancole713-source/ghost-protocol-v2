@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./safe-test";
 import { attachStrictClientMonitors } from "./error-collectors";
 
 test.describe("Cockpit smoke", () => {

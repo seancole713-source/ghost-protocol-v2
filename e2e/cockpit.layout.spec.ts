@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./safe-test";
 
 // Offline layout regression: use the shipped markup, CSS, renderer and handler.
 // All requests are blocked; no production API, scheduler or portfolio is started.

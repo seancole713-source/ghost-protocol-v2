@@ -5,7 +5,7 @@
  * tiles render honestly and safely. Point at a static server for the branch:
  *   BASE_URL=http://127.0.0.1:8099 npx playwright test e2e/mission-control.spec.ts --project=chromium
  */
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./safe-test";
 
 // These specs load raw .html files from a STATIC server (branch verification),
 // so they only make sense against a local host — production serves admin at
@@ -61,14 +61,14 @@ test.describe("Mission Control audit fixes", () => {
     await page.route("**/*", async (route) => {
       const url = new URL(route.request().url());
       if (url.origin === new URL(page.url() || "http://127.0.0.1:8099").origin && /\.(js|css|html|ico)$/.test(url.pathname)) {
-        return route.continue();
+        return route.fallback();
       }
       const match = Object.keys(MC_STUBS).find((k) => url.pathname === k || url.pathname.startsWith(k));
       if (match) return route.fulfill({ json: MC_STUBS[match] });
       if (url.pathname.startsWith("/api/") || url.pathname.startsWith("/admin/")) {
         return route.fulfill({ json: { ok: true } });
       }
-      return route.continue();
+      return route.fallback();
     });
 
     await page.goto("/admin.html", { waitUntil: "domcontentloaded" });
@@ -119,11 +119,11 @@ test.describe("Mission Control audit fixes", () => {
       page.on("pageerror", (e) => errs.push(String(e)));
       await page.route("**/*", async (route) => {
         const u = new URL(route.request().url());
-        if (/\.(js|css|html|ico|png|svg)$/.test(u.pathname)) return route.continue();
+        if (/\.(js|css|html|ico|png|svg)$/.test(u.pathname)) return route.fallback();
         if (u.pathname.startsWith("/api/") || u.pathname.startsWith("/admin/")) {
           return route.fulfill({ json: { ok: true } });
         }
-        return route.continue();
+        return route.fallback();
       });
       await page.goto(`/${pageFile}`, { waitUntil: "domcontentloaded" });
       await page.waitForTimeout(1500); // let async loaders run against stubs
@@ -143,11 +143,11 @@ test.describe("Mission Control audit fixes", () => {
   test("cockpit: add-position toggle reveals the fillable form", async ({ page }) => {
     await page.route("**/*", async (route) => {
       const u = new URL(route.request().url());
-      if (/\.(js|css|html|ico|png|svg)$/.test(u.pathname)) return route.continue();
+      if (/\.(js|css|html|ico|png|svg)$/.test(u.pathname)) return route.fallback();
       if (u.pathname.startsWith("/api/") || u.pathname.startsWith("/admin/")) {
         return route.fulfill({ json: { ok: true } });
       }
-      return route.continue();
+      return route.fallback();
     });
     await page.goto("/cockpit.html", { waitUntil: "domcontentloaded" });
     // Drive the handler directly — the static-served page's layout leaves the

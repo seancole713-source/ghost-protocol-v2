@@ -1,24 +1,37 @@
-import { expect, test } from "@playwright/test";
-import { blockPortfolioMutations } from "./read-only-portfolio";
+import { expect, test } from "./safe-test";
+import { blockLiveMutations } from "./read-only-browser";
 
-test("live portfolio guard blocks mutations before any network fallback", async ({ page }) => {
+test("live guard blocks canonical and encoded writes before network fallback", async ({ page, context }) => {
   const forwarded: string[] = [];
-  // Every possible fallback is mocked; this regression never contacts an app.
-  await page.route("**/*", async route => {
+  // Every fallback is mocked. No app, provider or real portfolio is contacted.
+  await context.route("**/*", async route => {
     forwarded.push(route.request().method());
-    await route.fulfill({ status: 200, contentType: "application/json",
-      headers: { "access-control-allow-origin": "*" }, body: "{}" });
+    await route.fulfill({ status: 200,
+      contentType: route.request().isNavigationRequest() ? "text/html" : "application/json",
+      body: route.request().isNavigationRequest() ? '<html><head><link rel="icon" href="data:,"></head></html>' : "{}" });
   });
-  const blocked = await blockPortfolioMutations(page);
+  const blocked = await blockLiveMutations(context);
   await page.goto("https://portfolio.invalid/");
-  forwarded.length = 0;  // navigation was mocked; later requests are same-origin
+  forwarded.length = 0;
   await page.evaluate(async () => {
-    for (const method of ["POST", "DELETE"]) {
-      await fetch("https://portfolio.invalid/api/portfolio/1", { method }).catch(() => null);
+    for (const path of ["/api/portfolio/1", "/api/%70ortfolio/1"]) {
+      for (const method of ["POST", "DELETE", "PUT", "PATCH"]) {
+        await fetch(path, { method }).catch(() => null);
+      }
     }
   });
-  expect(blocked).toEqual(["POST", "DELETE"]);
+  expect(blocked).toEqual(["POST", "DELETE", "PUT", "PATCH", "POST", "DELETE", "PUT", "PATCH"]);
   expect(forwarded).toEqual([]);
-  await page.evaluate(() => fetch("https://portfolio.invalid/api/portfolio").then(r => r.json()));
+  await page.evaluate(() => fetch("/api/portfolio").then(r => r.json()));
   expect(forwarded).toEqual(["GET"]);
+  expect(context.serviceWorkers()).toEqual([]);
+});
+
+test("live API fixture rejects mutations without contacting an app", async ({ request }) => {
+  const url = "https://portfolio.invalid/api/portfolio/1";
+  await expect(request.post(url)).rejects.toThrow("Live API mutations are forbidden");
+  await expect(request.delete(url)).rejects.toThrow("Live API mutations are forbidden");
+  await expect(request.put(url)).rejects.toThrow("Live API mutations are forbidden");
+  await expect(request.patch(url)).rejects.toThrow("Live API mutations are forbidden");
+  await expect(request.fetch(url, { method: "POST" })).rejects.toThrow("Live API mutations are forbidden");
 });

@@ -285,6 +285,10 @@ def test_portfolio_mutation_auth_only_in_disposable_app(pg_ledger, monkeypatch, 
         denied = client.request(method, path, **kwargs)
         assert denied.status_code == 401
         assert positions() == before
+        if method == "POST":
+            invalid = client.post(path, json={**payload, "symbol": ""})
+            assert invalid.status_code == 401  # authorization precedes validation
+            assert positions() == before
         allowed = client.request(method, path, headers={"x-ghost-mcp-token": "disposable-portfolio-auth-token"}, **kwargs)
         assert allowed.status_code == 200
         assert allowed.json()["ok"] is True
