@@ -144,3 +144,83 @@ def test_liveness_never_reads_readiness(monkeypatch):
         assert body["ready"] is False and body["failing"] == ["edge_morning_card"]
         assert body["components"]["edge_morning_card"]["status"] == "missing"
     wolf_app._READINESS_CACHE.update({"t": 0.0, "v": None})
+
+
+def _after_hours_scan(ts):
+    # The November 6 production observation: completed requests, but no usable
+    # live quotes. This is not a feed outage or permission to relax freshness.
+    return {"status": "complete", "ts": ts, "session": "extended", "symbols": 105,
+            "fetch_ok": 0, "fetch_fail": 0, "fetch_skipped": 0,
+            "stale_quote": 103, "no_intraday_print": 2,
+            "invalid_quote": 0, "invalid_baseline": 0}
+
+
+def test_after_hours_stale_quotes_are_explained_but_remain_not_ready():
+    store = MemoryStore()
+    store.put("edge_cards", FRI, {"day": FRI})
+    report = _after_hours_scan(at(18, 25))
+    out = build(at(18, 26), store, scan=lambda: report)
+    sc = out["components"]["scan_coverage"]
+    assert sc["status"] == "degraded"
+    assert sc["coverage_degraded"] is True and sc["usable_symbols"] == 0
+    assert sc["evidence_counts"]["stale_quote"] == 103
+    assert sc["evidence_counts"]["no_intraday_print"] == 2
+    assert sc["evidence_counts"]["fetch_fail"] == 0
+    assert "after-hours scan completed" in sc["note"]
+    assert "not usable live evidence" in sc["note"]
+    assert out["ready"] is False and out["failing"] == ["scan_coverage"]
+    public = PR.slim(out)
+    assert public["ready"] is False
+    assert public["components"]["scan_coverage"]["note"] == sc["note"]
+    assert "evidence_counts" not in public["components"]["scan_coverage"]
+
+
+@pytest.mark.parametrize("patch", [
+    {"fetch_fail": 1, "stale_quote": 102},
+    {"fetch_skipped": 1, "stale_quote": 102},
+    {"invalid_quote": 1, "stale_quote": 102},
+    {"invalid_baseline": 1, "stale_quote": 102},
+    {"fetch_fail": None},
+    {"fetch_fail": "0"},
+    {"fetch_fail": False},
+    {"no_intraday_print": -1},
+    {"stale_quote": 102},
+    {"status": "running"},
+    {"status": "error"},
+    {"ts": at(17, 0)},
+])
+def test_after_hours_context_never_hides_failures_or_incomplete_evidence(patch):
+    report = {**_after_hours_scan(at(18, 25)), **patch}
+    sc = build(at(18, 26), MemoryStore(), scan=lambda: report)["components"]["scan_coverage"]
+    assert sc["status"] == "degraded"
+    assert sc["note"].startswith("too few symbols had usable evidence")
+
+
+def test_missing_evidence_counters_are_unknown_not_zero_failures():
+    report = _after_hours_scan(at(18, 25))
+    del report["fetch_fail"]
+    sc = build(at(18, 26), MemoryStore(), scan=lambda: report)["components"]["scan_coverage"]
+    assert sc["evidence_counts"]["fetch_fail"] is None
+    assert sc["note"].startswith("too few symbols had usable evidence")
+
+
+@pytest.mark.parametrize("ts", [float("nan"), float("inf"), float("-inf"), True, -1, at(11, 1)])
+def test_invalid_or_future_scan_timestamp_is_never_fresh(ts):
+    sc = build(at(11, 0), MemoryStore(), scan=_scan(ts))["components"]["scan_coverage"]
+    assert sc["status"] == "stale" and sc["age_s"] is None
+
+
+def test_rth_and_premarket_stale_quotes_never_get_after_hours_explanation():
+    for hour, session in ((11, "rth"), (8, "premarket")):
+        report = {**_after_hours_scan(at(hour, 25)), "session": session}
+        sc = build(at(hour, 26), MemoryStore(), scan=lambda: report)["components"]["scan_coverage"]
+        assert sc["status"] == "degraded"
+        assert "after-hours" not in sc["note"]
+        assert "not usable live evidence" in sc["note"]
+
+
+def test_weekend_cached_degraded_scan_still_remains_degraded():
+    report = _after_hours_scan(at(18, 25))
+    sc = build(at(12, 0, d=3), MemoryStore(), scan=lambda: report)["components"]["scan_coverage"]
+    assert sc["status"] == "degraded"
+    assert sc["note"].startswith("too few symbols had usable evidence")
