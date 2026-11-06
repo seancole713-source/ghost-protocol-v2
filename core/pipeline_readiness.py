@@ -25,6 +25,7 @@ Components:
 """
 from __future__ import annotations
 
+import math
 import time
 from datetime import datetime, time as dtime
 from typing import Any, Callable, Dict, Optional
@@ -116,16 +117,53 @@ def workflow_component(workflow: Callable[[], Dict[str, Any]]) -> Dict[str, Any]
             "issues": issues, "workers": wf.get("workers"), "stale_leases": wf.get("stale_leases")}
 
 
+_SCAN_EVIDENCE_COUNTS = (
+    "fetch_ok", "fetch_fail", "fetch_skipped", "stale_quote", "no_intraday_print",
+    "invalid_quote", "invalid_baseline",
+)
+
+
+def _scan_evidence_counts(report: Dict[str, Any]) -> Dict[str, Optional[int]]:
+    """Missing/invalid counters stay unknown, never become a zero-failure claim."""
+    counts = {}
+    for key in _SCAN_EVIDENCE_COUNTS:
+        value = report.get(key)
+        counts[key] = value if type(value) is int and value >= 0 else None
+    return counts
+
+
+def _scan_coverage_note(report: Dict[str, Any], counts: Dict[str, Optional[int]],
+                        sess: Dict[str, Any], now: int, age: Optional[int]) -> str:
+    generic = "too few symbols had usable evidence; no alert is not evidence of no activity"
+    # Explain only a fresh, completed, internally consistent scan. Missing counters,
+    # a running/failed scan or any request/evidence error must keep the generic warning.
+    if (report.get("status") != "complete" or age is None or not 0 <= age <= SCAN_FRESH_S
+            or any(value is None for value in counts.values())
+            or sum(value for value in counts.values() if value is not None) != report.get("symbols")
+            or any(counts[key] for key in ("fetch_fail", "fetch_skipped", "invalid_quote", "invalid_baseline"))
+            or not (counts["stale_quote"] or counts["no_intraday_print"])):
+        return generic
+    day = datetime.fromtimestamp(now, tz=ET).date()
+    after_hours = (sess["trading"] and sess["date"] == day.isoformat()
+                   and report.get("session") == "extended"
+                   and _at(day, RTH[1]) <= now - age <= now)
+    prefix = "after-hours scan completed" if after_hours else "scan completed"
+    return (f"{prefix}, but stale or missing quotes are not usable live evidence; "
+            "no alert is not evidence of no activity")
+
+
 def scan_component(report: Dict[str, Any], sess: Dict[str, Any], now: int) -> Dict[str, Any]:
     from core.squeeze_monitor import scan_coverage
     report = report or {}
     ts = report.get("ts")
     try:
-        age = int(now - float(ts)) if ts else None
-    except (TypeError, ValueError):
+        stamp = float(ts) if ts is not None and not isinstance(ts, bool) else float("nan")
+        age = int(now - stamp) if math.isfinite(stamp) and 0 < stamp <= now else None
+    except (TypeError, ValueError, OverflowError):
         age = None
     cov = scan_coverage(report)
-    out = {**cov, "last_scan_ts": ts, "age_s": age}
+    counts = _scan_evidence_counts(report)
+    out = {**cov, "last_scan_ts": ts, "age_s": age, "evidence_counts": counts}
     day = datetime.fromtimestamp(now, tz=ET).date()
     in_rth = (sess["trading"] and sess["date"] == day.isoformat()
               and _at(day, RTH[0]) <= now < _at(day, RTH[1]))
@@ -135,7 +173,7 @@ def scan_component(report: Dict[str, Any], sess: Dict[str, Any], now: int) -> Di
         return {**out, "status": "stale", "note": f"last completed scan older than {SCAN_FRESH_S // 60} min"}
     if cov.get("coverage_degraded"):
         return {**out, "status": "degraded",
-                "note": "too few symbols had usable evidence; no alert is not evidence of no activity"}
+                "note": _scan_coverage_note(report, counts, sess, now, age)}
     return {**out, "status": "ok"}
 
 
