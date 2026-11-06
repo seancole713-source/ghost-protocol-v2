@@ -10,7 +10,8 @@ on:
 
 jobs:
   playwright-smoke:
-    runs-on: ubuntu-latest
+    # Playwright 1.59.1 does not support the Ubuntu 26.04 ubuntu-latest image.
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
       BASE_URL: ${{ github.event.inputs.base_url || 'https://ghost-protocol-v2-production.up.railway.app' }}
