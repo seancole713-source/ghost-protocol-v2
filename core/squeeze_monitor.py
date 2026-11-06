@@ -1010,18 +1010,20 @@ async def _run_watchlist_scan() -> None:
         )
     report["leaders"] = enriched
 
+    report["fetch_issue_reasons"] = _fetch_issue_reasons(batch_statuses)
     report["duration_ms"] = int((time.time() - t0) * 1000)
     report["status"] = "complete"
     _last_scan_report = report
     _persist_scan_report(report)
     LOGGER.info(
-        "[SqueezeMonitor] scan ok=%s no_print=%s fail=%s skipped=%s candidates=%s ms=%s",
+        "[SqueezeMonitor] scan ok=%s no_print=%s fail=%s skipped=%s candidates=%s ms=%s issue_reasons=%s",
         report["fetch_ok"],
         report["no_intraday_print"],
         report["fetch_fail"],
         report["fetch_skipped"],
         len(report["candidates"]),
         report["duration_ms"],
+        report["fetch_issue_reasons"],
     )
 
 
@@ -1361,6 +1363,26 @@ def _metrics_from_bar_set(cached: dict | None) -> Optional[Dict[str, Any]]:
         "peak_move_pct": (session_high - prior_close) / prior_close * 100,
         "current_move_pct": (price - prior_close) / prior_close * 100,
     }
+
+
+def _fetch_issue_reasons(statuses: Dict[str, Dict[str, Any]]) -> Dict[str, int]:
+    """Bounded, non-sensitive diagnostics; never log response bodies or URLs."""
+    known = {
+        "batch_busy", "batch_still_running", "batch_timeout", "not_configured",
+        "rate_limited_batch", "deadline_exceeded", "no_feed", "request_failed",
+        "invalid_response", "repeated_page_token", "page_limit",
+    }
+    counts: Dict[str, int] = {}
+    for detail in statuses.values():
+        if detail.get("status") not in ("fetch_fail", "fetch_skipped"):
+            continue
+        reason = detail.get("reason")
+        if isinstance(reason, str) and reason.startswith("http_") and reason[5:].isdigit():
+            key = reason if len(reason) == 8 else "other"
+        else:
+            key = reason if isinstance(reason, str) and reason in known else "other"
+        counts[key] = counts.get(key, 0) + 1
+    return dict(sorted(counts.items()))
 
 
 def batched_market_snapshot(symbols: List[str], *, force: bool = False) -> MarketSnapshot:

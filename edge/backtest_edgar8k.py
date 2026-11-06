@@ -76,7 +76,7 @@ import random
 import re
 import time
 from datetime import date, datetime, timedelta
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from edge import stats
 from edge.backtest import MINUTE_ADJUSTMENT, PRICE_BASIS, PRICE_BASIS_DETAIL, _bars, share_factor
@@ -97,7 +97,7 @@ T_PLAN = "edge_bt_edgar8k_plan"                 # per session: tickers passing t
 T_DAY = "edge_bt_edgar8k_day"                   # per session: the graded result
 T_INDEX = "edge_edgar_index"                    # EDGAR daily form index, 8-K / 8-K/A rows, per date
 T_HEADER = "edge_edgar_header"                  # EDGAR filing header, parsed, per accession
-PARSER_VERSION = 1
+PARSER_VERSION = 2
 
 PREREG_START, PREREG_END = date(2026, 7, 1), date(2026, 9, 30)
 END_DAY = PREREG_END
@@ -337,6 +337,10 @@ def parse_header(text: str) -> Dict[str, Any]:
     if m:
         out["form"] = m.group(1).strip().upper()
     head = t.split("</SEC-HEADER>", 1)[0]
+    if out["form"] is None:
+        m = re.search(r"^<TYPE>\s*([^\s<]+)", head, re.M)
+        if m:
+            out["form"] = m.group(1).strip().upper()
     raw_items = [x.strip() for x in re.findall(r"ITEM INFORMATION:\s*([^\n<]+)", head)]
     raw_items += [x.strip() for x in re.findall(r"<ITEMS>\s*([^\n<]+)", head)]
     items: List[str] = []
@@ -382,12 +386,28 @@ def crosscheck_header(text: str, ours: Dict[str, Any]) -> Dict[str, Any]:
         a, b = t.find("<SEC-HEADER>"), t.find("</SEC-HEADER>")
         if a < 0:
             return {"status": "error", "diffs": ["no <SEC-HEADER> block"]}
-        hdr = FilingHeader.parse_from_sgml_text(t[a:(b + len("</SEC-HEADER>")) if b > a else len(t)])
-        theirs_form = str(hdr.form or "").strip().upper() or None
-        acc = hdr.acceptance_datetime
-        theirs_acc = acc.strftime("%Y-%m-%dT%H:%M:%S") if hasattr(acc, "strftime") else None
-        raw = str(hdr.filing_metadata.get("ITEM INFORMATION") or "") if hdr.filing_metadata else ""
-        theirs_items = sorted({n for n in (item_number(x) for x in raw.split(", ")) if n})
+        if b <= a:
+            return {"status": "error", "diffs": ["incomplete <SEC-HEADER> block"]}
+        head = t[a:b]
+        if re.search(r"^<TYPE>", head, re.M):
+            # index-headers.html uses tagged SUBMISSION fields even inside SEC-HEADER.
+            # The tab/colon parser silently loses TYPE and ITEMS in this dialect.
+            from edgar.sgml.sgml_parser import SubmissionFormatParser
+            parsed = SubmissionFormatParser().parse(head.split("\n", 1)[-1])
+            theirs_form = str(parsed.get("TYPE") or "").strip().upper() or None
+            accepted = parsed.get("ACCEPTANCE-DATETIME")
+            theirs_acc = (datetime.strptime(accepted, "%Y%m%d%H%M%S").isoformat()
+                          if accepted else None)
+            raw_items = parsed.get("ITEMS") or []
+            raw_items = [raw_items] if isinstance(raw_items, str) else raw_items
+        else:
+            hdr = FilingHeader.parse_from_sgml_text(head)
+            theirs_form = str(hdr.form or "").strip().upper() or None
+            acc = hdr.acceptance_datetime
+            theirs_acc = acc.strftime("%Y-%m-%dT%H:%M:%S") if hasattr(acc, "strftime") else None
+            raw = str(hdr.filing_metadata.get("ITEM INFORMATION") or "") if hdr.filing_metadata else ""
+            raw_items = raw.split(", ")
+        theirs_items = sorted({n for n in (item_number(x) for x in raw_items) if n})
     except Exception as exc:  # noqa: BLE001 - a checker crash is counted, never fatal
         return {"status": "error", "diffs": [f"edgartools: {type(exc).__name__}: {str(exc)[:80]}"]}
     diffs = []
@@ -404,7 +424,10 @@ def crosscheck_verdict(cc: Dict[str, Any]) -> Dict[str, Any]:
     """Summary of the run's cross-check counters, and whether the 8-K selection can be trusted."""
     checked = int(cc.get("agree") or 0) + int(cc.get("disagree") or 0)
     rate = (int(cc.get("disagree") or 0) / checked) if checked else None
-    if int(cc.get("unavailable") or 0) and not checked:
+    failed = int(cc.get("error") or 0) + int(cc.get("unavailable") or 0)
+    if failed and checked:
+        trusted, why = False, f"{failed} headers could not be cross-checked: selection untrusted"
+    elif int(cc.get("unavailable") or 0) and not checked:
         trusted, why = None, "EdgarTools not installed: parser not cross-checked"
     elif checked < CROSSCHECK_MIN_CHECKED:
         trusted, why = None, f"only {checked} headers cross-checked (< {CROSSCHECK_MIN_CHECKED}): too few to judge"
@@ -528,7 +551,10 @@ def mean_diff_ci(by_day: Dict[str, Tuple[float, int, float, int]], *, iters: int
         sa = na = sb = nb = 0
         for _ in range(m):
             d = days[rng.randrange(m)]
-            sa += d[0]; na += d[1]; sb += d[2]; nb += d[3]
+            sa += d[0]
+            na += d[1]
+            sb += d[2]
+            nb += d[3]
         if na and nb:
             diffs.append(sa / na - sb / nb)
     if len(diffs) < iters / 2:
@@ -561,7 +587,8 @@ def gate(arm: List[Dict[str, Any]], twins: List[Dict[str, Any]]) -> Dict[str, An
             x = r[HEADLINE]
             if x["simulated"] in COUNTED and x["pnl_usd"] is not None:
                 d = by_day.setdefault(r["day"], [0.0, 0, 0.0, 0])
-                d[side] += x["pnl_usd"]; d[side + 1] += 1
+                d[side] += x["pnl_usd"]
+                d[side + 1] += 1
     wr = stats.diff_ci(a["wins"], a["fills"], t["wins"], t["fills"])
     return {"verdict": "FAIL" if reasons else "PASS", "reasons": reasons,
             "rule": "PASS only if Wilson lower >= 30% AND expectancy after 25 bps > $0 AND expectancy "
@@ -1144,7 +1171,7 @@ class _Run:
                  "cs_snapshots": self.snap_days,
                  "cs_snapshot_unavailable": sorted(self.meta.get("snapshot_unavailable") or {})}
         xcheck = crosscheck_verdict(self.prog.get("crosscheck") or {})
-        if xcheck["trusted"] is False:
+        if xcheck["trusted"] is not True:
             for v in out_w.values():
                 v["gate"]["verdict"] = "FAIL"
                 v["gate"]["reasons"].append(f"parser cross-check failed: {xcheck['note']}")

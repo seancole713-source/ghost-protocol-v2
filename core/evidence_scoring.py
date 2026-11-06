@@ -32,6 +32,8 @@ import math
 from typing import Any, Dict, Optional, Sequence
 from urllib.parse import urlparse
 
+# Keep v1: defined v1 scores are unchanged; only previously crashing inputs
+# gain conservative results. Existing v1 rows remain immutable and ineligible.
 SCORING_VERSION = "evidence_score_v1"
 
 # ---------------------------------------------------------------------------
@@ -243,6 +245,11 @@ def score_corroboration(source_refs: Sequence[Dict[str, Any]]) -> Dict[str, Any]
     return {"score": round(score, 4), "independent_domains": n, "domains": sorted(domains)}
 
 
+def _conclusion_key(value: Any) -> str:
+    """Never stringify structured claims into a seemingly named conclusion."""
+    return value.strip().lower() if isinstance(value, str) else ""
+
+
 def score_contradiction(
     verdict: Optional[str],
     classification: Optional[str],
@@ -259,14 +266,18 @@ def score_contradiction(
     has somewhere honest to register the moment a second agent exists. This
     can only subtract (rule 3) -- agreement never raises the score above 1.0.
     """
-    own_verdict = (verdict or "").strip().lower() or None
-    own_class = (classification or "").strip().lower() or None
+    own_verdict = _conclusion_key(verdict) or None
+    own_class = _conclusion_key(classification) or None
+    invalid_fields = sum(bool(value) and not isinstance(value, str)
+                         for value in (verdict, classification))
     conflicts = []
     for sibling in sibling_evidence:
         if not isinstance(sibling, dict):
             continue
-        s_verdict = (sibling.get("verdict") or "").strip().lower() or None
-        s_class = (sibling.get("classification") or "").strip().lower() or None
+        invalid_fields += sum(bool(value) and not isinstance(value, str)
+                              for value in (sibling.get("verdict"), sibling.get("classification")))
+        s_verdict = _conclusion_key(sibling.get("verdict")) or None
+        s_class = _conclusion_key(sibling.get("classification")) or None
         verdict_conflict = bool(own_verdict and s_verdict and own_verdict != s_verdict
                                  and {own_verdict, s_verdict} != {"mixed", "insufficient"})
         class_conflict = bool(
@@ -281,11 +292,11 @@ def score_contradiction(
                 "verdict_conflict": verdict_conflict,
                 "classification_conflict": class_conflict,
             })
-    if not conflicts:
-        return {"score": 1.0, "conflicts": []}
-    # Each additional independent conflict costs more (diminishing floor at 0.2).
-    penalty = min(0.8, 0.35 * len(conflicts))
-    return {"score": round(1.0 - penalty, 4), "conflicts": conflicts}
+    # Malformed conclusions cannot establish agreement. Use the existing
+    # contradiction floor, retaining any independently detected conflicts.
+    penalty = 0.8 if invalid_fields else min(0.8, 0.35 * len(conflicts))
+    return {"score": round(1.0 - penalty, 4), "conflicts": conflicts,
+            "invalid_conclusion_fields": invalid_fields}
 
 
 def score_catalyst_relevance(verdict: Optional[str], classification: Optional[str]) -> Dict[str, Any]:
@@ -296,10 +307,10 @@ def score_catalyst_relevance(verdict: Optional[str], classification: Optional[st
     sourced, perfectly fresh piece of evidence whose own verdict is
     "insufficient" should not score as if it identified a catalyst.
     """
-    verdict_key = (verdict or "").strip().lower()
+    verdict_key = _conclusion_key(verdict)
     verdict_score = _VERDICT_RELEVANCE.get(verdict_key, _VERDICT_RELEVANCE_FLOOR)
 
-    class_key = (classification or "").strip().lower()
+    class_key = _conclusion_key(classification)
     if not class_key:
         class_score = _CLASSIFICATION_RELEVANCE_MISSING
     elif class_key == "unknown":

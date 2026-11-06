@@ -28,6 +28,8 @@ class SourceHealth:
             return DOWN
         if self.last_event_ts is None:
             return UNKNOWN
+        if self.last_event_ts > now + 5:
+            return STALE
         if now - self.last_event_ts > self.max_age_s:
             return STALE
         if self.expected and self.covered is not None and self.covered / self.expected < self.min_coverage:

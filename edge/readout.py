@@ -5,6 +5,7 @@ from, and none of them shows a win rate without its interval.
 """
 from __future__ import annotations
 
+import json
 import time
 from collections import Counter
 from datetime import date, datetime, timedelta
@@ -14,7 +15,7 @@ from edge.ledger import Ledger
 from edge.resolver import RESOLVER_VERSION
 
 VIEWS = ("summary", "today", "experiments", "backtest", "misses", "probe", "universe",
-         "research", "radar", "paper", "models", "scorecard", "notes", "top10", "control")
+         "research", "radar", "paper", "models", "scorecard", "notes", "top10", "control", "operations")
 
 
 def _latest(store, table: str) -> Optional[Dict[str, Any]]:
@@ -196,7 +197,10 @@ def research(store, day: Optional[str] = None) -> Dict[str, Any]:
         return {"note": "no research yet (08:30-09:28 ET on trading days, when EDGE_RESEARCH_ENABLED)"}
     recs = sorted(store.scan("edge_research", day=d), key=lambda r: r["made_at"])
     return {"day": d, "spent_usd": (store.get("edge_research_budget", d) or {}).get("spent_usd"),
+            "budget": store.get("edge_research_budget", d),
             "symbols": [{"symbol": r["symbol"], "reviewer": r.get("reviewer"), "cost_usd": r.get("cost_usd"),
+                         "independence": r.get("independence"),
+                         "independent_review": r.get("independent_review"),
                          "review": r.get("review"), "unknowns": (r.get("unknowns") or [])[:5],
                          "claims": [{k: c.get(k) for k in ("kind", "statement", "status", "problems")}
                                     for c in r.get("claims") or []]} for r in recs]}
@@ -315,39 +319,89 @@ def paper(store, day: Optional[str] = None) -> Dict[str, Any]:
         return datetime.fromtimestamp(int(ts), tz=ET).strftime("%H:%M:%S ET") if ts else None
 
     kept = (store.get("edge_paper_orders", d) or {}).get("orders") or []
-    broker = {o.get("client_order_id"): o for o in kept}
-    exit_keys = ("type", "status", "qty", "filled_qty", "filled_avg_price", "filled_at", "canceled_at")
+    from edge.accounting import order_snapshot_groups
+    # Keep all snapshots and attested ID aliases. A dict comprehension here
+    # erased contradictory same-client evidence before accounting could see it.
+    snapshot_groups = order_snapshot_groups(kept)
+    exit_keys = ("id", "client_order_id", "type", "status", "qty", "filled_qty", "filled_avg_price", "filled_at", "canceled_at")
+
+    # Include nested legs in the exit alias index: a broker-only top-level
+    # snapshot may attest a contradiction to a named protective/bracket leg.
+    exit_snapshots = []
+
+    def collect(order):
+        exit_snapshots.append(order)
+        for leg in order.get("legs") or []:
+            collect(leg)
+
+    for order in kept:
+        collect(order)
+    exit_groups = order_snapshot_groups(exit_snapshots)
+    exit_group_for = {id(exit_snapshots[i]): n for n, (_, positions, _) in enumerate(exit_groups)
+                      for i in positions}
 
     def _exits(fid: str, entry: Dict[str, Any], p: Dict[str, Any]) -> list:
-        """Every exit the broker recorded: the bracket's target/stop legs, the 15:30 time-exit
-        sells (-tx, -tx2...) and any last-tick position close (audit 2026-09-25 U63)."""
+        """Select exit groups by attested role, then retain every alias snapshot."""
         closes = {str(x.get("order_id")) for x in p.get("tx_closes") or [] if x.get("order_id")}
-        out = [{"role": "stop" if "stop" in str(g.get("type") or "") else "target",
-                **{k: g.get(k) for k in exit_keys}} for g in entry.get("legs") or []]
-        for o in kept:
-            cid = str(o.get("client_order_id") or "")
-            if cid.startswith(f"{fid}-px"):          # protective OCO for a partly filled entry
-                out += [{"role": "protective_" + ("stop" if "stop" in str(g.get("type") or "") else "target"),
-                         **{k: g.get(k) for k in exit_keys}} for g in [o] + list(o.get("legs") or [])]
-            elif cid.startswith(f"{fid}-pf"):        # flatten when that protection failed
-                out.append({"role": "flatten", **{k: o.get(k) for k in exit_keys}})
-            elif cid.startswith(f"{fid}-tx") or str(o.get("id")) in closes:
-                out.append({"role": "time_exit" if cid.startswith(f"{fid}-tx") else "position_close",
-                            **{k: o.get(k) for k in exit_keys}})
+        selected = {}
+
+        def include(order, role):
+            selected.setdefault(exit_group_for[id(order)], role)
+
+        for leg in entry.get("legs") or []:
+            include(leg, "bracket")
+        for n, (_, positions, _) in enumerate(exit_groups):
+            snapshots = [exit_snapshots[i] for i in positions]
+            clients = [str(o.get("client_order_id") or "") for o in snapshots]
+            if any(cid.startswith(f"{fid}-px") for cid in clients):
+                selected[n] = "protective"
+                for order in snapshots:
+                    for leg in order.get("legs") or []:
+                        include(leg, "protective")
+            elif any(cid.startswith(f"{fid}-pf") for cid in clients):
+                selected[n] = "flatten"
+            elif any(cid.startswith(f"{fid}-tx") for cid in clients):
+                selected[n] = "time_exit"
+            elif any(str(o.get("id")) in closes for o in snapshots):
+                selected[n] = "position_close"
+        out = []
+        for n, role in selected.items():
+            for i in exit_groups[n][1]:
+                order = exit_snapshots[i]
+                kind = "stop" if "stop" in str(order.get("type") or "") else "target"
+                label = kind if role == "bracket" else "protective_" + kind if role == "protective" else role
+                out.append({"role": label, **{k: order.get(k) for k in exit_keys}})
         return out
 
     rows = []
-    for f in sorted(store.scan("forecasts", session_date=d), key=lambda r: r["issued_at"]):
+    forecasts = sorted(store.scan("forecasts", session_date=d), key=lambda r: r["issued_at"])
+    def shared_source(f):
+        fields = ("symbol", "issued_at", "entry_trigger", "entry_limit", "target", "stop", "shares")
+        return next((g["forecast_id"] for g in forecasts if g["forecast_id"] != f["forecast_id"]
+                     and all(g.get(k) == f.get(k) for k in fields)
+                     and store.get("edge_paper", f"{g['forecast_id']}|paper")), None)
+
+    for f in forecasts:
         p = store.get("edge_paper", f"{f['forecast_id']}|paper") or {}
         act = store.get("outcomes", f"{f['forecast_id']}|actual") or {}
         sim = store.get("outcomes", f"{f['forecast_id']}|simulated") or {}
-        entry = broker.get(f"{f['forecast_id']}-entry") or {}
+        entries = []
+        for _, positions, _ in snapshot_groups:
+            snapshots = [kept[i] for i in positions]
+            if any(o.get("client_order_id") == f"{f['forecast_id']}-entry"
+                   or (p.get("order_id") and o.get("id") == p["order_id"])
+                   for o in snapshots):
+                entries.extend(snapshots)
+        # Display is deterministic too; accounting receives every snapshot.
+        entries.sort(key=lambda o: json.dumps(o, sort_keys=True, default=str))
+        entry = entries[0] if entries else {}
         exits = _exits(f["forecast_id"], entry, p)
         # One judge for both columns, on the broker's own fill time: a late fill never reads as counted.
         late = entry_filled_after_window(store, f, act)
         why_outside = outside_rule_reason(store, f, act)
         outside = bool(why_outside) or (late and act.get("outcome") in COUNTED)
-        rows.append({"experiment": f["experiment_id"], "symbol": f["symbol"],
+        rows.append({"forecast_id": f["forecast_id"], "experiment": f["experiment_id"], "symbol": f["symbol"],
+                     "shared_order_source": shared_source(f) if not p else None,
                      "issued": _hm(f.get("issued_at")), "entry_window_ends": _hm(f.get("entry_expiry")),
                      "why": (f.get("evidence") or {}),
                      "entry_trigger": f.get("entry_trigger"), "entry_limit": f.get("entry_limit"),
@@ -357,13 +411,19 @@ def paper(store, day: Optional[str] = None) -> Dict[str, Any]:
                      "simulated": sim.get("outcome"), "simulated_note": sim.get("note"),
                      "actual": act.get("outcome"), "actual_pnl_usd": act.get("pnl_usd"),
                      "actual_counted": bool(act.get("outcome") in COUNTED and not outside and not late),
-                     "broker_entry": {k: entry.get(k) for k in ("status", "submitted_at", "filled_at",
+                     "broker_entry": {k: entry.get(k) for k in ("id", "client_order_id", "qty", "filled_qty", "status", "submitted_at", "filled_at",
                                                                 "filled_avg_price", "canceled_at")} if entry else None,
                      "broker_exits": exits,
+                     "broker_snapshots": [{"entry": {k: e.get(k) for k in
+                         ("id", "client_order_id", "qty", "filled_qty", "status", "submitted_at",
+                          "filled_at", "filled_avg_price", "canceled_at")},
+                         "exits": _exits(f["forecast_id"], e, p)} for e in entries],
                      "filled_after_window": late,
                      "note": (f"broker fill outside the rule ({why_outside or 'entry filled after the entry window'}): "
-                              "shown, not counted" if outside else None)})
-    return {"day": d, "orders": rows, "note": "Alpaca PAPER account only; no real money"}
+                              "excluded from rule accuracy, included in financial P&L" if outside else None)})
+    from edge.accounting import paper_summary
+    return {"day": d, "orders": rows, "financial_summary": paper_summary(rows),
+            "note": "Alpaca PAPER account only; no real money"}
 
 
 def models(store) -> Dict[str, Any]:
@@ -413,6 +473,9 @@ def _view(store, name: str, day: Optional[str], kind: Optional[str],
         return AN.recent(store, day=day, kind=kind)
     if name == "today":
         return today(store, day, now)
+    if name == "operations":
+        from edge.operations import report
+        return report(store, now=int(time.time()) if now is None else now)
     if name == "experiments":
         return experiments(store)
     if name == "backtest":
@@ -425,10 +488,12 @@ def _view(store, name: str, day: Optional[str], kind: Optional[str],
         return universe(store) or {"note": "no universe snapshot yet (06:00-07:00 ET)"}
     from edge import control_v2 as CA2, scorecard as SC
     t, sc = today(store, None, now), SC.scorecard(store)
+    from edge.operations import report as operations_report
     return {
         "today": {k: t.get(k) for k in ("requested_session", "served_session", "stale", "day", "forecasts",
                                         "baseline_forecasts", "health_banner", "note")},
         "experiments": experiments(store),
+        "operations": operations_report(store, now=int(time.time()) if now is None else now),
         "backtest": (lambda b: b and {"window": b.get("window"), "experiments": b.get("experiments"),
                                       "limits": b.get("limits")})(backtest(store)),
         "latest_misses": (lambda m: m and {k: m.get(k) for k in (

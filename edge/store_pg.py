@@ -54,6 +54,25 @@ class PostgresStore:
             )
             conn.commit()
 
+    def mutate(self, table: str, key: str, change) -> Dict[str, Any]:
+        """Serialize a short read/modify/write, including the initially absent row."""
+        with self._connect() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))", (table, key))
+            cur.execute("SELECT row FROM edge_rows WHERE tbl=%s AND key=%s FOR UPDATE", (table, key))
+            got = cur.fetchone()
+            old = got[0] if got else None
+            if isinstance(old, str):
+                old = json.loads(old)
+            updated = change(old)
+            cur.execute(
+                "INSERT INTO edge_rows (tbl,key,row,known_at) VALUES (%s,%s,%s::jsonb,%s) "
+                "ON CONFLICT (tbl,key) DO UPDATE SET row=EXCLUDED.row, known_at=EXCLUDED.known_at",
+                (table, key, json.dumps(updated), int(time.time())),
+            )
+            conn.commit()
+        return updated
+
     def put_new(self, table: str, key: str, row: Dict[str, Any]) -> Dict[str, Any]:
         """First writer wins: insert only when (table, key) is absent, in one statement.
 

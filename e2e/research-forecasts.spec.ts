@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./safe-test";
 
 test("recorded research forecasts stay separate from approved picks", async ({ page }) => {
   await page.goto("/console");

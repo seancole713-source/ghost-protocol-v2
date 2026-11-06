@@ -1,26 +1,15 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./safe-test";
 import { attachStrictClientMonitors } from "./error-collectors";
 
 test.describe("Portfolio security", () => {
-  test("portfolio API is auth-gated and cockpit shows locked state", async ({ page, request }) => {
+  test("portfolio GET is auth-gated and cockpit shows locked state", async ({ page, request }) => {
     const { consoleErrors, pageErrors, failedApiResponses } = attachStrictClientMonitors(page);
 
     const listed = await request.get("/api/portfolio");
     expect(listed.status()).toBe(401);
 
-    const created = await request.post("/api/portfolio", {
-      data: {
-        symbol: `ZZE2E${Date.now()}`,
-        asset_type: "stock",
-        quantity: 0.0001,
-        buy_price: 1,
-        buy_date: "2026-01-15",
-      },
-    });
-    expect(created.status()).toBe(401);
-
-    const del = await request.delete("/api/portfolio/1");
-    expect(del.status()).toBe(401);
+    // POST/DELETE authorization is exercised only against a disposable app/DB
+    // in test_shadow_evidence_ledger_postgres.py, never against live BASE_URL.
 
     await page.goto("/cockpit", { waitUntil: "domcontentloaded" });
     await expect(page.locator("#ppositions")).toContainText("Sign in", { timeout: 20_000 });

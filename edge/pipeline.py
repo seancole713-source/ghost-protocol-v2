@@ -35,7 +35,6 @@ DATA_UNAVAILABLE -- which is itself evidence for the purchase decision.
 from __future__ import annotations
 
 import logging
-import os
 import statistics
 from dataclasses import replace
 from datetime import date, datetime, time as dtime, timedelta
@@ -739,7 +738,7 @@ def resolve_day(get, ledger: Ledger, *, day: date, now: int) -> Dict[str, Any]:
     fcs = [f for spec in _all_specs(ledger.store, I)
            for f in ledger.store.scan("forecasts", experiment_id=spec.experiment_id, session_date=day.isoformat())]
     pending = [f for f in fcs
-               if not (ledger.store.get("outcomes", f"{f['forecast_id']}|simulated") or {}).get("outcome") in TERMINAL]
+               if (ledger.store.get("outcomes", f"{f['forecast_id']}|simulated") or {}).get("outcome") not in TERMINAL]
     if not pending:
         return {"status": "nothing_pending", "forecasts": len(fcs)}
     syms = sorted({f["symbol"] for f in pending})
@@ -1130,6 +1129,14 @@ def run(get, ledger: Ledger, *, now: int, http=None, notifier=None,
             if text:
                 guarded("notify_graded", lambda: _notify().once(notifier, ledger.store, day=ds,
                                                                  kind="graded", text=text))
+    if within((8, 0), (16, 30)):
+        from edge import operations as OP
+        guarded("operations", lambda: OP.check(http, ledger.store, now=now))
+        if notifier is not None:
+            for issue in (out.get("operations") or {}).get("issues") or []:
+                guarded("notify_" + issue["code"], lambda item=issue: _notify().once(
+                    notifier, ledger.store, day=ds, kind="operations_" + item["code"],
+                    text="Ghost operational issue: " + item["code"] + ". " + item["remedy"]))
     if notifier is not None:
         _problems(notifier, ledger.store, out, ds=ds, now=now, within=within, guarded=guarded)
     if len(out) == 1:
@@ -1233,10 +1240,10 @@ def _notify():
     return notify
 
 
-def _all_specs(store, I):
+def _all_specs(store, intraday):
     """Every experiment the shadow runs today, including a qualified model's."""
     from edge import models as MD
-    specs = list(EXPERIMENTS) + list(LATE_EXPERIMENTS) + list(I.INTRADAY_SPECS)
+    specs = list(EXPERIMENTS) + list(LATE_EXPERIMENTS) + list(intraday.INTRADAY_SPECS)
     m = MD.current(store)
     if m is not None:
         specs.append(m[1])

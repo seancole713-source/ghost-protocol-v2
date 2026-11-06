@@ -49,31 +49,27 @@ jobs:
         run: make test-compile
 
   integration:
-    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: ghost_ci
+          POSTGRES_PASSWORD: ephemeral_ci_only
+          POSTGRES_DB: ghost_ci_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ghost_ci -d ghost_ci_test"
+          --health-interval 10s --health-timeout 5s --health-retries 5
     env:
       GHOST_INTEGRATION_TESTS: "1"
-      TEST_DATABASE_ADMIN_URL: ${{ secrets.TEST_DATABASE_URL }}
+      TEST_DATABASE_URL: postgresql://ghost_ci:ephemeral_ci_only@127.0.0.1:5432/ghost_ci_test
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Skip-with-notice instead of hard-fail: an unconfigured secret must not
-      # paint every main push red and block release-gates behind it. Configure
-      # the TEST_DATABASE_URL repository secret to activate DB integration tests.
-      - name: Check TEST_DATABASE_URL secret
-        id: dbsecret
-        run: |
-          if [ -z "$TEST_DATABASE_ADMIN_URL" ]; then
-            echo "configured=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::TEST_DATABASE_URL repository secret not configured — DB integration tests SKIPPED"
-          else
-            echo "configured=true" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Set up Python
-        if: steps.dbsecret.outputs.configured == 'true'
         uses: actions/setup-python@v5
         with:
           python-version-file: ".python-version"
@@ -83,28 +79,12 @@ jobs:
             requirements-dev.txt
 
       - name: Install dependencies
-        if: steps.dbsecret.outputs.configured == 'true'
         run: |
           python -m pip install -r requirements.txt
           python -m pip install -r requirements-dev.txt
 
-      - name: Prepare isolated test database
-        if: steps.dbsecret.outputs.configured == 'true'
-        run: |
-          python scripts/ci_test_database.py create \
-            --name "ghost_ci_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
-
       - name: Run DB integration tests
-        if: steps.dbsecret.outputs.configured == 'true'
         run: make test-integration
-
-      - name: Remove isolated test database
-        if: always() && steps.dbsecret.outputs.configured == 'true'
-        run: |
-          if [ -n "${CI_TEST_DATABASE_NAME:-}" ]; then
-            python scripts/ci_test_database.py drop \
-              --name "$CI_TEST_DATABASE_NAME"
-          fi
 
   playwright-smoke:
     if: github.event_name != 'pull_request'
@@ -255,3 +235,57 @@ jobs:
 
       - name: Alert on new ERROR signatures
         run: python3 scripts/check_error_signatures.py
+
+  browser-offline-candidate:
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Evidence for the exact reviewed candidate, not this workflow commit.
+          ref: 6014ebd7e36f42143fd5b09215466870f2c53fca
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Prove desktop and mobile layout with every request blocked
+        run: >-
+          npx playwright test e2e/cockpit.layout.spec.ts
+          --project=desktop-chromium --project=mobile-chromium
+          --workers=1 --reporter=line
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: offline-candidate-browser-results
+          path: test-results/
+          if-no-files-found: ignore
+
+
+  browser-readonly-safety:
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Verify actual-candidate portfolio network guard without an app
+        run: >-
+          npx playwright test e2e/portfolio-readonly.spec.ts
+          --project=desktop-chromium --project=mobile-chromium
+          --workers=1 --reporter=line

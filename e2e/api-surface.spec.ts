@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./safe-test";
 
 /**
  * Read-only GET surface: every route the cockpit or ops tooling may hit on load.

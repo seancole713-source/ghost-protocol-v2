@@ -34,6 +34,15 @@ def test_agent_id_defaults_distinct_from_claude_worker():
     assert cfg.agent_id == "codex.production.worker"
 
 
+def test_new_citation_prompt_has_a_distinct_audit_version(monkeypatch):
+    monkeypatch.setenv("GHOST_BASE_URL", "https://ghost.example")
+    monkeypatch.setenv("GHOST_MCP_TOKEN", "t")
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    monkeypatch.delenv("CODEX_WORKER_PROMPT_VERSION", raising=False)
+    assert _config().prompt_version == worker.Config.from_env().prompt_version == worker.PROMPT_VERSION
+    assert worker.PROMPT_VERSION == "external-mover-triage/native-citations-v2"
+
+
 def test_from_env_rejects_agent_id_starting_with_claude(monkeypatch):
     monkeypatch.setenv("GHOST_BASE_URL", "https://ghost.example")
     monkeypatch.setenv("GHOST_MCP_TOKEN", "t")
@@ -293,8 +302,38 @@ def test_openai_client_repairs_non_json_first_pass_without_second_web_search():
     assert len(session.calls) == 2
     assert "tools" in session.calls[0]
     assert "tools" not in session.calls[1]
+    assert all(call["store"] is False for call in session.calls)
+    assert "native inline citations" in session.calls[0]["instructions"]
+    assert "prose, not JSON" in session.calls[0]["input"]
+    assert result["raw_response"]["research_text"] == "Research draft without JSON."
     assert result["raw_response"]["format_repaired"] is True
     assert result["source_refs"][0]["locator"] == "https://example.com/release"
+
+
+def test_uncited_prose_does_not_spend_on_a_futile_format_repair():
+    class Session(_FormatRepairSession):
+        def post(self, *args, **kwargs):
+            response = super().post(*args, **kwargs)
+            response.body["output"] = []
+            return response
+
+    session = Session()
+    with pytest.raises(worker.ResearchIncompleteError, match="citations=0"):
+        worker.OpenAIClient(_config(), session=session).research({}, {})
+    assert len(session.calls) == 1
+
+
+def test_incomplete_response_is_never_formatted_or_submitted():
+    class Session(_FormatRepairSession):
+        def post(self, *args, **kwargs):
+            response = super().post(*args, **kwargs)
+            response.body["status"] = "incomplete"
+            return response
+
+    session = Session()
+    with pytest.raises(worker.ResearchIncompleteError, match="not completed"):
+        worker.OpenAIClient(_config(), session=session).research({}, {})
+    assert len(session.calls) == 1
 
 
 class _FakeGhost:

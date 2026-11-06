@@ -2,6 +2,7 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
 import time
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -20,8 +21,30 @@ class Response:
         return self.body
 
 
+@pytest.fixture(params=[
+    "2026-03-06", "2026-03-09",  # before/after spring DST; prior session stays EST on Monday
+    "2026-10-30", "2026-11-02",  # before/after autumn DST; prior session stays EDT on Monday
+    "2026-11-04", "2026-12-02",  # original failing CI date and winter
+])
+def scan_clock(monkeypatch, request):
+    # This fixture simulates RTH. Freeze BOTH request-window datetime and the
+    # consumption-time age check; monotonic deadlines remain real.
+    now = datetime.fromisoformat(request.param).replace(
+        hour=12, tzinfo=ZoneInfo("America/New_York"),
+    ).astimezone(timezone.utc)
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now.astimezone(tz) if tz is not None else now.replace(tzinfo=None)
+
+    monkeypatch.setattr(sm, "datetime", FrozenDateTime)
+    monkeypatch.setattr(time, "time", lambda: now.timestamp())
+    return now
+
+
 @pytest.fixture
-def scan(monkeypatch):
+def scan(monkeypatch, scan_clock):
     monkeypatch.setattr("core.market_hours.is_us_extended_hours", lambda *a: True)
     monkeypatch.setattr("core.market_hours.is_us_premarket", lambda *a: False)
     monkeypatch.setattr("core.market_hours.is_us_rth", lambda *a: True)
@@ -40,12 +63,13 @@ def scan(monkeypatch):
     monkeypatch.setattr(sm, "_maybe_alert", lambda *a: pytest.fail("invalid quote alerted"))
     monkeypatch.setattr("core.squeeze_outcomes.record_squeeze_prediction", lambda *a, **kw: pytest.fail("invalid quote persisted"))
     from core.daily_bar_contract import previous_session
-    now = datetime.now(timezone.utc)
-    # The session date is the exchange's (ET), not UTC's: 00:00-04:00 UTC is still the
-    # previous ET day, and a UTC date there makes "prior" the current session.
-    from zoneinfo import ZoneInfo
-    prior = previous_session(now.astimezone(ZoneInfo("America/New_York")).date()).isoformat()
-    daily = {"SPCE": [{"t": prior + "T04:00:00Z", "c": 100, "v": 1000}]}
+    now = scan_clock
+    # Timestamp the PRIOR session's local midnight: 04:00 UTC in EDT, 05:00
+    # in EST. On the Monday after a switch its offset differs from today's.
+    exchange = ZoneInfo("America/New_York")
+    prior = previous_session(now.astimezone(exchange).date())
+    prior_midnight = datetime.combine(prior, datetime.min.time(), tzinfo=exchange)
+    daily = {"SPCE": [{"t": prior_midnight.astimezone(timezone.utc).isoformat(), "c": 100, "v": 1000}]}
     bar = {"t": (now - timedelta(minutes=3)).isoformat(), "c": 120, "h": 120, "l": 110, "v": 1000}
     return daily, {"SPCE": [bar]}
 
@@ -53,6 +77,19 @@ def scan(monkeypatch):
 def run_scan():
     asyncio.run(sm._run_watchlist_scan())
     return sm._last_scan_report
+
+
+def test_fixture_daily_bar_is_prior_exchange_midnight(scan, scan_clock):
+    expected = {
+        "2026-03-06": "2026-03-05T05:00:00+00:00",
+        "2026-03-09": "2026-03-06T05:00:00+00:00",
+        "2026-10-30": "2026-10-29T04:00:00+00:00",
+        "2026-11-02": "2026-10-30T04:00:00+00:00",
+        "2026-11-04": "2026-11-03T05:00:00+00:00",
+        "2026-12-02": "2026-12-01T05:00:00+00:00",
+    }
+    day = scan_clock.astimezone(ZoneInfo("America/New_York")).date().isoformat()
+    assert scan[0]["SPCE"][0]["t"] == expected[day]
 
 
 def test_intraday_429_is_failure_not_no_print(monkeypatch, scan):
@@ -72,13 +109,13 @@ def test_missing_prior_baseline_is_not_no_print(monkeypatch, scan):
     assert report["invalid_baseline"] == 1
 
 
-def test_stale_same_day_bar_cannot_reach_signal_or_ledger(monkeypatch, scan):
+def test_stale_same_day_bar_cannot_reach_signal_or_ledger(monkeypatch, scan, scan_clock):
     daily, intraday = scan
     # Stale by AGE, but still in the same exchange session: just past BAR_MAX_AGE_S. A bar
     # 5 h old failed between ~00:00 and 05:00 ET, when it belongs to the PREVIOUS session and
     # is dropped earlier as "no intraday print" (seen 2026-09-25 03:10 ET).
     from core.squeeze_evidence import BAR_MAX_AGE_S
-    intraday["SPCE"][0]["t"] = (datetime.now(timezone.utc) - timedelta(seconds=BAR_MAX_AGE_S + 120)).isoformat()
+    intraday["SPCE"][0]["t"] = (scan_clock - timedelta(seconds=BAR_MAX_AGE_S + 120)).isoformat()
     monkeypatch.setattr("requests.get", lambda url, **kw: Response(200, daily if "1Day" in url else intraday))
     monkeypatch.setattr(sm, "evaluate_squeeze_signal", lambda *a, **kw: pytest.fail("stale bar reached signal"))
     report = run_scan()
@@ -174,6 +211,7 @@ def test_rate_limit_stops_remaining_chunks_and_fallback(monkeypatch, scan):
     assert len(calls) == 1
     assert report["fetch_fail"] == 1
     assert report["fetch_skipped"] == 2
+    assert report["fetch_issue_reasons"] == {"http_429": 1, "rate_limited_batch": 2}
     assert report["no_intraday_print"] == 0
 
 
@@ -282,3 +320,15 @@ def test_evidence_uses_the_exchange_date_between_midnight_et_and_midnight_ct():
                "daily_feed": "iex", "intraday_feed": "iex"}
     assert evidence_status(metrics, now=now) == "ready"
     assert evidence_status({**metrics, "reference_session_date": "2026-09-24"}, now=now) == "invalid_baseline"
+
+
+def test_fetch_issue_diagnostics_keep_busy_and_provider_failures_distinct():
+    assert sm._fetch_issue_reasons({
+        "A": {"status": "fetch_skipped", "reason": "batch_busy"},
+        "B": {"status": "fetch_skipped", "reason": "batch_still_running"},
+        "C": {"status": "fetch_fail", "reason": "http_429"},
+        "D": {"status": "fetch_skipped", "reason": "rate_limited_batch"},
+        "E": {"status": "stale_quote", "reason": "stale_quote"},
+        "F": {"status": "fetch_fail", "reason": "https://private.example/token"},
+    }) == {"batch_busy": 1, "batch_still_running": 1, "http_429": 1,
+           "rate_limited_batch": 1, "other": 1}
