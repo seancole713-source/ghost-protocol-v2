@@ -10,7 +10,7 @@ on:
 
 jobs:
   playwright-smoke:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     env:
       BASE_URL: ${{ github.event.inputs.base_url || 'https://ghost-protocol-v2-production.up.railway.app' }}
